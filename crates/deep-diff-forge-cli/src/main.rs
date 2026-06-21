@@ -36,7 +36,8 @@ USAGE:
 
 BOOTSTRAP STATUS:
   The current binary exposes deployability smoke commands while the full
-  patch, semantic, TUI, daemon, and agent surfaces are implemented.
+  patch, semantic, TUI, daemon, and agent surfaces are designed but not yet
+  implemented.
 
 FUTURE PRIMARY MODES:
   deep-diff-forge <old> <new>
