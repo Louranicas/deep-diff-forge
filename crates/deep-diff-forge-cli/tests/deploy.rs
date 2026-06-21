@@ -19,7 +19,7 @@ fn status_json_declares_schema_and_maturity() {
     let (code, stdout, _) = run(&["deploy", "status", "--json"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("\"schema\": \"deep-diff-forge.deployment-status.v0\""));
-    assert!(stdout.contains("\"maturity\": \"L7\""));
+    assert!(stdout.contains("\"maturity\": \"L8\""));
     assert!(stdout.contains("\"repo\": \"deep-diff-forge\""));
 }
 
@@ -39,7 +39,7 @@ fn status_json_lists_gate_stack() {
 fn status_human_shows_maturity_name() {
     let (code, stdout, _) = run(&["deploy", "status"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("L7 (Daemon)"));
+    assert!(stdout.contains("L8 (Release)"));
     assert!(stdout.contains("just gate-feature"));
 }
 
@@ -48,6 +48,34 @@ fn status_json_includes_external_observers() {
     let (_, stdout, _) = run(&["deploy", "status", "--json"]);
     assert!(stdout.contains("\"external_observers\""));
     assert!(stdout.contains("\"habitat\": \"optional\""));
+}
+
+#[test]
+fn release_json_declares_schema_and_version() {
+    let (code, stdout, _) = run(&["deploy", "release", "--json"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("\"schema\": \"deep-diff-forge.release.v0\""));
+    assert!(stdout.contains("\"version\": \"0.1.0\""));
+}
+
+#[test]
+fn release_json_reports_crates_io_blocked() {
+    let (code, stdout, _) = run(&["deploy", "release", "--json"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("crates.io"));
+    assert!(stdout.contains("\"state\": \"blocked\""));
+    assert!(stdout.contains("\"pending\": [\"crates.io\"]"));
+    assert!(stdout.contains("\"fully_published\": false"));
+}
+
+#[test]
+fn release_human_lists_targets_and_pending() {
+    let (code, stdout, _) = run(&["deploy", "release"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("github"));
+    assert!(stdout.contains("gitlab"));
+    assert!(stdout.contains("crates.io"));
+    assert!(stdout.contains("pending: crates.io"));
 }
 
 #[test]

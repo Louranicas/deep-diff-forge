@@ -97,7 +97,7 @@ fn stdin_patch(opts: &[String]) {
 /// The current declared maturity level (kept in sync with the deployment
 /// framework; bumped as each ladder rung ships).
 const CURRENT_MATURITY: deep_diff_forge_core::MaturityLevel =
-    deep_diff_forge_core::MaturityLevel::L7;
+    deep_diff_forge_core::MaturityLevel::L8;
 
 /// `daemon {path|start|health|status|stop} [--socket PATH]`: drive the optional
 /// UDS JSON-RPC review daemon.
@@ -245,11 +245,68 @@ fn print_semantic_json(path: &str, analysis: &deep_diff_forge_syntax::SemanticAn
 
 /// Dispatch `deploy` subcommands.
 fn deploy_cmd(opts: &[String]) {
-    if opts.first().map(String::as_str) == Some("status") {
-        deploy_status(opts.iter().any(|a| a == "--json"));
+    let json = opts.iter().any(|a| a == "--json");
+    match opts
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .map(String::as_str)
+    {
+        Some("status") => deploy_status(json),
+        Some("release") => deploy_release(json),
+        _ => {
+            eprintln!("usage: deep-diff-forge deploy {{status|release}} [--json]");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Report the release publication posture for the current version.
+///
+/// This is a declared snapshot (like `deploy status`): the actual release acts
+/// are `git tag`, `gh release`, and `cargo publish`. crates.io is reported
+/// `blocked` until a registry token is configured.
+fn deploy_release(json: bool) {
+    use deep_diff_forge_core::{ReleasePlan, TargetState};
+    let plan = ReleasePlan::new(env!("CARGO_PKG_VERSION"))
+        .with_target("github", TargetState::Published)
+        .with_target("gitlab", TargetState::Published)
+        .with_target("github-release", TargetState::Published)
+        .with_target("crates.io", TargetState::Blocked);
+
+    if json {
+        use deep_diff_forge_core::json_escape;
+        use std::fmt::Write as _;
+        let mut targets = String::new();
+        for (i, t) in plan.targets.iter().enumerate() {
+            if i > 0 {
+                targets.push_str(", ");
+            }
+            let _ = write!(
+                targets,
+                "{{\"name\": {}, \"state\": {}}}",
+                json_escape(&t.name),
+                json_escape(t.state.as_str())
+            );
+        }
+        let pending: Vec<String> = plan.pending().iter().map(|p| json_escape(p)).collect();
+        println!(
+            "{{\n  \"schema\": \"deep-diff-forge.release.v0\",\n  \"version\": {},\n  \"fully_published\": {},\n  \"targets\": [{}],\n  \"pending\": [{}]\n}}",
+            json_escape(&plan.version),
+            plan.fully_published(),
+            targets,
+            pending.join(", ")
+        );
     } else {
-        eprintln!("usage: deep-diff-forge deploy status [--json]");
-        std::process::exit(2);
+        println!("deep-diff-forge release v{}", plan.version);
+        for t in &plan.targets {
+            println!("  {:<16} {}", t.name, t.state.as_str());
+        }
+        let pending = plan.pending();
+        if pending.is_empty() {
+            println!("fully published");
+        } else {
+            println!("pending: {}", pending.join(", "));
+        }
     }
 }
 
@@ -475,7 +532,7 @@ USAGE:
   deep-diff-forge --version
   deep-diff-forge --self-test
   deep-diff-forge doctor
-  deep-diff-forge deploy status [--json]
+  deep-diff-forge deploy {{status|release}} [--json]
   deep-diff-forge semantic <path> [--json]
   deep-diff-forge review [--probe]
   deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]
@@ -486,12 +543,10 @@ USAGE:
   deep-diff-forge loom-contract
 
 MATURITY:
-  L7 Daemon. The binary parses unified/Git patches (--stdin-patch), projects
-  them (--layout, --json, --jsonl), ranks the review (--rank), runs bounded
-  parallel lanes (--cluster), extracts tree-sitter symbols (semantic <path>),
-  opens the review TUI (review), serves an optional UDS JSON-RPC daemon
-  (daemon ...), and reports deployment status (deploy status --json). All
-  framework engine layers L0-L7 are implemented; L8 release is credential-gated.
+  L8 Release. All engine layers L0-L7 are implemented and tagged releases are
+  cut to GitHub (binary + checksums) and both git remotes (deploy release
+  --json reports the per-target posture). The one remaining target is crates.io
+  publication, which is blocked until a registry token is configured.
 
 FUTURE PRIMARY MODES:
   deep-diff-forge <old> <new>

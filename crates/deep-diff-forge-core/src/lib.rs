@@ -1,7 +1,9 @@
 mod deploy;
+mod release;
 mod util;
 
 pub use deploy::{DeploymentStatus, GateResult, GateState, MaturityLevel};
+pub use release::{ReleasePlan, ReleaseTarget, TargetState};
 pub use util::json_escape;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

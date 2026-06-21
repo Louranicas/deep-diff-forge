@@ -1,0 +1,87 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: build release binary
+        run: cargo build --release --locked -p deep-diff-forge-cli --target ${{ matrix.target }}
+      - name: package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          dist="deep-diff-forge-${TAG}-${TARGET}"
+          mkdir -p "${dist}"
+          cp "target/${TARGET}/release/deep-diff-forge" "${dist}/"
+          cp README.md LICENSE-MIT LICENSE-APACHE "${dist}/"
+          tar czf "${dist}.tar.gz" "${dist}"
+          sha256sum "${dist}.tar.gz" > "${dist}.tar.gz.sha256"
+      - name: package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          $dist = "deep-diff-forge-$env:TAG-$env:TARGET"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item "target/$env:TARGET/release/deep-diff-forge.exe" $dist
+          Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE $dist
+          Compress-Archive -Path $dist -DestinationPath "$dist.zip"
+          (Get-FileHash "$dist.zip" -Algorithm SHA256).Hash | Out-File "$dist.zip.sha256"
+      - name: upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            deep-diff-forge-*.tar.gz
+            deep-diff-forge-*.tar.gz.sha256
+            deep-diff-forge-*.zip
+            deep-diff-forge-*.zip.sha256
+
+  publish:
+    name: crates.io publish (token-gated)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: publish crates in dependency order if a token is configured
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "CARGO_REGISTRY_TOKEN not set; skipping crates.io publish."
+            exit 0
+          fi
+          for crate in core patch projection syntax pipeline graph agent tui cluster daemon cli; do
+            cargo publish -p "deep-diff-forge-${crate}" --locked
+            sleep 15
+          done
