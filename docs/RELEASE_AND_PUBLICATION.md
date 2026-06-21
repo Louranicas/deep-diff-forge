@@ -90,29 +90,30 @@ reports/releases/vX.Y.Z/
 
 ## Mirror Policy
 
-GitHub is primary today because the repo exists there:
+GitHub is the primary remote:
 
 ```text
 https://github.com/Louranicas/deep-diff-forge
 ```
 
-GitLab mirror is configured locally as:
+GitLab mirror is live under the authenticated namespace (`lukeomahoney`, not the
+GitHub username `Louranicas`), created via push-to-create and private by default:
 
 ```text
-git@gitlab.com:Louranicas/deep-diff-forge.git
+git@gitlab.com:lukeomahoney/deep-diff-forge.git
+https://gitlab.com/lukeomahoney/deep-diff-forge
 ```
 
-Current blocker:
-
-```text
-GitLab project not found or local machine lacks permission.
-```
-
-Once fixed:
+Both remotes are pushed in lock-step:
 
 ```bash
-git push -u gitlab main
+git push github main
+git push gitlab main
 ```
+
+Note: the GitLab namespace differs from GitHub. The earlier "project not found"
+blocker was a namespace mismatch (`Louranicas` is the GitHub user; the GitLab
+account is `lukeomahoney`) — resolved by repointing the remote.
 
 ## Deployment Link
 
