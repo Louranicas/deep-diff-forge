@@ -816,6 +816,11 @@ Minimum test bar by crate:
 | `loom` | plan parser, boundary decisions, gate receipts. |
 | `daemon` | socket lifecycle, version negotiation, session subscription. |
 
+Each production crate or module must reach at least 50 meaningful tests before
+release eligibility. The 50-test minimum is not a quota for shallow assertions:
+tests must include integration coverage where public boundaries exist, and must
+follow [Testing Gold Standard](TESTING_GOLD_STANDARD.md).
+
 ## Feature Flags
 
 Feature flags should trim heavy surfaces without changing core models.

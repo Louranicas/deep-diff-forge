@@ -81,6 +81,10 @@ truth whenever possible.
 | Fuzz | Patch parser, syntax lowering, JSONL codecs. |
 | Integration | Git workspace, TUI smoke, daemon socket lifecycle. |
 
+Every production module or crate must have at least 50 meaningful tests before
+release eligibility. The detailed standard is defined in
+`docs/TESTING_GOLD_STANDARD.md`.
+
 ## No Hidden Global State
 
 The CLI should pass explicit config, budgets, paths, and caches into engine

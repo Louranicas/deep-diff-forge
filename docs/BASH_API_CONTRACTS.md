@@ -39,6 +39,7 @@ just status
 just gate-docs
 just gate-bootstrap
 just gate-feature
+just test-audit
 just contracts
 just doctor
 just receipt-bootstrap

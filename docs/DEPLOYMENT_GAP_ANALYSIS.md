@@ -46,6 +46,7 @@ Not yet implemented:
 | --- | --- | --- | --- |
 | P0 | Deployment framework is mostly manual. | Receipts and gates depend on operator discipline. | Add `deep-diff-forge deploy doctor` and `deep-diff-forge deploy receipt` commands. |
 | P0 | No executable fixture gate exists. | Framework cannot prove patch truth or projection stability. | Implement `deep-diff-forge-patch` plus first patch fixtures. |
+| P0 | Current bootstrap crates have no real tests. | The codebase cannot yet demonstrate the required 50 meaningful tests per production module. | Treat current crates as L0 bootstrap and block production graduation until `TESTING_GOLD_STANDARD.md` is met. |
 | P0 | No CI workflow exists. | GitHub push is not independently verified. | Add `ci.yml` with fmt, check, clippy, tests, and contract probes. |
 | P0 | No machine-readable deployment schema exists in code. | Habitat/factory and CI cannot consume receipts reliably. | Add receipt structs in `core` and JSON output in CLI. |
 | P1 | No release artifact automation. | Release path is documented but not reproducible. | Add release manifest and build script after patch/projection spine lands. |

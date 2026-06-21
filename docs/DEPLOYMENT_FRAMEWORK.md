@@ -57,6 +57,7 @@ document should link back to this framework through a deployment link section.
 | [Rust Implementation Strategy](RUST_IMPLEMENTATION_STRATEGY.md) | Rust crate strategy, dependencies, errors, tests. |
 | [Schematics](SCHEMATICS.md) | Diagrams and system topology. |
 | [Storage And 10TB Corpus](STORAGE_AND_10TB_CORPUS.md) | Optional large corpus and archive policy. |
+| [Testing Gold Standard](TESTING_GOLD_STANDARD.md) | Minimum meaningful tests, integration coverage, and anti-test-fitting rules. |
 | [Vision](VISION.md) | Product direction and non-negotiables. |
 
 ## Deployment Architecture
@@ -143,6 +144,7 @@ Assimilated patterns:
 | `just check` | Gate 2 compile. |
 | `just clippy` | Gate 3 lint. |
 | `just test` | Gate 4 tests. |
+| `just test-audit` | Informational count against the 50-test production standard. |
 | `just contracts` | Gate 6 bootstrap contract probes. |
 | `just gate-docs` | Docs-only gate for planning changes. |
 | `just gate-bootstrap` | Current L0 deployment gate. |
@@ -219,6 +221,12 @@ Acceptance:
 - Unit tests pass.
 - Integration tests pass.
 - Contract tests verify stdout, stderr, and exit codes.
+- Every production module or crate has at least 50 meaningful tests before it
+  is release-eligible.
+- Test suites include integration tests for public command, API, filesystem,
+  socket, pipeline, or process boundaries when those boundaries exist.
+- Tests follow [Testing Gold Standard](TESTING_GOLD_STANDARD.md), including
+  the explicit ban on test fitting.
 
 ### Gate 5: Fixture
 

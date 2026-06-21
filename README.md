@@ -73,6 +73,7 @@ Additional execution architecture:
 - `docs/OPERATIONS_AND_DAEMON.md`: optional UDS daemon, health, systemd-user posture, and observability.
 - `docs/LEARNING_LOOP.md`: feedback loop for planner, ranking, annotations, and corpus regression.
 - `docs/STORAGE_AND_10TB_CORPUS.md`: policy for using `/mnt/storage-10tb` as optional corpus/archive storage.
+- `docs/TESTING_GOLD_STANDARD.md`: required meaningful test coverage, integration tests, and anti-test-fitting rules.
 - `docs/RELEASE_AND_PUBLICATION.md`: GitHub/GitLab/crates/binary release plan.
 
 ## Status

@@ -43,6 +43,18 @@ clippy:
 test:
     cargo test --workspace --locked
 
+# Report current test count by crate. This is informational until production modules exist.
+[group("quality")]
+test-audit:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for crate in crates/*; do
+      [ -d "${crate}" ] || continue
+      name="$(basename "${crate}")"
+      count="$( (rg -n '#\[(tokio::)?test\]|rstest|proptest!' "${crate}" 2>/dev/null || true) | wc -l | tr -d ' ')"
+      printf '%s tests=%s minimum=50 status=%s\n' "${name}" "${count}" "$([ "${count}" -ge 50 ] && echo pass || echo bootstrap-gap)"
+    done
+
 # Run all bootstrap contract probes.
 [group("contracts")]
 contracts:
