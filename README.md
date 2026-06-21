@@ -43,9 +43,26 @@ Deep-Diff-Forge must provide every capability in the comparison matrix:
 - `crates/deep-diff-forge-cli`: pager-compatible CLI and early smoke surface.
 - `docs/`: vision, architecture, baseline matrix, roadmap, and design constraints.
 
+## Rust And CLI Execution Spine
+
+Deep-Diff-Forge is written in Rust and designed for chainable command-line
+execution. The long-term binary must work both as a human review tool and as a
+strict Unix filter that Claude Code, Bash, CI, and daemon clients can compose.
+
+Additional execution architecture:
+
+- Chainable commands: ingest, plan, rank, annotate, render, chain.
+- Clustered commands: local parallel dimensional lanes with deterministic joins.
+- Dimensional model: patch, semantic, risk, agent, runtime, storage, history, and presentation dimensions.
+- Deep-Diff-Forge Loom: controlled assimilation of exemplar lessons into specs, fixtures, Rust crate plans, gates, and receipts.
+
 ## Deployment Spine
 
 - `docs/CLAUDE_CODE_BASH_CLI.md`: Claude Code, Bash, and CLI-first command contracts.
+- `docs/CHAINING_AND_CLUSTERING.md`: pipe-safe command chains and clustered execution.
+- `docs/DIMENSIONAL_EXECUTION_MODEL.md`: dimensional lanes, joins, budgets, and receipts.
+- `docs/DEEP_DIFF_FORGE_LOOM.md`: loom plan for assimilating exemplar repos and new capabilities.
+- `docs/RUST_IMPLEMENTATION_STRATEGY.md`: Rust crate strategy, dependencies, errors, and testing.
 - `docs/FEATURE_DEPLOYABILITY_MATRIX.md`: deployability gates for every baseline and pioneer feature.
 - `docs/PIONEER_FEATURE_SPECS.md`: implementation specs for semantic twins, review graph, and adaptive planner.
 - `docs/BASH_API_CONTRACTS.md`: strict shell, JSON, JSONL, and exit-code contracts.
@@ -58,3 +75,12 @@ Deep-Diff-Forge must provide every capability in the comparison matrix:
 ## Status
 
 This repo is in vision and architecture bootstrap. The initial code intentionally defines stable vocabulary before algorithmic work begins.
+
+Bootstrap contract probes:
+
+```bash
+deep-diff-forge claude-code-contract
+deep-diff-forge chain-contract
+deep-diff-forge cluster-contract
+deep-diff-forge loom-contract
+```

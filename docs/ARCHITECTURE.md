@@ -24,6 +24,12 @@ Deep-Diff-Forge is organized around a layered core.
 6. **Projection Layer**
    Converts the core model into side-by-side, inline, stacked, JSON, TUI, desktop, web, and agent API views.
 
+7. **Pipeline Layer**
+   Runs chainable command stages: ingest, plan, rank, annotate, render, chain, and cluster.
+
+8. **Loom Layer**
+   Assimilates exemplar lessons and feature proposals into Rust crate plans, fixtures, gates, and receipts.
+
 ## Core Principle
 
 Patch truth and semantic truth are separate but synchronized.
@@ -56,6 +62,9 @@ Planned:
 - `deep-diff-forge-tui`: interactive terminal UI.
 - `deep-diff-forge-agent`: annotation, provenance, and review API.
 - `deep-diff-forge-ui-model`: renderer-neutral layout and interaction model.
+- `deep-diff-forge-pipeline`: chain stages, stream codecs, and manifest runner.
+- `deep-diff-forge-cluster`: dimensional lane sharding, parallelism, and deterministic joins.
+- `deep-diff-forge-loom`: controlled assimilation plans, fixtures, gates, and receipts.
 - `deep-diff-forge-daemon`: optional local IPC daemon for shared cache and multi-client review sessions.
 
 ## Schematics
@@ -64,6 +73,10 @@ Detailed diagrams and API maps live in:
 
 - `docs/SCHEMATICS.md`
 - `docs/API_AND_IPC.md`
+- `docs/CHAINING_AND_CLUSTERING.md`
+- `docs/DIMENSIONAL_EXECUTION_MODEL.md`
+- `docs/DEEP_DIFF_FORGE_LOOM.md`
+- `docs/RUST_IMPLEMENTATION_STRATEGY.md`
 - `docs/PERFORMANCE_AND_NOVELTY.md`
 
 ## Non-Goals

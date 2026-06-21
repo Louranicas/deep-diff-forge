@@ -22,6 +22,9 @@ flowchart TB
     TUI[interactive TUI]
     Desktop[desktop or IDE adapter]
     Agent[agent API client]
+    Chain[chain runner]
+    Cluster[cluster runner]
+    Loom[forge loom]
     Core[deep-diff-forge-core]
     Input[Input adapters]
     Patch[Patch Truth Layer]
@@ -36,6 +39,9 @@ flowchart TB
     TUI --> Core
     Desktop --> Core
     Agent --> Core
+    Chain --> Core
+    Cluster --> Core
+    Loom --> Core
 
     Core --> Input
     Input --> Patch
@@ -51,11 +57,18 @@ flowchart TB
     Projection --> Agent
 
     Core <--> Cache
+    Chain --> Projection
+    Cluster --> Planner
+    Loom --> Planner
+    Loom --> Graph
     Daemon <--> Cache
     CLI -. optional IPC .-> Daemon
     TUI -. optional IPC .-> Daemon
     Desktop -. optional IPC .-> Daemon
     Agent -. optional IPC .-> Daemon
+    Chain -. optional IPC .-> Daemon
+    Cluster -. optional IPC .-> Daemon
+    Loom -. optional IPC .-> Daemon
 ```
 
 ## Process Modes
@@ -64,7 +77,10 @@ flowchart TB
 | --- | --- | --- | --- |
 | Library mode | Caller links `deep-diff-forge-core` and optional crates directly. | Desktop apps, IDEs, tests, embedded tools. | Yes |
 | CLI one-shot | `deep-diff-forge` runs once and exits. | Pager, CI, shell workflows. | Yes |
+| Chain runner | `deep-diff-forge chain` runs declared stages. | Bash, Claude Code, reproducible pipelines. | Yes after pipeline crate lands |
+| Cluster runner | `deep-diff-forge cluster` runs dimensional lanes in parallel. | Large repos, corpora, bounded local parallelism. | Yes after cluster crate lands |
 | Interactive TUI | `deep-diff-forge review` owns terminal event loop. | Review stream, mouse navigation, runtime toggles. | Yes after TUI crate lands |
+| Loom runner | `deep-diff-forge loom` creates plans, fixtures, gates, and receipts. | Assimilating exemplar lessons and new capabilities. | Yes after loom crate lands |
 | Local daemon | `deep-diff-forge daemon` exposes IPC and shared cache. | Multi-client sessions, persistent AST cache, agent coordination. | No, opt-in |
 
 The daemon is not required for correctness. It is a performance and coordination accelerator.
@@ -124,6 +140,9 @@ deep-diff-forge/
     deep-diff-forge-planner/    Strategy selection, budgets, fallback records, generated-file detection.
     deep-diff-forge-graph/      Review Intelligence Graph, risk ranking, ownership/test links.
     deep-diff-forge-projection/ Renderer-neutral projections: inline, side-by-side, stacked, JSON.
+    deep-diff-forge-pipeline/   Chain stages, stream codecs, manifest runner.
+    deep-diff-forge-cluster/    Dimensional sharding, parallel lanes, deterministic joins.
+    deep-diff-forge-loom/       Assimilation plans, fixture synthesis, gates, receipts.
     deep-diff-forge-tui/        Terminal UI, mouse support, responsive split/stack review.
     deep-diff-forge-agent/      Agent annotation API, provenance, approval and evidence protocol.
     deep-diff-forge-daemon/     Optional local daemon and IPC server.
@@ -137,9 +156,53 @@ Public APIs are split by stability.
 | --- | --- | --- |
 | Stable model API | `crates/deep-diff-forge-core/src/lib.rs` | All crates, plugin authors, API clients. |
 | Stable CLI API | `crates/deep-diff-forge-cli/src/main.rs` and command modules | Users, scripts, Git integration. |
+| Stable pipeline API | `deep-diff-forge-pipeline` | Bash, Claude Code, CI, reproducible chains. |
 | Experimental engine API | `deep-diff-forge-daemon` IPC methods | TUI, desktop adapters, agents. |
+| Experimental cluster API | `deep-diff-forge-cluster` | Large repo and corpus runners. |
+| Experimental loom API | `deep-diff-forge-loom` | Feature assimilation and receipt generation. |
 | Internal strategy API | `deep-diff-forge-planner` | Engine crates only. |
 | Internal parser API | `deep-diff-forge-syntax` and `deep-diff-forge-patch` | Engine crates only. |
+
+## Chain, Cluster, And Loom Schematic
+
+```mermaid
+flowchart TB
+    Git[Git or patch input]
+    Ingest[ingest stage]
+    Plan[plan stage]
+    Shard[cluster sharder]
+    PatchLane[patch dimension]
+    SemanticLane[semantic dimension]
+    RiskLane[risk dimension]
+    Join[stable join]
+    Render[render stage]
+    Loom[loom assimilation]
+    Fixtures[fixtures]
+    Gates[gates]
+    Receipts[receipts]
+
+    Git --> Ingest
+    Ingest --> Plan
+    Plan --> Shard
+    Shard --> PatchLane
+    Shard --> SemanticLane
+    PatchLane --> RiskLane
+    SemanticLane --> RiskLane
+    PatchLane --> Join
+    SemanticLane --> Join
+    RiskLane --> Join
+    Join --> Render
+
+    Loom --> Fixtures
+    Loom --> Gates
+    Fixtures --> Gates
+    Gates --> Receipts
+    Receipts --> Plan
+```
+
+The chain path is the default Unix-filter path. The cluster path is the same
+work split into deterministic lanes. The loom path feeds the engine with
+planned, tested, receipt-backed implementation changes.
 
 ## Runtime Control Plane
 
@@ -209,4 +272,3 @@ These are the high-leverage choices that push the design beyond central tendency
 | Budgeted semantic diff | Every parser/graph strategy has byte, node, and time ceilings. |
 | Renderer-neutral projections | TUI, desktop, IDE, and JSON share the same core model. |
 | Optional daemon only for shared state | Preserves CLI simplicity while enabling elite latency for large repos. |
-

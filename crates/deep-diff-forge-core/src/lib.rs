@@ -4,6 +4,76 @@ pub struct ReviewDocument {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionPlan {
+    pub dimensions: Vec<ExecutionDimension>,
+    pub lanes: Vec<ExecutionLane>,
+    pub join_policy: JoinPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExecutionDimension {
+    Patch,
+    Semantic,
+    Risk,
+    Agent,
+    Runtime,
+    Storage,
+    History,
+    Presentation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionLane {
+    pub id: String,
+    pub dimension: ExecutionDimension,
+    pub parallelism: Parallelism,
+    pub input_contract: StreamContract,
+    pub output_contract: StreamContract,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Parallelism {
+    Serial,
+    Auto,
+    Fixed(u16),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamContract {
+    Human,
+    Json,
+    JsonLines,
+    Compact,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinPolicy {
+    DeterministicInputOrder,
+    RankedReviewOrder,
+    AsReadyWithStableIds,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoomPlan {
+    pub name: String,
+    pub phases: Vec<LoomPhase>,
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoomPhase {
+    Intake,
+    BoundaryMap,
+    WeavePlan,
+    FixtureSynthesis,
+    RustCrateStub,
+    Gate,
+    Receipt,
+    Assimilation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewFile {
     pub path: String,
     pub status: FileStatus,

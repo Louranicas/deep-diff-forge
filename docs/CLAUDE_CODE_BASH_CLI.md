@@ -20,6 +20,9 @@ deep-diff-forge --version
 deep-diff-forge --self-test
 deep-diff-forge doctor
 deep-diff-forge claude-code-contract
+deep-diff-forge chain-contract
+deep-diff-forge cluster-contract
+deep-diff-forge loom-contract
 ```
 
 These commands exist before the full engine so CI, Claude Code, and Bash scripts have a stable handshake.
@@ -50,6 +53,17 @@ deep-diff-forge plan --git --json
 
 # validate daemon and cache
 deep-diff-forge doctor
+
+# chainable local pipeline
+deep-diff-forge ingest --git --jsonl | deep-diff-forge plan --stdin --jsonl
+deep-diff-forge chain --manifest .deep-diff-forge/chain.toml
+
+# clustered dimensional execution
+deep-diff-forge cluster --git --dimensions patch,semantic,risk --parallel auto --jsonl
+
+# loom assimilation
+deep-diff-forge loom plan --source /mnt/storage-10tb/repos/hunk --feature "review stream"
+deep-diff-forge loom gate --plan docs/loom/review-stream.json
 
 # daemon lifecycle
 deep-diff-forge daemon start
@@ -99,6 +113,9 @@ Required guarantees:
 - Every file, hunk, semantic span, and annotation has a stable id.
 - AI annotations are explicitly marked as human, agent-grounded, agent-ungrounded, or system-generated.
 - Patch truth remains available even when semantic analysis fails.
+- Chain, cluster, and loom contracts are inspectable before their full engines ship.
+- Clustered execution joins by stable IDs and deterministic order unless ranking is explicitly requested.
+- Loom outputs record exemplar lessons, crate ownership, fixtures, gates, and receipts.
 
 ## Bash Integration Patterns
 
@@ -153,4 +170,3 @@ deep-diff-forge plan --git --json > /tmp/deep-diff-forge-plan.json
 | huge generated file | Suppress with summary unless user expands. |
 | parser budget exceeded | Patch truth plus semantic fallback reason. |
 | daemon unavailable | Run in-process unless daemon explicitly requested. |
-

@@ -23,6 +23,9 @@ The core API is library-first. IPC exists only when a long-lived process provide
 | Review graph | `deep-diff-forge-graph` | `src/graph.rs` | File, hunk, symbol, test, owner, risk, agent nodes. |
 | Ranking | `deep-diff-forge-graph` | `src/rank.rs` | Deterministic review ordering. |
 | Agent API | `deep-diff-forge-agent` | `src/protocol.rs` | Annotation and evidence protocol. |
+| Pipeline API | `deep-diff-forge-pipeline` | `src/stage.rs` | Chain stages, stream codecs, manifest execution. |
+| Cluster API | `deep-diff-forge-cluster` | `src/scheduler.rs` | Dimensional sharding, local parallel lanes, join policies. |
+| Loom API | `deep-diff-forge-loom` | `src/plan.rs` | Assimilation plans, fixtures, gates, receipts. |
 | Daemon API | `deep-diff-forge-daemon` | `src/rpc.rs` | JSON-RPC transport, sessions, subscriptions. |
 
 ## CLI Command Surface
@@ -38,9 +41,17 @@ deep-diff-forge daemon stop
 deep-diff-forge daemon status
 deep-diff-forge cache status
 deep-diff-forge cache prune
+deep-diff-forge chain
+deep-diff-forge cluster
+deep-diff-forge loom plan
+deep-diff-forge loom gate
+deep-diff-forge loom receipt
 deep-diff-forge doctor
 deep-diff-forge --self-test
 deep-diff-forge claude-code-contract
+deep-diff-forge chain-contract
+deep-diff-forge cluster-contract
+deep-diff-forge loom-contract
 ```
 
 ## CLI Compatibility Contracts
@@ -54,6 +65,8 @@ deep-diff-forge claude-code-contract
 | Agent tools | JSON and JSONL modes with stable IDs. |
 | Claude Code | `claude-code-contract`, stable exit codes, no TTY requirement for machine commands. |
 | Bash | stdout for primary output, stderr for diagnostics, no prompts outside interactive commands. |
+| Unix filters | Explicit stdin modes, stable stream schemas, pipe-safe exit behavior. |
+| Cluster runners | Deterministic joins, bounded parallelism, receipts, replayable lane manifests. |
 
 ## JSON-RPC Method Map
 
@@ -70,6 +83,10 @@ The daemon uses JSON-RPC 2.0 over Unix domain sockets on Unix and named pipes on
 | `session.setBudgets` | client -> daemon | Adjust byte, node, and time budgets. |
 | `diff.plan` | client -> daemon | Return planner decisions without full projection. |
 | `diff.compute` | client -> daemon | Compute patch and semantic twins. |
+| `pipeline.run` | client -> daemon | Run a declared chain manifest with daemon cache acceleration. |
+| `cluster.run` | client -> daemon | Run dimensional lanes with explicit budgets and join policy. |
+| `loom.plan` | client -> daemon | Produce an assimilation plan from sources and requested capability. |
+| `loom.gate` | client -> daemon | Run loom gates and return receipt-ready results. |
 | `projection.render` | client -> daemon | Render inline, side-by-side, stacked, JSON, or compact stream. |
 | `annotation.add` | client -> daemon | Add human or agent annotation. |
 | `annotation.resolve` | client -> daemon | Mark annotation addressed. |
@@ -86,6 +103,9 @@ The daemon uses JSON-RPC 2.0 over Unix domain sockets on Unix and named pipes on
 | `session/progress` | phase, completed files, total files, active file. |
 | `diff/fileUpdated` | file id, patch status, semantic status, fallback reason. |
 | `graph/rankUpdated` | ordered file and hunk ids. |
+| `pipeline/stageCompleted` | stage id, output schema, item count, elapsed time. |
+| `cluster/laneCompleted` | lane id, dimension, shard id, fallback count, elapsed time. |
+| `loom/phaseCompleted` | plan id, phase, output path, gate status. |
 | `annotation/added` | annotation id and anchor. |
 | `approval/changed` | target id and decision. |
 | `cache/updated` | cache counters and generation id. |

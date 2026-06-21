@@ -11,7 +11,8 @@
 - Define socket locations and daemon lifecycle.
 - Define performance budgets and fallback taxonomy.
 - Define Claude Code, Bash, JSON, JSONL, and exit-code contracts.
-- Ship bootstrap smoke commands: `--self-test`, `doctor`, and `claude-code-contract`.
+- Define chain, cluster, dimensional execution, and loom assimilation contracts.
+- Ship bootstrap smoke commands: `--self-test`, `doctor`, `claude-code-contract`, `chain-contract`, `cluster-contract`, and `loom-contract`.
 
 ## Phase 1: Patch Baseline
 
@@ -21,6 +22,7 @@
 - Preserve metadata: modes, renames, binary markers, no-newline lines.
 - Add JSON output.
 - Add Bash-safe `--stdin-patch`, `--json`, `--jsonl`, `--plain`, and `--exit-code`.
+- Add `deep-diff-forge-pipeline` with ingest, plan, rank, and render stage contracts.
 
 ## Phase 2: Pager and Terminal Review
 
@@ -66,7 +68,16 @@
 - Add multi-client subscriptions.
 - Add secure socket ownership checks.
 
-## Phase 8: Deployment Spine
+## Phase 8: Cluster And Loom
+
+- Add `deep-diff-forge-cluster`.
+- Add dimensional sharding and join policies.
+- Add local parallel execution receipts.
+- Add `deep-diff-forge-loom`.
+- Add loom plan, fixture, gate, and receipt commands.
+- Add loom-assisted feature assimilation workflow.
+
+## Phase 9: Deployment Spine
 
 - Add CI workflows.
 - Add release packaging.
@@ -75,7 +86,7 @@
 - Add GitHub release automation.
 - Add GitLab mirror documentation and push gate.
 
-## Phase 9: Learning Loop
+## Phase 10: Learning Loop
 
 - Add corpus manifest format.
 - Add regression snapshot runner.

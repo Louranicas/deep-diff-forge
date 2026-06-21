@@ -23,6 +23,9 @@ deep-diff-forge --version
 deep-diff-forge --self-test
 deep-diff-forge doctor
 deep-diff-forge claude-code-contract
+deep-diff-forge chain-contract
+deep-diff-forge cluster-contract
+deep-diff-forge loom-contract
 ```
 
 ## Planned JSON Shapes
@@ -87,5 +90,16 @@ deep-diff-forge plan --git --json
 
 # Ask why a hunk is ranked first
 deep-diff-forge why-first hunk:42 --json
-```
 
+# Compose as Unix filters
+deep-diff-forge ingest --git --jsonl \
+  | deep-diff-forge plan --stdin --jsonl \
+  | deep-diff-forge rank --stdin --json \
+  | deep-diff-forge render --stdin --plain
+
+# Run bounded local parallelism
+deep-diff-forge cluster --git --dimensions patch,semantic,risk --parallel 4 --json
+
+# Produce a loom assimilation plan
+deep-diff-forge loom plan --source /mnt/storage-10tb/repos/difftastic --feature "syntax fallback"
+```
