@@ -31,6 +31,9 @@ errors, and reliable concurrency.
 | `deep-diff-forge-loom` | 6 | Assimilation plans, fixtures, gates, receipts. |
 | `deep-diff-forge-daemon` | 7 | Optional IPC, shared cache, subscriptions. |
 
+The detailed module tree, dependency graph, crate charters, and contextual code
+flows live in `docs/MODULE_STRUCTURE_PLAN.md`.
+
 ## Dependency Posture
 
 | Area | Likely dependency | Reason |
@@ -92,4 +95,3 @@ versioned APIs and receipts.
 4. Emit `deep-diff-forge --stdin-patch --json`.
 5. Add chain smoke tests for stdin, stdout, stderr, and exit codes.
 6. Add loom fixture for the patch parser baseline.
-

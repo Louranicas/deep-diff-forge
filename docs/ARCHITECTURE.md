@@ -77,6 +77,7 @@ Detailed diagrams and API maps live in:
 - `docs/DIMENSIONAL_EXECUTION_MODEL.md`
 - `docs/DEEP_DIFF_FORGE_LOOM.md`
 - `docs/RUST_IMPLEMENTATION_STRATEGY.md`
+- `docs/MODULE_STRUCTURE_PLAN.md`
 - `docs/PERFORMANCE_AND_NOVELTY.md`
 
 ## Non-Goals

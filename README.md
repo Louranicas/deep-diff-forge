@@ -63,6 +63,7 @@ Additional execution architecture:
 - `docs/DIMENSIONAL_EXECUTION_MODEL.md`: dimensional lanes, joins, budgets, and receipts.
 - `docs/DEEP_DIFF_FORGE_LOOM.md`: loom plan for assimilating exemplar repos and new capabilities.
 - `docs/RUST_IMPLEMENTATION_STRATEGY.md`: Rust crate strategy, dependencies, errors, and testing.
+- `docs/MODULE_STRUCTURE_PLAN.md`: detailed Rust workspace, crate, module, dependency, and code-flow plan.
 - `docs/FEATURE_DEPLOYABILITY_MATRIX.md`: deployability gates for every baseline and pioneer feature.
 - `docs/PIONEER_FEATURE_SPECS.md`: implementation specs for semantic twins, review graph, and adaptive planner.
 - `docs/BASH_API_CONTRACTS.md`: strict shell, JSON, JSONL, and exit-code contracts.
