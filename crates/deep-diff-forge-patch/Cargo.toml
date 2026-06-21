@@ -15,4 +15,4 @@ default = ["json"]
 json = []
 
 [dependencies]
-deep-diff-forge-core = { path = "../deep-diff-forge-core" }
+deep-diff-forge-core = { path = "../deep-diff-forge-core", version = "0.1.0" }

@@ -11,6 +11,10 @@ fn main() {
             let rest: Vec<String> = args.collect();
             deploy_cmd(&rest);
         }
+        Some("semantic") => {
+            let rest: Vec<String> = args.collect();
+            semantic_cmd(&rest);
+        }
         Some("--stdin-patch") => {
             let rest: Vec<String> = args.collect();
             stdin_patch(&rest);
@@ -76,7 +80,82 @@ fn stdin_patch(opts: &[String]) {
 /// The current declared maturity level (kept in sync with the deployment
 /// framework; bumped as each ladder rung ships).
 const CURRENT_MATURITY: deep_diff_forge_core::MaturityLevel =
-    deep_diff_forge_core::MaturityLevel::L3;
+    deep_diff_forge_core::MaturityLevel::L4;
+
+/// `semantic <path> [--json]`: parse a source file and report its symbols.
+fn semantic_cmd(opts: &[String]) {
+    let Some(path) = opts.iter().find(|a| !a.starts_with("--")) else {
+        eprintln!("usage: deep-diff-forge semantic <path> [--json]");
+        std::process::exit(2);
+    };
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("error: could not read {path}: {err}");
+            std::process::exit(3);
+        }
+    };
+    let analysis = deep_diff_forge_syntax::analyze(
+        path,
+        &source,
+        deep_diff_forge_syntax::SyntaxOptions::default(),
+    );
+    if opts.iter().any(|a| a == "--json") {
+        print_semantic_json(path, &analysis);
+    } else {
+        print_semantic_human(path, &analysis);
+    }
+}
+
+fn parse_status_str(status: &deep_diff_forge_core::ParseStatus) -> String {
+    use deep_diff_forge_core::ParseStatus;
+    match status {
+        ParseStatus::Parsed => "parsed".to_string(),
+        ParseStatus::ParsedWithErrors { errors } => format!("parsed_with_errors:{errors}"),
+        ParseStatus::Fallback { reason } => format!("fallback:{reason:?}"),
+    }
+}
+
+fn print_semantic_human(path: &str, analysis: &deep_diff_forge_syntax::SemanticAnalysis) {
+    println!(
+        "semantic: {path} ({}, {})",
+        analysis.language.name(),
+        parse_status_str(&analysis.parse_status)
+    );
+    for sym in &analysis.symbols {
+        println!(
+            "  {:<9} {}  L{}-L{}",
+            sym.kind, sym.name, sym.start_line, sym.end_line
+        );
+    }
+    println!("{} symbol(s)", analysis.symbols.len());
+}
+
+fn print_semantic_json(path: &str, analysis: &deep_diff_forge_syntax::SemanticAnalysis) {
+    use deep_diff_forge_core::json_escape;
+    use std::fmt::Write as _;
+    let mut symbols = String::new();
+    for (i, sym) in analysis.symbols.iter().enumerate() {
+        if i > 0 {
+            symbols.push_str(", ");
+        }
+        let _ = write!(
+            symbols,
+            "{{\"name\": {}, \"kind\": {}, \"start_line\": {}, \"end_line\": {}}}",
+            json_escape(&sym.name),
+            json_escape(&sym.kind),
+            sym.start_line,
+            sym.end_line
+        );
+    }
+    println!(
+        "{{\n  \"schema\": \"deep-diff-forge.semantic.v0\",\n  \"path\": {},\n  \"language\": {},\n  \"parse_status\": {},\n  \"symbols\": [{}]\n}}",
+        json_escape(path),
+        json_escape(analysis.language.name()),
+        json_escape(&parse_status_str(&analysis.parse_status)),
+        symbols
+    );
+}
 
 /// Dispatch `deploy` subcommands.
 fn deploy_cmd(opts: &[String]) {
@@ -198,6 +277,7 @@ USAGE:
   deep-diff-forge --self-test
   deep-diff-forge doctor
   deep-diff-forge deploy status [--json]
+  deep-diff-forge semantic <path> [--json]
   deep-diff-forge --stdin-patch [--json | --jsonl | --layout inline|side-by-side]
   deep-diff-forge claude-code-contract
   deep-diff-forge chain-contract
@@ -205,10 +285,11 @@ USAGE:
   deep-diff-forge loom-contract
 
 MATURITY:
-  L3 Pipeline. The binary parses unified/Git patches (--stdin-patch), projects
-  them (--layout, --json, --jsonl via the pipeline runner), and reports
-  deployment status (deploy status --json). The semantic, TUI, daemon, and
-  agent surfaces are designed but not yet implemented.
+  L4 Semantic. The binary parses unified/Git patches (--stdin-patch), projects
+  them (--layout, --json, --jsonl), reports deployment status (deploy status
+  --json), and extracts tree-sitter symbols from source files (semantic <path>,
+  Rust). The TUI, daemon, and agent surfaces are designed but not yet
+  implemented.
 
 FUTURE PRIMARY MODES:
   deep-diff-forge <old> <new>

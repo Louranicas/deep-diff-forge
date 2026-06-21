@@ -1,4 +1,31 @@
-# Deployment Evidence — L0 → L3 (Patch + Projection + Pipeline Spine)
+# Deployment Evidence — L0 → L4 (Patch + Projection + Pipeline + Semantic)
+
+## L4 Semantic (continuation, first heavy-dependency wave)
+
+`claim | warrant | evidence`
+
+- `deep-diff-forge-syntax` crate shipped | `[VBR]` | tree-sitter language
+  detection, budgeted parse (byte + node budgets → explicit `FallbackReason`),
+  top-level symbol extraction, `enclosing_symbol`. Time-budget enforcement is
+  honestly deferred (not reported as a fallback).
+- First external deps introduced under policy | `[VBE]` | `tree-sitter 0.25` +
+  `tree-sitter-rust 0.24` fetched and C-compiled (cc) cleanly; `cargo deny
+  check` → `advisories ok, bans ok, licenses ok, sources ok`. Internal path
+  deps carry `version = "0.1.0"` (publishable-workspace pattern).
+- CLI: `semantic <path> [--json]` | `[VBE]` | emits `deep-diff-forge.semantic.v0`;
+  on `crates/deep-diff-forge-core/src/deploy.rs` it correctly identified
+  MaturityLevel/GateState/GateResult/DeploymentStatus (enum/impl/struct) + the
+  tests module with line ranges.
+- Shared `core::json_escape` | `[VBR]` | one canonical RFC-8259 escaper added to
+  core (was the 4th place needing it).
+- Gate green | `[VBE]` | `just gate-feature` exit 0; **276 tests passed, 0
+  failed**; `deep-diff-forge-syntax` carries **51 tests** (>50 bar).
+- `deploy status` now reports `L4 (Semantic)` | `[VBE]`.
+
+Honest-degraded: full patch↔symbol join (mapping a hunk to its enclosing symbol
+in a diff) needs file bytes the bare `--stdin-patch` lacks — it is the Git-input
+wave's job; `enclosing_symbol` is the ready building block. The `semantic`
+command proves the layer live on whole files.
 
 ## Deployment-Spine Hardening (closes gap-analysis P0s, zero-touch)
 

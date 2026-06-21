@@ -11,8 +11,9 @@ name = "deep-diff-forge"
 path = "src/main.rs"
 
 [dependencies]
-deep-diff-forge-core = { path = "../deep-diff-forge-core" }
-deep-diff-forge-patch = { path = "../deep-diff-forge-patch" }
-deep-diff-forge-projection = { path = "../deep-diff-forge-projection" }
-deep-diff-forge-pipeline = { path = "../deep-diff-forge-pipeline" }
+deep-diff-forge-core = { path = "../deep-diff-forge-core", version = "0.1.0" }
+deep-diff-forge-patch = { path = "../deep-diff-forge-patch", version = "0.1.0" }
+deep-diff-forge-projection = { path = "../deep-diff-forge-projection", version = "0.1.0" }
+deep-diff-forge-pipeline = { path = "../deep-diff-forge-pipeline", version = "0.1.0" }
+deep-diff-forge-syntax = { path = "../deep-diff-forge-syntax", version = "0.1.0" }
 

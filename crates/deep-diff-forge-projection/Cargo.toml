@@ -8,7 +8,7 @@ rust-version.workspace = true
 description = "Renderer-neutral projections (inline, side-by-side) of the Deep-Diff-Forge review model."
 
 [dependencies]
-deep-diff-forge-core = { path = "../deep-diff-forge-core" }
+deep-diff-forge-core = { path = "../deep-diff-forge-core", version = "0.1.0" }
 
 [dev-dependencies]
-deep-diff-forge-patch = { path = "../deep-diff-forge-patch" }
+deep-diff-forge-patch = { path = "../deep-diff-forge-patch", version = "0.1.0" }

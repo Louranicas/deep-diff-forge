@@ -81,19 +81,21 @@ Additional execution architecture:
 
 ## Status
 
-This repo is at **L3 Pipeline** maturity. The core vocabulary is stable; the
-patch parser/renderer/JSON projection (`deep-diff-forge-patch`), the
-renderer-neutral projection layer (`deep-diff-forge-projection`), and the
-composable Unix-filter pipeline (`deep-diff-forge-pipeline`) are implemented.
-The semantic, TUI, daemon, and agent surfaces remain designed but not yet
-implemented. See [EVIDENCE.md](EVIDENCE.md) for the sealed deployment record.
+This repo is at **L4 Semantic** maturity. The core vocabulary is stable; the
+patch parser (`deep-diff-forge-patch`), projection layer
+(`deep-diff-forge-projection`), Unix-filter pipeline (`deep-diff-forge-pipeline`),
+and tree-sitter semantic layer (`deep-diff-forge-syntax`, Rust) are implemented,
+under a `deny.toml` supply-chain policy. The TUI, daemon, and agent surfaces
+remain designed but not yet implemented. See [EVIDENCE.md](EVIDENCE.md) for the
+sealed deployment record.
 
 ```bash
 git diff | deep-diff-forge --stdin-patch                        # review summary
 git diff | deep-diff-forge --stdin-patch --json                 # review.v0 JSON
 git diff | deep-diff-forge --stdin-patch --jsonl                # one event/file
-git diff | deep-diff-forge --stdin-patch --layout inline        # inline view
 git diff | deep-diff-forge --stdin-patch --layout side-by-side  # split view
+deep-diff-forge semantic src/lib.rs --json                      # tree-sitter symbols
+deep-diff-forge deploy status --json                            # deployment-status.v0
 ```
 
 Deployment shortcuts:

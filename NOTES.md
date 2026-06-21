@@ -48,4 +48,26 @@ Durable lessons for future Deep-Diff-Forge sessions. This is not a diary.
 - Evidence: `json::tests::quote_*`; `cargo` registry cache had no `serde-*`.
 - Affected files/symbols/commands:
   `crates/deep-diff-forge-patch/src/json.rs::quote`.
+- Status: permanent. The canonical shared escaper is now
+  `deep_diff_forge_core::json_escape` (added at L4); prefer it for new code.
+
+- Lesson: `cargo deny`'s `wildcards = "deny"` flags version-less intra-workspace
+  path deps; `allow-wildcard-paths` does NOT exempt publishable crates. Fix is
+  to give each internal path dep a `version` (e.g. `{ path = "..", version =
+  "0.1.0" }`) — the publishable-workspace pattern — not to relax the ban.
+- Evidence: `cargo deny check bans` error `allow-wildcard-paths ... does not
+  apply to public crates`; resolved → `advisories ok, bans ok, licenses ok`.
+- Affected files/symbols/commands: every `crates/*/Cargo.toml` internal dep;
+  `deny.toml`.
+- Status: permanent.
+
+- Lesson: tree-sitter (0.25 + grammar 0.24) fetches and C-compiles cleanly in
+  this environment via the `cc` crate; it pulls `serde_json`/`regex`
+  transitively, which is exactly why the supply-chain `deny.toml` was landed
+  first. Semantic budgets that are real: byte budget (pre-parse) and node
+  budget (post-parse via `descendant_count`). Time budget is NOT enforced yet
+  (would need the parser progress-callback API) — never report it as a fallback.
+- Evidence: `deep-diff-forge-syntax` builds + `analyze::tests::node_budget_*`.
+- Affected files/symbols/commands:
+  `crates/deep-diff-forge-syntax/src/analyze.rs`.
 - Status: permanent.
