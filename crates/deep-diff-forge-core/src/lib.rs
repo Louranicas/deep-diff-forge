@@ -1,0 +1,165 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewDocument {
+    pub files: Vec<ReviewFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewFile {
+    pub path: String,
+    pub status: FileStatus,
+    pub patch_twin: PatchTwin,
+    pub semantic_twin: Option<SemanticTwin>,
+    pub planner: PlannerDecision,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileStatus {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    TypeChanged,
+    BinaryChanged,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchTwin {
+    pub hunks: Vec<PatchHunk>,
+    pub metadata: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchHunk {
+    pub id: HunkId,
+    pub old_start: Option<u32>,
+    pub new_start: Option<u32>,
+    pub lines: Vec<PatchLine>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HunkId(pub u64);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatchLine {
+    pub kind: PatchLineKind,
+    pub old_line: Option<u32>,
+    pub new_line: Option<u32>,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatchLineKind {
+    Context,
+    Added,
+    Removed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticTwin {
+    pub language: String,
+    pub parse_status: ParseStatus,
+    pub spans: Vec<SemanticSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseStatus {
+    Parsed,
+    ParsedWithErrors { errors: u32 },
+    Fallback { reason: FallbackReason },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticSpan {
+    pub id: SemanticSpanId,
+    pub hunk_id: HunkId,
+    pub kind: SemanticChangeKind,
+    pub old_range: Option<TextRange>,
+    pub new_range: Option<TextRange>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SemanticSpanId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticChangeKind {
+    AddedNode,
+    RemovedNode,
+    ModifiedNode,
+    MovedNode,
+    ReformattedOnly,
+    RenamedSymbol,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextRange {
+    pub start_byte: u64,
+    pub end_byte: u64,
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannerDecision {
+    pub strategy: DiffStrategy,
+    pub fallback: Option<FallbackReason>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffStrategy {
+    Line,
+    Word,
+    Syntax,
+    MovedBlock,
+    Binary,
+    GeneratedSuppressed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FallbackReason {
+    UnsupportedLanguage,
+    ParseErrorsExceeded,
+    ByteBudgetExceeded,
+    NodeBudgetExceeded,
+    TimeBudgetExceeded,
+    BinaryInput,
+    InvalidPatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentAnnotation {
+    pub id: String,
+    pub anchor: AnnotationAnchor,
+    pub body: String,
+    pub provenance: AnnotationProvenance,
+    pub grounded: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnnotationAnchor {
+    File {
+        path: String,
+    },
+    Hunk {
+        path: String,
+        hunk_id: HunkId,
+    },
+    SemanticSpan {
+        path: String,
+        span_id: SemanticSpanId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnotationProvenance {
+    pub agent: String,
+    pub model: Option<String>,
+    pub evidence: Vec<String>,
+}
+
+impl ReviewDocument {
+    pub fn empty() -> Self {
+        Self { files: Vec::new() }
+    }
+}

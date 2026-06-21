@@ -1,0 +1,12 @@
+[workspace]
+members = [
+  "crates/deep-diff-forge-core",
+  "crates/deep-diff-forge-cli",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Louranicas/deep-diff-forge"
+rust-version = "1.85"
