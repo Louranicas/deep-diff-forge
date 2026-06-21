@@ -146,3 +146,6 @@ The loom emits work by dimension.
 The loom should be able to run locally, in CI, and over optional 10TB corpus
 storage without changing its output schema.
 
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

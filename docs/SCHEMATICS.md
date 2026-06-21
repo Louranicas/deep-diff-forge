@@ -272,3 +272,7 @@ These are the high-leverage choices that push the design beyond central tendency
 | Budgeted semantic diff | Every parser/graph strategy has byte, node, and time ceilings. |
 | Renderer-neutral projections | TUI, desktop, IDE, and JSON share the same core model. |
 | Optional daemon only for shared state | Preserves CLI simplicity while enabling elite latency for large repos. |
+
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

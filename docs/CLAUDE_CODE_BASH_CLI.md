@@ -170,3 +170,7 @@ deep-diff-forge plan --git --json > /tmp/deep-diff-forge-plan.json
 | huge generated file | Suppress with summary unless user expands. |
 | parser budget exceeded | Patch truth plus semantic fallback reason. |
 | daemon unavailable | Run in-process unless daemon explicitly requested. |
+
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

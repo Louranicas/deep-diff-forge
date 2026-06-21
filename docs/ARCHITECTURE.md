@@ -86,3 +86,7 @@ Detailed diagrams and API maps live in:
 - Do not make non-apply-able semantic output the canonical patch.
 - Do not trust AI annotations without provenance.
 - Do not require a desktop app for the engine to be useful.
+
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

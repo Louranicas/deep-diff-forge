@@ -114,3 +114,6 @@ Once fixed:
 git push -u gitlab main
 ```
 
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

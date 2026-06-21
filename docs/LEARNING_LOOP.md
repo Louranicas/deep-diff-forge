@@ -165,3 +165,6 @@ The 10TB disk can store large historical corpora and benchmark archives, but rep
 - Agent annotations are untrusted until grounded.
 - Learned behavior must be explainable through receipts.
 
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

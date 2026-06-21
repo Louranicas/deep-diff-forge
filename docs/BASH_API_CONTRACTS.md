@@ -103,3 +103,7 @@ deep-diff-forge cluster --git --dimensions patch,semantic,risk --parallel 4 --js
 # Produce a loom assimilation plan
 deep-diff-forge loom plan --source /mnt/storage-10tb/repos/difftastic --feature "syntax fallback"
 ```
+
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

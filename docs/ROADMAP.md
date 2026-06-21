@@ -94,3 +94,7 @@
 - Add planner outcome receipts.
 - Add review graph ranking evaluation.
 - Add annotation grounding evaluation.
+
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

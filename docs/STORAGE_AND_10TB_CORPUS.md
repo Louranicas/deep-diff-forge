@@ -103,3 +103,6 @@ Forbidden operations:
 - running recursive cleanup outside engine-owned directories
 - assuming the 10TB disk exists on other machines
 
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

@@ -156,3 +156,6 @@ Every fallback records:
 - parser failure falls back to line diff with reason
 - `fast` and `deep` profiles produce explainable differences
 
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

@@ -53,3 +53,6 @@ Existing tools optimize for one layer:
 
 Deep-Diff-Forge wins by making these layers cooperate instead of choosing one.
 
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

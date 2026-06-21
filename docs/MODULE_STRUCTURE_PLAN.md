@@ -913,3 +913,6 @@ Rules:
 - Does it fit the dependency graph?
 - Does it have a receipt path if it affects corpus, cluster, loom, or release?
 
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

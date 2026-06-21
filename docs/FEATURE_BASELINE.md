@@ -47,3 +47,7 @@ This baseline is non-negotiable for the first complete product cut.
 - Every feature has Bash-safe exit-code behavior.
 - Every feature has a fixture and regression receipt before release.
 - Every feature degrades to patch truth when semantic or agent layers fail.
+
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

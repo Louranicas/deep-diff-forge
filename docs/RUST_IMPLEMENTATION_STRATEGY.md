@@ -95,3 +95,7 @@ versioned APIs and receipts.
 4. Emit `deep-diff-forge --stdin-patch --json`.
 5. Add chain smoke tests for stdin, stdout, stderr, and exit codes.
 6. Add loom fixture for the patch parser baseline.
+
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

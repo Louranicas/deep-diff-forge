@@ -49,3 +49,7 @@ A feature is not deployable until it has:
 8. Planner budgets.
 9. Review graph ranking.
 10. Agent annotations.
+
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

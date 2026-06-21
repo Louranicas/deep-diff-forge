@@ -259,3 +259,6 @@ reports/deployments/<timestamp>/
 
 No deployment is green without a receipt directory.
 
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

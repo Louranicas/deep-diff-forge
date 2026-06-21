@@ -151,3 +151,6 @@ Minimum fixture classes:
 - AI annotation with valid evidence
 - AI annotation with missing evidence
 
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

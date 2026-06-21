@@ -179,3 +179,6 @@ The first implementation target is local parallelism. Remote distributed
 execution is out of scope until local receipts, replay, and failure semantics
 are boring and testable.
 
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

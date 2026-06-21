@@ -126,3 +126,6 @@ separate crates so the model stays stable:
 `unsafe` is not required for the initial model or runner. Any future unsafe
 optimization must be isolated, benchmarked, fuzzed, and feature-gated.
 
+## Deployment Link
+
+- Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)
