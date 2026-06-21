@@ -61,6 +61,9 @@ Additional execution architecture:
 - `docs/CLAUDE_CODE_BASH_CLI.md`: Claude Code, Bash, and CLI-first command contracts.
 - `docs/DEPLOYMENT_FRAMEWORK.md`: codebase deployment framework and bidirectional doc map.
 - `docs/DEPLOYMENT_GAP_ANALYSIS.md`: current framework gaps and non-anthropocentric recommendations.
+- `docs/AGENTIC_RUST_CODER_V4.md`: evidence-labelled Rust implementation and reporting standard.
+- `docs/HERMES_AGENT_PERSONA.md`: ARCHON-7 recursive heptadic problem-solving persona.
+- `docs/PROBLEM_SOLVER_GOD_TIER_SETUP.md`: structural diagnosis and seven-part verdict setup for high-cost design choices.
 - `docs/CHAINING_AND_CLUSTERING.md`: pipe-safe command chains and clustered execution.
 - `docs/DIMENSIONAL_EXECUTION_MODEL.md`: dimensional lanes, joins, budgets, and receipts.
 - `docs/DEEP_DIFF_FORGE_LOOM.md`: loom plan for assimilating exemplar repos and new capabilities.

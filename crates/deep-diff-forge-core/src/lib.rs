@@ -229,6 +229,7 @@ pub struct AnnotationProvenance {
 }
 
 impl ReviewDocument {
+    #[must_use]
     pub fn empty() -> Self {
         Self { files: Vec::new() }
     }

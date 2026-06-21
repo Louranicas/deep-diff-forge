@@ -36,6 +36,7 @@ document should link back to this framework through a deployment link section.
 | Document | Deployment role |
 | --- | --- |
 | [README](../README.md) | Entry point, product commitment, deployment spine index. |
+| [Agentic Rust Coder V4](AGENTIC_RUST_CODER_V4.md) | Evidence-labelled Rust implementation, gates, and reporting standard. |
 | [API And IPC](API_AND_IPC.md) | API locations, JSON-RPC, socket locations, protocol versioning. |
 | [Architecture](ARCHITECTURE.md) | Layering, crate plan, core principles. |
 | [Bash API Contracts](BASH_API_CONTRACTS.md) | Strict shell behavior, JSON/JSONL shapes, exit-code use. |
@@ -47,11 +48,13 @@ document should link back to this framework through a deployment link section.
 | [End To End Deployment](END_TO_END_DEPLOYMENT.md) | Gate sequence from local dev to release and learning. |
 | [Feature Baseline](FEATURE_BASELINE.md) | Required baseline capability set. |
 | [Feature Deployability Matrix](FEATURE_DEPLOYABILITY_MATRIX.md) | Feature-level gates and deployability criteria. |
+| [Hermes Agent Persona](HERMES_AGENT_PERSONA.md) | ARCHON-7 recursive heptadic architecture diagnosis role. |
 | [Learning Loop](LEARNING_LOOP.md) | Post-run feedback and promotion rules. |
 | [Module Structure Plan](MODULE_STRUCTURE_PLAN.md) | Rust workspace, crate, module, dependency, and code-flow plan. |
 | [Operations And Daemon](OPERATIONS_AND_DAEMON.md) | Optional daemon, health, UDS, service behavior. |
 | [Performance And Novelty](PERFORMANCE_AND_NOVELTY.md) | Performance posture and top-tail feature choices. |
 | [Pioneer Feature Specs](PIONEER_FEATURE_SPECS.md) | Semantic twin, review graph, adaptive planner specs. |
+| [Problem-Solver God-Tier Setup](PROBLEM_SOLVER_GOD_TIER_SETUP.md) | High-cost design decision role, verdict shape, and V4 handoff. |
 | [Release And Publication](RELEASE_AND_PUBLICATION.md) | Versioning, artifact publication, mirror policy. |
 | [Roadmap](ROADMAP.md) | Implementation phase order. |
 | [Rust Implementation Strategy](RUST_IMPLEMENTATION_STRATEGY.md) | Rust crate strategy, dependencies, errors, tests. |
@@ -143,6 +146,7 @@ Assimilated patterns:
 | `just fmt` | Gate 1 formatting. |
 | `just check` | Gate 2 compile. |
 | `just clippy` | Gate 3 lint. |
+| `just pedantic` | V4 pedantic clippy gate. |
 | `just test` | Gate 4 tests. |
 | `just test-audit` | Informational count against the 50-test production standard. |
 | `just contracts` | Gate 6 bootstrap contract probes. |
@@ -156,6 +160,65 @@ Assimilated patterns:
 | `just receipt-bootstrap` | Writes a bootstrap deployment receipt under `reports/`. |
 
 Generated receipts are intentionally ignored by Git through `/reports/`.
+
+## Agentic Rust Coder V4 Gate
+
+[Agentic Rust Coder V4](AGENTIC_RUST_CODER_V4.md) is the implementation
+standard for Rust changes. Its core rule is that every substantive codebase
+claim must be warranted as `[VBR]`, `[VBE]`, `[IFP]`, or `[CONJ]`.
+
+The required loop is:
+
+```text
+read relevant code -> make smallest change -> run gate -> read output -> decide
+```
+
+The executable V4 gate is:
+
+```bash
+just gate-feature
+```
+
+That recipe runs formatting, compile, standard clippy, pedantic clippy, tests,
+and bootstrap contract probes with repo-local `CARGO_TARGET_DIR=target`.
+
+V4 deployment rules:
+
+- Read `NOTES.md` at session start and update it only with durable lessons.
+- No production `unwrap` or `expect`.
+- No unexplained clippy suppressions.
+- No compiler appeasement through reflexive `clone`, broad `Arc<Mutex<_>>`,
+  `'static`, or bounds that do not model the data flow.
+- No performance claim without benchmark evidence.
+- No unsafe soundness claim without Miri where unsafe code exists.
+- No completion claim without command output or file-line evidence.
+
+## Hermes And Problem-Solver Setup
+
+[Hermes Agent Persona](HERMES_AGENT_PERSONA.md) and
+[Problem-Solver God-Tier Setup](PROBLEM_SOLVER_GOD_TIER_SETUP.md) are design
+roles, not deployment actuators. They apply before high-cost architecture
+choices such as public API shape, ownership-model redesign, daemon protocols,
+cache invalidation, schema versioning, release policy, and dependency strategy.
+
+Hermes supplies the recursive heptadic loop:
+
+```text
+decompose -> abstract -> invert -> constrain -> transfer -> trace -> reframe
+```
+
+The problem-solver setup supplies the seven-part verdict:
+
+```text
+diagnosis -> constraint map -> architecture -> failure profile
+  -> trade-off position -> confidence -> implementation sequence
+```
+
+The handoff contract is:
+
+```text
+Hermes/problem-solver verdict -> V4 implementation loop -> deployment receipts
+```
 
 ### Gate 0: Identity
 

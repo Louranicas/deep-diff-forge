@@ -38,6 +38,11 @@ check:
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
+# Run pedantic clippy with warnings denied.
+[group("quality")]
+pedantic:
+    cargo clippy --workspace --all-targets -- -D warnings -W clippy::pedantic
+
 # Run workspace tests.
 [group("quality")]
 test:
@@ -75,7 +80,7 @@ gate-bootstrap: fmt check contracts
 
 # Feature gate for Rust implementation changes.
 [group("gates")]
-gate-feature: fmt check clippy test contracts
+gate-feature: fmt check clippy pedantic test contracts
 
 # CI-equivalent local gate. This should remain stricter than gate-bootstrap.
 [group("gates")]

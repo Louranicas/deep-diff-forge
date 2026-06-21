@@ -13,6 +13,8 @@ errors, and reliable concurrency.
 - Avoid `unsafe` unless isolated, measured, fuzzed, and feature-gated.
 - Stream large data instead of collecting whole repos.
 - Treat CLI, daemon, TUI, and agent surfaces as projections over the same model.
+- Use evidence-labelled implementation and reporting from
+  [Agentic Rust Coder V4](AGENTIC_RUST_CODER_V4.md).
 
 ## Proposed Crate Expansion
 

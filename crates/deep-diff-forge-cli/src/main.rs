@@ -3,9 +3,9 @@ use deep_diff_forge_core::ReviewDocument;
 fn main() {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        None | Some("--help") | Some("-h") | Some("help") => print_help(),
-        Some("--version") | Some("-V") | Some("version") => print_version(),
-        Some("--self-test") | Some("self-test") => self_test(),
+        None | Some("--help" | "-h" | "help") => print_help(),
+        Some("--version" | "-V" | "version") => print_version(),
+        Some("--self-test" | "self-test") => self_test(),
         Some("doctor") => doctor(),
         Some("claude-code-contract") => claude_code_contract(),
         Some("chain-contract") => chain_contract(),
@@ -65,12 +65,14 @@ fn self_test() {
 fn doctor() {
     let runtime_dir =
         std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp/deep-diff-forge-runtime".into());
-    let cache_dir = std::env::var("XDG_CACHE_HOME")
-        .map(|base| format!("{base}/deep-diff-forge"))
-        .unwrap_or_else(|_| "~/.cache/deep-diff-forge".into());
-    let state_dir = std::env::var("XDG_STATE_HOME")
-        .map(|base| format!("{base}/deep-diff-forge"))
-        .unwrap_or_else(|_| "~/.local/state/deep-diff-forge".into());
+    let cache_dir = std::env::var("XDG_CACHE_HOME").map_or_else(
+        |_| "~/.cache/deep-diff-forge".into(),
+        |base| format!("{base}/deep-diff-forge"),
+    );
+    let state_dir = std::env::var("XDG_STATE_HOME").map_or_else(
+        |_| "~/.local/state/deep-diff-forge".into(),
+        |base| format!("{base}/deep-diff-forge"),
+    );
 
     println!("doctor ok: bootstrap binary is executable");
     println!("runtime_dir={runtime_dir}");
