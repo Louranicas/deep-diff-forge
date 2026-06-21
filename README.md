@@ -81,12 +81,12 @@ Additional execution architecture:
 
 ## Status
 
-This repo is at **L6 Cluster** maturity. The patch, projection, pipeline,
-semantic, Review Intelligence Graph, agent annotation, review TUI, and bounded
-parallel cluster (`deep-diff-forge-cluster`, deterministic joins + receipts)
-layers are implemented, under a `deny.toml` supply-chain policy. The daemon
-surface remains designed but not yet implemented. See [EVIDENCE.md](EVIDENCE.md)
-for the sealed deployment record.
+This repo is at **L7 Daemon** maturity — every engine layer (L0-L7) is
+implemented: patch, projection, pipeline, semantic, Review Intelligence Graph,
+agent annotation, review TUI, parallel cluster, and an optional UDS JSON-RPC
+daemon (`deep-diff-forge-daemon`, std sockets, owner-private), under a
+`deny.toml` supply-chain policy. The only remaining rung is L8 Release, which is
+credential-gated. See [EVIDENCE.md](EVIDENCE.md) for the sealed deployment record.
 
 ```bash
 git diff | deep-diff-forge --stdin-patch                        # review summary
@@ -99,6 +99,8 @@ git diff | deep-diff-forge review                               # interactive TU
 git diff | deep-diff-forge review --probe                       # headless TUI frame
 deep-diff-forge semantic src/lib.rs --json                      # tree-sitter symbols
 deep-diff-forge deploy status --json                            # deployment-status.v0
+deep-diff-forge daemon start --foreground                       # UDS JSON-RPC daemon
+deep-diff-forge daemon health                                   # query the daemon
 ```
 
 Deployment shortcuts:

@@ -87,6 +87,16 @@ Durable lessons for future Deep-Diff-Forge sessions. This is not a diary.
 - Affected files/symbols/commands: `crates/deep-diff-forge-cli/src/main.rs`.
 - Status: open finding.
 
+- Lesson: a UDS daemon is testable without a TTY/long-running process. Use
+  `std::os::unix::net::UnixStream::pair()` to cover `handle_connection` in
+  process, and spawn `run_server` on a thread with a `request` client to cover
+  the real accept loop + graceful shutdown. Keep the request/dispatch logic
+  socket-free (`process_line`/`dispatch`) so most of it tests without any socket.
+  std sockets removed any need for `tokio` at L7.
+- Evidence: `deep-diff-forge-daemon` serve.rs tests (socketpair + run_server).
+- Affected files/symbols/commands: `crates/deep-diff-forge-daemon/src/serve.rs`.
+- Status: permanent.
+
 - Lesson: tree-sitter (0.25 + grammar 0.24) fetches and C-compiles cleanly in
   this environment via the `cc` crate; it pulls `serde_json`/`regex`
   transitively, which is exactly why the supply-chain `deny.toml` was landed

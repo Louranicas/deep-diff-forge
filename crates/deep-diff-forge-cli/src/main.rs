@@ -19,6 +19,10 @@ fn main() {
             let rest: Vec<String> = args.collect();
             review_cmd(&rest);
         }
+        Some("daemon") => {
+            let rest: Vec<String> = args.collect();
+            daemon_cmd(&rest);
+        }
         Some("--stdin-patch") => {
             let rest: Vec<String> = args.collect();
             stdin_patch(&rest);
@@ -93,7 +97,47 @@ fn stdin_patch(opts: &[String]) {
 /// The current declared maturity level (kept in sync with the deployment
 /// framework; bumped as each ladder rung ships).
 const CURRENT_MATURITY: deep_diff_forge_core::MaturityLevel =
-    deep_diff_forge_core::MaturityLevel::L6;
+    deep_diff_forge_core::MaturityLevel::L7;
+
+/// `daemon {path|start|health|status|stop} [--socket PATH]`: drive the optional
+/// UDS JSON-RPC review daemon.
+fn daemon_cmd(opts: &[String]) {
+    use std::path::PathBuf;
+    let socket = flag_value(opts, "--socket")
+        .map_or_else(deep_diff_forge_daemon::default_socket_path, PathBuf::from);
+    let sub = opts
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .map(String::as_str);
+    match sub {
+        Some("path") => println!("{}", socket.display()),
+        Some("start") => {
+            if let Err(err) = deep_diff_forge_daemon::run_server(&socket) {
+                eprintln!("error: daemon failed: {err}");
+                std::process::exit(6);
+            }
+        }
+        Some("health") => daemon_client(&socket, r#"{"id":1,"method":"daemon.health"}"#),
+        Some("status") => daemon_client(&socket, r#"{"id":1,"method":"daemon.status"}"#),
+        Some("stop") => daemon_client(&socket, r#"{"id":1,"method":"daemon.shutdown"}"#),
+        _ => {
+            eprintln!(
+                "usage: deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]"
+            );
+            std::process::exit(2);
+        }
+    }
+}
+
+fn daemon_client(socket: &std::path::Path, line: &str) {
+    match deep_diff_forge_daemon::request(socket, line) {
+        Ok(response) => println!("{response}"),
+        Err(err) => {
+            eprintln!("error: no daemon at {}: {err}", socket.display());
+            std::process::exit(6);
+        }
+    }
+}
 
 /// `review [--probe]`: read a patch from stdin and open the review TUI.
 ///
@@ -434,6 +478,7 @@ USAGE:
   deep-diff-forge deploy status [--json]
   deep-diff-forge semantic <path> [--json]
   deep-diff-forge review [--probe]
+  deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]
   deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side]
   deep-diff-forge claude-code-contract
   deep-diff-forge chain-contract
@@ -441,12 +486,12 @@ USAGE:
   deep-diff-forge loom-contract
 
 MATURITY:
-  L6 Cluster. The binary parses unified/Git patches (--stdin-patch), projects
+  L7 Daemon. The binary parses unified/Git patches (--stdin-patch), projects
   them (--layout, --json, --jsonl), ranks the review (--rank), runs bounded
-  parallel dimensional lanes with deterministic joins (--cluster [--parallel]),
-  extracts tree-sitter symbols (semantic <path>), opens the review TUI (review),
-  and reports deployment status (deploy status --json). The daemon surface is
-  designed but not yet implemented.
+  parallel lanes (--cluster), extracts tree-sitter symbols (semantic <path>),
+  opens the review TUI (review), serves an optional UDS JSON-RPC daemon
+  (daemon ...), and reports deployment status (deploy status --json). All
+  framework engine layers L0-L7 are implemented; L8 release is credential-gated.
 
 FUTURE PRIMARY MODES:
   deep-diff-forge <old> <new>

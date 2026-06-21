@@ -1,4 +1,39 @@
-# Deployment Evidence — L0 → L6 (… + Cluster)
+# Deployment Evidence — L0 → L7 (… + Cluster + Daemon)
+
+## L7 Daemon (continuation, std-first UDS)
+
+`claim | warrant | evidence`
+
+- `deep-diff-forge-daemon` crate shipped | `[VBR]` | UDS JSON-RPC 2.0 server,
+  std-first (`std::os::unix::net`, thread-free single-accept loop, no `tokio`)
+  with `serde_json` for framing. Methods: `engine.initialize`, `daemon.health`,
+  `daemon.status`, `daemon.shutdown`, `diff.plan`, `session.open|snapshot|close`.
+- Socket security | `[VBR]`/`[VBE]` | runtime dir created `0700` + validated
+  (rejects group/world-accessible dirs), socket `0600`, stale sockets replaced;
+  asserted by `bind_secure` tests reading back the real modes.
+- Real socket round-trip tested, not mocked | `[VBE]` | `UnixStream::pair`
+  covers `handle_connection`; a live `run_server` thread + `request` client
+  cover the full accept loop incl. `diff.plan` over the socket and graceful
+  shutdown. Only the long-running CLI `daemon start` invocation is the boundary.
+- CLI: `daemon {path|start [--foreground]|health|status|stop} [--socket]` |
+  `[VBE]` | live lifecycle: started → socket appeared → `daemon health` returned
+  `{"status":"ok","pid":…,"protocol":0}` → `daemon stop` → `{"stopping":true}`
+  → server exited rc=0.
+- Gate green | `[VBE]` | `just gate-feature` exit 0; **553 tests passed, 0
+  failed**; daemon crate carries **57 tests** (>50). cargo-deny clean
+  (serde/serde_json maintained — no new advisory).
+- `deploy status` reports `L7 (Daemon)` | `[VBE]`.
+
+With L7, **all engine layers L0-L7 are implemented.** The remaining rungs are
+not engineering gaps: L8 Release is credential-gated (crates.io / GitHub
+Releases / GitLab — irreversible outward acts), and L9 Learning needs runtime
+telemetry from a deployed daemon.
+
+Honest scope: the daemon serves connections sequentially (one accept loop); a
+thread-per-connection or `tokio` multi-client upgrade is deferred until a
+measured need (the framework's "std first, async only with benefit" rule).
+uid-ownership verification is approximated by the `0700` mode check (strict
+getuid needs `libc`); documented, not silently skipped.
 
 ## L6 Cluster (continuation, near-zero-dep)
 

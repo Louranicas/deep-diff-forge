@@ -9,6 +9,7 @@ members = [
   "crates/deep-diff-forge-agent",
   "crates/deep-diff-forge-tui",
   "crates/deep-diff-forge-cluster",
+  "crates/deep-diff-forge-daemon",
   "crates/deep-diff-forge-cli",
 ]
 resolver = "2"

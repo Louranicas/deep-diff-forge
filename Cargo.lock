@@ -141,6 +141,7 @@ version = "0.1.0"
 dependencies = [
  "deep-diff-forge-cluster",
  "deep-diff-forge-core",
+ "deep-diff-forge-daemon",
  "deep-diff-forge-graph",
  "deep-diff-forge-patch",
  "deep-diff-forge-pipeline",
@@ -161,6 +162,17 @@ dependencies = [
 [[package]]
 name = "deep-diff-forge-core"
 version = "0.1.0"
+
+[[package]]
+name = "deep-diff-forge-daemon"
+version = "0.1.0"
+dependencies = [
+ "deep-diff-forge-core",
+ "deep-diff-forge-graph",
+ "deep-diff-forge-patch",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "deep-diff-forge-graph"
@@ -522,6 +534,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]
