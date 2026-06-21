@@ -37,6 +37,12 @@ fn stdin_patch(opts: &[String]) {
         eprintln!("error: could not read stdin: {err}");
         std::process::exit(3);
     }
+    // --jsonl streams one event per file through the real pipeline runner.
+    if opts.iter().any(|a| a == "--jsonl") {
+        run_jsonl_pipeline(input);
+        return;
+    }
+
     let files = match deep_diff_forge_patch::parse(&input) {
         Ok(files) => files,
         Err(err) => {
@@ -60,6 +66,22 @@ fn stdin_patch(opts: &[String]) {
         }
     } else {
         print_patch_summary(&files);
+    }
+}
+
+/// Drive `--jsonl` through the real pipeline runner (ingest → render JSONL).
+fn run_jsonl_pipeline(input: String) {
+    use deep_diff_forge_pipeline::{IngestStage, Pipeline, PipelineData, RenderStage};
+    let pipeline = Pipeline::new()
+        .with(Box::new(IngestStage))
+        .with(Box::new(RenderStage::jsonl()));
+    match pipeline.run(PipelineData::Patch(input)) {
+        Ok(PipelineData::Rendered(text)) => print!("{text}"),
+        Ok(_) => {}
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(4);
+        }
     }
 }
 
@@ -105,7 +127,7 @@ USAGE:
   deep-diff-forge --version
   deep-diff-forge --self-test
   deep-diff-forge doctor
-  deep-diff-forge --stdin-patch [--json | --layout inline|side-by-side]
+  deep-diff-forge --stdin-patch [--json | --jsonl | --layout inline|side-by-side]
   deep-diff-forge claude-code-contract
   deep-diff-forge chain-contract
   deep-diff-forge cluster-contract

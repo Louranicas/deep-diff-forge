@@ -104,11 +104,11 @@ flowchart TB
 | Release candidate | Dist output | release assets | full gate, package, smoke | release receipt |
 | Production release | Public remotes | tag/assets/crates | no-mistakes gate, final ack | publication receipt |
 
-The codebase is at L2 (projection spine): the patch parser, CLI JSON contract
-(`--stdin-patch --json`), patch fixture gates, and the renderer-neutral
-projection layer (`--stdin-patch --layout inline|side-by-side`) now exist.
-Release deployment remains blocked until the pipeline spine and the typed
-deployment-receipt schema land.
+The codebase is at L3 (pipeline spine): the patch parser, CLI JSON contract,
+patch fixtures, the projection layer (`--layout inline|side-by-side`), and the
+composable pipeline (`ChainStage`/`Pipeline` with `--jsonl` streaming driven
+through the real runner) now exist. Release deployment remains blocked until the
+semantic layer and the typed deployment-receipt schema land.
 
 Current gaps and recommendations are tracked in
 [Deployment Gap Analysis](DEPLOYMENT_GAP_ANALYSIS.md).
@@ -746,9 +746,11 @@ Rollback receipts must include:
 | L8 | Release | Signed assets, crates, CI, no-mistakes gate. |
 | L9 | Learning | Corpus-driven promotion and SLO-backed defaults. |
 
-The current repository is L2 (patch spine + projection spine shipped:
-`deep-diff-forge-patch`, `deep-diff-forge-projection`, `--stdin-patch [--json |
---layout inline|side-by-side]`, patch fixtures) with planned L3 Pipeline next.
+The current repository is L3 (patch + projection + pipeline spines shipped:
+`deep-diff-forge-patch`, `deep-diff-forge-projection`,
+`deep-diff-forge-pipeline`, `--stdin-patch [--json | --jsonl | --layout
+inline|side-by-side]`, patch fixtures) with planned L4 Semantic next (gated on
+the `tree-sitter` dependency).
 
 ## Framework Maintenance
 

@@ -68,6 +68,32 @@ fn malformed_patch_exits_four_with_stderr_diagnostic() {
 }
 
 #[test]
+fn jsonl_mode_streams_one_event_per_file() {
+    let two =
+        "--- a/a\n+++ b/a\n@@ -1,1 +1,1 @@\n-a\n+A\n--- a/b\n+++ b/b\n@@ -1,1 +1,1 @@\n-b\n+B\n";
+    let (code, stdout, _) = run(&["--stdin-patch", "--jsonl"], two);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.lines().count(), 2);
+    assert!(stdout.contains("\"event\":\"diff.file\""));
+}
+
+#[test]
+fn jsonl_malformed_exits_four() {
+    let bad = "--- a/x\n+++ b/x\n+stray\n";
+    let (code, stdout, stderr) = run(&["--stdin-patch", "--jsonl"], bad);
+    assert_eq!(code, 4);
+    assert!(stdout.is_empty());
+    assert!(!stderr.is_empty());
+}
+
+#[test]
+fn inline_layout_renders_header() {
+    let (code, stdout, _) = run(&["--stdin-patch", "--layout", "inline"], PATCH);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("modified  x"));
+}
+
+#[test]
 fn help_exits_zero() {
     let (code, stdout, _) = run(&["--help"], "");
     assert_eq!(code, 0);

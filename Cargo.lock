@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-patch",
+ "deep-diff-forge-pipeline",
  "deep-diff-forge-projection",
 ]
 
@@ -20,6 +21,15 @@ name = "deep-diff-forge-patch"
 version = "0.1.0"
 dependencies = [
  "deep-diff-forge-core",
+]
+
+[[package]]
+name = "deep-diff-forge-pipeline"
+version = "0.1.0"
+dependencies = [
+ "deep-diff-forge-core",
+ "deep-diff-forge-patch",
+ "deep-diff-forge-projection",
 ]
 
 [[package]]

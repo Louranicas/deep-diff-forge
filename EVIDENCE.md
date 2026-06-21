@@ -1,3 +1,26 @@
+# Deployment Evidence — L0 → L3 (Patch + Projection + Pipeline Spine)
+
+## L3 Pipeline (continuation, zero-touch)
+
+`claim | warrant | evidence`
+
+- `deep-diff-forge-pipeline` crate shipped | `[VBR]` | `ChainStage` trait +
+  `Pipeline` runner + `PipelineData`/`PipelineError` envelope; `IngestStage`
+  (raw patch → model) and `RenderStage` (model → json/jsonl/inline/side-by-side).
+- `--jsonl` streaming wired through the REAL runner | `[VBR]` | CLI
+  `run_jsonl_pipeline` builds `Pipeline::new().with(IngestStage).with(RenderStage::jsonl())`
+  — the pipeline is load-bearing in the binary, not just unit-tested.
+- Gate green | `[VBE]` | `just gate-feature` exit 0; **194 tests passed, 0
+  failed**; pipeline crate carries **53 tests** (>50 bar).
+- Proven live | `[VBE]` | `git diff HEAD | deep-diff-forge --stdin-patch --jsonl`
+  emitted one valid `diff.file` JSON event per file with correct +/- counts.
+- Strict-Bash safe | `[VBR]` | stages return typed `PipelineError`, never panic;
+  malformed input → exit 4 with clean stdout.
+
+The L2 record follows.
+
+---
+
 # Deployment Evidence — L0 → L2 (Patch + Projection Spine)
 
 ## L2 Projection (continuation, zero-touch)

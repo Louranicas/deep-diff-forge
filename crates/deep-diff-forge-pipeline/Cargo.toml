@@ -1,18 +1,13 @@
 [package]
-name = "deep-diff-forge-cli"
+name = "deep-diff-forge-pipeline"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-
-[[bin]]
-name = "deep-diff-forge"
-path = "src/main.rs"
+description = "Composable Unix-filter pipeline stages (ingest, render, JSONL) for Deep-Diff-Forge."
 
 [dependencies]
 deep-diff-forge-core = { path = "../deep-diff-forge-core" }
 deep-diff-forge-patch = { path = "../deep-diff-forge-patch" }
 deep-diff-forge-projection = { path = "../deep-diff-forge-projection" }
-deep-diff-forge-pipeline = { path = "../deep-diff-forge-pipeline" }
-
