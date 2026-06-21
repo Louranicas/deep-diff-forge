@@ -10,6 +10,8 @@
 - Define API and IPC contracts.
 - Define socket locations and daemon lifecycle.
 - Define performance budgets and fallback taxonomy.
+- Define Claude Code, Bash, JSON, JSONL, and exit-code contracts.
+- Ship bootstrap smoke commands: `--self-test`, `doctor`, and `claude-code-contract`.
 
 ## Phase 1: Patch Baseline
 
@@ -18,6 +20,7 @@
 - Build side-by-side row projection.
 - Preserve metadata: modes, renames, binary markers, no-newline lines.
 - Add JSON output.
+- Add Bash-safe `--stdin-patch`, `--json`, `--jsonl`, `--plain`, and `--exit-code`.
 
 ## Phase 2: Pager and Terminal Review
 

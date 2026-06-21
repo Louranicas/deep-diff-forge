@@ -40,3 +40,10 @@ This baseline is non-negotiable for the first complete product cut.
 - Approval state belongs to the reviewer, not the agent.
 - Patch truth remains auditable without AI features enabled.
 
+## Deployability Requirements
+
+- Every feature has a CLI path.
+- Every feature has a JSON or JSONL path for Claude Code.
+- Every feature has Bash-safe exit-code behavior.
+- Every feature has a fixture and regression receipt before release.
+- Every feature degrades to patch truth when semantic or agent layers fail.

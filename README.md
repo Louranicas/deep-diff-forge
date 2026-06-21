@@ -45,6 +45,10 @@ Deep-Diff-Forge must provide every capability in the comparison matrix:
 
 ## Deployment Spine
 
+- `docs/CLAUDE_CODE_BASH_CLI.md`: Claude Code, Bash, and CLI-first command contracts.
+- `docs/FEATURE_DEPLOYABILITY_MATRIX.md`: deployability gates for every baseline and pioneer feature.
+- `docs/PIONEER_FEATURE_SPECS.md`: implementation specs for semantic twins, review graph, and adaptive planner.
+- `docs/BASH_API_CONTRACTS.md`: strict shell, JSON, JSONL, and exit-code contracts.
 - `docs/END_TO_END_DEPLOYMENT.md`: gates from local build to release receipts.
 - `docs/OPERATIONS_AND_DAEMON.md`: optional UDS daemon, health, systemd-user posture, and observability.
 - `docs/LEARNING_LOOP.md`: feedback loop for planner, ranking, annotations, and corpus regression.

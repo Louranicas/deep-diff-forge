@@ -38,6 +38,9 @@ deep-diff-forge daemon stop
 deep-diff-forge daemon status
 deep-diff-forge cache status
 deep-diff-forge cache prune
+deep-diff-forge doctor
+deep-diff-forge --self-test
+deep-diff-forge claude-code-contract
 ```
 
 ## CLI Compatibility Contracts
@@ -49,6 +52,8 @@ deep-diff-forge cache prune
 | Pager | Stream ANSI output to stdout, no daemon required. |
 | CI | Deterministic exit codes and JSON output. |
 | Agent tools | JSON and JSONL modes with stable IDs. |
+| Claude Code | `claude-code-contract`, stable exit codes, no TTY requirement for machine commands. |
+| Bash | stdout for primary output, stderr for diagnostics, no prompts outside interactive commands. |
 
 ## JSON-RPC Method Map
 
@@ -171,4 +176,3 @@ engine.agent_annotations = 0
 ```
 
 Breaking changes increment the relevant namespace. Clients must feature-negotiate during `engine.initialize`.
-
