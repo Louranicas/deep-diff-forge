@@ -124,6 +124,37 @@ flowchart LR
     G0 --> G1 --> G2 --> G3 --> G4 --> G5 --> G6 --> G7 --> G8 --> G9 --> G10
 ```
 
+## Justfile Command Surface
+
+The repository includes a `justfile` that turns the deployment framework into
+repeatable local commands. The Justfile is a thin runner over Rust and shell
+contracts; it does not replace the CLI as the product interface.
+
+Assimilated patterns:
+
+- Rust service justfiles: `fmt`, `check`, `clippy`, `test`, and gate recipes.
+- Factory/habitat justfiles: read-only observation and receipt-first gates.
+- Small crate justfiles: repo-local `CARGO_TARGET_DIR=target`.
+
+| Recipe | Deployment role |
+| --- | --- |
+| `just status` | Gate 0 identity and metadata check. |
+| `just fmt` | Gate 1 formatting. |
+| `just check` | Gate 2 compile. |
+| `just clippy` | Gate 3 lint. |
+| `just test` | Gate 4 tests. |
+| `just contracts` | Gate 6 bootstrap contract probes. |
+| `just gate-docs` | Docs-only gate for planning changes. |
+| `just gate-bootstrap` | Current L0 deployment gate. |
+| `just gate-feature` | Stricter feature gate for Rust implementation changes. |
+| `just ci` | Local CI equivalent. |
+| `just zellij-observe` | Optional Zellij session observation. |
+| `just habitat-observe` | Optional habitat/factory status and wiring observation. |
+| `just doctor` | Combined status, contracts, and optional external observation. |
+| `just receipt-bootstrap` | Writes a bootstrap deployment receipt under `reports/`. |
+
+Generated receipts are intentionally ignored by Git through `/reports/`.
+
 ### Gate 0: Identity
 
 Purpose: ensure commands are operating on the intended repo and branch.
@@ -561,38 +592,26 @@ flag can express the same requirement.
 ### Docs-Only Gate
 
 ```bash
-cargo fmt --all --check
-CARGO_TARGET_DIR=target cargo check --workspace
+just gate-docs
 ```
 
 ### Bootstrap CLI Gate
 
 ```bash
-cargo fmt --all --check
-CARGO_TARGET_DIR=target cargo check --workspace
-CARGO_TARGET_DIR=target cargo run -p deep-diff-forge-cli -- --self-test
-CARGO_TARGET_DIR=target cargo run -p deep-diff-forge-cli -- doctor
-CARGO_TARGET_DIR=target cargo run -p deep-diff-forge-cli -- claude-code-contract
-CARGO_TARGET_DIR=target cargo run -p deep-diff-forge-cli -- chain-contract
-CARGO_TARGET_DIR=target cargo run -p deep-diff-forge-cli -- cluster-contract
-CARGO_TARGET_DIR=target cargo run -p deep-diff-forge-cli -- loom-contract
+just gate-bootstrap
 ```
 
 ### Feature Gate
 
 ```bash
-cargo fmt --all --check
-CARGO_TARGET_DIR=target cargo check --workspace --locked
-CARGO_TARGET_DIR=target cargo clippy --workspace --all-targets -- -D warnings
-CARGO_TARGET_DIR=target cargo test --workspace --locked
+just gate-feature
 ```
 
 ### Habitat Observation Gate
 
 ```bash
-factory-status
-factory-wiring
-zellij list-sessions
+just habitat-observe
+just zellij-observe
 ```
 
 These commands inform the deployment receipt. They do not replace Rust gates.

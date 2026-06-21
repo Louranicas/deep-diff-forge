@@ -79,6 +79,14 @@ Additional execution architecture:
 
 This repo is in vision and architecture bootstrap. The initial code intentionally defines stable vocabulary before algorithmic work begins.
 
+Deployment shortcuts:
+
+```bash
+just gate-bootstrap
+just doctor
+just receipt-bootstrap
+```
+
 Bootstrap contract probes:
 
 ```bash

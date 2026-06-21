@@ -55,6 +55,15 @@ Not yet implemented:
 | P2 | No benchmark receipt format. | Performance claims cannot be tracked. | Add benchmark schema and initial no-op baseline. |
 | P2 | No docs freshness check. | Bidirectional doc graph can drift. | Add a docs-link check command or script. |
 
+Current mitigation:
+
+- The repo-local `justfile` now provides executable `status`, `gate-docs`,
+  `gate-bootstrap`, `gate-feature`, `contracts`, `doctor`, and
+  `receipt-bootstrap` recipes.
+- This reduces manual deployment drift at L0, but it does not replace the
+  longer-term recommendation to add product-native `deep-diff-forge deploy`
+  commands and typed receipt schemas.
+
 ## Codebase Deployment Gap Analysis
 
 ### 1. Source Of Truth Gap

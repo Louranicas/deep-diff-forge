@@ -28,6 +28,29 @@ deep-diff-forge cluster-contract
 deep-diff-forge loom-contract
 ```
 
+## Justfile Runner Contract
+
+The repo-local `justfile` provides deployment shortcuts for humans, agents, CI
+operators, and Zellij panes. These recipes wrap documented commands; they do
+not create a separate product API.
+
+```bash
+just status
+just gate-docs
+just gate-bootstrap
+just gate-feature
+just contracts
+just doctor
+just receipt-bootstrap
+```
+
+Rules:
+
+- `CARGO_TARGET_DIR` is pinned to repo-local `target`.
+- Habitat and Zellij recipes are read-only and advisory.
+- Generated receipts go under `reports/` and are ignored by Git.
+- Product behavior still belongs to `deep-diff-forge`, not `just`.
+
 ## Planned JSON Shapes
 
 ### Review Document
