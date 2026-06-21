@@ -26,6 +26,7 @@ name = "deep-diff-forge-cli"
 version = "0.1.0"
 dependencies = [
  "deep-diff-forge-core",
+ "deep-diff-forge-graph",
  "deep-diff-forge-patch",
  "deep-diff-forge-pipeline",
  "deep-diff-forge-projection",
@@ -35,6 +36,14 @@ dependencies = [
 [[package]]
 name = "deep-diff-forge-core"
 version = "0.1.0"
+
+[[package]]
+name = "deep-diff-forge-graph"
+version = "0.1.0"
+dependencies = [
+ "deep-diff-forge-core",
+ "deep-diff-forge-patch",
+]
 
 [[package]]
 name = "deep-diff-forge-patch"

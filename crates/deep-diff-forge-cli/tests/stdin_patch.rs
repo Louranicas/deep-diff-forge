@@ -87,6 +87,39 @@ fn jsonl_malformed_exits_four() {
 }
 
 #[test]
+fn rank_json_emits_schema_and_orders_public_api_first() {
+    let two = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,1 +1,1 @@
+-a
++b
+diff --git a/tests/it.rs b/tests/it.rs
+--- a/tests/it.rs
++++ b/tests/it.rs
+@@ -1,1 +1,1 @@
+-a
++b
+";
+    let (code, stdout, _) = run(&["--stdin-patch", "--rank", "--json"], two);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("\"schema\": \"deep-diff-forge.rank.v0\""));
+    assert!(stdout.contains("public_api_surface"));
+    // src/lib.rs (public api) should appear before tests/it.rs in the output.
+    let lib_pos = stdout.find("src/lib.rs").unwrap();
+    let test_pos = stdout.find("tests/it.rs").unwrap();
+    assert!(lib_pos < test_pos);
+}
+
+#[test]
+fn rank_human_lists_files_and_count() {
+    let (code, stdout, _) = run(&["--stdin-patch", "--rank"], PATCH);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("1 file(s) ranked"));
+}
+
+#[test]
 fn inline_layout_renders_header() {
     let (code, stdout, _) = run(&["--stdin-patch", "--layout", "inline"], PATCH);
     assert_eq!(code, 0);

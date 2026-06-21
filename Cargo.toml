@@ -5,6 +5,7 @@ members = [
   "crates/deep-diff-forge-projection",
   "crates/deep-diff-forge-pipeline",
   "crates/deep-diff-forge-syntax",
+  "crates/deep-diff-forge-graph",
   "crates/deep-diff-forge-cli",
 ]
 resolver = "2"

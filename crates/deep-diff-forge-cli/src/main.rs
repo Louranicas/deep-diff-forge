@@ -59,7 +59,14 @@ fn stdin_patch(opts: &[String]) {
         }
     };
 
-    if opts.iter().any(|a| a == "--json") {
+    if opts.iter().any(|a| a == "--rank") {
+        let ranked = deep_diff_forge_graph::rank(&files);
+        if opts.iter().any(|a| a == "--json") {
+            print_rank_json(&ranked);
+        } else {
+            print_rank_human(&ranked);
+        }
+    } else if opts.iter().any(|a| a == "--json") {
         print!("{}", deep_diff_forge_patch::to_json(&files));
     } else if let Some(name) = flag_value(opts, "--layout") {
         if let Some(layout) = deep_diff_forge_projection::layout_from_str(&name) {
@@ -234,6 +241,46 @@ fn run_jsonl_pipeline(input: String) {
     }
 }
 
+fn print_rank_human(ranked: &[deep_diff_forge_graph::RankedFile]) {
+    for rf in ranked {
+        let signals: Vec<&str> = rf.signals.iter().map(|s| s.label()).collect();
+        println!(
+            "{:>4}  {:<14} {}  [{}]",
+            rf.score,
+            rf.status.label(),
+            rf.path,
+            signals.join(",")
+        );
+    }
+    println!("{} file(s) ranked", ranked.len());
+}
+
+fn print_rank_json(ranked: &[deep_diff_forge_graph::RankedFile]) {
+    use deep_diff_forge_core::json_escape;
+    use std::fmt::Write as _;
+    let mut items = String::new();
+    for (i, rf) in ranked.iter().enumerate() {
+        if i > 0 {
+            items.push_str(",\n");
+        }
+        let signals: Vec<String> = rf.signals.iter().map(|s| json_escape(s.label())).collect();
+        let _ = write!(
+            items,
+            "    {{\"path\": {}, \"status\": {}, \"score\": {}, \"signals\": [{}]}}",
+            json_escape(&rf.path),
+            json_escape(rf.status.label()),
+            rf.score,
+            signals.join(", ")
+        );
+    }
+    let body = if items.is_empty() {
+        String::new()
+    } else {
+        format!("\n{items}\n  ")
+    };
+    println!("{{\n  \"schema\": \"deep-diff-forge.rank.v0\",\n  \"ranked\": [{body}]\n}}");
+}
+
 /// Return the value following `name` in `opts`, if present.
 fn flag_value(opts: &[String], name: &str) -> Option<String> {
     opts.iter()
@@ -278,7 +325,7 @@ USAGE:
   deep-diff-forge doctor
   deep-diff-forge deploy status [--json]
   deep-diff-forge semantic <path> [--json]
-  deep-diff-forge --stdin-patch [--json | --jsonl | --layout inline|side-by-side]
+  deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --layout inline|side-by-side]
   deep-diff-forge claude-code-contract
   deep-diff-forge chain-contract
   deep-diff-forge cluster-contract

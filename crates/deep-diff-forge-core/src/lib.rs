@@ -99,6 +99,37 @@ pub enum FileStatus {
     Unknown,
 }
 
+impl FileStatus {
+    /// Canonical snake-case label, identical across every output surface
+    /// (JSON, JSONL, projection, rank).
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Added => "added",
+            Self::Modified => "modified",
+            Self::Deleted => "deleted",
+            Self::Renamed => "renamed",
+            Self::TypeChanged => "type_changed",
+            Self::BinaryChanged => "binary_changed",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[cfg(test)]
+mod file_status_tests {
+    use super::FileStatus;
+
+    #[test]
+    fn labels_are_snake_case() {
+        assert_eq!(FileStatus::BinaryChanged.label(), "binary_changed");
+        assert_eq!(FileStatus::TypeChanged.label(), "type_changed");
+        assert_eq!(FileStatus::Modified.label(), "modified");
+        assert_eq!(FileStatus::Added.label(), "added");
+        assert_eq!(FileStatus::Unknown.label(), "unknown");
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchTwin {
     pub hunks: Vec<PatchHunk>,
