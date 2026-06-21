@@ -1,4 +1,28 @@
-# Deployment Evidence — L0 → L7 (… + Cluster + Daemon)
+# Deployment Evidence — L0 → L8 (… + Daemon + Release)
+
+## L8 Release (tagged release; crates.io token-gated)
+
+`claim | warrant | evidence`
+
+- Release-automation code | `[VBR]` | `core::release` (`TargetState`,
+  `ReleaseTarget`, `ReleasePlan` — independent per-target states) + CLI
+  `deploy release [--json]` (`deep-diff-forge.release.v0`).
+- Release infrastructure | `[VBR]` | `release.yml` (tag-triggered build matrix →
+  binary + sha256 + GitHub Release upload; token-gated crates.io publish job in
+  dependency order), `CHANGELOG.md`, dual `LICENSE-MIT` + `LICENSE-APACHE`.
+- Tagged release cut | `[VBE]` | `v0.1.0` tagged and pushed to both remotes;
+  GitHub Release created with the linux binary + checksum.
+- Honest per-target posture | `[VBE]` | `deploy release --json` →
+  github/gitlab/github-release `published`, **crates.io `blocked`**,
+  `fully_published: false`, `pending: ["crates.io"]`.
+- Gate green | `[VBE]` | `just gate-feature` exit 0; **568 tests passed, 0
+  failed**; cargo-deny clean. `deploy status` → `L8 (Release)`.
+
+The one genuine wall: **crates.io publication** needs a `CARGO_REGISTRY_TOKEN`
+(no token present — `cargo publish` is an irreversible, yank-only act I cannot
+self-authorize). The release workflow performs it automatically once the token
+is configured as a repository secret; until then the target is reported
+`blocked`, never faked.
 
 ## L7 Daemon (continuation, std-first UDS)
 

@@ -10,11 +10,13 @@ interactive terminal cockpit, and bounded parallel execution on top — every
 layer a projection over one stable model, none of them ever allowed to corrupt
 the patch.
 
-> **Maturity: L7 (Daemon).** All engine layers L0–L7 are implemented:
-> patch · projection · pipeline · semantic · graph · agent · TUI · cluster ·
-> daemon. 11 crates, 553 tests, zero `unsafe`, supply-chain-gated. The only
-> remaining rung is L8 Release (publishing to package registries), which is
-> credential-gated. See [`EVIDENCE.md`](EVIDENCE.md) for the sealed record.
+> **Maturity: L8 (Release).** All engine layers L0–L7 are implemented and
+> **`v0.1.0` is tagged and released** to GitHub (binary + checksums) and both
+> git remotes. 11 crates, 568 tests, zero `unsafe`, supply-chain-gated, dual
+> MIT/Apache-2.0 licensed. The one remaining publication target is **crates.io**
+> (token-gated; the release workflow publishes automatically when a registry
+> token is configured). See [`EVIDENCE.md`](EVIDENCE.md) and
+> [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
@@ -383,8 +385,8 @@ L0 Bootstrap → L1 Patch → L2 Projection → L3 Pipeline → L4 Semantic
    → L5 Review → L6 Cluster → L7 Daemon → [L8 Release] → [L9 Learning]
 ```
 
-**L0–L7 are shipped.** L8 (Release) is credential-gated; L9 (Learning) needs
-runtime telemetry from a deployed daemon.
+**L0–L7 are shipped and `v0.1.0` is released (L8).** crates.io publication is
+token-gated; L9 (Learning) needs runtime telemetry from a deployed daemon.
 
 ## The deployment framework
 
@@ -443,7 +445,8 @@ is implemented, gated, and live-proven. Honest current limitations:
 - The CLI's `println!`-based output **panics on a broken pipe** (`… | head`) —
   pre-existing CLI-wide, tracked for a SIGPIPE hardening pass; output is not
   corrupted.
-- **L8 Release** (crates.io / GitHub Releases / GitLab) is credential-gated.
+- **L8 Release**: `v0.1.0` is tagged and released to GitHub + both git remotes;
+  only **crates.io** publication remains, gated on a registry token.
 - Time-budget enforcement in the semantic layer is deferred (and never reported
   as a fallback).
 
