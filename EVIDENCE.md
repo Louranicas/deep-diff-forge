@@ -1,5 +1,26 @@
 # Deployment Evidence — L0 → L3 (Patch + Projection + Pipeline Spine)
 
+## Deployment-Spine Hardening (closes gap-analysis P0s, zero-touch)
+
+`claim | warrant | evidence`
+
+- Typed deployment vocabulary in `core` | `[VBR]` | `deploy.rs`:
+  `MaturityLevel`, `GateState`, `GateResult`, `DeploymentStatus` (gap analysis
+  §3 "add receipt structs in core").
+- `deep-diff-forge deploy status [--json]` | `[VBE]` | emits
+  `deep-diff-forge.deployment-status.v0` with maturity + gate stack + external
+  observers (gap analysis §2/§9 "deploy status --json").
+- GitHub Actions CI | `[VBR]` | `.github/workflows/ci.yml` runs the full gate
+  ladder + contracts + `deploy status` + a cargo-deny supply-chain job (gap
+  analysis §4). Honest caveat: cannot be executed locally (no runner); YAML uses
+  only static `run:` commands (no untrusted-input interpolation).
+- Supply-chain policy | `[VBR]` | `deny.toml` (licenses/advisories/bans/sources)
+  guards the future tree-sitter/TUI/async waves before heavy deps arrive (gap
+  analysis §6 / P1, "MSRV + cargo-deny + cargo-audit before parser expansion";
+  MSRV is `rust-version = 1.85` in the workspace manifest).
+- Gate green | `[VBE]` | `just gate-feature` exit 0; **213 tests passed, 0
+  failed**.
+
 ## L3 Pipeline (continuation, zero-touch)
 
 `claim | warrant | evidence`

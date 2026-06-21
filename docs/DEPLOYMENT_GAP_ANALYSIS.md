@@ -40,6 +40,25 @@ Not yet implemented:
 - CI workflows
 - deployment receipt writer
 
+## Resolution Status (L3)
+
+Several P0/P1 gaps are now closed by the L1–L3 deployment waves:
+
+- **P0 receipt schema in code** — RESOLVED: `MaturityLevel`/`GateState`/
+  `GateResult`/`DeploymentStatus` in `deep-diff-forge-core::deploy`.
+- **P0 `deploy status` command** — RESOLVED: `deep-diff-forge deploy status
+  [--json]` emits `deep-diff-forge.deployment-status.v0`.
+- **P0 CI workflow** — RESOLVED: `.github/workflows/ci.yml` (gate ladder +
+  contracts + `deploy status` + cargo-deny).
+- **P0 fixture gate / real tests** — RESOLVED: `fixtures/patch/` + 213
+  workspace tests; patch/projection/pipeline crates each exceed the 50-test bar.
+- **P1 supply-chain policy** — PARTIAL: `deny.toml` + MSRV `1.85` landed;
+  `cargo audit`/`cargo vet` deferred to the dependency-introduction (L4+) wave.
+
+The remaining gaps below stay open pending the heavy-dependency waves
+(tree-sitter/TUI/async) and outward release acts (crates.io / GitHub Releases),
+which are deliberately gated.
+
 ## Executive Gaps
 
 | Priority | Gap | Impact | Recommendation |

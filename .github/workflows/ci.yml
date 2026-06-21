@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TARGET_DIR: target
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    name: deploy gate-feature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: format
+        run: cargo fmt --all --check
+      - name: compile
+        run: cargo check --workspace --locked
+      - name: lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: pedantic
+        run: cargo clippy --workspace --all-targets -- -D warnings -W clippy::pedantic
+      - name: test
+        run: cargo test --workspace --locked
+      - name: contracts
+        run: |
+          cargo run -p deep-diff-forge-cli -- --self-test
+          cargo run -p deep-diff-forge-cli -- doctor
+          cargo run -p deep-diff-forge-cli -- claude-code-contract
+          cargo run -p deep-diff-forge-cli -- chain-contract
+          cargo run -p deep-diff-forge-cli -- cluster-contract
+          cargo run -p deep-diff-forge-cli -- loom-contract
+      - name: deploy status
+        run: cargo run -p deep-diff-forge-cli -- deploy status --json
+
+  supply-chain:
+    name: supply chain audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

@@ -1,3 +1,7 @@
+mod deploy;
+
+pub use deploy::{DeploymentStatus, GateResult, GateState, MaturityLevel};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewDocument {
     pub files: Vec<ReviewFile>,

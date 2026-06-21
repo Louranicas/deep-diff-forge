@@ -7,6 +7,10 @@ fn main() {
         Some("--version" | "-V" | "version") => print_version(),
         Some("--self-test" | "self-test") => self_test(),
         Some("doctor") => doctor(),
+        Some("deploy") => {
+            let rest: Vec<String> = args.collect();
+            deploy_cmd(&rest);
+        }
         Some("--stdin-patch") => {
             let rest: Vec<String> = args.collect();
             stdin_patch(&rest);
@@ -69,6 +73,72 @@ fn stdin_patch(opts: &[String]) {
     }
 }
 
+/// The current declared maturity level (kept in sync with the deployment
+/// framework; bumped as each ladder rung ships).
+const CURRENT_MATURITY: deep_diff_forge_core::MaturityLevel =
+    deep_diff_forge_core::MaturityLevel::L3;
+
+/// Dispatch `deploy` subcommands.
+fn deploy_cmd(opts: &[String]) {
+    if opts.first().map(String::as_str) == Some("status") {
+        deploy_status(opts.iter().any(|a| a == "--json"));
+    } else {
+        eprintln!("usage: deep-diff-forge deploy status [--json]");
+        std::process::exit(2);
+    }
+}
+
+/// Emit a machine- or human-readable deployment status snapshot.
+///
+/// Gates are reported `not-run`: this is a status snapshot, not a gate run.
+/// Execute the gates with `just gate-feature`.
+fn deploy_status(json: bool) {
+    use deep_diff_forge_core::{DeploymentStatus, GateState};
+    const GATES: [&str; 7] = [
+        "identity", "format", "compile", "lint", "test", "fixture", "contract",
+    ];
+    let mut status = DeploymentStatus::new("deep-diff-forge", CURRENT_MATURITY);
+    for gate in GATES {
+        status = status.with_gate(gate, GateState::NotRun);
+    }
+
+    if json {
+        use std::fmt::Write as _;
+        let mut gates = String::new();
+        for (i, g) in status.gates.iter().enumerate() {
+            if i > 0 {
+                gates.push_str(", ");
+            }
+            let _ = write!(
+                gates,
+                "{{\"name\": \"{}\", \"state\": \"{}\"}}",
+                g.name,
+                g.state.as_str()
+            );
+        }
+        println!(
+            "{{\n  \"schema\": \"deep-diff-forge.deployment-status.v0\",\n  \"repo\": \"{}\",\n  \"maturity\": \"{}\",\n  \"maturity_name\": \"{}\",\n  \"gates\": [{}],\n  \"external_observers\": {{\"zellij\": \"observed\", \"habitat\": \"optional\"}}\n}}",
+            status.repo,
+            status.maturity.as_str(),
+            status.maturity.name(),
+            gates
+        );
+    } else {
+        println!("deep-diff-forge deployment status");
+        println!("repo:     {}", status.repo);
+        println!(
+            "maturity: {} ({})",
+            status.maturity.as_str(),
+            status.maturity.name()
+        );
+        let names: Vec<&str> = status.gates.iter().map(|g| g.name.as_str()).collect();
+        println!(
+            "gates:    {} (run via: just gate-feature)",
+            names.join(", ")
+        );
+    }
+}
+
 /// Drive `--jsonl` through the real pipeline runner (ingest → render JSONL).
 fn run_jsonl_pipeline(input: String) {
     use deep_diff_forge_pipeline::{IngestStage, Pipeline, PipelineData, RenderStage};
@@ -127,16 +197,18 @@ USAGE:
   deep-diff-forge --version
   deep-diff-forge --self-test
   deep-diff-forge doctor
+  deep-diff-forge deploy status [--json]
   deep-diff-forge --stdin-patch [--json | --jsonl | --layout inline|side-by-side]
   deep-diff-forge claude-code-contract
   deep-diff-forge chain-contract
   deep-diff-forge cluster-contract
   deep-diff-forge loom-contract
 
-BOOTSTRAP STATUS:
-  The current binary parses unified/Git patches (--stdin-patch, L1 patch
-  maturity) and exposes deployability smoke commands, while the semantic, TUI,
-  daemon, and agent surfaces are designed but not yet implemented.
+MATURITY:
+  L3 Pipeline. The binary parses unified/Git patches (--stdin-patch), projects
+  them (--layout, --json, --jsonl via the pipeline runner), and reports
+  deployment status (deploy status --json). The semantic, TUI, daemon, and
+  agent surfaces are designed but not yet implemented.
 
 FUTURE PRIMARY MODES:
   deep-diff-forge <old> <new>
