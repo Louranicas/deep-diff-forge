@@ -22,6 +22,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "deep-diff-forge-agent"
+version = "0.1.0"
+dependencies = [
+ "deep-diff-forge-core",
+ "deep-diff-forge-patch",
+]
+
+[[package]]
 name = "deep-diff-forge-cli"
 version = "0.1.0"
 dependencies = [
