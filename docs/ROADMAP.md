@@ -62,3 +62,21 @@
 - Add AST and line-index cache.
 - Add multi-client subscriptions.
 - Add secure socket ownership checks.
+
+## Phase 8: Deployment Spine
+
+- Add CI workflows.
+- Add release packaging.
+- Add deployment receipt generation.
+- Add daemon smoke tests.
+- Add GitHub release automation.
+- Add GitLab mirror documentation and push gate.
+
+## Phase 9: Learning Loop
+
+- Add corpus manifest format.
+- Add regression snapshot runner.
+- Add benchmark receipts.
+- Add planner outcome receipts.
+- Add review graph ranking evaluation.
+- Add annotation grounding evaluation.

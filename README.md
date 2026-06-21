@@ -43,7 +43,14 @@ Deep-Diff-Forge must provide every capability in the comparison matrix:
 - `crates/deep-diff-forge-cli`: pager-compatible CLI and early smoke surface.
 - `docs/`: vision, architecture, baseline matrix, roadmap, and design constraints.
 
+## Deployment Spine
+
+- `docs/END_TO_END_DEPLOYMENT.md`: gates from local build to release receipts.
+- `docs/OPERATIONS_AND_DAEMON.md`: optional UDS daemon, health, systemd-user posture, and observability.
+- `docs/LEARNING_LOOP.md`: feedback loop for planner, ranking, annotations, and corpus regression.
+- `docs/STORAGE_AND_10TB_CORPUS.md`: policy for using `/mnt/storage-10tb` as optional corpus/archive storage.
+- `docs/RELEASE_AND_PUBLICATION.md`: GitHub/GitLab/crates/binary release plan.
+
 ## Status
 
 This repo is in vision and architecture bootstrap. The initial code intentionally defines stable vocabulary before algorithmic work begins.
-
