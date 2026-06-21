@@ -80,12 +80,39 @@ Durable lessons for future Deep-Diff-Forge sessions. This is not a diary.
 
 - Lesson: the CLI's `println!` panics on a broken pipe (`… | head`) — Rust
   ignores SIGPIPE so EPIPE becomes a panic (exit 101). Pre-existing CLI-wide
-  since L1; output is not corrupted. Fix path: reset SIGPIPE disposition at
-  startup or route bulk output through a broken-pipe-tolerant writer. Tracked,
-  not yet fixed (avoid unsafe/dep churn mid-wave).
-- Evidence: `… review --probe | head` panicked after head closed.
-- Affected files/symbols/commands: `crates/deep-diff-forge-cli/src/main.rs`.
-- Status: open finding.
+  since L1; output is not corrupted. Resolved at L9 (v0.2.0) by routing bulk
+  output through a broken-pipe-tolerant writer (`emit`/`emitln!`) that exits `0`
+  on `ErrorKind::BrokenPipe` — std-only, no `unsafe`, no new deps. Chose the
+  per-write approach over resetting the SIGPIPE disposition precisely to keep
+  the zero-`unsafe` invariant (`signal()` would need `libc` + `unsafe`).
+- Evidence: `printf … | deep-diff-forge --stdin-patch --json | head -1; echo $?`
+  → 0 (was 101).
+- Affected files/symbols/commands: `crates/deep-diff-forge-cli/src/main.rs::emit`.
+- Status: resolved (v0.2.0).
+
+## 2026-06-22 (L9 Learning)
+
+- Lesson: an N-crate publishable workspace should inherit version + internal
+  deps from `[workspace.package].version` + `[workspace.dependencies]`. A version
+  bump then touches one line, and the path+version pair every internal dep needs
+  for `cargo publish` (and cargo-deny `wildcards = "deny"`) can't drift between
+  crates. `cargo publish --dry-run -p <leaf>` is the only ground truth for
+  publish-readiness — it would have caught that `core`/`cli` lacked the mandatory
+  `description` even though the registry token was the flagged blocker.
+- Evidence: `cargo publish --dry-run -p deep-diff-forge-core` packaged + verified
+  + reached "Uploading … aborting upload due to dry run".
+- Affected files/symbols/commands: `Cargo.toml`, every `crates/*/Cargo.toml`.
+- Status: permanent.
+
+- Lesson: edition 2024 makes `std::env::set_var` `unsafe`. To keep a
+  zero-`unsafe` crate, never mutate process env in tests — factor env-reading
+  code into a pure resolver (`resolve_learning_dir(xdg, home)`) that takes the
+  values as args, and test that. Also de-couples otherwise-racy parallel tests.
+- Evidence: `deep-diff-forge-learning::store::resolve_learning_dir` + tests;
+  `#![forbid(unsafe_code)]` on the crate compiles clean.
+- Affected files/symbols/commands:
+  `crates/deep-diff-forge-learning/src/store.rs`.
+- Status: permanent.
 
 - Lesson: a UDS daemon is testable without a TTY/long-running process. Use
   `std::os::unix::net::UnixStream::pair()` to cover `handle_connection` in

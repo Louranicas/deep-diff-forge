@@ -4,6 +4,40 @@ All notable changes to Deep-Diff-Forge are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-06-22
+
+The **L9 (Learning)** layer plus the first crates.io-publishable cut — 12 crates,
+703 tests, zero `unsafe`, supply-chain-gated. `cargo publish --dry-run` is clean
+across the workspace; the crates.io upload itself remains token-gated.
+
+### Added
+
+- **Learning (L9)** — `deep-diff-forge-learning`: the local-only learning loop.
+  Per-decision [`StrategyReceipt`]s (hashes/counts/timings — never a path or
+  source line) are appended as JSONL under `$XDG_STATE_HOME/deep-diff-forge/
+  learning/`, scored per strategy, and gated for promotion. Three learning units
+  — planner (strategy + budget), ranking (risk weights), annotation (agent trust
+  tiers, *untrusted until grounded*) — plus an explainable promotion gate. CLI
+  `learn {status|record --stdin} [--json]`. 135 tests; never uploads, never
+  mutates patch truth.
+
+### Changed
+
+- **Publishable-workspace manifests** — versions and internal deps are now
+  inherited via `[workspace.package]` + `[workspace.dependencies]`; every crate
+  carries `description`, `keywords`, `categories`, and `homepage`. `core` and
+  `cli` gained the `description` that `cargo publish` requires.
+
+### Fixed
+
+- **Broken-pipe handling** — bulk CLI output (`--stdin-patch`, `--rank`,
+  `--cluster`, `--jsonl`, `semantic`, `review --probe`, `learn`) is routed
+  through a broken-pipe-tolerant writer, so `deep-diff-forge … | head` exits `0`
+  instead of panicking with `EPIPE` (exit 101). Resolves the L1-era open finding;
+  std-only, no `unsafe`.
+
+[0.2.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.2.0
+
 ## [0.1.0] - 2026-06-22
 
 First tagged release. The complete diff/review engine (layers L1–L7,

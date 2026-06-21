@@ -129,7 +129,7 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-patch",
@@ -137,12 +137,13 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deep-diff-forge-cluster",
  "deep-diff-forge-core",
  "deep-diff-forge-daemon",
  "deep-diff-forge-graph",
+ "deep-diff-forge-learning",
  "deep-diff-forge-patch",
  "deep-diff-forge-pipeline",
  "deep-diff-forge-projection",
@@ -152,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-cluster"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-graph",
@@ -161,11 +162,11 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-core"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "deep-diff-forge-daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-graph",
@@ -176,22 +177,30 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-graph"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-patch",
 ]
 
 [[package]]
+name = "deep-diff-forge-learning"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "deep-diff-forge-patch"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deep-diff-forge-core",
 ]
 
 [[package]]
 name = "deep-diff-forge-pipeline"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-patch",
@@ -200,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-projection"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-patch",
@@ -208,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-syntax"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deep-diff-forge-core",
  "tree-sitter",
@@ -217,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossterm",
  "deep-diff-forge-core",

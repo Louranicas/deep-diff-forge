@@ -9,13 +9,37 @@ members = [
   "crates/deep-diff-forge-agent",
   "crates/deep-diff-forge-tui",
   "crates/deep-diff-forge-cluster",
+  "crates/deep-diff-forge-learning",
   "crates/deep-diff-forge-daemon",
   "crates/deep-diff-forge-cli",
 ]
 resolver = "2"
 
 [workspace.package]
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Louranicas/deep-diff-forge"
+homepage = "https://github.com/Louranicas/deep-diff-forge"
 rust-version = "1.85"
+keywords = ["diff", "code-review", "patch", "git", "tui"]
+categories = ["development-tools", "command-line-utilities"]
+
+# Internal crates are declared once here with paired path + version — the
+# publishable-workspace pattern (cargo-deny `wildcards = "deny"` requires a
+# version on every path dep, and crates.io requires it to resolve a published
+# dependency). Members reference them via `<crate>.workspace = true`, so a
+# version bump is a single edit to `[workspace.package].version` + the lines
+# below.
+[workspace.dependencies]
+deep-diff-forge-core = { path = "crates/deep-diff-forge-core", version = "0.2.0" }
+deep-diff-forge-patch = { path = "crates/deep-diff-forge-patch", version = "0.2.0" }
+deep-diff-forge-projection = { path = "crates/deep-diff-forge-projection", version = "0.2.0" }
+deep-diff-forge-pipeline = { path = "crates/deep-diff-forge-pipeline", version = "0.2.0" }
+deep-diff-forge-syntax = { path = "crates/deep-diff-forge-syntax", version = "0.2.0" }
+deep-diff-forge-graph = { path = "crates/deep-diff-forge-graph", version = "0.2.0" }
+deep-diff-forge-agent = { path = "crates/deep-diff-forge-agent", version = "0.2.0" }
+deep-diff-forge-tui = { path = "crates/deep-diff-forge-tui", version = "0.2.0" }
+deep-diff-forge-cluster = { path = "crates/deep-diff-forge-cluster", version = "0.2.0" }
+deep-diff-forge-learning = { path = "crates/deep-diff-forge-learning", version = "0.2.0" }
+deep-diff-forge-daemon = { path = "crates/deep-diff-forge-daemon", version = "0.2.0" }

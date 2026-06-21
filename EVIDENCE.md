@@ -1,4 +1,41 @@
-# Deployment Evidence — L0 → L8 (… + Daemon + Release)
+# Deployment Evidence — L0 → L9 (… + Daemon + Release + Learning)
+
+## L9 Learning (local-only loop; v0.2.0 crates.io-publishable cut)
+
+`claim | warrant | evidence`
+
+- Learning loop code | `[VBR]` | `deep-diff-forge-learning` (9 modules):
+  `receipt` (`StrategyReceipt` — hashes/counts/timings only, no path/source),
+  `store` (XDG local-only JSONL, fail-soft, pure `resolve_learning_dir`),
+  `score` (per-strategy scores + `TrustPolicy::earns_trust`), `planner`/`ranking`/
+  `annotation` (the three spec learning units), `promote` (explainable gate),
+  `error`, `util` (FNV-1a redaction). `#![forbid(unsafe_code)]`.
+- Privacy by construction | `[VBR]` | `StrategyReceipt` has no path/source field;
+  `receipt::tests::json_never_contains_a_path`; `redacted_id` is non-reversible.
+- Safety invariants | `[VBR]` | annotation source stays `Untrusted` without
+  grounded wins (`annotation::tests::ungrounded_acceptances_never_build_trust`);
+  promotion blocks on any failed rule and lists every reason
+  (`promote::tests::all_reasons_accumulated_not_short_circuited`).
+- CLI surface | `[VBE]` | `learn status [--json]` (`deep-diff-forge.learning.v0`)
+  + `learn record --stdin` round-trip live-proven; `deploy status` → `L9
+  (Learning)`.
+- Broken-pipe fix | `[VBE]` | bulk output routed through `emit`/`emitln!`;
+  `… --stdin-patch --json | head -1; echo $?` → **0** (was 101). L1-era open
+  finding resolved, std-only, no `unsafe`.
+- Publish-readiness | `[VBE]` | `cargo publish --dry-run -p deep-diff-forge-core`
+  and `-p deep-diff-forge-learning` both package + verify + reach "Uploading …
+  aborting upload due to dry run"; manifests inherit version + internal deps via
+  `[workspace.package]` + `[workspace.dependencies]`; `core`/`cli` gained the
+  mandatory `description`.
+- Gate green | `[VBE]` | `check → clippy -D warnings → pedantic → test` clean;
+  **703 tests passed, 0 failed** (568 + 135 learning); `cargo fmt --check` exit 0;
+  `cargo deny check` → advisories/bans/licenses/sources ok.
+
+The one genuine wall is unchanged: **crates.io upload** needs a
+`CARGO_REGISTRY_TOKEN` (an irreversible, yank-only act I cannot self-authorize).
+The workspace is now dry-run-verified publish-ready; the release workflow publishes
+all 12 crates in dependency order once the token is configured. Until then the
+target is reported `blocked`, never faked.
 
 ## L8 Release (tagged release; crates.io token-gated)
 

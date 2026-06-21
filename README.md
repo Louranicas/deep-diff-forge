@@ -10,12 +10,13 @@ interactive terminal cockpit, and bounded parallel execution on top — every
 layer a projection over one stable model, none of them ever allowed to corrupt
 the patch.
 
-> **Maturity: L8 (Release).** All engine layers L0–L7 are implemented and
-> **`v0.1.0` is tagged and released** to GitHub (binary + checksums) and both
-> git remotes. 11 crates, 568 tests, zero `unsafe`, supply-chain-gated, dual
-> MIT/Apache-2.0 licensed. The one remaining publication target is **crates.io**
-> (token-gated; the release workflow publishes automatically when a registry
-> token is configured). See [`EVIDENCE.md`](EVIDENCE.md) and
+> **Maturity: L9 (Learning).** All engine layers L0–L8 are implemented, plus the
+> L9 local-only learning loop (`learn status|record`). 12 crates, 703 tests, zero
+> `unsafe`, supply-chain-gated, dual MIT/Apache-2.0 licensed. The workspace is
+> **crates.io-publish-ready** (`cargo publish --dry-run` is clean across all
+> crates); the upload itself is **token-gated** — the release workflow publishes
+> automatically when `CARGO_REGISTRY_TOKEN` is configured. See
+> [`EVIDENCE.md`](EVIDENCE.md) and
 > [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
@@ -237,6 +238,23 @@ deep-diff-forge daemon stop
 
 See [The optional daemon](#the-optional-daemon).
 
+### `learn` — local-only learning loop (L9)
+
+Deep-Diff-Forge improves through measured review outcomes. The loop records a
+local-only receipt per planner decision (hashes, counts, timings — never a path
+or source line), scores each strategy, and gates whether a learned default may
+be promoted. Nothing is uploaded; nothing mutates patch truth.
+
+```bash
+deep-diff-forge learn status                 # store path, receipt count, scores, trust verdict
+deep-diff-forge learn status --json          # deep-diff-forge.learning.v0
+echo '<receipt-json>' | deep-diff-forge learn record --stdin   # feed one receipt (agents/CI)
+```
+
+Receipts live under `$XDG_STATE_HOME/deep-diff-forge/learning/` (falling back to
+`~/.local/state/...`). A fresh machine with no store reports zero receipts and no
+trusted default — never an error.
+
 ### Diagnostics & contracts
 
 ```bash
@@ -266,6 +284,7 @@ line. Primary output goes to **stdout**; diagnostics to **stderr**.
 | `--stdin-patch --cluster --json` | `deep-diff-forge.cluster.v0` |
 | `semantic --json` | `deep-diff-forge.semantic.v0` |
 | `deploy status --json` | `deep-diff-forge.deployment-status.v0` |
+| `learn status --json` | `deep-diff-forge.learning.v0` |
 | `daemon …` | JSON-RPC 2.0 |
 
 Example — `--rank --json`:
@@ -373,6 +392,7 @@ never the reverse. Patch truth is upstream of everything.
 | `deep-diff-forge-agent` | Annotation provenance, grounding classification, sanitization, anchor validation. |
 | `deep-diff-forge-tui` | Review-first terminal UI (ratatui), tested headlessly. |
 | `deep-diff-forge-cluster` | Bounded parallel dimensional execution + deterministic joins + receipts. |
+| `deep-diff-forge-learning` | L9 local-only learning loop: strategy receipts, scoring, gated promotion. |
 | `deep-diff-forge-daemon` | Optional UDS JSON-RPC service (std-first). |
 | `deep-diff-forge-cli` | Thin command entry point over the above. |
 
@@ -382,11 +402,14 @@ The codebase advances through declared maturity levels; each is gated and sealed
 
 ```
 L0 Bootstrap → L1 Patch → L2 Projection → L3 Pipeline → L4 Semantic
-   → L5 Review → L6 Cluster → L7 Daemon → [L8 Release] → [L9 Learning]
+   → L5 Review → L6 Cluster → L7 Daemon → L8 Release → [L9 Learning]
 ```
 
-**L0–L7 are shipped and `v0.1.0` is released (L8).** crates.io publication is
-token-gated; L9 (Learning) needs runtime telemetry from a deployed daemon.
+**L0–L9 are shipped; `v0.2.0` adds the L9 learning loop and the first
+crates.io-publishable cut.** The workspace passes `cargo publish --dry-run`
+across every crate; the crates.io upload is token-gated (the release workflow
+publishes when `CARGO_REGISTRY_TOKEN` is configured). The learning loop is
+local-only and runs without any deployed daemon.
 
 ## The deployment framework
 
@@ -422,7 +445,7 @@ just gate-feature
 #   bootstrap contract probes
 ```
 
-Standards enforced across the tree: **553 tests** (every production crate ≥ 50
+Standards enforced across the tree: **703 tests** (every production crate ≥ 50
 meaningful tests), **zero `unsafe`**, no production `unwrap`/`expect`, pedantic
 clippy clean with no unexplained suppressions, and a `cargo-deny`
 ([`deny.toml`](deny.toml)) supply-chain gate (advisories, licenses, bans,
@@ -433,7 +456,7 @@ Durable engineering lessons are recorded in [`NOTES.md`](NOTES.md).
 
 ## Project status
 
-This is an actively-built engine at **L7 maturity**. Everything documented above
+This is an actively-built engine at **L9 maturity**. Everything documented above
 is implemented, gated, and live-proven. Honest current limitations:
 
 - Full **patch↔symbol join** (mapping a hunk to its enclosing semantic symbol in
@@ -442,11 +465,11 @@ is implemented, gated, and live-proven. Honest current limitations:
   building block.
 - The daemon serves connections **sequentially**; a thread-per-connection /
   async upgrade is deferred until a measured need.
-- The CLI's `println!`-based output **panics on a broken pipe** (`… | head`) —
-  pre-existing CLI-wide, tracked for a SIGPIPE hardening pass; output is not
-  corrupted.
-- **L8 Release**: `v0.1.0` is tagged and released to GitHub + both git remotes;
-  only **crates.io** publication remains, gated on a registry token.
+- **L9 Learning**: the learning loop records and scores receipts and gates
+  promotion; wiring the engine's hot path to *emit* receipts automatically (vs.
+  the explicit `learn record`) lands as live signal accrues.
+- **Release**: `v0.2.0` is publish-ready (clean `cargo publish --dry-run` across
+  the workspace); the **crates.io** upload is gated on a registry token.
 - Time-budget enforcement in the semantic layer is deferred (and never reported
   as a fallback).
 

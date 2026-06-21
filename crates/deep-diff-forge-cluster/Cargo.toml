@@ -1,15 +1,18 @@
 [package]
 name = "deep-diff-forge-cluster"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Bounded parallel dimensional execution with deterministic joins and receipts."
 
 [dependencies]
-deep-diff-forge-core = { path = "../deep-diff-forge-core", version = "0.1.0" }
-deep-diff-forge-graph = { path = "../deep-diff-forge-graph", version = "0.1.0" }
+deep-diff-forge-core.workspace = true
+deep-diff-forge-graph.workspace = true
 
 [dev-dependencies]
-deep-diff-forge-patch = { path = "../deep-diff-forge-patch", version = "0.1.0" }
+deep-diff-forge-patch.workspace = true

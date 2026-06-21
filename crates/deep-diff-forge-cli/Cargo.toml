@@ -1,23 +1,27 @@
 [package]
 name = "deep-diff-forge-cli"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Deep-Diff-Forge: a deterministic, agent-collaborative diff and code-review engine (the `deep-diff-forge` CLI)."
 
 [[bin]]
 name = "deep-diff-forge"
 path = "src/main.rs"
 
 [dependencies]
-deep-diff-forge-core = { path = "../deep-diff-forge-core", version = "0.1.0" }
-deep-diff-forge-patch = { path = "../deep-diff-forge-patch", version = "0.1.0" }
-deep-diff-forge-projection = { path = "../deep-diff-forge-projection", version = "0.1.0" }
-deep-diff-forge-pipeline = { path = "../deep-diff-forge-pipeline", version = "0.1.0" }
-deep-diff-forge-syntax = { path = "../deep-diff-forge-syntax", version = "0.1.0" }
-deep-diff-forge-graph = { path = "../deep-diff-forge-graph", version = "0.1.0" }
-deep-diff-forge-tui = { path = "../deep-diff-forge-tui", version = "0.1.0" }
-deep-diff-forge-cluster = { path = "../deep-diff-forge-cluster", version = "0.1.0" }
-deep-diff-forge-daemon = { path = "../deep-diff-forge-daemon", version = "0.1.0" }
-
+deep-diff-forge-core.workspace = true
+deep-diff-forge-patch.workspace = true
+deep-diff-forge-projection.workspace = true
+deep-diff-forge-pipeline.workspace = true
+deep-diff-forge-syntax.workspace = true
+deep-diff-forge-graph.workspace = true
+deep-diff-forge-tui.workspace = true
+deep-diff-forge-cluster.workspace = true
+deep-diff-forge-learning.workspace = true
+deep-diff-forge-daemon.workspace = true

@@ -1,10 +1,13 @@
 [package]
 name = "deep-diff-forge-patch"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Canonical unified/Git patch parser, renderer, and JSON projection for Deep-Diff-Forge."
 
 [features]
@@ -15,4 +18,4 @@ default = ["json"]
 json = []
 
 [dependencies]
-deep-diff-forge-core = { path = "../deep-diff-forge-core", version = "0.1.0" }
+deep-diff-forge-core.workspace = true

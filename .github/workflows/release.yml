@@ -81,7 +81,7 @@ jobs:
             echo "CARGO_REGISTRY_TOKEN not set; skipping crates.io publish."
             exit 0
           fi
-          for crate in core patch projection syntax pipeline graph agent tui cluster daemon cli; do
+          for crate in core patch projection syntax pipeline graph agent tui cluster learning daemon cli; do
             cargo publish -p "deep-diff-forge-${crate}" --locked
             sleep 15
           done

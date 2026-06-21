@@ -1,3 +1,8 @@
 /target/
 /reports/
 /CLAUDE.local.md
+
+# Local-only authoring surfaces (never shipped publicly)
+/.obsidian/
+/deep-diff-forge.vault/
+/luke-scratchpad-deep-diff-forge.md

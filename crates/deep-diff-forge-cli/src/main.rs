@@ -1,5 +1,27 @@
 use deep_diff_forge_core::ReviewDocument;
 
+/// Write `s` to stdout, treating a reader that closed the pipe (`… | head`) as
+/// a clean exit. Rust ignores SIGPIPE, so a bare `print!`/`println!` panics with
+/// `BrokenPipe` (exit 101) the moment the downstream consumer goes away; routing
+/// bulk output through here keeps `deep-diff-forge … | head` a normal success.
+/// std-only, no `unsafe`.
+fn emit(s: &str) {
+    use std::io::Write as _;
+    if let Err(err) = std::io::stdout().write_all(s.as_bytes()) {
+        if err.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+        eprintln!("error: write failed: {err}");
+        std::process::exit(3);
+    }
+}
+
+/// `println!`-shaped wrapper over [`emit`] for broken-pipe-tolerant line output.
+macro_rules! emitln {
+    () => { emit("\n") };
+    ($($arg:tt)*) => { emit(&format!("{}\n", format_args!($($arg)*))) };
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
@@ -22,6 +44,10 @@ fn main() {
         Some("daemon") => {
             let rest: Vec<String> = args.collect();
             daemon_cmd(&rest);
+        }
+        Some("learn") => {
+            let rest: Vec<String> = args.collect();
+            learn_cmd(&rest);
         }
         Some("--stdin-patch") => {
             let rest: Vec<String> = args.collect();
@@ -77,14 +103,14 @@ fn stdin_patch(opts: &[String]) {
             print_rank_human(&ranked);
         }
     } else if opts.iter().any(|a| a == "--json") {
-        print!("{}", deep_diff_forge_patch::to_json(&files));
+        emit(&deep_diff_forge_patch::to_json(&files));
     } else if let Some(name) = flag_value(opts, "--layout") {
         if let Some(layout) = deep_diff_forge_projection::layout_from_str(&name) {
             let options = deep_diff_forge_projection::ProjectionOptions {
                 layout,
                 side_width: deep_diff_forge_projection::DEFAULT_SIDE_WIDTH,
             };
-            print!("{}", deep_diff_forge_projection::render(&files, options));
+            emit(&deep_diff_forge_projection::render(&files, options));
         } else {
             eprintln!("error: unknown layout: {name} (expected inline|side-by-side)");
             std::process::exit(2);
@@ -97,7 +123,7 @@ fn stdin_patch(opts: &[String]) {
 /// The current declared maturity level (kept in sync with the deployment
 /// framework; bumped as each ladder rung ships).
 const CURRENT_MATURITY: deep_diff_forge_core::MaturityLevel =
-    deep_diff_forge_core::MaturityLevel::L8;
+    deep_diff_forge_core::MaturityLevel::L9;
 
 /// `daemon {path|start|health|status|stop} [--socket PATH]`: drive the optional
 /// UDS JSON-RPC review daemon.
@@ -139,6 +165,141 @@ fn daemon_client(socket: &std::path::Path, line: &str) {
     }
 }
 
+/// `learn {status|record}`: inspect or feed the L9 local-only learning store.
+///
+/// The learning loop is local-only and fail-soft: a fresh machine with no store
+/// reports zero receipts and no trusted default, never an error.
+fn learn_cmd(opts: &[String]) {
+    let json = opts.iter().any(|a| a == "--json");
+    match opts
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .map(String::as_str)
+    {
+        None | Some("status") => learn_status(json),
+        Some("record") => learn_record(opts),
+        _ => {
+            eprintln!("usage: deep-diff-forge learn {{status|record --stdin}} [--json]");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Report the learning state: store location, receipt count, per-strategy
+/// scores, and the trusted-default verdict.
+fn learn_status(json: bool) {
+    use deep_diff_forge_learning::{LearningReport, store};
+    let dir = match store::learning_dir() {
+        Ok(d) => d,
+        Err(err) => {
+            eprintln!("error: {err}");
+            std::process::exit(3);
+        }
+    };
+    let report = match LearningReport::from_dir(&dir) {
+        Ok(r) => r,
+        Err(err) => {
+            eprintln!("error: could not read learning store: {err}");
+            std::process::exit(3);
+        }
+    };
+    let dir_str = dir.display().to_string();
+    let trusted = report
+        .trusted_default
+        .map(deep_diff_forge_learning::Strategy::label);
+
+    if json {
+        use deep_diff_forge_core::json_escape;
+        use std::fmt::Write as _;
+        let mut scores = String::new();
+        for (i, s) in report.scores.iter().enumerate() {
+            if i > 0 {
+                scores.push_str(", ");
+            }
+            let _ = write!(
+                scores,
+                "{{\"strategy\": {}, \"samples\": {}, \"acceptance_rate\": {:.3}, \"helpful_rate\": {:.3}, \"fallback_rate\": {:.3}, \"revisit_rate\": {:.3}, \"mean_elapsed_ms\": {:.1}, \"cache_hit_rate\": {:.3}, \"trusted\": {}}}",
+                json_escape(s.strategy.label()),
+                s.samples,
+                s.acceptance_rate,
+                s.helpful_rate,
+                s.fallback_rate,
+                s.revisit_rate,
+                s.mean_elapsed_ms,
+                s.cache_hit_rate,
+                s.earns_trust(&report.policy)
+            );
+        }
+        let trusted_json = trusted.map_or_else(|| "null".to_string(), json_escape);
+        emit(&format!(
+            "{{\n  \"schema\": \"deep-diff-forge.learning.v0\",\n  \"store\": {},\n  \"total_receipts\": {},\n  \"trusted_default\": {},\n  \"scores\": [{}]\n}}\n",
+            json_escape(&dir_str),
+            report.total_receipts,
+            trusted_json,
+            scores
+        ));
+    } else {
+        emitln!("deep-diff-forge learning (L9)");
+        emitln!("store:    {dir_str}");
+        emitln!("receipts: {}", report.total_receipts);
+        emitln!(
+            "trusted:  {}",
+            trusted.unwrap_or("none (insufficient evidence)")
+        );
+        for s in &report.scores {
+            emitln!(
+                "  {:<7} n={:<4} accept={:.2} helpful={:.2} fallback={:.2} revisit={:.2} {:>6.1}ms  {}",
+                s.strategy.label(),
+                s.samples,
+                s.acceptance_rate,
+                s.helpful_rate,
+                s.fallback_rate,
+                s.revisit_rate,
+                s.mean_elapsed_ms,
+                if s.earns_trust(&report.policy) {
+                    "[trusted]"
+                } else {
+                    ""
+                }
+            );
+        }
+    }
+}
+
+/// `learn record --stdin`: read one JSON [`StrategyReceipt`] from stdin and
+/// append it to the local store. The agent/automation entry point for feeding
+/// the loop; rejects malformed input rather than silently dropping it.
+fn learn_record(opts: &[String]) {
+    use deep_diff_forge_learning::{StrategyReceipt, record_receipt};
+    use std::io::Read as _;
+    if !opts.iter().any(|a| a == "--stdin") {
+        eprintln!("usage: deep-diff-forge learn record --stdin   (reads one JSON receipt)");
+        std::process::exit(2);
+    }
+    let mut input = String::new();
+    if let Err(err) = std::io::stdin().read_to_string(&mut input) {
+        eprintln!("error: could not read stdin: {err}");
+        std::process::exit(3);
+    }
+    let receipt = match StrategyReceipt::from_json(input.trim()) {
+        Ok(r) => r,
+        Err(err) => {
+            eprintln!("error: invalid receipt: {err}");
+            std::process::exit(4);
+        }
+    };
+    if let Err(err) = record_receipt(&receipt) {
+        eprintln!("error: could not record receipt: {err}");
+        std::process::exit(3);
+    }
+    emitln!(
+        "recorded: {} receipt for {} ({})",
+        receipt.strategy.label(),
+        receipt.language,
+        receipt.outcome.label()
+    );
+}
+
 /// `review [--probe]`: read a patch from stdin and open the review TUI.
 ///
 /// `--probe` renders one frame headlessly (no TTY needed) for CI/agents; bare
@@ -160,7 +321,7 @@ fn review_cmd(opts: &[String]) {
     let app = deep_diff_forge_tui::ReviewApp::from_review(&files);
     if opts.iter().any(|a| a == "--probe") {
         for line in deep_diff_forge_tui::render_to_lines(&app, 100, 30) {
-            println!("{line}");
+            emitln!("{line}");
         }
     } else if let Err(err) = deep_diff_forge_tui::run(app) {
         eprintln!("error: review requires an interactive terminal: {err}");
@@ -203,18 +364,21 @@ fn parse_status_str(status: &deep_diff_forge_core::ParseStatus) -> String {
 }
 
 fn print_semantic_human(path: &str, analysis: &deep_diff_forge_syntax::SemanticAnalysis) {
-    println!(
+    emitln!(
         "semantic: {path} ({}, {})",
         analysis.language.name(),
         parse_status_str(&analysis.parse_status)
     );
     for sym in &analysis.symbols {
-        println!(
+        emitln!(
             "  {:<9} {}  L{}-L{}",
-            sym.kind, sym.name, sym.start_line, sym.end_line
+            sym.kind,
+            sym.name,
+            sym.start_line,
+            sym.end_line
         );
     }
-    println!("{} symbol(s)", analysis.symbols.len());
+    emitln!("{} symbol(s)", analysis.symbols.len());
 }
 
 fn print_semantic_json(path: &str, analysis: &deep_diff_forge_syntax::SemanticAnalysis) {
@@ -234,7 +398,7 @@ fn print_semantic_json(path: &str, analysis: &deep_diff_forge_syntax::SemanticAn
             sym.end_line
         );
     }
-    println!(
+    emitln!(
         "{{\n  \"schema\": \"deep-diff-forge.semantic.v0\",\n  \"path\": {},\n  \"language\": {},\n  \"parse_status\": {},\n  \"symbols\": [{}]\n}}",
         json_escape(path),
         json_escape(analysis.language.name()),
@@ -297,15 +461,15 @@ fn deploy_release(json: bool) {
             pending.join(", ")
         );
     } else {
-        println!("deep-diff-forge release v{}", plan.version);
+        emitln!("deep-diff-forge release v{}", plan.version);
         for t in &plan.targets {
-            println!("  {:<16} {}", t.name, t.state.as_str());
+            emitln!("  {:<16} {}", t.name, t.state.as_str());
         }
         let pending = plan.pending();
         if pending.is_empty() {
-            println!("fully published");
+            emitln!("fully published");
         } else {
-            println!("pending: {}", pending.join(", "));
+            emitln!("pending: {}", pending.join(", "));
         }
     }
 }
@@ -368,7 +532,7 @@ fn run_jsonl_pipeline(input: String) {
         .with(Box::new(IngestStage))
         .with(Box::new(RenderStage::jsonl()));
     match pipeline.run(PipelineData::Patch(input)) {
-        Ok(PipelineData::Rendered(text)) => print!("{text}"),
+        Ok(PipelineData::Rendered(text)) => emit(&text),
         Ok(_) => {}
         Err(err) => {
             eprintln!("error: {err}");
@@ -399,7 +563,7 @@ fn run_cluster(files: &[deep_diff_forge_core::ReviewFile], opts: &[String]) {
         print_cluster_json(&run);
     } else {
         print_rank_human(&run.ranked);
-        println!(
+        emitln!(
             "cluster: {} dimension(s), parallelism={}, workers={}, join={}",
             run.receipt.dimensions.len(),
             parallelism_label(run.receipt.parallelism),
@@ -439,7 +603,7 @@ fn print_cluster_json(run: &deep_diff_forge_cluster::ClusterRun) {
     } else {
         format!("\n{ranked}\n  ")
     };
-    println!(
+    emitln!(
         "{{\n  \"schema\": \"deep-diff-forge.cluster.v0\",\n  \"receipt\": {{\"dimensions\": [{}], \"parallelism\": {}, \"workers\": {}, \"join_policy\": {}, \"file_count\": {}}},\n  \"ranked\": [{}]\n}}",
         dims.join(", "),
         json_escape(&parallelism_label(run.receipt.parallelism)),
@@ -453,7 +617,7 @@ fn print_cluster_json(run: &deep_diff_forge_cluster::ClusterRun) {
 fn print_rank_human(ranked: &[deep_diff_forge_graph::RankedFile]) {
     for rf in ranked {
         let signals: Vec<&str> = rf.signals.iter().map(|s| s.label()).collect();
-        println!(
+        emitln!(
             "{:>4}  {:<14} {}  [{}]",
             rf.score,
             rf.status.label(),
@@ -461,7 +625,7 @@ fn print_rank_human(ranked: &[deep_diff_forge_graph::RankedFile]) {
             signals.join(",")
         );
     }
-    println!("{} file(s) ranked", ranked.len());
+    emitln!("{} file(s) ranked", ranked.len());
 }
 
 fn print_rank_json(ranked: &[deep_diff_forge_graph::RankedFile]) {
@@ -487,7 +651,7 @@ fn print_rank_json(ranked: &[deep_diff_forge_graph::RankedFile]) {
     } else {
         format!("\n{items}\n  ")
     };
-    println!("{{\n  \"schema\": \"deep-diff-forge.rank.v0\",\n  \"ranked\": [{body}]\n}}");
+    emitln!("{{\n  \"schema\": \"deep-diff-forge.rank.v0\",\n  \"ranked\": [{body}]\n}}");
 }
 
 /// Return the value following `name` in `opts`, if present.
@@ -514,12 +678,12 @@ fn print_patch_summary(files: &[deep_diff_forge_core::ReviewFile]) {
         }
         let hunks = file.patch_twin.hunks.len();
         let status = format!("{:?}", file.status).to_lowercase();
-        println!(
+        emitln!(
             "{status:>14}  {}  (+{adds} -{dels}, {hunks} hunks)",
             file.path
         );
     }
-    println!("{} file(s) changed", files.len());
+    emitln!("{} file(s) changed", files.len());
 }
 
 fn print_help() {
@@ -536,6 +700,7 @@ USAGE:
   deep-diff-forge semantic <path> [--json]
   deep-diff-forge review [--probe]
   deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]
+  deep-diff-forge learn {{status|record --stdin}} [--json]
   deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side]
   deep-diff-forge claude-code-contract
   deep-diff-forge chain-contract
@@ -543,10 +708,13 @@ USAGE:
   deep-diff-forge loom-contract
 
 MATURITY:
-  L8 Release. All engine layers L0-L7 are implemented and tagged releases are
-  cut to GitHub (binary + checksums) and both git remotes (deploy release
-  --json reports the per-target posture). The one remaining target is crates.io
-  publication, which is blocked until a registry token is configured.
+  L9 Learning. All engine layers L0-L8 are implemented; the L9 learning loop
+  records local-only strategy receipts (learn status|record) and scores them to
+  trust planner/ranking/annotation defaults — never uploading source, never
+  mutating patch truth. Tagged releases are cut to GitHub (binary + checksums)
+  and both git remotes (deploy release --json reports the per-target posture).
+  The crates.io target stays blocked until a registry token is configured; the
+  workspace manifests are otherwise publish-ready (cargo publish --dry-run).
 
 FUTURE PRIMARY MODES:
   deep-diff-forge <old> <new>

@@ -1,5 +1,5 @@
 [package]
-name = "deep-diff-forge-daemon"
+name = "deep-diff-forge-learning"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,11 +8,8 @@ homepage.workspace = true
 rust-version.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Optional UDS JSON-RPC review daemon for Deep-Diff-Forge (std-first, no async runtime)."
+description = "L9 learning loop for Deep-Diff-Forge: local-only strategy receipts, scoring, and gated promotion of planner/ranking/annotation defaults."
 
 [dependencies]
-deep-diff-forge-core.workspace = true
-deep-diff-forge-patch.workspace = true
-deep-diff-forge-graph.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
