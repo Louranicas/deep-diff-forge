@@ -1,3 +1,26 @@
+# Deployment Evidence — L0 → L2 (Patch + Projection Spine)
+
+## L2 Projection (continuation, zero-touch)
+
+`claim | warrant | evidence`
+
+- `deep-diff-forge-projection` crate shipped | `[VBR]` | inline + side-by-side
+  renderer-neutral row builders + text renderers; reads the model, never mutates
+  patch truth.
+- CLI extended | `[VBR]` | `--stdin-patch --layout inline|side-by-side`;
+  unknown layout exits 2.
+- Gate green | `[VBE]` | `just gate-feature` exit 0; **138 tests passed, 0
+  failed** workspace-wide; projection crate carries **53 tests** (>50 bar).
+- Proven live | `[VBE]` | both layouts rendered `fixtures/patch/basic.patch`
+  with aligned line numbers/gutter; `--layout zigzag` → exit 2.
+- Cross-surface consistency fix | `[VBR]` | status labels unified to snake_case
+  (`binary_changed`, `type_changed`) across JSON and projection (was
+  `{:?}.to_lowercase()` → `binarychanged`).
+
+The L1 record follows.
+
+---
+
 # Deployment Evidence — L0 → L1 Patch Spine
 
 This file is the sealed evidence record for the deployment that took

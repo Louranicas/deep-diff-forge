@@ -13,4 +13,5 @@ path = "src/main.rs"
 [dependencies]
 deep-diff-forge-core = { path = "../deep-diff-forge-core" }
 deep-diff-forge-patch = { path = "../deep-diff-forge-patch" }
+deep-diff-forge-projection = { path = "../deep-diff-forge-projection" }
 

@@ -2,6 +2,7 @@
 members = [
   "crates/deep-diff-forge-core",
   "crates/deep-diff-forge-patch",
+  "crates/deep-diff-forge-projection",
   "crates/deep-diff-forge-cli",
 ]
 resolver = "2"

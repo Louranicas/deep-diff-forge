@@ -7,7 +7,10 @@ fn main() {
         Some("--version" | "-V" | "version") => print_version(),
         Some("--self-test" | "self-test") => self_test(),
         Some("doctor") => doctor(),
-        Some("--stdin-patch") => stdin_patch(args.any(|a| a == "--json")),
+        Some("--stdin-patch") => {
+            let rest: Vec<String> = args.collect();
+            stdin_patch(&rest);
+        }
         Some("claude-code-contract") => claude_code_contract(),
         Some("chain-contract") => chain_contract(),
         Some("cluster-contract") => cluster_contract(),
@@ -20,31 +23,52 @@ fn main() {
     }
 }
 
-/// Read a unified/Git patch from stdin and emit either a human review summary
-/// (default) or the `deep-diff-forge.review.v0` JSON document (`--json`).
+/// Read a unified/Git patch from stdin and emit one of: the
+/// `deep-diff-forge.review.v0` JSON document (`--json`), an inline or
+/// side-by-side projection (`--layout inline|side-by-side`), or a human review
+/// summary (default).
 ///
-/// Exit codes follow the CLI contract: 3 = input read failure,
+/// Exit codes follow the CLI contract: 2 = usage error, 3 = input read failure,
 /// 4 = patch parse failure.
-fn stdin_patch(json: bool) {
+fn stdin_patch(opts: &[String]) {
     use std::io::Read as _;
     let mut input = String::new();
     if let Err(err) = std::io::stdin().read_to_string(&mut input) {
         eprintln!("error: could not read stdin: {err}");
         std::process::exit(3);
     }
-    match deep_diff_forge_patch::parse(&input) {
-        Ok(files) => {
-            if json {
-                print!("{}", deep_diff_forge_patch::to_json(&files));
-            } else {
-                print_patch_summary(&files);
-            }
-        }
+    let files = match deep_diff_forge_patch::parse(&input) {
+        Ok(files) => files,
         Err(err) => {
             eprintln!("error: patch parse failed: {err}");
             std::process::exit(4);
         }
+    };
+
+    if opts.iter().any(|a| a == "--json") {
+        print!("{}", deep_diff_forge_patch::to_json(&files));
+    } else if let Some(name) = flag_value(opts, "--layout") {
+        if let Some(layout) = deep_diff_forge_projection::layout_from_str(&name) {
+            let options = deep_diff_forge_projection::ProjectionOptions {
+                layout,
+                side_width: deep_diff_forge_projection::DEFAULT_SIDE_WIDTH,
+            };
+            print!("{}", deep_diff_forge_projection::render(&files, options));
+        } else {
+            eprintln!("error: unknown layout: {name} (expected inline|side-by-side)");
+            std::process::exit(2);
+        }
+    } else {
+        print_patch_summary(&files);
     }
+}
+
+/// Return the value following `name` in `opts`, if present.
+fn flag_value(opts: &[String], name: &str) -> Option<String> {
+    opts.iter()
+        .position(|a| a == name)
+        .and_then(|i| opts.get(i + 1))
+        .cloned()
 }
 
 fn print_patch_summary(files: &[deep_diff_forge_core::ReviewFile]) {
@@ -81,7 +105,7 @@ USAGE:
   deep-diff-forge --version
   deep-diff-forge --self-test
   deep-diff-forge doctor
-  deep-diff-forge --stdin-patch [--json]
+  deep-diff-forge --stdin-patch [--json | --layout inline|side-by-side]
   deep-diff-forge claude-code-contract
   deep-diff-forge chain-contract
   deep-diff-forge cluster-contract
