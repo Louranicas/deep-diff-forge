@@ -17,4 +17,5 @@ deep-diff-forge-projection = { path = "../deep-diff-forge-projection", version =
 deep-diff-forge-pipeline = { path = "../deep-diff-forge-pipeline", version = "0.1.0" }
 deep-diff-forge-syntax = { path = "../deep-diff-forge-syntax", version = "0.1.0" }
 deep-diff-forge-graph = { path = "../deep-diff-forge-graph", version = "0.1.0" }
+deep-diff-forge-tui = { path = "../deep-diff-forge-tui", version = "0.1.0" }
 

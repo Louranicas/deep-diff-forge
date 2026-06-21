@@ -104,12 +104,11 @@ flowchart TB
 | Release candidate | Dist output | release assets | full gate, package, smoke | release receipt |
 | Production release | Public remotes | tag/assets/crates | no-mistakes gate, final ack | publication receipt |
 
-The codebase is at L4 (semantic spine): the patch parser, projection layer,
-composable pipeline, deployment-status command, and now the tree-sitter
-semantic layer (`deep-diff-forge-syntax` + `semantic <path> [--json]`, Rust)
-all exist, governed by a `deny.toml` supply-chain policy. Release deployment
-remains blocked until the review/graph layer and outward publication
-(credential-gated) land.
+The codebase is at L5 (review spine): patch parser, projection, pipeline,
+semantic layer, the Review Intelligence Graph (`--rank`), the agent annotation
+layer, and the review TUI (`review`, ratatui) all exist, governed by a
+`deny.toml` supply-chain policy. Release deployment remains blocked until the
+cluster/daemon layers and outward publication (credential-gated) land.
 
 Current gaps and recommendations are tracked in
 [Deployment Gap Analysis](DEPLOYMENT_GAP_ANALYSIS.md).
@@ -747,11 +746,11 @@ Rollback receipts must include:
 | L8 | Release | Signed assets, crates, CI, no-mistakes gate. |
 | L9 | Learning | Corpus-driven promotion and SLO-backed defaults. |
 
-The current repository is L4 (patch + projection + pipeline + semantic spines
-shipped: `deep-diff-forge-{patch,projection,pipeline,syntax}`, `--stdin-patch
-[--json | --jsonl | --layout …]`, `semantic <path> [--json]`, `deploy status`,
-patch fixtures, `deny.toml` supply-chain policy) with planned L5 Review next
-(TUI/graph, gated on the `ratatui`/`crossterm` dependencies).
+The current repository is L5 (patch + projection + pipeline + semantic + review
+spines shipped: `deep-diff-forge-{patch,projection,pipeline,syntax,graph,agent,tui}`,
+`--stdin-patch [--json | --jsonl | --rank | --layout …]`, `semantic <path>`,
+`review [--probe]`, `deploy status`, patch fixtures, `deny.toml` policy) with
+planned L6 Cluster next.
 
 ## Framework Maintenance
 

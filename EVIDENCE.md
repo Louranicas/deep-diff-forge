@@ -1,4 +1,40 @@
-# Deployment Evidence — L0 → L4 (Patch + Projection + Pipeline + Semantic)
+# Deployment Evidence — L0 → L5 (… + Review Intelligence + Agent + TUI)
+
+## L5 Review (three sub-waves)
+
+`claim | warrant | evidence`
+
+- **L5a graph** (`cb017be`) | `[VBR]`/`[VBE]` | `deep-diff-forge-graph` —
+  deterministic, explainable risk ranking from patch facts; `--stdin-patch
+  --rank [--json]` (`deep-diff-forge.rank.v0`). 54 tests. Live: ranked this
+  repo's own diff, `core/src/lib.rs` (public API) first.
+- **L5b agent** (`5f85a47`) | `[VBR]` | `deep-diff-forge-agent` — grounding
+  classification (evidence necessary; no-evidence ⇒ Ungrounded), source
+  inference, body sanitization, anchor validation, reviewer-owned resolution
+  (never auto-resolves). 50 tests. Library for the TUI/daemon.
+- **L5c TUI** | `[VBE]` | `deep-diff-forge-tui` (ratatui 0.29 + crossterm 0.28)
+  — pure tested state model + crossterm key-mapping + ratatui render exercised
+  headlessly via `TestBackend`; `review [--probe]`. 50 tests. Live: `review
+  --probe` rendered a full ranked sidebar + detail frame.
+- Gate green | `[VBE]` | `just gate-feature` exit 0; **437 tests passed, 0
+  failed**; each L5 crate ≥50.
+- Supply-chain gate caught a real transitive advisory | `[VBE]` | ratatui pulls
+  `paste 1.0.15` (unmaintained, RUSTSEC-2024-0436, not a vulnerability); handled
+  with a documented scoped `ignore` in `deny.toml`; `cargo deny check` →
+  advisories/bans/licenses/sources ok.
+- `deploy status` reports `L5 (Review)` | `[VBE]`.
+
+### Known limitation (honest-degraded)
+
+- **SIGPIPE / broken-pipe:** the CLI uses `println!`, which panics (exit 101)
+  if a downstream consumer closes the pipe early (e.g. `… | head`). This is
+  pre-existing CLI-wide (since L1), not L5-specific, and does not corrupt or
+  truncate emitted output. A dedicated hardening pass should reset the SIGPIPE
+  disposition or route bulk output through a broken-pipe-tolerant writer; it is
+  tracked rather than rushed mid-wave. The interactive `review` TUI is
+  unaffected (it owns the terminal).
+- The live interactive `review` loop (`run`) needs a real TTY and is the single
+  untested boundary; all logic lives in the tested state model + `--probe`.
 
 ## L4 Semantic (continuation, first heavy-dependency wave)
 

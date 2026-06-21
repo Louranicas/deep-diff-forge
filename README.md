@@ -81,19 +81,21 @@ Additional execution architecture:
 
 ## Status
 
-This repo is at **L4 Semantic** maturity. The core vocabulary is stable; the
-patch parser (`deep-diff-forge-patch`), projection layer
-(`deep-diff-forge-projection`), Unix-filter pipeline (`deep-diff-forge-pipeline`),
-and tree-sitter semantic layer (`deep-diff-forge-syntax`, Rust) are implemented,
-under a `deny.toml` supply-chain policy. The TUI, daemon, and agent surfaces
-remain designed but not yet implemented. See [EVIDENCE.md](EVIDENCE.md) for the
-sealed deployment record.
+This repo is at **L5 Review** maturity. The patch, projection, pipeline,
+semantic (`deep-diff-forge-syntax`), Review Intelligence Graph
+(`deep-diff-forge-graph`), agent annotation (`deep-diff-forge-agent`), and review
+TUI (`deep-diff-forge-tui`, ratatui) layers are implemented, under a `deny.toml`
+supply-chain policy. The daemon surface remains designed but not yet
+implemented. See [EVIDENCE.md](EVIDENCE.md) for the sealed deployment record.
 
 ```bash
 git diff | deep-diff-forge --stdin-patch                        # review summary
 git diff | deep-diff-forge --stdin-patch --json                 # review.v0 JSON
 git diff | deep-diff-forge --stdin-patch --jsonl                # one event/file
+git diff | deep-diff-forge --stdin-patch --rank                 # risk-ranked stream
 git diff | deep-diff-forge --stdin-patch --layout side-by-side  # split view
+git diff | deep-diff-forge review                               # interactive TUI
+git diff | deep-diff-forge review --probe                       # headless TUI frame
 deep-diff-forge semantic src/lib.rs --json                      # tree-sitter symbols
 deep-diff-forge deploy status --json                            # deployment-status.v0
 ```

@@ -5,6 +5,12 @@
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+  # paste 1.0.15 is unmaintained (RUSTSEC-2024-0436) — the author declared it
+  # feature-complete, not vulnerable. Pulled transitively by ratatui (TUI wave).
+  # Scoped accept; revisit when a maintained equivalent reaches the ratatui tree.
+  "RUSTSEC-2024-0436",
+]
 
 [licenses]
 version = 2

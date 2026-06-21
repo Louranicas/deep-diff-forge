@@ -61,6 +61,32 @@ Durable lessons for future Deep-Diff-Forge sessions. This is not a diary.
   `deny.toml`.
 - Status: permanent.
 
+- Lesson: ratatui TUIs are testable headlessly via `ratatui::backend::TestBackend`
+  — render into it, read the `Buffer` cells back as strings, assert on content.
+  Keep all decision logic in a pure state model; only the live `crossterm` event
+  loop needs a TTY (the one untested boundary). The CLI `review --probe` reuses
+  the same `render_to_lines` helper for a no-TTY live proof.
+- Evidence: `deep-diff-forge-tui` ui.rs tests + `review --probe` output.
+- Affected files/symbols/commands: `crates/deep-diff-forge-tui/src/ui.rs`.
+- Status: permanent.
+
+- Lesson: pulling ratatui surfaces an unmaintained transitive (`paste`,
+  RUSTSEC-2024-0436 — not a vulnerability). Handle accepted unmaintained-transitives
+  with a DOCUMENTED, scoped `ignore` entry in `deny.toml` (never by disabling the
+  advisories check). The supply-chain gate working as designed.
+- Evidence: `cargo deny check advisories` flagged it; scoped ignore → all ok.
+- Affected files/symbols/commands: `deny.toml`.
+- Status: permanent.
+
+- Lesson: the CLI's `println!` panics on a broken pipe (`… | head`) — Rust
+  ignores SIGPIPE so EPIPE becomes a panic (exit 101). Pre-existing CLI-wide
+  since L1; output is not corrupted. Fix path: reset SIGPIPE disposition at
+  startup or route bulk output through a broken-pipe-tolerant writer. Tracked,
+  not yet fixed (avoid unsafe/dep churn mid-wave).
+- Evidence: `… review --probe | head` panicked after head closed.
+- Affected files/symbols/commands: `crates/deep-diff-forge-cli/src/main.rs`.
+- Status: open finding.
+
 - Lesson: tree-sitter (0.25 + grammar 0.24) fetches and C-compiles cleanly in
   this environment via the `cc` crate; it pulls `serde_json`/`regex`
   transitively, which is exactly why the supply-chain `deny.toml` was landed

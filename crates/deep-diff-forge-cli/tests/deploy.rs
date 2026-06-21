@@ -19,7 +19,7 @@ fn status_json_declares_schema_and_maturity() {
     let (code, stdout, _) = run(&["deploy", "status", "--json"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("\"schema\": \"deep-diff-forge.deployment-status.v0\""));
-    assert!(stdout.contains("\"maturity\": \"L4\""));
+    assert!(stdout.contains("\"maturity\": \"L5\""));
     assert!(stdout.contains("\"repo\": \"deep-diff-forge\""));
 }
 
@@ -39,7 +39,7 @@ fn status_json_lists_gate_stack() {
 fn status_human_shows_maturity_name() {
     let (code, stdout, _) = run(&["deploy", "status"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("L4 (Semantic)"));
+    assert!(stdout.contains("L5 (Review)"));
     assert!(stdout.contains("just gate-feature"));
 }
 

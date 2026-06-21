@@ -15,6 +15,10 @@ fn main() {
             let rest: Vec<String> = args.collect();
             semantic_cmd(&rest);
         }
+        Some("review") => {
+            let rest: Vec<String> = args.collect();
+            review_cmd(&rest);
+        }
         Some("--stdin-patch") => {
             let rest: Vec<String> = args.collect();
             stdin_patch(&rest);
@@ -87,7 +91,36 @@ fn stdin_patch(opts: &[String]) {
 /// The current declared maturity level (kept in sync with the deployment
 /// framework; bumped as each ladder rung ships).
 const CURRENT_MATURITY: deep_diff_forge_core::MaturityLevel =
-    deep_diff_forge_core::MaturityLevel::L4;
+    deep_diff_forge_core::MaturityLevel::L5;
+
+/// `review [--probe]`: read a patch from stdin and open the review TUI.
+///
+/// `--probe` renders one frame headlessly (no TTY needed) for CI/agents; bare
+/// `review` launches the interactive loop and needs a real terminal.
+fn review_cmd(opts: &[String]) {
+    use std::io::Read as _;
+    let mut input = String::new();
+    if let Err(err) = std::io::stdin().read_to_string(&mut input) {
+        eprintln!("error: could not read stdin: {err}");
+        std::process::exit(3);
+    }
+    let files = match deep_diff_forge_patch::parse(&input) {
+        Ok(files) => files,
+        Err(err) => {
+            eprintln!("error: patch parse failed: {err}");
+            std::process::exit(4);
+        }
+    };
+    let app = deep_diff_forge_tui::ReviewApp::from_review(&files);
+    if opts.iter().any(|a| a == "--probe") {
+        for line in deep_diff_forge_tui::render_to_lines(&app, 100, 30) {
+            println!("{line}");
+        }
+    } else if let Err(err) = deep_diff_forge_tui::run(app) {
+        eprintln!("error: review requires an interactive terminal: {err}");
+        std::process::exit(6);
+    }
+}
 
 /// `semantic <path> [--json]`: parse a source file and report its symbols.
 fn semantic_cmd(opts: &[String]) {
@@ -325,6 +358,7 @@ USAGE:
   deep-diff-forge doctor
   deep-diff-forge deploy status [--json]
   deep-diff-forge semantic <path> [--json]
+  deep-diff-forge review [--probe]
   deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --layout inline|side-by-side]
   deep-diff-forge claude-code-contract
   deep-diff-forge chain-contract
@@ -332,11 +366,11 @@ USAGE:
   deep-diff-forge loom-contract
 
 MATURITY:
-  L4 Semantic. The binary parses unified/Git patches (--stdin-patch), projects
-  them (--layout, --json, --jsonl), reports deployment status (deploy status
-  --json), and extracts tree-sitter symbols from source files (semantic <path>,
-  Rust). The TUI, daemon, and agent surfaces are designed but not yet
-  implemented.
+  L5 Review. The binary parses unified/Git patches (--stdin-patch), projects
+  them (--layout, --json, --jsonl), ranks the review (--rank), extracts
+  tree-sitter symbols (semantic <path>), opens the review TUI (review), and
+  reports deployment status (deploy status --json). The daemon surface is
+  designed but not yet implemented.
 
 FUTURE PRIMARY MODES:
   deep-diff-forge <old> <new>
