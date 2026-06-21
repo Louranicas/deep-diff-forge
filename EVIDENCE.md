@@ -27,9 +27,17 @@
   aborting upload due to dry run"; manifests inherit version + internal deps via
   `[workspace.package]` + `[workspace.dependencies]`; `core`/`cli` gained the
   mandatory `description`.
-- Gate green | `[VBE]` | `check → clippy -D warnings → pedantic → test` clean;
-  **703 tests passed, 0 failed** (568 + 135 learning); `cargo fmt --check` exit 0;
-  `cargo deny check` → advisories/bans/licenses/sources ok.
+- Gate green | `[VBE]` | `check → clippy -D warnings → pedantic → test → docs`
+  clean; **721 tests passed, 0 failed**; `cargo fmt --check` exit 0; `cargo deny
+  check` + strict `cargo audit` clean.
+- Security hardened (S1008412) | `[VBE]` | 8-dimension STRIDE review + independent
+  verify → 17 confirmed findings (4 MED / 12 LOW / 1 INFO; **0 Critical/High**),
+  all remediated with fail-before/pass-after tests: terminal-escape injection
+  (`core::display_safe` wired at every human renderer; 5 e2e regression tests),
+  read-cap DoS guards, daemon panic-isolation + read-timeout + size-bound +
+  symlink-reject + no-`/tmp`-fallback, owner-private learning store, fail-closed
+  agent trust, workspace-`forbid(unsafe)`, pinned tree-sitter, CI+release
+  cargo-audit gate, `SECURITY.md`. Detail: `reports/security/` (+ register JSON).
 
 The one genuine wall is unchanged: **crates.io upload** needs a
 `CARGO_REGISTRY_TOKEN` (an irreversible, yank-only act I cannot self-authorize).

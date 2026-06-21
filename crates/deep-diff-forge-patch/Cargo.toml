@@ -19,3 +19,6 @@ json = []
 
 [dependencies]
 deep-diff-forge-core.workspace = true
+
+[lints]
+workspace = true

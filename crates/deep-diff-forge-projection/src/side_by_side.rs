@@ -1,4 +1,4 @@
-use deep_diff_forge_core::{PatchLine, PatchLineKind, ReviewFile};
+use deep_diff_forge_core::{PatchLine, PatchLineKind, ReviewFile, display_safe};
 use std::fmt::Write as _;
 
 /// One cell of a side-by-side row (one side, old or new).
@@ -99,12 +99,15 @@ fn fmt_cell(cell: Option<&SideCell>, width: usize) -> String {
 }
 
 fn truncate_pad(text: &str, width: usize) -> String {
-    let count = text.chars().count();
+    // Neutralise terminal escapes BEFORE width math, so the visible escaped form
+    // is what gets measured, truncated, and padded (an attacker cannot use a
+    // zero-width control sequence to desync column alignment).
+    let safe = display_safe(text);
+    let count = safe.chars().count();
     if count > width {
-        let truncated: String = text.chars().take(width).collect();
-        truncated
+        safe.chars().take(width).collect()
     } else {
-        format!("{text}{}", " ".repeat(width - count))
+        format!("{safe}{}", " ".repeat(width - count))
     }
 }
 
@@ -114,7 +117,7 @@ pub fn render_side_by_side(files: &[ReviewFile], width: usize) -> String {
     let mut out = String::new();
     for file in files {
         let status = crate::status_label(file.status);
-        let _ = writeln!(out, "{status}  {}", file.path);
+        let _ = writeln!(out, "{status}  {}", display_safe(&file.path));
         for row in side_rows(file) {
             let _ = writeln!(
                 out,

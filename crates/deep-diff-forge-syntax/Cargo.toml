@@ -12,5 +12,11 @@ description = "Tree-sitter language detection, parsing under budgets, and symbol
 
 [dependencies]
 deep-diff-forge-core.workspace = true
-tree-sitter = "0.25"
-tree-sitter-rust = "0.24"
+# Pinned to exact versions: these crates ship a `cc`-driven build script that
+# compiles C at build time, so a malicious in-range patch release must not be
+# auto-resolved. Bump deliberately; `cargo install --locked` is recommended.
+tree-sitter = "=0.25.10"
+tree-sitter-rust = "=0.24.2"
+
+[lints]
+workspace = true

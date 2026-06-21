@@ -4,7 +4,7 @@ mod util;
 
 pub use deploy::{DeploymentStatus, GateResult, GateState, MaturityLevel};
 pub use release::{ReleasePlan, ReleaseTarget, TargetState};
-pub use util::json_escape;
+pub use util::{display_safe, json_escape};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewDocument {

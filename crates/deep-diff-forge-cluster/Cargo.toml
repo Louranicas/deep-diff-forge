@@ -16,3 +16,6 @@ deep-diff-forge-graph.workspace = true
 
 [dev-dependencies]
 deep-diff-forge-patch.workspace = true
+
+[lints]
+workspace = true

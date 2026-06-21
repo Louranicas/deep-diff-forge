@@ -1,4 +1,5 @@
 use crate::state::ReviewApp;
+use deep_diff_forge_core::display_safe;
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -17,7 +18,10 @@ pub fn render(frame: &mut Frame, app: &ReviewApp) {
     let mut rows = Vec::new();
     for (i, file) in app.files().iter().enumerate() {
         let marker = if i == app.selected_index() { '>' } else { ' ' };
-        let text = format!("{marker} {:>3} {}", file.score, file.path);
+        // file.path is attacker-controlled (from the diff) — neutralise terminal
+        // escapes before rendering, since ratatui does not reliably strip them
+        // and `review --probe` writes these lines to stdout.
+        let text = format!("{marker} {:>3} {}", file.score, display_safe(&file.path));
         let style = if i == app.selected_index() {
             Style::default().add_modifier(Modifier::REVERSED)
         } else {
@@ -46,7 +50,7 @@ fn detail_lines(app: &ReviewApp) -> Vec<Line<'static>> {
         Some(file) => {
             let signals: Vec<&str> = file.signals.iter().map(|s| s.label()).collect();
             vec![
-                Line::from(format!("path:    {}", file.path)),
+                Line::from(format!("path:    {}", display_safe(&file.path))),
                 Line::from(format!("status:  {}", file.status.label())),
                 Line::from(format!("score:   {}", file.score)),
                 Line::from(format!("signals: {}", signals.join(","))),
@@ -120,6 +124,20 @@ mod tests {
         let out = rendered(&app());
         assert!(out.contains("src/lib.rs"));
         assert!(out.contains("src/other.rs"));
+    }
+
+    #[test]
+    fn render_neutralizes_terminal_escapes_in_path() {
+        // A malicious diff path with an ESC sequence must not reach the terminal
+        // through the TUI — `review --probe` pipes these lines straight to stdout.
+        let evil = "--- a/x\u{1b}[2J.rs\n+++ b/x\u{1b}[2J.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n";
+        let app = ReviewApp::from_review(&parse(evil).unwrap());
+        let out = render_to_lines(&app, 100, 16).join("\n");
+        assert!(!out.contains('\u{1b}'), "raw ESC leaked through TUI render");
+        assert!(
+            out.contains("\\x1b"),
+            "escaped form should be shown instead"
+        );
     }
 
     #[test]

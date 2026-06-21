@@ -5,12 +5,17 @@
 [advisories]
 version = 2
 yanked = "deny"
+unmaintained = "all"
 ignore = [
   # paste 1.0.15 is unmaintained (RUSTSEC-2024-0436) — the author declared it
   # feature-complete, not vulnerable. Pulled transitively by ratatui (TUI wave).
   # Scoped accept; revisit when a maintained equivalent reaches the ratatui tree.
   "RUSTSEC-2024-0436",
 ]
+# Note: lru 0.12.5 is unsound (RUSTSEC-2026-0002, `IterMut` Stacked Borrows),
+# transitive via ratatui and unreachable here (we never use lru's IterMut).
+# cargo-deny does not classify it, so it is accepted in the cargo-audit CI gate
+# instead (`--ignore RUSTSEC-2026-0002`); any NEW advisory still fails that gate.
 
 [licenses]
 version = 2

@@ -36,6 +36,32 @@ across the workspace; the crates.io upload itself remains token-gated.
   instead of panicking with `EPIPE` (exit 101). Resolves the L1-era open finding;
   std-only, no `unsafe`.
 
+### Security
+
+Pre-publication adversarial hardening (S1008412): an 8-dimension STRIDE review
+with independent verification produced a CVSS-scored register of 17 confirmed
+findings (4 MEDIUM, 12 LOW, 1 INFO; **no Critical/High**), all remediated with
+fail-before/pass-after regression tests. See `SECURITY.md`.
+
+- **Terminal/ANSI-escape injection** — attacker-controlled diff bodies, file
+  paths, and symbol names are now sanitized by `core::display_safe` (control
+  chars escaped to a visible `\xHH`) at every human-render boundary; `json_escape`
+  also neutralises `DEL` + the C1 block. A reviewer rendering a hostile patch can
+  no longer have their terminal hijacked (screen clobber, scrollback forgery,
+  OSC-52 clipboard write, title/hyperlink spoof).
+- **Memory-exhaustion DoS** — stdin, source-file, and daemon request reads are
+  hard-capped at the byte budget instead of buffering unbounded input.
+- **Daemon robustness** — per-connection panic/error isolation (`catch_unwind`,
+  no fatal `?`), a read timeout (slowloris), a size-bounded request line, symlink
+  rejection, and **no world-writable `/tmp` socket fallback** (fails closed
+  without `$XDG_RUNTIME_DIR`).
+- **Fail-closed trust** — agent annotation `source` is no longer inferred from an
+  attacker-controlled label; learning-store files are owner-private (`0700`/`0600`).
+- **Supply chain** — `unsafe_code = "forbid"` is now compiler-enforced
+  workspace-wide; `tree-sitter` is pinned to exact versions; a strict `cargo
+  audit` gate runs in CI and gates the irreversible crates.io publish;
+  least-privilege workflow permissions; Dependabot; `SECURITY.md`.
+
 [0.2.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.2.0
 
 ## [0.1.0] - 2026-06-22

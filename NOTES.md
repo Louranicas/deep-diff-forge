@@ -134,3 +134,58 @@ Durable lessons for future Deep-Diff-Forge sessions. This is not a diary.
 - Affected files/symbols/commands:
   `crates/deep-diff-forge-syntax/src/analyze.rs`.
 - Status: permanent.
+
+## 2026-06-22 (security hardening S1008412)
+
+- Lesson: a diff/review CLI's top threat is terminal/ANSI-escape injection —
+  attacker-controlled diff bodies, paths, and symbol names rendered raw can
+  hijack the reviewer's terminal (scrollback forgery, OSC-52 clipboard, title
+  spoof). Sanitize at the HUMAN-RENDER BOUNDARY (`core::display_safe`, escaping
+  control chars to visible `\xHH`, keeping tab), not in an unused helper. A
+  `sanitize_body` that exists + is tested but has zero call sites is the
+  silent-gap fail-open: tested protection, bypassed load path. Machine output
+  (`json_escape`) must also escape DEL + the C1 block (0x7f-0x9f, incl. 8-bit
+  CSI/OSC), not just `< 0x20`.
+- Evidence: `cli/tests/security.rs` feeds an ESC/OSC patch through every output
+  mode, asserts no raw 0x1b; `core::util::display_safe` + tests.
+- Affected: `core/src/util.rs`, `projection/src/{inline,side_by_side}.rs`,
+  `cli/src/main.rs` print_* fns.
+- Status: permanent.
+
+- Lesson: a byte budget checked INSIDE the parser is too late — the CLI's
+  `read_to_string` already materialised the whole untrusted input in RAM. Cap the
+  READ (`take(budget + 1)`) before buffering. Same for the daemon: `BufRead::
+  lines()` is unbounded; read each request line through `take(cap + 1)` +
+  `read_until`. Bound is testable cheaply with a `Cursor` + small cap, not 80 MB.
+- Evidence: `cli read_capped_or_exit`; `daemon serve.rs read_capped_line` + tests.
+- Status: permanent.
+
+- Lesson: `#![forbid(unsafe_code)]` per-crate is convention; `[workspace.lints.rust]
+  unsafe_code = "forbid"` + `[lints] workspace = true` in every member makes "0
+  unsafe" compiler-enforced and un-`allow`-able. cargo-deny v2 does NOT fail on
+  `unsound` advisories by default (it passed `lru` RUSTSEC-2026-0002 silently) —
+  add a strict `cargo audit --deny warnings` gate (with documented scoped
+  ignores) for advisory coverage; deny.toml stays the bans/licenses/sources gate.
+- Evidence: `cargo deny check` says "advisories ok" for lru; `cargo audit` flags
+  it. Root `Cargo.toml [workspace.lints]`; `ci.yml` + `release.yml` audit step.
+- Status: permanent.
+
+- Lesson: the daemon's secure default is to REFUSE the world-writable `/tmp`
+  socket fallback. `$XDG_RUNTIME_DIR` (`/run/user/<uid>`) is per-user, owner-only,
+  kernel-managed; a predictable `/tmp` path invites symlink/TOCTOU squatting.
+  Make path resolution `Option`-returning and fail closed (operator passes
+  `--socket`). `set_permissions` (chmod) doubles as an ownership gate — a non-root
+  process can only chmod a dir it owns — so a pre-existing attacker-owned dir
+  fails closed; additionally reject symlinks via `symlink_metadata`.
+- Evidence: `daemon/src/security.rs` (`runtime_base_from`, `validate_private_dir`
+  symlink rejection); `cli daemon_cmd` fail-closed branch.
+- Status: permanent.
+
+- Lesson: never infer trust from an attacker-controlled free-text label.
+  `source_of` substring-matched `provenance.agent` (`contains("human")`) →
+  adversarial annotation escalates to Human. Fail closed: default Agent
+  (untrusted), exact-match only a namespaced reserved id for System, never infer
+  Human from the wire. Real trust authority = grounding (evidence), unforgeable
+  by relabelling.
+- Evidence: `agent/src/lib.rs::source_of` + escalation regression tests.
+- Status: permanent.

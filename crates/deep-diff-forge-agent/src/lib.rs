@@ -78,13 +78,27 @@ pub fn grounding_of(annotation: &AgentAnnotation) -> GroundingLevel {
     }
 }
 
-/// Infer the source of an annotation from its provenance agent string.
+/// The engine's exact, namespaced reserved id for its own (`System`)
+/// annotations. The slash makes it implausible as an organic agent name, and
+/// ingestion of untrusted annotations must reject this id from external authors.
+pub const SYSTEM_AGENT_ID: &str = "deep-diff-forge/system";
+
+/// Classify the source of an annotation. **Fails closed.**
+///
+/// The `provenance.agent` field is self-asserted and fully attacker-controlled,
+/// so trust is never inferred from it: every externally-authored annotation is
+/// classified [`AnnotationSource::Agent`] (untrusted). A previous version
+/// substring-matched the label (`contains("human")` / `contains("system")`),
+/// which let an adversarial annotation labelled e.g. `"human-helper"` escalate
+/// itself to `Human`. That inference is removed.
+///
+/// `Human` is never derived from the wire (a human reviewer's trust arrives
+/// through the reviewer's own actions, not a label), and only the exact reserved
+/// [`SYSTEM_AGENT_ID`] maps to `System`. The real trust authority is
+/// [`grounding_of`] — evidence, which an attacker cannot fabricate by relabelling.
 #[must_use]
 pub fn source_of(annotation: &AgentAnnotation) -> AnnotationSource {
-    let agent = annotation.provenance.agent.to_ascii_lowercase();
-    if agent.contains("human") || agent.contains("reviewer") {
-        AnnotationSource::Human
-    } else if agent.contains("system") || agent.contains("deep-diff-forge") {
+    if annotation.provenance.agent == SYSTEM_AGENT_ID {
         AnnotationSource::System
     } else {
         AnnotationSource::Agent
@@ -143,47 +157,53 @@ mod tests {
     }
 
     #[test]
-    fn human_source_detected() {
-        assert_eq!(
-            source_of(&annotation("human:luke", &[], false)),
-            AnnotationSource::Human
-        );
-        assert_eq!(
-            source_of(&annotation("reviewer", &[], false)),
-            AnnotationSource::Human
-        );
+    fn source_fails_closed_to_agent() {
+        // Everything self-reported is untrusted Agent — including labels that
+        // previously escalated to Human/System.
+        for label in [
+            "claude-code",
+            "gpt",
+            "human:luke",
+            "reviewer",
+            "system",
+            "deep-diff-forge",
+            "HUMAN",
+        ] {
+            assert_eq!(
+                source_of(&annotation(label, &[], false)),
+                AnnotationSource::Agent,
+                "label {label:?} must classify as untrusted Agent"
+            );
+        }
     }
 
     #[test]
-    fn system_source_detected() {
+    fn only_exact_reserved_id_is_system() {
         assert_eq!(
-            source_of(&annotation("system", &[], false)),
+            source_of(&annotation(SYSTEM_AGENT_ID, &[], false)),
             AnnotationSource::System
         );
+        // Near-misses do not escalate (no substring / prefix match).
         assert_eq!(
-            source_of(&annotation("deep-diff-forge", &[], false)),
-            AnnotationSource::System
-        );
-    }
-
-    #[test]
-    fn agent_source_is_default() {
-        assert_eq!(
-            source_of(&annotation("claude-code", &[], false)),
+            source_of(&annotation("deep-diff-forge/system-but-evil", &[], false)),
             AnnotationSource::Agent
         );
         assert_eq!(
-            source_of(&annotation("gpt", &[], false)),
+            source_of(&annotation("x deep-diff-forge/system", &[], false)),
             AnnotationSource::Agent
         );
     }
 
     #[test]
-    fn source_detection_is_case_insensitive() {
-        assert_eq!(
-            source_of(&annotation("HUMAN", &[], false)),
-            AnnotationSource::Human
-        );
+    fn adversarial_label_cannot_escalate_to_human() {
+        // The headline fix: an attacker-chosen agent string can never become
+        // Human, regardless of what trust-implying word it embeds.
+        for evil in ["human-helper-bot", "trusted-reviewer", "SYSTEM-override"] {
+            assert_ne!(
+                source_of(&annotation(evil, &[], false)),
+                AnnotationSource::Human
+            );
+        }
     }
 
     #[test]

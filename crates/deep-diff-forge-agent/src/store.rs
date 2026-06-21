@@ -190,21 +190,24 @@ mod tests {
     }
 
     #[test]
-    fn by_source_filters_human() {
+    fn by_source_filters_system_by_exact_reserved_id() {
         let mut s = AnnotationStore::new();
-        s.add(ann("a", "human:luke", &[], false));
+        s.add(ann("a", crate::SYSTEM_AGENT_ID, &[], false));
         s.add(ann("b", "claude", &[], false));
-        let human = s.by_source(AnnotationSource::Human);
-        assert_eq!(human.len(), 1);
-        assert_eq!(human[0].id, "a");
+        let system = s.by_source(AnnotationSource::System);
+        assert_eq!(system.len(), 1);
+        assert_eq!(system[0].id, "a");
     }
 
     #[test]
-    fn by_source_filters_agent() {
+    fn by_source_self_asserted_labels_are_all_agent() {
+        // Fail-closed: "human"/"human:luke" no longer escalate; all untrusted.
         let mut s = AnnotationStore::new();
         s.add(ann("a", "human", &[], false));
-        s.add(ann("b", "claude", &[], false));
-        assert_eq!(s.by_source(AnnotationSource::Agent).len(), 1);
+        s.add(ann("b", "human:luke", &[], false));
+        s.add(ann("c", "claude", &[], false));
+        assert_eq!(s.by_source(AnnotationSource::Agent).len(), 3);
+        assert_eq!(s.by_source(AnnotationSource::Human).len(), 0);
     }
 
     #[test]

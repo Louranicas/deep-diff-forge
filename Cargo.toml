@@ -25,6 +25,13 @@ rust-version = "1.85"
 keywords = ["diff", "code-review", "patch", "git", "tui"]
 categories = ["development-tools", "command-line-utilities"]
 
+# Make the "zero unsafe" guarantee compiler-enforced across every crate, not a
+# convention. Members opt in with `[lints] workspace = true`. `unsafe_code =
+# "forbid"` cannot be locally overridden by an `#[allow]`, so a future unsafe
+# block fails the build.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
 # Internal crates are declared once here with paired path + version — the
 # publishable-workspace pattern (cargo-deny `wildcards = "deny"` requires a
 # version on every path dep, and crates.io requires it to resolve a published

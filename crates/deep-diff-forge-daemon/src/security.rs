@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
@@ -15,6 +16,9 @@ pub enum SocketError {
     NotADirectory,
     /// The directory grants access to group or others (mode `& 0o077 != 0`).
     TooPermissive,
+    /// The path is a symlink — refused, to defeat symlink-swap attacks on the
+    /// socket directory.
+    Symlink,
 }
 
 impl std::fmt::Display for SocketError {
@@ -23,6 +27,7 @@ impl std::fmt::Display for SocketError {
             Self::Missing => "runtime directory is missing",
             Self::NotADirectory => "runtime path is not a directory",
             Self::TooPermissive => "runtime directory is accessible by group or others",
+            Self::Symlink => "runtime path is a symlink",
         };
         f.write_str(msg)
     }
@@ -30,35 +35,57 @@ impl std::fmt::Display for SocketError {
 
 impl std::error::Error for SocketError {}
 
-/// The runtime base directory: `$XDG_RUNTIME_DIR` if set, else a per-process
-/// fallback under `/tmp` (matching the CLI `doctor` output).
+/// Pure resolver for the runtime base directory from the `XDG_RUNTIME_DIR` value.
+///
+/// Returns `None` when the variable is unset or empty. There is deliberately
+/// **no world-writable `/tmp` fallback**: `$XDG_RUNTIME_DIR` (typically
+/// `/run/user/<uid>`) is a per-user, kernel-managed, owner-only directory, while
+/// a predictable `/tmp` path invites symlink/TOCTOU squatting. When it is
+/// absent the daemon fails closed and the operator passes an explicit
+/// `--socket PATH` (or sets `XDG_RUNTIME_DIR`). Factored out for env-free tests.
 #[must_use]
-pub fn runtime_base() -> PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
-        || PathBuf::from("/tmp/deep-diff-forge-runtime"),
-        PathBuf::from,
-    )
+pub fn runtime_base_from(xdg_runtime_dir: Option<OsString>) -> Option<PathBuf> {
+    xdg_runtime_dir.filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
-/// The daemon's private runtime directory (`<base>/deep-diff-forge`).
+/// The runtime base directory from the live environment, or `None` if
+/// `$XDG_RUNTIME_DIR` is unset/empty (no insecure fallback).
 #[must_use]
-pub fn runtime_dir() -> PathBuf {
-    runtime_base().join("deep-diff-forge")
+pub fn runtime_base() -> Option<PathBuf> {
+    runtime_base_from(std::env::var_os("XDG_RUNTIME_DIR"))
 }
 
-/// The default socket path (`<runtime-dir>/deep-diff-forge.sock`).
+/// The daemon's private runtime directory (`<base>/deep-diff-forge`), or `None`.
 #[must_use]
-pub fn default_socket_path() -> PathBuf {
-    runtime_dir().join("deep-diff-forge.sock")
+pub fn runtime_dir() -> Option<PathBuf> {
+    runtime_base().map(|b| b.join("deep-diff-forge"))
 }
 
-/// Validate that `dir` is an existing, owner-private directory.
+/// The default socket path (`<runtime-dir>/deep-diff-forge.sock`), or `None` when
+/// no secure runtime directory is available.
+#[must_use]
+pub fn default_socket_path() -> Option<PathBuf> {
+    runtime_dir().map(|d| d.join("deep-diff-forge.sock"))
+}
+
+/// Validate that `dir` is an existing, owner-private, non-symlink directory.
+///
+/// Symlinks are rejected outright (via `symlink_metadata`) so an attacker cannot
+/// swap the socket directory for a link they control. Note that ownership is
+/// additionally enforced at creation time: [`ensure_runtime_dir`] `chmod`s the
+/// directory, and a non-root process can only `chmod` a directory it owns, so a
+/// directory owned by another user fails closed before this check is reached.
 ///
 /// # Errors
 ///
-/// Returns [`SocketError`] when the directory is missing, is not a directory,
-/// or is accessible by group/others.
+/// Returns [`SocketError`] when the path is a symlink, is missing, is not a
+/// directory, or is accessible by group/others.
 pub fn validate_private_dir(dir: &Path) -> Result<(), SocketError> {
+    // lstat first: reject the path itself being a symlink.
+    let link_meta = std::fs::symlink_metadata(dir).map_err(|_| SocketError::Missing)?;
+    if link_meta.file_type().is_symlink() {
+        return Err(SocketError::Symlink);
+    }
     let metadata = std::fs::metadata(dir).map_err(|_| SocketError::Missing)?;
     if !metadata.is_dir() {
         return Err(SocketError::NotADirectory);
@@ -71,6 +98,10 @@ pub fn validate_private_dir(dir: &Path) -> Result<(), SocketError> {
 
 /// Create (if needed) the daemon runtime directory with owner-private mode and
 /// validate it.
+///
+/// The `set_permissions` call is also the ownership gate: a non-root process can
+/// only `chmod` a directory it owns, so a pre-existing directory owned by an
+/// attacker makes this fail closed with `PermissionDenied`.
 ///
 /// # Errors
 ///
@@ -96,22 +127,27 @@ mod tests {
     }
 
     #[test]
-    fn default_socket_path_ends_with_sock() {
-        assert!(
-            default_socket_path()
-                .to_string_lossy()
-                .ends_with("deep-diff-forge.sock")
-        );
+    fn runtime_base_uses_xdg_runtime_dir() {
+        let base = runtime_base_from(Some(OsString::from("/run/user/1000"))).expect("base");
+        assert_eq!(base, PathBuf::from("/run/user/1000"));
     }
 
     #[test]
-    fn runtime_dir_is_under_base() {
-        assert!(runtime_dir().starts_with(runtime_base()));
+    fn runtime_base_none_without_xdg() {
+        assert_eq!(runtime_base_from(None), None);
+        assert_eq!(runtime_base_from(Some(OsString::new())), None);
     }
 
     #[test]
-    fn runtime_dir_named_deep_diff_forge() {
-        assert_eq!(runtime_dir().file_name().unwrap(), "deep-diff-forge");
+    fn socket_path_derives_from_xdg_base() {
+        // Exercise the full chain with an explicit base (no env, no /tmp).
+        let dir = runtime_base_from(Some(OsString::from("/run/user/1000")))
+            .map(|b| b.join("deep-diff-forge"))
+            .expect("dir");
+        let sock = dir.join("deep-diff-forge.sock");
+        assert!(sock.to_string_lossy().ends_with("deep-diff-forge.sock"));
+        assert_eq!(dir.file_name().unwrap(), "deep-diff-forge");
+        assert!(sock.starts_with("/run/user/1000"));
     }
 
     #[test]
@@ -147,6 +183,17 @@ mod tests {
     }
 
     #[test]
+    fn symlink_is_rejected() {
+        // A symlink (even one pointing at a valid owner-private dir) is refused.
+        let target = temp_dir("symtarget", 0o700);
+        let link = std::env::temp_dir().join(format!("ddf-sec-symlink-{}", std::process::id()));
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+        assert_eq!(validate_private_dir(&link), Err(SocketError::Symlink));
+        let _ = std::fs::remove_file(&link);
+    }
+
+    #[test]
     fn ensure_runtime_dir_creates_and_secures() {
         let dir = std::env::temp_dir().join(format!(
             "ddf-sec-ensure-{}/deep-diff-forge",
@@ -168,5 +215,6 @@ mod tests {
     fn socket_error_display_is_descriptive() {
         assert!(SocketError::TooPermissive.to_string().contains("group"));
         assert!(SocketError::Missing.to_string().contains("missing"));
+        assert!(SocketError::Symlink.to_string().contains("symlink"));
     }
 }

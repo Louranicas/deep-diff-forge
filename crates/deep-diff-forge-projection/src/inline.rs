@@ -1,4 +1,4 @@
-use deep_diff_forge_core::{PatchLineKind, ReviewFile};
+use deep_diff_forge_core::{PatchLineKind, ReviewFile, display_safe};
 use std::fmt::Write as _;
 
 /// One inline display row: old/new line numbers, a marker, and the text.
@@ -50,7 +50,9 @@ pub fn render_inline(files: &[ReviewFile]) -> String {
     let mut out = String::new();
     for file in files {
         let status = crate::status_label(file.status);
-        let _ = writeln!(out, "{status}  {}", file.path);
+        // Paths and line text are attacker-controlled; neutralise terminal
+        // escapes before they reach a reviewer's terminal.
+        let _ = writeln!(out, "{status}  {}", display_safe(&file.path));
         for hunk in &file.patch_twin.hunks {
             let old_start = hunk.old_start.unwrap_or(0);
             let new_start = hunk.new_start.unwrap_or(0);
@@ -62,7 +64,7 @@ pub fn render_inline(files: &[ReviewFile]) -> String {
                     num(line.old_line),
                     num(line.new_line),
                     marker_of(line.kind),
-                    line.text
+                    display_safe(&line.text)
                 );
             }
         }

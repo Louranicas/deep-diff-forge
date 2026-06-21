@@ -1,4 +1,4 @@
-use deep_diff_forge_core::ReviewDocument;
+use deep_diff_forge_core::{ReviewDocument, display_safe};
 
 /// Write `s` to stdout, treating a reader that closed the pipe (`… | head`) as
 /// a clean exit. Rust ignores SIGPIPE, so a bare `print!`/`println!` panics with
@@ -20,6 +20,37 @@ fn emit(s: &str) {
 macro_rules! emitln {
     () => { emit("\n") };
     ($($arg:tt)*) => { emit(&format!("{}\n", format_args!($($arg)*))) };
+}
+
+/// Read all of `reader` into a `String`, but never buffer more than the patch
+/// byte budget. `what` names the source for diagnostics.
+///
+/// Untrusted input (stdin, a source file) is read with a hard `budget + 1` cap,
+/// so a pathological or unbounded stream is a graceful `exit 4` rather than a
+/// memory-exhaustion denial of service — the process never allocates past the
+/// budget. The
+/// parser re-checks the budget, but this is the read-side enforcement that
+/// closes the gap between "input arrives" and "parser sees it". Exits the
+/// process on any failure (3 = read/encoding, 4 = over budget).
+fn read_capped_or_exit(reader: impl std::io::Read, what: &str) -> String {
+    use std::io::Read as _;
+    let cap = deep_diff_forge_patch::DEFAULT_BYTE_BUDGET;
+    let mut buf = Vec::new();
+    // take(cap + 1): one byte past the budget is enough to detect overflow
+    // without ever buffering an unbounded amount.
+    if let Err(err) = reader.take(cap as u64 + 1).read_to_end(&mut buf) {
+        eprintln!("error: could not read {what}: {err}");
+        std::process::exit(3);
+    }
+    if buf.len() > cap {
+        eprintln!("error: {what} exceeds the {cap}-byte input budget");
+        std::process::exit(4);
+    }
+    let Ok(text) = String::from_utf8(buf) else {
+        eprintln!("error: {what} is not valid UTF-8");
+        std::process::exit(3);
+    };
+    text
 }
 
 fn main() {
@@ -73,12 +104,7 @@ fn main() {
 /// Exit codes follow the CLI contract: 2 = usage error, 3 = input read failure,
 /// 4 = patch parse failure.
 fn stdin_patch(opts: &[String]) {
-    use std::io::Read as _;
-    let mut input = String::new();
-    if let Err(err) = std::io::stdin().read_to_string(&mut input) {
-        eprintln!("error: could not read stdin: {err}");
-        std::process::exit(3);
-    }
+    let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
     // --jsonl streams one event per file through the real pipeline runner.
     if opts.iter().any(|a| a == "--jsonl") {
         run_jsonl_pipeline(input);
@@ -112,7 +138,10 @@ fn stdin_patch(opts: &[String]) {
             };
             emit(&deep_diff_forge_projection::render(&files, options));
         } else {
-            eprintln!("error: unknown layout: {name} (expected inline|side-by-side)");
+            eprintln!(
+                "error: unknown layout: {} (expected inline|side-by-side)",
+                display_safe(&name)
+            );
             std::process::exit(2);
         }
     } else {
@@ -129,8 +158,17 @@ const CURRENT_MATURITY: deep_diff_forge_core::MaturityLevel =
 /// UDS JSON-RPC review daemon.
 fn daemon_cmd(opts: &[String]) {
     use std::path::PathBuf;
-    let socket = flag_value(opts, "--socket")
-        .map_or_else(deep_diff_forge_daemon::default_socket_path, PathBuf::from);
+    let socket = if let Some(path) = flag_value(opts, "--socket") {
+        PathBuf::from(path)
+    } else if let Some(path) = deep_diff_forge_daemon::default_socket_path() {
+        path
+    } else {
+        eprintln!(
+            "error: $XDG_RUNTIME_DIR is not set; refusing an insecure world-writable /tmp socket."
+        );
+        eprintln!("       set XDG_RUNTIME_DIR, or pass an explicit --socket PATH.");
+        std::process::exit(2);
+    };
     let sub = opts
         .iter()
         .find(|a| !a.starts_with("--"))
@@ -272,16 +310,11 @@ fn learn_status(json: bool) {
 /// the loop; rejects malformed input rather than silently dropping it.
 fn learn_record(opts: &[String]) {
     use deep_diff_forge_learning::{StrategyReceipt, record_receipt};
-    use std::io::Read as _;
     if !opts.iter().any(|a| a == "--stdin") {
         eprintln!("usage: deep-diff-forge learn record --stdin   (reads one JSON receipt)");
         std::process::exit(2);
     }
-    let mut input = String::new();
-    if let Err(err) = std::io::stdin().read_to_string(&mut input) {
-        eprintln!("error: could not read stdin: {err}");
-        std::process::exit(3);
-    }
+    let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
     let receipt = match StrategyReceipt::from_json(input.trim()) {
         Ok(r) => r,
         Err(err) => {
@@ -306,12 +339,7 @@ fn learn_record(opts: &[String]) {
 /// `--probe` renders one frame headlessly (no TTY needed) for CI/agents; bare
 /// `review` launches the interactive loop and needs a real terminal.
 fn review_cmd(opts: &[String]) {
-    use std::io::Read as _;
-    let mut input = String::new();
-    if let Err(err) = std::io::stdin().read_to_string(&mut input) {
-        eprintln!("error: could not read stdin: {err}");
-        std::process::exit(3);
-    }
+    let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
     let files = match deep_diff_forge_patch::parse(&input) {
         Ok(files) => files,
         Err(err) => {
@@ -336,13 +364,14 @@ fn semantic_cmd(opts: &[String]) {
         eprintln!("usage: deep-diff-forge semantic <path> [--json]");
         std::process::exit(2);
     };
-    let source = match std::fs::read_to_string(path) {
-        Ok(s) => s,
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
         Err(err) => {
-            eprintln!("error: could not read {path}: {err}");
+            eprintln!("error: could not read {}: {err}", display_safe(path));
             std::process::exit(3);
         }
     };
+    let source = read_capped_or_exit(file, "source file");
     let analysis = deep_diff_forge_syntax::analyze(
         path,
         &source,
@@ -366,15 +395,17 @@ fn parse_status_str(status: &deep_diff_forge_core::ParseStatus) -> String {
 
 fn print_semantic_human(path: &str, analysis: &deep_diff_forge_syntax::SemanticAnalysis) {
     emitln!(
-        "semantic: {path} ({}, {})",
+        "semantic: {} ({}, {})",
+        display_safe(path),
         analysis.language.name(),
         parse_status_str(&analysis.parse_status)
     );
     for sym in &analysis.symbols {
+        // Symbol names come from parsing attacker-controlled source — sanitize.
         emitln!(
             "  {:<9} {}  L{}-L{}",
             sym.kind,
-            sym.name,
+            display_safe(&sym.name),
             sym.start_line,
             sym.end_line
         );
@@ -622,7 +653,7 @@ fn print_rank_human(ranked: &[deep_diff_forge_graph::RankedFile]) {
             "{:>4}  {:<14} {}  [{}]",
             rf.score,
             rf.status.label(),
-            rf.path,
+            display_safe(&rf.path),
             signals.join(",")
         );
     }
@@ -681,7 +712,7 @@ fn print_patch_summary(files: &[deep_diff_forge_core::ReviewFile]) {
         let status = format!("{:?}", file.status).to_lowercase();
         emitln!(
             "{status:>14}  {}  (+{adds} -{dels}, {hunks} hunks)",
-            file.path
+            display_safe(&file.path)
         );
     }
     emitln!("{} file(s) changed", files.len());

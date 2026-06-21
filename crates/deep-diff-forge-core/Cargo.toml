@@ -11,3 +11,6 @@ categories.workspace = true
 description = "Core review-model vocabulary for Deep-Diff-Forge: patch/semantic twins, execution plan, deployment and release types."
 
 [dependencies]
+
+[lints]
+workspace = true

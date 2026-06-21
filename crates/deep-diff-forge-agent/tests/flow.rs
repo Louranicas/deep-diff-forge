@@ -1,8 +1,8 @@
 //! Integration tests: annotate a real review end to end.
 
 use deep_diff_forge_agent::{
-    AnnotationSource, AnnotationStore, GroundingLevel, anchor_path, grounding_of, sanitize_body,
-    source_of, validate_anchor,
+    AnnotationSource, AnnotationStore, GroundingLevel, SYSTEM_AGENT_ID, anchor_path, grounding_of,
+    sanitize_body, source_of, validate_anchor,
 };
 use deep_diff_forge_core::{
     AgentAnnotation, AnnotationAnchor, AnnotationProvenance, HunkId, ReviewFile,
@@ -127,6 +127,8 @@ fn reviewer_resolves_an_annotation() {
 #[test]
 fn human_and_agent_annotations_coexist() {
     let mut store = AnnotationStore::new();
+    // A self-asserted "human:luke" label is fail-closed to untrusted Agent; only
+    // the exact reserved engine id is System.
     store.add(make(
         "h",
         AnnotationAnchor::File {
@@ -145,8 +147,18 @@ fn human_and_agent_annotations_coexist() {
         &["e"],
         true,
     ));
-    assert_eq!(store.by_source(AnnotationSource::Human).len(), 1);
-    assert_eq!(store.by_source(AnnotationSource::Agent).len(), 1);
+    store.add(make(
+        "s",
+        AnnotationAnchor::File {
+            path: "src/lib.rs".into(),
+        },
+        SYSTEM_AGENT_ID,
+        &[],
+        false,
+    ));
+    assert_eq!(store.by_source(AnnotationSource::Human).len(), 0);
+    assert_eq!(store.by_source(AnnotationSource::Agent).len(), 2);
+    assert_eq!(store.by_source(AnnotationSource::System).len(), 1);
 }
 
 #[test]

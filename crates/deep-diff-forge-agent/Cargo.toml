@@ -15,3 +15,6 @@ deep-diff-forge-core.workspace = true
 
 [dev-dependencies]
 deep-diff-forge-patch.workspace = true
+
+[lints]
+workspace = true

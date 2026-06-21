@@ -76,14 +76,43 @@ pub fn append_receipt(dir: &Path, receipt: &StrategyReceipt) -> Result<(), Learn
     let path = receipts_path(dir);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+        // The privacy contract ("local-only … prefer hashes, counts, timings")
+        // is load-bearing: enforce owner-private (0o700) directories rather than
+        // inheriting the process umask. Failing to secure them is an error, not
+        // silently accepted — the store must not exist world-readable.
+        secure_dir(dir)?;
+        secure_dir(parent)?;
     }
     let mut line = receipt.to_json()?;
     line.push('\n');
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
+    let mut opts = fs::OpenOptions::new();
+    opts.create(true).append(true);
+    // Create the JSONL owner-read/write only (0o600). `mode` applies on create;
+    // an existing file keeps the mode set when it was first created.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(&path)?;
     file.write_all(line.as_bytes())?;
+    Ok(())
+}
+
+/// Tighten `dir` to owner-only (`0o700`) on Unix. No-op on other platforms.
+///
+/// # Errors
+/// Returns an I/O error if the permissions cannot be set.
+fn secure_dir(dir: &Path) -> Result<(), LearningError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir; // perms model differs; rely on the user profile directory.
+    }
     Ok(())
 }
 
@@ -193,6 +222,39 @@ mod tests {
         append_receipt(&dir, &r).expect("append");
         let loaded = load_receipts(&dir).expect("load");
         assert_eq!(loaded, vec![r]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn store_is_owner_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = temp_dir();
+        let _g = Scratch(dir.clone());
+        append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted)).expect("append");
+        let file_mode = fs::metadata(receipts_path(&dir))
+            .unwrap()
+            .permissions()
+            .mode();
+        let dir_mode = fs::metadata(&dir).unwrap().permissions().mode();
+        let receipts_dir_mode = fs::metadata(receipts_path(&dir).parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            file_mode & 0o777,
+            0o600,
+            "JSONL must be owner read/write only"
+        );
+        assert_eq!(
+            dir_mode & 0o077,
+            0,
+            "learning dir must not be group/world accessible"
+        );
+        assert_eq!(
+            receipts_dir_mode & 0o077,
+            0,
+            "receipts dir must be owner-only"
+        );
     }
 
     #[test]

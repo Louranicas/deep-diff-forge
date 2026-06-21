@@ -26,3 +26,6 @@ deep-diff-forge-tui.workspace = true
 deep-diff-forge-cluster.workspace = true
 deep-diff-forge-learning.workspace = true
 deep-diff-forge-daemon.workspace = true
+
+[lints]
+workspace = true

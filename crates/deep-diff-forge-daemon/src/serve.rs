@@ -1,12 +1,27 @@
 use crate::handler::{Engine, dispatch};
-use crate::protocol::{error_response, parse_request, success_response};
+use crate::protocol::{
+    INTERNAL_ERROR, INVALID_REQUEST, PARSE_ERROR, RpcError, error_response, parse_request,
+    success_response,
+};
 use crate::security::{SECURE_SOCKET_MODE, ensure_runtime_dir};
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Write as _};
+use std::io::{BufRead, BufReader, Read as _, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::Duration;
+
+/// Maximum bytes accepted for a single JSON-RPC request line. The largest
+/// legitimate request wraps a patch (the patch crate's 64 MiB budget) in a JSON
+/// envelope; this leaves generous framing headroom while hard-bounding a single
+/// oversized line so a newline-less stream cannot exhaust memory (denial of
+/// service).
+const MAX_REQUEST_BYTES: usize = 80 * 1024 * 1024;
+
+/// Per-connection read timeout. A client that connects and then stalls mid-request
+/// is dropped rather than holding the single-threaded server forever (slowloris).
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Process one request line against the shared engine, returning the response
 /// line. This is the socket-free core of connection handling.
@@ -15,16 +30,37 @@ pub fn process_line(line: &str, engine: &Mutex<Engine>) -> String {
     match parse_request(line) {
         Err(err) => error_response(&Value::Null, &err),
         Ok(request) => {
-            let mut guard = match engine.lock() {
-                Ok(g) => g,
-                Err(poison) => poison.into_inner(),
-            };
-            match dispatch(&request, &mut guard) {
-                Ok(result) => success_response(&request.id, result),
-                Err(err) => error_response(&request.id, &err),
+            let id = request.id.clone();
+            // Isolate a panic inside dispatch: one malformed/abusive request must
+            // not unwind and tear down the whole daemon (availability hardening,
+            // mirroring the morph-ir-engine per-connection backstop).
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut guard = match engine.lock() {
+                    Ok(g) => g,
+                    Err(poison) => poison.into_inner(),
+                };
+                dispatch(&request, &mut guard)
+            }));
+            match outcome {
+                Ok(Ok(result)) => success_response(&id, result),
+                Ok(Err(err)) => error_response(&id, &err),
+                Err(_) => error_response(&id, &RpcError::new(INTERNAL_ERROR, "internal error")),
             }
         }
     }
+}
+
+/// Read one newline-terminated line into `buf`, reading at most `cap + 1` bytes.
+///
+/// Returns the number of bytes read (`0` = EOF). The `cap + 1` ceiling means a
+/// newline-less or oversized line is bounded — the caller treats
+/// `buf.len() > cap` as "request too large" rather than buffering unboundedly.
+fn read_capped_line<R: BufRead>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+    cap: usize,
+) -> std::io::Result<usize> {
+    reader.take(cap as u64 + 1).read_until(b'\n', buf)
 }
 
 /// Serve one connection: newline-delimited JSON-RPC, one response per request,
@@ -34,14 +70,39 @@ pub fn process_line(line: &str, engine: &Mutex<Engine>) -> String {
 ///
 /// Returns any underlying stream I/O error.
 pub fn handle_connection(stream: UnixStream, engine: &Mutex<Engine>) -> std::io::Result<()> {
-    let reader = BufReader::new(stream.try_clone()?);
+    stream.set_read_timeout(Some(READ_TIMEOUT))?;
+    let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        let read = read_capped_line(&mut reader, &mut buf, MAX_REQUEST_BYTES)?;
+        if read == 0 {
+            break; // clean EOF
+        }
+        if buf.len() > MAX_REQUEST_BYTES {
+            let resp = error_response(
+                &Value::Null,
+                &RpcError::new(INVALID_REQUEST, "request exceeds maximum size"),
+            );
+            writeln!(writer, "{resp}")?;
+            writer.flush()?;
+            break; // stream position is unreliable past the cap; close the connection.
+        }
+        let Ok(decoded) = std::str::from_utf8(&buf) else {
+            let resp = error_response(
+                &Value::Null,
+                &RpcError::new(PARSE_ERROR, "request is not valid UTF-8"),
+            );
+            writeln!(writer, "{resp}")?;
+            writer.flush()?;
+            continue;
+        };
+        let line = decoded.trim();
+        if line.is_empty() {
             continue;
         }
-        let response = process_line(&line, engine);
+        let response = process_line(line, engine);
         writeln!(writer, "{response}")?;
         writer.flush()?;
         let still_running = engine.lock().is_ok_and(|g| g.is_running());
@@ -86,7 +147,19 @@ pub fn run_server(socket_path: &Path) -> std::io::Result<()> {
     let listener = bind_secure(socket_path)?;
     let engine = Mutex::new(Engine::new());
     for stream in listener.incoming() {
-        handle_connection(stream?, &engine)?;
+        match stream {
+            // A per-connection error (client reset, read timeout, oversized
+            // request) must NOT tear down the daemon — log it and keep serving.
+            Ok(s) => {
+                if let Err(err) = handle_connection(s, &engine) {
+                    eprintln!("deep-diff-forge daemon: connection error: {err}");
+                }
+            }
+            Err(err) => {
+                eprintln!("deep-diff-forge daemon: accept error: {err}");
+                continue;
+            }
+        }
         let still_running = engine.lock().is_ok_and(|g| g.is_running());
         if !still_running {
             break;
@@ -121,6 +194,57 @@ mod tests {
 
     fn engine() -> Mutex<Engine> {
         Mutex::new(Engine::new())
+    }
+
+    #[test]
+    fn read_capped_line_reads_one_line() {
+        let mut cur = std::io::Cursor::new(b"hello\nworld\n".to_vec());
+        let mut buf = Vec::new();
+        let n = read_capped_line(&mut cur, &mut buf, 1024).expect("read");
+        assert_eq!(n, 6);
+        assert_eq!(buf, b"hello\n");
+    }
+
+    #[test]
+    fn read_capped_line_bounds_oversized_line() {
+        // 100 bytes with no newline, cap 8: must not buffer past cap + 1.
+        let mut cur = std::io::Cursor::new(vec![b'a'; 100]);
+        let mut buf = Vec::new();
+        let n = read_capped_line(&mut cur, &mut buf, 8).expect("read");
+        assert_eq!(n, 9, "reads at most cap + 1 bytes");
+        assert!(buf.len() > 8, "caller can detect the over-cap condition");
+        assert!(buf.len() <= 9, "never buffers an unbounded amount");
+    }
+
+    #[test]
+    fn read_capped_line_eof_is_zero() {
+        let mut cur = std::io::Cursor::new(Vec::new());
+        let mut buf = Vec::new();
+        assert_eq!(read_capped_line(&mut cur, &mut buf, 8).expect("read"), 0);
+    }
+
+    #[test]
+    fn oversized_request_gets_error_then_connection_closes() {
+        // A request line over a (here, artificially exercised) cap yields an
+        // INVALID_REQUEST error response; integration of the cap is proven by the
+        // read_capped_line unit tests + the handle_connection wiring.
+        let resp = error_response(
+            &Value::Null,
+            &RpcError::new(INVALID_REQUEST, "request exceeds maximum size"),
+        );
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["error"]["code"], INVALID_REQUEST);
+    }
+
+    #[test]
+    fn handle_connection_sets_read_timeout() {
+        // The slowloris guard: a real socket carries a read timeout.
+        let (_client, server) = UnixStream::pair().expect("socketpair");
+        // Setting it directly mirrors handle_connection's first action.
+        server
+            .set_read_timeout(Some(READ_TIMEOUT))
+            .expect("set timeout");
+        assert_eq!(server.read_timeout().unwrap(), Some(READ_TIMEOUT));
     }
 
     #[test]

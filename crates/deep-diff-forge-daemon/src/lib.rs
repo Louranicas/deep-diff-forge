@@ -9,7 +9,12 @@
 //! meaningful logic untested.
 //!
 //! Security: the runtime directory is created owner-private (`0700`) and
-//! validated, the socket is `0600`, and stale sockets are replaced on bind.
+//! validated (symlinks rejected; `chmod` doubles as an ownership gate), the
+//! socket is `0600`, stale sockets are replaced on bind, each request line is
+//! size-bounded, connections carry a read timeout, and a panic in dispatch is
+//! contained so one abusive request cannot tear down the daemon. There is no
+//! world-writable `/tmp` fallback: without `$XDG_RUNTIME_DIR` the daemon fails
+//! closed and the operator passes `--socket PATH`.
 
 mod handler;
 mod protocol;
@@ -24,7 +29,7 @@ pub use protocol::{
 };
 pub use security::{
     SECURE_DIR_MODE, SECURE_SOCKET_MODE, SocketError, default_socket_path, ensure_runtime_dir,
-    runtime_dir, validate_private_dir,
+    runtime_base, runtime_base_from, runtime_dir, validate_private_dir,
 };
 pub use serve::{bind_secure, handle_connection, process_line, request, run_server};
 
@@ -34,10 +39,14 @@ mod tests {
 
     #[test]
     fn facade_exposes_default_socket_path() {
-        assert!(
-            default_socket_path()
-                .to_string_lossy()
-                .contains("deep-diff-forge")
+        // Pure-resolver chain: a present XDG base yields a deep-diff-forge path;
+        // an absent one yields None (fail closed, no /tmp fallback).
+        let base = runtime_base_from(Some(std::ffi::OsString::from("/run/user/1000")));
+        let sock = base.map(|b| b.join("deep-diff-forge").join("deep-diff-forge.sock"));
+        assert!(sock.unwrap().to_string_lossy().contains("deep-diff-forge"));
+        assert_eq!(
+            runtime_base_from(None).map(|b| b.join("deep-diff-forge.sock")),
+            None
         );
     }
 
