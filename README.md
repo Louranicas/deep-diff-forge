@@ -81,18 +81,19 @@ Additional execution architecture:
 
 ## Status
 
-This repo is at **L5 Review** maturity. The patch, projection, pipeline,
-semantic (`deep-diff-forge-syntax`), Review Intelligence Graph
-(`deep-diff-forge-graph`), agent annotation (`deep-diff-forge-agent`), and review
-TUI (`deep-diff-forge-tui`, ratatui) layers are implemented, under a `deny.toml`
-supply-chain policy. The daemon surface remains designed but not yet
-implemented. See [EVIDENCE.md](EVIDENCE.md) for the sealed deployment record.
+This repo is at **L6 Cluster** maturity. The patch, projection, pipeline,
+semantic, Review Intelligence Graph, agent annotation, review TUI, and bounded
+parallel cluster (`deep-diff-forge-cluster`, deterministic joins + receipts)
+layers are implemented, under a `deny.toml` supply-chain policy. The daemon
+surface remains designed but not yet implemented. See [EVIDENCE.md](EVIDENCE.md)
+for the sealed deployment record.
 
 ```bash
 git diff | deep-diff-forge --stdin-patch                        # review summary
 git diff | deep-diff-forge --stdin-patch --json                 # review.v0 JSON
 git diff | deep-diff-forge --stdin-patch --jsonl                # one event/file
 git diff | deep-diff-forge --stdin-patch --rank                 # risk-ranked stream
+git diff | deep-diff-forge --stdin-patch --cluster --parallel 4 # parallel + receipt
 git diff | deep-diff-forge --stdin-patch --layout side-by-side  # split view
 git diff | deep-diff-forge review                               # interactive TUI
 git diff | deep-diff-forge review --probe                       # headless TUI frame

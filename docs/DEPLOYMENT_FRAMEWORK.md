@@ -104,11 +104,11 @@ flowchart TB
 | Release candidate | Dist output | release assets | full gate, package, smoke | release receipt |
 | Production release | Public remotes | tag/assets/crates | no-mistakes gate, final ack | publication receipt |
 
-The codebase is at L5 (review spine): patch parser, projection, pipeline,
-semantic layer, the Review Intelligence Graph (`--rank`), the agent annotation
-layer, and the review TUI (`review`, ratatui) all exist, governed by a
-`deny.toml` supply-chain policy. Release deployment remains blocked until the
-cluster/daemon layers and outward publication (credential-gated) land.
+The codebase is at L6 (cluster spine): patch, projection, pipeline, semantic,
+graph (`--rank`), agent, review TUI (`review`), and now bounded parallel
+dimensional execution with deterministic joins and receipts (`--cluster`) all
+exist, governed by a `deny.toml` supply-chain policy. Release deployment remains
+blocked until the daemon layer and outward publication (credential-gated) land.
 
 Current gaps and recommendations are tracked in
 [Deployment Gap Analysis](DEPLOYMENT_GAP_ANALYSIS.md).
@@ -746,11 +746,12 @@ Rollback receipts must include:
 | L8 | Release | Signed assets, crates, CI, no-mistakes gate. |
 | L9 | Learning | Corpus-driven promotion and SLO-backed defaults. |
 
-The current repository is L5 (patch + projection + pipeline + semantic + review
-spines shipped: `deep-diff-forge-{patch,projection,pipeline,syntax,graph,agent,tui}`,
-`--stdin-patch [--json | --jsonl | --rank | --layout …]`, `semantic <path>`,
-`review [--probe]`, `deploy status`, patch fixtures, `deny.toml` policy) with
-planned L6 Cluster next.
+The current repository is L6 (patch + projection + pipeline + semantic + review
++ cluster spines shipped:
+`deep-diff-forge-{patch,projection,pipeline,syntax,graph,agent,tui,cluster}`,
+`--stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout …]`,
+`semantic <path>`, `review [--probe]`, `deploy status`, patch fixtures,
+`deny.toml` policy) with planned L7 Daemon next (gated on the `tokio` dependency).
 
 ## Framework Maintenance
 

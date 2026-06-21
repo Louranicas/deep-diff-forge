@@ -139,6 +139,7 @@ dependencies = [
 name = "deep-diff-forge-cli"
 version = "0.1.0"
 dependencies = [
+ "deep-diff-forge-cluster",
  "deep-diff-forge-core",
  "deep-diff-forge-graph",
  "deep-diff-forge-patch",
@@ -146,6 +147,15 @@ dependencies = [
  "deep-diff-forge-projection",
  "deep-diff-forge-syntax",
  "deep-diff-forge-tui",
+]
+
+[[package]]
+name = "deep-diff-forge-cluster"
+version = "0.1.0"
+dependencies = [
+ "deep-diff-forge-core",
+ "deep-diff-forge-graph",
+ "deep-diff-forge-patch",
 ]
 
 [[package]]

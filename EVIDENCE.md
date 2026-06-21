@@ -1,4 +1,25 @@
-# Deployment Evidence — L0 → L5 (… + Review Intelligence + Agent + TUI)
+# Deployment Evidence — L0 → L6 (… + Cluster)
+
+## L6 Cluster (continuation, near-zero-dep)
+
+`claim | warrant | evidence`
+
+- `deep-diff-forge-cluster` crate shipped | `[VBR]` | bounded parallel scheduler
+  on std `thread::scope` (no external dep, no `unsafe`): deterministic contiguous
+  sharding, `run_lane`, `run_risk_cluster`, `apply_join` over `JoinPolicy`, and a
+  structured `ClusterReceipt`.
+- **Determinism under parallelism** (the defining L6 guarantee) | `[VBE]` |
+  `--cluster --parallel serial` and `--parallel 8` produced **identical** ranked
+  JSON; in-crate tests assert serial == Fixed(n) == Auto for 40–200 files.
+- CLI: `--stdin-patch --cluster [--parallel serial|auto|N] [--json]`
+  (`deep-diff-forge.cluster.v0` with receipt) | `[VBE]` | live human + JSON.
+- Gate green | `[VBE]` | `just gate-feature` exit 0; **491 tests passed, 0
+  failed**; cluster crate carries **52 tests** (>50). cargo-deny clean.
+- `deploy status` reports `L6 (Cluster)` | `[VBE]`.
+
+Honest scope: lanes run the patch+risk dimensions today (the layers with data
+from a bare patch); semantic/history lanes join in once the Git-input wave
+feeds file bytes. Replay manifests are noted as future; the receipt ships now.
 
 ## L5 Review (three sub-waves)
 

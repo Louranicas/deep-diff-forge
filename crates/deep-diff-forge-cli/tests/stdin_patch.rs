@@ -113,6 +113,44 @@ diff --git a/tests/it.rs b/tests/it.rs
 }
 
 #[test]
+fn cluster_json_emits_schema_and_receipt() {
+    let two = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,1 +1,1 @@
+-a
++b
+diff --git a/src/other.rs b/src/other.rs
+--- a/src/other.rs
++++ b/src/other.rs
+@@ -1,1 +1,1 @@
+-a
++b
+";
+    let (code, stdout, _) = run(
+        &["--stdin-patch", "--cluster", "--parallel", "2", "--json"],
+        two,
+    );
+    assert_eq!(code, 0);
+    assert!(stdout.contains("\"schema\": \"deep-diff-forge.cluster.v0\""));
+    assert!(stdout.contains("\"parallelism\": \"fixed:2\""));
+    assert!(stdout.contains("\"join_policy\": \"ranked-review-order\""));
+    assert!(stdout.contains("src/lib.rs"));
+}
+
+#[test]
+fn cluster_human_prints_receipt_footer() {
+    let (code, stdout, _) = run(
+        &["--stdin-patch", "--cluster", "--parallel", "serial"],
+        PATCH,
+    );
+    assert_eq!(code, 0);
+    assert!(stdout.contains("cluster:"));
+    assert!(stdout.contains("parallelism=serial"));
+}
+
+#[test]
 fn rank_human_lists_files_and_count() {
     let (code, stdout, _) = run(&["--stdin-patch", "--rank"], PATCH);
     assert_eq!(code, 0);

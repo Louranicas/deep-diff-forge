@@ -63,7 +63,9 @@ fn stdin_patch(opts: &[String]) {
         }
     };
 
-    if opts.iter().any(|a| a == "--rank") {
+    if opts.iter().any(|a| a == "--cluster") {
+        run_cluster(&files, opts);
+    } else if opts.iter().any(|a| a == "--rank") {
         let ranked = deep_diff_forge_graph::rank(&files);
         if opts.iter().any(|a| a == "--json") {
             print_rank_json(&ranked);
@@ -91,7 +93,7 @@ fn stdin_patch(opts: &[String]) {
 /// The current declared maturity level (kept in sync with the deployment
 /// framework; bumped as each ladder rung ships).
 const CURRENT_MATURITY: deep_diff_forge_core::MaturityLevel =
-    deep_diff_forge_core::MaturityLevel::L5;
+    deep_diff_forge_core::MaturityLevel::L6;
 
 /// `review [--probe]`: read a patch from stdin and open the review TUI.
 ///
@@ -274,6 +276,79 @@ fn run_jsonl_pipeline(input: String) {
     }
 }
 
+/// Parse `--parallel serial|auto|<n>` into a `Parallelism` (default Auto).
+fn parse_parallelism(opts: &[String]) -> deep_diff_forge_core::Parallelism {
+    use deep_diff_forge_core::Parallelism;
+    match flag_value(opts, "--parallel").as_deref() {
+        Some("serial") => Parallelism::Serial,
+        Some("auto") | None => Parallelism::Auto,
+        Some(n) => n
+            .parse::<u16>()
+            .map_or(Parallelism::Auto, Parallelism::Fixed),
+    }
+}
+
+/// Run the patch+risk cluster with bounded parallelism and a deterministic join.
+fn run_cluster(files: &[deep_diff_forge_core::ReviewFile], opts: &[String]) {
+    use deep_diff_forge_cluster::{join_label, parallelism_label, run_risk_cluster};
+    use deep_diff_forge_core::JoinPolicy;
+    let parallelism = parse_parallelism(opts);
+    let run = run_risk_cluster(files, parallelism, JoinPolicy::RankedReviewOrder);
+    if opts.iter().any(|a| a == "--json") {
+        print_cluster_json(&run);
+    } else {
+        print_rank_human(&run.ranked);
+        println!(
+            "cluster: {} dimension(s), parallelism={}, workers={}, join={}",
+            run.receipt.dimensions.len(),
+            parallelism_label(run.receipt.parallelism),
+            run.receipt.worker_count,
+            join_label(run.receipt.join_policy)
+        );
+    }
+}
+
+fn print_cluster_json(run: &deep_diff_forge_cluster::ClusterRun) {
+    use deep_diff_forge_cluster::{dimension_label, join_label, parallelism_label};
+    use deep_diff_forge_core::json_escape;
+    use std::fmt::Write as _;
+    let dims: Vec<String> = run
+        .receipt
+        .dimensions
+        .iter()
+        .map(|d| json_escape(dimension_label(*d)))
+        .collect();
+    let mut ranked = String::new();
+    for (i, rf) in run.ranked.iter().enumerate() {
+        if i > 0 {
+            ranked.push_str(",\n");
+        }
+        let signals: Vec<String> = rf.signals.iter().map(|s| json_escape(s.label())).collect();
+        let _ = write!(
+            ranked,
+            "    {{\"path\": {}, \"status\": {}, \"score\": {}, \"signals\": [{}]}}",
+            json_escape(&rf.path),
+            json_escape(rf.status.label()),
+            rf.score,
+            signals.join(", ")
+        );
+    }
+    let body = if ranked.is_empty() {
+        String::new()
+    } else {
+        format!("\n{ranked}\n  ")
+    };
+    println!(
+        "{{\n  \"schema\": \"deep-diff-forge.cluster.v0\",\n  \"receipt\": {{\"dimensions\": [{}], \"parallelism\": {}, \"workers\": {}, \"join_policy\": {}, \"file_count\": {}}},\n  \"ranked\": [{}]\n}}",
+        dims.join(", "),
+        json_escape(&parallelism_label(run.receipt.parallelism)),
+        run.receipt.worker_count,
+        json_escape(join_label(run.receipt.join_policy)),
+        run.receipt.file_count,
+        body
+    );
+}
+
 fn print_rank_human(ranked: &[deep_diff_forge_graph::RankedFile]) {
     for rf in ranked {
         let signals: Vec<&str> = rf.signals.iter().map(|s| s.label()).collect();
@@ -359,17 +434,18 @@ USAGE:
   deep-diff-forge deploy status [--json]
   deep-diff-forge semantic <path> [--json]
   deep-diff-forge review [--probe]
-  deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --layout inline|side-by-side]
+  deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side]
   deep-diff-forge claude-code-contract
   deep-diff-forge chain-contract
   deep-diff-forge cluster-contract
   deep-diff-forge loom-contract
 
 MATURITY:
-  L5 Review. The binary parses unified/Git patches (--stdin-patch), projects
-  them (--layout, --json, --jsonl), ranks the review (--rank), extracts
-  tree-sitter symbols (semantic <path>), opens the review TUI (review), and
-  reports deployment status (deploy status --json). The daemon surface is
+  L6 Cluster. The binary parses unified/Git patches (--stdin-patch), projects
+  them (--layout, --json, --jsonl), ranks the review (--rank), runs bounded
+  parallel dimensional lanes with deterministic joins (--cluster [--parallel]),
+  extracts tree-sitter symbols (semantic <path>), opens the review TUI (review),
+  and reports deployment status (deploy status --json). The daemon surface is
   designed but not yet implemented.
 
 FUTURE PRIMARY MODES:
