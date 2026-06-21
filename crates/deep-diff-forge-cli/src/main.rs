@@ -7,6 +7,7 @@ fn main() {
         Some("--version" | "-V" | "version") => print_version(),
         Some("--self-test" | "self-test") => self_test(),
         Some("doctor") => doctor(),
+        Some("--stdin-patch") => stdin_patch(args.any(|a| a == "--json")),
         Some("claude-code-contract") => claude_code_contract(),
         Some("chain-contract") => chain_contract(),
         Some("cluster-contract") => cluster_contract(),
@@ -19,6 +20,57 @@ fn main() {
     }
 }
 
+/// Read a unified/Git patch from stdin and emit either a human review summary
+/// (default) or the `deep-diff-forge.review.v0` JSON document (`--json`).
+///
+/// Exit codes follow the CLI contract: 3 = input read failure,
+/// 4 = patch parse failure.
+fn stdin_patch(json: bool) {
+    use std::io::Read as _;
+    let mut input = String::new();
+    if let Err(err) = std::io::stdin().read_to_string(&mut input) {
+        eprintln!("error: could not read stdin: {err}");
+        std::process::exit(3);
+    }
+    match deep_diff_forge_patch::parse(&input) {
+        Ok(files) => {
+            if json {
+                print!("{}", deep_diff_forge_patch::to_json(&files));
+            } else {
+                print_patch_summary(&files);
+            }
+        }
+        Err(err) => {
+            eprintln!("error: patch parse failed: {err}");
+            std::process::exit(4);
+        }
+    }
+}
+
+fn print_patch_summary(files: &[deep_diff_forge_core::ReviewFile]) {
+    use deep_diff_forge_core::PatchLineKind;
+    for file in files {
+        let mut adds = 0usize;
+        let mut dels = 0usize;
+        for hunk in &file.patch_twin.hunks {
+            for line in &hunk.lines {
+                match line.kind {
+                    PatchLineKind::Added => adds += 1,
+                    PatchLineKind::Removed => dels += 1,
+                    PatchLineKind::Context => {}
+                }
+            }
+        }
+        let hunks = file.patch_twin.hunks.len();
+        let status = format!("{:?}", file.status).to_lowercase();
+        println!(
+            "{status:>14}  {}  (+{adds} -{dels}, {hunks} hunks)",
+            file.path
+        );
+    }
+    println!("{} file(s) changed", files.len());
+}
+
 fn print_help() {
     println!(
         "\
@@ -29,19 +81,19 @@ USAGE:
   deep-diff-forge --version
   deep-diff-forge --self-test
   deep-diff-forge doctor
+  deep-diff-forge --stdin-patch [--json]
   deep-diff-forge claude-code-contract
   deep-diff-forge chain-contract
   deep-diff-forge cluster-contract
   deep-diff-forge loom-contract
 
 BOOTSTRAP STATUS:
-  The current binary exposes deployability smoke commands while the full
-  patch, semantic, TUI, daemon, and agent surfaces are designed but not yet
-  implemented.
+  The current binary parses unified/Git patches (--stdin-patch, L1 patch
+  maturity) and exposes deployability smoke commands, while the semantic, TUI,
+  daemon, and agent surfaces are designed but not yet implemented.
 
 FUTURE PRIMARY MODES:
   deep-diff-forge <old> <new>
-  deep-diff-forge --stdin-patch
   deep-diff-forge --git
   deep-diff-forge review
   deep-diff-forge chain

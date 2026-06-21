@@ -81,7 +81,17 @@ Additional execution architecture:
 
 ## Status
 
-This repo is in vision and architecture bootstrap. The initial code intentionally defines stable vocabulary before algorithmic work begins.
+This repo is at **L1 Patch** maturity. The core vocabulary is stable and the
+canonical patch parser/renderer/JSON projection (`deep-diff-forge-patch`) is
+implemented, with `deep-diff-forge --stdin-patch [--json]` as the first
+executable diff contract beyond smoke commands. The semantic, TUI, daemon, and
+agent surfaces remain designed but not yet implemented. See
+[EVIDENCE.md](EVIDENCE.md) for the sealed deployment record.
+
+```bash
+git diff | deep-diff-forge --stdin-patch          # human review summary
+git diff | deep-diff-forge --stdin-patch --json   # deep-diff-forge.review.v0
+```
 
 Deployment shortcuts:
 
