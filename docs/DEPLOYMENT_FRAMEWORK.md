@@ -41,6 +41,7 @@ document should link back to this framework through a deployment link section.
 | [Bash API Contracts](BASH_API_CONTRACTS.md) | Strict shell behavior, JSON/JSONL shapes, exit-code use. |
 | [Chaining And Clustering](CHAINING_AND_CLUSTERING.md) | Unix filter chaining and local parallel execution. |
 | [Claude Code Bash CLI](CLAUDE_CODE_BASH_CLI.md) | Claude Code and CLI-first contracts. |
+| [Deployment Gap Analysis](DEPLOYMENT_GAP_ANALYSIS.md) | Current framework gaps and non-anthropocentric recommendations. |
 | [Deep-Diff-Forge Loom](DEEP_DIFF_FORGE_LOOM.md) | Assimilation plans, gates, fixtures, receipts. |
 | [Dimensional Execution Model](DIMENSIONAL_EXECUTION_MODEL.md) | Execution dimensions, lane states, join policies. |
 | [End To End Deployment](END_TO_END_DEPLOYMENT.md) | Gate sequence from local dev to release and learning. |
@@ -100,6 +101,9 @@ flowchart TB
 
 The current codebase is in bootstrap mode. Release deployment is blocked until
 the patch parser, projection spine, CLI JSON contracts, and fixture gates exist.
+
+Current gaps and recommendations are tracked in
+[Deployment Gap Analysis](DEPLOYMENT_GAP_ANALYSIS.md).
 
 ## Gate Stack
 
@@ -664,4 +668,3 @@ Update this document when:
 
 Every new Markdown document should be added to the bidirectional documentation
 map and should include a link back to this deployment framework.
-
