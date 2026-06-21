@@ -2,7 +2,8 @@
 //!
 //! Given a file's language and source bytes, this crate parses with tree-sitter
 //! under explicit budgets and extracts top-level symbols, reporting an explicit
-//! [`ParseStatus`] (parsed, parsed-with-errors, or a fallback reason). It never
+//! [`ParseStatus`](deep_diff_forge_core::ParseStatus) (parsed,
+//! parsed-with-errors, or a fallback reason). It never
 //! pretends syntax is available when parsing fails, and it never mutates patch
 //! truth (it has no access to it).
 //!

@@ -104,11 +104,13 @@ flowchart TB
 | Release candidate | Dist output | release assets | full gate, package, smoke | release receipt |
 | Production release | Public remotes | tag/assets/crates | no-mistakes gate, final ack | publication receipt |
 
-The codebase is at L8 (release): every engine layer L0-L7 is implemented, and
-`v0.1.0` is tagged and released to GitHub (binary + checksums via `release.yml`)
-and both git remotes, with a `deploy release` posture report and a `deny.toml`
-supply-chain policy. The single remaining publication target is **crates.io**,
-which the release workflow publishes automatically once a `CARGO_REGISTRY_TOKEN`
+The codebase is at L9 (learning): every engine layer L0-L8 is implemented plus
+the L9 local-only learning loop, and `v0.1.0` was tagged/released to GitHub
+(binary + checksums via `release.yml`) and both git remotes. `v0.2.0` is the
+crates.io-publishable cut (`cargo publish --dry-run` clean across the workspace),
+with a `deploy release` posture report and a `deny.toml` supply-chain policy. The
+single remaining publication target is **crates.io**, which the release workflow
+publishes automatically once a `CARGO_REGISTRY_TOKEN`
 is configured — the one credential-gated step. L9 Learning (runtime-telemetry
 driven) follows.
 

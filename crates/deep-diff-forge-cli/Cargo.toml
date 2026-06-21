@@ -8,6 +8,7 @@ homepage.workspace = true
 rust-version.workspace = true
 keywords.workspace = true
 categories.workspace = true
+readme = "README.md"
 description = "Deep-Diff-Forge: a deterministic, agent-collaborative diff and code-review engine (the `deep-diff-forge` CLI)."
 
 [[bin]]

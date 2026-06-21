@@ -28,6 +28,12 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings -W clippy::pedantic
       - name: test
         run: cargo test --workspace --locked
+      - name: docs
+        # Mirror the docs.rs build so a broken intra-doc link fails CI, not the
+        # public docs page after publish.
+        env:
+          RUSTDOCFLAGS: -D warnings -D rustdoc::broken_intra_doc_links
+        run: cargo doc --workspace --no-deps --locked
       - name: contracts
         run: |
           cargo run -p deep-diff-forge-cli -- --self-test

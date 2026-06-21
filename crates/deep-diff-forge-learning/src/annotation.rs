@@ -131,7 +131,7 @@ const PROVISIONAL_QUALITY: f64 = 0.50;
 /// Quality is the clean-win rate minus a penalty for contradictions (the most
 /// harmful outcome — a confidently wrong annotation). The tier gate is the
 /// safety invariant: regardless of quality, a source with fewer than
-/// [`MIN_GROUNDED_WINS`] clean wins stays [`TrustTier::Untrusted`].
+/// `MIN_GROUNDED_WINS` clean wins stays [`TrustTier::Untrusted`].
 #[must_use]
 pub fn fit_trust(observations: &[AnnotationObservation]) -> AnnotationTrust {
     if observations.is_empty() {

@@ -266,7 +266,8 @@ fn learn_status(json: bool) {
     }
 }
 
-/// `learn record --stdin`: read one JSON [`StrategyReceipt`] from stdin and
+/// `learn record --stdin`: read one JSON
+/// [`StrategyReceipt`](deep_diff_forge_learning::StrategyReceipt) from stdin and
 /// append it to the local store. The agent/automation entry point for feeding
 /// the loop; rejects malformed input rather than silently dropping it.
 fn learn_record(opts: &[String]) {

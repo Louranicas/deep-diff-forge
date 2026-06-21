@@ -82,9 +82,52 @@ gate-bootstrap: fmt check contracts
 [group("gates")]
 gate-feature: fmt check clippy pedantic test contracts
 
+# Build docs the way docs.rs will, failing on a broken intra-doc link.
+[group("quality")]
+docs:
+    RUSTDOCFLAGS="-D warnings -D rustdoc::broken_intra_doc_links" cargo doc --workspace --no-deps
+
 # CI-equivalent local gate. This should remain stricter than gate-bootstrap.
 [group("gates")]
 ci: gate-feature
+
+# Release gate: the feature gate plus the docs.rs-equivalent doc build.
+[group("gates")]
+gate-release: gate-feature docs
+
+# Verify publish-readiness without uploading. core+learning fully verify;
+# downstream crates resolve their internal deps from crates.io only after the
+# upstream crate is published, so they are dry-run-checked in dependency order
+# by the release workflow, not here.
+[group("release")]
+publish-dry-run:
+    cargo publish --dry-run -p deep-diff-forge-core --allow-dirty
+    cargo publish --dry-run -p deep-diff-forge-learning --allow-dirty
+
+# Cut a release: validate the tag matches the workspace version + a clean tree,
+# run the release gate, then tag and push BOTH remotes. Pushing the tag fires
+# release.yml (cross-platform binaries + GitHub Release, and crates.io publish
+# IF CARGO_REGISTRY_TOKEN is configured — an irreversible, yank-only act).
+# Usage: just release-tag 0.2.0
+[group("release")]
+release-tag version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    want="{{version}}"
+    have="$(sed -n '/^\[workspace.package\]/,/^\[/p' Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)"
+    if [ "${want}" != "${have}" ]; then
+      echo "version mismatch: arg='${want}' but [workspace.package].version='${have}'" >&2
+      exit 1
+    fi
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+      echo "working tree is dirty; commit before tagging" >&2
+      exit 1
+    fi
+    just gate-release
+    git tag -a "v${want}" -m "v${want}"
+    git push github "v${want}"
+    git push gitlab "v${want}"
+    printf 'tagged + pushed v%s to both remotes; release.yml is now running.\n' "${want}"
 
 # Read-only Zellij observation. This never controls deployment truth.
 [group("observe")]
