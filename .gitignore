@@ -6,3 +6,7 @@
 /.obsidian/
 /deep-diff-forge.vault/
 /luke-scratchpad-deep-diff-forge.md
+
+# Local tool state — morph-IR pipeline output + Pi workspace (not part of the crate)
+/.morph/
+/.pi/

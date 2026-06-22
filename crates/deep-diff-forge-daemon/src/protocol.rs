@@ -186,6 +186,20 @@ mod tests {
     }
 
     #[test]
+    fn json_rpc_error_codes_match_wire_standard() {
+        // These are externally-observed wire protocol values, not arbitrary
+        // internal enum discriminants. A sign flip silently changes client
+        // compatibility and must be killed by tests.
+        assert_eq!(PARSE_ERROR, -32700);
+        assert_eq!(INVALID_REQUEST, -32600);
+        assert_eq!(METHOD_NOT_FOUND, -32601);
+        assert_eq!(INVALID_PARAMS, -32602);
+        assert_eq!(INTERNAL_ERROR, -32603);
+        assert_eq!(SESSION_NOT_FOUND, 1);
+        assert_eq!(PATCH_PARSE_FAILED, 4);
+    }
+
+    #[test]
     fn response_round_trips_through_serde() {
         let s = success_response(&json!("id-1"), json!([1, 2, 3]));
         let v: Value = serde_json::from_str(&s).unwrap();

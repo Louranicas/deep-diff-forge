@@ -198,3 +198,32 @@ receipt-bootstrap:
     }
     EOF
     printf 'receipt=%s\n' "${dir}"
+
+# Generate a dependency SBOM from Cargo.lock/cargo metadata without requiring
+# host-local CycloneDX tooling. Emits root `sbom.spdx.json` for release upload.
+[group("security")]
+security-sbom:
+    python3 scripts/security/generate_spdx_sbom.py
+
+# List security-critical mutants and optionally run a bounded shard:
+#   just security-mutation list
+#   just security-mutation run
+[group("security")]
+security-mutation mode="list":
+    bash scripts/security/mutation_gate.sh {{mode}}
+
+# Probe that learning receipts/status do not expose raw source, patch text, or paths.
+[group("security")]
+security-privacy:
+    python3 scripts/security/privacy_probe.py
+
+# Run the UDS daemon hostile-client soak. Override duration with e.g.
+#   DDF_SOAK_SECONDS=1800 just security-soak
+[group("security")]
+security-soak:
+    python3 scripts/security/daemon_soak.py
+
+# Local S9 evidence bundle: release gate + SBOM + mutation inventory + privacy probe + soak.
+# This is still self-attested; external verifier/red-team receipt is required for promotion.
+[group("security")]
+security-s9-local: gate-release security-sbom security-mutation security-privacy security-soak

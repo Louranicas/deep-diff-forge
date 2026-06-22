@@ -110,6 +110,29 @@ fn json_mode_is_already_safe() {
 }
 
 #[test]
+fn json_empty_input_schema_snapshot_is_stable() {
+    let (code, out) = run_with_stdin(&["--stdin-patch", "--json"], b"");
+    assert_eq!(code, 0);
+    let text = String::from_utf8(out).expect("json output is utf8");
+    assert!(text.contains("\"schema\": \"deep-diff-forge.review.v0\""));
+    assert!(text.contains("\"files\": []"));
+    assert!(text.contains("\"files_changed\": 0"));
+    assert!(text.contains("\"additions\": 0"));
+    assert!(text.contains("\"deletions\": 0"));
+    assert!(text.contains("\"semantic_fallbacks\": 0"));
+}
+
+#[test]
+fn jsonl_empty_input_is_zero_read_success() {
+    let (code, out) = run_with_stdin(&["--stdin-patch", "--jsonl"], b"");
+    assert_eq!(code, 0);
+    assert!(
+        out.is_empty(),
+        "empty patch should stream zero JSONL events"
+    );
+}
+
+#[test]
 fn trojan_source_bidi_override_is_neutralized() {
     // CVE-2021-42574: a diff body carrying U+202E (RLO, UTF-8 `e2 80 ae`) could
     // visually reorder code so a reviewer sees something other than what runs.

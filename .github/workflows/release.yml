@@ -19,10 +19,10 @@ jobs:
     name: supply chain gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - name: cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87 # v2
         with:
           command: check
       - name: install cargo-audit
@@ -35,6 +35,8 @@ jobs:
     needs: supply-chain
     permissions:
       contents: write # create the GitHub Release + upload assets
+      attestations: write # GitHub Artifact Attestations / SLSA provenance
+      id-token: write # OIDC token required by attest-build-provenance
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -47,12 +49,15 @@ jobs:
           - { os: macos-latest, target: x86_64-apple-darwin }
           - { os: macos-latest, target: aarch64-apple-darwin }
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.target }}
       - name: build release binary
         run: cargo build --release --locked -p deep-diff-forge-cli --target ${{ matrix.target }}
+      - name: generate SPDX SBOM (single canonical release artifact)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: python3 scripts/security/generate_spdx_sbom.py
       - name: package
         shell: bash
         env:
@@ -66,20 +71,36 @@ jobs:
           cp README.md LICENSE-MIT LICENSE-APACHE "${dist}/"
           tar czf "${dist}.tar.gz" "${dist}"
           sha256sum "${dist}.tar.gz" > "${dist}.tar.gz.sha256"
+      - name: attest release provenance
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: |
+            deep-diff-forge-*.tar.gz
+            deep-diff-forge-*.tar.gz.sha256
+      - name: attest SBOM provenance
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: sbom.spdx.json
       - name: upload release assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             deep-diff-forge-*.tar.gz
             deep-diff-forge-*.tar.gz.sha256
+      - name: upload release SBOM
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          files: sbom.spdx.json
 
   publish:
     name: crates.io publish (token-gated)
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - name: publish crates in dependency order if a token is configured
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
