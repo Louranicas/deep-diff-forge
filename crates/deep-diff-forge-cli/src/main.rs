@@ -928,8 +928,9 @@ fn self_test() {
 }
 
 fn doctor() {
-    let runtime_dir =
-        std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp/deep-diff-forge-runtime".into());
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .filter(|v| !v.is_empty());
     let cache_dir = std::env::var("XDG_CACHE_HOME").map_or_else(
         |_| "~/.cache/deep-diff-forge".into(),
         |base| format!("{base}/deep-diff-forge"),
@@ -940,10 +941,21 @@ fn doctor() {
     );
 
     println!("doctor ok: bootstrap binary is executable");
-    println!("runtime_dir={runtime_dir}");
+    // Report the runtime dir + daemon socket honestly: without $XDG_RUNTIME_DIR
+    // the daemon fails closed (no world-writable /tmp fallback), so doctor must
+    // not advertise a /tmp path the daemon will refuse. The socket line is
+    // resolved through the daemon's own `SocketLocation`, the single source of
+    // truth, so doctor and the daemon never disagree.
+    match &runtime_dir {
+        Some(dir) => println!("runtime_dir={dir}"),
+        None => println!("runtime_dir=<unset: set XDG_RUNTIME_DIR>"),
+    }
     println!("cache_dir={cache_dir}");
     println!("state_dir={state_dir}");
-    println!("daemon_socket={runtime_dir}/deep-diff-forge/deep-diff-forge.sock");
+    match deep_diff_forge_daemon::SocketLocation::resolve(None) {
+        Ok(location) => println!("daemon_socket={}", location.path().display()),
+        Err(_) => println!("daemon_socket=<unavailable: set XDG_RUNTIME_DIR or pass --socket>"),
+    }
 }
 
 fn claude_code_contract() {
