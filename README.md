@@ -26,6 +26,7 @@ the patch.
 - [Why Deep-Diff-Forge](#why-deep-diff-forge)
 - [The first principle](#the-first-principle)
 - [Three pioneer features](#three-pioneer-features)
+- [Feature comparison](#feature-comparison)
 - [Install & build](#install--build)
 - [Quick start](#quick-start)
 - [Command reference](#command-reference)
@@ -89,6 +90,47 @@ none rewrite it.
    explained, budgeted, conservative fallback. (Strategy vocabulary is modeled
    today; semantic strategy selection grows as the Git-input wave feeds file
    bytes.)
+
+---
+
+## Feature comparison
+
+Deep-Diff-Forge is a review **engine**, not a syntax-highlighting pager — so it
+brings capabilities the rendering-focused tools don't, and (honestly) doesn't yet
+do everything they do. The table reflects default, out-of-the-box behavior.
+
+| Capability | deep-diff-forge | [`delta`][delta] | [`difftastic`][difft] | [`diff-so-fancy`][dsf] | `diff` |
+| --- | :---: | :---: | :---: | :---: | :---: |
+| Review-first interactive UI | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Multi-file review stream + sidebar | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Inline agent / AI annotations | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Runtime view toggles (inline ↔ side-by-side) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Deterministic risk ranking | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Machine-readable JSON / JSONL output | ✅ | ❌ | ❌ <sup>1</sup> | ❌ | ❌ |
+| Optional shared-cache daemon (UDS) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Local, private learning loop | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Apply-able patch output preserved | ✅ | ✅ <sup>2</sup> | ❌ | ✅ <sup>2</sup> | ✅ |
+| Syntax highlighting | ❌ <sup>3</sup> | ✅ | ✅ | ❌ | ❌ |
+| Structural / AST-level diffing | ❌ <sup>4</sup> | ❌ | ✅ | ❌ | ❌ |
+| Pager / Unix-filter friendly | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+<sup>1</sup> difftastic has an experimental JSON display; deep-diff-forge ships a
+stable, schema-versioned `--json` plus streaming `--jsonl`.
+<sup>2</sup> `delta` / `diff-so-fancy` re-render an underlying Git diff that
+remains apply-able; they do not alter patch truth.
+<sup>3</sup> Tree-sitter semantic analysis ships today (`semantic`); colored
+token highlighting in the renderer is on the roadmap.
+<sup>4</sup> deep-diff-forge models patch truth with a semantic *overlay*
+(symbols, parse status, stable anchors); full AST-level structural diff
+(difftastic's specialty) is on the roadmap.
+
+> Deep-Diff-Forge is optimized for reviewing a whole changeset **interactively**
+> and for **agent-collaborative, machine-readable** review. Comparisons are
+> best-effort against each tool's default behavior — corrections welcome via PR.
+
+[delta]: https://github.com/dandavison/delta
+[difft]: https://github.com/Wilfred/difftastic
+[dsf]: https://github.com/so-fancy/diff-so-fancy
 
 ---
 
