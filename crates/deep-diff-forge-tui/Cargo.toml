@@ -13,6 +13,9 @@ description = "Review-first terminal UI for Deep-Diff-Forge: app state, input ma
 [dependencies]
 deep-diff-forge-core.workspace = true
 deep-diff-forge-graph.workspace = true
+deep-diff-forge-projection.workspace = true
+deep-diff-forge-syntax.workspace = true
+deep-diff-forge-agent.workspace = true
 ratatui = "0.29"
 crossterm = "0.28"
 

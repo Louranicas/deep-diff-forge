@@ -154,7 +154,10 @@ fn json_escapes_c1_and_del() {
 fn jsonl_escapes_del_in_path() {
     let (code, out) = run_with_stdin(&["--stdin-patch", "--jsonl"], &c1_del_patch());
     assert_eq!(code, 0);
-    assert!(!out.contains(&DEL), "raw DEL (0x7f) leaked via --jsonl path");
+    assert!(
+        !out.contains(&DEL),
+        "raw DEL (0x7f) leaked via --jsonl path"
+    );
     let text = String::from_utf8(out).expect("jsonl output is utf8");
     assert!(text.contains("\\u007f"), "DEL not escaped in --jsonl path");
 }

@@ -44,18 +44,23 @@ diff --git a/tests/it.rs b/tests/it.rs
 fn probe_renders_the_review_frame() {
     let (code, stdout, _) = run(&["review", "--probe"], PATCH);
     assert_eq!(code, 0);
+    // Chrome: the menu bar and the ranked file tree.
+    assert!(stdout.contains("deep-diff-forge"));
     assert!(stdout.contains("Files (ranked)"));
-    assert!(stdout.contains("Detail"));
+    // The selected file's path titles the diff pane.
     assert!(stdout.contains("src/lib.rs"));
 }
 
 #[test]
-fn probe_shows_ranked_detail() {
+fn probe_shows_diff_and_engine_note() {
     let (code, stdout, _) = run(&["review", "--probe"], PATCH);
     assert_eq!(code, 0);
-    // The first (public-API) file is selected; detail shows its status.
-    assert!(stdout.contains("status:"));
+    // The diff pane header carries the file status and a hunk header.
     assert!(stdout.contains("modified"));
+    assert!(stdout.contains("@@"));
+    // lib.rs is a public-API surface, so the engine emits a grounded inline
+    // note — proving the annotations wiring reaches the headless frame.
+    assert!(stdout.contains("system note"));
 }
 
 #[test]

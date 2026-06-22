@@ -229,9 +229,12 @@ name = "deep-diff-forge-tui"
 version = "0.2.0"
 dependencies = [
  "crossterm",
+ "deep-diff-forge-agent",
  "deep-diff-forge-core",
  "deep-diff-forge-graph",
  "deep-diff-forge-patch",
+ "deep-diff-forge-projection",
+ "deep-diff-forge-syntax",
  "ratatui",
 ]
 

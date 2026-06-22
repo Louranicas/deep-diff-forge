@@ -346,10 +346,11 @@ fn learn_record(opts: &[String]) {
     );
 }
 
-/// `review [--probe]`: read a patch from stdin and open the review TUI.
+/// `review [--probe] [--side]`: read a patch from stdin and open the review TUI.
 ///
 /// `--probe` renders one frame headlessly (no TTY needed) for CI/agents; bare
-/// `review` launches the interactive loop and needs a real terminal.
+/// `review` launches the interactive loop and needs a real terminal. `--side`
+/// opens in the two-column side-by-side layout (default is inline).
 fn review_cmd(opts: &[String]) {
     let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
     let files = match deep_diff_forge_patch::parse(&input) {
@@ -359,9 +360,28 @@ fn review_cmd(opts: &[String]) {
             std::process::exit(4);
         }
     };
-    let app = deep_diff_forge_tui::ReviewApp::from_review(&files);
+    // Surface the engine's own findings (risk signals, semantic changes) as
+    // grounded, anchored inline notes so the review explains *why* a file
+    // matters in-place.
+    let ranked = deep_diff_forge_graph::rank(&files);
+    let notes = deep_diff_forge_tui::engine_annotations(&files, &ranked);
+    let mut app = deep_diff_forge_tui::ReviewApp::from_review_with_annotations(&files, notes);
+    // `--side` opens directly in the two-column layout (default is inline).
+    if opts.iter().any(|a| a == "--side") {
+        app.handle(deep_diff_forge_tui::AppEvent::ToggleLayout);
+    }
     if opts.iter().any(|a| a == "--probe") {
-        for line in deep_diff_forge_tui::render_to_lines(&app, 100, 30) {
+        // Probe size is configurable so callers can render a roomy frame; the
+        // floor keeps the layout from degenerating on absurd inputs.
+        let cols = flag_value(opts, "--cols")
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(100)
+            .max(40);
+        let rows = flag_value(opts, "--rows")
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(30)
+            .max(8);
+        for line in deep_diff_forge_tui::render_to_lines(&app, cols, rows) {
             emitln!("{line}");
         }
     } else if let Err(err) = deep_diff_forge_tui::run(app) {
@@ -896,7 +916,7 @@ USAGE:
   deep-diff-forge semantic <path> [--json]
   deep-diff-forge highlight <path> [--color|--no-color]
   deep-diff-forge structural <old> <new> [--json]
-  deep-diff-forge review [--probe]
+  deep-diff-forge review [--probe [--cols N] [--rows N]] [--side]
   deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]
   deep-diff-forge learn {{status|record --stdin}} [--json]
   deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side]

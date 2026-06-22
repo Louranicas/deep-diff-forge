@@ -7,13 +7,20 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// [`AppEvent::None`] so the event loop simply ignores them.
 #[must_use]
 pub fn map_key(key: KeyEvent) -> AppEvent {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => AppEvent::Quit,
         KeyCode::Char('j') | KeyCode::Down => AppEvent::Next,
         KeyCode::Char('k') | KeyCode::Up => AppEvent::Prev,
-        KeyCode::Char('t') | KeyCode::Tab => AppEvent::ToggleLayout,
-        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => AppEvent::ScrollDown,
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => AppEvent::ScrollUp,
+        KeyCode::Char('t' | 's') | KeyCode::Tab => AppEvent::ToggleLayout,
+        KeyCode::Char('z') => AppEvent::ToggleFold,
+        KeyCode::Char('n') => AppEvent::ToggleNotes,
+        KeyCode::Char('T') => AppEvent::CycleTheme,
+        KeyCode::Char('?') => AppEvent::ToggleHelp,
+        KeyCode::Char('h') | KeyCode::Left => AppEvent::FocusSidebar,
+        KeyCode::Char('l') | KeyCode::Right => AppEvent::FocusDiff,
+        KeyCode::Char('d') if ctrl => AppEvent::ScrollDown,
+        KeyCode::Char('u') if ctrl => AppEvent::ScrollUp,
         KeyCode::PageDown => AppEvent::ScrollDown,
         KeyCode::PageUp => AppEvent::ScrollUp,
         KeyCode::Char('g') | KeyCode::Home => AppEvent::Top,
@@ -35,12 +42,8 @@ mod tests {
     }
 
     #[test]
-    fn q_quits() {
+    fn q_and_esc_quit() {
         assert_eq!(map_key(key(KeyCode::Char('q'))), AppEvent::Quit);
-    }
-
-    #[test]
-    fn esc_quits() {
         assert_eq!(map_key(key(KeyCode::Esc)), AppEvent::Quit);
     }
 
@@ -57,25 +60,47 @@ mod tests {
     }
 
     #[test]
-    fn t_and_tab_toggle_layout() {
+    fn t_s_and_tab_toggle_layout() {
         assert_eq!(map_key(key(KeyCode::Char('t'))), AppEvent::ToggleLayout);
+        assert_eq!(map_key(key(KeyCode::Char('s'))), AppEvent::ToggleLayout);
         assert_eq!(map_key(key(KeyCode::Tab)), AppEvent::ToggleLayout);
     }
 
     #[test]
-    fn ctrl_d_scrolls_down() {
-        assert_eq!(map_key(ctrl('d')), AppEvent::ScrollDown);
+    fn z_folds_and_n_toggles_notes() {
+        assert_eq!(map_key(key(KeyCode::Char('z'))), AppEvent::ToggleFold);
+        assert_eq!(map_key(key(KeyCode::Char('n'))), AppEvent::ToggleNotes);
     }
 
     #[test]
-    fn ctrl_u_scrolls_up() {
+    fn capital_t_cycles_theme_lower_t_does_not() {
+        assert_eq!(map_key(key(KeyCode::Char('T'))), AppEvent::CycleTheme);
+        assert_eq!(map_key(key(KeyCode::Char('t'))), AppEvent::ToggleLayout);
+    }
+
+    #[test]
+    fn question_mark_toggles_help() {
+        assert_eq!(map_key(key(KeyCode::Char('?'))), AppEvent::ToggleHelp);
+    }
+
+    #[test]
+    fn h_l_and_arrows_switch_focus() {
+        assert_eq!(map_key(key(KeyCode::Char('h'))), AppEvent::FocusSidebar);
+        assert_eq!(map_key(key(KeyCode::Left)), AppEvent::FocusSidebar);
+        assert_eq!(map_key(key(KeyCode::Char('l'))), AppEvent::FocusDiff);
+        assert_eq!(map_key(key(KeyCode::Right)), AppEvent::FocusDiff);
+    }
+
+    #[test]
+    fn ctrl_d_and_u_scroll() {
+        assert_eq!(map_key(ctrl('d')), AppEvent::ScrollDown);
         assert_eq!(map_key(ctrl('u')), AppEvent::ScrollUp);
     }
 
     #[test]
-    fn plain_d_is_not_scroll() {
-        // Without the control modifier, 'd' is unbound.
+    fn plain_d_and_u_are_unbound() {
         assert_eq!(map_key(key(KeyCode::Char('d'))), AppEvent::None);
+        assert_eq!(map_key(key(KeyCode::Char('u'))), AppEvent::None);
     }
 
     #[test]
@@ -85,34 +110,22 @@ mod tests {
     }
 
     #[test]
-    fn g_and_home_are_top() {
+    fn g_and_home_are_top_shift_g_and_end_are_bottom() {
         assert_eq!(map_key(key(KeyCode::Char('g'))), AppEvent::Top);
         assert_eq!(map_key(key(KeyCode::Home)), AppEvent::Top);
-    }
-
-    #[test]
-    fn shift_g_and_end_are_bottom() {
         assert_eq!(map_key(key(KeyCode::Char('G'))), AppEvent::Bottom);
         assert_eq!(map_key(key(KeyCode::End)), AppEvent::Bottom);
     }
 
     #[test]
     fn unbound_key_is_none() {
-        assert_eq!(map_key(key(KeyCode::Char('z'))), AppEvent::None);
+        assert_eq!(map_key(key(KeyCode::Char('w'))), AppEvent::None);
+        assert_eq!(map_key(key(KeyCode::Char('x'))), AppEvent::None);
         assert_eq!(map_key(key(KeyCode::F(5))), AppEvent::None);
     }
 
     #[test]
-    fn lowercase_g_is_top_uppercase_is_bottom() {
-        assert_ne!(
-            map_key(key(KeyCode::Char('g'))),
-            map_key(key(KeyCode::Char('G')))
-        );
-    }
-
-    #[test]
-    fn quit_takes_priority_for_q() {
-        // 'q' even with modifiers still quits (code match precedes modifier checks).
+    fn quit_takes_priority_for_q_even_with_ctrl() {
         assert_eq!(map_key(ctrl('q')), AppEvent::Quit);
     }
 }

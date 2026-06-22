@@ -1,63 +1,185 @@
-use crate::state::ReviewApp;
-use deep_diff_forge_core::display_safe;
+//! Frame composition: assemble the chrome, the ranked file tree, and the diff
+//! pane into one screen, plus a headless renderer for `review --probe`/tests.
+//!
+//! Layout is three vertical bands — a menu bar, the main area, a status bar —
+//! and the main area splits into the file tree and the diff pane. The focused
+//! pane gets an accent border; a `?` help card draws as a centred overlay. All
+//! attacker-controlled text (paths, diff bodies, note bodies) is neutralised by
+//! the child modules before it reaches a cell.
+
+use crate::chrome::{help_lines, menu_bar, status_bar};
+use crate::diffview::diff_document;
+use crate::state::{Focus, Overlay, ReviewApp};
+use crate::theme::Palette;
+use crate::tree::{selected_row, tree_lines};
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Wrap,
+};
 
-/// Render the review app into a frame: a ranked file sidebar and a detail pane.
+/// Render the whole review cockpit into a frame.
 pub fn render(frame: &mut Frame, app: &ReviewApp) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
-        .split(frame.area());
+    let palette = app.theme().palette();
+    let area = frame.area();
+    let bands = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .split(area);
 
-    let mut rows = Vec::new();
-    for (i, file) in app.files().iter().enumerate() {
-        let marker = if i == app.selected_index() { '>' } else { ' ' };
-        // file.path is attacker-controlled (from the diff) — neutralise terminal
-        // escapes before rendering, since ratatui does not reliably strip them
-        // and `review --probe` writes these lines to stdout.
-        let text = format!("{marker} {:>3} {}", file.score, display_safe(&file.path));
-        let style = if i == app.selected_index() {
-            Style::default().add_modifier(Modifier::REVERSED)
-        } else {
-            Style::default()
-        };
-        rows.push(Line::styled(text, style));
-    }
-    if rows.is_empty() {
-        rows.push(Line::from("no files"));
-    }
-    let sidebar = Paragraph::new(rows).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Files (ranked)"),
+    let chrome_bg = Style::default().bg(palette.menu_bg);
+    frame.render_widget(
+        Paragraph::new(menu_bar(app, &palette, usize::from(bands[0].width))).style(chrome_bg),
+        bands[0],
     );
-    frame.render_widget(sidebar, chunks[0]);
 
-    let detail = Paragraph::new(detail_lines(app))
-        .scroll((app.scroll(), 0))
-        .block(Block::default().borders(Borders::ALL).title("Detail"));
-    frame.render_widget(detail, chunks[1]);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(32), Constraint::Percentage(68)])
+        .split(bands[1]);
+    render_tree(frame, app, &palette, cols[0]);
+    render_diff(frame, app, &palette, cols[1]);
+
+    frame.render_widget(
+        Paragraph::new(status_bar(app, &palette, usize::from(bands[2].width))).style(chrome_bg),
+        bands[2],
+    );
+
+    if app.overlay() == Overlay::Help {
+        render_help(frame, &palette, area);
+    }
 }
 
-fn detail_lines(app: &ReviewApp) -> Vec<Line<'static>> {
-    match app.selected_file() {
-        Some(file) => {
-            let signals: Vec<&str> = file.signals.iter().map(|s| s.label()).collect();
-            vec![
-                Line::from(format!("path:    {}", display_safe(&file.path))),
-                Line::from(format!("status:  {}", file.status.label())),
-                Line::from(format!("score:   {}", file.score)),
-                Line::from(format!("signals: {}", signals.join(","))),
-                Line::from(format!("layout:  {}", app.layout().label())),
-            ]
-        }
-        None => vec![Line::from("no files in review")],
+fn render_tree(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: Rect) {
+    let border = if app.focus() == Focus::Sidebar {
+        palette.accent
+    } else {
+        palette.border
+    };
+    let title = format!(" Files (ranked) · {} ", app.file_count());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border))
+        .title(Line::from(Span::styled(
+            title,
+            Style::default().fg(palette.accent),
+        )));
+    let inner_height = usize::from(area.height.saturating_sub(2));
+    let scroll = keep_visible(selected_row(app), inner_height);
+    frame.render_widget(
+        Paragraph::new(tree_lines(app, palette))
+            .block(block)
+            .scroll((scroll, 0)),
+        area,
+    );
+}
+
+fn render_diff(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: Rect) {
+    let border = if app.focus() == Focus::Diff {
+        palette.accent
+    } else {
+        palette.border
+    };
+    let pos = if app.is_empty() {
+        0
+    } else {
+        app.selected_index() + 1
+    };
+    let title = format!(
+        " review · {}/{} files · {} ",
+        pos,
+        app.file_count(),
+        app.layout().label()
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border))
+        .title(Line::from(Span::styled(
+            title,
+            Style::default().fg(palette.accent),
+        )));
+    let inner_width = usize::from(area.width.saturating_sub(2));
+    let inner_height = usize::from(area.height.saturating_sub(2));
+    // One continuous document of all files; the selected file's section start is
+    // the scroll anchor, and `app.scroll()` is the manual delta from there.
+    let (lines, starts) = diff_document(app, palette, inner_width);
+    let total = lines.len();
+    let base = starts.get(app.selected_index()).copied().unwrap_or(0);
+    let scroll = base.saturating_add(usize::from(app.scroll()));
+    let scroll_u16 = u16::try_from(scroll.min(total.saturating_sub(1))).unwrap_or(u16::MAX);
+    frame.render_widget(
+        Paragraph::new(lines).block(block).scroll((scroll_u16, 0)),
+        area,
+    );
+    // A scrollbar on the right border when the document overflows the viewport.
+    if total > inner_height {
+        let track = Rect {
+            x: area.x,
+            y: area.y + 1,
+            width: area.width,
+            height: area.height.saturating_sub(2),
+        };
+        let mut sb = ScrollbarState::new(total).position(scroll.min(total));
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .thumb_style(Style::default().fg(palette.accent))
+                .track_style(Style::default().fg(palette.border))
+                .begin_symbol(None)
+                .end_symbol(None),
+            track,
+            &mut sb,
+        );
+    }
+}
+
+fn render_help(frame: &mut Frame, palette: &Palette, area: Rect) {
+    let popup = centered(area, 62, 18);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(palette.accent))
+        .style(Style::default().bg(palette.menu_bg))
+        .title(Line::from(Span::styled(
+            " Help ",
+            Style::default().fg(palette.accent),
+        )));
+    frame.render_widget(
+        Paragraph::new(help_lines(palette))
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        popup,
+    );
+}
+
+/// Scroll offset that keeps `row` within a viewport of `height` lines.
+fn keep_visible(row: usize, height: usize) -> u16 {
+    if height == 0 || row < height {
+        return 0;
+    }
+    u16::try_from(row - height + 1).unwrap_or(u16::MAX)
+}
+
+/// A `w`×`h` rectangle centred in `area`, clamped to `area`.
+fn centered(area: Rect, w: u16, h: u16) -> Rect {
+    let w = w.min(area.width);
+    let h = h.min(area.height);
+    Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
     }
 }
 
@@ -95,9 +217,10 @@ mod tests {
     const MULTI: &str = "\
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -1,1 +1,1 @@
--a
-+b
+@@ -1,2 +1,2 @@
+ fn keep() {}
+-let old = 1;
++let new = 2;
 --- a/src/other.rs
 +++ b/src/other.rs
 @@ -1,1 +1,1 @@
@@ -106,109 +229,126 @@ mod tests {
 ";
 
     fn app() -> ReviewApp {
-        ReviewApp::from_review(&parse(MULTI).unwrap())
+        let files = parse(MULTI).unwrap();
+        let notes = crate::notes::engine_annotations(&files, &deep_diff_forge_graph::rank(&files));
+        ReviewApp::from_review_with_annotations(&files, notes)
     }
 
-    fn rendered(app: &ReviewApp) -> String {
-        render_to_lines(app, 80, 12).join("\n")
-    }
-
-    #[test]
-    fn renders_without_panicking() {
-        let lines = render_to_lines(&app(), 80, 12);
-        assert_eq!(lines.len(), 12);
+    fn screen(app: &ReviewApp) -> String {
+        render_to_lines(app, 120, 30).join("\n")
     }
 
     #[test]
-    fn sidebar_lists_files() {
-        let out = rendered(&app());
-        assert!(out.contains("src/lib.rs"));
-        assert!(out.contains("src/other.rs"));
+    fn renders_full_height_without_panicking() {
+        assert_eq!(render_to_lines(&app(), 120, 30).len(), 30);
     }
 
     #[test]
-    fn render_neutralizes_terminal_escapes_in_path() {
-        // A malicious diff path with an ESC sequence must not reach the terminal
-        // through the TUI — `review --probe` pipes these lines straight to stdout.
-        let evil = "--- a/x\u{1b}[2J.rs\n+++ b/x\u{1b}[2J.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n";
-        let app = ReviewApp::from_review(&parse(evil).unwrap());
-        let out = render_to_lines(&app, 100, 16).join("\n");
-        assert!(!out.contains('\u{1b}'), "raw ESC leaked through TUI render");
-        assert!(
-            out.contains("\\x1b"),
-            "escaped form should be shown instead"
-        );
+    fn menu_bar_is_present() {
+        let out = screen(&app());
+        assert!(out.contains("File"));
+        assert!(out.contains("Help"));
+        assert!(out.contains("deep-diff-forge"));
     }
 
     #[test]
-    fn selection_marker_on_first_file() {
-        let out = render_to_lines(&app(), 80, 12).join("\n");
-        // The selected (first, public-API) row carries the '>' marker.
-        assert!(out.contains("> "));
-    }
-
-    #[test]
-    fn detail_shows_selected_path() {
-        let out = rendered(&app());
-        assert!(out.contains("path:"));
-        assert!(out.contains("src/lib.rs"));
-    }
-
-    #[test]
-    fn detail_shows_status_and_score() {
-        let out = rendered(&app());
-        assert!(out.contains("status:"));
-        assert!(out.contains("modified"));
-        assert!(out.contains("score:"));
-    }
-
-    #[test]
-    fn detail_shows_layout_label() {
-        let out = rendered(&app());
-        assert!(out.contains("inline"));
-    }
-
-    #[test]
-    fn toggling_layout_changes_detail() {
-        let mut a = app();
-        a.handle(AppEvent::ToggleLayout);
-        assert!(rendered(&a).contains("side-by-side"));
-    }
-
-    #[test]
-    fn titles_are_rendered() {
-        let out = rendered(&app());
+    fn sidebar_lists_files_by_basename() {
+        let out = screen(&app());
         assert!(out.contains("Files (ranked)"));
-        assert!(out.contains("Detail"));
+        assert!(out.contains("lib.rs"));
+        assert!(out.contains("other.rs"));
     }
 
     #[test]
-    fn empty_review_renders_placeholder() {
-        let a = ReviewApp::new(Vec::new());
-        let out = render_to_lines(&a, 80, 12).join("\n");
-        assert!(out.contains("no files"));
+    fn diff_pane_shows_selected_content() {
+        let out = screen(&app());
+        assert!(out.contains("let new = 2;"));
+        assert!(out.contains("@@"));
     }
 
     #[test]
-    fn navigating_moves_the_marker_line() {
+    fn status_bar_shows_quit_hint() {
+        assert!(screen(&app()).contains("quit"));
+    }
+
+    #[test]
+    fn side_by_side_changes_the_screen() {
         let mut a = app();
-        let before = render_to_lines(&a, 80, 12);
-        a.handle(AppEvent::Next);
-        let after = render_to_lines(&a, 80, 12);
+        let before = screen(&a);
+        a.handle(AppEvent::ToggleLayout);
+        let after = screen(&a);
         assert_ne!(before, after);
+        assert!(after.contains('│'));
     }
 
     #[test]
-    fn detail_reflects_selected_file_after_nav() {
+    fn navigating_updates_the_diff_pane() {
         let mut a = app();
+        let before = screen(&a);
         a.handle(AppEvent::Next);
-        let out = render_to_lines(&a, 80, 12).join("\n");
-        assert!(out.contains("src/other.rs"));
+        assert_ne!(before, screen(&a));
+    }
+
+    #[test]
+    fn help_overlay_appears_on_toggle() {
+        let mut a = app();
+        assert!(!screen(&a).contains("review keys"));
+        a.handle(AppEvent::ToggleHelp);
+        assert!(screen(&a).contains("review keys"));
+    }
+
+    #[test]
+    fn malicious_path_does_not_leak_escape() {
+        let evil = "--- a/x\u{1b}[2J.rs\n+++ b/x\u{1b}[2J.rs\n@@ -1,1 +1,1 @@\n-a\n+\u{1b}[2Jb\n";
+        let files = parse(evil).unwrap();
+        let a = ReviewApp::from_review(&files);
+        let out = render_to_lines(&a, 120, 24).join("\n");
+        assert!(!out.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn empty_review_renders_safely() {
+        let a = ReviewApp::new(Vec::new());
+        let out = render_to_lines(&a, 80, 20);
+        assert_eq!(out.len(), 20);
+        assert!(out.join("\n").contains("no file"));
     }
 
     #[test]
     fn tiny_area_does_not_panic() {
-        let lines = render_to_lines(&app(), 4, 2);
-        assert_eq!(lines.len(), 2);
+        assert_eq!(render_to_lines(&app(), 4, 3).len(), 3);
+    }
+
+    #[test]
+    fn keep_visible_scrolls_only_when_needed() {
+        assert_eq!(keep_visible(3, 10), 0);
+        assert_eq!(keep_visible(10, 10), 1);
+        assert_eq!(keep_visible(0, 0), 0);
+    }
+
+    #[test]
+    fn centered_rect_fits_inside_area() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 40,
+        };
+        let r = centered(area, 60, 18);
+        assert!(r.x + r.width <= area.width);
+        assert!(r.y + r.height <= area.height);
+    }
+
+    #[test]
+    fn centered_rect_clamps_to_small_area() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 5,
+        };
+        let r = centered(area, 60, 18);
+        assert_eq!(r.width, 10);
+        assert_eq!(r.height, 5);
     }
 }
