@@ -118,7 +118,7 @@ Unix sockets are indicated only for the optional daemon.
 | Platform | Socket or pipe path |
 | --- | --- |
 | Linux | `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock` |
-| Linux fallback | `/tmp/deep-diff-forge-$UID/deep-diff-forge.sock` |
+| Linux (no `$XDG_RUNTIME_DIR`) | fails closed — pass `--socket PATH` (no world-writable `/tmp` fallback) |
 | macOS | `$TMPDIR/deep-diff-forge-$UID/deep-diff-forge.sock` |
 | Windows | `\\.\pipe\deep-diff-forge-$USER` |
 
