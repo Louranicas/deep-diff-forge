@@ -41,23 +41,49 @@ fn is_terminal_unsafe(c: char) -> bool {
     c.is_control() && c != '\t'
 }
 
+/// Whether `c` is a bidirectional or invisible formatting character that can make
+/// rendered text differ from its logical byte content — the "Trojan Source" class
+/// (CVE-2021-42574): bidi overrides/embeddings (`LRE`..`RLO`), bidi isolates
+/// (`LRI`..`PDI`), directional marks (`LRM`/`RLM`/`ALM`), and zero-width
+/// characters (`ZWSP`/`ZWNJ`/`ZWJ`/`BOM`). A diff/review tool must surface these
+/// rather than let attacker source reorder or hide code from the reviewer.
+#[must_use]
+fn is_bidi_or_invisible(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0x202A..=0x202E   // LRE RLE PDF LRO RLO
+        | 0x2066..=0x2069 // LRI RLI FSI PDI
+        | 0x200E | 0x200F // LRM RLM
+        | 0x061C          // ALM
+        | 0x200B..=0x200D // ZWSP ZWNJ ZWJ
+        | 0xFEFF          // ZWNBSP / BOM
+    )
+}
+
 /// Make an untrusted string safe to print to a terminal.
 ///
 /// Attacker-controlled content (diff line bodies, file paths, symbol names,
-/// agent annotations) can embed ANSI/CSI/OSC escape sequences that hijack the
-/// reviewer's terminal — clearing the screen, poisoning scrollback to forge a
-/// "clean" review, rewriting the window title, or driving an OSC-52 clipboard
-/// write. This renders every terminal-unsafe control character as a visible
-/// `\xHH` escape (e.g. `ESC` → `\x1b`, `CR` → `\x0d`) so the sequence is shown,
-/// not executed. Printable text and multi-byte UTF-8 pass through unchanged, and
-/// horizontal tabs are preserved so normal code indentation still renders.
+/// agent annotations) can attack the reviewer's terminal or eyes two ways:
 ///
+/// 1. **Terminal escapes** — ANSI/CSI/OSC sequences that clear the screen, poison
+///    scrollback to forge a "clean" review, rewrite the window title, or drive an
+///    OSC-52 clipboard write. Each terminal-unsafe control char is rendered as a
+///    visible `\xHH` escape (e.g. `ESC` → `\x1b`).
+/// 2. **Trojan Source** — bidi/invisible Unicode (e.g. `RLO` `U+202E`) that makes
+///    code *display* differently than it logically reads, hiding malicious
+///    edits from a reviewer. Each such char is rendered as a visible `\u{XXXX}`.
+///
+/// Printable text and ordinary multi-byte UTF-8 pass through unchanged, and
+/// horizontal tabs are preserved so normal code indentation still renders.
 /// Returns a borrowed `Cow` (zero allocation) when the input is already safe.
 /// This is the terminal-output counterpart to [`json_escape`]: human renderers
 /// use this, machine (`--json`/`--jsonl`) output uses `json_escape`.
 #[must_use]
 pub fn display_safe(value: &str) -> Cow<'_, str> {
-    if !value.chars().any(is_terminal_unsafe) {
+    if !value
+        .chars()
+        .any(|c| is_terminal_unsafe(c) || is_bidi_or_invisible(c))
+    {
         return Cow::Borrowed(value);
     }
     let mut out = String::with_capacity(value.len() + 8);
@@ -65,6 +91,9 @@ pub fn display_safe(value: &str) -> Cow<'_, str> {
         if is_terminal_unsafe(c) {
             // All terminal-unsafe chars are <= 0x9f, so two hex digits suffice.
             let _ = write!(out, "\\x{:02x}", u32::from(c));
+        } else if is_bidi_or_invisible(c) {
+            // Bidi/invisible chars are > 0xff; show them as a visible \u{XXXX}.
+            let _ = write!(out, "\\u{{{:04x}}}", u32::from(c));
         } else {
             out.push(c);
         }
@@ -159,6 +188,39 @@ mod tests {
         let safe = display_safe(osc);
         assert!(!safe.contains('\u{1b}'));
         assert!(!safe.contains('\u{07}'));
+    }
+
+    #[test]
+    fn display_safe_neutralizes_trojan_source_bidi() {
+        // CVE-2021-42574: an RLO override that visually reorders code must be
+        // surfaced, not passed through, so the reviewer sees what really executes.
+        let evil = "let access = if is_admin\u{202e} // ban_user\u{202c}";
+        let safe = display_safe(evil);
+        assert!(!safe.contains('\u{202e}'), "RLO must not survive");
+        assert!(!safe.contains('\u{202c}'), "PDF must not survive");
+        assert!(safe.contains("\\u{202e}"));
+        assert!(safe.contains("\\u{202c}"));
+    }
+
+    #[test]
+    fn display_safe_neutralizes_zero_width_and_isolates() {
+        for cp in [0x200b_u32, 0x200d, 0x2066, 0x2069, 0x200e, 0xfeff, 0x061c] {
+            let c = char::from_u32(cp).unwrap();
+            let s = format!("a{c}b");
+            let out = display_safe(&s);
+            assert!(!out.contains(c), "U+{cp:04x} must not survive");
+            assert!(out.contains(&format!("\\u{{{cp:04x}}}")));
+        }
+    }
+
+    #[test]
+    fn display_safe_keeps_ordinary_unicode() {
+        // Real multi-byte content (accents, CJK, emoji, arrows) is NOT bidi/
+        // invisible and must pass through untouched (borrowed, zero-alloc).
+        let s = "café 源 → 🚀 ";
+        let out = display_safe(s);
+        assert!(matches!(out, Cow::Borrowed(_)));
+        assert_eq!(out, s);
     }
 
     #[test]

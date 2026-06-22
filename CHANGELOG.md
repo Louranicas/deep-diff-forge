@@ -7,7 +7,7 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 ## [0.2.0] - 2026-06-22
 
 The **L9 (Learning)** layer plus the first crates.io-publishable cut — 12 crates,
-754 tests, zero `unsafe`, supply-chain-gated. `cargo publish --dry-run` is clean
+760 tests, zero `unsafe`, supply-chain-gated. `cargo publish --dry-run` is clean
 across the workspace; the crates.io upload itself remains token-gated.
 
 ### Added
@@ -63,8 +63,23 @@ across the workspace; the crates.io upload itself remains token-gated.
 Pre-publication adversarial hardening (S1008412): an 8-dimension STRIDE review
 with independent verification produced a CVSS-scored register of 17 confirmed
 findings (4 MEDIUM, 12 LOW, 1 INFO; **no Critical/High**), all remediated with
-fail-before/pass-after regression tests. See `SECURITY.md`.
+fail-before/pass-after regression tests. A later final-hardening review fleet
+(5 reviewers + adversarial verify) added the items below. See `SECURITY.md`.
 
+- **Trojan Source defence (CVE-2021-42574)** — `display_safe` now also escapes
+  bidirectional/invisible Unicode (`U+202A–202E`, `U+2066–2069`, directional
+  marks, zero-width, BOM) to a visible `\u{XXXX}`, so attacker source cannot
+  display differently than it reads — on-mission for a review tool.
+- **Cross-platform contract made honest** — the UDS daemon is Unix-only; it now
+  emits a clear `compile_error!` on non-Unix instead of a cryptic `std::os::unix`
+  failure, and the release matrix dropped its (un-buildable) Windows lane so CI
+  and code agree before the irreversible publish (Linux + macOS).
+- **Broken-pipe fix completed** — the remaining `deploy`/`doctor`/`--help`/
+  contract commands (notably the `--json` outputs CI/agents pipe to `head`/`jq`)
+  now route through the broken-pipe-tolerant writer; `… | head` exits `0`, not 101.
+- **`structural` on a non-Rust file** now errors explicitly instead of silently
+  reporting "formatting only"; **`doctor`** resolves both its runtime-dir and
+  socket lines through the daemon's `var_os` resolver (consistent on non-UTF-8 env).
 - **Terminal/ANSI-escape injection** — attacker-controlled diff bodies, file
   paths, and symbol names are now sanitized by `core::display_safe` (control
   chars escaped to a visible `\xHH`) at every human-render boundary; `json_escape`

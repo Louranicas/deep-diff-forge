@@ -108,3 +108,24 @@ fn json_mode_is_already_safe() {
     assert_eq!(code, 0);
     assert!(!out.contains(&ESC), "raw ESC leaked via --json");
 }
+
+#[test]
+fn trojan_source_bidi_override_is_neutralized() {
+    // CVE-2021-42574: a diff body carrying U+202E (RLO, UTF-8 `e2 80 ae`) could
+    // visually reorder code so a reviewer sees something other than what runs.
+    // The human render must escape it to a visible \u{202e}, not pass it through.
+    let mut patch = Vec::new();
+    patch.extend_from_slice(b"--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-let ok = a;\n+let ok = a;");
+    patch.extend_from_slice(&[0xe2, 0x80, 0xae]); // U+202E RLO
+    patch.extend_from_slice(b" // evil\n");
+    let (code, out) = run_with_stdin(&["--stdin-patch", "--layout", "inline"], &patch);
+    assert_eq!(code, 0);
+    assert!(
+        !out.windows(3).any(|w| w == [0xe2, 0x80, 0xae]),
+        "raw U+202E bidi override must not reach the terminal"
+    );
+    assert!(
+        String::from_utf8_lossy(&out).contains("\\u{202e}"),
+        "the bidi override should be shown as a visible escape"
+    );
+}

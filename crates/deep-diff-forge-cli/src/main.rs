@@ -394,6 +394,16 @@ fn structural_cmd(opts: &[String]) {
     let old_source = read_source_file_or_exit(old_path);
     let new_source = read_source_file_or_exit(new_path);
     let language = deep_diff_forge_syntax::detect_language(new_path);
+    // An unsupported language tokenizes to nothing on both sides, which would
+    // otherwise read as a misleading "no token changes (formatting only)". Be
+    // explicit instead: structural diffing is Rust-only today.
+    if language == deep_diff_forge_syntax::Language::Unsupported {
+        eprintln!(
+            "error: structural diff is unsupported for {} — only Rust is tokenized today",
+            display_safe(new_path)
+        );
+        std::process::exit(2);
+    }
     let diff = deep_diff_forge_syntax::structural_diff(language, &old_source, &new_source);
     if opts.iter().any(|a| a == "--json") {
         print_structural_json(&diff);
@@ -639,7 +649,7 @@ fn deploy_release(json: bool) {
             );
         }
         let pending: Vec<String> = plan.pending().iter().map(|p| json_escape(p)).collect();
-        println!(
+        emitln!(
             "{{\n  \"schema\": \"deep-diff-forge.release.v0\",\n  \"version\": {},\n  \"fully_published\": {},\n  \"targets\": [{}],\n  \"pending\": [{}]\n}}",
             json_escape(&plan.version),
             plan.fully_published(),
@@ -688,7 +698,7 @@ fn deploy_status(json: bool) {
                 g.state.as_str()
             );
         }
-        println!(
+        emitln!(
             "{{\n  \"schema\": \"deep-diff-forge.deployment-status.v0\",\n  \"repo\": \"{}\",\n  \"maturity\": \"{}\",\n  \"maturity_name\": \"{}\",\n  \"gates\": [{}],\n  \"external_observers\": {{\"zellij\": \"observed\", \"habitat\": \"optional\"}}\n}}",
             status.repo,
             status.maturity.as_str(),
@@ -696,15 +706,15 @@ fn deploy_status(json: bool) {
             gates
         );
     } else {
-        println!("deep-diff-forge deployment status");
-        println!("repo:     {}", status.repo);
-        println!(
+        emitln!("deep-diff-forge deployment status");
+        emitln!("repo:     {}", status.repo);
+        emitln!(
             "maturity: {} ({})",
             status.maturity.as_str(),
             status.maturity.name()
         );
         let names: Vec<&str> = status.gates.iter().map(|g| g.name.as_str()).collect();
-        println!(
+        emitln!(
             "gates:    {} (run via: just gate-feature)",
             names.join(", ")
         );
@@ -873,7 +883,7 @@ fn print_patch_summary(files: &[deep_diff_forge_core::ReviewFile]) {
 }
 
 fn print_help() {
-    println!(
+    emitln!(
         "\
 deep-diff-forge {version}
 
@@ -918,19 +928,16 @@ FUTURE PRIMARY MODES:
 }
 
 fn print_version() {
-    println!("deep-diff-forge {}", env!("CARGO_PKG_VERSION"));
+    emitln!("deep-diff-forge {}", env!("CARGO_PKG_VERSION"));
 }
 
 fn self_test() {
     let document = ReviewDocument::empty();
     assert!(document.files.is_empty());
-    println!("self-test ok: core model initialized");
+    emitln!("self-test ok: core model initialized");
 }
 
 fn doctor() {
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-        .ok()
-        .filter(|v| !v.is_empty());
     let cache_dir = std::env::var("XDG_CACHE_HOME").map_or_else(
         |_| "~/.cache/deep-diff-forge".into(),
         |base| format!("{base}/deep-diff-forge"),
@@ -940,26 +947,26 @@ fn doctor() {
         |base| format!("{base}/deep-diff-forge"),
     );
 
-    println!("doctor ok: bootstrap binary is executable");
-    // Report the runtime dir + daemon socket honestly: without $XDG_RUNTIME_DIR
-    // the daemon fails closed (no world-writable /tmp fallback), so doctor must
-    // not advertise a /tmp path the daemon will refuse. The socket line is
-    // resolved through the daemon's own `SocketLocation`, the single source of
-    // truth, so doctor and the daemon never disagree.
-    match &runtime_dir {
-        Some(dir) => println!("runtime_dir={dir}"),
-        None => println!("runtime_dir=<unset: set XDG_RUNTIME_DIR>"),
+    emitln!("doctor ok: bootstrap binary is executable");
+    // Report the runtime dir + daemon socket honestly AND consistently: both go
+    // through the daemon's own `var_os`-based resolvers (the single source of
+    // truth), so doctor and the daemon never disagree — even on a non-UTF-8
+    // $XDG_RUNTIME_DIR. Without it the daemon fails closed (no /tmp fallback), so
+    // doctor advertises no path the daemon would refuse.
+    match deep_diff_forge_daemon::runtime_base() {
+        Some(base) => emitln!("runtime_dir={}", base.display()),
+        None => emitln!("runtime_dir=<unset: set XDG_RUNTIME_DIR>"),
     }
-    println!("cache_dir={cache_dir}");
-    println!("state_dir={state_dir}");
+    emitln!("cache_dir={cache_dir}");
+    emitln!("state_dir={state_dir}");
     match deep_diff_forge_daemon::SocketLocation::resolve(None) {
-        Ok(location) => println!("daemon_socket={}", location.path().display()),
-        Err(_) => println!("daemon_socket=<unavailable: set XDG_RUNTIME_DIR or pass --socket>"),
+        Ok(location) => emitln!("daemon_socket={}", location.path().display()),
+        Err(_) => emitln!("daemon_socket=<unavailable: set XDG_RUNTIME_DIR or pass --socket>"),
     }
 }
 
 fn claude_code_contract() {
-    println!(
+    emitln!(
         "\
 deep-diff-forge claude-code-contract v0
 
@@ -978,7 +985,7 @@ BOOTSTRAP COMMANDS:
 }
 
 fn chain_contract() {
-    println!(
+    emitln!(
         "\
 deep-diff-forge chain-contract v0
 
@@ -999,7 +1006,7 @@ PLANNED MODES:
 }
 
 fn cluster_contract() {
-    println!(
+    emitln!(
         "\
 deep-diff-forge cluster-contract v0
 
@@ -1016,7 +1023,7 @@ PLANNED DIMENSIONS:
 }
 
 fn loom_contract() {
-    println!(
+    emitln!(
         "\
 deep-diff-forge loom-contract v0
 

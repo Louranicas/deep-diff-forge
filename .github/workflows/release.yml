@@ -39,11 +39,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Unix-only: the daemon is built on Unix domain sockets, so the CLI does
+        # not compile on Windows (the crate emits a clear compile_error there).
+        # Targets are Linux + macOS to match the code's platform contract.
         include:
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
           - { os: macos-latest, target: x86_64-apple-darwin }
           - { os: macos-latest, target: aarch64-apple-darwin }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -51,8 +53,7 @@ jobs:
           targets: ${{ matrix.target }}
       - name: build release binary
         run: cargo build --release --locked -p deep-diff-forge-cli --target ${{ matrix.target }}
-      - name: package (unix)
-        if: runner.os != 'Windows'
+      - name: package
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -65,27 +66,12 @@ jobs:
           cp README.md LICENSE-MIT LICENSE-APACHE "${dist}/"
           tar czf "${dist}.tar.gz" "${dist}"
           sha256sum "${dist}.tar.gz" > "${dist}.tar.gz.sha256"
-      - name: package (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          TARGET: ${{ matrix.target }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          $dist = "deep-diff-forge-$env:TAG-$env:TARGET"
-          New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          Copy-Item "target/$env:TARGET/release/deep-diff-forge.exe" $dist
-          Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE $dist
-          Compress-Archive -Path $dist -DestinationPath "$dist.zip"
-          (Get-FileHash "$dist.zip" -Algorithm SHA256).Hash | Out-File "$dist.zip.sha256"
       - name: upload release assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
             deep-diff-forge-*.tar.gz
             deep-diff-forge-*.tar.gz.sha256
-            deep-diff-forge-*.zip
-            deep-diff-forge-*.zip.sha256
 
   publish:
     name: crates.io publish (token-gated)

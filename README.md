@@ -5,13 +5,13 @@ intent, together.**
 
 Deep-Diff-Forge is a Rust CLI (and optional daemon) that treats a diff not as a
 blob of `+`/`-` lines but as a *review*: it preserves the exact, apply-able patch
-while layering syntax-aware understanding, risk ranking, agent annotations, an
-interactive terminal cockpit, and bounded parallel execution on top — every
-layer a projection over one stable model, none of them ever allowed to corrupt
-the patch.
+while layering syntax-aware understanding, syntax highlighting, structural
+(AST-level) diffing, risk ranking, agent annotations, an interactive terminal
+cockpit, and bounded parallel execution on top — every layer a projection over
+one stable model, none of them ever allowed to corrupt the patch.
 
 > **Maturity: L9 (Learning).** All engine layers L0–L8 are implemented, plus the
-> L9 local-only learning loop (`learn status|record`). 12 crates, 754 tests, zero
+> L9 local-only learning loop (`learn status|record`). 12 crates, 760 tests, zero
 > `unsafe`, supply-chain-gated, dual MIT/Apache-2.0 licensed. The workspace is
 > **crates.io-publish-ready** (`cargo publish --dry-run` is clean across all
 > crates); the upload itself is **token-gated** — the release workflow publishes
@@ -464,7 +464,7 @@ never the reverse. Patch truth is upstream of everything.
 | `deep-diff-forge-patch` | Unified/Git patch parser, apply-able renderer, `review.v0` JSON. |
 | `deep-diff-forge-projection` | Renderer-neutral inline & side-by-side projections. |
 | `deep-diff-forge-pipeline` | Composable Unix-filter stages (`ChainStage`, ingest/render), JSONL. |
-| `deep-diff-forge-syntax` | Tree-sitter language detection, budgeted parse, symbol extraction. |
+| `deep-diff-forge-syntax` | Tree-sitter language detection, budgeted parse, symbol extraction, syntax highlighting, and token-level structural diff. |
 | `deep-diff-forge-graph` | Review Intelligence Graph — deterministic risk ranking. |
 | `deep-diff-forge-agent` | Annotation provenance, grounding classification, sanitization, anchor validation. |
 | `deep-diff-forge-tui` | Review-first terminal UI (ratatui), tested headlessly. |
@@ -522,7 +522,7 @@ just gate-feature
 #   bootstrap contract probes
 ```
 
-Standards enforced across the tree: **754 tests** (every production crate ≥ 50
+Standards enforced across the tree: **760 tests** (every production crate ≥ 50
 meaningful tests), **zero `unsafe`** (compiler-forbidden workspace-wide via
 `[workspace.lints]`), no production `unwrap`/`expect`, pedantic clippy clean with
 no unexplained suppressions, and a `cargo-deny` ([`deny.toml`](deny.toml)) +

@@ -89,3 +89,14 @@ fn structural_missing_args_is_usage_error() {
     let (code, _) = run(&["structural", only.to_str().unwrap()]);
     assert_eq!(code, 2);
 }
+
+#[test]
+fn structural_unsupported_language_errors_not_reformat_only() {
+    // A non-Rust file must NOT silently report "formatting only" (both sides
+    // tokenize empty); it errors explicitly instead.
+    let a = write_temp("a.txt", b"hello\n");
+    let b = write_temp("b.txt", b"world\n");
+    let (code, out) = run(&["structural", a.to_str().unwrap(), b.to_str().unwrap()]);
+    assert_eq!(code, 2);
+    assert!(!String::from_utf8_lossy(&out).contains("formatting only"));
+}

@@ -28,7 +28,7 @@
   `[workspace.package]` + `[workspace.dependencies]`; `core`/`cli` gained the
   mandatory `description`.
 - Gate green | `[VBE]` | `check → clippy -D warnings → pedantic → test → docs`
-  clean; **721 tests passed, 0 failed**; `cargo fmt --check` exit 0; `cargo deny
+  clean; **760 tests passed, 0 failed**; `cargo fmt --check` exit 0; `cargo deny
   check` + strict `cargo audit` clean.
 - Security hardened (S1008412) | `[VBE]` | 8-dimension STRIDE review + independent
   verify → 17 confirmed findings (4 MED / 12 LOW / 1 INFO; **0 Critical/High**),

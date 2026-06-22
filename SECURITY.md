@@ -32,6 +32,11 @@ the most recent minor line is supported.
   escapes terminal control sequences (ANSI/CSI/OSC, CR, BEL, DEL, C1) to a
   visible `\xHH` form before they reach a terminal. Machine output
   (`--json`/`--jsonl`) is neutralised by `json_escape`.
+- **Trojan Source defence (CVE-2021-42574).** `display_safe` also neutralises
+  bidirectional and invisible Unicode (RLO/LRO/PDF/isolates `U+202A–U+202E` /
+  `U+2066–U+2069`, directional marks, zero-width characters, BOM) to a visible
+  `\u{XXXX}` — so attacker source cannot *display* differently than it logically
+  reads, a defence directly on-mission for a code-review tool.
 - **Bounded input.** Stdin, source files, and daemon request lines are read
   under a hard byte cap, so a pathological or unbounded stream degrades to a
   graceful error instead of exhausting memory.

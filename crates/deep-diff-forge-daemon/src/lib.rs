@@ -15,6 +15,17 @@
 //! contained so one abusive request cannot tear down the daemon. There is no
 //! world-writable `/tmp` fallback: without `$XDG_RUNTIME_DIR` the daemon fails
 //! closed and the operator passes `--socket PATH`.
+//!
+//! **Platform:** this crate is Unix-only — it is built on `std::os::unix` domain
+//! sockets and permission bits. On a non-Unix target it fails to compile with a
+//! clear message (below) rather than a confusing `std::os::unix` path-not-found.
+//! deep-diff-forge therefore targets Linux + macOS; the release matrix matches.
+
+#[cfg(not(unix))]
+compile_error!(
+    "deep-diff-forge-daemon is Unix-only (it uses Unix domain sockets); \
+     deep-diff-forge targets Linux and macOS"
+);
 
 mod handler;
 mod protocol;
