@@ -68,6 +68,14 @@ fn main() {
             let rest: Vec<String> = args.collect();
             semantic_cmd(&rest);
         }
+        Some("highlight") => {
+            let rest: Vec<String> = args.collect();
+            highlight_cmd(&rest);
+        }
+        Some("structural") => {
+            let rest: Vec<String> = args.collect();
+            structural_cmd(&rest);
+        }
         Some("review") => {
             let rest: Vec<String> = args.collect();
             review_cmd(&rest);
@@ -157,12 +165,13 @@ const CURRENT_MATURITY: deep_diff_forge_core::MaturityLevel =
 /// `daemon {path|start|health|status|stop} [--socket PATH]`: drive the optional
 /// UDS JSON-RPC review daemon.
 fn daemon_cmd(opts: &[String]) {
-    use std::path::PathBuf;
-    let socket = if let Some(path) = flag_value(opts, "--socket") {
-        PathBuf::from(path)
-    } else if let Some(path) = deep_diff_forge_daemon::default_socket_path() {
-        path
-    } else {
+    use deep_diff_forge_daemon::SocketLocation;
+    // One resolution point: explicit `--socket` override, else $XDG_RUNTIME_DIR,
+    // else fail closed (no world-writable /tmp fallback). The result is a
+    // valid-by-construction location, so no path `Option` is threaded below.
+    let override_path = flag_value(opts, "--socket");
+    let Ok(location) = SocketLocation::resolve(override_path.as_deref().map(std::path::Path::new))
+    else {
         eprintln!(
             "error: $XDG_RUNTIME_DIR is not set; refusing an insecure world-writable /tmp socket."
         );
@@ -174,16 +183,16 @@ fn daemon_cmd(opts: &[String]) {
         .find(|a| !a.starts_with("--"))
         .map(String::as_str);
     match sub {
-        Some("path") => println!("{}", socket.display()),
+        Some("path") => emitln!("{}", location.path().display()),
         Some("start") => {
-            if let Err(err) = deep_diff_forge_daemon::run_server(&socket) {
+            if let Err(err) = deep_diff_forge_daemon::run_server(&location) {
                 eprintln!("error: daemon failed: {err}");
                 std::process::exit(6);
             }
         }
-        Some("health") => daemon_client(&socket, r#"{"id":1,"method":"daemon.health"}"#),
-        Some("status") => daemon_client(&socket, r#"{"id":1,"method":"daemon.status"}"#),
-        Some("stop") => daemon_client(&socket, r#"{"id":1,"method":"daemon.shutdown"}"#),
+        Some("health") => daemon_client(&location, r#"{"id":1,"method":"daemon.health"}"#),
+        Some("status") => daemon_client(&location, r#"{"id":1,"method":"daemon.status"}"#),
+        Some("stop") => daemon_client(&location, r#"{"id":1,"method":"daemon.shutdown"}"#),
         _ => {
             eprintln!(
                 "usage: deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]"
@@ -193,11 +202,14 @@ fn daemon_cmd(opts: &[String]) {
     }
 }
 
-fn daemon_client(socket: &std::path::Path, line: &str) {
-    match deep_diff_forge_daemon::request(socket, line) {
-        Ok(response) => println!("{response}"),
+fn daemon_client(location: &deep_diff_forge_daemon::SocketLocation, line: &str) {
+    match deep_diff_forge_daemon::request(location, line) {
+        Ok(response) => emitln!("{response}"),
         Err(err) => {
-            eprintln!("error: no daemon at {}: {err}", socket.display());
+            eprintln!(
+                "error: no daemon at {}: {err}",
+                display_safe(&location.path().to_string_lossy())
+            );
             std::process::exit(6);
         }
     }
@@ -358,12 +370,9 @@ fn review_cmd(opts: &[String]) {
     }
 }
 
-/// `semantic <path> [--json]`: parse a source file and report its symbols.
-fn semantic_cmd(opts: &[String]) {
-    let Some(path) = opts.iter().find(|a| !a.starts_with("--")) else {
-        eprintln!("usage: deep-diff-forge semantic <path> [--json]");
-        std::process::exit(2);
-    };
+/// Open and read a source file under the byte cap, exiting on failure. The
+/// shared helper behind the file-reading subcommands.
+fn read_source_file_or_exit(path: &str) -> String {
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(err) => {
@@ -371,7 +380,152 @@ fn semantic_cmd(opts: &[String]) {
             std::process::exit(3);
         }
     };
-    let source = read_capped_or_exit(file, "source file");
+    read_capped_or_exit(file, "source file")
+}
+
+/// `structural <old> <new> [--json]`: token-level (AST-leaf) structural diff —
+/// reformat-aware, never touching patch truth.
+fn structural_cmd(opts: &[String]) {
+    let paths: Vec<&String> = opts.iter().filter(|a| !a.starts_with("--")).collect();
+    let (Some(old_path), Some(new_path)) = (paths.first(), paths.get(1)) else {
+        eprintln!("usage: deep-diff-forge structural <old> <new> [--json]");
+        std::process::exit(2);
+    };
+    let old_source = read_source_file_or_exit(old_path);
+    let new_source = read_source_file_or_exit(new_path);
+    let language = deep_diff_forge_syntax::detect_language(new_path);
+    let diff = deep_diff_forge_syntax::structural_diff(language, &old_source, &new_source);
+    if opts.iter().any(|a| a == "--json") {
+        print_structural_json(&diff);
+    } else {
+        print_structural_human(&diff);
+    }
+}
+
+fn print_structural_human(diff: &deep_diff_forge_syntax::StructuralDiff) {
+    use deep_diff_forge_syntax::ChangeKind;
+    if diff.reformat_only {
+        emitln!("structural: no token changes (formatting only)");
+    }
+    for change in &diff.changes {
+        if change.kind == ChangeKind::Unchanged {
+            continue;
+        }
+        let marker = match change.kind {
+            ChangeKind::Added => '+',
+            ChangeKind::Removed => '-',
+            ChangeKind::Moved => '~',
+            ChangeKind::Unchanged => ' ',
+        };
+        let line = change.new_line.or(change.old_line).unwrap_or(0);
+        emitln!(
+            "{marker} {:<10} L{line}  {}",
+            change.kind.label(),
+            display_safe(&change.text)
+        );
+    }
+    emitln!(
+        "summary: {} unchanged, {} added, {} removed, {} moved{}",
+        diff.unchanged,
+        diff.added,
+        diff.removed,
+        diff.moved,
+        if diff.degraded {
+            " (degraded: input too large for token LCS)"
+        } else {
+            ""
+        }
+    );
+}
+
+fn print_structural_json(diff: &deep_diff_forge_syntax::StructuralDiff) {
+    use deep_diff_forge_core::json_escape;
+    use deep_diff_forge_syntax::ChangeKind;
+    use std::fmt::Write as _;
+    let num = |v: Option<u32>| v.map_or_else(|| "null".to_string(), |n| n.to_string());
+    let mut changes = String::new();
+    for (i, c) in diff
+        .changes
+        .iter()
+        .filter(|c| c.kind != ChangeKind::Unchanged)
+        .enumerate()
+    {
+        if i > 0 {
+            changes.push_str(",\n");
+        }
+        let _ = write!(
+            changes,
+            "    {{\"kind\": {}, \"text\": {}, \"old_line\": {}, \"new_line\": {}}}",
+            json_escape(c.kind.label()),
+            json_escape(&c.text),
+            num(c.old_line),
+            num(c.new_line)
+        );
+    }
+    let body = if changes.is_empty() {
+        String::new()
+    } else {
+        format!("\n{changes}\n  ")
+    };
+    let lang = if diff.language == deep_diff_forge_syntax::Language::Rust {
+        "rust"
+    } else {
+        "unsupported"
+    };
+    emitln!(
+        "{{\n  \"schema\": \"deep-diff-forge.structural.v0\",\n  \"language\": {},\n  \"reformat_only\": {},\n  \"degraded\": {},\n  \"summary\": {{\"unchanged\": {}, \"added\": {}, \"removed\": {}, \"moved\": {}}},\n  \"changes\": [{}]\n}}",
+        json_escape(lang),
+        diff.reformat_only,
+        diff.degraded,
+        diff.unchanged,
+        diff.added,
+        diff.removed,
+        diff.moved,
+        body
+    );
+}
+
+/// `highlight <path> [--color|--no-color]`: print the file with tree-sitter
+/// syntax highlighting.
+///
+/// Colour is on when stdout is a terminal (or `--color` is forced) and off when
+/// piped (or `--no-color`). Either way the output is terminal-safe: the source is
+/// routed through the same control-char sanitiser, so a hostile file cannot
+/// inject escapes — only fixed SGR colour codes are emitted.
+fn highlight_cmd(opts: &[String]) {
+    use std::io::IsTerminal as _;
+    let Some(path) = opts.iter().find(|a| !a.starts_with("--")) else {
+        eprintln!("usage: deep-diff-forge highlight <path> [--color|--no-color]");
+        std::process::exit(2);
+    };
+    let source = read_source_file_or_exit(path);
+    let language = deep_diff_forge_syntax::detect_language(path);
+
+    let color = if opts.iter().any(|a| a == "--no-color") {
+        false
+    } else if opts.iter().any(|a| a == "--color") {
+        true
+    } else {
+        std::io::stdout().is_terminal()
+    };
+
+    if color {
+        emit(&deep_diff_forge_syntax::highlight_to_ansi(
+            language, &source,
+        ));
+    } else {
+        // No colour requested/available: still sanitise so a hostile file is safe.
+        emit(&display_safe(&source));
+    }
+}
+
+/// `semantic <path> [--json]`: parse a source file and report its symbols.
+fn semantic_cmd(opts: &[String]) {
+    let Some(path) = opts.iter().find(|a| !a.starts_with("--")) else {
+        eprintln!("usage: deep-diff-forge semantic <path> [--json]");
+        std::process::exit(2);
+    };
+    let source = read_source_file_or_exit(path);
     let analysis = deep_diff_forge_syntax::analyze(
         path,
         &source,
@@ -730,6 +884,8 @@ USAGE:
   deep-diff-forge doctor
   deep-diff-forge deploy {{status|release}} [--json]
   deep-diff-forge semantic <path> [--json]
+  deep-diff-forge highlight <path> [--color|--no-color]
+  deep-diff-forge structural <old> <new> [--json]
   deep-diff-forge review [--probe]
   deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]
   deep-diff-forge learn {{status|record --stdin}} [--json]

@@ -13,10 +13,14 @@
 //! never reported as a fallback reason here.
 
 mod analyze;
+mod highlight;
 mod language;
+mod structural;
 
 pub use analyze::{SemanticAnalysis, SyntaxOptions, analyze, analyze_language, enclosing_symbol};
+pub use highlight::{HighlightClass, HighlightSpan, highlight, highlight_to_ansi, to_ansi};
 pub use language::{Language, detect_language};
+pub use structural::{ChangeKind, StructuralDiff, Token, TokenChange, structural_diff, tokenize};
 
 /// A top-level named item discovered in a source file.
 #[derive(Debug, Clone, PartialEq, Eq)]

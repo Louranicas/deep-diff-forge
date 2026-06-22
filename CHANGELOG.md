@@ -7,11 +7,21 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 ## [0.2.0] - 2026-06-22
 
 The **L9 (Learning)** layer plus the first crates.io-publishable cut — 12 crates,
-703 tests, zero `unsafe`, supply-chain-gated. `cargo publish --dry-run` is clean
+754 tests, zero `unsafe`, supply-chain-gated. `cargo publish --dry-run` is clean
 across the workspace; the crates.io upload itself remains token-gated.
 
 ### Added
 
+- **Syntax highlighting** — `highlight <path> [--color|--no-color]` (+
+  `syntax::highlight`): tree-sitter highlighting reusing the grammar's own
+  `highlights.scm`, mapped to an ANSI palette. Colour auto-detects a TTY.
+  Terminal-injection-safe: source text is routed through `display_safe`, so the
+  only raw escapes are fixed SGR codes.
+- **Structural diff** — `structural <old> <new> [--json]` (+
+  `syntax::structural`, schema `deep-diff-forge.structural.v0`): a token/leaf-level
+  (AST) diff over tree-sitter token streams. **Reformat-aware** (layout-only edits
+  report zero structural change) with best-effort moved-block detection; never
+  touches patch truth. Bounded LCS with graceful degradation on huge inputs.
 - **Learning (L9)** — `deep-diff-forge-learning`: the local-only learning loop.
   Per-decision [`StrategyReceipt`]s (hashes/counts/timings — never a path or
   source line) are appended as JSONL under `$XDG_STATE_HOME/deep-diff-forge/
@@ -23,6 +33,12 @@ across the workspace; the crates.io upload itself remains token-gated.
 
 ### Changed
 
+- **Daemon socket handling** (Zen review) — replaced scattered `Option<PathBuf>`
+  resolution with a parse-don't-validate `SocketLocation` type: one
+  `SocketLocation::resolve(explicit)` entry point (explicit `--socket` → else
+  `$XDG_RUNTIME_DIR` → else a typed `NoRuntimeDir`, no `/tmp` fallback), with
+  `bind`/`connect`/`path` as methods. A "no location" state is unrepresentable
+  past construction, and the CLI's nested `if let` collapses to one call.
 - **Publishable-workspace manifests** — versions and internal deps are now
   inherited via `[workspace.package]` + `[workspace.dependencies]`; every crate
   carries `description`, `keywords`, `categories`, and `homepage`. `core` and
@@ -30,6 +46,12 @@ across the workspace; the crates.io upload itself remains token-gated.
 
 ### Fixed
 
+- **Patch truth: malformed/truncated hunks are now rejected** (Zen review) — the
+  parser enforces each hunk's declared `@@ -a,b +c,d @@` counts exactly. A hunk
+  that ends (at a new header, a new file, or EOF) before its counts are satisfied
+  is a `TruncatedHunk` error; a body line that over-fills a side is a
+  `HunkLineCountMismatch`. An internally-incoherent patch no longer parses as
+  apply-able truth.
 - **Broken-pipe handling** — bulk CLI output (`--stdin-patch`, `--rank`,
   `--cluster`, `--jsonl`, `semantic`, `review --probe`, `learn`) is routed
   through a broken-pipe-tolerant writer, so `deep-diff-forge … | head` exits `0`

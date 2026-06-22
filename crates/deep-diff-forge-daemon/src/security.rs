@@ -19,6 +19,10 @@ pub enum SocketError {
     /// The path is a symlink — refused, to defeat symlink-swap attacks on the
     /// socket directory.
     Symlink,
+    /// No secure runtime directory is available (`$XDG_RUNTIME_DIR` is unset and
+    /// there is deliberately no world-writable `/tmp` fallback) and no explicit
+    /// socket path was given.
+    NoRuntimeDir,
 }
 
 impl std::fmt::Display for SocketError {
@@ -28,6 +32,9 @@ impl std::fmt::Display for SocketError {
             Self::NotADirectory => "runtime path is not a directory",
             Self::TooPermissive => "runtime directory is accessible by group or others",
             Self::Symlink => "runtime path is a symlink",
+            Self::NoRuntimeDir => {
+                "no secure runtime directory ($XDG_RUNTIME_DIR unset; no /tmp fallback)"
+            }
         };
         f.write_str(msg)
     }

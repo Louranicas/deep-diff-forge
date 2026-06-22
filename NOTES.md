@@ -2,6 +2,31 @@
 
 Durable lessons for future Deep-Diff-Forge sessions. This is not a diary.
 
+## 2026-06-22 (refactor: parser strictness, socket type, highlight, structural)
+
+- Lesson: a unified-diff parser must enforce each hunk's declared `@@ -a,b +c,d @@`
+  counts EXACTLY, or "patch truth" leaks. The lenient version closed a hunk at a
+  new header / EOF regardless of remaining counts (silent truncation). Fix: make
+  hunk-closing fallible (`TruncatedHunk` when counts remain) and reject over-fills
+  in `consume_body` (`HunkLineCountMismatch`). One existing test used a malformed
+  patch (`@@ -1,2 +1,1 @@` with 2 removals, 0 new-side lines) — the stricter
+  parser correctly rejected it; the test, not the parser, was wrong.
+- Lesson (Zen): prefer a parse-don't-validate type over scattered `Option<PathBuf>`
+  handling. `SocketLocation::resolve()` is the one entry point; "no location" is
+  unrepresentable past construction; `bind`/`connect`/`path` are methods. The CLI
+  nested `if let` collapsed to one call.
+- Lesson: tree-sitter syntax highlighting needs no `tree-sitter-highlight` crate
+  (which would force a tree-sitter major bump) — load the grammar's
+  `HIGHLIGHTS_QUERY` into a `tree_sitter::Query` and iterate `QueryCursor::captures`
+  (`tree_sitter::StreamingIterator` is re-exported). SECURITY: route span text
+  through `display_safe` so the only raw ESC in coloured output is your fixed SGR
+  code — highlighting attacker source is otherwise an injection vector.
+- Lesson: flat-token LCS gives a real *reformat-aware* structural diff (whitespace
+  isn't a token, so layout-only edits diff to nothing) and clean add/remove, but
+  it CANNOT robustly detect moves: shared punctuation (`(`,`)`,`;`,`{`,`}`) gets
+  LCS-matched in place, fragmenting any moved block. Robust moves need the tree
+  (difftastic). Keep move detection best-effort + say so; don't over-claim.
+
 ## 2026-06-21
 
 - Lesson: Bootstrap Rust gates must pin build output to repo-local `target` to

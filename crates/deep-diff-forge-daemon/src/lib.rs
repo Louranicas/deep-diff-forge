@@ -31,7 +31,9 @@ pub use security::{
     SECURE_DIR_MODE, SECURE_SOCKET_MODE, SocketError, default_socket_path, ensure_runtime_dir,
     runtime_base, runtime_base_from, runtime_dir, validate_private_dir,
 };
-pub use serve::{bind_secure, handle_connection, process_line, request, run_server};
+pub use serve::{
+    SocketLocation, bind_secure, handle_connection, process_line, request, run_server,
+};
 
 #[cfg(test)]
 mod tests {

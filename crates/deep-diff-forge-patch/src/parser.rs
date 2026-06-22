@@ -66,7 +66,7 @@ pub fn parse_with(input: &str, options: ParseOptions) -> Result<Vec<ReviewFile>,
     for (index, line) in input.lines().enumerate() {
         parser.feed(line, index + 1)?;
     }
-    Ok(parser.finish())
+    parser.finish()
 }
 
 /// Working accumulator for one file section.
@@ -100,10 +100,13 @@ struct Parser {
     file: Option<FileBuf>,
     hunk: Option<HunkBuf>,
     next_hunk_id: u64,
+    /// Last line number fed, so end-of-input truncation can be located.
+    last_line: usize,
 }
 
 impl Parser {
     fn feed(&mut self, line: &str, line_number: usize) -> Result<(), PatchParseError> {
+        self.last_line = line_number;
         // The "\ No newline at end of file" marker applies to the preceding
         // line and is recorded as file metadata, whether or not a hunk is still
         // open (it can arrive after the hunk's line counts are exhausted).
@@ -116,28 +119,28 @@ impl Parser {
         // While a hunk is open and not yet exhausted, body lines belong to it.
         if let Some(hunk) = self.hunk.as_mut() {
             if hunk.rem_old > 0 || hunk.rem_new > 0 {
-                if let Some(consumed) = hunk.consume_body(line) {
+                if let Some(consumed) = hunk.consume_body(line, line_number) {
                     consumed?;
                     if hunk.rem_old == 0 && hunk.rem_new == 0 {
-                        self.close_hunk();
+                        // Counts satisfied: a clean close (cannot truncate).
+                        self.close_hunk(line_number)?;
                     }
                     return Ok(());
                 }
             }
-            // Not a body line, or counts exhausted: close and re-dispatch.
-            self.close_hunk();
+            // A non-body line arrived while the hunk still expects content:
+            // closing here rejects the truncated hunk.
+            self.close_hunk(line_number)?;
         }
         self.dispatch_non_body(line, line_number)
     }
 
     fn dispatch_non_body(&mut self, line: &str, line_number: usize) -> Result<(), PatchParseError> {
         if let Some(rest) = line.strip_prefix("diff --git ") {
-            self.start_git_file(rest);
-            return Ok(());
+            return self.start_git_file(rest, line_number);
         }
         if let Some(rest) = line.strip_prefix("--- ") {
-            self.on_old_header(rest);
-            return Ok(());
+            return self.on_old_header(rest, line_number);
         }
         if let Some(rest) = line.strip_prefix("+++ ") {
             self.on_new_header(rest);
@@ -160,18 +163,19 @@ impl Parser {
         Ok(())
     }
 
-    fn start_git_file(&mut self, rest: &str) {
-        self.close_hunk();
+    fn start_git_file(&mut self, rest: &str, line_number: usize) -> Result<(), PatchParseError> {
+        self.close_hunk(line_number)?;
         self.flush_file();
         let mut file = FileBuf::default();
         let mut tokens = rest.split_whitespace();
         file.git_old = tokens.next().map(strip_ab);
         file.git_new = tokens.next().map(strip_ab);
         self.file = Some(file);
+        Ok(())
     }
 
-    fn on_old_header(&mut self, rest: &str) {
-        self.close_hunk();
+    fn on_old_header(&mut self, rest: &str, line_number: usize) -> Result<(), PatchParseError> {
+        self.close_hunk(line_number)?;
         let needs_new = self
             .file
             .as_ref()
@@ -183,6 +187,7 @@ impl Parser {
         if let Some(file) = self.file.as_mut() {
             file.old_raw = Some(header_path(rest));
         }
+        Ok(())
     }
 
     fn on_new_header(&mut self, rest: &str) {
@@ -239,8 +244,18 @@ impl Parser {
         false
     }
 
-    fn close_hunk(&mut self) {
+    /// Close the open hunk, if any. A hunk whose declared old/new counts are not
+    /// yet satisfied is a truncated hunk and is rejected — this is what keeps a
+    /// hunk's `@@ -a,b +c,d @@` contract load-bearing for patch truth.
+    fn close_hunk(&mut self, line_number: usize) -> Result<(), PatchParseError> {
         if let Some(hunk) = self.hunk.take() {
+            if hunk.rem_old != 0 || hunk.rem_new != 0 {
+                return Err(PatchParseError::TruncatedHunk {
+                    line_number,
+                    remaining_old: hunk.rem_old,
+                    remaining_new: hunk.rem_new,
+                });
+            }
             if let Some(file) = self.file.as_mut() {
                 file.hunks.push(PatchHunk {
                     id: hunk.id,
@@ -250,6 +265,7 @@ impl Parser {
                 });
             }
         }
+        Ok(())
     }
 
     fn flush_file(&mut self) {
@@ -258,24 +274,40 @@ impl Parser {
         }
     }
 
-    fn finish(mut self) -> Vec<ReviewFile> {
-        self.close_hunk();
+    fn finish(mut self) -> Result<Vec<ReviewFile>, PatchParseError> {
+        // End of input: any still-open hunk must have satisfied its counts.
+        self.close_hunk(self.last_line)?;
         self.flush_file();
-        self.files
+        Ok(self.files)
     }
 }
 
 impl HunkBuf {
     /// Try to consume `line` as a hunk body line. Returns `None` when the line
-    /// is not a body line (so the caller closes the hunk and re-dispatches).
-    fn consume_body(&mut self, line: &str) -> Option<Result<(), PatchParseError>> {
+    /// is not a body line (so the caller closes the hunk and re-dispatches), and
+    /// `Some(Err(..))` when the line would exceed the side count the header
+    /// declared — a hunk that over-fills its `@@ -a,b +c,d @@` contract is
+    /// rejected, just as a truncated one is.
+    fn consume_body(
+        &mut self,
+        line: &str,
+        line_number: usize,
+    ) -> Option<Result<(), PatchParseError>> {
         let marker = line.chars().next();
         let text = line.get(1..).unwrap_or("").to_string();
+        let mismatch = || PatchParseError::HunkLineCountMismatch {
+            line_number,
+            text: line.to_string(),
+        };
         match marker {
             // A leading space is a context line; a truly-empty line inside an
             // unexhausted hunk is a blank context line emitted without the
-            // conventional leading space (lenient-tool tolerance).
+            // conventional leading space (lenient-tool tolerance). Context
+            // consumes one slot from BOTH sides, so both must remain.
             Some(' ') | None => {
+                if self.rem_old == 0 || self.rem_new == 0 {
+                    return Some(Err(mismatch()));
+                }
                 self.lines.push(PatchLine {
                     kind: PatchLineKind::Context,
                     old_line: Some(self.old_line),
@@ -284,11 +316,14 @@ impl HunkBuf {
                 });
                 self.old_line = self.old_line.saturating_add(1);
                 self.new_line = self.new_line.saturating_add(1);
-                self.rem_old = self.rem_old.saturating_sub(1);
-                self.rem_new = self.rem_new.saturating_sub(1);
+                self.rem_old -= 1;
+                self.rem_new -= 1;
                 Some(Ok(()))
             }
             Some('+') => {
+                if self.rem_new == 0 {
+                    return Some(Err(mismatch()));
+                }
                 self.lines.push(PatchLine {
                     kind: PatchLineKind::Added,
                     old_line: None,
@@ -296,10 +331,13 @@ impl HunkBuf {
                     text,
                 });
                 self.new_line = self.new_line.saturating_add(1);
-                self.rem_new = self.rem_new.saturating_sub(1);
+                self.rem_new -= 1;
                 Some(Ok(()))
             }
             Some('-') => {
+                if self.rem_old == 0 {
+                    return Some(Err(mismatch()));
+                }
                 self.lines.push(PatchLine {
                     kind: PatchLineKind::Removed,
                     old_line: Some(self.old_line),
@@ -307,7 +345,7 @@ impl HunkBuf {
                     text,
                 });
                 self.old_line = self.old_line.saturating_add(1);
-                self.rem_old = self.rem_old.saturating_sub(1);
+                self.rem_old -= 1;
                 Some(Ok(()))
             }
             _ => None,
@@ -457,6 +495,104 @@ mod tests {
         let files = parse(input).expect("parse should succeed");
         assert_eq!(files.len(), 1, "expected exactly one file");
         files.into_iter().next().unwrap()
+    }
+
+    // --- patch-truth: hunks must satisfy their declared `@@ -a,b +c,d @@` counts.
+
+    #[test]
+    fn exact_hunk_counts_are_accepted() {
+        // old = 1 ctx + 1 removed = 2; new = 1 ctx + 1 added = 2.
+        let input = "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n";
+        let file = one(input);
+        assert_eq!(file.patch_twin.hunks[0].lines.len(), 3);
+    }
+
+    #[test]
+    fn truncated_hunk_at_eof_is_rejected() {
+        // Header declares 5 old / 5 new but provides 2 lines, then EOF.
+        let input = "--- a/x\n+++ b/x\n@@ -1,5 +1,5 @@\n ctx\n-old\n";
+        let err = parse(input).unwrap_err();
+        assert!(
+            matches!(err, PatchParseError::TruncatedHunk { remaining_old, remaining_new, .. } if remaining_old == 3 && remaining_new == 4),
+            "expected TruncatedHunk, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn truncated_hunk_before_next_file_is_rejected() {
+        // First hunk is truncated, then a second file header arrives.
+        let input = "\
+diff --git a/x b/x
+--- a/x
++++ b/x
+@@ -1,3 +1,3 @@
+ ctx
+diff --git a/y b/y
+--- a/y
++++ b/y
+@@ -1,1 +1,1 @@
+-a
++b
+";
+        let err = parse(input).unwrap_err();
+        assert!(
+            matches!(err, PatchParseError::TruncatedHunk { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn added_line_when_new_count_is_zero_is_rejected() {
+        // A pure-deletion hunk (`+0,0`) that supplies an addition over-fills the
+        // new side while the old side is still expected.
+        let input = "--- a/x\n+++ b/x\n@@ -1,1 +0,0 @@\n+oops\n";
+        let err = parse(input).unwrap_err();
+        assert!(
+            matches!(err, PatchParseError::HunkLineCountMismatch { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn removed_line_when_old_count_is_zero_is_rejected() {
+        // A pure-addition hunk (`-0,0`) that supplies a removal over-fills old.
+        let input = "--- a/x\n+++ b/x\n@@ -0,0 +1,1 @@\n-oops\n";
+        let err = parse(input).unwrap_err();
+        assert!(
+            matches!(err, PatchParseError::HunkLineCountMismatch { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn context_line_when_one_side_exhausted_is_rejected() {
+        // old = 1, new = 2: the first context consumes the only old slot; a
+        // second context has no old slot left.
+        let input = "--- a/x\n+++ b/x\n@@ -1,1 +1,2 @@\n ctx\n ctx2\n";
+        let err = parse(input).unwrap_err();
+        assert!(
+            matches!(err, PatchParseError::HunkLineCountMismatch { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn trailing_body_line_after_a_satisfied_hunk_is_rejected() {
+        // The hunk's counts are exactly met by `-old`/`+new`; the extra `+x`
+        // then falls outside any hunk and is rejected (BodyLineOutsideHunk).
+        let input = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n+x\n";
+        let err = parse(input).unwrap_err();
+        assert!(
+            matches!(err, PatchParseError::BodyLineOutsideHunk { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn truncated_hunk_error_displays_remaining() {
+        let input = "--- a/x\n+++ b/x\n@@ -1,4 +1,4 @@\n ctx\n";
+        let msg = parse(input).unwrap_err().to_string();
+        assert!(msg.contains("truncated hunk"));
     }
 
     const BASIC: &str = "\
@@ -732,13 +868,16 @@ diff --git a/b.txt b/b.txt
     #[test]
     fn removed_line_content_dashes_are_not_a_new_file() {
         // A removed line whose content begins with "-- " must not be mistaken
-        // for the next file's "--- " header. Hunk counts disambiguate.
+        // for the next file's "--- " header. Hunk counts disambiguate: while the
+        // hunk still expects an old-side line, the "-"-prefixed line is removed
+        // content. (Counts here are exact: old = 1 ctx + 2 removed = 3, new = 1.)
         let input = "\
 diff --git a/x b/x
 --- a/x
 +++ b/x
-@@ -1,2 +1,1 @@
--keep
+@@ -1,3 +1,1 @@
+ keep
+-removed
 --- not a header, just content
 ";
         let file = one(input);

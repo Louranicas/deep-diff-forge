@@ -62,6 +62,26 @@ pub enum PatchParseError {
         /// Raw text of the offending body line.
         text: String,
     },
+    /// A hunk ended (at a new header, a new file, or end of input) before its
+    /// declared old/new line counts were satisfied — the hunk is truncated, so
+    /// no apply-able patch truth can be produced from it.
+    TruncatedHunk {
+        /// 1-based line number where the hunk's content ended.
+        line_number: usize,
+        /// Old-side lines still expected by the header count.
+        remaining_old: u32,
+        /// New-side lines still expected by the header count.
+        remaining_new: u32,
+    },
+    /// A hunk body line would exceed the side count declared by its header
+    /// (e.g. an added line after the new-count is already satisfied). The hunk
+    /// does not match its own `@@ -a,b +c,d @@` contract.
+    HunkLineCountMismatch {
+        /// 1-based line number of the offending body line.
+        line_number: usize,
+        /// Raw text of the offending body line.
+        text: String,
+    },
 }
 
 impl std::fmt::Display for PatchParseError {
@@ -83,6 +103,18 @@ impl std::fmt::Display for PatchParseError {
                     "diff body line outside any hunk at line {line_number}: {text:?}"
                 )
             }
+            Self::TruncatedHunk {
+                line_number,
+                remaining_old,
+                remaining_new,
+            } => write!(
+                f,
+                "truncated hunk ending at line {line_number}: {remaining_old} old / {remaining_new} new line(s) declared but missing"
+            ),
+            Self::HunkLineCountMismatch { line_number, text } => write!(
+                f,
+                "hunk body line at line {line_number} exceeds the count declared by its header: {text:?}"
+            ),
         }
     }
 }

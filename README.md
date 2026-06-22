@@ -11,7 +11,7 @@ layer a projection over one stable model, none of them ever allowed to corrupt
 the patch.
 
 > **Maturity: L9 (Learning).** All engine layers L0–L8 are implemented, plus the
-> L9 local-only learning loop (`learn status|record`). 12 crates, 721 tests, zero
+> L9 local-only learning loop (`learn status|record`). 12 crates, 754 tests, zero
 > `unsafe`, supply-chain-gated, dual MIT/Apache-2.0 licensed. The workspace is
 > **crates.io-publish-ready** (`cargo publish --dry-run` is clean across all
 > crates); the upload itself is **token-gated** — the release workflow publishes
@@ -110,19 +110,20 @@ do everything they do. The table reflects default, out-of-the-box behavior.
 | Optional shared-cache daemon (UDS) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Local, private learning loop | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Apply-able patch output preserved | ✅ | ✅ <sup>2</sup> | ❌ | ✅ <sup>2</sup> | ✅ |
-| Syntax highlighting | ❌ <sup>3</sup> | ✅ | ✅ | ❌ | ❌ |
-| Structural / AST-level diffing | ❌ <sup>4</sup> | ❌ | ✅ | ❌ | ❌ |
+| Syntax highlighting | ✅ <sup>3</sup> | ✅ | ✅ | ❌ | ❌ |
+| Structural / AST-level diffing | ✅ <sup>4</sup> | ❌ | ✅ | ❌ | ❌ |
 | Pager / Unix-filter friendly | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 <sup>1</sup> difftastic has an experimental JSON display; deep-diff-forge ships a
 stable, schema-versioned `--json` plus streaming `--jsonl`.
 <sup>2</sup> `delta` / `diff-so-fancy` re-render an underlying Git diff that
 remains apply-able; they do not alter patch truth.
-<sup>3</sup> Tree-sitter semantic analysis ships today (`semantic`); colored
-token highlighting in the renderer is on the roadmap.
-<sup>4</sup> deep-diff-forge models patch truth with a semantic *overlay*
-(symbols, parse status, stable anchors); full AST-level structural diff
-(difftastic's specialty) is on the roadmap.
+<sup>3</sup> Tree-sitter syntax highlighting (`highlight`), reusing the grammar's
+own queries and **terminal-injection-safe** (attacker source can't smuggle
+escapes). Rust today; more languages as grammars are added.
+<sup>4</sup> Token/leaf-level structural diff (`structural`): **reformat-aware**
+(layout-only changes report zero structural change) with best-effort moved-block
+detection. difftastic's optimal tree-edit-distance graph diff is deeper.
 
 > Deep-Diff-Forge is optimized for reviewing a whole changeset **interactively**
 > and for **agent-collaborative, machine-readable** review. Comparisons are
@@ -235,6 +236,37 @@ Unsupported extensions degrade with an explicit `fallback:UnsupportedLanguage`,
 never a guess. Parsing is byte- and node-budgeted; a malformed file reports
 `parsed_with_errors:N` rather than failing.
 
+### `highlight <path>` — syntax highlighting
+
+Print a source file with tree-sitter syntax highlighting, reusing the grammar's
+own `highlights.scm` queries.
+
+```bash
+deep-diff-forge highlight src/lib.rs               # colour when stdout is a TTY
+deep-diff-forge highlight src/lib.rs --color       # force ANSI
+deep-diff-forge highlight src/lib.rs --no-color     # plain (still sanitised)
+```
+
+Colour is automatic on a terminal and off when piped. Either way the output is
+**terminal-injection-safe**: source text is routed through the control-char
+sanitiser, so the only raw escapes are fixed SGR colour codes — a hostile file
+cannot hijack your terminal.
+
+### `structural <old> <new>` — token-level structural diff
+
+Diff two files by their tree-sitter **token streams** instead of raw lines, so
+the result is **reformat-aware**: a change that only reflows whitespace reports
+zero structural change.
+
+```bash
+deep-diff-forge structural old.rs new.rs            # human summary
+deep-diff-forge structural old.rs new.rs --json     # deep-diff-forge.structural.v0
+```
+
+Reports added / removed / unchanged tokens, with best-effort moved-block
+detection. This is a token/leaf-level diff (not difftastic's optimal
+tree-edit-distance), and it never touches patch truth — it only describes source.
+
 ### `review [--probe]` — interactive review cockpit
 
 ```bash
@@ -325,6 +357,7 @@ line. Primary output goes to **stdout**; diagnostics to **stderr**.
 | `--stdin-patch --rank --json` | `deep-diff-forge.rank.v0` |
 | `--stdin-patch --cluster --json` | `deep-diff-forge.cluster.v0` |
 | `semantic --json` | `deep-diff-forge.semantic.v0` |
+| `structural --json` | `deep-diff-forge.structural.v0` |
 | `deploy status --json` | `deep-diff-forge.deployment-status.v0` |
 | `learn status --json` | `deep-diff-forge.learning.v0` |
 | `daemon …` | JSON-RPC 2.0 |
@@ -487,7 +520,7 @@ just gate-feature
 #   bootstrap contract probes
 ```
 
-Standards enforced across the tree: **721 tests** (every production crate ≥ 50
+Standards enforced across the tree: **754 tests** (every production crate ≥ 50
 meaningful tests), **zero `unsafe`** (compiler-forbidden workspace-wide via
 `[workspace.lints]`), no production `unwrap`/`expect`, pedantic clippy clean with
 no unexplained suppressions, and a `cargo-deny` ([`deny.toml`](deny.toml)) +
