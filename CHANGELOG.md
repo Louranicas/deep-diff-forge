@@ -99,6 +99,27 @@ fail-before/pass-after regression tests. A later final-hardening review fleet
   audit` gate runs in CI and gates the irreversible crates.io publish;
   least-privilege workflow permissions; Dependabot; `SECURITY.md`.
 
+A second bias-controlled re-review (S1008443) raised three further findings, each
+fixed and independently verified (security / tester / claim-verifier judges,
+outside the build loop):
+
+- **Mandatory hunk-header closer** — `parse_hunk_header` now requires the closing
+  `@@` token; a header with trailing garbage and no closer (`@@ -1,1 +1,1
+  NOT_A_HUNK`) is rejected (exit 4) instead of normalizing into a valid model.
+  Completes the patch-truth hardening alongside the truncated-hunk fix.
+- **Explicit `--socket` no longer mutates caller state** — `SocketLocation` carries
+  provenance; an explicit `--socket` path binds via a fail-closed `bind_explicit`
+  that **creates** an absent parent at `0700` but **never chmods a pre-existing
+  parent** (a world-readable parent fails closed rather than being silently
+  tightened to `0700`) and removes the socket path **only if it is verifiably a
+  socket** (never a regular file, directory, or symlink). The engine-owned
+  `$XDG_RUNTIME_DIR` path is unchanged, and `daemon start --socket /new/path` still
+  works (the absent parent is created).
+- **Bounded daemon sessions** — review sessions are capped at `MAX_SESSIONS` (64)
+  with LRU eviction (least-recently-used evicted before insert; reads refresh
+  recency), hard-bounding daemon memory regardless of how many sessions a client
+  opens without closing.
+
 [0.2.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.2.0
 
 ## [0.1.0] - 2026-06-22

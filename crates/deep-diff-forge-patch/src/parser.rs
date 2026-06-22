@@ -439,7 +439,14 @@ struct HunkHeader {
     new_count: u32,
 }
 
-/// Parse `@@ -a,b +c,d @@` (counts optional, defaulting to 1).
+/// Parse `@@ -a,b +c,d @@ [optional section heading]`.
+///
+/// The opening `@@` is already required by the call site (line starts with `@@`).
+/// This function additionally requires the mandatory closing `@@` token — a unified
+/// diff hunk header without it is malformed and the patch MUST be rejected (patch
+/// truth: malformed input must never silently normalise to a valid internal model).
+///
+/// Trailing section-heading text after the closing `@@` is allowed and ignored.
 fn parse_hunk_header(line: &str) -> Option<HunkHeader> {
     let rest = line.strip_prefix("@@")?.trim_start();
     let rest = rest.strip_prefix('-')?;
@@ -447,9 +454,17 @@ fn parse_hunk_header(line: &str) -> Option<HunkHeader> {
     let old = parts.next()?;
     let after = parts.next()?.trim_start();
     let new = after.strip_prefix('+')?;
-    let new = new.split_whitespace().next()?;
+    // Collect whitespace-split tokens: first is the `new[,count]` range,
+    // second MUST be exactly `@@` (the mandatory closer).
+    let mut tokens = new.split_whitespace();
+    let new_range = tokens.next()?;
+    match tokens.next() {
+        Some("@@") => {}
+        _ => return None,
+    }
+    // Any further tokens are optional section-heading text — accepted and ignored.
     let (old_start, old_count) = parse_range(old)?;
-    let (new_start, new_count) = parse_range(new)?;
+    let (new_start, new_count) = parse_range(new_range)?;
     Some(HunkHeader {
         old_start,
         old_count,
@@ -1077,5 +1092,108 @@ diff --git a/x b/x
         assert_eq!(parse_range("5"), Some((5, 1)));
         assert_eq!(parse_range("5,3"), Some((5, 3)));
         assert_eq!(parse_range("x"), None);
+    }
+
+    // --- hunk-header closing `@@` enforcement (patch truth) ---
+    //
+    // A valid unified hunk header is: `@@ -old[,count] +new[,count] @@ [section]`
+    // The closing `@@` is mandatory. All REJECT tests below would have been
+    // accepted (parse returning Ok with a hunk) before the fix that enforces the
+    // closer; they now produce `MalformedHunkHeader`.
+
+    /// Basic header with explicit counts — must parse successfully end-to-end.
+    #[test]
+    fn hunk_header_accepts_basic_with_counts() {
+        let input = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n";
+        let file = one(input);
+        assert_eq!(file.patch_twin.hunks.len(), 1);
+    }
+
+    /// Header where both counts default to 1 (omitted) — must parse successfully.
+    #[test]
+    fn hunk_header_accepts_default_counts() {
+        let input = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n";
+        let file = one(input);
+        assert_eq!(file.patch_twin.hunks.len(), 1);
+    }
+
+    /// Header with trailing section-heading text after the `@@` closer — must parse
+    /// successfully; the section text is optional and must be accepted and ignored.
+    #[test]
+    fn hunk_header_accepts_section_text() {
+        let input = "--- a/x\n+++ b/x\n@@ -10,7 +10,6 @@ fn foo()\n-a\n-b\n-c\n-d\n-e\n-f\n-g\n+A\n+B\n+C\n+D\n+E\n+F\n";
+        let file = one(input);
+        assert_eq!(file.patch_twin.hunks.len(), 1);
+        assert_eq!(file.patch_twin.hunks[0].old_start, Some(10));
+    }
+
+    /// Pure-addition hunk (`-0,0 +1,5`) — must parse successfully.
+    #[test]
+    fn hunk_header_accepts_add_from_zero() {
+        let input = "--- /dev/null\n+++ b/x\n@@ -0,0 +1,5 @@\n+a\n+b\n+c\n+d\n+e\n";
+        let file = one(input);
+        assert_eq!(file.patch_twin.hunks.len(), 1);
+        let adds = file.patch_twin.hunks[0]
+            .lines
+            .iter()
+            .filter(|l| l.kind == PatchLineKind::Added)
+            .count();
+        assert_eq!(adds, 5);
+    }
+
+    /// Trailing garbage with NO closing `@@` — the closer is mandatory; this was
+    /// silently accepted before the fix (parse succeeded, garbage discarded).
+    #[test]
+    fn hunk_header_rejects_trailing_garbage_no_closer() {
+        let input = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 NOT_A_HUNK\n-old\n+new\n";
+        let err = parse(input).unwrap_err();
+        assert!(
+            matches!(err, PatchParseError::MalformedHunkHeader { .. }),
+            "expected MalformedHunkHeader, got {err:?}"
+        );
+    }
+
+    /// Completely missing closing `@@` — header ends after the `+new[,count]` token
+    /// with nothing following; was silently accepted before the fix.
+    #[test]
+    fn hunk_header_requires_closing_at_at() {
+        let input = "--- a/x\n+++ b/x\n@@ -1,1 +1,1\n-old\n+new\n";
+        let err = parse(input).unwrap_err();
+        assert!(
+            matches!(err, PatchParseError::MalformedHunkHeader { .. }),
+            "expected MalformedHunkHeader, got {err:?}"
+        );
+    }
+
+    /// Triple-`@@@` closer — the closing token must equal exactly `@@`; `@@@` is
+    /// a different token and must be rejected.  Was silently accepted before the fix
+    /// because the old code never inspected the closer at all.
+    #[test]
+    fn hunk_header_rejects_triple_at_closer() {
+        let input = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@@\n-old\n+new\n";
+        let err = parse(input).unwrap_err();
+        assert!(
+            matches!(err, PatchParseError::MalformedHunkHeader { .. }),
+            "expected MalformedHunkHeader, got {err:?}"
+        );
+    }
+
+    /// Direct unit-level check: `parse_hunk_header` returns `None` on the
+    /// canonical bad input so the call-site correctly maps it to an error.
+    #[test]
+    fn parse_hunk_header_unit_rejects_missing_closer() {
+        assert!(parse_hunk_header("@@ -1,1 +1,1 NOT_A_HUNK").is_none());
+        assert!(parse_hunk_header("@@ -1,1 +1,1").is_none());
+        assert!(parse_hunk_header("@@ -1,1 +1,1 @@@").is_none());
+    }
+
+    /// Direct unit-level check: `parse_hunk_header` returns `Some` for all
+    /// valid header forms.
+    #[test]
+    fn parse_hunk_header_unit_accepts_valid_forms() {
+        assert!(parse_hunk_header("@@ -1,1 +1,1 @@").is_some());
+        assert!(parse_hunk_header("@@ -1 +1 @@").is_some());
+        assert!(parse_hunk_header("@@ -10,7 +10,6 @@ fn foo()").is_some());
+        assert!(parse_hunk_header("@@ -0,0 +1,5 @@").is_some());
     }
 }

@@ -3,14 +3,33 @@ use crate::protocol::{
     INTERNAL_ERROR, INVALID_REQUEST, PARSE_ERROR, RpcError, error_response, parse_request,
     success_response,
 };
-use crate::security::{SECURE_SOCKET_MODE, SocketError, default_socket_path, ensure_runtime_dir};
+use crate::security::{
+    SECURE_DIR_MODE, SECURE_SOCKET_MODE, SocketError, default_socket_path, ensure_runtime_dir,
+    validate_private_dir,
+};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read as _, Write as _};
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
+
+/// Tracks whether a `SocketLocation` was produced from the engine-managed
+/// default path (the `$XDG_RUNTIME_DIR`-derived location the daemon owns) or
+/// from an explicit `--socket` override supplied by the caller.
+///
+/// The distinction determines which binding policy applies:
+/// * `EngineDefault` — the daemon owns the directory; create + chmod are safe.
+/// * `Explicit` — the directory belongs to the caller; we must not create it,
+///   must not chmod it, and must not remove anything that is not a socket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Provenance {
+    /// Path was derived from `$XDG_RUNTIME_DIR`; the daemon owns it.
+    EngineDefault,
+    /// Path was supplied by the caller via `--socket` or [`SocketLocation::at`].
+    Explicit,
+}
 
 /// A resolved, ready-to-use daemon socket location.
 ///
@@ -20,9 +39,16 @@ use std::time::Duration;
 /// [`SocketLocation::at`] (an explicit path) — so a "no location" state is not
 /// representable past construction, and binding/connecting are methods on the
 /// value rather than free functions over a bare path.
+///
+/// Provenance is carried in the type: explicit-path sockets bind with a
+/// fail-closed policy (parent must already exist and be owner-private; nothing
+/// is created or chmod'd; only an existing *socket* is removed). Engine-default
+/// sockets bind with the original create+chmod policy because the daemon owns
+/// that directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SocketLocation {
     path: PathBuf,
+    provenance: Provenance,
 }
 
 impl SocketLocation {
@@ -39,14 +65,24 @@ impl SocketLocation {
             return Ok(Self::at(path));
         }
         default_socket_path()
-            .map(|path| Self { path })
+            .map(|path| Self {
+                path,
+                provenance: Provenance::EngineDefault,
+            })
             .ok_or(SocketError::NoRuntimeDir)
     }
 
     /// A location at an explicit path (the `--socket PATH` override and tests).
+    ///
+    /// The returned location carries `Provenance::Explicit`: binding will
+    /// validate but not create or chmod the parent directory, and will refuse to
+    /// remove anything at the socket path that is not already a socket.
     #[must_use]
     pub fn at(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            provenance: Provenance::Explicit,
+        }
     }
 
     /// The resolved socket path.
@@ -55,13 +91,24 @@ impl SocketLocation {
         &self.path
     }
 
-    /// Bind a secured listener at this location (owner-private dir, symlink
-    /// rejection, `0600` socket).
+    /// Bind a secured listener at this location.
+    ///
+    /// The binding policy depends on provenance:
+    /// * **Engine-default** — creates + chmods the daemon-owned runtime dir,
+    ///   removes any stale file, binds, sets the socket to `0600`.
+    /// * **Explicit** — the parent directory must already exist and pass
+    ///   [`validate_private_dir`] (owner-private, non-symlink); it is never
+    ///   created or chmod'd. Any pre-existing path is removed only if it is a
+    ///   socket; a regular file or directory causes an error (fail closed).
     ///
     /// # Errors
+    ///
     /// Returns an I/O error if the directory cannot be secured or the bind fails.
     pub fn bind(&self) -> std::io::Result<UnixListener> {
-        bind_secure(&self.path)
+        match self.provenance {
+            Provenance::EngineDefault => bind_secure(&self.path),
+            Provenance::Explicit => bind_explicit(&self.path),
+        }
     }
 
     /// Connect to a daemon listening at this location.
@@ -187,6 +234,73 @@ pub fn bind_secure(socket_path: &Path) -> std::io::Result<UnixListener> {
     if socket_path.exists() {
         std::fs::remove_file(socket_path)?;
     }
+    let listener = UnixListener::bind(socket_path)?;
+    std::fs::set_permissions(
+        socket_path,
+        std::fs::Permissions::from_mode(SECURE_SOCKET_MODE),
+    )?;
+    Ok(listener)
+}
+
+/// Bind a listener at an *explicit* (caller-supplied) socket path with a
+/// fail-closed security policy:
+///
+/// 1. Secure the parent directory without mutating pre-existing state the caller
+///    owns:
+///    - If the parent is **missing**, create it (and ancestors) and chmod the
+///      leaf to `0700` — we own a directory we just created, so this introduces
+///      new owner-private state rather than tightening someone else's. This keeps
+///      `daemon start --socket /new/path/d.sock` working out of the box.
+///    - If the parent **already exists**, it must pass [`validate_private_dir`]
+///      (owner-private, non-symlink) and is **never** chmodded. A world-readable
+///      parent fails closed instead of being silently tightened to `0700` — this
+///      is the core of the hardening (a `--socket` override must not mutate a
+///      directory the caller already owns).
+/// 2. If the socket path already exists it is removed **only if it is a socket**
+///    (`symlink_metadata + file_type().is_socket()`). A regular file, directory,
+///    or symlink at the path causes an error; we never delete non-socket files.
+/// 3. Binds via [`UnixListener::bind`] and sets the socket to `0600`.
+///
+/// This is the binding path for `--socket` overrides. The engine-managed
+/// runtime dir uses [`bind_secure`] instead.
+///
+/// # Errors
+///
+/// Returns an I/O error if the parent cannot be created/secured, is a pre-existing
+/// insecure directory, the path holds a non-socket file, or the bind itself fails.
+pub fn bind_explicit(socket_path: &Path) -> std::io::Result<UnixListener> {
+    // 1. Secure the parent. Create it (owner-private) if absent; otherwise
+    //    validate it WITHOUT chmodding — never mutate a directory the caller owns.
+    let parent = socket_path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "socket path has no parent directory",
+        )
+    })?;
+    if std::fs::symlink_metadata(parent).is_err() {
+        // Parent is absent — create it and set owner-only mode on the new directory.
+        std::fs::create_dir_all(parent)?;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(SECURE_DIR_MODE))?;
+    }
+    // Validate in all cases (created or pre-existing); never chmod a dir we did
+    // not just create.
+    validate_private_dir(parent)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?;
+
+    // 2. If the path exists, remove it only when it is verifiably a socket.
+    //    Use symlink_metadata (lstat) to avoid following a symlink at the path.
+    if let Ok(meta) = std::fs::symlink_metadata(socket_path) {
+        if meta.file_type().is_socket() {
+            std::fs::remove_file(socket_path)?;
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "socket path is occupied by a non-socket file; refusing to delete it",
+            ));
+        }
+    }
+
+    // 3. Bind and set owner-only permissions on the socket.
     let listener = UnixListener::bind(socket_path)?;
     std::fs::set_permissions(
         socket_path,
@@ -424,10 +538,21 @@ mod tests {
         }
     }
 
+    /// Pre-create a parent directory at the given mode, returning the socket path.
+    fn temp_socket_with_parent(name: &str, parent_mode: u32) -> std::path::PathBuf {
+        let sock = temp_socket(name);
+        let parent = sock.parent().unwrap();
+        let _ = std::fs::remove_dir_all(parent);
+        std::fs::create_dir_all(parent).expect("create parent");
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(parent_mode))
+            .expect("chmod parent");
+        sock
+    }
+
     #[test]
     fn run_server_full_round_trip_then_shutdown() {
-        let sock = temp_socket("run");
-        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+        // Explicit SocketLocation requires the parent to exist and be owner-private.
+        let sock = temp_socket_with_parent("run", 0o700);
         let server_loc = SocketLocation::at(sock.clone());
         let server = thread::spawn(move || run_server(&server_loc));
         wait_for_socket(&sock);
@@ -446,8 +571,8 @@ mod tests {
 
     #[test]
     fn run_server_diff_plan_over_socket() {
-        let sock = temp_socket("plan");
-        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+        // Explicit SocketLocation requires the parent to exist and be owner-private.
+        let sock = temp_socket_with_parent("plan", 0o700);
         let server_loc = SocketLocation::at(sock.clone());
         let server = thread::spawn(move || run_server(&server_loc));
         wait_for_socket(&sock);
@@ -464,6 +589,8 @@ mod tests {
 
     #[test]
     fn request_to_missing_daemon_errors() {
+        // connect() does not require the parent to exist or be secure; it simply
+        // tries to open the socket path and fails if no daemon is listening.
         let sock = temp_socket("absent");
         let _ = std::fs::remove_dir_all(sock.parent().unwrap());
         let client = SocketLocation::at(sock);
@@ -501,5 +628,198 @@ mod tests {
         drop(reader);
         let _ = handle.join();
         assert!(line.contains("\"status\":\"ok\""));
+    }
+
+    // -------------------------------------------------------------------------
+    // F2: explicit-bind policy tests (fail-before/pass-after)
+    // -------------------------------------------------------------------------
+
+    // Build a temp parent dir at the given mode and return (parent, sock_path).
+    fn explicit_temp(label: &str, mode: u32) -> (std::path::PathBuf, std::path::PathBuf) {
+        let parent =
+            std::env::temp_dir().join(format!("ddf-explicit-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).expect("create parent");
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(mode))
+            .expect("chmod parent");
+        let sock = parent.join("test.sock");
+        (parent, sock)
+    }
+
+    // F2-T1: bind_explicit does NOT chmod an owner-private parent dir.
+    // The parent is pre-set to 0700; after binding the Explicit socket it must
+    // still be 0700 — we never touch the caller's directory.
+    #[test]
+    fn explicit_bind_does_not_chmod_parent() {
+        let (parent, sock) = explicit_temp("nochmod", 0o700);
+        let listener = bind_explicit(&sock).expect("bind_explicit on 0700 parent");
+        let parent_mode = std::fs::metadata(&parent).unwrap().permissions().mode();
+        assert_eq!(
+            parent_mode & 0o777,
+            0o700,
+            "parent mode must be unchanged (0700) after explicit bind"
+        );
+        drop(listener);
+    }
+
+    // F2-T2: bind_explicit ERRORS on a world-readable parent and does NOT chmod it.
+    // The parent is set to 0755; bind_explicit must return Err (fail closed)
+    // and must leave the parent at 0755 — the finding's exact regression check.
+    #[test]
+    fn explicit_bind_rejects_world_readable_parent() {
+        let (parent, sock) = explicit_temp("worldread", 0o755);
+        let result = bind_explicit(&sock);
+        assert!(
+            result.is_err(),
+            "bind_explicit must error on a world-readable (0755) parent"
+        );
+        // Critical: we must NOT have silently chmodded the parent to 0700.
+        let parent_mode = std::fs::metadata(&parent).unwrap().permissions().mode();
+        assert_eq!(
+            parent_mode & 0o777,
+            0o755,
+            "parent mode must remain 0755 — bind_explicit must not chmod it"
+        );
+        // Socket must not have been created.
+        assert!(!sock.exists(), "socket must not be created after error");
+    }
+
+    // F2-T3: bind_explicit refuses to delete a regular file at the socket path.
+    // A regular file pre-existing at the socket path must survive; bind_explicit
+    // returns Err and the file is still present.
+    #[test]
+    fn explicit_bind_refuses_to_delete_regular_file() {
+        let (_, sock) = explicit_temp("regularfile", 0o700);
+        // Place a regular file at the socket path.
+        std::fs::write(&sock, b"important data").expect("write regular file");
+        let result = bind_explicit(&sock);
+        assert!(
+            result.is_err(),
+            "bind_explicit must error when socket path holds a regular file"
+        );
+        assert!(
+            sock.exists(),
+            "regular file must still exist — bind_explicit must not delete it"
+        );
+        // Verify it's still the regular file, not a socket.
+        assert!(
+            std::fs::metadata(&sock).unwrap().file_type().is_file(),
+            "path must remain a regular file"
+        );
+    }
+
+    // F2-T9: bind_explicit refuses a SYMLINK at the socket path and does not
+    // follow it — a symlink pointing at a victim file must leave both the victim
+    // file AND the symlink untouched (lstat, not stat; never delete a non-socket).
+    #[test]
+    fn explicit_bind_refuses_symlink_at_socket_path() {
+        let (parent, sock) = explicit_temp("symlink-at-path", 0o700);
+        let victim = parent.join("victim.txt");
+        std::fs::write(&victim, b"do not delete").expect("write victim");
+        std::os::unix::fs::symlink(&victim, &sock).expect("create symlink at socket path");
+        let result = bind_explicit(&sock);
+        assert!(
+            result.is_err(),
+            "bind_explicit must refuse a symlink at the socket path"
+        );
+        assert!(victim.exists(), "victim file must not be deleted");
+        assert_eq!(
+            std::fs::read(&victim).unwrap(),
+            b"do not delete",
+            "victim contents must be intact"
+        );
+        assert!(
+            std::fs::symlink_metadata(&sock)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the symlink itself must remain (not followed, not removed)"
+        );
+    }
+
+    // F2-T4: bind_explicit successfully replaces a stale socket.
+    // A previous bind_explicit (dropped listener) leaves a stale socket file;
+    // a second bind_explicit must succeed by removing only the socket.
+    #[test]
+    fn explicit_bind_replaces_stale_socket() {
+        let (_, sock) = explicit_temp("staleexplicit", 0o700);
+        // First bind — creates the socket.
+        let first = bind_explicit(&sock).expect("first explicit bind");
+        drop(first);
+        // The stale socket file remains.
+        assert!(sock.exists(), "stale socket should still exist");
+        // Second bind over the stale socket must succeed.
+        let second = bind_explicit(&sock).expect("second explicit bind over stale socket");
+        drop(second);
+    }
+
+    // F2-T8: bind_explicit CREATES an absent parent at 0700 (preserves the
+    // `daemon start --socket /new/path` UX) — introducing new owner-private state,
+    // not mutating any pre-existing directory.
+    #[test]
+    fn explicit_bind_creates_missing_parent_at_0700() {
+        let parent =
+            std::env::temp_dir().join(format!("ddf-explicit-{}-mkparent", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        assert!(!parent.exists(), "precondition: parent must be absent");
+        let sock = parent.join("test.sock");
+        let listener = bind_explicit(&sock).expect("bind_explicit must create the missing parent");
+        assert!(sock.exists(), "socket must be created");
+        let mode = std::fs::metadata(&parent).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            crate::security::SECURE_DIR_MODE,
+            "freshly created parent must be owner-private (0700)"
+        );
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    // F2-T5: SocketLocation::at() produces an Explicit provenance location.
+    // Sanity-check that the public at() constructor is wired to the correct
+    // binding path (we cannot inspect the private field directly, so we observe
+    // that at() + bind() on an owner-private parent succeeds and does not
+    // create the parent when it already exists).
+    #[test]
+    fn socket_location_at_uses_explicit_policy() {
+        let (parent, sock) = explicit_temp("atloc", 0o700);
+        let loc = SocketLocation::at(sock.clone());
+        // `bind()` on a 0700 pre-existing parent via `at()` must succeed.
+        let listener = loc.bind().expect("SocketLocation::at bind on 0700 parent");
+        // Parent still 0700 (we didn't create or chmod it).
+        let mode = std::fs::metadata(&parent).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        drop(listener);
+    }
+
+    // F2-T6: SocketLocation::at() + bind() errors on world-readable parent.
+    // Complements the direct bind_explicit test through the public API surface.
+    #[test]
+    fn socket_location_at_rejects_world_readable_parent() {
+        let (parent, sock) = explicit_temp("atloc-wr", 0o755);
+        let loc = SocketLocation::at(sock);
+        assert!(
+            loc.bind().is_err(),
+            "bind via at() must error on 0755 parent"
+        );
+        // Parent must remain 0755.
+        let mode = std::fs::metadata(&parent).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+    }
+
+    // F2-T7: resolve(Some(path)) is Explicit; resolve(None) is EngineDefault.
+    // Provenance from resolve() is observable through the binding policy.
+    #[test]
+    fn resolve_explicit_uses_explicit_policy() {
+        // An explicit path through resolve() must refuse a world-readable parent.
+        let (parent, sock) = explicit_temp("resolve-explicit", 0o755);
+        let loc = SocketLocation::resolve(Some(&sock)).expect("resolve explicit");
+        assert!(
+            loc.bind().is_err(),
+            "resolve(Some(path)) must use explicit policy (fail on 0755)"
+        );
+        // Parent untouched.
+        let mode = std::fs::metadata(&parent).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
     }
 }

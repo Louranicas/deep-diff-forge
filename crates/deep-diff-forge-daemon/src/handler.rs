@@ -5,13 +5,41 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::time::Instant;
 
+/// Maximum number of concurrent review sessions retained in memory.
+///
+/// When a `session.open` request would push the count past this limit, the
+/// least-recently-used session is evicted first. This provides a hard bound on
+/// daemon memory growth regardless of how many sessions a client opens without
+/// closing them (denial-of-service hardening).
+///
+/// 64 concurrent review sessions is generous for interactive use (a typical
+/// editor opens one or two) while keeping the worst-case memory footprint
+/// bounded to `O(MAX_SESSIONS × patch_size)`.
+const MAX_SESSIONS: usize = 64;
+
+/// Per-session state stored inside the engine.
+struct SessionEntry {
+    files: Vec<ReviewFile>,
+    /// Monotonically increasing access tick; updated on open and on snapshot.
+    /// The session with the smallest tick is the least-recently-used candidate
+    /// for eviction when the cap is reached.
+    last_tick: u64,
+}
+
 /// Daemon engine: review sessions, counters, and lifecycle state.
 ///
 /// Shared across connection threads behind a `Mutex` by the server; the methods
 /// here are the pure, testable core (no socket I/O).
+///
+/// Session retention is bounded at `MAX_SESSIONS`. When capacity is reached,
+/// opening a new session evicts the least-recently-used (LRU) entry — the one
+/// with the smallest `last_tick` value — before inserting the new one.
 pub struct Engine {
-    sessions: HashMap<String, Vec<ReviewFile>>,
+    sessions: HashMap<String, SessionEntry>,
     next_session: u64,
+    /// Monotonically increasing counter incremented on every session open or
+    /// snapshot access; used for LRU ordering.
+    tick: u64,
     running: bool,
     pid: u32,
     started: Instant,
@@ -30,6 +58,7 @@ impl Engine {
         Self {
             sessions: HashMap::new(),
             next_session: 1,
+            tick: 0,
             running: true,
             pid: std::process::id(),
             started: Instant::now(),
@@ -42,21 +71,63 @@ impl Engine {
         self.running
     }
 
-    /// Number of open sessions.
+    /// Number of open sessions (always `<= MAX_SESSIONS`).
     #[must_use]
     pub fn session_count(&self) -> usize {
         self.sessions.len()
     }
 
+    /// Advance the global tick and return the new value.
+    fn next_tick(&mut self) -> u64 {
+        self.tick += 1;
+        self.tick
+    }
+
+    /// Evict the least-recently-used session when the cap is reached.
+    fn evict_lru_if_needed(&mut self) {
+        if self.sessions.len() < MAX_SESSIONS {
+            return;
+        }
+        // Find the key with the smallest last_tick (LRU).
+        let lru_key = self
+            .sessions
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_tick)
+            .map(|(key, _)| key.clone());
+        if let Some(key) = lru_key {
+            self.sessions.remove(&key);
+        }
+    }
+
     fn open_session(&mut self, files: Vec<ReviewFile>) -> String {
+        // Evict LRU before inserting so the map never exceeds MAX_SESSIONS.
+        self.evict_lru_if_needed();
         let id = format!("s{}", self.next_session);
         self.next_session += 1;
-        self.sessions.insert(id.clone(), files);
+        let tick = self.next_tick();
+        self.sessions.insert(
+            id.clone(),
+            SessionEntry {
+                files,
+                last_tick: tick,
+            },
+        );
         id
     }
 
-    fn snapshot(&self, id: &str) -> Option<&Vec<ReviewFile>> {
-        self.sessions.get(id)
+    /// Returns a clone of the session's files, refreshing the LRU tick.
+    ///
+    /// A read counts as an access so recently-queried sessions are not
+    /// unfairly evicted before idle ones.  We return an owned `Vec` to avoid
+    /// holding a borrow across the tick mutation.
+    fn snapshot(&mut self, id: &str) -> Option<Vec<ReviewFile>> {
+        let tick = self.next_tick();
+        if let Some(entry) = self.sessions.get_mut(id) {
+            entry.last_tick = tick;
+            Some(entry.files.clone())
+        } else {
+            None
+        }
     }
 
     fn close_session(&mut self, id: &str) -> bool {
@@ -111,7 +182,7 @@ pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcErro
         "session.snapshot" => {
             let id = str_param(&request.params, "session")?;
             match engine.snapshot(&id) {
-                Some(files) => Ok(ranked_json(&rank(files))),
+                Some(files) => Ok(ranked_json(&rank(&files))),
                 None => Err(RpcError::new(
                     SESSION_NOT_FOUND,
                     format!("no such session: {id}"),
@@ -348,5 +419,174 @@ mod tests {
         let mut e = Engine::new();
         let v = call(r#"{"method":"diff.plan","params":{"patch":""}}"#, &mut e).unwrap();
         assert_eq!(v.as_array().unwrap().len(), 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // F3: bounded LRU session tests (fail-before/pass-after)
+    // -------------------------------------------------------------------------
+
+    // Minimal valid patch for session.open.
+    const OPEN_LINE: &str = r#"{"method":"session.open","params":{"patch":"--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n"}}"#;
+
+    // F3-T1: session count is bounded at MAX_SESSIONS.
+    // Open MAX_SESSIONS + 5 sessions; the count must stay exactly at the cap.
+    #[test]
+    fn sessions_are_bounded() {
+        let mut e = Engine::new();
+        for _ in 0..(super::MAX_SESSIONS + 5) {
+            call(OPEN_LINE, &mut e).expect("session.open");
+        }
+        assert_eq!(
+            e.session_count(),
+            super::MAX_SESSIONS,
+            "session_count must not exceed MAX_SESSIONS"
+        );
+    }
+
+    // F3-T2: LRU eviction retains the most-recently-accessed session.
+    // Fill the engine to capacity, then access (snapshot) the first session
+    // ("s1") to refresh its tick. Open one more session (triggering eviction).
+    // "s1" must survive because it was recently accessed; an untouched session
+    // must be the one evicted.
+    #[test]
+    fn lru_evicts_least_recently_used() {
+        let mut e = Engine::new();
+        // Fill to MAX_SESSIONS.
+        for _ in 0..super::MAX_SESSIONS {
+            call(OPEN_LINE, &mut e).expect("session.open");
+        }
+        assert_eq!(e.session_count(), super::MAX_SESSIONS);
+
+        // Access s1 to refresh its LRU tick — it must NOT be evicted next.
+        let snap = call(
+            r#"{"method":"session.snapshot","params":{"session":"s1"}}"#,
+            &mut e,
+        );
+        assert!(snap.is_ok(), "s1 snapshot before eviction must succeed");
+
+        // Open one more session — evicts the LRU (not s1).
+        call(OPEN_LINE, &mut e).expect("session.open over cap");
+        assert_eq!(e.session_count(), super::MAX_SESSIONS);
+
+        // s1 must still be accessible.
+        let snap_after = call(
+            r#"{"method":"session.snapshot","params":{"session":"s1"}}"#,
+            &mut e,
+        );
+        assert!(
+            snap_after.is_ok(),
+            "s1 must be retained — it was recently accessed and should not have been evicted"
+        );
+    }
+
+    // F3-T6: eviction removes the TRUE least-recently-used session, not merely
+    // "some" session. Refresh every session except a known victim so the victim
+    // alone holds the minimum tick, then prove it is the exact one evicted. (A
+    // buggy "evict last-inserted" algorithm would pass F3-T2 but fail this.)
+    #[test]
+    fn lru_evicts_the_true_least_recently_used() {
+        let mut e = Engine::new();
+        let mut ids = Vec::new();
+        for _ in 0..super::MAX_SESSIONS {
+            let v = call(OPEN_LINE, &mut e).expect("open");
+            ids.push(v["session"].as_str().unwrap().to_string());
+        }
+        // The 2nd-opened session is the victim; refresh every OTHER session so the
+        // victim alone holds the lowest access tick.
+        let victim = ids[1].clone();
+        for id in &ids {
+            if id == &victim {
+                continue;
+            }
+            call(
+                &format!(r#"{{"method":"session.snapshot","params":{{"session":"{id}"}}}}"#),
+                &mut e,
+            )
+            .expect("refresh");
+        }
+        // Open one more — must evict exactly the victim (the true min-tick entry).
+        call(OPEN_LINE, &mut e).expect("open over cap");
+        assert_eq!(e.session_count(), super::MAX_SESSIONS);
+        let victim_snap = call(
+            &format!(r#"{{"method":"session.snapshot","params":{{"session":"{victim}"}}}}"#),
+            &mut e,
+        );
+        assert!(
+            victim_snap.is_err(),
+            "the true least-recently-used session must be the one evicted"
+        );
+        // A refreshed session (the first-opened) must still be present.
+        let survivor = call(
+            &format!(
+                r#"{{"method":"session.snapshot","params":{{"session":"{}"}}}}"#,
+                ids[0]
+            ),
+            &mut e,
+        );
+        assert!(
+            survivor.is_ok(),
+            "a refreshed session must survive eviction"
+        );
+    }
+
+    // F3-T3: session count never exceeds the cap across many opens.
+    // A tight loop opening 3× MAX_SESSIONS sessions; at no point between opens
+    // can the count exceed MAX_SESSIONS.
+    #[test]
+    fn session_count_never_exceeds_cap() {
+        let mut e = Engine::new();
+        for _ in 0..(super::MAX_SESSIONS * 3) {
+            call(OPEN_LINE, &mut e).expect("session.open");
+            assert!(
+                e.session_count() <= super::MAX_SESSIONS,
+                "session_count() exceeded MAX_SESSIONS after an open"
+            );
+        }
+    }
+
+    // F3-T4: closed sessions do not count toward the cap.
+    // Open to near-cap, close all, then verify re-opening works without spurious
+    // eviction of valid sessions.
+    #[test]
+    fn closed_sessions_free_capacity() {
+        let mut e = Engine::new();
+        let mut ids = Vec::new();
+        // Open MAX_SESSIONS sessions.
+        for _ in 0..super::MAX_SESSIONS {
+            let v = call(OPEN_LINE, &mut e).expect("open");
+            ids.push(v["session"].as_str().unwrap().to_string());
+        }
+        assert_eq!(e.session_count(), super::MAX_SESSIONS);
+        // Close all.
+        for id in &ids {
+            let v = call(
+                &format!(r#"{{"method":"session.close","params":{{"session":"{id}"}}}}"#),
+                &mut e,
+            )
+            .expect("close");
+            assert_eq!(v["closed"], true);
+        }
+        assert_eq!(e.session_count(), 0);
+        // Now we can open MAX_SESSIONS more without evictions.
+        for _ in 0..super::MAX_SESSIONS {
+            call(OPEN_LINE, &mut e).expect("re-open after close");
+        }
+        assert_eq!(e.session_count(), super::MAX_SESSIONS);
+    }
+
+    // F3-T5: snapshot on a non-existent session is still SESSION_NOT_FOUND even
+    // when the engine is at cap (eviction must not swallow the error).
+    #[test]
+    fn snapshot_missing_session_at_cap_is_error() {
+        let mut e = Engine::new();
+        for _ in 0..super::MAX_SESSIONS {
+            call(OPEN_LINE, &mut e).expect("open");
+        }
+        let err = call(
+            r#"{"method":"session.snapshot","params":{"session":"ghost"}}"#,
+            &mut e,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, SESSION_NOT_FOUND);
     }
 }

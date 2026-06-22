@@ -1,5 +1,28 @@
 # Deployment Evidence — L0 → L9 (… + Daemon + Release + Learning)
 
+## Zen bias-controlled re-review remediation (S1008443)
+
+`claim | warrant | evidence` — 3 findings from Zen's re-review of `920ca59`, fixed
+by FORGE builders (optimizer) then verified by three judges outside the build loop.
+
+- F1 closing-`@@` enforced | `[VBE]` | `parse_hunk_header` requires the closer
+  token; `@@ -1,1 +1,1 NOT_A_HUNK` → CLI exit 4 (was 0); valid forms (default
+  counts, trailing section text) still accepted. Parser tests `hunk_header_*`.
+- F2 explicit-socket fail-closed | `[VBE]` | `bind_explicit` — 0755 parent → daemon
+  exit 6, dir stays 755 (was chmodded to 700); regular file / symlink at path →
+  refused, victim intact; absent parent → created `0700`. Tests `explicit_bind_*`,
+  `socket_location_at_*`, `resolve_explicit_*`.
+- F3 bounded LRU sessions | `[VBR]` | `MAX_SESSIONS=64`, evict-before-insert; true
+  min-tick evicted; reads refresh recency. Tests `sessions_are_bounded`,
+  `session_count_never_exceeds_cap`, `lru_evicts_the_true_least_recently_used`.
+- Independent judges | `[VBR]` | forge-security-architect PASS (no Critical/High
+  regression, no new fail-open, no `unsafe`/silent-swallow); forge-tester PASS
+  (genuine fail-before/pass-after on the core fixes); agent-claim-verifier VERIFIED
+  CLEAN 4/4 (conf 0.97).
+- Gate green | `[VBE]` | `just gate-release` exit 0 (fmt → check → clippy →
+  pedantic → test → contracts → docs); workspace **789 tests, 0 failed** (765 + 24).
+  Diff = `parser.rs`, `daemon/serve.rs`, `daemon/handler.rs` only.
+
 ## L9 Learning (local-only loop; v0.2.0 crates.io-publishable cut)
 
 `claim | warrant | evidence`
