@@ -11,7 +11,7 @@ cockpit, and bounded parallel execution on top — every layer a projection over
 one stable model, none of them ever allowed to corrupt the patch.
 
 > **Maturity: L9 (Learning).** All engine layers L0–L8 are implemented, plus the
-> L9 local-only learning loop (`learn status|record`). 12 crates, 760 tests, zero
+> L9 local-only learning loop (`learn status|record`). 12 crates, 765 tests, zero
 > `unsafe`, supply-chain-gated, dual MIT/Apache-2.0 licensed. The workspace is
 > **crates.io-publish-ready** (`cargo publish --dry-run` is clean across all
 > crates); the upload itself is **token-gated** — the release workflow publishes
@@ -522,7 +522,7 @@ just gate-feature
 #   bootstrap contract probes
 ```
 
-Standards enforced across the tree: **760 tests** (every production crate ≥ 50
+Standards enforced across the tree: **765 tests** (every production crate ≥ 50
 meaningful tests), **zero `unsafe`** (compiler-forbidden workspace-wide via
 `[workspace.lints]`), no production `unwrap`/`expect`, pedantic clippy clean with
 no unexplained suppressions, and a `cargo-deny` ([`deny.toml`](deny.toml)) +

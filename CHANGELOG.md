@@ -7,7 +7,7 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 ## [0.2.0] - 2026-06-22
 
 The **L9 (Learning)** layer plus the first crates.io-publishable cut — 12 crates,
-760 tests, zero `unsafe`, supply-chain-gated. `cargo publish --dry-run` is clean
+765 tests, zero `unsafe`, supply-chain-gated. `cargo publish --dry-run` is clean
 across the workspace; the crates.io upload itself remains token-gated.
 
 ### Added
