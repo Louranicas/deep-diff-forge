@@ -11,7 +11,7 @@ cockpit, and bounded parallel execution on top — every layer a projection over
 one stable model, none of them ever allowed to corrupt the patch.
 
 > **Maturity: L9 (Learning).** All engine layers L0–L8 are implemented, plus the
-> L9 local-only learning loop (`learn status|record`). 12 crates, 789 tests, zero
+> L9 local-only learning loop (`learn status|record`). 12 crates, 792 tests, zero
 > `unsafe`, supply-chain-gated, dual MIT/Apache-2.0 licensed. The workspace is
 > **crates.io-publish-ready** (`cargo publish --dry-run` is clean across all
 > crates); the upload itself is **token-gated** — the release workflow publishes
@@ -533,16 +533,22 @@ just gate-feature
 #   bootstrap contract probes
 ```
 
-Standards enforced across the tree: **789 tests** (every production crate ≥ 50
+Standards enforced across the tree: **792 tests** (every production crate ≥ 50
 meaningful tests), **zero `unsafe`** (compiler-forbidden workspace-wide via
 `[workspace.lints]`), no production `unwrap`/`expect`, pedantic clippy clean with
 no unexplained suppressions, and a `cargo-deny` ([`deny.toml`](deny.toml)) +
-strict `cargo-audit` supply-chain gate (advisories, licenses, bans, sources). CI
-mirrors the gate in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+strict `cargo-audit` supply-chain gate (advisories, licenses, bans, sources) with
+every GitHub Action pinned to a commit SHA. CI mirrors the gate in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) and adds a fuzz-harness
+compile gate, a hostile-daemon soak, a learning-privacy probe, and an SPDX SBOM
+gate; the release workflow attaches SLSA build-provenance attestations and the
+SBOM (`sbom.spdx.json`).
 
 The engine is designed to be run on **untrusted input** (an attacker controls the
 whole diff); it has been adversarially hardened against terminal-escape injection,
-memory-exhaustion DoS, and the daemon's transport/filesystem surface. See
+Trojan-Source / bidi Unicode, memory-exhaustion DoS, and the daemon's
+transport/filesystem surface, and a cargo-fuzz harness ([`fuzz/`](fuzz/)) covers
+the patch parser, review JSON, daemon protocol, and agent annotations. See
 [`SECURITY.md`](SECURITY.md) for the threat model and disclosure policy.
 
 Durable engineering lessons are recorded in [`NOTES.md`](NOTES.md).

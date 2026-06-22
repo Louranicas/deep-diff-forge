@@ -31,7 +31,11 @@ the most recent minor line is supported.
   file paths, symbol names) are passed through `core::display_safe`, which
   escapes terminal control sequences (ANSI/CSI/OSC, CR, BEL, DEL, C1) to a
   visible `\xHH` form before they reach a terminal. Machine output
-  (`--json`/`--jsonl`) is neutralised by `json_escape`.
+  (`--json`/`--jsonl`) routes through one canonical `core::json_escape`, which —
+  beyond the RFC 8259 control set — also escapes `DEL` and the C1 block
+  (`0x7f..=0x9f`, including the 8-bit CSI/OSC introducers) to `\u00xx`, so JSON
+  printed to a terminal is safe too. Every JSON sink shares this one escaper (no
+  per-module forks).
 - **Trojan Source defence (CVE-2021-42574).** `display_safe` also neutralises
   bidirectional and invisible Unicode (RLO/LRO/PDF/isolates `U+202A–U+202E` /
   `U+2066–U+2069`, directional marks, zero-width characters, BOM) to a visible
@@ -62,12 +66,25 @@ the most recent minor line is supported.
   documented in `deny.toml`; any *new* advisory fails the gate.
 - The `tree-sitter` crates (which run a C build script) are pinned to exact
   versions; install with `cargo install --locked`.
-- Dependencies and GitHub Actions are tracked by Dependabot. For maximum
-  assurance, pin third-party actions to commit SHAs.
+- All GitHub Actions are pinned to commit SHAs (tag-hijack defence), and the
+  release workflow emits SLSA build-provenance attestations for the binary, its
+  checksum, and the SPDX SBOM (`sbom.spdx.json`, generated and CI-gated).
+  Dependencies and actions are tracked by Dependabot.
+- A `cargo-fuzz` harness (`fuzz/`) covers the patch parser, review JSON, daemon
+  protocol, and agent annotations; CI gates that it compiles.
 
 ## Hardening provenance
 
-The current posture follows an adversarial security review (S1008412): an
-8-dimension STRIDE audit with independent verification produced a CVSS-scored
-register; every confirmed finding was remediated with a fail-before/pass-after
-regression test. No Critical/High findings were confirmed.
+The current posture follows three reviews, each with judges outside the build
+loop and every confirmed finding remediated with a fail-before/pass-after test:
+
+- **S1008412** — an 8-dimension STRIDE audit with independent verification
+  produced a CVSS-scored register (17 confirmed; **no Critical/High**), all
+  remediated; a final review fleet added Trojan-Source/bidi defence.
+- **S1008443** — a bias-controlled re-review hardened patch-truth (mandatory
+  hunk-header closer), the daemon (fail-closed `bind_explicit`, bounded LRU
+  sessions), and the CI/release supply chain.
+- **S1008452** — a 7-facet posture review (88/100) closed its one High by
+  unifying the `--json`/`--jsonl` escapers with `core::json_escape` (C1/DEL
+  coverage); residuals (single-threaded daemon, clippy restriction lints) are
+  tracked. No Critical/High remain.

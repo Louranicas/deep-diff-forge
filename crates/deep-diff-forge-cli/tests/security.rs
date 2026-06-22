@@ -109,6 +109,56 @@ fn json_mode_is_already_safe() {
     assert!(!out.contains(&ESC), "raw ESC leaked via --json");
 }
 
+const DEL: u8 = 0x7f;
+
+/// A patch whose path and body carry DEL (`0x7f`) and 8-bit C1 control
+/// introducers (CSI `U+009B` = `0xC2 0x9B`, OSC `U+009D` = `0xC2 0x9D`). These are
+/// terminal-dangerous but **not** `< 0x20`, so a JSON escaper that only escaped C0
+/// would leak them to a terminal that prints `--json`/`--jsonl` output. Regression
+/// guard for the S1008452 forked-escaper finding (fail-before / pass-after).
+fn c1_del_patch() -> Vec<u8> {
+    let mut p = Vec::new();
+    p.extend_from_slice(b"--- a/c1");
+    p.push(DEL);
+    p.extend_from_slice(b".rs\n+++ b/c1");
+    p.push(DEL);
+    p.extend_from_slice(b".rs\n@@ -1,1 +1,1 @@\n-old\n+new");
+    p.extend_from_slice(&[0xC2, 0x9B]); // U+009B CSI
+    p.extend_from_slice(b"2J");
+    p.extend_from_slice(&[0xC2, 0x9D]); // U+009D OSC
+    p.extend_from_slice(b"payload\n");
+    p
+}
+
+#[test]
+fn json_escapes_c1_and_del() {
+    let (code, out) = run_with_stdin(&["--stdin-patch", "--json"], &c1_del_patch());
+    assert_eq!(code, 0);
+    // No raw DEL / C1 introducer may survive to machine output.
+    assert!(!out.contains(&DEL), "raw DEL (0x7f) leaked via --json");
+    assert!(
+        !out.windows(2).any(|w| w == [0xC2, 0x9B]),
+        "raw C1 CSI (U+009B) leaked via --json"
+    );
+    assert!(
+        !out.windows(2).any(|w| w == [0xC2, 0x9D]),
+        "raw C1 OSC (U+009D) leaked via --json"
+    );
+    // They must appear in the inert, escaped \u00xx form instead.
+    let text = String::from_utf8(out).expect("json output is utf8");
+    assert!(text.contains("\\u007f"), "DEL not escaped in --json");
+    assert!(text.contains("\\u009b"), "C1 CSI not escaped in --json");
+}
+
+#[test]
+fn jsonl_escapes_del_in_path() {
+    let (code, out) = run_with_stdin(&["--stdin-patch", "--jsonl"], &c1_del_patch());
+    assert_eq!(code, 0);
+    assert!(!out.contains(&DEL), "raw DEL (0x7f) leaked via --jsonl path");
+    let text = String::from_utf8(out).expect("jsonl output is utf8");
+    assert!(text.contains("\\u007f"), "DEL not escaped in --jsonl path");
+}
+
 #[test]
 fn json_empty_input_schema_snapshot_is_stable() {
     let (code, out) = run_with_stdin(&["--stdin-patch", "--json"], b"");

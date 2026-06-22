@@ -1,5 +1,59 @@
 # Deployment Evidence — L0 → L9 (… + Daemon + Release + Learning)
 
+## Live feature & capacity verification (S1008452)
+
+`claim | warrant | evidence` — the release binary exercised end-to-end (real
+process, exit codes + output asserted; not mocked). **0 product bugs found.** Full
+report: `reports/LIVE_TEST_EVIDENCE_S1008452.md`.
+
+- Quality gate | `[VBE]` | `check → clippy -D warnings → pedantic → test` clean;
+  **794 tests / 0 failed**; fuzz harness compiles (`cargo check --manifest-path
+  fuzz/Cargo.toml --bins` rc 0).
+- CLI features + edge cases | `[VBE]` | **48/48** — meta (`--version`/`--help`/
+  `--self-test`/`doctor`/`loom-contract`), `deploy status|release [--json]`, patch
+  projections (`--json`/`--jsonl`/`--rank`/`--cluster`/`--layout {inline,side-by-side}`),
+  `semantic`/`structural` (reformat-aware `"reformat_only": true`)/`highlight`,
+  `review --probe`, `learn status [--json]`; bad layout → rc 2.
+- L6 determinism | `[VBE]` | 5-file patch: `--parallel serial`==`auto`==`8`
+  byte-identical ranked results; `--parallel 8` used 5 workers (clamped to files).
+- Error/security contracts | `[VBE]` | malformed/truncated/bad-header patch → rc 4;
+  empty → rc 0 `files:[]`; Trojan-Source `U+202E` + terminal `ESC` neutralized in
+  body (inline) and path (summary); **C1/DEL escaped in `--json`/`--jsonl`**
+  (S1008452 fix, fail-before/pass-after); `… | head` → rc 0 (no SIGPIPE panic).
+- Daemon (UDS JSON-RPC) | `[VBE]` | live start, `0600` socket; CLI `health`/`status`;
+  **9/9** RPC incl. `diff.plan`, `session.open→snapshot→close`, and wire error codes
+  (`-32602`/`-32601`/`4`/`1`); CLI `stop` → exit 0, socket cleaned up. Hostile soak
+  (`daemon_soak.py`) PASS.
+- Privacy & SBOM | `[VBE]` | `privacy_probe.py` PASS (no source/path leak);
+  regenerated SBOM content-identical to committed (100 pkgs / 185 rels; timestamp
+  only).
+- Honest-degraded | live fuzzing not run (cargo-fuzz absent; harness compiles +
+  794 tests + hostile inputs + soak cover robustness); 64 MiB over-budget rejection
+  is unit-tested, not re-exercised live.
+
+## Supply-chain & fuzz hardening (S1008443 cont. → main `0d41ef2`)
+
+`claim | warrant | evidence`
+
+- CI/release supply-chain hardened | `[VBR]` | every GitHub Action pinned to a
+  commit SHA (CI + release); release emits SLSA build-provenance attestations for
+  the binary + sha256 + SBOM; SPDX SBOM (`sbom.spdx.json`) generated from
+  `Cargo.lock`/`cargo metadata`, CI-gated and release-uploaded.
+- Fuzz harness landed | `[VBR]`/`[VBE]` | `fuzz/` (cargo-fuzz) — `patch_parser`,
+  `review_json`, `daemon_protocol`, `agent_annotation`; excluded from the
+  publishable workspace (`Cargo.toml exclude = ["fuzz"]`); `cargo check
+  --manifest-path fuzz/Cargo.toml --bins` is a CI gate (verified exit 0).
+- Security probes wired | `[VBR]` | `scripts/security/{daemon_soak,privacy_probe,
+  generate_spdx_sbom}.py` + `mutation_gate.sh`, exposed as `just security-*`.
+- Regression tests added | `[VBE]` | JSON-RPC wire error-code guard
+  (`protocol.rs`) + empty-input `--json` schema-snapshot / `--jsonl` zero-read
+  (`cli` `security.rs`); all three live-confirmed passing.
+- Doc accuracy | `[VBR]` | daemon `lib.rs` corrected from "thread-per-connection"
+  to the true single-threaded sequential accept loop (matches `serve.rs`).
+- Gate green | `[VBE]` | `check → clippy -D warnings → pedantic → test` clean;
+  workspace **792 tests, 0 failed**; fuzz harness compiles. Production crate code
+  unchanged from `9195c24`. Committed `0d41ef2`; `main` synced to both remotes.
+
 ## Zen bias-controlled re-review remediation (S1008443)
 
 `claim | warrant | evidence` — 3 findings from Zen's re-review of `920ca59`, fixed

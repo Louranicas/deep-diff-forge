@@ -47,26 +47,12 @@ fn status_str(status: FileStatus) -> &'static str {
 }
 
 /// Quote and escape a string as a JSON string literal (RFC 8259).
+///
+/// Delegates to the canonical `core::json_escape` so `--jsonl` output carries the
+/// same DEL/`0x7f` + C1 (`0x80..=0x9f`) terminal-safety hardening as every other
+/// JSON sink — no forked escaper, one policy (S1008452).
 fn quote(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0c}' => out.push_str("\\f"),
-            c if u32::from(c) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", u32::from(c));
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+    deep_diff_forge_core::json_escape(value)
 }
 
 #[cfg(test)]

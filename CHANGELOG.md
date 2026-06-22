@@ -6,9 +6,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [0.2.0] - 2026-06-22
 
-The **L9 (Learning)** layer plus the first crates.io-publishable cut — 12 crates,
-765 tests, zero `unsafe`, supply-chain-gated. `cargo publish --dry-run` is clean
-across the workspace; the crates.io upload itself remains token-gated.
+The **L9 (Learning)** layer plus the first crates.io-publishable cut, then a
+supply-chain & fuzz hardening pass — 12 crates, 792 tests, zero `unsafe`,
+supply-chain-gated. `cargo publish --dry-run` is clean across the workspace; the
+crates.io upload itself remains token-gated.
 
 ### Added
 
@@ -119,6 +120,22 @@ outside the build loop):
   with LRU eviction (least-recently-used evicted before insert; reads refresh
   recency), hard-bounding daemon memory regardless of how many sessions a client
   opens without closing.
+
+A supply-chain & fuzz hardening pass then raised the release/CI posture:
+
+- **GitHub Actions pinned to commit SHAs** across CI and release (tag-hijack
+  defence); the release workflow now emits **SLSA build-provenance attestations**
+  for the binary, its checksum, and the SBOM.
+- **SPDX SBOM** (`sbom.spdx.json`) generated from `Cargo.lock`/`cargo metadata`,
+  gated in CI and uploaded with each release.
+- **Fuzz harness** (`fuzz/`, cargo-fuzz) — four targets (`patch_parser`,
+  `review_json`, `daemon_protocol`, `agent_annotation`), excluded from the
+  publishable workspace; a compile gate keeps it building in CI.
+- **CI security probes** — a hostile-daemon soak, a learning-privacy probe, and a
+  mutation-gate inventory, exposed as `just security-*` recipes.
+- Added a JSON-RPC wire error-code regression test and empty-input
+  `--json`/`--jsonl` stability tests. Corrected the daemon's `lib.rs` doc from
+  "thread-per-connection" to the true single-threaded sequential accept loop.
 
 [0.2.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.2.0
 

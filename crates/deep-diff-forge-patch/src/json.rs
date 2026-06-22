@@ -153,26 +153,14 @@ fn string_array(items: &[String]) -> String {
 }
 
 /// Quote and escape a string as a JSON string literal (RFC 8259).
+///
+/// Delegates to the canonical `core::json_escape` so machine output (`--json`)
+/// carries the same DEL/`0x7f` + C1 (`0x80..=0x9f`) terminal-safety hardening as
+/// every other JSON sink — a review tool's machine output is routinely printed to
+/// a terminal, and a forked escaper that dropped that coverage was a real
+/// defence-in-depth gap (S1008452). One escaper, one policy.
 fn quote(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0c}' => out.push_str("\\f"),
-            c if u32::from(c) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", u32::from(c));
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+    deep_diff_forge_core::json_escape(value)
 }
 
 #[cfg(test)]
