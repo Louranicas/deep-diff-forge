@@ -232,6 +232,7 @@ dependencies = [
  "deep-diff-forge-agent",
  "deep-diff-forge-cluster",
  "deep-diff-forge-core",
+ "deep-diff-forge-daemon",
  "deep-diff-forge-graph",
  "deep-diff-forge-learning",
  "deep-diff-forge-patch",

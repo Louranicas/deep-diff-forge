@@ -19,6 +19,7 @@ deep-diff-forge-agent.workspace = true
 deep-diff-forge-cluster.workspace = true
 deep-diff-forge-learning.workspace = true
 deep-diff-forge-patch.workspace = true
+deep-diff-forge-daemon.workspace = true
 ratatui = "0.29"
 crossterm = "0.28"
 

@@ -353,7 +353,8 @@ fn learn_record(opts: &[String]) {
 /// `review` launches the interactive loop and needs a real terminal. `--side`
 /// opens in the two-column side-by-side layout (default is inline). `--palette`
 /// opens the command palette; `--cmd NAME` runs a palette command (rank,
-/// cluster, summary, notes, review, learning, maturity) and shows its panel.
+/// outline, cluster, summary, notes, review, daemon, learning, maturity) and
+/// shows its panel.
 fn review_cmd(opts: &[String]) {
     let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
     let files = match deep_diff_forge_patch::parse(&input) {

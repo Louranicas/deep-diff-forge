@@ -10,9 +10,11 @@
 use crate::state::ReviewApp;
 use deep_diff_forge_agent::{anchor_path, grounding_of, source_of};
 use deep_diff_forge_cluster::{dimension_label, join_label, parallelism_label, run_risk_cluster};
-use deep_diff_forge_core::{JoinPolicy, MaturityLevel, Parallelism};
+use deep_diff_forge_core::{JoinPolicy, MaturityLevel, Parallelism, PatchLineKind};
+use deep_diff_forge_daemon::{SocketLocation, request};
 use deep_diff_forge_graph::change_counts;
 use deep_diff_forge_learning::{LearningReport, store};
+use deep_diff_forge_syntax::{SyntaxOptions, analyze};
 
 /// The maturity level this build declares (kept in step with the CLI).
 const CURRENT_MATURITY: MaturityLevel = MaturityLevel::L9;
@@ -36,6 +38,8 @@ const LADDER: [MaturityLevel; 10] = [
 pub enum Command {
     /// Ranked file list with scores and risk signals.
     Rank,
+    /// Tree-sitter symbol outline of the selected file's changed regions.
+    Outline,
     /// Dimensional cluster run summary.
     Cluster,
     /// Review statistics (files, ±lines, hunks, notes, by status).
@@ -44,6 +48,8 @@ pub enum Command {
     Notes,
     /// The `deep-diff-forge.review.v0` JSON document.
     ReviewJson,
+    /// Live UDS daemon health and status.
+    Daemon,
     /// The L9 learning store's per-strategy scores.
     Learning,
     /// The maturity ladder and the current level.
@@ -53,13 +59,15 @@ pub enum Command {
 impl Command {
     /// Every command, in palette order.
     #[must_use]
-    pub fn all() -> [Command; 7] {
+    pub fn all() -> [Command; 9] {
         [
             Self::Rank,
+            Self::Outline,
             Self::Cluster,
             Self::Summary,
             Self::Notes,
             Self::ReviewJson,
+            Self::Daemon,
             Self::Learning,
             Self::Maturity,
         ]
@@ -70,10 +78,12 @@ impl Command {
     pub fn label(self) -> &'static str {
         match self {
             Self::Rank => "rank",
+            Self::Outline => "outline",
             Self::Cluster => "cluster",
             Self::Summary => "summary",
             Self::Notes => "notes",
             Self::ReviewJson => "review json",
+            Self::Daemon => "daemon",
             Self::Learning => "learning",
             Self::Maturity => "maturity",
         }
@@ -84,10 +94,12 @@ impl Command {
     pub fn hint(self) -> &'static str {
         match self {
             Self::Rank => "files by review priority, with risk signals",
+            Self::Outline => "symbols in the selected file's changes (tree-sitter)",
             Self::Cluster => "parallel dimensional lanes + receipt",
             Self::Summary => "counts: files, ± lines, hunks, notes",
             Self::Notes => "every engine annotation + grounding",
             Self::ReviewJson => "the review.v0 machine document",
+            Self::Daemon => "live UDS daemon health + status",
             Self::Learning => "L9 strategy scores from the local store",
             Self::Maturity => "the L0–L9 ladder and current level",
         }
@@ -108,13 +120,80 @@ pub struct CommandOutput {
 pub fn run(command: Command, app: &ReviewApp) -> CommandOutput {
     match command {
         Command::Rank => rank_output(app),
+        Command::Outline => outline_output(app),
         Command::Cluster => cluster_output(app),
         Command::Summary => summary_output(app),
         Command::Notes => notes_output(app),
         Command::ReviewJson => review_json_output(app),
+        Command::Daemon => daemon_output(),
         Command::Learning => learning_output(),
         Command::Maturity => maturity_output(),
     }
+}
+
+fn outline_output(app: &ReviewApp) -> CommandOutput {
+    let Some(file) = app.selected_content() else {
+        return CommandOutput {
+            title: "outline".to_string(),
+            lines: vec!["no file selected".to_string()],
+        };
+    };
+    // Reconstruct the new-side content (context + added lines) and parse it.
+    // This shows the symbols a change touches; line numbers are intentionally
+    // omitted because the reconstruction has gaps between hunks.
+    let mut source = String::new();
+    for hunk in &file.patch_twin.hunks {
+        for line in &hunk.lines {
+            if line.kind != PatchLineKind::Removed {
+                source.push_str(&line.text);
+                source.push('\n');
+            }
+        }
+    }
+    let analysis = analyze(&file.path, &source, SyntaxOptions::default());
+    let mut lines = vec![
+        format!("file:     {}", file.path),
+        format!("language: {}", analysis.language.name()),
+        "symbols in the changed / new-side content:".to_string(),
+        String::new(),
+    ];
+    for symbol in &analysis.symbols {
+        lines.push(format!("{:<10} {}", symbol.kind, symbol.name));
+    }
+    if analysis.symbols.is_empty() {
+        lines.push("(no symbols detected in the changed regions)".to_string());
+    }
+    CommandOutput {
+        title: format!("outline · {}", file.path),
+        lines,
+    }
+}
+
+fn daemon_output() -> CommandOutput {
+    let title = "daemon · UDS JSON-RPC".to_string();
+    let location = match SocketLocation::resolve(None) {
+        Ok(location) => location,
+        Err(err) => {
+            return CommandOutput {
+                title,
+                lines: vec![format!("cannot resolve daemon socket: {err}")],
+            };
+        }
+    };
+    let mut lines = vec![
+        format!("socket: {}", location.path().display()),
+        String::new(),
+    ];
+    for (label, body) in [
+        ("health", r#"{"id":1,"method":"daemon.health"}"#),
+        ("status", r#"{"id":2,"method":"daemon.status"}"#),
+    ] {
+        match request(&location, body) {
+            Ok(response) => lines.push(format!("{label}: {response}")),
+            Err(err) => lines.push(format!("{label}: not reachable ({err})")),
+        }
+    }
+    CommandOutput { title, lines }
 }
 
 fn signals_of(rf: &deep_diff_forge_graph::RankedFile) -> String {
@@ -317,7 +396,31 @@ mod tests {
             assert!(!c.label().is_empty());
             assert!(!c.hint().is_empty());
         }
-        assert_eq!(Command::all().len(), 7);
+        assert_eq!(Command::all().len(), 9);
+    }
+
+    #[test]
+    fn outline_lists_changed_symbols() {
+        // A diff that adds a function should surface that function in the outline.
+        let src = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,1 +1,3 @@\n keep\n+pub fn added_fn() {}\n+struct Added;\n";
+        let files = parse(src).unwrap();
+        let a = ReviewApp::from_review(&files);
+        let out = run(Command::Outline, &a);
+        assert!(out.title.contains("outline"));
+        let b = body(&out);
+        assert!(b.contains("rust"));
+        assert!(
+            b.contains("added_fn"),
+            "added function should be in the outline: {b}"
+        );
+    }
+
+    #[test]
+    fn daemon_is_fail_soft_without_a_daemon() {
+        // Whether or not a daemon is up, this must never panic and must title.
+        let out = run(Command::Daemon, &app());
+        assert!(out.title.contains("daemon"));
+        assert!(!out.lines.is_empty());
     }
 
     #[test]
