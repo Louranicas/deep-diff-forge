@@ -9,7 +9,10 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub fn map_key(key: KeyEvent) -> AppEvent {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => AppEvent::Quit,
+        KeyCode::Char('q') => AppEvent::Quit,
+        KeyCode::Esc => AppEvent::Cancel,
+        KeyCode::Enter => AppEvent::Select,
+        KeyCode::Char(':') => AppEvent::OpenPalette,
         KeyCode::Char('j') | KeyCode::Down => AppEvent::Next,
         KeyCode::Char('k') | KeyCode::Up => AppEvent::Prev,
         KeyCode::Char('t' | 's') | KeyCode::Tab => AppEvent::ToggleLayout,
@@ -42,9 +45,15 @@ mod tests {
     }
 
     #[test]
-    fn q_and_esc_quit() {
+    fn q_quits_and_esc_cancels() {
         assert_eq!(map_key(key(KeyCode::Char('q'))), AppEvent::Quit);
-        assert_eq!(map_key(key(KeyCode::Esc)), AppEvent::Quit);
+        assert_eq!(map_key(key(KeyCode::Esc)), AppEvent::Cancel);
+    }
+
+    #[test]
+    fn enter_selects_and_colon_opens_palette() {
+        assert_eq!(map_key(key(KeyCode::Enter)), AppEvent::Select);
+        assert_eq!(map_key(key(KeyCode::Char(':'))), AppEvent::OpenPalette);
     }
 
     #[test]

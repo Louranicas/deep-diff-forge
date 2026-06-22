@@ -1,3 +1,4 @@
+use crate::command::{self, Command, CommandOutput};
 use crate::theme::ThemeKind;
 use deep_diff_forge_core::{AgentAnnotation, ReviewFile};
 use deep_diff_forge_graph::{RankedFile, rank};
@@ -33,6 +34,12 @@ pub enum AppEvent {
     FocusDiff,
     /// Show/hide the help overlay.
     ToggleHelp,
+    /// Open the command palette.
+    OpenPalette,
+    /// Confirm the current overlay selection (Enter).
+    Select,
+    /// Dismiss the current overlay, or quit when none is open (Esc).
+    Cancel,
     /// No-op (unrecognized input).
     None,
 }
@@ -84,6 +91,10 @@ pub enum Overlay {
     None,
     /// The keybinding help card.
     Help,
+    /// The command palette (pick an engine capability to run).
+    Palette,
+    /// The result panel of the last-run command.
+    Panel,
 }
 
 /// Review-first interactive app state.
@@ -105,6 +116,9 @@ pub struct ReviewApp {
     fold: bool,
     show_notes: bool,
     overlay: Overlay,
+    palette_index: usize,
+    panel: CommandOutput,
+    panel_scroll: u16,
     running: bool,
 }
 
@@ -156,14 +170,31 @@ impl ReviewApp {
             fold: true,
             show_notes: true,
             overlay: Overlay::default(),
+            palette_index: 0,
+            panel: CommandOutput::default(),
+            panel_scroll: 0,
             running: true,
         }
     }
 
-    /// Apply a semantic event to the state.
+    /// Apply a semantic event, routed by the active overlay so overlays are
+    /// modal: `Quit` always quits; otherwise the open overlay (if any) consumes
+    /// navigation/selection, and only the review handles events when none is up.
     pub fn handle(&mut self, event: AppEvent) {
+        if event == AppEvent::Quit {
+            self.running = false;
+            return;
+        }
+        match self.overlay {
+            Overlay::None => self.handle_review(event),
+            Overlay::Help => self.handle_help(event),
+            Overlay::Palette => self.handle_palette(event),
+            Overlay::Panel => self.handle_panel(event),
+        }
+    }
+
+    fn handle_review(&mut self, event: AppEvent) {
         match event {
-            AppEvent::Quit => self.running = false,
             AppEvent::Next => self.select_next(),
             AppEvent::Prev => self.select_prev(),
             AppEvent::ToggleLayout => self.layout = self.layout.toggled(),
@@ -182,14 +213,57 @@ impl ReviewApp {
             AppEvent::CycleTheme => self.theme = self.theme.next(),
             AppEvent::FocusSidebar => self.focus = Focus::Sidebar,
             AppEvent::FocusDiff => self.focus = Focus::Diff,
-            AppEvent::ToggleHelp => {
-                self.overlay = match self.overlay {
-                    Overlay::None => Overlay::Help,
-                    Overlay::Help => Overlay::None,
-                };
+            AppEvent::ToggleHelp => self.overlay = Overlay::Help,
+            AppEvent::OpenPalette => {
+                self.overlay = Overlay::Palette;
+                self.palette_index = 0;
             }
-            AppEvent::None => {}
+            // Esc with no overlay quits.
+            AppEvent::Cancel => self.running = false,
+            AppEvent::Quit | AppEvent::Select | AppEvent::None => {}
         }
+    }
+
+    fn handle_help(&mut self, event: AppEvent) {
+        if matches!(event, AppEvent::ToggleHelp | AppEvent::Cancel) {
+            self.overlay = Overlay::None;
+        }
+    }
+
+    fn handle_palette(&mut self, event: AppEvent) {
+        let count = Command::all().len();
+        match event {
+            AppEvent::Next => self.palette_index = (self.palette_index + 1) % count,
+            AppEvent::Prev => self.palette_index = (self.palette_index + count - 1) % count,
+            AppEvent::Top => self.palette_index = 0,
+            AppEvent::Bottom => self.palette_index = count - 1,
+            AppEvent::Select => self.run_selected_command(),
+            AppEvent::Cancel | AppEvent::OpenPalette => self.overlay = Overlay::None,
+            _ => {}
+        }
+    }
+
+    fn handle_panel(&mut self, event: AppEvent) {
+        match event {
+            AppEvent::ScrollDown | AppEvent::Next => {
+                self.panel_scroll = self.panel_scroll.saturating_add(1);
+            }
+            AppEvent::ScrollUp | AppEvent::Prev => {
+                self.panel_scroll = self.panel_scroll.saturating_sub(1);
+            }
+            AppEvent::Top => self.panel_scroll = 0,
+            // Back to the palette; `:` closes overlays entirely.
+            AppEvent::Cancel => self.overlay = Overlay::Palette,
+            AppEvent::OpenPalette => self.overlay = Overlay::None,
+            _ => {}
+        }
+    }
+
+    fn run_selected_command(&mut self) {
+        let command = Command::all()[self.palette_index];
+        self.panel = command::run(command, self);
+        self.panel_scroll = 0;
+        self.overlay = Overlay::Panel;
     }
 
     fn select_next(&mut self) {
@@ -300,6 +374,24 @@ impl ReviewApp {
     #[must_use]
     pub fn overlay(&self) -> Overlay {
         self.overlay
+    }
+
+    /// The highlighted command in the palette.
+    #[must_use]
+    pub fn palette_index(&self) -> usize {
+        self.palette_index
+    }
+
+    /// The last-run command's result panel.
+    #[must_use]
+    pub fn panel(&self) -> &CommandOutput {
+        &self.panel
+    }
+
+    /// The result panel's scroll offset.
+    #[must_use]
+    pub fn panel_scroll(&self) -> u16 {
+        self.panel_scroll
     }
 }
 
@@ -494,6 +586,77 @@ mod tests {
         assert_eq!(a.overlay(), Overlay::Help);
         a.handle(AppEvent::ToggleHelp);
         assert_eq!(a.overlay(), Overlay::None);
+    }
+
+    #[test]
+    fn palette_opens_navigates_and_runs() {
+        let mut a = app();
+        a.handle(AppEvent::OpenPalette);
+        assert_eq!(a.overlay(), Overlay::Palette);
+        assert_eq!(a.palette_index(), 0);
+        a.handle(AppEvent::Next);
+        assert_eq!(a.palette_index(), 1);
+        // Wrap backwards past zero.
+        a.handle(AppEvent::Prev);
+        a.handle(AppEvent::Prev);
+        assert_eq!(a.palette_index(), Command::all().len() - 1);
+        // Selecting runs the command into the panel.
+        a.handle(AppEvent::Select);
+        assert_eq!(a.overlay(), Overlay::Panel);
+        assert!(!a.panel().title.is_empty());
+    }
+
+    #[test]
+    fn palette_cancel_closes() {
+        let mut a = app();
+        a.handle(AppEvent::OpenPalette);
+        a.handle(AppEvent::Cancel);
+        assert_eq!(a.overlay(), Overlay::None);
+    }
+
+    #[test]
+    fn panel_scrolls_and_returns_to_palette() {
+        let mut a = app();
+        a.handle(AppEvent::OpenPalette);
+        a.handle(AppEvent::Select);
+        assert_eq!(a.overlay(), Overlay::Panel);
+        a.handle(AppEvent::ScrollDown);
+        a.handle(AppEvent::ScrollDown);
+        assert_eq!(a.panel_scroll(), 2);
+        a.handle(AppEvent::ScrollUp);
+        assert_eq!(a.panel_scroll(), 1);
+        // Esc from the panel returns to the palette.
+        a.handle(AppEvent::Cancel);
+        assert_eq!(a.overlay(), Overlay::Palette);
+    }
+
+    #[test]
+    fn esc_quits_only_when_no_overlay() {
+        let mut a = app();
+        // With the palette open, Esc closes it rather than quitting.
+        a.handle(AppEvent::OpenPalette);
+        a.handle(AppEvent::Cancel);
+        assert!(a.is_running());
+        // With nothing open, Esc quits.
+        a.handle(AppEvent::Cancel);
+        assert!(!a.is_running());
+    }
+
+    #[test]
+    fn quit_always_quits_even_with_overlay() {
+        let mut a = app();
+        a.handle(AppEvent::OpenPalette);
+        a.handle(AppEvent::Quit);
+        assert!(!a.is_running());
+    }
+
+    #[test]
+    fn review_nav_is_ignored_while_palette_open() {
+        let mut a = app();
+        a.handle(AppEvent::OpenPalette);
+        let before = a.selected_index();
+        a.handle(AppEvent::Next); // moves palette, not file selection
+        assert_eq!(a.selected_index(), before);
     }
 
     #[test]

@@ -346,11 +346,14 @@ fn learn_record(opts: &[String]) {
     );
 }
 
-/// `review [--probe] [--side]`: read a patch from stdin and open the review TUI.
+/// `review [--probe] [--side] [--palette | --cmd NAME]`: read a patch from stdin
+/// and open the review TUI.
 ///
 /// `--probe` renders one frame headlessly (no TTY needed) for CI/agents; bare
 /// `review` launches the interactive loop and needs a real terminal. `--side`
-/// opens in the two-column side-by-side layout (default is inline).
+/// opens in the two-column side-by-side layout (default is inline). `--palette`
+/// opens the command palette; `--cmd NAME` runs a palette command (rank,
+/// cluster, summary, notes, review, learning, maturity) and shows its panel.
 fn review_cmd(opts: &[String]) {
     let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
     let files = match deep_diff_forge_patch::parse(&input) {
@@ -370,6 +373,13 @@ fn review_cmd(opts: &[String]) {
     if opts.iter().any(|a| a == "--side") {
         app.handle(deep_diff_forge_tui::AppEvent::ToggleLayout);
     }
+    // `--cmd <name>` runs a palette command and shows its panel; `--palette`
+    // opens the palette. Both give headless access to the in-cockpit commands.
+    if let Some(name) = flag_value(opts, "--cmd") {
+        open_palette_command(&mut app, &name);
+    } else if opts.iter().any(|a| a == "--palette") {
+        app.handle(deep_diff_forge_tui::AppEvent::OpenPalette);
+    }
     if opts.iter().any(|a| a == "--probe") {
         // Probe size is configurable so callers can render a roomy frame; the
         // floor keeps the layout from degenerating on absurd inputs.
@@ -388,6 +398,22 @@ fn review_cmd(opts: &[String]) {
         eprintln!("error: review requires an interactive terminal: {err}");
         std::process::exit(6);
     }
+}
+
+/// Open the palette, move to the command whose label matches `name` (by full
+/// label or first word), and run it — leaving the app on that command's panel.
+fn open_palette_command(app: &mut deep_diff_forge_tui::ReviewApp, name: &str) {
+    use deep_diff_forge_tui::{AppEvent, Command};
+    app.handle(AppEvent::OpenPalette);
+    let target = Command::all()
+        .iter()
+        .position(|c| c.label() == name || c.label().split(' ').next() == Some(name));
+    if let Some(index) = target {
+        for _ in 0..index {
+            app.handle(AppEvent::Next);
+        }
+    }
+    app.handle(AppEvent::Select);
 }
 
 /// Open and read a source file under the byte cap, exiting on failure. The
@@ -916,7 +942,7 @@ USAGE:
   deep-diff-forge semantic <path> [--json]
   deep-diff-forge highlight <path> [--color|--no-color]
   deep-diff-forge structural <old> <new> [--json]
-  deep-diff-forge review [--probe [--cols N] [--rows N]] [--side]
+  deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME]
   deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]
   deep-diff-forge learn {{status|record --stdin}} [--json]
   deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side]

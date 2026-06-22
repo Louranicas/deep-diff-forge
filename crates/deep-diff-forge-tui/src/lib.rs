@@ -15,6 +15,7 @@
 //! `display_safe` before it reaches a cell.
 
 mod chrome;
+mod command;
 mod diffview;
 mod input;
 mod notes;
@@ -25,6 +26,7 @@ mod theme;
 mod tree;
 mod ui;
 
+pub use command::{Command, CommandOutput};
 pub use input::map_key;
 pub use notes::{engine_annotations, file_annotations, hunk_annotations};
 pub use run::run;

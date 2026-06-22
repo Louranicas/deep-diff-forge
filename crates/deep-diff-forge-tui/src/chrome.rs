@@ -53,7 +53,7 @@ fn on_off(flag: bool) -> &'static str {
 /// the right.
 #[must_use]
 pub(crate) fn status_bar(app: &ReviewApp, palette: &Palette, width: usize) -> Line<'static> {
-    let hints = "j/k move · ←/→ focus · s layout · z fold · n notes · T theme · ? help · q quit";
+    let hints = "j/k move · s layout · z fold · n notes · T theme · : cmds · ? help · q quit";
     let position = if app.is_empty() {
         0
     } else {
@@ -92,7 +92,9 @@ pub(crate) fn help_lines(palette: &Palette) -> Vec<Line<'static>> {
         ("z", "fold / unfold long unchanged context"),
         ("n", "show / hide inline agent notes"),
         ("T", "cycle colour theme"),
-        ("? / Esc", "toggle this help / quit"),
+        (":", "command palette (rank, cluster, json, …)"),
+        ("Enter", "run the selected palette command"),
+        ("? / Esc", "toggle help / dismiss overlay"),
         ("q", "quit the review"),
     ];
     let mut lines = vec![

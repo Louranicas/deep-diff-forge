@@ -8,7 +8,9 @@
 //! the child modules before it reaches a cell.
 
 use crate::chrome::{help_lines, menu_bar, status_bar};
+use crate::command::Command;
 use crate::diffview::diff_document;
+use crate::paint::safe_span;
 use crate::state::{Focus, Overlay, ReviewApp};
 use crate::theme::Palette;
 use crate::tree::{selected_row, tree_lines};
@@ -54,8 +56,11 @@ pub fn render(frame: &mut Frame, app: &ReviewApp) {
         bands[2],
     );
 
-    if app.overlay() == Overlay::Help {
-        render_help(frame, &palette, area);
+    match app.overlay() {
+        Overlay::Help => render_help(frame, &palette, area),
+        Overlay::Palette => render_palette(frame, app, &palette, area),
+        Overlay::Panel => render_panel(frame, app, &palette, area),
+        Overlay::None => {}
     }
 }
 
@@ -161,6 +166,104 @@ fn render_help(frame: &mut Frame, palette: &Palette, area: Rect) {
             .wrap(Wrap { trim: false }),
         popup,
     );
+}
+
+/// The command palette: pick an engine capability to run.
+fn render_palette(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: Rect) {
+    let commands = Command::all();
+    let popup = centered(area, 66, 13);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(palette.accent))
+        .style(Style::default().bg(palette.menu_bg))
+        .title(Line::from(Span::styled(
+            " Command palette ",
+            Style::default().fg(palette.accent),
+        )))
+        .title_bottom(Line::from(Span::styled(
+            " ↑/↓ move · Enter run · Esc close ",
+            Style::default().fg(palette.dim),
+        )));
+    let mut lines = Vec::with_capacity(commands.len());
+    for (i, command) in commands.iter().enumerate() {
+        let selected = i == app.palette_index();
+        let (marker, label_style) = if selected {
+            (
+                "▶ ",
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            )
+        } else {
+            ("  ", Style::default().fg(palette.fg))
+        };
+        lines.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(palette.accent)),
+            Span::styled(format!("{:<12}", command.label()), label_style),
+            Span::styled(
+                format!("  {}", command.hint()),
+                Style::default().fg(palette.dim),
+            ),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines).block(block), popup);
+}
+
+/// The result panel of the last-run command (scrollable, terminal-safe).
+fn render_panel(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: Rect) {
+    let popup = centered(
+        area,
+        area.width.saturating_sub(8),
+        area.height.saturating_sub(4),
+    );
+    frame.render_widget(Clear, popup);
+    let out = app.panel();
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(palette.accent))
+        .style(Style::default().bg(palette.menu_bg))
+        .title(Line::from(safe_span(
+            &format!(" {} ", out.title),
+            Style::default().fg(palette.accent),
+        )))
+        .title_bottom(Line::from(Span::styled(
+            " ↑/↓ scroll · Esc back · q quit ",
+            Style::default().fg(palette.dim),
+        )));
+    let lines: Vec<Line<'static>> = out
+        .lines
+        .iter()
+        .map(|l| Line::from(safe_span(l, Style::default().fg(palette.fg))))
+        .collect();
+    let total = lines.len();
+    let inner_height = usize::from(popup.height.saturating_sub(2));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .scroll((app.panel_scroll(), 0)),
+        popup,
+    );
+    if total > inner_height {
+        let track = Rect {
+            x: popup.x,
+            y: popup.y + 1,
+            width: popup.width,
+            height: popup.height.saturating_sub(2),
+        };
+        let mut sb = ScrollbarState::new(total).position(usize::from(app.panel_scroll()));
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .thumb_style(Style::default().fg(palette.accent))
+                .track_style(Style::default().fg(palette.border))
+                .begin_symbol(None)
+                .end_symbol(None),
+            track,
+            &mut sb,
+        );
+    }
 }
 
 /// Scroll offset that keeps `row` within a viewport of `height` lines.
