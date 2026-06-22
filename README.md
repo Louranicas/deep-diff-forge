@@ -11,7 +11,7 @@ cockpit, and bounded parallel execution on top — every layer a projection over
 one stable model, none of them ever allowed to corrupt the patch.
 
 > **Maturity: L9 (Learning).** All engine layers L0–L8 are implemented, plus the
-> L9 local-only learning loop (`learn status|record`). 12 crates, 765 tests, zero
+> L9 local-only learning loop (`learn status|record`). 12 crates, 789 tests, zero
 > `unsafe`, supply-chain-gated, dual MIT/Apache-2.0 licensed. The workspace is
 > **crates.io-publish-ready** (`cargo publish --dry-run` is clean across all
 > crates); the upload itself is **token-gated** — the release workflow publishes
@@ -72,7 +72,11 @@ every enrichment layer. Semantic analysis, risk ranking, and AI annotations may
 be absent, partial, or wrong — they can never mutate the apply-able patch. This
 single invariant is enforced everywhere: the parser, the projections, the
 ranking, the annotation layer, and the cluster scheduler all read the model;
-none rewrite it.
+none rewrite it. Conversely, an internally-incoherent patch is **rejected, not
+normalized**: a hunk whose body does not match its declared `@@ -a,b +c,d @@` line
+counts, a hunk truncated at EOF or the next file header, or a header missing its
+closing `@@` fails to parse (exit 4) rather than being silently repaired into a
+plausible-looking model.
 
 ## Three pioneer features
 
@@ -408,8 +412,15 @@ The daemon accelerates repeated review and multi-client workflows. It is
 it. It is **std-first** (no async runtime): a `UnixListener` JSON-RPC 2.0 server
 over an owner-private Unix domain socket.
 
-**Security:** the runtime directory is created `0700` (and rejected if group- or
-world-accessible), the socket is `0600`, and stale sockets are replaced on bind.
+**Security:** the engine-owned runtime directory is created `0700` (and rejected
+if group- or world-accessible) and the socket is `0600`. An explicit `--socket`
+path is bound **fail-closed**: an absent parent directory is created `0700`, but a
+pre-existing parent is validated and **never re-permissioned** (a group/world-
+accessible parent is refused rather than silently tightened to `0700`), and the
+socket path is replaced **only if it is already a socket** — the daemon never
+deletes a regular file, directory, or symlink it finds there. Review sessions are
+**bounded by an LRU cap**, so a client that opens sessions without closing them
+cannot grow daemon memory without limit.
 
 **Default socket:** `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock`. There
 is no world-writable `/tmp` fallback: if `$XDG_RUNTIME_DIR` is unset the daemon
@@ -454,7 +465,7 @@ result.
 
 ## Architecture
 
-Eleven narrow crates with strictly acyclic, inward dependency flow. `core` is
+Twelve narrow crates with strictly acyclic, inward dependency flow. `core` is
 pure vocabulary (no I/O, no parsing); every feature crate depends on `core`,
 never the reverse. Patch truth is upstream of everything.
 
@@ -522,7 +533,7 @@ just gate-feature
 #   bootstrap contract probes
 ```
 
-Standards enforced across the tree: **765 tests** (every production crate ≥ 50
+Standards enforced across the tree: **789 tests** (every production crate ≥ 50
 meaningful tests), **zero `unsafe`** (compiler-forbidden workspace-wide via
 `[workspace.lints]`), no production `unwrap`/`expect`, pedantic clippy clean with
 no unexplained suppressions, and a `cargo-deny` ([`deny.toml`](deny.toml)) +
