@@ -32,6 +32,8 @@ pub enum AppEvent {
     FocusSidebar,
     /// Move focus to the diff pane.
     FocusDiff,
+    /// Toggle the selected file's "reviewed" flag (and advance when marking it).
+    ToggleViewed,
     /// Show/hide the help overlay.
     ToggleHelp,
     /// Open the command palette.
@@ -108,6 +110,8 @@ pub struct ReviewApp {
     ranked: Vec<RankedFile>,
     content: Vec<ReviewFile>,
     annotations: Vec<AgentAnnotation>,
+    /// Per-file "reviewed" flags, aligned to `ranked`.
+    viewed: Vec<bool>,
     selected: usize,
     scroll: u16,
     layout: LayoutMode,
@@ -158,10 +162,12 @@ impl ReviewApp {
                 ranked.push(r);
             }
         }
+        let viewed = vec![false; ranked.len()];
         Self {
             ranked,
             content,
             annotations,
+            viewed,
             selected: 0,
             scroll: 0,
             layout: LayoutMode::Inline,
@@ -213,6 +219,7 @@ impl ReviewApp {
             AppEvent::CycleTheme => self.theme = self.theme.next(),
             AppEvent::FocusSidebar => self.focus = Focus::Sidebar,
             AppEvent::FocusDiff => self.focus = Focus::Diff,
+            AppEvent::ToggleViewed => self.toggle_viewed(),
             AppEvent::ToggleHelp => self.overlay = Overlay::Help,
             AppEvent::OpenPalette => {
                 self.overlay = Overlay::Palette;
@@ -280,6 +287,23 @@ impl ReviewApp {
         }
     }
 
+    /// Toggle the selected file's reviewed flag. Marking a file reviewed
+    /// advances to the next file so a reviewer can sweep top-to-bottom with a
+    /// single key; un-marking leaves the selection in place. A no-op on an
+    /// empty review.
+    fn toggle_viewed(&mut self) {
+        let now_viewed = match self.viewed.get_mut(self.selected) {
+            Some(flag) => {
+                *flag = !*flag;
+                *flag
+            }
+            None => return,
+        };
+        if now_viewed {
+            self.select_next();
+        }
+    }
+
     /// Whether the app should keep running.
     #[must_use]
     pub fn is_running(&self) -> bool {
@@ -302,6 +326,19 @@ impl ReviewApp {
     #[must_use]
     pub fn selected_index(&self) -> usize {
         self.selected
+    }
+
+    /// Whether the ranked file at `index` has been marked reviewed. Out-of-range
+    /// indices read as `false`.
+    #[must_use]
+    pub fn is_viewed(&self, index: usize) -> bool {
+        self.viewed.get(index).copied().unwrap_or(false)
+    }
+
+    /// How many files have been marked reviewed (review-progress numerator).
+    #[must_use]
+    pub fn viewed_count(&self) -> usize {
+        self.viewed.iter().filter(|&&v| v).count()
     }
 
     /// The selected file's ranking metadata, if any.
@@ -701,5 +738,77 @@ mod tests {
         let a = app();
         let b = a.clone();
         assert_eq!(a.file_count(), b.file_count());
+    }
+
+    #[test]
+    fn new_app_has_nothing_reviewed() {
+        let a = app();
+        assert_eq!(a.viewed_count(), 0);
+        assert!(!a.is_viewed(0));
+        assert!(!a.is_viewed(1));
+        assert!(!a.is_viewed(2));
+    }
+
+    #[test]
+    fn toggle_viewed_marks_and_advances() {
+        let mut a = app();
+        a.handle(AppEvent::ToggleViewed);
+        assert!(a.is_viewed(0), "selected file should be marked reviewed");
+        assert_eq!(a.selected_index(), 1, "marking advances to the next file");
+        assert_eq!(a.viewed_count(), 1);
+    }
+
+    #[test]
+    fn toggle_viewed_unmark_stays_put() {
+        let mut a = app();
+        a.handle(AppEvent::ToggleViewed); // mark file 0, advance to 1
+        a.handle(AppEvent::Prev); // back to file 0
+        a.handle(AppEvent::ToggleViewed); // un-mark file 0
+        assert!(!a.is_viewed(0));
+        assert_eq!(a.selected_index(), 0, "un-marking does not advance");
+        assert_eq!(a.viewed_count(), 0);
+    }
+
+    #[test]
+    fn toggle_viewed_at_last_file_clamps() {
+        let mut a = app();
+        a.handle(AppEvent::Bottom); // select last (index 2)
+        a.handle(AppEvent::ToggleViewed);
+        assert!(a.is_viewed(2));
+        assert_eq!(a.selected_index(), 2, "advance clamps at the last file");
+        assert_eq!(a.viewed_count(), 1);
+    }
+
+    #[test]
+    fn toggle_viewed_empty_review_is_safe() {
+        let mut a = ReviewApp::new(Vec::new());
+        a.handle(AppEvent::ToggleViewed);
+        assert_eq!(a.viewed_count(), 0);
+        assert_eq!(a.selected_index(), 0);
+        assert!(!a.is_viewed(0));
+    }
+
+    #[test]
+    fn toggle_viewed_ignored_while_overlay_open() {
+        let mut a = app();
+        a.handle(AppEvent::OpenPalette);
+        a.handle(AppEvent::ToggleViewed); // routed to the palette, not the review
+        assert!(!a.is_viewed(0));
+        assert_eq!(a.viewed_count(), 0);
+    }
+
+    #[test]
+    fn is_viewed_out_of_range_is_false() {
+        let a = app();
+        assert!(!a.is_viewed(999));
+    }
+
+    #[test]
+    fn viewed_flag_survives_clone() {
+        let mut a = app();
+        a.handle(AppEvent::ToggleViewed);
+        let b = a.clone();
+        assert_eq!(b.viewed_count(), 1);
+        assert!(b.is_viewed(0));
     }
 }

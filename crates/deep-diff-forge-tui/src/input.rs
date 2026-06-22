@@ -18,6 +18,7 @@ pub fn map_key(key: KeyEvent) -> AppEvent {
         KeyCode::Char('t' | 's') | KeyCode::Tab => AppEvent::ToggleLayout,
         KeyCode::Char('z') => AppEvent::ToggleFold,
         KeyCode::Char('n') => AppEvent::ToggleNotes,
+        KeyCode::Char('v' | ' ') => AppEvent::ToggleViewed,
         KeyCode::Char('T') => AppEvent::CycleTheme,
         KeyCode::Char('?') => AppEvent::ToggleHelp,
         KeyCode::Char('h') | KeyCode::Left => AppEvent::FocusSidebar,
@@ -79,6 +80,12 @@ mod tests {
     fn z_folds_and_n_toggles_notes() {
         assert_eq!(map_key(key(KeyCode::Char('z'))), AppEvent::ToggleFold);
         assert_eq!(map_key(key(KeyCode::Char('n'))), AppEvent::ToggleNotes);
+    }
+
+    #[test]
+    fn v_and_space_toggle_viewed() {
+        assert_eq!(map_key(key(KeyCode::Char('v'))), AppEvent::ToggleViewed);
+        assert_eq!(map_key(key(KeyCode::Char(' '))), AppEvent::ToggleViewed);
     }
 
     #[test]

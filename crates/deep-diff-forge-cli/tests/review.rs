@@ -77,3 +77,20 @@ fn probe_empty_patch_renders_placeholder() {
     assert_eq!(code, 0);
     assert!(stdout.contains("no files"));
 }
+
+#[test]
+fn probe_status_bar_advertises_the_viewed_key_and_progress() {
+    // A wide frame so the right-aligned state is not truncated.
+    let (code, stdout, _) = run(&["review", "--probe", "--cols", "200"], PATCH);
+    assert_eq!(code, 0);
+    // The left-aligned hints advertise the new key…
+    assert!(
+        stdout.contains("v viewed"),
+        "status hints should advertise the viewed key"
+    );
+    // …and the right-aligned state shows review progress (PATCH has 2 files).
+    assert!(
+        stdout.contains("viewed:0/2"),
+        "a fresh review should report 0 of 2 reviewed"
+    );
+}

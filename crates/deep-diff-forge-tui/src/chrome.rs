@@ -53,16 +53,19 @@ fn on_off(flag: bool) -> &'static str {
 /// the right.
 #[must_use]
 pub(crate) fn status_bar(app: &ReviewApp, palette: &Palette, width: usize) -> Line<'static> {
-    let hints = "j/k move · s layout · z fold · n notes · T theme · : cmds · ? help · q quit";
+    let hints =
+        "j/k move · v viewed · s layout · z fold · n notes · T theme · : cmds · ? help · q quit";
     let position = if app.is_empty() {
         0
     } else {
         app.selected_index() + 1
     };
     let state = format!(
-        "{} · {}/{} · {} · fold:{} · notes:{}",
+        "{} · {}/{} · viewed:{}/{} · {} · fold:{} · notes:{}",
         app.layout().label(),
         position,
+        app.file_count(),
+        app.viewed_count(),
         app.file_count(),
         app.theme().label(),
         on_off(app.fold()),
@@ -91,6 +94,7 @@ pub(crate) fn help_lines(palette: &Palette) -> Vec<Line<'static>> {
         ("s / Tab", "toggle inline ↔ side-by-side"),
         ("z", "fold / unfold long unchanged context"),
         ("n", "show / hide inline agent notes"),
+        ("v / Space", "mark file reviewed (advances to the next)"),
         ("T", "cycle colour theme"),
         (":", "command palette (rank, cluster, json, …)"),
         ("Enter", "run the selected palette command"),
@@ -175,6 +179,34 @@ mod tests {
         let a = ReviewApp::new(Vec::new());
         let out = text(&status_bar(&a, &ThemeKind::Dark.palette(), 140));
         assert!(out.contains("0/0"));
+    }
+
+    #[test]
+    fn status_bar_shows_review_progress() {
+        let out = text(&status_bar(&app(), &ThemeKind::Dark.palette(), 160));
+        assert!(
+            out.contains("viewed:0/1"),
+            "fresh review has nothing viewed"
+        );
+    }
+
+    #[test]
+    fn status_bar_review_progress_updates() {
+        let mut a = app();
+        a.handle(crate::state::AppEvent::ToggleViewed);
+        let out = text(&status_bar(&a, &ThemeKind::Dark.palette(), 160));
+        assert!(out.contains("viewed:1/1"), "marking updates the progress");
+    }
+
+    #[test]
+    fn help_lists_review_key() {
+        let p = ThemeKind::Dark.palette();
+        let out: String = help_lines(&p)
+            .iter()
+            .map(text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(out.contains("reviewed"));
     }
 
     #[test]

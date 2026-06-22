@@ -83,17 +83,28 @@ fn file_line(app: &ReviewApp, palette: &Palette, index: usize) -> Line<'static> 
     let (add, del) = change_counts(&app.content()[index]);
     let notes = note_count(app.annotations(), &rf.path);
     let selected = index == app.selected_index();
+    let viewed = app.is_viewed(index);
 
-    let base = if selected {
+    let mut base = if selected {
         Style::default().fg(palette.fg).bg(palette.selection_bg)
     } else {
         Style::default().fg(palette.fg)
     };
+    // Dim already-reviewed rows (unless one is selected) so the eye flows to
+    // what is left to review.
+    if viewed && !selected {
+        base = base.add_modifier(Modifier::DIM);
+    }
 
-    let mut spans = Vec::with_capacity(8);
+    let mut spans = Vec::with_capacity(9);
     spans.push(Span::styled(
         if selected { "▌" } else { " " }.to_string(),
         base.fg(palette.accent),
+    ));
+    // Reviewed-state column (fixed two cells wide so rows stay aligned).
+    spans.push(Span::styled(
+        if viewed { "✓ " } else { "  " }.to_string(),
+        base.fg(palette.added),
     ));
     spans.push(Span::styled(
         format!("{} ", status_marker(rf.status)),
@@ -255,6 +266,57 @@ mod tests {
             out.contains('▌'),
             "selected row should carry the bar marker"
         );
+    }
+
+    #[test]
+    fn fresh_review_shows_no_reviewed_check() {
+        assert!(
+            !rendered(&app()).contains('✓'),
+            "nothing is reviewed in a fresh app"
+        );
+    }
+
+    #[test]
+    fn reviewed_file_shows_check() {
+        let mut a = app();
+        a.handle(crate::state::AppEvent::ToggleViewed); // mark the top-ranked file
+        assert!(
+            rendered(&a).contains('✓'),
+            "a reviewed file should render the check marker"
+        );
+    }
+
+    #[test]
+    fn reviewed_unselected_row_is_dimmed() {
+        let mut a = app();
+        let first = base_of(&a.files()[0].path).to_string();
+        // Mark file 0 reviewed; selection advances off it, so it is now
+        // reviewed-and-unselected — the dim condition.
+        a.handle(crate::state::AppEvent::ToggleViewed);
+        let p = ThemeKind::Dark.palette();
+        let lines = tree_lines(&a, &p);
+        let row = lines
+            .iter()
+            .find(|l| text(l).contains(&first))
+            .expect("the reviewed file's row should be present");
+        assert!(
+            row.spans
+                .iter()
+                .any(|s| s.style.add_modifier.contains(Modifier::DIM)),
+            "a reviewed, unselected row should carry the DIM modifier"
+        );
+    }
+
+    #[test]
+    fn no_row_is_dimmed_in_a_fresh_review() {
+        let a = app();
+        let p = ThemeKind::Dark.palette();
+        let any_dim = tree_lines(&a, &p).iter().any(|l| {
+            l.spans
+                .iter()
+                .any(|s| s.style.add_modifier.contains(Modifier::DIM))
+        });
+        assert!(!any_dim, "nothing reviewed means nothing dimmed");
     }
 
     #[test]
