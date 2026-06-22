@@ -411,8 +411,10 @@ over an owner-private Unix domain socket.
 **Security:** the runtime directory is created `0700` (and rejected if group- or
 world-accessible), the socket is `0600`, and stale sockets are replaced on bind.
 
-**Default socket:** `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock`
-(fallback `/tmp/deep-diff-forge-runtime/deep-diff-forge/…`).
+**Default socket:** `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock`. There
+is no world-writable `/tmp` fallback: if `$XDG_RUNTIME_DIR` is unset the daemon
+fails closed and you pass an explicit `--socket PATH`. (`doctor` reports the
+resolved socket, or `<unavailable: set XDG_RUNTIME_DIR or pass --socket>`.)
 
 **JSON-RPC methods:** `engine.initialize`, `daemon.health`, `daemon.status`,
 `daemon.shutdown`, `diff.plan`, `session.open`, `session.snapshot`,
