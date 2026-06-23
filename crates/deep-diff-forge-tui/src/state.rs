@@ -24,6 +24,8 @@ pub enum AppEvent {
     Bottom,
     /// Collapse/expand long runs of unchanged context.
     ToggleFold,
+    /// Toggle wrapping for long diff rows.
+    ToggleWrap,
     /// Show/hide inline agent notes.
     ToggleNotes,
     /// Cycle to the next colour theme.
@@ -34,6 +36,8 @@ pub enum AppEvent {
     FocusDiff,
     /// Toggle the selected file's "reviewed" flag (and advance when marking it).
     ToggleViewed,
+    /// Select the file row at a visible tree row index.
+    SelectTreeRow(usize),
     /// Show/hide the help overlay.
     ToggleHelp,
     /// Open the command palette.
@@ -99,6 +103,24 @@ pub enum Overlay {
     Panel,
 }
 
+/// Review display toggles that affect diff rendering but not navigation.
+#[derive(Debug, Clone, Copy)]
+struct ViewOptions {
+    fold: bool,
+    wrap_lines: bool,
+    show_notes: bool,
+}
+
+impl Default for ViewOptions {
+    fn default() -> Self {
+        Self {
+            fold: true,
+            wrap_lines: false,
+            show_notes: true,
+        }
+    }
+}
+
 /// Review-first interactive app state.
 ///
 /// Pure and fully testable: rendering and the terminal event loop are kept out
@@ -117,8 +139,7 @@ pub struct ReviewApp {
     layout: LayoutMode,
     theme: ThemeKind,
     focus: Focus,
-    fold: bool,
-    show_notes: bool,
+    view: ViewOptions,
     overlay: Overlay,
     palette_index: usize,
     panel: CommandOutput,
@@ -173,8 +194,7 @@ impl ReviewApp {
             layout: LayoutMode::Inline,
             theme: ThemeKind::default(),
             focus: Focus::default(),
-            fold: true,
-            show_notes: true,
+            view: ViewOptions::default(),
             overlay: Overlay::default(),
             palette_index: 0,
             panel: CommandOutput::default(),
@@ -214,12 +234,14 @@ impl ReviewApp {
                 self.selected = self.ranked.len().saturating_sub(1);
                 self.scroll = 0;
             }
-            AppEvent::ToggleFold => self.fold = !self.fold,
-            AppEvent::ToggleNotes => self.show_notes = !self.show_notes,
+            AppEvent::ToggleFold => self.view.fold = !self.view.fold,
+            AppEvent::ToggleWrap => self.view.wrap_lines = !self.view.wrap_lines,
+            AppEvent::ToggleNotes => self.view.show_notes = !self.view.show_notes,
             AppEvent::CycleTheme => self.theme = self.theme.next(),
             AppEvent::FocusSidebar => self.focus = Focus::Sidebar,
             AppEvent::FocusDiff => self.focus = Focus::Diff,
             AppEvent::ToggleViewed => self.toggle_viewed(),
+            AppEvent::SelectTreeRow(row) => self.select_tree_row(row),
             AppEvent::ToggleHelp => self.overlay = Overlay::Help,
             AppEvent::OpenPalette => {
                 self.overlay = Overlay::Palette;
@@ -301,6 +323,14 @@ impl ReviewApp {
         };
         if now_viewed {
             self.select_next();
+        }
+    }
+
+    fn select_tree_row(&mut self, row: usize) {
+        if let Some(index) = crate::tree::file_index_at_row(self, row) {
+            self.selected = index;
+            self.scroll = 0;
+            self.focus = Focus::Sidebar;
         }
     }
 
@@ -398,13 +428,19 @@ impl ReviewApp {
     /// Whether long context runs are collapsed.
     #[must_use]
     pub fn fold(&self) -> bool {
-        self.fold
+        self.view.fold
+    }
+
+    /// Whether long diff rows wrap instead of clipping at the pane edge.
+    #[must_use]
+    pub fn wrap_lines(&self) -> bool {
+        self.view.wrap_lines
     }
 
     /// Whether inline notes are shown.
     #[must_use]
     pub fn show_notes(&self) -> bool {
-        self.show_notes
+        self.view.show_notes
     }
 
     /// The active modal overlay.
@@ -496,6 +532,7 @@ mod tests {
     fn defaults_fold_and_notes_on() {
         let a = app();
         assert!(a.fold());
+        assert!(!a.wrap_lines());
         assert!(a.show_notes());
         assert_eq!(a.theme(), ThemeKind::Dark);
         assert_eq!(a.focus(), Focus::Sidebar);
@@ -594,6 +631,16 @@ mod tests {
     }
 
     #[test]
+    fn toggle_wrap_flips() {
+        let mut a = app();
+        assert!(!a.wrap_lines());
+        a.handle(AppEvent::ToggleWrap);
+        assert!(a.wrap_lines());
+        a.handle(AppEvent::ToggleWrap);
+        assert!(!a.wrap_lines());
+    }
+
+    #[test]
     fn toggle_notes_flips() {
         let mut a = app();
         a.handle(AppEvent::ToggleNotes);
@@ -614,6 +661,23 @@ mod tests {
         assert_eq!(a.focus(), Focus::Diff);
         a.handle(AppEvent::FocusSidebar);
         assert_eq!(a.focus(), Focus::Sidebar);
+    }
+
+    #[test]
+    fn select_tree_row_selects_visible_file_and_focuses_sidebar() {
+        let mut a = app();
+        a.handle(AppEvent::FocusDiff);
+        a.handle(AppEvent::SelectTreeRow(2));
+        assert_eq!(a.selected_index(), 1);
+        assert_eq!(a.focus(), Focus::Sidebar);
+    }
+
+    #[test]
+    fn select_tree_row_ignores_directory_headers() {
+        let mut a = app();
+        a.handle(AppEvent::Next);
+        a.handle(AppEvent::SelectTreeRow(0));
+        assert_eq!(a.selected_index(), 1);
     }
 
     #[test]

@@ -1,13 +1,14 @@
-use crate::input::map_key;
+use crate::input::{map_key, map_mouse};
 use crate::state::ReviewApp;
 use crate::ui::render;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io;
+use std::time::Duration;
 
 /// Run the interactive review loop against a real terminal.
 ///
@@ -22,13 +23,17 @@ use std::io;
 pub fn run(mut app: ReviewApp) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    crossterm::execute!(stdout, EnterAlternateScreen)?;
+    crossterm::execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
     let result = event_loop(&mut terminal, &mut app);
 
     disable_raw_mode()?;
-    crossterm::execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    crossterm::execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     result
 }
@@ -39,9 +44,28 @@ fn event_loop<B: ratatui::backend::Backend>(
 ) -> io::Result<()> {
     while app.is_running() {
         terminal.draw(|frame| render(frame, app))?;
-        if let Event::Key(key) = event::read()? {
-            app.handle(map_key(key));
+        // Block for the next event, then drain the entire queued burst before
+        // the next redraw. Mouse capture (xterm any-motion mode 1003, enabled
+        // above) emits one motion event per cell of travel — hundreds per
+        // second. Redrawing once per event pegs a core; coalescing collapses an
+        // N-event burst into a single redraw. Blocking on the first `read`
+        // keeps an idle review at ~0% CPU.
+        dispatch(app, &event::read()?);
+        while app.is_running() && event::poll(Duration::ZERO)? {
+            dispatch(app, &event::read()?);
         }
     }
     Ok(())
+}
+
+/// Apply one terminal event to the app's state machine.
+///
+/// Mouse-motion and other non-actionable events fold to a no-op so a burst of
+/// them costs only the (cheap) `handle` call, not a re-render.
+fn dispatch(app: &mut ReviewApp, event: &Event) {
+    match event {
+        Event::Key(key) => app.handle(map_key(*key)),
+        Event::Mouse(mouse) => app.handle(map_mouse(*mouse)),
+        _ => {}
+    }
 }

@@ -174,6 +174,26 @@ pub(crate) fn selected_row(app: &ReviewApp) -> usize {
     0
 }
 
+/// Resolve a visible [`tree_lines`] row to a ranked file index. Directory
+/// header rows and out-of-range rows return `None`.
+#[must_use]
+pub(crate) fn file_index_at_row(app: &ReviewApp, target_row: usize) -> Option<usize> {
+    let mut row = 0;
+    for (_, indices) in grouped(app) {
+        if row == target_row {
+            return None;
+        }
+        row += 1; // directory header line
+        for index in indices {
+            if row == target_row {
+                return Some(index);
+            }
+            row += 1;
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,6 +397,21 @@ mod tests {
         a.handle(crate::state::AppEvent::Bottom);
         // The last file's row is greater than the first's.
         assert!(selected_row(&a) > 1);
+    }
+
+    #[test]
+    fn file_index_at_row_skips_directory_headers() {
+        let a = app();
+        assert_eq!(file_index_at_row(&a, 0), None);
+        assert_eq!(file_index_at_row(&a, 1), Some(0));
+    }
+
+    #[test]
+    fn file_index_at_row_resolves_visible_file_rows() {
+        let a = app();
+        let row = selected_row(&a);
+        assert_eq!(file_index_at_row(&a, row), Some(a.selected_index()));
+        assert_eq!(file_index_at_row(&a, 999), None);
     }
 
     #[test]

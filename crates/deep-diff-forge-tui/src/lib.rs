@@ -27,7 +27,7 @@ mod tree;
 mod ui;
 
 pub use command::{Command, CommandOutput};
-pub use input::map_key;
+pub use input::{map_key, map_mouse};
 pub use notes::{engine_annotations, file_annotations, hunk_annotations};
 pub use run::run;
 pub use state::{AppEvent, Focus, LayoutMode, Overlay, ReviewApp};

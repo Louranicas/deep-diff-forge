@@ -356,6 +356,14 @@ fn learn_record(opts: &[String]) {
 /// outline, cluster, summary, notes, review, daemon, learning, maturity) and
 /// shows its panel.
 fn review_cmd(opts: &[String]) {
+    if opts
+        .iter()
+        .any(|a| matches!(a.as_str(), "--help" | "-h" | "help"))
+    {
+        print_review_help();
+        return;
+    }
+
     let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
     let files = match deep_diff_forge_patch::parse(&input) {
         Ok(files) => files,
@@ -399,6 +407,31 @@ fn review_cmd(opts: &[String]) {
         eprintln!("error: review requires an interactive terminal: {err}");
         std::process::exit(6);
     }
+}
+
+fn print_review_help() {
+    emit(
+        "deep-diff-forge review
+
+USAGE:
+  deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME]
+
+Reads a unified/Git patch from stdin and opens the review TUI.
+
+OPTIONS:
+  --probe        Render one headless frame; does not require a TTY
+  --cols N       Probe width, minimum 40 columns
+  --rows N       Probe height, minimum 8 rows
+  --side         Start in side-by-side layout
+  --palette      Open the command palette before rendering/running
+  --cmd NAME     Run a palette command and show its result panel
+  -h, --help     Show this help
+
+COMMAND NAMES:
+  rank, outline, cluster, summary, notes, review, daemon, learning, maturity
+
+",
+    );
 }
 
 /// Open the palette, move to the command whose label matches `name` (by full
