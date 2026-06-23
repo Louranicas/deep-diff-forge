@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.svg" alt="Deep-Diff-Forge — a next-generation review engine for code changes" width="100%">
+</p>
+
 # Deep-Diff-Forge
 
 **A next-generation review engine for code changes — patch truth and semantic
