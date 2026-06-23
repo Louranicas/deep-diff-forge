@@ -52,6 +52,16 @@ fn probe_renders_the_review_frame() {
 }
 
 #[test]
+fn review_help_does_not_require_a_tty_or_patch() {
+    let (code, stdout, stderr) = run(&["review", "--help"], "");
+    assert_eq!(code, 0);
+    assert!(stderr.is_empty());
+    assert!(stdout.contains("deep-diff-forge review"));
+    assert!(stdout.contains("--probe"));
+    assert!(stdout.contains("--cmd NAME"));
+}
+
+#[test]
 fn probe_shows_diff_and_engine_note() {
     let (code, stdout, _) = run(&["review", "--probe"], PATCH);
     assert_eq!(code, 0);
@@ -76,4 +86,21 @@ fn probe_empty_patch_renders_placeholder() {
     let (code, stdout, _) = run(&["review", "--probe"], "");
     assert_eq!(code, 0);
     assert!(stdout.contains("no files"));
+}
+
+#[test]
+fn probe_status_bar_advertises_the_viewed_key_and_progress() {
+    // A wide frame so the right-aligned state is not truncated.
+    let (code, stdout, _) = run(&["review", "--probe", "--cols", "200"], PATCH);
+    assert_eq!(code, 0);
+    // The left-aligned hints advertise the new key…
+    assert!(
+        stdout.contains("v reviewed"),
+        "status hints should advertise the viewed key"
+    );
+    // …and the right-aligned state shows review progress (PATCH has 2 files).
+    assert!(
+        stdout.contains("viewed:0/2"),
+        "a fresh review should report 0 of 2 reviewed"
+    );
 }

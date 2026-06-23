@@ -1,5 +1,6 @@
+use crate::chrome::MENUS;
 use crate::state::AppEvent;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 /// Map a key event to a semantic [`AppEvent`].
 ///
@@ -17,7 +18,9 @@ pub fn map_key(key: KeyEvent) -> AppEvent {
         KeyCode::Char('k') | KeyCode::Up => AppEvent::Prev,
         KeyCode::Char('t' | 's') | KeyCode::Tab => AppEvent::ToggleLayout,
         KeyCode::Char('z') => AppEvent::ToggleFold,
+        KeyCode::Char('w') => AppEvent::ToggleWrap,
         KeyCode::Char('n') => AppEvent::ToggleNotes,
+        KeyCode::Char('v' | ' ') => AppEvent::ToggleViewed,
         KeyCode::Char('T') => AppEvent::CycleTheme,
         KeyCode::Char('?') => AppEvent::ToggleHelp,
         KeyCode::Char('h') | KeyCode::Left => AppEvent::FocusSidebar,
@@ -32,6 +35,51 @@ pub fn map_key(key: KeyEvent) -> AppEvent {
     }
 }
 
+/// Map a mouse event to a semantic [`AppEvent`].
+///
+/// The terminal event loop does not know the rendered pane rectangles, so this
+/// mapper intentionally handles only stable, layout-independent gestures:
+/// wheel scrolling and coarse left/right focus clicks. Rich hit testing can be
+/// layered on later without changing the state machine.
+#[must_use]
+pub fn map_mouse(mouse: MouseEvent) -> AppEvent {
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) if mouse.row == 0 => map_menu_click(mouse.column),
+        MouseEventKind::ScrollUp => AppEvent::ScrollUp,
+        MouseEventKind::ScrollDown => AppEvent::ScrollDown,
+        MouseEventKind::Down(MouseButton::Left) if mouse.column < 40 => {
+            AppEvent::SelectTreeRow(usize::from(mouse.row.saturating_sub(2)))
+        }
+        MouseEventKind::Down(MouseButton::Left) => AppEvent::FocusDiff,
+        _ => AppEvent::None,
+    }
+}
+
+fn map_menu_click(column: u16) -> AppEvent {
+    let column = usize::from(column);
+    for (label, event) in menu_actions() {
+        let Some(start) = MENUS.find(label) else {
+            continue;
+        };
+        let end = start + label.chars().count();
+        if (start..end).contains(&column) {
+            return event;
+        }
+    }
+    AppEvent::None
+}
+
+fn menu_actions() -> [(&'static str, AppEvent); 6] {
+    [
+        ("File(:)", AppEvent::OpenPalette),
+        ("View(s z w n)", AppEvent::ToggleLayout),
+        ("Navigate(j/k g/G)", AppEvent::FocusSidebar),
+        ("Theme(T)", AppEvent::CycleTheme),
+        ("Agent(:)", AppEvent::OpenPalette),
+        ("Help(?)", AppEvent::ToggleHelp),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -42,6 +90,24 @@ mod tests {
 
     fn ctrl(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn mouse(kind: MouseEventKind, column: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn body_mouse(kind: MouseEventKind, column: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row: 4,
+            modifiers: KeyModifiers::NONE,
+        }
     }
 
     #[test]
@@ -79,6 +145,17 @@ mod tests {
     fn z_folds_and_n_toggles_notes() {
         assert_eq!(map_key(key(KeyCode::Char('z'))), AppEvent::ToggleFold);
         assert_eq!(map_key(key(KeyCode::Char('n'))), AppEvent::ToggleNotes);
+    }
+
+    #[test]
+    fn w_toggles_wrap() {
+        assert_eq!(map_key(key(KeyCode::Char('w'))), AppEvent::ToggleWrap);
+    }
+
+    #[test]
+    fn v_and_space_toggle_viewed() {
+        assert_eq!(map_key(key(KeyCode::Char('v'))), AppEvent::ToggleViewed);
+        assert_eq!(map_key(key(KeyCode::Char(' '))), AppEvent::ToggleViewed);
     }
 
     #[test]
@@ -128,7 +205,6 @@ mod tests {
 
     #[test]
     fn unbound_key_is_none() {
-        assert_eq!(map_key(key(KeyCode::Char('w'))), AppEvent::None);
         assert_eq!(map_key(key(KeyCode::Char('x'))), AppEvent::None);
         assert_eq!(map_key(key(KeyCode::F(5))), AppEvent::None);
     }
@@ -136,5 +212,66 @@ mod tests {
     #[test]
     fn quit_takes_priority_for_q_even_with_ctrl() {
         assert_eq!(map_key(ctrl('q')), AppEvent::Quit);
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls() {
+        assert_eq!(
+            map_mouse(mouse(MouseEventKind::ScrollUp, 80)),
+            AppEvent::ScrollUp
+        );
+        assert_eq!(
+            map_mouse(mouse(MouseEventKind::ScrollDown, 80)),
+            AppEvent::ScrollDown
+        );
+    }
+
+    #[test]
+    fn mouse_left_click_coarsely_focuses_panes() {
+        assert_eq!(
+            map_mouse(body_mouse(MouseEventKind::Down(MouseButton::Left), 10)),
+            AppEvent::SelectTreeRow(2)
+        );
+        assert_eq!(
+            map_mouse(body_mouse(MouseEventKind::Down(MouseButton::Left), 80)),
+            AppEvent::FocusDiff
+        );
+    }
+
+    #[test]
+    fn other_mouse_events_are_noops() {
+        assert_eq!(
+            map_mouse(mouse(MouseEventKind::Down(MouseButton::Right), 80)),
+            AppEvent::None
+        );
+    }
+
+    #[test]
+    fn menu_clicks_dispatch_to_matching_actions() {
+        for (label, event) in menu_actions() {
+            let start = MENUS.find(label).expect("menu label exists");
+            let end = start + label.chars().count();
+            for column in start..end {
+                let column = u16::try_from(column).expect("menu column fits u16");
+                assert_eq!(
+                    map_mouse(mouse(MouseEventKind::Down(MouseButton::Left), column)),
+                    event,
+                    "column {column} in {label} should map consistently"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn menu_gaps_are_noops() {
+        let file_end = MENUS.find("File(:)").unwrap() + "File(:)".len();
+        let view_start = MENUS.find("View(s z w n)").unwrap();
+        for column in file_end..view_start {
+            let column = u16::try_from(column).expect("menu column fits u16");
+            assert_eq!(
+                map_mouse(mouse(MouseEventKind::Down(MouseButton::Left), column)),
+                AppEvent::None
+            );
+        }
     }
 }
