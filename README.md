@@ -15,13 +15,19 @@ cockpit, and bounded parallel execution on top — every layer a projection over
 one stable model, none of them ever allowed to corrupt the patch.
 
 > **Maturity: L9 (Learning).** All engine layers L0–L8 are implemented, plus the
-> L9 local-only learning loop (`learn status|record`). 12 crates, 792 tests, zero
+> L9 local-only learning loop (`learn status|record`). 12 crates, 927 tests, zero
 > `unsafe`, supply-chain-gated, dual MIT/Apache-2.0 licensed. The workspace is
 > **crates.io-publish-ready** (`cargo publish --dry-run` is clean across all
 > crates); the upload itself is **token-gated** — the release workflow publishes
 > automatically when `CARGO_REGISTRY_TOKEN` is configured. See
 > [`EVIDENCE.md`](EVIDENCE.md) and
 > [`CHANGELOG.md`](CHANGELOG.md).
+
+<p align="center">
+  <img src="assets/review-cockpit.png" alt="The deep-diff-forge review cockpit: a ranked file sidebar, a side-by-side syntax-highlighted diff, and the top command menu bar" width="100%">
+  <br>
+  <sub>The review cockpit in side-by-side layout — a risk-ranked file sidebar, a syntax-highlighted two-column diff, and the menu bar. Launch with <code>git diff | deep-diff-forge review</code>.</sub>
+</p>
 
 ---
 
@@ -55,7 +61,7 @@ Existing tools each optimize one layer of the review problem:
 | classic `diff` | patch truth, exit codes, automation | no semantic or review intelligence |
 | `delta`, `diff-so-fancy` | readable terminal rendering | line-oriented; pretty is not understanding |
 | `difftastic` | structural (syntax-tree) diffing | output is not apply-able as a patch |
-| `hunk` | review-first UI + AI workflow | broad desktop surface, not a composable core |
+| `hunk` | review-first terminal UI + agent workflow | interactive Node/TS viewer, not a composable machine-readable engine |
 | `lumen` | interactive viewer ergonomics | viewer, not an engine |
 
 Deep-Diff-Forge wins by making these layers **cooperate** instead of choosing
@@ -105,38 +111,58 @@ plausible-looking model.
 
 Deep-Diff-Forge is a review **engine**, not a syntax-highlighting pager — so it
 brings capabilities the rendering-focused tools don't, and (honestly) doesn't yet
-do everything they do. The table reflects default, out-of-the-box behavior.
+do everything they do. Its closest peer is [`hunk`][hunk], a review-first terminal
+viewer; the table reflects default, out-of-the-box behavior.
 
-| Capability | deep-diff-forge | [`delta`][delta] | [`difftastic`][difft] | [`diff-so-fancy`][dsf] | `diff` |
-| --- | :---: | :---: | :---: | :---: | :---: |
-| Review-first interactive UI | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Multi-file review stream + sidebar | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Inline agent / AI annotations | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Runtime view toggles (inline ↔ side-by-side) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Deterministic risk ranking | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Machine-readable JSON / JSONL output | ✅ | ❌ | ❌ <sup>1</sup> | ❌ | ❌ |
-| Optional shared-cache daemon (UDS) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Local, private learning loop | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Apply-able patch output preserved | ✅ | ✅ <sup>2</sup> | ❌ | ✅ <sup>2</sup> | ✅ |
-| Syntax highlighting | ✅ <sup>3</sup> | ✅ | ✅ | ❌ | ❌ |
-| Structural / AST-level diffing | ✅ <sup>4</sup> | ❌ | ✅ | ❌ | ❌ |
-| Pager / Unix-filter friendly | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Capability | deep-diff-forge | [`hunk`][hunk] | [`delta`][delta] | [`difftastic`][difft] | [`diff-so-fancy`][dsf] | `diff` |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: |
+| Review-first interactive UI | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Multi-file review stream + sidebar | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Inline agent / AI annotations | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Runtime view toggles (layout / fold / wrap / notes) | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Mouse support in the viewer | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Selectable colour themes | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Deterministic risk ranking | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Machine-readable JSON / JSONL output | ✅ | ❌ <sup>1</sup> | ❌ | ❌ <sup>2</sup> | ❌ | ❌ |
+| Optional shared-cache daemon (UDS) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Local, private learning loop | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Apply-able patch output preserved | ✅ | ❌ <sup>3</sup> | ✅ <sup>4</sup> | ❌ | ✅ <sup>4</sup> | ✅ |
+| Syntax highlighting | ✅ <sup>5</sup> | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Structural / AST-level diffing | ✅ <sup>6</sup> | ❌ | ❌ | ✅ | ❌ | ❌ |
+| Native Git / Jujutsu / Sapling input | ❌ <sup>7</sup> | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Watch / auto-reload on change | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Pager / Unix-filter friendly | ✅ | ✅ <sup>8</sup> | ✅ | ✅ | ✅ | ✅ |
 
-<sup>1</sup> difftastic has an experimental JSON display; deep-diff-forge ships a
+<sup>1</sup> `hunk`'s agent integration is a live in-session skill (`hunk skill
+path` / `--agent-context`), not a stable schema'd JSON/JSONL document a script can
+consume as a filter.
+<sup>2</sup> difftastic has an experimental JSON display; deep-diff-forge ships a
 stable, schema-versioned `--json` plus streaming `--jsonl`.
-<sup>2</sup> `delta` / `diff-so-fancy` re-render an underlying Git diff that
+<sup>3</sup> `hunk` is an interactive viewer; it renders patches but does not emit
+an apply-able patch to stdout.
+<sup>4</sup> `delta` / `diff-so-fancy` re-render an underlying Git diff that
 remains apply-able; they do not alter patch truth.
-<sup>3</sup> Tree-sitter syntax highlighting (`highlight`), reusing the grammar's
+<sup>5</sup> Tree-sitter syntax highlighting (`highlight`), reusing the grammar's
 own queries and **terminal-injection-safe** (attacker source can't smuggle
 escapes). Rust today; more languages as grammars are added.
-<sup>4</sup> Token/leaf-level structural diff (`structural`): **reformat-aware**
+<sup>6</sup> Token/leaf-level structural diff (`structural`): **reformat-aware**
 (layout-only changes report zero structural change) with best-effort moved-block
 detection. difftastic's optimal tree-edit-distance graph diff is deeper.
+<sup>7</sup> deep-diff-forge is stdin/pipe-first today (`git diff |
+deep-diff-forge`); native `--git` and `<old> <new>` file inputs are on the roadmap.
+<sup>8</sup> `hunk` is pager-compatible (a Git/jj/Sapling pager) but is itself an
+interactive full-screen UI, not a compose-onward stdout filter.
 
-> Deep-Diff-Forge is optimized for reviewing a whole changeset **interactively**
-> and for **agent-collaborative, machine-readable** review. Comparisons are
-> best-effort against each tool's default behavior — corrections welcome via PR.
+> The two interactive review tools here are deep-diff-forge and `hunk`, and they
+> differ in kind. Deep-Diff-Forge is a composable **Rust engine** — machine-readable
+> schemas, an optional UDS daemon, a learning loop, and deterministic risk ranking,
+> shipped as a single static binary — optimized for **agent-collaborative,
+> scriptable** review of a whole changeset. `hunk` is a feature-rich **Node/TS
+> viewer** (OpenTUI) that leads on native VCS integration, watch mode, and
+> responsive auto-layout. Comparisons are best-effort against each tool's default
+> behavior — corrections welcome via PR.
 
+[hunk]: https://github.com/modem-dev/hunk
 [delta]: https://github.com/dandavison/delta
 [difft]: https://github.com/Wilfred/difftastic
 [dsf]: https://github.com/so-fancy/diff-so-fancy
@@ -275,26 +301,55 @@ Reports added / removed / unchanged tokens, with best-effort moved-block
 detection. This is a token/leaf-level diff (not difftastic's optimal
 tree-edit-distance), and it never touches patch truth — it only describes source.
 
-### `review [--probe]` — interactive review cockpit
+### `review [--probe] [--side] [--palette | --cmd NAME]` — interactive review cockpit
 
 ```bash
 git diff | deep-diff-forge review            # launch the TUI (needs a terminal)
+git diff | deep-diff-forge review --side     # start in side-by-side layout
 git diff | deep-diff-forge review --probe    # render one frame headlessly (CI/agents, no TTY)
 ```
 
-The TUI shows a risk-ranked file sidebar and a detail pane. Keys:
+The cockpit is a ranked-file tree sidebar plus a diff pane with inline engine /
+agent notes, a top menu bar, and a status bar of live view state. Keys (press `?`
+in-app for the full card):
 
 | Key | Action |
 | --- | --- |
-| `j` / `↓` | next file |
-| `k` / `↑` | previous file |
-| `g` / `Home` · `G` / `End` | first / last file |
-| `t` / `Tab` | toggle inline ↔ side-by-side layout |
-| `Ctrl-d` / `PageDown` · `Ctrl-u` / `PageUp` | scroll detail down / up |
-| `q` / `Esc` | quit |
+| `j` / `k` · `↓` / `↑` | next / previous file (by rank) |
+| `g` / `G` · `Home` / `End` | first / last file |
+| `h` / `l` · `←` / `→` | focus the file tree / the diff pane |
+| `Enter` | open the selected file / run the selected palette command |
+| `s` / `Tab` (also `t`) | toggle inline ↔ side-by-side layout |
+| `z` | fold / unfold long runs of unchanged context |
+| `w` | wrap / clip long diff rows |
+| `n` | show / hide inline agent notes |
+| `v` / `Space` | mark the file reviewed (and advance to the next) |
+| `T` | cycle colour theme (dark · midnight · mono) |
+| `:` | open the command palette |
+| `?` | toggle the keybinding help card |
+| `Ctrl-d` / `PageDown` · `Ctrl-u` / `PageUp` | scroll the diff down / up |
+| `q` · `Esc` | quit · dismiss the current overlay |
 
-`--probe` renders a single frame to stdout via a headless backend — useful for
-snapshots, CI, and agents that cannot attach a terminal.
+**Mouse** is supported too: the scroll wheel scrolls the diff, a click in the
+sidebar selects that file, a click in the diff focuses it, and a click on a top
+menu name opens it.
+
+**Command palette** — `:` (in-app) runs any engine capability against the loaded
+review and shows the result in a panel; the same commands are reachable headlessly
+via `--palette` or `--cmd NAME`:
+
+```bash
+git diff | deep-diff-forge review --palette          # open the palette, then render
+git diff | deep-diff-forge review --cmd rank         # run one command headlessly
+git diff | deep-diff-forge review --probe --cols 120 --rows 40   # larger headless frame
+```
+
+Command names: `rank`, `outline`, `cluster`, `summary`, `notes`, `review` (the
+`review.v0` JSON), `daemon`, `learning`, `maturity`.
+
+`--probe` renders a single frame to stdout via a headless backend (size
+configurable with `--cols` / `--rows`) — useful for snapshots, CI, and agents that
+cannot attach a terminal.
 
 ### `deploy status` — machine-readable deployment state
 
@@ -306,6 +361,19 @@ deep-diff-forge deploy status --json     # deep-diff-forge.deployment-status.v0
 Reports the declared maturity level, the gate stack, and external-observer
 posture so CI and orchestration can consume deployment state instead of scraping
 prose.
+
+### `deploy release` — release publication posture
+
+```bash
+deep-diff-forge deploy release           # human
+deep-diff-forge deploy release --json    # deep-diff-forge.release.v0
+```
+
+Reports the per-target publication state for the current version — GitHub, GitLab,
+the GitHub release, and crates.io. This is a declared snapshot (the actual release
+acts are `git tag`, `gh release`, and `cargo publish`); `crates.io` is reported
+`blocked` until a registry token is configured, and `pending` lists every
+not-yet-published target.
 
 ### `daemon` — optional UDS JSON-RPC service
 
@@ -367,6 +435,7 @@ line. Primary output goes to **stdout**; diagnostics to **stderr**.
 | `semantic --json` | `deep-diff-forge.semantic.v0` |
 | `structural --json` | `deep-diff-forge.structural.v0` |
 | `deploy status --json` | `deep-diff-forge.deployment-status.v0` |
+| `deploy release --json` | `deep-diff-forge.release.v0` |
 | `learn status --json` | `deep-diff-forge.learning.v0` |
 | `daemon …` | JSON-RPC 2.0 |
 
@@ -537,7 +606,7 @@ just gate-feature
 #   bootstrap contract probes
 ```
 
-Standards enforced across the tree: **792 tests** (every production crate ≥ 50
+Standards enforced across the tree: **927 tests** (every production crate ≥ 50
 meaningful tests), **zero `unsafe`** (compiler-forbidden workspace-wide via
 `[workspace.lints]`), no production `unwrap`/`expect`, pedantic clippy clean with
 no unexplained suppressions, and a `cargo-deny` ([`deny.toml`](deny.toml)) +

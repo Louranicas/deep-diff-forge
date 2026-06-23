@@ -18,6 +18,7 @@ git diff | deep-diff-forge --stdin-patch                       # human review su
 git diff | deep-diff-forge --stdin-patch --json                # deep-diff-forge.review.v0
 git diff | deep-diff-forge --stdin-patch --rank                # risk-ranked files
 git diff | deep-diff-forge --stdin-patch --cluster --parallel 4 --json
+git diff | deep-diff-forge review                              # interactive review cockpit
 git diff | deep-diff-forge review --probe                      # one TUI frame, headless
 deep-diff-forge semantic src/lib.rs --json                     # tree-sitter symbols
 deep-diff-forge learn status                                   # L9 local learning state

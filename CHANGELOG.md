@@ -4,15 +4,37 @@ All notable changes to Deep-Diff-Forge are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 [Semantic Versioning](https://semver.org/).
 
-## [0.2.0] - 2026-06-22
+## [0.2.0] - 2026-06-23
 
-The **L9 (Learning)** layer plus the first crates.io-publishable cut, then a
-supply-chain & fuzz hardening pass — 12 crates, 792 tests, zero `unsafe`,
-supply-chain-gated. `cargo publish --dry-run` is clean across the workspace; the
-crates.io upload itself remains token-gated.
+The **L9 (Learning)** layer plus the first crates.io-publishable cut, a
+supply-chain & fuzz hardening pass, and the interactive **review cockpit** (ranked
+tree, multi-file diff, inline agent notes, command palette, colour themes, mouse)
+— 12 crates, 927 tests, zero `unsafe`, supply-chain-gated. `cargo publish
+--dry-run` is clean across the workspace; the crates.io upload itself remains
+token-gated.
 
 ### Added
 
+- **Interactive review cockpit** — `review [--probe] [--side] [--palette | --cmd
+  NAME]` (+ `deep-diff-forge-tui`, ratatui): a review-first terminal UI with a
+  risk-ranked file tree, a multi-file diff pane, and the engine's own findings as
+  inline grounded agent notes. Runtime view toggles for layout (inline ↔
+  side-by-side), fold, line-wrap, and notes; a per-file **reviewed flag** (`v` /
+  `Space`, auto-advancing, with a `viewed:n/total` progress indicator) for triage;
+  three colour themes (`T`: dark · midnight · mono); a top menu bar and a `?`
+  keybinding help card; and full **mouse** support (scroll, click-to-focus,
+  sidebar selection, menu clicks). State is pure and headless-testable
+  (`render_to_lines`); `--probe` renders one frame with no TTY for CI/agents.
+- **Command palette** — `:` in-app, or headless via `review --palette` / `--cmd
+  NAME`, runs any engine capability against the loaded review and shows it in a
+  result panel: `rank`, `outline` (tree-sitter symbols of the changed regions),
+  `cluster`, `summary`, `notes`, `review` (the `review.v0` JSON), live `daemon`
+  health/status, `learning` scores, and the `maturity` ladder. In-process and
+  read-only; never mutates patch truth.
+- **`deploy release`** — `deploy release [--json]` (schema
+  `deep-diff-forge.release.v0`): a declared per-target publication snapshot
+  (GitHub, GitLab, GitHub release, crates.io) with a `pending` list; `crates.io`
+  reports `blocked` until a registry token is configured.
 - **Syntax highlighting** — `highlight <path> [--color|--no-color]` (+
   `syntax::highlight`): tree-sitter highlighting reusing the grammar's own
   `highlights.scm`, mapped to an ANSI palette. Colour auto-detects a TTY.
