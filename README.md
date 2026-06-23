@@ -39,6 +39,7 @@ one stable model, none of them ever allowed to corrupt the patch.
 - [Feature comparison](#feature-comparison)
 - [Install & build](#install--build)
 - [Quick start](#quick-start)
+- [Release readiness](#release-readiness)
 - [Command reference](#command-reference)
 - [Output formats & schemas](#output-formats--schemas)
 - [Exit codes](#exit-codes)
@@ -71,7 +72,9 @@ many files — and for the agents, scripts, and CI that increasingly drive revie
 
 It is **Bash-first and Claude-Code-first**: every action has a deterministic
 command, machine-readable output (`--json` / `--jsonl`), stable exit codes, and
-works as a Unix filter with no daemon required.
+works as a Unix filter with no daemon required. That same deterministic surface
+makes it easy to wrap as a **Claude Agent Skill** or a **Pi extension** so an
+agent drives the review for you — see [`docs/MAKING_SKILLS.md`](docs/MAKING_SKILLS.md).
 
 ## The first principle
 
@@ -221,6 +224,60 @@ deep-diff-forge semantic src/lib.rs
 # Interactive review cockpit
 git diff | deep-diff-forge review
 ```
+
+## Release readiness
+
+For a public release or first-time agent integration, use the same paths the
+gates exercise:
+
+```bash
+# Build and smoke-check the release binary
+cargo build --release --bin deep-diff-forge
+target/release/deep-diff-forge --self-test
+target/release/deep-diff-forge doctor
+
+# Review a real changeset, or render one headless frame for CI/agents
+git diff HEAD~1 HEAD | target/release/deep-diff-forge review
+git diff HEAD~1 HEAD | target/release/deep-diff-forge review --probe
+
+# Machine-readable review for agents and automation
+git diff HEAD~1 HEAD | target/release/deep-diff-forge --stdin-patch --json
+git diff HEAD~1 HEAD | target/release/deep-diff-forge --stdin-patch --rank --json
+
+# Optional daemon lifecycle; run start in one terminal, health/status/stop in another
+target/release/deep-diff-forge daemon start --foreground
+target/release/deep-diff-forge daemon health
+target/release/deep-diff-forge daemon status
+target/release/deep-diff-forge daemon stop
+```
+
+Before tagging a release, run the repo gate and capture the daemon/security
+receipts:
+
+```bash
+just gate-release
+cargo audit
+cargo deny check
+python3 scripts/security/daemon_soak.py
+```
+
+The daemon and soak test need normal OS runtime/socket permissions; they are
+expected to fail in restricted sandboxes that block process/socket operations.
+The daemon is optional for correctness: one-shot CLI review, JSON/JSONL output,
+and the TUI all work without it.
+
+Recommended release proof for GitHub:
+
+- tag the verified commit, for example `v0.2.0`;
+- state that `just gate-release` passed;
+- include the TUI test count from the gate output;
+- include the daemon soak receipt and `verdict=PASS`;
+- call out that crates.io publishing is token-gated by `CARGO_REGISTRY_TOKEN`.
+
+Honest boundary: Deep-Diff-Forge is production-ready as a local, scriptable,
+agent-usable diff review and triage engine. Hosted review services, CI bot
+publishing flows, and deeper multi-agent orchestration are integration layers on
+top of this engine, not requirements for the current release.
 
 ---
 
@@ -589,6 +646,8 @@ code implements them, after which code wins or the gate fails.
   50-meaningful-tests rule and anti-test-fitting discipline.
 - **[`docs/AGENTIC_RUST_CODER_V4.md`](docs/AGENTIC_RUST_CODER_V4.md)** — the
   evidence-labelled implementation standard.
+- **[`docs/MAKING_SKILLS.md`](docs/MAKING_SKILLS.md)** — build a Claude Agent
+  Skill or Pi extension that drives the engine for agent-collaborative review.
 - See the framework's documentation map for the full set (architecture, specs,
   API/IPC, chaining/clustering, loom, performance, release, operations, …).
 
