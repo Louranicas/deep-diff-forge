@@ -84,13 +84,14 @@ jobs:
         with:
           subject-path: sbom.spdx.json
       - name: upload release assets
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |
             deep-diff-forge-*.tar.gz
             deep-diff-forge-*.tar.gz.sha256
       - name: upload release SBOM
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.target == 'x86_64-unknown-linux-gnu' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: sbom.spdx.json
