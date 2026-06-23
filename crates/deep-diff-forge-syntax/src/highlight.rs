@@ -12,8 +12,27 @@
 //! terminal-injection vector, even on a malicious source file.
 
 use crate::language::Language;
+use std::cell::RefCell;
 use std::fmt::Write as _;
 use tree_sitter::{Query, QueryCursor, StreamingIterator as _};
+
+enum QueryState {
+    Untried,
+    Unavailable,
+    Ready(Query),
+}
+
+thread_local! {
+    /// The compiled Rust highlight query, cached per thread.
+    ///
+    /// `Query::new` parses and compiles the grammar's entire `highlights.scm`.
+    /// The review TUI calls [`highlight`] once per rendered source line and
+    /// rebuilds the whole diff document every frame, so recompiling the query on
+    /// every call made rendering pathologically slow (seconds per keypress on a
+    /// multi-file diff). Compiling once and reusing the immutable query removes
+    /// that cost; `Unavailable` means compilation failed and highlighting is skipped.
+    static RUST_QUERY: RefCell<QueryState> = const { RefCell::new(QueryState::Untried) };
+}
 
 /// A renderer-neutral highlight class. Mapping to concrete colours lives in
 /// [`HighlightClass::ansi_sgr`] (terminal) and can be reused by other renderers.
@@ -130,29 +149,39 @@ fn highlight_rust(source: &str) -> Vec<HighlightSpan> {
     let Some(tree) = parser.parse(source, None) else {
         return Vec::new();
     };
-    let Ok(query) = Query::new(&language, tree_sitter_rust::HIGHLIGHTS_QUERY) else {
-        return Vec::new();
-    };
-    let names = query.capture_names();
-    let mut raw: Vec<HighlightSpan> = Vec::new();
-    let mut cursor = QueryCursor::new();
-    let mut caps = cursor.captures(&query, tree.root_node(), source.as_bytes());
-    while let Some((m, idx)) = caps.next() {
-        let cap = m.captures[*idx];
-        let Some(name) = names.get(cap.index as usize) else {
-            continue;
-        };
-        let class = HighlightClass::from_capture(name);
-        if class == HighlightClass::Plain {
-            continue;
+    RUST_QUERY.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        // Compile the highlight query at most once per thread, then reuse it.
+        if matches!(*slot, QueryState::Untried) {
+            *slot = match Query::new(&language, tree_sitter_rust::HIGHLIGHTS_QUERY) {
+                Ok(query) => QueryState::Ready(query),
+                Err(_) => QueryState::Unavailable,
+            };
         }
-        raw.push(HighlightSpan {
-            start: cap.node.start_byte(),
-            end: cap.node.end_byte(),
-            class,
-        });
-    }
-    flatten(raw)
+        let QueryState::Ready(query) = &*slot else {
+            return Vec::new();
+        };
+        let names = query.capture_names();
+        let mut raw: Vec<HighlightSpan> = Vec::new();
+        let mut cursor = QueryCursor::new();
+        let mut caps = cursor.captures(query, tree.root_node(), source.as_bytes());
+        while let Some((m, idx)) = caps.next() {
+            let cap = m.captures[*idx];
+            let Some(name) = names.get(cap.index as usize) else {
+                continue;
+            };
+            let class = HighlightClass::from_capture(name);
+            if class == HighlightClass::Plain {
+                continue;
+            }
+            raw.push(HighlightSpan {
+                start: cap.node.start_byte(),
+                end: cap.node.end_byte(),
+                class,
+            });
+        }
+        flatten(raw)
+    })
 }
 
 /// Resolve overlapping captures into non-overlapping, sorted spans.

@@ -89,25 +89,50 @@ fn file_section(
             }
         }
         lines.push(hunk_header(hunk, palette));
-        push_rows(lines, hunk, lang, palette, app.fold(), side, width);
+        push_rows(
+            lines,
+            hunk,
+            lang,
+            palette,
+            RowOptions {
+                fold: app.fold(),
+                side,
+                width,
+                wrap_lines: app.wrap_lines(),
+            },
+        );
     }
 }
 
 // ===== row emission with context folding =====
+
+#[derive(Clone, Copy)]
+struct RowOptions {
+    fold: bool,
+    side: bool,
+    width: usize,
+    wrap_lines: bool,
+}
 
 fn push_rows(
     lines: &mut Vec<Line<'static>>,
     hunk: &PatchHunk,
     lang: Language,
     palette: &Palette,
-    fold: bool,
-    side: bool,
-    width: usize,
+    options: RowOptions,
 ) {
-    if side {
-        push_side(lines, hunk, lang, palette, fold, width);
+    if options.side {
+        push_side(lines, hunk, lang, palette, options.fold, options.width);
     } else {
-        push_inline(lines, hunk, lang, palette, fold, width);
+        push_inline(
+            lines,
+            hunk,
+            lang,
+            palette,
+            options.fold,
+            options.width,
+            options.wrap_lines,
+        );
     }
 }
 
@@ -119,6 +144,7 @@ fn push_inline(
     palette: &Palette,
     fold: bool,
     width: usize,
+    wrap_lines: bool,
 ) {
     let mut ctx: Vec<&PatchLine> = Vec::new();
     for line in &hunk.lines {
@@ -126,10 +152,10 @@ fn push_inline(
             ctx.push(line);
             continue;
         }
-        flush_inline_ctx(lines, &mut ctx, fold, lang, palette, width);
-        lines.push(inline_row(line, lang, palette, width));
+        flush_inline_ctx(lines, &mut ctx, fold, lang, palette, width, wrap_lines);
+        lines.extend(inline_rows(line, lang, palette, width, wrap_lines));
     }
-    flush_inline_ctx(lines, &mut ctx, fold, lang, palette, width);
+    flush_inline_ctx(lines, &mut ctx, fold, lang, palette, width, wrap_lines);
 }
 
 fn flush_inline_ctx(
@@ -139,12 +165,13 @@ fn flush_inline_ctx(
     lang: Language,
     palette: &Palette,
     width: usize,
+    wrap_lines: bool,
 ) {
     if fold && ctx.len() > FOLD_CONTEXT {
         lines.push(fold_marker(ctx.len(), palette));
     } else {
         for line in ctx.iter() {
-            lines.push(inline_row(line, lang, palette, width));
+            lines.extend(inline_rows(line, lang, palette, width, wrap_lines));
         }
     }
     ctx.clear();
@@ -205,25 +232,87 @@ fn side_row(
 // ===== inline cell =====
 
 fn inline_row(line: &PatchLine, lang: Language, palette: &Palette, width: usize) -> Line<'static> {
+    inline_row_chunk(line, lang, palette, width, &display_safe(&line.text), false)
+}
+
+fn inline_rows(
+    line: &PatchLine,
+    lang: Language,
+    palette: &Palette,
+    width: usize,
+    wrap_lines: bool,
+) -> Vec<Line<'static>> {
+    if !wrap_lines {
+        return vec![inline_row(line, lang, palette, width)];
+    }
+    let text_width = inline_text_width(width);
+    chunks(&display_safe(&line.text), text_width)
+        .into_iter()
+        .enumerate()
+        .map(|(index, chunk)| inline_row_chunk(line, lang, palette, width, &chunk, index > 0))
+        .collect()
+}
+
+fn inline_row_chunk(
+    line: &PatchLine,
+    lang: Language,
+    palette: &Palette,
+    width: usize,
+    text: &str,
+    continuation: bool,
+) -> Line<'static> {
     let (marker, fg, bg) = kind_style(line.kind, palette);
     let base = bg.map_or_else(Style::default, |b| Style::default().bg(b));
-    let old = line.old_line.map(|n| n.to_string()).unwrap_or_default();
-    let new = line.new_line.map(|n| n.to_string()).unwrap_or_default();
+    let (old, new) = if continuation {
+        (String::new(), String::new())
+    } else {
+        (
+            line.old_line.map(|n| n.to_string()).unwrap_or_default(),
+            line.new_line.map(|n| n.to_string()).unwrap_or_default(),
+        )
+    };
+    let marker = if continuation { '↳' } else { marker };
     let mut spans = vec![
         bar_span(line.kind, palette),
         Span::styled(format!("{old:>5} "), Style::default().fg(palette.dim)),
         Span::styled(format!("{new:>5} "), Style::default().fg(palette.dim)),
         Span::styled(format!("{marker} "), base.fg(fg)),
     ];
-    spans.extend(themed_spans(lang, &line.text, palette, base));
+    spans.extend(themed_spans(lang, text, palette, base));
     if bg.is_some() {
-        let text_width = width.saturating_sub(15);
-        let used = display_safe(&line.text).chars().count();
+        let text_width = inline_text_width(width);
+        let used = text.chars().count();
         if used < text_width {
             spans.push(Span::styled(" ".repeat(text_width - used), base));
         }
     }
     Line::from(spans)
+}
+
+#[must_use]
+fn inline_text_width(width: usize) -> usize {
+    width.saturating_sub(15).max(1)
+}
+
+/// Hard-split already-safe text into fixed-width character chunks.
+#[must_use]
+fn chunks(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if current.chars().count() == width {
+            out.push(std::mem::take(&mut current));
+        }
+        current.push(ch);
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
 }
 
 // ===== side-by-side cell =====
@@ -651,6 +740,32 @@ mod tests {
     }
 
     #[test]
+    fn wrap_toggle_wraps_long_inline_rows() {
+        let long = "0123456789abcdefghijklmnopqrstuvwxyz";
+        let src = format!("--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,1 +1,1 @@\n-old\n+{long}\n");
+        let files = parse(&src).unwrap();
+        let mut a = ReviewApp::from_review(&files);
+        assert!(!render(&a, 24).contains('↳'));
+        a.handle(AppEvent::ToggleWrap);
+        let out = render(&a, 24);
+        assert!(out.contains('↳'));
+        assert!(out.contains("012345678"));
+        assert!(out.contains("9abcdefgh"));
+    }
+
+    #[test]
+    fn wrapped_unsafe_content_stays_escaped() {
+        let evil = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,1 +1,1 @@\n-old\n+\u{1b}[2Jabcdefghijklmnopqrstuvwxyz\n";
+        let files = parse(evil).unwrap();
+        let mut a = ReviewApp::from_review(&files);
+        a.handle(AppEvent::ToggleWrap);
+        let out = render(&a, 24);
+        assert!(!out.contains('\u{1b}'));
+        assert!(out.contains("\\x1b"));
+        assert!(out.contains('↳'));
+    }
+
+    #[test]
     fn note_box_borders_are_flush_and_equal_width() {
         let notes = crate::notes::engine_annotations(
             &parse(DIFF).unwrap(),
@@ -676,6 +791,7 @@ mod tests {
                 .all(|l| l.chars().count() <= 5)
         );
         assert_eq!(wrap("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
+        assert_eq!(chunks("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
         assert_eq!(truncate_pad("hi", 5).chars().count(), 5);
         assert_eq!(truncate_pad("hello world", 5), "hello");
     }

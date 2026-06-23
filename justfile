@@ -14,6 +14,27 @@ export CARGO_TARGET_DIR := "target"
 default:
     @just --list --unsorted
 
+# Launch the interactive review cockpit on a git diff (keys read from /dev/tty — needs a real terminal).
+# Examples:  just review             # uncommitted changes
+#            just review HEAD~1 HEAD  # the last commit
+#            just review main...HEAD  # this branch vs main
+[group("review")]
+review *ref="":
+    cargo build --release --bin deep-diff-forge
+    git diff {{ref}} | ./target/release/deep-diff-forge review
+
+# Launch the review cockpit directly in side-by-side layout.
+[group("review")]
+review-side *ref="":
+    cargo build --release --bin deep-diff-forge
+    git diff {{ref}} | ./target/release/deep-diff-forge review --side
+
+# Headless: render one review frame to stdout (no TTY needed — quick sanity check / CI).
+[group("review")]
+review-probe *ref="":
+    cargo build --release --bin deep-diff-forge
+    git diff {{ref}} | ./target/release/deep-diff-forge review --probe --cols 120 --rows 40
+
 # Show repository identity and deployment posture.
 [group("observe")]
 status:

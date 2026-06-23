@@ -83,17 +83,28 @@ fn file_line(app: &ReviewApp, palette: &Palette, index: usize) -> Line<'static> 
     let (add, del) = change_counts(&app.content()[index]);
     let notes = note_count(app.annotations(), &rf.path);
     let selected = index == app.selected_index();
+    let viewed = app.is_viewed(index);
 
-    let base = if selected {
+    let mut base = if selected {
         Style::default().fg(palette.fg).bg(palette.selection_bg)
     } else {
         Style::default().fg(palette.fg)
     };
+    // Dim already-reviewed rows (unless one is selected) so the eye flows to
+    // what is left to review.
+    if viewed && !selected {
+        base = base.add_modifier(Modifier::DIM);
+    }
 
-    let mut spans = Vec::with_capacity(8);
+    let mut spans = Vec::with_capacity(9);
     spans.push(Span::styled(
         if selected { "▌" } else { " " }.to_string(),
         base.fg(palette.accent),
+    ));
+    // Reviewed-state column (fixed two cells wide so rows stay aligned).
+    spans.push(Span::styled(
+        if viewed { "✓ " } else { "  " }.to_string(),
+        base.fg(palette.added),
     ));
     spans.push(Span::styled(
         format!("{} ", status_marker(rf.status)),
@@ -161,6 +172,26 @@ pub(crate) fn selected_row(app: &ReviewApp) -> usize {
         }
     }
     0
+}
+
+/// Resolve a visible [`tree_lines`] row to a ranked file index. Directory
+/// header rows and out-of-range rows return `None`.
+#[must_use]
+pub(crate) fn file_index_at_row(app: &ReviewApp, target_row: usize) -> Option<usize> {
+    let mut row = 0;
+    for (_, indices) in grouped(app) {
+        if row == target_row {
+            return None;
+        }
+        row += 1; // directory header line
+        for index in indices {
+            if row == target_row {
+                return Some(index);
+            }
+            row += 1;
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -258,6 +289,57 @@ mod tests {
     }
 
     #[test]
+    fn fresh_review_shows_no_reviewed_check() {
+        assert!(
+            !rendered(&app()).contains('✓'),
+            "nothing is reviewed in a fresh app"
+        );
+    }
+
+    #[test]
+    fn reviewed_file_shows_check() {
+        let mut a = app();
+        a.handle(crate::state::AppEvent::ToggleViewed); // mark the top-ranked file
+        assert!(
+            rendered(&a).contains('✓'),
+            "a reviewed file should render the check marker"
+        );
+    }
+
+    #[test]
+    fn reviewed_unselected_row_is_dimmed() {
+        let mut a = app();
+        let first = base_of(&a.files()[0].path).to_string();
+        // Mark file 0 reviewed; selection advances off it, so it is now
+        // reviewed-and-unselected — the dim condition.
+        a.handle(crate::state::AppEvent::ToggleViewed);
+        let p = ThemeKind::Dark.palette();
+        let lines = tree_lines(&a, &p);
+        let row = lines
+            .iter()
+            .find(|l| text(l).contains(&first))
+            .expect("the reviewed file's row should be present");
+        assert!(
+            row.spans
+                .iter()
+                .any(|s| s.style.add_modifier.contains(Modifier::DIM)),
+            "a reviewed, unselected row should carry the DIM modifier"
+        );
+    }
+
+    #[test]
+    fn no_row_is_dimmed_in_a_fresh_review() {
+        let a = app();
+        let p = ThemeKind::Dark.palette();
+        let any_dim = tree_lines(&a, &p).iter().any(|l| {
+            l.spans
+                .iter()
+                .any(|s| s.style.add_modifier.contains(Modifier::DIM))
+        });
+        assert!(!any_dim, "nothing reviewed means nothing dimmed");
+    }
+
+    #[test]
     fn status_markers_are_stable() {
         assert_eq!(status_marker(FileStatus::Added), 'A');
         assert_eq!(status_marker(FileStatus::Modified), 'M');
@@ -315,6 +397,21 @@ mod tests {
         a.handle(crate::state::AppEvent::Bottom);
         // The last file's row is greater than the first's.
         assert!(selected_row(&a) > 1);
+    }
+
+    #[test]
+    fn file_index_at_row_skips_directory_headers() {
+        let a = app();
+        assert_eq!(file_index_at_row(&a, 0), None);
+        assert_eq!(file_index_at_row(&a, 1), Some(0));
+    }
+
+    #[test]
+    fn file_index_at_row_resolves_visible_file_rows() {
+        let a = app();
+        let row = selected_row(&a);
+        assert_eq!(file_index_at_row(&a, row), Some(a.selected_index()));
+        assert_eq!(file_index_at_row(&a, 999), None);
     }
 
     #[test]

@@ -24,6 +24,8 @@ pub enum AppEvent {
     Bottom,
     /// Collapse/expand long runs of unchanged context.
     ToggleFold,
+    /// Toggle wrapping for long diff rows.
+    ToggleWrap,
     /// Show/hide inline agent notes.
     ToggleNotes,
     /// Cycle to the next colour theme.
@@ -32,6 +34,10 @@ pub enum AppEvent {
     FocusSidebar,
     /// Move focus to the diff pane.
     FocusDiff,
+    /// Toggle the selected file's "reviewed" flag (and advance when marking it).
+    ToggleViewed,
+    /// Select the file row at a visible tree row index.
+    SelectTreeRow(usize),
     /// Show/hide the help overlay.
     ToggleHelp,
     /// Open the command palette.
@@ -97,6 +103,24 @@ pub enum Overlay {
     Panel,
 }
 
+/// Review display toggles that affect diff rendering but not navigation.
+#[derive(Debug, Clone, Copy)]
+struct ViewOptions {
+    fold: bool,
+    wrap_lines: bool,
+    show_notes: bool,
+}
+
+impl Default for ViewOptions {
+    fn default() -> Self {
+        Self {
+            fold: true,
+            wrap_lines: false,
+            show_notes: true,
+        }
+    }
+}
+
 /// Review-first interactive app state.
 ///
 /// Pure and fully testable: rendering and the terminal event loop are kept out
@@ -108,13 +132,14 @@ pub struct ReviewApp {
     ranked: Vec<RankedFile>,
     content: Vec<ReviewFile>,
     annotations: Vec<AgentAnnotation>,
+    /// Per-file "reviewed" flags, aligned to `ranked`.
+    viewed: Vec<bool>,
     selected: usize,
     scroll: u16,
     layout: LayoutMode,
     theme: ThemeKind,
     focus: Focus,
-    fold: bool,
-    show_notes: bool,
+    view: ViewOptions,
     overlay: Overlay,
     palette_index: usize,
     panel: CommandOutput,
@@ -158,17 +183,18 @@ impl ReviewApp {
                 ranked.push(r);
             }
         }
+        let viewed = vec![false; ranked.len()];
         Self {
             ranked,
             content,
             annotations,
+            viewed,
             selected: 0,
             scroll: 0,
             layout: LayoutMode::Inline,
             theme: ThemeKind::default(),
             focus: Focus::default(),
-            fold: true,
-            show_notes: true,
+            view: ViewOptions::default(),
             overlay: Overlay::default(),
             palette_index: 0,
             panel: CommandOutput::default(),
@@ -208,11 +234,14 @@ impl ReviewApp {
                 self.selected = self.ranked.len().saturating_sub(1);
                 self.scroll = 0;
             }
-            AppEvent::ToggleFold => self.fold = !self.fold,
-            AppEvent::ToggleNotes => self.show_notes = !self.show_notes,
+            AppEvent::ToggleFold => self.view.fold = !self.view.fold,
+            AppEvent::ToggleWrap => self.view.wrap_lines = !self.view.wrap_lines,
+            AppEvent::ToggleNotes => self.view.show_notes = !self.view.show_notes,
             AppEvent::CycleTheme => self.theme = self.theme.next(),
             AppEvent::FocusSidebar => self.focus = Focus::Sidebar,
             AppEvent::FocusDiff => self.focus = Focus::Diff,
+            AppEvent::ToggleViewed => self.toggle_viewed(),
+            AppEvent::SelectTreeRow(row) => self.select_tree_row(row),
             AppEvent::ToggleHelp => self.overlay = Overlay::Help,
             AppEvent::OpenPalette => {
                 self.overlay = Overlay::Palette;
@@ -280,6 +309,31 @@ impl ReviewApp {
         }
     }
 
+    /// Toggle the selected file's reviewed flag. Marking a file reviewed
+    /// advances to the next file so a reviewer can sweep top-to-bottom with a
+    /// single key; un-marking leaves the selection in place. A no-op on an
+    /// empty review.
+    fn toggle_viewed(&mut self) {
+        let now_viewed = match self.viewed.get_mut(self.selected) {
+            Some(flag) => {
+                *flag = !*flag;
+                *flag
+            }
+            None => return,
+        };
+        if now_viewed {
+            self.select_next();
+        }
+    }
+
+    fn select_tree_row(&mut self, row: usize) {
+        if let Some(index) = crate::tree::file_index_at_row(self, row) {
+            self.selected = index;
+            self.scroll = 0;
+            self.focus = Focus::Sidebar;
+        }
+    }
+
     /// Whether the app should keep running.
     #[must_use]
     pub fn is_running(&self) -> bool {
@@ -302,6 +356,19 @@ impl ReviewApp {
     #[must_use]
     pub fn selected_index(&self) -> usize {
         self.selected
+    }
+
+    /// Whether the ranked file at `index` has been marked reviewed. Out-of-range
+    /// indices read as `false`.
+    #[must_use]
+    pub fn is_viewed(&self, index: usize) -> bool {
+        self.viewed.get(index).copied().unwrap_or(false)
+    }
+
+    /// How many files have been marked reviewed (review-progress numerator).
+    #[must_use]
+    pub fn viewed_count(&self) -> usize {
+        self.viewed.iter().filter(|&&v| v).count()
     }
 
     /// The selected file's ranking metadata, if any.
@@ -361,13 +428,19 @@ impl ReviewApp {
     /// Whether long context runs are collapsed.
     #[must_use]
     pub fn fold(&self) -> bool {
-        self.fold
+        self.view.fold
+    }
+
+    /// Whether long diff rows wrap instead of clipping at the pane edge.
+    #[must_use]
+    pub fn wrap_lines(&self) -> bool {
+        self.view.wrap_lines
     }
 
     /// Whether inline notes are shown.
     #[must_use]
     pub fn show_notes(&self) -> bool {
-        self.show_notes
+        self.view.show_notes
     }
 
     /// The active modal overlay.
@@ -459,6 +532,7 @@ mod tests {
     fn defaults_fold_and_notes_on() {
         let a = app();
         assert!(a.fold());
+        assert!(!a.wrap_lines());
         assert!(a.show_notes());
         assert_eq!(a.theme(), ThemeKind::Dark);
         assert_eq!(a.focus(), Focus::Sidebar);
@@ -557,6 +631,16 @@ mod tests {
     }
 
     #[test]
+    fn toggle_wrap_flips() {
+        let mut a = app();
+        assert!(!a.wrap_lines());
+        a.handle(AppEvent::ToggleWrap);
+        assert!(a.wrap_lines());
+        a.handle(AppEvent::ToggleWrap);
+        assert!(!a.wrap_lines());
+    }
+
+    #[test]
     fn toggle_notes_flips() {
         let mut a = app();
         a.handle(AppEvent::ToggleNotes);
@@ -577,6 +661,23 @@ mod tests {
         assert_eq!(a.focus(), Focus::Diff);
         a.handle(AppEvent::FocusSidebar);
         assert_eq!(a.focus(), Focus::Sidebar);
+    }
+
+    #[test]
+    fn select_tree_row_selects_visible_file_and_focuses_sidebar() {
+        let mut a = app();
+        a.handle(AppEvent::FocusDiff);
+        a.handle(AppEvent::SelectTreeRow(2));
+        assert_eq!(a.selected_index(), 1);
+        assert_eq!(a.focus(), Focus::Sidebar);
+    }
+
+    #[test]
+    fn select_tree_row_ignores_directory_headers() {
+        let mut a = app();
+        a.handle(AppEvent::Next);
+        a.handle(AppEvent::SelectTreeRow(0));
+        assert_eq!(a.selected_index(), 1);
     }
 
     #[test]
@@ -701,5 +802,77 @@ mod tests {
         let a = app();
         let b = a.clone();
         assert_eq!(a.file_count(), b.file_count());
+    }
+
+    #[test]
+    fn new_app_has_nothing_reviewed() {
+        let a = app();
+        assert_eq!(a.viewed_count(), 0);
+        assert!(!a.is_viewed(0));
+        assert!(!a.is_viewed(1));
+        assert!(!a.is_viewed(2));
+    }
+
+    #[test]
+    fn toggle_viewed_marks_and_advances() {
+        let mut a = app();
+        a.handle(AppEvent::ToggleViewed);
+        assert!(a.is_viewed(0), "selected file should be marked reviewed");
+        assert_eq!(a.selected_index(), 1, "marking advances to the next file");
+        assert_eq!(a.viewed_count(), 1);
+    }
+
+    #[test]
+    fn toggle_viewed_unmark_stays_put() {
+        let mut a = app();
+        a.handle(AppEvent::ToggleViewed); // mark file 0, advance to 1
+        a.handle(AppEvent::Prev); // back to file 0
+        a.handle(AppEvent::ToggleViewed); // un-mark file 0
+        assert!(!a.is_viewed(0));
+        assert_eq!(a.selected_index(), 0, "un-marking does not advance");
+        assert_eq!(a.viewed_count(), 0);
+    }
+
+    #[test]
+    fn toggle_viewed_at_last_file_clamps() {
+        let mut a = app();
+        a.handle(AppEvent::Bottom); // select last (index 2)
+        a.handle(AppEvent::ToggleViewed);
+        assert!(a.is_viewed(2));
+        assert_eq!(a.selected_index(), 2, "advance clamps at the last file");
+        assert_eq!(a.viewed_count(), 1);
+    }
+
+    #[test]
+    fn toggle_viewed_empty_review_is_safe() {
+        let mut a = ReviewApp::new(Vec::new());
+        a.handle(AppEvent::ToggleViewed);
+        assert_eq!(a.viewed_count(), 0);
+        assert_eq!(a.selected_index(), 0);
+        assert!(!a.is_viewed(0));
+    }
+
+    #[test]
+    fn toggle_viewed_ignored_while_overlay_open() {
+        let mut a = app();
+        a.handle(AppEvent::OpenPalette);
+        a.handle(AppEvent::ToggleViewed); // routed to the palette, not the review
+        assert!(!a.is_viewed(0));
+        assert_eq!(a.viewed_count(), 0);
+    }
+
+    #[test]
+    fn is_viewed_out_of_range_is_false() {
+        let a = app();
+        assert!(!a.is_viewed(999));
+    }
+
+    #[test]
+    fn viewed_flag_survives_clone() {
+        let mut a = app();
+        a.handle(AppEvent::ToggleViewed);
+        let b = a.clone();
+        assert_eq!(b.viewed_count(), 1);
+        assert!(b.is_viewed(0));
     }
 }

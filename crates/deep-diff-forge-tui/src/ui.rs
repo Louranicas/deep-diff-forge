@@ -149,7 +149,7 @@ fn render_diff(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: Rect
 }
 
 fn render_help(frame: &mut Frame, palette: &Palette, area: Rect) {
-    let popup = centered(area, 62, 18);
+    let popup = centered(area, 86, 28);
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -171,7 +171,7 @@ fn render_help(frame: &mut Frame, palette: &Palette, area: Rect) {
 /// The command palette: pick an engine capability to run.
 fn render_palette(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: Rect) {
     let commands = Command::all();
-    let popup = centered(area, 66, 13);
+    let popup = centered(area, 88, 14);
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -201,9 +201,13 @@ fn render_palette(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: R
         };
         lines.push(Line::from(vec![
             Span::styled(marker, Style::default().fg(palette.accent)),
-            Span::styled(format!("{:<12}", command.label()), label_style),
             Span::styled(
-                format!("  {}", command.hint()),
+                format!("{:<6}", command.menu()),
+                Style::default().fg(palette.dim),
+            ),
+            Span::styled(format!("{:<13}", command.label()), label_style),
+            Span::styled(
+                format!(" [{}] {}", command.shortcut(), command.hint()),
                 Style::default().fg(palette.dim),
             ),
         ]));
@@ -341,6 +345,16 @@ mod tests {
         render_to_lines(app, 120, 30).join("\n")
     }
 
+    /// Drive a real key through the full input→event path the binary uses
+    /// (`event_loop` does exactly `app.handle(map_key(key))`).
+    fn press(app: &mut ReviewApp, c: char) {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        app.handle(crate::input::map_key(KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::NONE,
+        )));
+    }
+
     #[test]
     fn renders_full_height_without_panicking() {
         assert_eq!(render_to_lines(&app(), 120, 30).len(), 30);
@@ -453,5 +467,109 @@ mod tests {
         let r = centered(area, 60, 18);
         assert_eq!(r.width, 10);
         assert_eq!(r.height, 5);
+    }
+
+    // --- end-to-end coverage of the "reviewed" flag, through the real key path
+    //     and the full render pipeline (the binary's exact behaviour, no TTY) ---
+
+    #[test]
+    fn fresh_review_renders_no_reviewed_check() {
+        assert!(
+            !screen(&app()).contains('✓'),
+            "nothing is reviewed in a fresh cockpit"
+        );
+    }
+
+    #[test]
+    fn pressing_v_marks_reviewed_and_renders_a_check() {
+        let mut a = app();
+        press(&mut a, 'v');
+        assert!(
+            screen(&a).contains('✓'),
+            "v should mark the file reviewed and the sidebar should render a check"
+        );
+    }
+
+    #[test]
+    fn pressing_space_also_marks_reviewed() {
+        let mut a = app();
+        press(&mut a, ' ');
+        assert!(screen(&a).contains('✓'), "Space is an alias for v");
+    }
+
+    #[test]
+    fn marking_every_file_renders_one_check_per_file() {
+        let mut a = app();
+        let n = a.file_count();
+        for _ in 0..n {
+            press(&mut a, 'v'); // mark + advance; advance clamps on the last file
+        }
+        assert_eq!(
+            screen(&a).matches('✓').count(),
+            n,
+            "every reviewed file shows exactly one check"
+        );
+    }
+
+    #[test]
+    fn status_bar_shows_viewed_progress_in_a_wide_frame() {
+        let mut a = app();
+        // A wide frame so the right-aligned state is not truncated.
+        let before = render_to_lines(&a, 200, 30).join("\n");
+        assert!(before.contains("viewed:0/2"), "fresh progress is 0 of 2");
+        press(&mut a, 'v');
+        let after = render_to_lines(&a, 200, 30).join("\n");
+        assert!(
+            after.contains("viewed:1/2"),
+            "marking one updates the count"
+        );
+    }
+
+    #[test]
+    fn reviewed_check_survives_navigation() {
+        let mut a = app();
+        press(&mut a, 'v'); // mark file 0; selection advances to file 1
+        press(&mut a, 'k'); // Prev → back to file 0
+        press(&mut a, 'j'); // Next → forward to file 1
+        assert!(
+            screen(&a).contains('✓'),
+            "reviewed state is sticky across navigation re-renders"
+        );
+    }
+
+    #[test]
+    fn unmarking_clears_the_only_check() {
+        let mut a = app();
+        press(&mut a, 'v'); // mark file 0 (advance to 1)
+        assert!(screen(&a).contains('✓'));
+        press(&mut a, 'k'); // back to file 0
+        press(&mut a, 'v'); // un-mark file 0
+        assert!(
+            !screen(&a).contains('✓'),
+            "un-marking the only reviewed file removes the check"
+        );
+    }
+
+    #[test]
+    fn help_overlay_lists_the_reviewed_binding() {
+        let mut a = app();
+        press(&mut a, '?'); // ToggleHelp
+        assert!(
+            screen(&a).contains("reviewed"),
+            "the help card documents the reviewed key"
+        );
+    }
+
+    #[test]
+    fn viewed_key_is_inert_while_palette_is_open() {
+        let mut a = app();
+        press(&mut a, ':'); // open the palette (modal)
+        press(&mut a, 'v'); // routed to the palette, not the review
+        // Close the palette and confirm nothing was marked.
+        press(&mut a, ':');
+        assert!(
+            !screen(&a).contains('✓'),
+            "the reviewed toggle must not fire under an open overlay"
+        );
     }
 }

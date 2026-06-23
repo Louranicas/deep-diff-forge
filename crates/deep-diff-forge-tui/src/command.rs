@@ -89,6 +89,23 @@ impl Command {
         }
     }
 
+    /// Command family shown in menus/help.
+    #[must_use]
+    pub fn menu(self) -> &'static str {
+        match self {
+            Self::Rank | Self::Summary | Self::ReviewJson => "File",
+            Self::Outline | Self::Cluster | Self::Notes => "Agent",
+            Self::Daemon | Self::Learning | Self::Maturity => "Help",
+        }
+    }
+
+    /// Palette access hint. Commands are launched through `:`, then row
+    /// selection, so this stays honest until direct bindings are added.
+    #[must_use]
+    pub fn shortcut(self) -> &'static str {
+        ":"
+    }
+
     /// One-line description shown next to the label.
     #[must_use]
     pub fn hint(self) -> &'static str {
@@ -395,6 +412,8 @@ mod tests {
         for c in Command::all() {
             assert!(!c.label().is_empty());
             assert!(!c.hint().is_empty());
+            assert!(!c.menu().is_empty());
+            assert_eq!(c.shortcut(), ":");
         }
         assert_eq!(Command::all().len(), 9);
     }
