@@ -149,7 +149,7 @@ fn render_diff(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: Rect
 }
 
 fn render_help(frame: &mut Frame, palette: &Palette, area: Rect) {
-    let popup = centered(area, 62, 18);
+    let popup = centered(area, 86, 28);
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -171,7 +171,7 @@ fn render_help(frame: &mut Frame, palette: &Palette, area: Rect) {
 /// The command palette: pick an engine capability to run.
 fn render_palette(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: Rect) {
     let commands = Command::all();
-    let popup = centered(area, 66, 13);
+    let popup = centered(area, 88, 14);
     frame.render_widget(Clear, popup);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -201,9 +201,13 @@ fn render_palette(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: R
         };
         lines.push(Line::from(vec![
             Span::styled(marker, Style::default().fg(palette.accent)),
-            Span::styled(format!("{:<12}", command.label()), label_style),
             Span::styled(
-                format!("  {}", command.hint()),
+                format!("{:<6}", command.menu()),
+                Style::default().fg(palette.dim),
+            ),
+            Span::styled(format!("{:<13}", command.label()), label_style),
+            Span::styled(
+                format!(" [{}] {}", command.shortcut(), command.hint()),
                 Style::default().fg(palette.dim),
             ),
         ]));
