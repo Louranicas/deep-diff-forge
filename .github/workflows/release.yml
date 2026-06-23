@@ -116,7 +116,7 @@ jobs:
           # retry crates.io's new-crate 429 limit (burst 5, then ~1/10min) until
           # each remaining crate lands. Lets a re-run finish a partial publish
           # without re-failing on already-published crates.
-          for crate in core patch projection syntax pipeline graph agent tui cluster learning daemon cli; do
+          for crate in core patch projection syntax pipeline graph agent cluster learning daemon tui cli; do
             name="deep-diff-forge-${crate}"
             attempt=0
             while true; do
