@@ -167,9 +167,18 @@ impl Parser {
         self.close_hunk(line_number)?;
         self.flush_file();
         let mut file = FileBuf::default();
-        let mut tokens = rest.split_whitespace();
-        file.git_old = tokens.next().map(strip_ab);
-        file.git_new = tokens.next().map(strip_ab);
+        // `diff --git a/OLD b/NEW` — split on the rightmost ` b/` occurrence.
+        // Using split_whitespace() breaks on paths that contain spaces; git's
+        // own parsing uses the rightmost ` b/` as the heuristic boundary.  When
+        // the filename itself contains ` b/`, the `---`/`+++` headers (set by
+        // on_old_header / on_new_header) override these values and are used
+        // for the final path, so an incorrect git-header split is harmless in
+        // practice.  An absent ` b/` (unusual / malformed) leaves both None so
+        // the caller falls back to the `---`/`+++` paths.
+        if let Some(sep) = rest.rfind(" b/") {
+            file.git_old = Some(strip_ab(&rest[..sep]));
+            file.git_new = Some(strip_ab(&rest[sep + 1..]));
+        }
         self.file = Some(file);
         Ok(())
     }
@@ -1195,5 +1204,42 @@ diff --git a/x b/x
         assert!(parse_hunk_header("@@ -1 +1 @@").is_some());
         assert!(parse_hunk_header("@@ -10,7 +10,6 @@ fn foo()").is_some());
         assert!(parse_hunk_header("@@ -0,0 +1,5 @@").is_some());
+    }
+
+    // --- OPEN-003: spaced-path tokenization (FIXED) ---
+
+    /// Regression: `diff --git a/foo bar.rs b/foo bar.rs` must produce the
+    /// correct path instead of truncating at the first space.
+    #[test]
+    fn spaced_path_git_header_is_parsed_correctly() {
+        let input = "\
+diff --git a/foo bar.rs b/foo bar.rs
+--- a/foo bar.rs
++++ b/foo bar.rs
+@@ -1,1 +1,1 @@
+-old
++new
+";
+        let files = parse(input).expect("parse should succeed");
+        assert_eq!(files.len(), 1);
+        // The ---/+++ headers (header_path) supply the authoritative path.
+        assert_eq!(files[0].path, "foo bar.rs");
+    }
+
+    /// Multiple spaces in the filename — rfind(" b/") must find the rightmost
+    /// occurrence and not truncate at the first space.
+    #[test]
+    fn spaced_path_multiple_spaces_in_filename() {
+        let input = "\
+diff --git a/a b c.rs b/a b c.rs
+--- a/a b c.rs
++++ b/a b c.rs
+@@ -1 +1 @@
+-x
++y
+";
+        let files = parse(input).expect("parse should succeed");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "a b c.rs");
     }
 }

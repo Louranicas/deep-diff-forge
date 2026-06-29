@@ -12,7 +12,7 @@ use std::io::{BufRead, BufReader, Read as _, Write as _};
 use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Tracks whether a `SocketLocation` was produced from the engine-managed
@@ -320,24 +320,36 @@ pub fn bind_explicit(socket_path: &Path) -> std::io::Result<UnixListener> {
 /// Returns an I/O error from binding or accepting connections.
 pub fn run_server(location: &SocketLocation) -> std::io::Result<()> {
     let listener = location.bind()?;
-    let engine = Mutex::new(Engine::new());
-    for stream in listener.incoming() {
-        match stream {
-            // A per-connection error (client reset, read timeout, oversized
-            // request) must NOT tear down the daemon — log it and keep serving.
-            Ok(s) => {
-                if let Err(err) = handle_connection(s, &engine) {
-                    eprintln!("deep-diff-forge daemon: connection error: {err}");
-                }
+    let socket_path = location.path().to_path_buf();
+    // Wrap the engine in Arc so each spawned connection thread can hold a
+    // reference without lifetime constraints on the accept loop.
+    let engine: Arc<Mutex<Engine>> = Arc::new(Mutex::new(Engine::new()));
+    loop {
+        // Break immediately if a previous connection already triggered shutdown.
+        if engine.lock().is_ok_and(|g| !g.is_running()) {
+            break;
+        }
+        match listener.accept() {
+            Ok((stream, _)) => {
+                let arc = Arc::clone(&engine);
+                let wakeup = socket_path.clone();
+                // A per-connection error must NOT tear down the daemon — the
+                // spawned thread logs it and the accept loop continues.
+                std::thread::spawn(move || {
+                    if let Err(err) = handle_connection(stream, &arc) {
+                        eprintln!("deep-diff-forge daemon: connection error: {err}");
+                    }
+                    // If the connection just triggered a shutdown, unblock the
+                    // accept loop (which is blocking on listener.accept()) by
+                    // opening a short-lived wakeup connection to ourselves.
+                    if arc.lock().is_ok_and(|g| !g.is_running()) {
+                        let _ = UnixStream::connect(wakeup);
+                    }
+                });
             }
             Err(err) => {
                 eprintln!("deep-diff-forge daemon: accept error: {err}");
-                continue;
             }
-        }
-        let still_running = engine.lock().is_ok_and(|g| g.is_running());
-        if !still_running {
-            break;
         }
     }
     let _ = std::fs::remove_file(location.path());

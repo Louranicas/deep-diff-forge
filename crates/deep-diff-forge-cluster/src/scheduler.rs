@@ -1,15 +1,24 @@
 use deep_diff_forge_core::{Parallelism, ReviewFile};
 
+/// Maximum worker count for `Parallelism::Fixed`, expressed as a multiple of
+/// the available CPU count.  Prevents `--parallel 65535` from spawning tens of
+/// thousands of OS threads on a small machine.
+const MAX_FIXED_WORKERS_CPU_MULTIPLE: usize = 4;
+
 /// Resolve a [`Parallelism`] setting into a concrete worker count, clamped to
 /// at least 1 and at most the item count.
 #[must_use]
 pub fn resolve_workers(parallelism: Parallelism, items: usize) -> usize {
+    let cpu_count =
+        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let requested = match parallelism {
         Parallelism::Serial => 1,
-        Parallelism::Fixed(n) => n as usize,
-        Parallelism::Auto => {
-            std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get)
+        // Cap Fixed at 4× CPU count to prevent runaway thread spawning when
+        // the caller passes an unreasonably large value (e.g. `--parallel 65535`).
+        Parallelism::Fixed(n) => {
+            (n as usize).min(cpu_count * MAX_FIXED_WORKERS_CPU_MULTIPLE).max(1)
         }
+        Parallelism::Auto => cpu_count,
     };
     requested.max(1).min(items.max(1))
 }
@@ -201,5 +210,18 @@ mod tests {
         let fs = files(3);
         let out = run_lane(&fs, Parallelism::Fixed(16), |i, _| i);
         assert_eq!(out, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn fixed_parallelism_capped_at_cpu_multiple() {
+        let cpu = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get);
+        let ceiling = cpu * MAX_FIXED_WORKERS_CPU_MULTIPLE;
+        // Fixed(65535) must never exceed 4× available CPUs regardless of item count.
+        let workers = resolve_workers(Parallelism::Fixed(u16::MAX), 100_000);
+        assert!(
+            workers <= ceiling,
+            "expected workers ≤ {ceiling} (4× cpu={cpu}), got {workers}"
+        );
     }
 }

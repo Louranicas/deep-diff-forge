@@ -141,6 +141,10 @@ pub fn highlight(language: Language, source: &str) -> Vec<HighlightSpan> {
 }
 
 fn highlight_rust(source: &str) -> Vec<HighlightSpan> {
+    // Guard against unbounded parse cost; mirrors the byte_budget in analyze().
+    if source.len() > crate::analyze::DEFAULT_BYTE_BUDGET {
+        return Vec::new();
+    }
     let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(&language).is_err() {

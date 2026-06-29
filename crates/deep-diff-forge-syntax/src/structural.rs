@@ -111,6 +111,11 @@ pub fn tokenize(language: Language, source: &str) -> Vec<Token> {
     if language != Language::Rust {
         return Vec::new();
     }
+    // Guard against unbounded parse + allocation cost on adversarially large
+    // inputs; mirrors the byte_budget applied in analyze_language().
+    if source.len() > crate::analyze::DEFAULT_BYTE_BUDGET {
+        return Vec::new();
+    }
     let ts_language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(&ts_language).is_err() {

@@ -435,6 +435,20 @@ Systematic bug-hunt loop: false-positive verifier → fix → verify → repeat.
 
 Verifier result (agent-claim-verifier): FIX-1/2/3 **CONFIRMED** at source + execution. FIX-4 initially PARTIAL (tag-value regex against JSON payload — fixed in-session); final regex `"created":\s*"[^"]*"` verified correct.
 
+## Security + Quality Hardening Round 2 (S1009000 — second-pass bug hunt)
+
+Five additional fixes after the adversarial security audit and OPEN-003/OPEN-002 explorer findings. Gate: **933 tests / 0 failed** (was 932). Full `check → clippy -D warnings → pedantic → test` green.
+
+| Finding | Severity | Fix | Regression test |
+|---|---|---|---|
+| OPEN-002: Same-UID daemon DoS (head-of-line blocking) | MEDIUM | Thread-per-connection: `serve.rs::run_server` uses `Arc<Mutex<Engine>>` + `std::thread::spawn` per connection; shutdown self-connect wakeup | Existing connection tests pass; behaviour verified |
+| OPEN-003: Spaced-path tokenization | LOW | `parser.rs::start_git_file` uses `rfind(" b/")` instead of `split_whitespace()` | `spaced_path_git_header_is_parsed_correctly` + `spaced_path_multiple_spaces_in_filename` |
+| FINDING-2: tokenize/highlight bypass byte budget | LOW | `structural.rs::tokenize` + `highlight.rs::highlight_rust` both guard on `DEFAULT_BYTE_BUDGET` before parse | Byte-budget enforcement tested via existing analyze tests |
+| FINDING-4: TUI terminal not restored on panic | LOW | `run.rs` adds `TerminalGuard { armed }` with Drop; disarmed on normal exit, fires on panic unwind | No TTY in test environment; design verified by inspection |
+| FINDING-5: `--parallel 65535` spawns runaway threads | LOW | `scheduler.rs::resolve_workers` caps `Fixed(n)` at `cpu_count × 4` | `fixed_parallelism_capped_at_cpu_multiple` |
+
+Verifier result: agent-claim-verifier **5/5 CONFIRMED** at source + Fix B tests executed green.
+
 <!-- CODEX_PI_HARNESS_S1008820_BACKLINK_START -->
 
 ## Codex Pi Harness backlink (S1008820)

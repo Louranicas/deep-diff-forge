@@ -10,12 +10,46 @@ use ratatui::backend::CrosstermBackend;
 use std::io;
 use std::time::Duration;
 
+/// RAII guard that restores the terminal on drop — fires on both normal return
+/// and panic unwind, so a panic in the event loop cannot leave the user's
+/// terminal in raw / alternate-screen mode.
+///
+/// The guard is *armed* on creation and *disarmed* before the normal-exit
+/// cleanup runs, which lets the normal path call `show_cursor()` explicitly
+/// (via the `Terminal` handle) while the panic path gets a best-effort restore.
+struct TerminalGuard {
+    armed: bool,
+}
+
+impl TerminalGuard {
+    fn new() -> Self {
+        Self { armed: true }
+    }
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            // Best-effort: ignore errors; must not panic inside Drop.
+            let _ = disable_raw_mode();
+            let _ = crossterm::execute!(
+                io::stdout(),
+                DisableMouseCapture,
+                LeaveAlternateScreen
+            );
+        }
+    }
+}
+
 /// Run the interactive review loop against a real terminal.
 ///
 /// This is the one part of the TUI that requires a live TTY and is therefore
 /// not unit-tested; all decision logic lives in the tested state model
 /// ([`ReviewApp::handle`]) and input mapping ([`map_key`]). The terminal is
-/// always restored, even on error.
+/// always restored, even on error or panic.
 ///
 /// # Errors
 ///
@@ -24,10 +58,14 @@ pub fn run(mut app: ReviewApp) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     crossterm::execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let mut guard = TerminalGuard::new();
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
     let result = event_loop(&mut terminal, &mut app);
 
+    // Disarm the panic guard and run the normal-path cleanup so we can also
+    // call show_cursor() which requires the Terminal handle.
+    guard.disarm();
     disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
