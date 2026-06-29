@@ -3,7 +3,7 @@
 //! The headline helper is [`redacted_id`]: the learning loop's privacy contract
 //! ("prefer hashes, counts, timings, and local-only receipts") is enforced by
 //! never storing a path or source line in the first place. Callers hash the
-//! path/source identity into a stable, non-reversible token and store *that*.
+//! path/source identity into a stable, opaque token and store *that*.
 
 /// 64-bit FNV-1a offset basis.
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -14,8 +14,10 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 ///
 /// FNV-1a is not cryptographic — it is a fast, stable, well-distributed hash.
 /// That is exactly the right tool here: receipts need a *stable* id for a file
-/// across runs, and a *non-reversible* one so the stored learning data cannot
-/// reconstruct a path. It is not used for any security decision.
+/// across runs. For typical file paths (>>8 bytes) the 64-bit output space makes
+/// brute-force pre-image search impractical, so the stored token does not
+/// meaningfully expose the original path. It is not used for any security decision;
+/// if cryptographic one-wayness is ever required, use HMAC-SHA-256 instead.
 #[must_use]
 pub fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash = FNV_OFFSET;
@@ -26,9 +28,9 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// A stable, non-reversible identity token for `input`, rendered as a 16-char
-/// lowercase hex string. Used as `StrategyReceipt::file_hash` so receipts never
-/// carry a path.
+/// A stable, opaque identity token for `input`, rendered as a 16-char lowercase
+/// hex string. Used as `StrategyReceipt::file_hash` so receipts never carry a path.
+/// See [`fnv1a`] for the caveats on practical vs. cryptographic one-wayness.
 #[must_use]
 pub fn redacted_id(input: &str) -> String {
     format!("{:016x}", fnv1a(input.as_bytes()))

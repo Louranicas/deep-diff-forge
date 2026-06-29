@@ -110,6 +110,15 @@ pub fn validate_private_dir(dir: &Path) -> Result<(), SocketError> {
 /// only `chmod` a directory it owns, so a pre-existing directory owned by an
 /// attacker makes this fail closed with `PermissionDenied`.
 ///
+/// ## Ancestor security
+///
+/// Only the leaf (`<XDG_RUNTIME_DIR>/deep-diff-forge`) is explicitly secured here.
+/// The parent (`$XDG_RUNTIME_DIR`, typically `/run/user/<uid>`) is a kernel-managed,
+/// per-user directory that systemd creates with mode `0700` and transitions to
+/// owner-only at login; the daemon relies on the kernel/init system to maintain that
+/// invariant for the parent. If `$XDG_RUNTIME_DIR` is passed as an explicit `--socket`
+/// parent by the operator, the operator is responsible for that directory's security.
+///
 /// # Errors
 ///
 /// Returns an I/O error if the directory cannot be created or secured, or a
