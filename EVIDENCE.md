@@ -435,6 +435,20 @@ Systematic bug-hunt loop: false-positive verifier → fix → verify → repeat.
 
 Verifier result (agent-claim-verifier): FIX-1/2/3 **CONFIRMED** at source + execution. FIX-4 initially PARTIAL (tag-value regex against JSON payload — fixed in-session); final regex `"created":\s*"[^"]*"` verified correct.
 
+## Security + Quality Hardening Round 3 (S1009000 — third-pass bug hunt)
+
+Gate: **935 tests / 0 failed** (was 933). Hunter: forge-security-architect. 0 Critical/High — convergence seal: **PASS**.
+
+| Finding | Severity | Fix | Regression test |
+|---|---|---|---|
+| FINDING-R3-1: run_lane worker-panic silent swallow | LOW | `scheduler.rs:85` `unwrap_or_default()` → `resume_unwind(payload)` — honest abort over fabricated partial coverage | Structural test: `run_lane_parallel_returns_input_order` still holds; panic propagation design-verified |
+| FINDING-R3-2: SYSTEM_AGENT_ID ingestion guard doc-only | INFO | `store.rs`: `add_untrusted()` entry point downgrades `SYSTEM_AGENT_ID` → empty agent id before ingestion; `add()` reserved for trusted internal callers | `add_untrusted_downgrades_system_agent_id_to_agent` + `add_untrusted_accepts_normal_agent_annotations_unchanged` |
+| FINDING-R3-3: RUSTSEC-2026-0002 (lru) undated accept | INFO | `deny.toml`: scoped existing comment with 2026-09-01 mandatory review date | Supply-chain governance note |
+
+Also closed (INFO doc-only, committed separately):
+- FINDING-3: FNV-1a "non-reversible" overclaim → "opaque" / "brute-force impractical for typical paths" + HMAC note
+- FINDING-7: `ensure_runtime_dir` ancestor security assumption now explicitly documented
+
 ## Security + Quality Hardening Round 2 (S1009000 — second-pass bug hunt)
 
 Five additional fixes after the adversarial security audit and OPEN-003/OPEN-002 explorer findings. Gate: **933 tests / 0 failed** (was 932). Full `check → clippy -D warnings → pedantic → test` green.
