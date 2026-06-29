@@ -233,7 +233,7 @@ mod tests {
     use crate::protocol::{METHOD_NOT_FOUND, parse_request};
 
     fn call(line: &str, engine: &mut Engine) -> Result<Value, RpcError> {
-        let req = parse_request(line).expect("valid request");
+        let req = parse_request(line)?;
         dispatch(&req, engine)
     }
 

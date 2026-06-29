@@ -75,5 +75,23 @@ jobs:
         run: cargo install cargo-audit --locked
       - name: cargo audit (strict advisory gate)
         run: cargo audit --deny warnings --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2026-0002
-      - name: SPDX SBOM gate
-        run: python3 scripts/security/generate_spdx_sbom.py
+      - name: SPDX SBOM gate (regenerate + verify against committed baseline)
+        run: |
+          python3 scripts/security/generate_spdx_sbom.py
+          # Strip the timestamp-only field before comparing so a content-identical
+          # SBOM that differs only in creation time still passes the gate.
+          python3 - <<'EOF'
+          import re, sys
+          def strip_ts(text):
+              # sbom.spdx.json is SPDX-JSON, not tag-value; "created" is a JSON string field.
+              return re.sub(r'"created":\s*"[^"]*"', '"created": "<stripped>"', text)
+          with open('sbom.spdx.json') as f:
+              regen = f.read()
+          import subprocess, os
+          committed = subprocess.check_output(['git', 'show', 'HEAD:sbom.spdx.json'], text=True)
+          if strip_ts(regen) != strip_ts(committed):
+              print('SBOM DRIFT: regenerated SBOM differs from committed baseline.')
+              print('Run: python3 scripts/security/generate_spdx_sbom.py && git add sbom.spdx.json')
+              sys.exit(1)
+          print('SBOM OK: content matches committed baseline (timestamp ignored).')
+          EOF

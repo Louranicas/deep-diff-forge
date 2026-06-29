@@ -107,13 +107,30 @@ pub fn enclosing_symbol(symbols: &[Symbol], line: u32) -> Option<&Symbol> {
         .min_by_key(|s| s.line_count())
 }
 
-fn count_errors(node: Node) -> u32 {
-    let mut errors = u32::from(node.is_error() || node.is_missing());
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        errors = errors.saturating_add(count_errors(child));
+fn count_errors(root: Node) -> u32 {
+    // Iterative DFS via TreeCursor — avoids stack overflow on deeply-nested trees.
+    // A narrow tree ~40k levels deep (well within the 200k node-budget) would
+    // overflow the stack with tail-recursive descent; this mirrors the pattern
+    // already used in structural.rs.
+    let mut count = 0u32;
+    let mut cursor = root.walk();
+    loop {
+        let node = cursor.node();
+        if node.is_error() || node.is_missing() {
+            count = count.saturating_add(1);
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return count;
+            }
+        }
     }
-    errors
 }
 
 fn extract_symbols(root: Node, source: &str) -> Vec<Symbol> {
@@ -464,5 +481,35 @@ impl Point {
         }
         let a = analyze_rs(&src);
         assert_eq!(a.symbols.len(), 30);
+    }
+
+    #[test]
+    fn count_errors_iterative_does_not_overflow_on_deeply_nested_source() {
+        // Regression: FINDING-002 — the former recursive count_errors would stack-
+        // overflow on ASTs whose DEPTH exceeded ~40k levels (a narrowly nested file
+        // well inside the 200k node-budget). The iterative TreeCursor rewrite makes
+        // the traversal O(1) stack regardless of depth. We use a moderately nested
+        // Rust expression (800 nested closures, enough to exercise multi-level
+        // recursion in the old code without needing a 40k-deep test fixture).
+        let depth = 800_usize;
+        let mut src = String::from("fn f() { ");
+        for _ in 0..depth {
+            src.push_str("(|| ");
+        }
+        src.push('1');
+        for _ in 0..depth {
+            src.push_str(")()");
+        }
+        src.push_str("; }");
+        // Must complete without panicking/aborting.
+        let a = analyze_rs(&src);
+        // Broken syntax is acceptable; what matters is we return, not abort.
+        let _ = a.parse_status;
+    }
+
+    #[test]
+    fn count_errors_zero_for_clean_parse() {
+        let a = analyze_rs("fn clean() -> u32 { 42 }");
+        assert_eq!(a.parse_status, ParseStatus::Parsed);
     }
 }

@@ -33,6 +33,15 @@ categories = ["development-tools", "command-line-utilities"]
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
+# Clippy restriction lints that enforce panic-discipline in production code.
+# `unwrap_in_result` fires only when `.unwrap()`/`.expect()` appears in a function
+# whose return type is `Result` or `Option` — production code must propagate errors,
+# not panic. Test functions return `()` and are therefore naturally exempt.
+# `panic_in_result_fn` similarly forbids explicit `panic!` in Result-returning fns.
+[workspace.lints.clippy]
+unwrap_in_result = "deny"
+panic_in_result_fn = "deny"
+
 # Internal crates are declared once here with paired path + version — the
 # publishable-workspace pattern (cargo-deny `wildcards = "deny"` requires a
 # version on every path dep, and crates.io requires it to resolve a published

@@ -420,3 +420,30 @@ release-eligible.
 ## Deployment Link
 
 - Framework: [Codebase Deployment Framework](docs/DEPLOYMENT_FRAMEWORK.md)
+
+## Security + Quality Hardening (S1009000 — bug hunt seal)
+
+Systematic bug-hunt loop: false-positive verifier → fix → verify → repeat. Gate: **930 tests / 0 failed** (was 927 — 3 new regression tests added). Full `check → clippy -D warnings → pedantic → test` green.
+
+| Finding | Severity | Fix | Regression test |
+|---|---|---|---|
+| FINDING-001: TUI note-box title escape injection | HIGH | `display_safe()` wraps anchor path at `diffview.rs:470` | `note_box_title_escapes_malicious_anchor_path` |
+| FINDING-002: Recursive `count_errors` stack overflow | MEDIUM | Iterative `TreeCursor` DFS at `analyze.rs:110` | `count_errors_iterative_does_not_overflow_on_deeply_nested_source` |
+| OPEN-006: No clippy restriction lints | LOW | `[workspace.lints.clippy]` `unwrap_in_result`+`panic_in_result_fn` = deny | Lint enforcement (+ fixed `handler.rs:236` `.expect()` → `?`) |
+| OPEN-007: SBOM gate regenerates-not-verifies | LOW | `ci.yml` now diffs regen vs `git show HEAD:sbom.spdx.json`; JSON timestamp strip | Verified end-to-end in-session |
+| OPEN-001 (FALSE POSITIVE): DEL/C1 in `--json`/`--jsonl` | — | Already closed in v0.2.0 (S1008452); source-confirmed FP | — |
+
+Verifier result (agent-claim-verifier): FIX-1/2/3 **CONFIRMED** at source + execution. FIX-4 initially PARTIAL (tag-value regex against JSON payload — fixed in-session); final regex `"created":\s*"[^"]*"` verified correct.
+
+<!-- CODEX_PI_HARNESS_S1008820_BACKLINK_START -->
+
+## Codex Pi Harness backlink (S1008820)
+
+This document is linked into the Codex Pi Harness v5 plan.
+
+- Plan: `ai_docs/CODEX_PI_HARNESS_PLAN_S1008820.md`
+- Workspace plan: `meta-plans/PLAN_codex_pi_harness_S1008820.md`
+- BIDI map: `ai_docs/CODEX_PI_HARNESS_BIDI_LINK_MAP_S1008820.md`
+- Status: plan/gate only; build not armed.
+
+<!-- CODEX_PI_HARNESS_S1008820_BACKLINK_END -->

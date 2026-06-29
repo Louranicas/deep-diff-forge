@@ -467,7 +467,7 @@ fn note_box(note: &AgentAnnotation, palette: &Palette, width: usize) -> Vec<Line
         palette.ungrounded
     };
 
-    let anchor = base_of(anchor_path(&note.anchor));
+    let anchor = display_safe(base_of(anchor_path(&note.anchor)));
     let prefix = format!("╭─ {} note · {anchor} · ", source_of(note).label());
     let label = grounding_of(note).label();
     // Fixed chars besides the dashes: the space before them and the closing `╮`.
@@ -810,6 +810,48 @@ mod tests {
     fn base_of_strips_dirs() {
         assert_eq!(base_of("a/b/c.rs"), "c.rs");
         assert_eq!(base_of("c.rs"), "c.rs");
+    }
+
+    #[test]
+    fn note_box_title_escapes_malicious_anchor_path() {
+        // Regression: FINDING-001 — the anchor (file path) in the note-box title
+        // must pass through display_safe before reaching the Span, otherwise an
+        // attacker-controlled filename containing ESC/CSI/OSC bytes reaches the
+        // terminal and can poison the reviewer's scrollback or hijack the clipboard.
+        use deep_diff_forge_core::{AnnotationAnchor, AnnotationProvenance};
+        let evil_path = "src/\x1b[2J\x1b]52;;evilpayload\x07evil.rs".to_string();
+        let note = AgentAnnotation {
+            id: "test-id".to_string(),
+            anchor: AnnotationAnchor::File {
+                path: evil_path.clone(),
+            },
+            body: "safe body".to_string(),
+            provenance: AnnotationProvenance {
+                agent: "system".to_string(),
+                model: None,
+                evidence: vec!["src/evil.rs:1".to_string()],
+            },
+            grounded: true,
+        };
+        let palette = ThemeKind::Dark.palette();
+        let lines = note_box(&note, &palette, 80);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            !all_text.contains('\x1b'),
+            "raw ESC escaped into note-box title: {all_text:?}"
+        );
+        assert!(
+            !all_text.contains('\x07'),
+            "raw BEL (OSC terminator) in note-box title: {all_text:?}"
+        );
+        // The sanitised representation of ESC should appear instead.
+        assert!(
+            all_text.contains("\\x1b") || all_text.contains("\\u{1b}"),
+            "no visible escape representation found in sanitised title"
+        );
     }
 
     #[test]
