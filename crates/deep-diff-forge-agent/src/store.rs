@@ -1,4 +1,4 @@
-use crate::{AnnotationSource, GroundingLevel, grounding_of, source_of};
+use crate::{AnnotationSource, GroundingLevel, SYSTEM_AGENT_ID, grounding_of, source_of};
 use deep_diff_forge_core::AgentAnnotation;
 
 /// An in-memory collection of annotations with reviewer-owned resolution state.
@@ -18,8 +18,25 @@ impl AnnotationStore {
         Self::default()
     }
 
-    /// Add an annotation.
+    /// Add an annotation produced by trusted internal engine code.
+    ///
+    /// Callers must be internal (engine, TUI) — never an external wire source.
+    /// For untrusted external input use [`add_untrusted`][Self::add_untrusted].
     pub fn add(&mut self, annotation: AgentAnnotation) {
+        self.annotations.push(annotation);
+    }
+
+    /// Add an annotation from an **untrusted external source** (file, wire,
+    /// agent output), enforcing the [`SYSTEM_AGENT_ID`] trust boundary.
+    ///
+    /// If the annotation claims to be the engine itself (`provenance.agent ==
+    /// SYSTEM_AGENT_ID`), that claim is silently downgraded to an empty agent
+    /// id so it can never masquerade as `AnnotationSource::System`. All other
+    /// fields are accepted verbatim (body sanitization is the caller's concern).
+    pub fn add_untrusted(&mut self, mut annotation: AgentAnnotation) {
+        if annotation.provenance.agent == SYSTEM_AGENT_ID {
+            annotation.provenance.agent = String::new();
+        }
         self.annotations.push(annotation);
     }
 
@@ -201,10 +218,10 @@ mod tests {
 
     #[test]
     fn by_source_self_asserted_labels_are_all_agent() {
-        // Fail-closed: "human"/"human:luke" no longer escalate; all untrusted.
+        // Fail-closed: "human"/"human:reviewer" no longer escalate; all untrusted.
         let mut s = AnnotationStore::new();
         s.add(ann("a", "human", &[], false));
-        s.add(ann("b", "human:luke", &[], false));
+        s.add(ann("b", "human:reviewer", &[], false));
         s.add(ann("c", "claude", &[], false));
         assert_eq!(s.by_source(AnnotationSource::Agent).len(), 3);
         assert_eq!(s.by_source(AnnotationSource::Human).len(), 0);
@@ -236,5 +253,25 @@ mod tests {
         assert!(s.is_resolved("b"));
         assert!(!s.is_resolved("a"));
         assert_eq!(s.unresolved().len(), 2);
+    }
+
+    #[test]
+    fn add_untrusted_downgrades_system_agent_id_to_agent() {
+        // An external annotation claiming SYSTEM_AGENT_ID must not be classified
+        // as System — the boundary enforces the invariant before ingestion.
+        let mut s = AnnotationStore::new();
+        s.add_untrusted(ann("a", crate::SYSTEM_AGENT_ID, &[], false));
+        // Must NOT appear as System.
+        assert!(s.by_source(AnnotationSource::System).is_empty());
+        // The annotation is still stored (it is Agent-classified), not silently dropped.
+        assert_eq!(s.len(), 1);
+    }
+
+    #[test]
+    fn add_untrusted_accepts_normal_agent_annotations_unchanged() {
+        let mut s = AnnotationStore::new();
+        s.add_untrusted(ann("b", "some-agent", &["e"], true));
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.by_source(AnnotationSource::Agent).len(), 1);
     }
 }

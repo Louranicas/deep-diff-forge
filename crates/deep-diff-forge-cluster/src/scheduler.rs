@@ -82,7 +82,12 @@ where
             .collect();
         handles
             .into_iter()
-            .map(|h| h.join().unwrap_or_default())
+            .map(|h| match h.join() {
+                Ok(chunk) => chunk,
+                // Re-propagate a panicking lane so callers get an honest abort
+                // instead of a silently-shortened result that over-claims coverage.
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
             .collect()
     });
     collected.into_iter().flatten().collect()

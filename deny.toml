@@ -12,10 +12,13 @@ ignore = [
   # Scoped accept; revisit when a maintained equivalent reaches the ratatui tree.
   "RUSTSEC-2024-0436",
 ]
-# Note: lru 0.12.5 is unsound (RUSTSEC-2026-0002, `IterMut` Stacked Borrows),
-# transitive via ratatui and unreachable here (we never use lru's IterMut).
-# cargo-deny does not classify it, so it is accepted in the cargo-audit CI gate
-# instead (`--ignore RUSTSEC-2026-0002`); any NEW advisory still fails that gate.
+# Note: lru 0.12.5 is unsound (RUSTSEC-2026-0002, `IterMut` Stacked Borrows,
+# filed 2026-01-07), transitive via ratatui → lru. We never call lru's IterMut
+# directly; whether ratatui does is ratatui's concern. cargo-deny does not surface
+# this advisory class, so it is accepted in the cargo-audit CI gate only via
+# `--ignore RUSTSEC-2026-0002`. Review gate: upgrade ratatui once a release ships
+# that pulls a fixed lru (or replaces it), then drop the --ignore.
+# Next mandatory review: 2026-09-01 (3-month window from S1009000 audit).
 
 [licenses]
 version = 2
