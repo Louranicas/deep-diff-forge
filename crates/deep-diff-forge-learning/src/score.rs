@@ -133,7 +133,13 @@ pub fn score_one(strategy: Strategy, receipts: &[StrategyReceipt]) -> StrategySc
     let revisits = mine.iter().filter(|r| r.revisited).count();
     let helpful = mine.iter().filter(|r| r.is_helpful()).count();
     let hits = mine.iter().filter(|r| r.cache.is_hit()).count();
-    let total_ms: u64 = mine.iter().map(|r| r.elapsed_ms).sum();
+    // saturating_add: two near-u64::MAX receipts from a poisoned store would
+    // wrap (release) or panic (debug) with plain `.sum()`; saturate instead so
+    // mean_elapsed_ms stays large-but-finite rather than wrapping to near-zero.
+    let total_ms: u64 = mine
+        .iter()
+        .map(|r| r.elapsed_ms)
+        .fold(0u64, u64::saturating_add);
 
     #[allow(clippy::cast_precision_loss)]
     let acceptance_rate = if decided == 0 {
