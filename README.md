@@ -712,3 +712,19 @@ Licensed under either of **MIT** or **Apache-2.0** at your option.
 
 - **GitHub:** https://github.com/Louranicas/deep-diff-forge
 - **Deployment framework:** [`docs/DEPLOYMENT_FRAMEWORK.md`](docs/DEPLOYMENT_FRAMEWORK.md)
+
+
+<!-- HABITAT_VAULT_HIGHWAY_START -->
+
+## Habitat Vault Highway
+
+> Registry: `habitat.vault-highways.v1` · vault id: `deep-diff-forge` · kind: `project-root` · status: `active`
+
+This entry point is reciprocally registered in the workspace-wide vault highway. Cross-vault navigation uses absolute `file://` links because bare Obsidian wikilinks do not resolve reliably across separate vault roots.
+
+- Workspace highway hub: [Habitat Vault Highways](file:///home/louranicas/claude-code-workspace/the-habitat-docs/Habitat%20Vault%20Highways.md)
+- Main Obsidian registry (upstream, read-only here): [Habitat Cross-Vault Index](file:///home/louranicas/projects/claude_code/Habitat%20Cross-Vault%20Index.md)
+- Hermes registry (upstream, read-only here): [Known Habitat Vaults — Cross Links](file:///home/louranicas/.hermes/hermes-agent-vault/Known%20Habitat%20Vaults%20%E2%80%94%20Cross%20Links.md)
+- Reciprocal target recorded by the hub: `deep-diff-forge/README.md`
+
+<!-- HABITAT_VAULT_HIGHWAY_END -->
