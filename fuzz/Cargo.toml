@@ -9,10 +9,10 @@ license = "MIT OR Apache-2.0"
 cargo-fuzz = true
 
 [dependencies]
-deep-diff-forge-agent = { path = "../crates/deep-diff-forge-agent", version = "0.2.0" }
-deep-diff-forge-core = { path = "../crates/deep-diff-forge-core", version = "0.2.0" }
-deep-diff-forge-daemon = { path = "../crates/deep-diff-forge-daemon", version = "0.2.0" }
-deep-diff-forge-patch = { path = "../crates/deep-diff-forge-patch", version = "0.2.0", features = ["json"] }
+deep-diff-forge-agent = { path = "../crates/deep-diff-forge-agent", version = "0.2.1" }
+deep-diff-forge-core = { path = "../crates/deep-diff-forge-core", version = "0.2.1" }
+deep-diff-forge-daemon = { path = "../crates/deep-diff-forge-daemon", version = "0.2.1" }
+deep-diff-forge-patch = { path = "../crates/deep-diff-forge-patch", version = "0.2.1", features = ["json"] }
 libfuzzer-sys = "0.4"
 serde_json = "1"
 

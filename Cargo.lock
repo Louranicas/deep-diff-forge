@@ -161,7 +161,7 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-agent"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-patch",
@@ -169,7 +169,7 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "deep-diff-forge-cluster",
  "deep-diff-forge-core",
@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-cluster"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-graph",
@@ -194,11 +194,11 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-core"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "deep-diff-forge-daemon"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-graph",
@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-graph"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-patch",
@@ -218,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-learning"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rustix",
  "serde",
@@ -227,14 +227,14 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-patch"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "deep-diff-forge-core",
 ]
 
 [[package]]
 name = "deep-diff-forge-pipeline"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-patch",
@@ -243,7 +243,7 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-projection"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-patch",
@@ -251,7 +251,7 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-syntax"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "deep-diff-forge-core",
  "tree-sitter",
@@ -260,7 +260,7 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-tui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "crossterm",
  "deep-diff-forge-agent",

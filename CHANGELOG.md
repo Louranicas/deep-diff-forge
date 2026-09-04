@@ -6,6 +6,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-04
+
 ### Security
 
 - Hardened the Unix daemon against symlink/inode-swap attacks, slowloris and
@@ -20,6 +22,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   derive from the workspace manifest. The separate fuzz dependency graph now
   passes the same advisory, license, source, and wildcard-dependency policy;
   CI/release concurrency and dependency-update cooldowns are explicit.
+
+[0.2.1]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.2.1
 
 ## [0.2.0] - 2026-06-23
 

@@ -106,9 +106,10 @@ flowchart TB
 
 The codebase is at L9 (learning): every engine layer L0-L8 is implemented plus
 the L9 local-only learning loop, and `v0.1.0` was tagged/released to GitHub
-(binary + checksums via `release.yml`) and both git remotes. `v0.2.0` is the
-crates.io-publishable cut (`cargo publish --dry-run` clean across the workspace),
-with a `deploy release` posture report and a `deny.toml` supply-chain policy. The
+(binary + checksums via `release.yml`) and both git remotes. `v0.2.1` is the
+SOL-1 security-hardening, crates.io-publishable cut (`cargo publish --dry-run`
+clean across the workspace), with a `deploy release` posture report and a
+`deny.toml` supply-chain policy. The
 single remaining publication target is **crates.io**, which the release workflow
 publishes automatically once a `CARGO_REGISTRY_TOKEN`
 is configured — the one credential-gated step. L9 Learning (runtime-telemetry

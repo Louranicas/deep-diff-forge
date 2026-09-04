@@ -81,7 +81,7 @@ Response:
   "id": 1,
   "result": {
     "status": "ok",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "pid": 12345,
     "sessions": 0,
     "retained_bytes": 0,

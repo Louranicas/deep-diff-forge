@@ -268,7 +268,7 @@ and the TUI all work without it.
 
 Recommended release proof for GitHub:
 
-- tag the verified commit, for example `v0.2.0`;
+- tag the verified commit, for example `v0.2.1`;
 - state that `just gate-release` passed;
 - include the TUI test count from the gate output;
 - include the daemon soak receipt and `verdict=PASS`;
@@ -700,8 +700,9 @@ is implemented, gated, and live-proven. Honest current limitations:
 - **L9 Learning**: the learning loop records and scores receipts and gates
   promotion; wiring the engine's hot path to *emit* receipts automatically (vs.
   the explicit `learn record`) lands as live signal accrues.
-- **Release**: `v0.2.0` is publish-ready (clean `cargo publish --dry-run` across
-  the workspace); the **crates.io** upload is gated on a registry token.
+- **Release**: `v0.2.1` is the SOL-1 security-hardening patch release and is
+  publish-ready (clean `cargo publish --dry-run` across the workspace); the
+  **crates.io** upload is gated on a registry token.
 - Time-budget enforcement in the semantic layer is deferred (and never reported
   as a fallback).
 
