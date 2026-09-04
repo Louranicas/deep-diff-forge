@@ -70,7 +70,10 @@ deep-diff-forge loom-contract
 
 ## JSON-RPC Method Map
 
-The daemon uses JSON-RPC 2.0 over Unix domain sockets on Unix and named pipes on Windows.
+The implemented daemon uses newline-delimited JSON-RPC 2.0 over filesystem
+Unix-domain sockets. The method map below includes planned surface area; Windows
+named pipes and TCP listeners are not implemented and must not be treated as
+security boundaries.
 
 | Method | Direction | Purpose |
 | --- | --- | --- |
@@ -115,14 +118,16 @@ The daemon uses JSON-RPC 2.0 over Unix domain sockets on Unix and named pipes on
 
 Unix sockets are indicated only for the optional daemon.
 
-| Platform | Socket or pipe path |
+| Platform | Socket path or status |
 | --- | --- |
-| Linux | `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock` |
-| Linux (no `$XDG_RUNTIME_DIR`) | fails closed — pass `--socket PATH` (no world-writable `/tmp` fallback) |
-| macOS | `$TMPDIR/deep-diff-forge-$UID/deep-diff-forge.sock` |
-| Windows | `\\.\pipe\deep-diff-forge-$USER` |
+| Unix with `$XDG_RUNTIME_DIR` | `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock` |
+| Unix without `$XDG_RUNTIME_DIR` | Fails closed — pass `--socket PATH`; there is no `/tmp` fallback |
+| Windows | Daemon unsupported; no named-pipe implementation |
 
-The daemon must create parent directories with mode `0700` on Unix and reject sockets not owned by the current user.
+The managed runtime directory is created with mode `0700`, checked against the
+effective user, and protected against symlink/inode swaps. The socket is mode
+`0600`. An explicit `--socket` path may create a missing parent at `0700`, but
+fails closed for an existing permissive, wrong-owner, or symlinked parent.
 
 ## Socket Lifecycle
 
@@ -146,13 +151,21 @@ sequenceDiagram
 
 ## Socket Security Rules
 
-- Bind only to filesystem paths in user-private runtime directories.
-- Refuse world-writable parent directories unless sticky-bit semantics and ownership are verified.
-- Use per-user daemon ownership.
-- Never expose daemon IPC on TCP by default.
-- Require explicit `--listen tcp://127.0.0.1:PORT` for development-only TCP.
-- Treat agent annotations as untrusted input.
-- Cap payload sizes and stream large outputs in chunks.
+- Bind only to filesystem paths in owner-private runtime directories.
+- Reject group/other-accessible or wrong-owner parents; sticky-bit directories
+  are not an exception.
+- Refuse symlinks and non-socket files at the socket path. Remove a stale socket
+  only when it is verifiably a socket, and remove it at shutdown only when its
+  device/inode identity still matches the server-created socket.
+- Keep the socket local to one OS user; do not forward or bind-mount it across a
+  trust boundary.
+- Treat request fields and agent annotations as untrusted input.
+- Enforce 80 MiB request/response caps, 30-second absolute I/O deadlines, eight
+  concurrent workers, 64 retained sessions, and a 128 MiB aggregate retained
+  session-payload budget.
+
+See [`SECURITY.md`](../SECURITY.md) for the maintained threat model, operational
+requirements, and residual risks.
 
 ## Filesystem State Locations
 

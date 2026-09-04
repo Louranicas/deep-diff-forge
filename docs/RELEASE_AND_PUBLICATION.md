@@ -31,8 +31,15 @@ Use semantic versioning:
 
 - [ ] `cargo fmt --all --check`
 - [ ] `CARGO_TARGET_DIR=target cargo check --workspace --locked`
-- [ ] `CARGO_TARGET_DIR=target cargo clippy --workspace --all-targets -- -D warnings`
+- [ ] `CARGO_TARGET_DIR=target cargo clippy --workspace --all-targets --locked -- -D warnings`
+- [ ] `CARGO_TARGET_DIR=target cargo clippy --workspace --all-targets --locked -- -D warnings -W clippy::pedantic`
 - [ ] `CARGO_TARGET_DIR=target cargo test --workspace --locked`
+- [ ] `cargo check --locked --manifest-path fuzz/Cargo.toml --bins`
+- [ ] `cargo deny check` and `cargo deny --manifest-path fuzz/Cargo.toml --locked check`
+- [ ] `cargo audit --deny warnings` for both `Cargo.lock` and `fuzz/Cargo.lock`
+- [ ] `python3 scripts/security/daemon_soak.py`
+- [ ] `python3 scripts/security/privacy_probe.py`
+- [ ] Regenerated `sbom.spdx.json` matches the committed dependency graph
 - [ ] Corpus regression snapshots pass
 - [ ] CLI smoke passes
 - [ ] Daemon smoke passes if daemon is included
@@ -63,14 +70,21 @@ dist/
   checksums.txt.sig
 ```
 
-## GitHub Actions Plan
+## GitHub Actions
 
-Required workflows:
+Implemented workflows:
 
-- `ci.yml`: fmt, check, clippy, tests, corpus snapshots
-- `release.yml`: tagged build matrix and release upload
-- `docs.yml`: build docs when docs site exists
-- `security.yml`: cargo audit, dependency review, supply-chain checks
+- `ci.yml`: formatting, compilation, strict and pedantic lint, tests, docs,
+  contracts, fuzz-harness compilation, daemon/privacy probes, root and fuzz
+  audits, policy checks, and SPDX SBOM drift detection.
+- `release.yml`: tag/version validation, repeated audit and policy gates, locked
+  build, SHA-256 generation, GitHub build-provenance attestations, release
+  upload, and crates.io publication.
+
+Both workflows pin third-party Actions to full commit SHAs and use explicit
+least-privilege permissions. Release publication is tag-only; the tag must
+exactly match the workspace version. See [`SECURITY.md`](../SECURITY.md) for the
+threat model and residual account-level controls.
 
 ## Publication Receipts
 

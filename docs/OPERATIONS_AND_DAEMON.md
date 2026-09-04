@@ -2,6 +2,10 @@
 
 The daemon is optional. Deep-Diff-Forge must remain useful as a CLI and library without it.
 
+This document includes planned operational surface area. The implemented
+security boundary is authoritative in [`SECURITY.md`](../SECURITY.md); items
+described as future or planned are not current guarantees.
+
 The daemon exists for top-tail latency and coordination:
 
 - shared AST cache
@@ -18,18 +22,17 @@ The daemon exists for top-tail latency and coordination:
 | Binary | `deep-diff-forge` |
 | Daemon subcommand | `deep-diff-forge daemon` |
 | Default transport | Unix domain socket |
-| TCP default | Disabled |
+| TCP transport | Not implemented |
 | Health method | `daemon.health` |
 | Status method | `daemon.status` |
 
 ## Socket Locations
 
-| Platform | Path |
+| Platform | Path or status |
 | --- | --- |
-| Linux | `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock` |
-| Linux (no `$XDG_RUNTIME_DIR`) | fails closed — pass `--socket PATH` (no world-writable `/tmp` fallback) |
-| macOS | `$TMPDIR/deep-diff-forge-$UID/deep-diff-forge.sock` |
-| Windows | `\\.\pipe\deep-diff-forge-$USER` |
+| Unix with `$XDG_RUNTIME_DIR` | `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock` |
+| Unix without `$XDG_RUNTIME_DIR` | Fails closed — pass `--socket PATH`; there is no `/tmp` fallback |
+| Windows | Daemon unsupported; no named-pipe implementation |
 
 ## Daemon State Machine
 
@@ -49,14 +52,18 @@ stateDiagram-v2
 
 ## Startup Gates
 
-The daemon refuses startup unless:
+The implemented daemon refuses startup unless:
 
-- runtime directory exists or can be created
-- runtime directory is owned by the current user
-- runtime directory mode is `0700` on Unix
-- socket path is not an active daemon owned by another process
-- cache directory is writable
-- protocol version is supported
+- a secure runtime base is available or an explicit socket path is supplied;
+- the socket parent exists as, or can be created as, an effective-user-owned
+  non-symlink directory with mode `0700`;
+- an existing socket path is either absent or verifiably a socket rather than a
+  symlink, regular file, or directory; and
+- the newly bound socket can be restricted to mode `0600`.
+
+Socket type and filesystem identity are checked, but liveness of an existing
+same-user socket is not probed before replacement. Operators must serialize
+starts and must not run multiple daemon instances at the same path.
 
 ## Health RPC
 
@@ -74,11 +81,12 @@ Response:
   "id": 1,
   "result": {
     "status": "ok",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "pid": 12345,
-    "socket": "/run/user/1000/deep-diff-forge/deep-diff-forge.sock",
     "sessions": 0,
-    "cache_entries": 0
+    "retained_bytes": 0,
+    "cache_entries": 0,
+    "protocol": 0
   }
 }
 ```
@@ -138,7 +146,7 @@ deep-diff-forge cache prune --max-size 20GiB
 
 | Failure | Required behavior |
 | --- | --- |
-| Stale socket | Probe, remove only if dead and owned by current user. |
+| Existing socket | In an owner-private parent, remove only when the path itself is a socket; serialize starts because liveness is not probed. |
 | Cache decode failure | Ignore entry, record fallback, continue. |
 | Parser panic | Catch at worker boundary, mark semantic fallback. |
 | Oversized payload | Reject with structured error. |

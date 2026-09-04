@@ -1,98 +1,214 @@
 # Security Policy
 
-Deep-Diff-Forge is a diff and code-review engine. It is designed to be run on
-**fully untrusted input**: an attacker controls the entire unified diff (paths
-and line bodies), the source files handed to the semantic layer, and any agent
-annotations. Hardening against that input is a first-class goal.
+Deep-Diff-Forge is a diff and code-review engine designed to process hostile
+patches and source files. Untrusted input is a normal operating condition, not
+an exceptional one. This policy documents the maintained security boundary,
+the controls enforced by the repository, and the limits operators must account
+for.
 
 ## Reporting a vulnerability
 
-Please report security issues **privately** — do not open a public issue for an
-unfixed vulnerability.
+Do not open a public issue for an unfixed vulnerability or include sensitive
+repository content in a report.
 
-- Preferred: open a **GitHub private security advisory** via the repository's
-  **Security → Report a vulnerability** tab.
-- Include: affected version/commit, a minimal reproduction (a sample patch or
-  command line where possible), the impact, and any suggested fix.
+- Preferred: submit a [private GitHub security advisory][report] using
+  **Security → Report a vulnerability**.
+- Include the affected version or commit, impact, prerequisites, and the
+  smallest safe reproduction available.
+- State whether the report concerns the CLI, daemon, parser, local learning
+  store, release pipeline, or an official artifact.
+- Remove credentials, proprietary source, and personal data from reproductions.
 
-We aim to acknowledge a report within **5 business days** and to ship a fix or a
-documented mitigation for confirmed High/Critical issues as a priority.
+We target an acknowledgement within five business days. Confirmed
+High/Critical issues are prioritized for a fix or documented mitigation. We
+coordinate publication with the reporter and publish an advisory and patched
+release when the fix is ready; these targets are not a service-level agreement.
+
+[report]: https://github.com/Louranicas/deep-diff-forge/security/advisories/new
 
 ## Supported versions
 
-The latest released `0.x` minor version receives security fixes. Pre-1.0, only
-the most recent minor line is supported.
+Before 1.0, only the newest released minor line receives security fixes.
 
-## Threat model & guarantees
+| Version | Supported |
+| --- | --- |
+| Latest `0.x` minor | Yes |
+| Older minor lines and unreleased snapshots | No |
 
-- **No `unsafe`.** `unsafe_code = "forbid"` is enforced workspace-wide via
-  `[workspace.lints]`, so the guarantee is compiler-checked, not convention.
-- **Terminal-safe rendering.** All attacker-controlled strings (diff bodies,
-  file paths, symbol names) are passed through `core::display_safe`, which
-  escapes terminal control sequences (ANSI/CSI/OSC, CR, BEL, DEL, C1) to a
-  visible `\xHH` form before they reach a terminal. Machine output
-  (`--json`/`--jsonl`) routes through one canonical `core::json_escape`, which —
-  beyond the RFC 8259 control set — also escapes `DEL` and the C1 block
-  (`0x7f..=0x9f`, including the 8-bit CSI/OSC introducers) to `\u00xx`, so JSON
-  printed to a terminal is safe too. Every JSON sink shares this one escaper (no
-  per-module forks).
-- **Trojan Source defence (CVE-2021-42574).** `display_safe` also neutralises
-  bidirectional and invisible Unicode (RLO/LRO/PDF/isolates `U+202A–U+202E` /
-  `U+2066–U+2069`, directional marks, zero-width characters, BOM) to a visible
-  `\u{XXXX}` — so attacker source cannot *display* differently than it logically
-  reads, a defence directly on-mission for a code-review tool.
-- **Bounded input.** Stdin, source files, and daemon request lines are read
-  under hard byte caps. Patch parsing also has a one-million-line structural
-  cap to bound the expansion of tiny input lines into larger model objects.
-- **Daemon least-privilege.** The optional UDS daemon creates an owner-private
-  (`0700`) runtime directory and a `0600` socket. Directory ownership is checked
-  against the effective user; symlinks and inode swaps are rejected. There is
-  **no world-writable `/tmp` fallback**. Request and response lines have absolute
-  deadlines and size caps, worker concurrency is capped at eight, retained
-  session payloads are capped at 128 MiB, and request-dispatch panics are
-  contained. Socket cleanup only removes the inode created by the server.
-- **Fail-closed trust.** Agent annotations are untrusted until *grounded*
-  (evidence-backed); annotation `source` is never inferred from an
-  attacker-controlled label.
-- **Local-only learning.** The L9 learning store accepts only redacted hex file
-  identifiers and bounded metadata tokens, under owner-private (`0700`/`0600`)
-  ownership and permissions. Directory/file symlinks and inode swaps are
-  rejected; file, line, and record counts are capped. The stable FNV identifier
-  is pseudonymous, not cryptographically one-way, so confidentiality comes from
-  the local access controls. Learning data is never uploaded.
+Use a tagged release for production automation. Reports against `main` are
+welcome, but `main` can contain unreleased behavior.
 
-## Supply chain
+## Scope and trust boundaries
 
-- `cargo deny` (bans, licenses, sources, advisories) and a strict `cargo audit`
-  gate run in CI **and** as a hard prerequisite of the irreversible crates.io
-  publish. There are no advisory waivers: warnings are denied.
-- The `tree-sitter` crates (which run a C build script) are pinned to exact
-  versions; install with `cargo install --locked`.
-- All GitHub Actions are pinned to commit SHAs (tag-hijack defence), and the
-  release workflow emits SLSA build-provenance attestations for the binary, its
-  checksum, and the SPDX SBOM (`sbom.spdx.json`, generated and CI-gated).
-  Releases run only from tags whose name exactly matches the workspace version;
-  checkout credentials are not persisted. Dependencies and actions are tracked
-  by Dependabot.
-- A `cargo-fuzz` harness (`fuzz/`) covers the patch parser, review JSON, daemon
-  protocol, and agent annotations; CI gates that it compiles.
+The security scope includes first-party Rust crates, the optional Unix-domain
+socket daemon, local learning receipts, command-line and terminal output,
+repository automation, and artifacts published by this repository.
+
+The following data is always treated as attacker-controlled:
+
+- unified diffs, file names, paths, hunk headers, and line bodies;
+- source bytes passed to syntax or semantic analysis;
+- JSON/JSONL and JSON-RPC requests, identifiers, and parameters;
+- agent annotations, labels, evidence, and claimed provenance;
+- learning metadata supplied at the receipt boundary.
+
+The operating-system kernel, effective user identity, process environment,
+installed trust roots, and GitHub release infrastructure are trusted. The local
+OS account is the daemon's isolation boundary: another process running as the
+same effective user is not considered isolated from the daemon or its learning
+store.
+
+The daemon is local IPC, not a multi-tenant network service. It must not be
+exposed through TCP forwarding, a shared container mount, or a socket directory
+writable by another account. Windows named-pipe support and TCP listeners are
+not implemented security boundaries.
+
+## Enforced controls
+
+### First-party memory safety
+
+`unsafe_code = "forbid"` is compiler-enforced for every first-party workspace
+crate and the separate fuzz package. This does not assert that the complete
+third-party dependency graph contains no `unsafe`; native and low-level
+dependencies are controlled through pinning, review, audit, and minimal feature
+selection.
+
+### Untrusted input and output
+
+- Stdin, source files, daemon lines, responses, learning records, and patch
+  structure are bounded before unbounded allocation or retention.
+- Patch parsing rejects more than one million physical lines, preventing tiny
+  lines from amplifying into an unbounded object graph.
+- Human-facing terminal output passes through `core::display_safe`, which
+  exposes ANSI/CSI/OSC controls, C0/C1 controls, carriage returns, DEL, bidi
+  overrides/isolates, directional marks, zero-width characters, and BOM rather
+  than executing or visually reordering them.
+- Raw JSON/JSONL terminal output uses the canonical `core::json_escape` path,
+  including DEL and C1 escaping. A downstream program that decodes those JSON
+  strings must apply its own terminal-safe rendering before displaying them.
+- Annotation provenance is fail-closed: a claimed `source` is not trusted until
+  evidence grounds it.
+
+### Local daemon
+
+- The daemon is Unix-only and listens on a filesystem Unix-domain socket.
+- Its managed runtime directory is owned by the effective user with mode
+  `0700`; its socket is mode `0600`. There is no `/tmp` fallback when
+  `$XDG_RUNTIME_DIR` is unavailable.
+- Explicit socket paths require an owner-private parent. Symlinks, wrong-owner
+  directories, permissive directories, inode swaps, and non-socket occupants
+  fail closed. Shutdown removes only the socket inode created by that server.
+- JSON-RPC envelopes are shape-checked, including protocol version, method,
+  identifier, and parameter types.
+- Requests and responses are capped at 80 MiB and use 30-second absolute read
+  and write deadlines. Slow byte-drip traffic cannot renew the deadline.
+- Concurrent workers are capped at eight. Sessions are LRU-bounded to 64 and
+  their aggregate retained nested payload is capped at 128 MiB.
+- A dispatch panic is contained to its request worker rather than unwinding the
+  listener.
+
+### Local learning store
+
+- Store directories and files must be owned by the effective user and remain
+  owner-private (`0700` directories and `0600` files).
+- Directory/file symlinks and inode replacement are rejected. New receipt files
+  use exclusive creation.
+- The store is capped at 64 MiB, individual JSONL records at 1 MiB, and retained
+  records at 100,000.
+- File identifiers must be redacted lowercase hexadecimal values; language and
+  parser-version fields accept bounded token characters rather than paths.
+- The stable FNV identifier is pseudonymous and dictionary-guessable, not a
+  confidentiality primitive. Confidentiality comes from local access controls.
+  Learning data is not uploaded by the project.
+
+### Supply chain and releases
+
+- Root and fuzz lockfiles are checked by strict `cargo audit --deny warnings`
+  and `cargo deny` advisory, ban, license, and source policies. There are no
+  advisory waivers.
+- Tree-sitter crates, which execute native build scripts, are pinned exactly.
+  The TUI disables unused default features.
+- GitHub Actions are pinned to full commit SHAs, use least-privilege job
+  permissions, do not persist checkout credentials, and have bounded run times.
+- Releases run only for `v*` tags whose value exactly matches the workspace
+  version. Audit and policy gates run again before publishing.
+- Release archives, checksums, and the generated SPDX SBOM receive GitHub build
+  provenance attestations. Dependabot monitors both Cargo graphs and Actions.
+- crates.io publication currently uses a repository secret. Moving to crates.io
+  trusted publishing remains an account-level hardening step outside this
+  repository.
+
+## Secure operation
+
+1. Run the latest supported release as an unprivileged, dedicated OS account
+   when processing mutually untrusted users' content.
+2. Keep `$XDG_RUNTIME_DIR` owned by that account and inaccessible to group and
+   others. For `--socket PATH`, pre-create an owner-private parent directory.
+3. Serialize daemon starts; do not run multiple instances at the same socket
+   path because an existing same-user socket is not probed for liveness.
+4. Do not publish, proxy, or bind-mount the daemon socket into a less-trusted
+   environment.
+5. Treat exported JSON and annotations as untrusted when another tool renders
+   them. Never interpolate paths or labels into a shell command.
+6. Protect learning-store backups and logs with the same access policy as the
+   source repositories they describe.
+7. Install from a tagged release or use `cargo install --locked`; retain the
+   lockfile in reproducible deployments.
+
+For a downloaded release, check its SHA-256 sidecar and verify its GitHub
+attestation against `Louranicas/deep-diff-forge`. A checksum obtained from the
+same untrusted location as an artifact detects corruption but is not, alone, an
+independent authenticity proof.
+
+## Reproducing the security gates
+
+The authoritative gate is [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+The principal local checks are:
+
+```bash
+cargo fmt --all --check
+cargo check --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings -W clippy::pedantic
+cargo test --workspace --locked
+cargo check --locked --manifest-path fuzz/Cargo.toml --bins
+cargo deny check
+cargo deny --manifest-path fuzz/Cargo.toml --locked check
+cargo audit --deny warnings
+cargo audit --deny warnings --file fuzz/Cargo.lock
+DDF_SOAK_SECONDS=10 python3 scripts/security/daemon_soak.py
+python3 scripts/security/privacy_probe.py
+```
+
+CI verifies the committed SBOM against a fresh dependency-graph regeneration.
+The release workflow repeats the supply-chain gate, regenerates the release
+SBOM, and attests it before irreversible publication.
+
+## Residual risks and non-goals
+
+- Resource caps limit individual operations and retained state; they are not a
+  CPU or process sandbox. A permitted local client can temporarily occupy all
+  eight daemon workers, and hostile syntax input still consumes bounded compute.
+- Owner-only permissions do not protect against another compromised process
+  running as the same OS user, including one that replaces an existing socket
+  path; nor do they protect against a compromised kernel or administrator.
+- Tree-sitter parsers and transitive dependencies can contain native or `unsafe`
+  implementation code even though first-party crates forbid it.
+- Pseudonymous file identifiers can be guessed from a small candidate set.
+- The project does not claim isolation suitable for hosting unrelated tenants,
+  cryptographic secrecy for review content, or safe display by downstream tools
+  that bypass its rendering APIs.
 
 ## Hardening provenance
 
-The current posture follows four reviews, each with verification outside the build
-loop and every confirmed finding remediated with a fail-before/pass-after test:
+The current posture follows these review cycles:
 
-- **S1008412** — an 8-dimension STRIDE audit with independent verification
-  produced a CVSS-scored register (17 confirmed; **no Critical/High**), all
-  remediated; a final review fleet added Trojan-Source/bidi defence.
-- **S1008443** — a bias-controlled re-review hardened patch-truth (mandatory
-  hunk-header closer), the daemon (fail-closed `bind_explicit`, bounded LRU
-  sessions), and the CI/release supply chain.
-- **S1008452** — a 7-facet posture review (88/100) closed its one High by
-  unifying the `--json`/`--jsonl` escapers with `core::json_escape` (C1/DEL
-  coverage). No Critical/High remained after that review.
-- **SOL-1 (2026-09-04)** — removed two stale advisory waivers, bounded daemon
-  concurrency and aggregate memory, added absolute I/O deadlines and inode-safe
-  local storage, enforced receipt privacy at the write boundary, and closed a
-  non-tag release-publication path. Full tests, strict Clippy/docs, fuzz-target
-  compilation, RustSec/cargo-deny, privacy probe, and hostile daemon soak pass.
+- **S1008412** — eight-dimension STRIDE audit and Trojan-Source/bidi defence.
+- **S1008443** — patch-truth, daemon fail-closed behavior, bounded sessions, and
+  CI/release supply-chain review.
+- **S1008452** — unified JSON/JSONL escaping and C1/DEL coverage.
+- **SOL-1 (2026-09-04)** — removed advisory waivers; bounded daemon concurrency,
+  deadlines, and aggregate memory; added inode-safe local storage and receipt
+  privacy; and closed non-tag release publication. Full tests, strict lint/docs,
+  fuzz compilation, RustSec/cargo-deny, privacy probing, and hostile daemon soak
+  passed at completion.
