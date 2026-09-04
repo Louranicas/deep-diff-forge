@@ -4,6 +4,23 @@ All notable changes to Deep-Diff-Forge are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Security
+
+- Hardened the Unix daemon against symlink/inode-swap attacks, slowloris and
+  stalled-reader clients, unbounded worker creation, oversized responses, and
+  multi-session memory exhaustion. JSON-RPC fields are now shape-validated.
+- Added a structural patch line budget and strict size/line/count, ownership,
+  permission, and pseudonymous-identifier validation to the learning store.
+- Upgraded Ratatui/Crossterm so the dependency graph uses patched `lru` 0.18.4
+  and removed all RustSec advisory waivers.
+- Restricted release publication to version-matching tags, stopped persisting
+  checkout credentials, pinned the audit tool, and made the publish version
+  derive from the workspace manifest. The separate fuzz dependency graph now
+  passes the same advisory, license, source, and wildcard-dependency policy;
+  CI/release concurrency and dependency-update cooldowns are explicit.
+
 ## [0.2.0] - 2026-06-23
 
 The **L9 (Learning)** layer plus the first crates.io-publishable cut, a

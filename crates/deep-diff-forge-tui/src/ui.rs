@@ -297,8 +297,9 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
 /// error rather than panicking.
 #[must_use]
 pub fn render_to_lines(app: &ReviewApp, width: u16, height: u16) -> Vec<String> {
-    let Ok(mut terminal) = Terminal::new(TestBackend::new(width, height)) else {
-        return Vec::new();
+    let mut terminal = match Terminal::new(TestBackend::new(width, height)) {
+        Ok(terminal) => terminal,
+        Err(infallible) => match infallible {},
     };
     if terminal.draw(|frame| render(frame, app)).is_err() {
         return Vec::new();

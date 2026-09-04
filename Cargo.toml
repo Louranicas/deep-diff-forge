@@ -22,7 +22,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Louranicas/deep-diff-forge"
 homepage = "https://github.com/Louranicas/deep-diff-forge"
-rust-version = "1.85"
+rust-version = "1.88"
 keywords = ["diff", "code-review", "patch", "git", "tui"]
 categories = ["development-tools", "command-line-utilities"]
 

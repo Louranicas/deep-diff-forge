@@ -145,7 +145,8 @@ impl ReviewOutcome {
 /// token, a `parser_version`, and counts/timings — never a path or source text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StrategyReceipt {
-    /// Non-reversible file identity ([`crate::util::redacted_id`]).
+    /// Pseudonymous file identity ([`crate::util::redacted_id`]); store access
+    /// controls, not this unkeyed hash, provide confidentiality.
     pub file_hash: String,
     /// Language token, e.g. `"rust"`.
     pub language: String,

@@ -174,10 +174,10 @@ fn symbol_name(node: Node, source: &str) -> Option<String> {
     if let Some(name) = node.child_by_field_name("name") {
         return node_text(name, source);
     }
-    if node.kind() == "impl_item" {
-        if let Some(ty) = node.child_by_field_name("type") {
-            return node_text(ty, source);
-        }
+    if node.kind() == "impl_item"
+        && let Some(ty) = node.child_by_field_name("type")
+    {
+        return node_text(ty, source);
     }
     None
 }

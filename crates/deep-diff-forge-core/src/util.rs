@@ -158,7 +158,7 @@ mod tests {
         // Tabs are kept (benign + ubiquitous in code); UTF-8 passes through.
         let out = display_safe("fn café() {\n");
         // newline IS escaped, tab/unicode preserved
-        assert!(display_safe("a\tb") == "a\tb");
+        assert_eq!(display_safe("a\tb"), "a\tb");
         assert!(matches!(display_safe("a\tb"), Cow::Borrowed(_)));
         assert!(out.contains("café"));
     }
@@ -227,15 +227,15 @@ mod tests {
     fn display_safe_no_control_char_ever_survives() {
         // Exhaustive: every control codepoint except tab is escaped.
         for cp in (0x00u32..=0x9f).filter(|c| *c != 0x09) {
-            if let Some(c) = char::from_u32(cp) {
-                if c.is_control() {
-                    let s = c.to_string();
-                    let out = display_safe(&s);
-                    assert!(
-                        !out.chars().any(char::is_control),
-                        "control U+{cp:04x} survived display_safe"
-                    );
-                }
+            if let Some(c) = char::from_u32(cp)
+                && c.is_control()
+            {
+                let s = c.to_string();
+                let out = display_safe(&s);
+                assert!(
+                    !out.chars().any(char::is_control),
+                    "control U+{cp:04x} survived display_safe"
+                );
             }
         }
     }

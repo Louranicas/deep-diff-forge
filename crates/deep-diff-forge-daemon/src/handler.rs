@@ -1,5 +1,7 @@
-use crate::protocol::{PATCH_PARSE_FAILED, PROTOCOL_VERSION, Request, RpcError, SESSION_NOT_FOUND};
-use deep_diff_forge_core::ReviewFile;
+use crate::protocol::{
+    PATCH_PARSE_FAILED, PROTOCOL_VERSION, RESOURCE_EXHAUSTED, Request, RpcError, SESSION_NOT_FOUND,
+};
+use deep_diff_forge_core::{PatchHunk, PatchLine, ReviewFile, SemanticSpan};
 use deep_diff_forge_graph::{RankedFile, rank};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -17,9 +19,18 @@ use std::time::Instant;
 /// bounded to `O(MAX_SESSIONS × patch_size)`.
 const MAX_SESSIONS: usize = 64;
 
+/// Maximum tracked heap payload retained across all sessions.
+///
+/// A session-count limit alone permits `MAX_SESSIONS` near-64 MiB patches to
+/// retain several GiB. The byte budget makes retention independent of request
+/// count; LRU sessions are evicted until both limits are satisfied.
+const MAX_RETAINED_SESSION_BYTES: usize = 128 * 1024 * 1024;
+
 /// Per-session state stored inside the engine.
 struct SessionEntry {
     files: Vec<ReviewFile>,
+    /// Estimated heap allocation held by `files` and its nested collections.
+    retained_bytes: usize,
     /// Monotonically increasing access tick; updated on open and on snapshot.
     /// The session with the smallest tick is the least-recently-used candidate
     /// for eviction when the cap is reached.
@@ -40,6 +51,8 @@ pub struct Engine {
     /// Monotonically increasing counter incremented on every session open or
     /// snapshot access; used for LRU ordering.
     tick: u64,
+    retained_bytes: usize,
+    max_retained_bytes: usize,
     running: bool,
     pid: u32,
     started: Instant,
@@ -59,6 +72,8 @@ impl Engine {
             sessions: HashMap::new(),
             next_session: 1,
             tick: 0,
+            retained_bytes: 0,
+            max_retained_bytes: MAX_RETAINED_SESSION_BYTES,
             running: true,
             pid: std::process::id(),
             started: Instant::now(),
@@ -79,60 +94,156 @@ impl Engine {
 
     /// Advance the global tick and return the new value.
     fn next_tick(&mut self) -> u64 {
+        if self.tick == u64::MAX {
+            // Rebase the at-most-64 entries while preserving their order, so a
+            // multi-decade daemon cannot panic or invert LRU ordering.
+            let mut ordered: Vec<(String, u64)> = self
+                .sessions
+                .iter()
+                .map(|(id, entry)| (id.clone(), entry.last_tick))
+                .collect();
+            ordered.sort_by_key(|(_, tick)| *tick);
+            for (index, (id, _)) in ordered.into_iter().enumerate() {
+                if let Some(entry) = self.sessions.get_mut(&id) {
+                    entry.last_tick = index as u64 + 1;
+                }
+            }
+            self.tick = self.sessions.len() as u64;
+        }
         self.tick += 1;
         self.tick
     }
 
-    /// Evict the least-recently-used session when the cap is reached.
-    fn evict_lru_if_needed(&mut self) {
-        if self.sessions.len() < MAX_SESSIONS {
-            return;
-        }
+    /// Evict the least-recently-used session, returning whether one existed.
+    fn evict_lru(&mut self) -> bool {
         // Find the key with the smallest last_tick (LRU).
         let lru_key = self
             .sessions
             .iter()
             .min_by_key(|(_, entry)| entry.last_tick)
             .map(|(key, _)| key.clone());
-        if let Some(key) = lru_key {
-            self.sessions.remove(&key);
+        if let Some(key) = lru_key
+            && let Some(removed) = self.sessions.remove(&key)
+        {
+            self.retained_bytes = self.retained_bytes.saturating_sub(removed.retained_bytes);
+            return true;
         }
+        false
     }
 
-    fn open_session(&mut self, files: Vec<ReviewFile>) -> String {
-        // Evict LRU before inserting so the map never exceeds MAX_SESSIONS.
-        self.evict_lru_if_needed();
-        let id = format!("s{}", self.next_session);
-        self.next_session += 1;
+    fn open_session(&mut self, files: Vec<ReviewFile>) -> Result<String, RpcError> {
+        let retained_bytes = estimated_session_bytes(&files);
+        if retained_bytes > self.max_retained_bytes {
+            return Err(RpcError::new(
+                RESOURCE_EXHAUSTED,
+                "session exceeds the retained-memory budget",
+            ));
+        }
+        while self.sessions.len() >= MAX_SESSIONS
+            || self.retained_bytes.saturating_add(retained_bytes) > self.max_retained_bytes
+        {
+            if !self.evict_lru() {
+                break;
+            }
+        }
+
+        // Wrap safely and skip any still-live id after the theoretical wrap.
+        let id = loop {
+            let candidate = format!("s{}", self.next_session);
+            self.next_session = self.next_session.checked_add(1).unwrap_or(1);
+            if !self.sessions.contains_key(&candidate) {
+                break candidate;
+            }
+        };
         let tick = self.next_tick();
+        self.retained_bytes = self.retained_bytes.saturating_add(retained_bytes);
         self.sessions.insert(
             id.clone(),
             SessionEntry {
                 files,
+                retained_bytes,
                 last_tick: tick,
             },
         );
-        id
+        Ok(id)
     }
 
-    /// Returns a clone of the session's files, refreshing the LRU tick.
-    ///
-    /// A read counts as an access so recently-queried sessions are not
-    /// unfairly evicted before idle ones.  We return an owned `Vec` to avoid
-    /// holding a borrow across the tick mutation.
-    fn snapshot(&mut self, id: &str) -> Option<Vec<ReviewFile>> {
+    /// Rank a session in place, refreshing the LRU tick without cloning its
+    /// potentially large parsed patch model.
+    fn snapshot_ranked(&mut self, id: &str) -> Option<Vec<RankedFile>> {
         let tick = self.next_tick();
         if let Some(entry) = self.sessions.get_mut(id) {
             entry.last_tick = tick;
-            Some(entry.files.clone())
+            Some(rank(&entry.files))
         } else {
             None
         }
     }
 
     fn close_session(&mut self, id: &str) -> bool {
-        self.sessions.remove(id).is_some()
+        if let Some(removed) = self.sessions.remove(id) {
+            self.retained_bytes = self.retained_bytes.saturating_sub(removed.retained_bytes);
+            true
+        } else {
+            false
+        }
     }
+}
+
+/// Estimate nested heap allocations retained by a parsed review model. Vector
+/// element storage is counted by capacity; owned string buffers are added
+/// separately. Saturating arithmetic fails closed at the retention gate.
+fn estimated_session_bytes(files: &Vec<ReviewFile>) -> usize {
+    let mut total = files
+        .capacity()
+        .saturating_mul(std::mem::size_of::<ReviewFile>());
+    for file in files {
+        total = total.saturating_add(file.path.capacity());
+        total = total.saturating_add(
+            file.patch_twin
+                .hunks
+                .capacity()
+                .saturating_mul(std::mem::size_of::<PatchHunk>()),
+        );
+        for hunk in &file.patch_twin.hunks {
+            total = total.saturating_add(
+                hunk.lines
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<PatchLine>()),
+            );
+            for line in &hunk.lines {
+                total = total.saturating_add(line.text.capacity());
+            }
+        }
+        total = total.saturating_add(
+            file.patch_twin
+                .metadata
+                .capacity()
+                .saturating_mul(std::mem::size_of::<String>()),
+        );
+        for metadata in &file.patch_twin.metadata {
+            total = total.saturating_add(metadata.capacity());
+        }
+        if let Some(semantic) = &file.semantic_twin {
+            total = total.saturating_add(semantic.language.capacity());
+            total = total.saturating_add(
+                semantic
+                    .spans
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<SemanticSpan>()),
+            );
+        }
+        total = total.saturating_add(
+            file.planner
+                .notes
+                .capacity()
+                .saturating_mul(std::mem::size_of::<String>()),
+        );
+        for note in &file.planner.notes {
+            total = total.saturating_add(note.capacity());
+        }
+    }
+    total
 }
 
 /// Dispatch a parsed request against the engine, returning the result value or
@@ -155,6 +266,7 @@ pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcErro
             "version": version,
             "pid": engine.pid,
             "sessions": engine.session_count(),
+            "retained_bytes": engine.retained_bytes,
             "cache_entries": 0,
             "protocol": PROTOCOL_VERSION,
         })),
@@ -176,13 +288,13 @@ pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcErro
         "session.open" => {
             let files = parse_patch_param(request)?;
             let count = files.len();
-            let id = engine.open_session(files);
+            let id = engine.open_session(files)?;
             Ok(json!({"session": id, "files": count}))
         }
         "session.snapshot" => {
             let id = str_param(&request.params, "session")?;
-            match engine.snapshot(&id) {
-                Some(files) => Ok(ranked_json(&rank(&files))),
+            match engine.snapshot_ranked(&id) {
+                Some(ranked) => Ok(ranked_json(&ranked)),
                 None => Err(RpcError::new(
                     SESSION_NOT_FOUND,
                     format!("no such session: {id}"),
@@ -400,6 +512,35 @@ mod tests {
     fn default_engine_matches_new() {
         let e = Engine::default();
         assert!(e.is_running());
+        assert_eq!(e.session_count(), 0);
+    }
+
+    #[test]
+    fn retained_byte_budget_evicts_lru_sessions() {
+        let mut e = Engine::new();
+        let files =
+            deep_diff_forge_patch::parse("--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n")
+                .unwrap();
+        let one_session = estimated_session_bytes(&files);
+        e.max_retained_bytes = one_session;
+
+        let first = e.open_session(files.clone()).unwrap();
+        let second = e.open_session(files).unwrap();
+        assert_eq!(e.session_count(), 1);
+        assert!(e.snapshot_ranked(&first).is_none());
+        assert!(e.snapshot_ranked(&second).is_some());
+        assert!(e.retained_bytes <= e.max_retained_bytes);
+    }
+
+    #[test]
+    fn oversized_session_is_rejected_without_eviction() {
+        let mut e = Engine::new();
+        let files =
+            deep_diff_forge_patch::parse("--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n")
+                .unwrap();
+        e.max_retained_bytes = estimated_session_bytes(&files).saturating_sub(1);
+        let err = e.open_session(files).unwrap_err();
+        assert_eq!(err.code, RESOURCE_EXHAUSTED);
         assert_eq!(e.session_count(), 0);
     }
 

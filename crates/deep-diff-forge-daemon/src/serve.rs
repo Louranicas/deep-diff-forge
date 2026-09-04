@@ -8,12 +8,13 @@ use crate::security::{
     validate_private_dir,
 };
 use serde_json::Value;
-use std::io::{BufRead, BufReader, Read as _, Write as _};
-use std::os::unix::fs::{FileTypeExt as _, PermissionsExt as _};
+use std::io::{BufRead, BufReader, Write as _};
+use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Tracks whether a `SocketLocation` was produced from the engine-managed
 /// default path (the `$XDG_RUNTIME_DIR`-derived location the daemon owns) or
@@ -127,9 +128,19 @@ impl SocketLocation {
 /// service).
 const MAX_REQUEST_BYTES: usize = 80 * 1024 * 1024;
 
-/// Per-connection read timeout. A client that connects and then stalls mid-request
-/// is dropped rather than holding the single-threaded server forever (slowloris).
+/// Maximum bytes accepted from a daemon response by the client helper.
+const MAX_RESPONSE_BYTES: usize = MAX_REQUEST_BYTES;
+
+/// Maximum number of connection worker threads alive at once.
+const MAX_CONNECTIONS: usize = 8;
+
+/// Absolute deadline for each request or response line. The remaining duration
+/// is applied before each read, so sending one byte just before a socket timeout
+/// cannot keep a worker alive forever.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Bound blocked writes to clients that stop reading responses.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Process one request line against the shared engine, returning the response
 /// line. This is the socket-free core of connection handling.
@@ -163,12 +174,61 @@ pub fn process_line(line: &str, engine: &Mutex<Engine>) -> String {
 /// Returns the number of bytes read (`0` = EOF). The `cap + 1` ceiling means a
 /// newline-less or oversized line is bounded — the caller treats
 /// `buf.len() > cap` as "request too large" rather than buffering unboundedly.
+#[cfg(test)]
 fn read_capped_line<R: BufRead>(
     reader: &mut R,
     buf: &mut Vec<u8>,
     cap: usize,
 ) -> std::io::Result<usize> {
+    use std::io::Read as _;
     reader.take(cap as u64 + 1).read_until(b'\n', buf)
+}
+
+/// Read one bounded line from a socket under an absolute deadline.
+fn read_capped_line_deadline(
+    reader: &mut BufReader<UnixStream>,
+    buf: &mut Vec<u8>,
+    cap: usize,
+    timeout: Duration,
+) -> std::io::Result<usize> {
+    let deadline = Instant::now() + timeout;
+    let maximum = cap.saturating_add(1);
+    loop {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "line read deadline exceeded")
+            })?;
+        reader.get_ref().set_read_timeout(Some(remaining))?;
+
+        let available = match reader.fill_buf() {
+            Ok(available) => available,
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) =>
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "line read deadline exceeded",
+                ));
+            }
+            Err(err) => return Err(err),
+        };
+        if available.is_empty() {
+            return Ok(buf.len());
+        }
+        let allowed = available.len().min(maximum.saturating_sub(buf.len()));
+        let newline = available[..allowed].iter().position(|byte| *byte == b'\n');
+        let consumed = newline.map_or(allowed, |position| position + 1);
+        buf.extend_from_slice(&available[..consumed]);
+        reader.consume(consumed);
+
+        if newline.is_some() || buf.len() >= maximum {
+            return Ok(buf.len());
+        }
+    }
 }
 
 /// Serve one connection: newline-delimited JSON-RPC, one response per request,
@@ -178,13 +238,14 @@ fn read_capped_line<R: BufRead>(
 ///
 /// Returns any underlying stream I/O error.
 pub fn handle_connection(stream: UnixStream, engine: &Mutex<Engine>) -> std::io::Result<()> {
-    stream.set_read_timeout(Some(READ_TIMEOUT))?;
+    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
     let mut buf = Vec::new();
     loop {
         buf.clear();
-        let read = read_capped_line(&mut reader, &mut buf, MAX_REQUEST_BYTES)?;
+        let read =
+            read_capped_line_deadline(&mut reader, &mut buf, MAX_REQUEST_BYTES, READ_TIMEOUT)?;
         if read == 0 {
             break; // clean EOF
         }
@@ -231,9 +292,7 @@ pub fn bind_secure(socket_path: &Path) -> std::io::Result<UnixListener> {
     if let Some(parent) = socket_path.parent() {
         ensure_runtime_dir(parent)?;
     }
-    if socket_path.exists() {
-        std::fs::remove_file(socket_path)?;
-    }
+    remove_stale_socket(socket_path)?;
     let listener = UnixListener::bind(socket_path)?;
     std::fs::set_permissions(
         socket_path,
@@ -277,10 +336,14 @@ pub fn bind_explicit(socket_path: &Path) -> std::io::Result<UnixListener> {
             "socket path has no parent directory",
         )
     })?;
-    if std::fs::symlink_metadata(parent).is_err() {
-        // Parent is absent — create it and set owner-only mode on the new directory.
-        std::fs::create_dir_all(parent)?;
-        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(SECURE_DIR_MODE))?;
+    match std::fs::symlink_metadata(parent) {
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            // Parent is absent — create it and set owner-only mode on the new directory.
+            std::fs::create_dir_all(parent)?;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(SECURE_DIR_MODE))?;
+        }
+        Err(err) => return Err(err),
     }
     // Validate in all cases (created or pre-existing); never chmod a dir we did
     // not just create.
@@ -289,16 +352,7 @@ pub fn bind_explicit(socket_path: &Path) -> std::io::Result<UnixListener> {
 
     // 2. If the path exists, remove it only when it is verifiably a socket.
     //    Use symlink_metadata (lstat) to avoid following a symlink at the path.
-    if let Ok(meta) = std::fs::symlink_metadata(socket_path) {
-        if meta.file_type().is_socket() {
-            std::fs::remove_file(socket_path)?;
-        } else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                "socket path is occupied by a non-socket file; refusing to delete it",
-            ));
-        }
-    }
+    remove_stale_socket(socket_path)?;
 
     // 3. Bind and set owner-only permissions on the socket.
     let listener = UnixListener::bind(socket_path)?;
@@ -307,6 +361,47 @@ pub fn bind_explicit(socket_path: &Path) -> std::io::Result<UnixListener> {
         std::fs::Permissions::from_mode(SECURE_SOCKET_MODE),
     )?;
     Ok(listener)
+}
+
+/// Remove a stale socket without ever following or deleting another file type.
+fn remove_stale_socket(socket_path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(socket_path) {
+        Ok(metadata) if metadata.file_type().is_socket() => std::fs::remove_file(socket_path),
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "socket path is occupied by a non-socket file; refusing to delete it",
+        )),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+/// Remove the socket on shutdown only if it is still the exact filesystem
+/// object created by this server. This prevents cleanup from deleting a path
+/// swapped in after bind.
+fn cleanup_owned_socket(socket_path: &Path, identity: (u64, u64)) {
+    if let Ok(metadata) = std::fs::symlink_metadata(socket_path)
+        && metadata.file_type().is_socket()
+        && (metadata.dev(), metadata.ino()) == identity
+    {
+        let _ = std::fs::remove_file(socket_path);
+    }
+}
+
+struct ActiveConnection(Arc<AtomicUsize>);
+
+impl Drop for ActiveConnection {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn try_acquire_connection(active: &Arc<AtomicUsize>) -> bool {
+    active
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            (count < MAX_CONNECTIONS).then_some(count + 1)
+        })
+        .is_ok()
 }
 
 /// Run the daemon server loop until shutdown.
@@ -321,9 +416,12 @@ pub fn bind_explicit(socket_path: &Path) -> std::io::Result<UnixListener> {
 pub fn run_server(location: &SocketLocation) -> std::io::Result<()> {
     let listener = location.bind()?;
     let socket_path = location.path().to_path_buf();
+    let socket_metadata = std::fs::symlink_metadata(&socket_path)?;
+    let socket_identity = (socket_metadata.dev(), socket_metadata.ino());
     // Wrap the engine in Arc so each spawned connection thread can hold a
     // reference without lifetime constraints on the accept loop.
     let engine: Arc<Mutex<Engine>> = Arc::new(Mutex::new(Engine::new()));
+    let active_connections = Arc::new(AtomicUsize::new(0));
     loop {
         // Break immediately if a previous connection already triggered shutdown.
         if engine.lock().is_ok_and(|g| !g.is_running()) {
@@ -331,28 +429,42 @@ pub fn run_server(location: &SocketLocation) -> std::io::Result<()> {
         }
         match listener.accept() {
             Ok((stream, _)) => {
+                if !try_acquire_connection(&active_connections) {
+                    // Dropping the accepted stream applies backpressure without
+                    // allocating another stack or worker thread.
+                    drop(stream);
+                    continue;
+                }
                 let arc = Arc::clone(&engine);
                 let wakeup = socket_path.clone();
+                let active = Arc::clone(&active_connections);
                 // A per-connection error must NOT tear down the daemon — the
                 // spawned thread logs it and the accept loop continues.
-                std::thread::spawn(move || {
-                    if let Err(err) = handle_connection(stream, &arc) {
-                        eprintln!("deep-diff-forge daemon: connection error: {err}");
-                    }
-                    // If the connection just triggered a shutdown, unblock the
-                    // accept loop (which is blocking on listener.accept()) by
-                    // opening a short-lived wakeup connection to ourselves.
-                    if arc.lock().is_ok_and(|g| !g.is_running()) {
-                        let _ = UnixStream::connect(wakeup);
-                    }
-                });
+                let spawned = std::thread::Builder::new()
+                    .name("ddf-daemon-connection".to_string())
+                    .spawn(move || {
+                        let _active_guard = ActiveConnection(active);
+                        if let Err(err) = handle_connection(stream, &arc) {
+                            eprintln!("deep-diff-forge daemon: connection error: {err}");
+                        }
+                        // If the connection just triggered a shutdown, unblock the
+                        // accept loop (which is blocking on listener.accept()) by
+                        // opening a short-lived wakeup connection to ourselves.
+                        if arc.lock().is_ok_and(|g| !g.is_running()) {
+                            let _ = UnixStream::connect(wakeup);
+                        }
+                    });
+                if let Err(err) = spawned {
+                    // The closure never ran, so release the slot explicitly.
+                    active_connections.fetch_sub(1, Ordering::AcqRel);
+                    eprintln!("deep-diff-forge daemon: could not spawn connection worker: {err}");
+                }
             }
-            Err(err) => {
-                eprintln!("deep-diff-forge daemon: accept error: {err}");
-            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(err),
         }
     }
-    let _ = std::fs::remove_file(location.path());
+    cleanup_owned_socket(location.path(), socket_identity);
     Ok(())
 }
 
@@ -363,12 +475,44 @@ pub fn run_server(location: &SocketLocation) -> std::io::Result<()> {
 /// Returns an I/O error if the connection or exchange fails (e.g. no daemon
 /// is listening at the location).
 pub fn request(location: &SocketLocation, line: &str) -> std::io::Result<String> {
+    if line.len() > MAX_REQUEST_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "request exceeds maximum size",
+        ));
+    }
+    if line.contains(['\r', '\n']) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "request must be exactly one line",
+        ));
+    }
     let mut stream = location.connect()?;
+    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
     writeln!(stream, "{line}")?;
     stream.flush()?;
     let mut reader = BufReader::new(stream);
-    let mut response = String::new();
-    reader.read_line(&mut response)?;
+    let mut response = Vec::new();
+    let read =
+        read_capped_line_deadline(&mut reader, &mut response, MAX_RESPONSE_BYTES, READ_TIMEOUT)?;
+    if read == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "daemon closed without a response",
+        ));
+    }
+    if response.len() > MAX_RESPONSE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "daemon response exceeds maximum size",
+        ));
+    }
+    let response = std::str::from_utf8(&response).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "daemon response is not valid UTF-8",
+        )
+    })?;
     Ok(response.trim_end().to_string())
 }
 
@@ -408,6 +552,28 @@ mod tests {
         let mut cur = std::io::Cursor::new(Vec::new());
         let mut buf = Vec::new();
         assert_eq!(read_capped_line(&mut cur, &mut buf, 8).expect("read"), 0);
+    }
+
+    #[test]
+    fn socket_line_deadline_is_absolute_across_dripped_bytes() {
+        let (mut client, server) = UnixStream::pair().expect("socketpair");
+        let drip = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            let _ = client.write_all(b"a");
+            thread::sleep(Duration::from_millis(20));
+            let _ = client.write_all(b"b");
+            thread::sleep(Duration::from_millis(20));
+            let _ = client.write_all(b"\n");
+        });
+        let mut reader = BufReader::new(server);
+        let mut line = Vec::new();
+        let started = Instant::now();
+        let err =
+            read_capped_line_deadline(&mut reader, &mut line, 1024, Duration::from_millis(50))
+                .expect_err("drip feed must not extend the absolute deadline");
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_millis(200));
+        drip.join().unwrap();
     }
 
     #[test]
@@ -541,6 +707,44 @@ mod tests {
         drop(second);
     }
 
+    #[test]
+    fn bind_secure_refuses_to_delete_regular_file() {
+        let sock = temp_socket("secure-regular-file");
+        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+        std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+        std::fs::write(&sock, b"important").unwrap();
+        let err = bind_secure(&sock).expect_err("regular file must not be removed");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&sock).unwrap(), b"important");
+    }
+
+    #[test]
+    fn cleanup_never_removes_regular_file() {
+        let sock = temp_socket("cleanup-regular-file");
+        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+        std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+        std::fs::write(&sock, b"important").unwrap();
+        let metadata = std::fs::metadata(&sock).unwrap();
+        cleanup_owned_socket(&sock, (metadata.dev(), metadata.ino()));
+        assert_eq!(std::fs::read(&sock).unwrap(), b"important");
+    }
+
+    #[test]
+    fn connection_slots_are_hard_bounded_and_released() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let mut guards = Vec::new();
+        for _ in 0..MAX_CONNECTIONS {
+            assert!(try_acquire_connection(&active));
+            guards.push(ActiveConnection(Arc::clone(&active)));
+        }
+        assert!(!try_acquire_connection(&active));
+        guards.pop();
+        assert!(try_acquire_connection(&active));
+        // Balance the final successful acquisition; the remaining guards clean
+        // up their own slots on drop.
+        active.fetch_sub(1, Ordering::AcqRel);
+    }
+
     fn wait_for_socket(path: &Path) {
         for _ in 0..50 {
             if path.exists() {
@@ -607,6 +811,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(sock.parent().unwrap());
         let client = SocketLocation::at(sock);
         assert!(request(&client, r#"{"method":"daemon.health"}"#).is_err());
+    }
+
+    #[test]
+    fn request_rejects_multiline_input_before_connecting() {
+        let client = SocketLocation::at(temp_socket("multiline"));
+        let err = request(&client, "{}\n{}").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]

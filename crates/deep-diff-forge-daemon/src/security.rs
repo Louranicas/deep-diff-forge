@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
@@ -16,6 +17,8 @@ pub enum SocketError {
     NotADirectory,
     /// The directory grants access to group or others (mode `& 0o077 != 0`).
     TooPermissive,
+    /// The directory is not owned by the effective user running the daemon.
+    WrongOwner,
     /// The path is a symlink — refused, to defeat symlink-swap attacks on the
     /// socket directory.
     Symlink,
@@ -31,6 +34,7 @@ impl std::fmt::Display for SocketError {
             Self::Missing => "runtime directory is missing",
             Self::NotADirectory => "runtime path is not a directory",
             Self::TooPermissive => "runtime directory is accessible by group or others",
+            Self::WrongOwner => "runtime directory is not owned by the effective user",
             Self::Symlink => "runtime path is a symlink",
             Self::NoRuntimeDir => {
                 "no secure runtime directory ($XDG_RUNTIME_DIR unset; no /tmp fallback)"
@@ -78,10 +82,8 @@ pub fn default_socket_path() -> Option<PathBuf> {
 /// Validate that `dir` is an existing, owner-private, non-symlink directory.
 ///
 /// Symlinks are rejected outright (via `symlink_metadata`) so an attacker cannot
-/// swap the socket directory for a link they control. Note that ownership is
-/// additionally enforced at creation time: [`ensure_runtime_dir`] `chmod`s the
-/// directory, and a non-root process can only `chmod` a directory it owns, so a
-/// directory owned by another user fails closed before this check is reached.
+/// swap the socket directory for a link they control. Ownership is compared
+/// directly with the process's effective user, including when running as root.
 ///
 /// # Errors
 ///
@@ -97,6 +99,9 @@ pub fn validate_private_dir(dir: &Path) -> Result<(), SocketError> {
     if !metadata.is_dir() {
         return Err(SocketError::NotADirectory);
     }
+    if metadata.uid() != rustix::process::geteuid().as_raw() {
+        return Err(SocketError::WrongOwner);
+    }
     if metadata.permissions().mode() & 0o077 != 0 {
         return Err(SocketError::TooPermissive);
     }
@@ -106,9 +111,8 @@ pub fn validate_private_dir(dir: &Path) -> Result<(), SocketError> {
 /// Create (if needed) the daemon runtime directory with owner-private mode and
 /// validate it.
 ///
-/// The `set_permissions` call is also the ownership gate: a non-root process can
-/// only `chmod` a directory it owns, so a pre-existing directory owned by an
-/// attacker makes this fail closed with `PermissionDenied`.
+/// Ownership is validated against the process's effective user after securing
+/// the opened directory handle.
 ///
 /// ## Ancestor security
 ///
@@ -124,8 +128,43 @@ pub fn validate_private_dir(dir: &Path) -> Result<(), SocketError> {
 /// Returns an I/O error if the directory cannot be created or secured, or a
 /// validation failure surfaced as `PermissionDenied`.
 pub fn ensure_runtime_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(SECURE_DIR_MODE))?;
+    // Never chmod through a pre-existing symlink. Apart from changing an
+    // attacker-chosen target, doing the lstat after chmod would make the
+    // validation far too late to be useful.
+    match std::fs::symlink_metadata(dir) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    SocketError::Symlink,
+                ));
+            }
+            if !metadata.is_dir() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotADirectory,
+                    SocketError::NotADirectory,
+                ));
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(dir)?;
+        }
+        Err(err) => return Err(err),
+    }
+    // Chmod the opened directory object, not the path, and verify that the
+    // lstat/open pair identifies the same inode. This closes the symlink-swap
+    // window between validation and permission tightening.
+    let path_metadata = std::fs::symlink_metadata(dir)?;
+    let directory = std::fs::File::open(dir)?;
+    let opened_metadata = directory.metadata()?;
+    if (path_metadata.dev(), path_metadata.ino()) != (opened_metadata.dev(), opened_metadata.ino())
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "runtime directory changed while it was being secured",
+        ));
+    }
+    directory.set_permissions(std::fs::Permissions::from_mode(SECURE_DIR_MODE))?;
     validate_private_dir(dir)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))
 }
@@ -222,6 +261,21 @@ mod tests {
     }
 
     #[test]
+    fn ensure_runtime_dir_rejects_symlink_without_chmodding_target() {
+        let target = temp_dir("ensure-sym-target", 0o755);
+        let link =
+            std::env::temp_dir().join(format!("ddf-sec-ensure-symlink-{}", std::process::id()));
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+
+        let err = ensure_runtime_dir(&link).expect_err("symlink must be rejected");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755, "target permissions must be untouched");
+        let _ = std::fs::remove_file(&link);
+    }
+
+    #[test]
     fn secure_modes_are_owner_only() {
         assert_eq!(SECURE_DIR_MODE & 0o077, 0);
         assert_eq!(SECURE_SOCKET_MODE & 0o077, 0);
@@ -232,5 +286,6 @@ mod tests {
         assert!(SocketError::TooPermissive.to_string().contains("group"));
         assert!(SocketError::Missing.to_string().contains("missing"));
         assert!(SocketError::Symlink.to_string().contains("symlink"));
+        assert!(SocketError::WrongOwner.to_string().contains("owned"));
     }
 }

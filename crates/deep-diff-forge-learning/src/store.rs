@@ -11,8 +11,8 @@
 //! production location and the `*_default` wrappers use it.
 
 use std::ffi::OsString;
-use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, Read as _, Write};
 use std::path::{Path, PathBuf};
 
 use crate::error::LearningError;
@@ -22,6 +22,12 @@ use crate::receipt::StrategyReceipt;
 const LEARNING_SUBDIR: &str = "deep-diff-forge/learning";
 /// Receipts file name, relative to the learning dir.
 const RECEIPTS_FILE: &str = "receipts/strategy.jsonl";
+/// Maximum on-disk receipt store size accepted or produced by this process.
+const MAX_RECEIPTS_BYTES: u64 = 64 * 1024 * 1024;
+/// Maximum size of one JSONL record, including its newline.
+const MAX_RECEIPT_LINE_BYTES: usize = 1024 * 1024;
+/// Maximum number of records materialized by [`load_receipts`].
+const MAX_RECEIPTS: usize = 100_000;
 
 /// Pure resolver for the learning directory, given the two relevant env values.
 ///
@@ -36,17 +42,17 @@ pub fn resolve_learning_dir(
     xdg_state_home: Option<OsString>,
     home: Option<OsString>,
 ) -> Result<PathBuf, LearningError> {
-    if let Some(base) = xdg_state_home {
-        if !base.is_empty() {
-            return Ok(PathBuf::from(base).join(LEARNING_SUBDIR));
-        }
+    if let Some(base) = xdg_state_home
+        && !base.is_empty()
+    {
+        return Ok(PathBuf::from(base).join(LEARNING_SUBDIR));
     }
-    if let Some(home) = home {
-        if !home.is_empty() {
-            return Ok(PathBuf::from(home)
-                .join(".local/state")
-                .join(LEARNING_SUBDIR));
-        }
+    if let Some(home) = home
+        && !home.is_empty()
+    {
+        return Ok(PathBuf::from(home)
+            .join(".local/state")
+            .join(LEARNING_SUBDIR));
     }
     Err(LearningError::NoStateDir)
 }
@@ -73,47 +79,202 @@ pub fn receipts_path(dir: &Path) -> PathBuf {
 /// Returns an error if the directory cannot be created, the receipt cannot be
 /// serialized, or the write fails.
 pub fn append_receipt(dir: &Path, receipt: &StrategyReceipt) -> Result<(), LearningError> {
+    validate_receipt_for_storage(receipt)?;
     let path = receipts_path(dir);
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
         // The privacy contract ("local-only … prefer hashes, counts, timings")
         // is load-bearing: enforce owner-private (0o700) directories rather than
         // inheriting the process umask. Failing to secure them is an error, not
         // silently accepted — the store must not exist world-readable.
-        secure_dir(dir)?;
-        secure_dir(parent)?;
+        ensure_secure_dir(dir)?;
+        ensure_secure_dir(parent)?;
     }
     let mut line = receipt.to_json()?;
     line.push('\n');
-    let mut opts = fs::OpenOptions::new();
-    opts.create(true).append(true);
-    // Create the JSONL owner-read/write only (0o600). `mode` applies on create;
-    // an existing file keeps the mode set when it was first created.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        opts.mode(0o600);
+    if line.len() > MAX_RECEIPT_LINE_BYTES {
+        return Err(invalid_data(
+            "serialized receipt exceeds the per-record budget",
+        ));
     }
-    let mut file = opts.open(&path)?;
+    let mut file = open_receipts_for_append(&path)?;
+    let current_len = file.metadata()?.len();
+    if current_len.saturating_add(line.len() as u64) > MAX_RECEIPTS_BYTES {
+        return Err(invalid_data(
+            "receipt store exceeds the on-disk size budget",
+        ));
+    }
     file.write_all(line.as_bytes())?;
     Ok(())
 }
 
-/// Tighten `dir` to owner-only (`0o700`) on Unix. No-op on other platforms.
+/// Create `dir` if absent, reject symlinks/non-directories, and tighten the
+/// actual directory to owner-only (`0o700`) on Unix.
 ///
 /// # Errors
 /// Returns an I/O error if the permissions cannot be set.
-fn secure_dir(dir: &Path) -> Result<(), LearningError> {
+fn ensure_secure_dir(dir: &Path) -> Result<(), LearningError> {
+    match fs::symlink_metadata(dir) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(invalid_data("learning directory must not be a symlink"));
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(invalid_data("learning path is not a directory"));
+        }
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => fs::create_dir_all(dir)?,
+        Err(err) => return Err(err.into()),
+    }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let path_metadata = fs::symlink_metadata(dir)?;
+        if path_metadata.uid() != rustix::process::geteuid().as_raw() {
+            return Err(invalid_data(
+                "learning directory is not owned by the effective user",
+            ));
+        }
+        let directory = File::open(dir)?;
+        let opened_metadata = directory.metadata()?;
+        if (path_metadata.dev(), path_metadata.ino())
+            != (opened_metadata.dev(), opened_metadata.ino())
+        {
+            return Err(invalid_data(
+                "learning directory changed while it was being secured",
+            ));
+        }
+        directory.set_permissions(fs::Permissions::from_mode(0o700))?;
     }
     #[cfg(not(unix))]
     {
         let _ = dir; // perms model differs; rely on the user profile directory.
     }
     Ok(())
+}
+
+fn invalid_data(message: &'static str) -> LearningError {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message).into()
+}
+
+fn validate_receipt_for_storage(receipt: &StrategyReceipt) -> Result<(), LearningError> {
+    let hash_valid = (16..=64).contains(&receipt.file_hash.len())
+        && receipt
+            .file_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if !hash_valid {
+        return Err(invalid_data(
+            "file_hash must be a 16-64 character lowercase hexadecimal redacted id",
+        ));
+    }
+    let token_valid = |value: &str, maximum: usize| {
+        !value.is_empty()
+            && value.len() <= maximum
+            && value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+' | b'@')
+            })
+    };
+    if !token_valid(&receipt.language, 64) {
+        return Err(invalid_data("language must be a bounded identifier token"));
+    }
+    if !token_valid(&receipt.parser_version, 128) {
+        return Err(invalid_data(
+            "parser_version must be a bounded identifier token",
+        ));
+    }
+    Ok(())
+}
+
+/// Validate that a path and opened handle identify the same owner-private
+/// regular file. The identity check closes the lstat/open swap window.
+fn validate_receipts_file(path_metadata: &fs::Metadata, file: &File) -> Result<(), LearningError> {
+    if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+        return Err(invalid_data(
+            "receipt store must be a regular non-symlink file",
+        ));
+    }
+    let file_metadata = file.metadata()?;
+    if !file_metadata.is_file() {
+        return Err(invalid_data("opened receipt store is not a regular file"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        if path_metadata.dev() != file_metadata.dev() || path_metadata.ino() != file_metadata.ino()
+        {
+            return Err(invalid_data(
+                "receipt store changed while it was being opened",
+            ));
+        }
+        if file_metadata.permissions().mode() & 0o077 != 0 {
+            return Err(invalid_data(
+                "receipt store is accessible by group or others",
+            ));
+        }
+        if file_metadata.uid() != rustix::process::geteuid().as_raw() {
+            return Err(invalid_data(
+                "receipt store is not owned by the effective user",
+            ));
+        }
+    }
+    if file_metadata.len() > MAX_RECEIPTS_BYTES {
+        return Err(invalid_data(
+            "receipt store exceeds the on-disk size budget",
+        ));
+    }
+    Ok(())
+}
+
+fn existing_receipts_file(path: &Path) -> Result<Option<(fs::Metadata, File)>, LearningError> {
+    let path_metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+        return Err(invalid_data(
+            "receipt store must be a regular non-symlink file",
+        ));
+    }
+    let file = OpenOptions::new().read(true).open(path)?;
+    validate_receipts_file(&path_metadata, &file)?;
+    Ok(Some((path_metadata, file)))
+}
+
+fn open_receipts_for_append(path: &Path) -> Result<File, LearningError> {
+    if let Some((path_metadata, _)) = existing_receipts_file(path)? {
+        let file = OpenOptions::new().append(true).open(path)?;
+        validate_receipts_file(&path_metadata, &file)?;
+        return Ok(file);
+    }
+
+    let mut options = OpenOptions::new();
+    options.create_new(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    let path_metadata = fs::symlink_metadata(path)?;
+    validate_receipts_file(&path_metadata, &file)?;
+    Ok(file)
+}
+
+fn open_receipts_for_read(path: &Path) -> Result<Option<File>, LearningError> {
+    existing_receipts_file(path).map(|entry| entry.map(|(_, file)| file))
+}
+
+fn read_capped_line(
+    reader: &mut BufReader<File>,
+    line: &mut Vec<u8>,
+) -> Result<usize, LearningError> {
+    let read = reader
+        .take(MAX_RECEIPT_LINE_BYTES as u64 + 1)
+        .read_until(b'\n', line)?;
+    if line.len() > MAX_RECEIPT_LINE_BYTES {
+        return Err(invalid_data("receipt record exceeds the per-record budget"));
+    }
+    Ok(read)
 }
 
 /// Load all receipts under `dir`.
@@ -128,17 +289,36 @@ fn secure_dir(dir: &Path) -> Result<(), LearningError> {
 /// line fails to parse.
 pub fn load_receipts(dir: &Path) -> Result<Vec<StrategyReceipt>, LearningError> {
     let path = receipts_path(dir);
-    if !path.exists() {
+    let Some(file) = open_receipts_for_read(&path)? else {
         return Ok(Vec::new());
-    }
-    let file = fs::File::open(&path)?;
+    };
     let reader = BufReader::new(file);
+    let mut reader = reader;
     let mut receipts = Vec::new();
-    for line in reader.lines() {
-        let line = line?;
+    let mut line = Vec::new();
+    let mut total_read = 0_u64;
+    loop {
+        line.clear();
+        let read = read_capped_line(&mut reader, &mut line)?;
+        if read == 0 {
+            break;
+        }
+        total_read = total_read.saturating_add(read as u64);
+        if total_read > MAX_RECEIPTS_BYTES {
+            return Err(invalid_data(
+                "receipt store grew beyond the on-disk size budget while reading",
+            ));
+        }
+        let line = std::str::from_utf8(&line)
+            .map_err(|_| invalid_data("receipt store contains invalid UTF-8"))?;
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
+        }
+        if receipts.len() >= MAX_RECEIPTS {
+            return Err(invalid_data(
+                "receipt store exceeds the record-count budget",
+            ));
         }
         receipts.push(StrategyReceipt::from_json(trimmed)?);
     }
@@ -151,15 +331,34 @@ pub fn load_receipts(dir: &Path) -> Result<Vec<StrategyReceipt>, LearningError> 
 /// Returns an error if the file exists but cannot be read.
 pub fn count_receipts(dir: &Path) -> Result<usize, LearningError> {
     let path = receipts_path(dir);
-    if !path.exists() {
+    let Some(file) = open_receipts_for_read(&path)? else {
         return Ok(0);
-    }
-    let file = fs::File::open(&path)?;
-    let reader = BufReader::new(file);
+    };
+    let mut reader = BufReader::new(file);
     let mut n = 0;
-    for line in reader.lines() {
-        if !line?.trim().is_empty() {
+    let mut line = Vec::new();
+    let mut total_read = 0_u64;
+    loop {
+        line.clear();
+        let read = read_capped_line(&mut reader, &mut line)?;
+        if read == 0 {
+            break;
+        }
+        total_read = total_read.saturating_add(read as u64);
+        if total_read > MAX_RECEIPTS_BYTES {
+            return Err(invalid_data(
+                "receipt store grew beyond the on-disk size budget while reading",
+            ));
+        }
+        let line = std::str::from_utf8(&line)
+            .map_err(|_| invalid_data("receipt store contains invalid UTF-8"))?;
+        if !line.trim().is_empty() {
             n += 1;
+            if n > MAX_RECEIPTS {
+                return Err(invalid_data(
+                    "receipt store exceeds the record-count budget",
+                ));
+            }
         }
     }
     Ok(n)
@@ -189,9 +388,21 @@ mod tests {
     }
 
     fn receipt(s: Strategy, outcome: ReviewOutcome) -> StrategyReceipt {
-        StrategyReceipt::new("hash", "rust", "v", s)
+        StrategyReceipt::new("0123456789abcdef", "rust", "v", s)
             .with_cache(CacheState::Hit)
             .with_outcome(outcome, false)
+    }
+
+    fn write_private(path: &Path, body: &[u8]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        options.open(path).unwrap().write_all(body).unwrap();
     }
 
     #[test]
@@ -282,10 +493,9 @@ mod tests {
         let dir = temp_dir();
         let _g = Scratch(dir.clone());
         let path = receipts_path(&dir);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
         let r = receipt(Strategy::Patch, ReviewOutcome::Accepted);
         let body = format!("\n{}\n\n", r.to_json().unwrap());
-        fs::write(&path, body).unwrap();
+        write_private(&path, body.as_bytes());
         assert_eq!(load_receipts(&dir).expect("load"), vec![r]);
     }
 
@@ -294,9 +504,89 @@ mod tests {
         let dir = temp_dir();
         let _g = Scratch(dir.clone());
         let path = receipts_path(&dir);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, "this is not json\n").unwrap();
+        write_private(&path, b"this is not json\n");
         assert!(load_receipts(&dir).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn append_rejects_symlink_directory_without_chmodding_target() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let target = temp_dir();
+        let link = temp_dir();
+        let _target_guard = Scratch(target.clone());
+        fs::create_dir_all(&target).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let result = append_receipt(&link, &receipt(Strategy::Patch, ReviewOutcome::Accepted));
+        assert!(result.is_err());
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        let _ = fs::remove_file(&link);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_and_append_reject_receipt_file_symlink() {
+        let dir = temp_dir();
+        let _guard = Scratch(dir.clone());
+        let path = receipts_path(&dir);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let victim = dir.join("victim.jsonl");
+        write_private(&victim, b"do not touch\n");
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+
+        assert!(load_receipts(&dir).is_err());
+        assert!(append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted)).is_err());
+        assert_eq!(fs::read(&victim).unwrap(), b"do not touch\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_rejects_world_readable_receipt_store() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = temp_dir();
+        let _guard = Scratch(dir.clone());
+        let path = receipts_path(&dir);
+        write_private(&path, b"\n");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(load_receipts(&dir).is_err());
+    }
+
+    #[test]
+    fn read_rejects_oversized_sparse_store() {
+        let dir = temp_dir();
+        let _guard = Scratch(dir.clone());
+        let path = receipts_path(&dir);
+        write_private(&path, b"");
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(MAX_RECEIPTS_BYTES + 1)
+            .unwrap();
+        assert!(count_receipts(&dir).is_err());
+    }
+
+    #[test]
+    fn append_rejects_unredacted_file_identity() {
+        let dir = temp_dir();
+        let _guard = Scratch(dir.clone());
+        let receipt = StrategyReceipt::new("secret/source/path.rs", "rust", "v1", Strategy::Patch);
+        assert!(append_receipt(&dir, &receipt).is_err());
+        assert!(!receipts_path(&dir).exists());
+    }
+
+    #[test]
+    fn append_rejects_path_like_metadata_tokens() {
+        let dir = temp_dir();
+        let _guard = Scratch(dir.clone());
+        let receipt =
+            StrategyReceipt::new("0123456789abcdef", "../../secret", "v1", Strategy::Patch);
+        assert!(append_receipt(&dir, &receipt).is_err());
     }
 
     #[test]

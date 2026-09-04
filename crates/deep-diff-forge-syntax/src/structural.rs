@@ -131,14 +131,14 @@ pub fn tokenize(language: Language, source: &str) -> Vec<Token> {
     let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
         if node.child_count() == 0 {
-            if let Some(text) = source.get(node.start_byte()..node.end_byte()) {
-                if !text.trim().is_empty() {
-                    tokens.push(Token {
-                        text: text.to_string(),
-                        #[allow(clippy::cast_possible_truncation)]
-                        line: node.start_position().row as u32 + 1,
-                    });
-                }
+            if let Some(text) = source.get(node.start_byte()..node.end_byte())
+                && !text.trim().is_empty()
+            {
+                tokens.push(Token {
+                    text: text.to_string(),
+                    #[allow(clippy::cast_possible_truncation)]
+                    line: node.start_position().row as u32 + 1,
+                });
             }
             continue;
         }

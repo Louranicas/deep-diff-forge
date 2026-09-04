@@ -33,6 +33,14 @@ pub use json::to_json;
 /// pathological input cannot exhaust memory by accident.
 pub const DEFAULT_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 
+/// Maximum number of physical lines accepted in one patch.
+///
+/// A byte budget alone is insufficient: a patch made of millions of tiny lines
+/// expands into substantially larger per-line model objects. This structural
+/// budget bounds that amplification before any model object for the excess
+/// line is allocated.
+pub const DEFAULT_LINE_BUDGET: usize = 1_000_000;
+
 /// Typed, non-panicking errors produced while parsing a patch.
 ///
 /// Patch parsing is allowed to be a hard failure: when no apply-able patch
@@ -47,6 +55,13 @@ pub enum PatchParseError {
         limit_bytes: usize,
         /// Observed input size in bytes.
         actual_bytes: usize,
+    },
+    /// The patch contains more physical lines than the structural budget.
+    LineBudgetExceeded {
+        /// Configured maximum line count.
+        limit_lines: usize,
+        /// First observed count over the limit.
+        actual_lines: usize,
     },
     /// A hunk header (`@@ -a,b +c,d @@`) could not be parsed.
     MalformedHunkHeader {
@@ -93,6 +108,13 @@ impl std::fmt::Display for PatchParseError {
             } => write!(
                 f,
                 "patch input is {actual_bytes} bytes, exceeding the {limit_bytes} byte budget"
+            ),
+            Self::LineBudgetExceeded {
+                limit_lines,
+                actual_lines,
+            } => write!(
+                f,
+                "patch contains at least {actual_lines} lines, exceeding the {limit_lines}-line budget"
             ),
             Self::MalformedHunkHeader { line_number, text } => {
                 write!(f, "malformed hunk header at line {line_number}: {text:?}")

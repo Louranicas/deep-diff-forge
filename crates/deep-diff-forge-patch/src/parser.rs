@@ -1,4 +1,4 @@
-use crate::{DEFAULT_BYTE_BUDGET, PatchParseError};
+use crate::{DEFAULT_BYTE_BUDGET, DEFAULT_LINE_BUDGET, PatchParseError};
 use deep_diff_forge_core::{
     DiffStrategy, FileStatus, HunkId, PatchHunk, PatchLine, PatchLineKind, PatchTwin,
     PlannerDecision, ReviewFile,
@@ -64,6 +64,12 @@ pub fn parse_with(input: &str, options: ParseOptions) -> Result<Vec<ReviewFile>,
 
     let mut parser = Parser::default();
     for (index, line) in input.lines().enumerate() {
+        if index >= DEFAULT_LINE_BUDGET {
+            return Err(PatchParseError::LineBudgetExceeded {
+                limit_lines: DEFAULT_LINE_BUDGET,
+                actual_lines: index + 1,
+            });
+        }
         parser.feed(line, index + 1)?;
     }
     parser.finish()
@@ -118,15 +124,15 @@ impl Parser {
         }
         // While a hunk is open and not yet exhausted, body lines belong to it.
         if let Some(hunk) = self.hunk.as_mut() {
-            if hunk.rem_old > 0 || hunk.rem_new > 0 {
-                if let Some(consumed) = hunk.consume_body(line, line_number) {
-                    consumed?;
-                    if hunk.rem_old == 0 && hunk.rem_new == 0 {
-                        // Counts satisfied: a clean close (cannot truncate).
-                        self.close_hunk(line_number)?;
-                    }
-                    return Ok(());
+            if (hunk.rem_old > 0 || hunk.rem_new > 0)
+                && let Some(consumed) = hunk.consume_body(line, line_number)
+            {
+                consumed?;
+                if hunk.rem_old == 0 && hunk.rem_new == 0 {
+                    // Counts satisfied: a clean close (cannot truncate).
+                    self.close_hunk(line_number)?;
                 }
+                return Ok(());
             }
             // A non-body line arrived while the hunk still expects content:
             // closing here rejects the truncated hunk.
@@ -1012,6 +1018,22 @@ diff --git a/x b/x
         let options = ParseOptions { byte_budget: 8 };
         let err = parse_with("diff --git a/x b/x\n", options).unwrap_err();
         assert!(matches!(err, PatchParseError::BudgetExceeded { .. }));
+    }
+
+    #[test]
+    fn structural_line_budget_is_enforced_before_model_amplification() {
+        let input = "preamble\n".repeat(DEFAULT_LINE_BUDGET + 1);
+        let options = ParseOptions {
+            byte_budget: input.len(),
+        };
+        let err = parse_with(&input, options).unwrap_err();
+        assert!(matches!(
+            err,
+            PatchParseError::LineBudgetExceeded {
+                limit_lines: DEFAULT_LINE_BUDGET,
+                actual_lines
+            } if actual_lines == DEFAULT_LINE_BUDGET + 1
+        ));
     }
 
     #[test]

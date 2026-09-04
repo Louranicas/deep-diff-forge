@@ -9,15 +9,14 @@ const MAX_FIXED_WORKERS_CPU_MULTIPLE: usize = 4;
 /// at least 1 and at most the item count.
 #[must_use]
 pub fn resolve_workers(parallelism: Parallelism, items: usize) -> usize {
-    let cpu_count =
-        std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let cpu_count = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let requested = match parallelism {
         Parallelism::Serial => 1,
         // Cap Fixed at 4× CPU count to prevent runaway thread spawning when
         // the caller passes an unreasonably large value (e.g. `--parallel 65535`).
-        Parallelism::Fixed(n) => {
-            (n as usize).min(cpu_count * MAX_FIXED_WORKERS_CPU_MULTIPLE).max(1)
-        }
+        Parallelism::Fixed(n) => (n as usize)
+            .min(cpu_count * MAX_FIXED_WORKERS_CPU_MULTIPLE)
+            .max(1),
         Parallelism::Auto => cpu_count,
     };
     requested.max(1).min(items.max(1))
@@ -219,8 +218,7 @@ mod tests {
 
     #[test]
     fn fixed_parallelism_capped_at_cpu_multiple() {
-        let cpu = std::thread::available_parallelism()
-            .map_or(1, std::num::NonZeroUsize::get);
+        let cpu = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
         let ceiling = cpu * MAX_FIXED_WORKERS_CPU_MULTIPLE;
         // Fixed(65535) must never exceed 4× available CPUs regardless of item count.
         let workers = resolve_workers(Parallelism::Fixed(u16::MAX), 100_000);

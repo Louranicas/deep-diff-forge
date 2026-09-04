@@ -5,12 +5,15 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
 
-  # Keep third-party GitHub Actions current. Actions are referenced by tag in the
-  # workflows for readability; Dependabot tracks upstream and proposes bumps so a
-  # floating tag does not silently drift onto a compromised release.
+  # Keep third-party GitHub Actions current. Workflows pin immutable commit SHAs;
+  # Dependabot proposes reviewed SHA updates without introducing floating tags.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7

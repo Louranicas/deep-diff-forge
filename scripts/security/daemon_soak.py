@@ -200,8 +200,8 @@ def main() -> int:
             pi_out = PI_REPORT_DIR / f"{stamp}-daemon-soak.json"
             pi_out.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
             print(f"receipt={out.relative_to(REPO)} pi_receipt={pi_out.relative_to(REPO)} verdict={receipt['verdict']}")
-            if receipt["verdict"] != "PASS":
-                return 1
+        if receipt["verdict"] != "PASS":
+            return 1
     return 0
 
 

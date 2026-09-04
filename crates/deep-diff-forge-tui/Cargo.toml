@@ -20,8 +20,8 @@ deep-diff-forge-cluster.workspace = true
 deep-diff-forge-learning.workspace = true
 deep-diff-forge-patch.workspace = true
 deep-diff-forge-daemon.workspace = true
-ratatui = "0.29"
-crossterm = "0.28"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29", "layout-cache"] }
+crossterm = "0.29"
 
 [lints]
 workspace = true

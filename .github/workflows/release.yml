@@ -3,7 +3,6 @@ name: release
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:
 
 # Least privilege by default; the job that creates the GitHub Release elevates.
 permissions:
@@ -12,6 +11,11 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# Never let two tag workflows publish the same dependency chain concurrently.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # Supply-chain gate: a tag must not publish past a known advisory, a denied
   # license, or a yanked dependency. crates.io publication is irreversible, so
@@ -19,17 +23,35 @@ jobs:
   supply-chain:
     name: supply chain gate
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - name: cargo-deny
         uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87 # v2
         with:
           command: check
+      - name: cargo-deny fuzz harness
+        run: cargo deny --manifest-path fuzz/Cargo.toml --locked check
       - name: install cargo-audit
-        run: cargo install cargo-audit --locked
+        run: cargo install cargo-audit --version 0.22.2 --locked
       - name: cargo audit (strict advisory gate)
-        run: cargo audit --deny warnings --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2026-0002
+        run: cargo audit --deny warnings
+      - name: cargo audit fuzz lockfile
+        run: cargo audit --deny warnings --file fuzz/Cargo.lock
+      - name: verify release tag matches workspace version
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          test "${RELEASE_TAG}" = "v${version}" || {
+            echo "::error::release tag ${RELEASE_TAG} does not match workspace version v${version}"
+            exit 1
+          }
 
   build:
     name: build ${{ matrix.target }}
@@ -39,6 +61,7 @@ jobs:
       attestations: write # GitHub Artifact Attestations / SLSA provenance
       id-token: write # OIDC token required by attest-build-provenance
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -51,11 +74,15 @@ jobs:
           - { os: macos-latest, target: aarch64-apple-darwin }
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           targets: ${{ matrix.target }}
       - name: build release binary
-        run: cargo build --release --locked -p deep-diff-forge-cli --target ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --locked -p deep-diff-forge-cli --target "${TARGET}"
       - name: generate SPDX SBOM (single canonical release artifact)
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: python3 scripts/security/generate_spdx_sbom.py
@@ -71,7 +98,11 @@ jobs:
           cp "target/${TARGET}/release/deep-diff-forge" "${dist}/"
           cp README.md LICENSE-MIT LICENSE-APACHE "${dist}/"
           tar czf "${dist}.tar.gz" "${dist}"
-          sha256sum "${dist}.tar.gz" > "${dist}.tar.gz.sha256"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${dist}.tar.gz" > "${dist}.tar.gz.sha256"
+          else
+            shasum -a 256 "${dist}.tar.gz" > "${dist}.tar.gz.sha256"
+          fi
       - name: attest release provenance
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
@@ -99,20 +130,29 @@ jobs:
   publish:
     name: crates.io publish (token-gated)
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - name: publish crates in dependency order if a token is configured
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          set -uo pipefail
+          set -euo pipefail
           if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
             echo "CARGO_REGISTRY_TOKEN not set; skipping crates.io publish."
             exit 0
           fi
-          # Idempotent + rate-limit-aware: skip crates already live at 0.2.0, and
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::release tag ${GITHUB_REF_NAME} does not match workspace version v${version}"
+            exit 1
+          fi
+          # Idempotent + rate-limit-aware: skip crates already live at the workspace version, and
           # retry crates.io's new-crate 429 limit (burst 5, then ~1/10min) until
           # each remaining crate lands. Lets a re-run finish a partial publish
           # without re-failing on already-published crates.
@@ -120,8 +160,8 @@ jobs:
             name="deep-diff-forge-${crate}"
             attempt=0
             while true; do
-              if curl -fsS "https://crates.io/api/v1/crates/${name}/0.2.0" >/dev/null 2>&1; then
-                echo "OK ${name} 0.2.0 is live"; break
+              if curl --proto '=https' --tlsv1.2 --retry 3 -fsS "https://crates.io/api/v1/crates/${name}/${version}" >/dev/null 2>&1; then
+                echo "OK ${name} ${version} is live"; break
               fi
               attempt=$((attempt + 1))
               if [ "${attempt}" -gt 25 ]; then
@@ -135,4 +175,4 @@ jobs:
               fi
             done
           done
-          echo "all 12 crates published at 0.2.0"
+          echo "all 12 crates published at ${version}"

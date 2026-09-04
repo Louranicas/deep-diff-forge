@@ -58,10 +58,10 @@ fn color_clean(
         if hs.start < cursor || hs.start > hs.end || hs.end > text.len() {
             continue;
         }
-        if hs.start > cursor {
-            if let Some(gap) = text.get(cursor..hs.start) {
-                out.push(Span::styled(gap.to_string(), base));
-            }
+        if hs.start > cursor
+            && let Some(gap) = text.get(cursor..hs.start)
+        {
+            out.push(Span::styled(gap.to_string(), base));
         }
         if let Some(tok) = text.get(hs.start..hs.end) {
             let color = palette.class_color(hs.class);
@@ -69,10 +69,10 @@ fn color_clean(
             cursor = hs.end;
         }
     }
-    if cursor < text.len() {
-        if let Some(rest) = text.get(cursor..) {
-            out.push(Span::styled(rest.to_string(), base));
-        }
+    if cursor < text.len()
+        && let Some(rest) = text.get(cursor..)
+    {
+        out.push(Span::styled(rest.to_string(), base));
     }
     out
 }

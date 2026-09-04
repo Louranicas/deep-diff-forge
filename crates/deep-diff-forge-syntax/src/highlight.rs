@@ -218,10 +218,10 @@ pub fn to_ansi(source: &str, spans: &[HighlightSpan]) -> String {
     let mut out = String::with_capacity(source.len() + spans.len() * 12);
     let mut cursor = 0usize;
     for span in spans {
-        if span.start > cursor {
-            if let Some(text) = source.get(cursor..span.start) {
-                out.push_str(&display_safe(text));
-            }
+        if span.start > cursor
+            && let Some(text) = source.get(cursor..span.start)
+        {
+            out.push_str(&display_safe(text));
         }
         if let Some(text) = source.get(span.start..span.end) {
             let _ = write!(

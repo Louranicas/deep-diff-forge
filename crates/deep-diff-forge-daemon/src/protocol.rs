@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use serde_json::{Value, json};
 
 /// Engine protocol version advertised by `engine.initialize`/`daemon.health`.
@@ -18,21 +17,20 @@ pub const INTERNAL_ERROR: i64 = -32603;
 pub const SESSION_NOT_FOUND: i64 = 1;
 /// Domain error code: a supplied patch could not be parsed.
 pub const PATCH_PARSE_FAILED: i64 = 4;
+/// Domain error code: a bounded daemon resource budget would be exceeded.
+pub const RESOURCE_EXHAUSTED: i64 = 8;
 
 /// A parsed JSON-RPC request. Missing optional fields default rather than
 /// failing, so a terse client (`{"method":"daemon.health"}`) is accepted.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Request {
     /// Protocol marker (`"2.0"`); defaulted when absent.
-    #[serde(default)]
     pub jsonrpc: String,
     /// Correlation id, echoed in the response; `null` when absent.
-    #[serde(default)]
     pub id: Value,
     /// Method name.
     pub method: String,
     /// Method parameters; `null` when absent.
-    #[serde(default)]
     pub params: Value,
 }
 
@@ -72,10 +70,59 @@ impl RpcError {
 ///
 /// # Errors
 ///
-/// Returns a [`RpcError`] with [`PARSE_ERROR`] when the line is not a valid
-/// JSON-RPC request object.
+/// Invalid JSON is a [`PARSE_ERROR`]; valid JSON with an invalid JSON-RPC shape
+/// is an [`INVALID_REQUEST`]. The protocol marker may be omitted for backwards
+/// compatibility with the CLI's terse local requests, but when present it must
+/// be exactly `"2.0"`.
 pub fn parse_request(line: &str) -> Result<Request, RpcError> {
-    serde_json::from_str::<Request>(line).map_err(|e| RpcError::new(PARSE_ERROR, e.to_string()))
+    let value: Value =
+        serde_json::from_str(line).map_err(|e| RpcError::new(PARSE_ERROR, e.to_string()))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| RpcError::new(INVALID_REQUEST, "request must be a JSON object"))?;
+
+    let jsonrpc = match object.get("jsonrpc") {
+        None => String::new(),
+        Some(Value::String(version)) if version == "2.0" => version.clone(),
+        Some(_) => {
+            return Err(RpcError::new(
+                INVALID_REQUEST,
+                "jsonrpc must be exactly \"2.0\"",
+            ));
+        }
+    };
+    let method = object
+        .get("method")
+        .and_then(Value::as_str)
+        .filter(|method| !method.is_empty() && method.len() <= 256)
+        .ok_or_else(|| {
+            RpcError::new(
+                INVALID_REQUEST,
+                "method must be a non-empty string of at most 256 bytes",
+            )
+        })?
+        .to_string();
+    let id = object.get("id").cloned().unwrap_or(Value::Null);
+    if !matches!(id, Value::Null | Value::String(_) | Value::Number(_)) {
+        return Err(RpcError::new(
+            INVALID_REQUEST,
+            "id must be a string, number, or null",
+        ));
+    }
+    let params = object.get("params").cloned().unwrap_or(Value::Null);
+    if !matches!(params, Value::Null | Value::Object(_) | Value::Array(_)) {
+        return Err(RpcError::new(
+            INVALID_REQUEST,
+            "params must be an object, array, or null",
+        ));
+    }
+
+    Ok(Request {
+        jsonrpc,
+        id,
+        method,
+        params,
+    })
 }
 
 /// Serialize a success response for `id` with `result`.
@@ -121,9 +168,9 @@ mod tests {
     }
 
     #[test]
-    fn missing_method_is_parse_error() {
+    fn missing_method_is_invalid_request() {
         let err = parse_request(r#"{"id":1}"#).unwrap_err();
-        assert_eq!(err.code, PARSE_ERROR);
+        assert_eq!(err.code, INVALID_REQUEST);
     }
 
     #[test]
@@ -142,6 +189,30 @@ mod tests {
     fn params_object_is_preserved() {
         let req = parse_request(r#"{"method":"diff.plan","params":{"patch":"x"}}"#).unwrap();
         assert_eq!(req.params.get("patch").and_then(Value::as_str), Some("x"));
+    }
+
+    #[test]
+    fn rejects_wrong_protocol_version() {
+        let err = parse_request(r#"{"jsonrpc":"1.0","method":"m"}"#).unwrap_err();
+        assert_eq!(err.code, INVALID_REQUEST);
+    }
+
+    #[test]
+    fn rejects_non_object_request() {
+        let err = parse_request(r"[1,2,3]").unwrap_err();
+        assert_eq!(err.code, INVALID_REQUEST);
+    }
+
+    #[test]
+    fn rejects_structured_id() {
+        let err = parse_request(r#"{"id":{},"method":"m"}"#).unwrap_err();
+        assert_eq!(err.code, INVALID_REQUEST);
+    }
+
+    #[test]
+    fn rejects_scalar_params() {
+        let err = parse_request(r#"{"method":"m","params":true}"#).unwrap_err();
+        assert_eq!(err.code, INVALID_REQUEST);
     }
 
     #[test]
@@ -197,6 +268,7 @@ mod tests {
         assert_eq!(INTERNAL_ERROR, -32603);
         assert_eq!(SESSION_NOT_FOUND, 1);
         assert_eq!(PATCH_PARSE_FAILED, 4);
+        assert_eq!(RESOURCE_EXHAUSTED, 8);
     }
 
     #[test]

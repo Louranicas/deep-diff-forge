@@ -174,7 +174,7 @@ interactive full-screen UI, not a compose-onward stdout filter.
 
 ## Install & build
 
-Requires Rust **1.85+** (edition 2024). The build is pinned to a repo-local
+Requires Rust **1.88+** (edition 2024). The build is pinned to a repo-local
 target directory.
 
 ```bash
@@ -542,15 +542,16 @@ The daemon accelerates repeated review and multi-client workflows. It is
 it. It is **std-first** (no async runtime): a `UnixListener` JSON-RPC 2.0 server
 over an owner-private Unix domain socket.
 
-**Security:** the engine-owned runtime directory is created `0700` (and rejected
-if group- or world-accessible) and the socket is `0600`. An explicit `--socket`
+**Security:** the engine-owned runtime directory is created/tightened to `0700`,
+must be owned by the effective user, and the socket is `0600`. An explicit `--socket`
 path is bound **fail-closed**: an absent parent directory is created `0700`, but a
 pre-existing parent is validated and **never re-permissioned** (a group/world-
 accessible parent is refused rather than silently tightened to `0700`), and the
 socket path is replaced **only if it is already a socket** — the daemon never
 deletes a regular file, directory, or symlink it finds there. Review sessions are
-**bounded by an LRU cap**, so a client that opens sessions without closing them
-cannot grow daemon memory without limit.
+bounded by both an **LRU count cap and a 128 MiB aggregate payload cap**. The
+server admits at most eight concurrent workers, applies absolute request/response
+deadlines, and caps both request and response lines.
 
 **Default socket:** `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock`. There
 is no world-writable `/tmp` fallback: if `$XDG_RUNTIME_DIR` is unset the daemon
@@ -694,8 +695,8 @@ is implemented, gated, and live-proven. Honest current limitations:
   a diff) awaits a Git-input layer that supplies file bytes; `semantic <file>`
   proves the engine on whole files today, and `enclosing_symbol` is the ready
   building block.
-- The daemon serves connections **sequentially**; a thread-per-connection /
-  async upgrade is deferred until a measured need.
+- The daemon intentionally admits at most eight concurrent local clients; excess
+  connections are closed without allocating another worker stack.
 - **L9 Learning**: the learning loop records and scores receipts and gates
   promotion; wiring the engine's hot path to *emit* receipts automatically (vs.
   the explicit `learn record`) lands as live signal accrues.

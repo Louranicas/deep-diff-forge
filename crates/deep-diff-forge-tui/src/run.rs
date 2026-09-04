@@ -35,11 +35,7 @@ impl Drop for TerminalGuard {
         if self.armed {
             // Best-effort: ignore errors; must not panic inside Drop.
             let _ = disable_raw_mode();
-            let _ = crossterm::execute!(
-                io::stdout(),
-                DisableMouseCapture,
-                LeaveAlternateScreen
-            );
+            let _ = crossterm::execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
         }
     }
 }
@@ -79,7 +75,10 @@ pub fn run(mut app: ReviewApp) -> io::Result<()> {
 fn event_loop<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut ReviewApp,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    io::Error: From<B::Error>,
+{
     while app.is_running() {
         terminal.draw(|frame| render(frame, app))?;
         // Block for the next event, then drain the entire queued burst before

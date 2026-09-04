@@ -42,40 +42,44 @@ the most recent minor line is supported.
   `\u{XXXX}` — so attacker source cannot *display* differently than it logically
   reads, a defence directly on-mission for a code-review tool.
 - **Bounded input.** Stdin, source files, and daemon request lines are read
-  under a hard byte cap, so a pathological or unbounded stream degrades to a
-  graceful error instead of exhausting memory.
+  under hard byte caps. Patch parsing also has a one-million-line structural
+  cap to bound the expansion of tiny input lines into larger model objects.
 - **Daemon least-privilege.** The optional UDS daemon creates an owner-private
-  (`0700`) runtime directory (symlinks rejected; `chmod` is the ownership gate)
-  and a `0600` socket. There is **no world-writable `/tmp` fallback**: without
-  `$XDG_RUNTIME_DIR` it fails closed and the operator passes `--socket PATH`.
-  Connections carry a read timeout, requests are size-bounded, and a panic in
-  request dispatch is contained so one abusive client cannot stop the daemon.
+  (`0700`) runtime directory and a `0600` socket. Directory ownership is checked
+  against the effective user; symlinks and inode swaps are rejected. There is
+  **no world-writable `/tmp` fallback**. Request and response lines have absolute
+  deadlines and size caps, worker concurrency is capped at eight, retained
+  session payloads are capped at 128 MiB, and request-dispatch panics are
+  contained. Socket cleanup only removes the inode created by the server.
 - **Fail-closed trust.** Agent annotations are untrusted until *grounded*
   (evidence-backed); annotation `source` is never inferred from an
   attacker-controlled label.
-- **Local-only learning.** The L9 learning store holds hashes, counts, and
-  timings — never source or paths — under owner-private (`0700`/`0600`)
-  permissions, and is never uploaded.
+- **Local-only learning.** The L9 learning store accepts only redacted hex file
+  identifiers and bounded metadata tokens, under owner-private (`0700`/`0600`)
+  ownership and permissions. Directory/file symlinks and inode swaps are
+  rejected; file, line, and record counts are capped. The stable FNV identifier
+  is pseudonymous, not cryptographically one-way, so confidentiality comes from
+  the local access controls. Learning data is never uploaded.
 
 ## Supply chain
 
 - `cargo deny` (bans, licenses, sources, advisories) and a strict `cargo audit`
   gate run in CI **and** as a hard prerequisite of the irreversible crates.io
-  publish. Two transitive, unreachable advisories (`RUSTSEC-2024-0436` paste,
-  `RUSTSEC-2026-0002` lru — both via `ratatui`) are explicitly accepted and
-  documented in `deny.toml`; any *new* advisory fails the gate.
+  publish. There are no advisory waivers: warnings are denied.
 - The `tree-sitter` crates (which run a C build script) are pinned to exact
   versions; install with `cargo install --locked`.
 - All GitHub Actions are pinned to commit SHAs (tag-hijack defence), and the
   release workflow emits SLSA build-provenance attestations for the binary, its
   checksum, and the SPDX SBOM (`sbom.spdx.json`, generated and CI-gated).
-  Dependencies and actions are tracked by Dependabot.
+  Releases run only from tags whose name exactly matches the workspace version;
+  checkout credentials are not persisted. Dependencies and actions are tracked
+  by Dependabot.
 - A `cargo-fuzz` harness (`fuzz/`) covers the patch parser, review JSON, daemon
   protocol, and agent annotations; CI gates that it compiles.
 
 ## Hardening provenance
 
-The current posture follows three reviews, each with judges outside the build
+The current posture follows four reviews, each with verification outside the build
 loop and every confirmed finding remediated with a fail-before/pass-after test:
 
 - **S1008412** — an 8-dimension STRIDE audit with independent verification
@@ -86,5 +90,9 @@ loop and every confirmed finding remediated with a fail-before/pass-after test:
   sessions), and the CI/release supply chain.
 - **S1008452** — a 7-facet posture review (88/100) closed its one High by
   unifying the `--json`/`--jsonl` escapers with `core::json_escape` (C1/DEL
-  coverage); residuals (single-threaded daemon, clippy restriction lints) are
-  tracked. No Critical/High remain.
+  coverage). No Critical/High remained after that review.
+- **SOL-1 (2026-09-04)** — removed two stale advisory waivers, bounded daemon
+  concurrency and aggregate memory, added absolute I/O deadlines and inode-safe
+  local storage, enforced receipt privacy at the write boundary, and closed a
+  non-tag release-publication path. Full tests, strict Clippy/docs, fuzz-target
+  compilation, RustSec/cargo-deny, privacy probe, and hostile daemon soak pass.
