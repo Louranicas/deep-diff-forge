@@ -82,7 +82,7 @@ deep-diff-forge daemon stop
 | 4 | Patch parse failure. |
 | 5 | Git workspace failure. |
 | 6 | Daemon or IPC failure. |
-| 7 | Contract violation — shipped: `--stdin-patch --require-files` refused a patch that parses to 0 files (`refused: 0 files in input (--require-files)` on stderr, stdout empty). |
+| 7 | Contract violation — shipped: `--stdin-patch --require-files` refused a patch that parses to 0 files (`refused: 0 files in input (--require-files)` on stderr), or `--stdin-patch --require-hunks` refused a patch with 0 hunks or 0 added+removed lines such as a header-only or rename-only diff (`refused: 0 hunks in input (--require-hunks)` on stderr). stdout is empty either way. A gate should pass both flags: `--require-files --require-hunks`. |
 | 8 | Internal recoverable fallback reached hard boundary. |
 | 101 | Panic or unrecoverable internal bug. |
 

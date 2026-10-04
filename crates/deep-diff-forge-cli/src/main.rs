@@ -105,10 +105,64 @@ fn main() {
 }
 
 /// Exit code for an input-contract refusal: the caller passed `--require-files`
-/// and the (well-formed) patch describes zero files. Distinct from 4 (the input
-/// could not be parsed) so a gate can tell "nothing to review" from "garbage".
-/// This is the "contract violation" slot of the documented exit-code table.
+/// or `--require-hunks` and the (well-formed) patch has nothing to review.
+/// Distinct from 4 (the input could not be parsed) so a gate can tell "nothing
+/// to review" from "garbage". This is the "contract violation" slot of the
+/// documented exit-code table.
 const EXIT_REFUSED: i32 = 7;
+
+/// Which input guards the caller asked for. Both default to off, so a plain
+/// invocation keeps its documented behaviour (nothing to review → exit 0).
+#[derive(Clone, Copy, Default)]
+struct InputGuards {
+    /// `--require-files`: refuse a patch that parses to 0 files.
+    files: bool,
+    /// `--require-hunks`: refuse a patch with 0 hunks or 0 changed lines.
+    hunks: bool,
+}
+
+impl InputGuards {
+    fn from_opts(opts: &[String]) -> Self {
+        Self {
+            files: opts.iter().any(|a| a == "--require-files"),
+            hunks: opts.iter().any(|a| a == "--require-hunks"),
+        }
+    }
+
+    fn any(self) -> bool {
+        self.files || self.hunks
+    }
+
+    /// Apply the requested guards in order (files, then hunks): exit
+    /// [`EXIT_REFUSED`] with a one-line stderr reason and an empty stdout on
+    /// the first one that fails. A gate that feeds a diff into the engine
+    /// should pass both, so neither an empty/mis-piped input nor a header-only
+    /// or rename-only diff can be mistaken for a clean, zero-risk review.
+    fn enforce(self, files: &[deep_diff_forge_core::ReviewFile]) {
+        if self.files && files.is_empty() {
+            eprintln!("refused: 0 files in input (--require-files)");
+            std::process::exit(EXIT_REFUSED);
+        }
+        if self.hunks && !has_reviewable_hunks(files) {
+            eprintln!("refused: 0 hunks in input (--require-hunks)");
+            std::process::exit(EXIT_REFUSED);
+        }
+    }
+}
+
+/// True when at least one hunk across all files carries an added or removed
+/// line (so "0 hunks" and "0 changed lines" are both refused). A header-only
+/// (`diff --git a/x b/x`) or rename-only diff parses to one file with no
+/// hunks; a hunk made only of context lines changes nothing. Neither is
+/// something a review can judge.
+fn has_reviewable_hunks(files: &[deep_diff_forge_core::ReviewFile]) -> bool {
+    use deep_diff_forge_core::PatchLineKind;
+    files
+        .iter()
+        .flat_map(|f| f.patch_twin.hunks.iter())
+        .flat_map(|h| h.lines.iter())
+        .any(|l| matches!(l.kind, PatchLineKind::Added | PatchLineKind::Removed))
+}
 
 /// Parse a patch or exit 4 with a stderr diagnostic (the CLI contract for a
 /// patch parse failure). Shared by every stdin-patch entry point.
@@ -119,17 +173,6 @@ fn parse_or_exit(input: &str) -> Vec<deep_diff_forge_core::ReviewFile> {
             eprintln!("error: patch parse failed: {err}");
             std::process::exit(4);
         }
-    }
-}
-
-/// `--require-files` guard: refuse a zero-file patch with [`EXIT_REFUSED`] and
-/// a one-line stderr reason, leaving stdout empty. A gate that feeds a diff
-/// into the engine should always pass `--require-files`, so an empty or
-/// mis-piped input can never be mistaken for a clean, zero-risk review.
-fn refuse_if_no_files(files: &[deep_diff_forge_core::ReviewFile]) {
-    if files.is_empty() {
-        eprintln!("refused: 0 files in input (--require-files)");
-        std::process::exit(EXIT_REFUSED);
     }
 }
 
@@ -146,25 +189,24 @@ fn seal_of(input: &str) -> InputSeal {
 /// summary (default).
 ///
 /// Exit codes follow the CLI contract: 2 = usage error, 3 = input read failure,
-/// 4 = patch parse failure, 7 = `--require-files` refused a zero-file patch.
+/// 4 = patch parse failure, 7 = `--require-files` / `--require-hunks` refused
+/// a patch with nothing to review.
 fn stdin_patch(opts: &[String]) {
     let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
-    let require_files = opts.iter().any(|a| a == "--require-files");
+    let guards = InputGuards::from_opts(opts);
     // --jsonl streams one event per file through the real pipeline runner.
     if opts.iter().any(|a| a == "--jsonl") {
-        if require_files {
-            // The pipeline parses internally; the gate needs the file count
+        if guards.any() {
+            // The pipeline parses internally; the gate needs the counts
             // before anything is streamed, so pre-flight the parse here.
-            refuse_if_no_files(&parse_or_exit(&input));
+            guards.enforce(&parse_or_exit(&input));
         }
         run_jsonl_pipeline(input);
         return;
     }
 
     let files = parse_or_exit(&input);
-    if require_files {
-        refuse_if_no_files(&files);
-    }
+    guards.enforce(&files);
 
     if opts.iter().any(|a| a == "--cluster") {
         run_cluster(&files, opts, &input);
@@ -1026,7 +1068,7 @@ USAGE:
   deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME]
   deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]
   deep-diff-forge learn {{status|record --stdin}} [--json]
-  deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side] [--require-files]
+  deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side] [--require-files] [--require-hunks]
   deep-diff-forge claude-code-contract
   deep-diff-forge chain-contract
   deep-diff-forge cluster-contract

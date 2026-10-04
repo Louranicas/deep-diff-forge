@@ -23,13 +23,22 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `refused: 0 files in input (--require-files)` on stderr. Gates should always
   pass it so an empty or mis-piped input is never read as a clean review.
   Default behaviour without the flag (0 files → exit 0) is unchanged.
+- **`--require-hunks`** for `--stdin-patch` — closes the gap `--require-files`
+  leaves open: a header-only (`diff --git a/x b/x`) or rename-only diff parses
+  to one file with 0 hunks and passed the files guard with exit 0. The new
+  guard refuses a patch with 0 hunks or 0 added+removed lines across all files
+  (header-only, rename-only, context-only hunks) with the same **exit code 7**,
+  an empty stdout, and `refused: 0 hunks in input (--require-hunks)` on stderr.
+  A gate should pass **both** flags; when both would fail, the files guard
+  reports first. Default behaviour without the flag is unchanged.
 - Determinism contract test: `--rank --json --require-files` is byte-identical
   across runs with an identical `input_sha256`.
 
 ### Changed
 
-- README exit-code table gains code 7; the documented test count is now the
-  measured 983.
+- README exit-code table gains code 7 and the recommended gate command now
+  reads `--require-files --require-hunks`; the documented test count is the
+  measured 991.
 
 ## [0.2.1] - 2026-09-04
 

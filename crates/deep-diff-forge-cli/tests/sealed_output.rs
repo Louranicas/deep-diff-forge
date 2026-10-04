@@ -221,6 +221,129 @@ fn help_documents_require_files() {
     assert!(stdout.contains("--require-files"));
 }
 
+// ---- --require-hunks -----------------------------------------------------
+
+/// One file, zero hunks: `--require-files` alone is satisfied by this.
+const HEADER_ONLY: &str = "diff --git a/x b/x\n";
+const RENAME_ONLY: &str =
+    "diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n";
+/// The recommended gate invocation from the README.
+const GATE: [&str; 5] = [
+    "--stdin-patch",
+    "--rank",
+    "--json",
+    "--require-files",
+    "--require-hunks",
+];
+
+#[test]
+fn require_hunks_refuses_header_only_diff_that_require_files_passes() {
+    // (1) both flags → refused with exit 7 and an empty stdout.
+    let (code, stdout, stderr) = run_text(&GATE, HEADER_ONLY);
+    assert_eq!(code, 7);
+    assert!(stdout.is_empty(), "stdout must stay empty on refusal");
+    assert_eq!(stderr, "refused: 0 hunks in input (--require-hunks)\n");
+
+    // (2) --require-files alone still passes it: one file is one file.
+    let (code, stdout, stderr) = run_text(
+        &["--stdin-patch", "--rank", "--json", "--require-files"],
+        HEADER_ONLY,
+    );
+    assert_eq!(code, 0);
+    assert!(stdout.contains("\"schema\": \"deep-diff-forge.rank.v0\""));
+    assert!(stdout.contains("\"path\": \"x\""));
+    assert!(stderr.is_empty());
+}
+
+#[test]
+fn require_hunks_passes_a_real_diff_sealed_and_unchanged() {
+    // (3) a diff with a real hunk clears both gates and is sealed.
+    let (code, with, stderr) = run_text(&GATE, PATCH);
+    assert_eq!(code, 0);
+    assert!(stderr.is_empty());
+    let head = format!(
+        "{{\n  \"schema\": \"deep-diff-forge.rank.v0\",\n{}  \"ranked\": [",
+        expected_seal(PATCH.as_bytes())
+    );
+    assert!(with.starts_with(&head), "got:\n{with}");
+    assert_eq!(input_sha256(&with), PATCH_SHA256);
+    let (_, without, _) = run_text(&["--stdin-patch", "--rank", "--json"], PATCH);
+    assert_eq!(
+        with, without,
+        "the guards must not alter a passing document"
+    );
+}
+
+#[test]
+fn require_hunks_refuses_rename_only_diff() {
+    // (4) a pure rename parses to one file, zero hunks, zero changed lines.
+    let (code, stdout, stderr) = run_text(&GATE, RENAME_ONLY);
+    assert_eq!(code, 7);
+    assert!(stdout.is_empty());
+    assert_eq!(stderr, "refused: 0 hunks in input (--require-hunks)\n");
+    // ... and without the flag it is still exit 0 (default unchanged).
+    let (code, stdout, _) = run_text(&["--stdin-patch", "--rank", "--json"], RENAME_ONLY);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("\"status\": \"renamed\""));
+}
+
+#[test]
+fn require_hunks_refuses_context_only_hunk() {
+    // A hunk exists but adds and removes nothing: still nothing to review.
+    let context_only = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n same\n";
+    let (code, stdout, stderr) = run_text(
+        &["--stdin-patch", "--json", "--require-hunks"],
+        context_only,
+    );
+    assert_eq!(code, 7);
+    assert!(stdout.is_empty());
+    assert_eq!(stderr, "refused: 0 hunks in input (--require-hunks)\n");
+}
+
+#[test]
+fn require_hunks_refuses_in_every_document_mode() {
+    for args in [
+        vec!["--stdin-patch", "--require-hunks"],
+        vec!["--stdin-patch", "--json", "--require-hunks"],
+        vec!["--stdin-patch", "--rank", "--json", "--require-hunks"],
+        vec!["--stdin-patch", "--cluster", "--json", "--require-hunks"],
+        vec!["--stdin-patch", "--jsonl", "--require-hunks"],
+        vec!["--stdin-patch", "--layout", "inline", "--require-hunks"],
+    ] {
+        let (code, stdout, stderr) = run_text(&args, HEADER_ONLY);
+        assert_eq!(code, 7, "args={args:?}");
+        assert!(stdout.is_empty(), "args={args:?}");
+        assert_eq!(
+            stderr, "refused: 0 hunks in input (--require-hunks)\n",
+            "args={args:?}"
+        );
+    }
+}
+
+#[test]
+fn both_guards_on_empty_input_report_the_files_guard_first() {
+    let (code, stdout, stderr) = run_text(&GATE, "");
+    assert_eq!(code, 7);
+    assert!(stdout.is_empty());
+    assert_eq!(stderr, "refused: 0 files in input (--require-files)\n");
+}
+
+#[test]
+fn require_hunks_does_not_mask_a_parse_failure() {
+    let bad = "--- a/x\n+++ b/x\n+stray addition with no hunk\n";
+    let (code, stdout, stderr) = run_text(&GATE, bad);
+    assert_eq!(code, 4);
+    assert_eq!(stdout, "");
+    assert!(stderr.contains("patch parse failed"));
+}
+
+#[test]
+fn help_documents_require_hunks() {
+    let (code, stdout, _) = run_text(&["--help"], "");
+    assert_eq!(code, 0);
+    assert!(stdout.contains("--require-hunks"));
+}
+
 // ---- determinism ---------------------------------------------------------
 
 #[test]

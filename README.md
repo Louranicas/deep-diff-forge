@@ -15,7 +15,7 @@ cockpit, and bounded parallel execution on top — every layer a projection over
 one stable model, none of them ever allowed to corrupt the patch.
 
 > **Maturity: L9 (Learning).** All engine layers L0–L8 are implemented, plus the
-> L9 local-only learning loop (`learn status|record`). 12 crates, 983 tests, zero
+> L9 local-only learning loop (`learn status|record`). 12 crates, 991 tests, zero
 > `unsafe`, supply-chain-gated, dual MIT/Apache-2.0 licensed. The workspace is
 > **crates.io-publish-ready** (`cargo publish --dry-run` is clean across all
 > crates); the upload itself is **token-gated** — the release workflow publishes
@@ -301,7 +301,12 @@ deep-diff-forge --stdin-patch [MODE]
 | `--cluster [--parallel serial\|auto\|N]` | Same ranking, computed via bounded parallel lanes with a deterministic join + a receipt. Add `--json` for `deep-diff-forge.cluster.v0`. |
 | `--layout inline` | Inline projection with old/new line numbers and markers. |
 | `--layout side-by-side` | Two-column old-vs-new projection with a gutter. |
-| `--require-files` | Guard (combine with any mode): refuse a patch that parses to **0 files** with exit code 7, an empty stdout, and `refused: 0 files in input (--require-files)` on stderr. A gate or orchestrator should **always** pass this, so an empty or mis-piped input can never be read as a clean, zero-risk review. Default behaviour (0 files → exit 0) is unchanged without it. |
+| `--require-files` | Guard (combine with any mode): refuse a patch that parses to **0 files** with exit code 7, an empty stdout, and `refused: 0 files in input (--require-files)` on stderr. Default behaviour (0 files → exit 0) is unchanged without it. |
+| `--require-hunks` | Guard (combine with any mode): refuse a patch with **0 hunks or 0 added+removed lines** across all files — a header-only `diff --git a/x b/x`, a rename-only diff, or a context-only hunk — with exit code 7, an empty stdout, and `refused: 0 hunks in input (--require-hunks)` on stderr. `--require-files` alone passes these (one file *is* one file). Default behaviour is unchanged without it. |
+
+A gate or orchestrator should **always pass both** guards, so neither an empty
+or mis-piped input nor a hunkless diff can be read as a clean, zero-risk review.
+When both are passed and both would fail, the files guard reports first.
 
 Examples:
 
@@ -311,8 +316,8 @@ git diff | deep-diff-forge --stdin-patch --json   > review.json
 git diff | deep-diff-forge --stdin-patch --jsonl  | while read -r ev; do echo "$ev"; done
 git diff | deep-diff-forge --stdin-patch --rank --json
 git diff | deep-diff-forge --stdin-patch --cluster --parallel 4 --json
-# orchestrator / gate: sealed, deterministic, refuses empty input
-git diff | deep-diff-forge --stdin-patch --rank --json --require-files
+# orchestrator / gate: sealed, deterministic, refuses empty or hunkless input
+git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require-hunks
 ```
 
 ### `semantic <path>` — tree-sitter symbols
@@ -557,7 +562,7 @@ single canonical snake-case spelling (`added`, `modified`, `deleted`,
 | 3 | Input (stdin or file) read failure. |
 | 4 | Patch parse failure. |
 | 6 | Daemon / interactive-terminal failure. |
-| 7 | Input contract refused: `--require-files` was passed and the (well-formed) patch describes 0 files. stderr: `refused: 0 files in input (--require-files)`. |
+| 7 | Input contract refused. `--require-files`: the (well-formed) patch describes 0 files — stderr `refused: 0 files in input (--require-files)`. `--require-hunks`: the patch has 0 hunks or 0 added+removed lines (header-only, rename-only, context-only) — stderr `refused: 0 hunks in input (--require-hunks)`. Gates should pass both. |
 
 Diagnostics never pollute stdout: on error, stdout stays empty and the message
 goes to stderr.
@@ -693,7 +698,7 @@ just gate-feature
 #   bootstrap contract probes
 ```
 
-Standards enforced across the tree: **983 tests** (every production crate ≥ 50
+Standards enforced across the tree: **991 tests** (every production crate ≥ 50
 meaningful tests), **zero `unsafe`** (compiler-forbidden workspace-wide via
 `[workspace.lints]`), no production `unwrap`/`expect`, pedantic clippy clean with
 no unexplained suppressions, and a `cargo-deny` ([`deny.toml`](deny.toml)) +

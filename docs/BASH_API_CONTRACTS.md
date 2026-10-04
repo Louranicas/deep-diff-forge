@@ -28,6 +28,30 @@ deep-diff-forge cluster-contract
 deep-diff-forge loom-contract
 ```
 
+## Gate Contract (`--stdin-patch`)
+
+A script that turns a review document into a pass/fail verdict must not read
+"nothing to review" as "nothing wrong". Two guards make that impossible; pass
+both:
+
+```bash
+git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require-hunks
+```
+
+| Guard | Refuses when | stderr line |
+| --- | --- | --- |
+| `--require-files` | the well-formed patch describes 0 files (empty or mis-piped input) | `refused: 0 files in input (--require-files)` |
+| `--require-hunks` | the patch has 0 hunks or 0 added+removed lines across all files (header-only `diff --git a/x b/x`, rename-only, context-only hunks) | `refused: 0 hunks in input (--require-hunks)` |
+
+Rules:
+
+- A refusal exits **7**, writes one line to stderr, and leaves stdout empty.
+- `--require-files` alone passes a header-only or rename-only diff (one file,
+  zero hunks); only `--require-hunks` closes that gap.
+- When both guards would fail, the files guard reports first.
+- A parse failure is still exit 4; the guards never mask it.
+- Without either flag the default is unchanged: nothing to review → exit 0.
+
 ## Justfile Runner Contract
 
 The repo-local `justfile` provides deployment shortcuts for humans, agents, CI
