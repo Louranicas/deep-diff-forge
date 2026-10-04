@@ -15,7 +15,7 @@ cockpit, and bounded parallel execution on top — every layer a projection over
 one stable model, none of them ever allowed to corrupt the patch.
 
 > **Maturity: L9 (Learning).** All engine layers L0–L8 are implemented, plus the
-> L9 local-only learning loop (`learn status|record`). 12 crates, 927 tests, zero
+> L9 local-only learning loop (`learn status|record`). 12 crates, 983 tests, zero
 > `unsafe`, supply-chain-gated, dual MIT/Apache-2.0 licensed. The workspace is
 > **crates.io-publish-ready** (`cargo publish --dry-run` is clean across all
 > crates); the upload itself is **token-gated** — the release workflow publishes
@@ -301,6 +301,7 @@ deep-diff-forge --stdin-patch [MODE]
 | `--cluster [--parallel serial\|auto\|N]` | Same ranking, computed via bounded parallel lanes with a deterministic join + a receipt. Add `--json` for `deep-diff-forge.cluster.v0`. |
 | `--layout inline` | Inline projection with old/new line numbers and markers. |
 | `--layout side-by-side` | Two-column old-vs-new projection with a gutter. |
+| `--require-files` | Guard (combine with any mode): refuse a patch that parses to **0 files** with exit code 7, an empty stdout, and `refused: 0 files in input (--require-files)` on stderr. A gate or orchestrator should **always** pass this, so an empty or mis-piped input can never be read as a clean, zero-risk review. Default behaviour (0 files → exit 0) is unchanged without it. |
 
 Examples:
 
@@ -310,6 +311,8 @@ git diff | deep-diff-forge --stdin-patch --json   > review.json
 git diff | deep-diff-forge --stdin-patch --jsonl  | while read -r ev; do echo "$ev"; done
 git diff | deep-diff-forge --stdin-patch --rank --json
 git diff | deep-diff-forge --stdin-patch --cluster --parallel 4 --json
+# orchestrator / gate: sealed, deterministic, refuses empty input
+git diff | deep-diff-forge --stdin-patch --rank --json --require-files
 ```
 
 ### `semantic <path>` — tree-sitter symbols
@@ -496,11 +499,32 @@ line. Primary output goes to **stdout**; diagnostics to **stderr**.
 | `learn status --json` | `deep-diff-forge.learning.v0` |
 | `daemon …` | JSON-RPC 2.0 |
 
+### Input sealing (`input_sha256` + `tool`)
+
+Every input-derived document — `review.v0`, `rank.v0`, `cluster.v0`, and
+`semantic.v0` — carries two additive top-level members directly after
+`schema`, so an orchestrator can treat the document as a **sealed observation**
+tied to exact bytes and an exact tool build:
+
+| Member | Meaning |
+| --- | --- |
+| `input_sha256` | Lowercase hex SHA-256 over the **exact bytes read** (stdin for `--stdin-patch`, the source file for `semantic`), hashed *before* any parsing or normalisation. `sha256sum < input` reproduces it. |
+| `tool` | `{"name": "deep-diff-forge", "version": "<CARGO_PKG_VERSION>"}` — the emitting build. |
+
+The schema names stay at `.v0`: the members are purely additive, every
+existing field keeps its meaning, and consumers that ignore unknown keys are
+unaffected. `--jsonl` events, the human renderers, and documents that are not
+derived from an input (`learning.v0`, `deployment-status.v0`, `release.v0`)
+carry no seal. Output is deterministic: the same bytes produce byte-identical
+stdout and the same `input_sha256` on every run.
+
 Example — `--rank --json`:
 
 ```json
 {
   "schema": "deep-diff-forge.rank.v0",
+  "input_sha256": "9317219840467a00fbb7bc3ff905b0ae26a999582c12c8d02f49d380b398bbb3",
+  "tool": {"name": "deep-diff-forge", "version": "0.2.1"},
   "ranked": [
     {"path": "src/lib.rs", "status": "modified", "score": 7, "signals": ["public_api_surface"]},
     {"path": "tests/it.rs", "status": "modified", "score": 1, "signals": ["test_only"]}
@@ -513,6 +537,8 @@ Example — `--cluster --json` (note the receipt):
 ```json
 {
   "schema": "deep-diff-forge.cluster.v0",
+  "input_sha256": "9317219840467a00fbb7bc3ff905b0ae26a999582c12c8d02f49d380b398bbb3",
+  "tool": {"name": "deep-diff-forge", "version": "0.2.1"},
   "receipt": {"dimensions": ["patch", "risk"], "parallelism": "fixed:4", "workers": 4, "join_policy": "ranked-review-order", "file_count": 2},
   "ranked": [ /* … */ ]
 }
@@ -531,6 +557,7 @@ single canonical snake-case spelling (`added`, `modified`, `deleted`,
 | 3 | Input (stdin or file) read failure. |
 | 4 | Patch parse failure. |
 | 6 | Daemon / interactive-terminal failure. |
+| 7 | Input contract refused: `--require-files` was passed and the (well-formed) patch describes 0 files. stderr: `refused: 0 files in input (--require-files)`. |
 
 Diagnostics never pollute stdout: on error, stdout stays empty and the message
 goes to stderr.
@@ -666,7 +693,7 @@ just gate-feature
 #   bootstrap contract probes
 ```
 
-Standards enforced across the tree: **927 tests** (every production crate ≥ 50
+Standards enforced across the tree: **983 tests** (every production crate ≥ 50
 meaningful tests), **zero `unsafe`** (compiler-forbidden workspace-wide via
 `[workspace.lints]`), no production `unwrap`/`expect`, pedantic clippy clean with
 no unexplained suppressions, and a `cargo-deny` ([`deny.toml`](deny.toml)) +

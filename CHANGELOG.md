@@ -6,6 +6,31 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Added
+
+- **Input sealing** — every input-derived machine document (`review.v0`,
+  `rank.v0`, `cluster.v0`, `semantic.v0`) now carries two additive top-level
+  members directly after `schema`: `input_sha256` (lowercase hex SHA-256 over
+  the exact bytes read, before any parsing or normalisation) and `tool`
+  (`{"name": "deep-diff-forge", "version": …}`). An orchestrator can tie a
+  verdict to exact input bytes and an exact tool build. Schema names are
+  unchanged (`.v0`): the fields are purely additive. SHA-256 is implemented in
+  `deep-diff-forge-core` (`sha256`, `sha256_hex`, `InputSeal`) in pure safe Rust
+  with no new dependency, tested against the NIST vectors;
+  `deep-diff-forge-patch` gains `to_json_sealed`.
+- **`--require-files`** for `--stdin-patch` — refuse a patch that parses to 0
+  files with the new **exit code 7**, an empty stdout, and
+  `refused: 0 files in input (--require-files)` on stderr. Gates should always
+  pass it so an empty or mis-piped input is never read as a clean review.
+  Default behaviour without the flag (0 files → exit 0) is unchanged.
+- Determinism contract test: `--rank --json --require-files` is byte-identical
+  across runs with an identical `input_sha256`.
+
+### Changed
+
+- README exit-code table gains code 7; the documented test count is now the
+  measured 983.
+
 ## [0.2.1] - 2026-09-04
 
 ### Security

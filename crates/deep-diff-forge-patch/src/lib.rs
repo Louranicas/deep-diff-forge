@@ -24,7 +24,7 @@ pub use parser::{ParseOptions, parse, parse_with};
 pub use render::render_unified;
 
 #[cfg(feature = "json")]
-pub use json::to_json;
+pub use json::{to_json, to_json_sealed};
 
 /// Default maximum input size accepted by the parser, in bytes.
 ///

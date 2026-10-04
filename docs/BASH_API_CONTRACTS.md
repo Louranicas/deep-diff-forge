@@ -59,6 +59,8 @@ Rules:
 ```json
 {
   "schema": "deep-diff-forge.review.v0",
+  "input_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tool": {"name": "deep-diff-forge", "version": "0.2.1"},
   "files": [],
   "summary": {
     "files_changed": 0,

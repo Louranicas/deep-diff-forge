@@ -1,4 +1,4 @@
-use deep_diff_forge_core::{DiffStrategy, FileStatus, PatchLineKind, ReviewFile};
+use deep_diff_forge_core::{DiffStrategy, FileStatus, InputSeal, PatchLineKind, ReviewFile};
 use std::fmt::Write as _;
 
 /// Schema identifier for the JSON document this module emits.
@@ -10,13 +10,33 @@ pub const SCHEMA: &str = "deep-diff-forge.review.v0";
 /// `deep-diff-forge.review.v0` schema, every file with its status, strategy,
 /// hunks, line anchors, and metadata, plus a summary. JSON is hand-rolled to
 /// keep the workspace dependency-free at L1.
+///
+/// This form carries no input seal (the caller has no raw input bytes — e.g.
+/// the TUI's in-memory review); the CLI's `--stdin-patch --json` uses
+/// [`to_json_sealed`] so a consumer can tie the document to its exact input.
 #[must_use]
 pub fn to_json(files: &[ReviewFile]) -> String {
+    render(files, None)
+}
+
+/// [`to_json`] plus the additive top-level `input_sha256` and `tool` members
+/// from `seal`, placed directly after `schema`. The schema name is unchanged:
+/// every `review.v0` field keeps its meaning, so existing consumers are
+/// unaffected and a gate can additionally verify the seal.
+#[must_use]
+pub fn to_json_sealed(files: &[ReviewFile], seal: &InputSeal) -> String {
+    render(files, Some(seal))
+}
+
+fn render(files: &[ReviewFile], seal: Option<&InputSeal>) -> String {
     let mut additions = 0usize;
     let mut deletions = 0usize;
     let mut out = String::new();
     out.push_str("{\n");
     let _ = writeln!(out, "  \"schema\": {},", quote(SCHEMA));
+    if let Some(seal) = seal {
+        out.push_str(&seal.json_members());
+    }
     out.push_str("  \"files\": [");
 
     for (i, file) in files.iter().enumerate() {
@@ -205,6 +225,36 @@ mod tests {
         let json = to_json(&[]);
         assert!(json.contains("\"files\": []"));
         assert!(json.contains("\"files_changed\": 0"));
+    }
+
+    #[test]
+    fn unsealed_output_carries_no_seal_members() {
+        let files = parse(BASIC).unwrap();
+        let json = to_json(&files);
+        assert!(!json.contains("input_sha256"));
+        assert!(!json.contains("\"tool\""));
+    }
+
+    #[test]
+    fn sealed_output_places_seal_directly_after_schema() {
+        let files = parse(BASIC).unwrap();
+        let seal = InputSeal::of(BASIC.as_bytes(), "1.2.3");
+        let json = to_json_sealed(&files, &seal);
+        let expected_head = format!(
+            "{{\n  \"schema\": \"deep-diff-forge.review.v0\",\n  \"input_sha256\": \"{}\",\n  \"tool\": {{\"name\": \"deep-diff-forge\", \"version\": \"1.2.3\"}},\n  \"files\": [",
+            seal.input_sha256
+        );
+        assert!(json.starts_with(&expected_head), "got:\n{json}");
+        // The rest of the document is byte-identical to the unsealed form.
+        assert_eq!(json.replacen(&seal.json_members(), "", 1), to_json(&files));
+    }
+
+    #[test]
+    fn sealed_empty_model_is_still_well_formed() {
+        let seal = InputSeal::of(b"", "0.0.0");
+        let json = to_json_sealed(&[], &seal);
+        assert!(json.contains("\"input_sha256\": \"e3b0c442"));
+        assert!(json.contains("\"files\": []"));
     }
 
     #[test]

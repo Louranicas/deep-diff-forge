@@ -82,7 +82,7 @@ deep-diff-forge daemon stop
 | 4 | Patch parse failure. |
 | 5 | Git workspace failure. |
 | 6 | Daemon or IPC failure. |
-| 7 | Contract violation. |
+| 7 | Contract violation — shipped: `--stdin-patch --require-files` refused a patch that parses to 0 files (`refused: 0 files in input (--require-files)` on stderr, stdout empty). |
 | 8 | Internal recoverable fallback reached hard boundary. |
 | 101 | Panic or unrecoverable internal bug. |
 

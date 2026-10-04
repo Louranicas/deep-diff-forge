@@ -1,4 +1,4 @@
-use deep_diff_forge_core::{ReviewDocument, display_safe};
+use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe};
 
 /// Write `s` to stdout, treating a reader that closed the pipe (`… | head`) as
 /// a clean exit. Rust ignores SIGPIPE, so a bare `print!`/`println!` panics with
@@ -104,40 +104,82 @@ fn main() {
     }
 }
 
+/// Exit code for an input-contract refusal: the caller passed `--require-files`
+/// and the (well-formed) patch describes zero files. Distinct from 4 (the input
+/// could not be parsed) so a gate can tell "nothing to review" from "garbage".
+/// This is the "contract violation" slot of the documented exit-code table.
+const EXIT_REFUSED: i32 = 7;
+
+/// Parse a patch or exit 4 with a stderr diagnostic (the CLI contract for a
+/// patch parse failure). Shared by every stdin-patch entry point.
+fn parse_or_exit(input: &str) -> Vec<deep_diff_forge_core::ReviewFile> {
+    match deep_diff_forge_patch::parse(input) {
+        Ok(files) => files,
+        Err(err) => {
+            eprintln!("error: patch parse failed: {err}");
+            std::process::exit(4);
+        }
+    }
+}
+
+/// `--require-files` guard: refuse a zero-file patch with [`EXIT_REFUSED`] and
+/// a one-line stderr reason, leaving stdout empty. A gate that feeds a diff
+/// into the engine should always pass `--require-files`, so an empty or
+/// mis-piped input can never be mistaken for a clean, zero-risk review.
+fn refuse_if_no_files(files: &[deep_diff_forge_core::ReviewFile]) {
+    if files.is_empty() {
+        eprintln!("refused: 0 files in input (--require-files)");
+        std::process::exit(EXIT_REFUSED);
+    }
+}
+
+/// Seal the exact input bytes for a machine-readable document. UTF-8
+/// validation in [`read_capped_or_exit`] is lossless, so the `String`'s bytes
+/// are precisely the bytes read — hashed before any parsing or normalisation.
+fn seal_of(input: &str) -> InputSeal {
+    InputSeal::of(input.as_bytes(), env!("CARGO_PKG_VERSION"))
+}
+
 /// Read a unified/Git patch from stdin and emit one of: the
 /// `deep-diff-forge.review.v0` JSON document (`--json`), an inline or
 /// side-by-side projection (`--layout inline|side-by-side`), or a human review
 /// summary (default).
 ///
 /// Exit codes follow the CLI contract: 2 = usage error, 3 = input read failure,
-/// 4 = patch parse failure.
+/// 4 = patch parse failure, 7 = `--require-files` refused a zero-file patch.
 fn stdin_patch(opts: &[String]) {
     let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
+    let require_files = opts.iter().any(|a| a == "--require-files");
     // --jsonl streams one event per file through the real pipeline runner.
     if opts.iter().any(|a| a == "--jsonl") {
+        if require_files {
+            // The pipeline parses internally; the gate needs the file count
+            // before anything is streamed, so pre-flight the parse here.
+            refuse_if_no_files(&parse_or_exit(&input));
+        }
         run_jsonl_pipeline(input);
         return;
     }
 
-    let files = match deep_diff_forge_patch::parse(&input) {
-        Ok(files) => files,
-        Err(err) => {
-            eprintln!("error: patch parse failed: {err}");
-            std::process::exit(4);
-        }
-    };
+    let files = parse_or_exit(&input);
+    if require_files {
+        refuse_if_no_files(&files);
+    }
 
     if opts.iter().any(|a| a == "--cluster") {
-        run_cluster(&files, opts);
+        run_cluster(&files, opts, &input);
     } else if opts.iter().any(|a| a == "--rank") {
         let ranked = deep_diff_forge_graph::rank(&files);
         if opts.iter().any(|a| a == "--json") {
-            print_rank_json(&ranked);
+            print_rank_json(&ranked, &seal_of(&input));
         } else {
             print_rank_human(&ranked);
         }
     } else if opts.iter().any(|a| a == "--json") {
-        emit(&deep_diff_forge_patch::to_json(&files));
+        emit(&deep_diff_forge_patch::to_json_sealed(
+            &files,
+            &seal_of(&input),
+        ));
     } else if let Some(name) = flag_value(opts, "--layout") {
         if let Some(layout) = deep_diff_forge_projection::layout_from_str(&name) {
             let options = deep_diff_forge_projection::ProjectionOptions {
@@ -365,13 +407,7 @@ fn review_cmd(opts: &[String]) {
     }
 
     let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
-    let files = match deep_diff_forge_patch::parse(&input) {
-        Ok(files) => files,
-        Err(err) => {
-            eprintln!("error: patch parse failed: {err}");
-            std::process::exit(4);
-        }
-    };
+    let files = parse_or_exit(&input);
     // Surface the engine's own findings (risk signals, semantic changes) as
     // grounded, anchored inline notes so the review explains *why* a file
     // matters in-place.
@@ -622,7 +658,8 @@ fn semantic_cmd(opts: &[String]) {
         deep_diff_forge_syntax::SyntaxOptions::default(),
     );
     if opts.iter().any(|a| a == "--json") {
-        print_semantic_json(path, &analysis);
+        // For `semantic` the sealed input is the source file's exact bytes.
+        print_semantic_json(path, &analysis, &seal_of(&source));
     } else {
         print_semantic_human(path, &analysis);
     }
@@ -657,7 +694,11 @@ fn print_semantic_human(path: &str, analysis: &deep_diff_forge_syntax::SemanticA
     emitln!("{} symbol(s)", analysis.symbols.len());
 }
 
-fn print_semantic_json(path: &str, analysis: &deep_diff_forge_syntax::SemanticAnalysis) {
+fn print_semantic_json(
+    path: &str,
+    analysis: &deep_diff_forge_syntax::SemanticAnalysis,
+    seal: &InputSeal,
+) {
     use deep_diff_forge_core::json_escape;
     use std::fmt::Write as _;
     let mut symbols = String::new();
@@ -675,7 +716,8 @@ fn print_semantic_json(path: &str, analysis: &deep_diff_forge_syntax::SemanticAn
         );
     }
     emitln!(
-        "{{\n  \"schema\": \"deep-diff-forge.semantic.v0\",\n  \"path\": {},\n  \"language\": {},\n  \"parse_status\": {},\n  \"symbols\": [{}]\n}}",
+        "{{\n  \"schema\": \"deep-diff-forge.semantic.v0\",\n{}  \"path\": {},\n  \"language\": {},\n  \"parse_status\": {},\n  \"symbols\": [{}]\n}}",
+        seal.json_members(),
         json_escape(path),
         json_escape(analysis.language.name()),
         json_escape(&parse_status_str(&analysis.parse_status)),
@@ -830,13 +872,14 @@ fn parse_parallelism(opts: &[String]) -> deep_diff_forge_core::Parallelism {
 }
 
 /// Run the patch+risk cluster with bounded parallelism and a deterministic join.
-fn run_cluster(files: &[deep_diff_forge_core::ReviewFile], opts: &[String]) {
+/// `input` is the raw patch text, sealed into the `--json` document.
+fn run_cluster(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], input: &str) {
     use deep_diff_forge_cluster::{join_label, parallelism_label, run_risk_cluster};
     use deep_diff_forge_core::JoinPolicy;
     let parallelism = parse_parallelism(opts);
     let run = run_risk_cluster(files, parallelism, JoinPolicy::RankedReviewOrder);
     if opts.iter().any(|a| a == "--json") {
-        print_cluster_json(&run);
+        print_cluster_json(&run, &seal_of(input));
     } else {
         print_rank_human(&run.ranked);
         emitln!(
@@ -849,7 +892,7 @@ fn run_cluster(files: &[deep_diff_forge_core::ReviewFile], opts: &[String]) {
     }
 }
 
-fn print_cluster_json(run: &deep_diff_forge_cluster::ClusterRun) {
+fn print_cluster_json(run: &deep_diff_forge_cluster::ClusterRun, seal: &InputSeal) {
     use deep_diff_forge_cluster::{dimension_label, join_label, parallelism_label};
     use deep_diff_forge_core::json_escape;
     use std::fmt::Write as _;
@@ -880,7 +923,8 @@ fn print_cluster_json(run: &deep_diff_forge_cluster::ClusterRun) {
         format!("\n{ranked}\n  ")
     };
     emitln!(
-        "{{\n  \"schema\": \"deep-diff-forge.cluster.v0\",\n  \"receipt\": {{\"dimensions\": [{}], \"parallelism\": {}, \"workers\": {}, \"join_policy\": {}, \"file_count\": {}}},\n  \"ranked\": [{}]\n}}",
+        "{{\n  \"schema\": \"deep-diff-forge.cluster.v0\",\n{}  \"receipt\": {{\"dimensions\": [{}], \"parallelism\": {}, \"workers\": {}, \"join_policy\": {}, \"file_count\": {}}},\n  \"ranked\": [{}]\n}}",
+        seal.json_members(),
         dims.join(", "),
         json_escape(&parallelism_label(run.receipt.parallelism)),
         run.receipt.worker_count,
@@ -904,7 +948,7 @@ fn print_rank_human(ranked: &[deep_diff_forge_graph::RankedFile]) {
     emitln!("{} file(s) ranked", ranked.len());
 }
 
-fn print_rank_json(ranked: &[deep_diff_forge_graph::RankedFile]) {
+fn print_rank_json(ranked: &[deep_diff_forge_graph::RankedFile], seal: &InputSeal) {
     use deep_diff_forge_core::json_escape;
     use std::fmt::Write as _;
     let mut items = String::new();
@@ -927,7 +971,10 @@ fn print_rank_json(ranked: &[deep_diff_forge_graph::RankedFile]) {
     } else {
         format!("\n{items}\n  ")
     };
-    emitln!("{{\n  \"schema\": \"deep-diff-forge.rank.v0\",\n  \"ranked\": [{body}]\n}}");
+    emitln!(
+        "{{\n  \"schema\": \"deep-diff-forge.rank.v0\",\n{}  \"ranked\": [{body}]\n}}",
+        seal.json_members()
+    );
 }
 
 /// Return the value following `name` in `opts`, if present.
@@ -979,7 +1026,7 @@ USAGE:
   deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME]
   deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]
   deep-diff-forge learn {{status|record --stdin}} [--json]
-  deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side]
+  deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side] [--require-files]
   deep-diff-forge claude-code-contract
   deep-diff-forge chain-contract
   deep-diff-forge cluster-contract
