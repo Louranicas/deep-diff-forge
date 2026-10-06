@@ -4,6 +4,8 @@
 
 # Deep-Diff-Forge
 
+Local Herdr integration: [Poteto Weave](</mnt/storage-10tb/hee4-evidence/prototypes/turso-tool-context/assimilation-20261005/README.md>) indexes DDF context and links back here. HEE's DDF adapter consumes review observations; HEE retains verdict authority. This is a local navigation link, not a deployed DDF feature.
+
 **A next-generation review engine for code changes — patch truth and semantic
 intent, together.**
 
