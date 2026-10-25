@@ -116,6 +116,9 @@ class Builds:
         self.count = 0
 
     def digest(self, spans):
+        """MIR digests per target. A neutralised copy that no longer builds (a `const fn` evaluated
+        at compile time, an `impl Trait` inferred from the body) is a change: code absent from the
+        production build cannot break it. Only the unmodified tree must build."""
         self.count += 1
         tree = os.path.join(self.scratch, f"tree-{self.count}")
         shutil.copytree(self.source, tree, symlinks=True, ignore=shutil.ignore_patterns("target"))
@@ -124,13 +127,19 @@ class Builds:
         # A lib and a bin may share a name, so each target's output is numbered, never named.
         for index, (name, selector) in enumerate(self.targets):
             emit = os.path.join(self.scratch, f"{self.count}-{index}.mir")
-            run(
-                ["cargo", "rustc", "--locked", "-q", "-p", self.package, *selector,
-                 "--no-default-features", "--features", ",".join(self.features),
-                 "--", f"--emit=mir={emit}"],
-                cwd=tree,
-                env=dict(os.environ, CARGO_TARGET_DIR=os.path.join(self.scratch, "target")),
-            )
+            try:
+                run(
+                    ["cargo", "rustc", "--locked", "-q", "-p", self.package, *selector,
+                     "--no-default-features", "--features", ",".join(self.features),
+                     "--", f"--emit=mir={emit}"],
+                    cwd=tree,
+                    env=dict(os.environ, CARGO_TARGET_DIR=os.path.join(self.scratch, "target")),
+                )
+            except RuntimeError:
+                if not spans:
+                    raise
+                digests[(index, name)] = "build failed"
+                continue
             with open(emit, "rb") as mir:
                 digests[(index, name)] = hashlib.sha256(mir.read()).hexdigest()
         shutil.rmtree(tree)

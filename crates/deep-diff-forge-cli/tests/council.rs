@@ -510,7 +510,8 @@ const FAKE_IMAGE_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef012
 /// the vendoring output; `fifo` and `symlinked_dir` at the mutation witness. It also answers the
 /// exemption oracle (installed again as `ddf-cargo-mutants-noexclude`): `exempt` hides a function the
 /// production build compiles (`exempt_txt`: in a non-`.rs` module), `hidden_test` hides one it
-/// does not, and `mir_blind` emits MIR that no change can alter.
+/// does not, `mir_blind` emits MIR that no change can alter, and `neutral_fails` stops building
+/// when `hidden` is neutralised.
 const FAKE_GATE: &str = r"#!/usr/bin/python3
 import json,os,pathlib,sys
 mode='@MODE@'
@@ -523,7 +524,7 @@ if '--list' in sys.argv:
         return {'file':file,'genre':'FnValue','span':body,'function':{'function_name':name,'span':span}}
     rows=[fn('shipped',1)]
     if 'noexclude' in os.path.basename(sys.argv[0]):
-        if mode in ('exempt','hidden_test','mir_blind'):rows.append(fn('hidden',4))
+        if mode in ('exempt','hidden_test','mir_blind','neutral_fails'):rows.append(fn('hidden',4))
         # A `#[path]` module need not end in `.rs` (council r10).
         if mode=='exempt_txt':rows.append(fn('hidden',1,'src/hidden.txt'))
     print(json.dumps(rows));sys.exit(0)
@@ -538,6 +539,8 @@ if sys.argv[1:2]==['rustc']:
     if mode=='hidden_test':lib='\n'.join(lib.split('\n')[:3])
     if mode=='exempt_txt':lib+=pathlib.Path('src/hidden.txt').read_text()
     if mode=='mir_blind':lib='constant'
+    # `neutral_fails`: like a `const fn` evaluated at compile time, a neutralised `hidden` breaks the build.
+    if mode=='neutral_fails' and 'loop {}' in '\n'.join(lib.split('\n')[3:]):sys.exit(1)
     pathlib.Path(emit).write_text(lib);sys.exit(0)
 if sys.argv[1:2]==['vendor']:
     out=pathlib.Path(sys.argv[-1])
@@ -882,6 +885,22 @@ fn test_only_code_hidden_from_cargo_mutants_is_allowed() {
     assert_eq!(witness["state"], "passed", "{witness}");
     assert_eq!(witness["hidden_functions"], 1);
     assert_eq!(witness["control"]["mir_changed"], true);
+}
+
+#[test]
+fn hidden_code_whose_neutralisation_breaks_the_build_ships() {
+    // Code absent from the production build cannot break it, so a failed build is a change.
+    let f = oracle_fixture("neutral_fails");
+    let result = f.gate("mutation");
+    assert_eq!(
+        result.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let witness = oracle_witness(&f);
+    assert_eq!(witness["state"], "refused", "{witness}");
+    assert_eq!(witness["refused"][0]["function"], "hidden");
 }
 
 #[test]
