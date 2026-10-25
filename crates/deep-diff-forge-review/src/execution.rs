@@ -68,7 +68,7 @@ fn run(
     let jobdir = directory.join("jobs").join(job);
     // Gates are measured on their own read-only snapshot copy; providers read only the captured prompt.
     let inventory: Option<Inventory> = gate
-        .map(|_| storage::read_json(&directory.join(INVENTORY_FILE), 4 * 1024 * 1024))
+        .map(|_| storage::read_json(&directory.join(INVENTORY_FILE), storage::INVENTORY_CAP))
         .transpose()?;
     let observe = || match &inventory {
         Some(inventory) => storage::fingerprint_tree(&jobdir.join("src"), inventory),
@@ -745,7 +745,7 @@ fn refuse_snapshot_paths(inventory: &Inventory, snapshot: &Path) -> Result<()> {
 fn prepare_work(directory: &Path, jobdir: &Path, vendored: bool, fuzz: bool) -> Result<PathBuf> {
     storage::make_dir(jobdir)?;
     let inventory: Inventory =
-        storage::read_json(&directory.join(INVENTORY_FILE), 4 * 1024 * 1024)?;
+        storage::read_json(&directory.join(INVENTORY_FILE), storage::INVENTORY_CAP)?;
     let source = jobdir.join("src");
     storage::copy_tree(&directory.join(SNAPSHOT_DIR), &source, &inventory)?;
     // The mountpoint for the fuzz artifact tmpfs; admission refused any sealed path under it, so it
@@ -904,7 +904,7 @@ pub fn run_gate(directory: &Path, gate: Gate) -> Result<Vec<Execution>> {
     let sandbox = Sandbox::from_env()?;
     let image_id = sandbox.image_id()?;
     let inventory: Inventory =
-        storage::read_json(&directory.join(INVENTORY_FILE), 4 * 1024 * 1024)?;
+        storage::read_json(&directory.join(INVENTORY_FILE), storage::INVENTORY_CAP)?;
     refuse_snapshot_paths(&inventory, &directory.join(SNAPSHOT_DIR))?;
     let _lock = admit(directory, &manifest)?;
     require(

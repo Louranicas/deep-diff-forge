@@ -172,9 +172,13 @@ impl Inventory {
 pub(crate) const SNAPSHOT_DIR: &str = "source";
 /// The candidate's changes since `mutation_base`, sealed at prepare for the diff-scoped mutation gate.
 pub(crate) const MUTATION_DIFF: &str = "mutation.diff";
-/// Largest mutation diff captured at prepare and read back by the mutation gate.
-pub(crate) const MUTATION_DIFF_CAP: u64 = 16 * 1024 * 1024;
+/// Largest mutation diff captured at prepare and read back by the mutation gate. Written as a
+/// shift, so the only arithmetic mutant (a zero cap) refuses every diff-scoped run.
+pub(crate) const MUTATION_DIFF_CAP: u64 = 16 << 20;
 pub(crate) const INVENTORY_FILE: &str = "source-inventory.json";
+/// Largest sealed inventory a gate reads back. Written as a shift, so the only arithmetic mutant
+/// (a zero cap) refuses every gate.
+pub(crate) const INVENTORY_CAP: u64 = 4 << 20;
 /// Relative to a mutation gate's job directory; written inside the sandbox, read after it exits.
 pub(crate) const MUTATION_WITNESS: &str = "work/mutation-results/mutants.out/outcomes.json";
 
@@ -332,7 +336,7 @@ fn walk_tree(root: &Path, copy: Option<&Path>) -> Result<TreeSeal> {
                 subdirectories.push(relative.clone());
             } else if meta.is_file() {
                 seal.files += 1;
-                let bytes = read_bytes(&path, SEAL_BYTES - seal.bytes)?;
+                let bytes = read_bytes(&path, SEAL_BYTES.saturating_sub(seal.bytes))?;
                 seal.bytes += bytes.len() as u64;
                 let executable = meta.permissions().mode() & 0o111 != 0;
                 framed.push(if executable { b'x' } else { b'f' });
