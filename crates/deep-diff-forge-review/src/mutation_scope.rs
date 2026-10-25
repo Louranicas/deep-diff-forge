@@ -299,11 +299,13 @@ fn regions(old: &[usize], new: &[usize], spent: &mut usize) -> Vec<Region> {
 }
 
 /// cargo-mutants selects mutants by new-side lines, so a region that only deletes lines selects
-/// none (measured with 27.1.0): removing a check would leave its function unmutated. Widen each such
-/// region over the unchanged lines on both sides, through blank, comment and attribute lines, to the
-/// nearest other line before and after it (council r9: a neighbour that is only a blank line can
-/// sit outside the affected item). Widening stops at the neighbouring regions, and widened regions that then
-/// overlap are merged. Unchanged lines are equal on both sides, so the diff stays valid.
+/// none (measured with 27.1.0): removing a check would leave its function unmutated. The same holds
+/// for a region whose new lines are all blank, comment or attribute lines, such as a `cfg` gate
+/// rewritten from `any()` to `all()` (council r10). Widen each such region over the unchanged lines
+/// on both sides, through blank, comment and attribute lines, to the nearest other line before and
+/// after it (council r9: a neighbour that is only a blank line can sit outside the affected item).
+/// Widening stops at the neighbouring regions, and widened regions that then overlap are merged.
+/// Unchanged lines are equal on both sides, so the diff stays valid.
 fn widen_deletions(found: &[Region], new: &[&[u8]]) -> Vec<Region> {
     // Lines that belong to no item's body: blank, comment and attribute lines (council r10: a
     // comment between a deleted `cfg` and the item it disabled stopped the widening).
@@ -317,7 +319,7 @@ fn widen_deletions(found: &[Region], new: &[&[u8]]) -> Vec<Region> {
     let mut widened: Vec<Region> = Vec::new();
     for (k, (old_range, new_range)) in found.iter().enumerate() {
         let (mut old_range, mut new_range) = (old_range.clone(), new_range.clone());
-        if new_range.is_empty() && !new.is_empty() {
+        if new_range.clone().all(blank) && !new.is_empty() {
             // The matched lines between this region and its neighbours.
             let floor = k.checked_sub(1).map_or(0, |previous| found[previous].1.end);
             let ceiling = found.get(k + 1).map_or(new.len(), |next| next.1.start);
@@ -388,12 +390,18 @@ fn lex(source: &str) -> Lexed {
         }
         _ => source,
     };
-    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    // Rust identifiers continue with any XID_Continue character (combining marks, connector
+    // punctuation); every non-ASCII character that is not whitespace is treated as one, which
+    // over-approximates and fails closed (council r10).
+    let ident = |c: char| c.is_alphanumeric() || c == '_' || (!c.is_ascii() && !rust_whitespace(c));
     let (mut before_last, mut last) = (' ', ' ');
     let mut chars = body.chars().peekable();
     while let Some(c) = chars.next() {
         // An `r` starts a raw literal or identifier only at a token's start (or after `b`/`c`).
         let token_start = !ident(last) || (matches!(last, 'b' | 'c') && !ident(before_last));
+        // An identifier right after a literal is that literal's suffix (`"a"r`), never a token's
+        // start (council r10); a skipped literal therefore counts as an identifier character.
+        let mut literal = false;
         match c {
             '/' if chars.next_if_eq(&'/').is_some() => {
                 chars.by_ref().find(|c| *c == '\n');
@@ -404,6 +412,7 @@ fn lex(source: &str) -> Lexed {
             '"' => {
                 let (text, closed) = skip_string(&mut chars);
                 lexed.desync |= !closed;
+                literal = true;
                 if lexed.code.ends_with("path=") {
                     lexed.module_paths.push(unescape(&text));
                 }
@@ -411,17 +420,18 @@ fn lex(source: &str) -> Lexed {
             'r' if token_start && raw_string_ahead(&chars) => {
                 let (text, closed) = skip_raw_string(&mut chars);
                 lexed.desync |= !closed;
+                literal = true;
                 if lexed.code.ends_with("path=") {
                     lexed.module_paths.push(text);
                 }
             }
             // A raw identifier's `r#` prefix: `r#mutants` is the path segment `mutants`.
             'r' if token_start && chars.next_if_eq(&'#').is_some() => {}
-            '\'' => skip_char_literal(&mut chars, &mut lexed.code),
+            '\'' => literal = skip_char_literal(&mut chars, &mut lexed.code),
             c if rust_whitespace(c) => {}
             c => lexed.code.push(c),
         }
-        (before_last, last) = (last, c);
+        (before_last, last) = (last, if literal { '_' } else { c });
     }
     lexed
 }
@@ -591,17 +601,25 @@ fn skip_raw_string(chars: &mut Peekable<Chars>) -> (String, bool) {
     }
     (text, false)
 }
-/// After a `'`: skip a character literal, or keep a lifetime or label's quote as code.
-fn skip_char_literal(chars: &mut Peekable<Chars>, code: &mut String) {
+/// After a `'`: skip a character literal and return true, or keep a lifetime or label's quote as
+/// code and return false.
+fn skip_char_literal(chars: &mut Peekable<Chars>, code: &mut String) -> bool {
     let mut ahead = chars.clone();
     match (ahead.next(), ahead.next()) {
         (Some('\\'), _) => {
             chars.next();
             chars.next();
             chars.by_ref().find(|c| *c == '\'');
+            true
         }
-        (Some(_), Some('\'')) => *chars = ahead,
-        _ => code.push('\''),
+        (Some(_), Some('\'')) => {
+            *chars = ahead;
+            true
+        }
+        _ => {
+            code.push('\'');
+            false
+        }
     }
 }
 
@@ -878,6 +896,12 @@ mod tests {
                 "a\nb\n\nc\n",
                 "@@ -1,3 +1,2 @@\n-a\n-X\n-b\n+a\n+b\n",
             ),
+            // A rewritten gate is widened like a deletion (council r10).
+            (
+                "fn a() {}\n#[cfg(any())]\nfn f() {}\n",
+                "fn a() {}\n#[cfg(all())]\nfn f() {}\n",
+                "@@ -1,3 +1,3 @@\n-fn a() {}\n-#[cfg(any())]\n-fn f() {}\n+fn a() {}\n+#[cfg(all())]\n+fn f() {}\n",
+            ),
             // Through comment and attribute lines too (council r10).
             (
                 "fn a() {}\n#[cfg(any())]\n// note\nfn f() {}\n",
@@ -1044,6 +1068,11 @@ mod tests {
             "#!/*x*/[allow(dead_code)] #[mutants::skip] pub fn f() {}",
             // Rust whitespace includes the directional marks.
             "#[mutants\u{200e}::\u{200f}skip] fn f() {}",
+            // A literal's suffix and an identifier's non-ASCII continuation are not token starts,
+            // so no raw string opens there (each case balanced so desync cannot rescue it).
+            "m!(\"a\"r#\"b\"); #[mutants::skip] fn f() {} // \"#",
+            "m!('a'r#\"b\"); #[mutants::skip] fn f() {} // \"#",
+            "m!(e\u{301}r#\"a\"); #[mutants::skip] fn f() {} // \"#",
             // A literal or comment left open swallows the rest: fail closed when both words appear.
             "let s = \"unterminated;\n#[mutants::skip] fn f() {}",
             "/* unterminated\n#[mutants::skip] fn f() {}",
