@@ -52,7 +52,8 @@ pub(crate) fn require_base(repository: &Path, base: &str) -> Result<()> {
             "--no-progress",
             base,
         ],
-        64 << 10,
+        // Silent on success; anything on stdout is refused with the rest.
+        0,
     )
     .map(drop)
     .map_err(|_| ReviewFailure("mutation base objects fail git fsck".into()))
@@ -619,10 +620,11 @@ mod tests {
         }
     }
 
-    /// 4,096 distinct lines a side sharing one interior line: exactly the per-file cell budget.
+    /// A shared first line, then 4,096 distinct lines a side sharing one interior line: exactly the
+    /// per-file cell budget once the common prefix is set aside.
     fn at_budget(tag: u8) -> (Vec<u8>, Vec<u8>) {
         let side = |name: &str| -> Vec<u8> {
-            let mut text = Vec::new();
+            let mut text = b"head\n".to_vec();
             for i in 0..4096 {
                 if i == 2048 {
                     text.extend_from_slice(b"shared\n");
@@ -700,6 +702,8 @@ mod tests {
             "let s = r#\"a \"b\" c\"#; #[mutants::skip] fn f() {}",
             "fn f<'a>(x: &'a str) {} #[mutants::skip] fn g() {}",
             "let b = b'\"'; #[mutants::skip] fn f() {}",
+            // A division is not a comment.
+            "let x = 4 / 2; #[mutants::skip] fn f() {}",
         ] {
             assert!(has_skip_attribute(source), "{source}");
         }
@@ -721,6 +725,11 @@ mod tests {
             "fn f<'a>(x: &'a str) -> &'a str { \"mutants::skip\" }",
             "let c = 'm'; let s = \"mutants::skip\";",
             "#[doc = \"mutants::skip\"] fn f() {}",
+            // A quote inside a raw string only closes it when followed by its `#`s.
+            "let s = r#\"a\"b #[mutants::skip]\"#;",
+            // Escaped character literals, including multi-character escapes before a quote literal.
+            "let q = '\\\"'; let s = \"mutants::skip\";",
+            "let a = ['\\u{22}','\"']; let s = \"mutants::skip\";",
         ] {
             assert!(!has_skip_attribute(source), "{source}");
         }
