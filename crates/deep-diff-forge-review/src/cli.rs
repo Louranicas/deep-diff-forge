@@ -44,13 +44,14 @@ pub fn dispatch(args: &[String]) -> Result<(String, i32)> {
         }
         "import" if args.len() == 3 => import(Path::new(&args[1]), Path::new(&args[2])),
         "export-tuicr" => export_tuicr(&args[1..]),
+        "import-tuicr" => import_tuicr(&args[1..]),
         "help" if args.len() <= 1 => Ok((HELP.into(), 0)),
         _ => Err(ReviewFailure(
             "invalid council command or missing explicit --execute; use council help".into(),
         )),
     }
 }
-const HELP: &str = "council example | prepare <request.json> <new-run-dir> | status <run-dir> | review <run-dir> <reviewer-id> <independent|challenge> --execute | gate <run-dir> <format|check|clippy|pedantic|tests|antipatterns|fuzz|mutation> --execute | import <run-dir> <report.json> | export-tuicr <run-dir> --session <tuicr-session.json> [--allow-review-level] [--execute]\n";
+const HELP: &str = "council example | prepare <request.json> <new-run-dir> | status <run-dir> | review <run-dir> <reviewer-id> <independent|challenge> --execute | gate <run-dir> <format|check|clippy|pedantic|tests|antipatterns|fuzz|mutation> --execute | import <run-dir> <report.json> | export-tuicr <run-dir> --session <tuicr-session.json> [--allow-review-level] [--execute] | import-tuicr <run-dir> --session <tuicr-session.json> [--execute]\n";
 fn output(value: &impl serde::Serialize, passed: bool) -> Result<(String, i32)> {
     Ok((
         serde_json::to_string_pretty(value)? + "\n",
@@ -112,6 +113,30 @@ fn export_tuicr(args: &[String]) -> Result<(String, i32)> {
         &crate::export_tuicr(Path::new(run), Path::new(session), options)?,
         true,
     )
+}
+/// Parse `import-tuicr <run-dir> --session <path> [--execute]`; dry run by default. Exit 7 when the
+/// planned or appended events include a conflict.
+fn import_tuicr(args: &[String]) -> Result<(String, i32)> {
+    let usage = || {
+        ReviewFailure(
+            "usage: council import-tuicr <run-dir> --session <tuicr-session.json> [--execute]"
+                .into(),
+        )
+    };
+    let (run, rest) = args.split_first().ok_or_else(usage)?;
+    let mut session = None;
+    let mut options = crate::ImportOptions::default();
+    let mut rest = rest.iter();
+    while let Some(flag) = rest.next() {
+        match flag.as_str() {
+            "--session" if session.is_none() => session = Some(rest.next().ok_or_else(usage)?),
+            "--execute" if !options.execute => options.execute = true,
+            _ => return Err(usage()),
+        }
+    }
+    let session = session.ok_or_else(usage)?;
+    let result = crate::import_tuicr(Path::new(run), Path::new(session), options)?;
+    output(&result, result.conflicts == 0)
 }
 /// Portable request template; caller chooses concrete paths and available model IDs.
 #[must_use]

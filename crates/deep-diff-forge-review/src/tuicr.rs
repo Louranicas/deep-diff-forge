@@ -27,10 +27,10 @@ use std::{
 
 /// The only tuicr session format this adapter has been checked against (tuicr 0.27.0).
 pub const SESSION_VERSION: &str = "1.3";
-const SESSION_CAP: u64 = 32 * 1024 * 1024;
+pub(crate) const SESSION_CAP: u64 = 32 * 1024 * 1024;
 const LOG_CAP: u64 = 16 * 1024 * 1024;
-const SOURCE_CAP: u64 = 64 * 1024 * 1024;
-const LEDGER_DIR: &str = "exports";
+pub(crate) const SOURCE_CAP: u64 = 64 * 1024 * 1024;
+pub(crate) const LEDGER_DIR: &str = "exports";
 const NOT_AUTHORITY: &str = "Model claim, not verified fact. Local draft note only: not an approval, forge post, review mark or disposition.";
 
 /// Typed refusal or failure of a tuicr export. Every variant is a refusal to write.
@@ -231,13 +231,13 @@ pub struct TuicrExport {
 
 /// The fields of a tuicr 1.3 session this adapter relies on; other fields are ignored.
 #[derive(Debug, Deserialize)]
-struct Session {
-    id: String,
+pub(crate) struct Session {
+    pub(crate) id: String,
     version: String,
     repo_path: PathBuf,
-    base_commit: String,
+    pub(crate) base_commit: String,
     #[serde(default)]
-    diff_source: Option<String>,
+    pub(crate) diff_source: Option<String>,
     #[serde(default)]
     commit_range: Option<Vec<String>>,
     #[serde(default)]
@@ -274,13 +274,13 @@ impl Session {
 
 /// Which bytes a session shows on its new side.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Revision {
+pub(crate) enum Revision {
     WorkingTree,
     Index,
     Commit(String),
 }
 impl Revision {
-    fn label(&self) -> String {
+    pub(crate) fn label(&self) -> String {
         match self {
             Self::WorkingTree => "working_tree".into(),
             Self::Index => "index".into(),
@@ -288,7 +288,7 @@ impl Revision {
         }
     }
 }
-fn commit_id(value: &str) -> bool {
+pub(crate) fn commit_id(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 /// Map tuicr's `diff_source` to the revision whose bytes its new side displays.
@@ -471,16 +471,16 @@ fn admitted_reports(
 }
 
 /// Verified identity between a run and the session it exports into.
-struct Binding<'a> {
-    directory: &'a Path,
-    manifest: &'a Manifest,
-    repository: PathBuf,
-    session: &'a Session,
-    revision: Revision,
+pub(crate) struct Binding<'a> {
+    pub(crate) directory: &'a Path,
+    pub(crate) manifest: &'a Manifest,
+    pub(crate) repository: PathBuf,
+    pub(crate) session: &'a Session,
+    pub(crate) revision: Revision,
 }
 impl Binding<'_> {
     /// Bytes the session reviews for `path`, or why there are none.
-    fn session_bytes(&self, path: &str) -> std::result::Result<Vec<u8>, String> {
+    pub(crate) fn session_bytes(&self, path: &str) -> std::result::Result<Vec<u8>, String> {
         match &self.revision {
             Revision::WorkingTree => {
                 let file = self.repository.join(path);
@@ -778,6 +778,54 @@ fn load_session(path: &Path) -> Result<Session> {
     serde_json::from_slice(&storage::read_bytes(path, SESSION_CAP)?)
         .map_err(|e| TuicrExportError::UnsupportedSession(e.to_string()))
 }
+/// A session file that passed the identity checks shared by export and import.
+pub(crate) struct OpenSession {
+    /// Canonical session path.
+    pub(crate) path: PathBuf,
+    /// The bounded bytes the session was parsed from, so a caller can parse richer views of the same read.
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) session: Session,
+    pub(crate) revision: Revision,
+    /// Canonical run repository, equal to the session's `repo_path`.
+    pub(crate) repository: PathBuf,
+}
+/// Read a bounded session and refuse unsupported versions, forge sessions, unknown diff sources,
+/// invalid ids and a repository other than the run's.
+pub(crate) fn open_session(manifest: &Manifest, session_path: &Path) -> Result<OpenSession> {
+    let path = fs::canonicalize(session_path)?;
+    let bytes = storage::read_bytes(&path, SESSION_CAP)?;
+    let session: Session = serde_json::from_slice(&bytes)
+        .map_err(|e| TuicrExportError::UnsupportedSession(e.to_string()))?;
+    if session.version != SESSION_VERSION {
+        return Err(TuicrExportError::UnsupportedSession(format!(
+            "session version {:?}; this adapter supports {SESSION_VERSION}",
+            session.version
+        )));
+    }
+    if session.pr_session_key.is_some() {
+        return Err(TuicrExportError::ForgeSession);
+    }
+    let revision = revision(&session)?;
+    if !crate::identifier(&session.id) {
+        return Err(TuicrExportError::UnsupportedSession(
+            "invalid session id".into(),
+        ));
+    }
+    let repository = fs::canonicalize(&manifest.request.repository)?;
+    if fs::canonicalize(&session.repo_path).ok().as_deref() != Some(repository.as_path()) {
+        return Err(TuicrExportError::RepositoryMismatch {
+            session: session.repo_path.display().to_string(),
+            run: repository.display().to_string(),
+        });
+    }
+    Ok(OpenSession {
+        path,
+        bytes,
+        session,
+        revision,
+        repository,
+    })
+}
 /// tuicr `review add --input` JSON payload for one note.
 fn payload(note: &PlannedNote) -> serde_json::Value {
     serde_json::json!({
@@ -822,12 +870,12 @@ fn created_id(stdout: &[u8], note: &PlannedNote) -> Result<String> {
 
 /// One ledger record; written create-new beside its intent marker.
 #[derive(Debug, Serialize, Deserialize)]
-struct LedgerEntry {
-    key: String,
-    run_id: String,
-    session_id: String,
-    tuicr_comment_id: String,
-    content_sha256: String,
+pub(crate) struct LedgerEntry {
+    pub(crate) key: String,
+    pub(crate) run_id: String,
+    pub(crate) session_id: String,
+    pub(crate) tuicr_comment_id: String,
+    pub(crate) content_sha256: String,
     recovered: bool,
 }
 
@@ -948,30 +996,13 @@ pub fn export_tuicr(
     let directory = fs::canonicalize(directory)?;
     let manifest = load_manifest(&directory)?;
     let (admitted, skipped_reports) = admitted_reports(&directory, &manifest)?;
-    let session_path = fs::canonicalize(session_path)?;
-    let session = load_session(&session_path)?;
-    if session.version != SESSION_VERSION {
-        return Err(TuicrExportError::UnsupportedSession(format!(
-            "session version {:?}; this adapter supports {SESSION_VERSION}",
-            session.version
-        )));
-    }
-    if session.pr_session_key.is_some() {
-        return Err(TuicrExportError::ForgeSession);
-    }
-    let revision = revision(&session)?;
-    if !crate::identifier(&session.id) {
-        return Err(TuicrExportError::UnsupportedSession(
-            "invalid session id".into(),
-        ));
-    }
-    let repository = fs::canonicalize(&manifest.request.repository)?;
-    if fs::canonicalize(&session.repo_path).ok().as_deref() != Some(repository.as_path()) {
-        return Err(TuicrExportError::RepositoryMismatch {
-            session: session.repo_path.display().to_string(),
-            run: repository.display().to_string(),
-        });
-    }
+    let OpenSession {
+        path: session_path,
+        session,
+        revision,
+        repository,
+        ..
+    } = open_session(&manifest, session_path)?;
     let binding = Binding {
         directory: &directory,
         manifest: &manifest,

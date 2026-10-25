@@ -1,8 +1,10 @@
 // Review council: DDF→tuicr export through the actual CLI with fake providers, a fake tuicr and one opt-in real-tuicr round trip.
 // Design/status: docs/REVIEW_COUNCIL.md#tuicr-export
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Comparisons%2FArchitecture%20Lessons%20and%20Interoperability
-//! Admission, identity, anchoring, idempotency and refusal controls for `council export-tuicr`.
-//! The real-tuicr test runs only with `DDF_TUICR_IT=1`, against an isolated XDG data/config store.
+//! Admission, identity, anchoring, idempotency and refusal controls for `council export-tuicr`, and
+//! the decision-journal controls for `council import-tuicr` (dispositions, conflicts, tombstones,
+//! stale revisions, tamper and truncation). The real-tuicr tests run only with `DDF_TUICR_IT=1`,
+//! against an isolated XDG data/config store.
 use deep_diff_forge_review::Profile;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
@@ -788,4 +790,619 @@ fn real_tuicr_round_trip_in_an_isolated_store() {
     refused(&mismatch, "unanchored");
     println!("mismatched revision: {}", stderr(&mismatch).trim());
     assert_eq!(it.comments(&stored).len(), NOTES + 1);
+}
+
+// ---- Decision journal: `council import-tuicr` ----
+
+const RANGE_KEY: &str = "correctness-codex/independent/finding/correctness-codex:range";
+const LINE_KEY: &str = "security-claude/independent/finding/security-claude:line";
+impl Fixture {
+    fn import(&self, session: &Path, flags: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .args(["council", "import-tuicr", self.run.to_str().unwrap()])
+            .args(["--session", session.to_str().unwrap()])
+            .args(flags)
+            .output()
+            .unwrap()
+    }
+    fn journal(&self) -> PathBuf {
+        self.run.join("decisions.jsonl")
+    }
+    fn events(&self) -> Vec<serde_json::Value> {
+        fs::read_to_string(self.journal())
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+    /// A session holding the five exported council notes, written through the fake tuicr.
+    fn exported(&self) -> PathBuf {
+        let session = self.session("session.json", |_| {});
+        json(&self.export(&session, &["--execute"], "normal"));
+        session
+    }
+    /// The tuicr comment id the export ledger recorded for `key`.
+    fn exported_id(&self, session: &Path, key: &str) -> String {
+        let out = json(&self.export(session, &[], "normal"));
+        note(&out, key)["tuicr_comment_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+}
+/// Rewrite a session file in place, as tuicr does when a human edits it.
+fn edit_session(session: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(session).unwrap()).unwrap();
+    edit(&mut value);
+    fs::write(session, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+}
+fn human(id: &str, author: &str, kind: &str, content: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id, "content": content, "comment_type": kind, "author": author,
+        "created_at": "2026-10-25T00:00:00Z", "line_context": null, "side": "new",
+        "line_range": null, "lifecycle_state": "local_draft",
+        "remote_review_id": null, "remote_comment_id": null, "commit_id": null
+    })
+}
+/// The comment `id`, review level or line level, for an in-place human edit.
+fn comment_mut<'a>(session: &'a mut serde_json::Value, id: &str) -> &'a mut serde_json::Value {
+    if session["review_comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["id"] == id)
+    {
+        return session["review_comments"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|c| c["id"] == id)
+            .unwrap();
+    }
+    session["files"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+        .flat_map(|f| f["line_comments"].as_object_mut().unwrap().values_mut())
+        .flat_map(|list| list.as_array_mut().unwrap().iter_mut())
+        .find(|c| c["id"] == id)
+        .unwrap_or_else(|| panic!("no comment {id}"))
+}
+fn kinds(events: &[serde_json::Value]) -> Vec<&str> {
+    events.iter().map(|e| e["kind"].as_str().unwrap()).collect()
+}
+
+/// Human comments: an anchored issue, a tagged praise, an unlinked note and a bogus tag.
+fn add_dispositions(session: &Path) {
+    edit_session(session, |s| {
+        // Overlaps the range note (x.rs:2-3, new side): linked by anchor.
+        let mut issue = human("h-issue", "Luke", "issue", "Off by one at the boundary.");
+        issue["line_range"] = serde_json::json!({"start": 3, "end": 3});
+        s["files"]["x.rs"]["line_comments"]["3"]
+            .as_array_mut()
+            .unwrap()
+            .push(issue);
+        s["files"]["x.rs"]["content_hash"] = 4242.into();
+        let reviews = s["review_comments"].as_array_mut().unwrap();
+        // Review level, linked by an explicit tag only.
+        reviews.push(human(
+            "h-praise",
+            "Luke",
+            "praise",
+            &format!("Good catch [ddf:{LINE_KEY}]"),
+        ));
+        reviews.push(human("h-note", "Ana", "note", "Unrelated note."));
+        // A tag naming a key the export never wrote links nothing.
+        reviews.push(human(
+            "h-bogus",
+            "Ana",
+            "note",
+            "[ddf:nobody/independent/finding/x]",
+        ));
+    });
+}
+
+#[test]
+fn import_journals_human_dispositions_with_actor_and_revision_and_rerun_is_a_noop() {
+    let f = Fixture::new();
+    let session = f.exported();
+    let head = git(&f.repository, &["rev-parse", "HEAD"]);
+    let range_id = f.exported_id(&session, RANGE_KEY);
+    let line_id = f.exported_id(&session, LINE_KEY);
+    add_dispositions(&session);
+    let before = fs::read(&session).unwrap();
+    let dry = json(&f.import(&session, &[]));
+    assert_eq!(dry["executed"], false);
+    assert!(!f.journal().exists(), "dry run must not write");
+    assert_eq!(
+        fs::read(&session).unwrap(),
+        before,
+        "import never writes tuicr"
+    );
+
+    let out = json(&f.import(&session, &["--execute"]));
+    assert_eq!(
+        out["events"], dry["events"],
+        "dry run plans exactly what is appended"
+    );
+    let events = f.events();
+    assert_eq!(events, out["events"].as_array().unwrap().clone());
+    assert_eq!(
+        kinds(&events),
+        [
+            "disposition",
+            "comment_added",
+            "comment_added",
+            "disposition"
+        ]
+    );
+    let by_id = |id: &str| {
+        events
+            .iter()
+            .find(|e| e["comment_id"] == id)
+            .unwrap_or_else(|| panic!("no event for {id}"))
+    };
+    let issue = by_id("h-issue");
+    assert_eq!(
+        issue["actor"],
+        serde_json::json!({"name": "Luke", "basis": "tuicr_author"})
+    );
+    assert_eq!(issue["comment_type"], "issue");
+    assert_eq!(issue["revision"]["base_commit"], head.as_str());
+    assert_eq!(issue["revision"]["diff_source"], "working_tree");
+    assert_eq!(issue["session_id"], "00000000-0000-4000-8000-000000000001");
+    assert_eq!(issue["content_hash"], 4242);
+    assert_eq!(issue["ddf_authored"], false);
+    assert_eq!(
+        issue["links"],
+        serde_json::json!([{"key": RANGE_KEY, "tuicr_comment_id": range_id, "basis": "anchor"}])
+    );
+    assert_eq!(
+        issue["anchor"],
+        serde_json::json!({"type": "lines", "file": "x.rs", "side": "new", "start_line": 3, "end_line": 3})
+    );
+    assert_eq!(
+        by_id("h-praise")["links"],
+        serde_json::json!([{"key": LINE_KEY, "tuicr_comment_id": line_id, "basis": "tag"}])
+    );
+    assert_eq!(by_id("h-note")["actor"]["name"], "Ana");
+    assert_eq!(by_id("h-bogus")["links"], serde_json::json!([]));
+    // The council's own notes are not human decisions.
+    assert!(events.iter().all(|e| e["ddf_authored"] == false));
+    // Chained from genesis.
+    assert_eq!(events[0]["prev"], "0".repeat(64));
+    for pair in events.windows(2) {
+        assert_eq!(pair[1]["prev"], pair[0]["hash"]);
+    }
+
+    let journal = fs::read(f.journal()).unwrap();
+    let again = json(&f.import(&session, &["--execute"]));
+    assert_eq!(again["events"], serde_json::json!([]));
+    assert_eq!(again["journal_events"], 4);
+    assert_eq!(
+        fs::read(f.journal()).unwrap(),
+        journal,
+        "rerun appends nothing"
+    );
+    assert_eq!(
+        fs::read_dir(f.run.join("decisions.checkpoints"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn stale_revision_or_bytes_refuse_the_disposition() {
+    let f = Fixture::new();
+    let session = f.exported();
+    edit_session(&session, |s| {
+        let mut issue = human("h-1", "Luke", "issue", "Boundary.");
+        issue["line_range"] = serde_json::json!({"start": 2, "end": 3});
+        s["files"]["x.rs"]["line_comments"]["3"]
+            .as_array_mut()
+            .unwrap()
+            .push(issue);
+    });
+    // A session on another base revision.
+    let stale = f.root.join("stale.json");
+    fs::copy(&session, &stale).unwrap();
+    edit_session(&stale, |s| s["base_commit"] = "f".repeat(40).into());
+    refused(&f.import(&stale, &["--execute"]), "stale revision");
+    edit_session(&stale, |s| s["base_commit"] = "pristine:abc:0".into());
+    refused(&f.import(&stale, &["--execute"]), "not a full commit id");
+    // The working tree moved after the run: the line disposition is on bytes the run never saw.
+    fs::write(f.repository.join("x.rs"), format!("{SOURCE}fn e() {{}}\n")).unwrap();
+    refused(&f.import(&session, &["--execute"]), "stale file");
+    assert!(!f.journal().exists(), "a refused import records nothing");
+    // A review-level disposition is refused too, because the session scope changed.
+    let review = f.root.join("review.json");
+    fs::copy(&session, &review).unwrap();
+    edit_session(&review, |s| {
+        s["files"]["x.rs"]["line_comments"]["3"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|c| c["id"] != "h-1");
+        s["review_comments"].as_array_mut().unwrap().push(human(
+            "h-2",
+            "Luke",
+            "note",
+            &format!("[ddf:{RANGE_KEY}]"),
+        ));
+    });
+    refused(&f.import(&review, &[]), "stale file");
+    // Positive control: the same session on the sealed bytes is accepted.
+    fs::write(f.repository.join("x.rs"), SOURCE).unwrap();
+    let ok = json(&f.import(&session, &["--execute"]));
+    assert_eq!(kinds(ok["events"].as_array().unwrap()), ["disposition"]);
+    // A new commit moves HEAD past the run: the stored session's base no longer matches the run.
+    fs::write(f.repository.join("x.rs"), "fn changed() {}\n").unwrap();
+    git(&f.repository, &["commit", "-qam", "later"]);
+    let newer = git(&f.repository, &["rev-parse", "HEAD"]);
+    edit_session(&session, |s| s["base_commit"] = newer.into());
+    refused(&f.import(&session, &["--execute"]), "stale revision");
+    assert_eq!(f.events().len(), 1);
+}
+
+#[test]
+fn reviewed_marks_need_the_journaled_content_hash() {
+    let f = Fixture::new();
+    let session = f.exported();
+    edit_session(&session, |s| {
+        s["files"]["x.rs"]["reviewed"] = true.into();
+        s["files"]["x.rs"]["content_hash"] = serde_json::Value::Null;
+    });
+    refused(&f.import(&session, &["--execute"]), "no tuicr content_hash");
+    edit_session(&session, |s| {
+        s["files"]["x.rs"]["content_hash"] = 111.into();
+    });
+    let first = json(&f.import(&session, &["--execute"]));
+    let mark = &first["events"][0];
+    assert_eq!(mark["kind"], "file_review");
+    assert_eq!(mark["reviewed"], true);
+    assert_eq!(mark["content_hash"], 111);
+    assert_eq!(
+        mark["anchor"],
+        serde_json::json!({"type": "file", "file": "x.rs"})
+    );
+    assert_eq!(mark["actor"]["basis"], "unrecorded");
+    // A further mark under a different tuicr diff hash is refused.
+    edit_session(&session, |s| {
+        s["files"]["x.rs"]["reviewed_hunks"] = serde_json::json!(["h1"]);
+        s["files"]["x.rs"]["content_hash"] = 222.into();
+    });
+    refused(&f.import(&session, &["--execute"]), "stale review mark");
+    // Positive control: the same mark under the journaled hash is accepted and supersedes the first.
+    edit_session(&session, |s| {
+        s["files"]["x.rs"]["content_hash"] = 111.into();
+    });
+    let second = json(&f.import(&session, &["--execute"]));
+    assert_eq!(
+        second["events"][0]["reviewed_hunks"],
+        serde_json::json!(["h1"])
+    );
+    assert_eq!(second["events"][0]["supersedes"], mark["hash"]);
+    // A reviewed mark on bytes the run did not seal is a stale disposition.
+    edit_session(&session, |s| {
+        s["files"]["x.rs"]["reviewed_hunks"] = serde_json::json!([]);
+    });
+    fs::write(f.repository.join("x.rs"), "fn changed() {}\n").unwrap();
+    refused(&f.import(&session, &["--execute"]), "stale file");
+    assert_eq!(f.events().len(), 2);
+}
+
+#[test]
+fn tampered_or_truncated_journals_are_refused() {
+    let f = Fixture::new();
+    let session = f.exported();
+    edit_session(&session, |s| {
+        let reviews = s["review_comments"].as_array_mut().unwrap();
+        reviews.push(human("h-1", "Luke", "note", "first"));
+        reviews.push(human("h-2", "Luke", "note", "second"));
+    });
+    json(&f.import(&session, &["--execute"]));
+    edit_session(&session, |s| {
+        s["review_comments"]
+            .as_array_mut()
+            .unwrap()
+            .push(human("h-3", "Luke", "note", "third"));
+    });
+    json(&f.import(&session, &["--execute"]));
+    let good = fs::read_to_string(f.journal()).unwrap();
+    assert_eq!(good.lines().count(), 3);
+    let cases: [(&str, String, &str); 5] = [
+        (
+            "edited content",
+            good.replacen("second", "SECOND", 1),
+            "modified or reordered",
+        ),
+        (
+            "reattributed actor",
+            good.replacen("\"Luke\"", "\"Mallory\"", 1),
+            "modified or reordered",
+        ),
+        (
+            "dropped last line",
+            good.split_inclusive('\n').take(2).collect(),
+            "truncated or rewritten",
+        ),
+        (
+            "partial last line",
+            good[..good.len() - 10].to_owned(),
+            "incomplete",
+        ),
+        (
+            "reordered lines",
+            {
+                let l: Vec<&str> = good.lines().collect();
+                format!("{}\n{}\n{}\n", l[1], l[0], l[2])
+            },
+            "modified or reordered",
+        ),
+    ];
+    for (name, text, needle) in cases {
+        fs::write(f.journal(), text).unwrap();
+        let out = f.import(&session, &[]);
+        assert_eq!(out.status.code(), Some(4), "{name}");
+        assert!(stderr(&out).contains(needle), "{name}: {}", stderr(&out));
+    }
+    fs::remove_file(f.journal()).unwrap();
+    refused(&f.import(&session, &[]), "truncated or rewritten");
+    // Positive control: the untouched journal verifies and plans nothing.
+    fs::write(f.journal(), &good).unwrap();
+    assert_eq!(
+        json(&f.import(&session, &["--execute"]))["events"],
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn edits_of_council_notes_are_conflicts_and_human_edits_are_revisions() {
+    let f = Fixture::new();
+    let session = f.exported();
+    let range_id = f.exported_id(&session, RANGE_KEY);
+    edit_session(&session, |s| {
+        s["review_comments"].as_array_mut().unwrap().push(human(
+            "h-1",
+            "Luke",
+            "suggestion",
+            "Use a half-open range.",
+        ));
+    });
+    json(&f.import(&session, &["--execute"]));
+    let journaled = fs::read(f.journal()).unwrap();
+    let added = f.events()[0]["hash"].clone();
+    edit_session(&session, |s| {
+        comment_mut(s, &range_id)["content"] = "edited by a human in the TUI".into();
+        let c = comment_mut(s, "h-1");
+        c["content"] = "Use a half-open range; see RFC.".into();
+        c["lifecycle_state"] = "submitted".into();
+    });
+    let out = f.import(&session, &["--execute"]);
+    assert_eq!(
+        out.status.code(),
+        Some(7),
+        "a conflict is raised, not absorbed"
+    );
+    let result: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["conflicts"], 1);
+    let events = f.events();
+    assert!(
+        fs::read(f.journal()).unwrap().starts_with(&journaled),
+        "prior events are never rewritten"
+    );
+    assert_eq!(
+        kinds(&events),
+        ["comment_added", "revised", "lifecycle", "revised"]
+    );
+    let conflict = &events[3];
+    assert_eq!(conflict["comment_id"], range_id.as_str());
+    assert_eq!(conflict["ddf_authored"], true);
+    assert!(
+        conflict["conflict"]
+            .as_str()
+            .unwrap()
+            .contains("edited outside DDF")
+    );
+    assert_eq!(conflict["actor"]["basis"], "unrecorded");
+    assert_eq!(conflict["content"], "edited by a human in the TUI");
+    let revised = &events[1];
+    assert_eq!(revised["comment_id"], "h-1");
+    assert!(revised["conflict"].is_null());
+    assert_eq!(revised["supersedes"], added);
+    assert_eq!(revised["actor"]["name"], "Luke");
+    let lifecycle = &events[2];
+    assert_eq!(lifecycle["previous_lifecycle_state"], "local_draft");
+    assert_eq!(lifecycle["lifecycle_state"], "submitted");
+    assert_eq!(lifecycle["supersedes"], revised["hash"]);
+    // Re-running neither repeats the conflict nor treats the edited note as new.
+    let again = f.import(&session, &["--execute"]);
+    assert_eq!(again.status.code(), Some(0), "{}", stderr(&again));
+    assert_eq!(f.events().len(), 4);
+    // A lifecycle-only change of an untouched council note is a transition, not a revision.
+    let line_id = f.exported_id(&session, LINE_KEY);
+    edit_session(&session, |s| {
+        comment_mut(s, &line_id)["lifecycle_state"] = "pushed_draft".into();
+    });
+    let pushed = json(&f.import(&session, &["--execute"]));
+    assert_eq!(kinds(pushed["events"].as_array().unwrap()), ["lifecycle"]);
+    assert_eq!(pushed["events"][0]["ddf_authored"], true);
+    assert_eq!(
+        json(&f.import(&session, &["--execute"]))["events"],
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn deleted_comments_become_tombstones_and_can_be_restored() {
+    let f = Fixture::new();
+    let session = f.exported();
+    let line_id = f.exported_id(&session, LINE_KEY);
+    edit_session(&session, |s| {
+        s["review_comments"].as_array_mut().unwrap().push(human(
+            "h-1",
+            "Luke",
+            "issue",
+            "Drop this.",
+        ));
+    });
+    json(&f.import(&session, &["--execute"]));
+    let added = f.events()[0].clone();
+    let original = fs::read(&session).unwrap();
+    edit_session(&session, |s| {
+        s["review_comments"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|c| c["id"] != "h-1");
+        for list in s["files"]["x.rs"]["line_comments"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+        {
+            list.as_array_mut()
+                .unwrap()
+                .retain(|c| c["id"] != line_id.as_str());
+        }
+    });
+    let out = json(&f.import(&session, &["--execute"]));
+    let events = out["events"].as_array().unwrap();
+    assert_eq!(kinds(events), ["deleted", "deleted"]);
+    let human_tomb = events.iter().find(|e| e["comment_id"] == "h-1").unwrap();
+    assert_eq!(human_tomb["supersedes"], added["hash"]);
+    assert_eq!(human_tomb["actor"]["name"], "Luke");
+    let note_tomb = events
+        .iter()
+        .find(|e| e["comment_id"] == line_id.as_str())
+        .unwrap();
+    assert_eq!(note_tomb["ddf_authored"], true);
+    assert!(note_tomb["content"].is_null());
+    assert_eq!(
+        json(&f.import(&session, &["--execute"]))["events"],
+        serde_json::json!([])
+    );
+    fs::write(&session, original).unwrap();
+    let restored = json(&f.import(&session, &["--execute"]));
+    assert_eq!(
+        kinds(restored["events"].as_array().unwrap()),
+        ["restored", "restored"]
+    );
+    assert_eq!(f.events().len(), 5);
+}
+
+#[test]
+fn interrupted_exports_held_locks_and_unsafe_sessions_refuse_import() {
+    let f = Fixture::new();
+    let session = f.exported();
+    let ledger = f
+        .run
+        .join("exports/tuicr/00000000-0000-4000-8000-000000000001");
+    let marker = ledger.join(format!("{}.pending", "a".repeat(64)));
+    fs::write(&marker, "key").unwrap();
+    refused(&f.import(&session, &[]), "interrupted export");
+    fs::remove_file(&marker).unwrap();
+    let lock = f.run.join("decisions.lock");
+    fs::write(&lock, "1").unwrap();
+    refused(&f.import(&session, &["--execute"]), "locked");
+    assert!(
+        json(&f.import(&session, &[]))["events"].is_array(),
+        "a dry run takes no lock"
+    );
+    fs::remove_file(&lock).unwrap();
+    let escaping = f.root.join("escaping.json");
+    fs::copy(&session, &escaping).unwrap();
+    edit_session(&escaping, |s| {
+        s["files"]["../x.rs"] = s["files"]["x.rs"].clone();
+    });
+    refused(&f.import(&escaping, &[]), "unsafe session");
+    refused(&f.import(&session, &["--execute", "--execute"]), "usage");
+    assert!(!f.journal().exists());
+}
+
+#[test]
+fn real_tuicr_human_comment_is_imported_as_a_disposition() {
+    if std::env::var_os("DDF_TUICR_IT").is_none() {
+        let _ = writeln!(
+            std::io::stderr(),
+            "UNMEASURED: real tuicr import skipped; set DDF_TUICR_IT=1 with tuicr on PATH"
+        );
+        return;
+    }
+    let it = Isolated::new();
+    let stored = it.stored_session();
+    json(&it.export(&stored, &["--execute"]));
+    let added = it.tuicr(
+        &[
+            "review",
+            "add",
+            "--session",
+            stored.to_str().unwrap(),
+            "--type",
+            "issue",
+            "--target-file",
+            "x.rs",
+            "--line",
+            "3",
+            "--username",
+            "Human Reviewer",
+            "Off by one here.",
+        ],
+        "",
+    );
+    println!("tuicr added {} at {}", added["id"], added["location"]);
+    let import = |flags: &[&str]| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"));
+        c.args(["council", "import-tuicr", it.f.run.to_str().unwrap()])
+            .arg("--session")
+            .arg(&stored)
+            .args(flags);
+        it.isolate(&mut c).output().unwrap()
+    };
+    let out = json(&import(&["--execute"]));
+    let events = out["events"].as_array().unwrap();
+    for e in events {
+        println!(
+            "journaled {} {} by {}",
+            e["kind"], e["comment_id"], e["actor"]["name"]
+        );
+    }
+    // The fixture note that seeded the session is a human comment too.
+    let disposition = events
+        .iter()
+        .find(|e| e["comment_id"] == added["id"])
+        .expect("the tuicr comment is journaled");
+    assert_eq!(disposition["kind"], "disposition");
+    assert_eq!(disposition["actor"]["name"], "Human Reviewer");
+    assert_eq!(disposition["comment_type"], "issue");
+    assert_eq!(disposition["links"][0]["key"], RANGE_KEY);
+    assert_eq!(disposition["links"][0]["basis"], "anchor");
+    assert_eq!(
+        disposition["revision"]["base_commit"],
+        git(&it.f.repository, &["rev-parse", "HEAD"]).as_str()
+    );
+    assert!(events.iter().all(|e| e["ddf_authored"] == false));
+    assert_eq!(
+        json(&import(&["--execute"]))["events"],
+        serde_json::json!([])
+    );
+    println!("rerun: no-op");
+    fs::write(it.f.repository.join("x.rs"), "fn changed() {}\n").unwrap();
+    it.tuicr(
+        &[
+            "review",
+            "add",
+            "--session",
+            stored.to_str().unwrap(),
+            "--target-file",
+            "x.rs",
+            "--line",
+            "1",
+            "--username",
+            "Human Reviewer",
+            "Later.",
+        ],
+        "",
+    );
+    let stale = import(&["--execute"]);
+    refused(&stale, "stale file");
+    println!("stale disposition: {}", stderr(&stale).trim());
 }

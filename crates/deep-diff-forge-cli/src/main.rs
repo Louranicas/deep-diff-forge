@@ -1115,7 +1115,7 @@ USAGE:
   deep-diff-forge deploy {{status|release}} [--json]
   deep-diff-forge semantic <path> [--json]
   deep-diff-forge highlight <path> [--color|--no-color]
-  deep-diff-forge council <example|prepare|review|gate|status|import|export-tuicr>
+  deep-diff-forge council <example|prepare|review|gate|status|import|export-tuicr|import-tuicr>
   deep-diff-forge analyze <patch-file> <base-directory> <candidate-directory>
   deep-diff-forge structural <old> <new> [--json]
   deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME]
