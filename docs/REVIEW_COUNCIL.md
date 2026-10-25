@@ -474,6 +474,10 @@ What remains against self-exemption:
 - the refusal of candidate toolchain configuration;
 - the oracle, which compares what cargo-mutants lists against what the compiler ships, instead of predicting cargo-mutants.
 
+**Advisory: unexamined changed lines.** The oracle's witness also lists every added line where production HIR code starts outside every function cargo-mutants examines, even with exclusions off. These are `const` and `static` items, `fn new`, and `macro_rules!` or `include!` bodies: code that no mutant can reach. It is reported (`unexamined_changed_lines`), not refused.
+- **Measured on the r12 diff:** exactly three lines, the three new `const` items.
+- **Measured, fake:** `the_oracle_reports_added_production_lines_no_mutated_function_contains` (fails against the r12 oracle).
+
 A skip attribute on code that never ships, such as a genuine test, is now allowed, where the lexer refused it. The lexer also refused `cfg_attr(all(), mutants :: skip)`, which cargo-mutants does not honour.
 
 ### Podman invocation

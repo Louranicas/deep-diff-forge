@@ -510,7 +510,7 @@ const FAKE_IMAGE_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef012
 /// the vendoring output; `fifo` and `symlinked_dir` at the mutation witness. It also answers the
 /// exemption oracle (installed again as `ddf-cargo-mutants-noexclude`): `exempt` hides a function the
 /// production HIR compiles (`exempt_txt`: in a non-`.rs` module), `hidden_test` hides one it does
-/// not, and `hir_empty` dumps no spans.
+/// not, `hir_empty` dumps no spans, and `unexamined` reports production code on an added line.
 const FAKE_GATE: &str = r"#!/usr/bin/python3
 import json,os,pathlib,sys
 mode='@MODE@'
@@ -530,6 +530,8 @@ if sys.argv[1:2]==['rustc']:
     # `exempt`: the hidden function is compiled into production; `hidden_test`: it is not.
     if mode=='exempt':print('span: src/lib.rs:3:5: 3:9 (#0)')
     if mode=='exempt_txt':print('span: src/hidden.txt:3:5: 3:9 (#0)')
+    # `unexamined`: production code on an added line that no listed function contains.
+    if mode=='unexamined':print('span: added.rs:2:1: 2:24 (#0)')
     sys.exit(0)
 if sys.argv[1:2]==['vendor']:
     out=pathlib.Path(sys.argv[-1])
@@ -872,6 +874,45 @@ fn test_only_code_hidden_from_cargo_mutants_is_allowed() {
     assert_eq!(witness["state"], "passed");
     assert_eq!(witness["hidden_functions"], 1);
     assert_eq!(witness["stock_functions_with_production_spans"], 1);
+}
+
+#[test]
+fn the_oracle_reports_added_production_lines_no_mutated_function_contains() {
+    let f = Fixture::new();
+    f.commit("added.rs", "pub fn kept() {}\n");
+    let prepared = prepare_with_mutation_base(&f, |f| {
+        fs::write(
+            f.repository.join("added.rs"),
+            "pub fn kept() {}\npub const LIMIT: u8 = 9;\n",
+        )
+        .unwrap();
+    });
+    assert!(
+        prepared.status.success(),
+        "{}",
+        String::from_utf8_lossy(&prepared.stderr)
+    );
+    f.install_gate("unexamined");
+    let result = f.gate("mutation");
+    // Advisory only: the gate is not refused for it.
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let witness: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            f.run
+                .join("jobs/sandbox-exemption-oracle/work/exemption-oracle.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(witness["state"], "passed");
+    assert_eq!(witness["unexamined_changed_lines"], 1, "{witness}");
+    assert_eq!(witness["unexamined"][0]["file"], "added.rs");
+    assert_eq!(witness["unexamined"][0]["line"], 2);
 }
 
 /// Stands in for the oracle inside the fake sandbox: writes `@WITNESS@` and exits `@CODE@`.

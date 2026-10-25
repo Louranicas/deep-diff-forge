@@ -83,12 +83,46 @@ def inside(spans, function):
     return [s for s in spans.get(path, ()) if (s[0], s[1]) >= (l1, c1) and (s[2], s[3]) <= (l2, c2)]
 
 
+def changed_lines(in_diff):
+    """New-side numbers of the added lines in each file, whatever the diff's context width."""
+    changed, path, number = {}, None, 0
+    with open(in_diff, encoding="utf-8", errors="replace") as diff:
+        for line in diff:
+            if line.startswith("+++ "):
+                path = line[6:].rstrip("\n") if line.startswith("+++ b/") else None
+                continue
+            hunk = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+            if hunk:
+                number = int(hunk[1])
+            elif line.startswith("+") and path:
+                changed.setdefault(path, set()).add(number)
+                number += 1
+            elif line.startswith(" "):
+                number += 1
+    return changed
+
+
+def unexamined(spans, examined, in_diff):
+    """Advisory: changed lines where production code starts outside every function cargo-mutants
+    examines even with exclusions off (`const` items, `fn new`, macro and `include!` bodies)."""
+    if not in_diff:
+        return []
+    rows = set()
+    for path, lines in changed_lines(in_diff).items():
+        functions = [f for f in examined if f[0] == path]
+        for span in spans.get(path, ()):
+            if span[0] in lines and not any(f[2] <= span[0] <= f[4] for f in functions):
+                rows.add((path, span[0]))
+    return [{"file": path, "line": line} for path, line in sorted(rows)]
+
+
 def judge(package, in_diff):
     scope = ["--list", "--json", "--no-config", "--package", package]
     if in_diff:
         scope += ["--in-diff", in_diff]
     stock = listing(["cargo", "mutants", *scope])
-    hidden = sorted(listing([NOEXCLUDE, "mutants", *scope]) - stock)
+    examined = listing([NOEXCLUDE, "mutants", *scope])
+    hidden = sorted(examined - stock)
     metadata = json.loads(
         subprocess.run(
             ["cargo", "metadata", "--locked", "--no-deps", "--format-version=1"],
@@ -123,6 +157,7 @@ def judge(package, in_diff):
                 {"file": function[0], "function": function[1], "line": function[2], "production_spans": len(found)}
             )
     state = "inconclusive" if reasons else ("refused" if refused else "passed")
+    advisory = unexamined(spans, examined, in_diff)
     return {
         "schema": SCHEMA,
         "state": state,
@@ -134,6 +169,8 @@ def judge(package, in_diff):
         "hidden_functions": len(hidden),
         "refused": refused,
         "reasons": reasons,
+        "unexamined_changed_lines": len(advisory),
+        "unexamined": advisory[:200],
     }
 
 
