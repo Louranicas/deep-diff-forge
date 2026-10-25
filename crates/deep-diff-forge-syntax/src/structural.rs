@@ -23,7 +23,8 @@
 
 use crate::language::Language;
 
-/// Above this token-pair product the quadratic LCS is skipped and a coarse
+/// Above this token-pair product (of the part between the common prefix and
+/// suffix) the quadratic LCS is skipped and a coarse
 /// whole-file remove+add is reported with [`StructuralDiff::degraded`] set —
 /// so a pathological input degrades gracefully instead of exhausting memory.
 const LCS_CELL_BUDGET: usize = 4_000_000;
@@ -191,9 +192,11 @@ pub fn tokenize_checked(
 }
 
 fn diff_tokens(language: Language, old: &[Token], new: &[Token]) -> StructuralDiff {
-    // Graceful degradation: a huge pair would make the quadratic LCS table blow
-    // up, so report a coarse whole-file change instead.
-    if old.len().saturating_mul(new.len()) > LCS_CELL_BUDGET {
+    // Graceful degradation: a huge changed middle would make the quadratic LCS
+    // table blow up, so report a coarse whole-file change instead.
+    let (prefix, suffix) = common_affixes(old, new);
+    let middle = (old.len() - prefix - suffix).saturating_mul(new.len() - prefix - suffix);
+    if middle > LCS_CELL_BUDGET {
         return coarse_diff(language, old, new);
     }
 
@@ -237,18 +240,39 @@ enum Op {
     Insert(usize),
 }
 
+/// Lengths of the longest common token prefix and, of what remains, the longest common suffix.
+/// A common prefix or suffix always belongs to some longest common subsequence, so only the
+/// middle needs the quadratic table; this keeps a small edit to a large file within budget.
+fn common_affixes(old: &[Token], new: &[Token]) -> (usize, usize) {
+    let prefix = old
+        .iter()
+        .zip(new)
+        .take_while(|(a, b)| a.text == b.text)
+        .count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a.text == b.text)
+        .count();
+    (prefix, suffix)
+}
+
 /// Longest-common-subsequence diff over token text. Classic O(n·m) DP +
-/// backtrack; bounded by [`LCS_CELL_BUDGET`] at the call site.
+/// backtrack over the part between the common prefix and suffix; bounded by
+/// [`LCS_CELL_BUDGET`] at the call site.
 fn lcs_ops(old: &[Token], new: &[Token]) -> Vec<Op> {
-    let n = old.len();
-    let m = new.len();
-    // table[i][j] = LCS length of old[i..] and new[j..]; (n+1)·(m+1) cells.
+    let (prefix, suffix) = common_affixes(old, new);
+    let n = old.len() - prefix - suffix;
+    let m = new.len() - prefix - suffix;
+    let (old_mid, new_mid) = (&old[prefix..prefix + n], &new[prefix..prefix + m]);
+    // table[i][j] = LCS length of old_mid[i..] and new_mid[j..]; (n+1)·(m+1) cells.
     let width = m + 1;
     let mut table = vec![0u32; (n + 1) * width];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
             let idx = i * width + j;
-            table[idx] = if old[i].text == new[j].text {
+            table[idx] = if old_mid[i].text == new_mid[j].text {
                 table[(i + 1) * width + (j + 1)] + 1
             } else {
                 table[(i + 1) * width + j].max(table[i * width + (j + 1)])
@@ -256,29 +280,31 @@ fn lcs_ops(old: &[Token], new: &[Token]) -> Vec<Op> {
         }
     }
 
-    let mut ops = Vec::with_capacity(n + m);
+    let mut ops = Vec::with_capacity(old.len() + new.len());
+    ops.extend((0..prefix).map(|k| Op::Equal(k, k)));
     let (mut i, mut j) = (0, 0);
     while i < n && j < m {
-        if old[i].text == new[j].text {
-            ops.push(Op::Equal(i, j));
+        if old_mid[i].text == new_mid[j].text {
+            ops.push(Op::Equal(prefix + i, prefix + j));
             i += 1;
             j += 1;
         } else if table[(i + 1) * width + j] >= table[i * width + (j + 1)] {
-            ops.push(Op::Delete(i));
+            ops.push(Op::Delete(prefix + i));
             i += 1;
         } else {
-            ops.push(Op::Insert(j));
+            ops.push(Op::Insert(prefix + j));
             j += 1;
         }
     }
     while i < n {
-        ops.push(Op::Delete(i));
+        ops.push(Op::Delete(prefix + i));
         i += 1;
     }
     while j < m {
-        ops.push(Op::Insert(j));
+        ops.push(Op::Insert(prefix + j));
         j += 1;
     }
+    ops.extend((0..suffix).map(|k| Op::Equal(prefix + n + k, prefix + m + k)));
     ops
 }
 
@@ -508,6 +534,75 @@ mod tests {
                 );
             }
         }
+    }
+
+    // Council r6/r7: every real DDF source file above ~2,000 tokens degraded to partial_lcs,
+    // however small the edit, because the budget applied to the whole-file product.
+    #[test]
+    fn a_small_edit_to_a_file_beyond_the_cell_budget_is_still_analyzed() {
+        // 800 one-line functions; `name(i)` names the i-th.
+        let source = |name: &dyn Fn(usize) -> String| -> String {
+            let mut text = String::new();
+            for i in 0..800 {
+                text.push_str("fn ");
+                text.push_str(&name(i));
+                text.push_str("() {}\n");
+            }
+            text
+        };
+        let old = source(&|i| format!("f{i}"));
+        let new = source(&|i| {
+            if i == 400 {
+                "renamed".into()
+            } else {
+                format!("f{i}")
+            }
+        });
+        let tokens = tokenize(Language::Rust, &old).len();
+        assert!(tokens * tokens > LCS_CELL_BUDGET, "{tokens} tokens");
+        let d = structural_diff(Language::Rust, &old, &new);
+        assert!(!d.degraded);
+        assert_eq!((d.added, d.removed, d.moved), (1, 1, 0));
+        assert_eq!(d.unchanged, tokens - 1);
+        let changed: Vec<_> = d
+            .changes
+            .iter()
+            .filter(|c| c.kind != ChangeKind::Unchanged)
+            .map(|c| (c.kind, c.text.as_str(), c.old_line, c.new_line))
+            .collect();
+        assert_eq!(
+            changed,
+            [
+                (ChangeKind::Removed, "f400", Some(401), None),
+                (ChangeKind::Added, "renamed", None, Some(401)),
+            ]
+        );
+        // Two edits 300 functions apart: a 1,800-token middle on each side (3.24 M cells) is
+        // analysed exactly, so the budget is applied to the middle on both sides, not the files.
+        let two_edits = source(&|i| match i {
+            400 | 700 => format!("e{i}"),
+            _ => format!("f{i}"),
+        });
+        let d = structural_diff(Language::Rust, &old, &two_edits);
+        assert!(!d.degraded);
+        assert_eq!((d.added, d.removed), (2, 2));
+        // A changed middle that is itself beyond the budget still degrades.
+        let rewritten = source(&|i| format!("g{i}"));
+        assert!(structural_diff(Language::Rust, &old, &rewritten).degraded);
+    }
+
+    #[test]
+    fn moved_blocks_are_counted_in_the_summary() {
+        let old = "fn a() { alpha(); beta(); gamma(); } fn b() { one(); } fn c() { two(); }";
+        let new = "fn b() { one(); } fn c() { two(); } fn a() { alpha(); beta(); gamma(); }";
+        let d = structural_diff(Language::Rust, old, new);
+        let moved = d
+            .changes
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Moved)
+            .count();
+        assert!(moved > 0);
+        assert_eq!(d.moved, moved);
     }
 
     #[test]
