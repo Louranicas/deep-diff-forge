@@ -13,6 +13,7 @@ use crate::storage::{self, Inventory};
 use crate::{Result, ReviewFailure, require};
 use std::collections::{BTreeSet, HashMap};
 use std::iter::Peekable;
+use std::ops::Range;
 use std::path::Path;
 use std::str::Chars;
 
@@ -29,18 +30,35 @@ const LINE_CAP: usize = 1 << 20;
 /// Per-file read budget, matching the inventory's 64 MiB source limit.
 const FILE_CAP: u64 = 64 << 20;
 
-/// Refuse a `base` that is not a commit and an ancestor of `HEAD`, before a run directory exists.
-pub(crate) fn require_ancestor(repository: &Path, base: &str) -> Result<()> {
+/// Refuse a `base` that is not a commit and an ancestor of `HEAD`, or whose objects do not hash to
+/// their IDs, before a run directory exists. Git does not re-hash a loose object when reading it,
+/// so without the `fsck` an author who can write `.git/objects` could serve forged base blobs under
+/// genuine IDs (measured); with it, the operator's base ID is the root of trust for every base blob.
+pub(crate) fn require_base(repository: &Path, base: &str) -> Result<()> {
     storage::git_bytes(
         repository,
         &["merge-base", "--is-ancestor", base, "HEAD"],
         0,
     )
+    .map_err(|_| {
+        ReviewFailure("mutation base must be a commit that is an ancestor of HEAD".into())
+    })?;
+    storage::git_bytes(
+        repository,
+        &[
+            "fsck",
+            "--no-dangling",
+            "--no-reflogs",
+            "--no-progress",
+            base,
+        ],
+        64 << 10,
+    )
     .map(drop)
-    .map_err(|_| ReviewFailure("mutation base must be a commit that is an ancestor of HEAD".into()))
+    .map_err(|_| ReviewFailure("mutation base objects fail git fsck".into()))
 }
 
-/// With a `base` already checked by [`require_ancestor`], the zero-context unified diff of every
+/// With a `base` already checked by [`require_base`], the zero-context unified diff of every
 /// inventoried file in `snapshot` against it. Every file is included, not only `.rs`
 /// ones, because `#[path]` can make any file a module. Files absent at `base` (including untracked
 /// ones) diff against empty. Deleted files add no lines, and files that are not UTF-8 on either
@@ -158,22 +176,18 @@ fn lcs_pairs(old: &[usize], new: &[usize]) -> Vec<(usize, usize)> {
     pairs
 }
 
-/// Append `path`'s zero-context unified diff from `old` to `new`. The exact LCS runs only while
+/// Changed lines of one file: an old-side and a new-side range of absolute line indices.
+type Region = (Range<usize>, Range<usize>);
+
+/// The minimal changed regions of `old` against `new`, ascending. The exact LCS runs only while
 /// this file and all files so far (`spent` cells) are within budget; otherwise the whole changed
-/// middle is reported.
-fn unified(path: &str, old: &[u8], new: &[u8], spent: &mut usize, out: &mut Vec<u8>) -> Result<()> {
-    let (old, new) = (lines(old)?, lines(new)?);
-    let mut ids = HashMap::new();
-    let (old_ids, new_ids) = (intern(&mut ids, &old), intern(&mut ids, &new));
-    let prefix = old_ids
-        .iter()
-        .zip(&new_ids)
-        .take_while(|(a, b)| a == b)
-        .count();
-    let suffix = old_ids[prefix..]
+/// middle is one region.
+fn regions(old: &[usize], new: &[usize], spent: &mut usize) -> Vec<Region> {
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let suffix = old[prefix..]
         .iter()
         .rev()
-        .zip(new_ids[prefix..].iter().rev())
+        .zip(new[prefix..].iter().rev())
         .take_while(|(a, b)| a == b)
         .count();
     let (old_end, new_end) = (old.len() - suffix, new.len() - suffix);
@@ -181,24 +195,63 @@ fn unified(path: &str, old: &[u8], new: &[u8], spent: &mut usize, out: &mut Vec<
     let mut anchors =
         if cells <= LINE_CELL_BUDGET && spent.saturating_add(cells) <= TOTAL_CELL_BUDGET {
             *spent += cells;
-            lcs_pairs(&old_ids[prefix..old_end], &new_ids[prefix..new_end])
+            lcs_pairs(&old[prefix..old_end], &new[prefix..new_end])
         } else {
             Vec::new()
         };
-    let (old_mid, new_mid) = (&old[prefix..old_end], &new[prefix..new_end]);
-    // A sentinel anchor after both middles closes the last hunk.
-    anchors.push((old_mid.len(), new_mid.len()));
-    out.extend_from_slice(format!("--- a/{path}\n+++ b/{path}\n").as_bytes());
-    let (mut i, mut j) = (0, 0);
+    // A sentinel anchor after both middles closes the last region.
+    anchors.push((old_end - prefix, new_end - prefix));
+    let (mut found, mut i, mut j) = (Vec::new(), 0, 0);
     for (anchor_old, anchor_new) in anchors {
         if anchor_old > i || anchor_new > j {
-            hunk(
-                (prefix + i, &old_mid[i..anchor_old]),
-                (prefix + j, &new_mid[j..anchor_new]),
-                out,
-            );
+            found.push((
+                prefix + i..prefix + anchor_old,
+                prefix + j..prefix + anchor_new,
+            ));
         }
         (i, j) = (anchor_old + 1, anchor_new + 1);
+    }
+    found
+}
+
+/// cargo-mutants selects mutants by new-side lines, so a region that only deletes lines selects
+/// none (measured with 27.1.0): removing a check would leave its function unmutated. Widen each
+/// such region by the unchanged line before it, or after it at the start of the file, so the code
+/// around a deletion is mutated; regions that then overlap are merged. Unchanged lines are equal on
+/// both sides, so the diff stays valid.
+fn widen_deletions(found: Vec<Region>, new_len: usize) -> Vec<Region> {
+    let mut widened: Vec<Region> = Vec::new();
+    for (old, new) in found {
+        let (old, new) = if !new.is_empty() || new_len == 0 {
+            (old, new)
+        } else if new.start > 0 {
+            (old.start - 1..old.end, new.start - 1..new.end)
+        } else {
+            (old.start..old.end + 1, new.start..new.end + 1)
+        };
+        match widened.last_mut() {
+            Some(last) if last.0.end > old.start => {
+                last.0.end = last.0.end.max(old.end);
+                last.1.end = last.1.end.max(new.end);
+            }
+            _ => widened.push((old, new)),
+        }
+    }
+    widened
+}
+
+/// Append `path`'s zero-context unified diff from `old` to `new`.
+fn unified(path: &str, old: &[u8], new: &[u8], spent: &mut usize, out: &mut Vec<u8>) -> Result<()> {
+    let (old, new) = (lines(old)?, lines(new)?);
+    let mut ids = HashMap::new();
+    let (old_ids, new_ids) = (intern(&mut ids, &old), intern(&mut ids, &new));
+    out.extend_from_slice(format!("--- a/{path}\n+++ b/{path}\n").as_bytes());
+    for (old_range, new_range) in widen_deletions(regions(&old_ids, &new_ids, spent), new.len()) {
+        hunk(
+            (old_range.start, &old[old_range]),
+            (new_range.start, &new[new_range]),
+            out,
+        );
     }
     Ok(())
 }
@@ -393,10 +446,49 @@ mod tests {
         diff
     }
 
-    fn added_lines(diff: &[u8]) -> usize {
-        diff.split_inclusive(|b| *b == b'\n')
-            .filter(|l| l.starts_with(b"+") && !l.starts_with(b"+++"))
-            .count()
+    /// The new-side lines (0-based) that a diff's hunks mark as added.
+    fn marked(diff: &[u8]) -> BTreeSet<usize> {
+        let mut lines = BTreeSet::new();
+        for header in diff
+            .split_inclusive(|b| *b == b'\n')
+            .filter(|l| l.starts_with(b"@@ "))
+        {
+            let header = std::str::from_utf8(header).unwrap();
+            let new_side = header.split(' ').nth(2).unwrap().trim_start_matches('+');
+            let (start, len) = new_side.split_once(',').unwrap();
+            let (start, len): (usize, usize) = (start.parse().unwrap(), len.parse().unwrap());
+            if len > 0 {
+                lines.extend(start - 1..start - 1 + len);
+            }
+        }
+        lines
+    }
+
+    /// The diff is valid, its minimal regions are exactly the lines outside one longest common
+    /// subsequence, and the output marks those plus one neighbouring line per pure deletion.
+    fn check(old: &[u8], new: &[u8]) {
+        let diff = diff_of(old, new, &mut 0);
+        assert_eq!(apply(&diff, old), new, "{old:?} -> {new:?}");
+        let (o, n) = (lines(old).unwrap(), lines(new).unwrap());
+        let mut ids = HashMap::new();
+        let (oi, ni) = (intern(&mut ids, &o), intern(&mut ids, &n));
+        let found = regions(&oi, &ni, &mut 0);
+        let minimal: usize = found.iter().map(|(_, new)| new.len()).sum();
+        assert_eq!(minimal, n.len() - lcs_len(&o, &n), "{old:?} -> {new:?}");
+        let marked = marked(&diff);
+        let mut deletions = 0;
+        for (_, new_range) in &found {
+            assert!(
+                new_range.clone().all(|line| marked.contains(&line)),
+                "{old:?} -> {new:?}"
+            );
+            if new_range.is_empty() && !n.is_empty() {
+                deletions += 1;
+                let neighbour = new_range.start.checked_sub(1).unwrap_or(new_range.start);
+                assert!(marked.contains(&neighbour), "{old:?} -> {new:?}");
+            }
+        }
+        assert!(marked.len() <= minimal + deletions, "{old:?} -> {new:?}");
     }
 
     fn hunks(diff: &[u8]) -> usize {
@@ -439,14 +531,7 @@ mod tests {
                 if old == new {
                     continue;
                 }
-                let diff = diff_of(old, new, &mut 0);
-                assert_eq!(apply(&diff, old), *new, "{old:?} -> {new:?}");
-                let (o, n) = (lines(old).unwrap(), lines(new).unwrap());
-                assert_eq!(
-                    added_lines(&diff),
-                    n.len() - lcs_len(&o, &n),
-                    "{old:?} -> {new:?}"
-                );
+                check(old, new);
             }
         }
     }
@@ -478,14 +563,7 @@ mod tests {
         for _ in 0..3000 {
             let (old_len, new_len) = (rng.below(16), rng.below(16));
             let (old, new) = (rng.file(old_len), rng.file(new_len));
-            let diff = diff_of(&old, &new, &mut 0);
-            assert_eq!(apply(&diff, &old), new);
-            let (o, n) = (lines(&old).unwrap(), lines(&new).unwrap());
-            assert_eq!(
-                added_lines(&diff),
-                n.len() - lcs_len(&o, &n),
-                "{old:?} -> {new:?}"
-            );
+            check(&old, &new);
         }
     }
 
@@ -511,6 +589,34 @@ mod tests {
             String::from_utf8(diff).unwrap(),
             "--- a/x.rs\n+++ b/x.rs\n@@ -2,1 +2,1 @@\n-X\n+X2\n@@ -5,1 +5,1 @@\n-Y\n+Y2\n"
         );
+    }
+
+    // cargo-mutants selects nothing for a pure deletion, so each one also marks a neighbour.
+    #[test]
+    fn pure_deletions_mark_a_neighbouring_line() {
+        for (old, new, expected) in [
+            // Mid-file: the line before.
+            ("a\nX\nb\n", "a\nb\n", "@@ -1,2 +1,1 @@\n-a\n-X\n+a\n"),
+            // At the start: the line after.
+            ("X\na\n", "a\n", "@@ -1,2 +1,1 @@\n-X\n-a\n+a\n"),
+            // Touching a replacement: two hunks, not merged.
+            (
+                "a\nX\nb\nY\n",
+                "a\nX2\nb\n",
+                "@@ -2,1 +2,1 @@\n-X\n+X2\n@@ -3,2 +3,1 @@\n-b\n-Y\n+b\n",
+            ),
+            // Two deletions sharing their neighbour: merged into one hunk.
+            ("X\na\nY\n", "a\n", "@@ -1,3 +1,1 @@\n-X\n-a\n-Y\n+a\n"),
+            // Nothing is left to mark.
+            ("a\n", "", "@@ -1,1 +0,0 @@\n-a\n"),
+        ] {
+            let diff = diff_of(old.as_bytes(), new.as_bytes(), &mut 0);
+            assert_eq!(
+                String::from_utf8(diff).unwrap(),
+                format!("--- a/x.rs\n+++ b/x.rs\n{expected}"),
+                "{old:?} -> {new:?}"
+            );
+        }
     }
 
     /// 4,096 distinct lines a side sharing one interior line: exactly the per-file cell budget.

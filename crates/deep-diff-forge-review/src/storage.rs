@@ -568,7 +568,7 @@ pub fn prepare(mut request: Request, directory: &Path) -> Result<Manifest> {
         "workspace changed during capture",
     )?;
     if let Some(base) = request.mutation_base.as_deref() {
-        crate::mutation_scope::require_ancestor(&repository, base)?;
+        crate::mutation_scope::require_base(&repository, base)?;
     }
     make_dir(directory)?;
     // A refusal from here on removes the run directory this call created, so no partial run is

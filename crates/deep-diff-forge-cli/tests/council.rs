@@ -828,6 +828,39 @@ fn replacement_refs_cannot_substitute_a_base_blob() {
 }
 
 #[test]
+fn a_forged_base_object_is_refused_before_any_run_exists() {
+    let f = Fixture::new();
+    f.commit("forged.rs", "pub fn real() {}\n");
+    let result = prepare_with_mutation_base(&f, |f| {
+        // Overwrite the base blob's loose object with other bytes under the same ID. `cat-file`
+        // would serve them; only a hash check notices.
+        let oid = git(f, &["rev-parse", "HEAD:forged.rs"]);
+        let object = f
+            .repository
+            .join(format!(".git/objects/{}/{}", &oid[..2], &oid[2..]));
+        let mut permissions = fs::metadata(&object).unwrap().permissions();
+        permissions.set_mode(0o644);
+        fs::set_permissions(&object, permissions).unwrap();
+        let forged = Command::new("python3")
+            .args([
+                "-I",
+                "-c",
+                "import sys,zlib;b=b'pub fn forged() {}\\n';sys.stdout.buffer.write(zlib.compress(b'blob %d\\0'%len(b)+b))",
+            ])
+            .output()
+            .unwrap();
+        fs::write(&object, forged.stdout).unwrap();
+    });
+    assert_eq!(result.status.code(), Some(4));
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("mutation base objects fail git fsck"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!f.run.exists());
+}
+
+#[test]
 fn binary_files_are_out_of_scope_and_control_characters_in_paths_are_refused() {
     let f = Fixture::new();
     let result = prepare_with_mutation_base(&f, |f| {
