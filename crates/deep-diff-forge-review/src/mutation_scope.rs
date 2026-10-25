@@ -801,6 +801,10 @@ mod tests {
             b"line ] string\"]",
             b"let g = \"**/*.rs\";",
             b"let q = \"\\\"\"; // escaped quote",
+            b"\"only a string\"",
+            b"r\"raw only\"",
+            b"#[doc = r#\"#x\"#]",
+            b"pub fn after() {}",
             b"#[doc = \"[x]\"] pub fn f() {}",
             b"pub fn g() {} /* trailing",
             b"*/ let x = 1;",
@@ -811,7 +815,7 @@ mod tests {
             code_lines(&source),
             [
                 false, false, false, false, false, false, false, false, false, false, false, false,
-                true, true, true, true, true
+                true, true, true, true, false, true, true, true, true
             ]
         );
     }
