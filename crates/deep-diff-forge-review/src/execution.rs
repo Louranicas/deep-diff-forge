@@ -772,6 +772,11 @@ fn qualify_gate(
 
 /// The antipattern checker is compiled into the controller so a candidate cannot supply its own grader.
 const POLICY_CHECK: &str = include_str!("../policy/review_policy_check.py");
+/// The mutation-exemption oracle, compiled in for the same reason; see the script's own header.
+const EXEMPTION_ORACLE: &str = include_str!("../policy/exemption_oracle.py");
+const ORACLE_JOB: &str = "sandbox-exemption-oracle";
+/// The oracle's verdict, written inside the sandbox, relative to its job directory.
+const ORACLE_WITNESS: &str = "work/exemption-oracle.json";
 const VENDOR_JOB: &str = "sandbox-vendor";
 /// Sealed copy of the vendoring job's output, relative to the run directory; the only vendor mount.
 const VENDOR_DIR: &str = "vendor";
@@ -925,6 +930,110 @@ fn vendored_dependencies(
     Ok((sealed, seal.sha256))
 }
 
+/// Refuse, before the mutation gate's job slot exists, a candidate whose shipped code cargo-mutants
+/// would skip. The embedded oracle lists the mutation scope with the gate's cargo-mutants and with
+/// the image's no-exclusion build, then asks the stable compiler, through the non-test HIR, whether
+/// what only the second listed is compiled into production. It runs once per run, offline, in its
+/// own sandbox job; candidate build scripts and proc macros run there, never in the controller.
+fn refuse_hidden_exemptions(
+    directory: &Path,
+    manifest: &Manifest,
+    (sandbox, image_id, vendor): (&Sandbox, &str, Option<&(PathBuf, String)>),
+    mutation_diff: Option<&[u8]>,
+) -> Result<()> {
+    let launch = GateLaunch {
+        sandbox,
+        image_id,
+        vendor: vendor.map(|(path, digest)| (path.as_path(), digest.as_str())),
+        network: false,
+        mutation: false,
+        fuzz: false,
+    };
+    let jobdir = directory.join("jobs").join(ORACLE_JOB);
+    if !jobdir.exists() {
+        require_fresh(manifest)?;
+        let work = prepare_work(directory, &jobdir, launch.vendor.is_some(), false)?;
+        storage::write_new(
+            &work.join("exemption_oracle.py"),
+            EXEMPTION_ORACLE.as_bytes(),
+        )?;
+        let mut argv = [
+            "python3",
+            "/work/exemption_oracle.py",
+            "--package",
+            &manifest.request.mutation_package,
+            "--witness",
+            "/work/exemption-oracle.json",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        if let Some(diff) = mutation_diff {
+            storage::write_new(&jobdir.join("cargo-home").join(MUTATION_DIFF), diff)?;
+            argv.extend([
+                "--in-diff".into(),
+                format!("{}/{MUTATION_DIFF}", sandbox::CARGO_HOME),
+            ]);
+        }
+        let receipt = run(
+            directory,
+            manifest,
+            ORACLE_JOB,
+            &argv,
+            &jobdir,
+            b"",
+            Some(&launch),
+        )?;
+        let verdict = storage::read_untrusted(&jobdir, Path::new(ORACLE_WITNESS), 1 << 20)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .unwrap_or_default();
+        let passed = receipt.outcome == Outcome::Passed
+            && verdict["state"] == "passed"
+            && verdict["targets_dumped"].as_u64().is_some_and(|n| n > 0);
+        if !passed {
+            let refused = verdict["refused"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .take(5)
+                .map(|row| format!("{}:{} {}", row["file"], row["line"], row["function"]))
+                .collect::<Vec<_>>();
+            storage::write_new(
+                &jobdir.join("qualification-error.txt"),
+                format!(
+                    "exemption oracle state {}; refused {refused:?}; reasons {}\n",
+                    verdict["state"], verdict["reasons"]
+                )
+                .as_bytes(),
+            )?;
+        }
+        storage::write_json(
+            &jobdir.join("qualification.json"),
+            &Qualification {
+                outcome: if passed {
+                    Outcome::Passed
+                } else {
+                    Outcome::Failed
+                },
+                report_sha256: None,
+                witness_sha256: None,
+            },
+        )?;
+    }
+    let qualification: Qualification =
+        storage::read_json(&jobdir.join("qualification.json"), storage::REPORT_CAP)?;
+    if qualification.outcome == Outcome::Passed && !jobdir.join("qualification-error.txt").exists()
+    {
+        return Ok(());
+    }
+    let detail = storage::read_bytes(&jobdir.join("qualification-error.txt"), 64 * 1024)
+        .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned())
+        .unwrap_or_default();
+    Err(ReviewFailure(format!(
+        "candidate code cannot exempt itself from the mutation gate: {detail}; inspect jobs/{ORACLE_JOB} and prepare a new run"
+    )))
+}
+
 /// Place a gate's controller-supplied inputs in its scratch directory; returns whether the job gets
 /// the fuzz artifact tmpfs (only when the snapshot has a `fuzz/` directory to hold its mountpoint).
 fn stage_inputs(
@@ -997,6 +1106,10 @@ pub fn run_gate(directory: &Path, gate: Gate) -> Result<Vec<Execution>> {
             directory, &manifest, &sandbox, &image_id,
         )?)
     };
+    if gate == Gate::Mutation {
+        let launch = (&sandbox, image_id.as_str(), vendor.as_ref());
+        refuse_hidden_exemptions(directory, &manifest, launch, mutation_diff.as_deref())?;
+    }
     let commands = gate_argv(&manifest, gate);
     let mut receipts = Vec::new();
     for (i, argv) in commands.iter().enumerate() {

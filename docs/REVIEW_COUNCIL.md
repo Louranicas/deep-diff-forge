@@ -124,7 +124,7 @@ ddf-integration-20261025 council review /absolute/new-run-directory correctness-
 # Run the challenge job for every configured reviewer.
 
 # Gates refuse unless the gate image is set and present locally; see "Gate sandbox".
-export DDF_COUNCIL_GATE_IMAGE=localhost/ddf-council-gate:20261025c
+export DDF_COUNCIL_GATE_IMAGE=localhost/ddf-council-gate:20261026a
 ddf-integration-20261025 council gate /absolute/new-run-directory format --execute
 ddf-integration-20261025 council gate /absolute/new-run-directory check --execute
 ddf-integration-20261025 council gate /absolute/new-run-directory clippy --execute
@@ -241,7 +241,7 @@ Every command below runs inside the [gate sandbox](#gate-sandbox) with working d
 | tests | cargo test --workspace --locked | Requires successful tool plus nonzero observed passed tests; zero work is inconclusive |
 | antipatterns | python3 /work/review_policy_check.py (the controller's embedded copy of the pinned checker, not the candidate's script) | Parses manifests and pinned metadata of the snapshot; requires `state: passed` and nonzero workspace members checked; does not certify the 50 semantic patterns absent |
 | fuzz | cargo +nightly fuzz run for each explicit target, corpus `/work/corpus` seeded from the snapshot, artifacts in `/work/fuzz-artifacts/`, declared time/input budgets | Every target must succeed and show nonzero executed cases; empty/unavailable/timeout/crash is not PASS |
-| mutation | cargo mutants --package the-explicit-package --test-workspace true --jobs 4 --timeout 300 --output /work/mutation-results, plus `--in-diff /work/mutation.diff` when the request sets `mutation_base` | Requires successful baseline, coherent per-mutant outcomes, nonzero caught mutants, zero missed, zero timeouts; unviable outcomes remain visible |
+| mutation | First the [exemption oracle](#exemption-oracle-r12) job, which refuses before any mutation job slot; then cargo mutants --package the-explicit-package --test-workspace true --jobs 4 --timeout 300 --output /work/mutation-results, plus `--in-diff /work/mutation.diff` when the request sets `mutation_base` | Requires successful baseline, coherent per-mutant outcomes, nonzero caught mutants, zero missed, zero timeouts; unviable outcomes remain visible |
 
 Each gate job, including mutation, gets its own `work/` directory and never sees the normal build cache (AP-32). Non-mutation gates set `CARGO_TARGET_DIR=/work/target`; the mutation gate deliberately leaves `CARGO_TARGET_DIR` unset, because cargo-mutants copies the tree per build and a shared target directory would cross-contaminate those copies. The mutation witness is `jobs/gate-mutation/work/mutation-results/mutants.out/outcomes.json`; it is read without following any symlink or opening a FIFO, and the SHA-256 of exactly the bytes judged is recorded in the job's qualification and rechecked on every status. Mutation scope is the explicitly named package, while the test scope is the entire workspace so CLI/dependent integration tests can kill mutations in the review library. Requested checks appearing in model findings become additional outstanding evidence requirements. They are never executed automatically. The controller does not interpret a model's shell snippet as a command. No percentage score or majority vote overrides these requirements.
 
@@ -388,7 +388,7 @@ Council r9 (run `1ea218af…`) reviewed `51894f8..2cd4568`. All of its evidence 
 
 | Finding (r9) | Control | Evidence |
 | --- | --- | --- |
-| fsck checks once, but the blobs are read later, so a loose object swapped in between goes unseen (HIGH; all six reviewers) | `fsck` is gone. Every base object is re-hashed against its ID by `git hash-object` (Git's collision-detecting SHA-1) at the moment it is read: the operator's base commit, each tree on the way down, and each changed file's blob. Nothing read is trusted unverified, so there is no check-to-use gap. Unchanged files are found with one `hash-object --stdin-paths` over the snapshot, compared with the verified tree's blob IDs, and never read | **Measured, fake:** `a_forged_base_object_is_refused_before_any_run_exists`. The candidate changes the file, so its base blob is read, and the blob is forged to the candidate's bytes ("a base object does not hash to its ID") |
+| fsck checks once, but the blobs are read later, so a loose object swapped in between goes unseen (HIGH; all six reviewers) | `fsck` is gone. Every base object is re-hashed against its ID by `git hash-object` (Git's collision-detecting SHA-1) at the moment it is read: the operator's base commit, each tree on the way down, and each changed file's blob. Nothing read is trusted unverified, so there is no check-to-use gap. Unchanged files are found with one `hash-object --stdin-paths` over the snapshot, compared with the verified tree's blob IDs, and never read through Git (that one `hash-object` call does read every snapshot byte; corrected after council r10, performance F3) | **Measured, fake:** `a_forged_base_object_is_refused_before_any_run_exists`. The candidate changes the file, so its base blob is read, and the blob is forged to the candidate's bytes ("a base object does not hash to its ID") |
 | A non-UTF-8 base drops new Rust from scope (HIGH; all six reviewers) | Only the new side must be UTF-8. A base that is not UTF-8 diffs as empty, so the whole new file is in scope | **Measured, fake:** `a_binary_base_file_turned_into_rust_is_in_scope` |
 | `#[path]` modules that are not `.rs` escape the skip scan (HIGH; architecture, falsifier, security, subtractor) | The scan follows `#[path = "…"]` literals (also under `cfg_attr`) to the files they name, whatever their extension, repeatedly, matching by file name, which over-includes | **Measured, fake:** `a_skip_attribute_in_a_non_rs_path_module_is_refused`. **Unit:** `path_attributes_name_their_module_files` |
 | A shebang with an unmatched quote hides a real skip attribute (HIGH; correctness, falsifier, subtractor) | The lexer skips a first-line shebang as rustc does: `#!` not followed by `[`. `#![…]` stays an inner attribute | **Unit:** two shebang positives and an inner-attribute negative |
@@ -423,6 +423,36 @@ Council r10 (run `ebf5d834…`) reviewed `2cd4568..bec1a49`. Every evidence gate
 | `hash-object` format checks could refuse a legitimate historical object (architecture, low) | `--literally`: only the ID must match | — |
 | Double lexing; an input thread for every Git command (performance, low) | One pass per file; a writer thread only when there is input | — |
 | **The exemption control is a denylist that predicts cargo-mutants** (architecture, r9 and r10) | **Not changed, and the main open item.** Every round has found a lexer divergence. The robust fixes need a decision: either **(a)** build the gate image's cargo-mutants with skip-attribute support compiled out, so nothing needs predicting, or **(b)** detect with `syn`, the parser cargo-mutants uses, adding it as a direct controller dependency. Both affect the supply-chain gates (image provenance, or cargo-deny, cargo-audit and the SBOM) | Disclosed; recommended for the next slice |
+
+<a id="exemption-oracle-r12"></a>
+
+### r12: the exemption oracle replaces the denylist
+
+The decision record is in the project vault (`Strategy/Decision Record Exemption Control 2026-10-26.md`). Rehearsing it showed that the skip attribute was one of six ways cargo-mutants 27.1.0 leaves an item unmutated. `src/visit.rs` also skips any attribute whose path *ends in* `test`, `#[cfg(test)]`, every `unsafe fn`, any method named `new`, and empty bodies. Each route below compiles as production code and gets zero mutants from stock cargo-mutants (measured on a planted workspace). The r8–r11 lexer looked for none of the first four:
+
+| Route | Spelling |
+| --- | --- |
+| Path-suffix test attribute | `#[idm::test]` on a production fn, where `idm` is a three-line local identity proc macro |
+| Shadowed built-in | `use idm::test;` then a bare `#[test] pub fn …`, called from production code |
+| Build-script cfg | `build.rs` prints `cargo:rustc-cfg=test`, so `#[cfg(test)]` code is compiled into the normal build |
+| `unsafe fn` | Workspace lints forbid it, but the candidate controls `Cargo.toml` |
+| Renaming macro | A path-suffix `test` attribute whose expansion renames the fn; production calls the new name |
+
+Deciding "test code" needs name resolution and the build configuration, which no syntactic scan has; cargo-mutants itself gets the shadowed `#[test]` wrong. So the gate now asks the compiler. Before the mutation job slot exists, the controller runs `policy/exemption_oracle.py` (compiled in, like the policy checker) as the offline sandbox job `sandbox-exemption-oracle`:
+
+1. It lists the mutation scope (`--package`, plus `--in-diff` when there is a `mutation_base`) with the gate's cargo-mutants and with `ddf-cargo-mutants-noexclude`. That is the same crates.io archive, pinned by its index checksum, with `review-policy/sandbox/cargo-mutants-noexclude.patch` switching attribute and `unsafe fn` exclusions off. A function only the second lists was hidden by an exclusion.
+2. It dumps the non-test HIR (`cargo rustc -- -Zunpretty=hir-tree`) of the package's lib and bin targets with the stable gate toolchain. `RUSTC_BOOTSTRAP` names only that crate, so proc-macro crates stay on stable and cannot emit `def_site` spans.
+3. A hidden function is refused when any production HIR span lies inside its source span, which includes its attributes. A macro can only give its output spans it received or the call site, both inside the item, so a renamed expansion is still caught. Genuine tests are absent from the non-test build and pass.
+4. The run is inconclusive, and refused, if a target dumps no spans, or if no function the gate mutates has a production span.
+
+| Finding | Control | Evidence |
+| --- | --- | --- |
+| The exemption control predicted cargo-mutants with a denylist lexer (architecture, councils r9 and r10; every round found a divergence) | The oracle above; the lexer refusal is kept for this round as a fast first check and is no longer the control | **Measured, fake:** `shipped_code_hidden_from_cargo_mutants_refuses_the_mutation_gate`, `test_only_code_hidden_from_cargo_mutants_is_allowed`, `an_oracle_without_production_spans_is_inconclusive_and_refused`. All three fail against `cf8bb22`. **Measured, prototype:** the planted workspace, 5 of 5 routes refused and its genuine test allowed; the DDF workspace at `cf8bb22`, 0 of 1,012 hidden functions refused (all are tests), 715 of 717 mutated functions covered (the other two are `cfg(not(unix))` twins). The r11 diff took 9.5 s |
+| "Unchanged files are never read" overstated it (performance F3, r10) | Wording corrected in the r9 row above | — |
+
+**Residual.**
+- Candidate build scripts and proc macros run while the HIR is produced, so a hostile macro could print a forged tree and exit 0. That is residual 1 below, lying to the tool, and the oracle does not defend against it. It closes *declarative* exemption: code that cargo-mutants skips by design while it still ships.
+- Code cargo-mutants never examines stays unmutated in both listings and is not an exemption: `fn new`, empty bodies, `macro_rules!` and `include!` bodies, and build scripts. A future coverage-completeness check (production HIR spans on changed lines that no mutated function contains) would surface them; it is not implemented.
 
 ### Podman invocation
 
@@ -653,6 +683,12 @@ One canonical changed-source digest reused by analysis and council; explicit abs
 Canonical, pinned checker: parse workspace TOML and provenance JSON; check lint inheritance and source labels without pretending to detect all semantic antipatterns. The controller embeds this file and runs it inside the gate sandbox with the snapshot copy as working directory. `scripts/security/review_policy_check.py` is a compatibility wrapper for CI and humans that runs it against the repository root; council gates never execute the wrapper.
 
 [Exact crate/module](../crates/deep-diff-forge-review/policy/review_policy_check.py) · [compatibility wrapper](../scripts/security/review_policy_check.py) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--scripts--security--review_policy_check)
+
+### crates/deep-diff-forge-review/policy/exemption_oracle.py
+
+Mutation-exemption oracle: list the mutation scope with the gate's cargo-mutants and with the image's no-exclusion build, dump the package's non-test HIR with the stable toolchain, and refuse a hidden function that has production spans. The controller embeds this file and runs it in the sandbox job `sandbox-exemption-oracle` before the mutation gate; see [r12](#exemption-oracle-r12). Its image dependency is `ddf-cargo-mutants-noexclude`, built from the pinned crate and `review-policy/sandbox/cargo-mutants-noexclude.patch`.
+
+[Exact crate/module](../crates/deep-diff-forge-review/policy/exemption_oracle.py) · [patch](../review-policy/sandbox/cargo-mutants-noexclude.patch)
 
 <a id="report-fuzz"></a>
 

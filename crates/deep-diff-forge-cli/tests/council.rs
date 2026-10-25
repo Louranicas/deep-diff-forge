@@ -115,9 +115,11 @@ impl Fixture {
     }
     /// Install the fake `cargo` with its mode baked in: the sandbox has no ambient environment.
     fn install_gate(&self, mode: &str) {
-        let cargo = self.bin.join("cargo");
-        fs::write(&cargo, FAKE_GATE.replace("@MODE@", mode)).unwrap();
-        fs::set_permissions(&cargo, fs::Permissions::from_mode(0o700)).unwrap();
+        for name in ["cargo", "ddf-cargo-mutants-noexclude"] {
+            let tool = self.bin.join(name);
+            fs::write(&tool, FAKE_GATE.replace("@MODE@", mode)).unwrap();
+            fs::set_permissions(&tool, fs::Permissions::from_mode(0o700)).unwrap();
+        }
     }
     fn gate(&self, gate: &str) -> Output {
         self.gate_with(gate, "normal")
@@ -505,10 +507,26 @@ const FAKE_IMAGE_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef012
 /// Fake `cargo` inside the fake sandbox. Modes plant what a hostile candidate (or its tools) could
 /// leave in the job's writable `/work`: `vendor_symlink`, `vendor_root_symlink`, `vendor_fifo` and
 /// `vendor_dirs` (more empty directories than the seal's entry budget) in
-/// the vendoring output; `fifo` and `symlinked_dir` at the mutation witness.
+/// the vendoring output; `fifo` and `symlinked_dir` at the mutation witness. It also answers the
+/// exemption oracle (installed again as `ddf-cargo-mutants-noexclude`): `exempt` hides a function the
+/// production HIR compiles, `hidden_test` hides one it does not, and `hir_empty` dumps no spans.
 const FAKE_GATE: &str = r"#!/usr/bin/python3
 import json,os,pathlib,sys
 mode='@MODE@'
+if '--list' in sys.argv:
+    # Exemption oracle listings: the no-exclusion build also names `hidden` (lines 3-4).
+    def fn(name,a,b):return {'file':'src/lib.rs','function':{'function_name':name,'span':{'start':{'line':a,'column':1},'end':{'line':b,'column':40}}}}
+    rows=[fn('shipped',1,2)]
+    if 'noexclude' in os.path.basename(sys.argv[0]) and mode in ('exempt','hidden_test'):rows.append(fn('hidden',3,4))
+    print(json.dumps(rows));sys.exit(0)
+if sys.argv[1:2]==['metadata']:
+    print(json.dumps({'packages':[{'name':'deep-diff-forge-review','targets':[{'name':'deep-diff-forge-review','kind':['lib']}]}]}));sys.exit(0)
+if sys.argv[1:2]==['rustc']:
+    assert '-Zunpretty=hir-tree' in sys.argv and os.environ.get('RUSTC_BOOTSTRAP')=='deep_diff_forge_review',sys.argv
+    if mode!='hir_empty':print('span: src/lib.rs:1:1: 2:2 (#0)')
+    # `exempt`: the hidden function is compiled into production; `hidden_test`: it is not.
+    if mode=='exempt':print('span: src/lib.rs:3:5: 3:9 (#0)')
+    sys.exit(0)
 if sys.argv[1:2]==['vendor']:
     out=pathlib.Path(sys.argv[-1])
     if mode=='vendor_root_symlink':out.symlink_to('/etc');sys.exit(0)
@@ -807,6 +825,76 @@ fn candidate_code_cannot_exempt_itself_from_the_mutation_gate() {
     assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
     // Only the mutation gate is concerned; the same snapshot still runs its tests.
     assert_eq!(f.gate("tests").status.code(), Some(0));
+}
+
+#[test]
+fn shipped_code_hidden_from_cargo_mutants_refuses_the_mutation_gate() {
+    let f = Fixture::new();
+    f.prepare();
+    // The no-exclusion listing names `hidden`, and the production HIR has a span inside it.
+    f.install_gate("exempt");
+    let result = f.gate("mutation");
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert_eq!(result.status.code(), Some(4), "{stderr}");
+    assert!(
+        stderr.contains("candidate code cannot exempt itself from the mutation gate")
+            && stderr.contains("hidden"),
+        "{stderr}"
+    );
+    let oracle = f.run.join("jobs/sandbox-exemption-oracle");
+    let witness: serde_json::Value =
+        serde_json::from_slice(&fs::read(oracle.join("work/exemption-oracle.json")).unwrap())
+            .unwrap();
+    assert_eq!(witness["state"], "refused");
+    assert_eq!(witness["refused"][0]["function"], "hidden");
+    // Refused before the mutation gate's slot exists, and a rerun repeats the refusal.
+    assert!(!f.run.join("jobs/gate-mutation").exists());
+    assert_eq!(f.gate("mutation").status.code(), Some(4));
+    let argv = f.runtime_argv("sandbox-exemption-oracle").concat();
+    assert!(
+        argv.iter().any(|a| a == "/work/exemption_oracle.py"),
+        "{argv:?}"
+    );
+    assert!(argv.iter().any(|a| a == "--network=none"), "{argv:?}");
+}
+
+#[test]
+fn test_only_code_hidden_from_cargo_mutants_is_allowed() {
+    let f = Fixture::new();
+    f.prepare();
+    // `hidden` is listed only without exclusions, but the non-test build has no span in it.
+    f.install_gate("hidden_test");
+    let result = f.gate("mutation");
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let witness: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            f.run
+                .join("jobs/sandbox-exemption-oracle/work/exemption-oracle.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(witness["state"], "passed");
+    assert_eq!(witness["hidden_functions"], 1);
+    assert_eq!(witness["stock_functions_with_production_spans"], 1);
+}
+
+#[test]
+fn an_oracle_without_production_spans_is_inconclusive_and_refused() {
+    let f = Fixture::new();
+    f.prepare();
+    // A HIR dump that names nothing cannot clear anything, whatever the listings say.
+    f.install_gate("hir_empty");
+    let result = f.gate("mutation");
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert_eq!(result.status.code(), Some(4), "{stderr}");
+    assert!(stderr.contains("inconclusive"), "{stderr}");
+    assert!(!f.run.join("jobs/gate-mutation").exists());
 }
 
 fn git(f: &Fixture, args: &[&str]) -> String {

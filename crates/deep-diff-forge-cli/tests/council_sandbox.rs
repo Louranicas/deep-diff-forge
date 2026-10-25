@@ -363,9 +363,40 @@ fn real_sandbox_refuses_planted_breaches() {
     let inspected = runtime_output(&["image", "inspect", "--format", "{{.Id}}", &image]);
     let image_id = String::from_utf8_lossy(&inspected.stdout).trim().to_owned();
     breach_probes(&home, uid, &image_id);
+    // Also the oracle's positive control: an honest crate reaches the mutation job slot.
     witness_symlink_probe(&home, uid);
     vendor_symlink_probe(&home, uid);
     toolchain_config_probe(&home, uid);
+    exemption_oracle_probe(&home, uid);
+}
+
+/// A build script that sets `cfg(test)` ships the probe's test module in the normal build, where
+/// cargo-mutants still skips it. The exemption oracle must refuse before the mutation job exists,
+/// with the build script run offline inside its own sandbox job.
+fn exemption_oracle_probe(home: &str, uid: u32) {
+    let build = "fn main() {\n    println!(\"cargo:rustc-cfg=test\");\n}\n";
+    let (root, request) = fixture(home, uid, "exemption", &[("build.rs", build)]);
+    let run = root.join("run");
+    prepare(&request, &run);
+    let mutation = gate(&run, "mutation", None);
+    let stderr = String::from_utf8_lossy(&mutation.stderr);
+    assert_eq!(mutation.status.code(), Some(4), "{stderr}");
+    assert!(
+        stderr.contains("candidate code cannot exempt itself from the mutation gate"),
+        "{stderr}"
+    );
+    let witness = json(&run.join("jobs/sandbox-exemption-oracle/work/exemption-oracle.json"));
+    assert_eq!(witness["state"], "refused", "{witness}");
+    assert!(
+        witness["refused"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["function"].as_str().unwrap().starts_with("tests::")),
+        "{witness}"
+    );
+    assert!(!run.join("jobs/gate-mutation").exists());
+    let _ = fs::remove_dir_all(&root);
 }
 
 /// Breach probes in the tests gate, then a mutation gate on the same run (the positive control for
