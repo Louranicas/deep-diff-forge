@@ -509,30 +509,36 @@ const FAKE_IMAGE_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef012
 /// `vendor_dirs` (more empty directories than the seal's entry budget) in
 /// the vendoring output; `fifo` and `symlinked_dir` at the mutation witness. It also answers the
 /// exemption oracle (installed again as `ddf-cargo-mutants-noexclude`): `exempt` hides a function the
-/// production HIR compiles (`exempt_txt`: in a non-`.rs` module), `hidden_test` hides one it does
-/// not, `hir_empty` dumps no spans, and `unexamined` reports production code on an added line.
+/// production build compiles (`exempt_txt`: in a non-`.rs` module), `hidden_test` hides one it
+/// does not, and `mir_blind` emits MIR that no change can alter.
 const FAKE_GATE: &str = r"#!/usr/bin/python3
 import json,os,pathlib,sys
 mode='@MODE@'
 if '--list' in sys.argv:
-    # Exemption oracle listings: the no-exclusion build also names `hidden` (lines 3-4).
-    def fn(name,a,b,file='src/lib.rs'):return {'file':file,'function':{'function_name':name,'span':{'start':{'line':a,'column':1},'end':{'line':b,'column':40}}}}
-    rows=[fn('shipped',1,2)]
-    if 'noexclude' in os.path.basename(sys.argv[0]) and mode in ('exempt','hidden_test'):rows.append(fn('hidden',3,4))
-    # A `#[path]` module need not end in `.rs` (council r10); its spans must still count.
-    if 'noexclude' in os.path.basename(sys.argv[0]) and mode=='exempt_txt':rows.append(fn('hidden',3,4,'src/hidden.txt'))
+    # Exemption oracle listings over `ORACLE_LIB`: `shipped` (lines 1-3) is always mutated; the
+    # no-exclusion build also names `hidden` (lines 4-6, or 1-3 of the `.txt` module).
+    def fn(name,first,file='src/lib.rs'):
+        span={'start':{'line':first,'column':1},'end':{'line':first+2,'column':2}}
+        body={'start':{'line':first+1,'column':5},'end':{'line':first+1,'column':6}}
+        return {'file':file,'genre':'FnValue','span':body,'function':{'function_name':name,'span':span}}
+    rows=[fn('shipped',1)]
+    if 'noexclude' in os.path.basename(sys.argv[0]):
+        if mode in ('exempt','hidden_test','mir_blind'):rows.append(fn('hidden',4))
+        # A `#[path]` module need not end in `.rs` (council r10).
+        if mode=='exempt_txt':rows.append(fn('hidden',1,'src/hidden.txt'))
     print(json.dumps(rows));sys.exit(0)
 if sys.argv[1:2]==['metadata']:
-    print(json.dumps({'packages':[{'name':'deep-diff-forge-review','targets':[{'name':'deep-diff-forge-review','kind':['lib']}]}]}));sys.exit(0)
+    package={'name':'deep-diff-forge-review','id':'ddf','targets':[{'name':'deep-diff-forge-review','kind':['rlib','cdylib']}]}
+    print(json.dumps({'packages':[package],'workspace_members':['ddf'],'resolve':{'nodes':[{'id':'ddf','features':[]}]}}));sys.exit(0)
 if sys.argv[1:2]==['rustc']:
-    assert '-Zunpretty=hir-tree' in sys.argv and os.environ.get('RUSTC_BOOTSTRAP')=='deep_diff_forge_review',sys.argv
-    if mode!='hir_empty':print('span: src/lib.rs:1:1: 2:2 (#0)')
-    # `exempt`: the hidden function is compiled into production; `hidden_test`: it is not.
-    if mode=='exempt':print('span: src/lib.rs:3:5: 3:9 (#0)')
-    if mode=='exempt_txt':print('span: src/hidden.txt:3:5: 3:9 (#0)')
-    # `unexamined`: production code on an added line that no listed function contains.
-    if mode=='unexamined':print('span: added.rs:2:1: 2:24 (#0)')
-    sys.exit(0)
+    # Production MIR stands in as the source text that ships: in `hidden_test` only `shipped`.
+    emit=next(a[len('--emit=mir='):] for a in sys.argv if a.startswith('--emit=mir='))
+    assert 'RUSTC_BOOTSTRAP' not in os.environ,'the oracle needs no unstable flags'
+    lib=pathlib.Path('src/lib.rs').read_text()
+    if mode=='hidden_test':lib='\n'.join(lib.split('\n')[:3])
+    if mode=='exempt_txt':lib+=pathlib.Path('src/hidden.txt').read_text()
+    if mode=='mir_blind':lib='constant'
+    pathlib.Path(emit).write_text(lib);sys.exit(0)
 if sys.argv[1:2]==['vendor']:
     out=pathlib.Path(sys.argv[-1])
     if mode=='vendor_root_symlink':out.symlink_to('/etc');sys.exit(0)
@@ -808,54 +814,63 @@ fn analysis_admission_binds_the_review_id_and_refuses_unusable_analyses() {
     }
 }
 
+/// Two functions for the fake exemption oracle; `hidden.txt` is a non-`.rs` module.
+const ORACLE_LIB: &str =
+    "pub fn shipped() -> u32 {\n    1\n}\npub fn hidden() -> u32 {\n    2\n}\n";
+
+fn oracle_fixture(mode: &str) -> Fixture {
+    let f = Fixture::new();
+    f.commit("src/lib.rs", ORACLE_LIB);
+    f.commit("src/hidden.txt", "pub fn hidden() -> u32 {\n    3\n}\n");
+    f.prepare();
+    f.install_gate(mode);
+    f
+}
+
+fn oracle_witness(f: &Fixture) -> serde_json::Value {
+    serde_json::from_slice(
+        &fs::read(
+            f.run
+                .join("jobs/sandbox-exemption-oracle/work/exemption-oracle.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
 #[test]
 fn shipped_code_hidden_from_cargo_mutants_refuses_the_mutation_gate() {
-    // A span in a non-`.rs` module counts like any other.
-    let f = Fixture::new();
-    f.prepare();
-    f.install_gate("exempt_txt");
-    let result = f.gate("mutation");
-    assert_eq!(
-        result.status.code(),
-        Some(4),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let f = Fixture::new();
-    f.prepare();
-    // The no-exclusion listing names `hidden`, and the production HIR has a span inside it.
-    f.install_gate("exempt");
-    let result = f.gate("mutation");
-    let stderr = String::from_utf8_lossy(&result.stderr);
-    assert_eq!(result.status.code(), Some(4), "{stderr}");
-    assert!(
-        stderr.contains("candidate code cannot exempt itself from the mutation gate")
-            && stderr.contains("hidden"),
-        "{stderr}"
-    );
-    let oracle = f.run.join("jobs/sandbox-exemption-oracle");
-    let witness: serde_json::Value =
-        serde_json::from_slice(&fs::read(oracle.join("work/exemption-oracle.json")).unwrap())
-            .unwrap();
-    assert_eq!(witness["state"], "refused");
-    assert_eq!(witness["refused"][0]["function"], "hidden");
-    // Refused before the mutation gate's slot exists, and a rerun repeats the refusal.
-    assert!(!f.run.join("jobs/gate-mutation").exists());
-    assert_eq!(f.gate("mutation").status.code(), Some(4));
-    let argv = f.runtime_argv("sandbox-exemption-oracle").concat();
-    assert!(
-        argv.iter().any(|a| a == "/work/exemption_oracle.py"),
-        "{argv:?}"
-    );
-    assert!(argv.iter().any(|a| a == "--network=none"), "{argv:?}");
+    for mode in ["exempt", "exempt_txt"] {
+        // Neutralising `hidden`'s body changes the production MIR, so it ships.
+        let f = oracle_fixture(mode);
+        let result = f.gate("mutation");
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert_eq!(result.status.code(), Some(4), "{mode}: {stderr}");
+        assert!(
+            stderr.contains("candidate code cannot exempt itself from the mutation gate")
+                && stderr.contains("hidden"),
+            "{stderr}"
+        );
+        let witness = oracle_witness(&f);
+        assert_eq!(witness["state"], "refused", "{witness}");
+        assert_eq!(witness["refused"][0]["function"], "hidden");
+        assert_eq!(witness["control"]["mir_changed"], true);
+        // Refused before the mutation gate's slot exists, and a rerun repeats the refusal.
+        assert!(!f.run.join("jobs/gate-mutation").exists());
+        assert_eq!(f.gate("mutation").status.code(), Some(4));
+        let argv = f.runtime_argv("sandbox-exemption-oracle").concat();
+        assert!(
+            argv.iter().any(|a| a == "/work/exemption_oracle.py"),
+            "{argv:?}"
+        );
+        assert!(argv.iter().any(|a| a == "--network=none"), "{argv:?}");
+    }
 }
 
 #[test]
 fn test_only_code_hidden_from_cargo_mutants_is_allowed() {
-    let f = Fixture::new();
-    f.prepare();
-    // `hidden` is listed only without exclusions, but the non-test build has no span in it.
-    f.install_gate("hidden_test");
+    // `hidden` is listed only without exclusions, and changing it leaves the production MIR alone.
+    let f = oracle_fixture("hidden_test");
     let result = f.gate("mutation");
     assert_eq!(
         result.status.code(),
@@ -863,56 +878,22 @@ fn test_only_code_hidden_from_cargo_mutants_is_allowed() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    let witness: serde_json::Value = serde_json::from_slice(
-        &fs::read(
-            f.run
-                .join("jobs/sandbox-exemption-oracle/work/exemption-oracle.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(witness["state"], "passed");
+    let witness = oracle_witness(&f);
+    assert_eq!(witness["state"], "passed", "{witness}");
     assert_eq!(witness["hidden_functions"], 1);
-    assert_eq!(witness["stock_functions_with_production_spans"], 1);
+    assert_eq!(witness["control"]["mir_changed"], true);
 }
 
 #[test]
-fn the_oracle_reports_added_production_lines_no_mutated_function_contains() {
-    let f = Fixture::new();
-    f.commit("added.rs", "pub fn kept() {}\n");
-    let prepared = prepare_with_mutation_base(&f, |f| {
-        fs::write(
-            f.repository.join("added.rs"),
-            "pub fn kept() {}\npub const LIMIT: u8 = 9;\n",
-        )
-        .unwrap();
-    });
-    assert!(
-        prepared.status.success(),
-        "{}",
-        String::from_utf8_lossy(&prepared.stderr)
-    );
-    f.install_gate("unexamined");
+fn a_comparison_the_positive_control_cannot_move_is_inconclusive_and_refused() {
+    // MIR that no change alters cannot clear anything, whatever the listings say.
+    let f = oracle_fixture("mir_blind");
     let result = f.gate("mutation");
-    // Advisory only: the gate is not refused for it.
-    assert_eq!(
-        result.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let witness: serde_json::Value = serde_json::from_slice(
-        &fs::read(
-            f.run
-                .join("jobs/sandbox-exemption-oracle/work/exemption-oracle.json"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(witness["state"], "passed");
-    assert_eq!(witness["unexamined_changed_lines"], 1, "{witness}");
-    assert_eq!(witness["unexamined"][0]["file"], "added.rs");
-    assert_eq!(witness["unexamined"][0]["line"], 2);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert_eq!(result.status.code(), Some(4), "{stderr}");
+    assert!(stderr.contains("inconclusive"), "{stderr}");
+    assert_eq!(oracle_witness(&f)["control"]["mir_changed"], false);
+    assert!(!f.run.join("jobs/gate-mutation").exists());
 }
 
 /// Stands in for the oracle inside the fake sandbox: writes `@WITNESS@` and exits `@CODE@`.
@@ -927,8 +908,11 @@ sys.exit(@CODE@)
 fn the_controller_checks_the_oracle_witness_as_well_as_its_exit() {
     // A zero exit cannot pass a vacuous witness, and a passing witness cannot pass a failed exit.
     for (witness, code) in [
-        (r#"{"state":"passed","targets_dumped":0}"#, 0),
-        (r#"{"state":"passed","targets_dumped":1}"#, 1),
+        (
+            r#"{"state":"passed","hidden_functions":1,"control":{"mir_changed":false}}"#,
+            0,
+        ),
+        (r#"{"state":"passed","hidden_functions":0}"#, 1),
     ] {
         let f = Fixture::new();
         f.prepare();
@@ -951,19 +935,6 @@ fn the_controller_checks_the_oracle_witness_as_well_as_its_exit() {
         );
         assert!(!f.run.join("jobs/gate-mutation").exists(), "{witness}");
     }
-}
-
-#[test]
-fn an_oracle_without_production_spans_is_inconclusive_and_refused() {
-    let f = Fixture::new();
-    f.prepare();
-    // A HIR dump that names nothing cannot clear anything, whatever the listings say.
-    f.install_gate("hir_empty");
-    let result = f.gate("mutation");
-    let stderr = String::from_utf8_lossy(&result.stderr);
-    assert_eq!(result.status.code(), Some(4), "{stderr}");
-    assert!(stderr.contains("inconclusive"), "{stderr}");
-    assert!(!f.run.join("jobs/gate-mutation").exists());
 }
 
 fn git(f: &Fixture, args: &[&str]) -> String {

@@ -307,13 +307,8 @@ fn regions(old: &[usize], new: &[usize], spent: &mut usize) -> Vec<Region> {
 fn widen_deletions(found: &[Region], new: &[&[u8]]) -> Vec<Region> {
     // Lines that belong to no item's body: blank, comment and attribute lines (council r10: a
     // comment between a deleted `cfg` and the item it disabled stopped the widening).
-    let blank = |line: usize| {
-        let text = new[line].trim_ascii();
-        text.is_empty()
-            || [&b"//"[..], b"/*", b"*", b"#["]
-                .iter()
-                .any(|start| text.starts_with(start))
-    };
+    let code = code_lines(new);
+    let blank = |line: usize| !code[line];
     let mut widened: Vec<Region> = Vec::new();
     for (k, (old_range, new_range)) in found.iter().enumerate() {
         let (mut old_range, mut new_range) = (old_range.clone(), new_range.clone());
@@ -341,6 +336,53 @@ fn widen_deletions(found: &[Region], new: &[&[u8]]) -> Vec<Region> {
         }
     }
     widened
+}
+
+/// Whether each line holds code outside comments and attributes, tracking nested block comments
+/// and attribute brackets across lines (council r12: the inside of a multi-line `/* … */`, or of a
+/// multi-line `#[cfg(…)]`, is not code). String literals are not lexed: a `/*` or `[` inside one
+/// can only mark later lines as non-code, which widens further and over-includes.
+fn code_lines(new: &[&[u8]]) -> Vec<bool> {
+    let (mut comment, mut attribute) = (0_usize, 0_usize);
+    new.iter()
+        .map(|line| {
+            let mut code = false;
+            let mut skip = 0;
+            for (i, &byte) in line.iter().enumerate() {
+                if skip > 0 {
+                    skip -= 1;
+                    continue;
+                }
+                let pair = line.get(i..i + 2);
+                if comment > 0 {
+                    if pair == Some(b"/*") {
+                        comment += 1;
+                        skip = 1;
+                    } else if pair == Some(b"*/") {
+                        comment -= 1;
+                        skip = 1;
+                    }
+                } else if pair == Some(b"//") {
+                    break;
+                } else if pair == Some(b"/*") {
+                    comment = 1;
+                    skip = 1;
+                } else if attribute > 0 {
+                    match byte {
+                        b'[' => attribute += 1,
+                        b']' => attribute -= 1,
+                        _ => {}
+                    }
+                } else if pair == Some(b"#[") {
+                    attribute = 1;
+                    skip = 1;
+                } else if !byte.is_ascii_whitespace() {
+                    code = true;
+                }
+            }
+            code
+        })
+        .collect()
 }
 
 /// Append `path`'s zero-context unified diff from `old` to `new`.
@@ -712,6 +754,48 @@ mod tests {
         let diff = diff_of(&old, &new, &mut 0);
         assert_eq!(apply(&diff, &old), new);
         assert!(diff.starts_with(b"--- a/x.rs\n+++ b/x.rs\n@@ -1,4100 +1,4100 @@\n"));
+    }
+
+    #[test]
+    fn code_lines_skip_comments_and_attributes_across_lines() {
+        let source: Vec<&[u8]> = [
+            &b"#[cfg(any("[..],
+            b"    test"[..].as_ref(),
+            b"))]",
+            b"/* outer /* nested */",
+            b"   still a comment */",
+            b"// line comment",
+            b"   ",
+            b"#[doc = \"[x]\"] pub fn f() {}",
+            b"pub fn g() {} /* trailing",
+            b"*/ let x = 1;",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            code_lines(&source),
+            [
+                false, false, false, false, false, false, false, true, true, true
+            ]
+        );
+    }
+
+    #[test]
+    fn deletion_widening_passes_multi_line_comments_and_attributes() {
+        for (old, new) in [
+            (
+                "fn a() {}\n#[cfg(any())]\n/*\nexplanation\n*/\nfn f() {}\n",
+                "fn a() {}\n/*\nexplanation\n*/\nfn f() {}\n",
+            ),
+            (
+                "fn a() {}\n#[cfg(any())]\n#[cfg_attr(\n    test,\n    allow(dead_code)\n)]\nfn f() {}\n",
+                "fn a() {}\n#[cfg_attr(\n    test,\n    allow(dead_code)\n)]\nfn f() {}\n",
+            ),
+        ] {
+            let marked = marked(&diff_of(old.as_bytes(), new.as_bytes(), &mut 0));
+            let last = new.lines().count() - 1;
+            assert!(marked.contains(&last), "{new:?}: {marked:?}");
+        }
     }
 
     #[test]

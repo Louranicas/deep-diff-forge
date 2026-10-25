@@ -428,6 +428,8 @@ Council r10 (run `ebf5d834…`) reviewed `2cd4568..bec1a49`. Every evidence gate
 
 ### r12: the exemption oracle replaces the denylist
 
+> Steps 2 and 3 below (HIR spans) were superseded in [r13](#lexer-retired-r13) by differential compilation, after council r12 showed that an enclosing-module macro defeats span containment.
+
 The decision record is in the project vault (`Strategy/Decision Record Exemption Control 2026-10-26.md`). Rehearsing it showed that the skip attribute was one of six ways cargo-mutants 27.1.0 leaves an item unmutated. `src/visit.rs` also skips any attribute whose path *ends in* `test`, `#[cfg(test)]`, every `unsafe fn`, any method named `new`, and empty bodies. Each route below compiles as production code and gets zero mutants from stock cargo-mutants (measured on a planted workspace). The r8–r11 lexer looked for none of the first four:
 
 | Route | Spelling |
@@ -460,25 +462,40 @@ Deciding "test code" needs name resolution and the build configuration, which no
 
 <a id="lexer-retired-r13"></a>
 
-### r13: the skip-attribute lexer is retired
+### r13: council r12 follow-ups — differential compilation, and the lexer retired
 
-The [exemption oracle](#exemption-oracle-r12) refuses every spelling of the skip attribute that cargo-mutants 27.1.0 honours, measured against the r8–r11 lexer catalogue. It also covers the routes the lexer never looked for. The lexer and its scan are therefore removed:
-- `refuse_mutation_exemptions`, which scanned `#[path]` and Cargo targets;
-- `mutation_scope`'s `lex`, `exemption_scan`, `manifest_paths`, `unescape` and shebang helpers;
-- their unit and fake-runtime tests.
+Council r12 (run `8e3b0abb…`) reviewed `bec1a49..049955a`. All 8 evidence gates passed in the sandbox, and the exemption oracle passed on its first real run (16 of 16 mutated functions covered). 5 of 6 independent reports were admitted. The controller rejected architecture-claude's report for citing a file that does not exist (`deep-diff-forge-storage/src/storage.rs`), so the challenge round did not start. The admitted reports agree on these findings, and the rejected report's two HIGHs repeat them:
 
-That is about 580 lines. The rows above for councils r8–r11 describe a control that no longer exists; they are kept as history.
+| Finding (r12) | Control | Evidence |
+| --- | --- | --- |
+| An attribute macro on an *enclosing module* re-spans every descendant token to its own call site, so a shipped function has no span inside its own span (HIGH; correctness, falsifier, subtractor) | **Span containment is replaced by differential compilation.** The oracle copies the snapshot and replaces each hidden function's body (cargo-mutants' own `FnValue` body span) with a line-preserving `loop {}`. It builds the package's production MIR from both trees with the stable `--emit=mir`, and refuses when the MIR changes. Renaming or re-spanning a changed body cannot hide the change. Each function whose body alone changes the MIR is named (up to 32) | **Measured, prototype:** an ancestor-module re-parsing macro is refused, along with the five r12 routes. **Measured, fake:** `shipped_code_hidden_from_cargo_mutants_refuses_the_mutation_gate` |
+| `rlib`, `dylib`, `cdylib` and `staticlib` library targets were skipped (HIGH; falsifier, security, subtractor, architecture) | Every library kind is built with `--lib`. Outputs are numbered, because a lib and a bin may share a name (the positive control caught that collision while this was being measured) | **Measured, prototype:** a `cdylib`+`rlib` library beside a bin is refused. **Fake:** the metadata lists `["rlib","cdylib"]` |
+| Whitespace in a path broke the span regex; differently spelled paths fell open (HIGH; correctness, falsifier; security medium) | No span parsing: bodies are edited at the paths cargo-mutants itself parsed | **Measured, prototype:** `#[path = "hidden file.rs"]` is refused |
+| The oracle built default features; the gate tests workspace-unified features (HIGH; correctness) | MIR is built with exactly the features `cargo metadata`'s resolve enables for the package (`--no-default-features --features …`). A bin is built only if its `required-features` are enabled (falsifier, medium) | **Measured, prototype:** a `ship` feature enabled only by another member is refused |
+| The oracle environment was detectable (`RUSTC_BOOTSTRAP`) (HIGH; security) | No unstable flag or `RUSTC_BOOTSTRAP`: `--emit=mir` is stable. A build script can still tell the job apart, for example from its parent process. That is residual 1 (lying to the tool) | **Fake:** the fake `cargo` asserts `RUSTC_BOOTSTRAP` is unset |
+| Pipe deadlock on a large stderr (medium; four reviewers) | Every tool runs through `communicate()` | By construction |
+| Containment was quadratic (performance) | Gone: one baseline build, one control build and one batch build; bisection only on refusal | DDF r12 diff: 3 builds, 12 s |
+| Deletion widening stopped inside a multi-line `/* … */` (HIGH; correctness), and inside a multi-line attribute | `code_lines` tracks nested block comments and attribute brackets across lines. Strings are not lexed, so a misread can only widen further | **Unit:** `code_lines_skip_comments_and_attributes_across_lines`, and `deletion_widening_passes_multi_line_comments_and_attributes` (fails with the old classifier) |
+| The lexer was a second policy authority with its own false positives (subtractor, architecture) | **Retired.** `refuse_mutation_exemptions`, the `#[path]` and Cargo-target scan, and `mutation_scope`'s lexer are removed with their tests, about 580 lines. The r8–r11 rows above are kept as history | — |
+| Oracle logic was untested below the fake (architecture, medium) | The prototype catalogue is kept as evidence. The real-Podman probe exercises the shipped script end to end | **Measured, real:** `exemption_oracle_probe` |
 
-What remains against self-exemption:
-- `--no-config`, so a candidate `.cargo/mutants.toml` is never read;
-- the refusal of candidate toolchain configuration;
-- the oracle, which compares what cargo-mutants lists against what the compiler ships, instead of predicting cargo-mutants.
+**Positive control.** Neutralizing one function the gate mutates must change the MIR, or the run is inconclusive. If nothing is hidden, the oracle passes without building anything.
 
-**Advisory: unexamined changed lines.** The oracle's witness also lists every added line where production HIR code starts outside every function cargo-mutants examines, even with exclusions off. These are `const` and `static` items, `fn new`, and `macro_rules!` or `include!` bodies: code that no mutant can reach. It is reported (`unexamined_changed_lines`), not refused.
-- **Measured on the r12 diff:** exactly three lines, the three new `const` items.
-- **Measured, fake:** `the_oracle_reports_added_production_lines_no_mutated_function_contains` (fails against the r12 oracle).
+**Measured on DDF** (`deep-diff-forge-review`, the whole package): 35 hidden functions, all tests. Batch neutralization leaves the MIR unchanged, the control changes it, and the run takes 17 s.
 
-A skip attribute on code that never ships, such as a genuine test, is now allowed, where the lexer refused it. The lexer also refused `cfg_attr(all(), mutants :: skip)`, which cargo-mutants does not honour.
+**Removed.** The span-based "unexamined changed lines" advisory added earlier on this branch needed `-Zunpretty`, and so `RUSTC_BOOTSTRAP`.
+
+**What remains against self-exemption:**
+- `--no-config`;
+- the candidate toolchain-configuration refusal;
+- the oracle.
+
+A skip attribute on code that never ships, such as a genuine test, is now allowed. `cfg_attr(all(), mutants :: skip)`, which cargo-mutants does not honour, is mutated normally.
+
+**Residual.**
+- A candidate that detects the oracle job and builds differently there, or forges compiler output, is residual 1.
+- Code cargo-mutants never examines stays unmutated: `fn new`, empty bodies, `macro_rules!` and `include!` bodies, and build scripts.
+- A hidden function without a `FnValue` body span makes the run inconclusive.
 
 ### Podman invocation
 
@@ -712,7 +729,7 @@ Canonical, pinned checker: parse workspace TOML and provenance JSON; check lint 
 
 ### crates/deep-diff-forge-review/policy/exemption_oracle.py
 
-Mutation-exemption oracle: list the mutation scope with the gate's cargo-mutants and with the image's no-exclusion build, dump the package's non-test HIR with the stable toolchain, and refuse a hidden function that has production spans. The controller embeds this file and runs it in the sandbox job `sandbox-exemption-oracle` before the mutation gate; see [r12](#exemption-oracle-r12). Its image dependency is `ddf-cargo-mutants-noexclude`, built from the pinned crate and `review-policy/sandbox/cargo-mutants-noexclude.patch`.
+Mutation-exemption oracle: list the mutation scope with the gate's cargo-mutants and with the image's no-exclusion build; neutralise each hidden function's body in a copy of the snapshot; build the package's production MIR (`--emit=mir`, workspace-unified features) from both trees, and refuse when hidden code changes it. A positive control must change the MIR. The controller embeds this file and runs it in the sandbox job `sandbox-exemption-oracle` before the mutation gate; see [r12](#exemption-oracle-r12) and [r13](#lexer-retired-r13). Its image dependency is `ddf-cargo-mutants-noexclude`, built from the pinned crate and `review-policy/sandbox/cargo-mutants-noexclude.patch`.
 
 [Exact crate/module](../crates/deep-diff-forge-review/policy/exemption_oracle.py) · [patch](../review-policy/sandbox/cargo-mutants-noexclude.patch)
 

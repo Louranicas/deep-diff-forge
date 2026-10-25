@@ -899,9 +899,12 @@ fn refuse_hidden_exemptions(
             &manifest.request.mutation_package,
             "--witness",
             "/work/exemption-oracle.json",
+            "--scratch",
+            "/work/oracle-scratch",
         ]
         .map(str::to_owned)
         .to_vec();
+        storage::make_dir(&work.join("oracle-scratch"))?;
         if let Some(diff) = mutation_diff {
             storage::write_new(&jobdir.join("cargo-home").join(MUTATION_DIFF), diff)?;
             argv.extend([
@@ -922,9 +925,10 @@ fn refuse_hidden_exemptions(
             .ok()
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
             .unwrap_or_default();
+        // A pass needs hidden functions to judge and a positive control that saw a change, or none.
         let passed = receipt.outcome == Outcome::Passed
             && verdict["state"] == "passed"
-            && verdict["targets_dumped"].as_u64().is_some_and(|n| n > 0);
+            && (verdict["hidden_functions"] == 0 || verdict["control"]["mir_changed"] == true);
         if !passed {
             let refused = verdict["refused"]
                 .as_array()
