@@ -2,6 +2,7 @@
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#shared-service
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--main
 mod analysis;
+mod git_input;
 use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe};
 
 /// Write `s` to stdout, treating a reader that closed the pipe (`… | head`) as
@@ -115,6 +116,11 @@ fn main() {
             let rest: Vec<String> = args.collect();
             stdin_patch(&rest);
         }
+        Some(selector @ ("--git-working-tree" | "--git-staged" | "--git-range")) => {
+            let selector = selector.to_owned();
+            let rest: Vec<String> = args.collect();
+            git_input::run(&selector, &rest);
+        }
         Some("claude-code-contract") => claude_code_contract(),
         Some("chain-contract") => chain_contract(),
         Some("cluster-contract") => cluster_contract(),
@@ -215,6 +221,7 @@ fn seal_of(input: &str) -> InputSeal {
 /// 4 = patch parse failure, 7 = `--require-files` / `--require-hunks` refused
 /// a patch with nothing to review.
 fn stdin_patch(opts: &[String]) {
+    git_input::reject_with_stdin(opts);
     let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
     let guards = InputGuards::from_opts(opts);
     // --jsonl streams one event per file through the real pipeline runner.
@@ -230,20 +237,26 @@ fn stdin_patch(opts: &[String]) {
 
     let files = parse_or_exit(&input);
     guards.enforce(&files);
+    emit_review(&files, opts, &input);
+}
 
+/// Emit the selected review output for already-parsed `files`; `input` is the
+/// exact patch text that is sealed into machine-readable documents. Shared by
+/// `--stdin-patch` and the structured Git selections.
+fn emit_review(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], input: &str) {
     if opts.iter().any(|a| a == "--cluster") {
-        run_cluster(&files, opts, &input);
+        run_cluster(files, opts, input);
     } else if opts.iter().any(|a| a == "--rank") {
-        let ranked = deep_diff_forge_graph::rank(&files);
+        let ranked = deep_diff_forge_graph::rank(files);
         if opts.iter().any(|a| a == "--json") {
-            print_rank_json(&ranked, &seal_of(&input));
+            print_rank_json(&ranked, &seal_of(input));
         } else {
             print_rank_human(&ranked);
         }
     } else if opts.iter().any(|a| a == "--json") {
         emit(&deep_diff_forge_patch::to_json_sealed(
-            &files,
-            &seal_of(&input),
+            files,
+            &seal_of(input),
         ));
     } else if let Some(name) = flag_value(opts, "--layout") {
         if let Some(layout) = deep_diff_forge_projection::layout_from_str(&name) {
@@ -251,7 +264,7 @@ fn stdin_patch(opts: &[String]) {
                 layout,
                 side_width: deep_diff_forge_projection::DEFAULT_SIDE_WIDTH,
             };
-            emit(&deep_diff_forge_projection::render(&files, options));
+            emit(&deep_diff_forge_projection::render(files, options));
         } else {
             eprintln!(
                 "error: unknown layout: {} (expected inline|side-by-side)",
@@ -260,7 +273,7 @@ fn stdin_patch(opts: &[String]) {
             std::process::exit(2);
         }
     } else {
-        print_patch_summary(&files);
+        print_patch_summary(files);
     }
 }
 
@@ -1102,6 +1115,7 @@ USAGE:
   deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]
   deep-diff-forge learn {{status|record --stdin}} [--json]
   deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side] [--require-files] [--require-hunks]
+  deep-diff-forge {{--git-working-tree [--include-untracked] | --git-staged | --git-range A..B}} [--repo PATH] [--acquisition-json | <--stdin-patch output flags>]
   deep-diff-forge claude-code-contract
   deep-diff-forge chain-contract
   deep-diff-forge cluster-contract
