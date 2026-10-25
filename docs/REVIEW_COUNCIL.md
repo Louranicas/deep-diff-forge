@@ -380,6 +380,25 @@ Council r8 (run `1bdbab0a…`) reviewed `592fc3f..51894f8`: the `mutation_scope`
 | One `cat-file` per file (performance) | Not changed: 202 tracked files here. Batching is a follow-up | Residual |
 | `minimal` has no reader; the Cargo home doubles as an input mount (architecture, low) | Not changed. `minimal` is for reviewers and later admission policy; the read-only Cargo home is the one controller-written mount a mutation job already has | Disclosed |
 
+<a id="gate-sandbox-r9"></a>
+
+### r9 follow-ups
+
+Council r9 (run `1ea218af…`) reviewed `51894f8..2cd4568`. All of its evidence gates passed in the sandbox (1,167 tests). Its reviewers converged on these findings:
+
+| Finding (r9) | Control | Evidence |
+| --- | --- | --- |
+| fsck checks once, but the blobs are read later, so a loose object swapped in between goes unseen (HIGH; all six reviewers) | `fsck` is gone. Every base object is re-hashed against its ID by `git hash-object` (Git's collision-detecting SHA-1) at the moment it is read: the operator's base commit, each tree on the way down, and each changed file's blob. Nothing read is trusted unverified, so there is no check-to-use gap. Unchanged files are found with one `hash-object --stdin-paths` over the snapshot, compared with the verified tree's blob IDs, and never read | **Measured, fake:** `a_forged_base_object_is_refused_before_any_run_exists`. The candidate changes the file, so its base blob is read, and the blob is forged to the candidate's bytes ("a base object does not hash to its ID") |
+| A non-UTF-8 base drops new Rust from scope (HIGH; all six reviewers) | Only the new side must be UTF-8. A base that is not UTF-8 diffs as empty, so the whole new file is in scope | **Measured, fake:** `a_binary_base_file_turned_into_rust_is_in_scope` |
+| `#[path]` modules that are not `.rs` escape the skip scan (HIGH; architecture, falsifier, security, subtractor) | The scan follows `#[path = "…"]` literals (also under `cfg_attr`) to the files they name, whatever their extension, repeatedly, matching by file name, which over-includes | **Measured, fake:** `a_skip_attribute_in_a_non_rs_path_module_is_refused`. **Unit:** `path_attributes_name_their_module_files` |
+| A shebang with an unmatched quote hides a real skip attribute (HIGH; correctness, falsifier, subtractor) | The lexer skips a first-line shebang as rustc does: `#!` not followed by `[`. `#![…]` stays an inner attribute | **Unit:** two shebang positives and an inner-attribute negative |
+| `ar#"x"` lexed as a raw string (architecture) | A raw string or raw identifier starts only at a token's start, or after a `b`/`c` prefix | **Unit:** the `foo!(ar#"x")` positive |
+| Deletion widening can mark only a blank line (HIGH; correctness, falsifier, architecture) | A pure deletion is widened on both sides, through blank lines, to the nearest non-blank line before and after it, stopping at neighbouring regions | **Unit:** the `#[cfg(any())]` case of `pure_deletions_mark_a_neighbouring_line`, and both-side neighbour checks in the exhaustive and random tests |
+| Paths that could confuse a diff parser (security, low) | Refused as well: any whitespace other than a plain space, and a leading `"` | — |
+| One `cat-file` per unchanged file (performance) | Unchanged files are skipped by hash, unread | By construction |
+| New logic inside macros is not mutated (security, medium) | Not changed: cargo-mutants does not look inside macro token streams. Disclosed as a residual | — |
+| `git_bytes` has no deadline (performance, medium) | Not changed: prepare is operator-run and fails closed on error. Disclosed | — |
+
 ### Podman invocation
 
 Every gate job runs `$DDF_COUNCIL_PODMAN run` (the default runtime is `podman`) with these flags. The source of truth is `sandbox.rs` `Sandbox::argv`.

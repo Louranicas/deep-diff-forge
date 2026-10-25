@@ -129,6 +129,16 @@ fn capture(id: String, path: &Path, remaining: &mut usize) -> Result<Artifact> {
 /// off: replacement refs and grafts (which can substitute a base blob), lazy fetches from promisor
 /// remotes and every transport (which can run helpers on the host), hooks and fsmonitor.
 pub(crate) fn git_bytes(repository: &Path, args: &[&str], cap: u64) -> Result<Vec<u8>> {
+    git_input(repository, args, &[], cap)
+}
+/// [`git_bytes`] with `input` on Git's standard input, written from its own thread so that a large
+/// input and a large output cannot block each other.
+pub(crate) fn git_input(
+    repository: &Path,
+    args: &[&str],
+    input: &[u8],
+    cap: u64,
+) -> Result<Vec<u8>> {
     let mut child = Command::new("git")
         .args([
             "--no-optional-locks",
@@ -145,9 +155,19 @@ pub(crate) fn git_bytes(repository: &Path, args: &[&str], cap: u64) -> Result<Ve
         .env("GIT_NO_LAZY_FETCH", "1")
         .args(args)
         .current_dir(repository)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| ReviewFailure("missing Git input stream".into()))?;
+    let input = input.to_vec();
+    // Dropping the handle at the end of the thread closes Git's input.
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+    });
     let mut bytes = Vec::new();
     let output = child
         .stdout
@@ -162,6 +182,7 @@ pub(crate) fn git_bytes(repository: &Path, args: &[&str], cap: u64) -> Result<Ve
         ));
     }
     require(child.wait()?.success(), "Git acquisition command failed")?;
+    let _ = writer.join();
     Ok(bytes)
 }
 /// The fingerprinted source file set: Git HEAD plus tracked and non-ignored untracked paths.

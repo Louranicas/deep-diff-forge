@@ -832,8 +832,10 @@ fn a_forged_base_object_is_refused_before_any_run_exists() {
     let f = Fixture::new();
     f.commit("forged.rs", "pub fn real() {}\n");
     let result = prepare_with_mutation_base(&f, |f| {
-        // Overwrite the base blob's loose object with other bytes under the same ID. `cat-file`
-        // would serve them; only a hash check notices.
+        // The candidate changes the file, so its base blob must be read; then the base blob's
+        // loose object is overwritten with the candidate's bytes under the genuine ID, which would
+        // make the change vanish. `cat-file` serves them; only re-hashing on read notices.
+        fs::write(f.repository.join("forged.rs"), "pub fn forged() {}\n").unwrap();
         let oid = git(f, &["rev-parse", "HEAD:forged.rs"]);
         let object = f
             .repository
@@ -853,11 +855,70 @@ fn a_forged_base_object_is_refused_before_any_run_exists() {
     });
     assert_eq!(result.status.code(), Some(4));
     assert!(
-        String::from_utf8_lossy(&result.stderr).contains("mutation base objects fail git fsck"),
+        String::from_utf8_lossy(&result.stderr).contains("a base object does not hash to its ID"),
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
     assert!(!f.run.exists());
+}
+
+#[test]
+fn a_binary_base_file_turned_into_rust_is_in_scope() {
+    let f = Fixture::new();
+    // The base holds a non-UTF-8 blob at the path the candidate turns into Rust.
+    fs::write(f.repository.join("module.rs"), [0xff, b'\n']).unwrap();
+    git(&f, &["add", "module.rs"]);
+    git(
+        &f,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "binary base",
+        ],
+    );
+    let result = prepare_with_mutation_base(&f, |f| {
+        fs::write(
+            f.repository.join("module.rs"),
+            "pub fn now_rust() -> bool { false }\n",
+        )
+        .unwrap();
+    });
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let sealed = fs::read_to_string(f.run.join("mutation.diff")).unwrap();
+    assert!(
+        sealed.contains("+++ b/module.rs\n@@ -0,0 +1,1 @@\n+pub fn now_rust() -> bool { false }"),
+        "{sealed}"
+    );
+}
+
+#[test]
+fn a_skip_attribute_in_a_non_rs_path_module_is_refused() {
+    let f = Fixture::new();
+    let attribute = format!("#[{} :: skip]", "mutants");
+    f.commit(
+        "hidden.txt",
+        &format!("{attribute}\npub fn untested() {{}}\n"),
+    );
+    f.commit("lib.rs", "#[path = \"hidden.txt\"]\nmod hidden;\n");
+    f.prepare();
+    f.install_gate("valid");
+    let result = f.gate("mutation");
+    assert_eq!(result.status.code(), Some(4));
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("snapshot contains a cargo-mutants skip attribute in hidden.txt"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
 }
 
 #[test]

@@ -5,13 +5,15 @@
 //!
 //! `git diff <base>` of a working tree honours index flags (assume-unchanged, skip-worktree), the
 //! candidate's own `.gitattributes` (`-diff`, `binary`) and skips untracked files, so a candidate
-//! could shrink its own mutation scope (council r7). Git is never asked to compare anything here:
-//! each base blob is read raw (`git cat-file blob`, with replacements, grafts, lazy fetches and
-//! transports disabled by [`storage::git_bytes`]), each file is read from the sealed snapshot after
-//! its fingerprint is verified, and the zero-context unified diff is built in-process.
+//! could shrink its own mutation scope (council r7). Git is never asked to compare anything here.
+//! Every base object read is re-hashed against its ID the moment it is read, from the operator's
+//! base commit ID down through each tree to each blob, so nothing written to the object store can
+//! substitute bytes (councils r8 and r9). Each file is read from the sealed snapshot after its
+//! fingerprint is verified, and the zero-context unified diff is built in-process.
 use crate::storage::{self, Inventory};
 use crate::{Result, ReviewFailure, require};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 use std::iter::Peekable;
 use std::ops::Range;
 use std::path::Path;
@@ -30,40 +32,91 @@ const LINE_CAP: usize = 1 << 20;
 /// Per-file read budget, matching the inventory's 64 MiB source limit.
 const FILE_CAP: u64 = 64 << 20;
 
-/// Refuse a `base` that is not a commit and an ancestor of `HEAD`, or whose objects do not hash to
-/// their IDs, before a run directory exists. Git does not re-hash a loose object when reading it,
-/// so without the `fsck` an author who can write `.git/objects` could serve forged base blobs under
-/// genuine IDs (measured); with it, the operator's base ID is the root of trust for every base blob.
+/// Refuse a `base` that is not a commit and an ancestor of `HEAD`, before a run directory exists.
+/// The base's objects are not trusted here; [`capture`] verifies each one as it reads it.
 pub(crate) fn require_base(repository: &Path, base: &str) -> Result<()> {
     storage::git_bytes(
         repository,
         &["merge-base", "--is-ancestor", base, "HEAD"],
         0,
     )
-    .map_err(|_| {
-        ReviewFailure("mutation base must be a commit that is an ancestor of HEAD".into())
-    })?;
-    storage::git_bytes(
-        repository,
-        &[
-            "fsck",
-            "--no-dangling",
-            "--no-reflogs",
-            "--no-progress",
-            base,
-        ],
-        // Silent on success; anything on stdout is refused with the rest.
-        0,
-    )
     .map(drop)
-    .map_err(|_| ReviewFailure("mutation base objects fail git fsck".into()))
+    .map_err(|_| ReviewFailure("mutation base must be a commit that is an ancestor of HEAD".into()))
+}
+
+/// One object of `kind`, read and then re-hashed by Git (`hash-object`, with Git's own
+/// collision-detecting hash) and refused unless it hashes to `oid`. Git does not re-hash a loose
+/// object on read, so a forged object stored under a genuine ID is caught here, at the moment of use.
+fn verified(repository: &Path, kind: &str, oid: &str) -> Result<Vec<u8>> {
+    let bytes = storage::git_bytes(repository, &["cat-file", kind, oid], FILE_CAP)?;
+    let hashed = storage::git_input(
+        repository,
+        &["hash-object", "-t", kind, "--stdin"],
+        &bytes,
+        1024,
+    )?;
+    require(
+        hashed.trim_ascii() == oid.as_bytes(),
+        "a base object does not hash to its ID",
+    )?;
+    Ok(bytes)
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::new(), |mut text, byte| {
+        let _ = write!(text, "{byte:02x}");
+        text
+    })
+}
+
+/// The blob ID of every file under the `base` commit, keyed by path, reading only verified trees.
+fn base_blobs(repository: &Path, base: &str) -> Result<BTreeMap<String, String>> {
+    let commit = verified(repository, "commit", base)?;
+    let tree = commit
+        .strip_prefix(b"tree ")
+        .and_then(|rest| rest.get(..base.len()))
+        .ok_or_else(|| ReviewFailure("base commit names no tree".into()))?;
+    // Raw tree entries end in a binary ID as long as the base ID's bytes.
+    let id_len = base.len() / 2;
+    let mut blobs = BTreeMap::new();
+    let mut pending = vec![(String::new(), String::from_utf8_lossy(tree).into_owned())];
+    while let Some((prefix, oid)) = pending.pop() {
+        let bytes = verified(repository, "tree", &oid)?;
+        let mut entries = bytes.as_slice();
+        // Each entry is `<mode> <name>\0<binary id>`; every pass consumes at least one byte.
+        while let Some(nul) = entries.iter().position(|b| *b == 0) {
+            let (head, tail) = entries.split_at(nul);
+            let id = tail
+                .get(1..=id_len)
+                .ok_or_else(|| ReviewFailure("malformed base tree".into()))?;
+            entries = &tail[1 + id_len..];
+            let space = head
+                .iter()
+                .position(|b| *b == b' ')
+                .ok_or_else(|| ReviewFailure("malformed base tree".into()))?;
+            let (mode, name) = (&head[..space], &head[space + 1..]);
+            let Ok(name) = std::str::from_utf8(name) else {
+                continue;
+            };
+            match mode {
+                b"40000" => pending.push((format!("{prefix}{name}/"), hex(id))),
+                // A submodule's commit is not a file in this repository.
+                b"160000" => {}
+                _ => {
+                    blobs.insert(format!("{prefix}{name}"), hex(id));
+                }
+            }
+        }
+        require(entries.is_empty(), "malformed base tree")?;
+    }
+    Ok(blobs)
 }
 
 /// With a `base` already checked by [`require_base`], the zero-context unified diff of every
-/// inventoried file in `snapshot` against it. Every file is included, not only `.rs`
-/// ones, because `#[path]` can make any file a module. Files absent at `base` (including untracked
-/// ones) diff against empty. Deleted files add no lines, and files that are not UTF-8 on either
-/// side can be neither compiled as Rust nor mutated, so both are omitted.
+/// inventoried file in `snapshot` against it. Every file is included, not only `.rs` ones, because
+/// `#[path]` can make any file a module. A file absent at `base` (including an untracked one), or
+/// one that was not UTF-8 there, diffs against empty. Deleted files add no lines, and a file that is
+/// not UTF-8 now cannot be compiled as Rust or mutated, so both are omitted.
 pub(crate) fn capture(
     repository: &Path,
     snapshot: &Path,
@@ -79,13 +132,8 @@ fn capture_from(
     inventory: &Inventory,
     base: &str,
 ) -> Result<Vec<u8>> {
-    let listed = storage::git_bytes(
-        repository,
-        &["ls-tree", "-r", "-z", "--name-only", base],
-        FILE_CAP,
-    )?;
-    let in_base: BTreeSet<&[u8]> = listed.split(|b| *b == 0).collect();
-    let (mut diff, mut spent) = (Vec::new(), 0);
+    let blobs = base_blobs(repository, base)?;
+    let mut present = Vec::new();
     for path in inventory.paths() {
         let Some(meta) = storage::untrusted_metadata(snapshot, Path::new(path))? else {
             continue;
@@ -94,21 +142,55 @@ fn capture_from(
             meta.is_file(),
             "source inventory contains symlink or non-file",
         )?;
+        // Headers are line-oriented and a leading quote reads as Git's path quoting: a newline,
+        // another separator or a quote in a name could forge or misattribute a header or a hunk.
+        require(
+            !path.starts_with('"')
+                && !path
+                    .chars()
+                    .any(|c| c.is_control() || (c.is_whitespace() && c != ' ')),
+            "mutation scope path contains a control character, separator or leading quote",
+        )?;
+        present.push(path);
+    }
+    // One Git process hashes every snapshot file, so unchanged files are skipped unread.
+    let listing = present.iter().fold(String::new(), |mut text, path| {
+        let _ = writeln!(text, "{}", snapshot.join(path).display());
+        text
+    });
+    let hashed = storage::git_input(
+        repository,
+        &["hash-object", "--no-filters", "--stdin-paths"],
+        listing.as_bytes(),
+        FILE_CAP,
+    )?;
+    let ids: Vec<&[u8]> = hashed
+        .split(|b| *b == b'\n')
+        .filter(|id| !id.is_empty())
+        .collect();
+    require(
+        ids.len() == present.len(),
+        "snapshot hashing was incomplete",
+    )?;
+    let (mut diff, mut spent) = (Vec::new(), 0);
+    for (path, id) in present.into_iter().zip(ids) {
+        let base_id = blobs.get(path);
+        if base_id.is_some_and(|base_id| base_id.as_bytes() == id) {
+            continue;
+        }
         let new = storage::read_untrusted(snapshot, Path::new(path), FILE_CAP)?;
-        let old = if in_base.contains(path.as_bytes()) {
-            let object = format!("{base}:./{path}");
-            storage::git_bytes(repository, &["cat-file", "blob", &object], FILE_CAP)?
+        if std::str::from_utf8(&new).is_err() {
+            continue;
+        }
+        let old = match base_id {
+            Some(base_id) => verified(repository, "blob", base_id)?,
+            None => Vec::new(),
+        };
+        let old = if std::str::from_utf8(&old).is_ok() {
+            old
         } else {
             Vec::new()
         };
-        if old == new || std::str::from_utf8(&old).is_err() || std::str::from_utf8(&new).is_err() {
-            continue;
-        }
-        // Headers are line-oriented: a newline in a name could forge a header or a hunk.
-        require(
-            !path.chars().any(char::is_control),
-            "mutation scope path contains a control character",
-        )?;
         unified(path, &old, &new, &mut spent, &mut diff)?;
         require(
             diff.len() as u64 <= MUTATION_DIFF_CAP,
@@ -216,26 +298,37 @@ fn regions(old: &[usize], new: &[usize], spent: &mut usize) -> Vec<Region> {
 }
 
 /// cargo-mutants selects mutants by new-side lines, so a region that only deletes lines selects
-/// none (measured with 27.1.0): removing a check would leave its function unmutated. Widen each
-/// such region by the unchanged line before it, or after it at the start of the file, so the code
-/// around a deletion is mutated; regions that then overlap are merged. Unchanged lines are equal on
-/// both sides, so the diff stays valid.
-fn widen_deletions(found: Vec<Region>, new_len: usize) -> Vec<Region> {
+/// none (measured with 27.1.0): removing a check would leave its function unmutated. Widen each such
+/// region over the unchanged lines on both sides, through any blank lines, to the nearest non-blank
+/// line before and after it (council r9: a neighbour that is only a blank line can sit outside the
+/// affected item). Widening stops at the neighbouring regions, and widened regions that then
+/// overlap are merged. Unchanged lines are equal on both sides, so the diff stays valid.
+fn widen_deletions(found: &[Region], new: &[&[u8]]) -> Vec<Region> {
+    let blank = |line: usize| new[line].iter().all(u8::is_ascii_whitespace);
     let mut widened: Vec<Region> = Vec::new();
-    for (old, new) in found {
-        let (old, new) = if !new.is_empty() || new_len == 0 {
-            (old, new)
-        } else if new.start > 0 {
-            (old.start - 1..old.end, new.start - 1..new.end)
-        } else {
-            (old.start..old.end + 1, new.start..new.end + 1)
-        };
+    for (k, (old_range, new_range)) in found.iter().enumerate() {
+        let (mut old_range, mut new_range) = (old_range.clone(), new_range.clone());
+        if new_range.is_empty() && !new.is_empty() {
+            // The matched lines between this region and its neighbours.
+            let floor = k.checked_sub(1).map_or(0, |previous| found[previous].1.end);
+            let ceiling = found.get(k + 1).map_or(new.len(), |next| next.1.start);
+            let before = (floor..new_range.start)
+                .rev()
+                .find(|line| !blank(*line))
+                .unwrap_or(floor);
+            let after = (new_range.end..ceiling)
+                .find(|line| !blank(*line))
+                .map_or(ceiling, |line| line + 1);
+            old_range = old_range.start - (new_range.start - before)
+                ..old_range.end + (after - new_range.end);
+            new_range = before..after;
+        }
         match widened.last_mut() {
-            Some(last) if last.0.end > old.start => {
-                last.0.end = last.0.end.max(old.end);
-                last.1.end = last.1.end.max(new.end);
+            Some(last) if last.0.end > old_range.start => {
+                last.0.end = last.0.end.max(old_range.end);
+                last.1.end = last.1.end.max(new_range.end);
             }
-            _ => widened.push((old, new)),
+            _ => widened.push((old_range, new_range)),
         }
     }
     widened
@@ -247,7 +340,7 @@ fn unified(path: &str, old: &[u8], new: &[u8], spent: &mut usize, out: &mut Vec<
     let mut ids = HashMap::new();
     let (old_ids, new_ids) = (intern(&mut ids, &old), intern(&mut ids, &new));
     out.extend_from_slice(format!("--- a/{path}\n+++ b/{path}\n").as_bytes());
-    for (old_range, new_range) in widen_deletions(regions(&old_ids, &new_ids, spent), new.len()) {
+    for (old_range, new_range) in widen_deletions(&regions(&old_ids, &new_ids, spent), &new) {
         hunk(
             (old_range.start, &old[old_range]),
             (new_range.start, &new[new_range]),
@@ -257,31 +350,77 @@ fn unified(path: &str, old: &[u8], new: &[u8], spent: &mut usize, out: &mut Vec<
     Ok(())
 }
 
-/// True when Rust `source` names cargo-mutants' skip attribute path in code, in any spelling the
-/// compiler (and so cargo-mutants, through `syn`) treats as the same tokens: whitespace, comments
-/// and raw-identifier prefixes around `mutants`, `::` and `skip` are dropped. Comments and string,
-/// byte-string, raw-string and character literals are skipped, so a mention in one is not a match.
-/// Fails closed: an identifier merely ending in `mutants` before `::skip` also matches.
-pub(crate) fn has_skip_attribute(source: &str) -> bool {
-    let mut code = String::new();
-    let mut chars = source.chars().peekable();
+/// Rust `source` with comments, literals and whitespace removed, plus the contents of any string
+/// literal that directly follows `path =` (a `#[path]` module file, also under `cfg_attr`).
+struct Lexed {
+    code: String,
+    module_paths: Vec<String>,
+}
+
+/// Lex just enough of Rust to tell code from comments and literals. Whitespace, comments (nested
+/// too) and `r#` raw-identifier prefixes are dropped; string, byte-string, raw-string and character
+/// literals are skipped. A first-line shebang is skipped as rustc does (`#!` not followed by `[`).
+/// A raw string or raw identifier only starts at the start of a token, so `ar#"x"` (edition 2015
+/// and 2018) is an identifier, `#` and a string.
+fn lex(source: &str) -> Lexed {
+    let mut lexed = Lexed {
+        code: String::new(),
+        module_paths: Vec::new(),
+    };
+    let body = match source.strip_prefix("#!") {
+        Some(rest) if !rest.trim_start().starts_with('[') => {
+            rest.find('\n').map_or("", |newline| &rest[newline..])
+        }
+        _ => source,
+    };
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let (mut before_last, mut last) = (' ', ' ');
+    let mut chars = body.chars().peekable();
     while let Some(c) = chars.next() {
+        // An `r` starts a raw literal or identifier only at a token's start (or after `b`/`c`).
+        let token_start = !ident(last) || (matches!(last, 'b' | 'c') && !ident(before_last));
         match c {
             '/' if chars.next_if_eq(&'/').is_some() => {
                 chars.by_ref().find(|c| *c == '\n');
             }
             '/' if chars.next_if_eq(&'*').is_some() => skip_block_comment(&mut chars),
-            '"' => skip_string(&mut chars),
-            'r' if raw_string_ahead(&chars) => skip_raw_string(&mut chars),
+            '"' => {
+                let text = skip_string(&mut chars);
+                if lexed.code.ends_with("path=") {
+                    lexed.module_paths.push(text);
+                }
+            }
+            'r' if token_start && raw_string_ahead(&chars) => {
+                let text = skip_raw_string(&mut chars);
+                if lexed.code.ends_with("path=") {
+                    lexed.module_paths.push(text);
+                }
+            }
             // A raw identifier's `r#` prefix: `r#mutants` is the path segment `mutants`.
-            'r' if chars.next_if_eq(&'#').is_some() => {}
-            '\'' => skip_char_literal(&mut chars, &mut code),
+            'r' if token_start && chars.next_if_eq(&'#').is_some() => {}
+            '\'' => skip_char_literal(&mut chars, &mut lexed.code),
             c if c.is_whitespace() => {}
-            c => code.push(c),
+            c => lexed.code.push(c),
         }
+        (before_last, last) = (last, c);
     }
-    code.contains("mutants::skip")
+    lexed
 }
+
+/// True when Rust `source` names cargo-mutants' skip attribute path in code, in any spelling the
+/// compiler (and so cargo-mutants, through `syn`) treats as the same tokens. A mention in a comment
+/// or a literal is not a match. Fails closed: an identifier merely ending in `mutants` before
+/// `::skip` also matches.
+pub(crate) fn has_skip_attribute(source: &str) -> bool {
+    lex(source).code.contains("mutants::skip")
+}
+
+/// The file names that `source`'s `#[path = "…"]` attributes point at, so the skip scan can follow
+/// modules that do not end in `.rs`.
+pub(crate) fn module_paths(source: &str) -> Vec<String> {
+    lex(source).module_paths
+}
+
 /// After `/*`: through the matching `*/`, counting nested comments.
 fn skip_block_comment(chars: &mut Peekable<Chars>) {
     let (mut depth, mut previous) = (1_usize, ' ');
@@ -298,17 +437,21 @@ fn skip_block_comment(chars: &mut Peekable<Chars>) {
         }
     }
 }
-/// After an opening `"`: through the closing one, honouring backslash escapes.
-fn skip_string(chars: &mut Peekable<Chars>) {
+/// After an opening `"`: through the closing one, honouring backslash escapes; returns the
+/// contents with escapes kept as written.
+fn skip_string(chars: &mut Peekable<Chars>) -> String {
+    let mut text = String::new();
     while let Some(c) = chars.next() {
         match c {
             '\\' => {
-                chars.next();
+                text.push(c);
+                text.extend(chars.next());
             }
-            '"' => return,
-            _ => {}
+            '"' => break,
+            _ => text.push(c),
         }
     }
+    text
 }
 /// Whether the `r` just read opens a raw string: `#`s, then a quote.
 fn raw_string_ahead(chars: &Peekable<Chars>) -> bool {
@@ -316,20 +459,24 @@ fn raw_string_ahead(chars: &Peekable<Chars>) -> bool {
     while ahead.next_if_eq(&'#').is_some() {}
     ahead.peek() == Some(&'"')
 }
-/// After the `r` of a raw string: its `#`s and quote, then through a quote followed by as many `#`s.
-fn skip_raw_string(chars: &mut Peekable<Chars>) {
+/// After the `r` of a raw string: its `#`s and quote, then through a quote followed by as many `#`s;
+/// returns the contents.
+fn skip_raw_string(chars: &mut Peekable<Chars>) -> String {
     let mut hashes = 0_usize;
     while chars.next_if_eq(&'#').is_some() {
         hashes += 1;
     }
     chars.next();
+    let mut text = String::new();
     while let Some(c) = chars.next() {
         let mut ahead = chars.clone();
         if c == '"' && (0..hashes).all(|_| ahead.next() == Some('#')) {
             *chars = ahead;
-            return;
+            break;
         }
+        text.push(c);
     }
+    text
 }
 /// After a `'`: skip a character literal, or keep a lifetime or label's quote as code.
 fn skip_char_literal(chars: &mut Peekable<Chars>, code: &mut String) {
@@ -373,6 +520,7 @@ fn hunk(old: (usize, &[&[u8]]), new: (usize, &[&[u8]]), out: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     /// Apply a diff produced by [`unified`] to `old`, checking every hunk's old- and new-side
     /// coordinates as well as its context.
@@ -477,19 +625,20 @@ mod tests {
         let minimal: usize = found.iter().map(|(_, new)| new.len()).sum();
         assert_eq!(minimal, n.len() - lcs_len(&o, &n), "{old:?} -> {new:?}");
         let marked = marked(&diff);
-        let mut deletions = 0;
         for (_, new_range) in &found {
             assert!(
                 new_range.clone().all(|line| marked.contains(&line)),
                 "{old:?} -> {new:?}"
             );
-            if new_range.is_empty() && !n.is_empty() {
-                deletions += 1;
-                let neighbour = new_range.start.checked_sub(1).unwrap_or(new_range.start);
-                assert!(marked.contains(&neighbour), "{old:?} -> {new:?}");
+            // A pure deletion also marks the unchanged lines on both sides of it.
+            if new_range.is_empty() {
+                for neighbour in [new_range.start.checked_sub(1), Some(new_range.start)] {
+                    if let Some(line) = neighbour.filter(|line| *line < n.len()) {
+                        assert!(marked.contains(&line), "{old:?} -> {new:?}");
+                    }
+                }
             }
         }
-        assert!(marked.len() <= minimal + deletions, "{old:?} -> {new:?}");
     }
 
     fn hunks(diff: &[u8]) -> usize {
@@ -596,8 +745,19 @@ mod tests {
     #[test]
     fn pure_deletions_mark_a_neighbouring_line() {
         for (old, new, expected) in [
-            // Mid-file: the line before.
-            ("a\nX\nb\n", "a\nb\n", "@@ -1,2 +1,1 @@\n-a\n-X\n+a\n"),
+            // Mid-file: the lines before and after.
+            (
+                "a\nX\nb\n",
+                "a\nb\n",
+                "@@ -1,3 +1,2 @@\n-a\n-X\n-b\n+a\n+b\n",
+            ),
+            // Through blank lines to the nearest non-blank one on each side (council r9: deleting
+            // a `cfg` that disabled the next item must mark that item, not just the blank line).
+            (
+                "fn a() {}\n\n#[cfg(any())]\nfn f() {}\n",
+                "fn a() {}\n\nfn f() {}\n",
+                "@@ -1,4 +1,3 @@\n-fn a() {}\n-\n-#[cfg(any())]\n-fn f() {}\n+fn a() {}\n+\n+fn f() {}\n",
+            ),
             // At the start: the line after.
             ("X\na\n", "a\n", "@@ -1,2 +1,1 @@\n-X\n-a\n+a\n"),
             // Touching a replacement: two hunks, not merged.
@@ -670,6 +830,20 @@ mod tests {
     }
 
     #[test]
+    fn path_attributes_name_their_module_files() {
+        assert_eq!(
+            module_paths(
+                "#[path = \"impl.txt\"] mod a;\n#[cfg_attr(test, path = r\"t/b.inc\")] mod b;\nlet path = 1; let s = \"x\";"
+            ),
+            ["impl.txt", "t/b.inc"]
+        );
+        assert_eq!(
+            module_paths("// #[path = \"c.txt\"]\nmod c;"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn the_line_cap_bounds_each_side() {
         assert_eq!(
             lines(&vec![b'\n'; LINE_CAP - 1]).unwrap().len(),
@@ -704,6 +878,11 @@ mod tests {
             "let b = b'\"'; #[mutants::skip] fn f() {}",
             // A division is not a comment.
             "let x = 4 / 2; #[mutants::skip] fn f() {}",
+            // A shebang line is not code, even with an unmatched quote in it.
+            "#!/bin/sh \"\n#[mutants::skip]\npub fn f() {}",
+            "#!/usr/bin/env r#\"\n#[mutants::skip]\npub fn f() {}",
+            // Edition 2015/2018: `ar#"x"` is an identifier, `#` and a string, not a raw string.
+            "foo!(ar#\"x\"); #[mutants::skip] fn f() {}",
         ] {
             assert!(has_skip_attribute(source), "{source}");
         }
@@ -730,6 +909,8 @@ mod tests {
             // Escaped character literals, including multi-character escapes before a quote literal.
             "let q = '\\\"'; let s = \"mutants::skip\";",
             "let a = ['\\u{22}','\"']; let s = \"mutants::skip\";",
+            // `#![` is an inner attribute, not a shebang: the string after it is still a literal.
+            "#![doc = \"mutants::skip\"]\nfn f() {}",
         ] {
             assert!(!has_skip_attribute(source), "{source}");
         }

@@ -571,25 +571,51 @@ const MUTANT_TIMEOUT_SECONDS: u64 = 300;
 const MUTANT_JOBS: u8 = 4;
 /// Refuse, before any job slot exists, a snapshot whose Rust code exempts itself from mutation with
 /// cargo-mutants' skip attribute, in any token-equivalent spelling
-/// ([`crate::mutation_scope::has_skip_attribute`]).
+/// ([`crate::mutation_scope::has_skip_attribute`]). Every `.rs` file is scanned, then every file
+/// that a `#[path = "…"]` attribute names, whatever its extension (council r9: a module need not end
+/// in `.rs`), repeatedly, so chains of such modules are followed. Names are matched by file name,
+/// which over-includes.
 fn refuse_mutation_exemptions(snapshot: &Path, inventory: &Inventory) -> Result<()> {
-    for path in inventory.paths() {
-        let rust = Path::new(path)
+    let rust = |path: &str| {
+        Path::new(path)
             .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"));
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
+    };
+    let mut queue: Vec<&str> = inventory.paths().filter(|path| rust(path)).collect();
+    let mut scanned = std::collections::BTreeSet::new();
+    let mut modules = std::collections::BTreeSet::new();
+    while let Some(path) = queue.pop() {
+        if !scanned.insert(path) {
+            continue;
+        }
         let Some(meta) = storage::untrusted_metadata(snapshot, Path::new(path))? else {
             continue;
         };
-        if rust
-            && meta.is_file()
-            && crate::mutation_scope::has_skip_attribute(&String::from_utf8_lossy(
-                &storage::read_untrusted(snapshot, Path::new(path), 64 << 20)?,
-            ))
-        {
+        if !meta.is_file() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&storage::read_untrusted(
+            snapshot,
+            Path::new(path),
+            64 << 20,
+        )?)
+        .into_owned();
+        if crate::mutation_scope::has_skip_attribute(&text) {
             return Err(ReviewFailure(format!(
                 "snapshot contains a cargo-mutants skip attribute in {path}; candidate code cannot exempt itself from the mutation gate"
             )));
         }
+        for module in crate::mutation_scope::module_paths(&text) {
+            if let Some(name) = Path::new(&module).file_name() {
+                modules.insert(name.to_owned());
+            }
+        }
+        queue.extend(inventory.paths().filter(|candidate| {
+            !scanned.contains(candidate)
+                && Path::new(candidate)
+                    .file_name()
+                    .is_some_and(|name| modules.contains(name))
+        }));
     }
     Ok(())
 }
