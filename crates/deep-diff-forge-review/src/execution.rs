@@ -570,10 +570,9 @@ const MUTANT_TIMEOUT_SECONDS: u64 = 300;
 /// Parallel cargo-mutants workers; each has its own build directory under `/work/tmp`.
 const MUTANT_JOBS: u8 = 4;
 /// Refuse, before any job slot exists, a snapshot whose Rust code exempts itself from mutation with
-/// cargo-mutants' skip attribute, which it honours in any form, including under `cfg_attr`. The
-/// needle is assembled at run time so this source file does not match itself.
+/// cargo-mutants' skip attribute, in any token-equivalent spelling
+/// ([`crate::mutation_scope::has_skip_attribute`]).
 fn refuse_mutation_exemptions(snapshot: &Path, inventory: &Inventory) -> Result<()> {
-    let needle = ["mutants", "skip"].join("::");
     for path in inventory.paths() {
         let rust = Path::new(path)
             .extension()
@@ -583,9 +582,9 @@ fn refuse_mutation_exemptions(snapshot: &Path, inventory: &Inventory) -> Result<
         };
         if rust
             && meta.is_file()
-            && storage::read_untrusted(snapshot, Path::new(path), 64 << 20)?
-                .windows(needle.len())
-                .any(|window| window == needle.as_bytes())
+            && crate::mutation_scope::has_skip_attribute(&String::from_utf8_lossy(
+                &storage::read_untrusted(snapshot, Path::new(path), 64 << 20)?,
+            ))
         {
             return Err(ReviewFailure(format!(
                 "snapshot contains a cargo-mutants skip attribute in {path}; candidate code cannot exempt itself from the mutation gate"

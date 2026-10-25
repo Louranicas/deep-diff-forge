@@ -1,18 +1,20 @@
 // Review council: The diff-scoped mutation gate's scope, built from raw base blobs and the sealed workspace bytes.
 // Design/status: docs/REVIEW_COUNCIL.md#gate-sandbox-r7
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--mutation_scope
-//! The lines a diff-scoped mutation gate mutates.
+//! The lines a diff-scoped mutation gate mutates, and the skip attributes it refuses.
 //!
 //! `git diff <base>` of a working tree honours index flags (assume-unchanged, skip-worktree), the
 //! candidate's own `.gitattributes` (`-diff`, `binary`) and skips untracked files, so a candidate
 //! could shrink its own mutation scope (council r7). Git is never asked to compare anything here:
-//! each base blob is read raw (`git cat-file blob`, no filters or attributes), each inventoried
-//! file is read from the workspace the snapshot seals, and the zero-context unified diff is built
-//! in-process.
+//! each base blob is read raw (`git cat-file blob`, with replacements, grafts, lazy fetches and
+//! transports disabled by [`storage::git_bytes`]), each file is read from the sealed snapshot after
+//! its fingerprint is verified, and the zero-context unified diff is built in-process.
 use crate::storage::{self, Inventory};
 use crate::{Result, ReviewFailure, require};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::iter::Peekable;
 use std::path::Path;
+use std::str::Chars;
 
 /// Largest mutation diff captured at prepare and read back by the mutation gate. Written as a
 /// shift, so the only arithmetic mutant (a zero cap) refuses every diff-scoped run.
@@ -20,70 +22,111 @@ pub(crate) const MUTATION_DIFF_CAP: u64 = 16 << 20;
 /// Line-pair cells for one file's exact LCS. Above it the whole changed middle is reported, which
 /// over-includes lines (more mutants) and never omits a changed one.
 const LINE_CELL_BUDGET: usize = 16 << 20;
+/// Line-pair cells for all files together; past it, further files are reported whole too.
+const TOTAL_CELL_BUDGET: usize = 64 << 20;
+/// Lines on either side of one file. Bounds the line index and an empty side's table.
+const LINE_CAP: usize = 1 << 20;
 /// Per-file read budget, matching the inventory's 64 MiB source limit.
 const FILE_CAP: u64 = 64 << 20;
 
-/// With a `base`, the zero-context unified diff of every inventoried file against it; the base must
-/// be an ancestor of `HEAD`. Every file is included, not only `.rs` ones, because `#[path]` can make
-/// any file a module. Files absent at `base` (including untracked ones) diff against empty; deleted
-/// files add no lines and are omitted.
-pub(crate) fn capture(
-    repository: &Path,
-    inventory: &Inventory,
-    base: Option<&str>,
-) -> Result<Option<Vec<u8>>> {
-    base.map(|base| capture_from(repository, inventory, base))
-        .transpose()
-}
-fn capture_from(repository: &Path, inventory: &Inventory, base: &str) -> Result<Vec<u8>> {
+/// Refuse a `base` that is not a commit and an ancestor of `HEAD`, before a run directory exists.
+pub(crate) fn require_ancestor(repository: &Path, base: &str) -> Result<()> {
     storage::git_bytes(
         repository,
         &["merge-base", "--is-ancestor", base, "HEAD"],
         0,
     )
-    .map_err(|_| {
-        ReviewFailure("mutation base must be a commit that is an ancestor of HEAD".into())
-    })?;
+    .map(drop)
+    .map_err(|_| ReviewFailure("mutation base must be a commit that is an ancestor of HEAD".into()))
+}
+
+/// With a `base` already checked by [`require_ancestor`], the zero-context unified diff of every
+/// inventoried file in `snapshot` against it. Every file is included, not only `.rs`
+/// ones, because `#[path]` can make any file a module. Files absent at `base` (including untracked
+/// ones) diff against empty. Deleted files add no lines, and files that are not UTF-8 on either
+/// side can be neither compiled as Rust nor mutated, so both are omitted.
+pub(crate) fn capture(
+    repository: &Path,
+    snapshot: &Path,
+    inventory: &Inventory,
+    base: Option<&str>,
+) -> Result<Option<Vec<u8>>> {
+    base.map(|base| capture_from(repository, snapshot, inventory, base))
+        .transpose()
+}
+fn capture_from(
+    repository: &Path,
+    snapshot: &Path,
+    inventory: &Inventory,
+    base: &str,
+) -> Result<Vec<u8>> {
     let listed = storage::git_bytes(
         repository,
         &["ls-tree", "-r", "-z", "--name-only", base],
         FILE_CAP,
     )?;
     let in_base: BTreeSet<&[u8]> = listed.split(|b| *b == 0).collect();
-    let mut diff = Vec::new();
+    let (mut diff, mut spent) = (Vec::new(), 0);
     for path in inventory.paths() {
-        let Some(meta) = storage::untrusted_metadata(repository, Path::new(path))? else {
+        let Some(meta) = storage::untrusted_metadata(snapshot, Path::new(path))? else {
             continue;
         };
         require(
             meta.is_file(),
             "source inventory contains symlink or non-file",
         )?;
-        let new = storage::read_bytes(&repository.join(path), FILE_CAP)?;
+        let new = storage::read_untrusted(snapshot, Path::new(path), FILE_CAP)?;
         let old = if in_base.contains(path.as_bytes()) {
             let object = format!("{base}:./{path}");
             storage::git_bytes(repository, &["cat-file", "blob", &object], FILE_CAP)?
         } else {
             Vec::new()
         };
-        if old != new {
-            unified(path, &old, &new, &mut diff);
-            require(
-                diff.len() as u64 <= MUTATION_DIFF_CAP,
-                "mutation diff exceeds its budget",
-            )?;
+        if old == new || std::str::from_utf8(&old).is_err() || std::str::from_utf8(&new).is_err() {
+            continue;
         }
+        // Headers are line-oriented: a newline in a name could forge a header or a hunk.
+        require(
+            !path.chars().any(char::is_control),
+            "mutation scope path contains a control character",
+        )?;
+        unified(path, &old, &new, &mut spent, &mut diff)?;
+        require(
+            diff.len() as u64 <= MUTATION_DIFF_CAP,
+            "mutation diff exceeds its budget",
+        )?;
     }
     Ok(diff)
 }
 
-/// Lines with their terminators, so a missing final newline is itself a difference.
-fn lines(bytes: &[u8]) -> Vec<&[u8]> {
-    bytes.split_inclusive(|b| *b == b'\n').collect()
+/// Lines with their terminators, so a missing final newline is itself a difference; at most
+/// [`LINE_CAP`] of them.
+fn lines(bytes: &[u8]) -> Result<Vec<&[u8]>> {
+    require(
+        bytes
+            .split_inclusive(|b| *b == b'\n')
+            .take(LINE_CAP)
+            .count()
+            < LINE_CAP,
+        "a changed file has too many lines for the mutation scope",
+    )?;
+    Ok(bytes.split_inclusive(|b| *b == b'\n').collect())
+}
+
+/// Each line's index among the distinct lines seen so far, so the LCS compares integers: the cost
+/// of a long line is paid once when it is hashed, not once per table cell.
+fn intern<'a>(ids: &mut HashMap<&'a [u8], usize>, lines: &[&'a [u8]]) -> Vec<usize> {
+    lines
+        .iter()
+        .map(|line| {
+            let next = ids.len();
+            *ids.entry(*line).or_insert(next)
+        })
+        .collect()
 }
 
 /// Index pairs of one longest common subsequence of `old` and `new`, ascending.
-fn lcs_pairs(old: &[&[u8]], new: &[&[u8]]) -> Vec<(usize, usize)> {
+fn lcs_pairs(old: &[usize], new: &[usize]) -> Vec<(usize, usize)> {
     let (n, m) = (old.len(), new.len());
     let width = m + 1;
     let mut table = vec![0u32; (n + 1) * width];
@@ -115,23 +158,34 @@ fn lcs_pairs(old: &[&[u8]], new: &[&[u8]]) -> Vec<(usize, usize)> {
     pairs
 }
 
-/// Append `path`'s zero-context unified diff from `old` to `new`.
-fn unified(path: &str, old: &[u8], new: &[u8], out: &mut Vec<u8>) {
-    let (old, new) = (lines(old), lines(new));
-    let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
-    let suffix = old[prefix..]
+/// Append `path`'s zero-context unified diff from `old` to `new`. The exact LCS runs only while
+/// this file and all files so far (`spent` cells) are within budget; otherwise the whole changed
+/// middle is reported.
+fn unified(path: &str, old: &[u8], new: &[u8], spent: &mut usize, out: &mut Vec<u8>) -> Result<()> {
+    let (old, new) = (lines(old)?, lines(new)?);
+    let mut ids = HashMap::new();
+    let (old_ids, new_ids) = (intern(&mut ids, &old), intern(&mut ids, &new));
+    let prefix = old_ids
         .iter()
-        .rev()
-        .zip(new[prefix..].iter().rev())
+        .zip(&new_ids)
         .take_while(|(a, b)| a == b)
         .count();
-    let old_mid = &old[prefix..old.len() - suffix];
-    let new_mid = &new[prefix..new.len() - suffix];
-    let mut anchors = if old_mid.len().saturating_mul(new_mid.len()) <= LINE_CELL_BUDGET {
-        lcs_pairs(old_mid, new_mid)
-    } else {
-        Vec::new()
-    };
+    let suffix = old_ids[prefix..]
+        .iter()
+        .rev()
+        .zip(new_ids[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let (old_end, new_end) = (old.len() - suffix, new.len() - suffix);
+    let cells = (old_end - prefix).saturating_mul(new_end - prefix);
+    let mut anchors =
+        if cells <= LINE_CELL_BUDGET && spent.saturating_add(cells) <= TOTAL_CELL_BUDGET {
+            *spent += cells;
+            lcs_pairs(&old_ids[prefix..old_end], &new_ids[prefix..new_end])
+        } else {
+            Vec::new()
+        };
+    let (old_mid, new_mid) = (&old[prefix..old_end], &new[prefix..new_end]);
     // A sentinel anchor after both middles closes the last hunk.
     anchors.push((old_mid.len(), new_mid.len()));
     out.extend_from_slice(format!("--- a/{path}\n+++ b/{path}\n").as_bytes());
@@ -145,6 +199,95 @@ fn unified(path: &str, old: &[u8], new: &[u8], out: &mut Vec<u8>) {
             );
         }
         (i, j) = (anchor_old + 1, anchor_new + 1);
+    }
+    Ok(())
+}
+
+/// True when Rust `source` names cargo-mutants' skip attribute path in code, in any spelling the
+/// compiler (and so cargo-mutants, through `syn`) treats as the same tokens: whitespace, comments
+/// and raw-identifier prefixes around `mutants`, `::` and `skip` are dropped. Comments and string,
+/// byte-string, raw-string and character literals are skipped, so a mention in one is not a match.
+/// Fails closed: an identifier merely ending in `mutants` before `::skip` also matches.
+pub(crate) fn has_skip_attribute(source: &str) -> bool {
+    let mut code = String::new();
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '/' if chars.next_if_eq(&'/').is_some() => {
+                chars.by_ref().find(|c| *c == '\n');
+            }
+            '/' if chars.next_if_eq(&'*').is_some() => skip_block_comment(&mut chars),
+            '"' => skip_string(&mut chars),
+            'r' if raw_string_ahead(&chars) => skip_raw_string(&mut chars),
+            // A raw identifier's `r#` prefix: `r#mutants` is the path segment `mutants`.
+            'r' if chars.next_if_eq(&'#').is_some() => {}
+            '\'' => skip_char_literal(&mut chars, &mut code),
+            c if c.is_whitespace() => {}
+            c => code.push(c),
+        }
+    }
+    code.contains("mutants::skip")
+}
+/// After `/*`: through the matching `*/`, counting nested comments.
+fn skip_block_comment(chars: &mut Peekable<Chars>) {
+    let (mut depth, mut previous) = (1_usize, ' ');
+    for c in chars.by_ref() {
+        match (previous, c) {
+            ('/', '*') => (depth, previous) = (depth + 1, ' '),
+            ('*', '/') => {
+                (depth, previous) = (depth - 1, ' ');
+                if depth == 0 {
+                    return;
+                }
+            }
+            _ => previous = c,
+        }
+    }
+}
+/// After an opening `"`: through the closing one, honouring backslash escapes.
+fn skip_string(chars: &mut Peekable<Chars>) {
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            '"' => return,
+            _ => {}
+        }
+    }
+}
+/// Whether the `r` just read opens a raw string: `#`s, then a quote.
+fn raw_string_ahead(chars: &Peekable<Chars>) -> bool {
+    let mut ahead = chars.clone();
+    while ahead.next_if_eq(&'#').is_some() {}
+    ahead.peek() == Some(&'"')
+}
+/// After the `r` of a raw string: its `#`s and quote, then through a quote followed by as many `#`s.
+fn skip_raw_string(chars: &mut Peekable<Chars>) {
+    let mut hashes = 0_usize;
+    while chars.next_if_eq(&'#').is_some() {
+        hashes += 1;
+    }
+    chars.next();
+    while let Some(c) = chars.next() {
+        let mut ahead = chars.clone();
+        if c == '"' && (0..hashes).all(|_| ahead.next() == Some('#')) {
+            *chars = ahead;
+            return;
+        }
+    }
+}
+/// After a `'`: skip a character literal, or keep a lifetime or label's quote as code.
+fn skip_char_literal(chars: &mut Peekable<Chars>, code: &mut String) {
+    let mut ahead = chars.clone();
+    match (ahead.next(), ahead.next()) {
+        (Some('\\'), _) => {
+            chars.next();
+            chars.next();
+            chars.by_ref().find(|c| *c == '\'');
+        }
+        (Some(_), Some('\'')) => *chars = ahead,
+        _ => code.push('\''),
     }
 }
 
@@ -177,13 +320,14 @@ fn hunk(old: (usize, &[&[u8]]), new: (usize, &[&[u8]]), out: &mut Vec<u8>) {
 mod tests {
     use super::*;
 
-    /// Apply a diff produced by [`unified`] to `old`, checking every hunk's header and context.
+    /// Apply a diff produced by [`unified`] to `old`, checking every hunk's old- and new-side
+    /// coordinates as well as its context.
     fn apply(diff: &[u8], old: &[u8]) -> Vec<u8> {
-        let source = lines(old);
+        let source = lines(old).unwrap();
         let mut text = diff.split_inclusive(|b| *b == b'\n').peekable();
         assert!(text.next().unwrap().starts_with(b"--- a/"));
         assert!(text.next().unwrap().starts_with(b"+++ b/"));
-        let (mut result, mut copied) = (Vec::new(), 0);
+        let (mut result, mut result_lines, mut copied) = (Vec::new(), 0, 0);
         while let Some(header) = text.next() {
             let header = std::str::from_utf8(header).unwrap();
             let spec: Vec<usize> = header
@@ -193,15 +337,18 @@ mod tests {
                 .filter(|s| !s.is_empty())
                 .map(|s| s.parse().unwrap())
                 .collect();
-            let (old_start, old_len) = (spec[0], spec[1]);
-            let before = if old_len == 0 {
-                old_start
-            } else {
-                old_start - 1
-            };
+            let (old_start, old_len, new_start, new_len) = (spec[0], spec[1], spec[2], spec[3]);
+            let before = old_start - usize::from(old_len > 0);
             assert!(before >= copied, "hunks out of order: {header}");
             result.extend(source[copied..before].iter().flat_map(|l| l.iter()));
-            let mut removed = 0;
+            result_lines += before - copied;
+            // The new side names the line it follows (empty) or its own first line.
+            assert_eq!(
+                new_start,
+                result_lines + usize::from(new_len > 0),
+                "{header}"
+            );
+            let (mut removed, mut added) = (0, 0);
             while let Some(line) = text.next_if(|l| l[0] == b'-' || l[0] == b'+') {
                 let mut body = line[1..].to_vec();
                 if text.next_if(|l| l.starts_with(b"\\ No newline")).is_some() {
@@ -212,13 +359,50 @@ mod tests {
                     removed += 1;
                 } else {
                     result.extend(body);
+                    added += 1;
                 }
             }
-            assert_eq!(removed, old_len, "{header}");
+            assert_eq!((removed, added), (old_len, new_len), "{header}");
+            result_lines += added;
             copied = before + old_len;
         }
         result.extend(source[copied..].iter().flat_map(|l| l.iter()));
         result
+    }
+
+    /// An independent LCS length, by rows and without backtracking.
+    fn lcs_len(old: &[&[u8]], new: &[&[u8]]) -> usize {
+        let mut prev = vec![0usize; new.len() + 1];
+        for a in old {
+            let mut row = vec![0usize; new.len() + 1];
+            for (k, b) in new.iter().enumerate() {
+                row[k + 1] = if a == b {
+                    prev[k] + 1
+                } else {
+                    prev[k + 1].max(row[k])
+                };
+            }
+            prev = row;
+        }
+        prev[new.len()]
+    }
+
+    fn diff_of(old: &[u8], new: &[u8], spent: &mut usize) -> Vec<u8> {
+        let mut diff = Vec::new();
+        unified("x.rs", old, new, spent, &mut diff).unwrap();
+        diff
+    }
+
+    fn added_lines(diff: &[u8]) -> usize {
+        diff.split_inclusive(|b| *b == b'\n')
+            .filter(|l| l.starts_with(b"+") && !l.starts_with(b"+++"))
+            .count()
+    }
+
+    fn hunks(diff: &[u8]) -> usize {
+        diff.split_inclusive(|b| *b == b'\n')
+            .filter(|l| l.starts_with(b"@@ "))
+            .count()
     }
 
     /// Every file of up to `max` lines over a small alphabet, with and without a final newline.
@@ -255,53 +439,16 @@ mod tests {
                 if old == new {
                     continue;
                 }
-                let mut diff = Vec::new();
-                unified("x.rs", old, new, &mut diff);
+                let diff = diff_of(old, new, &mut 0);
                 assert_eq!(apply(&diff, old), *new, "{old:?} -> {new:?}");
-                // Minimal: exactly the new lines outside one longest common subsequence are added.
-                let (o, n) = (lines(old), lines(new));
-                let added = diff
-                    .split_inclusive(|b| *b == b'\n')
-                    .filter(|l| l.starts_with(b"+") && !l.starts_with(b"+++"))
-                    .count();
+                let (o, n) = (lines(old).unwrap(), lines(new).unwrap());
                 assert_eq!(
-                    added,
-                    n.len() - lcs_pairs(&o, &n).len(),
+                    added_lines(&diff),
+                    n.len() - lcs_len(&o, &n),
                     "{old:?} -> {new:?}"
                 );
             }
         }
-    }
-
-    #[test]
-    fn hunk_headers_follow_unified_diff_conventions() {
-        let mut diff = Vec::new();
-        unified("x.rs", b"a\nb\nc\n", b"a\nB\nc\nd\n", &mut diff);
-        assert_eq!(
-            String::from_utf8(diff).unwrap(),
-            "--- a/x.rs\n+++ b/x.rs\n@@ -2,1 +2,1 @@\n-b\n+B\n@@ -3,0 +4,1 @@\n+d\n"
-        );
-        let mut diff = Vec::new();
-        unified("new.rs", b"", b"fn f() {}", &mut diff);
-        assert_eq!(
-            String::from_utf8(diff).unwrap(),
-            "--- a/new.rs\n+++ b/new.rs\n@@ -0,0 +1,1 @@\n+fn f() {}\n\\ No newline at end of file\n"
-        );
-    }
-
-    #[test]
-    fn adjacent_unchanged_lines_produce_no_empty_hunk() {
-        let mut diff = Vec::new();
-        unified(
-            "x.rs",
-            b"a\nX\nb\nc\nY\nd\n",
-            b"a\nX2\nb\nc\nY2\nd\n",
-            &mut diff,
-        );
-        assert_eq!(
-            String::from_utf8(diff).unwrap(),
-            "--- a/x.rs\n+++ b/x.rs\n@@ -2,1 +2,1 @@\n-X\n+X2\n@@ -5,1 +5,1 @@\n-Y\n+Y2\n"
-        );
     }
 
     /// A small deterministic xorshift generator, so the random test is reproducible.
@@ -331,29 +478,71 @@ mod tests {
         for _ in 0..3000 {
             let (old_len, new_len) = (rng.below(16), rng.below(16));
             let (old, new) = (rng.file(old_len), rng.file(new_len));
-            let mut diff = Vec::new();
-            unified("x.rs", &old, &new, &mut diff);
+            let diff = diff_of(&old, &new, &mut 0);
             assert_eq!(apply(&diff, &old), new);
-            let (o, n) = (lines(&old), lines(&new));
-            let added = diff
-                .split_inclusive(|b| *b == b'\n')
-                .filter(|l| l.starts_with(b"+") && !l.starts_with(b"+++"))
-                .count();
-            // An independent LCS length, by rows and without backtracking.
-            let mut prev = vec![0usize; n.len() + 1];
-            for a in &o {
-                let mut row = vec![0usize; n.len() + 1];
-                for (k, b) in n.iter().enumerate() {
-                    row[k + 1] = if a == b {
-                        prev[k] + 1
-                    } else {
-                        prev[k + 1].max(row[k])
-                    };
-                }
-                prev = row;
-            }
-            assert_eq!(added, n.len() - prev[n.len()], "{old:?} -> {new:?}");
+            let (o, n) = (lines(&old).unwrap(), lines(&new).unwrap());
+            assert_eq!(
+                added_lines(&diff),
+                n.len() - lcs_len(&o, &n),
+                "{old:?} -> {new:?}"
+            );
         }
+    }
+
+    #[test]
+    fn hunk_headers_follow_unified_diff_conventions() {
+        let diff = diff_of(b"a\nb\nc\n", b"a\nB\nc\nd\n", &mut 0);
+        assert_eq!(
+            String::from_utf8(diff).unwrap(),
+            "--- a/x.rs\n+++ b/x.rs\n@@ -2,1 +2,1 @@\n-b\n+B\n@@ -3,0 +4,1 @@\n+d\n"
+        );
+        let mut diff = Vec::new();
+        unified("new.rs", b"", b"fn f() {}", &mut 0, &mut diff).unwrap();
+        assert_eq!(
+            String::from_utf8(diff).unwrap(),
+            "--- a/new.rs\n+++ b/new.rs\n@@ -0,0 +1,1 @@\n+fn f() {}\n\\ No newline at end of file\n"
+        );
+    }
+
+    #[test]
+    fn adjacent_unchanged_lines_produce_no_empty_hunk() {
+        let diff = diff_of(b"a\nX\nb\nc\nY\nd\n", b"a\nX2\nb\nc\nY2\nd\n", &mut 0);
+        assert_eq!(
+            String::from_utf8(diff).unwrap(),
+            "--- a/x.rs\n+++ b/x.rs\n@@ -2,1 +2,1 @@\n-X\n+X2\n@@ -5,1 +5,1 @@\n-Y\n+Y2\n"
+        );
+    }
+
+    /// 4,096 distinct lines a side sharing one interior line: exactly the per-file cell budget.
+    fn at_budget(tag: u8) -> (Vec<u8>, Vec<u8>) {
+        let side = |name: &str| -> Vec<u8> {
+            let mut text = Vec::new();
+            for i in 0..4096 {
+                if i == 2048 {
+                    text.extend_from_slice(b"shared\n");
+                } else {
+                    text.extend_from_slice(format!("{name}{tag}-{i}\n").as_bytes());
+                }
+            }
+            text
+        };
+        (side("old"), side("new"))
+    }
+
+    // The exact LCS runs at the per-file budget and while all files together are within theirs;
+    // after that a file's middle is reported whole (one hunk), over-including but never omitting.
+    #[test]
+    fn cell_budgets_bound_the_exact_lcs_per_file_and_in_total() {
+        const { assert!(4096 * 4096 == LINE_CELL_BUDGET && 4 * LINE_CELL_BUDGET == TOTAL_CELL_BUDGET) };
+        let mut spent = 0;
+        for tag in 0..5 {
+            let (old, new) = at_budget(tag);
+            let diff = diff_of(&old, &new, &mut spent);
+            assert_eq!(apply(&diff, &old), new);
+            let expected = if tag < 4 { 2 } else { 1 };
+            assert_eq!(hunks(&diff), expected, "file {tag}");
+        }
+        assert_eq!(spent, TOTAL_CELL_BUDGET);
     }
 
     #[test]
@@ -367,9 +556,70 @@ mod tests {
         };
         let (old, new) = (side("old"), side("new"));
         const { assert!(4100 * 4100 > LINE_CELL_BUDGET) };
-        let mut diff = Vec::new();
-        unified("x.rs", &old, &new, &mut diff);
+        let diff = diff_of(&old, &new, &mut 0);
         assert_eq!(apply(&diff, &old), new);
         assert!(diff.starts_with(b"--- a/x.rs\n+++ b/x.rs\n@@ -1,4100 +1,4100 @@\n"));
+    }
+
+    #[test]
+    fn the_line_cap_bounds_each_side() {
+        assert_eq!(
+            lines(&vec![b'\n'; LINE_CAP - 1]).unwrap().len(),
+            LINE_CAP - 1
+        );
+        assert!(lines(&vec![b'\n'; LINE_CAP]).is_err());
+        let mut diff = Vec::new();
+        assert!(unified("x.rs", b"", &vec![b'\n'; LINE_CAP], &mut 0, &mut diff).is_err());
+    }
+
+    #[test]
+    fn skip_attributes_are_found_in_every_token_equivalent_spelling() {
+        for source in [
+            "#[mutants::skip]\nfn f() {}",
+            "#[mutants :: skip] fn f() {}",
+            "#[mutants\t::\n skip] fn f() {}",
+            "#[mutants/**/::/* x */skip] fn f() {}",
+            "#[mutants // c\n::skip] fn f() {}",
+            "#[cfg_attr(test, mutants ::skip)] fn f() {}",
+            "#[::mutants::skip] fn f() {}",
+            "#[r#mutants::r#skip] fn f() {}",
+            "// a comment\n#[mutants::skip] fn f() {}",
+            "/* a comment */ #[mutants::skip] fn f() {}",
+            "/**/#[mutants::skip] fn f() {}",
+            "/* a /* nested */ comment */ #[mutants::skip] fn f() {}",
+            "let q = '\"'; #[mutants::skip] fn f() {}",
+            "let q = '\\''; #[mutants::skip] fn f() {}",
+            "let q = '\\u{22}'; #[mutants::skip] fn f() {}",
+            "let s = \"a \\\" b\"; #[mutants::skip] fn f() {}",
+            "let s = r#\"a \"b\" c\"#; #[mutants::skip] fn f() {}",
+            "fn f<'a>(x: &'a str) {} #[mutants::skip] fn g() {}",
+            "let b = b'\"'; #[mutants::skip] fn f() {}",
+        ] {
+            assert!(has_skip_attribute(source), "{source}");
+        }
+    }
+
+    #[test]
+    fn mentions_in_comments_and_literals_are_not_skip_attributes() {
+        for source in [
+            "// #[mutants::skip]\nfn f() {}",
+            "//! mutants::skip\nfn f() {}",
+            "/* #[mutants::skip] */ fn f() {}",
+            "/* a /* nested */ #[mutants::skip] */ fn f() {}",
+            "let s = \"#[mutants::skip]\";",
+            "let s = \"a \\\" #[mutants::skip]\";",
+            "let s = r\"#[mutants::skip]\";",
+            "let s = r#\"a \"quoted\" #[mutants::skip]\"#;",
+            "let s = br##\"x\"# #[mutants::skip]\"##;",
+            "let s = b\"#[mutants::skip]\";",
+            "fn f<'a>(x: &'a str) -> &'a str { \"mutants::skip\" }",
+            "let c = 'm'; let s = \"mutants::skip\";",
+            "#[doc = \"mutants::skip\"] fn f() {}",
+        ] {
+            assert!(!has_skip_attribute(source), "{source}");
+        }
+        // This module's own source names the attribute only inside literals and comments.
+        assert!(!has_skip_attribute(include_str!("mutation_scope.rs")));
+        assert!(!has_skip_attribute(include_str!("execution.rs")));
     }
 }

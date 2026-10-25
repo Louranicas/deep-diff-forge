@@ -358,6 +358,26 @@ Council r7 (run `09c8d772…`, 12/12 reports) reviewed `5b703b9..592fc3f`: the r
 | The default whole-package mutation gate cannot fit the 3,600 s request cap on this workspace (architecture, performance) | Not changed. Whole-package mode stays for small packages; `important_decision` councils on this repository set `mutation_base`. A 957-mutant package at about 71 s per mutant needs hours | Documented here and in the residuals |
 | Cap rewrites (`<< 20`, `saturating_sub`) remove mutants without boundary tests (architecture, security) | Not changed. The caps keep their values, and their only arithmetic mutant (a zero cap) is caught. Boundary tests at 4 MiB or 16 MiB would need fixtures of that size in every mutant's test run | Disclosed |
 
+<a id="gate-sandbox-r8"></a>
+
+### r8 follow-ups
+
+Council r8 (run `1bdbab0a…`) reviewed `592fc3f..51894f8`: the `mutation_scope` redesign and the r7 fixes. Every gate except mutation had passed by the time the reviews ran, including the tests gate, which counted 1,159 tests in the sandbox.
+
+| Finding (r8) | Control | Evidence |
+| --- | --- | --- |
+| Replacement refs (and grafts) substitute a base blob, hiding a change (HIGH; all five correctness, architecture, falsifier, security and subtractor reviewers) | `storage::git_bytes` runs every Git command with `--no-replace-objects`, `GIT_NO_REPLACE_OBJECTS=1` and `GIT_GRAFT_FILE=/dev/null` | **Measured, fake:** `replacement_refs_cannot_substitute_a_base_blob` (a `git replace` of the base blob with the candidate's bytes; the change is still in scope) |
+| Lazy fetch can run transports on the host (security) | `GIT_NO_LAZY_FETCH=1` and `-c protocol.allow=never` on every Git command | By construction (no promisor fixture) |
+| The skip-attribute byte needle misses `#[mutants :: skip]` and comment-separated forms (HIGH; all five correctness, architecture, falsifier, performance and security reviewers; subtractor on false refusals) | `mutation_scope::has_skip_attribute` drops whitespace, comments (nested too) and `r#` prefixes, and skips string, byte-string, raw-string and char literals before matching the path. A mention in a comment or string is no longer a refusal | **Unit:** 19 positive spellings and 13 negatives, including this module's own source. **Measured, fake:** the spaced `cfg_attr` case of `candidate_code_cannot_exempt_itself_from_the_mutation_gate` |
+| Unescaped paths can forge diff headers (architecture, security, subtractor) | A path with any control character is refused at prepare | **Measured, fake:** `binary_files_are_out_of_scope_and_control_characters_in_paths_are_refused` |
+| Binary files make a non-UTF-8 diff (correctness) | A file that is not UTF-8 on either side is out of scope: it cannot be compiled as Rust or mutated | Same test (the sealed diff is UTF-8, without `asset.bin`) |
+| The scope was read from the live workspace, not the sealed snapshot (architecture) | `prepare` copies and verifies the snapshot first, then builds the scope from the snapshot's bytes. A base that is not an ancestor is refused before any directory exists, and any later refusal removes the run directory this call created | Existing scope tests now run against the snapshot; the control-character case checks no run is left |
+| Empty sides and allocation (correctness, falsifier, subtractor, performance) | At most 1 Mi lines a side per file, so an empty side's table is bounded too. Lines are interned, so one comparison costs one integer comparison, not one memcmp of a long line. The exact LCS stops at 64 M cells across all files, after which middles are reported whole | **Unit:** `the_line_cap_bounds_each_side`; `cell_budgets_bound_the_exact_lcs_per_file_and_in_total` (four files at exactly the per-file budget are exact; the fifth is whole) |
+| The test oracle ignored new-side coordinates (falsifier) | `apply` checks every hunk's new start and length against the reconstructed file | All `mutation_scope` unit tests |
+| `mutation_base` not pinned to an object ID (architecture) | Rebutted by construction: `validate_request` already admits only a full 40- or 64-hex object ID, and replacements are now off, so the ID names one commit | — |
+| One `cat-file` per file (performance) | Not changed: 202 tracked files here. Batching is a follow-up | Residual |
+| `minimal` has no reader; the Cargo home doubles as an input mount (architecture, low) | Not changed. `minimal` is for reviewers and later admission policy; the read-only Cargo home is the one controller-written mount a mutation job already has | Disclosed |
+
 ### Podman invocation
 
 Every gate job runs `$DDF_COUNCIL_PODMAN run` (the default runtime is `podman`) with these flags. The source of truth is `sandbox.rs` `Sandbox::argv`.

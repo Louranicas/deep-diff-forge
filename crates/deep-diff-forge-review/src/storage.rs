@@ -125,15 +125,24 @@ fn capture(id: String, path: &Path, remaining: &mut usize) -> Result<Artifact> {
         text,
     })
 }
+/// Run Git with repository-local behaviour that could change what it reports, or run code, turned
+/// off: replacement refs and grafts (which can substitute a base blob), lazy fetches from promisor
+/// remotes and every transport (which can run helpers on the host), hooks and fsmonitor.
 pub(crate) fn git_bytes(repository: &Path, args: &[&str], cap: u64) -> Result<Vec<u8>> {
     let mut child = Command::new("git")
         .args([
             "--no-optional-locks",
+            "--no-replace-objects",
             "-c",
             "core.fsmonitor=false",
             "-c",
             "core.hooksPath=/dev/null",
+            "-c",
+            "protocol.allow=never",
         ])
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_GRAFT_FILE", "/dev/null")
+        .env("GIT_NO_LAZY_FETCH", "1")
         .args(args)
         .current_dir(repository)
         .stdout(Stdio::piped())
@@ -553,25 +562,65 @@ pub fn prepare(mut request: Request, directory: &Path) -> Result<Manifest> {
             text: (*text).into(),
         });
     }
-    // Captured inside the same unchanged-workspace window as everything else.
-    let mutation_diff =
-        crate::mutation_scope::capture(&repository, &inventory, request.mutation_base.as_deref())?;
     let tree_after = source_fingerprint(&repository)?;
     require(
         tree_before == tree_after,
         "workspace changed during capture",
     )?;
+    if let Some(base) = request.mutation_base.as_deref() {
+        crate::mutation_scope::require_ancestor(&repository, base)?;
+    }
+    make_dir(directory)?;
+    // A refusal from here on removes the run directory this call created, so no partial run is
+    // left to load or to block a retry.
+    seal_run(
+        directory,
+        &repository,
+        &inventory,
+        tree_before,
+        review_id,
+        request,
+        artifacts,
+    )
+    .inspect_err(|_| {
+        let _ = fs::remove_dir_all(directory);
+    })
+}
+/// Write a prepared run into the new, empty `directory`: the verified snapshot, the mutation scope
+/// read from it, then the manifest that seals them.
+fn seal_run(
+    directory: &Path,
+    repository: &Path,
+    inventory: &Inventory,
+    source_tree: String,
+    review_id: String,
+    request: Request,
+    artifacts: Vec<Artifact>,
+) -> Result<Manifest> {
+    // Gates run on copies of this sealed snapshot, never on the mutable checkout. The mutation
+    // scope is read from the same copy once it is verified, so it describes the sealed bytes.
+    let snapshot = directory.join(SNAPSHOT_DIR);
+    copy_tree(repository, &snapshot, inventory)?;
+    require(
+        fingerprint_tree(&snapshot, inventory)? == source_tree,
+        "workspace changed during snapshot export",
+    )?;
+    let mutation_diff = crate::mutation_scope::capture(
+        repository,
+        &snapshot,
+        inventory,
+        request.mutation_base.as_deref(),
+    )?;
     let mut manifest = Manifest {
         schema: "deep-diff-forge.council.v1".into(),
         run_id: String::new(),
         review_id,
-        source_tree: tree_before,
+        source_tree,
         request,
         artifacts,
         mutation_diff_sha256: mutation_diff.as_deref().map(sha256_hex),
     };
     manifest.run_id = manifest_digest(&manifest)?;
-    make_dir(directory)?;
     make_dir(&directory.join("jobs"))?;
     make_dir(&directory.join("reports"))?;
     make_dir(&directory.join("workspace"))?;
@@ -580,14 +629,7 @@ pub fn prepare(mut request: Request, directory: &Path) -> Result<Manifest> {
     if let Some(diff) = &mutation_diff {
         write_new(&directory.join(MUTATION_DIFF), diff)?;
     }
-    // Gates run on copies of this sealed snapshot, never on the mutable checkout.
-    let snapshot = directory.join(SNAPSHOT_DIR);
-    copy_tree(&repository, &snapshot, &inventory)?;
-    write_json(&directory.join(INVENTORY_FILE), &inventory)?;
-    require(
-        fingerprint_tree(&snapshot, &inventory)? == manifest.source_tree,
-        "workspace changed during snapshot export",
-    )?;
+    write_json(&directory.join(INVENTORY_FILE), inventory)?;
     Ok(manifest)
 }
 /// Load a sealed local manifest and verify every embedded artifact digest.

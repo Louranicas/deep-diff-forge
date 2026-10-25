@@ -691,6 +691,8 @@ fn index_flags_attributes_and_untracked_files_cannot_shrink_the_mutation_scope()
         "{sealed}"
     );
     assert!(!sealed.contains("+pub fn first()"), "{sealed}");
+    // An unchanged file is not in scope at all.
+    assert!(!sealed.contains("x.rs"), "{sealed}");
     // Every inventoried file is in scope, since `#[path]` can make any file a module.
     assert!(sealed.contains("+++ b/.gitattributes"), "{sealed}");
 }
@@ -774,7 +776,8 @@ fn analysis_admission_binds_the_review_id_and_refuses_unusable_analyses() {
 fn candidate_code_cannot_exempt_itself_from_the_mutation_gate() {
     let f = Fixture::new();
     // Assembled at run time, so this test file does not trip the controller's own scan.
-    let attribute = format!("#[cfg_attr(test, {}::skip)]", "mutants");
+    // A spaced spelling: the same attribute path to rustc and cargo-mutants.
+    let attribute = format!("#[cfg_attr(test, {} :: skip)]", "mutants");
     f.commit(
         "exempt.rs",
         &format!("{attribute}\npub fn untested() {{}}\n"),
@@ -792,6 +795,73 @@ fn candidate_code_cannot_exempt_itself_from_the_mutation_gate() {
     assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
     // Only the mutation gate is concerned; the same snapshot still runs its tests.
     assert_eq!(f.gate("tests").status.code(), Some(0));
+}
+
+fn git(f: &Fixture, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(&f.repository)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{args:?}");
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+#[test]
+fn replacement_refs_cannot_substitute_a_base_blob() {
+    let f = Fixture::new();
+    f.commit("swapped.rs", "pub fn original() {}\n");
+    let result = prepare_with_mutation_base(&f, |f| {
+        fs::write(f.repository.join("swapped.rs"), "pub fn changed() {}\n").unwrap();
+        // Make the base's blob read back as the candidate's bytes, hiding the change.
+        let base_blob = git(f, &["rev-parse", "HEAD:swapped.rs"]);
+        let candidate_blob = git(f, &["hash-object", "-w", "swapped.rs"]);
+        git(f, &["replace", &base_blob, &candidate_blob]);
+    });
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let sealed = fs::read_to_string(f.run.join("mutation.diff")).unwrap();
+    assert!(sealed.contains("+pub fn changed() {}"), "{sealed}");
+}
+
+#[test]
+fn binary_files_are_out_of_scope_and_control_characters_in_paths_are_refused() {
+    let f = Fixture::new();
+    let result = prepare_with_mutation_base(&f, |f| {
+        fs::write(f.repository.join("asset.bin"), [0xff, 0xfe, b'\n']).unwrap();
+        fs::write(f.repository.join("text.rs"), "pub fn text() {}\n").unwrap();
+    });
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let sealed = fs::read(f.run.join("mutation.diff")).unwrap();
+    let sealed = String::from_utf8(sealed).expect("the sealed scope is UTF-8");
+    assert!(
+        !sealed.contains("asset.bin") && sealed.contains("+++ b/text.rs"),
+        "{sealed}"
+    );
+    // A name with a newline could forge a header line; it is refused, not escaped.
+    let f = Fixture::new();
+    let result = prepare_with_mutation_base(&f, |f| {
+        fs::write(
+            f.repository.join("evil\n@@ -1,1 +1,1 @@.rs"),
+            "pub fn evil() {}\n",
+        )
+        .unwrap();
+    });
+    assert_eq!(result.status.code(), Some(4));
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("path contains a control character"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    // A refusal after the run directory was created leaves nothing behind.
+    assert!(!f.run.exists());
 }
 
 #[test]
