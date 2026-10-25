@@ -355,6 +355,8 @@ fn unified(path: &str, old: &[u8], new: &[u8], spent: &mut usize, out: &mut Vec<
 struct Lexed {
     code: String,
     module_paths: Vec<String>,
+    /// A literal or comment was still open at the end: the lexer disagrees with rustc somewhere.
+    desync: bool,
 }
 
 /// Lex just enough of Rust to tell code from comments and literals. Whitespace, comments (nested
@@ -366,6 +368,7 @@ fn lex(source: &str) -> Lexed {
     let mut lexed = Lexed {
         code: String::new(),
         module_paths: Vec::new(),
+        desync: false,
     };
     let body = match source.strip_prefix("#!") {
         Some(rest) if !rest.trim_start().starts_with('[') => {
@@ -383,15 +386,19 @@ fn lex(source: &str) -> Lexed {
             '/' if chars.next_if_eq(&'/').is_some() => {
                 chars.by_ref().find(|c| *c == '\n');
             }
-            '/' if chars.next_if_eq(&'*').is_some() => skip_block_comment(&mut chars),
+            '/' if chars.next_if_eq(&'*').is_some() => {
+                lexed.desync |= !skip_block_comment(&mut chars);
+            }
             '"' => {
-                let text = skip_string(&mut chars);
+                let (text, closed) = skip_string(&mut chars);
+                lexed.desync |= !closed;
                 if lexed.code.ends_with("path=") {
                     lexed.module_paths.push(text);
                 }
             }
             'r' if token_start && raw_string_ahead(&chars) => {
-                let text = skip_raw_string(&mut chars);
+                let (text, closed) = skip_raw_string(&mut chars);
+                lexed.desync |= !closed;
                 if lexed.code.ends_with("path=") {
                     lexed.module_paths.push(text);
                 }
@@ -409,10 +416,14 @@ fn lex(source: &str) -> Lexed {
 
 /// True when Rust `source` names cargo-mutants' skip attribute path in code, in any spelling the
 /// compiler (and so cargo-mutants, through `syn`) treats as the same tokens. A mention in a comment
-/// or a literal is not a match. Fails closed: an identifier merely ending in `mutants` before
-/// `::skip` also matches.
+/// or a literal is not a match. Fails closed twice over: an identifier merely ending in `mutants`
+/// before `::skip` matches, and so does any file the lexer could not follow to its end (a literal
+/// or comment still open) that mentions both words anywhere, since a lexer that disagrees with rustc
+/// may have swallowed a real attribute (council r9).
 pub(crate) fn has_skip_attribute(source: &str) -> bool {
-    lex(source).code.contains("mutants::skip")
+    let lexed = lex(source);
+    lexed.code.contains("mutants::skip")
+        || (lexed.desync && source.contains("mutants") && source.contains("skip"))
 }
 
 /// The file names that `source`'s `#[path = "…"]` attributes point at, so the skip scan can follow
@@ -421,8 +432,8 @@ pub(crate) fn module_paths(source: &str) -> Vec<String> {
     lex(source).module_paths
 }
 
-/// After `/*`: through the matching `*/`, counting nested comments.
-fn skip_block_comment(chars: &mut Peekable<Chars>) {
+/// After `/*`: through the matching `*/`, counting nested comments; false if it never closes.
+fn skip_block_comment(chars: &mut Peekable<Chars>) -> bool {
     let (mut depth, mut previous) = (1_usize, ' ');
     for c in chars.by_ref() {
         match (previous, c) {
@@ -430,16 +441,17 @@ fn skip_block_comment(chars: &mut Peekable<Chars>) {
             ('*', '/') => {
                 (depth, previous) = (depth - 1, ' ');
                 if depth == 0 {
-                    return;
+                    return true;
                 }
             }
             _ => previous = c,
         }
     }
+    false
 }
 /// After an opening `"`: through the closing one, honouring backslash escapes; returns the
-/// contents with escapes kept as written.
-fn skip_string(chars: &mut Peekable<Chars>) -> String {
+/// contents with escapes kept as written, and whether the string closed.
+fn skip_string(chars: &mut Peekable<Chars>) -> (String, bool) {
     let mut text = String::new();
     while let Some(c) = chars.next() {
         match c {
@@ -447,11 +459,11 @@ fn skip_string(chars: &mut Peekable<Chars>) -> String {
                 text.push(c);
                 text.extend(chars.next());
             }
-            '"' => break,
+            '"' => return (text, true),
             _ => text.push(c),
         }
     }
-    text
+    (text, false)
 }
 /// Whether the `r` just read opens a raw string: `#`s, then a quote.
 fn raw_string_ahead(chars: &Peekable<Chars>) -> bool {
@@ -460,8 +472,8 @@ fn raw_string_ahead(chars: &Peekable<Chars>) -> bool {
     ahead.peek() == Some(&'"')
 }
 /// After the `r` of a raw string: its `#`s and quote, then through a quote followed by as many `#`s;
-/// returns the contents.
-fn skip_raw_string(chars: &mut Peekable<Chars>) -> String {
+/// returns the contents, and whether the string closed.
+fn skip_raw_string(chars: &mut Peekable<Chars>) -> (String, bool) {
     let mut hashes = 0_usize;
     while chars.next_if_eq(&'#').is_some() {
         hashes += 1;
@@ -472,11 +484,11 @@ fn skip_raw_string(chars: &mut Peekable<Chars>) -> String {
         let mut ahead = chars.clone();
         if c == '"' && (0..hashes).all(|_| ahead.next() == Some('#')) {
             *chars = ahead;
-            break;
+            return (text, true);
         }
         text.push(c);
     }
-    text
+    (text, false)
 }
 /// After a `'`: skip a character literal, or keep a lifetime or label's quote as code.
 fn skip_char_literal(chars: &mut Peekable<Chars>, code: &mut String) {
@@ -883,6 +895,11 @@ mod tests {
             "#!/usr/bin/env r#\"\n#[mutants::skip]\npub fn f() {}",
             // Edition 2015/2018: `ar#"x"` is an identifier, `#` and a string, not a raw string.
             "foo!(ar#\"x\"); #[mutants::skip] fn f() {}",
+            // A literal or comment left open swallows the rest: fail closed when both words appear.
+            "let s = \"unterminated;\n#[mutants::skip] fn f() {}",
+            "/* unterminated\n#[mutants::skip] fn f() {}",
+            "let s = r#\"unterminated\n#[mutants::skip] fn f() {}",
+            "let s = r\"x\"#; #[mutants :: skip] fn f() {}",
         ] {
             assert!(has_skip_attribute(source), "{source}");
         }
@@ -911,6 +928,9 @@ mod tests {
             "let a = ['\\u{22}','\"']; let s = \"mutants::skip\";",
             // `#![` is an inner attribute, not a shebang: the string after it is still a literal.
             "#![doc = \"mutants::skip\"]\nfn f() {}",
+            // Open at the end but never mentioning skip: no refusal.
+            "let s = \"unterminated mutants",
+            "/* unterminated skip",
         ] {
             assert!(!has_skip_attribute(source), "{source}");
         }
