@@ -447,7 +447,7 @@ Deciding "test code" needs name resolution and the build configuration, which no
 
 | Finding | Control | Evidence |
 | --- | --- | --- |
-| The exemption control predicted cargo-mutants with a denylist lexer (architecture, councils r9 and r10; every round found a divergence) | The oracle above; the lexer refusal is kept for this round as a fast first check and is no longer the control | **Measured, fake:** `shipped_code_hidden_from_cargo_mutants_refuses_the_mutation_gate`, `test_only_code_hidden_from_cargo_mutants_is_allowed`, `an_oracle_without_production_spans_is_inconclusive_and_refused`. All three fail against `cf8bb22`. **Measured, prototype:** the planted workspace, 5 of 5 routes refused and its genuine test allowed; the DDF workspace at `cf8bb22`, 0 of 1,012 hidden functions refused (all are tests), 715 of 717 mutated functions covered (the other two are `cfg(not(unix))` twins). The r11 diff took 9.5 s |
+| The exemption control predicted cargo-mutants with a denylist lexer (architecture, councils r9 and r10; every round found a divergence) | The oracle above; the lexer refusal was kept for r12 as a fast first check and retired in [r13](#lexer-retired-r13) | **Measured, fake:** `shipped_code_hidden_from_cargo_mutants_refuses_the_mutation_gate`, `test_only_code_hidden_from_cargo_mutants_is_allowed`, `an_oracle_without_production_spans_is_inconclusive_and_refused`. All three fail against `cf8bb22`. **Measured, prototype:** the planted workspace, 5 of 5 routes refused and its genuine test allowed; the DDF workspace at `cf8bb22`, 0 of 1,012 hidden functions refused (all are tests), 715 of 717 mutated functions covered (the other two are `cfg(not(unix))` twins). The r11 diff took 9.5 s |
 | "Unchanged files are never read" overstated it (performance F3, r10) | Wording corrected in the r9 row above | — |
 | Found while measuring the lexer catalogue against the oracle: its span pattern required a `.rs` path, so a hidden function in a `#[path]` module named `hidden.txt` would have been allowed | Spans are matched by rustc's `:line:col: line:col (#` suffix, whatever the extension | **Measured, fake:** the `exempt_txt` case of `shipped_code_hidden_from_cargo_mutants_refuses_the_mutation_gate` (fails with the old pattern). **Measured, prototype:** the escaped `hid\x64en.txt` module and a `[lib] path = "src/lib.txt"` root are refused |
 | The controller trusted the oracle's exit code or its witness without cross-checking (r12 rehearsal: 4 missed mutants) | Both must agree: exit 0, `state: passed` and at least one dumped target | **Measured, fake:** `the_controller_checks_the_oracle_witness_as_well_as_its_exit` (a zero-target pass at exit 0, and a pass at exit 1, both refused) |
@@ -457,6 +457,24 @@ Deciding "test code" needs name resolution and the build configuration, which no
 **Residual.**
 - Candidate build scripts and proc macros run while the HIR is produced, so a hostile macro could print a forged tree and exit 0. That is residual 1 below, lying to the tool, and the oracle does not defend against it. It closes *declarative* exemption: code that cargo-mutants skips by design while it still ships.
 - Code cargo-mutants never examines stays unmutated in both listings and is not an exemption: `fn new`, empty bodies, `macro_rules!` and `include!` bodies, and build scripts. A future coverage-completeness check (production HIR spans on changed lines that no mutated function contains) would surface them; it is not implemented.
+
+<a id="lexer-retired-r13"></a>
+
+### r13: the skip-attribute lexer is retired
+
+The [exemption oracle](#exemption-oracle-r12) refuses every spelling of the skip attribute that cargo-mutants 27.1.0 honours, measured against the r8–r11 lexer catalogue. It also covers the routes the lexer never looked for. The lexer and its scan are therefore removed:
+- `refuse_mutation_exemptions`, which scanned `#[path]` and Cargo targets;
+- `mutation_scope`'s `lex`, `exemption_scan`, `manifest_paths`, `unescape` and shebang helpers;
+- their unit and fake-runtime tests.
+
+That is about 580 lines. The rows above for councils r8–r11 describe a control that no longer exists; they are kept as history.
+
+What remains against self-exemption:
+- `--no-config`, so a candidate `.cargo/mutants.toml` is never read;
+- the refusal of candidate toolchain configuration;
+- the oracle, which compares what cargo-mutants lists against what the compiler ships, instead of predicting cargo-mutants.
+
+A skip attribute on code that never ships, such as a genuine test, is now allowed, where the lexer refused it. The lexer also refused `cfg_attr(all(), mutants :: skip)`, which cargo-mutants does not honour.
 
 ### Podman invocation
 

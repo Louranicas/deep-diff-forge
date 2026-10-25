@@ -569,71 +569,6 @@ fn gate_argv(manifest: &Manifest, gate: Gate) -> Vec<Vec<String>> {
 const MUTANT_TIMEOUT_SECONDS: u64 = 300;
 /// Parallel cargo-mutants workers; each has its own build directory under `/work/tmp`.
 const MUTANT_JOBS: u8 = 4;
-/// Refuse, before any job slot exists, a snapshot whose Rust code exempts itself from mutation with
-/// cargo-mutants' skip attribute, in any token-equivalent spelling
-/// ([`crate::mutation_scope::exemption_scan`]). Every `.rs` file is scanned, then every file a
-/// `#[path = "…"]` attribute or a Cargo manifest's `path = "…"` names, whatever its extension
-/// (councils r9 and r10: modules and target roots need not end in `.rs`), following chains. Names
-/// are matched by file name, which over-includes; each file is queued at most once.
-fn refuse_mutation_exemptions(snapshot: &Path, inventory: &Inventory) -> Result<()> {
-    let rust = |path: &str| {
-        Path::new(path)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
-    };
-    let manifest = |path: &str| Path::new(path).file_name() == Some("Cargo.toml".as_ref());
-    let mut by_name: std::collections::BTreeMap<&std::ffi::OsStr, Vec<&str>> =
-        std::collections::BTreeMap::new();
-    for path in inventory.paths() {
-        if let Some(name) = Path::new(path).file_name() {
-            by_name.entry(name).or_default().push(path);
-        }
-    }
-    let mut queued: std::collections::BTreeSet<&str> = inventory
-        .paths()
-        .filter(|path| rust(path) || manifest(path))
-        .collect();
-    let mut queue: Vec<&str> = queued.iter().copied().collect();
-    let mut names = std::collections::BTreeSet::new();
-    while let Some(path) = queue.pop() {
-        let Some(meta) = storage::untrusted_metadata(snapshot, Path::new(path))? else {
-            continue;
-        };
-        if !meta.is_file() {
-            continue;
-        }
-        let text = String::from_utf8_lossy(&storage::read_untrusted(
-            snapshot,
-            Path::new(path),
-            64 << 20,
-        )?)
-        .into_owned();
-        let referenced = if manifest(path) {
-            crate::mutation_scope::manifest_paths(&text)
-        } else {
-            let (skip, modules) = crate::mutation_scope::exemption_scan(&text);
-            if skip {
-                return Err(ReviewFailure(format!(
-                    "snapshot contains a cargo-mutants skip attribute in {path}; candidate code cannot exempt itself from the mutation gate"
-                )));
-            }
-            modules
-        };
-        for module in referenced {
-            let Some(name) = Path::new(&module).file_name() else {
-                continue;
-            };
-            if names.insert(name.to_owned()) {
-                for candidate in by_name.get(name).into_iter().flatten() {
-                    if queued.insert(candidate) {
-                        queue.push(candidate);
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
 /// Read the sealed mutation diff and check it against the manifest, before any job slot exists.
 fn sealed_mutation_diff(directory: &Path, manifest: &Manifest) -> Result<Option<Vec<u8>>> {
     let Some(expected) = &manifest.mutation_diff_sha256 else {
@@ -1093,7 +1028,6 @@ pub fn run_gate(directory: &Path, gate: Gate) -> Result<Vec<Execution>> {
         "gate snapshot does not match the sealed source tree",
     )?;
     let mutation_diff = if gate == Gate::Mutation {
-        refuse_mutation_exemptions(&directory.join(SNAPSHOT_DIR), &inventory)?;
         sealed_mutation_diff(directory, &manifest)?
     } else {
         None

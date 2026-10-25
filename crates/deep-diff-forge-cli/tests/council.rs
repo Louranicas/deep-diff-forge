@@ -807,31 +807,6 @@ fn analysis_admission_binds_the_review_id_and_refuses_unusable_analyses() {
 }
 
 #[test]
-fn candidate_code_cannot_exempt_itself_from_the_mutation_gate() {
-    let f = Fixture::new();
-    // Assembled at run time, so this test file does not trip the controller's own scan.
-    // A spaced spelling: the same attribute path to rustc and cargo-mutants.
-    let attribute = format!("#[cfg_attr(test, {} :: skip)]", "mutants");
-    f.commit(
-        "exempt.rs",
-        &format!("{attribute}\npub fn untested() {{}}\n"),
-    );
-    f.prepare();
-    f.install_gate("valid");
-    let result = f.gate("mutation");
-    assert_eq!(result.status.code(), Some(4));
-    assert!(
-        String::from_utf8_lossy(&result.stderr)
-            .contains("snapshot contains a cargo-mutants skip attribute in exempt.rs"),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
-    // Only the mutation gate is concerned; the same snapshot still runs its tests.
-    assert_eq!(f.gate("tests").status.code(), Some(0));
-}
-
-#[test]
 fn shipped_code_hidden_from_cargo_mutants_refuses_the_mutation_gate() {
     // A span in a non-`.rs` module counts like any other.
     let f = Fixture::new();
@@ -1053,28 +1028,6 @@ fn a_binary_base_file_turned_into_rust_is_in_scope() {
 }
 
 #[test]
-fn a_skip_attribute_in_a_non_rs_path_module_is_refused() {
-    let f = Fixture::new();
-    let attribute = format!("#[{} :: skip]", "mutants");
-    f.commit(
-        "hidden.txt",
-        &format!("{attribute}\npub fn untested() {{}}\n"),
-    );
-    f.commit("lib.rs", "#[path = \"hidden.txt\"]\nmod hidden;\n");
-    f.prepare();
-    f.install_gate("valid");
-    let result = f.gate("mutation");
-    assert_eq!(result.status.code(), Some(4));
-    assert!(
-        String::from_utf8_lossy(&result.stderr)
-            .contains("snapshot contains a cargo-mutants skip attribute in hidden.txt"),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
-}
-
-#[test]
 fn a_submodule_replaced_by_a_file_diffs_against_empty() {
     let f = Fixture::new();
     // A gitlink in the base tree: its ID names a commit, not a blob.
@@ -1149,41 +1102,6 @@ fn path_characters_that_could_confuse_a_diff_parser_are_refused() {
 }
 
 #[test]
-fn escaped_path_literals_and_non_rs_cargo_targets_are_scanned() {
-    let attribute = format!("#[{} :: skip]", "mutants");
-    // `"hid\x64en.txt"` names hidden.txt: rustc resolves the literal's value.
-    let f = Fixture::new();
-    f.commit(
-        "hidden.txt",
-        &format!("{attribute}\npub fn untested() {{}}\n"),
-    );
-    f.commit("lib.rs", "#[path = \"hid\\x64en.txt\"]\nmod hidden;\n");
-    // A target root with any extension, named only by the manifest.
-    let g = Fixture::new();
-    g.commit(
-        "root.inc",
-        &format!("{attribute}\npub fn untested() {{}}\n"),
-    );
-    g.commit(
-        "Cargo.toml",
-        "[package]\nname = \"p\"\n[lib]\npath = \"root.inc\"\n",
-    );
-    for (fixture, file) in [(&f, "hidden.txt"), (&g, "root.inc")] {
-        fixture.prepare();
-        fixture.install_gate("valid");
-        let result = fixture.gate("mutation");
-        assert_eq!(result.status.code(), Some(4), "{file}");
-        assert!(
-            String::from_utf8_lossy(&result.stderr)
-                .contains(&format!("cargo-mutants skip attribute in {file}")),
-            "{}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-        assert_eq!(fs::read_dir(fixture.run.join("jobs")).unwrap().count(), 0);
-    }
-}
-
-#[test]
 fn a_symlink_replaced_by_a_file_with_its_target_bytes_is_in_scope() {
     let f = Fixture::new();
     // A symlink's blob holds its target; a regular file with those bytes hashes the same.
@@ -1214,25 +1132,6 @@ fn a_symlink_replaced_by_a_file_with_its_target_bytes_is_in_scope() {
     assert!(
         sealed.contains("+++ b/link.rs\n@@ -0,0 +1,1 @@\n+target.rs"),
         "{sealed}"
-    );
-}
-
-#[test]
-fn an_unreferenced_non_rs_file_mentioning_the_attribute_is_not_scanned() {
-    let f = Fixture::new();
-    // Prose about the attribute, in a file no `#[path]` names: not code, not refused.
-    f.commit(
-        "NOTES.md",
-        &format!("Use #[{}::skip] sparingly.\n", "mutants"),
-    );
-    f.prepare();
-    f.install_gate("valid");
-    let result = f.gate("mutation");
-    assert_eq!(
-        result.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
     );
 }
 
