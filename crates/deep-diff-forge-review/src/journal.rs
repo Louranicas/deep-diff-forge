@@ -1298,9 +1298,8 @@ mod tests {
         assert_eq!(ok[0].lifecycle, Lifecycle::LocalDraft);
     }
 
-    #[test]
-    fn event_hash_covers_every_field_but_itself() {
-        let mut planner = Planner {
+    fn planner() -> Planner<'static> {
+        Planner {
             run_id: "run",
             session_id: "s",
             revision: SessionRevision {
@@ -1311,11 +1310,38 @@ mod tests {
             next: 0,
             prev: genesis(),
             events: vec![],
-        };
-        let actor = Actor {
+        }
+    }
+    fn user() -> Actor {
+        Actor {
             name: "user".into(),
             basis: ActorBasis::TuicrAuthor,
-        };
+        }
+    }
+    /// A private directory, removed on drop.
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "ddf-journal-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            fs::create_dir(&dir).unwrap();
+            Self(dir)
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn event_hash_covers_every_field_but_itself() {
+        let mut planner = planner();
+        let actor = user();
         let first = planner
             .push(planner.blank(EventKind::CommentAdded, actor.clone()))
             .unwrap();
@@ -1331,5 +1357,127 @@ mod tests {
         let mut forged = b.clone();
         forged.actor.name = "someone else".into();
         assert_ne!(forged.digest().unwrap(), b.hash);
+    }
+
+    /// Each line check stands alone: a resealed hash does not excuse a wrong schema, sequence,
+    /// chain link or run, and a re-serialised line must be byte-identical.
+    #[test]
+    fn every_journal_line_check_refuses_on_its_own() {
+        let dir = Scratch::new();
+        let mut p = planner();
+        p.push(p.blank(EventKind::CommentAdded, user())).unwrap();
+        p.push(p.blank(EventKind::Deleted, user())).unwrap();
+        let [first, last] = &p.events[..] else {
+            panic!("two events")
+        };
+        let line = |e: &DecisionEvent| serde_json::to_string(e).unwrap();
+        let load = |last: &str| {
+            fs::write(
+                dir.0.join(JOURNAL_FILE),
+                format!("{}\n{last}\n", line(first)),
+            )
+            .unwrap();
+            load_journal(&dir.0, "run")
+        };
+        let resealed = |edit: fn(&mut DecisionEvent)| {
+            let mut e = last.clone();
+            edit(&mut e);
+            e.hash = e.digest().unwrap();
+            line(&e)
+        };
+        assert_eq!(load(&line(last)).unwrap().events, p.events);
+        let cases = [
+            ("non-canonical line", line(last).replacen('{', "{ ", 1)),
+            (
+                "other schema",
+                resealed(|e| e.schema = "deep-diff-forge.decision.v0".into()),
+            ),
+            ("skipped seq", resealed(|e| e.seq = 2)),
+            ("broken chain", resealed(|e| e.prev = genesis())),
+            ("other run", resealed(|e| e.run_id = "other".into())),
+            ("stale hash", {
+                let mut e = last.clone();
+                e.content = Some("forged".into());
+                line(&e)
+            }),
+        ];
+        for (name, text) in cases {
+            let refused = load(&text);
+            assert!(
+                matches!(&refused, Err(TuicrImportError::Journal(r)) if r.starts_with("event 1 was modified")),
+                "{name}: {refused:?}",
+                refused = refused.map(|j| j.events.len())
+            );
+        }
+    }
+
+    #[test]
+    fn journal_is_read_up_to_its_cap_and_no_further() {
+        let dir = Scratch::new();
+        // The documented 64 MiB, written out so the test does not move with the constant.
+        let cap: u64 = 64 << 20;
+        let file = fs::File::create(dir.0.join(JOURNAL_FILE)).unwrap();
+        // Exactly the cap is read in full, then refused for its content (NULs, no final newline).
+        file.set_len(cap).unwrap();
+        let at_cap = load_journal(&dir.0, "run").map(|j| j.bytes);
+        assert!(
+            matches!(&at_cap, Err(TuicrImportError::Journal(r)) if r.contains("incomplete")),
+            "{at_cap:?}"
+        );
+        file.set_len(cap + 1).unwrap();
+        let over = load_journal(&dir.0, "run").map(|j| j.bytes);
+        assert!(
+            matches!(&over, Err(e @ TuicrImportError::Session(_)) if e.to_string().contains("acquisition budget")),
+            "{over:?}"
+        );
+    }
+
+    #[test]
+    fn only_the_first_positive_mark_pins_the_content_hash() {
+        let p = planner();
+        let mark = |reviewed: bool, hunks: &[&str], hash: u64| DecisionEvent {
+            anchor: Some(Anchor::File {
+                file: "x.rs".into(),
+            }),
+            content_hash: Some(hash),
+            reviewed: Some(reviewed),
+            reviewed_hunks: Some(hunks.iter().map(|h| (*h).to_owned()).collect()),
+            ..p.blank(
+                EventKind::FileReview,
+                Actor {
+                    name: "unrecorded".into(),
+                    basis: ActorBasis::Unrecorded,
+                },
+            )
+        };
+        let mut journal = Journal::default();
+        let pinned = |j: &Journal| j.files[&("s".to_owned(), "x.rs".to_owned())].pinned;
+        journal.replay(&mark(false, &[], 1));
+        assert_eq!(pinned(&journal), None, "an unmarked file pins nothing");
+        journal.replay(&mark(false, &["h1"], 2));
+        assert_eq!(
+            pinned(&journal),
+            Some(2),
+            "a reviewed hunk is a positive mark"
+        );
+        journal.replay(&mark(true, &[], 3));
+        assert_eq!(pinned(&journal), Some(2), "later marks keep the first pin");
+    }
+
+    #[test]
+    fn only_an_existing_lock_file_is_reported_as_locked() {
+        let dir = Scratch::new();
+        let lock = Lock::acquire(&dir.0).unwrap();
+        assert!(matches!(
+            Lock::acquire(&dir.0),
+            Err(TuicrImportError::Locked { .. })
+        ));
+        drop(lock);
+        assert!(!dir.0.join(LOCK_FILE).exists(), "the lock is released");
+        // Any other failure to create the lock is reported as itself.
+        assert!(matches!(
+            Lock::acquire(&dir.0.join("missing")),
+            Err(TuicrImportError::Session(_))
+        ));
     }
 }
