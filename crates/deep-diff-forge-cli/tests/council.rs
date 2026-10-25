@@ -998,6 +998,14 @@ fn vendoring_output_is_sealed_and_planted_links_or_fifos_are_never_mounted() {
         "vendor_dirs",
     ] {
         let f = Fixture::new();
+        if mode == "vendor_dirs" {
+            // Creating 100,001 directories takes about 3 s on a loaded host, beyond the fixture's
+            // 2 s job timeout; the case must be refused by the entry budget, not the clock.
+            let mut spec: serde_json::Value =
+                serde_json::from_slice(&fs::read(&f.request).unwrap()).unwrap();
+            spec["timeout_seconds"] = 120.into();
+            fs::write(&f.request, serde_json::to_vec(&spec).unwrap()).unwrap();
+        }
         f.prepare();
         f.install_gate(mode);
         let result = f.gate("tests");
