@@ -278,6 +278,33 @@ mod tests {
         let _ = std::fs::remove_file(&link);
     }
 
+    // The live wrappers must resolve exactly what the pure resolver yields for
+    // the current environment, whether `XDG_RUNTIME_DIR` is set or not. Reads
+    // the environment only; nothing in this crate mutates it.
+    #[test]
+    fn live_resolvers_match_the_environment() {
+        let expected = runtime_base_from(std::env::var_os("XDG_RUNTIME_DIR"));
+        assert_eq!(runtime_base(), expected);
+        let expected_dir = expected.map(|base| base.join("deep-diff-forge"));
+        assert_eq!(runtime_dir(), expected_dir);
+        assert_eq!(
+            default_socket_path(),
+            expected_dir.map(|dir| dir.join("deep-diff-forge.sock"))
+        );
+    }
+
+    #[test]
+    fn ensure_runtime_dir_propagates_non_missing_errors_without_creating() {
+        // A regular file used as a parent makes lstat fail with ENOTDIR, not
+        // ENOENT; that must be reported, not treated as "absent, create it".
+        let file = std::env::temp_dir().join(format!("ddf-sec-notdir-{}", std::process::id()));
+        std::fs::write(&file, b"x").expect("write");
+        let err = ensure_runtime_dir(&file.join("deep-diff-forge")).expect_err("ENOTDIR");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
+        assert!(std::fs::metadata(&file).unwrap().is_file());
+        let _ = std::fs::remove_file(&file);
+    }
+
     #[test]
     fn secure_modes_are_owner_only() {
         assert_eq!(SECURE_DIR_MODE & 0o077, 0);

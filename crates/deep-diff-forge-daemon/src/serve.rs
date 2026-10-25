@@ -483,7 +483,8 @@ pub fn run_server(location: &SocketLocation) -> std::io::Result<()> {
 /// Returns an I/O error if the connection or exchange fails (e.g. no daemon
 /// is listening at the location).
 pub fn request(location: &SocketLocation, line: &str) -> std::io::Result<String> {
-    if line.len() > MAX_REQUEST_BYTES {
+    // The server caps the framed line, newline included; refuse locally what it would refuse.
+    if line.len() + 1 > MAX_REQUEST_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "request exceeds maximum size",
@@ -1052,5 +1053,213 @@ mod tests {
         // Parent untouched.
         let mode = std::fs::metadata(&parent).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o755);
+    }
+
+    // -------------------------------------------------------------------------
+    // Size caps, error-kind guards, and accept-loop error handling
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn request_and_response_caps_are_80_mib() {
+        assert_eq!(MAX_REQUEST_BYTES, 80 << 20);
+        assert_eq!(MAX_RESPONSE_BYTES, 80 << 20);
+    }
+
+    #[test]
+    fn socket_line_read_reports_non_timeout_errors_unchanged() {
+        // Closing a Unix stream socket with unread data in its receive queue
+        // resets the peer: the next read fails with ECONNRESET, which must not
+        // be disguised as a deadline timeout.
+        let (local, peer) = UnixStream::pair().expect("socketpair");
+        (&local).write_all(b"never read").unwrap();
+        drop(peer);
+        let mut reader = BufReader::new(local);
+        let mut line = Vec::new();
+        let err = read_capped_line_deadline(&mut reader, &mut line, 1024, Duration::from_secs(5))
+            .expect_err("reset peer");
+        assert_eq!(err.kind(), std::io::ErrorKind::ConnectionReset);
+    }
+
+    // Serve one connection, send `request` (no trailing newline is added), and
+    // return the first response line.
+    fn exchange_raw(request: Vec<u8>) -> Value {
+        let (client, server) = UnixStream::pair().expect("socketpair");
+        let handle = thread::spawn(move || handle_connection(server, &engine()));
+        let mut writer = client.try_clone().unwrap();
+        let send = thread::spawn(move || {
+            let _ = writer.write_all(&request);
+            let _ = writer.flush();
+        });
+        let mut reader = BufReader::new(client);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        send.join().unwrap();
+        drop(reader);
+        let _ = handle.join();
+        serde_json::from_str(&line).unwrap()
+    }
+
+    // A request padded with trailing whitespace to exactly `total` bytes,
+    // optionally newline-terminated (the newline counts toward `total`).
+    fn padded_health_request(total: usize, newline: bool) -> Vec<u8> {
+        let mut request = br#"{"id":7,"method":"daemon.health"}"#.to_vec();
+        request.resize(total - usize::from(newline), b' ');
+        if newline {
+            request.push(b'\n');
+        }
+        request
+    }
+
+    #[test]
+    fn request_line_exactly_at_cap_is_served() {
+        let v = exchange_raw(padded_health_request(MAX_REQUEST_BYTES, true));
+        assert_eq!(v["result"]["status"], "ok", "{v}");
+        assert_eq!(v["id"], 7);
+    }
+
+    #[test]
+    fn request_line_one_byte_over_cap_is_rejected() {
+        let v = exchange_raw(padded_health_request(MAX_REQUEST_BYTES + 1, false));
+        assert_eq!(v["error"]["code"], INVALID_REQUEST, "{v}");
+        assert_eq!(v["id"], Value::Null);
+    }
+
+    #[test]
+    fn client_request_size_cap_boundary() {
+        // A line whose framed form (plus newline) fits the server cap passes the size gate
+        // and fails only at connect; one byte more is refused before connecting.
+        let client = SocketLocation::at(temp_socket("client-cap"));
+        let _ = std::fs::remove_dir_all(client.path().parent().unwrap());
+        let at_cap = " ".repeat(MAX_REQUEST_BYTES - 1);
+        let err = request(&client, &at_cap).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        let over_cap = " ".repeat(MAX_REQUEST_BYTES);
+        let err = request(&client, &over_cap).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    // Answer one request at `sock` with the raw `response` bytes.
+    fn fake_daemon(name: &str, response: Vec<u8>) -> (SocketLocation, thread::JoinHandle<()>) {
+        let (_, sock) = explicit_temp(name, 0o700);
+        let listener = UnixListener::bind(&sock).expect("bind fake daemon");
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            let _ = (&stream).write_all(&response);
+        });
+        (SocketLocation::at(sock), handle)
+    }
+
+    #[test]
+    fn client_accepts_response_exactly_at_cap() {
+        let mut response = vec![b'x'; MAX_RESPONSE_BYTES - 1];
+        response.push(b'\n');
+        let (location, daemon) = fake_daemon("resp-at-cap", response);
+        let got = request(&location, r#"{"method":"daemon.health"}"#).expect("at-cap response");
+        assert_eq!(got.len(), MAX_RESPONSE_BYTES - 1);
+        daemon.join().unwrap();
+    }
+
+    #[test]
+    fn client_rejects_response_over_cap() {
+        let (location, daemon) = fake_daemon("resp-over-cap", vec![b'x'; MAX_RESPONSE_BYTES + 1]);
+        let err = request(&location, r#"{"method":"daemon.health"}"#).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        daemon.join().unwrap();
+    }
+
+    #[test]
+    fn remove_stale_socket_propagates_non_missing_errors() {
+        // lstat through a regular file fails with ENOTDIR. Only ENOENT means
+        // "nothing to remove"; anything else must surface as an error.
+        let (parent, _) = explicit_temp("stale-notdir", 0o700);
+        let file = parent.join("file");
+        std::fs::write(&file, b"keep").unwrap();
+        let err = remove_stale_socket(&file.join("d.sock")).expect_err("ENOTDIR");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
+        assert_eq!(std::fs::read(&file).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn explicit_bind_propagates_non_missing_parent_errors() {
+        // A parent below a regular file is not "missing"; nothing is created.
+        let (parent, _) = explicit_temp("parent-notdir", 0o700);
+        let file = parent.join("file");
+        std::fs::write(&file, b"keep").unwrap();
+        let err = bind_explicit(&file.join("sub").join("d.sock")).expect_err("ENOTDIR");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
+        assert_eq!(std::fs::read(&file).unwrap(), b"keep");
+    }
+
+    const ACCEPT_ERROR_CHILD_ENV: &str = "DDF_TEST_ACCEPT_ERROR_SOCKET";
+
+    // Child half of `run_server_returns_persistent_accept_errors`. It lowers the
+    // process fd limit, so it must never run inside the shared test process: it
+    // is ignored and a no-op unless the parent test sets the socket variable.
+    #[test]
+    #[ignore = "spawned as a child process by run_server_returns_persistent_accept_errors"]
+    fn accept_error_child() {
+        use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+        use std::os::fd::AsRawFd as _;
+        let Some(sock) = std::env::var_os(ACCEPT_ERROR_CHILD_ENV) else {
+            return;
+        };
+        // Leave room for exactly one more descriptor (the listener). Linux
+        // reserves the accepted fd before waiting, so every accept() then fails
+        // with EMFILE immediately — a persistent, non-EINTR accept error.
+        let next_fd = std::fs::File::open("/dev/null").unwrap().as_raw_fd();
+        let limit = getrlimit(Resource::Nofile);
+        setrlimit(
+            Resource::Nofile,
+            Rlimit {
+                current: Some(u64::try_from(next_fd).unwrap() + 1),
+                maximum: limit.maximum,
+            },
+        )
+        .unwrap();
+        let err = run_server(&SocketLocation::at(PathBuf::from(sock)))
+            .expect_err("a persistent accept error must stop the server");
+        assert_eq!(err.raw_os_error(), Some(24), "EMFILE: {err}");
+    }
+
+    #[test]
+    fn run_server_returns_persistent_accept_errors() {
+        // A non-EINTR accept error must end run_server with that error rather
+        // than spin forever retrying it.
+        let sock = temp_socket_with_parent("accept-error", 0o700);
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "serve::tests::accept_error_child",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env(ACCEPT_ERROR_CHILD_ENV, &sock)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn child test");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        // run_server returns before cleanup on error, so the bound socket file
+        // proves the child really ran it (not an empty test filter).
+        let bound = sock.exists();
+        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+        let status = status.expect("run_server kept looping on a persistent accept error");
+        assert!(status.success(), "child test failed: {status}");
+        assert!(bound, "child never bound the socket");
     }
 }

@@ -174,6 +174,20 @@ mod tests {
     }
 
     #[test]
+    fn empty_method_is_invalid_request() {
+        let err = parse_request(r#"{"method":""}"#).unwrap_err();
+        assert_eq!(err.code, INVALID_REQUEST);
+    }
+
+    #[test]
+    fn method_length_is_capped_at_256_bytes() {
+        let at_cap = format!(r#"{{"method":"{}"}}"#, "m".repeat(256));
+        assert_eq!(parse_request(&at_cap).unwrap().method.len(), 256);
+        let over_cap = format!(r#"{{"method":"{}"}}"#, "m".repeat(257));
+        assert_eq!(parse_request(&over_cap).unwrap_err().code, INVALID_REQUEST);
+    }
+
+    #[test]
     fn invalid_json_is_parse_error() {
         let err = parse_request("not json").unwrap_err();
         assert_eq!(err.code, PARSE_ERROR);

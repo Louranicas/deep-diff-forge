@@ -718,6 +718,103 @@ mod tests {
         assert_eq!(e.session_count(), super::MAX_SESSIONS);
     }
 
+    // Single-file patch whose one added line is `line_bytes` long.
+    fn patch_with_line(line_bytes: usize) -> Vec<ReviewFile> {
+        let patch = format!(
+            "--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-a\n+{}\n",
+            "b".repeat(line_bytes)
+        );
+        deep_diff_forge_patch::parse(&patch).unwrap()
+    }
+
+    #[test]
+    fn default_retained_budget_is_128_mib() {
+        assert_eq!(MAX_RETAINED_SESSION_BYTES, 128 << 20);
+        assert_eq!(Engine::new().max_retained_bytes, 128 << 20);
+    }
+
+    #[test]
+    fn default_budget_accepts_multi_mebibyte_session() {
+        // Well under 128 MiB, but over any accidentally-additive budget (~1 MiB).
+        let mut e = Engine::new();
+        e.open_session(patch_with_line(4 << 20))
+            .expect("a 4 MiB session fits the default budget");
+        assert_eq!(e.session_count(), 1);
+    }
+
+    #[test]
+    fn estimate_counts_retained_line_text() {
+        let files = patch_with_line(10_000);
+        assert!(estimated_session_bytes(&files) >= 10_000);
+        let mut e = Engine::new();
+        e.max_retained_bytes = 4096;
+        let err = e.open_session(files).unwrap_err();
+        assert_eq!(err.code, RESOURCE_EXHAUSTED);
+    }
+
+    #[test]
+    fn sessions_exactly_filling_the_byte_budget_are_all_retained() {
+        let mut e = Engine::new();
+        // Parse each session separately: a clone may shrink vector capacities.
+        e.max_retained_bytes = 2 * estimated_session_bytes(&patch_with_line(1));
+        let first = e.open_session(patch_with_line(1)).unwrap();
+        let second = e.open_session(patch_with_line(1)).unwrap();
+        assert_eq!(e.retained_bytes, e.max_retained_bytes);
+        assert!(
+            e.snapshot_ranked(&first).is_some(),
+            "at-budget must not evict"
+        );
+        assert!(e.snapshot_ranked(&second).is_some());
+    }
+
+    #[test]
+    fn byte_budget_evicts_as_many_sessions_as_needed() {
+        let mut e = Engine::new();
+        let large = patch_with_line(4096);
+        let large_bytes = estimated_session_bytes(&large);
+        assert!(large_bytes > estimated_session_bytes(&patch_with_line(1)));
+        e.open_session(patch_with_line(1)).unwrap();
+        e.open_session(patch_with_line(1)).unwrap();
+        // Room for the large session only once BOTH small sessions are gone.
+        e.max_retained_bytes = large_bytes;
+        let kept = e.open_session(large).unwrap();
+        assert_eq!(e.session_count(), 1);
+        assert!(e.snapshot_ranked(&kept).is_some());
+        assert_eq!(e.retained_bytes, large_bytes);
+    }
+
+    #[test]
+    fn ticks_increase_monotonically() {
+        let mut e = Engine::new();
+        assert_eq!(e.next_tick(), 1);
+        assert_eq!(e.next_tick(), 2);
+        e.open_session(patch_with_line(1)).unwrap();
+        assert_eq!(e.next_tick(), 4);
+    }
+
+    #[test]
+    fn tick_overflow_rebases_densely_and_preserves_lru_order() {
+        let mut e = Engine::new();
+        let a = e.open_session(patch_with_line(1)).unwrap();
+        let b = e.open_session(patch_with_line(1)).unwrap();
+        let c = e.open_session(patch_with_line(1)).unwrap();
+        // Recency order: b (oldest), c, a (newest).
+        e.sessions.get_mut(&b).unwrap().last_tick = u64::MAX - 30;
+        e.sessions.get_mut(&c).unwrap().last_tick = u64::MAX - 20;
+        e.sessions.get_mut(&a).unwrap().last_tick = u64::MAX - 10;
+        e.tick = u64::MAX;
+
+        assert_eq!(e.next_tick(), 4);
+        assert_eq!(e.sessions[&b].last_tick, 1);
+        assert_eq!(e.sessions[&c].last_tick, 2);
+        assert_eq!(e.sessions[&a].last_tick, 3);
+        assert!(e.evict_lru());
+        assert!(
+            !e.sessions.contains_key(&b),
+            "oldest entry is still the LRU"
+        );
+    }
+
     // F3-T5: snapshot on a non-existent session is still SESSION_NOT_FOUND even
     // when the engine is at cap (eviction must not swallow the error).
     #[test]
