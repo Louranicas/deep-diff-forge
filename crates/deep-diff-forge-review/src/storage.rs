@@ -36,18 +36,61 @@ const POLICY: &[(&str, &str)] = &[
     ),
 ];
 
+/// Read a controller artifact. `O_NOFOLLOW` refuses a symlink leaf and `O_NONBLOCK` keeps a FIFO from
+/// blocking the open; `fstat` then refuses anything that is not a regular file before a byte is read.
 pub(crate) fn read_bytes(path: &Path, cap: u64) -> Result<Vec<u8>> {
-    require(
-        !fs::symlink_metadata(path)?.file_type().is_symlink(),
-        "symlink artifact rejected",
-    )?;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|error| match error.raw_os_error() {
+            Some(nix::libc::ELOOP) => ReviewFailure("symlink artifact rejected".into()),
+            _ => error.into(),
+        })?;
+    require(file.metadata()?.is_file(), "non-regular artifact rejected")?;
     let mut data = Vec::new();
-    File::open(path)?.take(cap + 1).read_to_end(&mut data)?;
+    file.take(cap + 1).read_to_end(&mut data)?;
     require(
         data.len() as u64 <= cap,
         "artifact exceeds acquisition budget",
     )?;
     Ok(data)
+}
+/// Metadata of `root/relative` without following a symlink in any component below the trusted
+/// `root`; `None` if a component is absent. Every intermediate component must be a real directory.
+pub(crate) fn untrusted_metadata(root: &Path, relative: &Path) -> Result<Option<fs::Metadata>> {
+    let components = relative.components().collect::<Vec<_>>();
+    require(
+        !components.is_empty()
+            && components
+                .iter()
+                .all(|c| matches!(c, std::path::Component::Normal(_))),
+        "unsafe relative artifact path",
+    )?;
+    let mut path = root.to_path_buf();
+    for (i, component) in components.iter().enumerate() {
+        path.push(component);
+        let meta = match fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            other => other?,
+        };
+        if i + 1 == components.len() {
+            return Ok(Some(meta));
+        }
+        require(
+            meta.is_dir(),
+            "symlink or non-directory component in an artifact path",
+        )?;
+    }
+    Ok(None)
+}
+/// Read a regular file a sandboxed job could have written, under a trusted `root`, refusing a symlink
+/// in any component and any FIFO, socket or device. Callers read only after the container is gone.
+pub(crate) fn read_untrusted(root: &Path, relative: &Path, cap: u64) -> Result<Vec<u8>> {
+    let meta = untrusted_metadata(root, relative)?
+        .ok_or_else(|| ReviewFailure("sandbox artifact missing".into()))?;
+    require(meta.is_file(), "sandbox artifact is not a regular file")?;
+    read_bytes(&root.join(relative), cap)
 }
 pub(crate) fn read_json<T: serde::de::DeserializeOwned>(path: &Path, cap: u64) -> Result<T> {
     Ok(serde_json::from_slice(&read_bytes(path, cap)?)?)
@@ -122,6 +165,9 @@ impl Inventory {
     pub(crate) fn contains(&self, path: &str) -> bool {
         self.paths.contains(path)
     }
+    pub(crate) fn paths(&self) -> impl Iterator<Item = &str> {
+        self.paths.iter().map(String::as_str)
+    }
 }
 pub(crate) const SNAPSHOT_DIR: &str = "source";
 pub(crate) const INVENTORY_FILE: &str = "source-inventory.json";
@@ -176,18 +222,14 @@ pub(crate) fn fingerprint_tree(root: &Path, inventory: &Inventory) -> Result<Str
     let mut remaining = 64 * 1024 * 1024;
     let mut framed = inventory.head.as_bytes().to_vec();
     for relative in &inventory.paths {
-        let path = root.join(relative);
-        match fs::symlink_metadata(&path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                framed.extend_from_slice(b"deleted\0");
-            }
-            Err(e) => return Err(e.into()),
-            Ok(meta) => {
+        match untrusted_metadata(root, Path::new(relative))? {
+            None => framed.extend_from_slice(b"deleted\0"),
+            Some(meta) => {
                 require(
-                    meta.is_file() && !meta.file_type().is_symlink(),
+                    meta.is_file(),
                     "source inventory contains symlink or non-file",
                 )?;
-                let bytes = read_bytes(&path, remaining)?;
+                let bytes = read_bytes(&root.join(relative), remaining)?;
                 remaining -= bytes.len() as u64;
                 framed.extend_from_slice(&meta.permissions().mode().to_be_bytes());
                 framed.extend_from_slice(sha256_hex(&bytes).as_bytes());
@@ -203,13 +245,11 @@ pub(crate) fn fingerprint_tree(root: &Path, inventory: &Inventory) -> Result<Str
 pub(crate) fn copy_tree(from: &Path, to: &Path, inventory: &Inventory) -> Result<()> {
     make_dir(to)?;
     for relative in &inventory.paths {
-        let source = from.join(relative);
-        let meta = match fs::symlink_metadata(&source) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            other => other?,
+        let Some(meta) = untrusted_metadata(from, Path::new(relative))? else {
+            continue;
         };
         require(
-            meta.is_file() && !meta.file_type().is_symlink(),
+            meta.is_file(),
             "source inventory contains symlink or non-file",
         )?;
         let target = to.join(relative);
@@ -219,13 +259,112 @@ pub(crate) fn copy_tree(from: &Path, to: &Path, inventory: &Inventory) -> Result
                 .mode(0o700)
                 .create(parent)?;
         }
-        write_new(&target, &read_bytes(&source, 64 * 1024 * 1024)?)?;
+        write_new(
+            &target,
+            &read_bytes(&from.join(relative), 64 * 1024 * 1024)?,
+        )?;
         fs::set_permissions(
             &target,
             fs::Permissions::from_mode(meta.permissions().mode()),
         )?;
     }
     Ok(())
+}
+/// Identity of a directory tree that a sandboxed job produced and the controller sealed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TreeSeal {
+    pub(crate) sha256: String,
+    pub(crate) files: u64,
+    pub(crate) bytes: u64,
+}
+/// Budget for a sealed tree; the measured DDF vendor tree is 9,008 files and 204 MB.
+const SEAL_FILES: u64 = 100_000;
+const SEAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Walk `root` in sorted order, accepting only real directories and regular files within the budget,
+/// and digest names, kinds, executable bits and contents. With `copy`, also recreate the tree there
+/// as a new controller-owned directory with read-only files. The walk never follows a symlink.
+fn walk_tree(root: &Path, copy: Option<&Path>) -> Result<TreeSeal> {
+    require(
+        fs::symlink_metadata(root)?.is_dir(),
+        "sandbox output root is not a real directory",
+    )?;
+    if let Some(to) = copy {
+        make_dir(to)?;
+    }
+    let mut seal = TreeSeal {
+        sha256: String::new(),
+        files: 0,
+        bytes: 0,
+    };
+    let mut framed = Vec::new();
+    let mut pending = vec![PathBuf::new()];
+    while let Some(directory) = pending.pop() {
+        let mut names = fs::read_dir(root.join(&directory))?
+            .map(|entry| entry.map(|e| e.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        names.sort_unstable();
+        let mut subdirectories = Vec::new();
+        for name in names {
+            let relative = directory.join(name);
+            let path = root.join(&relative);
+            let meta = fs::symlink_metadata(&path)?;
+            let encoded = relative.as_os_str().as_encoded_bytes();
+            if meta.is_dir() {
+                framed.push(b'd');
+                if let Some(to) = copy {
+                    make_dir(&to.join(&relative))?;
+                }
+                subdirectories.push(relative.clone());
+            } else if meta.is_file() {
+                seal.files += 1;
+                require(
+                    seal.files <= SEAL_FILES,
+                    "sandbox output exceeds file budget",
+                )?;
+                let bytes = read_bytes(&path, SEAL_BYTES - seal.bytes)?;
+                seal.bytes += bytes.len() as u64;
+                let executable = meta.permissions().mode() & 0o111 != 0;
+                framed.push(if executable { b'x' } else { b'f' });
+                framed.extend_from_slice(sha256_hex(&bytes).as_bytes());
+                if let Some(to) = copy {
+                    // Not synced per file: the seal digest is re-verified before every use instead.
+                    OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(if executable { 0o500 } else { 0o400 })
+                        .open(to.join(&relative))?
+                        .write_all(&bytes)?;
+                }
+            } else {
+                return Err(ReviewFailure(format!(
+                    "sandbox output contains a symlink or special file: {}",
+                    relative.display()
+                )));
+            }
+            framed.extend_from_slice(&(encoded.len() as u64).to_be_bytes());
+            framed.extend_from_slice(encoded);
+        }
+        // Reversed onto the stack, so subdirectories are also visited in sorted order.
+        pending.extend(subdirectories.into_iter().rev());
+    }
+    seal.sha256 = sha256_hex(&framed);
+    Ok(seal)
+}
+/// Copy a tree a sandboxed job wrote into a new controller-owned directory, refusing symlinks,
+/// special files and oversized output; returns the seal that later mounts are verified against.
+pub(crate) fn seal_tree(from: &Path, to: &Path) -> Result<TreeSeal> {
+    // Validate before creating anything, so a refused output leaves no partial copy behind.
+    let seal = walk_tree(from, None)?;
+    require(
+        walk_tree(from, Some(to))? == seal && walk_tree(to, None)? == seal,
+        "sealed copy does not match the sandbox output",
+    )?;
+    Ok(seal)
+}
+/// Re-measure a sealed tree.
+pub(crate) fn tree_seal(root: &Path) -> Result<TreeSeal> {
+    walk_tree(root, None)
 }
 fn verify_candidate(
     analysis: &serde_json::Value,
@@ -533,11 +672,9 @@ pub(crate) fn executions(directory: &Path, manifest: &Manifest) -> Result<Vec<Ex
             if qualification_path.exists() {
                 let q: Qualification = read_json(&qualification_path, REPORT_CAP)?;
                 if let Some(expected) = q.witness_sha256 {
-                    let witness = jobdir.join(MUTATION_WITNESS);
-                    require(
-                        sha256_hex(&read_bytes(&witness, 16 * 1024 * 1024)?) == expected,
-                        "mutation witness changed",
-                    )?;
+                    let witness =
+                        read_untrusted(&jobdir, Path::new(MUTATION_WITNESS), 16 * 1024 * 1024)?;
+                    require(sha256_hex(&witness) == expected, "mutation witness changed")?;
                 }
                 receipt.outcome = q.outcome;
             } else if receipt.outcome == Outcome::Passed

@@ -236,6 +236,9 @@ pub struct Execution {
     pub argv: Vec<String>,
     pub stdout_sha256: String,
     pub stderr_sha256: String,
+    /// Local ID of the gate image the job was launched from; absent for provider jobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_id: Option<String>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct Assessment {

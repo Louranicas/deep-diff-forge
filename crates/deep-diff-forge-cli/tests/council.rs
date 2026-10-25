@@ -7,8 +7,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::{
     fs,
     path::PathBuf,
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
     sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Fixture {
@@ -119,10 +120,64 @@ impl Fixture {
         fs::set_permissions(&cargo, fs::Permissions::from_mode(0o700)).unwrap();
     }
     fn gate(&self, gate: &str) -> Output {
-        self.call(
-            &["gate", self.run.to_str().unwrap(), gate, "--execute"],
-            "normal",
-        )
+        self.gate_with(gate, "normal")
+    }
+    /// A gate run under a planted runtime fault; a controller that hangs fails the test, never blocks it.
+    fn gate_with(&self, gate: &str, runtime: &str) -> Output {
+        let mut child = self
+            .command(
+                &["gate", self.run.to_str().unwrap(), gate, "--execute"],
+                "normal",
+            )
+            .env("DDF_FAKE_RUNTIME", runtime)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        while child.try_wait().unwrap().is_none() {
+            if start.elapsed() > Duration::from_secs(150) {
+                let _ = child.kill();
+                panic!("controller hung on {gate} under {runtime}");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        child.wait_with_output().unwrap()
+    }
+    /// Every `rm` / `container exists` the fake runtime answered.
+    fn control_log(&self) -> Vec<Vec<String>> {
+        fs::read_to_string(self.bin.join("runtime-control.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+    /// Commit an extra file into the fixture repository, outside the analysed candidate.
+    fn commit(&self, path: &str, contents: &str) {
+        let file = self.repository.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, contents).unwrap();
+        for args in [
+            vec!["add", path],
+            vec![
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "extra file",
+            ],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(&self.repository)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
     }
     /// Every runtime invocation the fake recorded for one job's `/work` mount.
     fn runtime_argv(&self, job: &str) -> Vec<Vec<String>> {
@@ -384,19 +439,35 @@ fn oversized_transcripts_fail_with_explicit_incomplete_diagnostics() {
     assert!(fs::metadata(job.join("stdout.log")).unwrap().len() <= 8 * 1024 * 1024);
 }
 
-/// Fake rootless runtime: answers `image inspect`/`rm`, and for `run` maps `/work` and `/vendor` to
-/// their `--volume` host paths, then runs the gate argv with ONLY the `--env` values plus a PATH to
-/// the fake tools (no inherited environment), propagating the exit code. Each `run` argv is
-/// appended as one JSON line to `<work>/runtime-argv.json`.
+/// Fake rootless runtime: answers `image inspect` with [`FAKE_IMAGE_ID`] and `rm`/`container exists`
+/// (logging both to `fake-bin/runtime-control.log`), and for `run` maps `/work`, `/src`, `/cargo-home`
+/// and `/vendor` to their `--volume` host paths, then runs the gate argv with ONLY the `--env` values
+/// plus a PATH to the fake tools (no inherited environment), propagating the exit code. Each `run` argv
+/// is appended as one JSON line to `<work>/runtime-argv.json`. `DDF_FAKE_RUNTIME` (inherited from the
+/// controller, never passed into the gate) plants runtime faults: `hang_inspect`, `bad_id`, `linger`
+/// (the container never goes away) and `hang_exists`; `mode:job` limits a removal fault to containers
+/// whose name contains `job`. A name listed in `fake-bin/occupied-names` is
+/// refused as in use, like a container another invocation still holds.
 const FAKE_RUNTIME: &str = r"#!/usr/bin/python3
-import json,os,re,shutil,subprocess,sys
+import json,os,re,shutil,subprocess,sys,time
 args=sys.argv[1:]
+here=os.path.dirname(os.path.abspath(__file__))
+mode,_,only=os.environ.get('DDF_FAKE_RUNTIME','normal').partition(':')
+image_id='0123456789abcdef'*4
+def control():
+    with open(os.path.join(here,'runtime-control.log'),'a') as log:log.write(json.dumps(args)+'\n')
 if args[:2]==['image','inspect']:
+    if mode=='hang_inspect':time.sleep(120)
     if args[-1]!='fake-gate':sys.exit(125)
-    print('sha256:fake-gate-image-id');sys.exit(0)
-if args[:1]==['rm']:sys.exit(0)
+    print('not-an-image-id' if mode=='bad_id' else 'sha256:'+image_id);sys.exit(0)
+if args[:1]==['rm']:control();sys.exit(0)
+if args[:2]==['container','exists']:
+    control()
+    if only not in args[-1]:sys.exit(1)
+    if mode=='hang_exists':time.sleep(120)
+    sys.exit(0 if mode=='linger' else 1)
 assert args[0]=='run',args
-mounts={};env={};workdir=None;i=1
+mounts={};env={};workdir=None;name=None;i=1
 while args[i].startswith('--'):
     flag,_,value=args[i].partition('=')
     if flag=='--volume':
@@ -404,30 +475,48 @@ while args[i].startswith('--'):
     elif flag=='--env':
         key,_,val=value.partition('=');env[key]=val
     elif flag=='--workdir':workdir=value
+    elif flag=='--name':name=value
     i+=1
 image=args[i];inner=args[i+1:]
-assert image=='fake-gate',image
+assert image==image_id,image
+occupied=os.path.join(here,'occupied-names')
+if os.path.exists(occupied) and name in open(occupied).read().split():
+    print('container name in use: '+name,file=sys.stderr);sys.exit(125)
 with open(os.path.join(mounts['/work'],'runtime-argv.json'),'a') as log:log.write(json.dumps(sys.argv)+'\n')
 def host(text):
-    return re.sub(r'(^|=)(/work|/vendor)(?=/|$)',lambda m:m.group(1)+mounts[m.group(2)],text)
+    return re.sub(r'(^|=)(/work|/vendor|/src|/cargo-home)(?=/|$)',lambda m:m.group(1)+mounts[m.group(2)],text)
 env={key:host(val) for key,val in env.items()}
-env['PATH']=os.path.dirname(os.path.abspath(__file__))+':/usr/bin:/bin'
+env['PATH']=here+':/usr/bin:/bin'
 exe=shutil.which(inner[0],path=env['PATH'])
 sys.exit(subprocess.run([exe]+[host(a) for a in inner[1:]],cwd=host(workdir),env=env).returncode)
 ";
+/// The image ID the fake runtime resolves `fake-gate` to; gates must launch this, never the tag.
+const FAKE_IMAGE_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+/// Fake `cargo` inside the fake sandbox. Modes plant what a hostile candidate (or its tools) could
+/// leave in the job's writable `/work`: `vendor_symlink`, `vendor_root_symlink` and `vendor_fifo` in
+/// the vendoring output; `fifo` and `symlinked_dir` at the mutation witness.
 const FAKE_GATE: &str = r"#!/usr/bin/python3
 import json,os,pathlib,sys
 mode='@MODE@'
 if sys.argv[1:2]==['vendor']:
-    pathlib.Path(sys.argv[-1]).mkdir();sys.exit(0)
+    out=pathlib.Path(sys.argv[-1])
+    if mode=='vendor_root_symlink':out.symlink_to('/etc');sys.exit(0)
+    crate=out/'crate-1.0.0';crate.mkdir(parents=True);(crate/'lib.rs').write_text('pub fn f() {}\n')
+    if mode=='vendor_symlink':(crate/'escape').symlink_to('/etc')
+    if mode=='vendor_fifo':os.mkfifo(crate/'pipe')
+    sys.exit(0)
 if 'mutants' in sys.argv:
     assert 'CARGO_TARGET_DIR' not in os.environ,'mutation must not share a cargo target dir'
-    parent=pathlib.Path(sys.argv[sys.argv.index('--output')+1])/'mutants.out';parent.mkdir(parents=True)
+    output=pathlib.Path(sys.argv[sys.argv.index('--output')+1]);parent=output/'mutants.out'
+    if mode=='symlinked_dir':
+        real=output/'elsewhere';real.mkdir(parents=True);parent.symlink_to(real)
+    else:parent.mkdir(parents=True)
     data={'total_mutants':1,'caught':1,'unviable':0,'missed':0,'timeout':0,'outcomes':[{'scenario':'Baseline','summary':'Success'},{'scenario':{'Mutant':{}},'summary':'CaughtMutant'}]}
     if mode=='empty':data.update(total_mutants=0,caught=0,outcomes=[])
     if mode=='caption_only':data.pop('outcomes')
     if mode=='survivor':data['missed']=1
-    (parent/'outcomes.json').write_text(json.dumps(data))
+    if mode=='fifo':os.mkfifo(parent/'outcomes.json')
+    else:(parent/'outcomes.json').write_text(json.dumps(data))
 elif 'fuzz' in sys.argv:
     print('Done '+('0' if mode=='empty' else '100')+' runs in 1 second(s)',file=sys.stderr)
 else:
@@ -496,12 +585,31 @@ fn mutation_jobs_own_a_build_cache_and_cannot_contaminate_normal_tests() {
         argv.iter()
             .all(|a| !a.starts_with("--env=CARGO_TARGET_DIR") && !a.contains(&normal))
     );
-    assert!(f.run.join("jobs/sandbox-vendor/work/vendor").is_dir());
+    // Gates mount the controller's sealed copy of the vendoring output, never the job's own /work.
+    let sealed = fs::canonicalize(f.run.join("vendor")).unwrap();
+    assert!(sealed.join("crate-1.0.0/lib.rs").is_file());
+    assert!(
+        argv.iter()
+            .any(|a| *a == format!("--volume={}:/vendor:ro,z", sealed.display())),
+        "{argv:?}"
+    );
+    assert!(argv.iter().all(|a| !a.contains("sandbox-vendor")));
+    let seal: serde_json::Value = serde_json::from_slice(
+        &fs::read(f.run.join("jobs/sandbox-vendor/vendor-seal.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(env["vendor_sha256"], seal["sha256"]);
+    assert_eq!(seal["files"], 1);
     assert!(
         f.run
             .join("jobs/gate-mutation/work/mutation-results/mutants.out/outcomes.json")
             .is_file()
     );
+    let qualification: serde_json::Value = serde_json::from_slice(
+        &fs::read(f.run.join("jobs/gate-mutation/qualification.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(qualification["witness_sha256"].is_string());
 }
 
 #[test]
@@ -581,7 +689,8 @@ fn gates_run_on_the_sealed_snapshot_and_refuse_a_tampered_one() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    assert!(!f.run.join("jobs/gate-tests").exists());
+    // Refused at admission: not even the vendoring job got a slot.
+    assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
 
     let f = Fixture::new();
     f.prepare();
@@ -601,7 +710,7 @@ fn gates_run_on_the_sealed_snapshot_and_refuse_a_tampered_one() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(seen["cwd"], job.join("work/src").display().to_string());
+    assert_eq!(seen["cwd"], job.join("src").display().to_string());
     assert_eq!(seen["x.rs"], "fn b() {}\n");
     // Only sandbox-issued environment reaches the gate, with container paths under its own /work.
     let env = seen["env"].as_object().unwrap();
@@ -612,6 +721,11 @@ fn gates_run_on_the_sealed_snapshot_and_refuse_a_tampered_one() {
         job.join("work/target").display().to_string()
     );
     assert_eq!(env["CARGO_NET_OFFLINE"], "true");
+    assert_eq!(
+        env["CARGO_HOME"],
+        job.join("cargo-home").display().to_string()
+    );
+    assert_eq!(env["RUSTUP_TOOLCHAIN"], "1.99.1");
 }
 
 #[test]
@@ -721,4 +835,316 @@ fn relative_run_paths_resolve_before_provider_working_directory_changes() {
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
+}
+
+fn receipts(output: &Output) -> serde_json::Value {
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|_| {
+        panic!(
+            "no receipts: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+    })
+}
+
+#[test]
+fn candidate_toolchain_configuration_is_refused_before_any_job_slot() {
+    for planted in [
+        ".cargo/config.toml",
+        ".cargo/config",
+        "rust-toolchain.toml",
+        "rust-toolchain",
+        "fuzz/.cargo/config.toml",
+    ] {
+        let f = Fixture::new();
+        f.commit(
+            planted,
+            "[build]\nrustc-wrapper = \"/work/src/wrapper\"\n[toolchain]\npath = \"/work/evil\"\n",
+        );
+        f.prepare();
+        f.install_gate("valid");
+        for gate in ["tests", "antipatterns"] {
+            let result = f.gate(gate);
+            assert_eq!(result.status.code(), Some(4), "{planted}/{gate}");
+            assert!(
+                String::from_utf8_lossy(&result.stderr)
+                    .contains(&format!("candidate toolchain configuration {planted}")),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
+        assert!(!f.run.join("controller.lock").exists());
+    }
+}
+
+#[test]
+fn vendoring_output_is_sealed_and_planted_links_or_fifos_are_never_mounted() {
+    for mode in ["vendor_symlink", "vendor_root_symlink", "vendor_fifo"] {
+        let f = Fixture::new();
+        f.prepare();
+        f.install_gate(mode);
+        let result = f.gate("tests");
+        assert_eq!(
+            result.status.code(),
+            Some(4),
+            "{mode}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("dependency vendoring did not pass"),
+            "{mode}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let vendor = f.run.join("jobs/sandbox-vendor");
+        let refusal = fs::read_to_string(vendor.join("qualification-error.txt")).unwrap();
+        assert!(
+            refusal.contains("vendored output refused"),
+            "{mode}: {refusal}"
+        );
+        assert!(!vendor.join("vendor-seal.json").exists());
+        assert!(!f.run.join("vendor").exists(), "{mode}");
+        assert!(!f.run.join("jobs/gate-tests").exists(), "{mode}");
+        // A later gate is refused too, rather than mounting what the vendoring job left behind.
+        assert_eq!(f.gate("check").status.code(), Some(4), "{mode}");
+        assert!(!f.run.join("jobs/gate-check").exists(), "{mode}");
+    }
+
+    // A sealed copy changed after vendoring is re-measured and refused before the next gate's slot.
+    let f = Fixture::new();
+    f.prepare();
+    f.install_gate("valid");
+    assert_eq!(f.gate("tests").status.code(), Some(0));
+    fs::write(f.run.join("vendor/crate-1.0.0/added.rs"), "// planted\n").unwrap();
+    let result = f.gate("check");
+    assert_eq!(result.status.code(), Some(4));
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("sealed vendor directory changed"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!f.run.join("jobs/gate-check").exists());
+}
+
+#[test]
+fn a_fifo_or_symlinked_directory_mutation_witness_is_refused_without_hanging() {
+    for mode in ["fifo", "symlinked_dir"] {
+        let f = Fixture::new();
+        f.prepare();
+        f.install_gate(mode);
+        let result = f.gate("mutation");
+        assert_eq!(
+            result.status.code(),
+            Some(7),
+            "{mode}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(receipts(&result)[0]["outcome"], "inconclusive", "{mode}");
+        let job = f.run.join("jobs/gate-mutation");
+        let refusal = fs::read_to_string(job.join("qualification-error.txt")).unwrap();
+        assert!(
+            refusal.contains("mutation witness refused"),
+            "{mode}: {refusal}"
+        );
+        let qualification: serde_json::Value =
+            serde_json::from_slice(&fs::read(job.join("qualification.json")).unwrap()).unwrap();
+        assert_eq!(qualification["witness_sha256"], serde_json::Value::Null);
+        assert_eq!(f.status().status.code(), Some(7), "{mode}");
+    }
+}
+
+#[test]
+fn a_container_that_is_not_provably_removed_never_qualifies() {
+    for runtime in ["linger:gate-tests", "hang_exists:gate-tests"] {
+        let f = Fixture::new();
+        f.prepare();
+        f.install_gate("valid");
+        let result = f.gate_with("tests", runtime);
+        assert_eq!(
+            result.status.code(),
+            Some(7),
+            "{runtime}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(receipts(&result)[0]["outcome"], "inconclusive", "{runtime}");
+        let job = f.run.join("jobs/gate-tests");
+        let refusal = fs::read_to_string(job.join("qualification-error.txt")).unwrap();
+        assert!(
+            refusal.contains("not provably removed"),
+            "{runtime}: {refusal}"
+        );
+        // The name that was proved (or not) gone is the name the container ran under.
+        let environment: serde_json::Value =
+            serde_json::from_slice(&fs::read(job.join("environment.json")).unwrap()).unwrap();
+        let name = environment["container_name"].as_str().unwrap();
+        assert!(
+            f.control_log()
+                .iter()
+                .any(|c| c[..2] == ["container", "exists"] && c[2] == name)
+        );
+        assert_eq!(f.status().status.code(), Some(7), "{runtime}");
+    }
+    // The vendoring job is held to the same rule: nothing it left is sealed or mounted.
+    let f = Fixture::new();
+    f.prepare();
+    f.install_gate("valid");
+    let result = f.gate_with("tests", "linger:sandbox-vendor");
+    assert_eq!(result.status.code(), Some(4));
+    assert!(!f.run.join("jobs/sandbox-vendor/vendor-seal.json").exists());
+    assert!(!f.run.join("vendor").exists());
+}
+
+#[test]
+fn an_unresolvable_or_hanging_image_lookup_is_refused_before_any_job_slot() {
+    for runtime in ["bad_id", "hang_inspect"] {
+        let f = Fixture::new();
+        f.prepare();
+        f.install_gate("valid");
+        let start = Instant::now();
+        let result = f.gate_with("tests", runtime);
+        assert_eq!(result.status.code(), Some(4), "{runtime}");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("gate sandbox unavailable"),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(start.elapsed() < Duration::from_secs(90), "{runtime}");
+        assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
+    }
+}
+
+#[test]
+fn gates_launch_the_resolved_image_id_with_read_only_inputs_and_bounded_resources() {
+    let f = Fixture::new();
+    f.prepare();
+    f.install_gate("valid");
+    let result = f.gate("tests");
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(receipts(&result)[0]["image_id"], FAKE_IMAGE_ID);
+    let job = fs::canonicalize(f.run.join("jobs/gate-tests")).unwrap();
+    let execution: serde_json::Value =
+        serde_json::from_slice(&fs::read(job.join("execution.json")).unwrap()).unwrap();
+    assert_eq!(execution["image_id"], FAKE_IMAGE_ID);
+    let environment: serde_json::Value =
+        serde_json::from_slice(&fs::read(job.join("environment.json")).unwrap()).unwrap();
+    assert_eq!(environment["image_id"], FAKE_IMAGE_ID);
+    assert_eq!(environment["image"], "fake-gate");
+    let argv = f.runtime_argv("gate-tests").concat();
+    // The mutable tag is resolved once at admission and never launched.
+    assert!(argv.iter().any(|a| a == FAKE_IMAGE_ID));
+    assert!(argv.iter().all(|a| a != "fake-gate"));
+    for expected in [
+        format!("--volume={}:/src:ro,Z", job.join("src").display()),
+        format!(
+            "--volume={}:/cargo-home:ro,Z",
+            job.join("cargo-home").display()
+        ),
+        format!("--volume={}:/work:Z", job.join("work").display()),
+        "--workdir=/src".into(),
+        "--env=RUSTUP_TOOLCHAIN=1.99.1".into(),
+        "--env=CARGO_HOME=/cargo-home".into(),
+        "--memory=32g".into(),
+        "--memory-swap=32g".into(),
+    ] {
+        assert!(argv.contains(&expected), "missing {expected}: {argv:?}");
+    }
+    assert!(argv.iter().any(|a| a.starts_with("--cpus=")));
+    // The vendoring job alone has network and a writable Cargo home; it too runs on a read-only source.
+    let vendor = f.runtime_argv("sandbox-vendor").concat();
+    assert!(vendor.iter().all(|a| a != "--network=none"));
+    assert!(
+        vendor
+            .iter()
+            .any(|a| a == "--env=CARGO_HOME=/work/cargo-home")
+    );
+    assert!(vendor.iter().any(|a| a.ends_with("/src:/src:ro,Z")));
+    assert!(vendor.iter().any(|a| a == "--env=RUSTUP_TOOLCHAIN=1.99.1"));
+}
+
+#[test]
+fn fuzz_jobs_get_a_scratch_artifact_mount_over_the_read_only_source() {
+    let f = Fixture::new();
+    f.commit("fuzz/Cargo.toml", "[package]\nname = \"fixture-fuzz\"\n");
+    f.prepare();
+    f.install_gate("valid");
+    let result = f.gate("fuzz");
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let job = f.run.join("jobs/gate-fuzz");
+    // The mountpoint exists in the controller's copy but is outside the fingerprinted inventory.
+    assert!(job.join("src/fuzz/artifacts").is_dir());
+    let argv = f.runtime_argv("gate-fuzz").concat();
+    assert!(
+        argv.iter()
+            .any(|a| a == "--tmpfs=/src/fuzz/artifacts:rw,nosuid,nodev,noexec,size=64m,U")
+    );
+}
+
+#[test]
+fn a_changed_workspace_or_held_lock_is_refused_before_any_job_slot() {
+    let f = Fixture::new();
+    f.prepare();
+    f.install_gate("valid");
+    fs::write(f.repository.join("x.rs"), "fn changed() {}\n").unwrap();
+    let result = f.gate("tests");
+    assert_eq!(result.status.code(), Some(4));
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("workspace changed"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
+    assert!(!f.run.join("controller.lock").exists());
+
+    let f = Fixture::new();
+    f.prepare();
+    f.install_gate("valid");
+    fs::write(f.run.join("controller.lock"), "another controller\n").unwrap();
+    assert_eq!(f.gate("tests").status.code(), Some(4));
+    assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
+    // The other controller's lock is not ours to remove.
+    assert!(f.run.join("controller.lock").exists());
+}
+
+#[test]
+fn container_names_carry_a_per_invocation_nonce() {
+    let f = Fixture::new();
+    f.prepare();
+    f.install_gate("valid");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.run.join("manifest.json")).unwrap()).unwrap();
+    let prefix = format!(
+        "ddf-council-{}-gate-tests",
+        &manifest["run_id"].as_str().unwrap()[..16]
+    );
+    // Another invocation with the same run ID still holds the name the controller used to derive.
+    fs::write(f.bin.join("occupied-names"), format!("{prefix}\n")).unwrap();
+    let result = f.gate("tests");
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let environment: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.run.join("jobs/gate-tests/environment.json")).unwrap())
+            .unwrap();
+    let name = environment["container_name"].as_str().unwrap();
+    let nonce = name.strip_prefix(&format!("{prefix}-")).unwrap();
+    assert!(
+        nonce.len() == 16 && nonce.bytes().all(|b| b.is_ascii_hexdigit()),
+        "{name}"
+    );
+    // The other invocation's container is never removed in our name.
+    let log = f.control_log();
+    assert!(log.iter().all(|c| c.last().unwrap() != &prefix), "{log:?}");
+    assert!(log.iter().any(|c| c.last().unwrap() == name));
 }
