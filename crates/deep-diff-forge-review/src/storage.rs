@@ -82,7 +82,7 @@ fn capture(id: String, path: &Path, remaining: &mut usize) -> Result<Artifact> {
         text,
     })
 }
-fn git_bytes(repository: &Path, args: &[&str], cap: u64) -> Result<Vec<u8>> {
+pub(crate) fn git_bytes(repository: &Path, args: &[&str], cap: u64) -> Result<Vec<u8>> {
     let mut child = Command::new("git")
         .args([
             "--no-optional-locks",

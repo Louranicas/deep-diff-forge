@@ -43,13 +43,14 @@ pub fn dispatch(args: &[String]) -> Result<(String, i32)> {
             )
         }
         "import" if args.len() == 3 => import(Path::new(&args[1]), Path::new(&args[2])),
+        "export-tuicr" => export_tuicr(&args[1..]),
         "help" if args.len() <= 1 => Ok((HELP.into(), 0)),
         _ => Err(ReviewFailure(
             "invalid council command or missing explicit --execute; use council help".into(),
         )),
     }
 }
-const HELP: &str = "council example | prepare <request.json> <new-run-dir> | status <run-dir> | review <run-dir> <reviewer-id> <independent|challenge> --execute | gate <run-dir> <format|check|clippy|pedantic|tests|antipatterns|fuzz|mutation> --execute | import <run-dir> <report.json>\n";
+const HELP: &str = "council example | prepare <request.json> <new-run-dir> | status <run-dir> | review <run-dir> <reviewer-id> <independent|challenge> --execute | gate <run-dir> <format|check|clippy|pedantic|tests|antipatterns|fuzz|mutation> --execute | import <run-dir> <report.json> | export-tuicr <run-dir> --session <tuicr-session.json> [--allow-review-level] [--execute]\n";
 fn output(value: &impl serde::Serialize, passed: bool) -> Result<(String, i32)> {
     Ok((
         serde_json::to_string_pretty(value)? + "\n",
@@ -83,6 +84,34 @@ fn import(directory: &Path, path: &Path) -> Result<(String, i32)> {
         &report,
     )?;
     Ok(("{\"imported\":true,\"provenance\":\"manual_unverified\",\"satisfies_execution_gate\":false}\n".into(), 0))
+}
+/// Parse `export-tuicr <run-dir> --session <path> [--allow-review-level] [--execute]`; dry run by default.
+fn export_tuicr(args: &[String]) -> Result<(String, i32)> {
+    let usage = || {
+        ReviewFailure(
+            "usage: council export-tuicr <run-dir> --session <tuicr-session.json> [--allow-review-level] [--execute]"
+                .into(),
+        )
+    };
+    let (run, rest) = args.split_first().ok_or_else(usage)?;
+    let mut session = None;
+    let mut options = crate::ExportOptions::default();
+    let mut rest = rest.iter();
+    while let Some(flag) = rest.next() {
+        match flag.as_str() {
+            "--session" if session.is_none() => session = Some(rest.next().ok_or_else(usage)?),
+            "--execute" if !options.execute => options.execute = true,
+            "--allow-review-level" if !options.allow_review_level => {
+                options.allow_review_level = true;
+            }
+            _ => return Err(usage()),
+        }
+    }
+    let session = session.ok_or_else(usage)?;
+    output(
+        &crate::export_tuicr(Path::new(run), Path::new(session), options)?,
+        true,
+    )
 }
 /// Portable request template; caller chooses concrete paths and available model IDs.
 #[must_use]

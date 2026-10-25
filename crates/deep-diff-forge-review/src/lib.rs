@@ -9,11 +9,16 @@ mod model;
 mod policy;
 mod sandbox;
 mod storage;
+mod tuicr;
 pub use execution::{run_gate, run_reviewer};
 pub use model::*;
 pub use policy::{assess, report_schema, validate_report, validate_request};
 use std::{error::Error, fmt};
 pub use storage::{load_manifest, prepare, source_fingerprint};
+pub use tuicr::{
+    ExportOptions, NoteStatus, PlannedNote, SESSION_VERSION, SkippedReport, Target, TuicrExport,
+    TuicrExportError, export_tuicr,
+};
 #[derive(Debug)]
 pub struct ReviewFailure(pub String);
 impl fmt::Display for ReviewFailure {
