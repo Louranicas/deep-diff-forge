@@ -427,6 +427,90 @@ mod tests {
         assert_eq!(texts, vec!["fn", "main", "(", ")", "{", "}"]);
     }
 
+    /// Independent forward-DP reference for the length of the longest common subsequence.
+    fn reference_lcs_len(a: &[&str], b: &[&str]) -> usize {
+        let mut prev = vec![0usize; b.len() + 1];
+        for x in a {
+            let mut row = vec![0usize; b.len() + 1];
+            for (j, y) in b.iter().enumerate() {
+                row[j + 1] = if x == y {
+                    prev[j] + 1
+                } else {
+                    row[j].max(prev[j + 1])
+                };
+            }
+            prev = row;
+        }
+        prev[b.len()]
+    }
+
+    /// Every sequence of length 0..=`max_len` over `alphabet`.
+    fn all_sequences(alphabet: &[&'static str], max_len: usize) -> Vec<Vec<&'static str>> {
+        let mut all = vec![Vec::new()];
+        let mut frontier = vec![Vec::new()];
+        for _ in 0..max_len {
+            frontier = frontier
+                .iter()
+                .flat_map(|seq: &Vec<&'static str>| {
+                    alphabet.iter().map(move |t| {
+                        let mut next = seq.clone();
+                        next.push(*t);
+                        next
+                    })
+                })
+                .collect();
+            all.extend(frontier.iter().cloned());
+        }
+        all
+    }
+
+    // Mutation testing found that corrupting the DP's diagonal (match) cell survived every
+    // fixture test: greedy backtracking hid it. Check optimality and edit-script validity
+    // exhaustively on small inputs instead.
+    #[test]
+    fn lcs_ops_is_a_valid_optimal_edit_script() {
+        let sequences = all_sequences(&["a", "b", "c"], 5);
+        let tokens = |seq: &[&str]| -> Vec<Token> {
+            seq.iter()
+                .map(|t| Token {
+                    text: (*t).to_owned(),
+                    line: 1,
+                })
+                .collect()
+        };
+        for old in &sequences {
+            for new in &sequences {
+                let ops = lcs_ops(&tokens(old), &tokens(new));
+                let (mut next_old, mut next_new, mut equal) = (0, 0, 0);
+                for op in &ops {
+                    match *op {
+                        Op::Equal(i, j) => {
+                            assert_eq!((i, j), (next_old, next_new), "{old:?} -> {new:?}");
+                            assert_eq!(old[i], new[j], "{old:?} -> {new:?}");
+                            next_old += 1;
+                            next_new += 1;
+                            equal += 1;
+                        }
+                        Op::Delete(i) => {
+                            assert_eq!(i, next_old, "{old:?} -> {new:?}");
+                            next_old += 1;
+                        }
+                        Op::Insert(j) => {
+                            assert_eq!(j, next_new, "{old:?} -> {new:?}");
+                            next_new += 1;
+                        }
+                    }
+                }
+                assert_eq!((next_old, next_new), (old.len(), new.len()));
+                assert_eq!(
+                    equal,
+                    reference_lcs_len(old, new),
+                    "not a longest common subsequence: {old:?} -> {new:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn tokenize_unsupported_is_empty() {
         assert_eq!(tokenize(Language::Unsupported, "fn main() {}").len(), 0);

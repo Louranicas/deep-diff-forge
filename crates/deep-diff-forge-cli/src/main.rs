@@ -273,6 +273,17 @@ const CURRENT_MATURITY: deep_diff_forge_core::MaturityLevel =
 /// UDS JSON-RPC review daemon.
 fn daemon_cmd(opts: &[String]) {
     use deep_diff_forge_daemon::SocketLocation;
+    let sub = opts
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .map(String::as_str);
+    // Validate the subcommand first, so an unknown one reports usage whatever the environment.
+    if !matches!(sub, Some("path" | "start" | "health" | "status" | "stop")) {
+        eprintln!(
+            "usage: deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]"
+        );
+        std::process::exit(2);
+    }
     // One resolution point: explicit `--socket` override, else $XDG_RUNTIME_DIR,
     // else fail closed (no world-writable /tmp fallback). The result is a
     // valid-by-construction location, so no path `Option` is threaded below.
@@ -285,10 +296,6 @@ fn daemon_cmd(opts: &[String]) {
         eprintln!("       set XDG_RUNTIME_DIR, or pass an explicit --socket PATH.");
         std::process::exit(2);
     };
-    let sub = opts
-        .iter()
-        .find(|a| !a.starts_with("--"))
-        .map(String::as_str);
     match sub {
         Some("path") => emitln!("{}", location.path().display()),
         Some("start") => {

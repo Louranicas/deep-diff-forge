@@ -10,7 +10,21 @@ fn bin() -> &'static str {
 }
 
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = Command::new(bin()).args(args).output().expect("run");
+    run_with_runtime_dir(args, None)
+}
+
+/// Run with an explicit `$XDG_RUNTIME_DIR` (or none), never the caller's ambient value,
+/// so results do not depend on the desktop session or sandbox the tests run in.
+fn run_with_runtime_dir(
+    args: &[&str],
+    runtime_dir: Option<&std::path::Path>,
+) -> (i32, String, String) {
+    let mut command = Command::new(bin());
+    command.args(args).env_remove("XDG_RUNTIME_DIR");
+    if let Some(dir) = runtime_dir {
+        command.env("XDG_RUNTIME_DIR", dir);
+    }
+    let out = command.output().expect("run");
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -24,9 +38,27 @@ fn temp_socket(name: &str) -> PathBuf {
 
 #[test]
 fn daemon_path_prints_socket() {
-    let (code, stdout, _) = run(&["daemon", "path"]);
+    let runtime = std::env::temp_dir().join(format!("ddf-clid-{}-runtime", std::process::id()));
+    let (code, stdout, _) = run_with_runtime_dir(&["daemon", "path"], Some(&runtime));
     assert_eq!(code, 0);
     assert!(stdout.contains("deep-diff-forge.sock"));
+    assert!(stdout.starts_with(runtime.to_str().unwrap()));
+}
+
+#[test]
+fn daemon_path_without_runtime_dir_refuses_tmp_fallback() {
+    let (code, stdout, stderr) = run(&["daemon", "path"]);
+    assert_eq!(code, 2);
+    assert_eq!(stdout, "");
+    assert!(stderr.contains("refusing an insecure world-writable /tmp socket"));
+}
+
+#[test]
+fn daemon_unknown_subcommand_reports_usage_without_runtime_dir() {
+    let (code, _, stderr) = run(&["daemon", "frobnicate"]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("usage"));
+    assert!(!stderr.contains("XDG_RUNTIME_DIR"));
 }
 
 #[test]

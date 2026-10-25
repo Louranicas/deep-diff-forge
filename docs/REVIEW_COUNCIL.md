@@ -124,7 +124,7 @@ ddf-integration-20261025 council review /absolute/new-run-directory correctness-
 # Run the challenge job for every configured reviewer.
 
 # Gates refuse unless the gate image is set and present locally; see "Gate sandbox".
-export DDF_COUNCIL_GATE_IMAGE=localhost/ddf-council-gate:20261025
+export DDF_COUNCIL_GATE_IMAGE=localhost/ddf-council-gate:20261025b
 ddf-integration-20261025 council gate /absolute/new-run-directory format --execute
 ddf-integration-20261025 council gate /absolute/new-run-directory check --execute
 ddf-integration-20261025 council gate /absolute/new-run-directory clippy --execute
@@ -237,11 +237,11 @@ Only `crates-io` is replaced. A candidate with git or alternative-registry depen
 1. Build the image. The header of the Containerfile gives the command:
 
    ```sh
-   podman build --pull=never -t localhost/ddf-council-gate:20261025 -f review-policy/sandbox/Containerfile review-policy/sandbox
+   podman build --pull=never -t localhost/ddf-council-gate:20261025b -f review-policy/sandbox/Containerfile review-policy/sandbox
    ```
 
    `--pull=never` refuses to fetch the base image, so on a fresh machine first pull the digest-pinned `FROM` reference: `podman pull registry.fedoraproject.org/fedora:44@sha256:0d2a354d…`, using the full digest from the Containerfile. The build itself needs network; the gates do not.
-2. Set `DDF_COUNCIL_GATE_IMAGE=localhost/ddf-council-gate:20261025`, or another local tag you built. On this host, `podman image inspect` gives that tag the image ID `bb89cf38bca362967cfa33c43efc709016a09acdcab562fb361d393aa8ce185f` (measured 2026-10-25).
+2. Set `DDF_COUNCIL_GATE_IMAGE=localhost/ddf-council-gate:20261025b`, or another local tag you built. On this host, `podman image inspect` gives that tag the image ID `d26503c7a920df45eae98804bf15147a0b8b5cb150627634ee1bc5616404f497` (measured 2026-10-25). The first image, `:20261025` (`bb89cf38…`), lacked `git` and a C++ compiler. Council r4's tests and fuzz gates failed closed on it: the Git-backed fixtures could not run, and `libfuzzer-sys` could not compile.
 3. On Fedora Atomic (Silverblue/Kinoite), Podman is on the host and not in the default Toolbx container. Measured here: `fedora-toolbox-44` has `flatpak-spawn` but no `podman`. You have two options:
    - Run the controller on the host.
    - From a toolbox, set `DDF_COUNCIL_PODMAN="flatpak-spawn --host podman"`. The variable is split on whitespace into the runtime argv.
@@ -262,15 +262,16 @@ Only `crates-io` is replaced. A candidate with git or alternative-registry depen
 ### Evidence status
 
 - **Measured (2026-10-25, this host):**
-  - The `--log-driver` comparison described above. This was reported by the implementing agent.
-  - The local image ID of `localhost/ddf-council-gate:20261025`.
-  - `python3 scripts/security/review_policy_check.py --selftest` and the plain invocation of the compatibility wrapper both succeeded when run from outside the repository root: 6 self-tests OK, `state: passed`, 13 workspace members checked.
+  - The `--log-driver` comparison described above. `passthrough` dropped redirected streams; `none` delivered them.
+  - Real-Podman planted-breach test through the controller (`DDF_COUNCIL_SANDBOX_IT=1`, commit `51196b6`): all 8 probes refused. These were agent credentials, egress to 1.1.1.1:443, writes into the run's `jobs/`, writes to `/etc`, `/run/host`, the session bus, and process visibility (3 PIDs).
+  - The full workspace test suite inside the gate sandbox on image `:20261025b`, with network none, read-only root and vendored dependencies: 1,042 passed, 0 failed (this branch). libFuzzer `council_report` in the same sandbox: 3,679,356 runs in 21 s.
+  - Council r4 found two gate-image gaps (missing `git`, missing `c++`). Both gates failed closed and neither was reported as passed.
+  - `python3 scripts/security/review_policy_check.py --selftest` and the plain wrapper invocation both succeeded from outside the repository root: 6 self-tests OK, `state: passed`, 13 workspace members.
 - **Inferred:** the claims above about Cargo's checksum and no-compilation behaviour during vendoring, and the git-dependency limitation.
 - **Unmeasured in this document:**
-  - Workspace test results for this change.
-  - The opt-in `council_sandbox` integration test (`DDF_COUNCIL_SANDBOX_IT=1`).
+  - The opt-in `council_sandbox` test re-run on image `:20261025b`. It was measured only at `51196b6` on `:20261025`.
   - The CI step that builds the image and runs that test on GitHub-hosted runners.
-  - Any adversarial attempt to escape the container or forge a receipt from inside it.
+  - Container or kernel escape attempts beyond the 8 planted probes, and forging parsed tool output (see residual risks).
 
   For test results, see the vault verification receipt.
 
