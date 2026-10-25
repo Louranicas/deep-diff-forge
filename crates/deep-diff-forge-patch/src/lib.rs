@@ -10,6 +10,11 @@
 //! model, and projects the model into a stable JSON document for Claude Code,
 //! CI, and Bash consumers.
 //!
+//! Native Git input goes through [`acquire_git`]: paths, statuses, modes and
+//! blob IDs come from Git's NUL-delimited `--raw -z` records, each paired with
+//! the exact patch block it describes ([`StructuredDiff`]); the patch bytes
+//! stay the authoritative artifact.
+//!
 //! # Trust boundary
 //!
 //! Patch input is untrusted. Parsing is panic-free on malformed input, returns
@@ -17,6 +22,8 @@
 //! size with an explicit byte budget so a pathological input degrades instead
 //! of exhausting memory.
 
+mod git_acquire;
+mod git_raw;
 mod parser;
 mod paths;
 mod render;
@@ -24,6 +31,10 @@ mod render;
 #[cfg(feature = "json")]
 mod json;
 
+pub use git_acquire::{GitAcquireOptions, GitAcquisition, GitSelection, acquire as acquire_git};
+pub use git_raw::{
+    GitAcquireError, GitChange, GitChangeKind, GitChangeOrigin, GitPath, StructuredDiff,
+};
 pub use parser::{ParseOptions, parse, parse_with};
 pub use render::render_unified;
 
