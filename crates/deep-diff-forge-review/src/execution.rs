@@ -569,7 +569,7 @@ fn sealed_mutation_diff(directory: &Path, manifest: &Manifest) -> Result<Option<
     let Some(expected) = &manifest.mutation_diff_sha256 else {
         return Ok(None);
     };
-    let bytes = storage::read_bytes(&directory.join(MUTATION_DIFF), 16 * 1024 * 1024)?;
+    let bytes = storage::read_bytes(&directory.join(MUTATION_DIFF), storage::MUTATION_DIFF_CAP)?;
     require(
         &sha256_hex(&bytes) == expected,
         "sealed mutation diff does not match the manifest",

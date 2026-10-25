@@ -172,6 +172,8 @@ impl Inventory {
 pub(crate) const SNAPSHOT_DIR: &str = "source";
 /// The candidate's changes since `mutation_base`, sealed at prepare for the diff-scoped mutation gate.
 pub(crate) const MUTATION_DIFF: &str = "mutation.diff";
+/// Largest mutation diff captured at prepare and read back by the mutation gate.
+pub(crate) const MUTATION_DIFF_CAP: u64 = 16 * 1024 * 1024;
 pub(crate) const INVENTORY_FILE: &str = "source-inventory.json";
 /// Relative to a mutation gate's job directory; written inside the sandbox, read after it exits.
 pub(crate) const MUTATION_WITNESS: &str = "work/mutation-results/mutants.out/outcomes.json";
@@ -305,7 +307,7 @@ fn walk_tree(root: &Path, copy: Option<&Path>) -> Result<TreeSeal> {
     let mut pending = vec![PathBuf::new()];
     while let Some(directory) = pending.pop() {
         // Listed lazily up to the remaining budget, so a huge directory is refused, not collected.
-        let remaining = usize::try_from(SEAL_ENTRIES - entries).unwrap_or(usize::MAX);
+        let remaining = usize::try_from(SEAL_ENTRIES.saturating_sub(entries)).unwrap_or(usize::MAX);
         let mut names = fs::read_dir(root.join(&directory))?
             .take(remaining.saturating_add(1))
             .map(|entry| entry.map(|e| e.file_name()))
@@ -496,7 +498,7 @@ fn mutation_diff(repository: &Path, base: Option<&str>) -> Result<Option<Vec<u8>
                 base,
                 "--",
             ],
-            16 * 1024 * 1024,
+            MUTATION_DIFF_CAP,
         )
     })
     .transpose()
