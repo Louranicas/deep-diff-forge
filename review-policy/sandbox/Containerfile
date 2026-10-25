@@ -1,0 +1,30 @@
+# Review council gate image: the only environment in which council quality gates execute candidate code.
+# Design/status: docs/REVIEW_COUNCIL.md#gate-sandbox
+#
+# Build (rootless Podman, network only at build time):
+#   podman build --pull=never -t localhost/ddf-council-gate:20261025 -f review-policy/sandbox/Containerfile review-policy/sandbox
+# Gates then run this image with --network=none, a read-only root, all capabilities dropped,
+# no-new-privileges and no host home mounts; see deep-diff-forge-review/src/sandbox.rs.
+
+# Base pinned by digest, not tag, so a re-pushed tag cannot change the gate environment.
+FROM registry.fedoraproject.org/fedora:44@sha256:0d2a354dfdf7ba75083fe371eb6239842fe13f38c52d339dae1ebcf13c7c4062 AS builder
+RUN dnf install -y --setopt=install_weak_deps=False gcc rustup python3 && dnf clean all
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:/usr/bin
+# Exact toolchains: stable for check/clippy/tests/mutation, a dated nightly for cargo-fuzz.
+RUN rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.99.1 \
+      --component clippy,rustfmt \
+ && rustup toolchain install nightly-2026-10-25 --profile minimal \
+ && ln -s nightly-2026-10-25-x86_64-unknown-linux-gnu /opt/rustup/toolchains/nightly-x86_64-unknown-linux-gnu
+# `rustup toolchain link` refuses the channel name "nightly"; the symlink makes `cargo +nightly` resolve
+# to the dated toolchain without ever updating it.
+RUN cargo install --locked cargo-mutants@27.1.0 cargo-fuzz@0.13.2 \
+ && rm -rf /opt/cargo/registry /opt/cargo/git
+
+FROM registry.fedoraproject.org/fedora:44@sha256:0d2a354dfdf7ba75083fe371eb6239842fe13f38c52d339dae1ebcf13c7c4062
+RUN dnf install -y --setopt=install_weak_deps=False gcc python3 && dnf clean all
+COPY --from=builder /opt/rustup /opt/rustup
+COPY --from=builder /opt/cargo/bin /opt/cargo/bin
+ENV RUSTUP_HOME=/opt/rustup PATH=/opt/cargo/bin:/usr/bin LANG=C.UTF-8
+# Runtime is always --userns=keep-id; never root inside the gate.
+USER 1000:1000
+WORKDIR /work/src

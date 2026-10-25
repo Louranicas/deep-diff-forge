@@ -1,0 +1,254 @@
+// Review council: Planted-breach controls for the real rootless Podman gate sandbox (opt-in, never a silent pass).
+// Design/status: docs/REVIEW_COUNCIL.md#gate-sandbox
+//! A candidate crate whose own `#[test]` tries to read agent credentials, reach the network, forge
+//! controller evidence, write the image root and see host sockets/PIDs. Runs only with
+//! `DDF_COUNCIL_SANDBOX_IT=1` plus `DDF_COUNCIL_PODMAN` / `DDF_COUNCIL_GATE_IMAGE`; otherwise it prints
+//! an `UNMEASURED` line and returns.
+use deep_diff_forge_review::Profile;
+use std::os::unix::fs::MetadataExt;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+/// Every probe the planted test reports; each must appear exactly once, as `refused`.
+const PROBES: [&str; 8] = [
+    "read codex-auth",
+    "read claude-credentials",
+    "connect 1.1.1.1:443",
+    "write run-jobs",
+    "write /etc/ddf-probe",
+    "exists /run/host",
+    "exists session-bus",
+    "pids",
+];
+
+/// The real home of the current uid from the password database, never `$HOME`.
+fn real_home(uid: u32) -> String {
+    fs::read_to_string("/etc/passwd")
+        .unwrap()
+        .lines()
+        .map(|line| line.split(':').collect::<Vec<_>>())
+        .find(|fields| fields.len() >= 6 && fields[2] == uid.to_string())
+        .map(|fields| fields[5].to_owned())
+        .expect("current uid has a password-database entry")
+}
+
+fn probe_crate(home: &str, uid: u32, forged: &Path) -> String {
+    format!(
+        r#"//! Planted breaches: each probe prints one `BREACH` or `refused` line, never file contents.
+#[cfg(test)]
+mod tests {{
+    use std::io::Write as _;
+    use std::time::Duration;
+    fn verdict(breached: bool, probe: &str, detail: &str) {{
+        // Written to the fd directly so libtest output capture cannot hide it.
+        let mut out = std::io::stdout().lock();
+        let word = if breached {{ "BREACH" }} else {{ "refused" }};
+        writeln!(out, "{{word}} {{probe}}: {{detail}}").unwrap();
+        out.flush().unwrap();
+    }}
+    #[test]
+    fn planted_breaches() {{
+        for (probe, path) in [
+            ("read codex-auth", "{home}/.codex/auth.json"),
+            ("read claude-credentials", "{home}/.claude/.credentials.json"),
+        ] {{
+            match std::fs::File::open(path) {{
+                Ok(_) => verdict(true, probe, "opened for reading"),
+                Err(e) => verdict(false, probe, &e.kind().to_string()),
+            }}
+        }}
+        let address = "1.1.1.1:443".parse().unwrap();
+        match std::net::TcpStream::connect_timeout(&address, Duration::from_secs(3)) {{
+            Ok(_) => verdict(true, "connect 1.1.1.1:443", "connected"),
+            Err(e) => verdict(false, "connect 1.1.1.1:443", &e.kind().to_string()),
+        }}
+        for (probe, path) in [("write run-jobs", "{forged}"), ("write /etc/ddf-probe", "/etc/ddf-probe")] {{
+            match std::fs::write(path, b"forged by a gate") {{
+                Ok(()) => verdict(true, probe, "written"),
+                Err(e) => verdict(false, probe, &e.kind().to_string()),
+            }}
+        }}
+        for (probe, path) in [("exists /run/host", "/run/host"), ("exists session-bus", "/run/user/{uid}/bus")] {{
+            let present = std::path::Path::new(path).exists();
+            verdict(present, probe, if present {{ "present" }} else {{ "absent" }});
+        }}
+        let pids = std::fs::read_dir("/proc")
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit()))
+            .count();
+        verdict(pids > 32, "pids", &format!("{{pids}} visible in /proc"));
+    }}
+}}
+"#,
+        forged = forged.display()
+    )
+}
+
+fn git(repository: &Path, args: &[&str]) {
+    assert!(
+        Command::new("git")
+            .args(args)
+            .current_dir(repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+/// Relative to the run directory: a controller-evidence path the planted test tries to forge.
+const FORGED: &str = "jobs/forged-by-gate.txt";
+
+/// A committed probe crate plus analysis/decision/request, under a fresh root; returns (root, request).
+fn fixture(home: &str, uid: u32) -> (PathBuf, PathBuf) {
+    let root = std::env::temp_dir().join(format!("ddf-council-sandbox-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir(&root).unwrap();
+    let root = fs::canonicalize(&root).unwrap();
+    let forged = root.join("run").join(FORGED);
+    let repository = root.join("repo");
+    fs::create_dir_all(repository.join("src")).unwrap();
+    fs::write(
+        repository.join("Cargo.toml"),
+        "[package]\nname = \"ddf-sandbox-probe\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n",
+    )
+    .unwrap();
+    fs::write(
+        repository.join("Cargo.lock"),
+        "# This file is automatically @generated by Cargo.\n# It is not intended for manual editing.\nversion = 4\n\n[[package]]\nname = \"ddf-sandbox-probe\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let lib = probe_crate(home, uid, &forged);
+    fs::write(repository.join("src/lib.rs"), &lib).unwrap();
+    git(&repository, &["init", "-q"]);
+    git(&repository, &["add", "."]);
+    git(
+        &repository,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "planted-breach probe",
+        ],
+    );
+
+    let snapshot =
+        deep_diff_forge_core::changed_source_snapshot_id([("src/lib.rs", Some(lib.as_bytes()))]);
+    let analysis = root.join("analysis.json");
+    fs::write(
+        &analysis,
+        serde_json::to_vec(&serde_json::json!({
+            "schema": "deep-diff-forge.analysis.v1",
+            "review_id": "0".repeat(64),
+            "candidate_snapshot": snapshot,
+            "coverage": [{"path": "src/lib.rs", "coverage": "analyzed"}],
+            "review": {"files": [{"path": "src/lib.rs", "status": "added"}]},
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let decision = root.join("decision.md");
+    fs::write(
+        &decision,
+        "Measure the gate sandbox against planted breaches.\n",
+    )
+    .unwrap();
+    let mut spec = deep_diff_forge_review::cli::example();
+    spec.profile = Profile::Roster;
+    spec.reviewers.truncate(2);
+    spec.repository = repository.display().to_string();
+    spec.analysis_file = analysis.display().to_string();
+    spec.decision_file = decision.display().to_string();
+    spec.timeout_seconds = 600;
+    let request = root.join("request.json");
+    fs::write(&request, serde_json::to_vec(&spec).unwrap()).unwrap();
+    (root, request)
+}
+
+#[test]
+fn real_sandbox_refuses_planted_breaches() {
+    if std::env::var("DDF_COUNCIL_SANDBOX_IT").as_deref() != Ok("1") {
+        eprintln!(
+            "UNMEASURED: set DDF_COUNCIL_SANDBOX_IT=1 with DDF_COUNCIL_PODMAN and DDF_COUNCIL_GATE_IMAGE to run the real-Podman planted-breach controls; nothing was measured"
+        );
+        return;
+    }
+    for required in ["DDF_COUNCIL_PODMAN", "DDF_COUNCIL_GATE_IMAGE"] {
+        assert!(
+            std::env::var(required).is_ok_and(|v| !v.is_empty()),
+            "{required} must be set when DDF_COUNCIL_SANDBOX_IT=1"
+        );
+    }
+    let uid = fs::metadata("/proc/self").unwrap().uid();
+    let home = real_home(uid);
+    // A probe against a missing or unreadable file would be a vacuous refusal.
+    for credential in [".codex/auth.json", ".claude/.credentials.json"] {
+        let path = Path::new(&home).join(credential);
+        assert!(
+            fs::File::open(&path).is_ok(),
+            "{} is not readable on the host; the probe would be vacuous",
+            path.display()
+        );
+    }
+
+    let (root, request) = fixture(&home, uid);
+    let run = root.join("run");
+    let forged = run.join(FORGED);
+    let council = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .arg("council")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let prepared = council(&["prepare", request.to_str().unwrap(), run.to_str().unwrap()]);
+    assert!(
+        prepared.status.success(),
+        "{}",
+        String::from_utf8_lossy(&prepared.stderr)
+    );
+    let gate = council(&["gate", run.to_str().unwrap(), "tests", "--execute"]);
+    let job = run.join("jobs/gate-tests");
+    let log = fs::read_to_string(job.join("stdout.log")).unwrap_or_default();
+    let lines = log
+        .lines()
+        .filter(|l| l.starts_with("BREACH ") || l.starts_with("refused "))
+        .collect::<Vec<_>>();
+    for line in &lines {
+        eprintln!("PROBE {line}");
+    }
+    assert_eq!(
+        gate.status.code(),
+        Some(0),
+        "tests gate did not qualify, so the probes are unmeasured: {}\n{log}",
+        String::from_utf8_lossy(&gate.stderr)
+    );
+    let receipts: serde_json::Value = serde_json::from_slice(&gate.stdout).unwrap();
+    assert_eq!(receipts[0]["outcome"], "passed");
+    assert!(
+        lines.iter().all(|l| !l.starts_with("BREACH ")),
+        "{lines:#?}"
+    );
+    for probe in PROBES {
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with(&format!("refused {probe}:")))
+                .count(),
+            1,
+            "{probe} not reported exactly once as refused: {lines:#?}"
+        );
+    }
+    assert_eq!(lines.len(), PROBES.len());
+    assert!(!forged.exists(), "gate forged {}", forged.display());
+    let environment: serde_json::Value =
+        serde_json::from_slice(&fs::read(job.join("environment.json")).unwrap()).unwrap();
+    assert_eq!(environment["network"], "none");
+    assert_eq!(environment["host_home_mounted"], false);
+    let _ = fs::remove_dir_all(&root);
+}

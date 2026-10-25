@@ -79,9 +79,9 @@ impl Fixture {
         fs::write(&request, serde_json::to_vec(&spec).unwrap()).unwrap();
         let bin = root.join("fake-bin");
         fs::create_dir(&bin).unwrap();
-        for name in ["codex", "claude"] {
+        for (name, script) in [("codex", FAKE), ("claude", FAKE), ("podman", FAKE_RUNTIME)] {
             let p = bin.join(name);
-            fs::write(&p, FAKE).unwrap();
+            fs::write(&p, script).unwrap();
             fs::set_permissions(&p, fs::Permissions::from_mode(0o700)).unwrap();
         }
         let run = root.join("run");
@@ -93,18 +93,49 @@ impl Fixture {
             bin,
         }
     }
-    fn call(&self, args: &[&str], mode: &str) -> Output {
+    /// The controller process. Providers still see `DDF_FAKE_MODE`; sandboxed gates never do.
+    fn command(&self, args: &[&str], mode: &str) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"));
         command
             .arg("council")
             .args(args)
             .env("DDF_FAKE_MODE", mode)
             .env("CARGO_TARGET_DIR", self.root.join("normal-target"))
+            .env("DDF_COUNCIL_PODMAN", self.bin.join("podman"))
+            .env("DDF_COUNCIL_GATE_IMAGE", "fake-gate")
             .env(
                 "PATH",
                 format!("{}:{}", self.bin.display(), std::env::var("PATH").unwrap()),
             );
-        command.output().unwrap()
+        command
+    }
+    fn call(&self, args: &[&str], mode: &str) -> Output {
+        self.command(args, mode).output().unwrap()
+    }
+    /// Install the fake `cargo` with its mode baked in: the sandbox has no ambient environment.
+    fn install_gate(&self, mode: &str) {
+        let cargo = self.bin.join("cargo");
+        fs::write(&cargo, FAKE_GATE.replace("@MODE@", mode)).unwrap();
+        fs::set_permissions(&cargo, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    fn gate(&self, gate: &str) -> Output {
+        self.call(
+            &["gate", self.run.to_str().unwrap(), gate, "--execute"],
+            "normal",
+        )
+    }
+    /// Every runtime invocation the fake recorded for one job's `/work` mount.
+    fn runtime_argv(&self, job: &str) -> Vec<Vec<String>> {
+        fs::read_to_string(
+            self.run
+                .join("jobs")
+                .join(job)
+                .join("work/runtime-argv.json"),
+        )
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
     }
     fn prepare(&self) {
         let result = self.call(
@@ -353,11 +384,44 @@ fn oversized_transcripts_fail_with_explicit_incomplete_diagnostics() {
     assert!(fs::metadata(job.join("stdout.log")).unwrap().len() <= 8 * 1024 * 1024);
 }
 
+/// Fake rootless runtime: answers `image inspect`/`rm`, and for `run` maps `/work` and `/vendor` to
+/// their `--volume` host paths, then runs the gate argv with ONLY the `--env` values plus a PATH to
+/// the fake tools (no inherited environment), propagating the exit code. Each `run` argv is
+/// appended as one JSON line to `<work>/runtime-argv.json`.
+const FAKE_RUNTIME: &str = r"#!/usr/bin/python3
+import json,os,re,shutil,subprocess,sys
+args=sys.argv[1:]
+if args[:2]==['image','inspect']:
+    if args[-1]!='fake-gate':sys.exit(125)
+    print('sha256:fake-gate-image-id');sys.exit(0)
+if args[:1]==['rm']:sys.exit(0)
+assert args[0]=='run',args
+mounts={};env={};workdir=None;i=1
+while args[i].startswith('--'):
+    flag,_,value=args[i].partition('=')
+    if flag=='--volume':
+        host,target,_=value.split(':');mounts[target]=host
+    elif flag=='--env':
+        key,_,val=value.partition('=');env[key]=val
+    elif flag=='--workdir':workdir=value
+    i+=1
+image=args[i];inner=args[i+1:]
+assert image=='fake-gate',image
+with open(os.path.join(mounts['/work'],'runtime-argv.json'),'a') as log:log.write(json.dumps(sys.argv)+'\n')
+def host(text):
+    return re.sub(r'(^|=)(/work|/vendor)(?=/|$)',lambda m:m.group(1)+mounts[m.group(2)],text)
+env={key:host(val) for key,val in env.items()}
+env['PATH']=os.path.dirname(os.path.abspath(__file__))+':/usr/bin:/bin'
+exe=shutil.which(inner[0],path=env['PATH'])
+sys.exit(subprocess.run([exe]+[host(a) for a in inner[1:]],cwd=host(workdir),env=env).returncode)
+";
 const FAKE_GATE: &str = r"#!/usr/bin/python3
 import json,os,pathlib,sys
-mode=os.environ.get('DDF_FAKE_MODE','empty')
+mode='@MODE@'
+if sys.argv[1:2]==['vendor']:
+    pathlib.Path(sys.argv[-1]).mkdir();sys.exit(0)
 if 'mutants' in sys.argv:
-    assert os.environ.get('CARGO_TARGET_DIR','').endswith('/jobs/gate-mutation/mutation-target')
+    assert 'CARGO_TARGET_DIR' not in os.environ,'mutation must not share a cargo target dir'
     parent=pathlib.Path(sys.argv[sys.argv.index('--output')+1])/'mutants.out';parent.mkdir(parents=True)
     data={'total_mutants':1,'caught':1,'unviable':0,'missed':0,'timeout':0,'outcomes':[{'scenario':'Baseline','summary':'Success'},{'scenario':{'Mutant':{}},'summary':'CaughtMutant'}]}
     if mode=='empty':data.update(total_mutants=0,caught=0,outcomes=[])
@@ -367,7 +431,9 @@ if 'mutants' in sys.argv:
 elif 'fuzz' in sys.argv:
     print('Done '+('0' if mode=='empty' else '100')+' runs in 1 second(s)',file=sys.stderr)
 else:
-    print('test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out')
+    seen={'cwd':os.getcwd(),'x.rs':pathlib.Path('x.rs').read_text(),'env':dict(os.environ)}
+    print('OBSERVED '+json.dumps(seen))
+    print('test result: ok. '+('0' if mode=='empty' else '1')+' passed; 0 failed; 0 ignored; 0 measured; 0 filtered out')
 ";
 #[test]
 fn empty_mutation_fuzz_or_test_runs_are_inconclusive_even_at_exit_zero() {
@@ -380,10 +446,8 @@ fn empty_mutation_fuzz_or_test_runs_are_inconclusive_even_at_exit_zero() {
     ] {
         let f = Fixture::new();
         f.prepare();
-        let cargo = f.bin.join("cargo");
-        fs::write(&cargo, FAKE_GATE).unwrap();
-        fs::set_permissions(&cargo, fs::Permissions::from_mode(0o700)).unwrap();
-        let result = f.call(&["gate", f.run.to_str().unwrap(), gate, "--execute"], mode);
+        f.install_gate(mode);
+        let result = f.gate(gate);
         assert_eq!(
             result.status.code(),
             Some(7),
@@ -400,13 +464,8 @@ fn empty_mutation_fuzz_or_test_runs_are_inconclusive_even_at_exit_zero() {
 fn mutation_jobs_own_a_build_cache_and_cannot_contaminate_normal_tests() {
     let f = Fixture::new();
     f.prepare();
-    let cargo = f.bin.join("cargo");
-    fs::write(&cargo, FAKE_GATE).unwrap();
-    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o700)).unwrap();
-    let result = f.call(
-        &["gate", f.run.to_str().unwrap(), "mutation", "--execute"],
-        "valid",
-    );
+    f.install_gate("valid");
+    let result = f.gate("mutation");
     assert_eq!(
         result.status.code(),
         Some(0),
@@ -418,13 +477,223 @@ fn mutation_jobs_own_a_build_cache_and_cannot_contaminate_normal_tests() {
     )
     .unwrap();
     assert_eq!(env["normal_target_inherited"], false);
-    assert_eq!(
-        env["mutation_target_dir"],
-        f.run
-            .join("jobs/gate-mutation/mutation-target")
-            .display()
-            .to_string()
+    assert_eq!(env["cargo_target_dir"], serde_json::Value::Null);
+    assert_eq!(env["network"], "none");
+    assert_eq!(env["host_home_mounted"], false);
+    assert!(
+        !env["environment"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str().unwrap().starts_with("CARGO_TARGET_DIR=")),
+        "{env}"
     );
+    // The caller's own target dir never reaches the sandbox, and vendoring ran first.
+    let normal = f.root.join("normal-target").display().to_string();
+    let argv = f.runtime_argv("gate-mutation").concat();
+    assert!(argv.iter().any(|a| a == "--network=none"));
+    assert!(
+        argv.iter()
+            .all(|a| !a.starts_with("--env=CARGO_TARGET_DIR") && !a.contains(&normal))
+    );
+    assert!(f.run.join("jobs/sandbox-vendor/work/vendor").is_dir());
+    assert!(
+        f.run
+            .join("jobs/gate-mutation/work/mutation-results/mutants.out/outcomes.json")
+            .is_file()
+    );
+}
+
+#[test]
+fn qualification_cannot_restore_pass_over_a_refusal_marker() {
+    let f = Fixture::new();
+    f.prepare();
+    f.install_gate("empty");
+    assert_eq!(f.gate("tests").status.code(), Some(7));
+    let job = f.run.join("jobs/gate-tests");
+    assert!(job.join("qualification-error.txt").is_file());
+    let gate_reason = |output: &Output| {
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        result["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r.as_str().unwrap().starts_with("gate-tests:"))
+    };
+    let before = f.status();
+    assert_eq!(before.status.code(), Some(7));
+    assert!(gate_reason(&before));
+    // A same-uid forger rewrites the controller's qualification; the exit-0 receipt is untouched.
+    fs::write(
+        job.join("qualification.json"),
+        br#"{"outcome":"passed","report_sha256":null,"witness_sha256":null}"#,
+    )
+    .unwrap();
+    let after = f.status();
+    assert_eq!(after.status.code(), Some(7));
+    assert!(
+        gate_reason(&after),
+        "{}",
+        String::from_utf8_lossy(&after.stdout)
+    );
+}
+
+#[test]
+fn ignored_candidate_files_are_refused_at_prepare() {
+    let f = Fixture::new();
+    assert!(
+        Command::new("git")
+            .args(["rm", "-q", "--cached", "x.rs"])
+            .current_dir(&f.repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::write(f.repository.join(".gitignore"), "x.rs\n").unwrap();
+    let result = f.call(
+        &[
+            "prepare",
+            f.request.to_str().unwrap(),
+            f.run.to_str().unwrap(),
+        ],
+        "normal",
+    );
+    assert_eq!(result.status.code(), Some(4));
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("candidate file is outside the fingerprinted source inventory"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!f.run.exists());
+}
+
+#[test]
+fn gates_run_on_the_sealed_snapshot_and_refuse_a_tampered_one() {
+    let f = Fixture::new();
+    f.prepare();
+    f.install_gate("valid");
+    fs::write(f.run.join("source/x.rs"), "fn forged() {}\n").unwrap();
+    let result = f.gate("tests");
+    assert_eq!(result.status.code(), Some(4));
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("gate snapshot does not match"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!f.run.join("jobs/gate-tests").exists());
+
+    let f = Fixture::new();
+    f.prepare();
+    f.install_gate("valid");
+    let result = f.gate("tests");
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let job = fs::canonicalize(f.run.join("jobs/gate-tests")).unwrap();
+    let log = fs::read_to_string(job.join("stdout.log")).unwrap();
+    let seen: serde_json::Value = serde_json::from_str(
+        log.lines()
+            .find_map(|l| l.strip_prefix("OBSERVED "))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(seen["cwd"], job.join("work/src").display().to_string());
+    assert_eq!(seen["x.rs"], "fn b() {}\n");
+    // Only sandbox-issued environment reaches the gate, with container paths under its own /work.
+    let env = seen["env"].as_object().unwrap();
+    assert!(env.keys().all(|k| !k.starts_with("DDF_")), "{env:?}");
+    assert_eq!(env["HOME"], job.join("work/home").display().to_string());
+    assert_eq!(
+        env["CARGO_TARGET_DIR"],
+        job.join("work/target").display().to_string()
+    );
+    assert_eq!(env["CARGO_NET_OFFLINE"], "true");
+}
+
+#[test]
+fn antipattern_gate_runs_the_controllers_pinned_checker() {
+    let f = Fixture::new();
+    let planted = f.repository.join("scripts/security");
+    fs::create_dir_all(&planted).unwrap();
+    fs::write(
+        planted.join("review_policy_check.py"),
+        "print('{\"state\":\"passed\",\"workspace_members_checked\":1}')\n",
+    )
+    .unwrap();
+    for args in [
+        vec!["add", "scripts"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "plant a self-grading checker",
+        ],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(&f.repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    f.prepare();
+    let result = f.gate("antipatterns");
+    assert_eq!(
+        result.status.code(),
+        Some(7),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let receipts: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_ne!(receipts[0]["outcome"], "passed");
+    let job = f.run.join("jobs/gate-antipatterns");
+    assert!(
+        !fs::read_to_string(job.join("stdout.log"))
+            .unwrap()
+            .contains("\"workspace_members_checked\":1")
+    );
+    assert_eq!(
+        fs::read_to_string(job.join("work/review_policy_check.py")).unwrap(),
+        include_str!("../../deep-diff-forge-review/policy/review_policy_check.py")
+    );
+    let argv = f.runtime_argv("gate-antipatterns").concat();
+    assert!(argv.iter().any(|a| a == "/work/review_policy_check.py"));
+    assert!(argv.iter().all(|a| !a.contains("scripts/security")));
+    assert_eq!(f.status().status.code(), Some(7));
+}
+
+#[test]
+fn gates_refuse_without_a_sandbox() {
+    for image in [None, Some("absent-image")] {
+        let f = Fixture::new();
+        f.prepare();
+        f.install_gate("valid");
+        let mut command = f.command(
+            &["gate", f.run.to_str().unwrap(), "tests", "--execute"],
+            "normal",
+        );
+        match image {
+            None => command.env_remove("DDF_COUNCIL_GATE_IMAGE"),
+            Some(image) => command.env("DDF_COUNCIL_GATE_IMAGE", image),
+        };
+        let result = command.output().unwrap();
+        assert_eq!(result.status.code(), Some(4), "{image:?}");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("gate sandbox unavailable"),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
+    }
 }
 
 #[test]

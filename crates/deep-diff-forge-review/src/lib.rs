@@ -7,6 +7,7 @@ pub mod cli;
 mod execution;
 mod model;
 mod policy;
+mod sandbox;
 mod storage;
 pub use execution::{run_gate, run_reviewer};
 pub use model::*;

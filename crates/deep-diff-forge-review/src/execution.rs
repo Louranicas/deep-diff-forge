@@ -3,6 +3,8 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--execution
 //! Controller-owned subprocesses. No model-produced command text is executed.
 use crate::model::Qualification;
+use crate::sandbox::{self, Sandbox, Spec, WORK};
+use crate::storage::{INVENTORY_FILE, Inventory, MUTATION_WITNESS, SNAPSHOT_DIR};
 use crate::{
     Execution, Gate, Manifest, Outcome, Provider, Report, Result, ReviewFailure, Reviewer, Round,
     load_manifest, report_schema, require, source_fingerprint, storage, validate_report,
@@ -17,7 +19,7 @@ use std::io::Write as _;
 use std::os::unix::{fs::OpenOptionsExt, process::CommandExt};
 use std::{
     fs::{self, File, OpenOptions},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
@@ -34,6 +36,14 @@ fn lock(directory: &Path) -> Result<JobLock> {
     storage::write_new(&path, b"controller execution in progress\n")?;
     Ok(JobLock(path))
 }
+/// How a gate job runs: inside the sandbox, against its private copy of the sealed snapshot.
+struct GateLaunch<'a> {
+    sandbox: &'a Sandbox,
+    image_id: &'a str,
+    vendor: Option<&'a Path>,
+    network: bool,
+    mutation: bool,
+}
 fn run(
     directory: &Path,
     manifest: &Manifest,
@@ -41,15 +51,32 @@ fn run(
     argv: &[String],
     cwd: &Path,
     input: &[u8],
+    gate: Option<&GateLaunch<'_>>,
 ) -> Result<Execution> {
     let _lock = lock(directory)?;
-    let before = source_fingerprint(Path::new(&manifest.request.repository))?;
+    let repository = Path::new(&manifest.request.repository);
     require(
-        before == manifest.source_tree,
+        source_fingerprint(repository)? == manifest.source_tree,
         "workspace changed; prepare a new run",
     )?;
     let jobdir = directory.join("jobs").join(job);
-    storage::make_dir(&jobdir)?;
+    let work = jobdir.join("work");
+    // Gates are measured on their own snapshot copy; providers read only the captured prompt.
+    let inventory: Option<Inventory> = gate
+        .map(|_| storage::read_json(&directory.join(INVENTORY_FILE), 4 * 1024 * 1024))
+        .transpose()?;
+    let observe = || match &inventory {
+        Some(inventory) => storage::fingerprint_tree(&work.join("src"), inventory),
+        None => source_fingerprint(repository),
+    };
+    let before = observe()?;
+    require(
+        before == manifest.source_tree,
+        "gate snapshot does not match the sealed source tree",
+    )?;
+    if gate.is_none() {
+        storage::make_dir(&jobdir)?;
+    }
     storage::write_new(&jobdir.join("stdin.txt"), input)?;
     let stdout = jobdir.join("stdout.log");
     let stderr = jobdir.join("stderr.log");
@@ -63,55 +90,35 @@ fn run(
         .create_new(true)
         .mode(0o600)
         .open(&stderr)?;
+    let name = sandbox::container_name(&manifest.run_id, job);
+    let launched = launch_argv(manifest, &jobdir, &name, argv, gate)?;
     let start = Instant::now();
-    let mut command = Command::new(&argv[0]);
+    let mut command = Command::new(&launched[0]);
     command
-        .args(&argv[1..])
+        .args(&launched[1..])
         .current_dir(cwd)
         .stdin(File::open(jobdir.join("stdin.txt"))?)
         .stdout(Stdio::from(output))
         .stderr(Stdio::from(errors))
         .process_group(0);
-    if job.starts_with("gate-") {
-        for key in ["OPENAI_API_KEY", "CODEX_API_KEY", "ANTHROPIC_API_KEY"] {
-            command.env_remove(key);
-        }
-    }
-    if job == "gate-mutation" {
-        let target = jobdir.join("mutation-target");
-        command.env("CARGO_TARGET_DIR", &target);
-        storage::write_json(
-            &jobdir.join("environment.json"),
-            &serde_json::json!({"mutation_target_dir":target,"normal_target_inherited":false}),
-        )?;
-    }
-    let (mut outcome, exit_code) = supervise(
+    let supervised = supervise(
         &mut command,
         &stdout,
         &stderr,
         start,
         manifest.request.timeout_seconds,
-    )?;
-    let output_bytes = fs::metadata(&stdout)?.len();
-    let error_bytes = fs::metadata(&stderr)?.len();
-    if output_bytes.saturating_add(error_bytes) > LOG_CAP {
+    );
+    // conmon can keep a container running after its client is killed; remove it by name.
+    if let Some(gate) = gate {
+        gate.sandbox.remove(&name);
+    }
+    let (mut outcome, exit_code) = supervised?;
+    if limit_transcripts(&jobdir, &stdout, &stderr)? {
         outcome = Outcome::OutputLimit;
-        storage::write_json(
-            &jobdir.join("transcript-limit.json"),
-            &serde_json::json!({"transcript_complete":false,"stdout_bytes_observed":output_bytes,"stderr_bytes_observed":error_bytes,"retained_per_stream_limit":LOG_CAP}),
-        )?;
-        for path in [&stdout, &stderr] {
-            if fs::metadata(path)?.len() > LOG_CAP {
-                OpenOptions::new()
-                    .write(true)
-                    .open(path)?
-                    .set_len(LOG_CAP)?;
-            }
-        }
     }
     File::open(&stdout)?.sync_all()?;
     File::open(&stderr)?.sync_all()?;
-    let after = source_fingerprint(Path::new(&manifest.request.repository))?;
+    let after = observe()?;
     let outcome = if before == after {
         outcome
     } else {
@@ -131,6 +138,53 @@ fn run(
     };
     storage::write_json(&jobdir.join("execution.json"), &receipt)?;
     Ok(receipt)
+}
+/// Full command line: a gate is wrapped in the sandbox and its environment recorded; a provider runs as given.
+fn launch_argv(
+    manifest: &Manifest,
+    jobdir: &Path,
+    name: &str,
+    argv: &[String],
+    gate: Option<&GateLaunch<'_>>,
+) -> Result<Vec<String>> {
+    let Some(gate) = gate else {
+        return Ok(argv.to_vec());
+    };
+    let spec = Spec {
+        name,
+        work: &jobdir.join("work"),
+        vendor: gate.vendor,
+        inner: argv,
+        timeout_seconds: manifest.request.timeout_seconds,
+        network: gate.network,
+        mutation: gate.mutation,
+    };
+    storage::write_json(
+        &jobdir.join("environment.json"),
+        &gate.sandbox.record(&spec, gate.image_id),
+    )?;
+    Ok(gate.sandbox.argv(&spec))
+}
+/// Truncate oversized transcripts and record that they are incomplete; returns whether the limit was hit.
+fn limit_transcripts(jobdir: &Path, stdout: &Path, stderr: &Path) -> Result<bool> {
+    let output_bytes = fs::metadata(stdout)?.len();
+    let error_bytes = fs::metadata(stderr)?.len();
+    if output_bytes.saturating_add(error_bytes) <= LOG_CAP {
+        return Ok(false);
+    }
+    storage::write_json(
+        &jobdir.join("transcript-limit.json"),
+        &serde_json::json!({"transcript_complete":false,"stdout_bytes_observed":output_bytes,"stderr_bytes_observed":error_bytes,"retained_per_stream_limit":LOG_CAP}),
+    )?;
+    for path in [stdout, stderr] {
+        if fs::metadata(path)?.len() > LOG_CAP {
+            OpenOptions::new()
+                .write(true)
+                .open(path)?
+                .set_len(LOG_CAP)?;
+        }
+    }
+    Ok(true)
 }
 fn supervise(
     command: &mut Command,
@@ -264,6 +318,7 @@ pub fn run_reviewer(directory: &Path, id: &str, round: Round) -> Result<Executio
         &argv,
         &directory.join("workspace"),
         text.as_bytes(),
+        None,
     )?;
     if receipt.outcome != Outcome::Passed {
         return Ok(receipt);
@@ -403,7 +458,8 @@ fn provider_argv(directory: &Path, reviewer: &Reviewer, candidate: &Path) -> Res
     Ok(argv)
 }
 
-fn gate_argv(manifest: &Manifest, directory: &Path, gate: Gate) -> Vec<Vec<String>> {
+/// Gate command lines use container paths; each job's `/work` is its own private directory.
+fn gate_argv(manifest: &Manifest, gate: Gate) -> Vec<Vec<String>> {
     let one = match gate {
         Gate::Format => vec!["cargo", "fmt", "--all", "--check"],
         Gate::Check => vec!["cargo", "check", "--workspace", "--all-targets", "--locked"],
@@ -430,7 +486,8 @@ fn gate_argv(manifest: &Manifest, directory: &Path, gate: Gate) -> Vec<Vec<Strin
             "clippy::pedantic",
         ],
         Gate::Tests => vec!["cargo", "test", "--workspace", "--locked"],
-        Gate::Antipatterns => vec!["python3", "scripts/security/review_policy_check.py"],
+        // The controller's pinned checker, never the candidate's own copy (it would grade itself).
+        Gate::Antipatterns => vec!["python3", "/work/review_policy_check.py"],
         Gate::Fuzz => {
             return manifest
                 .request
@@ -443,14 +500,11 @@ fn gate_argv(manifest: &Manifest, directory: &Path, gate: Gate) -> Vec<Vec<Strin
                         "fuzz".into(),
                         "run".into(),
                         target.clone(),
-                        directory
-                            .join(format!("corpus-{target}"))
-                            .display()
-                            .to_string(),
+                        format!("{WORK}/corpus"),
                         "--".into(),
                         format!("-max_total_time={}", manifest.request.fuzz_seconds),
                         "-runs=1000000000".into(),
-                        format!("-artifact_prefix={}/", directory.join("jobs").display()),
+                        format!("-artifact_prefix={WORK}/fuzz-artifacts/"),
                         "-max_len=4096".into(),
                     ]
                 })
@@ -467,7 +521,7 @@ fn gate_argv(manifest: &Manifest, directory: &Path, gate: Gate) -> Vec<Vec<Strin
                 "--timeout".into(),
                 "30".into(),
                 "--output".into(),
-                directory.join("mutation-results").display().to_string(),
+                format!("{WORK}/mutation-results"),
             ]];
         }
     };
@@ -524,7 +578,7 @@ fn qualify_gate(directory: &Path, job: &str, gate: Gate, receipt: &mut Execution
     let jobdir = directory.join("jobs").join(job);
     let measured = match gate {
         Gate::Mutation => storage::read_json::<serde_json::Value>(
-            &directory.join("mutation-results/mutants.out/outcomes.json"),
+            &jobdir.join(MUTATION_WITNESS),
             16 * 1024 * 1024,
         )
         .as_ref()
@@ -570,6 +624,88 @@ fn qualify_gate(directory: &Path, job: &str, gate: Gate, receipt: &mut Execution
     Ok(())
 }
 
+/// The antipattern checker is compiled into the controller so a candidate cannot supply its own grader.
+const POLICY_CHECK: &str = include_str!("../policy/review_policy_check.py");
+const VENDOR_JOB: &str = "sandbox-vendor";
+
+/// Create a gate's private work tree: a verified copy of the sealed snapshot plus scratch directories.
+fn prepare_work(directory: &Path, jobdir: &Path, vendored: bool) -> Result<PathBuf> {
+    storage::make_dir(jobdir)?;
+    let work = jobdir.join("work");
+    storage::make_dir(&work)?;
+    let inventory: Inventory =
+        storage::read_json(&directory.join(INVENTORY_FILE), 4 * 1024 * 1024)?;
+    storage::copy_tree(&directory.join(SNAPSHOT_DIR), &work.join("src"), &inventory)?;
+    for scratch in ["home", "cargo-home", "tmp"] {
+        storage::make_dir(&work.join(scratch))?;
+    }
+    if vendored {
+        storage::write_new(
+            &work.join("cargo-home/config.toml"),
+            sandbox::VENDORED_CONFIG.as_bytes(),
+        )?;
+    }
+    Ok(work)
+}
+
+/// Vendor the candidate's locked dependencies once per run, so offline gates can build.
+/// This is the only networked sandbox job; `cargo vendor` reads manifests and lockfiles but runs no
+/// candidate build scripts, and cargo verifies each vendored crate's checksum against Cargo.lock.
+fn vendored_dependencies(
+    directory: &Path,
+    manifest: &Manifest,
+    sandbox: &Sandbox,
+    image_id: &str,
+) -> Result<PathBuf> {
+    let jobdir = directory.join("jobs").join(VENDOR_JOB);
+    let vendor = jobdir.join("work/vendor");
+    if !jobdir.exists() {
+        let work = prepare_work(directory, &jobdir, false)?;
+        let mut argv = ["cargo", "vendor", "--locked", "--versioned-dirs"]
+            .map(str::to_owned)
+            .to_vec();
+        if work.join("src/fuzz/Cargo.toml").exists() {
+            argv.extend(["--sync".into(), "fuzz/Cargo.toml".into()]);
+        }
+        argv.push(format!("{WORK}/vendor"));
+        let launch = GateLaunch {
+            sandbox,
+            image_id,
+            vendor: None,
+            network: true,
+            mutation: false,
+        };
+        let receipt = run(
+            directory,
+            manifest,
+            VENDOR_JOB,
+            &argv,
+            &work,
+            b"",
+            Some(&launch),
+        )?;
+        // `cargo vendor` exits 0 without creating the directory when there are no dependencies.
+        if receipt.outcome == Outcome::Passed && !vendor.exists() {
+            storage::make_dir(&vendor)?;
+        }
+        storage::write_json(
+            &jobdir.join("qualification.json"),
+            &Qualification {
+                outcome: receipt.outcome.clone(),
+                report_sha256: None,
+                witness_sha256: None,
+            },
+        )?;
+    }
+    let qualification: Qualification =
+        storage::read_json(&jobdir.join("qualification.json"), storage::REPORT_CAP)?;
+    require(
+        qualification.outcome == Outcome::Passed && vendor.is_dir(),
+        "dependency vendoring did not pass; inspect jobs/sandbox-vendor and prepare a new run",
+    )?;
+    Ok(vendor)
+}
+
 /// Execute a fixed, admitted quality check. Models can request a check but cannot write its receipt.
 /// # Errors
 /// Refuses stale sources, duplicate jobs and malformed mutation coverage results.
@@ -577,22 +713,17 @@ pub fn run_gate(directory: &Path, gate: Gate) -> Result<Vec<Execution>> {
     let canonical = fs::canonicalize(directory)?;
     let directory = canonical.as_path();
     let manifest = load_manifest(directory)?;
-    if gate == Gate::Fuzz {
-        for target in &manifest.request.fuzz_targets {
-            let corpus = directory.join(format!("corpus-{target}"));
-            storage::make_dir(&corpus)?;
-            let seed = Path::new(&manifest.request.repository)
-                .join("review-policy/fuzz-seeds")
-                .join(format!("{target}.json"));
-            if seed.exists() {
-                storage::write_new(
-                    &corpus.join("seed.json"),
-                    &storage::read_bytes(&seed, 128 * 1024)?,
-                )?;
-            }
-        }
-    }
-    let commands = gate_argv(&manifest, directory, gate);
+    // Refuse before creating any job: an unavailable sandbox must not burn an immutable job slot.
+    let sandbox = Sandbox::from_env()?;
+    let image_id = sandbox.image_id()?;
+    let vendor = if gate == Gate::Antipatterns {
+        None
+    } else {
+        Some(vendored_dependencies(
+            directory, &manifest, &sandbox, &image_id,
+        )?)
+    };
+    let commands = gate_argv(&manifest, gate);
     let mut receipts = Vec::new();
     for (i, argv) in commands.iter().enumerate() {
         let job = if commands.len() == 1 {
@@ -600,16 +731,41 @@ pub fn run_gate(directory: &Path, gate: Gate) -> Result<Vec<Execution>> {
         } else {
             format!("gate-{}-{i}", gate.label())
         };
-        let mut receipt = run(
-            directory,
-            &manifest,
-            &job,
-            argv,
-            Path::new(&manifest.request.repository),
-            b"",
-        )?;
+        let jobdir = directory.join("jobs").join(&job);
+        let work = prepare_work(directory, &jobdir, vendor.is_some())?;
+        match gate {
+            Gate::Fuzz => {
+                storage::make_dir(&work.join("corpus"))?;
+                storage::make_dir(&work.join("fuzz-artifacts"))?;
+                // Seeds come from the sealed snapshot, never the live checkout.
+                let seed = work
+                    .join("src/review-policy/fuzz-seeds")
+                    .join(format!("{}.json", manifest.request.fuzz_targets[i]));
+                if seed.exists() {
+                    storage::write_new(
+                        &work.join("corpus/seed.json"),
+                        &storage::read_bytes(&seed, 128 * 1024)?,
+                    )?;
+                }
+            }
+            Gate::Antipatterns => {
+                storage::write_new(
+                    &work.join("review_policy_check.py"),
+                    POLICY_CHECK.as_bytes(),
+                )?;
+            }
+            _ => {}
+        }
+        let launch = GateLaunch {
+            sandbox: &sandbox,
+            image_id: &image_id,
+            vendor: vendor.as_deref(),
+            network: false,
+            mutation: gate == Gate::Mutation,
+        };
+        let mut receipt = run(directory, &manifest, &job, argv, &work, b"", Some(&launch))?;
         qualify_gate(directory, &job, gate, &mut receipt)?;
-        let witness = directory.join("mutation-results/mutants.out/outcomes.json");
+        let witness = jobdir.join(MUTATION_WITNESS);
         let witness_sha256 = if gate == Gate::Mutation && witness.exists() {
             Some(sha256_hex(&storage::read_bytes(
                 &witness,

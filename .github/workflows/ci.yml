@@ -90,7 +90,9 @@ jobs:
   review-controller-evidence:
     name: review controller mutation and fuzz evidence
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Raised from 30: the gate image build installs two Rust toolchains and compiles
+    # cargo-mutants and cargo-fuzz inside the image.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -110,6 +112,38 @@ jobs:
           mkdir -p /tmp/ddf-council-corpus
           cp review-policy/fuzz-seeds/council_report.json /tmp/ddf-council-corpus/seed.json
           cargo +nightly fuzz run council_report /tmp/ddf-council-corpus -- -max_total_time=10 -max_len=4096
+      # Council quality gates only run inside the rootless Podman gate sandbox
+      # (docs/REVIEW_COUNCIL.md#gate-sandbox). The ubuntu runner images ship podman.
+      #
+      # UNVERIFIED on GitHub-hosted runners: Ubuntu 23.10+ (so ubuntu-24.04 / ubuntu-latest)
+      # restricts unprivileged user namespaces through AppArmor, which can make rootless
+      # podman fail with "unshare(...): Operation not permitted". Ubuntu documents the switch
+      # kernel.apparmor_restrict_unprivileged_userns (set it to 0 to lift the restriction):
+      #   https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces
+      # The runner-images tracker records the 22.04 -> 24.04 breakage but no official fix:
+      #   https://github.com/actions/runner-images/issues/10443
+      # No GitHub-maintained recommendation for rootless podman on ubuntu-24.04 was found, so
+      # this relaxes the sysctl on the ephemeral runner VM only when it is present and set.
+      # The alternative is a per-binary AppArmor profile granting `userns,` (same Ubuntu post).
+      - name: allow rootless podman user namespaces (ubuntu-24.04, unverified)
+        run: |
+          podman --version
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = "1" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: build council gate image
+        run: |
+          # The Containerfile builds with --pull=never, so pull its digest-pinned base first.
+          base="$(sed -n 's/^FROM \([^ ]*@sha256:[0-9a-f]*\).*/\1/p' review-policy/sandbox/Containerfile | sort -u)"
+          test "$(printf '%s\n' "$base" | wc -l)" -eq 1
+          podman pull "$base"
+          podman build --pull=never -t localhost/ddf-council-gate:ci -f review-policy/sandbox/Containerfile review-policy/sandbox
+          podman image inspect --format '{{.Id}}' localhost/ddf-council-gate:ci
+      - name: council gate sandbox integration
+        env:
+          DDF_COUNCIL_SANDBOX_IT: "1"
+          DDF_COUNCIL_GATE_IMAGE: localhost/ddf-council-gate:ci
+        run: cargo test --locked -p deep-diff-forge-cli --test council_sandbox
 
   supply-chain:
     name: supply chain audit
