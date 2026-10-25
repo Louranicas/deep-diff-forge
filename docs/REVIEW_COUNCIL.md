@@ -167,6 +167,67 @@ Find the session path with `tuicr review list --repo <repository>`. Rules, each 
 
 tuicr locates its store with `directories::ProjectDirs` (`$XDG_DATA_HOME/tuicr/reviews`, default `~/.local/share/tuicr/reviews`) and saves an edited session at a path derived from its slug and canonical repository, not necessarily at the `--session` path given; hence the `review list` preflight and the post-write re-read. tuicr has no non-interactive way to create a session. The opt-in real-tuicr test (`DDF_TUICR_IT=1`) therefore writes a minimal 1.3 session file in an isolated `HOME`/`XDG_DATA_HOME`/`XDG_CONFIG_HOME`, lets `tuicr review add` save it into the isolated store, asserts the stored path lies under the isolated data directory, and then exports into it. Without the variable it prints `UNMEASURED:`.
 
+<a id="decision-journal"></a>
+
+### Decision journal fed by tuicr dispositions (DDF-R18)
+
+`council import-tuicr` is the reverse direction. It reads a local tuicr (0.27.0) session and appends what humans did there to an append-only journal in the run, `<run>/decisions.jsonl`. It never writes to tuicr. A recorded event is an observation of a human decision, not an approval or a verified fact.
+
+```sh
+# Dry run (default): every check, then the events it would append, as JSON. Writes nothing.
+ddf-integration-20261025 council import-tuicr /absolute/run-directory --session <session.json>
+# Append the events.
+ddf-integration-20261025 council import-tuicr /absolute/run-directory --session <session.json> --execute
+```
+
+Exit 0 means the import completed. Exit 7 means the events include a conflict; they are still appended in `--execute` mode. Exit 4 is a refusal, and nothing is appended. Rules, each covered by [the journal tests](../crates/deep-diff-forge-cli/tests/council_tuicr.rs):
+
+- **Event schema** (`deep-diff-forge.decision.v1`, one JSON object per line):
+  - Identity: `seq`, `prev`, `run_id`, `session_id`, `revision` (`diff_source`, `base_commit`, `new_side`), `comment_id`, and `content_sha256` of the comment text.
+  - Anchoring: `anchor` (`review`, `file`, or `lines` with `file`, `side`, `start_line`, `end_line`), and `content_hash`, the tuicr `FileReview.content_hash` of the anchored file.
+  - Payload: `kind`, `actor` (`name`, `basis`), `ddf_authored`, `comment_type`, `lifecycle_state`, `previous_lifecycle_state`, `content` (verbatim, untrusted), `links`, `reviewed`, `reviewed_hunks`, `conflict`, `supersedes`, and `hash`.
+  - `hash` is the SHA-256 of the line serialized with `hash` set to `""`.
+  - `kind` is one of:
+    - `comment_added`: a comment not written by this run's export.
+    - `disposition`: such a comment linked to a council finding.
+    - `revised`: changed content.
+    - `restored`
+    - `lifecycle`: a `local_draft`/`pushed_draft`/`submitted` transition.
+    - `deleted`: a tombstone.
+    - `file_review`: a change in `reviewed` or `reviewed_hunks`.
+- **DDF authorship and actors.** A comment counts as DDF-authored only if its id is in this run's export ledger (`exports/tuicr/<session-id>/*.json`). The author string is not used for this. An export intent marker without a completion record refuses the import.
+  - For human comments, `actor.name` is the tuicr `author` field, with basis `tuicr_author`. It is free-form and unauthenticated.
+  - tuicr records no editor for changes to council notes and no actor for reviewed marks. Those events carry the name `unrecorded`, with basis `unrecorded`.
+- **Linking rule.** Tags in the comment text take precedence. A tag is `[ddf:<reviewer>/<round>/finding/<finding-id>]` (the export ledger key), or a quoted note header `[DDF-COUNCIL run=<this run> reviewer=<r> round=<round> finding=<id>]`. Each tag must name an exported finding note. Tags for other runs, unknown keys, summaries and response notes link nothing. A tag is at most 256 bytes.
+  - With no valid tag, the comment links to every exported finding note on the same file and side whose line range overlaps its own.
+  - Review-level and file-level comments link only by tag.
+- **Conflicts, not last-writer-wins.**
+  - A journaled or exported comment whose text changed gets a new `revised` event. The event references the prior event by `supersedes`.
+  - If that comment is a council note, which changes only when someone outside DDF edits it, the event carries a `conflict` reason and the command exits 7. The baseline for a council note is the ledger's `content_sha256`.
+  - Earlier events are never changed or removed. A comment that disappears gets a `deleted` tombstone.
+- **Chain and tamper evidence.**
+  - `prev` chains every event to the one before it. The first event's `prev` is 64 zeros.
+  - Each import that appends also writes a create-new checkpoint `<run>/decisions.checkpoints/<seq>.json` holding the head hash.
+  - Before planning, the whole journal is verified: each line must be the event's own canonical serialization, `seq` must be consecutive, every `prev` and `hash` must recompute, and `run_id` must match. Every checkpoint must still name an event the journal holds.
+  - An edited, reordered, partially written or truncated journal is refused. This includes a deleted journal whose checkpoints remain.
+  - Appends use `O_APPEND` after checking that the file length still equals the verified length, under a create-new `decisions.lock`.
+  - These are local consistency checks, not signatures. A same-uid process that rewrites the journal, its checkpoints and all hashes together is not detected.
+- **Stale revision refusal.** All refusals reject the whole import, and nothing is appended.
+  - The session must pass the export's identity checks: version, no forge session, and the same repository.
+  - Its `base_commit` must be a full commit id equal to the HEAD in the run's `source-inventory.json`. That inventory and the sealed snapshot are first re-verified against the manifest's `source_tree` fingerprint.
+  - Every event anchored to a file requires the bytes the session shows for that file to equal `<run>/source/<path>`. These bytes are resolved per `diff_source`, as in the export. The file must also be in the inventory.
+  - A review-level event requires this for every file the session lists. A listed file outside the inventory is refused if the session can show bytes for it, and is otherwise skipped (for example, tuicr's commit-message pseudo-files).
+- **Reviewed marks.** tuicr's `content_hash` is an FNV-1a hash over its own rendered diff hunks, so DDF cannot recompute it from the snapshot. A positive mark (`reviewed` or any `reviewed_hunks`) is therefore refused in two cases:
+  - It has no `content_hash`.
+  - Its `content_hash` differs from the one pinned by the first journaled positive mark for that file.
+
+  The byte check above also applies to the mark.
+- **Idempotency and bounds.** Re-running against an unchanged session plans and appends nothing.
+  - The session file is capped at 32 MiB and the journal at 64 MiB.
+  - Comment ids must be short identifiers and must be unique across the session.
+  - File keys must be relative paths with only normal components.
+  - Unknown lifecycle states and comment sides are refused.
+
 ## Exact quality checks
 
 Every command below runs inside the [gate sandbox](#gate-sandbox) with working directory `/work/src`, the job's private copy of the sealed snapshot. Paths beginning `/work` are container paths inside that job's own `jobs/<job>/work/` directory.
@@ -406,11 +467,19 @@ Read-only DDF→tuicr export: admitted reports only, repository and per-file byt
 
 [Exact crate/module](../crates/deep-diff-forge-review/src/tuicr.rs)
 
+<a id="decision-journal-module"></a>
+
+### crates/deep-diff-forge-review/src/journal.rs
+
+tuicr→DDF decision journal: an append-only, hash-chained `decisions.jsonl` with checkpoints. It records actor-attributed dispositions, revisions and conflicts, lifecycle transitions, tombstones and reviewed marks. It refuses stale revisions and bytes. Design: [Decision journal](#decision-journal).
+
+[Exact crate/module](../crates/deep-diff-forge-review/src/journal.rs)
+
 <a id="tuicr-export-controls"></a>
 
 ### crates/deep-diff-forge-cli/tests/council_tuicr.rs
 
-Export through the actual CLI with fake providers and a fake tuicr, plus one opt-in real-tuicr round trip in an isolated store.
+Export and decision-journal import through the actual CLI with fake providers and a fake tuicr. It also has two opt-in real-tuicr tests in an isolated store: the export round trip, and a `tuicr review add` human comment imported as a disposition.
 
 [Exact crate/module](../crates/deep-diff-forge-cli/tests/council_tuicr.rs)
 

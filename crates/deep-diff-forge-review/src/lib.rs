@@ -5,12 +5,17 @@
 //! Design: `docs/REVIEW_COUNCIL.md`. [Vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FReview%20Council).
 pub mod cli;
 mod execution;
+mod journal;
 mod model;
 mod policy;
 mod sandbox;
 mod storage;
 mod tuicr;
 pub use execution::{run_gate, run_reviewer};
+pub use journal::{
+    Actor, ActorBasis, Anchor, DecisionEvent, EventKind, ImportOptions, JOURNAL_FILE, Lifecycle,
+    Link, LinkBasis, SessionRevision, TuicrImport, TuicrImportError, import_tuicr,
+};
 pub use model::*;
 pub use policy::{assess, report_schema, validate_report, validate_request};
 use std::{error::Error, fmt};
