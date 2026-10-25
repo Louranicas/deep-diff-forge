@@ -1022,11 +1022,10 @@ fn refuse_hidden_exemptions(
     }
     let qualification: Qualification =
         storage::read_json(&jobdir.join("qualification.json"), storage::REPORT_CAP)?;
-    if qualification.outcome == Outcome::Passed && !jobdir.join("qualification-error.txt").exists()
-    {
+    if qualification.outcome == Outcome::Passed {
         return Ok(());
     }
-    let detail = storage::read_bytes(&jobdir.join("qualification-error.txt"), 64 * 1024)
+    let detail = storage::read_bytes(&jobdir.join("qualification-error.txt"), storage::REPORT_CAP)
         .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned())
         .unwrap_or_default();
     Err(ReviewFailure(format!(

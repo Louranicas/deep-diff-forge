@@ -509,15 +509,18 @@ const FAKE_IMAGE_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef012
 /// `vendor_dirs` (more empty directories than the seal's entry budget) in
 /// the vendoring output; `fifo` and `symlinked_dir` at the mutation witness. It also answers the
 /// exemption oracle (installed again as `ddf-cargo-mutants-noexclude`): `exempt` hides a function the
-/// production HIR compiles, `hidden_test` hides one it does not, and `hir_empty` dumps no spans.
+/// production HIR compiles (`exempt_txt`: in a non-`.rs` module), `hidden_test` hides one it does
+/// not, and `hir_empty` dumps no spans.
 const FAKE_GATE: &str = r"#!/usr/bin/python3
 import json,os,pathlib,sys
 mode='@MODE@'
 if '--list' in sys.argv:
     # Exemption oracle listings: the no-exclusion build also names `hidden` (lines 3-4).
-    def fn(name,a,b):return {'file':'src/lib.rs','function':{'function_name':name,'span':{'start':{'line':a,'column':1},'end':{'line':b,'column':40}}}}
+    def fn(name,a,b,file='src/lib.rs'):return {'file':file,'function':{'function_name':name,'span':{'start':{'line':a,'column':1},'end':{'line':b,'column':40}}}}
     rows=[fn('shipped',1,2)]
     if 'noexclude' in os.path.basename(sys.argv[0]) and mode in ('exempt','hidden_test'):rows.append(fn('hidden',3,4))
+    # A `#[path]` module need not end in `.rs` (council r10); its spans must still count.
+    if 'noexclude' in os.path.basename(sys.argv[0]) and mode=='exempt_txt':rows.append(fn('hidden',3,4,'src/hidden.txt'))
     print(json.dumps(rows));sys.exit(0)
 if sys.argv[1:2]==['metadata']:
     print(json.dumps({'packages':[{'name':'deep-diff-forge-review','targets':[{'name':'deep-diff-forge-review','kind':['lib']}]}]}));sys.exit(0)
@@ -526,6 +529,7 @@ if sys.argv[1:2]==['rustc']:
     if mode!='hir_empty':print('span: src/lib.rs:1:1: 2:2 (#0)')
     # `exempt`: the hidden function is compiled into production; `hidden_test`: it is not.
     if mode=='exempt':print('span: src/lib.rs:3:5: 3:9 (#0)')
+    if mode=='exempt_txt':print('span: src/hidden.txt:3:5: 3:9 (#0)')
     sys.exit(0)
 if sys.argv[1:2]==['vendor']:
     out=pathlib.Path(sys.argv[-1])
@@ -829,6 +833,17 @@ fn candidate_code_cannot_exempt_itself_from_the_mutation_gate() {
 
 #[test]
 fn shipped_code_hidden_from_cargo_mutants_refuses_the_mutation_gate() {
+    // A span in a non-`.rs` module counts like any other.
+    let f = Fixture::new();
+    f.prepare();
+    f.install_gate("exempt_txt");
+    let result = f.gate("mutation");
+    assert_eq!(
+        result.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     let f = Fixture::new();
     f.prepare();
     // The no-exclusion listing names `hidden`, and the production HIR has a span inside it.
@@ -882,6 +897,44 @@ fn test_only_code_hidden_from_cargo_mutants_is_allowed() {
     assert_eq!(witness["state"], "passed");
     assert_eq!(witness["hidden_functions"], 1);
     assert_eq!(witness["stock_functions_with_production_spans"], 1);
+}
+
+/// Stands in for the oracle inside the fake sandbox: writes `@WITNESS@` and exits `@CODE@`.
+const FAKE_ORACLE: &str = r"#!/usr/bin/python3
+import os,sys
+if 'exemption_oracle.py' not in ' '.join(sys.argv):os.execv('/usr/bin/python3',['/usr/bin/python3']+sys.argv[1:])
+open(sys.argv[sys.argv.index('--witness')+1],'w').write('@WITNESS@')
+sys.exit(@CODE@)
+";
+
+#[test]
+fn the_controller_checks_the_oracle_witness_as_well_as_its_exit() {
+    // A zero exit cannot pass a vacuous witness, and a passing witness cannot pass a failed exit.
+    for (witness, code) in [
+        (r#"{"state":"passed","targets_dumped":0}"#, 0),
+        (r#"{"state":"passed","targets_dumped":1}"#, 1),
+    ] {
+        let f = Fixture::new();
+        f.prepare();
+        f.install_gate("valid");
+        let oracle = f.bin.join("python3");
+        fs::write(
+            &oracle,
+            FAKE_ORACLE
+                .replace("@WITNESS@", witness)
+                .replace("@CODE@", &code.to_string()),
+        )
+        .unwrap();
+        fs::set_permissions(&oracle, fs::Permissions::from_mode(0o700)).unwrap();
+        let result = f.gate("mutation");
+        assert_eq!(
+            result.status.code(),
+            Some(4),
+            "{witness}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(!f.run.join("jobs/gate-mutation").exists(), "{witness}");
+    }
 }
 
 #[test]

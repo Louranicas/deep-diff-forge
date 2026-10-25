@@ -30,7 +30,9 @@ import subprocess
 import sys
 
 NOEXCLUDE = "ddf-cargo-mutants-noexclude"
-SPAN = re.compile(r"([^\s:()]+\.rs):(\d+):(\d+): (\d+):(\d+)")
+# A rustc span is `<path>:<line>:<col>: <line>:<col> (#<ctxt>)`. The path is matched by that suffix,
+# never by its extension: `#[path]` modules and Cargo target roots need not end in `.rs` (council r10).
+SPAN = re.compile(r"(\S+?):(\d+):(\d+): (\d+):(\d+) \(#")
 SCHEMA = "deep-diff-forge.exemption-oracle.v1"
 
 
