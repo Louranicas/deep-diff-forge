@@ -31,19 +31,30 @@ impl Drop for JobLock {
         let _ = fs::remove_file(&self.0);
     }
 }
-fn lock(directory: &Path) -> Result<JobLock> {
+/// Take the run's controller lock and refuse a changed workspace, before any job slot exists.
+fn admit(directory: &Path, manifest: &Manifest) -> Result<JobLock> {
     let path = directory.join("controller.lock");
     storage::write_new(&path, b"controller execution in progress\n")?;
-    Ok(JobLock(path))
+    let lock = JobLock(path);
+    require_fresh(manifest)?;
+    Ok(lock)
+}
+fn require_fresh(manifest: &Manifest) -> Result<()> {
+    require(
+        source_fingerprint(Path::new(&manifest.request.repository))? == manifest.source_tree,
+        "workspace changed; prepare a new run",
+    )
 }
 /// How a gate job runs: inside the sandbox, against its private copy of the sealed snapshot.
 struct GateLaunch<'a> {
     sandbox: &'a Sandbox,
     image_id: &'a str,
-    vendor: Option<&'a Path>,
+    vendor: Option<(&'a Path, &'a str)>,
     network: bool,
     mutation: bool,
+    fuzz: bool,
 }
+/// Run one admitted job; the caller holds the controller lock from [`admit`].
 fn run(
     directory: &Path,
     manifest: &Manifest,
@@ -53,20 +64,14 @@ fn run(
     input: &[u8],
     gate: Option<&GateLaunch<'_>>,
 ) -> Result<Execution> {
-    let _lock = lock(directory)?;
     let repository = Path::new(&manifest.request.repository);
-    require(
-        source_fingerprint(repository)? == manifest.source_tree,
-        "workspace changed; prepare a new run",
-    )?;
     let jobdir = directory.join("jobs").join(job);
-    let work = jobdir.join("work");
-    // Gates are measured on their own snapshot copy; providers read only the captured prompt.
+    // Gates are measured on their own read-only snapshot copy; providers read only the captured prompt.
     let inventory: Option<Inventory> = gate
         .map(|_| storage::read_json(&directory.join(INVENTORY_FILE), 4 * 1024 * 1024))
         .transpose()?;
     let observe = || match &inventory {
-        Some(inventory) => storage::fingerprint_tree(&work.join("src"), inventory),
+        Some(inventory) => storage::fingerprint_tree(&jobdir.join("src"), inventory),
         None => source_fingerprint(repository),
     };
     let before = observe()?;
@@ -90,8 +95,7 @@ fn run(
         .create_new(true)
         .mode(0o600)
         .open(&stderr)?;
-    let name = sandbox::container_name(&manifest.run_id, job);
-    let launched = launch_argv(manifest, &jobdir, &name, argv, gate)?;
+    let (launched, name) = launch_argv(manifest, &jobdir, job, argv, gate)?;
     let start = Instant::now();
     let mut command = Command::new(&launched[0]);
     command
@@ -108,16 +112,27 @@ fn run(
         start,
         manifest.request.timeout_seconds,
     );
-    // conmon can keep a container running after its client is killed; remove it by name.
-    if let Some(gate) = gate {
-        gate.sandbox.remove(&name);
-    }
+    // conmon can keep a container running after its client is killed; remove it by name and
+    // prove it gone before anything it could still write is read.
+    let removal = match (gate, &name) {
+        (Some(gate), Some(name)) => gate.sandbox.remove(name),
+        _ => Ok(()),
+    };
     let (mut outcome, exit_code) = supervised?;
     if limit_transcripts(&jobdir, &stdout, &stderr)? {
         outcome = Outcome::OutputLimit;
     }
     File::open(&stdout)?.sync_all()?;
     File::open(&stderr)?.sync_all()?;
+    if let Err(error) = removal {
+        storage::write_new(
+            &jobdir.join("qualification-error.txt"),
+            format!("{error}; the job's work directory was not read and no gate PASS\n").as_bytes(),
+        )?;
+        if outcome == Outcome::Passed {
+            outcome = Outcome::Inconclusive;
+        }
+    }
     let after = observe()?;
     let outcome = if before == after {
         outcome
@@ -135,35 +150,43 @@ fn run(
         argv: argv.to_vec(),
         stdout_sha256: sha256_hex(&storage::read_bytes(&stdout, LOG_CAP * 2)?),
         stderr_sha256: sha256_hex(&storage::read_bytes(&stderr, LOG_CAP * 2)?),
+        image_id: gate.map(|g| g.image_id.to_owned()),
     };
     storage::write_json(&jobdir.join("execution.json"), &receipt)?;
     Ok(receipt)
 }
 /// Full command line: a gate is wrapped in the sandbox and its environment recorded; a provider runs as given.
+/// Also returns the gate's container name.
 fn launch_argv(
     manifest: &Manifest,
     jobdir: &Path,
-    name: &str,
+    job: &str,
     argv: &[String],
     gate: Option<&GateLaunch<'_>>,
-) -> Result<Vec<String>> {
+) -> Result<(Vec<String>, Option<String>)> {
     let Some(gate) = gate else {
-        return Ok(argv.to_vec());
+        return Ok((argv.to_vec(), None));
     };
+    let name = sandbox::container_name(&manifest.run_id, job)?;
+    let cargo_home = jobdir.join("cargo-home");
     let spec = Spec {
-        name,
+        name: &name,
+        image_id: gate.image_id,
         work: &jobdir.join("work"),
+        source: &jobdir.join("src"),
+        cargo_home: gate.vendor.map(|_| cargo_home.as_path()),
         vendor: gate.vendor,
         inner: argv,
         timeout_seconds: manifest.request.timeout_seconds,
         network: gate.network,
         mutation: gate.mutation,
+        fuzz: gate.fuzz,
     };
     storage::write_json(
         &jobdir.join("environment.json"),
-        &gate.sandbox.record(&spec, gate.image_id),
+        &gate.sandbox.record(&spec),
     )?;
-    Ok(gate.sandbox.argv(&spec))
+    Ok((gate.sandbox.argv(&spec), Some(name)))
 }
 /// Truncate oversized transcripts and record that they are incomplete; returns whether the limit was hit.
 fn limit_transcripts(jobdir: &Path, stdout: &Path, stderr: &Path) -> Result<bool> {
@@ -311,6 +334,7 @@ pub fn run_reviewer(directory: &Path, id: &str, round: Round) -> Result<Executio
     let job = format!("review-{}-{}", reviewer.id, round.label());
     let candidate = directory.join("jobs").join(&job).join("candidate.json");
     let argv = provider_argv(directory, reviewer, &candidate)?;
+    let _lock = admit(directory, &manifest)?;
     let mut receipt = run(
         directory,
         &manifest,
@@ -571,18 +595,37 @@ fn fuzz_measurement(text: &str) -> Option<(u64, u64)> {
         }
     })
 }
-fn qualify_gate(directory: &Path, job: &str, gate: Gate, receipt: &mut Execution) -> Result<()> {
+/// Lower a passing gate that did not measure its required work; returns the mutation witness digest.
+fn qualify_gate(
+    directory: &Path,
+    job: &str,
+    gate: Gate,
+    receipt: &mut Execution,
+) -> Result<Option<String>> {
     if receipt.outcome != Outcome::Passed {
-        return Ok(());
+        return Ok(None);
     }
     let jobdir = directory.join("jobs").join(job);
+    let mut witness = None;
+    let mut detail = String::new();
     let measured = match gate {
-        Gate::Mutation => storage::read_json::<serde_json::Value>(
-            &jobdir.join(MUTATION_WITNESS),
-            16 * 1024 * 1024,
-        )
-        .as_ref()
-        .is_ok_and(mutation_measured),
+        // Written inside the sandbox: read once, without following any symlink or opening a FIFO,
+        // and digest exactly the bytes that were judged.
+        Gate::Mutation => {
+            match storage::read_untrusted(&jobdir, Path::new(MUTATION_WITNESS), 16 * 1024 * 1024) {
+                Ok(bytes) => {
+                    let measured = serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .as_ref()
+                        .is_ok_and(mutation_measured);
+                    witness = measured.then(|| sha256_hex(&bytes));
+                    measured
+                }
+                Err(error) => {
+                    detail = format!("mutation witness refused: {error}\n");
+                    false
+                }
+            }
+        }
         Gate::Fuzz => {
             let bytes = storage::read_bytes(&jobdir.join("stderr.log"), LOG_CAP)?;
             let measurement = fuzz_measurement(&String::from_utf8_lossy(&bytes));
@@ -618,30 +661,67 @@ fn qualify_gate(directory: &Path, job: &str, gate: Gate, receipt: &mut Execution
         receipt.outcome = Outcome::Inconclusive;
         storage::write_new(
             &jobdir.join("qualification-error.txt"),
-            b"Tool exit zero without non-vacuous required measurement; no gate PASS\n",
+            format!(
+                "{detail}Tool exit zero without non-vacuous required measurement; no gate PASS\n"
+            )
+            .as_bytes(),
         )?;
     }
-    Ok(())
+    Ok(witness)
 }
 
 /// The antipattern checker is compiled into the controller so a candidate cannot supply its own grader.
 const POLICY_CHECK: &str = include_str!("../policy/review_policy_check.py");
 const VENDOR_JOB: &str = "sandbox-vendor";
+/// Sealed copy of the vendoring job's output, relative to the run directory; the only vendor mount.
+const VENDOR_DIR: &str = "vendor";
+/// Candidate files that would select a toolchain or Cargo behaviour: wrappers, runners, linkers,
+/// credential providers, source replacement. Refused at any depth, before any job slot exists.
+const TOOLCHAIN_CONFIG: [&str; 4] = [
+    ".cargo/config",
+    ".cargo/config.toml",
+    "rust-toolchain",
+    "rust-toolchain.toml",
+];
+fn refuse_toolchain_config(inventory: &Inventory) -> Result<()> {
+    let planted = inventory.paths().find(|path| {
+        TOOLCHAIN_CONFIG
+            .iter()
+            .any(|name| path == name || path.ends_with(&format!("/{name}")))
+    });
+    match planted {
+        Some(path) => Err(ReviewFailure(format!(
+            "snapshot contains candidate toolchain configuration {path}; gates never run with candidate-selected Cargo config or toolchains"
+        ))),
+        None => Ok(()),
+    }
+}
 
-/// Create a gate's private work tree: a verified copy of the sealed snapshot plus scratch directories.
-fn prepare_work(directory: &Path, jobdir: &Path, vendored: bool) -> Result<PathBuf> {
+/// Create a gate's slot: a read-only-mounted, verified copy of the sealed snapshot, writable scratch,
+/// and (when vendored) a controller-written Cargo home.
+fn prepare_work(directory: &Path, jobdir: &Path, vendored: bool, fuzz: bool) -> Result<PathBuf> {
     storage::make_dir(jobdir)?;
-    let work = jobdir.join("work");
-    storage::make_dir(&work)?;
     let inventory: Inventory =
         storage::read_json(&directory.join(INVENTORY_FILE), 4 * 1024 * 1024)?;
-    storage::copy_tree(&directory.join(SNAPSHOT_DIR), &work.join("src"), &inventory)?;
+    let source = jobdir.join("src");
+    storage::copy_tree(&directory.join(SNAPSHOT_DIR), &source, &inventory)?;
+    // The mountpoint for the fuzz artifact tmpfs; outside the inventory, so never fingerprinted.
+    let fuzz_dir = storage::untrusted_metadata(&source, Path::new("fuzz"))?;
+    if fuzz
+        && fuzz_dir.is_some_and(|meta| meta.is_dir())
+        && storage::untrusted_metadata(&source, Path::new("fuzz/artifacts"))?.is_none()
+    {
+        storage::make_dir(&source.join("fuzz/artifacts"))?;
+    }
+    let work = jobdir.join("work");
+    storage::make_dir(&work)?;
     for scratch in ["home", "cargo-home", "tmp"] {
         storage::make_dir(&work.join(scratch))?;
     }
     if vendored {
+        storage::make_dir(&jobdir.join("cargo-home"))?;
         storage::write_new(
-            &work.join("cargo-home/config.toml"),
+            &jobdir.join("cargo-home/config.toml"),
             sandbox::VENDORED_CONFIG.as_bytes(),
         )?;
     }
@@ -651,20 +731,24 @@ fn prepare_work(directory: &Path, jobdir: &Path, vendored: bool) -> Result<PathB
 /// Vendor the candidate's locked dependencies once per run, so offline gates can build.
 /// This is the only networked sandbox job; `cargo vendor` reads manifests and lockfiles but runs no
 /// candidate build scripts, and cargo verifies each vendored crate's checksum against Cargo.lock.
+/// Its output is candidate-writable, so it is never mounted itself: the controller seals a checked
+/// copy into `<run>/vendor` and every later gate re-verifies that copy's digest before mounting it.
 fn vendored_dependencies(
     directory: &Path,
     manifest: &Manifest,
     sandbox: &Sandbox,
     image_id: &str,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, String)> {
     let jobdir = directory.join("jobs").join(VENDOR_JOB);
-    let vendor = jobdir.join("work/vendor");
+    let sealed = directory.join(VENDOR_DIR);
+    let seal_path = jobdir.join("vendor-seal.json");
     if !jobdir.exists() {
-        let work = prepare_work(directory, &jobdir, false)?;
+        require_fresh(manifest)?;
+        let work = prepare_work(directory, &jobdir, false, false)?;
         let mut argv = ["cargo", "vendor", "--locked", "--versioned-dirs"]
             .map(str::to_owned)
             .to_vec();
-        if work.join("src/fuzz/Cargo.toml").exists() {
+        if jobdir.join("src/fuzz/Cargo.toml").exists() {
             argv.extend(["--sync".into(), "fuzz/Cargo.toml".into()]);
         }
         argv.push(format!("{WORK}/vendor"));
@@ -674,24 +758,39 @@ fn vendored_dependencies(
             vendor: None,
             network: true,
             mutation: false,
+            fuzz: false,
         };
         let receipt = run(
             directory,
             manifest,
             VENDOR_JOB,
             &argv,
-            &work,
+            &jobdir,
             b"",
             Some(&launch),
         )?;
-        // `cargo vendor` exits 0 without creating the directory when there are no dependencies.
-        if receipt.outcome == Outcome::Passed && !vendor.exists() {
-            storage::make_dir(&vendor)?;
+        let mut outcome = receipt.outcome;
+        if outcome == Outcome::Passed {
+            // `cargo vendor` exits 0 without creating the directory when there are no dependencies.
+            if storage::untrusted_metadata(&work, Path::new("vendor"))?.is_none() {
+                storage::make_dir(&work.join("vendor"))?;
+            }
+            match storage::seal_tree(&work.join("vendor"), &sealed) {
+                Ok(seal) => storage::write_json(&seal_path, &seal)?,
+                Err(error) => {
+                    storage::write_new(
+                        &jobdir.join("qualification-error.txt"),
+                        format!("vendored output refused: {error}; nothing was mounted\n")
+                            .as_bytes(),
+                    )?;
+                    outcome = Outcome::Inconclusive;
+                }
+            }
         }
         storage::write_json(
             &jobdir.join("qualification.json"),
             &Qualification {
-                outcome: receipt.outcome.clone(),
+                outcome,
                 report_sha256: None,
                 witness_sha256: None,
             },
@@ -700,10 +799,56 @@ fn vendored_dependencies(
     let qualification: Qualification =
         storage::read_json(&jobdir.join("qualification.json"), storage::REPORT_CAP)?;
     require(
-        qualification.outcome == Outcome::Passed && vendor.is_dir(),
+        qualification.outcome == Outcome::Passed
+            && !jobdir.join("qualification-error.txt").exists()
+            && seal_path.exists(),
         "dependency vendoring did not pass; inspect jobs/sandbox-vendor and prepare a new run",
     )?;
-    Ok(vendor)
+    let seal: storage::TreeSeal = storage::read_json(&seal_path, storage::REPORT_CAP)?;
+    require(
+        storage::tree_seal(&sealed)? == seal,
+        "sealed vendor directory changed since vendoring; prepare a new run",
+    )?;
+    Ok((sealed, seal.sha256))
+}
+
+/// Place a gate's controller-supplied inputs in its scratch directory; returns whether the job gets
+/// the fuzz artifact tmpfs (only when the snapshot has a `fuzz/` directory to hold its mountpoint).
+fn stage_inputs(
+    manifest: &Manifest,
+    jobdir: &Path,
+    work: &Path,
+    gate: Gate,
+    index: usize,
+) -> Result<bool> {
+    match gate {
+        Gate::Fuzz => {
+            storage::make_dir(&work.join("corpus"))?;
+            storage::make_dir(&work.join("fuzz-artifacts"))?;
+            // Seeds come from the sealed snapshot, never the live checkout.
+            let source = jobdir.join("src");
+            let seed = Path::new("review-policy/fuzz-seeds")
+                .join(format!("{}.json", manifest.request.fuzz_targets[index]));
+            if storage::untrusted_metadata(&source, &seed)?.is_some() {
+                storage::write_new(
+                    &work.join("corpus/seed.json"),
+                    &storage::read_untrusted(&source, &seed, 128 * 1024)?,
+                )?;
+            }
+            Ok(
+                storage::untrusted_metadata(&source, Path::new("fuzz/artifacts"))?
+                    .is_some_and(|meta| meta.is_dir()),
+            )
+        }
+        Gate::Antipatterns => {
+            storage::write_new(
+                &work.join("review_policy_check.py"),
+                POLICY_CHECK.as_bytes(),
+            )?;
+            Ok(false)
+        }
+        _ => Ok(false),
+    }
 }
 
 /// Execute a fixed, admitted quality check. Models can request a check but cannot write its receipt.
@@ -713,9 +858,19 @@ pub fn run_gate(directory: &Path, gate: Gate) -> Result<Vec<Execution>> {
     let canonical = fs::canonicalize(directory)?;
     let directory = canonical.as_path();
     let manifest = load_manifest(directory)?;
-    // Refuse before creating any job: an unavailable sandbox must not burn an immutable job slot.
+    // Refuse before creating any job: an unavailable sandbox, candidate toolchain configuration, a
+    // held lock, a changed workspace or a tampered snapshot must not burn an immutable job slot.
     let sandbox = Sandbox::from_env()?;
     let image_id = sandbox.image_id()?;
+    let inventory: Inventory =
+        storage::read_json(&directory.join(INVENTORY_FILE), 4 * 1024 * 1024)?;
+    refuse_toolchain_config(&inventory)?;
+    let _lock = admit(directory, &manifest)?;
+    require(
+        storage::fingerprint_tree(&directory.join(SNAPSHOT_DIR), &inventory)?
+            == manifest.source_tree,
+        "gate snapshot does not match the sealed source tree",
+    )?;
     let vendor = if gate == Gate::Antipatterns {
         None
     } else {
@@ -732,48 +887,30 @@ pub fn run_gate(directory: &Path, gate: Gate) -> Result<Vec<Execution>> {
             format!("gate-{}-{i}", gate.label())
         };
         let jobdir = directory.join("jobs").join(&job);
-        let work = prepare_work(directory, &jobdir, vendor.is_some())?;
-        match gate {
-            Gate::Fuzz => {
-                storage::make_dir(&work.join("corpus"))?;
-                storage::make_dir(&work.join("fuzz-artifacts"))?;
-                // Seeds come from the sealed snapshot, never the live checkout.
-                let seed = work
-                    .join("src/review-policy/fuzz-seeds")
-                    .join(format!("{}.json", manifest.request.fuzz_targets[i]));
-                if seed.exists() {
-                    storage::write_new(
-                        &work.join("corpus/seed.json"),
-                        &storage::read_bytes(&seed, 128 * 1024)?,
-                    )?;
-                }
-            }
-            Gate::Antipatterns => {
-                storage::write_new(
-                    &work.join("review_policy_check.py"),
-                    POLICY_CHECK.as_bytes(),
-                )?;
-            }
-            _ => {}
-        }
+        // An earlier job can run for a long time; a workspace edited meanwhile stales the rest.
+        require_fresh(&manifest)?;
+        let work = prepare_work(directory, &jobdir, vendor.is_some(), gate == Gate::Fuzz)?;
+        let fuzz_mount = stage_inputs(&manifest, &jobdir, &work, gate, i)?;
         let launch = GateLaunch {
             sandbox: &sandbox,
             image_id: &image_id,
-            vendor: vendor.as_deref(),
+            vendor: vendor
+                .as_ref()
+                .map(|(path, digest)| (path.as_path(), digest.as_str())),
             network: false,
             mutation: gate == Gate::Mutation,
+            fuzz: fuzz_mount,
         };
-        let mut receipt = run(directory, &manifest, &job, argv, &work, b"", Some(&launch))?;
-        qualify_gate(directory, &job, gate, &mut receipt)?;
-        let witness = jobdir.join(MUTATION_WITNESS);
-        let witness_sha256 = if gate == Gate::Mutation && witness.exists() {
-            Some(sha256_hex(&storage::read_bytes(
-                &witness,
-                16 * 1024 * 1024,
-            )?))
-        } else {
-            None
-        };
+        let mut receipt = run(
+            directory,
+            &manifest,
+            &job,
+            argv,
+            &jobdir,
+            b"",
+            Some(&launch),
+        )?;
+        let witness_sha256 = qualify_gate(directory, &job, gate, &mut receipt)?;
         storage::write_json(
             &directory.join("jobs").join(&job).join("qualification.json"),
             &Qualification {

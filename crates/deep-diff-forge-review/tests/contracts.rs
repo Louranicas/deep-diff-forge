@@ -47,6 +47,7 @@ fn execution(m: &Manifest, job: String) -> Execution {
         argv: vec!["trusted-test-controller".into()],
         stdout_sha256: "test".into(),
         stderr_sha256: "test".into(),
+        image_id: None,
     }
 }
 fn complete(m: &Manifest) -> (Vec<Report>, Vec<Execution>) {

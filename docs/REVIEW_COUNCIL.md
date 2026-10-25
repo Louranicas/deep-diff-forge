@@ -124,7 +124,7 @@ ddf-integration-20261025 council review /absolute/new-run-directory correctness-
 # Run the challenge job for every configured reviewer.
 
 # Gates refuse unless the gate image is set and present locally; see "Gate sandbox".
-export DDF_COUNCIL_GATE_IMAGE=localhost/ddf-council-gate:20261025b
+export DDF_COUNCIL_GATE_IMAGE=localhost/ddf-council-gate:20261025c
 ddf-integration-20261025 council gate /absolute/new-run-directory format --execute
 ddf-integration-20261025 council gate /absolute/new-run-directory check --execute
 ddf-integration-20261025 council gate /absolute/new-run-directory clippy --execute
@@ -169,7 +169,7 @@ tuicr locates its store with `directories::ProjectDirs` (`$XDG_DATA_HOME/tuicr/r
 
 ## Exact quality checks
 
-Every command below runs inside the [gate sandbox](#gate-sandbox) with working directory `/work/src`, the job's private copy of the sealed snapshot. Paths beginning `/work` are container paths inside that job's own `jobs/<job>/work/` directory.
+Every command below runs inside the [gate sandbox](#gate-sandbox) with working directory `/src`, the job's private copy of the sealed snapshot, mounted read-only. Paths beginning `/work` are container paths inside that job's own writable `jobs/<job>/work/` directory.
 
 | Gate | Fixed command/measurement | Failure semantics |
 | --- | --- | --- |
@@ -182,9 +182,9 @@ Every command below runs inside the [gate sandbox](#gate-sandbox) with working d
 | fuzz | cargo +nightly fuzz run for each explicit target, corpus `/work/corpus` seeded from the snapshot, artifacts in `/work/fuzz-artifacts/`, declared time/input budgets | Every target must succeed and show nonzero executed cases; empty/unavailable/timeout/crash is not PASS |
 | mutation | cargo mutants --package the-explicit-package --test-workspace true --timeout 30 --output /work/mutation-results | Requires successful baseline, coherent per-mutant outcomes, nonzero caught mutants, zero missed, zero timeouts; unviable outcomes remain visible |
 
-Each gate job, including mutation, gets its own `work/` directory and never sees the normal build cache (AP-32). Non-mutation gates set `CARGO_TARGET_DIR=/work/target`; the mutation gate deliberately leaves `CARGO_TARGET_DIR` unset, because cargo-mutants copies the tree per build and a shared target directory would cross-contaminate those copies. The mutation witness is `jobs/gate-mutation/work/mutation-results/mutants.out/outcomes.json`; its SHA-256 is recorded in the job's qualification and rechecked on every status. Mutation scope is the explicitly named package, while the test scope is the entire workspace so CLI/dependent integration tests can kill mutations in the review library. Requested checks appearing in model findings become additional outstanding evidence requirements. They are never executed automatically. The controller does not interpret a model's shell snippet as a command. No percentage score or majority vote overrides these requirements.
+Each gate job, including mutation, gets its own `work/` directory and never sees the normal build cache (AP-32). Non-mutation gates set `CARGO_TARGET_DIR=/work/target`; the mutation gate deliberately leaves `CARGO_TARGET_DIR` unset, because cargo-mutants copies the tree per build and a shared target directory would cross-contaminate those copies. The mutation witness is `jobs/gate-mutation/work/mutation-results/mutants.out/outcomes.json`; it is read without following any symlink or opening a FIFO, and the SHA-256 of exactly the bytes judged is recorded in the job's qualification and rechecked on every status. Mutation scope is the explicitly named package, while the test scope is the entire workspace so CLI/dependent integration tests can kill mutations in the review library. Requested checks appearing in model findings become additional outstanding evidence requirements. They are never executed automatically. The controller does not interpret a model's shell snippet as a command. No percentage score or majority vote overrides these requirements.
 
-The subprocess output limit is an 8 MiB combined trigger checked cooperatively. Owned processes are killed on timeout/output excess. Retained streams are capped to 8 MiB each, and `transcript-limit.json` explicitly marks incomplete transcripts and observed byte counts. Such runs never qualify. This is not an OS disk quota and a burst may exceed the trigger before detection. Gate containers additionally carry `--pids-limit=8192` and `--memory=32g`; there is no CPU or disk quota. Files and run directories are private, create-new and fsynced. A stale controller lock after interruption requires operator inspection; there is no unsafe automatic lock-stealing or silent result replay.
+The subprocess output limit is an 8 MiB combined trigger checked cooperatively. Owned processes are killed on timeout/output excess. Retained streams are capped to 8 MiB each, and `transcript-limit.json` explicitly marks incomplete transcripts and observed byte counts. Such runs never qualify. This is not an OS disk quota and a burst may exceed the trigger before detection. Gate containers additionally carry `--pids-limit=8192`, `--memory=32g`, `--memory-swap=32g` (no swap) and `--cpus=<host CPUs − 1>`; there is no disk quota. Files and run directories are private, create-new and fsynced. A stale controller lock after interruption requires operator inspection; there is no unsafe automatic lock-stealing or silent result replay.
 
 <a id="gate-sandbox"></a>
 
@@ -197,7 +197,22 @@ The first live council run (r2) produced seven HIGH findings from both provider 
 3. **Ambient authority and self-grading.** Gates inherited credentials and network, and the antipatterns gate executed the candidate's own `scripts/security/review_policy_check.py`.
 4. **Refusal override.** A `qualification.json` could overwrite refusal markers; this was confirmed in `storage.rs`.
 
-This section describes the replacement. Gates now run in a rootless Podman container against a private copy of a source snapshot sealed at `prepare`.
+This section describes the replacement. Gates now run in a rootless Podman container against a private, read-only-mounted copy of a source snapshot sealed at `prepare`.
+
+Council run r4 then reviewed that sandbox, and six reviewers concurred on four HIGH findings, four MEDIUM and three LOW:
+
+1. (HIGH) The networked vendoring job ran candidate-selected code: `cargo` resolved through the rustup proxy with the snapshot as working directory, so a candidate `rust-toolchain(.toml)` could select a toolchain path and a candidate `.cargo/config.toml` could select credential providers and other executables.
+2. (HIGH) The vendoring output `jobs/sandbox-vendor/work/vendor` was candidate-writable. It was accepted with a check that follows symlinks, then mounted into later gates with `:z`, so a symlink could make Podman mount and relabel a host directory.
+3. (HIGH) Gates ran on a writable `/work/src`, so a build script or `rustc` wrapper could change a file and restore it between the before and after fingerprints (A→B→A).
+4. (HIGH) The mutation witness read blocked forever on a FIFO. (MEDIUM) Host-side reads rejected only a symlink leaf, so a container-written directory symlink was followed.
+5. (MEDIUM) Jobs launched the mutable tag, not the resolved image ID. (LOW) Receipts did not name the sandbox image.
+6. (MEDIUM) The status of `podman rm` was ignored, and the runtime control commands had no deadline.
+7. (MEDIUM) A job slot was created before the lock and workspace-staleness checks, so a refused job still consumed it.
+8. (LOW) Container names were derived from the run ID alone and could collide across invocations.
+9. (LOW) There was no swap bound and no CPU bound.
+10. (MEDIUM) Some real-Podman probes were vacuous: any connect error counted as "no network", and a read-only root could not be told apart from a permission refusal.
+
+[r4 hardening](#gate-sandbox-r4) maps each of them to its control and to the test that shows it refusing a planted breach.
 
 ### Threat model
 
@@ -207,17 +222,39 @@ This section describes the replacement. Gates now run in a rootless Podman conta
 
 ### Controls and the findings they answer
 
-| Control | Code | r2 finding answered |
+| Control | Code | Finding answered |
 | --- | --- | --- |
-| `prepare` builds a source inventory (Git HEAD plus tracked and non-ignored untracked paths). It copies exactly those files into `<run>/source/`, writes `source-inventory.json`, then re-fingerprints the copy and refuses if it differs from the sealed `source_tree` | `storage.rs` `inventory`, `copy_tree`, `fingerprint_tree`, `prepare` | (2) the tested bytes are a sealed copy, not the live tree |
-| Candidate files must be members of the inventory, so a gitignored candidate file is refused | `storage.rs` `verify_candidate` | (2) gitignored candidates outside the fingerprint |
-| Each gate job gets `jobs/<job>/work/src`, a fresh copy of the sealed snapshot. That copy is fingerprinted against the sealed tree before the run and again after it; any difference is not PASS. The live checkout is still fingerprinted before every job, so a changed workspace stales the run | `execution.rs` `prepare_work`, `run` | (2) ABA on a mutable tree |
-| Only `jobs/<job>/work/` is mounted (at `/work`). Receipts, logs, `environment.json`, `qualification.json` and refusal markers live in `jobs/<job>/`, which the container cannot reach | `sandbox.rs` `argv`, `execution.rs` `launch_argv` | (1) gate code writing receipts into the run directory |
-| No host home is mounted. `HOME`, `CARGO_HOME` and `TMPDIR` point into `/work`, and only the variables listed in `environment.json` are passed. Gates run with `--network=none` and `CARGO_NET_OFFLINE=true`, except for the one vendoring job | `sandbox.rs` `env`, `argv` | (3) inherited credentials and network |
-| The antipatterns gate runs `python3 /work/review_policy_check.py`. That file is the controller's embedded copy (`include_str!`) of `crates/deep-diff-forge-review/policy/review_policy_check.py`, and it checks the snapshot from its working directory | `execution.rs` `POLICY_CHECK`, `gate_argv` | (3) self-grading |
-| In `executions()`, a `protocol-error.txt` or `qualification-error.txt` marker lowers any outcome that would otherwise be `Passed`. A qualification can lower an outcome but cannot restore `Passed` over a marker | `storage.rs` `executions` | (4) qualification overriding refusal |
-| `run_gate` resolves `DDF_COUNCIL_GATE_IMAGE` to a local image ID before creating any job. It refuses if the variable is unset or the image is not present locally, and it never pulls. Every job records the image name and ID in `environment.json` | `sandbox.rs` `from_env`, `image_id`, `record`; `execution.rs` `run_gate` | An unavailable sandbox does not consume an immutable job slot |
-| Each container is named `ddf-council-<first 16 chars of run id>-<job>` and is force-removed by that name (`podman rm --force --time 0`) after every job, whatever the outcome | `sandbox.rs` `container_name`, `remove`; `execution.rs` `run` | Cleanup when the Podman client is killed but the container lives on |
+| `prepare` builds a source inventory (Git HEAD plus tracked and non-ignored untracked paths). It copies exactly those files into `<run>/source/`, writes `source-inventory.json`, then re-fingerprints the copy and refuses if it differs from the sealed `source_tree` | `storage.rs` `inventory`, `copy_tree`, `fingerprint_tree`, `prepare` | r2 (2): the tested bytes are a sealed copy, not the live tree |
+| Candidate files must be members of the inventory, so a gitignored candidate file is refused | `storage.rs` `verify_candidate` | r2 (2): gitignored candidates outside the fingerprint |
+| Each gate job gets `jobs/<job>/src`, a fresh copy of the sealed snapshot, mounted **read-only** at `/src` (the working directory). Writable scratch is a separate `jobs/<job>/work` at `/work`. The copy is fingerprinted against the sealed tree before and after the run, and any difference is not PASS | `execution.rs` `prepare_work`, `run`; `sandbox.rs` `argv` | r2 (2), r4 (3): A→B→A needs a writable source, and the gate has none |
+| Only `jobs/<job>/work/` is writable (at `/work`). Receipts, logs, `environment.json`, `qualification.json` and refusal markers live in `jobs/<job>/`, which the container cannot reach | `sandbox.rs` `argv`, `execution.rs` `launch_argv` | r2 (1): gate code writing receipts into the run directory |
+| No host home is mounted. `HOME` and `TMPDIR` point into `/work`, `CARGO_HOME` is a controller-written read-only mount (see below), and only the variables listed in `environment.json` are passed. Gates run with `--network=none` and `CARGO_NET_OFFLINE=true`, except for the one vendoring job | `sandbox.rs` `env`, `argv` | r2 (3): inherited credentials and network |
+| The antipatterns gate runs `python3 /work/review_policy_check.py`. That file is the controller's embedded copy (`include_str!`) of `crates/deep-diff-forge-review/policy/review_policy_check.py`, and it checks the snapshot from its working directory | `execution.rs` `POLICY_CHECK`, `gate_argv` | r2 (3): self-grading |
+| In `executions()`, a `protocol-error.txt` or `qualification-error.txt` marker lowers any outcome that would otherwise be `Passed`. A qualification can lower an outcome but cannot restore `Passed` over a marker | `storage.rs` `executions` | r2 (4): qualification overriding refusal |
+| Before any job slot exists, `run_gate` checks, in order: the runtime and image ID; candidate toolchain configuration; the controller lock; the live workspace fingerprint; and the sealed snapshot's fingerprint. The live workspace is checked again before each later job's slot | `execution.rs` `run_gate`, `admit`, `require_fresh` | r4 (7): a refusal never burns a slot |
+
+<a id="gate-sandbox-r4"></a>
+
+### r4 hardening
+
+Each control below was demonstrated against a planted breach. **Fake** marks the deterministic fake-Podman tests in `crates/deep-diff-forge-cli/tests/council.rs`, which exercise controller logic against real files, symlinks and FIFOs on the host. **Real** marks the opt-in real-Podman test `real_sandbox_refuses_planted_breaches` in `council_sandbox.rs`. "Mutation-checked" means the control was disabled in the source and its test then failed; the code was restored afterwards.
+
+| Finding | Control | Evidence |
+| --- | --- | --- |
+| 1 Vendoring ran candidate-selected code | **Refusal:** a snapshot whose inventory contains `.cargo/config`, `.cargo/config.toml`, `rust-toolchain` or `rust-toolchain.toml` at *any* depth is refused by every gate, before the lock or any job slot ("snapshot contains candidate toolchain configuration …"). **Override:** every job, including vendoring, gets `RUSTUP_TOOLCHAIN=1.99.1`. Precedence is `+toolchain` > `RUSTUP_TOOLCHAIN` > toolchain file, so the fuzz gate's explicit `cargo +nightly` still selects nightly. **No candidate config in reach:** with the working directory `/src`, Cargo's config search covers only `/src/.cargo` and `/.cargo` (read-only image root) plus `CARGO_HOME`, and the controller writes `CARGO_HOME` | **Measured, fake:** `candidate_toolchain_configuration_is_refused_before_any_job_slot` (four names plus a nested `fuzz/.cargo/config.toml`; jobs dir empty; mutation-checked). **Measured, real:** the planted `rust-toolchain.toml` and `.cargo/config.toml` are refused with no job created. The "toolchain file" probe uses the container's initial environment (`/proc/1/environ`): a planted `channel = "nightly"` file yields `rustc 1.99.1`, and its positive control (the same environment without `RUSTUP_TOOLCHAIN`) yields nightly. Against the bce40ee controller the probe reports BREACH. **Measured (manual Podman):** a `rust-toolchain.toml` with `path = "/work/evil"` is honoured without `RUSTUP_TOOLCHAIN` ("invalid toolchain: the path '/work/evil' has no bin/ directory") and ignored with it |
+| 2 Vendoring output symlink → host bind mount | After the vendoring container is proved gone, the controller walks `jobs/sandbox-vendor/work/vendor` with `symlink_metadata`, never following a link. It accepts only real directories and regular files, within 100,000 files and 2 GiB, and refuses anything else before creating anything. It then copies the tree into a new controller-owned `<run>/vendor` (files `0400`/`0500`) and re-measures the copy. The digest of names, kinds, executable bits and contents goes into `jobs/sandbox-vendor/vendor-seal.json`. Gates mount only `<run>/vendor`, and only after re-measuring it against that seal. Each gate's `environment.json` records `vendor_sha256` | **Measured, fake:** `vendoring_output_is_sealed_and_planted_links_or_fifos_are_never_mounted` (a symlink inside the output, a symlinked output root and a FIFO are all refused with no seal, no `<run>/vendor` and no gate slot; a byte added to the sealed copy is refused before the next gate's slot; mutation-checked, both for the refusal and for the re-measure). **Measured, real:** a wrapper plants `vendor/escape → <host dir>` after the real vendoring container exits; vendoring is refused ("symlink or special file"), and neither `<run>/vendor` nor `jobs/gate-check` exists |
+| 3 Writable source A→B→A | Source mounted `/src:ro,Z`. Empirically (see below), no gate needs to write the source except cargo-fuzz, which always creates `fuzz/artifacts/<target>`. The controller pre-creates that mountpoint in its copy, outside the inventory, and mounts a 64 MiB `nosuid,nodev,noexec` tmpfs there, owned by the job user. Crash inputs still go to `-artifact_prefix=/work/fuzz-artifacts/`. Cargo-config-selected wrappers and runners (`build.rustc-wrapper`, `target.*.runner`, linkers, `[env]` and so on) are not neutralised through environment variables, which could never cover every key. They are unreachable instead, because candidate Cargo config is refused (finding 1) and the controller's `CARGO_HOME` is mounted `ro`. A candidate process can still create `/work/.cargo/config.toml`, but `/work` is not an ancestor of the working directory `/src` | **Measured, real:** probe "write /src/src/lib.rs" fails with EROFS (os error 30). The file is owned by the job's uid through keep-id, so only the read-only mount can produce EROFS. **Measured, fake:** `gates_launch_the_resolved_image_id_with_read_only_inputs_and_bounded_resources` and `fuzz_jobs_get_a_scratch_artifact_mount_over_the_read_only_source` check the exact mounts |
+| 4 FIFO hang, directory symlinks followed | `storage::read_bytes` opens with `O_NOFOLLOW \| O_NONBLOCK`, then `fstat`s and refuses anything that is not a regular file. `read_untrusted` and `untrusted_metadata` additionally refuse a symlink or non-directory in *every* component below a trusted root. They are used for the mutation witness (at qualification and on every `status`), the before and after source fingerprints, the snapshot copy, fuzz seeds and the vendoring walk. Mutation qualification reads the witness once and digests exactly the bytes it judged | **Measured, fake:** `a_fifo_or_symlinked_directory_mutation_witness_is_refused_without_hanging` (a real FIFO at `outcomes.json` and a symlinked `mutants.out` each give `inconclusive` with "mutation witness refused"). Mutation checks: following intermediate symlinks makes it fail; with no leaf pre-check `O_NONBLOCK`+`fstat` alone still refuses the FIFO; with neither, the controller hangs (the test's 150 s watchdog fires). **Measured, real:** the probe crate's own test, run by real cargo-mutants, renames `mutants.out` and leaves a symlink. The gate is `inconclusive` ("mutation witness refused"), while the unplanted positive control on the same crate passes with a recorded witness digest |
+| 5 Tag race; receipts lacked sandbox identity | The tag is resolved to a 64-hex image ID before any slot exists, and the container is launched by that ID. The ID is recorded in `environment.json` and in a new `image_id` field of the execution receipt (absent for provider jobs, so older receipts still load) | **Measured, fake:** the fake runtime refuses to run anything but the resolved ID, and the receipt carries it (mutation-checked by launching the tag); an ID that is not 64-hex is refused before any slot. **Measured, real:** the receipt's `image_id` equals `podman image inspect` |
+| 6 `rm` status ignored; no deadlines | After every gate job: `podman rm --force --time 0 <name>`, then `podman container exists <name>`, which must answer exit 1. Any other answer, or none within 30 s, writes `qualification-error.txt` and lowers `Passed` to `Inconclusive`, and nothing in `work/` is read for qualification. `image inspect`, `rm` and `container exists` each run in their own process group under a 30 s deadline, with a detached output reader so a lingering descendant cannot hold the deadline open | **Measured, fake:** `a_container_that_is_not_provably_removed_never_qualifies` (`exists` answers 0, or hangs: gate `inconclusive`; the same fault on the vendoring job: no seal, no `<run>/vendor`; mutation-checked) and `an_unresolvable_or_hanging_image_lookup_is_refused_before_any_job_slot` (a hanging inspect is refused within the deadline with jobs empty; mutation-checked by raising the deadline). **Measured, real:** `container exists` answers 1 after a real gate, also through `flatpak-spawn --host` |
+| 7 Slot burned before admission | Order is as in the controls table above; the lock is held for the whole gate invocation | **Measured, fake:** `a_changed_workspace_or_held_lock_is_refused_before_any_job_slot` and the tampered-snapshot case of `gates_run_on_the_sealed_snapshot_and_refuse_a_tampered_one` (jobs dir empty; mutation-checked) |
+| 8 Name collision | Container name `ddf-council-<16 of run id>-<job>-<16 hex nonce from /dev/urandom>`, recorded as `container_name` | **Measured, fake:** `container_names_carry_a_per_invocation_nonce` (the old derived name is held by "another invocation", the gate still passes, and that name is never removed; mutation-checked) |
+| 9 Resources | `--memory=32g --memory-swap=32g` (no swap) and `--cpus=<host CPUs − 1, min 1>` | **Measured, real:** probe "cgroup bounds" reads `memory.max=34359738368 memory.swap.max=0 cpu.max=1500000 100000 pids.max=8192` on this 16-CPU host. Against the bce40ee controller it reports BREACH (`memory.swap.max=34359738368`, `cpu.max=max`) |
+| 10 Vacuous probes | Every refusal must carry the specific errno only the control produces: credentials `ENOENT`; connect `ENETUNREACH` (101), since a timeout or reset would mean packets left; run-directory write `ENOENT`; writes to `/etc`, `/opt/ddf-probe-writable` and `/src` `EROFS` (30). Positive controls: `/opt/ddf-probe-writable` (new in image `:20261025c`) is owned by the gate user, and the test first shows a container without `--read-only` can write there; the toolchain probe has its unpinned control; the witness probe has its unplanted control | **Measured, real:** all 12 probes `refused` with those errnos. Against the bce40ee controller, three report BREACH (source write, cgroup bounds, toolchain file) |
+
+**What each gate writes (measured 2026-10-25, manual Podman, DDF at bce40ee, source mounted read-only on `:20261025b`):** `cargo fmt --all --check`, `cargo check --workspace --all-targets --locked`, the pedantic clippy command and `cargo test --workspace --locked` (1,085 passed) all succeed with no source writes. `--locked` stops lockfile writes, and `CARGO_TARGET_DIR=/work/target` takes build output. `cargo +nightly fuzz run` fails with EROFS creating `/src/fuzz/artifacts/council_report/` until the tmpfs is mounted, then succeeds (2,435,420 runs in 11 s). cargo-mutants copies the source into `$TMPDIR` (`/work/tmp`) and writes only `--output`; a sharded run caught 1 of 1 mutants. With `CARGO_HOME` mounted read-only, the workspace check, a fuzz run and a sharded mutants run all still succeed. The antipatterns checker writes nothing (`state: passed`, 13 members).
+
+**Through the real controller (measured 2026-10-25, image `:20261025c`):** a council run on a copy of this branch's working tree, with the toolbox-built controller and `DDF_COUNCIL_PODMAN="flatpak-spawn --host podman"`, gave these results. Vendoring sealed 9,008 files and 204,093,575 bytes into `<run>/vendor` (digest `942c5ce9…`). `format` passed (167 s including vendoring and sealing), `pedantic` passed (56 s), `tests` passed with 1,094 observed passed tests (336 s), `fuzz` (`council_report`, 20 s budget) passed with 3,301,024 runs in 21 s (209 s including the nightly release build), and `antipatterns` passed (`state: passed`, 13 members; the job itself took 0.7 s). Wall time between gates also includes controller admission, which measured 4.7 s when the host was idle. One stall of about 4.7 minutes before the antipatterns slot was not reproduced; the inferred cause is filesystem flush contention after the fuzz build, and it was not measured.
 
 ### Podman invocation
 
@@ -225,37 +262,41 @@ Every gate job runs `$DDF_COUNCIL_PODMAN run` (the default runtime is `podman`) 
 
 | Flag | Why |
 | --- | --- |
-| `--rm` | Leave no container state behind after a normal exit. Removal by name covers abnormal exits |
+| `--rm` | Leave no container state behind after a normal exit. Removal by name, followed by `container exists`, covers abnormal exits |
 | `--pull=never` | Run only the operator-admitted local image; Podman "never pull[s] the image but use[s] the one from the local containers storage" |
-| `--read-only` | The image root filesystem cannot be modified, so toolchains cannot be altered between or during jobs |
+| `--read-only` | The image root filesystem cannot be modified, so toolchains cannot be altered between or during jobs. Podman's default `--read-only-tmpfs` still mounts tmpfs on `/tmp`, `/var/tmp`, `/run` and `/dev/shm`; those are per-container and discarded |
 | `--cap-drop=all`, `--security-opt=no-new-privileges` | No capabilities, and no privilege gain through setuid binaries |
 | `--userns=keep-id` | Podman "creates a user namespace where the current user's UID:GID are mapped to the same values in the container", so `/work` files stay owned by the operator and nothing runs as container root |
 | `--init` | An init "forwards signals and reaps processes", so test and fuzz children are reaped and signalled |
-| `--pids-limit=8192`, `--memory=32g` | Bound fork and memory amplification. This is not a CPU or disk quota |
+| `--pids-limit=8192`, `--memory=32g`, `--memory-swap=32g`, `--cpus=<host CPUs − 1>` | Bound fork and memory amplification, with no swap, and leave one CPU to the supervising controller. This is not a disk quota |
 | `--log-driver=none` | Measured on this host on 2026-10-25, with the Podman client's stdout/stderr redirected to files. `passthrough` produced an empty transcript at exit 0, while `none`, `k8s-file` and the default all delivered both streams. `none` was chosen so candidate output is not also duplicated into container logs |
-| `--name=ddf-council-…` | Gives each container a deterministic, unique handle for forced removal |
+| `--name=ddf-council-…-<nonce>` | A handle unique to this invocation, used for forced removal and the removal proof |
 | `--timeout=<request timeout + 60>` | Podman's `--timeout` is the "maximum time a container is allowed to run before conmon sends it the kill signal". It backs up the controller's own deadline. Podman also documents that "Podman can exit but conmon continues to run", which is why killing the client is not enough and the controller removes the container by name |
 | `--network=none` | No network for any gate. Only the vendoring job omits this flag |
 | `--volume=<job>/work:/work:Z` | The job's only writable mount. `Z` relabels it private to this container for SELinux |
-| `--volume=<vendor>:/vendor:ro,z` | The run's vendored dependencies, read-only, with a shared label because every gate job mounts the same directory |
-| `--env=HOME=/work/home`, `CARGO_HOME=/work/cargo-home`, `TMPDIR=/work/tmp`, `CARGO_NET_OFFLINE=true`, and `CARGO_TARGET_DIR=/work/target` for every gate except mutation | Explicit, recorded environment, with no inherited variables |
-| `--workdir=/work/src` | Commands run in the snapshot copy |
+| `--volume=<job>/src:/src:ro,Z` | The job's copy of the sealed snapshot, read-only |
+| `--volume=<job>/cargo-home:/cargo-home:ro,Z` | Controller-written `config.toml` that replaces `crates-io` with `/vendor`; read-only, so candidate code cannot redirect later Cargo invocations in the same job (all gates except vendoring and antipatterns) |
+| `--volume=<run>/vendor:/vendor:ro,z` | The controller's sealed copy of the vendored dependencies, read-only, with a shared label because every gate job mounts the same directory. It is a real directory the controller created, so the relabel cannot reach a path the candidate chose |
+| `--tmpfs=/src/fuzz/artifacts:rw,nosuid,nodev,noexec,size=64m,U` | Fuzz gate only, when the snapshot has `fuzz/`: the directory cargo-fuzz insists on creating |
+| `--env=HOME=/work/home`, `CARGO_HOME=/cargo-home` (vendoring and antipatterns: `/work/cargo-home`), `TMPDIR=/work/tmp`, `RUSTUP_TOOLCHAIN=1.99.1`, `CARGO_NET_OFFLINE=true`, and `CARGO_TARGET_DIR=/work/target` for every gate except mutation | Explicit, recorded environment, with no inherited variables |
+| `--workdir=/src` | Commands run in the read-only snapshot copy |
+| image **ID** (not tag) | Resolved once before any slot; see finding 5 |
 
 The toolchains are baked into the image rather than mounted from the host `~/.rustup` or `~/.cargo`. Podman's volume documentation says "Do not relabel system files and directories", and its example for sharing a home directory disables SELinux separation instead (`--security-opt label=disable`). Mounting the operator's home would also expose credentials. Source: [podman-run(1)](https://docs.podman.io/en/latest/markdown/podman-run.1.html), for `--timeout`, conmon, `:z`/`:Z`, `--userns=keep-id`, `--pull`, `--init` and `--read-only`.
 
-The image is defined by [`review-policy/sandbox/Containerfile`](../review-policy/sandbox/Containerfile). It is a Fedora 44 base pinned by digest, with Rust 1.99.1 (clippy and rustfmt), `nightly-2026-10-25` reachable as `cargo +nightly`, cargo-mutants 27.1.0, cargo-fuzz 0.13.2, gcc and python3, and it runs as `USER 1000:1000`.
+The image is defined by [`review-policy/sandbox/Containerfile`](../review-policy/sandbox/Containerfile). It is a Fedora 44 base pinned by digest, with Rust 1.99.1 (clippy and rustfmt), `nightly-2026-10-25` reachable as `cargo +nightly`, cargo-mutants 27.1.0, cargo-fuzz 0.13.2, gcc and python3, and the probe positive-control directory `/opt/ddf-probe-writable`. It runs as `USER 1000:1000`. The controller's `STABLE_TOOLCHAIN` constant must name a toolchain installed in the image; if it does not, every Rust gate fails closed (inferred: rustup cannot install into the read-only image root, and gates have no network).
 
 ### Dependency vendoring
 
-Offline gates still need crate sources. Before the first gate that builds Rust (every gate except antipatterns), `run_gate` runs a `sandbox-vendor` job once per run. That job runs in the same sandbox, against its own snapshot copy, with the default network:
+Offline gates still need crate sources. Before the first gate that builds Rust (every gate except antipatterns), `run_gate` runs a `sandbox-vendor` job once per run. That job runs in the same sandbox, against its own read-only snapshot copy, with the default network and a scratch `CARGO_HOME`:
 
 ```text
 cargo vendor --locked --versioned-dirs [--sync fuzz/Cargo.toml] /work/vendor
 ```
 
-The `--sync fuzz/Cargo.toml` part is added only if the snapshot contains that file. The job must reach `Passed`, or every later gate refuses with "dependency vendoring did not pass; inspect jobs/sandbox-vendor and prepare a new run". The resulting `jobs/sandbox-vendor/work/vendor` is mounted read-only at `/vendor` in each later gate. Each gate's `cargo-home/config.toml` replaces `crates-io` with that directory.
+The `--sync fuzz/Cargo.toml` part is added only if the snapshot contains that file. The job must reach `Passed`, the container must be proved removed, and its output must pass the seal walk (finding 2). Otherwise every later gate refuses with "dependency vendoring did not pass; inspect jobs/sandbox-vendor and prepare a new run". Gates mount only the sealed `<run>/vendor`, re-measured against `vendor-seal.json` before each gate's slot is created. Measured for this repository: 9,008 files, 204,093,575 bytes.
 
-This is the only networked job. `cargo vendor` resolves and downloads crates named by the manifests and lockfile, but it does not compile them, so no build script, proc macro, test or fuzz target from the candidate or its dependencies runs while the network is available. Cargo also checks downloaded registry crates against the `Cargo.lock` checksums. Both points are inferred from Cargo's documented behaviour and the code comment in `execution.rs`; neither has been tested adversarially here.
+This is the only networked job. Two things are measured: candidate toolchain files and Cargo config cannot reach it (finding 1), and `cargo vendor` succeeds against a read-only source. Two are inferred from Cargo's documented behaviour, not adversarially tested here: that `cargo vendor` compiles nothing (no build script, proc macro, test or fuzz target runs while the network is available), and that it checks downloaded registry crates against the `Cargo.lock` checksums.
 
 Only `crates-io` is replaced. A candidate with git or alternative-registry dependencies would fail offline gates (inferred, not tested).
 
@@ -264,14 +305,14 @@ Only `crates-io` is replaced. A candidate with git or alternative-registry depen
 1. Build the image. The header of the Containerfile gives the command:
 
    ```sh
-   podman build --pull=never -t localhost/ddf-council-gate:20261025b -f review-policy/sandbox/Containerfile review-policy/sandbox
+   podman build --pull=never -t localhost/ddf-council-gate:20261025c -f review-policy/sandbox/Containerfile review-policy/sandbox
    ```
 
    `--pull=never` refuses to fetch the base image, so on a fresh machine first pull the digest-pinned `FROM` reference: `podman pull registry.fedoraproject.org/fedora:44@sha256:0d2a354d…`, using the full digest from the Containerfile. The build itself needs network; the gates do not.
-2. Set `DDF_COUNCIL_GATE_IMAGE=localhost/ddf-council-gate:20261025b`, or another local tag you built. On this host, `podman image inspect` gives that tag the image ID `d26503c7a920df45eae98804bf15147a0b8b5cb150627634ee1bc5616404f497` (measured 2026-10-25). The first image, `:20261025` (`bb89cf38…`), lacked `git` and a C++ compiler. Council r4's tests and fuzz gates failed closed on it: the Git-backed fixtures could not run, and `libfuzzer-sys` could not compile.
+2. Set `DDF_COUNCIL_GATE_IMAGE=localhost/ddf-council-gate:20261025c`, or another local tag you built. On this host, `podman image inspect` gives that tag the image ID `74a31d365814e21a283356770ad198afb16beb12fae9bf315a91bd6c123bbfd7` (measured 2026-10-25). Earlier images: `:20261025b` (`d26503c7…`) lacks `/opt/ddf-probe-writable`, so the planted-breach test's positive control fails on it. The first image, `:20261025` (`bb89cf38…`), lacked `git` and a C++ compiler. Council r4's tests and fuzz gates failed closed on it: the Git-backed fixtures could not run, and `libfuzzer-sys` could not compile.
 3. On Fedora Atomic (Silverblue/Kinoite), Podman is on the host and not in the default Toolbx container. Measured here: `fedora-toolbox-44` has `flatpak-spawn` but no `podman`. You have two options:
    - Run the controller on the host.
-   - From a toolbox, set `DDF_COUNCIL_PODMAN="flatpak-spawn --host podman"`. The variable is split on whitespace into the runtime argv.
+   - From a toolbox, set `DDF_COUNCIL_PODMAN="flatpak-spawn --host podman"`. The variable is split on whitespace into the runtime argv. Exit statuses propagate through it; `container exists` answers 1 for an absent container (measured).
 
    Do not treat Toolbx as the isolation layer. It is documented to give "seamless access to the user's home directory", sockets, D-Bus, the SSH agent, `/dev` and the host filesystem at `/run/host` ([containertoolbx.org](https://containertoolbx.org/)), so it is not a security boundary.
 
@@ -279,26 +320,30 @@ Only `crates-io` is replaced. A candidate with git or alternative-registry depen
 
 ### Residual risks
 
-- **Work witnesses are sanity checks, not adversarial proof.** The tests witness counts `test result: ok. N` lines on stdout, and the fuzz witness parses libFuzzer's `Done N runs in S second(s)` on stderr. Candidate code shares those streams and can print fabricated lines. The mutation witness `outcomes.json` is written by cargo-mutants inside `/work`, which candidate test code can also write. The sandbox stops a gate from forging the *controller's* receipt, qualification or markers. It does not stop the candidate from lying to the tool whose output is being parsed.
-- **Image admission is local tag plus recorded image ID, not signature verification.** Anyone who can write the operator's container storage can replace the tag. The recorded ID shows after the fact which image ran. Status does not re-verify that the image still exists or still has that ID.
+- **Work witnesses are sanity checks, not adversarial proof.** The tests witness counts `test result: ok. N` lines on stdout, and the fuzz witness parses libFuzzer's `Done N runs in S second(s)` on stderr. Candidate code shares those streams and can print fabricated lines. The mutation witness `outcomes.json` is written by cargo-mutants inside `/work`, which candidate test code can also write; the strict reader stops it from hanging or redirecting the controller, but not from writing plausible JSON. Within one mutation job, candidate code can also influence later cargo-mutants steps through `/work` (for example its copied tree in `/work/tmp`). The sandbox stops a gate from forging the *controller's* receipt, qualification or markers, and from changing the source it is fingerprinted on. It does not stop the candidate from lying to the tool whose output is being parsed.
+- **Image admission is local tag plus recorded image ID, not signature verification.** Anyone who can write the operator's container storage can replace the tag. The ID is pinned from admission to launch within one gate invocation and recorded in the receipt. Status does not re-verify that the image still exists or still has that ID.
 - **`keep-id` maps the operator's uid into the container.** Isolation rests on namespaces, the mount set, dropped capabilities and `no-new-privileges`, not on a separate uid. A container or kernel escape lands as the operator.
-- **The vendor step fetches what the candidate's lockfile names.** It runs with network and (inferred) honours the candidate's own Cargo configuration from the snapshot, so a hostile candidate can make it contact registries or hosts of its choosing and download arbitrary crate sources. Those sources then run, offline, inside later gates.
-- **Resource bounds are partial.** There are PID and memory limits, but no CPU or disk quota.
+- **The vendoring step fetches what the candidate's lockfile and manifests name.** Candidate Cargo config and toolchain files are refused, but `[patch]`, git and path entries in `Cargo.toml` and `Cargo.lock` still direct which hosts it contacts and which sources it downloads. Those sources then run, offline, inside later gates.
+- **The toolchain-config refusal is name-based.** It covers the four file names Cargo and rustup read, at any depth in the inventory. A future Cargo or rustup that reads another file name would not be covered until it is added; `RUSTUP_TOOLCHAIN` and the read-only `CARGO_HOME` remain as independent layers.
+- **The real-Podman FIFO probe is unmeasured.** The FIFO control is measured with a real FIFO on the host in the fake-Podman test. The real-Podman witness probe plants a directory symlink instead: a FIFO planted before cargo-mutants' own final write would block cargo-mutants itself (a timeout, not a witness read), and a plant after it cannot happen because `--init` ends every process when cargo-mutants exits (inferred).
+- **Host reads are component-checked, not `openat`-anchored.** There is a window between the component checks and the open. Reads happen only after the container is proved gone, so the remaining racer would be a same-uid process outside the sandbox, which is out of scope.
+- **Out of scope for this change:** a disk quota on `/work` (a gate can fill the host disk); per-gate timeouts (one request-wide timeout applies to every gate); and a generic controller (gate commands, toolchain constant and fuzz layout are specific to this Rust workspace's needs).
 - **Same-uid processes outside the sandbox remain out of scope**, as described in the threat model.
 
 ### Evidence status
 
 - **Measured (2026-10-25, this host):**
-  - The `--log-driver` comparison described above. `passthrough` dropped redirected streams; `none` delivered them.
-  - Real-Podman planted-breach test through the controller (`DDF_COUNCIL_SANDBOX_IT=1`, commit `51196b6`): all 8 probes refused. These were agent credentials, egress to 1.1.1.1:443, writes into the run's `jobs/`, writes to `/etc`, `/run/host`, the session bus, and process visibility (3 PIDs).
-  - The full workspace test suite inside the gate sandbox on image `:20261025b`, with network none, read-only root and vendored dependencies: 1,042 passed, 0 failed (this branch). libFuzzer `council_report` in the same sandbox: 3,679,356 runs in 21 s.
+  - Every r4 control in the [r4 hardening](#gate-sandbox-r4) table, with the evidence given in its row: fake-Podman negative controls (each mutation-checked as stated) and the real-Podman planted-breach test on `:20261025c` (all 12 probes refused with their specific errnos, the positive controls succeed, and the witness, vendor-symlink and toolchain-config plants are refused).
+  - The same real-Podman test against the bce40ee controller: BREACH on the source write, the cgroup bounds and the toolchain file.
+  - The per-gate write survey and the run through the real controller described above.
+  - The `--log-driver` comparison. `passthrough` dropped redirected streams; `none` delivered them.
   - Council r4 found two gate-image gaps (missing `git`, missing `c++`). Both gates failed closed and neither was reported as passed.
-  - `python3 scripts/security/review_policy_check.py --selftest` and the plain wrapper invocation both succeeded from outside the repository root: 6 self-tests OK, `state: passed`, 13 workspace members.
-- **Inferred:** the claims above about Cargo's checksum and no-compilation behaviour during vendoring, and the git-dependency limitation.
+- **Inferred:** Cargo's checksum and no-compilation behaviour during vendoring; the git-dependency limitation; the fail-closed behaviour if `STABLE_TOOLCHAIN` is missing from the image; that a post-exit FIFO plant is impossible under `--init`.
 - **Unmeasured in this document:**
-  - The opt-in `council_sandbox` test re-run on image `:20261025b`. It was measured only at `51196b6` on `:20261025`.
-  - The CI step that builds the image and runs that test on GitHub-hosted runners.
-  - Container or kernel escape attempts beyond the 8 planted probes, and forging parsed tool output (see residual risks).
+  - The real-Podman FIFO witness probe (see residual risks).
+  - The mutation gate on this repository's own `deep-diff-forge-review` package in the new sandbox. Mutation was measured on the probe crate and on a sharded `deep-diff-forge-core` run only.
+  - The CI step that builds the image and runs the planted-breach test on GitHub-hosted runners.
+  - Container or kernel escape attempts beyond the planted probes, and forging parsed tool output (see residual risks).
 
   For test results, see the vault verification receipt.
 
@@ -354,7 +399,7 @@ Bounded private context capture, canonical candidate snapshot verification, sour
 
 ### crates/deep-diff-forge-review/src/execution.rs
 
-Fixed provider/gate argv, sandboxed gate jobs on per-job snapshot copies, one networked vendoring job, the embedded policy checker, deadlines, owned process groups, output limits and non-vacuous work qualification.
+Fixed provider/gate argv, admission before any job slot, sandboxed gate jobs on read-only per-job snapshot copies, candidate toolchain-config refusal, one networked vendoring job whose output is sealed before use, the embedded policy checker, deadlines, owned process groups, output limits and non-vacuous work qualification.
 
 [Exact crate/module](../crates/deep-diff-forge-review/src/execution.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--execution)
 
@@ -362,7 +407,7 @@ Fixed provider/gate argv, sandboxed gate jobs on per-job snapshot copies, one ne
 
 ### crates/deep-diff-forge-review/src/sandbox.rs
 
-Rootless Podman gate sandbox: fixed flags, explicit environment, `/work` and read-only `/vendor` mounts, `environment.json` record, container naming and forced removal. Design: [Gate sandbox](#gate-sandbox).
+Rootless Podman gate sandbox: fixed flags launched by image ID, explicit environment with a pinned `RUSTUP_TOOLCHAIN`, writable `/work` plus read-only `/src`, `/cargo-home` and `/vendor` mounts, `environment.json` record, nonce container naming, and forced removal with a removal proof under deadlines. Design: [Gate sandbox](#gate-sandbox).
 
 [Exact crate/module](../crates/deep-diff-forge-review/src/sandbox.rs)
 
