@@ -766,6 +766,7 @@ mod tests {
             b"   still a comment */",
             b"// line comment",
             b"   ",
+            b"#[a[b]]",
             b"#[doc = \"[x]\"] pub fn f() {}",
             b"pub fn g() {} /* trailing",
             b"*/ let x = 1;",
@@ -775,7 +776,7 @@ mod tests {
         assert_eq!(
             code_lines(&source),
             [
-                false, false, false, false, false, false, false, true, true, true
+                false, false, false, false, false, false, false, false, true, true, true
             ]
         );
     }
