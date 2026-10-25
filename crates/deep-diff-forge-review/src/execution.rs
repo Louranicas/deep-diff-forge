@@ -571,23 +571,31 @@ const MUTANT_TIMEOUT_SECONDS: u64 = 300;
 const MUTANT_JOBS: u8 = 4;
 /// Refuse, before any job slot exists, a snapshot whose Rust code exempts itself from mutation with
 /// cargo-mutants' skip attribute, in any token-equivalent spelling
-/// ([`crate::mutation_scope::has_skip_attribute`]). Every `.rs` file is scanned, then every file
-/// that a `#[path = "…"]` attribute names, whatever its extension (council r9: a module need not end
-/// in `.rs`), repeatedly, so chains of such modules are followed. Names are matched by file name,
-/// which over-includes.
+/// ([`crate::mutation_scope::exemption_scan`]). Every `.rs` file is scanned, then every file a
+/// `#[path = "…"]` attribute or a Cargo manifest's `path = "…"` names, whatever its extension
+/// (councils r9 and r10: modules and target roots need not end in `.rs`), following chains. Names
+/// are matched by file name, which over-includes; each file is queued at most once.
 fn refuse_mutation_exemptions(snapshot: &Path, inventory: &Inventory) -> Result<()> {
     let rust = |path: &str| {
         Path::new(path)
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
     };
-    let mut queue: Vec<&str> = inventory.paths().filter(|path| rust(path)).collect();
-    let mut scanned = std::collections::BTreeSet::new();
-    let mut modules = std::collections::BTreeSet::new();
-    while let Some(path) = queue.pop() {
-        if !scanned.insert(path) {
-            continue;
+    let manifest = |path: &str| Path::new(path).file_name() == Some("Cargo.toml".as_ref());
+    let mut by_name: std::collections::BTreeMap<&std::ffi::OsStr, Vec<&str>> =
+        std::collections::BTreeMap::new();
+    for path in inventory.paths() {
+        if let Some(name) = Path::new(path).file_name() {
+            by_name.entry(name).or_default().push(path);
         }
+    }
+    let mut queued: std::collections::BTreeSet<&str> = inventory
+        .paths()
+        .filter(|path| rust(path) || manifest(path))
+        .collect();
+    let mut queue: Vec<&str> = queued.iter().copied().collect();
+    let mut names = std::collections::BTreeSet::new();
+    while let Some(path) = queue.pop() {
         let Some(meta) = storage::untrusted_metadata(snapshot, Path::new(path))? else {
             continue;
         };
@@ -600,22 +608,29 @@ fn refuse_mutation_exemptions(snapshot: &Path, inventory: &Inventory) -> Result<
             64 << 20,
         )?)
         .into_owned();
-        if crate::mutation_scope::has_skip_attribute(&text) {
-            return Err(ReviewFailure(format!(
-                "snapshot contains a cargo-mutants skip attribute in {path}; candidate code cannot exempt itself from the mutation gate"
-            )));
-        }
-        for module in crate::mutation_scope::module_paths(&text) {
-            if let Some(name) = Path::new(&module).file_name() {
-                modules.insert(name.to_owned());
+        let referenced = if manifest(path) {
+            crate::mutation_scope::manifest_paths(&text)
+        } else {
+            let (skip, modules) = crate::mutation_scope::exemption_scan(&text);
+            if skip {
+                return Err(ReviewFailure(format!(
+                    "snapshot contains a cargo-mutants skip attribute in {path}; candidate code cannot exempt itself from the mutation gate"
+                )));
+            }
+            modules
+        };
+        for module in referenced {
+            let Some(name) = Path::new(&module).file_name() else {
+                continue;
+            };
+            if names.insert(name.to_owned()) {
+                for candidate in by_name.get(name).into_iter().flatten() {
+                    if queued.insert(candidate) {
+                        queue.push(candidate);
+                    }
+                }
             }
         }
-        queue.extend(inventory.paths().filter(|candidate| {
-            !scanned.contains(candidate)
-                && Path::new(candidate)
-                    .file_name()
-                    .is_some_and(|name| modules.contains(name))
-        }));
     }
     Ok(())
 }

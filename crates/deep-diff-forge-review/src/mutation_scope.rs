@@ -51,7 +51,9 @@ fn verified(repository: &Path, kind: &str, oid: &str) -> Result<Vec<u8>> {
     let bytes = storage::git_bytes(repository, &["cat-file", kind, oid], FILE_CAP)?;
     let hashed = storage::git_input(
         repository,
-        &["hash-object", "-t", kind, "--stdin"],
+        // `--literally` hashes without Git's format checks, so a legitimate historical object
+        // (zero-padded modes from old tools) is not refused; only the ID has to match.
+        &["hash-object", "-t", kind, "--stdin", "--literally"],
         &bytes,
         1024,
     )?;
@@ -100,11 +102,12 @@ fn base_blobs(repository: &Path, base: &str) -> Result<BTreeMap<String, String>>
             };
             match mode {
                 b"40000" => pending.push((format!("{prefix}{name}/"), hex(id))),
-                // A submodule's commit is not a file in this repository.
-                b"160000" => {}
-                _ => {
+                // Regular files only. A submodule's commit is not a file here, and a symlink's
+                // blob holds its target, which a regular file with those bytes is not (council r10).
+                b"100644" | b"100755" => {
                     blobs.insert(format!("{prefix}{name}"), hex(id));
                 }
+                _ => {}
             }
         }
         require(entries.is_empty(), "malformed base tree")?;
@@ -142,14 +145,12 @@ fn capture_from(
             meta.is_file(),
             "source inventory contains symlink or non-file",
         )?;
-        // Headers are line-oriented and a leading quote reads as Git's path quoting: a newline,
-        // another separator or a quote in a name could forge or misattribute a header or a hunk.
+        // Headers are line-oriented, a space can end a name for some diff parsers (Git appends a
+        // tab after such names), and a leading quote reads as Git's path quoting: any of them
+        // could forge or misattribute a header or a hunk.
         require(
-            !path.starts_with('"')
-                && !path
-                    .chars()
-                    .any(|c| c.is_control() || (c.is_whitespace() && c != ' ')),
-            "mutation scope path contains a control character, separator or leading quote",
+            !path.starts_with('"') && !path.chars().any(|c| c.is_control() || c.is_whitespace()),
+            "mutation scope path contains whitespace, a control character or a leading quote",
         )?;
         present.push(path);
     }
@@ -299,12 +300,20 @@ fn regions(old: &[usize], new: &[usize], spent: &mut usize) -> Vec<Region> {
 
 /// cargo-mutants selects mutants by new-side lines, so a region that only deletes lines selects
 /// none (measured with 27.1.0): removing a check would leave its function unmutated. Widen each such
-/// region over the unchanged lines on both sides, through any blank lines, to the nearest non-blank
-/// line before and after it (council r9: a neighbour that is only a blank line can sit outside the
-/// affected item). Widening stops at the neighbouring regions, and widened regions that then
+/// region over the unchanged lines on both sides, through blank, comment and attribute lines, to the
+/// nearest other line before and after it (council r9: a neighbour that is only a blank line can
+/// sit outside the affected item). Widening stops at the neighbouring regions, and widened regions that then
 /// overlap are merged. Unchanged lines are equal on both sides, so the diff stays valid.
 fn widen_deletions(found: &[Region], new: &[&[u8]]) -> Vec<Region> {
-    let blank = |line: usize| new[line].iter().all(u8::is_ascii_whitespace);
+    // Lines that belong to no item's body: blank, comment and attribute lines (council r10: a
+    // comment between a deleted `cfg` and the item it disabled stopped the widening).
+    let blank = |line: usize| {
+        let text = new[line].trim_ascii();
+        text.is_empty()
+            || [&b"//"[..], b"/*", b"*", b"#["]
+                .iter()
+                .any(|start| text.starts_with(start))
+    };
     let mut widened: Vec<Region> = Vec::new();
     for (k, (old_range, new_range)) in found.iter().enumerate() {
         let (mut old_range, mut new_range) = (old_range.clone(), new_range.clone());
@@ -370,8 +379,11 @@ fn lex(source: &str) -> Lexed {
         module_paths: Vec::new(),
         desync: false,
     };
+    // rustc strips a byte-order mark first, then a shebang: `#!` whose next token, after
+    // whitespace and comments, is not `[` (council r10: a comment before `[`, or a BOM, changed it).
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
     let body = match source.strip_prefix("#!") {
-        Some(rest) if !rest.trim_start().starts_with('[') => {
+        Some(rest) if !inner_attribute_follows(rest) => {
             rest.find('\n').map_or("", |newline| &rest[newline..])
         }
         _ => source,
@@ -393,7 +405,7 @@ fn lex(source: &str) -> Lexed {
                 let (text, closed) = skip_string(&mut chars);
                 lexed.desync |= !closed;
                 if lexed.code.ends_with("path=") {
-                    lexed.module_paths.push(text);
+                    lexed.module_paths.push(unescape(&text));
                 }
             }
             'r' if token_start && raw_string_ahead(&chars) => {
@@ -406,7 +418,7 @@ fn lex(source: &str) -> Lexed {
             // A raw identifier's `r#` prefix: `r#mutants` is the path segment `mutants`.
             'r' if token_start && chars.next_if_eq(&'#').is_some() => {}
             '\'' => skip_char_literal(&mut chars, &mut lexed.code),
-            c if c.is_whitespace() => {}
+            c if rust_whitespace(c) => {}
             c => lexed.code.push(c),
         }
         (before_last, last) = (last, c);
@@ -414,22 +426,111 @@ fn lex(source: &str) -> Lexed {
     lexed
 }
 
-/// True when Rust `source` names cargo-mutants' skip attribute path in code, in any spelling the
-/// compiler (and so cargo-mutants, through `syn`) treats as the same tokens. A mention in a comment
-/// or a literal is not a match. Fails closed twice over: an identifier merely ending in `mutants`
-/// before `::skip` matches, and so does any file the lexer could not follow to its end (a literal
-/// or comment still open) that mentions both words anywhere, since a lexer that disagrees with rustc
-/// may have swallowed a real attribute (council r9).
-pub(crate) fn has_skip_attribute(source: &str) -> bool {
-    let lexed = lex(source);
-    lexed.code.contains("mutants::skip")
-        || (lexed.desync && source.contains("mutants") && source.contains("skip"))
+/// Rust's whitespace (Unicode `Pattern_White_Space`), which adds the left-to-right and right-to-left
+/// marks to what `char::is_whitespace` covers (council r10: `mutants\u{200E}::skip`).
+fn rust_whitespace(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '\u{200e}' | '\u{200f}')
 }
 
-/// The file names that `source`'s `#[path = "…"]` attributes point at, so the skip scan can follow
-/// modules that do not end in `.rs`.
-pub(crate) fn module_paths(source: &str) -> Vec<String> {
-    lex(source).module_paths
+/// rustc's shebang rule: after `#!`, an inner attribute follows when the next token, after
+/// whitespace and comments, is `[`.
+fn inner_attribute_follows(rest: &str) -> bool {
+    let mut chars = rest.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '/' if chars.next_if_eq(&'/').is_some() => {
+                chars.by_ref().find(|c| *c == '\n');
+            }
+            '/' if chars.next_if_eq(&'*').is_some() => {
+                skip_block_comment(&mut chars);
+            }
+            c if rust_whitespace(c) => {}
+            c => return c == '[',
+        }
+    }
+    false
+}
+
+/// A string literal's value from its escaped spelling: rustc resolves `#[path]` from the value, so
+/// `"hid\x64en.txt"` names `hidden.txt` (council r10). Unknown escapes are kept as written.
+fn unescape(text: &str) -> String {
+    let mut value = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            value.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => value.push('\n'),
+            Some('t') => value.push('\t'),
+            Some('r') => value.push('\r'),
+            Some('0') => value.push('\0'),
+            Some('x') => {
+                let digits: String = chars.by_ref().take(2).collect();
+                value.extend(u8::from_str_radix(&digits, 16).ok().map(char::from));
+            }
+            Some('u') => {
+                let digits: String = chars
+                    .by_ref()
+                    .skip_while(|c| *c == '{')
+                    .take_while(|c| *c != '}')
+                    .collect();
+                value.extend(
+                    u32::from_str_radix(&digits, 16)
+                        .ok()
+                        .and_then(char::from_u32),
+                );
+            }
+            // A line continuation drops the newline and the next line's leading whitespace.
+            Some('\n') => while chars.next_if(|c| rust_whitespace(*c)).is_some() {},
+            Some(other) => value.push(other),
+            None => value.push('\\'),
+        }
+    }
+    value
+}
+
+/// The `path = "…"` values in a Cargo manifest (target roots such as `[lib] path`, in basic or
+/// literal TOML strings), so the skip scan reaches a target root whatever its extension
+/// (council r10). Dependency paths are directories and only over-include.
+pub(crate) fn manifest_paths(manifest: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for line in manifest.lines() {
+        let mut rest = line;
+        while let Some(at) = rest.find("path") {
+            rest = &rest[at + 4..];
+            let value = rest.trim_start().strip_prefix('=').map(str::trim_start);
+            let Some(quote) = value.and_then(|value| value.chars().next()) else {
+                continue;
+            };
+            if matches!(quote, '"' | '\'') {
+                let body = &value.unwrap_or_default()[1..];
+                if let Some(end) = body.find(quote) {
+                    paths.push(if quote == '"' {
+                        unescape(&body[..end])
+                    } else {
+                        body[..end].to_owned()
+                    });
+                }
+            }
+        }
+    }
+    paths
+}
+
+/// One pass over Rust `source`: whether it names cargo-mutants' skip attribute path in code, in any
+/// spelling the compiler (and so cargo-mutants, through `syn`) treats as the same tokens, and the
+/// file names its `#[path = "…"]` attributes point at. A mention in a comment or a literal is not a
+/// match. Fails closed twice over: an identifier merely ending in `mutants` before `::skip`
+/// matches, and so does any file the lexer could not follow to its end (a literal or comment still
+/// open) that mentions both words anywhere, since a lexer that disagrees with rustc may have
+/// swallowed a real attribute (council r9).
+pub(crate) fn exemption_scan(source: &str) -> (bool, Vec<String>) {
+    let lexed = lex(source);
+    let skip = lexed.code.contains("mutants::skip")
+        || (lexed.desync && source.contains("mutants") && source.contains("skip"));
+    (skip, lexed.module_paths)
 }
 
 /// After `/*`: through the matching `*/`, counting nested comments; false if it never closes.
@@ -533,6 +634,14 @@ fn hunk(old: (usize, &[&[u8]]), new: (usize, &[&[u8]]), out: &mut Vec<u8>) {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    fn has_skip_attribute(source: &str) -> bool {
+        exemption_scan(source).0
+    }
+
+    fn module_paths(source: &str) -> Vec<String> {
+        exemption_scan(source).1
+    }
 
     /// Apply a diff produced by [`unified`] to `old`, checking every hunk's old- and new-side
     /// coordinates as well as its context.
@@ -769,6 +878,12 @@ mod tests {
                 "a\nb\n\nc\n",
                 "@@ -1,3 +1,2 @@\n-a\n-X\n-b\n+a\n+b\n",
             ),
+            // Through comment and attribute lines too (council r10).
+            (
+                "fn a() {}\n#[cfg(any())]\n// note\nfn f() {}\n",
+                "fn a() {}\n// note\nfn f() {}\n",
+                "@@ -1,4 +1,3 @@\n-fn a() {}\n-#[cfg(any())]\n-// note\n-fn f() {}\n+fn a() {}\n+// note\n+fn f() {}\n",
+            ),
             // Through blank lines to the nearest non-blank one on each side (council r9: deleting
             // a `cfg` that disabled the next item must mark that item, not just the blank line).
             (
@@ -859,6 +974,24 @@ mod tests {
             module_paths("// #[path = \"c.txt\"]\nmod c;"),
             Vec::<String>::new()
         );
+        // rustc resolves the literal's value, not its spelling (council r10).
+        assert_eq!(
+            module_paths(
+                "#[path = \"hid\\x64en.txt\"] mod a;\n#[path = \"hidden\\u{2e}rs\"] mod b;"
+            ),
+            ["hidden.txt", "hidden.rs"]
+        );
+        assert_eq!(unescape("a\\n\\t\\\\\\\"\\0\\\n   b"), "a\n\t\\\"\0b");
+    }
+
+    #[test]
+    fn manifest_paths_name_target_roots_in_either_string_style() {
+        assert_eq!(
+            manifest_paths(
+                "[lib]\npath = \"src/lib.txt\"\n[[bin]]\nname = 'x'\npath='src/main.inc'\n[dependencies]\nfoo = { path = \"../foo\" }\n# path = \"in a comment\" is over-included\n"
+            ),
+            ["src/lib.txt", "src/main.inc", "../foo", "in a comment"]
+        );
     }
 
     #[test]
@@ -906,6 +1039,11 @@ mod tests {
             "#!/bin/sh \"\n#[mutants::skip]\nfn f() {} // \"",
             // `#![` opens an inner attribute, not a shebang.
             "#![mutants::skip]\nfn f() {}",
+            // rustc strips a byte-order mark before the shebang, and skips comments before `[`.
+            "\u{feff}#!/bin/sh \"\n#[mutants::skip]\nfn f() {} // \"",
+            "#!/*x*/[allow(dead_code)] #[mutants::skip] pub fn f() {}",
+            // Rust whitespace includes the directional marks.
+            "#[mutants\u{200e}::\u{200f}skip] fn f() {}",
             // A literal or comment left open swallows the rest: fail closed when both words appear.
             "let s = \"unterminated;\n#[mutants::skip] fn f() {}",
             "/* unterminated\n#[mutants::skip] fn f() {}",

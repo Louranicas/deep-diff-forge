@@ -980,7 +980,9 @@ fn path_characters_that_could_confuse_a_diff_parser_are_refused() {
     for (name, refused) in [
         ("non\u{a0}breaking.rs", true),
         ("\"quoted.rs", true),
-        ("plain space.rs", false),
+        // Some diff parsers end a name at a space (Git appends a tab after such names).
+        ("plain space.rs", true),
+        ("plain-name.rs", false),
     ] {
         let f = Fixture::new();
         let result = prepare_with_mutation_base(&f, |f| {
@@ -1003,6 +1005,75 @@ fn path_characters_that_could_confuse_a_diff_parser_are_refused() {
             assert!(sealed.contains(&format!("+++ b/{name}\n")), "{sealed}");
         }
     }
+}
+
+#[test]
+fn escaped_path_literals_and_non_rs_cargo_targets_are_scanned() {
+    let attribute = format!("#[{} :: skip]", "mutants");
+    // `"hid\x64en.txt"` names hidden.txt: rustc resolves the literal's value.
+    let f = Fixture::new();
+    f.commit(
+        "hidden.txt",
+        &format!("{attribute}\npub fn untested() {{}}\n"),
+    );
+    f.commit("lib.rs", "#[path = \"hid\\x64en.txt\"]\nmod hidden;\n");
+    // A target root with any extension, named only by the manifest.
+    let g = Fixture::new();
+    g.commit(
+        "root.inc",
+        &format!("{attribute}\npub fn untested() {{}}\n"),
+    );
+    g.commit(
+        "Cargo.toml",
+        "[package]\nname = \"p\"\n[lib]\npath = \"root.inc\"\n",
+    );
+    for (fixture, file) in [(&f, "hidden.txt"), (&g, "root.inc")] {
+        fixture.prepare();
+        fixture.install_gate("valid");
+        let result = fixture.gate("mutation");
+        assert_eq!(result.status.code(), Some(4), "{file}");
+        assert!(
+            String::from_utf8_lossy(&result.stderr)
+                .contains(&format!("cargo-mutants skip attribute in {file}")),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(fs::read_dir(fixture.run.join("jobs")).unwrap().count(), 0);
+    }
+}
+
+#[test]
+fn a_symlink_replaced_by_a_file_with_its_target_bytes_is_in_scope() {
+    let f = Fixture::new();
+    // A symlink's blob holds its target; a regular file with those bytes hashes the same.
+    std::os::unix::fs::symlink("target.rs", f.repository.join("link.rs")).unwrap();
+    git(&f, &["add", "link.rs"]);
+    git(
+        &f,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "symlink",
+        ],
+    );
+    let result = prepare_with_mutation_base(&f, |f| {
+        fs::remove_file(f.repository.join("link.rs")).unwrap();
+        fs::write(f.repository.join("link.rs"), "target.rs").unwrap();
+    });
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let sealed = fs::read_to_string(f.run.join("mutation.diff")).unwrap();
+    assert!(
+        sealed.contains("+++ b/link.rs\n@@ -0,0 +1,1 @@\n+target.rs"),
+        "{sealed}"
+    );
 }
 
 #[test]
@@ -1053,7 +1124,7 @@ fn binary_files_are_out_of_scope_and_control_characters_in_paths_are_refused() {
     });
     assert_eq!(result.status.code(), Some(4));
     assert!(
-        String::from_utf8_lossy(&result.stderr).contains("path contains a control character"),
+        String::from_utf8_lossy(&result.stderr).contains("mutation scope path contains"),
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );

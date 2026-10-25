@@ -401,6 +401,26 @@ Council r9 (run `1ea218af…`) reviewed `51894f8..2cd4568`. All of its evidence 
 | New logic inside macros is not mutated (security, medium) | Not changed: cargo-mutants does not look inside macro token streams. Disclosed as a residual | — |
 | `git_bytes` has no deadline (performance, medium) | Not changed: prepare is operator-run and fails closed on error. Disclosed | — |
 
+<a id="gate-sandbox-r10"></a>
+
+### r10 follow-ups
+
+Council r10 (run `ebf5d834…`) reviewed `2cd4568..bec1a49`. Every evidence gate passed in the sandbox (1,173 tests). Security found no hole in the verified object walk. The remaining findings are in the exemption lexer and its scan:
+
+| Finding (r10) | Control | Evidence |
+| --- | --- | --- |
+| Escaped `#[path]` literals (`"hid\x64en.txt"`) bypass the scan (HIGH; architecture, correctness, falsifier, security, subtractor) | Captured literals are unescaped (`\x`, `\u{…}`, `\n`, `\t`, `\r`, `\0`, `\\`, quotes, line continuations), so the scan follows the value rustc resolves | **Measured, fake:** the `hidden.txt` case of `escaped_path_literals_and_non_rs_cargo_targets_are_scanned`. **Unit:** `path_attributes_name_their_module_files` |
+| Non-`.rs` Cargo target roots are never scanned (HIGH; architecture, correctness, falsifier, subtractor) | Every `Cargo.toml` seeds the scan with its `path = "…"` values, in basic or literal TOML strings | **Measured, fake:** the `root.inc` case of the same test. **Unit:** `manifest_paths_name_target_roots_in_either_string_style` |
+| The shebang rule diverges from rustc: comments before `[`, and a byte-order mark (HIGH; architecture, correctness, security) | A BOM is stripped first. `#!` is a shebang unless the next token after whitespace and comments is `[` | **Unit:** the BOM and `#!/*x*/[` positives |
+| `U+200E`/`U+200F` inside the path (HIGH; architecture) | The lexer drops Rust's `Pattern_White_Space`, which includes the directional marks | **Unit:** the `\u{200e}`/`\u{200f}` positive |
+| A comment line stops deletion widening before the newly enabled item (HIGH; correctness, falsifier, security, subtractor) | Widening passes through blank, comment and attribute lines | **Unit:** the `// note` case of `pure_deletions_mark_a_neighbouring_line` |
+| The module queue grows quadratically with duplicates (performance, correctness, falsifier, subtractor, security) | Inventory is indexed by file name once; each file is queued at most once; each new name is looked up once | By construction |
+| A symlink replaced by a file with its target bytes is skipped as unchanged (security, low) | Only regular-file modes (`100644`, `100755`) count as base blobs | **Measured, fake:** `a_symlink_replaced_by_a_file_with_its_target_bytes_is_in_scope` |
+| A space in a header path may end the name for some parsers (security) | Paths with any whitespace are refused | **Measured, fake:** the `plain space.rs` case of `path_characters_that_could_confuse_a_diff_parser_are_refused` |
+| `hash-object` format checks could refuse a legitimate historical object (architecture, low) | `--literally`: only the ID must match | — |
+| Double lexing; an input thread for every Git command (performance, low) | One pass per file; a writer thread only when there is input | — |
+| **The exemption control is a denylist that predicts cargo-mutants** (architecture, r9 and r10) | **Not changed, and the main open item.** Every round has found a lexer divergence. The robust fixes need a decision: either **(a)** build the gate image's cargo-mutants with skip-attribute support compiled out, so nothing needs predicting, or **(b)** detect with `syn`, the parser cargo-mutants uses, adding it as a direct controller dependency. Both affect the supply-chain gates (image provenance, or cargo-deny, cargo-audit and the SBOM) | Disclosed; recommended for the next slice |
+
 ### Podman invocation
 
 Every gate job runs `$DDF_COUNCIL_PODMAN run` (the default runtime is `podman`) with these flags. The source of truth is `sandbox.rs` `Sandbox::argv`.
