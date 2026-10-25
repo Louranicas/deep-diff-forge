@@ -53,6 +53,10 @@ fn executable(path: &Path, text: &str) {
 impl Fixture {
     /// Prepare a run and execute both blind reviews with fake providers that emit cited findings.
     fn new() -> Self {
+        Self::with_repository(|_| {})
+    }
+    /// As [`Fixture::new`], with `setup` applied to the committed repository before the run is prepared.
+    fn with_repository(setup: impl FnOnce(&Path)) -> Self {
         let root = std::env::temp_dir().join(format!(
             "ddf-tuicr-{}-{}",
             std::process::id(),
@@ -65,6 +69,7 @@ impl Fixture {
         git(&repository, &["init", "-q"]);
         git(&repository, &["add", "x.rs"]);
         git(&repository, &["commit", "-qm", "fixture"]);
+        setup(&repository);
         let analysis = root.join("analysis.json");
         let snapshot =
             deep_diff_forge_core::changed_source_snapshot_id([("x.rs", Some(SOURCE.as_bytes()))]);
@@ -1161,6 +1166,7 @@ fn edits_of_council_notes_are_conflicts_and_human_edits_are_revisions() {
     let f = Fixture::new();
     let session = f.exported();
     let range_id = f.exported_id(&session, RANGE_KEY);
+    let line_id = f.exported_id(&session, LINE_KEY);
     edit_session(&session, |s| {
         s["review_comments"].as_array_mut().unwrap().push(human(
             "h-1",
@@ -1175,7 +1181,7 @@ fn edits_of_council_notes_are_conflicts_and_human_edits_are_revisions() {
     edit_session(&session, |s| {
         comment_mut(s, &range_id)["content"] = "edited by a human in the TUI".into();
         let c = comment_mut(s, "h-1");
-        c["content"] = "Use a half-open range; see RFC.".into();
+        c["content"] = format!("Use a half-open range; see RFC. [ddf:{LINE_KEY}]").into();
         c["lifecycle_state"] = "submitted".into();
     });
     let out = f.import(&session, &["--execute"]);
@@ -1211,6 +1217,11 @@ fn edits_of_council_notes_are_conflicts_and_human_edits_are_revisions() {
     assert!(revised["conflict"].is_null());
     assert_eq!(revised["supersedes"], added);
     assert_eq!(revised["actor"]["name"], "Luke");
+    assert_eq!(
+        revised["links"],
+        serde_json::json!([{"key": LINE_KEY, "tuicr_comment_id": line_id, "basis": "tag"}]),
+        "a revision carries the links of its new content"
+    );
     let lifecycle = &events[2];
     assert_eq!(lifecycle["previous_lifecycle_state"], "local_draft");
     assert_eq!(lifecycle["lifecycle_state"], "submitted");
@@ -1220,7 +1231,6 @@ fn edits_of_council_notes_are_conflicts_and_human_edits_are_revisions() {
     assert_eq!(again.status.code(), Some(0), "{}", stderr(&again));
     assert_eq!(f.events().len(), 4);
     // A lifecycle-only change of an untouched council note is a transition, not a revision.
-    let line_id = f.exported_id(&session, LINE_KEY);
     edit_session(&session, |s| {
         comment_mut(s, &line_id)["lifecycle_state"] = "pushed_draft".into();
     });
@@ -1231,6 +1241,16 @@ fn edits_of_council_notes_are_conflicts_and_human_edits_are_revisions() {
         json(&f.import(&session, &["--execute"]))["events"],
         serde_json::json!([])
     );
+    // A lifecycle-only change of a journaled human comment supersedes its latest event.
+    edit_session(&session, |s| {
+        comment_mut(s, "h-1")["lifecycle_state"] = "pushed_draft".into();
+    });
+    let moved = json(&f.import(&session, &["--execute"]));
+    assert_eq!(kinds(moved["events"].as_array().unwrap()), ["lifecycle"]);
+    let moved = &moved["events"][0];
+    assert_eq!(moved["comment_id"], "h-1");
+    assert_eq!(moved["previous_lifecycle_state"], "submitted");
+    assert_eq!(moved["supersedes"], lifecycle["hash"]);
 }
 
 #[test]
@@ -1239,15 +1259,19 @@ fn deleted_comments_become_tombstones_and_can_be_restored() {
     let session = f.exported();
     let line_id = f.exported_id(&session, LINE_KEY);
     edit_session(&session, |s| {
-        s["review_comments"].as_array_mut().unwrap().push(human(
+        let reviews = s["review_comments"].as_array_mut().unwrap();
+        reviews.push(human(
             "h-1",
             "Luke",
             "issue",
-            "Drop this.",
+            &format!("Drop this. [ddf:{LINE_KEY}]"),
         ));
+        // A later comment by someone else: h-1's tombstone must still name h-1's author.
+        reviews.push(human("h-2", "Ana", "note", "Unrelated."));
     });
     json(&f.import(&session, &["--execute"]));
     let added = f.events()[0].clone();
+    assert_eq!(added["comment_id"], "h-1");
     let original = fs::read(&session).unwrap();
     edit_session(&session, |s| {
         s["review_comments"]
@@ -1282,11 +1306,158 @@ fn deleted_comments_become_tombstones_and_can_be_restored() {
     );
     fs::write(&session, original).unwrap();
     let restored = json(&f.import(&session, &["--execute"]));
+    let back = restored["events"].as_array().unwrap();
+    assert_eq!(kinds(back), ["restored", "restored"]);
+    let human_back = back.iter().find(|e| e["comment_id"] == "h-1").unwrap();
+    assert_eq!(human_back["supersedes"], human_tomb["hash"]);
+    assert_eq!(human_back["actor"]["name"], "Luke");
     assert_eq!(
-        kinds(restored["events"].as_array().unwrap()),
-        ["restored", "restored"]
+        human_back["links"],
+        serde_json::json!([{"key": LINE_KEY, "tuicr_comment_id": line_id, "basis": "tag"}])
     );
-    assert_eq!(f.events().len(), 5);
+    let note_back = back
+        .iter()
+        .find(|e| e["comment_id"] == line_id.as_str())
+        .unwrap();
+    assert_eq!(note_back["supersedes"], note_tomb["hash"]);
+    assert_eq!(note_back["links"], serde_json::json!([]));
+    assert_eq!(f.events().len(), 6);
+}
+
+#[test]
+fn reviewed_hunks_alone_are_a_positive_mark_that_pins_the_content_hash() {
+    let f = Fixture::new();
+    let session = f.exported();
+    edit_session(&session, |s| {
+        s["files"]["x.rs"]["reviewed_hunks"] = serde_json::json!(["h1"]);
+        s["files"]["x.rs"]["content_hash"] = serde_json::Value::Null;
+    });
+    refused(&f.import(&session, &["--execute"]), "no tuicr content_hash");
+    edit_session(&session, |s| {
+        s["files"]["x.rs"]["content_hash"] = 111.into();
+    });
+    let first = json(&f.import(&session, &["--execute"]));
+    let mark = &first["events"][0];
+    assert_eq!(mark["reviewed"], false);
+    assert_eq!(mark["reviewed_hunks"], serde_json::json!(["h1"]));
+    assert_eq!(mark["content_hash"], 111);
+    // The hunk mark pinned 111: a whole-file mark under another tuicr diff hash is refused.
+    edit_session(&session, |s| {
+        s["files"]["x.rs"]["reviewed"] = true.into();
+        s["files"]["x.rs"]["content_hash"] = 222.into();
+    });
+    refused(&f.import(&session, &["--execute"]), "stale review mark");
+    // Clearing every mark is not positive, so it needs no content hash.
+    edit_session(&session, |s| {
+        s["files"]["x.rs"]["reviewed"] = false.into();
+        s["files"]["x.rs"]["reviewed_hunks"] = serde_json::json!([]);
+        s["files"]["x.rs"]["content_hash"] = serde_json::Value::Null;
+    });
+    let cleared = json(&f.import(&session, &["--execute"]));
+    assert_eq!(
+        kinds(cleared["events"].as_array().unwrap()),
+        ["file_review"]
+    );
+    assert_eq!(cleared["events"][0]["reviewed"], false);
+    assert_eq!(cleared["events"][0]["supersedes"], mark["hash"]);
+}
+
+#[test]
+fn dispositions_need_the_file_on_both_sides_or_neither() {
+    // gone.rs is committed, then deleted before the run: inventoried, absent from the snapshot.
+    let f = Fixture::with_repository(|repository| {
+        fs::write(repository.join("gone.rs"), "fn gone() {}\n").unwrap();
+        git(repository, &["add", "gone.rs"]);
+        git(repository, &["commit", "-qm", "gone"]);
+        fs::remove_file(repository.join("gone.rs")).unwrap();
+    });
+    let deleted = f.session("deleted.json", |s| {
+        s["files"]["gone.rs"] = serde_json::json!({
+            "path": "gone.rs", "reviewed": false, "status": "deleted",
+            "file_comments": [human("h-gone", "Luke", "note", "Good riddance.")],
+            "line_comments": {}, "reviewed_hunks": [], "content_hash": 0
+        });
+    });
+    // Absent on both sides: a disposition on the deleted file is on the run's revision.
+    let both_absent = json(&f.import(&deleted, &[]));
+    assert_eq!(
+        kinds(both_absent["events"].as_array().unwrap()),
+        ["comment_added"]
+    );
+    assert_eq!(
+        both_absent["events"][0]["anchor"],
+        serde_json::json!({"type": "file", "file": "gone.rs"})
+    );
+    // Recreated after the run: the session reviews bytes the run never sealed.
+    fs::write(f.repository.join("gone.rs"), "fn gone() {}\n").unwrap();
+    refused(&f.import(&deleted, &[]), "absent from the sealed snapshot");
+    fs::remove_file(f.repository.join("gone.rs")).unwrap();
+    // Sealed, then deleted from the working tree: the session cannot show the sealed bytes.
+    let sealed = f.session("sealed.json", |s| {
+        s["files"]["x.rs"]["file_comments"] =
+            serde_json::json!([human("h-x", "Luke", "note", "Keep this.")]);
+    });
+    fs::remove_file(f.repository.join("x.rs")).unwrap();
+    refused(&f.import(&sealed, &[]), "stale file");
+    // Positive control: the sealed bytes restored.
+    fs::write(f.repository.join("x.rs"), SOURCE).unwrap();
+    assert_eq!(
+        kinds(json(&f.import(&sealed, &[]))["events"].as_array().unwrap()),
+        ["comment_added"]
+    );
+    assert!(!f.journal().exists(), "dry runs write nothing");
+}
+
+#[test]
+fn export_ledger_records_must_belong_to_the_run_and_session_and_be_named_by_key() {
+    let f = Fixture::new();
+    let session = f.exported();
+    let dir = f
+        .run
+        .join("exports/tuicr/00000000-0000-4000-8000-000000000001");
+    let name = f
+        .ledger_files()
+        .into_iter()
+        .find(|n| Path::new(n).extension().is_some_and(|e| e == "json"))
+        .unwrap();
+    let record = dir.join(&name);
+    let original = fs::read(&record).unwrap();
+    // Each identity field is checked on its own.
+    for field in ["run_id", "session_id"] {
+        let mut value: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        value[field] = "f".repeat(64).into();
+        fs::write(&record, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+        refused(
+            &f.import(&session, &[]),
+            "does not belong to this run and session",
+        );
+    }
+    fs::write(&record, &original).unwrap();
+    // A faithful record under a name that is not the hash of its key.
+    let misnamed = dir.join(format!("{}.json", "0".repeat(64)));
+    fs::copy(&record, &misnamed).unwrap();
+    refused(
+        &f.import(&session, &[]),
+        "does not belong to this run and session",
+    );
+    fs::remove_file(&misnamed).unwrap();
+    assert!(json(&f.import(&session, &[]))["events"].is_array());
+}
+
+#[test]
+fn sealed_inventory_is_read_up_to_its_cap_and_no_further() {
+    const CAP: usize = 8 * 1024 * 1024;
+    let f = Fixture::new();
+    let session = f.session("session.json", |_| {});
+    let inventory = f.run.join("source-inventory.json");
+    // Trailing JSON whitespace changes neither the inventory nor its fingerprint.
+    let mut padded = fs::read(&inventory).unwrap();
+    padded.resize(CAP, b' ');
+    fs::write(&inventory, &padded).unwrap();
+    assert!(json(&f.import(&session, &[]))["events"].is_array());
+    padded.push(b' ');
+    fs::write(&inventory, &padded).unwrap();
+    refused(&f.import(&session, &[]), "acquisition budget");
 }
 
 #[test]
