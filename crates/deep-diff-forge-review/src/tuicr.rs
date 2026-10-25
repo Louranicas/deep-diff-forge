@@ -63,8 +63,6 @@ pub enum TuicrExportError {
     },
     /// tuicr does not list the session file as a stored session for the run's repository.
     NotInStore { session: String },
-    /// A live tuicr has the session open and could overwrite external edits.
-    SessionActive { session: String },
     /// No usable `tuicr` executable was found on `PATH`.
     TuicrUnavailable(String),
     /// tuicr exited unsuccessfully; its stderr is retained verbatim.
@@ -114,10 +112,6 @@ impl fmt::Display for TuicrExportError {
             Self::NotInStore { session } => write!(
                 f,
                 "tuicr export refused (not in store): tuicr does not list {session} for the run repository; tuicr would save edits elsewhere"
-            ),
-            Self::SessionActive { session } => write!(
-                f,
-                "tuicr export refused (session active): a live tuicr has {session} open; close it first"
             ),
             Self::TuicrUnavailable(reason) => write!(f, "tuicr unavailable: {reason}"),
             Self::TuicrFailed { status, stderr } => {
@@ -753,13 +747,11 @@ fn tuicr(binary: &Path, cwd: &Path, args: &[&str], input: &[u8]) -> Result<Vec<u
     }
     Ok(output.stdout)
 }
-/// The session must be tuicr's stored copy for this repository and not open in a live tuicr.
+/// The session must be tuicr's stored copy for this repository (it may be open in a live tuicr).
 fn preflight(binary: &Path, repository: &Path, session: &Path) -> Result<()> {
     #[derive(Deserialize)]
     struct Listed {
         path: PathBuf,
-        #[serde(default)]
-        active: bool,
     }
     let repo = repository
         .to_str()
@@ -771,17 +763,15 @@ fn preflight(binary: &Path, repository: &Path, session: &Path) -> Result<()> {
         b"",
     )?)
     .map_err(|e| TuicrExportError::TuicrOutput(format!("review list: {e}")))?;
-    let entry = listed
+    listed
         .iter()
         .find(|l| fs::canonicalize(&l.path).is_ok_and(|p| p == session))
         .ok_or_else(|| TuicrExportError::NotInStore {
             session: session.display().to_string(),
         })?;
-    if entry.active {
-        return Err(TuicrExportError::SessionActive {
-            session: session.display().to_string(),
-        });
-    }
+    // An active session is fine: tuicr's CLI writes are lock-protected and a running TUI polls
+    // and merges external edits (tuicr README, "Review session CLI"). The per-add re-read below
+    // still refuses if the session diverges.
     Ok(())
 }
 fn load_session(path: &Path) -> Result<Session> {

@@ -576,16 +576,28 @@ fn tuicr_failure_is_typed_keeps_stderr_and_leaves_no_ledger() {
 }
 
 #[test]
-fn unstored_active_diverged_or_missing_tuicr_is_refused() {
+fn active_sessions_accept_verified_exports() {
+    // tuicr is designed for collaborative tools to add to a session open in the TUI.
+    let f = Fixture::new();
+    let session = f.session("session.json", |_| {});
+    let out = json(&f.export(&session, &["--execute"], "active"));
+    assert_eq!(out["executed"], true);
+    assert!(
+        out["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| n["status"] == "created" && n["tuicr_comment_id"].is_string())
+    );
+}
+
+#[test]
+fn unstored_diverged_or_missing_tuicr_is_refused() {
     let f = Fixture::new();
     let session = f.session("session.json", |_| {});
     refused(
         &f.export(&session, &["--execute"], "unlisted"),
         "not in store",
-    );
-    refused(
-        &f.export(&session, &["--execute"], "active"),
-        "session active",
     );
     assert!(f.tuicr_calls().iter().all(|c| c["argv"][1] == "list"));
     let diverged = f.export(&session, &["--execute"], "diverge");
