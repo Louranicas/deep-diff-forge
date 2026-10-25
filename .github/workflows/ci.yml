@@ -58,6 +58,11 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: pedantic
         run: cargo clippy --workspace --all-targets --locked -- -D warnings -W clippy::pedantic
+      - name: pedantic (feature and fuzz coverage)
+        # The workspace pass builds default features only, and the fuzz crate is outside the workspace.
+        run: |
+          cargo clippy -p deep-diff-forge-patch --no-default-features --all-targets --locked -- -D warnings -W clippy::pedantic
+          cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings -W clippy::pedantic
       - name: test
         run: cargo test --workspace --locked
       - name: docs
