@@ -272,6 +272,75 @@ fn range_json(range: Option<TextRange>) -> String {
         },
     )
 }
+/// Node-level spans emitted verbatim per file; above this, regions carry the line evidence and the
+/// omission is recorded explicitly (measured: one 30 KB file produced 3,970 spans, 628 KB of JSON).
+const SPAN_BUDGET: usize = 256;
+
+type Lines = Option<(u32, u32)>;
+fn lines(range: Option<TextRange>) -> Lines {
+    range.map(|r| (r.start_line, r.end_line))
+}
+/// `next` continues a run that starts at or before it and ends no earlier than the line above it.
+fn adjoins(run: Lines, next: Lines) -> bool {
+    match (run, next) {
+        (None, None) => true,
+        (Some((start, end)), Some((next_start, _))) => {
+            next_start >= start && next_start <= end.saturating_add(1)
+        }
+        _ => false,
+    }
+}
+fn widen(run: Lines, next: Lines) -> Lines {
+    run.zip(next)
+        .map(|((start, end), (_, next_end))| (start, end.max(next_end)))
+        .or(run)
+}
+fn lines_json(lines: Lines) -> String {
+    lines.map_or_else(|| "null".into(), |(start, end)| format!("[{start},{end}]"))
+}
+/// Coalesce spans into contiguous changed-line regions per hunk and kind. Precision is
+/// `source_line`, so nested nodes over the same lines add no line information.
+fn regions_json(spans: &[SemanticSpan]) -> String {
+    let mut sorted = spans.iter().collect::<Vec<_>>();
+    sorted.sort_by_key(|s| {
+        (
+            s.hunk_id.0,
+            s.kind as u8,
+            lines(s.old_range),
+            lines(s.new_range),
+        )
+    });
+    let mut regions: Vec<(&SemanticSpan, Lines, Lines, usize)> = Vec::new();
+    for span in sorted {
+        let (old, new) = (lines(span.old_range), lines(span.new_range));
+        match regions.last_mut() {
+            Some((first, run_old, run_new, count))
+                if first.hunk_id == span.hunk_id
+                    && first.kind == span.kind
+                    && adjoins(*run_old, old)
+                    && adjoins(*run_new, new) =>
+            {
+                *run_old = widen(*run_old, old);
+                *run_new = widen(*run_new, new);
+                *count += 1;
+            }
+            _ => regions.push((span, old, new, 1)),
+        }
+    }
+    regions
+        .iter()
+        .map(|(first, old, new, count)| {
+            format!(
+                "{{\"hunk_id\":{},\"kind\":{},\"old_lines\":{},\"new_lines\":{},\"spans\":{count}}}",
+                first.hunk_id.0,
+                json_escape(&format!("{:?}", first.kind)),
+                lines_json(*old),
+                lines_json(*new)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
 fn line_ranges(source: &str) -> Vec<TextRange> {
     let mut offset = 0u64;
     source
@@ -386,11 +455,21 @@ impl ReviewBundle {
                 );
             }
             if let Some(twin) = file.semantic_twin.as_ref() {
-                let spans = twin.spans.iter().map(|s| format!("{{\"id\":{},\"hunk_id\":{},\"kind\":{},\"old_range\":{},\"new_range\":{}}}", s.id.0, s.hunk_id.0, json_escape(&format!("{:?}", s.kind)), range_json(s.old_range), range_json(s.new_range))).collect::<Vec<_>>().join(",");
                 let _ = write!(
                     record,
-                    ",\"span_precision\":\"source_line\",\"semantic_spans\":[{spans}]"
+                    ",\"span_precision\":\"source_line\",\"semantic_regions\":[{}]",
+                    regions_json(&twin.spans)
                 );
+                if twin.spans.len() <= SPAN_BUDGET {
+                    let spans = twin.spans.iter().map(|s| format!("{{\"id\":{},\"hunk_id\":{},\"kind\":{},\"old_range\":{},\"new_range\":{}}}", s.id.0, s.hunk_id.0, json_escape(&format!("{:?}", s.kind)), range_json(s.old_range), range_json(s.new_range))).collect::<Vec<_>>().join(",");
+                    let _ = write!(record, ",\"semantic_spans\":[{spans}]");
+                } else {
+                    let _ = write!(
+                        record,
+                        ",\"semantic_spans_omitted\":{{\"reason\":\"span_budget\",\"count\":{},\"budget\":{SPAN_BUDGET}}}",
+                        twin.spans.len()
+                    );
+                }
             }
             record.push('}');
             records.push(record);
@@ -498,5 +577,98 @@ mod tests {
         source.new.as_mut().unwrap().push_str("// context\n");
         let contextual = analyze_review(patch.into(), &[source]).unwrap();
         assert_ne!(original.id(), contextual.id());
+    }
+    fn line_span(
+        hunk: u64,
+        kind: SemanticChangeKind,
+        old: Option<u32>,
+        new: Option<u32>,
+    ) -> SemanticSpan {
+        let range = |line: u32| TextRange {
+            start_byte: 0,
+            end_byte: 0,
+            start_line: line,
+            end_line: line,
+        };
+        SemanticSpan {
+            id: SemanticSpanId(0),
+            hunk_id: HunkId(hunk),
+            kind,
+            old_range: old.map(range),
+            new_range: new.map(range),
+        }
+    }
+    #[test]
+    fn regions_coalesce_nested_and_adjacent_lines_only() {
+        use SemanticChangeKind::{AddedNode, RemovedNode};
+        let spans = [
+            line_span(0, AddedNode, None, Some(4)),
+            line_span(0, AddedNode, None, Some(3)),
+            line_span(0, AddedNode, None, Some(3)),
+            line_span(0, AddedNode, None, Some(5)),
+            line_span(0, AddedNode, None, Some(9)),
+            line_span(0, RemovedNode, Some(3), None),
+            line_span(1, AddedNode, None, Some(6)),
+        ];
+        assert_eq!(
+            regions_json(&spans),
+            "{\"hunk_id\":0,\"kind\":\"AddedNode\",\"old_lines\":null,\"new_lines\":[3,5],\"spans\":4},\
+             {\"hunk_id\":0,\"kind\":\"AddedNode\",\"old_lines\":null,\"new_lines\":[9,9],\"spans\":1},\
+             {\"hunk_id\":0,\"kind\":\"RemovedNode\",\"old_lines\":[3,3],\"new_lines\":null,\"spans\":1},\
+             {\"hunk_id\":1,\"kind\":\"AddedNode\",\"old_lines\":null,\"new_lines\":[6,6],\"spans\":1}"
+        );
+    }
+    #[test]
+    fn moved_regions_require_both_sides_to_adjoin() {
+        use SemanticChangeKind::MovedNode;
+        let spans = [
+            line_span(0, MovedNode, Some(1), Some(10)),
+            line_span(0, MovedNode, Some(2), Some(11)),
+            line_span(0, MovedNode, Some(3), Some(20)),
+        ];
+        assert_eq!(
+            regions_json(&spans),
+            "{\"hunk_id\":0,\"kind\":\"MovedNode\",\"old_lines\":[1,2],\"new_lines\":[10,11],\"spans\":2},\
+             {\"hunk_id\":0,\"kind\":\"MovedNode\",\"old_lines\":[3,3],\"new_lines\":[20,20],\"spans\":1}"
+        );
+    }
+    #[test]
+    fn span_budget_replaces_verbatim_spans_with_an_explicit_omission() {
+        let mut body = String::new();
+        let mut patch =
+            format!("--- a/x.rs\n+++ b/x.rs\n@@ -1 +1,{SPAN_BUDGET} @@\n-fn a() {{}}\n");
+        for i in 0..SPAN_BUDGET {
+            let line = format!("fn f{i}() {{ let x = {i}; }}\n");
+            body.push_str(&line);
+            patch.push('+');
+            patch.push_str(&line);
+        }
+        let source = SourcePair {
+            path: "x.rs".into(),
+            old: Some("fn a() {}\n".into()),
+            new: Some(body),
+        };
+        let bundle = analyze_review(patch, &[source]).unwrap();
+        let count = bundle.files()[0]
+            .semantic_twin
+            .as_ref()
+            .unwrap()
+            .spans
+            .len();
+        assert!(
+            count > SPAN_BUDGET,
+            "fixture must exceed the budget: {count}"
+        );
+        let json = bundle.to_json();
+        assert!(!json.contains("\"semantic_spans\":"), "{json}");
+        assert!(json.contains(&format!(
+            "\"semantic_spans_omitted\":{{\"reason\":\"span_budget\",\"count\":{count},\"budget\":{SPAN_BUDGET}}}"
+        )));
+        assert!(json.contains("\"new_lines\":[1,256]"), "{json}");
+        let small = analyze_review(PATCH.into(), &[pair()]).unwrap().to_json();
+        assert!(
+            small.contains("\"semantic_spans\":[{") && small.contains("\"semantic_regions\":[{")
+        );
+        assert!(!small.contains("semantic_spans_omitted"));
     }
 }
