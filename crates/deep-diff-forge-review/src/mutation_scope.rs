@@ -143,12 +143,10 @@ fn capture_from(
             meta.is_file(),
             "source inventory contains symlink or non-file",
         )?;
-        // Headers are line-oriented, a space can end a name for some diff parsers (Git appends a
-        // tab after such names), and a leading quote reads as Git's path quoting: any of them
-        // could forge or misattribute a header or a hunk.
+        // `hash-object --stdin-paths` reads one path per line.
         require(
-            !path.starts_with('"') && !path.chars().any(|c| c.is_control() || c.is_whitespace()),
-            "mutation scope path contains whitespace, a control character or a leading quote",
+            !path.chars().any(char::is_control),
+            "mutation scope path contains a control character",
         )?;
         present.push(path);
     }
@@ -190,6 +188,14 @@ fn capture_from(
         } else {
             Vec::new()
         };
+        // Headers are line-oriented, a space can end a name for some diff parsers (Git appends a
+        // tab after such names), and a leading quote reads as Git's path quoting: any of them
+        // could forge or misattribute a header or a hunk. Only a changed file gets a header, so an
+        // unchanged `docs/Design Notes.md` does not block the diff scope (council r13).
+        require(
+            !path.starts_with('"') && !path.chars().any(char::is_whitespace),
+            "mutation scope path contains whitespace or a leading quote",
+        )?;
         unified(path, &old, &new, &mut spent, &mut diff)?;
         require(
             diff.len() as u64 <= MUTATION_DIFF_CAP,
@@ -338,12 +344,16 @@ fn widen_deletions(found: &[Region], new: &[&[u8]]) -> Vec<Region> {
     widened
 }
 
-/// Whether each line holds code outside comments and attributes, tracking nested block comments
-/// and attribute brackets across lines (council r12: the inside of a multi-line `/* … */`, or of a
-/// multi-line `#[cfg(…)]`, is not code). String literals are not lexed: a `/*` or `[` inside one
-/// can only mark later lines as non-code, which widens further and over-includes.
+/// Whether each line holds code outside comments and attributes, tracking nested block comments,
+/// attribute brackets and string literals across lines (council r12: the inside of a multi-line
+/// `/* … */` or `#[cfg(…)]` is not code; council r13: a `]` or `/*` inside a string, as in
+/// `#[doc = "]"]` or `"**/*.rs"`, changes neither). Plain, byte and raw (`r#"…"#`) strings are
+/// followed; a character literal holding `"` is not, and opens a string that can only make later
+/// lines non-code, which widens further.
 fn code_lines(new: &[&[u8]]) -> Vec<bool> {
     let (mut comment, mut attribute) = (0_usize, 0_usize);
+    // Inside a string: `None` for plain strings, `Some(n)` for a raw string closed by `"` and n `#`.
+    let mut string: Option<Option<usize>> = None;
     new.iter()
         .map(|line| {
             let mut code = false;
@@ -354,7 +364,18 @@ fn code_lines(new: &[&[u8]]) -> Vec<bool> {
                     continue;
                 }
                 let pair = line.get(i..i + 2);
-                if comment > 0 {
+                let hashes = line[i + 1..].iter().take_while(|b| **b == b'#').count();
+                if let Some(raw) = string {
+                    match raw {
+                        None if byte == b'\\' => skip = 1,
+                        None if byte == b'"' => string = None,
+                        Some(n) if byte == b'"' && hashes >= n => {
+                            string = None;
+                            skip = n;
+                        }
+                        _ => {}
+                    }
+                } else if comment > 0 {
                     if pair == Some(b"/*") {
                         comment += 1;
                         skip = 1;
@@ -367,6 +388,13 @@ fn code_lines(new: &[&[u8]]) -> Vec<bool> {
                 } else if pair == Some(b"/*") {
                     comment = 1;
                     skip = 1;
+                } else if byte == b'"' {
+                    string = Some(None);
+                    code |= attribute == 0;
+                } else if byte == b'r' && line.get(i + 1 + hashes) == Some(&b'"') {
+                    string = Some(Some(hashes));
+                    skip = hashes + 1;
+                    code |= attribute == 0;
                 } else if attribute > 0 {
                     match byte {
                         b'[' => attribute += 1,
@@ -767,6 +795,12 @@ mod tests {
             b"// line comment",
             b"   ",
             b"#[a[b]]",
+            b"#[doc = \"]\"]",
+            b"#[doc = r#\"a\"]\"#]",
+            b"#[doc = \"multi",
+            b"line ] string\"]",
+            b"let g = \"**/*.rs\";",
+            b"let q = \"\\\"\"; // escaped quote",
             b"#[doc = \"[x]\"] pub fn f() {}",
             b"pub fn g() {} /* trailing",
             b"*/ let x = 1;",
@@ -776,7 +810,8 @@ mod tests {
         assert_eq!(
             code_lines(&source),
             [
-                false, false, false, false, false, false, false, false, true, true, true
+                false, false, false, false, false, false, false, false, false, false, false, false,
+                true, true, true, true, true
             ]
         );
     }
@@ -784,6 +819,10 @@ mod tests {
     #[test]
     fn deletion_widening_passes_multi_line_comments_and_attributes() {
         for (old, new) in [
+            (
+                "fn a() {}\n#[cfg(any())]\n#[doc = \"]\"]\nfn f() {}\n",
+                "fn a() {}\n#[doc = \"]\"]\nfn f() {}\n",
+            ),
             (
                 "fn a() {}\n#[cfg(any())]\n/*\nexplanation\n*/\nfn f() {}\n",
                 "fn a() {}\n/*\nexplanation\n*/\nfn f() {}\n",

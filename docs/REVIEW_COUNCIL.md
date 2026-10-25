@@ -498,6 +498,34 @@ A skip attribute on code that never ships, such as a genuine test, is now allowe
 - Code cargo-mutants never examines stays unmutated: `fn new`, empty bodies, `macro_rules!` and `include!` bodies, and build scripts.
 - A hidden function without a `FnValue` body span makes the run inconclusive.
 
+<a id="gate-build-oracle-r14"></a>
+
+### r14: council r13 follow-ups — the oracle builds as the gate builds
+
+Council r13 (run `5fc1d260…`) reviewed `bec1a49..c0c0d6a`, and it is the first complete council of the oracle: 12/12 reports and 8/8 evidence gates (1,175 tests; mutation 82 mutants, 81 caught, 0 missed). On the real run the oracle saw 20 hidden functions, the MIR was unchanged, and the control moved. The findings and their fixes:
+
+| Finding (r13) | Control | Evidence |
+| --- | --- | --- |
+| A shipped body that already *is* the replacement (`{ loop {} }`) leaves the MIR unchanged (HIGH; correctness, falsifier, subtractor; 5/5) | Two replacements, `loop {}` and `panic!()`. Hidden code ships if either changes the MIR or breaks the build; no body equals both | **Measured, prototype:** `{ loop {} }` and `{ panic!() }` bodies are refused |
+| The oracle rebuilt the gate's configuration by hand: the package's own features, not the dependency features unified across the workspace; the dev profile, not the test profile (HIGH; falsifier 5/5, correctness, architecture) | The oracle runs the gate's own build, `cargo test --workspace --no-run`. The observable is the package's **non-test** lib and bin MIR, chosen from Cargo's JSON artifact messages; test harnesses are excluded. Features, dependency unification, profile and target are therefore the gate's | **Measured, prototype:** DDF diff and whole package pass (20 and 37 hidden functions); all routes are refused. **Fake:** the build asserts the gate environment |
+| Paths and build counts let a build script tell oracle builds apart (`tree-N`, `CARGO_TARGET_DIR`) (HIGH; security 5/5, architecture) | Every build uses one cargo-mutants-style path (`$TMPDIR/cargo-mutants-src-*.tmp`, target inside) and the mutation gate's environment (the job launches with the mutation flag, so there is no `CARGO_TARGET_DIR`). Remaining tells (the emitted-MIR flag, `CARGO_INCREMENTAL=0`, the parent process) are residual 1 | **Fake:** asserts that `CARGO_TARGET_DIR` is unset |
+| `env!("CARGO_MANIFEST_DIR")` made honest code look shipped, and let the control pass trivially (5/5) | One path for every build | **Measured, prototype:** an honest crate using `env!` passes |
+| A failing control build counted as a change (5/5) | The control must build *and* change the MIR. Up to 5 mutated functions are tried, since a `const fn` cannot be neutralized | Fake: `a_comparison_the_positive_control_cannot_move_is_inconclusive_and_refused` |
+| No check that the comparison itself is stable | The unmodified tree is built twice, the second time forcing a recompile, and the two must agree. Measured: incremental sessions reorder interned allocations, so builds run with `CARGO_INCREMENTAL=0` and allocation numbers are canonicalized | **Fake:** `a_build_that_does_not_reproduce_is_inconclusive_and_refused`. **Measured:** fresh and rebuilt MIR are byte-identical without incremental compilation |
+| A source directory named `target` was dropped from the copy (5/5) | Only a top-level `target` holding Cargo's `CACHEDIR.TAG` is skipped | **Measured, prototype:** an honest crate with `src/target/mod.rs` passes |
+| A `]` or `/*` inside a string moved `code_lines` (HIGH; correctness, falsifier, subtractor, security; 5/5) | Plain, byte and raw strings are followed across lines | **Unit:** `#[doc = "]"]`, `r#"…"#`, a multi-line string and `"**/*.rs"`. The widening test with `#[doc = "]"]` fails against the r13 scanner |
+| Whitespace refusal blocked the diff scope repo-wide (low, 5/5) | Only changed files, which get a header, must avoid whitespace and a leading quote. Control characters are still refused for every path, because hashing is line-oriented | **Fake:** `only_changed_files_need_header_safe_names` (fails against r13) |
+| Stale "HIR" doc comment; an interrupted job wedged with an opaque error (low) | Doc corrected; a missing qualification names the cause and asks for a new run | — |
+| "Bisection" was linear (performance) | Wording: one build pair per hidden function, up to 32, and only on refusal | — |
+
+**Cost on DDF:** 5 builds for a pass (original twice, control, two batches), about 25 s.
+
+**Residuals:**
+- The oracle job gets its own full timeout (performance, low).
+- The no-exclusion patch is tied to cargo-mutants 27.1.0 and fails the image build if it no longer applies (architecture, medium).
+- Below-function exemptions are not possible on stable Rust (security, needs_test). **Measured:** `#[mutants::skip]` on a match arm ("expected non-macro attribute"), a statement (E0658) or an expression (E0658) does not compile, and `#[cfg_attr(test, mutants::skip)]` on an arm breaks the gate's own test build.
+- `code_lines` is still a scanner in the scope path (architecture, medium). It is fail-safe except where a character literal holding `"` opens a string, which only over-includes.
+
 ### Podman invocation
 
 Every gate job runs `$DDF_COUNCIL_PODMAN run` (the default runtime is `podman`) with these flags. The source of truth is `sandbox.rs` `Sandbox::argv`.

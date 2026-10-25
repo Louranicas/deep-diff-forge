@@ -510,8 +510,8 @@ const FAKE_IMAGE_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef012
 /// the vendoring output; `fifo` and `symlinked_dir` at the mutation witness. It also answers the
 /// exemption oracle (installed again as `ddf-cargo-mutants-noexclude`): `exempt` hides a function the
 /// production build compiles (`exempt_txt`: in a non-`.rs` module), `hidden_test` hides one it
-/// does not, `mir_blind` emits MIR that no change can alter, and `neutral_fails` stops building
-/// when `hidden` is neutralised.
+/// does not, `mir_blind` emits MIR that no change can alter, `neutral_fails` stops building when
+/// `hidden` is neutralised, and `unreproducible` emits different MIR on every build.
 const FAKE_GATE: &str = r"#!/usr/bin/python3
 import json,os,pathlib,sys
 mode='@MODE@'
@@ -524,24 +524,30 @@ if '--list' in sys.argv:
         return {'file':file,'genre':'FnValue','span':body,'function':{'function_name':name,'span':span}}
     rows=[fn('shipped',1)]
     if 'noexclude' in os.path.basename(sys.argv[0]):
-        if mode in ('exempt','hidden_test','mir_blind','neutral_fails'):rows.append(fn('hidden',4))
+        if mode in ('exempt','hidden_test','mir_blind','neutral_fails','unreproducible'):rows.append(fn('hidden',4))
         # A `#[path]` module need not end in `.rs` (council r10).
         if mode=='exempt_txt':rows.append(fn('hidden',1,'src/hidden.txt'))
     print(json.dumps(rows));sys.exit(0)
 if sys.argv[1:2]==['metadata']:
-    package={'name':'deep-diff-forge-review','id':'ddf','targets':[{'name':'deep-diff-forge-review','kind':['rlib','cdylib']}]}
-    print(json.dumps({'packages':[package],'workspace_members':['ddf'],'resolve':{'nodes':[{'id':'ddf','features':[]}]}}));sys.exit(0)
-if sys.argv[1:2]==['rustc']:
-    # Production MIR stands in as the source text that ships: in `hidden_test` only `shipped`.
-    emit=next(a[len('--emit=mir='):] for a in sys.argv if a.startswith('--emit=mir='))
-    assert 'RUSTC_BOOTSTRAP' not in os.environ,'the oracle needs no unstable flags'
-    lib=pathlib.Path('src/lib.rs').read_text()
-    if mode=='hidden_test':lib='\n'.join(lib.split('\n')[:3])
-    if mode=='exempt_txt':lib+=pathlib.Path('src/hidden.txt').read_text()
-    if mode=='mir_blind':lib='constant'
-    # `neutral_fails`: like a `const fn` evaluated at compile time, a neutralised `hidden` breaks the build.
-    if mode=='neutral_fails' and 'loop {}' in '\n'.join(lib.split('\n')[3:]):sys.exit(1)
-    pathlib.Path(emit).write_text(lib);sys.exit(0)
+    package={'name':'deep-diff-forge-review','manifest_path':os.path.join(os.getcwd(),'Cargo.toml'),'targets':[{'name':'deep-diff-forge-review','kind':['rlib','cdylib']}]}
+    print(json.dumps({'packages':[package]}));sys.exit(0)
+if sys.argv[1:2]==['test'] and '--no-run' in sys.argv:
+    # The oracle's gate build: production MIR stands in as the source text that ships.
+    assert 'CARGO_TARGET_DIR' not in os.environ and 'RUSTC_BOOTSTRAP' not in os.environ,'not the gate environment'
+    assert os.environ.get('CARGO_INCREMENTAL')=='0' and '--emit=link,mir' in os.environ.get('CARGO_ENCODED_RUSTFLAGS','')
+    lines=pathlib.Path('src/lib.rs').read_text().split('\n')
+    if mode=='neutral_fails' and lines[4]!='    2':sys.exit(1)
+    mir='\n'.join(lines[:3] if mode=='hidden_test' else lines)
+    if mode=='exempt_txt':mir+=pathlib.Path('src/hidden.txt').read_text()
+    if mode=='mir_blind':mir='constant'
+    if mode=='unreproducible':import time;mir+=str(time.time_ns())
+    deps=pathlib.Path(os.getcwd(),'target','debug','deps');deps.mkdir(parents=True,exist_ok=True)
+    (deps/'deep_diff_forge_review-0f.mir').write_text(mir)
+    (deps/'deep_diff_forge_review-7e.mir').write_text('test harness '+mir)
+    def artifact(test,name):
+        return json.dumps({'reason':'compiler-artifact','manifest_path':os.path.join(os.getcwd(),'Cargo.toml'),'target':{'name':'deep-diff-forge-review','kind':['rlib','cdylib']},'profile':{'test':test},'filenames':[str(deps/name)]})
+    print(artifact(False,'libdeep_diff_forge_review-0f.rlib'));print(artifact(True,'deep_diff_forge_review-7e'))
+    sys.exit(0)
 if sys.argv[1:2]==['vendor']:
     out=pathlib.Path(sys.argv[-1])
     if mode=='vendor_root_symlink':out.symlink_to('/etc');sys.exit(0)
@@ -904,6 +910,19 @@ fn hidden_code_whose_neutralisation_breaks_the_build_ships() {
 }
 
 #[test]
+fn a_build_that_does_not_reproduce_is_inconclusive_and_refused() {
+    // Two builds of the unmodified tree must agree before any difference can mean anything.
+    let f = oracle_fixture("unreproducible");
+    let result = f.gate("mutation");
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert_eq!(result.status.code(), Some(4), "{stderr}");
+    let witness = oracle_witness(&f);
+    assert_eq!(witness["state"], "inconclusive", "{witness}");
+    assert_eq!(witness["reproducible"], false);
+    assert!(!f.run.join("jobs/gate-mutation").exists());
+}
+
+#[test]
 fn a_comparison_the_positive_control_cannot_move_is_inconclusive_and_refused() {
     // MIR that no change alters cannot clear anything, whatever the listings say.
     let f = oracle_fixture("mir_blind");
@@ -1129,6 +1148,25 @@ fn path_characters_that_could_confuse_a_diff_parser_are_refused() {
             let sealed = fs::read_to_string(f.run.join("mutation.diff")).unwrap();
             assert!(sealed.contains(&format!("+++ b/{name}\n")), "{sealed}");
         }
+    }
+}
+
+#[test]
+fn only_changed_files_need_header_safe_names() {
+    // An unchanged file with a space in its name gets no header, so it cannot block the diff scope
+    // (council r13); a control character still breaks the line-oriented hashing of every path.
+    for (name, refused) in [("docs/Design Notes.md", false), ("tab\tname.md", true)] {
+        let f = Fixture::new();
+        f.commit(name, "unchanged\n");
+        let result = prepare_with_mutation_base(&f, |f| {
+            fs::write(f.repository.join("changed.rs"), "pub fn changed() {}\n").unwrap();
+        });
+        assert_eq!(
+            result.status.success(),
+            !refused,
+            "{name}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
     }
 }
 

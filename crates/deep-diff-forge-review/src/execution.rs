@@ -867,9 +867,10 @@ fn vendored_dependencies(
 
 /// Refuse, before the mutation gate's job slot exists, a candidate whose shipped code cargo-mutants
 /// would skip. The embedded oracle lists the mutation scope with the gate's cargo-mutants and with
-/// the image's no-exclusion build, then asks the stable compiler, through the non-test HIR, whether
-/// what only the second listed is compiled into production. It runs once per run, offline, in its
-/// own sandbox job; candidate build scripts and proc macros run there, never in the controller.
+/// the image's no-exclusion build, neutralises what only the second listed, and refuses when that
+/// changes the package's non-test MIR in the gate's own build (`cargo test --workspace --no-run`).
+/// It runs once per run, offline, in its own sandbox job with the mutation gate's environment;
+/// candidate build scripts and proc macros run there, never in the controller.
 fn refuse_hidden_exemptions(
     directory: &Path,
     manifest: &Manifest,
@@ -881,7 +882,8 @@ fn refuse_hidden_exemptions(
         image_id,
         vendor: vendor.map(|(path, digest)| (path.as_path(), digest.as_str())),
         network: false,
-        mutation: false,
+        // The mutation gate's environment (no `CARGO_TARGET_DIR`), so builds are the gate's own.
+        mutation: true,
         fuzz: false,
     };
     let jobdir = directory.join("jobs").join(ORACLE_JOB);
@@ -899,12 +901,9 @@ fn refuse_hidden_exemptions(
             &manifest.request.mutation_package,
             "--witness",
             "/work/exemption-oracle.json",
-            "--scratch",
-            "/work/oracle-scratch",
         ]
         .map(str::to_owned)
         .to_vec();
-        storage::make_dir(&work.join("oracle-scratch"))?;
         if let Some(diff) = mutation_diff {
             storage::write_new(&jobdir.join("cargo-home").join(MUTATION_DIFF), diff)?;
             argv.extend([
@@ -959,8 +958,16 @@ fn refuse_hidden_exemptions(
             },
         )?;
     }
-    let qualification: Qualification =
-        storage::read_json(&jobdir.join("qualification.json"), storage::REPORT_CAP)?;
+    // A controller interrupted mid-job leaves no qualification: the slot is spent (council r13).
+    let qualification: Qualification = storage::read_json(
+        &jobdir.join("qualification.json"),
+        storage::REPORT_CAP,
+    )
+    .map_err(|_| {
+        ReviewFailure(format!(
+            "jobs/{ORACLE_JOB} has no qualification (an interrupted controller?); prepare a new run"
+        ))
+    })?;
     if qualification.outcome == Outcome::Passed {
         return Ok(());
     }
