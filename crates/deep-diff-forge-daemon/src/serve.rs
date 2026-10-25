@@ -1,3 +1,6 @@
+// DDF integration: R25, R28, R40, R59. Preserve bounded connection admission on Rust 1.88 using compare-exchange; this does not solve the separate global-lock recommendation.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#runtime
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-daemon--serve
 use crate::handler::{Engine, dispatch};
 use crate::protocol::{
     INTERNAL_ERROR, INVALID_REQUEST, PARSE_ERROR, RpcError, error_response, parse_request,
@@ -397,11 +400,16 @@ impl Drop for ActiveConnection {
 }
 
 fn try_acquire_connection(active: &Arc<AtomicUsize>) -> bool {
-    active
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-            (count < MAX_CONNECTIONS).then_some(count + 1)
-        })
-        .is_ok()
+    let mut count = active.load(Ordering::Acquire);
+    loop {
+        if count >= MAX_CONNECTIONS {
+            return false;
+        }
+        match active.compare_exchange_weak(count, count + 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return true,
+            Err(observed) => count = observed,
+        }
+    }
 }
 
 /// Run the daemon server loop until shutdown.

@@ -1,3 +1,6 @@
+// DDF integration: R31, R32. Measure displayed cells and preserve grapheme boundaries after terminal-safety escaping; keep remaining chrome/wrap geometry visible as work.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#terminal-geometry
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-tui--diffview
 //! Diff rendering for both layouts, as one scrollable line list.
 //!
 //! [`diff_document`] renders the whole review as one continuous, scrollable
@@ -281,7 +284,7 @@ fn inline_row_chunk(
     spans.extend(themed_spans(lang, text, palette, base));
     if bg.is_some() {
         let text_width = inline_text_width(width);
-        let used = text.chars().count();
+        let used = deep_diff_forge_projection::cell_width(text);
         if used < text_width {
             spans.push(Span::styled(" ".repeat(text_width - used), base));
         }
@@ -297,22 +300,7 @@ fn inline_text_width(width: usize) -> usize {
 /// Hard-split already-safe text into fixed-width character chunks.
 #[must_use]
 fn chunks(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut out = Vec::new();
-    let mut current = String::new();
-    for ch in text.chars() {
-        if current.chars().count() == width {
-            out.push(std::mem::take(&mut current));
-        }
-        current.push(ch);
-    }
-    if !current.is_empty() {
-        out.push(current);
-    }
-    if out.is_empty() {
-        out.push(String::new());
-    }
-    out
+    deep_diff_forge_projection::wrap_cells(text, width)
 }
 
 // ===== side-by-side cell =====
@@ -505,12 +493,7 @@ fn kind_style(kind: PatchLineKind, palette: &Palette) -> (char, Color, Option<Co
 /// Truncate `safe` (already terminal-safe) to `width` chars, padding with
 /// spaces so every cell is exactly `width` columns wide.
 fn truncate_pad(safe: &str, width: usize) -> String {
-    let count = safe.chars().count();
-    if count >= width {
-        safe.chars().take(width).collect()
-    } else {
-        format!("{safe}{}", " ".repeat(width - count))
-    }
+    deep_diff_forge_projection::fit_cells(safe, width)
 }
 
 /// Greedy word-wrap to `width` columns, hard-splitting over-long words. Always
@@ -666,7 +649,7 @@ mod tests {
         let a = ReviewApp::new(Vec::new());
         assert!(render(&a, 80).contains("no files in review"));
         let (_, starts) = diff_document(&a, &ThemeKind::Dark.palette(), 80);
-        assert!(starts.is_empty());
+        assert_eq!(starts.len(), 0);
     }
 
     #[test]

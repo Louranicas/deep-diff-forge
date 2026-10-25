@@ -9,6 +9,7 @@ license = "MIT OR Apache-2.0"
 cargo-fuzz = true
 
 [dependencies]
+deep-diff-forge-review = { path = "../crates/deep-diff-forge-review", version = "0.2.1" }
 deep-diff-forge-agent = { path = "../crates/deep-diff-forge-agent", version = "0.2.1" }
 deep-diff-forge-core = { path = "../crates/deep-diff-forge-core", version = "0.2.1" }
 deep-diff-forge-daemon = { path = "../crates/deep-diff-forge-daemon", version = "0.2.1" }
@@ -43,6 +44,13 @@ bench = false
 [[bin]]
 name = "agent_annotation"
 path = "fuzz_targets/agent_annotation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "council_report"
+path = "fuzz_targets/council_report.rs"
 test = false
 doc = false
 bench = false

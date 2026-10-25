@@ -1,3 +1,6 @@
+// DDF integration: R08, R10, R11. Never turn a failed analysis into formatting-only or behavioral safety; parser time cancellation is cooperative, node limits are post-parse.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#syntax-availability
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--lib
 //! Tree-sitter semantic layer for Deep-Diff-Forge (L4).
 //!
 //! Given a file's language and source bytes, this crate parses with tree-sitter
@@ -7,10 +10,23 @@
 //! pretends syntax is available when parsing fails, and it never mutates patch
 //! truth (it has no access to it).
 //!
-//! Budgets enforced today: byte budget (pre-parse guard against pathological
-//! inputs) and node budget (post-parse cap). Time-budget enforcement is
-//! deferred until the parser progress-callback API is wired, and is therefore
-//! never reported as a fallback reason here.
+//! Source bytes are bounded before parsing. A cooperative progress callback
+//! cancels long parses; node count is capped after parsing. This is not process
+//! isolation or a hard real-time guarantee (R10).
+
+/// Cooperative parser deadline; checked by tree-sitter's progress callback.
+/// The source byte guard and post-parse node cap remain independently necessary.
+fn parse_bounded(parser: &mut tree_sitter::Parser, source: &str) -> Option<tree_sitter::Tree> {
+    let start = std::time::Instant::now();
+    let mut cancel =
+        |_: &tree_sitter::ParseState| start.elapsed() > std::time::Duration::from_millis(250);
+    let options = tree_sitter::ParseOptions::new().progress_callback(&mut cancel);
+    parser.parse_with_options(
+        &mut |offset, _| &source.as_bytes()[offset..],
+        None,
+        Some(options),
+    )
+}
 
 mod analyze;
 mod highlight;
@@ -20,7 +36,9 @@ mod structural;
 pub use analyze::{SemanticAnalysis, SyntaxOptions, analyze, analyze_language, enclosing_symbol};
 pub use highlight::{HighlightClass, HighlightSpan, highlight, highlight_to_ansi, to_ansi};
 pub use language::{Language, detect_language};
-pub use structural::{ChangeKind, StructuralDiff, Token, TokenChange, structural_diff, tokenize};
+pub use structural::{
+    ChangeKind, StructuralDiff, Token, TokenChange, structural_diff, tokenize, tokenize_checked,
+};
 
 /// A top-level named item discovered in a source file.
 #[derive(Debug, Clone, PartialEq, Eq)]

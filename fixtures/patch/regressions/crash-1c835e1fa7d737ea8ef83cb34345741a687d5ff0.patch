@@ -1,0 +1,17 @@
+de.txt
+delet0000
+--- a/gne.txt
+copy from +++ /dev/null
+@@ -1,1 +0,0 @@
+-obsoe.txt
+delet0001
+
+delet0000
+--- a/gne.txt
+copy from +++ /dev/null
+@@ -1,1 +0,0 @@
+-obsoe.txt
+delet000--- a/gne.txt
++++ /dev/null
+@@ -1,1 +0,0 @@
+-obsollete

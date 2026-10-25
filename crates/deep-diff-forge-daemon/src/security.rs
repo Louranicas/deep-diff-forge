@@ -1,3 +1,6 @@
+// DDF review route: DDF-R28. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-daemon--src--security
 use std::ffi::OsString;
 use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::fs::PermissionsExt as _;

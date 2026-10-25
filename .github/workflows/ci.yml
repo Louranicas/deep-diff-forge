@@ -1,6 +1,10 @@
+# DDF integration: R39, R40, R41, R42, R43, R44, R45, R46, R57, R58, R59. Make checks fail closed, preserve fuzz crash evidence, use the actual build output path and gate tag publication on the quality workflow.
+# Design/status: docs/RECOMMENDATION_INTEGRATION.md#quality-gates
+# Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--ci
 name: ci
 
 on:
+  workflow_call:
   pull_request:
   push:
     branches: [main]
@@ -18,6 +22,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  msrv:
+    name: declared Rust 1.88 compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.88.0
+      - run: cargo check --workspace --all-targets --locked
+
   gate:
     name: deploy gate-feature
     runs-on: ubuntu-latest
@@ -29,6 +46,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: rustfmt, clippy
+      - name: parsed antipattern policy and planted refusal controls
+        run: |
+          python3 scripts/security/review_policy_check.py --selftest
+          python3 scripts/security/review_policy_check.py
       - name: format
         run: cargo fmt --all --check
       - name: compile
@@ -61,8 +82,34 @@ jobs:
         env:
           DDF_SOAK_SECONDS: 10
         run: python3 scripts/security/daemon_soak.py
+      - name: privacy probe failure regressions
+        run: python3 scripts/security/test_privacy_probe.py
       - name: learning privacy probe
         run: python3 scripts/security/privacy_probe.py
+
+  review-controller-evidence:
+    name: review controller mutation and fuzz evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: install pinned evidence tools
+        run: |
+          cargo install cargo-mutants --version 27.1.0 --locked
+          cargo install cargo-fuzz --version 0.13.2 --locked
+          rustup toolchain install nightly --profile minimal
+      - name: scoped mutation of admission and receipt qualification
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/ddf-review-mutation-target
+        run: cargo mutants --package deep-diff-forge-review --re 'identifier|check_execution' --test-workspace true --timeout 30
+      - name: instrumented council-report fuzz smoke
+        run: |
+          mkdir -p /tmp/ddf-council-corpus
+          cp review-policy/fuzz-seeds/council_report.json /tmp/ddf-council-corpus/seed.json
+          cargo +nightly fuzz run council_report /tmp/ddf-council-corpus -- -max_total_time=10 -max_len=4096
 
   supply-chain:
     name: supply chain audit
@@ -77,6 +124,8 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87 # v2
         with:
           command: check
+      - name: install host cargo-deny
+        run: cargo install cargo-deny --version 0.20.2 --locked
       - name: cargo-deny fuzz harness
         run: cargo deny --manifest-path fuzz/Cargo.toml --locked check
       # cargo-deny does not fail on every informational unsoundness advisory, so

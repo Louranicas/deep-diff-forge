@@ -1,3 +1,6 @@
+// DDF integration: R31, R32. Measure displayed cells and preserve grapheme boundaries after terminal-safety escaping; keep remaining chrome/wrap geometry visible as work.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#terminal-geometry
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-projection--lib
 //! Renderer-neutral projections of the Deep-Diff-Forge review model (L2).
 //!
 //! A projection converts the stable [`deep_diff_forge_core`] model into display
@@ -11,6 +14,8 @@
 //! JSON consumer can share one model.
 
 mod inline;
+mod width;
+pub use width::{cell_width, fit_cells, wrap_cells};
 mod side_by_side;
 
 pub use inline::{InlineRow, inline_rows, render_inline};

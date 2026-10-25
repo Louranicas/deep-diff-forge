@@ -1,3 +1,6 @@
+// DDF integration: R14, R15, R16, R17, R52. Separate asserted citations from captured artifact integrity, trusted evaluator support and revision freshness. Do not resolve duplicate IDs together.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#evidence
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--lib
 //! Agent annotation protocol for Deep-Diff-Forge (L5).
 //!
 //! Annotations are first-class but **not trusted by default** (Vision §4): every
@@ -7,6 +10,7 @@
 //! not the agent — this crate never auto-resolves an annotation.
 
 mod anchor;
+pub mod evidence;
 mod store;
 
 pub use anchor::{anchor_path, validate_anchor};
@@ -20,7 +24,7 @@ pub const MAX_BODY_LEN: usize = 4096;
 /// How well an annotation's claim is backed by evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GroundingLevel {
-    /// Has evidence and is asserted grounded.
+    /// Reserved for a trusted evaluator; never inferred from annotation strings.
     Grounded,
     /// Has evidence but is not asserted grounded (claim awaits confirmation).
     PartiallyGrounded,
@@ -63,7 +67,8 @@ impl AnnotationSource {
     }
 }
 
-/// Classify an annotation's grounding from its evidence and grounded flag.
+/// Classify legacy annotation evidence as self-asserted, never verified.
+/// Use `evidence::EvidenceRegistry` for checked artifact support and freshness.
 ///
 /// Evidence is necessary: an annotation with no evidence is always
 /// [`GroundingLevel::Ungrounded`], even if its `grounded` flag is set.
@@ -71,8 +76,6 @@ impl AnnotationSource {
 pub fn grounding_of(annotation: &AgentAnnotation) -> GroundingLevel {
     if annotation.provenance.evidence.is_empty() {
         GroundingLevel::Ungrounded
-    } else if annotation.grounded {
-        GroundingLevel::Grounded
     } else {
         GroundingLevel::PartiallyGrounded
     }
@@ -95,7 +98,7 @@ pub const SYSTEM_AGENT_ID: &str = "deep-diff-forge/system";
 /// `Human` is never derived from the wire (a human reviewer's trust arrives
 /// through the reviewer's own actions, not a label), and only the exact reserved
 /// [`SYSTEM_AGENT_ID`] maps to `System`. The real trust authority is
-/// [`grounding_of`] — evidence, which an attacker cannot fabricate by relabelling.
+/// an authenticated ingestion boundary; evidence strings are also untrusted.
 #[must_use]
 pub fn source_of(annotation: &AgentAnnotation) -> AnnotationSource {
     if annotation.provenance.agent == SYSTEM_AGENT_ID {
@@ -145,9 +148,9 @@ mod tests {
     }
 
     #[test]
-    fn evidence_and_flag_is_grounded() {
+    fn arbitrary_evidence_and_flag_are_only_asserted() {
         let a = annotation("claude", &["src/x.rs:10"], true);
-        assert_eq!(grounding_of(&a), GroundingLevel::Grounded);
+        assert_eq!(grounding_of(&a), GroundingLevel::PartiallyGrounded);
     }
 
     #[test]

@@ -1,3 +1,7 @@
+// DDF integration: R02, R09, R19, R21. Validate that a patch transforms the captured base into the captured candidate before attaching semantics; export explicit coverage and snapshot scope.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#shared-service
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--main
+mod analysis;
 use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe};
 
 /// Write `s` to stdout, treating a reader that closed the pipe (`… | head`) as
@@ -64,6 +68,25 @@ fn main() {
             let rest: Vec<String> = args.collect();
             deploy_cmd(&rest);
         }
+        Some("council") => match deep_diff_forge_review::cli::dispatch(&args.collect::<Vec<_>>()) {
+            Ok((output, code)) => {
+                emit(&output);
+                if code != 0 {
+                    std::process::exit(code);
+                }
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                std::process::exit(4);
+            }
+        },
+        Some("analyze") => match analysis::run(&args.collect::<Vec<_>>()) {
+            Ok(json) => emit(&json),
+            Err(error) => {
+                eprintln!("error: {error}");
+                std::process::exit(4);
+            }
+        },
         Some("semantic") => {
             let rest: Vec<String> = args.collect();
             semantic_cmd(&rest);
@@ -572,6 +595,10 @@ fn structural_cmd(opts: &[String]) {
 
 fn print_structural_human(diff: &deep_diff_forge_syntax::StructuralDiff) {
     use deep_diff_forge_syntax::ChangeKind;
+    if let Some(reason) = &diff.unavailable {
+        emitln!("structural: unavailable ({reason:?}); use patch review");
+        return;
+    }
     if diff.reformat_only {
         emitln!("structural: no token changes (formatting only)");
     }
@@ -641,10 +668,14 @@ fn print_structural_json(diff: &deep_diff_forge_syntax::StructuralDiff) {
         "unsupported"
     };
     emitln!(
-        "{{\n  \"schema\": \"deep-diff-forge.structural.v0\",\n  \"language\": {},\n  \"reformat_only\": {},\n  \"degraded\": {},\n  \"summary\": {{\"unchanged\": {}, \"added\": {}, \"removed\": {}, \"moved\": {}}},\n  \"changes\": [{}]\n}}",
+        "{{\n  \"schema\": \"deep-diff-forge.structural.v0\",\n  \"language\": {},\n  \"reformat_only\": {},\n  \"degraded\": {},\n  \"unavailable\": {},\n  \"summary\": {{\"unchanged\": {}, \"added\": {}, \"removed\": {}, \"moved\": {}}},\n  \"changes\": [{}]\n}}",
         json_escape(lang),
         diff.reformat_only,
         diff.degraded,
+        diff.unavailable.as_ref().map_or_else(
+            || "null".into(),
+            |reason| json_escape(&format!("{reason:?}"))
+        ),
         diff.unchanged,
         diff.added,
         diff.removed,
@@ -1064,6 +1095,8 @@ USAGE:
   deep-diff-forge deploy {{status|release}} [--json]
   deep-diff-forge semantic <path> [--json]
   deep-diff-forge highlight <path> [--color|--no-color]
+  deep-diff-forge council <example|prepare|review|gate|status|import>
+  deep-diff-forge analyze <patch-file> <base-directory> <candidate-directory>
   deep-diff-forge structural <old> <new> [--json]
   deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME]
   deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]
@@ -1102,7 +1135,7 @@ fn print_version() {
 
 fn self_test() {
     let document = ReviewDocument::empty();
-    assert!(document.files.is_empty());
+    assert_eq!(document.files.len(), 0);
     emitln!("self-test ok: core model initialized");
 }
 

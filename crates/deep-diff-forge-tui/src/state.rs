@@ -1,3 +1,6 @@
+// DDF review route: DDF-R33. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-tui--src--state
 use crate::command::{self, Command, CommandOutput};
 use crate::theme::ThemeKind;
 use deep_diff_forge_core::{AgentAnnotation, ReviewFile};
@@ -704,7 +707,7 @@ mod tests {
         // Selecting runs the command into the panel.
         a.handle(AppEvent::Select);
         assert_eq!(a.overlay(), Overlay::Panel);
-        assert!(!a.panel().title.is_empty());
+        assert_ne!(a.panel().title.len(), 0);
     }
 
     #[test]
@@ -772,7 +775,7 @@ mod tests {
     #[test]
     fn empty_review_is_empty_and_safe() {
         let mut a = ReviewApp::new(Vec::new());
-        assert!(a.is_empty());
+        assert_eq!(a.ranked.len(), 0);
         assert!(a.selected_file().is_none());
         assert!(a.selected_content().is_none());
         a.handle(AppEvent::Bottom);

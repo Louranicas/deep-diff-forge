@@ -1,3 +1,6 @@
+// DDF integration: R14, R15, R16, R17, R52. Separate asserted citations from captured artifact integrity, trusted evaluator support and revision freshness. Do not resolve duplicate IDs together.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#evidence
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-tui--notes
 //! Engine-authored inline annotations and anchored lookups.
 //!
 //! A review tool is more useful when it explains *why* a file deserves
@@ -182,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn risk_note_is_grounded_with_evidence() {
+    fn risk_note_cites_asserted_risk_signals() {
         let a = annos(LIB);
         assert!(a[0].grounded);
         assert!(
@@ -191,7 +194,7 @@ mod tests {
                 .iter()
                 .any(|e| e == "public_api_surface")
         );
-        assert_eq!(grounding_of(&a[0]), GroundingLevel::Grounded);
+        assert_eq!(grounding_of(&a[0]), GroundingLevel::PartiallyGrounded);
     }
 
     #[test]
@@ -215,7 +218,7 @@ mod tests {
 
     #[test]
     fn plain_file_gets_no_note() {
-        assert!(annos(PLAIN).is_empty());
+        assert_eq!(annos(PLAIN).len(), 0);
     }
 
     #[test]
@@ -233,7 +236,7 @@ mod tests {
         let found = hunk_annotations(&a, "src/lib.rs", hunk_id);
         assert_eq!(found.len(), 1);
         let missing = hunk_annotations(&a, "src/lib.rs", HunkId(999));
-        assert!(missing.is_empty());
+        assert_eq!(missing.len(), 0);
     }
 
     #[test]
@@ -245,7 +248,7 @@ mod tests {
         let ranked = rank(&files);
         let a = engine_annotations(&files, &ranked);
         // Binary change is a signal, so there is a note, and it is file-anchored.
-        assert!(!a.is_empty());
+        assert_ne!(a.len(), 0);
         let by_file = file_annotations(&a, "lib.so");
         assert_eq!(
             by_file.len(),
@@ -301,7 +304,7 @@ mod tests {
             RiskSignal::GeneratedOrVendored,
         ];
         for s in signals {
-            assert!(!signal_phrase(s).is_empty());
+            assert_ne!(signal_phrase(s).len(), 0);
         }
     }
 
@@ -316,7 +319,7 @@ mod tests {
             SemanticChangeKind::RenamedSymbol,
         ];
         for k in kinds {
-            assert!(!semantic_phrase(k).is_empty());
+            assert_ne!(semantic_phrase(k).len(), 0);
         }
     }
 }

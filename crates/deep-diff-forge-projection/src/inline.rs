@@ -123,7 +123,7 @@ mod tests {
     fn empty_file_has_no_rows() {
         let files =
             parse("diff --git a/p.png b/p.png\nBinary files a/p.png and b/p.png differ\n").unwrap();
-        assert!(inline_rows(&files[0]).is_empty());
+        assert_eq!(inline_rows(&files[0]).len(), 0);
     }
 
     #[test]

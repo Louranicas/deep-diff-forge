@@ -63,7 +63,7 @@ fn malformed_patch_exits_four_with_stderr_diagnostic() {
     let bad = "--- a/x\n+++ b/x\n+stray addition with no hunk\n";
     let (code, stdout, stderr) = run(&["--stdin-patch"], bad);
     assert_eq!(code, 4);
-    assert!(stdout.is_empty());
+    assert_eq!(stdout.len(), 0);
     assert!(stderr.contains("patch parse failed"));
 }
 
@@ -82,8 +82,8 @@ fn jsonl_malformed_exits_four() {
     let bad = "--- a/x\n+++ b/x\n+stray\n";
     let (code, stdout, stderr) = run(&["--stdin-patch", "--jsonl"], bad);
     assert_eq!(code, 4);
-    assert!(stdout.is_empty());
-    assert!(!stderr.is_empty());
+    assert_eq!(stdout.len(), 0);
+    assert_ne!(stderr.len(), 0);
 }
 
 #[test]

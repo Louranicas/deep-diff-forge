@@ -16,14 +16,7 @@ while layering syntax-aware understanding, syntax highlighting, structural
 cockpit, and bounded parallel execution on top — every layer a projection over
 one stable model, none of them ever allowed to corrupt the patch.
 
-> **Maturity: L9 (Learning).** All engine layers L0–L8 are implemented, plus the
-> L9 local-only learning loop (`learn status|record`). 12 crates, 991 tests, zero
-> `unsafe`, supply-chain-gated, dual MIT/Apache-2.0 licensed. The workspace is
-> **crates.io-publish-ready** (`cargo publish --dry-run` is clean across all
-> crates); the upload itself is **token-gated** — the release workflow publishes
-> automatically when `CARGO_REGISTRY_TOKEN` is configured. See
-> [`EVIDENCE.md`](EVIDENCE.md) and
-> [`CHANGELOG.md`](CHANGELOG.md).
+> **Local development cut.** This branch adds source-pair analysis, correctness/trust repairs and a runnable multi-provider review council. Existing L0–L9 labels are historical capability declarations, not proof that every end-to-end integration is complete. Current verification and remaining gates are in [the integration ledger](docs/RECOMMENDATION_INTEGRATION.md) and [review council design](docs/REVIEW_COUNCIL.md). The new public model/API changes require a release/versioning decision; this local cut has not been merged, published or release-qualified.
 
 <p align="center">
   <img src="assets/review-cockpit.png" alt="The deep-diff-forge review cockpit: a ranked file sidebar, a side-by-side syntax-highlighted diff, and the top command menu bar" width="100%">
@@ -630,7 +623,7 @@ result.
 
 ## Architecture
 
-Twelve narrow crates with strictly acyclic, inward dependency flow. `core` is
+Narrow crates with acyclic, inward dependency flow. `core` is
 pure vocabulary (no I/O, no parsing); every feature crate depends on `core`,
 never the reverse. Patch truth is upstream of everything.
 
@@ -647,6 +640,7 @@ never the reverse. Patch truth is upstream of everything.
 | `deep-diff-forge-cluster` | Bounded parallel dimensional execution + deterministic joins + receipts. |
 | `deep-diff-forge-learning` | L9 local-only learning loop: strategy receipts, scoring, gated promotion. |
 | `deep-diff-forge-daemon` | Optional UDS JSON-RPC service (std-first). |
+| `deep-diff-forge-review` | Captured Claude Code/Codex review rosters, expert challenge rounds and explicit quality-gate orchestration. |
 | `deep-diff-forge-cli` | Thin command entry point over the above. |
 
 ### Maturity ladder
@@ -658,11 +652,7 @@ L0 Bootstrap → L1 Patch → L2 Projection → L3 Pipeline → L4 Semantic
    → L5 Review → L6 Cluster → L7 Daemon → L8 Release → [L9 Learning]
 ```
 
-**L0–L9 are shipped; `v0.2.0` adds the L9 learning loop and the first
-crates.io-publishable cut.** The workspace passes `cargo publish --dry-run`
-across every crate; the crates.io upload is token-gated (the release workflow
-publishes when `CARGO_REGISTRY_TOKEN` is configured). The learning loop is
-local-only and runs without any deployed daemon.
+The ladder records the original engine’s declared feature stages. It is not a readiness assertion for this evolving branch. Council/analysis inputs, tested paths, unsupported cases and pending UI/daemon migrations are documented separately. Run the current checks instead of reusing historical publish or test-count claims.
 
 ## The deployment framework
 
@@ -700,8 +690,7 @@ just gate-feature
 #   bootstrap contract probes
 ```
 
-Standards enforced across the tree: **991 tests** (every production crate ≥ 50
-meaningful tests), **zero `unsafe`** (compiler-forbidden workspace-wide via
+Standards enforced across the tree include **zero `unsafe`** (compiler-forbidden workspace-wide via
 `[workspace.lints]`), no production `unwrap`/`expect`, pedantic clippy clean with
 no unexplained suppressions, and a `cargo-deny` ([`deny.toml`](deny.toml)) +
 strict `cargo-audit` supply-chain gate (advisories, licenses, bans, sources) with
@@ -734,11 +723,8 @@ is implemented, gated, and live-proven. Honest current limitations:
 - **L9 Learning**: the learning loop records and scores receipts and gates
   promotion; wiring the engine's hot path to *emit* receipts automatically (vs.
   the explicit `learn record`) lands as live signal accrues.
-- **Release**: `v0.2.1` is the SOL-1 security-hardening patch release and is
-  publish-ready (clean `cargo publish --dry-run` across the workspace); the
-  **crates.io** upload is gated on a registry token.
-- Time-budget enforcement in the semantic layer is deferred (and never reported
-  as a fallback).
+- **Release**: this local development cut extends the 0.2.1 base and is not newly publish-qualified. Registry credentials alone are insufficient; quality, supply-chain, API versioning and release checks must pass first.
+- Semantic parsing now has cooperative progress-callback cancellation; node limits remain post-parse, and this is not an OS hard-time isolation boundary.
 
 ## License
 
@@ -748,3 +734,13 @@ Licensed under either of **MIT** or **Apache-2.0** at your option.
 
 - **GitHub:** https://github.com/Louranicas/deep-diff-forge
 - **Deployment framework:** [`docs/DEPLOYMENT_FRAMEWORK.md`](docs/DEPLOYMENT_FRAMEWORK.md)
+
+
+## Review integration route
+
+[Implementation status and delivery gates](docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes) ↔ [Module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2FREADME). This route records planned and evaluation-dependent work without claiming it is implemented.
+
+
+## Review roster and expert council
+
+[Architecture, exact CLI usage and refusal semantics](docs/REVIEW_COUNCIL.md) ↔ [Vault council hub](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FReview%20Council). The council integrates pinned pstack principles and the advisory HEE antipattern inventory with measured, revision-bound checks.

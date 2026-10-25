@@ -1,3 +1,6 @@
+// DDF integration: R35, R36, R37. Reject nonfinite metrics and policy tolerances before comparing promotion thresholds; receipt existence still does not prove causal improvement.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#learning-gate
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-learning--promote
 //! Promotion gate.
 //!
 //! The learning loop never silently changes behaviour. A learned candidate
@@ -116,6 +119,19 @@ pub fn evaluate_promotion(
     policy: &PromotionPolicy,
 ) -> PromotionDecision {
     let mut reasons = Vec::new();
+    for (label, value) in [
+        ("benchmark regression", candidate.benchmark_regression),
+        ("fallback rate delta", candidate.fallback_rate_delta),
+        ("benchmark policy", policy.max_benchmark_regression),
+        ("fallback policy", policy.max_fallback_rate_delta),
+    ] {
+        if !value.is_finite() {
+            reasons.push(format!("{label} must be finite"));
+        }
+    }
+    if policy.max_benchmark_regression < 0.0 || policy.max_fallback_rate_delta < 0.0 {
+        reasons.push("promotion tolerances must be nonnegative".to_string());
+    }
 
     if candidate.corpus_regression_delta > 0 && !candidate.regressions_intentional {
         reasons.push(format!(
@@ -173,7 +189,7 @@ mod tests {
         let c = PromotionCandidate::clean("planner.default", 100);
         let d = evaluate_promotion(&c, &PromotionPolicy::default());
         assert!(d.promote);
-        assert!(d.blocking_reasons.is_empty());
+        assert_eq!(d.blocking_reasons.len(), 0);
     }
 
     #[test]
@@ -314,5 +330,28 @@ mod tests {
         let json = serde_json::to_string(&d).expect("serialize");
         let back: PromotionDecision = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(d, back);
+    }
+}
+
+#[cfg(test)]
+mod numeric_regressions {
+    use super::*;
+    #[test]
+    fn nonfinite_candidates_and_policies_fail_closed() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut candidate = PromotionCandidate::clean("test", 100);
+            let mut policy = PromotionPolicy::default();
+            candidate.benchmark_regression = value;
+            assert!(!evaluate_promotion(&candidate, &policy).promote);
+            candidate = PromotionCandidate::clean("test", 100);
+            candidate.fallback_rate_delta = value;
+            assert!(!evaluate_promotion(&candidate, &policy).promote);
+            candidate = PromotionCandidate::clean("test", 100);
+            policy.max_benchmark_regression = value;
+            assert!(!evaluate_promotion(&candidate, &policy).promote);
+            policy = PromotionPolicy::default();
+            policy.max_fallback_rate_delta = value;
+            assert!(!evaluate_promotion(&candidate, &policy).promote);
+        }
     }
 }

@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn status_starts_with_no_gates() {
         let s = DeploymentStatus::new("deep-diff-forge", MaturityLevel::L3);
-        assert!(s.gates.is_empty());
+        assert_eq!(s.gates.len(), 0);
         assert_eq!(s.repo, "deep-diff-forge");
         assert_eq!(s.maturity, MaturityLevel::L3);
     }

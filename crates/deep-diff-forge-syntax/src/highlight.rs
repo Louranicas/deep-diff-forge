@@ -1,3 +1,6 @@
+// DDF integration: R08, R10, R11. Never turn a failed analysis into formatting-only or behavioral safety; parser time cancellation is cooperative, node limits are post-parse.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#syntax-availability
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--highlight
 //! Tree-sitter syntax highlighting.
 //!
 //! Highlighting reuses the in-tree tree-sitter: it loads the grammar's own
@@ -150,7 +153,7 @@ fn highlight_rust(source: &str) -> Vec<HighlightSpan> {
     if parser.set_language(&language).is_err() {
         return Vec::new();
     }
-    let Some(tree) = parser.parse(source, None) else {
+    let Some(tree) = crate::parse_bounded(&mut parser, source) else {
         return Vec::new();
     };
     RUST_QUERY.with(|cell| {
@@ -301,7 +304,7 @@ mod tests {
     #[test]
     fn highlights_rust_keywords_and_strings() {
         let spans = highlight(Language::Rust, "fn main() { let s = \"hi\"; }");
-        assert!(!spans.is_empty());
+        assert_ne!(spans.len(), 0);
         // `fn` should be a keyword span at byte 0.
         assert!(
             spans
@@ -325,7 +328,7 @@ mod tests {
 
     #[test]
     fn unsupported_language_yields_no_spans() {
-        assert!(highlight(Language::Unsupported, "fn main() {}").is_empty());
+        assert_eq!(highlight(Language::Unsupported, "fn main() {}").len(), 0);
     }
 
     #[test]
@@ -388,7 +391,7 @@ mod tests {
 
     #[test]
     fn empty_source_is_empty() {
-        assert!(highlight(Language::Rust, "").is_empty());
+        assert_eq!(highlight(Language::Rust, "").len(), 0);
         assert_eq!(highlight_to_ansi(Language::Rust, ""), "");
     }
 }

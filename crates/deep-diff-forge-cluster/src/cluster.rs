@@ -1,3 +1,6 @@
+// DDF review route: DDF-R23. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-cluster--src--cluster
 use crate::scheduler::{resolve_workers, run_lane};
 use deep_diff_forge_core::{ExecutionDimension, JoinPolicy, Parallelism, ReviewFile};
 use deep_diff_forge_graph::{RankedFile, score_file};
@@ -250,7 +253,7 @@ mod tests {
     #[test]
     fn empty_review_clusters_empty() {
         let run = run_risk_cluster(&[], Parallelism::Auto, JoinPolicy::RankedReviewOrder);
-        assert!(run.ranked.is_empty());
+        assert_eq!(run.ranked.len(), 0);
         assert_eq!(run.receipt.file_count, 0);
     }
 

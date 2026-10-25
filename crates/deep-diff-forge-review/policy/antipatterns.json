@@ -1,0 +1,739 @@
+[
+  {
+    "id": "AP-01",
+    "title_summary": "Duplicate authority or rule sites",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W02",
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "one typed owner and generated rules",
+    "proposed_negative_test": "Introduce duplicate limit and require duplicate-site check to identify both",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-02",
+    "title_summary": "Stringly-typed state",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W02"
+    ],
+    "proposed_enforcement": "opaque enum and pure transition reducer",
+    "proposed_negative_test": "Attempt illegal transition in source and through persisted JSON",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-03",
+    "title_summary": "Option-soup lifecycle",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W02",
+      "W04"
+    ],
+    "proposed_enforcement": "sum type with phase-specific payload",
+    "proposed_negative_test": "Try to construct contradictory completed and running states",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-04",
+    "title_summary": "Unbounded acquisition or derived sets",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W04",
+      "W06",
+      "W07"
+    ],
+    "proposed_enforcement": "bounded readers and collection budgets",
+    "proposed_negative_test": "Oversized socket frame must fail before large allocation",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-05",
+    "title_summary": "Function-level check unreachable in flow",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W06"
+    ],
+    "proposed_enforcement": "end-to-end caller-reachability test",
+    "proposed_negative_test": "Truncate upstream and verify oversize still refuses",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-06",
+    "title_summary": "Policy coupled to clock/host",
+    "primary_wave": "W02",
+    "relevant_waves": [
+      "W02",
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "pure policy plus injected observations",
+    "proposed_negative_test": "Exercise every recovery branch with synthetic value inputs",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-07",
+    "title_summary": "Reacquisition of validated data",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W03",
+      "W06"
+    ],
+    "proposed_enforcement": "typed passed-in proof/value",
+    "proposed_negative_test": "Change ambient source after validation; decision unchanged",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-08",
+    "title_summary": "Overlarge mixed-responsibility module",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W06"
+    ],
+    "proposed_enforcement": "ownership-oriented module boundaries",
+    "proposed_negative_test": "Source audit finds unrelated authority owners in one file",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-09",
+    "title_summary": "Unnecessary public surface",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W04",
+      "W06"
+    ],
+    "proposed_enforcement": "private by default; cargo-aware unused-public audit",
+    "proposed_negative_test": "Plant public function unused by production and require rejection",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-10",
+    "title_summary": "Test-only seam exposed in release",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W04",
+      "W06"
+    ],
+    "proposed_enforcement": "cfg(test) boundary and release symbol test",
+    "proposed_negative_test": "Try to invoke fault injection from release build",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-11",
+    "title_summary": "Forbidden crate dependency edge",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W04",
+      "W06"
+    ],
+    "proposed_enforcement": "Cargo workspace dependency law",
+    "proposed_negative_test": "Plant forbidden cross-crate import and require compile failure",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-12",
+    "title_summary": "Duplicated registry of identifiers",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W03",
+      "W06"
+    ],
+    "proposed_enforcement": "single typed registry generating consumers",
+    "proposed_negative_test": "Plant duplicate action table and require schema diff failure",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-13",
+    "title_summary": "State without writer or reader",
+    "primary_wave": "W02",
+    "relevant_waves": [
+      "W02",
+      "W03",
+      "W06"
+    ],
+    "proposed_enforcement": "ownership/schema contract",
+    "proposed_negative_test": "Add orphan field without reader and require review gate refusal",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-14",
+    "title_summary": "Silently clamped or defaulted caller limit",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W02",
+      "W06",
+      "W08"
+    ],
+    "proposed_enforcement": "fallible bounds; no silent default",
+    "proposed_negative_test": "Request limit above cap; must receive typed refusal with values",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-15",
+    "title_summary": "Unenforced comment asserting exclusivity",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W06"
+    ],
+    "proposed_enforcement": "replace claim with compile/lint invariant",
+    "proposed_negative_test": "Bypass only-door and require deterministic failure",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-16",
+    "title_summary": "Judgment smuggled into exact rule",
+    "primary_wave": "W03",
+    "relevant_waves": [
+      "W03",
+      "W05",
+      "W08"
+    ],
+    "proposed_enforcement": "explicit advisory vs deterministic typed outputs",
+    "proposed_negative_test": "Model recommendation cannot become authorisation or verdict",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-17",
+    "title_summary": "Unreviewed lint suppression",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W06"
+    ],
+    "proposed_enforcement": "lint-ratchet and expiring approved exception",
+    "proposed_negative_test": "Add #[allow] and require gate refusal",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-18",
+    "title_summary": "Weak test double that records nothing",
+    "primary_wave": "W02",
+    "relevant_waves": [
+      "W02",
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "assert precise observed inputs and outputs",
+    "proposed_negative_test": "Swap real arguments in mock and ensure test goes red",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-19",
+    "title_summary": "Expected result invented at same origin",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W02",
+      "W05"
+    ],
+    "proposed_enforcement": "independent golden fixtures",
+    "proposed_negative_test": "Mutate implementation constant; independent oracle catches divergence",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-20",
+    "title_summary": "Substring-only output assertion",
+    "primary_wave": "W05",
+    "relevant_waves": [
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "exact structured output assertion",
+    "proposed_negative_test": "Alter one critical output field; test must fail",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-21",
+    "title_summary": "Self-derived known-answer tests",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "independent reference fixtures",
+    "proposed_negative_test": "Corrupt generator and verify oracle remains unchanged",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-22",
+    "title_summary": "Negative control fails for wrong reason",
+    "primary_wave": "W05",
+    "relevant_waves": [
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "assert named diagnostic and exercised rule",
+    "proposed_negative_test": "Plant unrelated compile error; rule-specific control rejects false kill",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-23",
+    "title_summary": "Plant caught by lint not target test",
+    "primary_wave": "W05",
+    "relevant_waves": [
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "test must fail when lint caps removed",
+    "proposed_negative_test": "Run planted fault with cap-lints=warn; named test catches it",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-24",
+    "title_summary": "Detector clause survives isolated mutation",
+    "primary_wave": "W05",
+    "relevant_waves": [
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "per-clause mutation controls",
+    "proposed_negative_test": "Disable one clause; matching negative control must fail",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-25",
+    "title_summary": "Detector complexity grows without gain",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W06",
+      "W08"
+    ],
+    "proposed_enforcement": "compiler-first detector cost budget",
+    "proposed_negative_test": "Two rounds with nondecreasing survivors trigger stop",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-26",
+    "title_summary": "Regex parses source declarations",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "syn/cargo metadata/AST-based inspection",
+    "proposed_negative_test": "Plant multiline macro/import confounding regex",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-27",
+    "title_summary": "Manually incomplete universe enumeration",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "discover source population from compiler/git",
+    "proposed_negative_test": "Add crate not in hand-written list and require detection",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-28",
+    "title_summary": "Test count literals as oracle",
+    "primary_wave": "W05",
+    "relevant_waves": [
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "derive expected relations from test inventory",
+    "proposed_negative_test": "Add new test and require gate to adapt automatically",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-29",
+    "title_summary": "Verdict from exit code/caption only",
+    "primary_wave": "W05",
+    "relevant_waves": [
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "evidence-counted and subject-bound gate results",
+    "proposed_negative_test": "Zero tests executed must never report PASS",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-30",
+    "title_summary": "Gate result without commit/tree identity",
+    "primary_wave": "W02",
+    "relevant_waves": [
+      "W02",
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "immutable subject SHA and dirty-state trace",
+    "proposed_negative_test": "Change working tree while gate runs; verdict invalidates",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-31",
+    "title_summary": "Unbounded loop or shutdown await",
+    "primary_wave": "W02",
+    "relevant_waves": [
+      "W02",
+      "W04",
+      "W06",
+      "W07"
+    ],
+    "proposed_enforcement": "explicit deadlines and cancellation",
+    "proposed_negative_test": "Hang tool child; bounded termination occurs",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-32",
+    "title_summary": "Mutation tool contaminates test state",
+    "primary_wave": "W05",
+    "relevant_waves": [
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "isolated target directories and precheck",
+    "proposed_negative_test": "Plant in precheck; ensure red and no production pollution",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-33",
+    "title_summary": "Self-reviewed success claim",
+    "primary_wave": "W05",
+    "relevant_waves": [
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "independent verifier capability",
+    "proposed_negative_test": "Builder claims PASS against failing test; refused",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-34",
+    "title_summary": "Unwitnessed agent claim accepted",
+    "primary_wave": "W03",
+    "relevant_waves": [
+      "W03",
+      "W04",
+      "W05"
+    ],
+    "proposed_enforcement": "provenance/readback and unverified status",
+    "proposed_negative_test": "Worker says merged without Git receipt; remains UNVERIFIED",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-35",
+    "title_summary": "Unbudgeted agent fan-out",
+    "primary_wave": "W03",
+    "relevant_waves": [
+      "W03",
+      "W04",
+      "W07"
+    ],
+    "proposed_enforcement": "capability activation; concurrency budget",
+    "proposed_negative_test": "Request 30 workers against pool cap; bounded queue/refusal",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-36",
+    "title_summary": "Endless architecture rounds",
+    "primary_wave": "W06",
+    "relevant_waves": [
+      "W06",
+      "W08"
+    ],
+    "proposed_enforcement": "two-round design ceiling; buildable cut",
+    "proposed_negative_test": "Third design round refused; unresolved work ticketed",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-37",
+    "title_summary": "Append target determined too early",
+    "primary_wave": "W02",
+    "relevant_waves": [
+      "W02",
+      "W03",
+      "W07"
+    ],
+    "proposed_enforcement": "transactional current-state append",
+    "proposed_negative_test": "Parallel writers use stale tip; conflict/reconcile",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-38",
+    "title_summary": "Kill process by name pattern",
+    "primary_wave": "W02",
+    "relevant_waves": [
+      "W02",
+      "W04",
+      "W06"
+    ],
+    "proposed_enforcement": "pidfd/process custody identity",
+    "proposed_negative_test": "Reuse PID or same command name; unrelated process lives",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-39",
+    "title_summary": "Commit chained to ambiguous check",
+    "primary_wave": "W05",
+    "relevant_waves": [
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "one typed gate orchestrator",
+    "proposed_negative_test": "A skipped/failing gate cannot trigger commit",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-40",
+    "title_summary": "Host/toolbox/path confusion",
+    "primary_wave": "W04",
+    "relevant_waves": [
+      "W04",
+      "W06",
+      "W07"
+    ],
+    "proposed_enforcement": "typed environment/scope identifiers",
+    "proposed_negative_test": "Host and sandbox path mismatch fails preflight",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-41",
+    "title_summary": "Primitive helper reimplemented",
+    "primary_wave": "W03",
+    "relevant_waves": [
+      "W03",
+      "W04",
+      "W06"
+    ],
+    "proposed_enforcement": "catalogue and code reuse audit",
+    "proposed_negative_test": "Introduce duplicate helper and detect overlapping contract",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-42",
+    "title_summary": "Workaround masks invalid rule scope",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W05",
+      "W06"
+    ],
+    "proposed_enforcement": "fix authorization/validation source of truth",
+    "proposed_negative_test": "Add workaround while invalid original rule still exists",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-43",
+    "title_summary": "Fragile regex text insertion",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W06"
+    ],
+    "proposed_enforcement": "syntax-aware codemod",
+    "proposed_negative_test": "Apply rewriter to nested Rust fn/attrs; AST stays valid",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-44",
+    "title_summary": "Unconsumed corpus or status rows",
+    "primary_wave": "W03",
+    "relevant_waves": [
+      "W03",
+      "W06"
+    ],
+    "proposed_enforcement": "named reader and retention policy",
+    "proposed_negative_test": "required reader missing => artifact admission refused",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-45",
+    "title_summary": "Generated marker blocks in production source",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W06"
+    ],
+    "proposed_enforcement": "source-tree guard with legitimate exceptions",
+    "proposed_negative_test": "Plant BEGIN/END generated block; scan fails",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-46",
+    "title_summary": "State copied into static documentation",
+    "primary_wave": "W02",
+    "relevant_waves": [
+      "W02",
+      "W03",
+      "W06"
+    ],
+    "proposed_enforcement": "live state query + time-qualified projection",
+    "proposed_negative_test": "Change runtime status; doc does not claim stale static state",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-47",
+    "title_summary": "Editing derived projection rather than owner",
+    "primary_wave": "W02",
+    "relevant_waves": [
+      "W02",
+      "W03",
+      "W06"
+    ],
+    "proposed_enforcement": "read-only derived view; owner-mediated update",
+    "proposed_negative_test": "Attempt direct projection mutation; rejected",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-48",
+    "title_summary": "Two canonical homes for one fact",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W03",
+      "W06"
+    ],
+    "proposed_enforcement": "one owner plus source-linked projection",
+    "proposed_negative_test": "Introduce competing authoritative copies; audit fails",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-49",
+    "title_summary": "External state changed without readback/fsync",
+    "primary_wave": "W02",
+    "relevant_waves": [
+      "W02",
+      "W04",
+      "W06",
+      "W07"
+    ],
+    "proposed_enforcement": "durable intent, readback, explicit uncertain result",
+    "proposed_negative_test": "Kill after effect before ack; cannot fabricate completed",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  },
+  {
+    "id": "AP-50",
+    "title_summary": "Late grant/prerequisite discovery",
+    "primary_wave": "W01",
+    "relevant_waves": [
+      "W01",
+      "W04",
+      "W06"
+    ],
+    "proposed_enforcement": "preflight grant capability + expiry",
+    "proposed_negative_test": "Revoke grant just before action; refused",
+    "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
+    "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
+    "basis": "Index summary; source row must be checked before rule implementation"
+  }
+]

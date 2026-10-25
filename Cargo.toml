@@ -1,3 +1,6 @@
+# DDF review route R59: declared MSRV and locked dependency validation; see current verification and CI.
+# Design/status: docs/RECOMMENDATION_INTEGRATION.md#ddf-r59
+# Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2FCargo.toml
 [workspace]
 members = [
   "crates/deep-diff-forge-core",
@@ -11,6 +14,7 @@ members = [
   "crates/deep-diff-forge-cluster",
   "crates/deep-diff-forge-learning",
   "crates/deep-diff-forge-daemon",
+  "crates/deep-diff-forge-review",
   "crates/deep-diff-forge-cli",
 ]
 resolver = "2"
@@ -60,3 +64,5 @@ deep-diff-forge-tui = { path = "crates/deep-diff-forge-tui", version = "0.2.1" }
 deep-diff-forge-cluster = { path = "crates/deep-diff-forge-cluster", version = "0.2.1" }
 deep-diff-forge-learning = { path = "crates/deep-diff-forge-learning", version = "0.2.1" }
 deep-diff-forge-daemon = { path = "crates/deep-diff-forge-daemon", version = "0.2.1" }
+
+deep-diff-forge-review = { path = "crates/deep-diff-forge-review", version = "0.2.1" }

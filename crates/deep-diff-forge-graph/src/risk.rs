@@ -1,3 +1,6 @@
+// DDF review route: DDF-R12, DDF-R13. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-graph--src--risk
 use deep_diff_forge_core::{FileStatus, PatchLineKind, ReviewFile};
 
 /// A deterministic, explainable reason a file is ranked where it is.
@@ -281,7 +284,7 @@ mod tests {
         // base (1) + primary-source bonus (1) = 2, no other signals.
         let (score, signals) = score_file(&modify("src/util.rs", 1));
         assert_eq!(score, 2);
-        assert!(signals.is_empty());
+        assert_eq!(signals.len(), 0);
     }
 
     #[test]

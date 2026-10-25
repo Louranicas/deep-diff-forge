@@ -252,7 +252,7 @@ fn require_hunks_refuses_header_only_diff_that_require_files_passes() {
     assert_eq!(code, 0);
     assert!(stdout.contains("\"schema\": \"deep-diff-forge.rank.v0\""));
     assert!(stdout.contains("\"path\": \"x\""));
-    assert!(stderr.is_empty());
+    assert_eq!(stderr.len(), 0);
 }
 
 #[test]
@@ -260,7 +260,7 @@ fn require_hunks_passes_a_real_diff_sealed_and_unchanged() {
     // (3) a diff with a real hunk clears both gates and is sealed.
     let (code, with, stderr) = run_text(&GATE, PATCH);
     assert_eq!(code, 0);
-    assert!(stderr.is_empty());
+    assert_eq!(stderr.len(), 0);
     let head = format!(
         "{{\n  \"schema\": \"deep-diff-forge.rank.v0\",\n{}  \"ranked\": [",
         expected_seal(PATCH.as_bytes())
@@ -279,7 +279,7 @@ fn require_hunks_refuses_rename_only_diff() {
     // (4) a pure rename parses to one file, zero hunks, zero changed lines.
     let (code, stdout, stderr) = run_text(&GATE, RENAME_ONLY);
     assert_eq!(code, 7);
-    assert!(stdout.is_empty());
+    assert_eq!(stdout.len(), 0);
     assert_eq!(stderr, "refused: 0 hunks in input (--require-hunks)\n");
     // ... and without the flag it is still exit 0 (default unchanged).
     let (code, stdout, _) = run_text(&["--stdin-patch", "--rank", "--json"], RENAME_ONLY);
@@ -296,7 +296,7 @@ fn require_hunks_refuses_context_only_hunk() {
         context_only,
     );
     assert_eq!(code, 7);
-    assert!(stdout.is_empty());
+    assert_eq!(stdout.len(), 0);
     assert_eq!(stderr, "refused: 0 hunks in input (--require-hunks)\n");
 }
 
@@ -324,7 +324,7 @@ fn require_hunks_refuses_in_every_document_mode() {
 fn both_guards_on_empty_input_report_the_files_guard_first() {
     let (code, stdout, stderr) = run_text(&GATE, "");
     assert_eq!(code, 7);
-    assert!(stdout.is_empty());
+    assert_eq!(stdout.len(), 0);
     assert_eq!(stderr, "refused: 0 files in input (--require-files)\n");
 }
 
@@ -353,7 +353,8 @@ fn rank_json_require_files_is_byte_identical_across_runs() {
     let (code1, out1, err1) = run(&args, &input);
     let (code2, out2, err2) = run(&args, &input);
     assert_eq!((code1, code2), (0, 0));
-    assert!(err1.is_empty() && err2.is_empty());
+    assert_eq!(err1.len(), 0);
+    assert_eq!(err2.len(), 0);
     assert_eq!(out1, out2, "stdout must be byte-identical across runs");
 
     let doc1 = String::from_utf8(out1).expect("utf-8");

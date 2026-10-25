@@ -123,7 +123,7 @@ mod tests {
         let PipelineData::Review(files) = ingest("") else {
             panic!("expected review");
         };
-        assert!(files.is_empty());
+        assert_eq!(files.len(), 0);
     }
 
     #[test]

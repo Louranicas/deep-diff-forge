@@ -1,3 +1,9 @@
+// DDF integration R21: derive semantic fallback totals from the enriched model; skipped coverage remains explicit in analysis.v1.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#shared-service
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--json
+// DDF review route: DDF-R21. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-patch--src--json
 use deep_diff_forge_core::{DiffStrategy, FileStatus, InputSeal, PatchLineKind, ReviewFile};
 use std::fmt::Write as _;
 
@@ -75,7 +81,18 @@ fn render(files: &[ReviewFile], seal: Option<&InputSeal>) -> String {
     let _ = writeln!(out, "    \"files_changed\": {},", files.len());
     let _ = writeln!(out, "    \"additions\": {additions},");
     let _ = writeln!(out, "    \"deletions\": {deletions},");
-    out.push_str("    \"semantic_fallbacks\": 0\n");
+    let fallbacks = files
+        .iter()
+        .filter(|file| {
+            file.semantic_twin.as_ref().is_some_and(|twin| {
+                matches!(
+                    twin.parse_status,
+                    deep_diff_forge_core::ParseStatus::Fallback { .. }
+                )
+            })
+        })
+        .count();
+    let _ = writeln!(out, "    \"semantic_fallbacks\": {fallbacks}");
     out.push_str("  }\n");
     out.push_str("}\n");
     out
