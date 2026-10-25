@@ -1016,6 +1016,29 @@ mod tests {
             ),
             ["src/lib.txt", "src/main.inc", "../foo", "in a comment"]
         );
+        // Only a basic string resolves escapes; a literal string keeps its backslashes.
+        assert_eq!(
+            manifest_paths("path = \"hid\\x64en.txt\"\npath = 'raw\\x64.txt'\n"),
+            ["hidden.txt", "raw\\x64.txt"]
+        );
+    }
+
+    #[test]
+    fn an_inner_attribute_follows_after_whitespace_and_comments_only() {
+        for rest in [
+            "[",
+            " \t\n[",
+            "\u{200e}[",
+            "// c\n[",
+            "/* a */ [",
+            "//\n/**/[x]",
+        ] {
+            assert!(inner_attribute_follows(rest), "{rest:?}");
+        }
+        // A lone `/` is a token, not a comment opener; neither is `/` before anything but `/` or `*`.
+        for rest in ["", "/bin/sh", "/x*/[", "// [", "/ /[", "x["] {
+            assert!(!inner_attribute_follows(rest), "{rest:?}");
+        }
     }
 
     #[test]
