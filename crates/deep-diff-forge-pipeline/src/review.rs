@@ -450,8 +450,13 @@ impl ReviewBundle {
             if let Some(diff) = &analysis.structural {
                 let _ = write!(
                     record,
-                    ",\"reformat_only\":{},\"degraded\":{},\"added\":{},\"removed\":{},\"moved\":{}",
-                    diff.reformat_only, diff.degraded, diff.added, diff.removed, diff.moved
+                    ",\"reformat_only\":{},\"degraded\":{},\"minimal\":{},\"added\":{},\"removed\":{},\"moved\":{}",
+                    diff.reformat_only,
+                    diff.degraded,
+                    diff.minimal,
+                    diff.added,
+                    diff.removed,
+                    diff.moved
                 );
             }
             if let Some(twin) = file.semantic_twin.as_ref() {

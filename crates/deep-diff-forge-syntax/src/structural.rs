@@ -25,8 +25,9 @@
 //! the exact LCS runs on the changed middle when that fits [`LCS_CELL_BUDGET`].
 //! A larger middle is anchored on unchanged lines (an LCS over lines, each
 //! identified by its token texts) and the token LCS runs on each gap between
-//! anchors: a valid but not necessarily minimal script. Only when the line table
-//! or a single gap is over budget does the file degrade to a coarse whole-file
+//! anchors: a valid but not necessarily minimal script
+//! ([`StructuralDiff::minimal`] is false). Only when the line table, or the gaps'
+//! cells together, are over budget does the file degrade to a coarse whole-file
 //! change ([`StructuralDiff::degraded`]).
 
 use crate::language::Language;
@@ -104,6 +105,9 @@ pub struct StructuralDiff {
     pub reformat_only: bool,
     /// True when the LCS was skipped for size and a coarse diff was produced.
     pub degraded: bool,
+    /// True when `changes` is a minimal (longest-common-subsequence) script. The line-anchored
+    /// path is valid but not necessarily minimal, and a degraded or unavailable diff never is.
+    pub minimal: bool,
     /// Why structural analysis is unavailable; never interpreted as unchanged.
     pub unavailable: Option<deep_diff_forge_core::FallbackReason>,
 }
@@ -128,6 +132,7 @@ pub fn structural_diff(language: Language, old_source: &str, new_source: &str) -
             moved: 0,
             reformat_only: false,
             degraded: true,
+            minimal: false,
             unavailable: Some(reason),
         },
     }
@@ -206,10 +211,10 @@ fn diff_tokens(language: Language, old: &[Token], new: &[Token]) -> StructuralDi
     // gap between anchors is itself too large does the whole file degrade.
     let (prefix, suffix) = common_affixes(old, new);
     let middle = (old.len() - prefix - suffix).saturating_mul(new.len() - prefix - suffix);
-    let ops = if middle <= LCS_CELL_BUDGET {
-        lcs_ops(old, new)
+    let (ops, minimal) = if middle <= LCS_CELL_BUDGET {
+        (lcs_ops(old, new), true)
     } else if let Some(ops) = line_anchored_ops(old, new) {
-        ops
+        (ops, false)
     } else {
         return coarse_diff(language, old, new);
     };
@@ -241,6 +246,7 @@ fn diff_tokens(language: Language, old: &[Token], new: &[Token]) -> StructuralDi
         moved,
         reformat_only,
         degraded: false,
+        minimal,
         unavailable: None,
     }
 }
@@ -350,7 +356,8 @@ fn intern_lines<'a>(
 /// Two-level diff for a changed middle beyond [`LCS_CELL_BUDGET`]: an LCS over whole lines (a
 /// line's identity is its token texts, so layout inside a line is ignored) picks unchanged lines
 /// as anchors, then a token LCS runs on each gap between anchors. The script is valid but, unlike
-/// [`lcs_ops`], not guaranteed minimal. `None` when the line table or any gap is over budget.
+/// [`lcs_ops`], not guaranteed minimal. `None` when the line table, or the gaps' cells together,
+/// are over budget, so the work stays within twice the budget however many gaps there are.
 fn line_anchored_ops(old: &[Token], new: &[Token]) -> Option<Vec<Op>> {
     let (prefix, suffix) = common_affixes(old, new);
     let (old_end, new_end) = (old.len() - suffix, new.len() - suffix);
@@ -377,13 +384,21 @@ fn line_anchored_ops(old: &[Token], new: &[Token]) -> Option<Vec<Op>> {
     }
     let mut ops = Vec::with_capacity(old.len() + new.len());
     ops.extend((0..prefix).map(|k| Op::Equal(k, k)));
-    // Token cursors (absolute indices) up to which ops have been emitted.
+    // Token cursors (absolute indices) up to which ops have been emitted, and gap cells spent.
     let (mut old_at, mut new_at) = (prefix, prefix);
+    let mut spent = 0;
     let (mut i, mut j) = (0, 0);
     while i < n && j < m {
         if old_ids[i] == new_ids[j] {
             let (old_line, new_line) = (prefix + old_lines[i].start, prefix + new_lines[j].start);
-            gap_ops(old, new, (old_at, new_at), (old_line, new_line), &mut ops)?;
+            gap_ops(
+                old,
+                new,
+                (old_at, new_at),
+                (old_line, new_line),
+                &mut spent,
+                &mut ops,
+            )?;
             let len = old_lines[i].len();
             ops.extend((0..len).map(|k| Op::Equal(old_line + k, new_line + k)));
             (old_at, new_at) = (old_line + len, new_line + len);
@@ -395,21 +410,30 @@ fn line_anchored_ops(old: &[Token], new: &[Token]) -> Option<Vec<Op>> {
             j += 1;
         }
     }
-    gap_ops(old, new, (old_at, new_at), (old_end, new_end), &mut ops)?;
+    gap_ops(
+        old,
+        new,
+        (old_at, new_at),
+        (old_end, new_end),
+        &mut spent,
+        &mut ops,
+    )?;
     ops.extend((0..suffix).map(|k| Op::Equal(old_end + k, new_end + k)));
     Some(ops)
 }
 
-/// Append the token LCS of `old[from.0..to.0]` against `new[from.1..to.1]` with absolute indices;
-/// `None` when that gap alone is over [`LCS_CELL_BUDGET`].
+/// Append the token LCS of `old[from.0..to.0]` against `new[from.1..to.1]` with absolute indices,
+/// adding its cells to `spent`; `None` once the gaps together exceed [`LCS_CELL_BUDGET`].
 fn gap_ops(
     old: &[Token],
     new: &[Token],
     from: (usize, usize),
     to: (usize, usize),
+    spent: &mut usize,
     ops: &mut Vec<Op>,
 ) -> Option<()> {
-    if (to.0 - from.0).saturating_mul(to.1 - from.1) > LCS_CELL_BUDGET {
+    *spent = spent.saturating_add((to.0 - from.0).saturating_mul(to.1 - from.1));
+    if *spent > LCS_CELL_BUDGET {
         return None;
     }
     ops.extend(
@@ -467,28 +491,29 @@ fn mark_moves(ops: &[Op], old: &[Token], new: &[Token]) -> Vec<TokenChange> {
     };
 
     // A delete run and an insert run with identical token text (length >=
-    // MIN_MOVE_RUN) are a moved block. Each insert run is matched at most once.
+    // MIN_MOVE_RUN) are a moved block. Each insert run is matched at most once,
+    // to the earliest unused one. Insert runs are indexed by text once, so the
+    // search is linear in the runs rather than a scan per delete run.
+    let mut unused: std::collections::HashMap<
+        Vec<&str>,
+        std::collections::VecDeque<(usize, usize)>,
+    > = std::collections::HashMap::new();
+    for ins in &insert_runs {
+        let text = run_text(*ins);
+        if text.len() >= MIN_MOVE_RUN {
+            unused.entry(text).or_default().push_back(*ins);
+        }
+    }
     let mut moved_ops: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    let mut used_inserts: Vec<bool> = vec![false; insert_runs.len()];
+    // Only runs of at least MIN_MOVE_RUN are indexed, so a shorter delete run finds nothing.
     for d in &delete_runs {
         let dt = run_text(*d);
-        if dt.len() < MIN_MOVE_RUN {
-            continue;
-        }
-        for (ii, ins) in insert_runs.iter().enumerate() {
-            if used_inserts[ii] {
-                continue;
-            }
-            if run_text(*ins) == dt {
-                used_inserts[ii] = true;
-                for idx in d.0..d.1 {
-                    moved_ops.insert(idx);
-                }
-                for idx in ins.0..ins.1 {
-                    moved_ops.insert(idx);
-                }
-                break;
-            }
+        if let Some(ins) = unused
+            .get_mut(&dt)
+            .and_then(std::collections::VecDeque::pop_front)
+        {
+            moved_ops.extend(d.0..d.1);
+            moved_ops.extend(ins.0..ins.1);
         }
     }
 
@@ -553,6 +578,7 @@ fn coarse_diff(language: Language, old: &[Token], new: &[Token]) -> StructuralDi
         moved: 0,
         reformat_only: false,
         degraded: true,
+        minimal: false,
         unavailable: None,
     }
 }
@@ -678,6 +704,7 @@ mod tests {
         assert!(tokens * tokens > LCS_CELL_BUDGET, "{tokens} tokens");
         let d = structural_diff(Language::Rust, &old, &new);
         assert!(!d.degraded);
+        assert!(d.minimal);
         assert_eq!((d.added, d.removed, d.moved), (1, 1, 0));
         assert_eq!(d.unchanged, tokens - 1);
         let changed: Vec<_> = d
@@ -710,6 +737,7 @@ mod tests {
         });
         let d = structural_diff(Language::Rust, &old, &both_ends);
         assert!(!d.degraded);
+        assert!(!d.minimal, "anchored, so not claimed minimal");
         assert_eq!((d.added, d.removed, d.moved), (2, 2, 0));
         // A rewritten block of 160 functions near the end (a 960-token gap, 0.92 M cells) plus an
         // edit near the start: the gap is measured on its own, so the file is still analysed.
@@ -747,6 +775,28 @@ mod tests {
         let d = structural_diff(Language::Rust, &source(false), &source(true));
         assert!(d.degraded);
         assert!(d.unavailable.is_none());
+    }
+
+    // Each rewritten block is a gap well inside the budget; together they are not. The work bound
+    // is on the gaps' total, so eight blocks degrade where four are analysed.
+    #[test]
+    fn the_gaps_together_stay_within_the_cell_budget() {
+        let source = |blocks: usize| -> String {
+            let mut text = String::new();
+            for i in 0..1600 {
+                // A 150-function block starts every 200 functions.
+                let rewritten = i % 200 < 150 && i / 200 < blocks;
+                text.push_str(if rewritten { "fn g" } else { "fn f" });
+                text.push_str(&i.to_string());
+                text.push_str("() {}\n");
+            }
+            text
+        };
+        let old = source(0);
+        let four = structural_diff(Language::Rust, &old, &source(4));
+        assert!(!four.degraded && !four.minimal);
+        assert_eq!((four.added, four.removed), (600, 600));
+        assert!(structural_diff(Language::Rust, &old, &source(8)).degraded);
     }
 
     #[test]

@@ -25,9 +25,11 @@ pub(crate) const WORK: &str = "/work";
 /// Container-side read-only mount of the job's copy of the sealed snapshot; gates run here.
 const SOURCE: &str = "/src";
 const VENDOR: &str = "/vendor";
-const CARGO_HOME: &str = "/cargo-home";
-/// cargo-fuzz creates `fuzz/artifacts/<target>` even when `-artifact_prefix` points elsewhere.
-const FUZZ_ARTIFACTS: &str = "/src/fuzz/artifacts";
+/// Container-side read-only mount of the job's controller-written Cargo home.
+pub(crate) const CARGO_HOME: &str = "/cargo-home";
+/// The fuzz gate's tmpfs, relative to the source root. cargo-fuzz creates `fuzz/artifacts/<target>`
+/// even when `-artifact_prefix` points elsewhere. Admission refuses any sealed path under it.
+pub(crate) const FUZZ_ARTIFACTS: &str = "fuzz/artifacts";
 /// The image's stable toolchain (review-policy/sandbox/Containerfile). Set for every job so a
 /// `rust-toolchain(.toml)` file can never select a toolchain; an explicit `+nightly` still wins.
 const STABLE_TOOLCHAIN: &str = "1.99.1";
@@ -175,7 +177,7 @@ impl Sandbox {
         if spec.fuzz {
             // The controller pre-creates the mountpoint in its source copy; `U` makes it the job's.
             argv.push(format!(
-                "--tmpfs={FUZZ_ARTIFACTS}:rw,nosuid,nodev,noexec,size=64m,U"
+                "--tmpfs={SOURCE}/{FUZZ_ARTIFACTS}:rw,nosuid,nodev,noexec,size=64m,U"
             ));
         }
         for (key, value) in env(spec) {
@@ -203,7 +205,7 @@ impl Sandbox {
             "host_home_mounted": false,
             "writable_mounts": [WORK],
             "read_only_mounts": read_only,
-            "tmpfs_mounts": if spec.fuzz { vec![FUZZ_ARTIFACTS] } else { Vec::new() },
+            "tmpfs_mounts": if spec.fuzz { vec![format!("{SOURCE}/{FUZZ_ARTIFACTS}")] } else { Vec::new() },
             "vendor_sha256": spec.vendor.map(|(_, digest)| digest),
             "memory": "32g",
             "memory_swap": "32g",

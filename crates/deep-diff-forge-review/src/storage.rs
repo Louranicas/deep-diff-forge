@@ -172,9 +172,6 @@ impl Inventory {
 pub(crate) const SNAPSHOT_DIR: &str = "source";
 /// The candidate's changes since `mutation_base`, sealed at prepare for the diff-scoped mutation gate.
 pub(crate) const MUTATION_DIFF: &str = "mutation.diff";
-/// Largest mutation diff captured at prepare and read back by the mutation gate. Written as a
-/// shift, so the only arithmetic mutant (a zero cap) refuses every diff-scoped run.
-pub(crate) const MUTATION_DIFF_CAP: u64 = 16 << 20;
 pub(crate) const INVENTORY_FILE: &str = "source-inventory.json";
 /// Largest sealed inventory a gate reads back. Written as a shift, so the only arithmetic mutant
 /// (a zero cap) refuses every gate.
@@ -487,26 +484,6 @@ fn verify_analysis(analysis: &serde_json::Value, request: &Request) -> Result<St
     )?;
     Ok(review_id)
 }
-/// Tracked workspace files against `base`, if any: the lines the diff-scoped mutation gate mutates.
-/// Untracked files are not in it, so their mutants are not measured.
-fn mutation_diff(repository: &Path, base: Option<&str>) -> Result<Option<Vec<u8>>> {
-    base.map(|base| {
-        git_bytes(
-            repository,
-            &[
-                "diff",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--no-color",
-                "--no-renames",
-                base,
-                "--",
-            ],
-            MUTATION_DIFF_CAP,
-        )
-    })
-    .transpose()
-}
 /// Capture a validated analysis, decision and caller-selected context into a new private run.
 /// # Errors
 /// Refuses pre-existing output, incomplete analysis, invalid roster or oversized/changed inputs.
@@ -577,7 +554,8 @@ pub fn prepare(mut request: Request, directory: &Path) -> Result<Manifest> {
         });
     }
     // Captured inside the same unchanged-workspace window as everything else.
-    let mutation_diff = mutation_diff(&repository, request.mutation_base.as_deref())?;
+    let mutation_diff =
+        crate::mutation_scope::capture(&repository, &inventory, request.mutation_base.as_deref())?;
     let tree_after = source_fingerprint(&repository)?;
     require(
         tree_before == tree_after,

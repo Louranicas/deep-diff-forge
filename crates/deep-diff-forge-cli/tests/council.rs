@@ -6,7 +6,7 @@ use deep_diff_forge_review::{Profile, Request};
 use std::os::unix::fs::PermissionsExt;
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Output, Stdio},
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
@@ -460,10 +460,15 @@ def control():
 if args[:2]==['image','inspect']:
     if mode=='hang_inspect':time.sleep(120)
     if args[-1]!='fake-gate':sys.exit(125)
-    if mode=='orphan_inspect' and os.fork()==0:
-        # A descendant that keeps the output pipe open after the runtime itself exits.
-        with open(os.path.join(here,'orphan.pid'),'w') as out:out.write(str(os.getpid()))
-        time.sleep(120);os._exit(0)
+    if mode=='orphan_inspect':
+        pidfile=os.path.join(here,'orphan.pid')
+        if os.fork()==0:
+            # A descendant that keeps the output pipe open after the runtime itself exits.
+            with open(pidfile+'.tmp','w') as out:out.write(str(os.getpid()))
+            os.rename(pidfile+'.tmp',pidfile)
+            time.sleep(120);os._exit(0)
+        # Exit only once the descendant is recorded, so the controller cannot kill it first.
+        while not os.path.exists(pidfile):time.sleep(0.01)
     print('not-an-image-id' if mode=='bad_id' else 'sha256:'+image_id);sys.exit(0)
 if args[:1]==['rm']:control();sys.exit(0)
 if args[:2]==['container','exists']:
@@ -605,13 +610,222 @@ fn a_mutation_base_scopes_mutation_to_a_sealed_diff_and_a_changed_diff_is_refuse
         let argv = f.runtime_argv("gate-mutation").concat();
         assert!(
             argv.windows(2)
-                .any(|w| w == ["--in-diff", "/work/mutation.diff"])
+                .any(|w| w == ["--in-diff", "/cargo-home/mutation.diff"])
         );
         assert_eq!(
-            fs::read_to_string(f.run.join("jobs/gate-mutation/work/mutation.diff")).unwrap(),
+            fs::read_to_string(f.run.join("jobs/gate-mutation/cargo-home/mutation.diff")).unwrap(),
             sealed
         );
     }
+}
+
+/// A fixture prepared with `mutation_base` set to the commit before `setup` runs.
+fn prepare_with_mutation_base(f: &Fixture, setup: impl Fn(&Fixture)) -> Output {
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&f.repository)
+        .output()
+        .unwrap();
+    let mut spec: serde_json::Value =
+        serde_json::from_slice(&fs::read(&f.request).unwrap()).unwrap();
+    spec["mutation_base"] = String::from_utf8(head.stdout).unwrap().trim().into();
+    fs::write(&f.request, serde_json::to_vec(&spec).unwrap()).unwrap();
+    setup(f);
+    f.call(
+        &[
+            "prepare",
+            f.request.to_str().unwrap(),
+            f.run.to_str().unwrap(),
+        ],
+        "normal",
+    )
+}
+
+#[test]
+fn index_flags_attributes_and_untracked_files_cannot_shrink_the_mutation_scope() {
+    let f = Fixture::new();
+    f.commit("hidden.rs", "pub fn hidden() {}\n");
+    f.commit("binary.rs", "pub fn binary() {}\n");
+    f.commit(
+        "multi.rs",
+        "pub fn first() {}\npub fn second() {}\npub fn third() {}\n",
+    );
+    let result = prepare_with_mutation_base(&f, |f| {
+        // Each of these hid a change from `git diff <base>` of the working tree.
+        f.commit(".gitattributes", "binary.rs -diff\n");
+        fs::write(f.repository.join("binary.rs"), "pub fn binary() { 1; }\n").unwrap();
+        fs::write(f.repository.join("hidden.rs"), "pub fn hidden() { 2; }\n").unwrap();
+        assert!(
+            Command::new("git")
+                .args(["update-index", "--assume-unchanged", "hidden.rs"])
+                .current_dir(&f.repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::write(f.repository.join("untracked.rs"), "pub fn untracked() {}\n").unwrap();
+        fs::write(
+            f.repository.join("multi.rs"),
+            "pub fn first() {}\npub fn changed() {}\npub fn third() {}\n",
+        )
+        .unwrap();
+    });
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let sealed = fs::read_to_string(f.run.join("mutation.diff")).unwrap();
+    for added in [
+        "+pub fn binary() { 1; }",
+        "+pub fn hidden() { 2; }",
+        "+pub fn untracked() {}",
+    ] {
+        assert!(sealed.contains(added), "{added} missing from {sealed}");
+    }
+    // Precise as well as complete: an unchanged line of a changed base file is not in scope.
+    assert!(
+        sealed.contains(
+            "+++ b/multi.rs\n@@ -2,1 +2,1 @@\n-pub fn second() {}\n+pub fn changed() {}\n"
+        ),
+        "{sealed}"
+    );
+    assert!(!sealed.contains("+pub fn first()"), "{sealed}");
+    // Every inventoried file is in scope, since `#[path]` can make any file a module.
+    assert!(sealed.contains("+++ b/.gitattributes"), "{sealed}");
+}
+
+#[test]
+fn analysis_admission_binds_the_review_id_and_refuses_unusable_analyses() {
+    type Edit = dyn Fn(&mut serde_json::Value, &mut serde_json::Value);
+    fn important(_: &mut serde_json::Value, spec: &mut serde_json::Value) {
+        spec["profile"] = "important_decision".into();
+        spec["reviewers"] =
+            serde_json::to_value(deep_diff_forge_review::cli::example().reviewers).unwrap();
+    }
+    let prepare = |edit: &Edit| -> (Fixture, Output) {
+        let f = Fixture::new();
+        let path = f.root.join("analysis.json");
+        let mut analysis: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let mut spec: serde_json::Value =
+            serde_json::from_slice(&fs::read(&f.request).unwrap()).unwrap();
+        edit(&mut analysis, &mut spec);
+        fs::write(&path, serde_json::to_vec(&analysis).unwrap()).unwrap();
+        fs::write(&f.request, serde_json::to_vec(&spec).unwrap()).unwrap();
+        let result = f.call(
+            &[
+                "prepare",
+                f.request.to_str().unwrap(),
+                f.run.to_str().unwrap(),
+            ],
+            "normal",
+        );
+        (f, result)
+    };
+    // Admitted: the sealed manifest carries the analysis's own review ID.
+    let (f, result) = prepare(&|_, _| {});
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.run.join("manifest.json")).unwrap()).unwrap();
+    let analysis: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.root.join("analysis.json")).unwrap()).unwrap();
+    assert_eq!(manifest["review_id"], analysis["review_id"]);
+    // The important profile admits the same analysis when every file is analysed.
+    let (_, result) = prepare(&important);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let refusals: [(&str, &Edit); 4] = [
+        ("invalid review_id", &|a, _| a["review_id"] = "abc".into()),
+        ("empty or mismatched analysis coverage", &|a, _| {
+            a["coverage"] = serde_json::json!([]);
+        }),
+        ("coverage paths do not uniquely match files", &|a, _| {
+            a["coverage"][0]["path"] = "other.rs".into();
+        }),
+        (
+            "important decision has missing/partial/unavailable source analysis",
+            &|a, spec| {
+                important(a, spec);
+                a["coverage"][0]["coverage"] = "partial_lcs".into();
+            },
+        ),
+    ];
+    for (message, edit) in refusals {
+        let (f, result) = prepare(edit);
+        assert!(!result.status.success(), "{message}");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains(message),
+            "{message}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(!f.run.exists(), "{message}");
+    }
+}
+
+#[test]
+fn candidate_code_cannot_exempt_itself_from_the_mutation_gate() {
+    let f = Fixture::new();
+    // Assembled at run time, so this test file does not trip the controller's own scan.
+    let attribute = format!("#[cfg_attr(test, {}::skip)]", "mutants");
+    f.commit(
+        "exempt.rs",
+        &format!("{attribute}\npub fn untested() {{}}\n"),
+    );
+    f.prepare();
+    f.install_gate("valid");
+    let result = f.gate("mutation");
+    assert_eq!(result.status.code(), Some(4));
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("snapshot contains a cargo-mutants skip attribute in exempt.rs"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
+    // Only the mutation gate is concerned; the same snapshot still runs its tests.
+    assert_eq!(f.gate("tests").status.code(), Some(0));
+}
+
+#[test]
+fn a_mutation_base_that_is_not_an_ancestor_of_head_is_refused() {
+    let f = Fixture::new();
+    let result = prepare_with_mutation_base(&f, |f| {
+        // Rewrite history so the recorded base is no longer an ancestor of HEAD.
+        assert!(
+            Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "commit",
+                    "-q",
+                    "--amend",
+                    "-m",
+                    "rewritten",
+                ])
+                .current_dir(&f.repository)
+                .status()
+                .unwrap()
+                .success()
+        );
+    });
+    assert_eq!(result.status.code(), Some(4));
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("must be a commit that is an ancestor of HEAD"),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!f.run.exists());
 }
 
 #[test]
@@ -649,6 +863,8 @@ fn mutation_jobs_own_a_build_cache_and_cannot_contaminate_normal_tests() {
     // Without a mutation base the whole package is mutated, each mutant against the workspace suite.
     assert!(!argv.iter().any(|a| a == "--in-diff"));
     assert!(argv.windows(2).any(|w| w == ["--timeout", "300"]));
+    // The candidate's `.cargo/mutants.toml` is never read.
+    assert!(argv.iter().any(|a| a == "--no-config"));
     assert!(
         argv.iter()
             .all(|a| !a.starts_with("--env=CARGO_TARGET_DIR") && !a.contains(&normal))
@@ -947,9 +1163,18 @@ fn candidate_toolchain_configuration_is_refused_before_any_job_slot() {
 
 #[test]
 fn sealed_paths_under_the_fuzz_artifact_mountpoint_are_refused_before_any_job_slot() {
-    for planted in ["fuzz/artifacts/council_report/x.rs", "fuzz/artifacts"] {
+    for (planted, deleted) in [
+        ("fuzz/artifacts/council_report/x.rs", false),
+        ("fuzz/artifacts", false),
+        // Deleted but inventoried: the controller would create the mountpoint over the deletion.
+        ("fuzz/artifacts", true),
+    ] {
         let f = Fixture::new();
         f.commit(planted, "pub fn sealed() {}\n");
+        if deleted {
+            f.commit("fuzz/keep.rs", "pub fn kept() {}\n");
+            fs::remove_file(f.repository.join(planted)).unwrap();
+        }
         f.prepare();
         f.install_gate("valid");
         for gate in ["fuzz", "tests"] {
@@ -1153,7 +1378,13 @@ fn a_control_command_descendant_is_killed_when_the_runtime_exits() {
     // Without the group kill, the held pipe would stall the lookup until its 30 s deadline.
     assert!(start.elapsed() < Duration::from_secs(25));
     let pid = fs::read_to_string(f.bin.join("orphan.pid")).unwrap();
-    assert!(!Path::new(&format!("/proc/{}", pid.trim())).exists());
+    // SIGKILL is immediate, but the orphan's /proc entry lasts until its new parent reaps it.
+    let proc = PathBuf::from(format!("/proc/{}", pid.trim()));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while proc.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!proc.exists(), "descendant {} survived", pid.trim());
 }
 
 #[test]
