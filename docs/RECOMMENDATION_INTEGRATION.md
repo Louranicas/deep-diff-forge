@@ -43,6 +43,12 @@ The command emits one `deep-diff-forge.analysis.v1` JSON document. Unknown/extra
 
 The `review_id` seals the original patch and both supplied source snapshots. It is not a whole-repository/build/environment identity. Old/new source absence differs from an empty file. Supplying mismatched source bytes is a hard error. Token-derived spans identify full source lines and report `span_precision: source_line`; they are not exact token-byte or behavioral evidence. Duplicate source paths and extra source pairs are rejected.
 
+Output is bounded per file:
+- **`semantic_regions` (always present):** the spans coalesced into contiguous changed-line runs for each hunk and change kind. Each region carries `old_lines` and `new_lines` as inclusive `[start,end]` pairs or `null`, plus the number of `spans` it covers. A moved region continues only while both sides stay contiguous. Line precision is unchanged, because nested nodes over the same line add no line information.
+- **`semantic_spans` (at most 256 per file):** the verbatim spans. Above that budget the field is absent, and `semantic_spans_omitted: {reason: "span_budget", count, budget}` records exactly what was left out.
+
+Measured on the four-file r3 sandbox change: output fell from 1,113,154 to 101,849 bytes. Previously one 30 KB file alone emitted 3,970 spans, or 628 KB.
+
 `CapturedPatch.original()` preserves the original input, including cosmetic headings. `render_unified()` is a normalized reconstruction with the tested fidelity guarantees below. `ReviewRevision::from_review_id(bundle.id())` binds annotations/evidence to the full changed-source bundle. `from_patch()` is only patch-scoped and cannot detect a same-patch change in unmodified source context. Legacy `validate_anchor()` is document-local; durable consumers must use `BoundAnchor`.
 
 `EvidenceRegistry.capture` stores the digest of actual bytes; `Linked` is not semantic support. A trusted controller must explicitly call `assess` with evaluator and rationale to record supported/contradicted evidence. Every lookup checks revision freshness. The legacy `grounded` boolean and arbitrary citation strings cannot produce verified support. This registry does not authenticate controllers, persist decisions, execute verification commands or infer that one artifact supports every claim citing it.

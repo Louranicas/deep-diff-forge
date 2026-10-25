@@ -176,8 +176,7 @@ pub fn tokenize_checked(
             {
                 tokens.push(Token {
                     text: text.to_string(),
-                    #[allow(clippy::cast_possible_truncation)]
-                    line: node.start_position().row as u32 + 1,
+                    line: u32::try_from(node.start_position().row + 1).unwrap_or(u32::MAX),
                 });
             }
             continue;
