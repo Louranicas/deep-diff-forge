@@ -650,6 +650,8 @@ fn index_flags_attributes_and_untracked_files_cannot_shrink_the_mutation_scope()
         "multi.rs",
         "pub fn first() {}\npub fn second() {}\npub fn third() {}\n",
     );
+    f.commit("sub/inner.rs", "pub fn inner() {}\n");
+    f.commit("sub/changed.rs", "pub fn before() {}\n");
     let result = prepare_with_mutation_base(&f, |f| {
         // Each of these hid a change from `git diff <base>` of the working tree.
         f.commit(".gitattributes", "binary.rs -diff\n");
@@ -669,6 +671,7 @@ fn index_flags_attributes_and_untracked_files_cannot_shrink_the_mutation_scope()
             "pub fn first() {}\npub fn changed() {}\npub fn third() {}\n",
         )
         .unwrap();
+        fs::write(f.repository.join("sub/changed.rs"), "pub fn after() {}\n").unwrap();
     });
     assert!(
         result.status.success(),
@@ -691,8 +694,17 @@ fn index_flags_attributes_and_untracked_files_cannot_shrink_the_mutation_scope()
         "{sealed}"
     );
     assert!(!sealed.contains("+pub fn first()"), "{sealed}");
-    // An unchanged file is not in scope at all.
-    assert!(!sealed.contains("x.rs"), "{sealed}");
+    // An unchanged file is not in scope at all, nested or not, and a nested change is exact.
+    assert!(
+        !sealed.contains("x.rs") && !sealed.contains("sub/inner.rs"),
+        "{sealed}"
+    );
+    assert!(
+        sealed.contains(
+            "+++ b/sub/changed.rs\n@@ -1,1 +1,1 @@\n-pub fn before() {}\n+pub fn after() {}\n"
+        ),
+        "{sealed}"
+    );
     // Every inventoried file is in scope, since `#[path]` can make any file a module.
     assert!(sealed.contains("+++ b/.gitattributes"), "{sealed}");
 }
@@ -919,6 +931,97 @@ fn a_skip_attribute_in_a_non_rs_path_module_is_refused() {
         String::from_utf8_lossy(&result.stderr)
     );
     assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
+}
+
+#[test]
+fn a_submodule_replaced_by_a_file_diffs_against_empty() {
+    let f = Fixture::new();
+    // A gitlink in the base tree: its ID names a commit, not a blob.
+    let head = git(&f, &["rev-parse", "HEAD"]);
+    git(
+        &f,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{head},vendored"),
+        ],
+    );
+    git(
+        &f,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "gitlink",
+        ],
+    );
+    let result = prepare_with_mutation_base(&f, |f| {
+        git(f, &["rm", "-q", "--cached", "vendored"]);
+        fs::write(f.repository.join("vendored"), "pub fn vendored() {}\n").unwrap();
+    });
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let sealed = fs::read_to_string(f.run.join("mutation.diff")).unwrap();
+    assert!(
+        sealed.contains("+++ b/vendored\n@@ -0,0 +1,1 @@\n+pub fn vendored() {}"),
+        "{sealed}"
+    );
+}
+
+#[test]
+fn path_characters_that_could_confuse_a_diff_parser_are_refused() {
+    for (name, refused) in [
+        ("non\u{a0}breaking.rs", true),
+        ("\"quoted.rs", true),
+        ("plain space.rs", false),
+    ] {
+        let f = Fixture::new();
+        let result = prepare_with_mutation_base(&f, |f| {
+            fs::write(f.repository.join(name), "pub fn named() {}\n").unwrap();
+        });
+        if refused {
+            assert_eq!(result.status.code(), Some(4), "{name}");
+            assert!(
+                String::from_utf8_lossy(&result.stderr).contains("mutation scope path contains"),
+                "{name}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        } else {
+            assert!(
+                result.status.success(),
+                "{name}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let sealed = fs::read_to_string(f.run.join("mutation.diff")).unwrap();
+            assert!(sealed.contains(&format!("+++ b/{name}\n")), "{sealed}");
+        }
+    }
+}
+
+#[test]
+fn an_unreferenced_non_rs_file_mentioning_the_attribute_is_not_scanned() {
+    let f = Fixture::new();
+    // Prose about the attribute, in a file no `#[path]` names: not code, not refused.
+    f.commit(
+        "NOTES.md",
+        &format!("Use #[{}::skip] sparingly.\n", "mutants"),
+    );
+    f.prepare();
+    f.install_gate("valid");
+    let result = f.gate("mutation");
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 }
 
 #[test]

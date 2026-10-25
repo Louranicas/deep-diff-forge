@@ -763,6 +763,12 @@ mod tests {
                 "a\nb\n",
                 "@@ -1,3 +1,2 @@\n-a\n-X\n-b\n+a\n+b\n",
             ),
+            // The next non-blank line, not the first blank one after it.
+            (
+                "a\nX\nb\n\nc\n",
+                "a\nb\n\nc\n",
+                "@@ -1,3 +1,2 @@\n-a\n-X\n-b\n+a\n+b\n",
+            ),
             // Through blank lines to the nearest non-blank one on each side (council r9: deleting
             // a `cfg` that disabled the next item must mark that item, not just the blank line).
             (
@@ -895,6 +901,11 @@ mod tests {
             "#!/usr/bin/env r#\"\n#[mutants::skip]\npub fn f() {}",
             // Edition 2015/2018: `ar#"x"` is an identifier, `#` and a string, not a raw string.
             "foo!(ar#\"x\"); #[mutants::skip] fn f() {}",
+            // The same with every quote balanced, so a mis-lex cannot fall back on desync.
+            "foo!(ar#\"x\"); #[mutants::skip] fn f() {} // \"#",
+            "#!/bin/sh \"\n#[mutants::skip]\nfn f() {} // \"",
+            // `#![` opens an inner attribute, not a shebang.
+            "#![mutants::skip]\nfn f() {}",
             // A literal or comment left open swallows the rest: fail closed when both words appear.
             "let s = \"unterminated;\n#[mutants::skip] fn f() {}",
             "/* unterminated\n#[mutants::skip] fn f() {}",
