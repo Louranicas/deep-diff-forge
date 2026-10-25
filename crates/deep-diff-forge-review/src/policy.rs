@@ -36,6 +36,14 @@ pub fn validate_request(request: &Request) -> Result<()> {
         identifier(&request.mutation_package),
         "mutation package must be one explicit package",
     )?;
+    // A full object ID, never a revision expression or an option Git could interpret.
+    require(
+        request.mutation_base.as_deref().is_none_or(|base| {
+            matches!(base.len(), 40 | 64)
+                && base.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        }),
+        "mutation base must be a full lowercase commit ID",
+    )?;
     require(
         !request.fuzz_targets.is_empty() && request.fuzz_targets.len() <= 8,
         "fuzz scope must be explicit and nonempty",

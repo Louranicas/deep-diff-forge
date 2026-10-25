@@ -6,7 +6,7 @@ use deep_diff_forge_review::{Profile, Request};
 use std::os::unix::fs::PermissionsExt;
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
@@ -444,7 +444,8 @@ fn oversized_transcripts_fail_with_explicit_incomplete_diagnostics() {
 /// and `/vendor` to their `--volume` host paths, then runs the gate argv with ONLY the `--env` values
 /// plus a PATH to the fake tools (no inherited environment), propagating the exit code. Each `run` argv
 /// is appended as one JSON line to `<work>/runtime-argv.json`. `DDF_FAKE_RUNTIME` (inherited from the
-/// controller, never passed into the gate) plants runtime faults: `hang_inspect`, `bad_id`, `linger`
+/// controller, never passed into the gate) plants runtime faults: `hang_inspect`, `bad_id`,
+/// `orphan_inspect` (answers, then leaves a descendant holding the output pipe), `linger`
 /// (the container never goes away) and `hang_exists`; `mode:job` limits a removal fault to containers
 /// whose name contains `job`. A name listed in `fake-bin/occupied-names` is
 /// refused as in use, like a container another invocation still holds.
@@ -459,6 +460,10 @@ def control():
 if args[:2]==['image','inspect']:
     if mode=='hang_inspect':time.sleep(120)
     if args[-1]!='fake-gate':sys.exit(125)
+    if mode=='orphan_inspect' and os.fork()==0:
+        # A descendant that keeps the output pipe open after the runtime itself exits.
+        with open(os.path.join(here,'orphan.pid'),'w') as out:out.write(str(os.getpid()))
+        time.sleep(120);os._exit(0)
     print('not-an-image-id' if mode=='bad_id' else 'sha256:'+image_id);sys.exit(0)
 if args[:1]==['rm']:control();sys.exit(0)
 if args[:2]==['container','exists']:
@@ -493,7 +498,8 @@ sys.exit(subprocess.run([exe]+[host(a) for a in inner[1:]],cwd=host(workdir),env
 /// The image ID the fake runtime resolves `fake-gate` to; gates must launch this, never the tag.
 const FAKE_IMAGE_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 /// Fake `cargo` inside the fake sandbox. Modes plant what a hostile candidate (or its tools) could
-/// leave in the job's writable `/work`: `vendor_symlink`, `vendor_root_symlink` and `vendor_fifo` in
+/// leave in the job's writable `/work`: `vendor_symlink`, `vendor_root_symlink`, `vendor_fifo` and
+/// `vendor_dirs` (more empty directories than the seal's entry budget) in
 /// the vendoring output; `fifo` and `symlinked_dir` at the mutation witness.
 const FAKE_GATE: &str = r"#!/usr/bin/python3
 import json,os,pathlib,sys
@@ -504,6 +510,8 @@ if sys.argv[1:2]==['vendor']:
     crate=out/'crate-1.0.0';crate.mkdir(parents=True);(crate/'lib.rs').write_text('pub fn f() {}\n')
     if mode=='vendor_symlink':(crate/'escape').symlink_to('/etc')
     if mode=='vendor_fifo':os.mkfifo(crate/'pipe')
+    if mode=='vendor_dirs':
+        for i in range(100_001):(crate/str(i)).mkdir()
     sys.exit(0)
 if 'mutants' in sys.argv:
     assert 'CARGO_TARGET_DIR' not in os.environ,'mutation must not share a cargo target dir'
@@ -522,7 +530,8 @@ elif 'fuzz' in sys.argv:
 else:
     seen={'cwd':os.getcwd(),'x.rs':pathlib.Path('x.rs').read_text(),'env':dict(os.environ)}
     print('OBSERVED '+json.dumps(seen))
-    print('test result: ok. '+('0' if mode=='empty' else '1')+' passed; 0 failed; 0 ignored; 0 measured; 0 filtered out')
+    for passed in ([18446744073709551615]*2 if mode=='overflow' else [0 if mode=='empty' else 1]):
+        print('test result: ok. '+str(passed)+' passed; 0 failed; 0 ignored; 0 measured; 0 filtered out')
 ";
 #[test]
 fn empty_mutation_fuzz_or_test_runs_are_inconclusive_even_at_exit_zero() {
@@ -532,6 +541,8 @@ fn empty_mutation_fuzz_or_test_runs_are_inconclusive_even_at_exit_zero() {
         ("mutation", "survivor"),
         ("fuzz", "empty"),
         ("tests", "empty"),
+        // Two maximal candidate captions: an overflowing sum is unmeasured, not a panic or a wrap.
+        ("tests", "overflow"),
     ] {
         let f = Fixture::new();
         f.prepare();
@@ -546,6 +557,60 @@ fn empty_mutation_fuzz_or_test_runs_are_inconclusive_even_at_exit_zero() {
         let receipts: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
         assert_eq!(receipts[0]["outcome"], "inconclusive");
         assert_eq!(f.status().status.code(), Some(7));
+    }
+}
+
+#[test]
+fn a_mutation_base_scopes_mutation_to_a_sealed_diff_and_a_changed_diff_is_refused() {
+    for tamper in [false, true] {
+        let f = Fixture::new();
+        let head = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&f.repository)
+            .output()
+            .unwrap();
+        let head = String::from_utf8(head.stdout).unwrap().trim().to_owned();
+        let mut spec: serde_json::Value =
+            serde_json::from_slice(&fs::read(&f.request).unwrap()).unwrap();
+        spec["mutation_base"] = head.into();
+        fs::write(&f.request, serde_json::to_vec(&spec).unwrap()).unwrap();
+        f.commit("y.rs", "fn changed() {}\n");
+        f.prepare();
+        f.install_gate("valid");
+        let sealed = fs::read_to_string(f.run.join("mutation.diff")).unwrap();
+        assert!(
+            sealed.contains("+++ b/y.rs") && sealed.contains("+fn changed() {}"),
+            "{sealed}"
+        );
+        if tamper {
+            fs::write(f.run.join("mutation.diff"), "").unwrap();
+            let result = f.gate("mutation");
+            assert_eq!(result.status.code(), Some(4));
+            assert!(
+                String::from_utf8_lossy(&result.stderr)
+                    .contains("sealed mutation diff does not match the manifest"),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
+            continue;
+        }
+        let result = f.gate("mutation");
+        assert_eq!(
+            result.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let argv = f.runtime_argv("gate-mutation").concat();
+        assert!(
+            argv.windows(2)
+                .any(|w| w == ["--in-diff", "/work/mutation.diff"])
+        );
+        assert_eq!(
+            fs::read_to_string(f.run.join("jobs/gate-mutation/work/mutation.diff")).unwrap(),
+            sealed
+        );
     }
 }
 
@@ -581,6 +646,9 @@ fn mutation_jobs_own_a_build_cache_and_cannot_contaminate_normal_tests() {
     let normal = f.root.join("normal-target").display().to_string();
     let argv = f.runtime_argv("gate-mutation").concat();
     assert!(argv.iter().any(|a| a == "--network=none"));
+    // Without a mutation base the whole package is mutated, each mutant against the workspace suite.
+    assert!(!argv.iter().any(|a| a == "--in-diff"));
+    assert!(argv.windows(2).any(|w| w == ["--timeout", "300"]));
     assert!(
         argv.iter()
             .all(|a| !a.starts_with("--env=CARGO_TARGET_DIR") && !a.contains(&normal))
@@ -878,8 +946,57 @@ fn candidate_toolchain_configuration_is_refused_before_any_job_slot() {
 }
 
 #[test]
+fn sealed_paths_under_the_fuzz_artifact_mountpoint_are_refused_before_any_job_slot() {
+    for planted in ["fuzz/artifacts/council_report/x.rs", "fuzz/artifacts"] {
+        let f = Fixture::new();
+        f.commit(planted, "pub fn sealed() {}\n");
+        f.prepare();
+        f.install_gate("valid");
+        for gate in ["fuzz", "tests"] {
+            let result = f.gate(gate);
+            assert_eq!(result.status.code(), Some(4), "{planted}/{gate}");
+            assert!(
+                String::from_utf8_lossy(&result.stderr).contains(&format!(
+                    "snapshot contains {planted} under the fuzz artifact mountpoint"
+                )),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+        assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
+        assert!(!f.run.join("controller.lock").exists());
+    }
+}
+
+#[test]
+fn deleted_toolchain_configuration_selects_nothing_and_is_not_refused() {
+    let f = Fixture::new();
+    f.commit(
+        ".cargo/config.toml",
+        "[build]\nrustc-wrapper = \"/work/wrapper\"\n",
+    );
+    // Tracked but deleted in the workspace: inventoried, absent from the snapshot.
+    fs::remove_file(f.repository.join(".cargo/config.toml")).unwrap();
+    f.prepare();
+    f.install_gate("valid");
+    let result = f.gate("tests");
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
 fn vendoring_output_is_sealed_and_planted_links_or_fifos_are_never_mounted() {
-    for mode in ["vendor_symlink", "vendor_root_symlink", "vendor_fifo"] {
+    for mode in [
+        "vendor_symlink",
+        "vendor_root_symlink",
+        "vendor_fifo",
+        // Empty directories count against the entry budget, like files.
+        "vendor_dirs",
+    ] {
         let f = Fixture::new();
         f.prepare();
         f.install_gate(mode);
@@ -1010,6 +1127,25 @@ fn an_unresolvable_or_hanging_image_lookup_is_refused_before_any_job_slot() {
         assert!(start.elapsed() < Duration::from_secs(90), "{runtime}");
         assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
     }
+}
+
+#[test]
+fn a_control_command_descendant_is_killed_when_the_runtime_exits() {
+    let f = Fixture::new();
+    f.prepare();
+    f.install_gate("valid");
+    let start = Instant::now();
+    let result = f.gate_with("tests", "orphan_inspect");
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    // Without the group kill, the held pipe would stall the lookup until its 30 s deadline.
+    assert!(start.elapsed() < Duration::from_secs(25));
+    let pid = fs::read_to_string(f.bin.join("orphan.pid")).unwrap();
+    assert!(!Path::new(&format!("/proc/{}", pid.trim())).exists());
 }
 
 #[test]

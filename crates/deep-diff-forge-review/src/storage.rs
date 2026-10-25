@@ -170,6 +170,8 @@ impl Inventory {
     }
 }
 pub(crate) const SNAPSHOT_DIR: &str = "source";
+/// The candidate's changes since `mutation_base`, sealed at prepare for the diff-scoped mutation gate.
+pub(crate) const MUTATION_DIFF: &str = "mutation.diff";
 pub(crate) const INVENTORY_FILE: &str = "source-inventory.json";
 /// Relative to a mutation gate's job directory; written inside the sandbox, read after it exits.
 pub(crate) const MUTATION_WITNESS: &str = "work/mutation-results/mutants.out/outcomes.json";
@@ -278,8 +280,9 @@ pub(crate) struct TreeSeal {
     pub(crate) files: u64,
     pub(crate) bytes: u64,
 }
-/// Budget for a sealed tree; the measured DDF vendor tree is 9,008 files and 204 MB.
-const SEAL_FILES: u64 = 100_000;
+/// Budget for a sealed tree; the measured DDF vendor tree is 9,008 files and 204 MB. Directories
+/// count against the entry budget too, so an output of empty directories is bounded.
+const SEAL_ENTRIES: u64 = 100_000;
 const SEAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Walk `root` in sorted order, accepting only real directories and regular files within the budget,
 /// and digest names, kinds, executable bits and contents. With `copy`, also recreate the tree there
@@ -298,11 +301,20 @@ fn walk_tree(root: &Path, copy: Option<&Path>) -> Result<TreeSeal> {
         bytes: 0,
     };
     let mut framed = Vec::new();
+    let mut entries = 0_u64;
     let mut pending = vec![PathBuf::new()];
     while let Some(directory) = pending.pop() {
+        // Listed lazily up to the remaining budget, so a huge directory is refused, not collected.
+        let remaining = usize::try_from(SEAL_ENTRIES - entries).unwrap_or(usize::MAX);
         let mut names = fs::read_dir(root.join(&directory))?
+            .take(remaining.saturating_add(1))
             .map(|entry| entry.map(|e| e.file_name()))
             .collect::<std::io::Result<Vec<_>>>()?;
+        entries += names.len() as u64;
+        require(
+            entries <= SEAL_ENTRIES,
+            "sandbox output exceeds entry budget",
+        )?;
         names.sort_unstable();
         let mut subdirectories = Vec::new();
         for name in names {
@@ -318,10 +330,6 @@ fn walk_tree(root: &Path, copy: Option<&Path>) -> Result<TreeSeal> {
                 subdirectories.push(relative.clone());
             } else if meta.is_file() {
                 seal.files += 1;
-                require(
-                    seal.files <= SEAL_FILES,
-                    "sandbox output exceeds file budget",
-                )?;
                 let bytes = read_bytes(&path, SEAL_BYTES - seal.bytes)?;
                 seal.bytes += bytes.len() as u64;
                 let executable = meta.permissions().mode() & 0o111 != 0;
@@ -473,6 +481,26 @@ fn verify_analysis(analysis: &serde_json::Value, request: &Request) -> Result<St
     )?;
     Ok(review_id)
 }
+/// Tracked workspace files against `base`, if any: the lines the diff-scoped mutation gate mutates.
+/// Untracked files are not in it, so their mutants are not measured.
+fn mutation_diff(repository: &Path, base: Option<&str>) -> Result<Option<Vec<u8>>> {
+    base.map(|base| {
+        git_bytes(
+            repository,
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "--no-renames",
+                base,
+                "--",
+            ],
+            16 * 1024 * 1024,
+        )
+    })
+    .transpose()
+}
 /// Capture a validated analysis, decision and caller-selected context into a new private run.
 /// # Errors
 /// Refuses pre-existing output, incomplete analysis, invalid roster or oversized/changed inputs.
@@ -542,6 +570,8 @@ pub fn prepare(mut request: Request, directory: &Path) -> Result<Manifest> {
             text: (*text).into(),
         });
     }
+    // Captured inside the same unchanged-workspace window as everything else.
+    let mutation_diff = mutation_diff(&repository, request.mutation_base.as_deref())?;
     let tree_after = source_fingerprint(&repository)?;
     require(
         tree_before == tree_after,
@@ -554,6 +584,7 @@ pub fn prepare(mut request: Request, directory: &Path) -> Result<Manifest> {
         source_tree: tree_before,
         request,
         artifacts,
+        mutation_diff_sha256: mutation_diff.as_deref().map(sha256_hex),
     };
     manifest.run_id = manifest_digest(&manifest)?;
     make_dir(directory)?;
@@ -562,6 +593,9 @@ pub fn prepare(mut request: Request, directory: &Path) -> Result<Manifest> {
     make_dir(&directory.join("workspace"))?;
     write_json(&directory.join("manifest.json"), &manifest)?;
     write_json(&directory.join("report.schema.json"), &report_schema())?;
+    if let Some(diff) = &mutation_diff {
+        write_new(&directory.join(MUTATION_DIFF), diff)?;
+    }
     // Gates run on copies of this sealed snapshot, never on the mutable checkout.
     let snapshot = directory.join(SNAPSHOT_DIR);
     copy_tree(&repository, &snapshot, &inventory)?;
@@ -582,6 +616,10 @@ pub fn load_manifest(directory: &Path) -> Result<Manifest> {
         manifest.schema == "deep-diff-forge.council.v1"
             && manifest_digest(&manifest)? == manifest.run_id,
         "manifest seal mismatch",
+    )?;
+    require(
+        manifest.request.mutation_base.is_some() == manifest.mutation_diff_sha256.is_some(),
+        "mutation base and sealed mutation diff must appear together",
     )?;
     for artifact in &manifest.artifacts {
         require(

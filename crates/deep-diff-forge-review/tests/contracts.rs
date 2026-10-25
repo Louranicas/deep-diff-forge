@@ -22,6 +22,7 @@ fn manifest() -> Manifest {
             sha256: "digest".into(),
             text: "first\nsecond\n".into(),
         }],
+        mutation_diff_sha256: None,
     }
 }
 fn report(m: &Manifest, id: &str, round: Round) -> Report {
@@ -246,6 +247,34 @@ fn important_profile_requires_adversarial_lenses_and_real_fuzz_mutation_gates() 
     let gates = Gate::required(Profile::ImportantDecision);
     assert!(gates.contains(&Gate::Fuzz));
     assert!(gates.contains(&Gate::Mutation));
+}
+#[test]
+fn mutation_base_is_a_full_commit_id_never_a_revision_expression() {
+    let valid = manifest().request;
+    for base in ["0".repeat(40), "a".repeat(64)] {
+        let mut p = valid.clone();
+        p.mutation_base = Some(base);
+        assert!(validate_request(&p).is_ok());
+    }
+    for base in [
+        String::new(),
+        "HEAD".into(),
+        "0".repeat(39),
+        "0".repeat(41),
+        "A".repeat(40),
+        format!("--output={}", "0".repeat(31)),
+        format!("{}~1", "0".repeat(38)),
+    ] {
+        let mut p = valid.clone();
+        p.mutation_base = Some(base.clone());
+        assert!(validate_request(&p).is_err(), "{base}");
+    }
+    // Absent means the whole package, and is omitted from the sealed JSON so older run IDs hold.
+    assert!(
+        !serde_json::to_string(&valid)
+            .unwrap()
+            .contains("mutation_base")
+    );
 }
 #[test]
 fn execution_options_and_budget_values_are_admitted_not_silently_clamped() {

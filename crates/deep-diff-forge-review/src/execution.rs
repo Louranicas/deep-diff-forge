@@ -4,7 +4,7 @@
 //! Controller-owned subprocesses. No model-produced command text is executed.
 use crate::model::Qualification;
 use crate::sandbox::{self, Sandbox, Spec, WORK};
-use crate::storage::{INVENTORY_FILE, Inventory, MUTATION_WITNESS, SNAPSHOT_DIR};
+use crate::storage::{INVENTORY_FILE, Inventory, MUTATION_DIFF, MUTATION_WITNESS, SNAPSHOT_DIR};
 use crate::{
     Execution, Gate, Manifest, Outcome, Provider, Report, Result, ReviewFailure, Reviewer, Round,
     load_manifest, report_schema, require, source_fingerprint, storage, validate_report,
@@ -535,21 +535,46 @@ fn gate_argv(manifest: &Manifest, gate: Gate) -> Vec<Vec<String>> {
                 .collect();
         }
         Gate::Mutation => {
-            return vec![vec![
+            let mut argv = vec![
                 "cargo".into(),
                 "mutants".into(),
                 "--package".into(),
                 manifest.request.mutation_package.clone(),
                 "--test-workspace".into(),
                 "true".into(),
+                "--jobs".into(),
+                MUTANT_JOBS.to_string(),
                 "--timeout".into(),
-                "30".into(),
+                MUTANT_TIMEOUT_SECONDS.to_string(),
                 "--output".into(),
                 format!("{WORK}/mutation-results"),
-            ]];
+            ];
+            if manifest.mutation_diff_sha256.is_some() {
+                argv.extend(["--in-diff".into(), format!("{WORK}/{MUTATION_DIFF}")]);
+            }
+            return vec![argv];
         }
     };
     vec![one.into_iter().map(str::to_owned).collect()]
+}
+/// Per-mutant test timeout. cargo-mutants 27.1.0 times its baseline on the mutated package's own
+/// tests but runs every mutant against the workspace suite (71 s through the tests gate at
+/// `5b703b9`), so a timeout derived from the baseline, or the former fixed 30 s, times out every
+/// mutant; council r6's gate did exactly that.
+const MUTANT_TIMEOUT_SECONDS: u64 = 300;
+/// Parallel cargo-mutants workers; each has its own build directory under `/work/tmp`.
+const MUTANT_JOBS: u8 = 4;
+/// Read the sealed mutation diff and check it against the manifest, before any job slot exists.
+fn sealed_mutation_diff(directory: &Path, manifest: &Manifest) -> Result<Option<Vec<u8>>> {
+    let Some(expected) = &manifest.mutation_diff_sha256 else {
+        return Ok(None);
+    };
+    let bytes = storage::read_bytes(&directory.join(MUTATION_DIFF), 16 * 1024 * 1024)?;
+    require(
+        &sha256_hex(&bytes) == expected,
+        "sealed mutation diff does not match the manifest",
+    )?;
+    Ok(Some(bytes))
 }
 fn mutation_measured(value: &serde_json::Value) -> bool {
     let Some(rows) = value["outcomes"].as_array() else {
@@ -634,11 +659,13 @@ fn qualify_gate(
         }
         Gate::Tests => {
             let bytes = storage::read_bytes(&jobdir.join("stdout.log"), LOG_CAP)?;
+            // Captions are candidate output: a sum that overflows is unmeasured, never a panic or wrap.
             let count = String::from_utf8_lossy(&bytes)
                 .lines()
                 .filter_map(|line| line.strip_prefix("test result: ok. "))
                 .filter_map(|rest| rest.split_whitespace().next()?.parse::<u64>().ok())
-                .sum::<u64>();
+                .try_fold(0_u64, u64::checked_add)
+                .unwrap_or(0);
             storage::write_json(
                 &jobdir.join("test-measurement.json"),
                 &serde_json::json!({"passed_tests_observed":count}),
@@ -683,18 +710,34 @@ const TOOLCHAIN_CONFIG: [&str; 4] = [
     "rust-toolchain",
     "rust-toolchain.toml",
 ];
-fn refuse_toolchain_config(inventory: &Inventory) -> Result<()> {
-    let planted = inventory.paths().find(|path| {
-        TOOLCHAIN_CONFIG
+/// The fuzz gate's writable tmpfs mountpoint. A sealed file there would be fingerprinted on the host
+/// but hidden, and replaceable, inside the container, so the snapshot may hold nothing under it.
+const FUZZ_ARTIFACTS: &str = "fuzz/artifacts";
+/// Refuse, before any job slot exists, a snapshot that holds candidate toolchain configuration or
+/// anything under the fuzz artifact mountpoint. Inventoried-but-deleted paths are absent from the
+/// snapshot, so they select nothing and are not refused.
+fn refuse_snapshot_paths(inventory: &Inventory, snapshot: &Path) -> Result<()> {
+    for path in inventory.paths() {
+        let toolchain = TOOLCHAIN_CONFIG
             .iter()
-            .any(|name| path == name || path.ends_with(&format!("/{name}")))
-    });
-    match planted {
-        Some(path) => Err(ReviewFailure(format!(
-            "snapshot contains candidate toolchain configuration {path}; gates never run with candidate-selected Cargo config or toolchains"
-        ))),
-        None => Ok(()),
+            .any(|name| path == *name || path.ends_with(&format!("/{name}")));
+        let artifact = path == FUZZ_ARTIFACTS || path.starts_with(&format!("{FUZZ_ARTIFACTS}/"));
+        if !(toolchain || artifact)
+            || storage::untrusted_metadata(snapshot, Path::new(path))?.is_none()
+        {
+            continue;
+        }
+        return Err(ReviewFailure(if toolchain {
+            format!(
+                "snapshot contains candidate toolchain configuration {path}; gates never run with candidate-selected Cargo config or toolchains"
+            )
+        } else {
+            format!(
+                "snapshot contains {path} under the fuzz artifact mountpoint; the gate's tmpfs would hide sealed bytes"
+            )
+        }));
     }
+    Ok(())
 }
 
 /// Create a gate's slot: a read-only-mounted, verified copy of the sealed snapshot, writable scratch,
@@ -705,13 +748,11 @@ fn prepare_work(directory: &Path, jobdir: &Path, vendored: bool, fuzz: bool) -> 
         storage::read_json(&directory.join(INVENTORY_FILE), 4 * 1024 * 1024)?;
     let source = jobdir.join("src");
     storage::copy_tree(&directory.join(SNAPSHOT_DIR), &source, &inventory)?;
-    // The mountpoint for the fuzz artifact tmpfs; outside the inventory, so never fingerprinted.
+    // The mountpoint for the fuzz artifact tmpfs; admission refused any sealed path under it, so it
+    // is absent from the copy and never fingerprinted.
     let fuzz_dir = storage::untrusted_metadata(&source, Path::new("fuzz"))?;
-    if fuzz
-        && fuzz_dir.is_some_and(|meta| meta.is_dir())
-        && storage::untrusted_metadata(&source, Path::new("fuzz/artifacts"))?.is_none()
-    {
-        storage::make_dir(&source.join("fuzz/artifacts"))?;
+    if fuzz && fuzz_dir.is_some_and(|meta| meta.is_dir()) {
+        storage::make_dir(&source.join(FUZZ_ARTIFACTS))?;
     }
     let work = jobdir.join("work");
     storage::make_dir(&work)?;
@@ -836,7 +877,7 @@ fn stage_inputs(
                 )?;
             }
             Ok(
-                storage::untrusted_metadata(&source, Path::new("fuzz/artifacts"))?
+                storage::untrusted_metadata(&source, Path::new(FUZZ_ARTIFACTS))?
                     .is_some_and(|meta| meta.is_dir()),
             )
         }
@@ -864,13 +905,18 @@ pub fn run_gate(directory: &Path, gate: Gate) -> Result<Vec<Execution>> {
     let image_id = sandbox.image_id()?;
     let inventory: Inventory =
         storage::read_json(&directory.join(INVENTORY_FILE), 4 * 1024 * 1024)?;
-    refuse_toolchain_config(&inventory)?;
+    refuse_snapshot_paths(&inventory, &directory.join(SNAPSHOT_DIR))?;
     let _lock = admit(directory, &manifest)?;
     require(
         storage::fingerprint_tree(&directory.join(SNAPSHOT_DIR), &inventory)?
             == manifest.source_tree,
         "gate snapshot does not match the sealed source tree",
     )?;
+    let mutation_diff = if gate == Gate::Mutation {
+        sealed_mutation_diff(directory, &manifest)?
+    } else {
+        None
+    };
     let vendor = if gate == Gate::Antipatterns {
         None
     } else {
@@ -891,6 +937,9 @@ pub fn run_gate(directory: &Path, gate: Gate) -> Result<Vec<Execution>> {
         require_fresh(&manifest)?;
         let work = prepare_work(directory, &jobdir, vendor.is_some(), gate == Gate::Fuzz)?;
         let fuzz_mount = stage_inputs(&manifest, &jobdir, &work, gate, i)?;
+        if let Some(diff) = &mutation_diff {
+            storage::write_new(&work.join(MUTATION_DIFF), diff)?;
+        }
         let launch = GateLaunch {
             sandbox: &sandbox,
             image_id: &image_id,

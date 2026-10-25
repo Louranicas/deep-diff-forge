@@ -84,6 +84,10 @@ impl Sandbox {
         let start = Instant::now();
         loop {
             if let Some(status) = child.try_wait()? {
+                // A descendant may still hold the pipe; the group outlives its reaped leader.
+                if let Ok(group) = i32::try_from(child.id()) {
+                    let _ = killpg(Pid::from_raw(group), Signal::SIGKILL);
+                }
                 let remaining = CONTROL_DEADLINE.saturating_sub(start.elapsed());
                 return Ok(receiver
                     .recv_timeout(remaining)
