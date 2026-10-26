@@ -556,13 +556,42 @@ single canonical snake-case spelling (`added`, `modified`, `deleted`,
 | --- | --- |
 | 0 | Success. |
 | 2 | CLI usage / argument error. |
-| 3 | Input (stdin or file) read failure. |
-| 4 | Patch parse failure. |
+| 3 | I/O or encoding failure: reading input (stdin, a file, Git, the learning store), non-UTF-8 input, or writing output. |
+| 4 | Invalid input: a patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, or a refused Git acquisition. |
 | 6 | Daemon / interactive-terminal failure. |
 | 7 | Input contract refused. `--require-files`: the (well-formed) patch describes 0 files — stderr `refused: 0 files in input (--require-files)`. `--require-hunks`: the patch has 0 hunks or 0 added+removed lines (header-only, rename-only, context-only) — stderr `refused: 0 hunks in input (--require-hunks)`. Gates should pass both. |
+| 101 | Internal error (a panic). Report it as a bug. |
+
+The `council` subcommands use their own family ([review council](docs/REVIEW_COUNCIL.md)):
+
+| Council code | Meaning |
+| --- | --- |
+| 0 | The requested council operation completed under its contract; `status` exit 0 means ready for human review. |
+| 4 | Malformed input, stale admission, an existing artifact, or a protocol or I/O failure. |
+| 7 | HOLD: failed, missing or inconclusive evidence, or an import conflict. |
 
 Diagnostics never pollute stdout: on error, stdout stays empty and the message
 goes to stderr.
+
+### Machine contract (`ddf.result.v1`)
+
+Both tables are one registry in the binary, and a test fails if this README drifts from it.
+
+```bash
+deep-diff-forge envelope -- --stdin-patch --json < change.patch   # one ddf.result.v1 object
+deep-diff-forge schema result        # JSON Schema (2020-12) of the envelope
+deep-diff-forge schema exit-codes    # the registry: family, code, name, meaning
+deep-diff-forge explain 7 --family council
+```
+
+`envelope` runs the command as a child of the same binary, with stdin passed through. It reports:
+
+- `exit_code`, and `outcome`, the registry name for that code (`undocumented` for an unlisted code, `signal` if the command was killed);
+- `ok`, which is true only for exit 0 with nothing truncated;
+- `stdout`, parsed when it is exactly one JSON value (otherwise text, so `--jsonl` stays text);
+- `stderr`.
+
+The command's own output is unchanged, and `envelope` exits with the command's code. Captured stdout is capped at 16 MiB and stderr at 1 MiB; anything cut is listed in `truncated` and never parsed.
 
 ## The optional daemon
 

@@ -2,6 +2,7 @@
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-core--lib
 mod deploy;
+pub mod exit;
 mod release;
 mod seal;
 mod util;

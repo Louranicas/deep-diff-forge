@@ -124,8 +124,10 @@ Remaining, in order:
 
 1. **CLI contract, daemon parity, SDK and MCP**, as four slices, each gated like
    a council round:
-   - **A. CLI contract v1:** one `ddf.result.v1` envelope, uniform `--json`,
-     a documented exit-code table, `ddf schema` and `ddf explain`.
+   - **A. CLI contract v1 (implemented):** `envelope -- <command…>` gives every
+     command one `ddf.result.v1` envelope without changing its own output.
+     Also `schema`, `explain`, and one exit-code registry by family, guarded
+     against README drift.
    - **B. Daemon parity:** the planned JSON-RPC methods and a versioned
      protocol.
    - **C. SDK:** a semver-checked Rust facade crate, a thin Python client over
@@ -133,7 +135,7 @@ Remaining, in order:
    - **D. MCP server:** `ddf mcp` over stdio, read-only by default, with each
      write tool opt-in.
 
-   A comes first, then B and D together, then C. None of this is implemented.
+   A comes first, then B and D together, then C. A is implemented; B–D are not.
 2. **GitLab `main` divergence:** reconcile it before any GitLab push of `main`.
 3. **Ubuntu 26:** a measured move off the `ubuntu-24.04` pin, re-checking
    rootless Podman.

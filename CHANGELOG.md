@@ -63,6 +63,29 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - Determinism contract test: `--rank --json --require-files` is byte-identical
   across runs with an identical `input_sha256`.
 
+### Added (slice A: CLI contract v1)
+
+- `deep-diff-forge envelope -- <command…>` wraps any command's result in one
+  `ddf.result.v1` JSON object: exit code, registry outcome, stdout (parsed when it
+  is one JSON value), stderr, and any truncation. It runs the command as a child
+  of the same binary with stdin passed through, leaves the command's own output
+  unchanged, and exits with its code.
+- `deep-diff-forge schema [result|exit-codes]` prints the envelope's JSON Schema
+  (2020-12) or the exit-code registry. `deep-diff-forge explain <code> [--family
+  engine|council] [--json]` names one code.
+- One exit-code registry, by command family (`engine`, `council`), owned by
+  `deep_diff_forge_core::exit` so the daemon and SDK slices can share it. Every
+  exit site uses its constants, and a source-scan test forbids numeric exit
+  literals. The engine meanings now say what the codes are used for: 3 is any I/O
+  or encoding failure, 4 is any invalid input, and 101 is a panic (council sa1:
+  the old "patch parse" label misnamed receipt and analysis errors). The README
+  documents both tables, and a test fails if they drift from the registry.
+- `envelope` keeps the command's exit code when its own reader closes the pipe;
+  whitespace-only stdout stays text; the schema lists every emitted field as
+  required and enumerates `outcome`.
+- `--help` no longer says crates.io is blocked only by a missing token; it is on
+  hold until the codebase is production-ready.
+
 ### Changed
 
 - README exit-code table gains code 7 and the recommended gate command now
