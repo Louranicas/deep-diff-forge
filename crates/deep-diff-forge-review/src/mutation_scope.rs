@@ -1,7 +1,7 @@
 // Review council: The diff-scoped mutation gate's scope, built from raw base blobs and the sealed workspace bytes.
 // Design/status: docs/REVIEW_COUNCIL.md#gate-sandbox-r7
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--mutation_scope
-//! The lines a diff-scoped mutation gate mutates, and the skip attributes it refuses.
+//! The lines a diff-scoped mutation gate mutates.
 //!
 //! `git diff <base>` of a working tree honours index flags (assume-unchanged, skip-worktree), the
 //! candidate's own `.gitattributes` (`-diff`, `binary`) and skips untracked files, so a candidate
@@ -14,10 +14,8 @@ use crate::storage::{self, Inventory};
 use crate::{Result, ReviewFailure, require};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
-use std::iter::Peekable;
 use std::ops::Range;
 use std::path::Path;
-use std::str::Chars;
 
 /// Largest mutation diff captured at prepare and read back by the mutation gate. Written as a
 /// shift, so the only arithmetic mutant (a zero cap) refuses every diff-scoped run.
@@ -51,7 +49,9 @@ fn verified(repository: &Path, kind: &str, oid: &str) -> Result<Vec<u8>> {
     let bytes = storage::git_bytes(repository, &["cat-file", kind, oid], FILE_CAP)?;
     let hashed = storage::git_input(
         repository,
-        &["hash-object", "-t", kind, "--stdin"],
+        // `--literally` hashes without Git's format checks, so a legitimate historical object
+        // (zero-padded modes from old tools) is not refused; only the ID has to match.
+        &["hash-object", "-t", kind, "--stdin", "--literally"],
         &bytes,
         1024,
     )?;
@@ -100,11 +100,12 @@ fn base_blobs(repository: &Path, base: &str) -> Result<BTreeMap<String, String>>
             };
             match mode {
                 b"40000" => pending.push((format!("{prefix}{name}/"), hex(id))),
-                // A submodule's commit is not a file in this repository.
-                b"160000" => {}
-                _ => {
+                // Regular files only. A submodule's commit is not a file here, and a symlink's
+                // blob holds its target, which a regular file with those bytes is not (council r10).
+                b"100644" | b"100755" => {
                     blobs.insert(format!("{prefix}{name}"), hex(id));
                 }
+                _ => {}
             }
         }
         require(entries.is_empty(), "malformed base tree")?;
@@ -142,14 +143,10 @@ fn capture_from(
             meta.is_file(),
             "source inventory contains symlink or non-file",
         )?;
-        // Headers are line-oriented and a leading quote reads as Git's path quoting: a newline,
-        // another separator or a quote in a name could forge or misattribute a header or a hunk.
+        // `hash-object --stdin-paths` reads one path per line.
         require(
-            !path.starts_with('"')
-                && !path
-                    .chars()
-                    .any(|c| c.is_control() || (c.is_whitespace() && c != ' ')),
-            "mutation scope path contains a control character, separator or leading quote",
+            !path.chars().any(char::is_control),
+            "mutation scope path contains a control character",
         )?;
         present.push(path);
     }
@@ -191,6 +188,15 @@ fn capture_from(
         } else {
             Vec::new()
         };
+        // Headers are line-oriented, a space can end a name for some diff parsers (Git appends a
+        // tab after such names), and a leading quote reads as Git's path quoting: any of them
+        // could forge or misattribute a header or a hunk. Only a changed text file gets a header,
+        // so neither an unchanged `docs/Design Notes.md` (council r13) nor a changed binary
+        // `assets/My Logo.png` (council r15) blocks the diff scope.
+        require(
+            !path.starts_with('"') && !path.chars().any(char::is_whitespace),
+            "mutation scope path contains whitespace or a leading quote",
+        )?;
         unified(path, &old, &new, &mut spent, &mut diff)?;
         require(
             diff.len() as u64 <= MUTATION_DIFF_CAP,
@@ -298,17 +304,22 @@ fn regions(old: &[usize], new: &[usize], spent: &mut usize) -> Vec<Region> {
 }
 
 /// cargo-mutants selects mutants by new-side lines, so a region that only deletes lines selects
-/// none (measured with 27.1.0): removing a check would leave its function unmutated. Widen each such
-/// region over the unchanged lines on both sides, through any blank lines, to the nearest non-blank
-/// line before and after it (council r9: a neighbour that is only a blank line can sit outside the
-/// affected item). Widening stops at the neighbouring regions, and widened regions that then
-/// overlap are merged. Unchanged lines are equal on both sides, so the diff stays valid.
+/// none (measured with 27.1.0): removing a check would leave its function unmutated. The same holds
+/// for a region whose new lines are all blank, comment or attribute lines, such as a `cfg` gate
+/// rewritten from `any()` to `all()` (council r10). Widen each such region over the unchanged lines
+/// on both sides, through blank, comment and attribute lines, to the nearest other line before and
+/// after it (council r9: a neighbour that is only a blank line can sit outside the affected item).
+/// Widening stops at the neighbouring regions, and widened regions that then overlap are merged.
+/// Unchanged lines are equal on both sides, so the diff stays valid.
 fn widen_deletions(found: &[Region], new: &[&[u8]]) -> Vec<Region> {
-    let blank = |line: usize| new[line].iter().all(u8::is_ascii_whitespace);
+    // Lines that belong to no item's body: blank, comment and attribute lines (council r10: a
+    // comment between a deleted `cfg` and the item it disabled stopped the widening).
+    let code = code_lines(new);
+    let blank = |line: usize| !code[line];
     let mut widened: Vec<Region> = Vec::new();
     for (k, (old_range, new_range)) in found.iter().enumerate() {
         let (mut old_range, mut new_range) = (old_range.clone(), new_range.clone());
-        if new_range.is_empty() && !new.is_empty() {
+        if new_range.clone().all(blank) && !new.is_empty() {
             // The matched lines between this region and its neighbours.
             let floor = k.checked_sub(1).map_or(0, |previous| found[previous].1.end);
             let ceiling = found.get(k + 1).map_or(new.len(), |next| next.1.start);
@@ -324,7 +335,17 @@ fn widen_deletions(found: &[Region], new: &[&[u8]]) -> Vec<Region> {
             new_range = before..after;
         }
         match widened.last_mut() {
-            Some(last) if last.0.end > old_range.start => {
+            // Overlapping regions merge, and so do touching ones when the later is empty on a
+            // side: an empty side's header names the line it follows (`-3,0`), which collides
+            // with a hunk ending on that line, and cargo-mutants' diff parser rejects the pair
+            // (council r17's sealed diff: "hunks not in order or overlap"). Widening can carry a
+            // region right up to the next one; regions are separated by the same matched lines
+            // on both sides, so they touch on both sides at once.
+            Some(last)
+                if last.0.end > old_range.start
+                    || last.0.end == old_range.start
+                        && (old_range.is_empty() || new_range.is_empty()) =>
+            {
                 last.0.end = last.0.end.max(old_range.end);
                 last.1.end = last.1.end.max(new_range.end);
             }
@@ -332,6 +353,107 @@ fn widen_deletions(found: &[Region], new: &[&[u8]]) -> Vec<Region> {
         }
     }
     widened
+}
+
+/// Whether each line holds code outside comments and attributes, tracking nested block comments,
+/// attribute brackets and string literals across lines (council r12: the inside of a multi-line
+/// `/* … */` or `#[cfg(…)]` is not code; council r13: a `]` or `/*` inside a string, as in
+/// `#[doc = "]"]` or `"**/*.rs"`, changes neither). Plain, byte and raw (`r#"…"#`) strings are
+/// followed; a character literal holding `"` is not, and opens a string that can only make later
+/// lines non-code, which widens further.
+fn code_lines(new: &[&[u8]]) -> Vec<bool> {
+    let (mut comment, mut attribute) = (0_usize, 0_usize);
+    // Inside a string: `None` for plain strings, `Some(n)` for a raw string closed by `"` and n `#`.
+    let mut string: Option<Option<usize>> = None;
+    new.iter()
+        .map(|line| {
+            let mut code = false;
+            let mut skip = 0;
+            for (i, &byte) in line.iter().enumerate() {
+                if skip > 0 {
+                    skip -= 1;
+                    continue;
+                }
+                let pair = line.get(i..i + 2);
+                // Counted only at a raw string's opening or closing quote, so a run of `#` costs
+                // linear time, not quadratic (council r14).
+                let hashes = || line[i + 1..].iter().take_while(|b| **b == b'#').count();
+                if let Some(raw) = string {
+                    match raw {
+                        None if byte == b'\\' => skip = 1,
+                        None if byte == b'"' => string = None,
+                        Some(n) if byte == b'"' && hashes() >= n => {
+                            string = None;
+                            skip = n;
+                        }
+                        _ => {}
+                    }
+                } else if comment > 0 {
+                    if pair == Some(b"/*") {
+                        comment += 1;
+                        skip = 1;
+                    } else if pair == Some(b"*/") {
+                        comment -= 1;
+                        skip = 1;
+                    }
+                } else if pair == Some(b"//") {
+                    break;
+                } else if pair == Some(b"/*") {
+                    comment = 1;
+                    skip = 1;
+                } else if let Some(length) = char_literal(&line[i..]) {
+                    // A character literal, `'"'` included, is skipped whole (council r14: one
+                    // holding a quote opened a phantom string that could under-include).
+                    skip = length - 1;
+                    code |= attribute == 0;
+                } else if byte == b'"' {
+                    string = Some(None);
+                    code |= attribute == 0;
+                } else if byte == b'r' && line.get(i + 1 + hashes()) == Some(&b'"') {
+                    string = Some(Some(hashes()));
+                    skip = hashes() + 1;
+                    code |= attribute == 0;
+                } else if attribute > 0 {
+                    match byte {
+                        b'[' => attribute += 1,
+                        b']' => attribute -= 1,
+                        _ => {}
+                    }
+                } else if pair == Some(b"#[") {
+                    attribute = 1;
+                    skip = 1;
+                } else if !byte.is_ascii_whitespace() {
+                    code = true;
+                }
+            }
+            code
+        })
+        .collect()
+}
+
+/// The byte length of the character literal `rest` starts with (`'x'`, `'"'`, `'é'`, `'\''`,
+/// `'\u{1F600}'`), or `None` for a lifetime, a label or anything else. An escape's closing quote
+/// is looked for within the longest escape, so the search is bounded.
+fn char_literal(rest: &[u8]) -> Option<usize> {
+    if rest.first() != Some(&b'\'') {
+        return None;
+    }
+    if rest.get(1) == Some(&b'\\') {
+        return rest
+            .iter()
+            .enumerate()
+            .skip(3)
+            .take(10)
+            .find(|(_, b)| **b == b'\'')
+            .map(|(end, _)| end + 1);
+    }
+    let width = match rest.get(1)? {
+        lead if *lead < 0x80 => 1,
+        lead if *lead >= 0xF0 => 4,
+        lead if *lead >= 0xE0 => 3,
+        _ => 2,
+    };
+    (rest.get(1 + width) == Some(&b'\'')).then_some(width + 2)
 }
 
 /// Append `path`'s zero-context unified diff from `old` to `new`.
@@ -348,160 +470,6 @@ fn unified(path: &str, old: &[u8], new: &[u8], spent: &mut usize, out: &mut Vec<
         );
     }
     Ok(())
-}
-
-/// Rust `source` with comments, literals and whitespace removed, plus the contents of any string
-/// literal that directly follows `path =` (a `#[path]` module file, also under `cfg_attr`).
-struct Lexed {
-    code: String,
-    module_paths: Vec<String>,
-    /// A literal or comment was still open at the end: the lexer disagrees with rustc somewhere.
-    desync: bool,
-}
-
-/// Lex just enough of Rust to tell code from comments and literals. Whitespace, comments (nested
-/// too) and `r#` raw-identifier prefixes are dropped; string, byte-string, raw-string and character
-/// literals are skipped. A first-line shebang is skipped as rustc does (`#!` not followed by `[`).
-/// A raw string or raw identifier only starts at the start of a token, so `ar#"x"` (edition 2015
-/// and 2018) is an identifier, `#` and a string.
-fn lex(source: &str) -> Lexed {
-    let mut lexed = Lexed {
-        code: String::new(),
-        module_paths: Vec::new(),
-        desync: false,
-    };
-    let body = match source.strip_prefix("#!") {
-        Some(rest) if !rest.trim_start().starts_with('[') => {
-            rest.find('\n').map_or("", |newline| &rest[newline..])
-        }
-        _ => source,
-    };
-    let ident = |c: char| c.is_alphanumeric() || c == '_';
-    let (mut before_last, mut last) = (' ', ' ');
-    let mut chars = body.chars().peekable();
-    while let Some(c) = chars.next() {
-        // An `r` starts a raw literal or identifier only at a token's start (or after `b`/`c`).
-        let token_start = !ident(last) || (matches!(last, 'b' | 'c') && !ident(before_last));
-        match c {
-            '/' if chars.next_if_eq(&'/').is_some() => {
-                chars.by_ref().find(|c| *c == '\n');
-            }
-            '/' if chars.next_if_eq(&'*').is_some() => {
-                lexed.desync |= !skip_block_comment(&mut chars);
-            }
-            '"' => {
-                let (text, closed) = skip_string(&mut chars);
-                lexed.desync |= !closed;
-                if lexed.code.ends_with("path=") {
-                    lexed.module_paths.push(text);
-                }
-            }
-            'r' if token_start && raw_string_ahead(&chars) => {
-                let (text, closed) = skip_raw_string(&mut chars);
-                lexed.desync |= !closed;
-                if lexed.code.ends_with("path=") {
-                    lexed.module_paths.push(text);
-                }
-            }
-            // A raw identifier's `r#` prefix: `r#mutants` is the path segment `mutants`.
-            'r' if token_start && chars.next_if_eq(&'#').is_some() => {}
-            '\'' => skip_char_literal(&mut chars, &mut lexed.code),
-            c if c.is_whitespace() => {}
-            c => lexed.code.push(c),
-        }
-        (before_last, last) = (last, c);
-    }
-    lexed
-}
-
-/// True when Rust `source` names cargo-mutants' skip attribute path in code, in any spelling the
-/// compiler (and so cargo-mutants, through `syn`) treats as the same tokens. A mention in a comment
-/// or a literal is not a match. Fails closed twice over: an identifier merely ending in `mutants`
-/// before `::skip` matches, and so does any file the lexer could not follow to its end (a literal
-/// or comment still open) that mentions both words anywhere, since a lexer that disagrees with rustc
-/// may have swallowed a real attribute (council r9).
-pub(crate) fn has_skip_attribute(source: &str) -> bool {
-    let lexed = lex(source);
-    lexed.code.contains("mutants::skip")
-        || (lexed.desync && source.contains("mutants") && source.contains("skip"))
-}
-
-/// The file names that `source`'s `#[path = "…"]` attributes point at, so the skip scan can follow
-/// modules that do not end in `.rs`.
-pub(crate) fn module_paths(source: &str) -> Vec<String> {
-    lex(source).module_paths
-}
-
-/// After `/*`: through the matching `*/`, counting nested comments; false if it never closes.
-fn skip_block_comment(chars: &mut Peekable<Chars>) -> bool {
-    let (mut depth, mut previous) = (1_usize, ' ');
-    for c in chars.by_ref() {
-        match (previous, c) {
-            ('/', '*') => (depth, previous) = (depth + 1, ' '),
-            ('*', '/') => {
-                (depth, previous) = (depth - 1, ' ');
-                if depth == 0 {
-                    return true;
-                }
-            }
-            _ => previous = c,
-        }
-    }
-    false
-}
-/// After an opening `"`: through the closing one, honouring backslash escapes; returns the
-/// contents with escapes kept as written, and whether the string closed.
-fn skip_string(chars: &mut Peekable<Chars>) -> (String, bool) {
-    let mut text = String::new();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => {
-                text.push(c);
-                text.extend(chars.next());
-            }
-            '"' => return (text, true),
-            _ => text.push(c),
-        }
-    }
-    (text, false)
-}
-/// Whether the `r` just read opens a raw string: `#`s, then a quote.
-fn raw_string_ahead(chars: &Peekable<Chars>) -> bool {
-    let mut ahead = chars.clone();
-    while ahead.next_if_eq(&'#').is_some() {}
-    ahead.peek() == Some(&'"')
-}
-/// After the `r` of a raw string: its `#`s and quote, then through a quote followed by as many `#`s;
-/// returns the contents, and whether the string closed.
-fn skip_raw_string(chars: &mut Peekable<Chars>) -> (String, bool) {
-    let mut hashes = 0_usize;
-    while chars.next_if_eq(&'#').is_some() {
-        hashes += 1;
-    }
-    chars.next();
-    let mut text = String::new();
-    while let Some(c) = chars.next() {
-        let mut ahead = chars.clone();
-        if c == '"' && (0..hashes).all(|_| ahead.next() == Some('#')) {
-            *chars = ahead;
-            return (text, true);
-        }
-        text.push(c);
-    }
-    (text, false)
-}
-/// After a `'`: skip a character literal, or keep a lifetime or label's quote as code.
-fn skip_char_literal(chars: &mut Peekable<Chars>, code: &mut String) {
-    let mut ahead = chars.clone();
-    match (ahead.next(), ahead.next()) {
-        (Some('\\'), _) => {
-            chars.next();
-            chars.next();
-            chars.by_ref().find(|c| *c == '\'');
-        }
-        (Some(_), Some('\'')) => *chars = ahead,
-        _ => code.push('\''),
-    }
 }
 
 /// One hunk replacing `old.1` (starting after `old.0` lines) with `new.1` (after `new.0` lines).
@@ -625,11 +593,33 @@ mod tests {
         lines
     }
 
+    /// Each hunk on each side starts after the last line the previous hunk names, as a unified-diff
+    /// parser requires: an empty side's start is the line it follows (council r17: cargo-mutants
+    /// rejected a pure insertion that started on the previous hunk's last line).
+    fn assert_hunks_ordered(diff: &[u8]) {
+        let mut last = [None::<usize>; 2];
+        for header in diff
+            .split_inclusive(|b| *b == b'\n')
+            .filter(|l| l.starts_with(b"@@ "))
+        {
+            let header = std::str::from_utf8(header).unwrap();
+            for (side, field) in header.split(' ').skip(1).take(2).enumerate() {
+                let (start, len) = field[1..].split_once(',').unwrap();
+                let (start, len): (usize, usize) = (start.parse().unwrap(), len.parse().unwrap());
+                if let Some(end) = last[side] {
+                    assert!(start > end, "{}", String::from_utf8_lossy(diff));
+                }
+                last[side] = Some(if len == 0 { start } else { start + len - 1 });
+            }
+        }
+    }
+
     /// The diff is valid, its minimal regions are exactly the lines outside one longest common
     /// subsequence, and the output marks those plus one neighbouring line per pure deletion.
     fn check(old: &[u8], new: &[u8]) {
         let diff = diff_of(old, new, &mut 0);
         assert_eq!(apply(&diff, old), new, "{old:?} -> {new:?}");
+        assert_hunks_ordered(&diff);
         let (o, n) = (lines(old).unwrap(), lines(new).unwrap());
         let mut ids = HashMap::new();
         let (oi, ni) = (intern(&mut ids, &o), intern(&mut ids, &n));
@@ -769,6 +759,18 @@ mod tests {
                 "a\nb\n\nc\n",
                 "@@ -1,3 +1,2 @@\n-a\n-X\n-b\n+a\n+b\n",
             ),
+            // A rewritten gate is widened like a deletion (council r10).
+            (
+                "fn a() {}\n#[cfg(any())]\nfn f() {}\n",
+                "fn a() {}\n#[cfg(all())]\nfn f() {}\n",
+                "@@ -1,3 +1,3 @@\n-fn a() {}\n-#[cfg(any())]\n-fn f() {}\n+fn a() {}\n+#[cfg(all())]\n+fn f() {}\n",
+            ),
+            // Through comment and attribute lines too (council r10).
+            (
+                "fn a() {}\n#[cfg(any())]\n// note\nfn f() {}\n",
+                "fn a() {}\n// note\nfn f() {}\n",
+                "@@ -1,4 +1,3 @@\n-fn a() {}\n-#[cfg(any())]\n-// note\n-fn f() {}\n+fn a() {}\n+// note\n+fn f() {}\n",
+            ),
             // Through blank lines to the nearest non-blank one on each side (council r9: deleting
             // a `cfg` that disabled the next item must mark that item, not just the blank line).
             (
@@ -848,17 +850,127 @@ mod tests {
     }
 
     #[test]
-    fn path_attributes_name_their_module_files() {
+    fn code_lines_skip_comments_and_attributes_across_lines() {
+        let source: Vec<&[u8]> = [
+            &b"#[cfg(any("[..],
+            b"    test"[..].as_ref(),
+            b"))]",
+            b"/* outer /* nested */",
+            b"   still a comment */",
+            b"// line comment",
+            b"   ",
+            b"#[a[b]]",
+            b"#[doc = \"]\"]",
+            b"#[doc = r#\"a\"]\"#]",
+            b"#[doc = \"multi",
+            b"line ] string\"]",
+            b"let g = \"**/*.rs\";",
+            b"let q = \"\\\"\"; // escaped quote",
+            b"\"only a string\"",
+            b"r\"raw only\"",
+            b"#[doc = r#\"#x\"#]",
+            b"pub fn after() {}",
+            b"const Q: char = '\"';",
+            b"#[doc = \"]\"]",
+            b"fn l<'a>(x: &'a str) -> char { '\\'' }",
+            b"let e = '\\u{e9}';",
+            b"#[doc = \"[x]\"] pub fn f() {}",
+            b"pub fn g() {} /* trailing",
+            b"*/ let x = 1;",
+        ]
+        .into_iter()
+        .collect();
         assert_eq!(
-            module_paths(
-                "#[path = \"impl.txt\"] mod a;\n#[cfg_attr(test, path = r\"t/b.inc\")] mod b;\nlet path = 1; let s = \"x\";"
+            code_lines(&source),
+            [
+                false, false, false, false, false, false, false, false, false, false, false, false,
+                true, true, true, true, false, true, true, false, true, true, true, true, true
+            ]
+        );
+    }
+
+    #[test]
+    fn char_literals_and_lifetimes_are_told_apart() {
+        for (rest, length) in [
+            (&b"'x'"[..], Some(3)),
+            (b"'\"' rest", Some(3)),
+            ("'é'".as_bytes(), Some(4)),
+            ("'😀'".as_bytes(), Some(6)),
+            ("'中'".as_bytes(), Some(5)),
+            (b"'\\''", Some(4)),
+            (b"'\\u{1F600}'", Some(11)),
+            (b"'a, b", None),
+            (b"'static", None),
+            (b"x'", None),
+            (b"'\\x", None),
+            // A stray continuation byte is not a one-byte character.
+            (b"'\x80'", None),
+        ] {
+            assert_eq!(
+                char_literal(rest),
+                length,
+                "{:?}",
+                String::from_utf8_lossy(rest)
+            );
+        }
+        // A run of `#` is scanned once per byte, not once per position (council r14), in code and
+        // inside a raw string (council r15: the former test never reached that path). Eager
+        // counting would take about 2^39 comparisons here and time out rather than pass.
+        let run = vec![b'#'; 1 << 20];
+        let mut raw = b"let s = r#\"".to_vec();
+        raw.extend_from_slice(&run);
+        raw.extend_from_slice(b"\"#;");
+        assert_eq!(
+            code_lines(&[&run[..], &raw[..], b"/* after */"]),
+            [true, true, false]
+        );
+        // The skip ends exactly at the closing quote, so a comment right after it still opens; a
+        // literal alone is code, and one inside an attribute is not.
+        let source: [&[u8]; 5] = [
+            b"let a = 'x'/*",
+            b"inner",
+            b"*/ let b = 1;",
+            b"'x'",
+            b"#[doc = 'x']",
+        ];
+        assert_eq!(code_lines(&source), [true, false, true, true, false]);
+    }
+
+    #[test]
+    fn widened_regions_that_touch_the_next_one_become_one_hunk() {
+        // The deleted `cfg` widens down to `b`, and the insertion after `b` then starts exactly
+        // where the widened region ends. Two such hunks are rejected by cargo-mutants' parser
+        // ("hunks not in order or overlap"; measured on council r17's sealed diff).
+        let diff = diff_of(b"a\n#[cfg(x)]\nb\nc\n", b"a\nb\nNEW\nc\n", &mut 0);
+        assert_eq!(hunks(&diff), 1, "{}", String::from_utf8_lossy(&diff));
+        assert_hunks_ordered(&diff);
+        assert_eq!(apply(&diff, b"a\n#[cfg(x)]\nb\nc\n"), b"a\nb\nNEW\nc\n");
+    }
+
+    #[test]
+    fn deletion_widening_passes_multi_line_comments_and_attributes() {
+        for (old, new) in [
+            (
+                "fn a() -> u32 { let _ = '\"'; 1 }\n#[cfg(any())]\n#[doc = \"]\"]\nfn f() {}\n",
+                "fn a() -> u32 { let _ = '\"'; 1 }\n#[doc = \"]\"]\nfn f() {}\n",
             ),
-            ["impl.txt", "t/b.inc"]
-        );
-        assert_eq!(
-            module_paths("// #[path = \"c.txt\"]\nmod c;"),
-            Vec::<String>::new()
-        );
+            (
+                "fn a() {}\n#[cfg(any())]\n#[doc = \"]\"]\nfn f() {}\n",
+                "fn a() {}\n#[doc = \"]\"]\nfn f() {}\n",
+            ),
+            (
+                "fn a() {}\n#[cfg(any())]\n/*\nexplanation\n*/\nfn f() {}\n",
+                "fn a() {}\n/*\nexplanation\n*/\nfn f() {}\n",
+            ),
+            (
+                "fn a() {}\n#[cfg(any())]\n#[cfg_attr(\n    test,\n    allow(dead_code)\n)]\nfn f() {}\n",
+                "fn a() {}\n#[cfg_attr(\n    test,\n    allow(dead_code)\n)]\nfn f() {}\n",
+            ),
+        ] {
+            let marked = marked(&diff_of(old.as_bytes(), new.as_bytes(), &mut 0));
+            let last = new.lines().count() - 1;
+            assert!(marked.contains(&last), "{new:?}: {marked:?}");
+        }
     }
 
     #[test]
@@ -870,83 +982,5 @@ mod tests {
         assert!(lines(&vec![b'\n'; LINE_CAP]).is_err());
         let mut diff = Vec::new();
         assert!(unified("x.rs", b"", &vec![b'\n'; LINE_CAP], &mut 0, &mut diff).is_err());
-    }
-
-    #[test]
-    fn skip_attributes_are_found_in_every_token_equivalent_spelling() {
-        for source in [
-            "#[mutants::skip]\nfn f() {}",
-            "#[mutants :: skip] fn f() {}",
-            "#[mutants\t::\n skip] fn f() {}",
-            "#[mutants/**/::/* x */skip] fn f() {}",
-            "#[mutants // c\n::skip] fn f() {}",
-            "#[cfg_attr(test, mutants ::skip)] fn f() {}",
-            "#[::mutants::skip] fn f() {}",
-            "#[r#mutants::r#skip] fn f() {}",
-            "// a comment\n#[mutants::skip] fn f() {}",
-            "/* a comment */ #[mutants::skip] fn f() {}",
-            "/**/#[mutants::skip] fn f() {}",
-            "/* a /* nested */ comment */ #[mutants::skip] fn f() {}",
-            "let q = '\"'; #[mutants::skip] fn f() {}",
-            "let q = '\\''; #[mutants::skip] fn f() {}",
-            "let q = '\\u{22}'; #[mutants::skip] fn f() {}",
-            "let s = \"a \\\" b\"; #[mutants::skip] fn f() {}",
-            "let s = r#\"a \"b\" c\"#; #[mutants::skip] fn f() {}",
-            "fn f<'a>(x: &'a str) {} #[mutants::skip] fn g() {}",
-            "let b = b'\"'; #[mutants::skip] fn f() {}",
-            // A division is not a comment.
-            "let x = 4 / 2; #[mutants::skip] fn f() {}",
-            // A shebang line is not code, even with an unmatched quote in it.
-            "#!/bin/sh \"\n#[mutants::skip]\npub fn f() {}",
-            "#!/usr/bin/env r#\"\n#[mutants::skip]\npub fn f() {}",
-            // Edition 2015/2018: `ar#"x"` is an identifier, `#` and a string, not a raw string.
-            "foo!(ar#\"x\"); #[mutants::skip] fn f() {}",
-            // The same with every quote balanced, so a mis-lex cannot fall back on desync.
-            "foo!(ar#\"x\"); #[mutants::skip] fn f() {} // \"#",
-            "#!/bin/sh \"\n#[mutants::skip]\nfn f() {} // \"",
-            // `#![` opens an inner attribute, not a shebang.
-            "#![mutants::skip]\nfn f() {}",
-            // A literal or comment left open swallows the rest: fail closed when both words appear.
-            "let s = \"unterminated;\n#[mutants::skip] fn f() {}",
-            "/* unterminated\n#[mutants::skip] fn f() {}",
-            "let s = r#\"unterminated\n#[mutants::skip] fn f() {}",
-            "let s = r\"x\"#; #[mutants :: skip] fn f() {}",
-        ] {
-            assert!(has_skip_attribute(source), "{source}");
-        }
-    }
-
-    #[test]
-    fn mentions_in_comments_and_literals_are_not_skip_attributes() {
-        for source in [
-            "// #[mutants::skip]\nfn f() {}",
-            "//! mutants::skip\nfn f() {}",
-            "/* #[mutants::skip] */ fn f() {}",
-            "/* a /* nested */ #[mutants::skip] */ fn f() {}",
-            "let s = \"#[mutants::skip]\";",
-            "let s = \"a \\\" #[mutants::skip]\";",
-            "let s = r\"#[mutants::skip]\";",
-            "let s = r#\"a \"quoted\" #[mutants::skip]\"#;",
-            "let s = br##\"x\"# #[mutants::skip]\"##;",
-            "let s = b\"#[mutants::skip]\";",
-            "fn f<'a>(x: &'a str) -> &'a str { \"mutants::skip\" }",
-            "let c = 'm'; let s = \"mutants::skip\";",
-            "#[doc = \"mutants::skip\"] fn f() {}",
-            // A quote inside a raw string only closes it when followed by its `#`s.
-            "let s = r#\"a\"b #[mutants::skip]\"#;",
-            // Escaped character literals, including multi-character escapes before a quote literal.
-            "let q = '\\\"'; let s = \"mutants::skip\";",
-            "let a = ['\\u{22}','\"']; let s = \"mutants::skip\";",
-            // `#![` is an inner attribute, not a shebang: the string after it is still a literal.
-            "#![doc = \"mutants::skip\"]\nfn f() {}",
-            // Open at the end but never mentioning skip: no refusal.
-            "let s = \"unterminated mutants",
-            "/* unterminated skip",
-        ] {
-            assert!(!has_skip_attribute(source), "{source}");
-        }
-        // This module's own source names the attribute only inside literals and comments.
-        assert!(!has_skip_attribute(include_str!("mutation_scope.rs")));
-        assert!(!has_skip_attribute(include_str!("execution.rs")));
     }
 }

@@ -155,18 +155,20 @@ pub(crate) fn git_input(
         .env("GIT_NO_LAZY_FETCH", "1")
         .args(args)
         .current_dir(repository)
-        .stdin(Stdio::piped())
+        .stdin(if input.is_empty() {
+            Stdio::null()
+        } else {
+            Stdio::piped()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| ReviewFailure("missing Git input stream".into()))?;
-    let input = input.to_vec();
-    // Dropping the handle at the end of the thread closes Git's input.
-    let writer = std::thread::spawn(move || {
-        let _ = stdin.write_all(&input);
+    // Only a command given input gets a writer thread; dropping its handle closes Git's input.
+    let writer = child.stdin.take().map(|mut stdin| {
+        let input = input.to_vec();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        })
     });
     let mut bytes = Vec::new();
     let output = child
@@ -182,7 +184,9 @@ pub(crate) fn git_input(
         ));
     }
     require(child.wait()?.success(), "Git acquisition command failed")?;
-    let _ = writer.join();
+    if let Some(writer) = writer {
+        let _ = writer.join();
+    }
     Ok(bytes)
 }
 /// The fingerprinted source file set: Git HEAD plus tracked and non-ignored untracked paths.
