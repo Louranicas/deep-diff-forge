@@ -59,6 +59,38 @@ The remaining gaps below stay open pending the heavy-dependency waves
 (tree-sitter/TUI/async) and outward release acts (crates.io / GitHub Releases),
 which are deliberately gated.
 
+## Resolution Status (2026-10-26)
+
+The "Current State" and per-gap sections below are the original L0 analysis,
+kept as history. Since the L3 update:
+
+- **CI gap (§4)** — RESOLVED and green: `main` passes all five CI jobs at run
+  40274253094 after the red-CI fixes (pinned toolchains, a reproducible SBOM,
+  an installed `cargo-deny`). See
+  [`EVIDENCE.md`](../EVIDENCE.md#review-council-and-ci-2026-10-26).
+- **Gate automation gap (§2)** — the review council adds eight evidence gates
+  that run only in a rootless Podman sandbox, with a diff-scoped mutation gate
+  and an exemption oracle ([review council](REVIEW_COUNCIL.md#gate-sandbox)).
+  The sandbox's planted-breach suite runs in CI.
+- **Source of truth gap (§1)** — the council stack reaches `main` through
+  staged, reviewed merges (PRs #3, #4 and #5 merged), under branch protection.
+- **Supply-chain gap (§6)** — `cargo audit` and `cargo deny` both run in CI;
+  the committed SBOM is reproducible (content-addressed namespace, `created`
+  from the last `Cargo.lock` commit).
+
+Still open:
+
+- **Packaging gap (§7)** and crates.io: publication is on hold until the
+  codebase is production-ready.
+- **Machine consumer gap** — the CLI contract, daemon parity, SDK and MCP
+  slices A–D ([roadmap](ROADMAP.md#status-2026-10-26)) are planned, not
+  implemented.
+- **Network and mirror gap** — GitLab `main` has diverged from GitHub `main`
+  and must be reconciled before it is pushed.
+- **CI platform drift** — Node 20 actions are deprecated, and `ubuntu-latest`
+  moves to Ubuntu 26; the rootless-Podman CI step is measured on Ubuntu 24.04
+  only.
+
 ## Executive Gaps
 
 | Priority | Gap | Impact | Recommendation |
@@ -153,7 +185,9 @@ Recommendation:
 
 ### 4. CI Gap
 
-No GitHub Actions workflow exists yet.
+> **Status 2026-10-26: resolved.** `.github/workflows/ci.yml` runs five jobs (review-controller mutation and fuzz evidence with real Podman, supply chain, gitleaks, MSRV 1.88, deploy gate-feature), and `main` is green. The analysis below is the original gap record, kept as history.
+
+No GitHub Actions workflow exists yet (as of the original analysis).
 
 Risk:
 

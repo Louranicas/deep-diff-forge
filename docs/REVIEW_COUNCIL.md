@@ -729,6 +729,7 @@ Every gate job runs `$DDF_COUNCIL_PODMAN run` (the default runtime is `podman`) 
 | `--read-only` | The image root filesystem cannot be modified, so toolchains cannot be altered between or during jobs. Podman's default `--read-only-tmpfs` still mounts tmpfs on `/tmp`, `/var/tmp`, `/run` and `/dev/shm`; those are per-container and discarded |
 | `--cap-drop=all`, `--security-opt=no-new-privileges` | No capabilities, and no privilege gain through setuid binaries |
 | `--userns=keep-id` | Podman "creates a user namespace where the current user's UID:GID are mapped to the same values in the container", so `/work` files stay owned by the operator and nothing runs as container root |
+| `--user=<uid>:<gid>` | The controller's own uid and gid, read from `/proc/self`. Without it the job runs as the image's `USER 1000`, which cannot read the controller's private source copy when the operator's uid differs (measured on a GitHub runner, uid 1001: "could not find `Cargo.toml` in `/src`"). Added on stage A (`e075e00`) |
 | `--init` | An init "forwards signals and reaps processes", so test and fuzz children are reaped and signalled |
 | `--pids-limit=8192`, `--memory=32g`, `--memory-swap=32g`, `--cpus=<host CPUs − 1>` | Bound fork and memory amplification, with no swap, and leave one CPU to the supervising controller. This is not a disk quota |
 | `--log-driver=none` | Measured on this host on 2026-10-25, with the Podman client's stdout/stderr redirected to files. `passthrough` produced an empty transcript at exit 0, while `none`, `k8s-file` and the default all delivered both streams. `none` was chosen so candidate output is not also duplicated into container logs |
@@ -807,7 +808,7 @@ Only `crates-io` is replaced. A candidate with git or alternative-registry depen
 - **Unmeasured in this document:**
   - The real-Podman FIFO witness probe (see residual risks).
   - The mutation gate on this repository's own `deep-diff-forge-review` package in the new sandbox. Mutation was measured on the probe crate and on a sharded `deep-diff-forge-core` run only.
-  - The CI step that builds the image and runs the planted-breach test on GitHub-hosted runners.
+  - The CI step that builds the image and runs the planted-breach test on GitHub-hosted runners. *Superseded 2026-10-26: measured passing on `main` at run 40274253094; see [`EVIDENCE.md`](../EVIDENCE.md#review-council-and-ci-2026-10-26).*
   - Container or kernel escape attempts beyond the planted probes, and forging parsed tool output (see residual risks).
 
   For test results, see the vault verification receipt.

@@ -475,3 +475,104 @@ This document is linked into the Codex Pi Harness v5 plan.
 - Status: plan/gate only; build not armed.
 
 <!-- CODEX_PI_HARNESS_S1008820_BACKLINK_END -->
+
+<a id="review-council-and-ci-2026-10-26"></a>
+
+## Review council and CI (2026-10-26)
+
+Measured by the operator unless labelled otherwise. Model reports are inputs to
+triage, not evidence. Design and per-round history:
+[`docs/REVIEW_COUNCIL.md`](docs/REVIEW_COUNCIL.md).
+
+### main CI
+
+- **Green at run [40274253094](https://github.com/Louranicas/deep-diff-forge/actions/runs/40274253094)**
+  `[measured]`, on the stage B merge (`b50b3f0`): secret scan (9 s), declared
+  Rust 1.88 compatibility (30 s), deploy gate-feature (2 m 0 s), supply chain
+  audit (5 m 25 s), and review controller mutation and fuzz evidence
+  (32 m 7 s). This is the first green `main` since 2026-06.
+- The evidence job builds the gate image on the GitHub-hosted `ubuntu-latest`
+  runner and runs the **real-Podman planted-breach suite** there `[measured]`.
+  Getting there took three fixes, each found in a hosted run's logs:
+  `DDF_COUNCIL_PODMAN` unset; the sandbox running as the image's uid 1000
+  instead of the runner's 1001 (`e075e00`); and a probe-verdict parsing race
+  (run 40268250417, fixed in `110c2ad`).
+- Run annotations `[measured]` warn that Node 20 actions are deprecated
+  (`actions/checkout` is forced onto Node 24) and that `ubuntu-latest` migrates
+  to Ubuntu 26 from 2026-10-19. Neither fails the run; both are open.
+
+### Council runs r12–r17
+
+Each run reviewed a pinned worktree with gate image `:20261026a` (r12–r16),
+`:20261026b` (r17) or `:20261026c` (`8f4ea620`, r18). Source: the vault triage
+notes `Reviews/Council r12–r17 Triage 2026-10-26`.
+
+| Run | ID | Reviewed | Reports | Gates | Mutation | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| r12 | `8e3b0abb` | `bec1a49..049955a` | 5/6 independent | 8/8 | passed | `architecture-claude` rejected for a fabricated citation (lines 0–0); challenge round not started. First real oracle run: 16/16 mutated functions in production spans, 7 hidden functions all tests |
+| r13 | `5fc1d260` | `bec1a49..c0c0d6a` | 12/12 | 8/8 | 82: 81 caught, 1 unviable, 0 missed | 1,175 tests; fuzz about 10 M runs; oracle: 20 hidden functions, MIR unchanged, control moved |
+| r14 | `278bbc34` | `c0c0d6a..4ccaf10` | 12/12 | 8/8 | 76/76 caught | 1,177 tests; oracle v3: 20 hidden functions, 5 builds, reproducible |
+| r15 | `43066928` | `4ccaf10..1ff04ff` | 12/12 | 8/8 | 76/76 caught | First mutation job with `--emit=link,mir`: 15 m 41 s against 13 m 49 s in r14 for the same 76 mutants |
+| r16 | `2a569cea` | `1ff04ff..9d38f43` | 12/12 | 8/8 | 8/8 caught | Oracle v5: 1 hidden function, 17 builds, all five configurations built |
+| r17 | `8a35a3d1` | `1ff04ff..a2b362e` | 12/12 | 7/8 | refused before any job | The oracle could not list the scope: cargo-mutants rejected the sealed diff ("hunks not in order or overlap"), exposing the touching-hunks defect latent since r10 |
+
+| r18 | `f2baaa43` | `a2b362e..e45aad0` | 11/12 | 7/8 | refused before its job | The oracle **falsely refused** DDF's own `#[cfg(test)]` code: rustc's incremental reuse after an edit-and-restore duplicated allocations in unchanged MIR (measured). The Codex falsifier challenge was refused by the provider's cybersecurity safeguard |
+| r19 | `4946f232` | `e45aad0..d3498a1` | 12/12 | 8/8 | 12/12 caught | Oracle v8: 2 hidden functions passed in 10 builds |
+| r20 | `0fd3cac8` | `d3498a1..36d5e7c` | 12/12 | 8/8 | 7/7 caught | Consensus: the v9 dep-info check failed open (measured: every build script skipped) |
+| r21 | `b3aa0f3c` | `36d5e7c..1f9dbc0` | 12/12 | 7/7 evidence | no mutants (no Rust in scope changed: unmeasured, not passed) | No HIGH findings; consensus MEDIUMs fixed in r22 |
+
+Every finding the councils reached consensus on was fixed on the following
+round's branch and re-reviewed through r21; r22's MEDIUM fixes merged under
+the oracle's stop rule (see `docs/REVIEW_COUNCIL.md`, r21–r22).
+
+### Exemption oracle (v7, `e45aad0`)
+
+- **Strict exactness** `[measured]`: a bare top-level `#[test]`, a
+  feature-conditional `use m::test` and `#[cfg(any(test))]` are refused with
+  0 builds; a genuine `#[cfg(test)]` test passes.
+- **Attack catalogue** `[measured]`: every route is refused; all but the
+  build-script `cfg(test)` route are refused with 0 builds, and that one is
+  caught by the build check.
+- **DDF's own review package** `[measured]`: 38 hidden functions, all under
+  `#[cfg(test)]`, pass in 10 builds and 100 s, with controls moving in both the
+  gate and release configurations.
+- **Mutation rehearsal** `[measured]`: 27/27 caught.
+- **Real Podman** on `:20261026c` (`8f4ea620`) `[measured]`: the planted-breach
+  suite passes. The suite fails unless each of its 12 probes reports a refusal
+  exactly once.
+- **Residual** `[inferred]`: a build script or proc macro that keys
+  `cfg(test)` or its output to a configuration other than gate and release, or
+  that detects the oracle. Path-qualified test attributes (`#[tokio::test]`),
+  bare `#[test]` outside `#[cfg(test)]`, and `unsafe fn` in scope are refused
+  by design.
+
+### Exemption oracle (v11, `e658a0c`)
+
+- **DDF's own review package** `[measured]`: 40 hidden functions, all under
+  `#[cfg(test)]`, pass in 12 builds and 127 s in the gate image. Every non-test
+  unit, including every registry build script, has a dep-info rule naming its
+  own output, with all inputs present and within its allow-list.
+- **Incremental history** `[measured]`: with incremental reuse, a rebuild after
+  the control's edit-and-restore differed from the first build; without it,
+  equal. v8 onwards removes incremental state before each build and treats drift
+  as inconclusive.
+- **Real Podman** `[measured]`:
+  - a build script's `cfg(test)` is refused from cargo's own report in 2 builds;
+  - a binary `include!`ing a `#[cfg(test)]` module file is refused by the MIR
+    comparison;
+  - the same through `/src` was not refused by v8 and is refused by v9 onwards
+    from dep-info.
+- **Stop rule** `[inferred]`: run-time behaviour of build scripts and proc
+  macros (reading, copying, symlinks, generating code, detecting the job) is
+  one residual class. For path packages it is in the reviewed diff; for
+  dependencies, the supply-chain gate governs it.
+
+### Staged merges
+
+`release/stage-a` merged as `88e1cc0` (PR #3) and `release/stage-b` as
+`b50b3f0` (PR #4) and `release/stage-c` as `39005c5` (PR #5), all as merge
+commits, each after all five required checks passed. Since 2026-10-26, `main` is
+protected by ruleset 25868121: pull requests only, every required check, an
+up-to-date branch, no force push, and no bypass.
+Nothing is tagged or published; crates.io publication is on hold until the
+codebase is production-ready.
