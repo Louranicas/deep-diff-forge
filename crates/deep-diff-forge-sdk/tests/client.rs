@@ -45,6 +45,12 @@ fn the_client_and_the_facade_agree_with_a_live_daemon() {
         matches!(unknown, Error::Rpc { code: -32601, .. }),
         "{unknown}"
     );
+    // The daemon answers an invalid request with id null; the client still reports its error.
+    let invalid = client.call("", &Value::Null).unwrap_err();
+    assert!(
+        matches!(invalid, Error::Rpc { code: -32600, .. }),
+        "{invalid}"
+    );
 
     assert_eq!(
         client.call("daemon.shutdown", &Value::Null).unwrap()["stopping"],

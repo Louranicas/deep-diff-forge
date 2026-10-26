@@ -43,7 +43,10 @@ def _result(response, request_id):
     object's shape are checked before anything in it is believed, errors included."""
     if not isinstance(response, dict) or response.get("jsonrpc") != "2.0":
         raise TransportError("not a JSON-RPC 2.0 response")
-    if response.get("id") != request_id or isinstance(response.get("id"), bool):
+    # An invalid request is answered with id null (JSON-RPC 2.0 §5); one request per exchange makes
+    # that error this call's, so only an error may carry it.
+    null_error = "id" in response and response["id"] is None and "result" not in response
+    if (response.get("id") != request_id or isinstance(response.get("id"), bool)) and not null_error:
         raise TransportError(f"response id {response.get('id')!r} does not match {request_id}")
     if ("result" in response) == ("error" in response):
         raise TransportError("a response must have exactly one of result and error")

@@ -39,6 +39,10 @@ class Stdio(unittest.TestCase):
             with self.assertRaises(ddf.RpcError) as unknown:
                 client.call("no.such")
             self.assertEqual(unknown.exception.code, -32601)
+            # An invalid request is answered with id null (JSON-RPC 2.0 §5): still the daemon's error.
+            with self.assertRaises(ddf.RpcError) as invalid:
+                client.call("")
+            self.assertEqual(invalid.exception.code, -32600)
             self.assertEqual(client.call("daemon.health")["status"], "ok")
 
     def test_an_oversize_request_is_refused_locally(self):
@@ -55,9 +59,14 @@ class Responses(unittest.TestCase):
         with self.assertRaises(ddf.RpcError) as error:
             ddf._result({"jsonrpc": "2.0", "id": 1, "error": {"code": 7, "message": "m"}}, 1)
         self.assertEqual(error.exception.code, 7)
+        with self.assertRaises(ddf.RpcError) as invalid:
+            ddf._result({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "m"}}, 1)
+        self.assertEqual(invalid.exception.code, -32600)
 
     def test_invalid_answers_are_transport_errors(self):
         for bad in [
+            {"jsonrpc": "2.0", "id": None, "result": {}},
+            {"jsonrpc": "2.0", "error": {"code": -32600, "message": "no id at all"}},
             {"jsonrpc": "2.0", "id": 999, "error": {"code": 4, "message": "another call"}},
             {"jsonrpc": "2.0", "id": 2, "result": {}},
             {"jsonrpc": "2.0", "id": True, "result": {}},

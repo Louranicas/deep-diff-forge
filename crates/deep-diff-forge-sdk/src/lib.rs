@@ -26,15 +26,19 @@ pub use deep_diff_forge_core::{InputSeal, ReviewFile};
 pub use deep_diff_forge_graph::RankedFile;
 
 /// Which input contracts [`review`] applies: `Guards::none()`, then `require_files` and
-/// `require_hunks`, as the CLI's `--require-files` and `--require-hunks`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// `require_hunks`, as the CLI's `--require-files` and `--require-hunks`. There is no `Default`:
+/// a caller names the contracts it means, starting from [`Guards::none`] or [`Guards::all`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Guards(deep_diff_forge_patch::InputGuards);
 
 impl Guards {
     /// No contract: any patch that parses is reviewed, even an empty one.
     #[must_use]
     pub fn none() -> Self {
-        Self::default()
+        Self(deep_diff_forge_patch::InputGuards {
+            files: false,
+            hunks: false,
+        })
     }
 
     /// Both contracts, as a gate should apply them.
@@ -204,7 +208,10 @@ fn parse_response(answer: &str, id: i64) -> Result<serde_json::Value, Error> {
     if response.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
         return Err(bad("jsonrpc is not \"2.0\""));
     }
-    if response.get("id").and_then(Value::as_i64) != Some(id) {
+    // An invalid request is answered with id null (JSON-RPC 2.0 §5); one request per exchange makes
+    // that error this call's, so only an error may carry it.
+    let null_error = response.get("id") == Some(&Value::Null) && response.get("result").is_none();
+    if response.get("id").and_then(Value::as_i64) != Some(id) && !null_error {
         return Err(bad(&format!("its id is not {id}")));
     }
     match (
@@ -325,7 +332,20 @@ mod tests {
                 message: "refused: x".into()
             })
         );
+        // An invalid request is answered with id null (JSON-RPC 2.0 §5): still the daemon's error.
+        assert_eq!(
+            parse_response(
+                r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"bad method"}}"#,
+                1
+            ),
+            Err(Error::Rpc {
+                code: -32600,
+                message: "bad method".into()
+            })
+        );
         for bad in [
+            r#"{"jsonrpc":"2.0","id":null,"result":{}}"#,
+            r#"{"jsonrpc":"2.0","error":{"code":-32600,"message":"no id at all"}}"#,
             r#"{"jsonrpc":"2.0","id":2,"result":{}}"#,
             r#"{"jsonrpc":"2.0","id":2,"error":{"code":4,"message":"other call"}}"#,
             r#"{"jsonrpc":"1.0","id":1,"result":{}}"#,
