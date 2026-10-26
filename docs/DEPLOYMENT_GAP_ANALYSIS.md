@@ -186,7 +186,9 @@ Recommendation:
 
 ### 4. CI Gap
 
-No GitHub Actions workflow exists yet.
+> **Status 2026-10-26: resolved.** `.github/workflows/ci.yml` runs five jobs (review-controller mutation and fuzz evidence with real Podman, supply chain, gitleaks, MSRV 1.88, deploy gate-feature), and `main` is green. The analysis below is the original gap record, kept as history.
+
+No GitHub Actions workflow exists yet (as of the original analysis).
 
 Risk:
 

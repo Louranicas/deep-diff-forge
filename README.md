@@ -4,8 +4,6 @@
 
 # Deep-Diff-Forge
 
-Local Herdr integration: [Poteto Weave](</mnt/storage-10tb/hee4-evidence/prototypes/turso-tool-context/assimilation-20261005/README.md>) indexes DDF context and links back here. HEE's DDF adapter consumes review observations; HEE retains verdict authority. This is a local navigation link, not a deployed DDF feature.
-
 **A next-generation review engine for code changes — patch truth and semantic
 intent, together.**
 
@@ -764,8 +762,10 @@ copy. Evidence for each council run is in [`EVIDENCE.md`](EVIDENCE.md#review-cou
 
 ## Project status
 
-This is an actively-built engine at **L9 maturity**. Everything documented above
-is implemented, gated, and live-proven. Honest current limitations:
+This is an actively-built engine whose L0–L9 labels are historical capability
+declarations (see the development status above). Everything documented above is
+implemented and gated by tests; per-feature end-to-end proof is tracked in the
+[integration ledger](docs/RECOMMENDATION_INTEGRATION.md). Honest current limitations:
 
 - Full **patch↔symbol join** (mapping a hunk to its enclosing semantic symbol in
   a diff) awaits a Git-input layer that supplies file bytes; `semantic <file>`
@@ -779,6 +779,7 @@ is implemented, gated, and live-proven. Honest current limitations:
 - **Release**: the staged merges extend the 0.2.1 base and are not newly publish-qualified. **crates.io publication is on hold until the codebase is production-ready**; registry credentials alone are insufficient, and quality, supply-chain, API versioning and release checks must pass first.
 - **Remaining before a release (2026-10-26):** council r18 triage and the stage C merge ([#5](https://github.com/Louranicas/deep-diff-forge/pull/5)); the CLI contract, daemon parity, SDK and MCP slices A–D ([roadmap](docs/ROADMAP.md#status-2026-10-26)); reconciling the diverged GitLab `main`; and two CI platform migrations announced in the run annotations (Node 20 actions are deprecated, and `ubuntu-latest` moves to Ubuntu 26).
 - Semantic parsing now has cooperative progress-callback cancellation; node limits remain post-parse, and this is not an OS hard-time isolation boundary.
+- **Local integration (operator workstation only, not a DDF feature):** Herdr's Poteto Weave index (`/mnt/storage-10tb/hee4-evidence/prototypes/turso-tool-context/assimilation-20261005/`) indexes DDF context, and HEE's DDF adapter consumes review observations; HEE retains verdict authority.
 
 ## License
 
