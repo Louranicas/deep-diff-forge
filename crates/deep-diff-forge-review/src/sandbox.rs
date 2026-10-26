@@ -263,8 +263,15 @@ fn env(spec: &Spec<'_>) -> Vec<(&'static str, String)> {
     if let Some(target) = cargo_target_dir(spec) {
         env.push(("CARGO_TARGET_DIR", target));
     }
+    if spec.mutation {
+        // The exemption oracle observes emitted MIR; giving the mutation gate the same flag means
+        // a build script cannot tell the two jobs apart by it (council r14).
+        env.push(("CARGO_ENCODED_RUSTFLAGS", MUTATION_RUSTFLAGS.into()));
+    }
     env
 }
+/// The extra rustc output both mutation-environment jobs emit (see [`env`]).
+pub(crate) const MUTATION_RUSTFLAGS: &str = "--emit=link,mir";
 /// Cargo configuration that resolves every crate from the run's read-only vendor directory.
 pub(crate) const VENDORED_CONFIG: &str = "[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n[source.vendored-sources]\ndirectory = \"/vendor\"\n";
 /// Container name: run, job and a per-invocation nonce, so a container left by another invocation

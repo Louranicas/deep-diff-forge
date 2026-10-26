@@ -894,8 +894,10 @@ fn refuse_hidden_exemptions(
             &work.join("exemption_oracle.py"),
             EXEMPTION_ORACLE.as_bytes(),
         )?;
+        // Isolated mode: candidate build scripts can write to /work, which must not be on sys.path.
         let mut argv = [
             "python3",
+            "-I",
             "/work/exemption_oracle.py",
             "--package",
             &manifest.request.mutation_package,
@@ -924,10 +926,12 @@ fn refuse_hidden_exemptions(
             .ok()
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
             .unwrap_or_default();
-        // A pass needs hidden functions to judge and a positive control that saw a change, or none.
+        // A pass needs no hidden functions, or a reproducible comparison whose positive control saw
+        // a change (council r14: both are checked here, not taken from the oracle's state).
         let passed = receipt.outcome == Outcome::Passed
             && verdict["state"] == "passed"
-            && (verdict["hidden_functions"] == 0 || verdict["control"]["mir_changed"] == true);
+            && (verdict["hidden_functions"] == 0
+                || verdict["control"]["mir_changed"] == true && verdict["reproducible"] == true);
         if !passed {
             let refused = verdict["refused"]
                 .as_array()

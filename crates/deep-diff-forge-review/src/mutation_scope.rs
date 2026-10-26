@@ -175,6 +175,15 @@ fn capture_from(
         if base_id.is_some_and(|base_id| base_id.as_bytes() == id) {
             continue;
         }
+        // Headers are line-oriented, a space can end a name for some diff parsers (Git appends a
+        // tab after such names), and a leading quote reads as Git's path quoting: any of them
+        // could forge or misattribute a header or a hunk. Only a changed file gets a header, so an
+        // unchanged `docs/Design Notes.md` does not block the diff scope (council r13); the check
+        // comes before any read of the file (council r14).
+        require(
+            !path.starts_with('"') && !path.chars().any(char::is_whitespace),
+            "mutation scope path contains whitespace or a leading quote",
+        )?;
         let new = storage::read_untrusted(snapshot, Path::new(path), FILE_CAP)?;
         if std::str::from_utf8(&new).is_err() {
             continue;
@@ -188,14 +197,6 @@ fn capture_from(
         } else {
             Vec::new()
         };
-        // Headers are line-oriented, a space can end a name for some diff parsers (Git appends a
-        // tab after such names), and a leading quote reads as Git's path quoting: any of them
-        // could forge or misattribute a header or a hunk. Only a changed file gets a header, so an
-        // unchanged `docs/Design Notes.md` does not block the diff scope (council r13).
-        require(
-            !path.starts_with('"') && !path.chars().any(char::is_whitespace),
-            "mutation scope path contains whitespace or a leading quote",
-        )?;
         unified(path, &old, &new, &mut spent, &mut diff)?;
         require(
             diff.len() as u64 <= MUTATION_DIFF_CAP,
@@ -364,12 +365,14 @@ fn code_lines(new: &[&[u8]]) -> Vec<bool> {
                     continue;
                 }
                 let pair = line.get(i..i + 2);
-                let hashes = line[i + 1..].iter().take_while(|b| **b == b'#').count();
+                // Counted only at a raw string's opening or closing quote, so a run of `#` costs
+                // linear time, not quadratic (council r14).
+                let hashes = || line[i + 1..].iter().take_while(|b| **b == b'#').count();
                 if let Some(raw) = string {
                     match raw {
                         None if byte == b'\\' => skip = 1,
                         None if byte == b'"' => string = None,
-                        Some(n) if byte == b'"' && hashes >= n => {
+                        Some(n) if byte == b'"' && hashes() >= n => {
                             string = None;
                             skip = n;
                         }
@@ -388,12 +391,17 @@ fn code_lines(new: &[&[u8]]) -> Vec<bool> {
                 } else if pair == Some(b"/*") {
                     comment = 1;
                     skip = 1;
+                } else if let Some(length) = char_literal(&line[i..]) {
+                    // A character literal, `'"'` included, is skipped whole (council r14: one
+                    // holding a quote opened a phantom string that could under-include).
+                    skip = length - 1;
+                    code |= attribute == 0;
                 } else if byte == b'"' {
                     string = Some(None);
                     code |= attribute == 0;
-                } else if byte == b'r' && line.get(i + 1 + hashes) == Some(&b'"') {
-                    string = Some(Some(hashes));
-                    skip = hashes + 1;
+                } else if byte == b'r' && line.get(i + 1 + hashes()) == Some(&b'"') {
+                    string = Some(Some(hashes()));
+                    skip = hashes() + 1;
                     code |= attribute == 0;
                 } else if attribute > 0 {
                     match byte {
@@ -411,6 +419,31 @@ fn code_lines(new: &[&[u8]]) -> Vec<bool> {
             code
         })
         .collect()
+}
+
+/// The byte length of the character literal `rest` starts with (`'x'`, `'"'`, `'é'`, `'\''`,
+/// `'\u{1F600}'`), or `None` for a lifetime, a label or anything else. An escape's closing quote
+/// is looked for within the longest escape, so the search is bounded.
+fn char_literal(rest: &[u8]) -> Option<usize> {
+    if rest.first() != Some(&b'\'') {
+        return None;
+    }
+    if rest.get(1) == Some(&b'\\') {
+        return rest
+            .iter()
+            .enumerate()
+            .skip(3)
+            .take(10)
+            .find(|(_, b)| **b == b'\'')
+            .map(|(end, _)| end + 1);
+    }
+    let width = match rest.get(1)? {
+        lead if *lead < 0x80 => 1,
+        lead if *lead >= 0xF0 => 4,
+        lead if *lead >= 0xE0 => 3,
+        _ => 2,
+    };
+    (rest.get(1 + width) == Some(&b'\'')).then_some(width + 2)
 }
 
 /// Append `path`'s zero-context unified diff from `old` to `new`.
@@ -805,6 +838,10 @@ mod tests {
             b"r\"raw only\"",
             b"#[doc = r#\"#x\"#]",
             b"pub fn after() {}",
+            b"const Q: char = '\"';",
+            b"#[doc = \"]\"]",
+            b"fn l<'a>(x: &'a str) -> char { '\\'' }",
+            b"let e = '\\u{e9}';",
             b"#[doc = \"[x]\"] pub fn f() {}",
             b"pub fn g() {} /* trailing",
             b"*/ let x = 1;",
@@ -815,14 +852,45 @@ mod tests {
             code_lines(&source),
             [
                 false, false, false, false, false, false, false, false, false, false, false, false,
-                true, true, true, true, false, true, true, true, true
+                true, true, true, true, false, true, true, false, true, true, true, true, true
             ]
         );
     }
 
     #[test]
+    fn char_literals_and_lifetimes_are_told_apart() {
+        for (rest, length) in [
+            (&b"'x'"[..], Some(3)),
+            (b"'\"' rest", Some(3)),
+            ("'é'".as_bytes(), Some(4)),
+            ("'😀'".as_bytes(), Some(6)),
+            ("'中'".as_bytes(), Some(5)),
+            (b"'\\''", Some(4)),
+            (b"'\\u{1F600}'", Some(11)),
+            (b"'a, b", None),
+            (b"'static", None),
+            (b"x'", None),
+            (b"'\\x", None),
+        ] {
+            assert_eq!(
+                char_literal(rest),
+                length,
+                "{:?}",
+                String::from_utf8_lossy(rest)
+            );
+        }
+        // A long run of `#` is scanned once per byte, not once per position.
+        let run = vec![b'#'; 1 << 16];
+        assert_eq!(code_lines(&[&run[..]]), [true]);
+    }
+
+    #[test]
     fn deletion_widening_passes_multi_line_comments_and_attributes() {
         for (old, new) in [
+            (
+                "fn a() -> u32 { let _ = '\"'; 1 }\n#[cfg(any())]\n#[doc = \"]\"]\nfn f() {}\n",
+                "fn a() -> u32 { let _ = '\"'; 1 }\n#[doc = \"]\"]\nfn f() {}\n",
+            ),
             (
                 "fn a() {}\n#[cfg(any())]\n#[doc = \"]\"]\nfn f() {}\n",
                 "fn a() {}\n#[doc = \"]\"]\nfn f() {}\n",

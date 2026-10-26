@@ -526,6 +526,34 @@ Council r13 (run `5fc1d260…`) reviewed `bec1a49..c0c0d6a`, and it is the first
 - Below-function exemptions are not possible on stable Rust (security, needs_test). **Measured:** `#[mutants::skip]` on a match arm ("expected non-macro attribute"), a statement (E0658) or an expression (E0658) does not compile, and `#[cfg_attr(test, mutants::skip)]` on an arm breaks the gate's own test build.
 - `code_lines` is still a scanner in the scope path (architecture, medium). It is fail-safe except where a character literal holding `"` opens a string, which only over-includes.
 
+<a id="genuine-test-code-r15"></a>
+
+### r15: council r14 follow-ups — hidden code must be genuine test code
+
+Council r14 (run `278bbc34…`) reviewed `c0c0d6a..4ccaf10`: 12/12 reports and 8/8 gates (1,177 tests; mutation 76 of 76 caught). On its first real run, oracle v3 saw 20 hidden functions, ran 5 builds, was reproducible and had a live control. The findings and the r15 controls:
+
+| Finding (r14) | Control | Evidence |
+| --- | --- | --- |
+| "The gate's build is not the shipped build": code compiled only in release, on another target or with another feature passed as absent (challenge HIGH; security, architecture) | **A hidden function must be genuine test code.** Neutralizing it must change or break a *test harness* of the gate build, and must change no *non-test* unit. Code compiled nowhere is refused, matching the gate: listed, its mutants would survive and hold the run | **Measured, prototype:** a `#[cfg(not(debug_assertions))]` hidden fn is refused ("compiled nowhere"). **Fake:** `hidden_code_compiled_nowhere_is_refused` |
+| Non-test bins are not built by `cargo test --no-run` without integration tests (HIGH; architecture 4 concur); a bin-only package had no observable (correctness) | The oracle builds `cargo build --workspace --lib --bins --tests --keep-going`. Measured: the test units have the same hashes as the gate's `cargo test --no-run`, reused fresh, and the non-test bins are built too. Uplifted artifacts are resolved to their `deps/` hard links by inode | **Measured, prototype:** a `cdylib`+`rlib` library beside a bin is refused |
+| A failed test-harness build was counted as shipping (correctness, subtractor; 5/5) | `--keep-going` reports each unit. A broken non-test unit means the code ships; a broken harness means test code | **Measured, prototype:** a test-only `const fn` used in a test constant is allowed. **Fake:** `a_test_harness_that_stops_building_proves_test_code_not_shipping` |
+| `--emit=mir` in `CARGO_ENCODED_RUSTFLAGS` was a tell to build scripts (HIGH; security 5/5) | The controller gives the **mutation job the same flag** (`sandbox::MUTATION_RUSTFLAGS`), so both jobs carry it. `CARGO_INCREMENTAL` is no longer set: allocations are now named by a hash of their contents and sorted, which makes fresh, incremental and non-incremental builds of one source identical (measured). The oracle also sets cargo-mutants' `INSTA_UPDATE` and `INSTA_FORCE_PASS` | **Fake:** `the_mutation_job_emits_mir_like_the_oracle`. Measured: the canonical MIR digest is equal across fresh, incremental and non-incremental builds |
+| The control search stopped at the first build that succeeded (5/5) | It continues until a control builds *and* changes non-test MIR (up to 5) | Fake: the blind-comparison test |
+| The reproducibility check could compare a cached unit (5/5) | The second build touches every target root of the package | — |
+| A character literal holding `"` desynchronized `code_lines` and under-included (HIGH; 4 reviewers) | `char_literal` skips `'x'`, `'"'`, multi-byte and escaped literals; lifetimes and labels are untouched | **Unit:** `char_literals_and_lifetimes_are_told_apart`; the widening case `'"'` then `#[doc = "]"]` fails against r14 |
+| Quadratic hash counting (HIGH; 3 reviewers) | Counted only at a raw string's quotes | **Unit:** a 64 KiB run of `#` |
+| Overlapping nested spans in a batch (falsifier) | Spans nested in another of the same file are dropped; the outer replacement removes them | — |
+| The header check ran after 64 MiB reads (performance) | It runs before any read of the file | — |
+| `python3` without `-I` (security, low) | `python3 -I` | — |
+| The controller trusted reproducibility implicitly (architecture, low) | The controller requires `reproducible: true` itself | Fake: forged-witness case |
+
+**Cost:** more builds, since every hidden function is proved individually: one per replacement until a harness moves. Measured on DDF: the r12 diff (20 hidden functions) took 45 builds and 87 s; the whole package (37) took 79 builds and 145 s. The mutation job now also writes MIR dumps.
+
+**Residuals:**
+- A build script can still tell the oracle job from the mutation job by its parent process or timing; that is residual 1.
+- Genuine test code for another platform (`cfg(all(test, windows))`) is refused on this host, consistent with the gate, where such listed mutants would survive.
+- Code cargo-mutants never examines stays unmutated.
+
 ### Podman invocation
 
 Every gate job runs `$DDF_COUNCIL_PODMAN run` (the default runtime is `podman`) with these flags. The source of truth is `sandbox.rs` `Sandbox::argv`.
