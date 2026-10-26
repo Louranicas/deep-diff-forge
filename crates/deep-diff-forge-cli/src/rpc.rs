@@ -1,3 +1,4 @@
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--rpc
 // DDF slice C: `deep-diff-forge rpc`, the daemon's JSON-RPC over stdio, served in-process.
 // Design/status: docs/ROADMAP.md#status-2026-10-26 and docs/API_AND_IPC.md.
 //! The daemon protocol without a daemon: each stdin line is answered by the same

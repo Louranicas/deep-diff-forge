@@ -1,3 +1,4 @@
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-core--exit
 //! The exit-code registry: the single owner of every process exit code deep-diff-forge documents.
 //!
 //! Two families share numbers with different meanings: `council` (the review-council subcommands)

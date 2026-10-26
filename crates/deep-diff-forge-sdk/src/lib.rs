@@ -1,3 +1,4 @@
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-sdk--lib
 // DDF slice C: the stable Rust facade. Design/status: docs/ROADMAP.md#status-2026-10-26.
 //! The stable Rust interface to Deep-Diff-Forge.
 //!

@@ -1,3 +1,4 @@
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--guards
 //! Input contracts a caller can require of a parsed patch (`--require-files`, `--require-hunks`
 //! on the CLI; `require_files` and `require_hunks` on the daemon's `diff.compute`). One predicate
 //! serves every surface, so the CLI and the daemon refuse exactly the same inputs.
