@@ -63,6 +63,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - Determinism contract test: `--rank --json --require-files` is byte-identical
   across runs with an identical `input_sha256`.
 
+### Added (slice D: MCP server)
+
+- `deep-diff-forge mcp`: a read-only, dual-era MCP server over stdio. It
+  implements the 2026-07-28 specification (per-request `_meta`,
+  `server/discover`, `resultType`, `UnsupportedProtocolVersion` -32022) and keeps
+  the `initialize` handshake for 2025-11-25 and earlier clients. Its tools are
+  `review_patch` (the daemon's `diff.compute`, with byte-for-byte parity with the
+  CLI tested over real stdio), `rank_patch`, `explain_exit_code` and
+  `exit_code_registry`. All are annotated read-only. Domain refusals are tool
+  errors (`isError`); malformed calls are protocol errors. Request lines are
+  capped and stdout carries only protocol messages.
+
 ### Added (slice B: daemon parity, protocol 1)
 
 - **Daemon `diff.compute`** returns the same `deep-diff-forge.review.v0` document
