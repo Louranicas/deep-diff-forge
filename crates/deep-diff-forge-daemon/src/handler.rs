@@ -324,27 +324,38 @@ pub const METHODS: &[MethodSpec] = &[
 /// parse failures, or unknown sessions.
 pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcError> {
     let version = env!("CARGO_PKG_VERSION");
-    match request.method.as_str() {
+    // `METHODS` is the authority: a request is dispatched on its `METHODS` entry, so a name it does
+    // not list is never dispatched and an arm added below without an entry is unreachable rather
+    // than undiscoverable (council sb1).
+    let Some(spec) = METHODS.iter().find(|m| m.name == request.method) else {
+        return Err(RpcError::method_not_found(&request.method));
+    };
+    match spec.name {
         "engine.initialize" => {
-            // A client may name the protocol it speaks; one this daemon does not is refused, not
+            // Versions are additive, so any version up to ours is served, and the answer lists the
+            // methods that version has. A newer one, or a non-integer, is refused rather than
             // silently answered in another dialect.
-            match request.params.get("protocol") {
-                None => {}
-                Some(Value::Number(n)) if n.as_u64() == Some(u64::from(PROTOCOL_VERSION)) => {}
+            let speaks = match request.params.get("protocol") {
+                None => PROTOCOL_VERSION,
+                Some(Value::Number(n))
+                    if n.as_u64().is_some_and(|n| n <= u64::from(PROTOCOL_VERSION)) =>
+                {
+                    u32::try_from(n.as_u64().unwrap_or_default()).unwrap_or(PROTOCOL_VERSION)
+                }
                 Some(other) => {
                     return Err(RpcError::new(
                         PROTOCOL_UNSUPPORTED,
                         format!(
-                            "protocol {other} is not supported; this daemon speaks {PROTOCOL_VERSION}"
+                            "protocol {other} is not supported; this daemon speaks 0 to {PROTOCOL_VERSION}"
                         ),
                     ));
                 }
-            }
+            };
             Ok(json!({
                 "server": "deep-diff-forge",
                 "version": version,
-                "protocol": PROTOCOL_VERSION,
-                "methods": METHODS.iter().map(|m| m.name).collect::<Vec<_>>(),
+                "protocol": speaks,
+                "methods": METHODS.iter().filter(|m| m.since <= speaks).map(|m| m.name).collect::<Vec<_>>(),
             }))
         }
         "engine.methods" => Ok(json!({
@@ -960,6 +971,21 @@ mod tests {
 
     #[test]
     fn every_listed_method_is_dispatched_and_nothing_else_is() {
+        // An unlisted name is refused before the dispatcher's arms are consulted.
+        let mut probe = Engine::new();
+        for unlisted in ["engine.shutdown", "session.list", "diff.Compute", ""] {
+            let request = Request {
+                jsonrpc: "2.0".into(),
+                id: Value::Null,
+                method: unlisted.into(),
+                params: Value::Null,
+            };
+            assert_eq!(
+                dispatch(&request, &mut probe).unwrap_err().code,
+                crate::protocol::METHOD_NOT_FOUND,
+                "{unlisted}"
+            );
+        }
         for spec in METHODS {
             let mut e = Engine::new();
             let line = format!(r#"{{"method":"{}"}}"#, spec.name);
@@ -991,7 +1017,25 @@ mod tests {
             .unwrap()["protocol"],
             1
         );
-        for other in ["0", "2", "\"1\"", "1.5", "null"] {
+        let v0 = call(
+            r#"{"method":"engine.initialize","params":{"protocol":0}}"#,
+            &mut e,
+        )
+        .unwrap();
+        assert_eq!(v0["protocol"], 0);
+        let names: Vec<&str> = v0["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m.as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&"diff.plan")
+                && !names.contains(&"diff.compute")
+                && !names.contains(&"engine.methods"),
+            "{names:?}"
+        );
+        for other in ["2", "\"1\"", "1.5", "null", "-1"] {
             let line =
                 format!(r#"{{"method":"engine.initialize","params":{{"protocol":{other}}}}}"#);
             assert_eq!(

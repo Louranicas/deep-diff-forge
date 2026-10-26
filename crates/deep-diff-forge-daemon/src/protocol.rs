@@ -1,7 +1,8 @@
 use serde_json::{Value, json};
 
-/// Engine protocol version advertised by `engine.initialize`/`daemon.health`. Version 1 adds
-/// `engine.methods`, `diff.compute` and protocol negotiation; every version-0 method is unchanged.
+/// Engine protocol version advertised by `engine.initialize`/`daemon.health`. Versions are
+/// additive: version 1 adds `engine.methods`, `diff.compute` and negotiation, and every version-0
+/// method is unchanged, so a client that names any version up to this one is served.
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// JSON-RPC standard error code: invalid JSON was received.
@@ -289,6 +290,8 @@ mod tests {
         assert_eq!(SESSION_NOT_FOUND, 1);
         assert_eq!(PATCH_PARSE_FAILED, 4);
         assert_eq!(RESOURCE_EXHAUSTED, 8);
+        assert_eq!(PROTOCOL_UNSUPPORTED, 2);
+        assert_eq!(INPUT_CONTRACT_REFUSED, 7);
     }
 
     #[test]

@@ -1,6 +1,7 @@
-//! Slice B: the daemon's `diff.compute` answers exactly as `deep-diff-forge --stdin-patch --json`
-//! does for the same bytes: the same review document (seal included), the same refusals, and the
-//! same parse failures, with the registry's codes on both surfaces.
+//! Slice B: the daemon's `diff.compute` answers as `deep-diff-forge --stdin-patch --json` does for
+//! the same bytes: the same review document as a JSON value (seal included; key order is not part
+//! of the contract), the same refusal text, and the same parse-failure text, with the registry's
+//! codes on both surfaces.
 use deep_diff_forge_core::exit;
 use deep_diff_forge_daemon::{
     Engine, INPUT_CONTRACT_REFUSED, PATCH_PARSE_FAILED, dispatch, parse_request,
@@ -74,6 +75,8 @@ fn diff_compute_matches_the_cli_document_refusals_and_failures() {
                 }
                 exit::INPUT_CONTRACT_REFUSED => {
                     let err = rpc.unwrap_err();
+                    // The daemon's code is the CLI's exit code, numerically (council sb1).
+                    assert_eq!(err.code, i64::from(exit::INPUT_CONTRACT_REFUSED));
                     assert_eq!(
                         (err.code, format!("{}\n", err.message)),
                         (INPUT_CONTRACT_REFUSED, stderr),
@@ -82,7 +85,14 @@ fn diff_compute_matches_the_cli_document_refusals_and_failures() {
                     seen[1] += 1;
                 }
                 exit::INVALID_INPUT => {
-                    assert_eq!(rpc.unwrap_err().code, PATCH_PARSE_FAILED, "{patch:?}");
+                    let err = rpc.unwrap_err();
+                    assert_eq!(err.code, PATCH_PARSE_FAILED, "{patch:?}");
+                    assert_eq!(err.code, i64::from(exit::INVALID_INPUT));
+                    assert_eq!(
+                        format!("error: patch parse failed: {}\n", err.message),
+                        stderr,
+                        "{patch:?}"
+                    );
                     seen[2] += 1;
                 }
                 other => panic!("unexpected exit {other} for {patch:?} {flags:?}: {stderr}"),
