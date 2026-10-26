@@ -63,6 +63,21 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - Determinism contract test: `--rank --json --require-files` is byte-identical
   across runs with an identical `input_sha256`.
 
+### Added (slice A: CLI contract v1)
+
+- `deep-diff-forge envelope -- <command…>` wraps any command's result in one
+  `ddf.result.v1` JSON object: exit code, registry outcome, stdout (parsed when it
+  is one JSON value), stderr, and any truncation. It runs the command as a child
+  of the same binary with stdin passed through, leaves the command's own output
+  unchanged, and exits with its code.
+- `deep-diff-forge schema [result|exit-codes]` prints the envelope's JSON Schema
+  (2020-12) or the exit-code registry. `deep-diff-forge explain <code> [--family
+  engine|council] [--json]` names one code.
+- One exit-code registry, by command family (`engine`, `council`). The README
+  documents both tables, and a test fails if they drift from the registry.
+- `--help` no longer says crates.io is blocked only by a missing token; it is on
+  hold until the codebase is production-ready.
+
 ### Changed
 
 - README exit-code table gains code 7 and the recommended gate command now

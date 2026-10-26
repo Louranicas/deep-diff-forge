@@ -2,6 +2,7 @@
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#shared-service
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--main
 mod analysis;
+mod contract;
 mod git_input;
 use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe};
 
@@ -121,6 +122,18 @@ fn main() {
             let rest: Vec<String> = args.collect();
             git_input::run(&selector, &rest);
         }
+        Some("schema") => contract_output(contract::schema(&args.collect::<Vec<_>>())),
+        Some("explain") => contract_output(contract::explain(&args.collect::<Vec<_>>())),
+        Some("envelope") => match contract::envelope(&args.collect::<Vec<_>>()) {
+            Ok((json, code)) => {
+                emit(&json);
+                std::process::exit(code);
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                std::process::exit(2);
+            }
+        },
         Some("claude-code-contract") => claude_code_contract(),
         Some("chain-contract") => chain_contract(),
         Some("cluster-contract") => cluster_contract(),
@@ -1123,6 +1136,9 @@ USAGE:
   deep-diff-forge learn {{status|record --stdin}} [--json]
   deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side] [--require-files] [--require-hunks]
   deep-diff-forge {{--git-working-tree [--include-untracked] | --git-staged | --git-range A..B}} [--repo PATH] [--acquisition-json | <--stdin-patch output flags>]
+  deep-diff-forge envelope -- <command> [args…]
+  deep-diff-forge schema [result|exit-codes]
+  deep-diff-forge explain <code> [--family engine|council] [--json]
   deep-diff-forge claude-code-contract
   deep-diff-forge chain-contract
   deep-diff-forge cluster-contract
@@ -1134,8 +1150,14 @@ MATURITY:
   trust planner/ranking/annotation defaults — never uploading source, never
   mutating patch truth. Tagged releases are cut to GitHub (binary + checksums)
   and both git remotes (deploy release --json reports the per-target posture).
-  The crates.io target stays blocked until a registry token is configured; the
-  workspace manifests are otherwise publish-ready (cargo publish --dry-run).
+  crates.io publication is on hold until the codebase is production-ready; a
+  configured registry token does not lift the hold.
+
+MACHINE CONTRACT:
+  envelope -- <command…> wraps any command's result in one ddf.result.v1 JSON
+  object (exit code, registry outcome, stdout, stderr) and exits with its code.
+  schema prints the envelope's JSON Schema or the exit-code registry; explain
+  names one exit code.
 
 FUTURE PRIMARY MODES:
   deep-diff-forge <old> <new>
@@ -1148,6 +1170,17 @@ FUTURE PRIMARY MODES:
 ",
         version = env!("CARGO_PKG_VERSION")
     );
+}
+
+/// Print a machine-contract answer, or its usage error with exit 2.
+fn contract_output(result: Result<String, String>) {
+    match result {
+        Ok(text) => emit(&text),
+        Err(error) => {
+            eprintln!("error: {error}");
+            std::process::exit(2);
+        }
+    }
 }
 
 fn print_version() {
