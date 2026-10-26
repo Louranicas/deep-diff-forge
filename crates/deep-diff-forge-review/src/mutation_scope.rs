@@ -335,7 +335,17 @@ fn widen_deletions(found: &[Region], new: &[&[u8]]) -> Vec<Region> {
             new_range = before..after;
         }
         match widened.last_mut() {
-            Some(last) if last.0.end > old_range.start => {
+            // Overlapping regions merge, and so do touching ones when the later is empty on a
+            // side: an empty side's header names the line it follows (`-3,0`), which collides
+            // with a hunk ending on that line, and cargo-mutants' diff parser rejects the pair
+            // (council r17's sealed diff: "hunks not in order or overlap"). Widening can carry a
+            // region right up to the next one; regions are separated by the same matched lines
+            // on both sides, so they touch on both sides at once.
+            Some(last)
+                if last.0.end > old_range.start
+                    || last.0.end == old_range.start
+                        && (old_range.is_empty() || new_range.is_empty()) =>
+            {
                 last.0.end = last.0.end.max(old_range.end);
                 last.1.end = last.1.end.max(new_range.end);
             }
@@ -585,9 +595,31 @@ mod tests {
 
     /// The diff is valid, its minimal regions are exactly the lines outside one longest common
     /// subsequence, and the output marks those plus one neighbouring line per pure deletion.
+    /// Each hunk on each side starts after the last line the previous hunk names, as a unified-diff
+    /// parser requires: an empty side's start is the line it follows (council r17: cargo-mutants
+    /// rejected a pure insertion that started on the previous hunk's last line).
+    fn assert_hunks_ordered(diff: &[u8]) {
+        let mut last = [None::<usize>; 2];
+        for header in diff
+            .split_inclusive(|b| *b == b'\n')
+            .filter(|l| l.starts_with(b"@@ "))
+        {
+            let header = std::str::from_utf8(header).unwrap();
+            for (side, field) in header.split(' ').skip(1).take(2).enumerate() {
+                let (start, len) = field[1..].split_once(',').unwrap();
+                let (start, len): (usize, usize) = (start.parse().unwrap(), len.parse().unwrap());
+                if let Some(end) = last[side] {
+                    assert!(start > end, "{}", String::from_utf8_lossy(diff));
+                }
+                last[side] = Some(if len == 0 { start } else { start + len - 1 });
+            }
+        }
+    }
+
     fn check(old: &[u8], new: &[u8]) {
         let diff = diff_of(old, new, &mut 0);
         assert_eq!(apply(&diff, old), new, "{old:?} -> {new:?}");
+        assert_hunks_ordered(&diff);
         let (o, n) = (lines(old).unwrap(), lines(new).unwrap());
         let mut ids = HashMap::new();
         let (oi, ni) = (intern(&mut ids, &o), intern(&mut ids, &n));
@@ -902,6 +934,17 @@ mod tests {
             b"#[doc = 'x']",
         ];
         assert_eq!(code_lines(&source), [true, false, true, true, false]);
+    }
+
+    #[test]
+    fn widened_regions_that_touch_the_next_one_become_one_hunk() {
+        // The deleted `cfg` widens down to `b`, and the insertion after `b` then starts exactly
+        // where the widened region ends. Two such hunks are rejected by cargo-mutants' parser
+        // ("hunks not in order or overlap"; measured on council r17's sealed diff).
+        let diff = diff_of(b"a\n#[cfg(x)]\nb\nc\n", b"a\nb\nNEW\nc\n", &mut 0);
+        assert_eq!(hunks(&diff), 1, "{}", String::from_utf8_lossy(&diff));
+        assert_hunks_ordered(&diff);
+        assert_eq!(apply(&diff, b"a\n#[cfg(x)]\nb\nc\n"), b"a\nb\nNEW\nc\n");
     }
 
     #[test]

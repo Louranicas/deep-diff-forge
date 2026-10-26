@@ -124,7 +124,7 @@ ddf-integration-20261025 council review /absolute/new-run-directory correctness-
 # Run the challenge job for every configured reviewer.
 
 # Gates refuse unless the gate image is set and present locally; see "Gate sandbox".
-export DDF_COUNCIL_GATE_IMAGE=localhost/ddf-council-gate:20261026a
+export DDF_COUNCIL_GATE_IMAGE=localhost/ddf-council-gate:20261026c
 ddf-integration-20261025 council gate /absolute/new-run-directory format --execute
 ddf-integration-20261025 council gate /absolute/new-run-directory check --execute
 ddf-integration-20261025 council gate /absolute/new-run-directory clippy --execute
@@ -580,6 +580,70 @@ Council r15 (run `43066928…`) reviewed `4ccaf10..1ff04ff`: 12/12 reports and 8
 - A build script that detects the oracle job, or forged compiler output, is residual 1.
 - The gate environment now carries the oracle's MIR flag; that is a deliberate parity commitment (architecture, contested 2–2–1).
 
+<a id="allow-list-r17"></a>
+
+### r17: council r16 follow-ups — exclusions are allow-listed, not classified
+
+Council r16 (run `2a569cea…`) reviewed `1ff04ff..9d38f43`: 12/12 reports and 8/8 gates (mutation 8 of 8 caught). On the real run oracle v5 passed with all five configurations built. Its consensus closes this line of design: **a sampled set of configurations cannot prove "ships nowhere"**.
+- Non-monotone feature conditions such as `cfg(any(test, all(feature = "a", not(feature = "b"))))` escape it (correctness, falsifier, security, subtractor; 5/5).
+- So do candidate-defined profiles (architecture challenge).
+- A shipping configuration that failed to build was silently dropped (architecture, security, subtractor; 5/5).
+- The harness proof was unsound: section matching ignored the file (5/5 ×3); harness reproducibility was unchecked (5/5 ×3); and error attribution compared lines but not columns.
+
+**r17 stops classifying exclusions and allow-lists them** (`policy/exemption_oracle.py`, schema v6):
+
+1. The scope is listed three times with the same pinned crate: the gate's cargo-mutants; `ddf-cargo-mutants-strict` (`review-policy/sandbox/cargo-mutants-strict.patch`: honours only exact `#[cfg(test)]` and a bare `#[test]`); and the no-exclusion build. cargo-mutants' own `syn` parse decides all three.
+2. A function the gate skips that the strict build still lists was hidden by something else: `mutants::skip`, a test-suffixed attribute, `unsafe fn`, or a condition on features or profiles carried by such an attribute. **It is refused outright, with no builds, whatever its cfg.** No configuration can matter.
+3. A function hidden only by the allow-list is test code by its source. The two non-declarative ways it could still ship are a shadowed `#[test]` and a build script printing `cargo:rustc-cfg=test`. Both are checked by neutralizing the allow-listed bodies (`loop {}` and `panic!()`) and comparing canonical non-test MIR in the gate build (`--profile test`, the gate's own units) and in release.
+   - Both unmodified builds must succeed, and the gate build must reproduce.
+   - `--keep-going` keeps a harness broken by a neutralized test-only `const fn` from hiding the non-test result.
+   - A non-test unit missing from an edited build reads as changed, which fails closed.
+4. **Removed:** the harness proof and section matching (every r16 harness finding); the three sampled feature configurations (the configuration-space findings); and attribution beyond 8 functions.
+
+| Finding (r16) | Disposition | Evidence |
+| --- | --- | --- |
+| Configuration sampling is incomplete (features, profiles) | Closed structurally: only `#[cfg(test)]` and `#[test]` may hide code. Every other exclusion is refused | **Measured, prototype:** the dual-configuration and release-only routes are refused with 0 builds |
+| Unbuilt shipping configurations were dropped | Both configurations must build, or the run is inconclusive | Fake: the unmodified-build path |
+| Section match ignores the file; harness reproducibility; error columns | Gone: there is no harness proof | — |
+| Identifiers named like `allocN`; a lone `"` in a hex dump | An `allocN` that names no allocation is left as written; a string literal never spans lines | **Unit:** two new cases |
+| Colour refinement can be quadratic | Bounded at 16 rounds. Each round is a pure function of the last, so the result stays order-independent | — |
+| Attribution builds after certain refusal | Only up to 8 allow-listed functions, and only when they ship | — |
+| The controller ignored `configurations` | Every configuration the witness records was built, or the oracle refused | — |
+| Doc drift | The controller doc names the allow-list | — |
+
+**Measured:**
+- The catalogue's 17 attack routes are all refused. All but two are refused by the allow-list with zero builds. The shadowed `#[test]` and the build.rs `cfg(test)` route are refused by the build check.
+- The honest crate passes, and a test-only `const fn` is recognized as test code.
+- DDF's whole package: 38 hidden functions, all allow-listed, passed in 8 builds and 71 s (v5: 30 builds, 142 s).
+
+**Residuals:**
+- A build script or proc macro that keys `cfg(test)` or its output to a configuration other than gate and release, or that detects the oracle, is residual 1.
+- `#[tokio::test]` and other path-qualified test attributes outside a `#[cfg(test)]` module are refused. Wrap them in `#[cfg(test)] mod tests`.
+
+<a id="cfg-test-only-r18"></a>
+
+### r18: council r17 follow-ups — only `#[cfg(test)]`, every member, and a diff-builder bug
+
+Council r17 (run `8a35a3d1…`) reviewed `1ff04ff..a2b362e` with all 12 reports. Its mutation gate was refused before any job: the oracle could not list the scope, because cargo-mutants rejected the **sealed mutation diff** ("hunks not in order or overlap"). That is a latent defect in `mutation_scope` (r10's widening), fixed here.
+
+| Finding (r17) | Control | Evidence |
+| --- | --- | --- |
+| **The sealed diff had touching hunks.** Widening can carry a region right up to the next one, and a pure insertion (`-3,0`) then starts on the line the previous hunk ends on; cargo-mutants rejects the pair | Regions merge on overlap, and also when they touch and the later one is empty on a side. Every hunk on each side must start after the last line the previous hunk names | **Unit:** `widened_regions_that_touch_the_next_one_become_one_hunk`. The random-file property tests now assert header ordering, and **fail with the old merge rule**: the defect was latent since r10 |
+| A bare `#[test]` is name-resolved: `#[cfg(feature = "ship")] use m::test;` makes it another macro under a feature (HIGH; falsifier 5/5, security 5/5) | **The allow-list is only `#[cfg(test)]`**, as upstream `attr_is_cfg_test` parses it: the whole argument must be the identifier `test`. A `#[test]` must sit inside a `#[cfg(test)]` item. DDF's own tests already do | **Measured, prototype:** the bare top-level `#[test]`, the feature-conditional import and `#[cfg(any(test))]` are refused with 0 builds; a genuine `#[cfg(test)]` test is allowed |
+| A `#[path]` include ships the mutation package's code from another workspace member (HIGH; correctness, subtractor) | The non-test units of **every workspace member** are compared | By construction (the workspace is already built) |
+| Identifiers named like allocations were rewritten (5/5) | Only MIR's reference syntax counts (`{allocN:`, `╾allocN<…`, `allocN+0x…`). Measured: DDF's MIR has 993 allocations and no named references, so the old pattern only ever touched identifiers. Definition multiplicity is kept | **Unit:** identifier case |
+| Release had no control and no reproducibility check (architecture 4/1; performance 3/2) | Both configurations reproduce, and the positive control must move both | Measured on DDF: the control moves gate and release |
+| A build script could restore a neutralized file during the build (security, challenge) | After every edited build, the edited files must hold what the oracle wrote | **Fake:** `a_build_that_restores_a_neutralised_file_is_inconclusive` (fails against r17) |
+| Builds ran after a certain refusal (5/5) | Any disallowed exclusion refuses before building | 0 builds in the prototype |
+| `outermost` was quadratic (5/5) | One sort and one sweep | — |
+| The controller ignored `configurations` | `oracle_passed`: every recorded configuration built, reproducible, control moved | **Fake:** forged-witness case (fails against r17) |
+
+**Measured:**
+- DDF's whole package: 38 hidden functions, all under `#[cfg(test)]`, pass in 10 builds and 100 s, with controls moving in gate and release.
+- The catalogue: every route except the build-script `cfg(test)` is refused with zero builds; that one is caught by the build check.
+
+**Residual:** a build script or proc macro that sets `cfg(test)` or changes its output only in a configuration other than gate and release, or detects the oracle, is residual 1.
+
 ### Podman invocation
 
 Every gate job runs `$DDF_COUNCIL_PODMAN run` (the default runtime is `podman`) with these flags. The source of truth is `sandbox.rs` `Sandbox::argv`.
@@ -629,11 +693,11 @@ Only `crates-io` is replaced. A candidate with git or alternative-registry depen
 1. Build the image. The header of the Containerfile gives the command:
 
    ```sh
-   podman build --pull=never -t localhost/ddf-council-gate:20261026a -f review-policy/sandbox/Containerfile review-policy/sandbox
+   podman build --pull=never -t localhost/ddf-council-gate:20261026c -f review-policy/sandbox/Containerfile review-policy/sandbox
    ```
 
    `--pull=never` refuses to fetch the base image, so on a fresh machine first pull the digest-pinned `FROM` reference: `podman pull registry.fedoraproject.org/fedora:44@sha256:0d2a354d…`, using the full digest from the Containerfile. The build itself needs network; the gates do not.
-2. Set `DDF_COUNCIL_GATE_IMAGE=localhost/ddf-council-gate:20261026a`, or another local tag you built. On this host, `podman image inspect` gives that tag the image ID `d739908eeb4353b92412c33dc34e06ab94871e25c99bd898bc1bc9ce89004039` (measured 2026-10-26; its build log shows the crate checksum `OK` and the patch applied). It adds `ddf-cargo-mutants-noexclude` for the [exemption oracle](#exemption-oracle-r12); the mutation gate refuses on an image without it. Earlier images: `:20261025c` (`74a31d36…`) has no no-exclusion build. `:20261025b` (`d26503c7…`) lacks `/opt/ddf-probe-writable`, so the planted-breach test's positive control fails on it. The first image, `:20261025` (`bb89cf38…`), lacked `git` and a C++ compiler. Council r4's tests and fuzz gates failed closed on it: the Git-backed fixtures could not run, and `libfuzzer-sys` could not compile.
+2. Set `DDF_COUNCIL_GATE_IMAGE=localhost/ddf-council-gate:20261026c`, or another local tag you built. On this host, `podman image inspect` gives that tag the image ID `8f4ea620d02155bfb4dd97dd43a1d2dff1147f6d3739ab0a6125ea687a5f2d4b` (measured 2026-10-26; its build log shows the crate checksum `OK` and both patches applied). It carries `ddf-cargo-mutants-noexclude` and `ddf-cargo-mutants-strict` for the [exemption oracle](#allow-list-r17); the mutation gate refuses on an image without them. Earlier images: `:20261026b` (`32976d40…`) honours a bare `#[test]` in its strict build; `:20261026a` (`d739908e…`) has no strict build; `:20261025c` (`74a31d36…`) has neither. `:20261025b` (`d26503c7…`) lacks `/opt/ddf-probe-writable`, so the planted-breach test's positive control fails on it. The first image, `:20261025` (`bb89cf38…`), lacked `git` and a C++ compiler. Council r4's tests and fuzz gates failed closed on it: the Git-backed fixtures could not run, and `libfuzzer-sys` could not compile.
 3. On Fedora Atomic (Silverblue/Kinoite), Podman is on the host and not in the default Toolbx container. Measured here: `fedora-toolbox-44` has `flatpak-spawn` but no `podman`. You have two options:
    - Run the controller on the host.
    - From a toolbox, set `DDF_COUNCIL_PODMAN="flatpak-spawn --host podman"`. The variable is split on whitespace into the runtime argv. Exit statuses propagate through it; `container exists` answers 1 for an absent container (measured).

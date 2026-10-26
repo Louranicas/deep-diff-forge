@@ -41,9 +41,19 @@ class Canonical(unittest.TestCase):
         b = 'fn f() {\n    _0 = const "alloc2";\n}\n'
         self.assertNotEqual(oracle.canonical_mir(a), oracle.canonical_mir(b))
 
-    def test_undefined_allocations_are_refused(self):
-        with self.assertRaises(RuntimeError):
-            oracle.canonical_mir(FN % "5")
+    def test_identifiers_that_look_like_allocations_are_left_alone(self):
+        # `fn alloc7` names no allocation: it must neither collapse with another name nor fail
+        # (council r16: a sentinel let a candidate make a configuration unobservable).
+        a = "fn alloc7() {\n}\n"
+        b = "fn alloc8() {\n}\n"
+        self.assertNotEqual(oracle.canonical_mir(a), oracle.canonical_mir(b))
+        self.assertEqual(oracle.canonical_mir(a), a + "\n")
+
+    def test_a_quote_never_spans_lines(self):
+        # A hex dump's ASCII column can show a lone `"`; it must not pair with a quote below it.
+        a = mir([0], ["1"], ['00 │ 22 │ "'])
+        b = mir([0], ["9"], ['00 │ 22 │ "'])
+        self.assertEqual(oracle.canonical_mir(a), oracle.canonical_mir(b))
 
     def test_empty_single_line_allocations(self):
         a = FN % "3" + "alloc3 (size: 0, align: 1) {}\n"
@@ -80,24 +90,6 @@ class Artifacts(unittest.TestCase):
         self.assertEqual(oracle.stem_of("/t/deps/libv7.so"), "v7")
         self.assertEqual(oracle.stem_of("/t/deps/library-2b"), "library-2b")
         self.assertEqual(oracle.stem_of("/t/deps/liberty-3c"), "liberty-3c")
-
-
-class Sections(unittest.TestCase):
-    NAMES = ["m::tests::helper", "a::tests::dup", "b::tests::dup",
-             "m::<impl at crates/x/src/m.rs:10:1: 20:2>::below", "m::<impl at crates/x/src/m.rs:30:1: 40:2>::below"]
-
-    def test_free_functions_match_a_unique_path_suffix(self):
-        self.assertEqual(oracle.section_of(("crates/x/src/m.rs", "tests::helper", 5, 1), self.NAMES), "m::tests::helper")
-        self.assertIsNone(oracle.section_of(("crates/x/src/m.rs", "tests::dup", 5, 1), self.NAMES))
-
-    def test_methods_match_the_impl_that_contains_them(self):
-        self.assertEqual(oracle.section_of(("crates/x/src/m.rs", "Rng::below", 12, 5), self.NAMES), self.NAMES[3])
-        self.assertEqual(oracle.section_of(("crates/x/src/m.rs", "Other::below", 33, 5), self.NAMES), self.NAMES[4])
-        self.assertIsNone(oracle.section_of(("crates/x/src/m.rs", "Rng::below", 25, 5), self.NAMES))
-
-    def test_sections_split_a_dump(self):
-        found = oracle.sections("fn a() {\n    x\n}\nfn b::c(_1: u8) {\n    y\n}\n")
-        self.assertEqual(sorted(found), ["a", "b::c"])
 
 
 if __name__ == "__main__":

@@ -865,14 +865,29 @@ fn vendored_dependencies(
     Ok((sealed, seal.sha256))
 }
 
+/// The controller's own reading of the oracle's witness: `passed`, and either nothing hidden or a
+/// reproducible comparison, in configurations that all built, whose positive control moved. The
+/// exit status alone is not trusted, nor the oracle's `state` alone.
+fn oracle_passed(verdict: &serde_json::Value) -> bool {
+    // Every configuration the oracle compared must have been built (council r17).
+    let built = verdict["configurations"]
+        .as_object()
+        .is_some_and(|configs| !configs.is_empty() && configs.values().all(|v| v == "built"));
+    verdict["state"] == "passed"
+        && (verdict["hidden_functions"] == 0
+            || verdict["control"]["mir_changed"] == true
+                && verdict["reproducible"] == true
+                && built)
+}
+
 /// Refuse, before the mutation gate's job slot exists, a candidate whose shipped code cargo-mutants
 /// would skip. The embedded oracle lists the mutation scope with the gate's cargo-mutants and with
-/// the image's no-exclusion build, neutralises what only the second listed, and requires each such
-/// function to be genuine test code: its neutralisation must change or break a test harness of the
-/// gate configuration and change no non-test unit of the gate, release, all-features or
-/// no-default-features builds (`policy/exemption_oracle.py` has the detail). It runs once per run,
-/// offline, in its own sandbox job with the mutation gate's environment; candidate build scripts
-/// and proc macros run there, never in the controller.
+/// the image's strict and no-exclusion builds. A function hidden by anything but `#[cfg(test)]`
+/// is refused outright; one hidden only by it must leave every non-test unit of every workspace
+/// member, in the gate and release builds, unchanged when neutralised
+/// (`policy/exemption_oracle.py` has the detail). It runs once per run, offline, in its own
+/// sandbox job with the mutation gate's environment; candidate build scripts and proc macros run
+/// there, never in the controller.
 fn refuse_hidden_exemptions(
     directory: &Path,
     manifest: &Manifest,
@@ -930,10 +945,7 @@ fn refuse_hidden_exemptions(
             .unwrap_or_default();
         // A pass needs no hidden functions, or a reproducible comparison whose positive control saw
         // a change (council r14: both are checked here, not taken from the oracle's state).
-        let passed = receipt.outcome == Outcome::Passed
-            && verdict["state"] == "passed"
-            && (verdict["hidden_functions"] == 0
-                || verdict["control"]["mir_changed"] == true && verdict["reproducible"] == true);
+        let passed = receipt.outcome == Outcome::Passed && oracle_passed(&verdict);
         if !passed {
             let refused = verdict["refused"]
                 .as_array()

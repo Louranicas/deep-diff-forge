@@ -2,7 +2,7 @@
 # Design/status: docs/REVIEW_COUNCIL.md#gate-sandbox
 #
 # Build (rootless Podman, network only at build time):
-#   podman build --pull=never -t localhost/ddf-council-gate:20261026a -f review-policy/sandbox/Containerfile review-policy/sandbox
+#   podman build --pull=never -t localhost/ddf-council-gate:20261026c -f review-policy/sandbox/Containerfile review-policy/sandbox
 # Gates then run this image by image ID with --network=none, a read-only root, a read-only source mount,
 # all capabilities dropped, no-new-privileges and no host home mounts; see deep-diff-forge-review/src/sandbox.rs.
 # The controller sets RUSTUP_TOOLCHAIN to the stable toolchain below (sandbox.rs STABLE_TOOLCHAIN).
@@ -23,15 +23,22 @@ RUN cargo install --locked cargo-mutants@27.1.0 cargo-fuzz@0.13.2 \
 # The exemption oracle's second listing (crates/deep-diff-forge-review/policy/exemption_oracle.py):
 # the same cargo-mutants release, from the crates.io archive pinned by the checksum the registry
 # index records for 27.1.0, with attribute and `unsafe fn` exclusions switched off by a reviewed
-# patch. It only lists; the gate's mutation run always uses the stock build above.
+# patch. It only lists; the gate's mutation run always uses the stock build above. A second
+# patch builds `ddf-cargo-mutants-strict`, which honours only `#[cfg(test)]`: the oracle's
+# allow-list (decision record 1.0.8).
 COPY cargo-mutants-noexclude.patch /tmp/noexclude.patch
+COPY cargo-mutants-strict.patch /tmp/strict.patch
 RUN curl -fsSLo /tmp/cargo-mutants.crate https://static.crates.io/crates/cargo-mutants/cargo-mutants-27.1.0.crate \
  && echo "07072e7bcdeb425d5e5fdbfd9f15a2c749e23cb2edf5ef40aee5876760ae1cf9  /tmp/cargo-mutants.crate" | sha256sum -c - \
  && tar -xzf /tmp/cargo-mutants.crate -C /tmp \
  && patch -d /tmp/cargo-mutants-27.1.0 -p1 < /tmp/noexclude.patch \
  && cargo install --locked --path /tmp/cargo-mutants-27.1.0 --root /tmp/noexclude \
  && install -m 0755 /tmp/noexclude/bin/cargo-mutants /opt/cargo/bin/ddf-cargo-mutants-noexclude \
- && rm -rf /tmp/cargo-mutants* /tmp/noexclude* /opt/cargo/registry /opt/cargo/git
+ && rm -rf /tmp/cargo-mutants-27.1.0 && tar -xzf /tmp/cargo-mutants.crate -C /tmp \
+ && patch -d /tmp/cargo-mutants-27.1.0 -p1 < /tmp/strict.patch \
+ && cargo install --locked --path /tmp/cargo-mutants-27.1.0 --root /tmp/strict \
+ && install -m 0755 /tmp/strict/bin/cargo-mutants /opt/cargo/bin/ddf-cargo-mutants-strict \
+ && rm -rf /tmp/cargo-mutants* /tmp/noexclude* /tmp/strict* /opt/cargo/registry /opt/cargo/git
 
 FROM registry.fedoraproject.org/fedora:44@sha256:0d2a354dfdf7ba75083fe371eb6239842fe13f38c52d339dae1ebcf13c7c4062
 # gcc-c++: libfuzzer-sys compiles C++ through cc-rs (measured: r4 fuzz gate "failed to find tool c++").
