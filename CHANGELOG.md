@@ -73,8 +73,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - `deep-diff-forge schema [result|exit-codes]` prints the envelope's JSON Schema
   (2020-12) or the exit-code registry. `deep-diff-forge explain <code> [--family
   engine|council] [--json]` names one code.
-- One exit-code registry, by command family (`engine`, `council`). The README
+- One exit-code registry, by command family (`engine`, `council`), owned by
+  `deep_diff_forge_core::exit` so the daemon and SDK slices can share it. Every
+  exit site uses its constants, and a source-scan test forbids numeric exit
+  literals. The engine meanings now say what the codes are used for: 3 is any I/O
+  or encoding failure, 4 is any invalid input, and 101 is a panic (council sa1:
+  the old "patch parse" label misnamed receipt and analysis errors). The README
   documents both tables, and a test fails if they drift from the registry.
+- `envelope` keeps the command's exit code when its own reader closes the pipe;
+  whitespace-only stdout stays text; the schema lists every emitted field as
+  required and enumerates `outcome`.
 - `--help` no longer says crates.io is blocked only by a missing token; it is on
   hold until the codebase is production-ready.
 

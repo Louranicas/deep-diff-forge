@@ -14,6 +14,7 @@
 //! `--require-hunks` refusal.
 
 use crate::{InputGuards, emit, emit_review, flag_value, seal_of};
+use deep_diff_forge_core::exit;
 use deep_diff_forge_core::{display_safe, json_escape};
 use deep_diff_forge_patch::{
     GitAcquireError, GitAcquireOptions, GitAcquisition, GitPath, GitSelection, acquire_git,
@@ -27,7 +28,7 @@ const SELECTORS: &[&str] = &["--git-working-tree", "--git-staged", "--git-range"
 pub(crate) fn reject_with_stdin(opts: &[String]) {
     if let Some(flag) = opts.iter().find(|a| SELECTORS.contains(&a.as_str())) {
         eprintln!("error: --stdin-patch cannot be combined with {flag}; choose one input source");
-        std::process::exit(2);
+        std::process::exit(exit::USAGE);
     }
 }
 
@@ -36,17 +37,17 @@ fn usage(message: &str) -> ! {
     eprintln!(
         "usage: deep-diff-forge {{--git-working-tree [--include-untracked] | --git-staged | --git-range A..B}} [--repo PATH] [--acquisition-json | --json | --jsonl | --rank | --cluster | --layout inline|side-by-side] [--require-files] [--require-hunks]"
     );
-    std::process::exit(2);
+    std::process::exit(exit::USAGE);
 }
 
 fn exit_code(err: &GitAcquireError) -> i32 {
     match err {
-        GitAcquireError::InvalidSelection { .. } => 2,
+        GitAcquireError::InvalidSelection { .. } => exit::USAGE,
         GitAcquireError::Spawn { .. }
         | GitAcquireError::CommandFailed { .. }
         | GitAcquireError::NonUtf8Patch
-        | GitAcquireError::NonUtf8Path { .. } => 3,
-        _ => 4,
+        | GitAcquireError::NonUtf8Path { .. } => exit::IO,
+        _ => exit::INVALID_INPUT,
     }
 }
 

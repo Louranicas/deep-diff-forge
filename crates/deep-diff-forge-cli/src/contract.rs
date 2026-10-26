@@ -1,12 +1,13 @@
 // DDF slice A: the machine contract (`ddf.result.v1`, the exit-code registry, `schema`, `explain`,
 // `envelope`). Design/status: docs/ROADMAP.md#status-2026-10-26 and README "Machine contract".
-//! One registry of exit codes, by command family, and the `ddf.result.v1` envelope.
+//! The `ddf.result.v1` envelope over the exit-code registry (`deep_diff_forge_core::exit`).
 //!
 //! `envelope -- <command…>` runs this binary as a child with the given arguments and wraps what it
 //! did, whatever the command, in one JSON object: its exit status and the registry's name for it,
 //! its stdout (parsed when it is one JSON value), and its stderr. The child's own output is never
 //! changed, so every existing consumer keeps working, and the envelope exits with the child's code.
 
+use deep_diff_forge_core::exit::{EXIT_CODES, ExitCode, lookup};
 use serde_json::{Value, json};
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -20,75 +21,6 @@ pub const STDOUT_CAP: usize = 16 * 1024 * 1024;
 /// Captured stderr beyond this many bytes is cut and the envelope reports `truncated`.
 pub const STDERR_CAP: usize = 1024 * 1024;
 
-/// One exit code of one command family.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ExitCode {
-    pub family: &'static str,
-    pub code: i32,
-    pub name: &'static str,
-    pub meaning: &'static str,
-}
-
-/// Every exit code the CLI documents. `council` is the review-council subcommand family; `engine`
-/// is every other command. Each README "Exit codes" row must begin with its meaning here, and the
-/// two must name the same codes (`tests/contract.rs`).
-pub const EXIT_CODES: &[ExitCode] = &[
-    ExitCode {
-        family: "engine",
-        code: 0,
-        name: "success",
-        meaning: "Success.",
-    },
-    ExitCode {
-        family: "engine",
-        code: 2,
-        name: "usage",
-        meaning: "CLI usage / argument error.",
-    },
-    ExitCode {
-        family: "engine",
-        code: 3,
-        name: "input_read",
-        meaning: "Input (stdin or file) read failure.",
-    },
-    ExitCode {
-        family: "engine",
-        code: 4,
-        name: "parse",
-        meaning: "Patch parse failure.",
-    },
-    ExitCode {
-        family: "engine",
-        code: 6,
-        name: "daemon_or_terminal",
-        meaning: "Daemon / interactive-terminal failure.",
-    },
-    ExitCode {
-        family: "engine",
-        code: 7,
-        name: "input_contract_refused",
-        meaning: "Input contract refused.",
-    },
-    ExitCode {
-        family: "council",
-        code: 0,
-        name: "completed",
-        meaning: "The requested council operation completed under its contract; `status` exit 0 means ready for human review.",
-    },
-    ExitCode {
-        family: "council",
-        code: 4,
-        name: "refused",
-        meaning: "Malformed input, stale admission, an existing artifact, or a protocol or I/O failure.",
-    },
-    ExitCode {
-        family: "council",
-        code: 7,
-        name: "hold",
-        meaning: "HOLD: failed, missing or inconclusive evidence.",
-    },
-];
-
 /// The command family an argument vector belongs to.
 pub fn family_of(args: &[String]) -> &'static str {
     if args.first().map(String::as_str) == Some("council") {
@@ -96,13 +28,6 @@ pub fn family_of(args: &[String]) -> &'static str {
     } else {
         "engine"
     }
-}
-
-/// The registry entry for `code` in `family`, if documented.
-pub fn lookup(family: &str, code: i32) -> Option<&'static ExitCode> {
-    EXIT_CODES
-        .iter()
-        .find(|e| e.family == family && e.code == code)
 }
 
 /// `explain <code> [--family engine|council] [--json]`: what an exit code means.
@@ -161,14 +86,23 @@ pub fn schema(args: &[String]) -> Result<String, String> {
     Ok(format!("{value:#}\n"))
 }
 
+/// Every outcome name the envelope can report.
+fn outcomes() -> Vec<&'static str> {
+    let mut names: Vec<&str> = EXIT_CODES.iter().map(|e| e.name).collect();
+    names.extend(["undocumented", "signal"]);
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
 fn result_schema() -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://github.com/Louranicas/deep-diff-forge/schemas/ddf.result.v1.json",
         "title": RESULT_SCHEMA,
-        "description": "What one deep-diff-forge command did, as reported by `deep-diff-forge envelope -- <command…>`.",
+        "description": "What one deep-diff-forge CLI process did, as reported by `deep-diff-forge envelope -- <command…>`. A parsed stdout is the command's JSON value re-serialised (key order and number text may differ); byte-exact consumers read the command directly. The envelope sets no deadline of its own.",
         "type": "object",
-        "required": ["schema", "version", "command", "family", "exit_code", "outcome", "ok", "stdout", "stderr", "truncated"],
+        "required": ["schema", "version", "command", "family", "exit_code", "outcome", "ok", "stdout", "stdout_format", "stdout_utf8", "stderr", "truncated"],
         "additionalProperties": false,
         "properties": {
             "schema": {"const": RESULT_SCHEMA},
@@ -177,7 +111,7 @@ fn result_schema() -> Value {
             "family": {"enum": ["engine", "council"]},
             "exit_code": {"type": ["integer", "null"], "description": "null when the command ended on a signal."},
             "signal": {"type": "integer"},
-            "outcome": {"type": "string", "description": "The registry name of exit_code in this family (`deep-diff-forge schema exit-codes`), `undocumented` or `signal`."},
+            "outcome": {"enum": outcomes(), "description": "The registry name of exit_code in this family (`deep-diff-forge schema exit-codes`), `undocumented` or `signal`."},
             "ok": {"type": "boolean", "description": "exit_code is 0 and nothing was truncated."},
             "stdout": {"description": "The parsed value when stdout is exactly one JSON value; otherwise its text (lossy UTF-8)."},
             "stdout_format": {"enum": ["json", "text", "empty"]},
@@ -218,13 +152,14 @@ pub fn wrap(
         Err(_) => (Value::Null, "signal"),
     };
     let text = String::from_utf8_lossy(stdout.0);
-    let trimmed = text.trim();
-    let (body, format) = if trimmed.is_empty() {
+    // Empty means no bytes at all; whitespace is text. Only JSON's own whitespace may surround a
+    // parsed value (serde_json's rule), a cut value is never parsed, nor is invalid UTF-8.
+    let (body, format) = if stdout.0.is_empty() {
         (json!(""), "empty")
-    } else if stdout.1 {
-        (json!(text), "text") // a cut value is never parsed
+    } else if stdout.1 || std::str::from_utf8(stdout.0).is_err() {
+        (json!(text), "text")
     } else {
-        serde_json::from_str::<Value>(trimmed)
+        serde_json::from_str::<Value>(&text)
             .map_or_else(|_| (json!(text), "text"), |value| (value, "json"))
     };
     let truncated: Vec<&str> = [("stdout", stdout.1), ("stderr", stderr.1)]
@@ -309,17 +244,84 @@ mod tests {
         list.iter().map(|s| (*s).to_owned()).collect()
     }
 
+    /// Every envelope `wrap` can produce satisfies the published schema's keys and enums.
     #[test]
-    fn every_family_code_pair_is_unique_and_named() {
-        for (i, a) in EXIT_CODES.iter().enumerate() {
-            assert!(!a.name.is_empty() && !a.meaning.is_empty());
-            assert!(
-                EXIT_CODES[i + 1..]
-                    .iter()
-                    .all(|b| (a.family, a.code) != (b.family, b.code)),
-                "{a:?}"
-            );
+    fn wrap_conforms_to_the_published_schema() {
+        let schema = result_schema();
+        let properties = schema["properties"].as_object().unwrap();
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        let cases = [
+            wrap(&args(&["x"]), Ok(0), (b"{}", false), (b"", false)),
+            wrap(
+                &args(&["council", "status"]),
+                Ok(7),
+                (b"x", true),
+                (b"e", true),
+            ),
+            wrap(&args(&["x"]), Err(9), (b"", false), (b"", false)),
+            wrap(&args(&["x"]), Ok(5), (b"\xff", false), (b"", false)),
+        ];
+        for value in cases {
+            let object = value.as_object().unwrap();
+            assert!(object.keys().all(|k| properties.contains_key(k)), "{value}");
+            assert!(required.iter().all(|k| object.contains_key(*k)), "{value}");
+            for field in ["outcome", "stdout_format", "family"] {
+                assert!(
+                    properties[field]["enum"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&value[field]),
+                    "{field}: {value}"
+                );
+            }
         }
+    }
+
+    struct Counting<'a>(&'a [u8], usize);
+
+    impl Read for Counting<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(self.0.len() - self.1).min(3);
+            buf[..n].copy_from_slice(&self.0[self.1..self.1 + n]);
+            self.1 += n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn capture_drains_everything_past_the_cap() {
+        let data = [7u8; 64];
+        let mut reader = Counting(&data, 0);
+        let (kept, cut) = capture(&mut reader, 10).unwrap();
+        assert_eq!((kept.len(), cut, reader.1), (10, true, 64));
+    }
+
+    #[test]
+    fn whitespace_is_text_and_only_json_whitespace_surrounds_a_value() {
+        let v = wrap(&args(&["x"]), Ok(0), (b" \n", false), (b"", false));
+        assert_eq!(
+            (v["stdout"].as_str(), v["stdout_format"].as_str()),
+            (Some(" \n"), Some("text"))
+        );
+        let v = wrap(
+            &args(&["x"]),
+            Ok(0),
+            ("\u{a0}{}".as_bytes(), false),
+            (b"", false),
+        );
+        assert_eq!(v["stdout_format"], "text");
+        let v = wrap(
+            &args(&["x"]),
+            Ok(0),
+            (b"\n {\"a\":1} \r\n", false),
+            (b"", false),
+        );
+        assert_eq!(v["stdout"]["a"], 1);
     }
 
     #[test]

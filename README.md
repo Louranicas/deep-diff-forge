@@ -556,10 +556,11 @@ single canonical snake-case spelling (`added`, `modified`, `deleted`,
 | --- | --- |
 | 0 | Success. |
 | 2 | CLI usage / argument error. |
-| 3 | Input (stdin or file) read failure. |
-| 4 | Patch parse failure. |
+| 3 | I/O or encoding failure: reading input (stdin, a file, Git, the learning store), non-UTF-8 input, or writing output. |
+| 4 | Invalid input: a patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, or a refused Git acquisition. |
 | 6 | Daemon / interactive-terminal failure. |
 | 7 | Input contract refused. `--require-files`: the (well-formed) patch describes 0 files — stderr `refused: 0 files in input (--require-files)`. `--require-hunks`: the patch has 0 hunks or 0 added+removed lines (header-only, rename-only, context-only) — stderr `refused: 0 hunks in input (--require-hunks)`. Gates should pass both. |
+| 101 | Internal error (a panic). Report it as a bug. |
 
 The `council` subcommands use their own family ([review council](docs/REVIEW_COUNCIL.md)):
 
@@ -567,7 +568,7 @@ The `council` subcommands use their own family ([review council](docs/REVIEW_COU
 | --- | --- |
 | 0 | The requested council operation completed under its contract; `status` exit 0 means ready for human review. |
 | 4 | Malformed input, stale admission, an existing artifact, or a protocol or I/O failure. |
-| 7 | HOLD: failed, missing or inconclusive evidence. |
+| 7 | HOLD: failed, missing or inconclusive evidence, or an import conflict. |
 
 Diagnostics never pollute stdout: on error, stdout stays empty and the message
 goes to stderr.

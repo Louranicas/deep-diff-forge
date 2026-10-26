@@ -7,6 +7,7 @@ use crate::{
     Round, assess, load_manifest, prepare, require, run_gate, run_reviewer, source_fingerprint,
     storage, validate_report,
 };
+use deep_diff_forge_core::exit;
 use std::path::Path;
 
 /// Execute council CLI arguments, returning a machine-readable result and appropriate exit code.
@@ -45,7 +46,7 @@ pub fn dispatch(args: &[String]) -> Result<(String, i32)> {
         "import" if args.len() == 3 => import(Path::new(&args[1]), Path::new(&args[2])),
         "export-tuicr" => export_tuicr(&args[1..]),
         "import-tuicr" => import_tuicr(&args[1..]),
-        "help" if args.len() <= 1 => Ok((HELP.into(), 0)),
+        "help" if args.len() <= 1 => Ok((HELP.into(), exit::COUNCIL_COMPLETED)),
         _ => Err(ReviewFailure(
             "invalid council command or missing explicit --execute; use council help".into(),
         )),
@@ -55,7 +56,11 @@ const HELP: &str = "council example | prepare <request.json> <new-run-dir> | sta
 fn output(value: &impl serde::Serialize, passed: bool) -> Result<(String, i32)> {
     Ok((
         serde_json::to_string_pretty(value)? + "\n",
-        if passed { 0 } else { 7 },
+        if passed {
+            exit::COUNCIL_COMPLETED
+        } else {
+            exit::COUNCIL_HOLD
+        },
     ))
 }
 fn status(directory: &Path) -> Result<(String, i32)> {
@@ -84,7 +89,7 @@ fn import(directory: &Path, path: &Path) -> Result<(String, i32)> {
         &storage::report_path(directory, &report.reviewer_id, report.round),
         &report,
     )?;
-    Ok(("{\"imported\":true,\"provenance\":\"manual_unverified\",\"satisfies_execution_gate\":false}\n".into(), 0))
+    Ok(("{\"imported\":true,\"provenance\":\"manual_unverified\",\"satisfies_execution_gate\":false}\n".into(), exit::COUNCIL_COMPLETED))
 }
 /// Parse `export-tuicr <run-dir> --session <path> [--allow-review-level] [--execute]`; dry run by default.
 fn export_tuicr(args: &[String]) -> Result<(String, i32)> {

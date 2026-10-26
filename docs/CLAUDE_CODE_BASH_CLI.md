@@ -73,6 +73,10 @@ deep-diff-forge daemon stop
 
 ## Exit Codes
 
+> The table below is the original design. The shipped codes are the registry printed by
+> `deep-diff-forge schema exit-codes` and documented in the README's "Exit codes"; codes 1, 5 and
+> 8 are not emitted.
+
 | Code | Meaning |
 | --- | --- |
 | 0 | Success. |

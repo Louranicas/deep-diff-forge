@@ -4,6 +4,7 @@
 mod analysis;
 mod contract;
 mod git_input;
+use deep_diff_forge_core::exit;
 use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe};
 
 /// Write `s` to stdout, treating a reader that closed the pipe (`… | head`) as
@@ -15,10 +16,10 @@ fn emit(s: &str) {
     use std::io::Write as _;
     if let Err(err) = std::io::stdout().write_all(s.as_bytes()) {
         if err.kind() == std::io::ErrorKind::BrokenPipe {
-            std::process::exit(0);
+            std::process::exit(exit::SUCCESS);
         }
         eprintln!("error: write failed: {err}");
-        std::process::exit(3);
+        std::process::exit(exit::IO);
     }
 }
 
@@ -46,15 +47,15 @@ fn read_capped_or_exit(reader: impl std::io::Read, what: &str) -> String {
     // without ever buffering an unbounded amount.
     if let Err(err) = reader.take(cap as u64 + 1).read_to_end(&mut buf) {
         eprintln!("error: could not read {what}: {err}");
-        std::process::exit(3);
+        std::process::exit(exit::IO);
     }
     if buf.len() > cap {
         eprintln!("error: {what} exceeds the {cap}-byte input budget");
-        std::process::exit(4);
+        std::process::exit(exit::INVALID_INPUT);
     }
     let Ok(text) = String::from_utf8(buf) else {
         eprintln!("error: {what} is not valid UTF-8");
-        std::process::exit(3);
+        std::process::exit(exit::IO);
     };
     text
 }
@@ -79,14 +80,14 @@ fn main() {
             }
             Err(error) => {
                 eprintln!("error: {error}");
-                std::process::exit(4);
+                std::process::exit(exit::COUNCIL_REFUSED);
             }
         },
         Some("analyze") => match analysis::run(&args.collect::<Vec<_>>()) {
             Ok(json) => emit(&json),
             Err(error) => {
                 eprintln!("error: {error}");
-                std::process::exit(4);
+                std::process::exit(exit::INVALID_INPUT);
             }
         },
         Some("semantic") => {
@@ -126,12 +127,19 @@ fn main() {
         Some("explain") => contract_output(contract::explain(&args.collect::<Vec<_>>())),
         Some("envelope") => match contract::envelope(&args.collect::<Vec<_>>()) {
             Ok((json, code)) => {
-                emit(&json);
+                // Unlike `emit`, a closed reader keeps the command's own exit code (council sa1).
+                use std::io::Write as _;
+                if let Err(err) = std::io::stdout().write_all(json.as_bytes())
+                    && err.kind() != std::io::ErrorKind::BrokenPipe
+                {
+                    eprintln!("error: write failed: {err}");
+                    std::process::exit(exit::IO);
+                }
                 std::process::exit(code);
             }
             Err(error) => {
                 eprintln!("error: {error}");
-                std::process::exit(2);
+                std::process::exit(exit::USAGE);
             }
         },
         Some("claude-code-contract") => claude_code_contract(),
@@ -141,7 +149,7 @@ fn main() {
         Some(command) => {
             eprintln!("unknown command: {command}");
             eprintln!("run `deep-diff-forge --help` for supported bootstrap commands");
-            std::process::exit(2);
+            std::process::exit(exit::USAGE);
         }
     }
 }
@@ -151,7 +159,7 @@ fn main() {
 /// Distinct from 4 (the input could not be parsed) so a gate can tell "nothing
 /// to review" from "garbage". This is the "contract violation" slot of the
 /// documented exit-code table.
-const EXIT_REFUSED: i32 = 7;
+const EXIT_REFUSED: i32 = exit::INPUT_CONTRACT_REFUSED;
 
 /// Which input guards the caller asked for. Both default to off, so a plain
 /// invocation keeps its documented behaviour (nothing to review → exit 0).
@@ -213,7 +221,7 @@ fn parse_or_exit(input: &str) -> Vec<deep_diff_forge_core::ReviewFile> {
         Ok(files) => files,
         Err(err) => {
             eprintln!("error: patch parse failed: {err}");
-            std::process::exit(4);
+            std::process::exit(exit::INVALID_INPUT);
         }
     }
 }
@@ -283,7 +291,7 @@ fn emit_review(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], inpu
                 "error: unknown layout: {} (expected inline|side-by-side)",
                 display_safe(&name)
             );
-            std::process::exit(2);
+            std::process::exit(exit::USAGE);
         }
     } else {
         print_patch_summary(files);
@@ -308,7 +316,7 @@ fn daemon_cmd(opts: &[String]) {
         eprintln!(
             "usage: deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]"
         );
-        std::process::exit(2);
+        std::process::exit(exit::USAGE);
     }
     // One resolution point: explicit `--socket` override, else $XDG_RUNTIME_DIR,
     // else fail closed (no world-writable /tmp fallback). The result is a
@@ -320,14 +328,14 @@ fn daemon_cmd(opts: &[String]) {
             "error: $XDG_RUNTIME_DIR is not set; refusing an insecure world-writable /tmp socket."
         );
         eprintln!("       set XDG_RUNTIME_DIR, or pass an explicit --socket PATH.");
-        std::process::exit(2);
+        std::process::exit(exit::USAGE);
     };
     match sub {
         Some("path") => emitln!("{}", location.path().display()),
         Some("start") => {
             if let Err(err) = deep_diff_forge_daemon::run_server(&location) {
                 eprintln!("error: daemon failed: {err}");
-                std::process::exit(6);
+                std::process::exit(exit::DAEMON_OR_TERMINAL);
             }
         }
         Some("health") => daemon_client(&location, r#"{"id":1,"method":"daemon.health"}"#),
@@ -337,7 +345,7 @@ fn daemon_cmd(opts: &[String]) {
             eprintln!(
                 "usage: deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]"
             );
-            std::process::exit(2);
+            std::process::exit(exit::USAGE);
         }
     }
 }
@@ -350,7 +358,7 @@ fn daemon_client(location: &deep_diff_forge_daemon::SocketLocation, line: &str) 
                 "error: no daemon at {}: {err}",
                 display_safe(&location.path().to_string_lossy())
             );
-            std::process::exit(6);
+            std::process::exit(exit::DAEMON_OR_TERMINAL);
         }
     }
 }
@@ -370,7 +378,7 @@ fn learn_cmd(opts: &[String]) {
         Some("record") => learn_record(opts),
         _ => {
             eprintln!("usage: deep-diff-forge learn {{status|record --stdin}} [--json]");
-            std::process::exit(2);
+            std::process::exit(exit::USAGE);
         }
     }
 }
@@ -383,14 +391,14 @@ fn learn_status(json: bool) {
         Ok(d) => d,
         Err(err) => {
             eprintln!("error: {err}");
-            std::process::exit(3);
+            std::process::exit(exit::IO);
         }
     };
     let report = match LearningReport::from_dir(&dir) {
         Ok(r) => r,
         Err(err) => {
             eprintln!("error: could not read learning store: {err}");
-            std::process::exit(3);
+            std::process::exit(exit::IO);
         }
     };
     let dir_str = dir.display().to_string();
@@ -464,19 +472,19 @@ fn learn_record(opts: &[String]) {
     use deep_diff_forge_learning::{StrategyReceipt, record_receipt};
     if !opts.iter().any(|a| a == "--stdin") {
         eprintln!("usage: deep-diff-forge learn record --stdin   (reads one JSON receipt)");
-        std::process::exit(2);
+        std::process::exit(exit::USAGE);
     }
     let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
     let receipt = match StrategyReceipt::from_json(input.trim()) {
         Ok(r) => r,
         Err(err) => {
             eprintln!("error: invalid receipt: {err}");
-            std::process::exit(4);
+            std::process::exit(exit::INVALID_INPUT);
         }
     };
     if let Err(err) = record_receipt(&receipt) {
         eprintln!("error: could not record receipt: {err}");
-        std::process::exit(3);
+        std::process::exit(exit::IO);
     }
     emitln!(
         "recorded: {} receipt for {} ({})",
@@ -539,7 +547,7 @@ fn review_cmd(opts: &[String]) {
         }
     } else if let Err(err) = deep_diff_forge_tui::run(app) {
         eprintln!("error: review requires an interactive terminal: {err}");
-        std::process::exit(6);
+        std::process::exit(exit::DAEMON_OR_TERMINAL);
     }
 }
 
@@ -591,7 +599,7 @@ fn read_source_file_or_exit(path: &str) -> String {
         Ok(f) => f,
         Err(err) => {
             eprintln!("error: could not read {}: {err}", display_safe(path));
-            std::process::exit(3);
+            std::process::exit(exit::IO);
         }
     };
     read_capped_or_exit(file, "source file")
@@ -603,7 +611,7 @@ fn structural_cmd(opts: &[String]) {
     let paths: Vec<&String> = opts.iter().filter(|a| !a.starts_with("--")).collect();
     let (Some(old_path), Some(new_path)) = (paths.first(), paths.get(1)) else {
         eprintln!("usage: deep-diff-forge structural <old> <new> [--json]");
-        std::process::exit(2);
+        std::process::exit(exit::USAGE);
     };
     let old_source = read_source_file_or_exit(old_path);
     let new_source = read_source_file_or_exit(new_path);
@@ -616,7 +624,7 @@ fn structural_cmd(opts: &[String]) {
             "error: structural diff is unsupported for {} — only Rust is tokenized today",
             display_safe(new_path)
         );
-        std::process::exit(2);
+        std::process::exit(exit::USAGE);
     }
     let diff = deep_diff_forge_syntax::structural_diff(language, &old_source, &new_source);
     if opts.iter().any(|a| a == "--json") {
@@ -728,7 +736,7 @@ fn highlight_cmd(opts: &[String]) {
     use std::io::IsTerminal as _;
     let Some(path) = opts.iter().find(|a| !a.starts_with("--")) else {
         eprintln!("usage: deep-diff-forge highlight <path> [--color|--no-color]");
-        std::process::exit(2);
+        std::process::exit(exit::USAGE);
     };
     let source = read_source_file_or_exit(path);
     let language = deep_diff_forge_syntax::detect_language(path);
@@ -755,7 +763,7 @@ fn highlight_cmd(opts: &[String]) {
 fn semantic_cmd(opts: &[String]) {
     let Some(path) = opts.iter().find(|a| !a.starts_with("--")) else {
         eprintln!("usage: deep-diff-forge semantic <path> [--json]");
-        std::process::exit(2);
+        std::process::exit(exit::USAGE);
     };
     let source = read_source_file_or_exit(path);
     let analysis = deep_diff_forge_syntax::analyze(
@@ -843,7 +851,7 @@ fn deploy_cmd(opts: &[String]) {
         Some("release") => deploy_release(json),
         _ => {
             eprintln!("usage: deep-diff-forge deploy {{status|release}} [--json]");
-            std::process::exit(2);
+            std::process::exit(exit::USAGE);
         }
     }
 }
@@ -960,7 +968,7 @@ fn run_jsonl_pipeline(input: String) {
         Ok(_) => {}
         Err(err) => {
             eprintln!("error: {err}");
-            std::process::exit(4);
+            std::process::exit(exit::INVALID_INPUT);
         }
     }
 }
@@ -1178,7 +1186,7 @@ fn contract_output(result: Result<String, String>) {
         Ok(text) => emit(&text),
         Err(error) => {
             eprintln!("error: {error}");
-            std::process::exit(2);
+            std::process::exit(exit::USAGE);
         }
     }
 }

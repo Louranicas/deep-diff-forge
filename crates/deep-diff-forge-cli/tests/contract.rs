@@ -154,3 +154,88 @@ fn readme_exit_code_tables_match_the_registry() {
         }
     }
 }
+
+/// True when `rest` begins with a decimal literal (optionally after a minus sign).
+fn starts_numeric(rest: &str) -> bool {
+    rest.trim_start_matches('-')
+        .starts_with(|c: char| c.is_ascii_digit())
+}
+
+/// The numeric exit codes a source line hands over directly: `process::exit(N)`, a council
+/// `Ok((…, N))`, or a `=> N,` match arm in an exit-code function.
+fn numeric_exit(line: &str, exit_arms: bool) -> bool {
+    let code = line.trim();
+    if code.starts_with("//") {
+        return false;
+    }
+    let call = code.split("process::exit(").skip(1).any(starts_numeric);
+    let pair = code.contains("Ok((")
+        && code.rsplit(", ").next().is_some_and(|tail| {
+            starts_numeric(tail)
+                && tail
+                    .trim_end_matches([')', ','])
+                    .chars()
+                    .all(|c| c.is_ascii_digit())
+        });
+    let arm = exit_arms
+        && code
+            .rsplit("=> ")
+            .next()
+            .is_some_and(|tail| code.contains("=> ") && starts_numeric(tail));
+    call || pair || arm
+}
+
+/// Every exit site uses the registry's constants (`deep_diff_forge_core::exit`): a numeric literal
+/// would be a code the registry does not own (council sa1).
+#[test]
+fn exit_sites_use_registry_constants() {
+    assert!(numeric_exit("        std::process::exit(4);", false));
+    assert!(numeric_exit("    Ok((HELP.into(), 0)),", false));
+    assert!(numeric_exit(
+        "        GitAcquireError::Spawn { .. } => 3,",
+        true
+    ));
+    assert!(!numeric_exit(
+        "        std::process::exit(exit::IO);",
+        false
+    ));
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
+    let files = [
+        ("deep-diff-forge-cli/src/main.rs", false),
+        ("deep-diff-forge-cli/src/git_input.rs", true),
+        ("deep-diff-forge-cli/src/analysis.rs", false),
+        ("deep-diff-forge-cli/src/contract.rs", false),
+        ("deep-diff-forge-review/src/cli.rs", false),
+    ];
+    for (file, exit_arms) in files {
+        let text = std::fs::read_to_string(format!("{root}/{file}")).unwrap();
+        let body = text.split("#[cfg(test)]").next().unwrap();
+        for (number, line) in body.lines().enumerate() {
+            assert!(
+                !numeric_exit(line, exit_arms),
+                "{file}:{}: {line}",
+                number + 1
+            );
+        }
+    }
+}
+
+#[test]
+fn envelope_keeps_the_commands_code_when_its_reader_closes() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args([
+            "envelope",
+            "--",
+            "--stdin-patch",
+            "--json",
+            "--require-files",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take()); // the reader goes away before the envelope writes
+    drop(child.stdin.take());
+    assert_eq!(child.wait().unwrap().code(), Some(7));
+}
