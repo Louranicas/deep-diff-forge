@@ -77,9 +77,11 @@ and must not be treated as security boundaries.
 ### Implemented (protocol 1)
 
 `engine.methods` is the authoritative list. A test keeps that list and the
-dispatcher in step. A client may pass `{"protocol": 1}` to `engine.initialize`;
-any other version is refused with domain error 2 rather than answered in another
-dialect.
+dispatcher in step. Protocol versions are additive. A client may pass `{"protocol": N}` to
+`engine.initialize` for any N up to 1, and the answer lists that version's
+methods. A newer or non-integer version is refused with domain error 2 rather
+than answered in another dialect. `METHODS` is the only route into the
+dispatcher.
 
 | Method | Params | Result | Since |
 | --- | --- | --- | --- |
@@ -93,7 +95,8 @@ dialect.
 **Parity:** `diff.compute` and the CLI share the parser, the input seal, the JSON
 projection and one input-contract predicate (`deep_diff_forge_patch::InputGuards`).
 A test feeds six fixtures under all four guard combinations to both surfaces and
-requires the same document, the same refusal text, or the same failure.
+requires the same document as a JSON value (key order is not part of the
+contract), the same refusal text, or the same parse-failure text.
 
 | Domain error | Meaning | CLI exit (engine family) |
 | --- | --- | --- |
