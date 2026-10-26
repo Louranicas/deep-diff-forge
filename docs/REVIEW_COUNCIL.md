@@ -665,6 +665,28 @@ Council r18 (run `f2baaa43…`) reviewed `a2b362e..e45aad0` with 11 of 12 report
 - A proc macro that always emits the same body, so neutralising cannot move it (subtractor): it needs a `cfg(test)` build script, which is now refused directly. Otherwise it is residual 1 (lying to the tool).
 - Incremental history is suppressed, not modelled. Any remaining build-history effect reads as drift (inconclusive), never as a refusal or a pass.
 
+<a id="dep-info-r20"></a>
+
+### r20: council r19 follow-ups — what rustc read, drift on every path, the controller reads the outcome
+
+Council r19 (run `4946f232…`) reviewed `e45aad0..d3498a1` with **all 12 reports and 8/8 gates**:
+- the oracle passed 2 hidden functions in 10 builds;
+- the mutation gate caught 12 of 12 mutants.
+
+| Finding (r19) | Control | Evidence |
+| --- | --- | --- |
+| A unit can compile code the neutralisation never touches. The finding named non-path packages (HIGH; security 5/0, architecture challenge). Its premise is partly wrong: a dependency's `rustc-cfg=test` applies only to that dependency. The class is real, though: an absolute `include!("/src/…")` compiles the **unneutralised snapshot** | **Each non-test unit's dep-info** (the files rustc read) is checked after every build. Refused: any unit reading the snapshot outside the build tree, and any registry or git unit reading a tree file other than its own `OUT_DIR` output. Workspace paths in dep-info are relative to the tree (measured; the first draft resolved them against `/src`, and the real-Podman positive control refused clean code until fixed) | **Real Podman:** a binary `include!`ing `/src/src/t.rs` is **not refused by v8** (gate exit 7) and is refused by v9. **Fake:** `a_registry_unit_that_reads_the_tree_is_refused` fails against v8 |
+| The drift guard ran only when something already shipped, so history that masked a neutralisation could pass (HIGH; falsifier 4/1, correctness 5/0, architecture) | The unmodified tree is rebuilt in **every** configuration after the neutralised builds; drift is inconclusive. Cost: +2 builds | **Fake:** `drift_on_a_passing_comparison_is_inconclusive` fails against v8 |
+| The controller checked preconditions, not the outcome (architecture 5/0) | `oracle_passed` also requires `refused` and `reasons` to be empty arrays, and, with hidden functions, `shipping_configurations` too | **Fake:** forged witnesses with refusals, reasons, shipping or a missing field are refused; fails against v8 |
+| One forged witness exercised both exact-set checks (falsifier 5/0) | Split into one witness per map | — |
+| Build-script `cfg(test)` was consulted only after the first builds (architecture 5/0) | Direct reports from any build are acted on before the verdict | — |
+| A candidate `target/` without `CACHEDIR.TAG` was copied (security) | The snapshot's top-level `target/` is never copied | — |
+| No real-rustc witness of the MIR comparison (architecture 4/1) | A real probe: a binary `include!`s another binary's `#[cfg(test)]` module file | **Real Podman:** refused as "allow-listed but compiled into …" |
+| An attribute macro emits a fixed body for a `#[cfg(test)]` function (subtractor, 3/2) | **Scope, documented:** the hidden body never ships; the shipped body is the macro's. Code from dependencies, from another crate's macro expansion, or generated files is outside the mutation gate by construction | — |
+| The oracle shares a uid with candidate build scripts, which could tamper with the witness (security challenge) | Recorded as the same trust class as the mutation job, whose outcomes candidate tests already influence (see residuals) | — |
+
+**Cost.** Typical 12 builds (10 + drift). Worst case 54. The job keeps the request timeout.
+
 ### Podman invocation
 
 Every gate job runs `$DDF_COUNCIL_PODMAN run` (the default runtime is `podman`) with these flags. The source of truth is `sandbox.rs` `Sandbox::argv`.

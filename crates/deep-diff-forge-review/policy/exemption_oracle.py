@@ -28,11 +28,20 @@ oracle no longer classifies exclusions; it allow-lists them:
    is observed directly in cargo's `build-script-executed` messages and refused (council r18).
    Incremental state is removed before every build: rustc's incremental reuse after an edit and
    its restore was measured to duplicate allocations and move the MIR of unchanged code.
+   Every unit's dep-info (the files rustc read) is checked as well: a unit that reads the
+   unneutralised snapshot outside the build tree (an absolute `include!`), or a registry or git
+   package that reads a file of the tree, escapes the neutralisation and is refused (council r19).
 4. Controls, in both configurations: the unmodified build succeeds and reproduces, and
    neutralising a function the gate mutates (chosen per configuration) keeps every unit building
    and changes one. After every edited build, the edited files must still hold what the oracle
-   wrote. Before a batch is called shipped, the unmodified tree is rebuilt: if it no longer
-   matches its first build, the comparison drifted and the verdict is inconclusive.
+   wrote. After the neutralised builds, the unmodified tree is rebuilt in every configuration: if
+   it no longer matches its first build, the comparison drifted and the verdict is inconclusive,
+   whatever the neutralised builds showed (council r19: the guard ran only on refusals).
+
+Scope: the guarantee is about function bodies written in the mutation package's sources. Code that
+ships from dependencies, from another crate's macro expansion or from generated files is outside the
+mutation gate by construction, whatever its origin (a macro may ignore a `#[cfg(test)]` body and
+emit its own; that body is the macro's, not the hidden one).
 
 A build script or proc macro that detects this job and behaves differently, or that keys
 `cfg(test)` to a configuration not built here, is the documented "lying to the tool" residual
@@ -51,7 +60,7 @@ import tempfile
 
 NOEXCLUDE = "ddf-cargo-mutants-noexclude"
 STRICT = "ddf-cargo-mutants-strict"
-SCHEMA = "deep-diff-forge.exemption-oracle.v8"
+SCHEMA = "deep-diff-forge.exemption-oracle.v9"
 LIBRARY_KINDS = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
 LIBRARY_EXTENSIONS = {"rlib", "rmeta", "so", "a", "dylib", "dll"}
 REPLACEMENTS = ("loop {}", "panic!()")
@@ -183,6 +192,19 @@ def digest_text(text):
     return hashlib.sha256(canonical_mir(text).encode()).hexdigest()
 
 
+def dep_info_paths(text):
+    """The files a Makefile-style dep-info names: every target and prerequisite, unescaped."""
+    paths = []
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        for token in re.split(r"(?<!\\) ", line):
+            token = token.replace("\\ ", " ").rstrip(":")
+            if token:
+                paths.append(token)
+    return paths
+
+
 def stem_of(path):
     """The MIR stem of an artifact: `lib` is a prefix of library files only (council r15)."""
     name, _, extension = os.path.basename(path).partition(".")
@@ -197,10 +219,11 @@ class GateBuild:
         name = os.path.basename(source.rstrip("/")) or "src"
         self.tree = tempfile.mkdtemp(prefix=f"cargo-mutants-{name}-", suffix=".tmp")
         TREES.append(self.tree)
-        # A Cargo build directory carries CACHEDIR.TAG; a source directory named `target` does not.
-        stale = os.path.exists(os.path.join(source, "target", "CACHEDIR.TAG"))
+        # The snapshot's own `target/` is never reused: planted fingerprints or MIR could replay a
+        # stale unit (council r19). A source directory named `target` fails the build: inconclusive.
         shutil.copytree(source, self.tree, symlinks=True, dirs_exist_ok=True,
-                        ignore=lambda d, names: {"target"} if stale and d == source else set())
+                        ignore=lambda d, names: {"target"} if d == source else set())
+        self.snapshot = os.path.realpath(source) + os.sep
         metadata = json.loads(run(["cargo", "metadata", "--locked", "--format-version=1"],
                                   cwd=self.tree).stdout)
         members = [p for p in metadata["packages"] if p["name"] == package and p["id"] in metadata["workspace_members"]]
@@ -217,7 +240,7 @@ class GateBuild:
         inside = os.path.realpath(self.tree) + os.sep
         self.roots = sorted({t["src_path"] for p in local for t in p["targets"]
                              if os.path.realpath(t["src_path"]).startswith(inside)})
-        self.expected, self.test_cfg = {}, set()
+        self.expected, self.test_cfg, self.escapes = {}, set(), set()
         # The mutation gate's environment: cargo-mutants adds these two, and the controller gives
         # both jobs the emitted-MIR flag.
         self.env = dict(os.environ, INSTA_UPDATE="no", INSTA_FORCE_PASS="0")
@@ -241,6 +264,26 @@ class GateBuild:
             if parent == directory:
                 return
             directory = parent
+
+    def check_dep_info(self, message, deps, twins):
+        """Record a non-test unit that read files the neutralisation cannot reach: the snapshot
+        outside the tree (any package), or the tree itself (a registry or git package)."""
+        local = message.get("manifest_path") in self.manifests
+        inside = os.path.realpath(self.tree) + os.sep
+        built = os.path.join(inside, "target") + os.sep  # OUT_DIR output of any package
+        for name in message["filenames"]:
+            for twin in [name, *twins.get(os.stat(name).st_ino, [])] if os.path.exists(name) else [name]:
+                info = os.path.join(os.path.dirname(twin), stem_of(twin) + ".d")
+                if not os.path.isfile(info):
+                    continue
+                with open(info, encoding="utf-8", errors="replace") as text:
+                    for path in dep_info_paths(text.read()):
+                        # Workspace paths are relative to the tree cargo ran in (measured).
+                        real = os.path.realpath(os.path.join(self.tree, path))
+                        in_tree = real.startswith(inside)
+                        if (real.startswith(self.snapshot) and not in_tree) or (
+                                not local and in_tree and not real.startswith(built)):
+                            self.escapes.add((message["target"]["name"], real))
 
     def build(self, config, spans=(), replacement=None, touch=()):
         """Canonical MIR digests of the package's non-test units that built. A unit missing from an
@@ -292,6 +335,8 @@ class GateBuild:
             if (message.get("reason") == "build-script-executed" and message.get("package_id") in self.ids
                     and "test" in message.get("cfgs", [])):
                 self.test_cfg.add(self.ids[message["package_id"]])  # seen directly, not inferred (council r18)
+            if message.get("reason") == "compiler-artifact" and not message["profile"]["test"]:
+                self.check_dep_info(message, deps, twins)
             if message.get("reason") != "compiler-artifact" or message.get("manifest_path") not in self.manifests:
                 continue
             kinds = set(message["target"]["kind"])
@@ -310,6 +355,19 @@ class GateBuild:
         if not digests and not spans:
             raise RuntimeError(f"configuration {config} produced no non-test lib or bin")
         return digests
+
+
+def certain(build, verdict):
+    """Refuse outright what cargo or rustc reported directly, from any build so far: a build script
+    setting cfg(test), or a unit reading files the neutralisation cannot reach."""
+    rows = [{"file": os.path.relpath(path, build.tree), "function": "build script", "line": 0,
+             "reason": "a build script sets cfg(test)"} for path in sorted(build.test_cfg)]
+    rows += [{"file": path, "function": f"unit {unit}", "line": 0,
+              "reason": "a unit reads files outside the neutralised tree"} for unit, path in sorted(build.escapes)]
+    if not rows:
+        return False
+    verdict["refused"], verdict["builds"], verdict["state"] = rows, build.count, "refused"
+    return True
 
 
 def judge(package, in_diff):
@@ -336,11 +394,7 @@ def judge(package, in_diff):
     build = GateBuild(os.getcwd(), package)
     original = {config: build.build(config) for config in CONFIGS}
     verdict["configurations"] = {config: "built" for config in original}
-    if build.test_cfg:
-        # A build script that sets cfg(test) makes every allow-listed body shipped code: certain.
-        verdict["refused"] = [{"file": os.path.relpath(path, build.tree), "function": "build script", "line": 0,
-                               "reason": "a build script sets cfg(test)"} for path in sorted(build.test_cfg)]
-        verdict["builds"], verdict["state"] = build.count, "refused"
+    if certain(build, verdict):
         return verdict
     # Both configurations get a reproducibility check and a positive control (council r17: a
     # release comparison that cannot move would otherwise pass unnoticed).
@@ -374,7 +428,11 @@ def judge(package, in_diff):
 
     shipped_in = shipping(spans)
     verdict["shipping_configurations"] = shipped_in
-    drifted = [config for config in shipped_in if build.build(config) != original[config]]
+    # Every configuration, passing or not: history that masked a neutralisation would otherwise
+    # pass unseen (council r19).
+    drifted = [config for config in CONFIGS if build.build(config) != original[config]]
+    if certain(build, verdict):
+        return verdict
     if drifted:
         # The unmodified tree no longer builds as it first did: what moved is not attributable.
         verdict["reasons"].append(f"the unmodified tree drifted from its first build in {drifted}")

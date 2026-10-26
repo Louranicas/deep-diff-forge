@@ -213,7 +213,9 @@ fn fixture(home: &str, uid: u32, label: &str, extra: &[(&str, &str)]) -> (PathBu
         .replace("@FORGED@", &forged.display().to_string());
     fs::write(repository.join("src/lib.rs"), &lib).unwrap();
     for (path, contents) in extra {
-        fs::write(repository.join(path), contents).unwrap();
+        let path = repository.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
     }
     git(&repository, &["init", "-q"]);
     git(&repository, &["add", "."]);
@@ -370,6 +372,7 @@ fn real_sandbox_refuses_planted_breaches() {
     vendor_symlink_probe(&home, uid);
     toolchain_config_probe(&home, uid);
     exemption_oracle_probe(&home, uid);
+    exemption_oracle_include_probes(&home, uid);
 }
 
 /// A build script that sets `cfg(test)` ships the probe's test module in the normal build, where
@@ -401,6 +404,54 @@ fn exemption_oracle_probe(home: &str, uid: u32) {
     assert_eq!(witness["builds"], 2, "{witness}");
     assert!(!run.join("jobs/gate-mutation").exists());
     let _ = fs::remove_dir_all(&root);
+}
+
+/// A binary whose `#[cfg(test)]` module file another binary also `include!`s. Through a relative path,
+/// real rustc compiles the file into the binary and the canonical MIR moves when it is neutralised
+/// (council r19: the MIR comparison needs a real-toolchain witness). Through `/src`, the binary
+/// compiles the unneutralised snapshot, which only its dep-info reveals.
+fn exemption_oracle_include_probes(home: &str, uid: u32) {
+    let main = "#[cfg(test)]\n#[path = \"t.rs\"]\nmod t;\n\nfn main() {}\n";
+    let hidden = "pub fn hidden() -> u32 {\n    7\n}\n";
+    for (label, include, reason) in [
+        ("include-mir", "../t.rs", "allow-listed but compiled into"),
+        (
+            "include-snapshot",
+            "/src/src/t.rs",
+            "a unit reads files outside the neutralised tree",
+        ),
+    ] {
+        let ship = format!(
+            "include!(\"{include}\");\n\nfn main() {{\n    std::process::exit(i32::try_from(hidden()).unwrap_or(1));\n}}\n"
+        );
+        let (root, request) = fixture(
+            home,
+            uid,
+            label,
+            &[
+                ("src/main.rs", main),
+                ("src/t.rs", hidden),
+                ("src/bin/ship.rs", &ship),
+            ],
+        );
+        let run = root.join("run");
+        prepare(&request, &run);
+        let mutation = gate(&run, "mutation", None);
+        let stderr = String::from_utf8_lossy(&mutation.stderr);
+        assert_eq!(mutation.status.code(), Some(4), "{label}: {stderr}");
+        let witness = json(&run.join("jobs/sandbox-exemption-oracle/work/exemption-oracle.json"));
+        assert_eq!(witness["state"], "refused", "{label}: {witness}");
+        assert!(
+            witness["refused"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["reason"].as_str().unwrap().starts_with(reason)),
+            "{label}: {witness}"
+        );
+        assert!(!run.join("jobs/gate-mutation").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
 }
 
 /// Breach probes in the tests gate, then a mutation gate on the same run (the positive control for

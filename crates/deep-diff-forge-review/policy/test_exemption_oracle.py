@@ -91,6 +91,13 @@ class Artifacts(unittest.TestCase):
         self.assertEqual(oracle.stem_of("/t/deps/library-2b"), "library-2b")
         self.assertEqual(oracle.stem_of("/t/deps/liberty-3c"), "liberty-3c")
 
+    def test_dep_info_names_every_file_with_escaped_spaces(self):
+        text = ("/t/deps/p-1a.d: src/lib.rs /src/src/t.rs src/a\\ b.rs\n\n"
+                "src/lib.rs:\n/src/src/t.rs:\n# env-dep:CARGO_PKG_NAME=p\n")
+        self.assertEqual(oracle.dep_info_paths(text),
+                         ["/t/deps/p-1a.d", "src/lib.rs", "/src/src/t.rs", "src/a b.rs",
+                          "src/lib.rs", "/src/src/t.rs"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
