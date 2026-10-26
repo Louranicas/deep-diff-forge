@@ -602,7 +602,7 @@ The command's own output is unchanged, and `envelope` exits with the command's c
 
 | Tool | What it returns |
 | --- | --- |
-| `review_patch` | The `deep-diff-forge.review.v0` document for `patch`, exactly as `--stdin-patch --json` prints it. `require_files` / `require_hunks` refuse as the CLI flags do |
+| `review_patch` | The `deep-diff-forge.review.v0` document for `patch`: the same JSON value `--stdin-patch --json` prints. `require_files` / `require_hunks` refuse as the CLI flags do |
 | `rank_patch` | The patch's files ordered by review risk |
 | `explain_exit_code` | One exit code's family, name and meaning |
 | `exit_code_registry` | Every documented exit code |

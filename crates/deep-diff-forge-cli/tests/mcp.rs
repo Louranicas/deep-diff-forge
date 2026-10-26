@@ -127,3 +127,38 @@ fn mcp_takes_no_arguments() {
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(out.stdout.len(), 0);
 }
+
+/// The transport's failure modes decide the exit code: a reader that went away is a clean end
+/// (exit 0); any other write failure is an I/O failure (exit 3).
+#[test]
+fn a_closed_reader_ends_cleanly_and_a_failed_write_is_an_io_failure() {
+    let ping = format!(
+        "{}\n",
+        json!({"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {"_meta": meta()}})
+    );
+    for (stdout, expected) in [
+        (Stdio::piped(), 0),
+        (
+            Stdio::from(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open("/dev/full")
+                    .unwrap(),
+            ),
+            3,
+        ),
+    ] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .arg("mcp")
+            .stdin(Stdio::piped())
+            .stdout(stdout)
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        drop(child.stdout.take()); // for the pipe: the reader is gone before anything is written
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(ping.as_bytes()).unwrap();
+        drop(stdin);
+        assert_eq!(child.wait().unwrap().code(), Some(expected));
+    }
+}
