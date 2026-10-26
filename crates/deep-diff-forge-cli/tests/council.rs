@@ -1422,6 +1422,15 @@ fn mutation_jobs_own_a_build_cache_and_cannot_contaminate_normal_tests() {
     assert!(argv.windows(2).any(|w| w == ["--timeout", "300"]));
     // The candidate's `.cargo/mutants.toml` is never read.
     assert!(argv.iter().any(|a| a == "--no-config"));
+    // The job runs as the operator, not as the image's USER (a uid-1001 runner could not read
+    // the private source copy otherwise).
+    let me = fs::metadata("/proc/self").unwrap();
+    let user = format!(
+        "--user={}:{}",
+        std::os::unix::fs::MetadataExt::uid(&me),
+        std::os::unix::fs::MetadataExt::gid(&me)
+    );
+    assert!(argv.contains(&user), "{argv:?}");
     assert!(
         argv.iter()
             .all(|a| !a.starts_with("--env=CARGO_TARGET_DIR") && !a.contains(&normal))

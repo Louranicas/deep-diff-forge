@@ -64,8 +64,11 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      # Pinned to the gate image's toolchain: a floating `stable` broke main when a new release
+      # deprecated `fetch_update` under `-D warnings`.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
+          toolchain: 1.99.1
           components: rustfmt, clippy
       - name: parsed antipattern policy and planted refusal controls
         run: |
@@ -125,21 +128,23 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.1
       - name: install pinned evidence tools
         run: |
           cargo install cargo-mutants --version 27.1.0 --locked
           cargo install cargo-fuzz --version 0.13.2 --locked
-          rustup toolchain install nightly --profile minimal
+          rustup toolchain install nightly-2026-10-25 --profile minimal
       - name: scoped mutation of admission and receipt qualification
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/ddf-review-mutation-target
-        run: cargo mutants --package deep-diff-forge-review --re 'identifier|check_execution' --test-workspace true --timeout 30
+        run: cargo mutants --package deep-diff-forge-review --re 'identifier|check_execution' --test-workspace true --timeout 300
       - name: instrumented council-report fuzz smoke
         run: |
           mkdir -p /tmp/ddf-council-corpus
           cp review-policy/fuzz-seeds/council_report.json /tmp/ddf-council-corpus/seed.json
-          cargo +nightly fuzz run council_report /tmp/ddf-council-corpus -- -max_total_time=10 -max_len=4096
+          cargo +nightly-2026-10-25 fuzz run council_report /tmp/ddf-council-corpus -- -max_total_time=10 -max_len=4096
       # Council quality gates only run inside the rootless Podman gate sandbox
       # (docs/REVIEW_COUNCIL.md#gate-sandbox). The ubuntu runner images ship podman.
       #
@@ -153,7 +158,7 @@ jobs:
       # No GitHub-maintained recommendation for rootless podman on ubuntu-24.04 was found, so
       # this relaxes the sysctl on the ephemeral runner VM only when it is present and set.
       # The alternative is a per-binary AppArmor profile granting `userns,` (same Ubuntu post).
-      - name: allow rootless podman user namespaces (ubuntu-24.04, unverified)
+      - name: allow rootless podman user namespaces (ubuntu-24.04; measured working 2026-10-26)
         run: |
           podman --version
           if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = "1" ]; then
@@ -167,11 +172,31 @@ jobs:
           podman pull "$base"
           podman build --pull=never -t localhost/ddf-council-gate:ci -f review-policy/sandbox/Containerfile review-policy/sandbox
           podman image inspect --format '{{.Id}}' localhost/ddf-council-gate:ci
+      # The credential probes must have something to fail to read, or their refusal is vacuous
+      # (council_sandbox.rs asserts the files exist). A runner has no agent credentials, so plant
+      # canaries with no secret in them at the paths the probes target.
+      - name: plant canary credentials for the sandbox probes
+        run: |
+          mkdir -p "$HOME/.codex" "$HOME/.claude"
+          printf 'ddf-ci-canary\n' > "$HOME/.codex/auth.json"
+          printf 'ddf-ci-canary\n' > "$HOME/.claude/.credentials.json"
+          chmod 600 "$HOME/.codex/auth.json" "$HOME/.claude/.credentials.json"
       - name: council gate sandbox integration
         env:
           DDF_COUNCIL_SANDBOX_IT: "1"
+          DDF_COUNCIL_PODMAN: podman
           DDF_COUNCIL_GATE_IMAGE: localhost/ddf-council-gate:ci
-        run: cargo test --locked -p deep-diff-forge-cli --test council_sandbox
+        run: cargo test --locked -p deep-diff-forge-cli --test council_sandbox -- --nocapture
+      # A failed probe run leaves its run directory behind; show why each job failed.
+      - name: sandbox diagnostics on failure
+        if: failure()
+        run: |
+          podman info --format 'network={{.Host.NetworkBackend}} pasta={{.Host.Pasta.Executable}} slirp={{.Host.Slirp4NetNS.Executable}}' || true
+          podman --version
+          for f in /tmp/ddf-council-sandbox-*/run/jobs/*/stderr.log /tmp/ddf-council-sandbox-*/run/jobs/*/protocol-error.txt /tmp/ddf-council-sandbox-*/run/jobs/*/qualification-error.txt; do
+            [ -f "$f" ] && { echo "== $f"; tail -n 40 "$f"; }
+          done
+          true
 
   supply-chain:
     name: supply chain audit
@@ -181,7 +206,9 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.1
       - name: cargo-deny (bans, licenses, sources, advisories)
         uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87 # v2
         with:
