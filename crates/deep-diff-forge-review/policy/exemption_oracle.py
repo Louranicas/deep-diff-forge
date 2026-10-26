@@ -42,8 +42,10 @@ oracle no longer classifies exclusions; it allow-lists them:
 
 Stop rule (council r20): the oracle observes what cargo and rustc report. Run-time behaviour of
 build scripts and proc macros (reading or copying files, creating symlinks, generating code,
-detecting this job) is one residual class, visible in the reviewed diff; no further detector is
-added for it.
+detecting this job) is one residual class; no further detector is added for it. For path packages
+that code is in the reviewed diff. For a registry dependency only the Cargo.lock change is: its
+code is governed by the supply-chain gate (cargo-deny: crates.io only, no unknown git), not here
+(council r21 corrected this premise).
 
 Scope: the guarantee is about function bodies written in the mutation package's sources. Code that
 ships from dependencies, from another crate's macro expansion or from generated files is outside the
@@ -67,7 +69,7 @@ import tempfile
 
 NOEXCLUDE = "ddf-cargo-mutants-noexclude"
 STRICT = "ddf-cargo-mutants-strict"
-SCHEMA = "deep-diff-forge.exemption-oracle.v10"
+SCHEMA = "deep-diff-forge.exemption-oracle.v11"
 LIBRARY_KINDS = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
 LIBRARY_EXTENSIONS = {"rlib", "rmeta", "so", "a", "dylib", "dll"}
 REPLACEMENTS = ("loop {}", "panic!()")
@@ -199,19 +201,19 @@ def digest_text(text):
     return hashlib.sha256(canonical_mir(text).encode()).hexdigest()
 
 
-def dep_info_paths(text):
-    """The files a Makefile-style dep-info names: every target and prerequisite, unescaped. Lines
-    end only at a newline (a filename may hold U+2028), and only the target loses its colon: a
-    prerequisite named `x:` stays `x:` (council r20)."""
-    paths = []
+def dep_info_rules(text):
+    """The rules of a Makefile-style dep-info, as (target, prerequisites), unescaped. Lines end only
+    at a newline (a filename may hold U+2028), and only the target loses its colon: a prerequisite
+    named `x:` stays `x:` (council r20). Targets are outputs, which may never have been written;
+    prerequisites are what rustc read (council r21: the roles were merged)."""
+    rules = []
     for line in text.split("\n"):
         if not line or line.startswith("#"):
             continue
         tokens = [t.replace("\\ ", " ") for t in re.split(r"(?<!\\) ", line) if t]
         if tokens and tokens[0].endswith(":"):
-            tokens[0] = tokens[0][:-1]
-        paths += [t for t in tokens if t]
-    return paths
+            rules.append((tokens[0][:-1], tokens[1:]))
+    return rules
 
 
 def stem_of(path):
@@ -277,43 +279,46 @@ class GateBuild:
                 return
             directory = parent
 
-    def check_dep_info(self, message, deps, twins):
-        """Hold a non-test unit to the files it may read (fail closed): a path package the tree, a
-        registry or git package its own directory, every unit `target/`. Without
-        `-Z binary-dep-depinfo` rustc names no sysroot files (measured on DDF's own build)."""
+    def check_dep_info(self, message, twins, siblings):
+        """Hold a non-test unit to the files it read (fail closed). Its evidence is the dep-info rule
+        whose target is one of the unit's own files, so a planted `.d` naming something else proves
+        nothing. Every prerequisite must exist, and lie in the tree (a path package) or the
+        package's own directory (a registry or git package), or under `target/` (`OUT_DIR`)."""
         manifest = message.get("manifest_path")
         inside = os.path.realpath(self.tree) + os.sep
-        produced = os.path.join(inside, "target") + os.sep  # outputs (some never emitted), OUT_DIR
+        produced = os.path.join(inside, "target") + os.sep
         own = inside if manifest in self.manifests else self.package_dirs.get(manifest, "\0")
         unit = message["target"]["name"]
-        found = False
+        files = set()
         for name in message["filenames"]:
-            # A build script is reported as `build/<pkg>-<hash>/build-script-build`, a hard link to
-            # the `build_script_build-<hash>` beside it, whose dep-info that is (measured).
-            linked = []
+            files.add(name)
             if os.path.exists(name):
+                # A build script is reported as `build/<pkg>-<hash>/build-script-build`, a hard link
+                # to the `build_script_build-<hash>` beside it, whose dep-info that is (measured).
                 inode = os.stat(name).st_ino
-                linked = twins.get(inode, []) + [os.path.join(os.path.dirname(name), sibling)
-                                                 for sibling in os.listdir(os.path.dirname(name))
-                                                 if os.stat(os.path.join(os.path.dirname(name), sibling)).st_ino == inode]
-            for twin in [name, *linked]:
-                info = os.path.join(os.path.dirname(twin), stem_of(twin) + ".d")
-                if not os.path.isfile(info):
-                    continue
-                found = True
+                files.update(twins.get(inode, []))
+                files.update(siblings(os.path.dirname(name)).get(inode, []))
+        reals = {os.path.realpath(f) for f in files}
+        rules = []
+        for twin in files:
+            info = os.path.join(os.path.dirname(twin), stem_of(twin) + ".d")
+            if os.path.isfile(info):
                 with open(info, encoding="utf-8", errors="replace") as text:
-                    for path in dep_info_paths(text.read()):
-                        # Workspace paths are relative to the tree cargo ran in (measured).
-                        joined = os.path.join(self.tree, path)
-                        real = os.path.realpath(joined)
-                        if real.startswith(produced):
-                            continue
-                        if not os.path.lexists(joined):
-                            self.unverified.add(f"{unit} read {path}, which no longer exists")
-                        elif not real.startswith(own):
-                            self.escapes.add((unit, real))
-        if not found:
-            self.unverified.add(f"no dep-info found for {unit} ({message['filenames'][:2]})")
+                    rules += [r for r in dep_info_rules(text.read())
+                              if os.path.realpath(os.path.join(self.tree, r[0])) in reals]
+        if not rules:
+            self.unverified.add(f"no dep-info rule names {unit} ({message['filenames'][:2]})")
+        for _, prerequisites in rules:
+            if not prerequisites:
+                self.unverified.add(f"the dep-info rule for {unit} names no input")
+            for path in prerequisites:
+                # Workspace paths are relative to the tree cargo ran in (measured).
+                joined = os.path.join(self.tree, path)
+                real = os.path.realpath(joined)
+                if not os.path.lexists(joined):
+                    self.unverified.add(f"{unit} read {path}, which no longer exists")
+                elif not (real.startswith(own) or real.startswith(produced)):
+                    self.escapes.add((unit, real))
 
     def build(self, config, spans=(), replacement=None, touch=()):
         """Canonical MIR digests of the package's non-test units that built. A unit missing from an
@@ -359,6 +364,16 @@ class GateBuild:
         for path in glob.glob(os.path.join(deps, "*")):
             if os.path.isfile(path) and not path.endswith((".d", ".mir")):
                 twins.setdefault(os.stat(path).st_ino, []).append(path)
+        listed = {deps: {}}  # deps/ is indexed by `twins`; any other directory once per build
+
+        def siblings(directory):
+            if directory not in listed:
+                index = listed[directory] = {}
+                for entry in os.scandir(directory):
+                    if entry.is_file(follow_symlinks=False):
+                        index.setdefault(entry.inode(), []).append(entry.path)
+            return listed[directory]
+
         digests = {}
         for line in done.stdout.splitlines():
             message = json.loads(line) if line.startswith("{") else {}
@@ -366,7 +381,7 @@ class GateBuild:
                     and "test" in message.get("cfgs", [])):
                 self.test_cfg.add(self.ids[message["package_id"]])  # seen directly, not inferred (council r18)
             if message.get("reason") == "compiler-artifact" and not message["profile"]["test"]:
-                self.check_dep_info(message, deps, twins)
+                self.check_dep_info(message, twins, siblings)
             if message.get("reason") != "compiler-artifact" or message.get("manifest_path") not in self.manifests:
                 continue
             kinds = set(message["target"]["kind"])

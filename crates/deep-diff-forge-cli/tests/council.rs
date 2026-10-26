@@ -525,7 +525,9 @@ const FAKE_IMAGE_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef012
 /// only unmodified builds after an edit, so the neutralised ones look unchanged.
 /// `foreign_reads_tree` has a registry unit whose dep-info names a file of the tree;
 /// `reads_elsewhere`, `vanished` and `no_dep_info` give the package's own unit a dep-info naming a
-/// file outside the tree, a file that is gone, or none at all.
+/// file outside the tree, a file that is gone, or none at all; `empty_dep_info` a rule with no
+/// input, `planted_dep_info` a `.d` naming another output, and `missing_generated` a registry
+/// unit whose generated `OUT_DIR` input is gone.
 const FAKE_GATE: &str = r"#!/usr/bin/python3
 import json,os,pathlib,sys
 mode='@MODE@'
@@ -539,7 +541,7 @@ if '--list' in sys.argv:
         return {'file':file,'genre':'FnValue','span':body,'function':{'function_name':name,'span':span}}
     tool=os.path.basename(sys.argv[0]);rows=[fn('shipped',1)]
     hidden=fn('hidden',1,'src/hidden.txt') if mode=='exempt_txt' else fn('hidden',4)
-    allow_listed={'hidden_test','shadowed','release_ships','neutral_fails','harness_fails','mir_blind','unreproducible','restores','path_dep_ships','build_script_cfg','incremental_history','drifts','drift_on_pass','foreign_reads_tree','reads_elsewhere','vanished','no_dep_info'}
+    allow_listed={'hidden_test','shadowed','release_ships','neutral_fails','harness_fails','mir_blind','unreproducible','restores','path_dep_ships','build_script_cfg','incremental_history','drifts','drift_on_pass','foreign_reads_tree','reads_elsewhere','vanished','no_dep_info','empty_dep_info','missing_generated','planted_dep_info'}
     if 'noexclude' in tool and (mode in allow_listed or mode.startswith('exempt')):rows.append(hidden)
     if 'strict' in tool and mode.startswith('exempt'):rows.append(hidden)
     print(json.dumps(rows));sys.exit(0)
@@ -595,21 +597,27 @@ if sys.argv[1:2]==['build'] and '--keep-going' in sys.argv:
     # A registry unit is never observed, whatever its MIR.
     (deps/'libdep-2b.rlib').write_text('binary');(deps/'dep-2b.mir').write_text(str(os.urandom(8)))
     # Its dep-info: vendored source and its own OUT_DIR are fine; a file of the tree is not.
-    read=[os.path.join(os.getcwd(),'target',profile,'build','dep-3c','out','gen.rs'),os.path.join(REGISTRY,'src','lib.rs')]
+    generated=pathlib.Path(os.getcwd(),'target',profile,'build','dep-3c','out','gen.rs');generated.parent.mkdir(parents=True,exist_ok=True)
+    if mode!='missing_generated':generated.write_text('')
+    read=[str(generated),os.path.join(REGISTRY,'src','lib.rs')]
     if mode=='foreign_reads_tree':read.append('src/lib.rs')
-    (deps/'dep-2b.d').write_text(str(deps/'dep-2b.d')+': '+' '.join(read)+'\n')
+    (deps/'dep-2b.d').write_text(str(deps/'libdep-2b.rlib')+': '+' '.join(read)+'\n')
     # Cargo names workspace files relative to the directory it ran in (measured, real rustc); its
     # targets include outputs never emitted. `reads_elsewhere` reads a file outside its allow-list,
     # `vanished` one that is gone, `no_dep_info` leaves none.
     own=['src/lib.rs']+(['src/gone.rs'] if mode=='vanished' else [])+([os.path.join(REGISTRY,'src','lib.rs')] if mode=='reads_elsewhere' else [])
-    if mode!='no_dep_info':(deps/'deep_diff_forge_review-0f.d').write_text(str(deps/'libdeep_diff_forge_review-0f.rmeta')+': '+' '.join(own)+'\n\nsrc/lib.rs:\n')
-    if mode=='path_dep_ships':(deps/'helper-1a.d').write_text(str(deps/'helper-1a.d')+': src/lib.rs\n')
+    # Its rule names the unit's own output; `empty_dep_info` lists no input, `planted_dep_info` a
+    # `.d` whose rules name some other output.
+    rule=str(deps/('other-9f.rlib' if mode=='planted_dep_info' else 'libdeep_diff_forge_review-0f.rlib'))
+    if mode=='empty_dep_info':own=[]
+    if mode!='no_dep_info':(deps/'deep_diff_forge_review-0f.d').write_text(rule+': '+' '.join(own)+'\n\nsrc/lib.rs:\n')
+    if mode=='path_dep_ships':(deps/'helper-1a.d').write_text(str(deps/'libhelper-1a.rlib')+': src/lib.rs\n')
     # A build script, reported as Cargo does: `build-script-build`, a hard link to the hashed
     # executable beside it, whose dep-info that is (measured).
     script=pathlib.Path(os.getcwd(),'target',profile,'build','review-9a');script.mkdir(parents=True,exist_ok=True)
     hashed=script/'build_script_build-9a'
     if not hashed.exists():hashed.write_text('binary');os.link(hashed,script/'build-script-build')
-    (script/'build_script_build-9a.d').write_text(str(script/'build_script_build-9a.d')+': src/lib.rs\n')
+    (script/'build_script_build-9a.d').write_text(str(hashed)+': src/lib.rs\n')
     print(json.dumps({'reason':'compiler-artifact','manifest_path':os.path.join(os.getcwd(),'Cargo.toml'),'target':{'name':'build-script-build','kind':['custom-build']},'profile':{'test':False},'filenames':[str(script/'build-script-build')]}))
     print(json.dumps({'reason':'compiler-artifact','manifest_path':os.path.join(REGISTRY,'Cargo.toml'),'target':{'name':'dep','kind':['lib']},'profile':{'test':False},'filenames':[str(deps/'libdep-2b.rlib')]}))
     harness_breaks=mode=='harness_fails' and neutralised
@@ -1084,7 +1092,11 @@ fn dep_info_is_an_allow_list_and_missing_evidence_is_inconclusive() {
             "a unit reads files outside the neutralised tree",
         ),
         ("vanished", "inconclusive", "no longer exists"),
-        ("no_dep_info", "inconclusive", "no dep-info found"),
+        ("no_dep_info", "inconclusive", "no dep-info rule names"),
+        // Council r21: evidence must name the unit, list inputs, and every input must exist.
+        ("planted_dep_info", "inconclusive", "no dep-info rule names"),
+        ("empty_dep_info", "inconclusive", "names no input"),
+        ("missing_generated", "inconclusive", "no longer exists"),
     ] {
         let f = oracle_fixture(mode);
         assert_eq!(f.gate("mutation").status.code(), Some(4), "{mode}");
@@ -1214,7 +1226,7 @@ fn the_controller_checks_the_oracle_witness_as_well_as_its_exit() {
             1,
         ),
         (
-            r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":true},"reproducible":true,"configurations":{"gate":"built","release":"does not build"}}"#,
+            r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":true,"configurations":{"gate":{"function":"f"},"release":{"function":"f"}}},"reproducible":true,"configurations":{"gate":"built","release":"does not build"}}"#,
             0,
         ),
         // An omitted configuration was never shown (council r18).
