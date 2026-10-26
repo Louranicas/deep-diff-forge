@@ -129,7 +129,7 @@ impl SocketLocation {
 /// envelope; this leaves generous framing headroom while hard-bounding a single
 /// oversized line so a newline-less stream cannot exhaust memory (denial of
 /// service).
-const MAX_REQUEST_BYTES: usize = 80 * 1024 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 80 * 1024 * 1024;
 
 /// Maximum bytes accepted from a daemon response by the client helper.
 const MAX_RESPONSE_BYTES: usize = MAX_REQUEST_BYTES;
@@ -177,8 +177,14 @@ pub fn process_line(line: &str, engine: &Mutex<Engine>) -> String {
 /// Returns the number of bytes read (`0` = EOF). The `cap + 1` ceiling means a
 /// newline-less or oversized line is bounded — the caller treats
 /// `buf.len() > cap` as "request too large" rather than buffering unboundedly.
-#[cfg(test)]
-fn read_capped_line<R: BufRead>(
+/// This is the daemon protocol's framing on any byte stream: the cap counts the
+/// newline, and an oversized request is detected after `cap + 1` bytes without
+/// waiting for the rest (`deep-diff-forge rpc` uses it on stdio).
+///
+/// # Errors
+///
+/// Returns any read error from `reader`.
+pub fn read_capped_line<R: BufRead>(
     reader: &mut R,
     buf: &mut Vec<u8>,
     cap: usize,

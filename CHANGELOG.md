@@ -63,6 +63,20 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - Determinism contract test: `--rank --json --require-files` is byte-identical
   across runs with an identical `input_sha256`.
 
+### Added (slice C: SDKs)
+
+- **Rust: the `deep-diff-forge-sdk` crate.** `review` (with `InputGuards`)
+  returns a `Review` whose `to_json` is the CLI's review document byte for byte;
+  `rank` orders it by risk; `exit` re-exports the registry; `Client` calls a
+  running daemon. `Error` maps to the CLI exit codes. The public signatures are
+  pinned by a compile-checked test, and a live in-process daemon test proves the
+  client and the facade agree.
+- **`deep-diff-forge rpc`:** the daemon's JSON-RPC over stdio, with no daemon.
+  It uses the socket server's own line handler and request cap, and stops on
+  `daemon.shutdown`.
+- **Python client** (`sdk/python`, standard library only): `StdioClient` and
+  `SocketClient`. Its tests check CLI parity over both transports and run in CI.
+
 ### Added (slice D: MCP server)
 
 - `deep-diff-forge mcp`: a read-only, dual-era MCP server over stdio. It

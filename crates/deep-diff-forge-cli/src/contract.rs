@@ -1,3 +1,4 @@
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--contract
 // DDF slice A: the machine contract (`ddf.result.v1`, the exit-code registry, `schema`, `explain`,
 // `envelope`). Design/status: docs/ROADMAP.md#status-2026-10-26 and README "Machine contract".
 //! The `ddf.result.v1` envelope over the exit-code registry (`deep_diff_forge_core::exit`).

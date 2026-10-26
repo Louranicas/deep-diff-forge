@@ -617,6 +617,39 @@ Every tool is annotated `readOnlyHint: true`, and none writes anything.
 {"mcpServers": {"deep-diff-forge": {"command": "deep-diff-forge", "args": ["mcp"]}}}
 ```
 
+## SDKs
+
+**Rust:** the `deep-diff-forge-sdk` crate is a stable facade over the same crates the CLI and the daemon use.
+
+```rust
+use deep_diff_forge_sdk::{review, rank, Guards};
+let review = review(patch, Guards::all())?;   // or Guards::none().require_files()
+let document = review.to_json();   // byte for byte what `--stdin-patch --json` prints
+let ranked = rank(&review);
+```
+
+`Client::at(socket).call(method, &params)` calls a running daemon. It is Unix-only and validates every answer's version, id and error shape.
+
+- **Exit codes:** errors map to the CLI's exit codes (`Error::exit_code`). A daemon's error 4 or 7 means what CLI exit 4 or 7 means.
+- **Ownership:** the SDK owns `Guards`, `Review` (opaque) and `Error` (`#[non_exhaustive]`). `ReviewFile`, `InputSeal` and `RankedFile` are the review document's model types and change only with its schema version.
+- **Stability:** `tests/api.rs` pins every public signature, so changing one is a deliberate breaking change.
+- **Platforms:** review, rank and exit do not depend on the daemon (inferred from the `cfg(unix)` dependency split; there is no non-Unix CI).
+
+**Python:** `sdk/python/deep_diff_forge.py` uses the standard library only. It speaks the daemon protocol over either of two transports, with the same calls:
+
+- `deep-diff-forge rpc` over a pipe (`StdioClient`), which needs no daemon;
+- a running daemon's socket (`SocketClient`).
+
+```python
+from deep_diff_forge import StdioClient
+with StdioClient() as client:
+    document = client.review_patch(patch, require_files=True, require_hunks=True)
+```
+
+`deep-diff-forge rpc` answers each stdin line with the socket server's own request handler, under the socket's framing (an 80 MiB cap that counts the newline, with an oversized request refused at once), and stops at `daemon.shutdown`.
+
+The Python client checks every answer's version and id, errors included. `StdioClient` bounds each answer's size and time and kills a child that exceeds either. CI runs the Python tests against the built binary, over both transports.
+
 ## The optional daemon
 
 The daemon accelerates repeated review and multi-client workflows. It is

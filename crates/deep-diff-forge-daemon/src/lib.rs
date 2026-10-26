@@ -45,7 +45,8 @@ pub use security::{
     runtime_base, runtime_base_from, runtime_dir, validate_private_dir,
 };
 pub use serve::{
-    SocketLocation, bind_secure, handle_connection, process_line, request, run_server,
+    MAX_REQUEST_BYTES, SocketLocation, bind_secure, handle_connection, process_line,
+    read_capped_line, request, run_server,
 };
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+# Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--policy--exemption_oracle
 """Mutation-exemption oracle for the council mutation gate (DDF, decision record 2026-10-26).
 
 cargo-mutants 27.1.0 skips, by design, any item carrying `#[mutants::skip]`, `#[cfg(test)]`, an

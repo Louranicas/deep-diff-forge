@@ -16,6 +16,7 @@ members = [
   "crates/deep-diff-forge-daemon",
   "crates/deep-diff-forge-review",
   "crates/deep-diff-forge-cli",
+  "crates/deep-diff-forge-sdk",
 ]
 resolver = "2"
 exclude = ["fuzz"]
@@ -64,5 +65,6 @@ deep-diff-forge-tui = { path = "crates/deep-diff-forge-tui", version = "0.2.1" }
 deep-diff-forge-cluster = { path = "crates/deep-diff-forge-cluster", version = "0.2.1" }
 deep-diff-forge-learning = { path = "crates/deep-diff-forge-learning", version = "0.2.1" }
 deep-diff-forge-daemon = { path = "crates/deep-diff-forge-daemon", version = "0.2.1" }
+deep-diff-forge-sdk = { path = "crates/deep-diff-forge-sdk", version = "0.2.1" }
 
 deep-diff-forge-review = { path = "crates/deep-diff-forge-review", version = "0.2.1" }

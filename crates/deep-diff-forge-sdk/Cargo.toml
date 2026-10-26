@@ -1,0 +1,24 @@
+[package]
+name = "deep-diff-forge-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "The stable Rust facade over Deep-Diff-Forge: review a patch, rank it, read the exit-code registry, or call the daemon."
+
+[dependencies]
+deep-diff-forge-core.workspace = true
+deep-diff-forge-patch.workspace = true
+deep-diff-forge-graph.workspace = true
+serde_json = "=1.0.150"
+
+# Only `Client` (a Unix-socket transport) needs the daemon; review, rank and exit build anywhere.
+[target.'cfg(unix)'.dependencies]
+deep-diff-forge-daemon.workspace = true
+
+[lints]
+workspace = true

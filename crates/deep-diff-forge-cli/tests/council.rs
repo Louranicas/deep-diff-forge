@@ -113,6 +113,17 @@ impl Fixture {
     fn call(&self, args: &[&str], mode: &str) -> Output {
         self.command(args, mode).output().unwrap()
     }
+    /// Give each job 60 s instead of the fixture's 2 s, before `prepare`. For a case whose own work
+    /// (the exemption oracle's dozen builds, about 0.7 s alone; 100,001 directories) passes 2 s on
+    /// a loaded runner: its refusal must come from the control under test, not the clock (main CI
+    /// failed so on 2026-10-26; 64 parallel copies reproduce it). Two jobs stay inside the 150 s
+    /// watchdog of `gate_with`.
+    fn long_budget(&self) {
+        let mut spec: serde_json::Value =
+            serde_json::from_slice(&fs::read(&self.request).unwrap()).unwrap();
+        spec["timeout_seconds"] = 60.into();
+        fs::write(&self.request, serde_json::to_vec(&spec).unwrap()).unwrap();
+    }
     /// Install the fake `cargo` with its mode baked in: the sandbox has no ambient environment.
     fn install_gate(&self, mode: &str) {
         for name in [
@@ -664,6 +675,7 @@ fn empty_mutation_fuzz_or_test_runs_are_inconclusive_even_at_exit_zero() {
         ("tests", "overflow"),
     ] {
         let f = Fixture::new();
+        f.long_budget();
         f.prepare();
         f.install_gate(mode);
         let result = f.gate(gate);
@@ -694,6 +706,7 @@ fn a_mutation_base_scopes_mutation_to_a_sealed_diff_and_a_changed_diff_is_refuse
         spec["mutation_base"] = head.into();
         fs::write(&f.request, serde_json::to_vec(&spec).unwrap()).unwrap();
         f.commit("y.rs", "fn changed() {}\n");
+        f.long_budget();
         f.prepare();
         f.install_gate("valid");
         let sealed = fs::read_to_string(f.run.join("mutation.diff")).unwrap();
@@ -906,6 +919,7 @@ fn oracle_fixture(mode: &str) -> Fixture {
     let f = Fixture::new();
     f.commit("src/lib.rs", ORACLE_LIB);
     f.commit("src/hidden.txt", "pub fn hidden() -> u32 {\n    3\n}\n");
+    f.long_budget();
     f.prepare();
     f.install_gate(mode);
     f
@@ -1112,6 +1126,7 @@ fn a_complete_witness_with_a_zero_exit_passes() {
     // The positive control for the forged-witness refusals above.
     let witness = r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":true,"configurations":{"gate":{"function":"f"},"release":{"function":"f"}}},"reproducible":true,"configurations":{"gate":"built","release":"built"}}"#;
     let f = Fixture::new();
+    f.long_budget();
     f.prepare();
     f.install_gate("valid");
     let oracle = f.bin.join("python3");
@@ -1266,6 +1281,7 @@ fn the_controller_checks_the_oracle_witness_as_well_as_its_exit() {
         ),
     ] {
         let f = Fixture::new();
+        f.long_budget();
         f.prepare();
         f.install_gate("valid");
         let oracle = f.bin.join("python3");
@@ -1611,6 +1627,7 @@ fn a_mutation_base_that_is_not_an_ancestor_of_head_is_refused() {
 #[test]
 fn mutation_jobs_own_a_build_cache_and_cannot_contaminate_normal_tests() {
     let f = Fixture::new();
+    f.long_budget();
     f.prepare();
     f.install_gate("valid");
     let result = f.gate("mutation");
@@ -2013,12 +2030,9 @@ fn vendoring_output_is_sealed_and_planted_links_or_fifos_are_never_mounted() {
     ] {
         let f = Fixture::new();
         if mode == "vendor_dirs" {
-            // Creating 100,001 directories takes about 3 s on a loaded host, beyond the fixture's
-            // 2 s job timeout; the case must be refused by the entry budget, not the clock.
-            let mut spec: serde_json::Value =
-                serde_json::from_slice(&fs::read(&f.request).unwrap()).unwrap();
-            spec["timeout_seconds"] = 120.into();
-            fs::write(&f.request, serde_json::to_vec(&spec).unwrap()).unwrap();
+            // Creating 100,001 directories takes about 3 s on a loaded host: the case must be
+            // refused by the entry budget, not the clock.
+            f.long_budget();
         }
         f.prepare();
         f.install_gate(mode);
@@ -2068,6 +2082,7 @@ fn vendoring_output_is_sealed_and_planted_links_or_fifos_are_never_mounted() {
 fn a_fifo_or_symlinked_directory_mutation_witness_is_refused_without_hanging() {
     for mode in ["fifo", "symlinked_dir"] {
         let f = Fixture::new();
+        f.long_budget();
         f.prepare();
         f.install_gate(mode);
         let result = f.gate("mutation");
