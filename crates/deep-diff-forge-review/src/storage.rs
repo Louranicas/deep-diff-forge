@@ -125,20 +125,49 @@ fn capture(id: String, path: &Path, remaining: &mut usize) -> Result<Artifact> {
         text,
     })
 }
+/// Run Git with repository-local behaviour that could change what it reports, or run code, turned
+/// off: replacement refs and grafts (which can substitute a base blob), lazy fetches from promisor
+/// remotes and every transport (which can run helpers on the host), hooks and fsmonitor.
 pub(crate) fn git_bytes(repository: &Path, args: &[&str], cap: u64) -> Result<Vec<u8>> {
+    git_input(repository, args, &[], cap)
+}
+/// [`git_bytes`] with `input` on Git's standard input, written from its own thread so that a large
+/// input and a large output cannot block each other.
+pub(crate) fn git_input(
+    repository: &Path,
+    args: &[&str],
+    input: &[u8],
+    cap: u64,
+) -> Result<Vec<u8>> {
     let mut child = Command::new("git")
         .args([
             "--no-optional-locks",
+            "--no-replace-objects",
             "-c",
             "core.fsmonitor=false",
             "-c",
             "core.hooksPath=/dev/null",
+            "-c",
+            "protocol.allow=never",
         ])
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_GRAFT_FILE", "/dev/null")
+        .env("GIT_NO_LAZY_FETCH", "1")
         .args(args)
         .current_dir(repository)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| ReviewFailure("missing Git input stream".into()))?;
+    let input = input.to_vec();
+    // Dropping the handle at the end of the thread closes Git's input.
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+    });
     let mut bytes = Vec::new();
     let output = child
         .stdout
@@ -153,6 +182,7 @@ pub(crate) fn git_bytes(repository: &Path, args: &[&str], cap: u64) -> Result<Ve
         ));
     }
     require(child.wait()?.success(), "Git acquisition command failed")?;
+    let _ = writer.join();
     Ok(bytes)
 }
 /// The fingerprinted source file set: Git HEAD plus tracked and non-ignored untracked paths.
@@ -170,7 +200,12 @@ impl Inventory {
     }
 }
 pub(crate) const SNAPSHOT_DIR: &str = "source";
+/// The candidate's changes since `mutation_base`, sealed at prepare for the diff-scoped mutation gate.
+pub(crate) const MUTATION_DIFF: &str = "mutation.diff";
 pub(crate) const INVENTORY_FILE: &str = "source-inventory.json";
+/// Largest sealed inventory a gate reads back. Written as a shift, so the only arithmetic mutant
+/// (a zero cap) refuses every gate.
+pub(crate) const INVENTORY_CAP: u64 = 4 << 20;
 /// Relative to a mutation gate's job directory; written inside the sandbox, read after it exits.
 pub(crate) const MUTATION_WITNESS: &str = "work/mutation-results/mutants.out/outcomes.json";
 
@@ -278,8 +313,9 @@ pub(crate) struct TreeSeal {
     pub(crate) files: u64,
     pub(crate) bytes: u64,
 }
-/// Budget for a sealed tree; the measured DDF vendor tree is 9,008 files and 204 MB.
-const SEAL_FILES: u64 = 100_000;
+/// Budget for a sealed tree; the measured DDF vendor tree is 9,008 files and 204 MB. Directories
+/// count against the entry budget too, so an output of empty directories is bounded.
+const SEAL_ENTRIES: u64 = 100_000;
 const SEAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Walk `root` in sorted order, accepting only real directories and regular files within the budget,
 /// and digest names, kinds, executable bits and contents. With `copy`, also recreate the tree there
@@ -298,11 +334,20 @@ fn walk_tree(root: &Path, copy: Option<&Path>) -> Result<TreeSeal> {
         bytes: 0,
     };
     let mut framed = Vec::new();
+    let mut entries = 0_u64;
     let mut pending = vec![PathBuf::new()];
     while let Some(directory) = pending.pop() {
+        // Listed lazily up to the remaining budget, so a huge directory is refused, not collected.
+        let remaining = usize::try_from(SEAL_ENTRIES.saturating_sub(entries)).unwrap_or(usize::MAX);
         let mut names = fs::read_dir(root.join(&directory))?
+            .take(remaining.saturating_add(1))
             .map(|entry| entry.map(|e| e.file_name()))
             .collect::<std::io::Result<Vec<_>>>()?;
+        entries += names.len() as u64;
+        require(
+            entries <= SEAL_ENTRIES,
+            "sandbox output exceeds entry budget",
+        )?;
         names.sort_unstable();
         let mut subdirectories = Vec::new();
         for name in names {
@@ -318,11 +363,7 @@ fn walk_tree(root: &Path, copy: Option<&Path>) -> Result<TreeSeal> {
                 subdirectories.push(relative.clone());
             } else if meta.is_file() {
                 seal.files += 1;
-                require(
-                    seal.files <= SEAL_FILES,
-                    "sandbox output exceeds file budget",
-                )?;
-                let bytes = read_bytes(&path, SEAL_BYTES - seal.bytes)?;
+                let bytes = read_bytes(&path, SEAL_BYTES.saturating_sub(seal.bytes))?;
                 seal.bytes += bytes.len() as u64;
                 let executable = meta.permissions().mode() & 0o111 != 0;
                 framed.push(if executable { b'x' } else { b'f' });
@@ -547,29 +588,69 @@ pub fn prepare(mut request: Request, directory: &Path) -> Result<Manifest> {
         tree_before == tree_after,
         "workspace changed during capture",
     )?;
+    if let Some(base) = request.mutation_base.as_deref() {
+        crate::mutation_scope::require_base(&repository, base)?;
+    }
+    make_dir(directory)?;
+    // A refusal from here on removes the run directory this call created, so no partial run is
+    // left to load or to block a retry.
+    seal_run(
+        directory,
+        &repository,
+        &inventory,
+        tree_before,
+        review_id,
+        request,
+        artifacts,
+    )
+    .inspect_err(|_| {
+        let _ = fs::remove_dir_all(directory);
+    })
+}
+/// Write a prepared run into the new, empty `directory`: the verified snapshot, the mutation scope
+/// read from it, then the manifest that seals them.
+fn seal_run(
+    directory: &Path,
+    repository: &Path,
+    inventory: &Inventory,
+    source_tree: String,
+    review_id: String,
+    request: Request,
+    artifacts: Vec<Artifact>,
+) -> Result<Manifest> {
+    // Gates run on copies of this sealed snapshot, never on the mutable checkout. The mutation
+    // scope is read from the same copy once it is verified, so it describes the sealed bytes.
+    let snapshot = directory.join(SNAPSHOT_DIR);
+    copy_tree(repository, &snapshot, inventory)?;
+    require(
+        fingerprint_tree(&snapshot, inventory)? == source_tree,
+        "workspace changed during snapshot export",
+    )?;
+    let mutation_diff = crate::mutation_scope::capture(
+        repository,
+        &snapshot,
+        inventory,
+        request.mutation_base.as_deref(),
+    )?;
     let mut manifest = Manifest {
         schema: "deep-diff-forge.council.v1".into(),
         run_id: String::new(),
         review_id,
-        source_tree: tree_before,
+        source_tree,
         request,
         artifacts,
+        mutation_diff_sha256: mutation_diff.as_deref().map(sha256_hex),
     };
     manifest.run_id = manifest_digest(&manifest)?;
-    make_dir(directory)?;
     make_dir(&directory.join("jobs"))?;
     make_dir(&directory.join("reports"))?;
     make_dir(&directory.join("workspace"))?;
     write_json(&directory.join("manifest.json"), &manifest)?;
     write_json(&directory.join("report.schema.json"), &report_schema())?;
-    // Gates run on copies of this sealed snapshot, never on the mutable checkout.
-    let snapshot = directory.join(SNAPSHOT_DIR);
-    copy_tree(&repository, &snapshot, &inventory)?;
-    write_json(&directory.join(INVENTORY_FILE), &inventory)?;
-    require(
-        fingerprint_tree(&snapshot, &inventory)? == manifest.source_tree,
-        "workspace changed during snapshot export",
-    )?;
+    if let Some(diff) = &mutation_diff {
+        write_new(&directory.join(MUTATION_DIFF), diff)?;
+    }
+    write_json(&directory.join(INVENTORY_FILE), inventory)?;
     Ok(manifest)
 }
 /// Load a sealed local manifest and verify every embedded artifact digest.
@@ -582,6 +663,10 @@ pub fn load_manifest(directory: &Path) -> Result<Manifest> {
         manifest.schema == "deep-diff-forge.council.v1"
             && manifest_digest(&manifest)? == manifest.run_id,
         "manifest seal mismatch",
+    )?;
+    require(
+        manifest.request.mutation_base.is_some() == manifest.mutation_diff_sha256.is_some(),
+        "mutation base and sealed mutation diff must appear together",
     )?;
     for artifact in &manifest.artifacts {
         require(

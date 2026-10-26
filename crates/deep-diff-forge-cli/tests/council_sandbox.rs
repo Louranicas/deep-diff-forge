@@ -60,7 +60,9 @@ mod tests {
         // Written to the fd directly so libtest output capture cannot hide it.
         let mut out = std::io::stdout().lock();
         let word = if breached { "BREACH" } else { "refused" };
-        writeln!(out, "{word} {probe}: {detail}").unwrap();
+        // A leading newline: libtest prints `test name ... ` without one, and the probe tests run
+        // in parallel, so a verdict could otherwise land mid-line (measured on main's CI).
+        writeln!(out, "\n{word} {probe}: {detail}").unwrap();
         out.flush().unwrap();
     }
     #[test]
@@ -378,9 +380,16 @@ fn breach_probes(home: &str, uid: u32, image_id: &str) {
     let tests = gate(&run, "tests", None);
     let job = run.join("jobs/gate-tests");
     let log = fs::read_to_string(job.join("stdout.log")).unwrap_or_default();
+    // Verdicts are matched wherever they appear in a line, never only at its start.
     let lines = log
         .lines()
-        .filter(|l| l.starts_with("BREACH ") || l.starts_with("refused "))
+        .filter_map(|l| {
+            ["BREACH ", "refused "]
+                .iter()
+                .filter_map(|word| l.find(word))
+                .min()
+                .map(|at| &l[at..])
+        })
         .collect::<Vec<_>>();
     for line in &lines {
         eprintln!("PROBE {line}");

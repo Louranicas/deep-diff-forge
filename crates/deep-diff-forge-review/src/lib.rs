@@ -7,6 +7,7 @@ pub mod cli;
 mod execution;
 mod journal;
 mod model;
+mod mutation_scope;
 mod policy;
 mod sandbox;
 mod storage;

@@ -20,10 +20,20 @@
 //! sequence, the approach in difftastic's `lcs_diff`), not the optimal
 //! tree-edit-distance graph diff. It never touches patch truth: it operates on
 //! source bytes and only describes them.
+//!
+//! **Bounded work.** The common token prefix and suffix are matched first, and
+//! the exact LCS runs on the changed middle when that fits [`LCS_CELL_BUDGET`].
+//! A larger middle is anchored on unchanged lines (an LCS over lines, each
+//! identified by its token texts) and the token LCS runs on each gap between
+//! anchors: a valid but not necessarily minimal script
+//! ([`StructuralDiff::minimal`] is false). Only when the line table, or the gaps'
+//! cells together, are over budget does the file degrade to a coarse whole-file
+//! change ([`StructuralDiff::degraded`]).
 
 use crate::language::Language;
 
-/// Above this token-pair product the quadratic LCS is skipped and a coarse
+/// Above this token-pair product (of the part between the common prefix and
+/// suffix) the quadratic LCS is skipped and a coarse
 /// whole-file remove+add is reported with [`StructuralDiff::degraded`] set —
 /// so a pathological input degrades gracefully instead of exhausting memory.
 const LCS_CELL_BUDGET: usize = 4_000_000;
@@ -95,6 +105,9 @@ pub struct StructuralDiff {
     pub reformat_only: bool,
     /// True when the LCS was skipped for size and a coarse diff was produced.
     pub degraded: bool,
+    /// True when `changes` is a minimal (longest-common-subsequence) script. The line-anchored
+    /// path is valid but not necessarily minimal, and a degraded or unavailable diff never is.
+    pub minimal: bool,
     /// Why structural analysis is unavailable; never interpreted as unchanged.
     pub unavailable: Option<deep_diff_forge_core::FallbackReason>,
 }
@@ -119,6 +132,7 @@ pub fn structural_diff(language: Language, old_source: &str, new_source: &str) -
             moved: 0,
             reformat_only: false,
             degraded: true,
+            minimal: false,
             unavailable: Some(reason),
         },
     }
@@ -191,13 +205,19 @@ pub fn tokenize_checked(
 }
 
 fn diff_tokens(language: Language, old: &[Token], new: &[Token]) -> StructuralDiff {
-    // Graceful degradation: a huge pair would make the quadratic LCS table blow
-    // up, so report a coarse whole-file change instead.
-    if old.len().saturating_mul(new.len()) > LCS_CELL_BUDGET {
+    // Graceful degradation: a huge changed middle would make the quadratic LCS
+    // table blow up, so report a coarse whole-file change instead.
+    // A middle too large for one token table is anchored on unchanged lines first; only when a
+    // gap between anchors is itself too large does the whole file degrade.
+    let (prefix, suffix) = common_affixes(old, new);
+    let middle = (old.len() - prefix - suffix).saturating_mul(new.len() - prefix - suffix);
+    let (ops, minimal) = if middle <= LCS_CELL_BUDGET {
+        (lcs_ops(old, new), true)
+    } else if let Some(ops) = line_anchored_ops(old, new) {
+        (ops, false)
+    } else {
         return coarse_diff(language, old, new);
-    }
-
-    let ops = lcs_ops(old, new);
+    };
     let mut changes = mark_moves(&ops, old, new);
 
     let (mut unchanged, mut added, mut removed, mut moved) = (0, 0, 0, 0);
@@ -226,6 +246,7 @@ fn diff_tokens(language: Language, old: &[Token], new: &[Token]) -> StructuralDi
         moved,
         reformat_only,
         degraded: false,
+        minimal,
         unavailable: None,
     }
 }
@@ -237,18 +258,39 @@ enum Op {
     Insert(usize),
 }
 
+/// Lengths of the longest common token prefix and, of what remains, the longest common suffix.
+/// A common prefix or suffix always belongs to some longest common subsequence, so only the
+/// middle needs the quadratic table; this keeps a small edit to a large file within budget.
+fn common_affixes(old: &[Token], new: &[Token]) -> (usize, usize) {
+    let prefix = old
+        .iter()
+        .zip(new)
+        .take_while(|(a, b)| a.text == b.text)
+        .count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a.text == b.text)
+        .count();
+    (prefix, suffix)
+}
+
 /// Longest-common-subsequence diff over token text. Classic O(n·m) DP +
-/// backtrack; bounded by [`LCS_CELL_BUDGET`] at the call site.
+/// backtrack over the part between the common prefix and suffix; bounded by
+/// [`LCS_CELL_BUDGET`] at the call site.
 fn lcs_ops(old: &[Token], new: &[Token]) -> Vec<Op> {
-    let n = old.len();
-    let m = new.len();
-    // table[i][j] = LCS length of old[i..] and new[j..]; (n+1)·(m+1) cells.
+    let (prefix, suffix) = common_affixes(old, new);
+    let n = old.len() - prefix - suffix;
+    let m = new.len() - prefix - suffix;
+    let (old_mid, new_mid) = (&old[prefix..prefix + n], &new[prefix..prefix + m]);
+    // table[i][j] = LCS length of old_mid[i..] and new_mid[j..]; (n+1)·(m+1) cells.
     let width = m + 1;
     let mut table = vec![0u32; (n + 1) * width];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
             let idx = i * width + j;
-            table[idx] = if old[i].text == new[j].text {
+            table[idx] = if old_mid[i].text == new_mid[j].text {
                 table[(i + 1) * width + (j + 1)] + 1
             } else {
                 table[(i + 1) * width + j].max(table[i * width + (j + 1)])
@@ -256,30 +298,154 @@ fn lcs_ops(old: &[Token], new: &[Token]) -> Vec<Op> {
         }
     }
 
-    let mut ops = Vec::with_capacity(n + m);
+    let mut ops = Vec::with_capacity(old.len() + new.len());
+    ops.extend((0..prefix).map(|k| Op::Equal(k, k)));
     let (mut i, mut j) = (0, 0);
     while i < n && j < m {
-        if old[i].text == new[j].text {
-            ops.push(Op::Equal(i, j));
+        if old_mid[i].text == new_mid[j].text {
+            ops.push(Op::Equal(prefix + i, prefix + j));
             i += 1;
             j += 1;
         } else if table[(i + 1) * width + j] >= table[i * width + (j + 1)] {
-            ops.push(Op::Delete(i));
+            ops.push(Op::Delete(prefix + i));
             i += 1;
         } else {
-            ops.push(Op::Insert(j));
+            ops.push(Op::Insert(prefix + j));
             j += 1;
         }
     }
     while i < n {
-        ops.push(Op::Delete(i));
+        ops.push(Op::Delete(prefix + i));
         i += 1;
     }
     while j < m {
-        ops.push(Op::Insert(j));
+        ops.push(Op::Insert(prefix + j));
         j += 1;
     }
+    ops.extend((0..suffix).map(|k| Op::Equal(prefix + n + k, prefix + m + k)));
     ops
+}
+
+/// Token index ranges of each source line in `tokens` (tokens arrive in source order).
+fn line_runs(tokens: &[Token]) -> Vec<std::ops::Range<usize>> {
+    let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
+    for (k, token) in tokens.iter().enumerate() {
+        match runs.last_mut() {
+            Some(run) if tokens[run.start].line == token.line => run.end = k + 1,
+            _ => runs.push(k..k + 1),
+        }
+    }
+    runs
+}
+
+/// The ID of each line's token texts in `ids`, assigning new IDs in first-seen order.
+fn intern_lines<'a>(
+    ids: &mut std::collections::HashMap<Vec<&'a str>, usize>,
+    side: &'a [Token],
+    runs: &[std::ops::Range<usize>],
+) -> Vec<usize> {
+    runs.iter()
+        .map(|run| {
+            let key = side[run.clone()].iter().map(|t| t.text.as_str()).collect();
+            let next = ids.len();
+            *ids.entry(key).or_insert(next)
+        })
+        .collect()
+}
+
+/// Two-level diff for a changed middle beyond [`LCS_CELL_BUDGET`]: an LCS over whole lines (a
+/// line's identity is its token texts, so layout inside a line is ignored) picks unchanged lines
+/// as anchors, then a token LCS runs on each gap between anchors. The script is valid but, unlike
+/// [`lcs_ops`], not guaranteed minimal. `None` when the line table, or the gaps' cells together,
+/// are over budget, so the work stays within twice the budget however many gaps there are.
+fn line_anchored_ops(old: &[Token], new: &[Token]) -> Option<Vec<Op>> {
+    let (prefix, suffix) = common_affixes(old, new);
+    let (old_end, new_end) = (old.len() - suffix, new.len() - suffix);
+    let old_lines = line_runs(&old[prefix..old_end]);
+    let new_lines = line_runs(&new[prefix..new_end]);
+    let (n, m) = (old_lines.len(), new_lines.len());
+    if n.saturating_mul(m) > LCS_CELL_BUDGET {
+        return None;
+    }
+    // Intern each line's token texts, so the table compares integers.
+    let mut ids = std::collections::HashMap::new();
+    let old_ids = intern_lines(&mut ids, &old[prefix..old_end], &old_lines);
+    let new_ids = intern_lines(&mut ids, &new[prefix..new_end], &new_lines);
+    let width = m + 1;
+    let mut table = vec![0u32; (n + 1) * width];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            table[i * width + j] = if old_ids[i] == new_ids[j] {
+                table[(i + 1) * width + (j + 1)] + 1
+            } else {
+                table[(i + 1) * width + j].max(table[i * width + (j + 1)])
+            };
+        }
+    }
+    let mut ops = Vec::with_capacity(old.len() + new.len());
+    ops.extend((0..prefix).map(|k| Op::Equal(k, k)));
+    // Token cursors (absolute indices) up to which ops have been emitted, and gap cells spent.
+    let (mut old_at, mut new_at) = (prefix, prefix);
+    let mut spent = 0;
+    let (mut i, mut j) = (0, 0);
+    while i < n && j < m {
+        if old_ids[i] == new_ids[j] {
+            let (old_line, new_line) = (prefix + old_lines[i].start, prefix + new_lines[j].start);
+            gap_ops(
+                old,
+                new,
+                (old_at, new_at),
+                (old_line, new_line),
+                &mut spent,
+                &mut ops,
+            )?;
+            let len = old_lines[i].len();
+            ops.extend((0..len).map(|k| Op::Equal(old_line + k, new_line + k)));
+            (old_at, new_at) = (old_line + len, new_line + len);
+            i += 1;
+            j += 1;
+        } else if table[(i + 1) * width + j] >= table[i * width + (j + 1)] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    gap_ops(
+        old,
+        new,
+        (old_at, new_at),
+        (old_end, new_end),
+        &mut spent,
+        &mut ops,
+    )?;
+    ops.extend((0..suffix).map(|k| Op::Equal(old_end + k, new_end + k)));
+    Some(ops)
+}
+
+/// Append the token LCS of `old[from.0..to.0]` against `new[from.1..to.1]` with absolute indices,
+/// adding its cells to `spent`; `None` once the gaps together exceed [`LCS_CELL_BUDGET`].
+fn gap_ops(
+    old: &[Token],
+    new: &[Token],
+    from: (usize, usize),
+    to: (usize, usize),
+    spent: &mut usize,
+    ops: &mut Vec<Op>,
+) -> Option<()> {
+    *spent = spent.saturating_add((to.0 - from.0).saturating_mul(to.1 - from.1));
+    if *spent > LCS_CELL_BUDGET {
+        return None;
+    }
+    ops.extend(
+        lcs_ops(&old[from.0..to.0], &new[from.1..to.1])
+            .into_iter()
+            .map(|op| match op {
+                Op::Equal(i, j) => Op::Equal(from.0 + i, from.1 + j),
+                Op::Delete(i) => Op::Delete(from.0 + i),
+                Op::Insert(j) => Op::Insert(from.1 + j),
+            }),
+    );
+    Some(())
 }
 
 /// Minimum token run length to be considered a "moved block" (short identical
@@ -325,28 +491,29 @@ fn mark_moves(ops: &[Op], old: &[Token], new: &[Token]) -> Vec<TokenChange> {
     };
 
     // A delete run and an insert run with identical token text (length >=
-    // MIN_MOVE_RUN) are a moved block. Each insert run is matched at most once.
+    // MIN_MOVE_RUN) are a moved block. Each insert run is matched at most once,
+    // to the earliest unused one. Insert runs are indexed by text once, so the
+    // search is linear in the runs rather than a scan per delete run.
+    let mut unused: std::collections::HashMap<
+        Vec<&str>,
+        std::collections::VecDeque<(usize, usize)>,
+    > = std::collections::HashMap::new();
+    for ins in &insert_runs {
+        let text = run_text(*ins);
+        if text.len() >= MIN_MOVE_RUN {
+            unused.entry(text).or_default().push_back(*ins);
+        }
+    }
     let mut moved_ops: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    let mut used_inserts: Vec<bool> = vec![false; insert_runs.len()];
+    // Only runs of at least MIN_MOVE_RUN are indexed, so a shorter delete run finds nothing.
     for d in &delete_runs {
         let dt = run_text(*d);
-        if dt.len() < MIN_MOVE_RUN {
-            continue;
-        }
-        for (ii, ins) in insert_runs.iter().enumerate() {
-            if used_inserts[ii] {
-                continue;
-            }
-            if run_text(*ins) == dt {
-                used_inserts[ii] = true;
-                for idx in d.0..d.1 {
-                    moved_ops.insert(idx);
-                }
-                for idx in ins.0..ins.1 {
-                    moved_ops.insert(idx);
-                }
-                break;
-            }
+        if let Some(ins) = unused
+            .get_mut(&dt)
+            .and_then(std::collections::VecDeque::pop_front)
+        {
+            moved_ops.extend(d.0..d.1);
+            moved_ops.extend(ins.0..ins.1);
         }
     }
 
@@ -411,6 +578,7 @@ fn coarse_diff(language: Language, old: &[Token], new: &[Token]) -> StructuralDi
         moved: 0,
         reformat_only: false,
         degraded: true,
+        minimal: false,
         unavailable: None,
     }
 }
@@ -508,6 +676,213 @@ mod tests {
                 );
             }
         }
+    }
+
+    // Council r6/r7: every real DDF source file above ~2,000 tokens degraded to partial_lcs,
+    // however small the edit, because the budget applied to the whole-file product.
+    #[test]
+    fn a_small_edit_to_a_file_beyond_the_cell_budget_is_still_analyzed() {
+        // 800 one-line functions; `name(i)` names the i-th.
+        let source = |name: &dyn Fn(usize) -> String| -> String {
+            let mut text = String::new();
+            for i in 0..800 {
+                text.push_str("fn ");
+                text.push_str(&name(i));
+                text.push_str("() {}\n");
+            }
+            text
+        };
+        let old = source(&|i| format!("f{i}"));
+        let new = source(&|i| {
+            if i == 400 {
+                "renamed".into()
+            } else {
+                format!("f{i}")
+            }
+        });
+        let tokens = tokenize(Language::Rust, &old).len();
+        assert!(tokens * tokens > LCS_CELL_BUDGET, "{tokens} tokens");
+        let d = structural_diff(Language::Rust, &old, &new);
+        assert!(!d.degraded);
+        assert!(d.minimal);
+        assert_eq!((d.added, d.removed, d.moved), (1, 1, 0));
+        assert_eq!(d.unchanged, tokens - 1);
+        let changed: Vec<_> = d
+            .changes
+            .iter()
+            .filter(|c| c.kind != ChangeKind::Unchanged)
+            .map(|c| (c.kind, c.text.as_str(), c.old_line, c.new_line))
+            .collect();
+        assert_eq!(
+            changed,
+            [
+                (ChangeKind::Removed, "f400", Some(401), None),
+                (ChangeKind::Added, "renamed", None, Some(401)),
+            ]
+        );
+        // Two edits 300 functions apart: a 1,800-token middle on each side (3.24 M cells) is
+        // analysed exactly, so the budget is applied to the middle on both sides, not the files.
+        let two_edits = source(&|i| match i {
+            400 | 700 => format!("e{i}"),
+            _ => format!("f{i}"),
+        });
+        let d = structural_diff(Language::Rust, &old, &two_edits);
+        assert!(!d.degraded);
+        assert_eq!((d.added, d.removed), (2, 2));
+        // Edits at both ends leave a middle of ~4,700 tokens (21.9 M cells): anchored on the
+        // unchanged lines between them, it is still analysed exactly.
+        let both_ends = source(&|i| match i {
+            10 | 790 => format!("e{i}"),
+            _ => format!("f{i}"),
+        });
+        let d = structural_diff(Language::Rust, &old, &both_ends);
+        assert!(!d.degraded);
+        assert!(!d.minimal, "anchored, so not claimed minimal");
+        assert_eq!((d.added, d.removed, d.moved), (2, 2, 0));
+        // A rewritten block of 160 functions near the end (a 960-token gap, 0.92 M cells) plus an
+        // edit near the start: the gap is measured on its own, so the file is still analysed.
+        let block = source(&|i| match i {
+            10 | 600..760 => format!("e{i}"),
+            _ => format!("f{i}"),
+        });
+        let d = structural_diff(Language::Rust, &old, &block);
+        assert!(!d.degraded);
+        assert_eq!((d.added, d.removed), (161, 161));
+        // A changed middle that is itself beyond the budget still degrades.
+        let rewritten = source(&|i| format!("g{i}"));
+        assert!(structural_diff(Language::Rust, &old, &rewritten).degraded);
+    }
+
+    // 2,100 lines a side (4.41 M line-table cells): even with only two edits, the line table
+    // itself is over budget, so the file degrades rather than allocating it.
+    #[test]
+    fn a_line_table_beyond_the_budget_degrades() {
+        let source = |edited: bool| -> String {
+            let mut text = String::new();
+            for i in 0..2100 {
+                let name = if edited && (i == 5 || i == 2095) {
+                    "e"
+                } else {
+                    "f"
+                };
+                text.push_str("fn ");
+                text.push_str(name);
+                text.push_str(&i.to_string());
+                text.push_str("() {}\n");
+            }
+            text
+        };
+        let d = structural_diff(Language::Rust, &source(false), &source(true));
+        assert!(d.degraded);
+        assert!(d.unavailable.is_none());
+    }
+
+    // Each rewritten block is a gap well inside the budget; together they are not. The work bound
+    // is on the gaps' total, so eight blocks degrade where four are analysed.
+    #[test]
+    fn the_gaps_together_stay_within_the_cell_budget() {
+        let source = |blocks: usize| -> String {
+            let mut text = String::new();
+            for i in 0..1600 {
+                // A 150-function block starts every 200 functions.
+                let rewritten = i % 200 < 150 && i / 200 < blocks;
+                text.push_str(if rewritten { "fn g" } else { "fn f" });
+                text.push_str(&i.to_string());
+                text.push_str("() {}\n");
+            }
+            text
+        };
+        let old = source(0);
+        let four = structural_diff(Language::Rust, &old, &source(4));
+        assert!(!four.degraded && !four.minimal);
+        assert_eq!((four.added, four.removed), (600, 600));
+        assert!(structural_diff(Language::Rust, &old, &source(8)).degraded);
+    }
+
+    #[test]
+    fn moved_blocks_are_counted_in_the_summary() {
+        let old = "fn a() { alpha(); beta(); gamma(); } fn b() { one(); } fn c() { two(); }";
+        let new = "fn b() { one(); } fn c() { two(); } fn a() { alpha(); beta(); gamma(); }";
+        let d = structural_diff(Language::Rust, old, new);
+        let moved = d
+            .changes
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Moved)
+            .count();
+        assert!(moved > 0);
+        assert_eq!(d.moved, moved);
+    }
+
+    // The anchored path gives up minimality, never validity: check the edit script exhaustively,
+    // with each side grouped into lines differently.
+    #[test]
+    fn line_anchored_ops_is_always_a_valid_edit_script() {
+        let sequences = all_sequences(&["a", "b", "c"], 5);
+        let tokens = |seq: &[&str], per_line: usize| -> Vec<Token> {
+            seq.iter()
+                .enumerate()
+                .map(|(k, t)| Token {
+                    text: (*t).to_owned(),
+                    line: u32::try_from(k / per_line).unwrap(),
+                })
+                .collect()
+        };
+        for old in &sequences {
+            for new in &sequences {
+                for (old_per_line, new_per_line) in [(1, 1), (2, 2), (1, 3)] {
+                    let (o, n) = (tokens(old, old_per_line), tokens(new, new_per_line));
+                    let ops = line_anchored_ops(&o, &n).unwrap();
+                    let (mut next_old, mut next_new) = (0, 0);
+                    for op in &ops {
+                        match *op {
+                            Op::Equal(i, j) => {
+                                assert_eq!((i, j), (next_old, next_new), "{old:?} -> {new:?}");
+                                assert_eq!(old[i], new[j], "{old:?} -> {new:?}");
+                                next_old += 1;
+                                next_new += 1;
+                            }
+                            Op::Delete(i) => {
+                                assert_eq!(i, next_old, "{old:?} -> {new:?}");
+                                next_old += 1;
+                            }
+                            Op::Insert(j) => {
+                                assert_eq!(j, next_new, "{old:?} -> {new:?}");
+                                next_new += 1;
+                            }
+                        }
+                    }
+                    assert_eq!((next_old, next_new), (old.len(), new.len()));
+                    // One token per line: the line LCS is the token LCS, so anchoring is optimal.
+                    if (old_per_line, new_per_line) == (1, 1) {
+                        let equal = ops.iter().filter(|op| matches!(op, Op::Equal(..))).count();
+                        assert_eq!(equal, reference_lcs_len(old, new), "{old:?} -> {new:?}");
+                    }
+                    if old == new && old_per_line == new_per_line {
+                        assert!(ops.iter().all(|op| matches!(op, Op::Equal(..))));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn affixes_and_line_runs_are_exact() {
+        let tokens = |spec: &[(&str, u32)]| -> Vec<Token> {
+            spec.iter()
+                .map(|(text, line)| Token {
+                    text: (*text).to_owned(),
+                    line: *line,
+                })
+                .collect()
+        };
+        let old = tokens(&[("a", 1), ("b", 1), ("x", 2), ("c", 3), ("d", 3), ("e", 3)]);
+        let new = tokens(&[("a", 1), ("b", 1), ("y", 2), ("z", 2), ("d", 3), ("e", 3)]);
+        assert_eq!(common_affixes(&old, &new), (2, 2));
+        assert_eq!(common_affixes(&old, &old), (6, 0));
+        assert_eq!(common_affixes(&old, &[]), (0, 0));
+        assert_eq!(line_runs(&old), [0..2, 2..3, 3..6]);
+        assert_eq!(line_runs(&new), [0..2, 2..4, 4..6]);
+        assert_eq!(line_runs(&[]), Vec::<std::ops::Range<usize>>::new());
     }
 
     #[test]

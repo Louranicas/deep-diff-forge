@@ -83,6 +83,10 @@ pub struct Request {
     pub profile: Profile,
     pub reviewers: Vec<Reviewer>,
     pub mutation_package: String,
+    /// Full commit ID the candidate is measured against. When set, the mutation gate only mutates
+    /// lines changed since it (`--in-diff` of a diff sealed at prepare); absent, the whole package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_base: Option<String>,
     pub fuzz_targets: Vec<String>,
     pub timeout_seconds: u64,
     pub fuzz_seconds: u64,
@@ -104,6 +108,9 @@ pub struct Manifest {
     pub source_tree: String,
     pub request: Request,
     pub artifacts: Vec<Artifact>,
+    /// Digest of `mutation.diff` in the run directory; present exactly when `mutation_base` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_diff_sha256: Option<String>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

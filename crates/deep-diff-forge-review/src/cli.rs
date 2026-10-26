@@ -187,6 +187,7 @@ pub fn example() -> Request {
             },
         ],
         mutation_package: "deep-diff-forge-review".into(),
+        mutation_base: None,
         fuzz_targets: vec!["council_report".into()],
         timeout_seconds: 600,
         fuzz_seconds: 30,
