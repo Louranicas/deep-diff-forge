@@ -883,14 +883,23 @@ fn every_configuration(
     })
 }
 
-/// The controller's own reading of the oracle's witness: `passed`, and either nothing hidden or a
-/// reproducible comparison in which every required configuration built and had a positive control
-/// that moved. The exit status alone is not trusted, nor the oracle's `state` alone.
+/// True when `value` is an empty JSON array (a missing field is not empty).
+fn empty_list(value: &serde_json::Value) -> bool {
+    value.as_array().is_some_and(Vec::is_empty)
+}
+
+/// The controller's own reading of the oracle's witness: `passed` with nothing refused and no
+/// reasons, and either nothing hidden or a reproducible comparison in which every required
+/// configuration built, had a positive control that moved, and shipped nothing. The exit status
+/// alone is not trusted, nor the oracle's `state` alone (council r19: the outcome is checked too).
 fn oracle_passed(verdict: &serde_json::Value) -> bool {
     verdict["state"] == "passed"
+        && empty_list(&verdict["refused"])
+        && empty_list(&verdict["reasons"])
         && (verdict["hidden_functions"] == 0
             || verdict["control"]["mir_changed"] == true
                 && verdict["reproducible"] == true
+                && empty_list(&verdict["shipping_configurations"])
                 && every_configuration(&verdict["configurations"], |v| v == "built")
                 && every_configuration(&verdict["control"]["configurations"], |v| {
                     v["function"].is_string()
