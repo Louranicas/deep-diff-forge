@@ -63,6 +63,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - Determinism contract test: `--rank --json --require-files` is byte-identical
   across runs with an identical `input_sha256`.
 
+### Added (slice B: daemon parity, protocol 1)
+
+- **Daemon `diff.compute`** returns the same `deep-diff-forge.review.v0` document
+  as `--stdin-patch --json` for the same bytes, under the same input contracts
+  (`require_files`, `require_hunks`). A parity test proves this across fixtures
+  and guard combinations. The input-contract predicate moved to
+  `deep_diff_forge_patch::InputGuards`, shared by both surfaces.
+- **`engine.methods`** lists every method with its params, result and protocol
+  version. `engine.initialize` reports the method names and refuses a protocol
+  version it does not speak (domain error 2). Domain error 7 is an input-contract
+  refusal, matching CLI exit 7.
+
 ### Added (slice A: CLI contract v1)
 
 - `deep-diff-forge envelope -- <command…>` wraps any command's result in one

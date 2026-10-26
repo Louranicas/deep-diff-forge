@@ -161,57 +161,33 @@ fn main() {
 /// documented exit-code table.
 const EXIT_REFUSED: i32 = exit::INPUT_CONTRACT_REFUSED;
 
-/// Which input guards the caller asked for. Both default to off, so a plain
-/// invocation keeps its documented behaviour (nothing to review → exit 0).
+/// The `--require-files` / `--require-hunks` input contracts, parsed from the CLI flags; the
+/// predicate itself is [`deep_diff_forge_patch::InputGuards`], shared with the daemon.
 #[derive(Clone, Copy, Default)]
-struct InputGuards {
-    /// `--require-files`: refuse a patch that parses to 0 files.
-    files: bool,
-    /// `--require-hunks`: refuse a patch with 0 hunks or 0 changed lines.
-    hunks: bool,
-}
+struct InputGuards(deep_diff_forge_patch::InputGuards);
 
 impl InputGuards {
     fn from_opts(opts: &[String]) -> Self {
-        Self {
+        Self(deep_diff_forge_patch::InputGuards {
             files: opts.iter().any(|a| a == "--require-files"),
             hunks: opts.iter().any(|a| a == "--require-hunks"),
-        }
+        })
     }
 
     fn any(self) -> bool {
-        self.files || self.hunks
+        self.0.files || self.0.hunks
     }
 
-    /// Apply the requested guards in order (files, then hunks): exit
-    /// [`EXIT_REFUSED`] with a one-line stderr reason and an empty stdout on
-    /// the first one that fails. A gate that feeds a diff into the engine
-    /// should pass both, so neither an empty/mis-piped input nor a header-only
-    /// or rename-only diff can be mistaken for a clean, zero-risk review.
+    /// Exit [`EXIT_REFUSED`] with a one-line stderr reason and an empty stdout on the first
+    /// requested contract the input breaks. A gate that feeds a diff into the engine should pass
+    /// both, so neither an empty or mis-piped input nor a header-only or rename-only diff can be
+    /// mistaken for a clean, zero-risk review.
     fn enforce(self, files: &[deep_diff_forge_core::ReviewFile]) {
-        if self.files && files.is_empty() {
-            eprintln!("refused: 0 files in input (--require-files)");
-            std::process::exit(EXIT_REFUSED);
-        }
-        if self.hunks && !has_reviewable_hunks(files) {
-            eprintln!("refused: 0 hunks in input (--require-hunks)");
+        if let Some(reason) = self.0.refusal(files) {
+            eprintln!("refused: {reason}");
             std::process::exit(EXIT_REFUSED);
         }
     }
-}
-
-/// True when at least one hunk across all files carries an added or removed
-/// line (so "0 hunks" and "0 changed lines" are both refused). A header-only
-/// (`diff --git a/x b/x`) or rename-only diff parses to one file with no
-/// hunks; a hunk made only of context lines changes nothing. Neither is
-/// something a review can judge.
-fn has_reviewable_hunks(files: &[deep_diff_forge_core::ReviewFile]) -> bool {
-    use deep_diff_forge_core::PatchLineKind;
-    files
-        .iter()
-        .flat_map(|f| f.patch_twin.hunks.iter())
-        .flat_map(|h| h.lines.iter())
-        .any(|l| matches!(l.kind, PatchLineKind::Added | PatchLineKind::Removed))
 }
 
 /// Parse a patch or exit 4 with a stderr diagnostic (the CLI contract for a

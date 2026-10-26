@@ -2,7 +2,8 @@
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-daemon--src--handler
 use crate::protocol::{
-    PATCH_PARSE_FAILED, PROTOCOL_VERSION, RESOURCE_EXHAUSTED, Request, RpcError, SESSION_NOT_FOUND,
+    INPUT_CONTRACT_REFUSED, PATCH_PARSE_FAILED, PROTOCOL_UNSUPPORTED, PROTOCOL_VERSION,
+    RESOURCE_EXHAUSTED, Request, RpcError, SESSION_NOT_FOUND,
 };
 use deep_diff_forge_core::{PatchHunk, PatchLine, ReviewFile, SemanticSpan};
 use deep_diff_forge_graph::{RankedFile, rank};
@@ -249,6 +250,71 @@ fn estimated_session_bytes(files: &Vec<ReviewFile>) -> usize {
     total
 }
 
+/// One method the daemon implements, as `engine.methods` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MethodSpec {
+    pub name: &'static str,
+    /// The `params` object, as `name: type` pairs (`?` marks an optional one).
+    pub params: &'static str,
+    /// The shape of `result`.
+    pub result: &'static str,
+    /// The protocol version that introduced it.
+    pub since: u32,
+}
+
+const fn method(
+    name: &'static str,
+    params: &'static str,
+    result: &'static str,
+    since: u32,
+) -> MethodSpec {
+    MethodSpec {
+        name,
+        params,
+        result,
+        since,
+    }
+}
+
+/// Every method [`dispatch`] answers; a test keeps this list and the dispatcher in step.
+pub const METHODS: &[MethodSpec] = &[
+    method(
+        "engine.initialize",
+        "protocol?: integer",
+        "{server, version, protocol, methods}",
+        0,
+    ),
+    method(
+        "engine.methods",
+        "",
+        "{protocol, methods: [{name, params, result, since}]}",
+        1,
+    ),
+    method(
+        "daemon.health",
+        "",
+        "{status, version, pid, sessions, retained_bytes, cache_entries, protocol}",
+        0,
+    ),
+    method(
+        "daemon.status",
+        "",
+        "{running, uptime_secs, sessions, version, protocol}",
+        0,
+    ),
+    method("daemon.shutdown", "", "{stopping}", 0),
+    method("diff.plan", "patch: string", "[ranked file]", 0),
+    method(
+        "diff.compute",
+        "patch: string, require_files?: boolean, require_hunks?: boolean",
+        "the deep-diff-forge.review.v0 document `deep-diff-forge --stdin-patch --json` prints for the same patch",
+        1,
+    ),
+    method("session.open", "patch: string", "{session, files}", 0),
+    method("session.snapshot", "session: string", "[ranked file]", 0),
+    method("session.close", "session: string", "{closed}", 0),
+];
+
 /// Dispatch a parsed request against the engine, returning the result value or
 /// a typed [`RpcError`].
 ///
@@ -258,11 +324,46 @@ fn estimated_session_bytes(files: &Vec<ReviewFile>) -> usize {
 /// parse failures, or unknown sessions.
 pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcError> {
     let version = env!("CARGO_PKG_VERSION");
-    match request.method.as_str() {
-        "engine.initialize" => Ok(json!({
-            "server": "deep-diff-forge",
-            "version": version,
+    // `METHODS` is the authority: a request is dispatched on its `METHODS` entry, so a name it does
+    // not list is never dispatched and an arm added below without an entry is unreachable rather
+    // than undiscoverable (council sb1).
+    let Some(spec) = METHODS.iter().find(|m| m.name == request.method) else {
+        return Err(RpcError::method_not_found(&request.method));
+    };
+    match spec.name {
+        "engine.initialize" => {
+            // Versions are additive, so any version up to ours is served, and the answer lists the
+            // methods that version has. A newer one, or a non-integer, is refused rather than
+            // silently answered in another dialect.
+            let speaks = match request.params.get("protocol") {
+                None => PROTOCOL_VERSION,
+                Some(Value::Number(n))
+                    if n.as_u64().is_some_and(|n| n <= u64::from(PROTOCOL_VERSION)) =>
+                {
+                    u32::try_from(n.as_u64().unwrap_or_default()).unwrap_or(PROTOCOL_VERSION)
+                }
+                Some(other) => {
+                    return Err(RpcError::new(
+                        PROTOCOL_UNSUPPORTED,
+                        format!(
+                            "protocol {other} is not supported; this daemon speaks 0 to {PROTOCOL_VERSION}"
+                        ),
+                    ));
+                }
+            };
+            Ok(json!({
+                "server": "deep-diff-forge",
+                "version": version,
+                "protocol": speaks,
+                "methods": METHODS.iter().filter(|m| m.since <= speaks).map(|m| m.name).collect::<Vec<_>>(),
+            }))
+        }
+        "engine.methods" => Ok(json!({
             "protocol": PROTOCOL_VERSION,
+            "methods": METHODS
+                .iter()
+                .map(|m| json!({"name": m.name, "params": m.params, "result": m.result, "since": m.since}))
+                .collect::<Vec<_>>(),
         })),
         "daemon.health" => Ok(json!({
             "status": "ok",
@@ -288,6 +389,7 @@ pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcErro
             let files = parse_patch_param(request)?;
             Ok(ranked_json(&rank(&files)))
         }
+        "diff.compute" => compute(request),
         "session.open" => {
             let files = parse_patch_param(request)?;
             let count = files.len();
@@ -309,6 +411,42 @@ pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcErro
             Ok(json!({"closed": engine.close_session(&id)}))
         }
         other => Err(RpcError::method_not_found(other)),
+    }
+}
+
+/// `diff.compute`: the review document the CLI's `--stdin-patch --json` prints for the same
+/// patch, sealed over the same bytes, under the same input contracts (`InputGuards`).
+fn compute(request: &Request) -> Result<Value, RpcError> {
+    let patch = str_param(&request.params, "patch")?;
+    let guards = deep_diff_forge_patch::InputGuards {
+        files: bool_param(&request.params, "require_files")?,
+        hunks: bool_param(&request.params, "require_hunks")?,
+    };
+    let files = deep_diff_forge_patch::parse(&patch)
+        .map_err(|e| RpcError::new(PATCH_PARSE_FAILED, e.to_string()))?;
+    if let Some(reason) = guards.refusal(&files) {
+        return Err(RpcError::new(
+            INPUT_CONTRACT_REFUSED,
+            format!("refused: {reason}"),
+        ));
+    }
+    let seal = deep_diff_forge_core::InputSeal::of(patch.as_bytes(), env!("CARGO_PKG_VERSION"));
+    serde_json::from_str(&deep_diff_forge_patch::to_json_sealed(&files, &seal)).map_err(|e| {
+        RpcError::new(
+            crate::protocol::INTERNAL_ERROR,
+            format!("review document is not JSON: {e}"),
+        )
+    })
+}
+
+/// An optional boolean param: absent is `false`; any other type is invalid.
+fn bool_param(params: &Value, key: &str) -> Result<bool, RpcError> {
+    match params.get(key) {
+        None => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(RpcError::invalid_params(format!(
+            "param '{key}' must be a boolean"
+        ))),
     }
 }
 
@@ -829,5 +967,130 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, SESSION_NOT_FOUND);
+    }
+
+    #[test]
+    fn every_listed_method_is_dispatched_and_nothing_else_is() {
+        // An unlisted name is refused before the dispatcher's arms are consulted.
+        let mut probe = Engine::new();
+        for unlisted in ["engine.shutdown", "session.list", "diff.Compute", ""] {
+            let request = Request {
+                jsonrpc: "2.0".into(),
+                id: Value::Null,
+                method: unlisted.into(),
+                params: Value::Null,
+            };
+            assert_eq!(
+                dispatch(&request, &mut probe).unwrap_err().code,
+                crate::protocol::METHOD_NOT_FOUND,
+                "{unlisted}"
+            );
+        }
+        for spec in METHODS {
+            let mut e = Engine::new();
+            let line = format!(r#"{{"method":"{}"}}"#, spec.name);
+            if let Err(err) = call(&line, &mut e) {
+                assert_ne!(err.code, crate::protocol::METHOD_NOT_FOUND, "{}", spec.name);
+            }
+            assert!(spec.since <= PROTOCOL_VERSION, "{}", spec.name);
+        }
+        let names: Vec<&str> = METHODS.iter().map(|m| m.name).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len());
+        let v = call(r#"{"method":"engine.methods"}"#, &mut Engine::new()).unwrap();
+        assert_eq!(v["methods"].as_array().unwrap().len(), METHODS.len());
+        assert_eq!(v["methods"][6]["name"], "diff.compute");
+        let v = call(r#"{"method":"engine.initialize"}"#, &mut Engine::new()).unwrap();
+        assert_eq!(v["methods"].as_array().unwrap().len(), METHODS.len());
+    }
+
+    #[test]
+    fn initialize_refuses_a_protocol_it_does_not_speak() {
+        let mut e = Engine::new();
+        assert_eq!(
+            call(
+                r#"{"method":"engine.initialize","params":{"protocol":1}}"#,
+                &mut e
+            )
+            .unwrap()["protocol"],
+            1
+        );
+        let v0 = call(
+            r#"{"method":"engine.initialize","params":{"protocol":0}}"#,
+            &mut e,
+        )
+        .unwrap();
+        assert_eq!(v0["protocol"], 0);
+        let names: Vec<&str> = v0["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m.as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&"diff.plan")
+                && !names.contains(&"diff.compute")
+                && !names.contains(&"engine.methods"),
+            "{names:?}"
+        );
+        for other in ["2", "\"1\"", "1.5", "null", "-1"] {
+            let line =
+                format!(r#"{{"method":"engine.initialize","params":{{"protocol":{other}}}}}"#);
+            assert_eq!(
+                call(&line, &mut e).unwrap_err().code,
+                PROTOCOL_UNSUPPORTED,
+                "{other}"
+            );
+        }
+    }
+
+    #[test]
+    fn compute_applies_the_input_contracts_and_reports_typed_errors() {
+        let mut e = Engine::new();
+        let ok = r#"{"method":"diff.compute","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+b\n","require_files":true,"require_hunks":true}}"#;
+        let v = call(ok, &mut e).unwrap();
+        assert_eq!(v["schema"], "deep-diff-forge.review.v0");
+        assert_eq!(v["files"].as_array().unwrap().len(), 1);
+        let empty = call(
+            r#"{"method":"diff.compute","params":{"patch":"","require_files":true}}"#,
+            &mut e,
+        )
+        .unwrap_err();
+        assert_eq!(
+            (empty.code, empty.message.as_str()),
+            (
+                INPUT_CONTRACT_REFUSED,
+                "refused: 0 files in input (--require-files)"
+            )
+        );
+        let header = call(r#"{"method":"diff.compute","params":{"patch":"diff --git a/x b/x\n","require_hunks":true}}"#, &mut e).unwrap_err();
+        assert_eq!(
+            (header.code, header.message.as_str()),
+            (
+                INPUT_CONTRACT_REFUSED,
+                "refused: 0 hunks in input (--require-hunks)"
+            )
+        );
+        assert!(call(r#"{"method":"diff.compute","params":{"patch":""}}"#, &mut e).is_ok());
+        let bad = call(
+            r#"{"method":"diff.compute","params":{"patch":"","require_files":"yes"}}"#,
+            &mut e,
+        )
+        .unwrap_err();
+        assert_eq!(bad.code, crate::protocol::INVALID_PARAMS);
+        let garbage = call(
+            r#"{"method":"diff.compute","params":{"patch":"--- a/x\n+++ b/x\n+stray\n"}}"#,
+            &mut e,
+        )
+        .unwrap_err();
+        assert_eq!(garbage.code, PATCH_PARSE_FAILED);
+        assert_eq!(
+            call(r#"{"method":"diff.compute","params":{}}"#, &mut e)
+                .unwrap_err()
+                .code,
+            crate::protocol::INVALID_PARAMS
+        );
     }
 }
