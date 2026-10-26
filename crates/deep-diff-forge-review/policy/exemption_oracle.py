@@ -58,6 +58,8 @@ CONFIGS = {
 CONTROL_TRIES = 5
 # Allow-listed functions named individually when their batch ships (4 builds each).
 ATTRIBUTION_LIMIT = 8
+# Build trees this process created, removed on exit: each holds a full target directory.
+TREES = []
 # Colour-refinement rounds: each is a pure function of the last, so any bound stays
 # order-independent; allocation chains deeper than this are merely less distinguished.
 REFINEMENT_ROUNDS = 16
@@ -188,6 +190,7 @@ class GateBuild:
         self.source, self.package, self.count, self.edited = source, package, 0, set()
         name = os.path.basename(source.rstrip("/")) or "src"
         self.tree = tempfile.mkdtemp(prefix=f"cargo-mutants-{name}-", suffix=".tmp")
+        TREES.append(self.tree)
         # A Cargo build directory carries CACHEDIR.TAG; a source directory named `target` does not.
         stale = os.path.exists(os.path.join(source, "target", "CACHEDIR.TAG"))
         shutil.copytree(source, self.tree, symlinks=True, dirs_exist_ok=True,
@@ -364,6 +367,9 @@ def main():
     except (RuntimeError, OSError, ValueError, KeyError, StopIteration, IndexError) as error:
         verdict = {"schema": SCHEMA, "state": "inconclusive", "package": args.package,
                    "hidden_functions": None, "builds": 0, "refused": [], "reasons": [str(error)[-1000:]]}
+    finally:
+        for tree in TREES:
+            shutil.rmtree(tree, ignore_errors=True)
     with open(args.witness, "w", encoding="utf-8") as out:
         json.dump(verdict, out, indent=1)
     print(json.dumps({k: v for k, v in verdict.items() if k != "refused"} | {"refused": len(verdict["refused"])}))
