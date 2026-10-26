@@ -28,15 +28,22 @@ oracle no longer classifies exclusions; it allow-lists them:
    is observed directly in cargo's `build-script-executed` messages and refused (council r18).
    Incremental state is removed before every build: rustc's incremental reuse after an edit and
    its restore was measured to duplicate allocations and move the MIR of unchanged code.
-   Every unit's dep-info (the files rustc read) is checked as well: a unit that reads the
-   unneutralised snapshot outside the build tree (an absolute `include!`), or a registry or git
-   package that reads a file of the tree, escapes the neutralisation and is refused (council r19).
+   Every non-test unit's dep-info (the files rustc read) is checked against an allow-list
+   (councils r19-r20): a path package may read the build tree, a registry or git package its own
+   directory, and any unit `target/` (outputs and `OUT_DIR`). Anything else, such as
+   the unneutralised snapshot through an absolute `include!`, is refused. A unit whose dep-info
+   cannot be found, or that names a file which no longer exists, makes the verdict inconclusive.
 4. Controls, in both configurations: the unmodified build succeeds and reproduces, and
    neutralising a function the gate mutates (chosen per configuration) keeps every unit building
    and changes one. After every edited build, the edited files must still hold what the oracle
    wrote. After the neutralised builds, the unmodified tree is rebuilt in every configuration: if
    it no longer matches its first build, the comparison drifted and the verdict is inconclusive,
    whatever the neutralised builds showed (council r19: the guard ran only on refusals).
+
+Stop rule (council r20): the oracle observes what cargo and rustc report. Run-time behaviour of
+build scripts and proc macros (reading or copying files, creating symlinks, generating code,
+detecting this job) is one residual class, visible in the reviewed diff; no further detector is
+added for it.
 
 Scope: the guarantee is about function bodies written in the mutation package's sources. Code that
 ships from dependencies, from another crate's macro expansion or from generated files is outside the
@@ -60,7 +67,7 @@ import tempfile
 
 NOEXCLUDE = "ddf-cargo-mutants-noexclude"
 STRICT = "ddf-cargo-mutants-strict"
-SCHEMA = "deep-diff-forge.exemption-oracle.v9"
+SCHEMA = "deep-diff-forge.exemption-oracle.v10"
 LIBRARY_KINDS = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
 LIBRARY_EXTENSIONS = {"rlib", "rmeta", "so", "a", "dylib", "dll"}
 REPLACEMENTS = ("loop {}", "panic!()")
@@ -193,15 +200,17 @@ def digest_text(text):
 
 
 def dep_info_paths(text):
-    """The files a Makefile-style dep-info names: every target and prerequisite, unescaped."""
+    """The files a Makefile-style dep-info names: every target and prerequisite, unescaped. Lines
+    end only at a newline (a filename may hold U+2028), and only the target loses its colon: a
+    prerequisite named `x:` stays `x:` (council r20)."""
     paths = []
-    for line in text.splitlines():
+    for line in text.split("\n"):
         if not line or line.startswith("#"):
             continue
-        for token in re.split(r"(?<!\\) ", line):
-            token = token.replace("\\ ", " ").rstrip(":")
-            if token:
-                paths.append(token)
+        tokens = [t.replace("\\ ", " ") for t in re.split(r"(?<!\\) ", line) if t]
+        if tokens and tokens[0].endswith(":"):
+            tokens[0] = tokens[0][:-1]
+        paths += [t for t in tokens if t]
     return paths
 
 
@@ -236,11 +245,14 @@ class GateBuild:
         self.manifests = {p["manifest_path"] for p in local}
         # A `build-script-executed` message names its package by id only (measured, cargo 1.99.1).
         self.ids = {p["id"]: p["manifest_path"] for p in local}
+        # Where each package's own sources live, for the dep-info allow-list.
+        self.package_dirs = {p["manifest_path"]: os.path.dirname(os.path.realpath(p["manifest_path"])) + os.sep
+                             for p in metadata["packages"]}
         # Touched before the reproducibility build, so no observed unit is merely replayed (council r18).
         inside = os.path.realpath(self.tree) + os.sep
         self.roots = sorted({t["src_path"] for p in local for t in p["targets"]
                              if os.path.realpath(t["src_path"]).startswith(inside)})
-        self.expected, self.test_cfg, self.escapes = {}, set(), set()
+        self.expected, self.test_cfg, self.escapes, self.unverified = {}, set(), set(), set()
         # The mutation gate's environment: cargo-mutants adds these two, and the controller gives
         # both jobs the emitted-MIR flag.
         self.env = dict(os.environ, INSTA_UPDATE="no", INSTA_FORCE_PASS="0")
@@ -266,24 +278,42 @@ class GateBuild:
             directory = parent
 
     def check_dep_info(self, message, deps, twins):
-        """Record a non-test unit that read files the neutralisation cannot reach: the snapshot
-        outside the tree (any package), or the tree itself (a registry or git package)."""
-        local = message.get("manifest_path") in self.manifests
+        """Hold a non-test unit to the files it may read (fail closed): a path package the tree, a
+        registry or git package its own directory, every unit `target/`. Without
+        `-Z binary-dep-depinfo` rustc names no sysroot files (measured on DDF's own build)."""
+        manifest = message.get("manifest_path")
         inside = os.path.realpath(self.tree) + os.sep
-        built = os.path.join(inside, "target") + os.sep  # OUT_DIR output of any package
+        produced = os.path.join(inside, "target") + os.sep  # outputs (some never emitted), OUT_DIR
+        own = inside if manifest in self.manifests else self.package_dirs.get(manifest, "\0")
+        unit = message["target"]["name"]
+        found = False
         for name in message["filenames"]:
-            for twin in [name, *twins.get(os.stat(name).st_ino, [])] if os.path.exists(name) else [name]:
+            # A build script is reported as `build/<pkg>-<hash>/build-script-build`, a hard link to
+            # the `build_script_build-<hash>` beside it, whose dep-info that is (measured).
+            linked = []
+            if os.path.exists(name):
+                inode = os.stat(name).st_ino
+                linked = twins.get(inode, []) + [os.path.join(os.path.dirname(name), sibling)
+                                                 for sibling in os.listdir(os.path.dirname(name))
+                                                 if os.stat(os.path.join(os.path.dirname(name), sibling)).st_ino == inode]
+            for twin in [name, *linked]:
                 info = os.path.join(os.path.dirname(twin), stem_of(twin) + ".d")
                 if not os.path.isfile(info):
                     continue
+                found = True
                 with open(info, encoding="utf-8", errors="replace") as text:
                     for path in dep_info_paths(text.read()):
                         # Workspace paths are relative to the tree cargo ran in (measured).
-                        real = os.path.realpath(os.path.join(self.tree, path))
-                        in_tree = real.startswith(inside)
-                        if (real.startswith(self.snapshot) and not in_tree) or (
-                                not local and in_tree and not real.startswith(built)):
-                            self.escapes.add((message["target"]["name"], real))
+                        joined = os.path.join(self.tree, path)
+                        real = os.path.realpath(joined)
+                        if real.startswith(produced):
+                            continue
+                        if not os.path.lexists(joined):
+                            self.unverified.add(f"{unit} read {path}, which no longer exists")
+                        elif not real.startswith(own):
+                            self.escapes.add((unit, real))
+        if not found:
+            self.unverified.add(f"no dep-info found for {unit} ({message['filenames'][:2]})")
 
     def build(self, config, spans=(), replacement=None, touch=()):
         """Canonical MIR digests of the package's non-test units that built. A unit missing from an
@@ -358,15 +388,22 @@ class GateBuild:
 
 
 def certain(build, verdict):
-    """Refuse outright what cargo or rustc reported directly, from any build so far: a build script
-    setting cfg(test), or a unit reading files the neutralisation cannot reach."""
+    """Settle what cargo or rustc reported directly, from any build so far: refuse a build script
+    setting cfg(test) or a unit reading files outside its allow-list; a unit whose reads cannot be
+    verified makes the verdict inconclusive."""
     rows = [{"file": os.path.relpath(path, build.tree), "function": "build script", "line": 0,
              "reason": "a build script sets cfg(test)"} for path in sorted(build.test_cfg)]
     rows += [{"file": path, "function": f"unit {unit}", "line": 0,
               "reason": "a unit reads files outside the neutralised tree"} for unit, path in sorted(build.escapes)]
-    if not rows:
+    if rows:
+        verdict["refused"], verdict["state"] = rows, "refused"
+    elif build.unverified:
+        verdict["reasons"].append(f"the files {len(build.unverified)} units read are unverified: "
+                                  f"{sorted(build.unverified)[:3]}")
+        verdict["state"] = "inconclusive"
+    else:
         return False
-    verdict["refused"], verdict["builds"], verdict["state"] = rows, build.count, "refused"
+    verdict["builds"] = build.count
     return True
 
 
