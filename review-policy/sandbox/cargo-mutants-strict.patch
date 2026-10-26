@@ -11,17 +11,18 @@
      } else {
          false
      }
-@@ -860,9 +860,12 @@
+@@ -860,9 +860,11 @@
  ///
  /// This checks for `#[cfg(test)]`, attributes whose path ends with `test` (like `#[test]` or `#[tokio::test]`), and `#[mutants::skip]`.
  fn attrs_excluded(attrs: &[Attribute]) -> bool {
-+    // Deep-Diff-Forge strict build (review-policy/sandbox): only exact `#[cfg(test)]` and a bare
-+    // `#[test]` hide an item, so the exemption oracle can refuse every other exclusion outright.
-+    let _ = (attr_is_test, attr_is_mutants_skip);
-     attrs
-         .iter()
+-    attrs
+-        .iter()
 -        .any(|attr| attr_is_cfg_test(attr) || attr_is_test(attr) || attr_is_mutants_skip(attr))
-+        .any(|attr| attr_is_cfg_test(attr) || path_is(attr.path(), &["test"]))
++    // Deep-Diff-Forge strict build (review-policy/sandbox): only `#[cfg(test)]` hides an item. A
++    // bare `#[test]` is not enough, because an import can make `test` name another macro, even
++    // under a feature (council r17); the oracle refuses every other exclusion outright.
++    let _ = (attr_is_test, attr_is_mutants_skip);
++    attrs.iter().any(attr_is_cfg_test)
  }
  
  /// True if the block (e.g. the contents of a function) is empty.

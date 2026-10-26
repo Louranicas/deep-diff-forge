@@ -8,22 +8,25 @@ outflanked by a configuration the oracle did not sample (features, profiles, tar
 oracle no longer classifies exclusions; it allow-lists them:
 
 1. List the scope three times, all with the same pinned cargo-mutants crate: the gate's build;
-   `ddf-cargo-mutants-strict`, which honours only exact `#[cfg(test)]` and a bare `#[test]`; and
+   `ddf-cargo-mutants-strict`, which honours only `#[cfg(test)]` (cargo-mutants' own
+   `attr_is_cfg_test`: the whole argument must be the identifier `test`); and
    `ddf-cargo-mutants-noexclude`, which honours nothing. cargo-mutants' own `syn` parse decides
    all three, so there is no second parser to diverge from it.
-2. A function the gate skips but the strict build lists was hidden by something other than the
-   allow-list (`mutants::skip`, a test-suffixed attribute, `unsafe fn`). It is refused outright,
-   whatever its cfg, so no feature or profile combination can matter (council r16).
-3. A function only the allow-list hides is test code by its source, unless the build disagrees:
-   an imported macro shadowing the built-in `#[test]`, or a build script printing
-   `cargo:rustc-cfg=test`. Those are checked by changing the code and watching the compiler: the
-   snapshot is copied once to a cargo-mutants-style directory, built as the gate builds it
+2. A function the gate skips but the strict build lists was hidden by something other than
+   `#[cfg(test)]`: `mutants::skip`, a test-suffixed attribute, `unsafe fn`, or a bare `#[test]`
+   (an import can make `test` another macro, even under a feature: council r17). The run is
+   refused outright, before any build, so no feature or profile combination can matter.
+3. Code under `#[cfg(test)]` is test code by its source, unless a build script prints
+   `cargo:rustc-cfg=test`. That is checked by changing the code and watching the compiler: the
+   snapshot is copied once to a cargo-mutants-style directory and built as the gate builds it
    (`cargo build --profile test --lib --bins --tests`, measured to reproduce cargo test's units)
    and in release, with MIR emitted (`--emit=link,mir`, which the mutation job carries too).
-   Neutralising the allow-listed bodies (`loop {}` and `panic!()`, keeping lines) must leave every
-   non-test unit's canonical MIR unchanged, and every build must succeed.
-4. Controls: both unmodified builds must succeed and the gate build must reproduce; neutralising a
-   function the gate mutates must keep every unit building and change one.
+   Neutralising the allow-listed bodies (`loop {}` and `panic!()`, keeping lines) must leave the
+   canonical MIR of every non-test unit of every workspace member unchanged (council r17: a
+   `#[path]` include can ship the code from another member), and every build must succeed.
+4. Controls, in both configurations: the unmodified build succeeds and reproduces, and
+   neutralising a function the gate mutates keeps every unit building and changes one. After
+   every edited build, the edited files must still hold what the oracle wrote.
 
 A build script or proc macro that detects this job and behaves differently, or that keys
 `cfg(test)` to a configuration not built here, is the documented "lying to the tool" residual
@@ -42,7 +45,7 @@ import tempfile
 
 NOEXCLUDE = "ddf-cargo-mutants-noexclude"
 STRICT = "ddf-cargo-mutants-strict"
-SCHEMA = "deep-diff-forge.exemption-oracle.v6"
+SCHEMA = "deep-diff-forge.exemption-oracle.v7"
 LIBRARY_KINDS = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
 LIBRARY_EXTENSIONS = {"rlib", "rmeta", "so", "a", "dylib", "dll"}
 REPLACEMENTS = ("loop {}", "panic!()")
@@ -90,12 +93,16 @@ def position(span, end):
 
 
 def outermost(spans):
-    """Drop body spans nested in another of the same file: the outer replacement removes them."""
-    return [(path, span) for path, span in spans
-            if not any(other_path == path and other is not span
-                       and position(other, False) <= position(span, False)
-                       and position(span, True) <= position(other, True)
-                       for other_path, other in spans)]
+    """Drop body spans nested in another of the same file: the outer replacement removes them.
+    One sort and one sweep (council r17: the pairwise check was quadratic)."""
+    kept, current = [], None
+    for path, span in sorted(spans, key=lambda item: (item[0], position(item[1], False),
+                                                       tuple(-v for v in position(item[1], True)))):
+        if current and current[0] == path and position(span, True) <= position(current[1], True):
+            continue  # inside the span kept last
+        kept.append((path, span))
+        current = (path, span)
+    return kept
 
 
 def neutralised(text, spans, replacement):
@@ -116,8 +123,11 @@ def neutralised(text, spans, replacement):
 
 
 ALLOC_HEAD = re.compile(r"^alloc(\d+) (\(.*\)) \{(\})?$")
-# A string literal is kept whole (on one line), so `"alloc1"` in program data is never a reference.
-ALLOC_TOKEN = re.compile(r'"(?:[^"\\\n]|\\.)*"|\balloc(\d+)\b')
+# A string literal is kept whole (on one line), so `"alloc1"` in program data is never a reference;
+# outside one, `allocN` is a reference only in MIR's reference syntax (`{alloc7: &str}`,
+# `{alloc7<imm>: ..}`, `╾alloc7<imm>╼`, `alloc7+0x4`), never an identifier such as `fn alloc7`
+# (council r17).
+ALLOC_TOKEN = re.compile(r'"(?:[^"\\\n]|\\.)*"|(?<=[{╾─])alloc(\d+)(?=[<:+╼─])')
 
 
 def substitute(text, label):
@@ -156,7 +166,8 @@ def canonical_mir(text):
     def name(r):
         return "alloc<" + labels[r] + ">" if r in labels else None
 
-    definitions = sorted({labels[n] + substitute(c, name) for n, c in allocations.items()})
+    # A sorted list, not a set: how many allocations share a label is part of the program.
+    definitions = sorted(labels[n] + substitute(c, name) for n, c in allocations.items())
     return substitute("\n".join(body), name) + "\n" + "\n".join(definitions)
 
 
@@ -186,8 +197,11 @@ class GateBuild:
         members = [p for p in metadata["packages"] if p["name"] == package]
         if len(members) != 1:
             raise RuntimeError(f"package {package} is not exactly one workspace member")
-        self.manifest = members[0]["manifest_path"]
+        # Every member's non-test units are observed: a `#[path]` include can ship the mutation
+        # package's code from another member (council r17).
+        self.manifests = {p["manifest_path"] for p in metadata["packages"]}
         self.roots = sorted({t["src_path"] for t in members[0]["targets"]})
+        self.expected = {}
         # The mutation gate's environment: cargo-mutants adds these two, and the controller gives
         # both jobs the emitted-MIR flag.
         self.env = dict(os.environ, INSTA_UPDATE="no", INSTA_FORCE_PASS="0")
@@ -228,6 +242,7 @@ class GateBuild:
             with open(os.path.join(self.tree, path), "w", encoding="utf-8") as out:
                 out.write(text)
             self.edited.add(path)
+            self.expected[path] = text
         for root in touch:
             os.utime(root)
         self.refuse_runtime_config()
@@ -238,6 +253,12 @@ class GateBuild:
         done = run(["cargo", "build", "--workspace", *arguments, "--locked", "--keep-going",
                     "--message-format=json"], cwd=self.tree, env=self.env, check=False)
         self.refuse_runtime_config()
+        # A build script runs in this tree with write access; had it restored a neutralised file,
+        # the unchanged MIR would prove nothing (council r17).
+        for path in self.edited:
+            with open(os.path.join(self.tree, path), encoding="utf-8", errors="replace") as now:
+                if now.read() != self.expected[path]:
+                    raise RuntimeError(f"{path} changed during the build")
         if done.returncode != 0 and not spans:
             raise RuntimeError(f"the unmodified tree does not build in {config}: {done.stderr[-600:]}")
         # Cargo reports uplifted paths for some units; each is a hard link to its deps/ original.
@@ -248,7 +269,7 @@ class GateBuild:
         digests = {}
         for line in done.stdout.splitlines():
             message = json.loads(line) if line.startswith("{") else {}
-            if message.get("reason") != "compiler-artifact" or message.get("manifest_path") != self.manifest:
+            if message.get("reason") != "compiler-artifact" or message.get("manifest_path") not in self.manifests:
                 continue
             kinds = set(message["target"]["kind"])
             if message["profile"]["test"] or not kinds & (LIBRARY_KINDS | {"bin"}):
@@ -264,7 +285,7 @@ class GateBuild:
                 with open(os.path.join(deps, f"{stem}.mir"), encoding="utf-8", errors="replace") as mir:
                     digests[stem] = digest_text(mir.read())
         if not digests and not spans:
-            raise RuntimeError(f"configuration {config} produced no non-test lib or bin of {self.package}")
+            raise RuntimeError(f"configuration {config} produced no non-test lib or bin")
         return digests
 
 
@@ -280,9 +301,10 @@ def judge(package, in_diff):
     verdict = {"schema": SCHEMA, "package": package, "in_diff": bool(in_diff), "hidden_functions": len(hidden),
                "allow_listed": len(allowed), "builds": 0, "refused": [], "reasons": [], "configurations": {}}
     verdict["refused"] = [{"file": f, "function": n, "line": line,
-                           "reason": "excluded by something other than #[cfg(test)] or #[test]"}
+                           "reason": "excluded by something other than #[cfg(test)]"}
                           for f, n, line, _ in disallowed]
-    if not allowed:
+    if disallowed or not allowed:
+        # The verdict is already certain: build nothing (council r17).
         verdict["state"] = "refused" if disallowed else "passed"
         return verdict
     unbodied = [key for key in allowed if key not in bodies]
@@ -291,19 +313,25 @@ def judge(package, in_diff):
     build = GateBuild(os.getcwd(), package)
     original = {config: build.build(config) for config in CONFIGS}
     verdict["configurations"] = {config: "built" for config in original}
-    verdict["reproducible"] = build.build("gate", touch=build.roots) == original["gate"]
+    # Both configurations get a reproducibility check and a positive control (council r17: a
+    # release comparison that cannot move would otherwise pass unnoticed).
+    verdict["reproducible"] = all(build.build(config, touch=build.roots) == original[config] for config in CONFIGS)
     if not verdict["reproducible"]:
         verdict["reasons"].append("two builds of the unmodified tree disagree: the comparison cannot be trusted")
     if not stock_bodies:
         stock, stock_bodies = listing("cargo", ["--package", package])
     verdict["control"] = {"mir_changed": False}
     for control in sorted(key for key in stock if key in stock_bodies)[:CONTROL_TRIES]:
-        edited = build.build("gate", [(control[0], stock_bodies[control])], REPLACEMENTS[0])
-        if set(edited) == set(original["gate"]) and edited != original["gate"]:
-            verdict["control"] = {"file": control[0], "function": control[1], "mir_changed": True}
+        moved = []
+        for config in CONFIGS:
+            edited = build.build(config, [(control[0], stock_bodies[control])], REPLACEMENTS[0])
+            moved.append(set(edited) == set(original[config]) and edited != original[config])
+        if all(moved):
+            verdict["control"] = {"file": control[0], "function": control[1], "mir_changed": True,
+                                  "configurations": sorted(CONFIGS)}
             break
     if not verdict["control"]["mir_changed"]:
-        verdict["reasons"].append("no mutated function both built completely and changed non-test MIR when neutralised")
+        verdict["reasons"].append("no mutated function built completely and changed non-test MIR in every configuration")
     spans = [(key[0], bodies[key]) for key in allowed if key in bodies]
     def shipping(selected):
         return sorted({config for config in CONFIGS for replacement in REPLACEMENTS

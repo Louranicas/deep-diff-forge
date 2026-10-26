@@ -2,7 +2,7 @@
 # Design/status: docs/REVIEW_COUNCIL.md#gate-sandbox
 #
 # Build (rootless Podman, network only at build time):
-#   podman build --pull=never -t localhost/ddf-council-gate:20261026b -f review-policy/sandbox/Containerfile review-policy/sandbox
+#   podman build --pull=never -t localhost/ddf-council-gate:20261026c -f review-policy/sandbox/Containerfile review-policy/sandbox
 # Gates then run this image by image ID with --network=none, a read-only root, a read-only source mount,
 # all capabilities dropped, no-new-privileges and no host home mounts; see deep-diff-forge-review/src/sandbox.rs.
 # The controller sets RUSTUP_TOOLCHAIN to the stable toolchain below (sandbox.rs STABLE_TOOLCHAIN).
@@ -24,8 +24,8 @@ RUN cargo install --locked cargo-mutants@27.1.0 cargo-fuzz@0.13.2 \
 # the same cargo-mutants release, from the crates.io archive pinned by the checksum the registry
 # index records for 27.1.0, with attribute and `unsafe fn` exclusions switched off by a reviewed
 # patch. It only lists; the gate's mutation run always uses the stock build above. A second
-# patch builds `ddf-cargo-mutants-strict`, which honours only exact `#[cfg(test)]` and a bare
-# `#[test]`: the oracle's allow-list (decision record 1.0.7).
+# patch builds `ddf-cargo-mutants-strict`, which honours only `#[cfg(test)]`: the oracle's
+# allow-list (decision record 1.0.8).
 COPY cargo-mutants-noexclude.patch /tmp/noexclude.patch
 COPY cargo-mutants-strict.patch /tmp/strict.patch
 RUN curl -fsSLo /tmp/cargo-mutants.crate https://static.crates.io/crates/cargo-mutants/cargo-mutants-27.1.0.crate \

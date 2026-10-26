@@ -514,7 +514,8 @@ const FAKE_IMAGE_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef012
 /// `fifo` and `symlinked_dir` at the mutation witness. For the exemption oracle (installed again
 /// as `ddf-cargo-mutants-noexclude` and `ddf-cargo-mutants-strict`): `exempt`/`exempt_txt` hide
 /// `hidden` with something other than the allow-list; the rest hide it with `#[cfg(test)]`, and
-/// `hidden_test` keeps it out of non-test units, `shadowed` compiles it in (a shadowed `#[test]`),
+/// `hidden_test` keeps it out of non-test units, `shadowed` compiles it in (a build script setting
+/// `cfg(test)`), `restores` puts the neutralised file back during the build,
 /// `release_ships` only in release, `neutral_fails`/`harness_fails` stop the non-test unit or
 /// only the harness building when it is neutralised, `mir_blind` emits MIR no change can alter,
 /// and `unreproducible` differs on every build.
@@ -531,7 +532,7 @@ if '--list' in sys.argv:
         return {'file':file,'genre':'FnValue','span':body,'function':{'function_name':name,'span':span}}
     tool=os.path.basename(sys.argv[0]);rows=[fn('shipped',1)]
     hidden=fn('hidden',1,'src/hidden.txt') if mode=='exempt_txt' else fn('hidden',4)
-    allow_listed={'hidden_test','shadowed','release_ships','neutral_fails','harness_fails','mir_blind','unreproducible'}
+    allow_listed={'hidden_test','shadowed','release_ships','neutral_fails','harness_fails','mir_blind','unreproducible','restores'}
     if 'noexclude' in tool and (mode in allow_listed or mode.startswith('exempt')):rows.append(hidden)
     if 'strict' in tool and mode.startswith('exempt'):rows.append(hidden)
     print(json.dumps(rows));sys.exit(0)
@@ -540,6 +541,7 @@ if sys.argv[1:2]==['metadata']:
     package={'name':'deep-diff-forge-review','manifest_path':os.path.join(os.getcwd(),'Cargo.toml'),'targets':[{'name':'deep-diff-forge-review','kind':['rlib','cdylib'],'src_path':root}]}
     print(json.dumps({'packages':[package]}));sys.exit(0)
 if sys.argv[1:2]==['build'] and '--keep-going' in sys.argv:
+    ORACLE_SOURCE='pub fn shipped() -> u32 {\n    1\n}\npub fn hidden() -> u32 {\n    2\n}\n'
     # The oracle's builds. Non-test MIR stands in as the source text the unit compiles; `--tests`
     # (the gate configuration) also builds a harness.
     assert 'CARGO_TARGET_DIR' not in os.environ and 'CARGO_INCREMENTAL' not in os.environ,'not the gate environment'
@@ -548,6 +550,8 @@ if sys.argv[1:2]==['build'] and '--keep-going' in sys.argv:
     assert not gate or sys.argv[sys.argv.index('--profile')+1]=='test','the gate builds the test profile'
     lines=pathlib.Path('src/lib.rs').read_text().split('\n')
     neutralised=lines[4]!='    2'
+    # `restores`: a build script that puts the neutralised file back during the build.
+    if mode=='restores' and neutralised:pathlib.Path('src/lib.rs').write_text(ORACLE_SOURCE)
     shipped,hidden='\n'.join(lines[:3]),'\n'.join(lines[3:])
     ships=mode=='shadowed' or (mode=='release_ships' and '--release' in sys.argv)
     nontest=shipped+'\n'+hidden if ships else shipped
@@ -964,6 +968,22 @@ fn a_build_that_does_not_reproduce_is_inconclusive_and_refused() {
 }
 
 #[test]
+fn a_build_that_restores_a_neutralised_file_is_inconclusive() {
+    // Unchanged MIR proves nothing if the build put the original body back (council r17).
+    let f = oracle_fixture("restores");
+    assert_eq!(f.gate("mutation").status.code(), Some(4));
+    let witness = oracle_witness(&f);
+    assert_eq!(witness["state"], "inconclusive", "{witness}");
+    assert!(
+        witness["reasons"][0]
+            .as_str()
+            .unwrap()
+            .contains("changed during the build"),
+        "{witness}"
+    );
+}
+
+#[test]
 fn the_mutation_job_emits_mir_like_the_oracle() {
     // The flag the oracle needs is in both jobs' environment, so it tells a build script nothing.
     let f = oracle_fixture("hidden_test");
@@ -1010,6 +1030,10 @@ fn the_controller_checks_the_oracle_witness_as_well_as_its_exit() {
             0,
         ),
         (r#"{"state":"passed","hidden_functions":0}"#, 1),
+        (
+            r#"{"state":"passed","hidden_functions":1,"control":{"mir_changed":true},"reproducible":true,"configurations":{"gate":"built","release":"does not build"}}"#,
+            0,
+        ),
     ] {
         let f = Fixture::new();
         f.prepare();
