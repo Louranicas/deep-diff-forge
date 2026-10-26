@@ -73,14 +73,13 @@ kept as history. Since the L3 update:
   and an exemption oracle ([review council](REVIEW_COUNCIL.md#gate-sandbox)).
   The sandbox's planted-breach suite runs in CI.
 - **Source of truth gap (§1)** — the council stack reaches `main` through
-  staged, reviewed merges (PR #3 and PR #4 merged; PR #5 open).
+  staged, reviewed merges (PRs #3, #4 and #5 merged), under branch protection.
 - **Supply-chain gap (§6)** — `cargo audit` and `cargo deny` both run in CI;
   the committed SBOM is reproducible (content-addressed namespace, `created`
   from the last `Cargo.lock` commit).
 
 Still open:
 
-- Council r18 triage, then the stage C merge.
 - **Packaging gap (§7)** and crates.io: publication is on hold until the
   codebase is production-ready.
 - **Machine consumer gap** — the CLI contract, daemon parity, SDK and MCP

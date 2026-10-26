@@ -110,15 +110,19 @@ Done:
 - **Gate sandbox:** the eight council gates run only in a rootless Podman
   container, as the operator's own uid
   ([gate sandbox](REVIEW_COUNCIL.md#gate-sandbox)).
-- **Exemption oracle:** only `#[cfg(test)]` may hide code from the
-  diff-scoped mutation gate ([r18](REVIEW_COUNCIL.md#cfg-test-only-r18)).
+- **Exemption oracle (v11, stage C, PR #5, `39005c5`):** only `#[cfg(test)]`
+  may hide code from the diff-scoped mutation gate. Allow-listed code is checked
+  by MIR, a direct build-script report and a fail-closed dep-info allow-list,
+  under a stop rule ([r18–r22](REVIEW_COUNCIL.md#cfg-test-only-r18)).
+- **CI platform:** every job runs on `ubuntu-24.04`, the image the Podman step
+  was measured on, and the Node 20 actions moved to their Node 24 releases
+  (stage D).
 - **Review interop:** Git acquisition (P1a), tuicr export (P1b) and the
   decision journal (P1c).
 
 Remaining, in order:
 
-1. **Council r18 triage** (run `f2baaa43`), then merge stage C (PR #5).
-2. **CLI contract, daemon parity, SDK and MCP**, as four slices, each gated like
+1. **CLI contract, daemon parity, SDK and MCP**, as four slices, each gated like
    a council round:
    - **A. CLI contract v1:** one `ddf.result.v1` envelope, uniform `--json`,
      a documented exit-code table, `ddf schema` and `ddf explain`.
@@ -130,11 +134,10 @@ Remaining, in order:
      write tool opt-in.
 
    A comes first, then B and D together, then C. None of this is implemented.
-3. **GitLab `main` divergence:** reconcile it before any GitLab push of `main`.
-4. **CI platform migrations:** Node 20 actions are deprecated, and the
-   `ubuntu-latest` label moves to Ubuntu 26; the rootless-Podman step was
-   measured on Ubuntu 24.04 only.
-5. **crates.io:** on hold until the codebase is production-ready and the
+2. **GitLab `main` divergence:** reconcile it before any GitLab push of `main`.
+3. **Ubuntu 26:** a measured move off the `ubuntu-24.04` pin, re-checking
+   rootless Podman.
+4. **crates.io:** on hold until the codebase is production-ready and the
    repository documentation is current.
 
 ## Deployment Link

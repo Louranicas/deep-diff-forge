@@ -66,18 +66,33 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 ### Changed
 
 - README exit-code table gains code 7 and the recommended gate command now
-  reads `--require-files --require-hunks`; the documented test count is the
-  measured 991.
+  reads `--require-files --require-hunks`. The workspace has 1,192 passing tests
+  (1 ignored), measured 2026-10-26 on the stage D tree; the 991 baseline is
+  historical.
 - The exemption control evolved through councils r10–r18: a skip-attribute
   lexer, then oracle spans (r12), differential MIR compilation (r13), the
   gate's own build (r14), proven test code (r15), five configurations (r16),
-  an allow-list (r17) and, finally, `#[cfg(test)]` only (r18). Each step
-  answered a council finding; `docs/REVIEW_COUNCIL.md` keeps the history.
+  an allow-list (r17) and `#[cfg(test)]` only (r18). Councils r18–r21 then
+  hardened the evidence:
+  - incremental state is removed before each build, and drift of the
+    unmodified tree is inconclusive (r19–r20);
+  - path dependencies are observed (r19);
+  - a build script's `cfg(test)` is refused from cargo's own report (r19);
+  - each unit's dep-info is held to an allow-list and fails closed (r20–r22);
+  - the controller requires exactly the gate and release configurations and a
+    clean outcome (r19–r20).
+
+  A stop rule bounds further detectors (r21). Each step answered a council
+  finding; `docs/REVIEW_COUNCIL.md` keeps the history.
 - The skip-attribute lexer (about 580 lines) is retired (r13); the oracle is
   the single control. `code_lines` widening follows nested comments, attribute
   brackets, plain/byte/raw strings and character literals.
 - The mutation job carries `CARGO_ENCODED_RUSTFLAGS=--emit=link,mir`, the same
   flag as the oracle's builds, so the two are indistinguishable by flags.
+- CI runs every job on `ubuntu-24.04`, where the rootless-Podman step was
+  measured; `ubuntu-latest` moves to Ubuntu 26, which will be its own measured
+  change. `actions/checkout` (v4 → v7.0.1) and `softprops/action-gh-release`
+  (v2 → v3.0.3) move to their Node 24 releases, pinned by SHA.
 - Structural diff trims the common token prefix and suffix before the LCS and
   anchors oversize diffs on unchanged lines.
 - CI: every toolchain pinned (stable 1.99.1, `nightly-2026-10-25`); the

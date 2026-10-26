@@ -218,14 +218,15 @@ Current status (2026-10-26):
 - **crates.io (step 6) is on hold** until the codebase is production-ready and
   its documentation is current. A configured token does not lift the hold.
 - Changes reach GitHub `main` through staged pull requests merged as merge
-  commits (stage A, PR #3; stage B, PR #4; stage C, PR #5 open), each passing
-  CI first. `main` CI is green at run 40274253094; see
+  commits (stage A, PR #3; stage B, PR #4; stage C, PR #5), each passing all
+  five required checks first. Ruleset 25868121 enforces this on `main`: no direct
+  push, no force push, no bypass. `main` CI is green at run 40274253094; see
   [`EVIDENCE.md`](../EVIDENCE.md#review-council-and-ci-2026-10-26).
 - Gates 2 and 3 are additionally covered for review-council runs by the eight
   sandboxed evidence gates ([review council](REVIEW_COUNCIL.md#gate-sandbox)).
-- Open before the next release: council r18 triage and the stage C merge; the
-  CLI/SDK/MCP slices A–D ([roadmap](ROADMAP.md#status-2026-10-26)); Node 20
-  action deprecation; and the `ubuntu-latest` move to Ubuntu 26.
+- Open before the next release: the CLI/SDK/MCP slices A–D
+  ([roadmap](ROADMAP.md#status-2026-10-26)) and a measured move from the
+  `ubuntu-24.04` pin to Ubuntu 26.
 
 ### Gate 8: Post-Release Learning
 
