@@ -4,6 +4,7 @@
 mod analysis;
 mod contract;
 mod git_input;
+mod mcp;
 use deep_diff_forge_core::exit;
 use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe};
 
@@ -125,23 +126,8 @@ fn main() {
         }
         Some("schema") => contract_output(contract::schema(&args.collect::<Vec<_>>())),
         Some("explain") => contract_output(contract::explain(&args.collect::<Vec<_>>())),
-        Some("envelope") => match contract::envelope(&args.collect::<Vec<_>>()) {
-            Ok((json, code)) => {
-                // Unlike `emit`, a closed reader keeps the command's own exit code (council sa1).
-                use std::io::Write as _;
-                if let Err(err) = std::io::stdout().write_all(json.as_bytes())
-                    && err.kind() != std::io::ErrorKind::BrokenPipe
-                {
-                    eprintln!("error: write failed: {err}");
-                    std::process::exit(exit::IO);
-                }
-                std::process::exit(code);
-            }
-            Err(error) => {
-                eprintln!("error: {error}");
-                std::process::exit(exit::USAGE);
-            }
-        },
+        Some("envelope") => run_envelope(&args.collect::<Vec<_>>()),
+        Some("mcp") => run_mcp(&args.collect::<Vec<_>>()),
         Some("claude-code-contract") => claude_code_contract(),
         Some("chain-contract") => chain_contract(),
         Some("cluster-contract") => cluster_contract(),
@@ -1120,6 +1106,7 @@ USAGE:
   deep-diff-forge learn {{status|record --stdin}} [--json]
   deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side] [--require-files] [--require-hunks]
   deep-diff-forge {{--git-working-tree [--include-untracked] | --git-staged | --git-range A..B}} [--repo PATH] [--acquisition-json | <--stdin-patch output flags>]
+  deep-diff-forge mcp
   deep-diff-forge envelope -- <command> [args…]
   deep-diff-forge schema [result|exit-codes]
   deep-diff-forge explain <code> [--family engine|council] [--json]
@@ -1141,7 +1128,8 @@ MACHINE CONTRACT:
   envelope -- <command…> wraps any command's result in one ddf.result.v1 JSON
   object (exit code, registry outcome, stdout, stderr) and exits with its code.
   schema prints the envelope's JSON Schema or the exit-code registry; explain
-  names one exit code.
+  names one exit code. mcp serves read-only MCP tools over stdio (review_patch,
+  rank_patch, explain_exit_code, exit_code_registry).
 
 FUTURE PRIMARY MODES:
   deep-diff-forge <old> <new>
@@ -1154,6 +1142,43 @@ FUTURE PRIMARY MODES:
 ",
         version = env!("CARGO_PKG_VERSION")
     );
+}
+
+/// `envelope -- <command…>`: print the `ddf.result.v1` object and leave with the command's code.
+fn run_envelope(args: &[String]) {
+    match contract::envelope(args) {
+        Ok((json, code)) => {
+            // Unlike `emit`, a closed reader keeps the command's own exit code (council sa1).
+            use std::io::Write as _;
+            if let Err(err) = std::io::stdout().write_all(json.as_bytes())
+                && err.kind() != std::io::ErrorKind::BrokenPipe
+            {
+                eprintln!("error: write failed: {err}");
+                std::process::exit(exit::IO);
+            }
+            std::process::exit(code);
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            std::process::exit(exit::USAGE);
+        }
+    }
+}
+
+/// `mcp`: serve the read-only MCP tools over stdio until stdin closes.
+fn run_mcp(args: &[String]) {
+    if !args.is_empty() {
+        eprintln!("error: mcp takes no arguments (it serves MCP over stdio)");
+        std::process::exit(exit::USAGE);
+    }
+    match mcp::serve(&mut std::io::stdin().lock(), &mut std::io::stdout().lock()) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(err) => {
+            eprintln!("error: mcp transport failed: {err}");
+            std::process::exit(exit::IO);
+        }
+    }
 }
 
 /// Print a machine-contract answer, or its usage error with exit 2.

@@ -134,11 +134,13 @@ Remaining, in order:
      (subscriptions, projection, annotations, cache) stay planned.
    - **C. SDK:** a semver-checked Rust facade crate, a thin Python client over
      the daemon socket, and `ddf rpc` over stdio.
-   - **D. MCP server:** `ddf mcp` over stdio, read-only by default, with each
-     write tool opt-in.
+   - **D. MCP server (implemented):** `deep-diff-forge mcp` over stdio, dual-era
+     (2026-07-28 and the legacy handshake). It has four read-only tools, with
+     `review_patch` tested for parity with the CLI. No write tool exists; any
+     future one must be opt-in.
 
-   A comes first, then B and D together, then C. A and B are implemented; C and D
-   are not.
+   A comes first, then B and D together, then C. A, B and D are implemented; C
+   is not.
 2. **GitLab `main` divergence:** reconcile it before any GitLab push of `main`.
 3. **Ubuntu 26:** a measured move off the `ubuntu-24.04` pin, re-checking
    rootless Podman.

@@ -593,6 +593,30 @@ deep-diff-forge explain 7 --family council
 
 The command's own output is unchanged, and `envelope` exits with the command's code. Captured stdout is capped at 16 MiB and stderr at 1 MiB; anything cut is listed in `truncated` and never parsed.
 
+## MCP server
+
+`deep-diff-forge mcp` serves read-only [Model Context Protocol](https://modelcontextprotocol.io) tools over stdio, one JSON-RPC message per line.
+
+- **Modern clients** (specification 2026-07-28) send the protocol version and client capabilities in each request's `_meta`, and may call `server/discover` first.
+- **Legacy clients** (2025-11-25, 2025-06-18, 2025-03-26) use the `initialize` handshake.
+
+| Tool | What it returns |
+| --- | --- |
+| `review_patch` | The `deep-diff-forge.review.v0` document for `patch`: the same JSON value `--stdin-patch --json` prints. `require_files` / `require_hunks` refuse as the CLI flags do |
+| `rank_patch` | The patch's files ordered by review risk |
+| `explain_exit_code` | One exit code's family, name and meaning |
+| `exit_code_registry` | Every documented exit code |
+
+Every tool is annotated `readOnlyHint: true`, and none writes anything.
+
+- **Errors:** a malformed call or an unknown tool is a JSON-RPC error. A parse failure or a broken input contract is a tool result with `isError: true`, so a model can correct its input.
+- **Limits:** a request line is capped at the 64 MiB patch budget plus 1 MiB.
+- **Lifetime:** the server exits when stdin closes.
+
+```json
+{"mcpServers": {"deep-diff-forge": {"command": "deep-diff-forge", "args": ["mcp"]}}}
+```
+
 ## The optional daemon
 
 The daemon accelerates repeated review and multi-client workflows. It is
