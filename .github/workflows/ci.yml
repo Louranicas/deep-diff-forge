@@ -185,6 +185,16 @@ jobs:
           DDF_COUNCIL_PODMAN: podman
           DDF_COUNCIL_GATE_IMAGE: localhost/ddf-council-gate:ci
         run: cargo test --locked -p deep-diff-forge-cli --test council_sandbox -- --nocapture
+      # A failed probe run leaves its run directory behind; show why each job failed.
+      - name: sandbox diagnostics on failure
+        if: failure()
+        run: |
+          podman info --format 'network={{.Host.NetworkBackend}} pasta={{.Host.Pasta.Executable}} slirp={{.Host.Slirp4NetNS.Executable}}' || true
+          podman --version
+          for f in /tmp/ddf-council-sandbox-*/run/jobs/*/stderr.log /tmp/ddf-council-sandbox-*/run/jobs/*/protocol-error.txt /tmp/ddf-council-sandbox-*/run/jobs/*/qualification-error.txt; do
+            [ -f "$f" ] && { echo "== $f"; tail -n 40 "$f"; }
+          done
+          true
 
   supply-chain:
     name: supply chain audit
