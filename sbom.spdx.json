@@ -1,13 +1,13 @@
 {
   "SPDXID": "SPDXRef-DOCUMENT",
   "creationInfo": {
-    "created": "2026-10-25T07:31:39Z",
+    "created": "2026-10-26T11:42:01Z",
     "creators": [
       "Tool: deep-diff-forge scripts/security/generate_spdx_sbom.py"
     ]
   },
   "dataLicense": "CC0-1.0",
-  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/295f923ff6e110d7fa015e3f24b0527c",
+  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/2b57c3f9bd250e62c48212103f5d1c46",
   "name": "deep-diff-forge-cargo-lock-sbom",
   "packages": [
     {
@@ -645,7 +645,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "be4f1442760db0631b166ea03b93cd53b54a5ac2620d569e0aa83a70b93f1fb8"
+          "checksumValue": "4fa2899683f4c06d9a9d88347ab1af8ff387d73be7842a8780e9c478fb17a1b3"
         }
       ],
       "copyrightText": "NOASSERTION",
