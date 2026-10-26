@@ -554,6 +554,32 @@ Council r14 (run `278bbc34…`) reviewed `c0c0d6a..4ccaf10`: 12/12 reports and 8
 - Genuine test code for another platform (`cfg(all(test, windows))`) is refused on this host, consistent with the gate, where such listed mutants would survive.
 - Code cargo-mutants never examines stays unmutated.
 
+<a id="every-configuration-r16"></a>
+
+### r16: council r15 follow-ups — test code in the gate, shipped nowhere
+
+Council r15 (run `43066928…`) reviewed `4ccaf10..1ff04ff`: 12/12 reports and 8/8 gates (mutation 76 of 76 caught). On its first real run oracle v4 had 3 hidden functions, all proven test code, reproducible, with a live control. Findings and controls:
+
+| Finding (r15) | Control | Evidence |
+| --- | --- | --- |
+| The criterion samples one configuration: `cfg(any(test, not(debug_assertions)))`, `cfg(any(test, feature = "x"))` or a release-only `build.rs` cfg puts code in a debug test harness while it ships elsewhere (HIGH; architecture, falsifier, security 5/5; challenge HIGHs) | Hidden code must be test code **in the gate** and absent from **every shipping configuration** the oracle can build. The batch neutralization is checked against `--release`, `--all-features`, `--no-default-features` and `--release --all-features`, as well as the gate configuration. A configuration that does not build cannot ship and is recorded as such | **Measured, prototype:** both dual-configuration routes are refused ("ships" in release and all-features), and the release-only route is now "ships". **Fake:** `test_code_that_ships_in_another_configuration_is_refused` |
+| `cargo build` uses the dev profile; the gate uses the test profile, which a candidate can customize (HIGH; correctness, needs_test) | The gate configuration is `cargo build --profile test --lib --bins --tests`. Measured, with `[profile.test] debug-assertions = false`: `cargo test --no-run` builds both the library and the harness with the test profile, and `cargo build --profile test` reproduces the same unit hashes, which plain `cargo build` does not | Measured on DDF with a customized test profile |
+| A partial baseline build was accepted (exit code discarded), and the control's "built" check was vacuous (HIGH; subtractor, falsifier; architecture and correctness 5/5) | Every unmodified build must exit 0. The control must keep **every** non-test unit building and change one | **Fake:** the blind-control and reproducibility tests |
+| Any harness failure counted as proof of test code (5/5) | A harness counts as broken *by the edit* only when a compiler error points inside that function's body. A non-test unit counts as broken only with an error in an edited file | **Fake:** `a_test_harness_that_stops_building_proves_test_code_not_shipping` (the error is placed in the body) |
+| Canonicalization rewrote `alloc` inside string literals, collapsed undefined references, and depended on visit order for cyclic allocations (5/5) | String literals are skipped. Undefined references are refused. Allocations are named by colour refinement of their contents until the partition is stable, which is order-independent and handles cycles | **Unit:** `test_exemption_oracle.py`, 13 tests; the cycle, literal and undefined cases fail against the r15 oracle |
+| `lib` was stripped from every artifact name (5/5) | `lib` is stripped only from library files (`rlib`, `rmeta`, `so`, `a`, `dylib`, `dll`) | **Unit:** `liberty-3c` and `library-2b` keep their names |
+| The header check, moved before the read, refused changed binary files with whitespace in their names (5/5) | Back after the UTF-8 test: only changed *text* files get headers | **Fake:** `a_changed_binary_file_needs_no_header_safe_name` (fails against r15) |
+| The `#` regression test never reached the raw-string path and could not fail (5/5) | 1 MiB runs in code and inside a raw string. Eager counting would take about 2^39 comparisons | Unit |
+| Runtime `.cargo/config` in an ancestor of the build directory (challenge, security) | The oracle refuses any `.cargo/config*` outside `CARGO_HOME` in the tree or its ancestors, before and after every build | By construction |
+| The oracle core was untested below the fake (security, needs_test) | `policy/test_exemption_oracle.py` runs in CI's gate job and in the local replica | 13 unit tests |
+| Linear cost and the 64-function cliff (architecture 4–1; performance) | Harness membership is proved from **per-function MIR sections**, matched uniquely by module path or by the `<impl at file:line>` that contains the method. Ambiguous matches fall back to individual builds. Measured on DDF: the whole package (38 hidden functions) takes 30 builds in 142 s across 5 configurations, against 79 builds in 145 s for one configuration in r15; the r15 diff takes 17 builds in 108 s | Measured |
+| MIR emission cost in the mutation gate was unmeasured (performance, needs_test) | Measured: council r14's mutation gate (no flag) took 13 min 49 s and council r15's (flag plus oracle v4) took 15 min 41 s, both for 76 mutants; the combined overhead is at most 1 min 52 s (+13 %) | Measured from the council driver logs |
+
+**Residuals:**
+- Other target triples are not built.
+- A build script that detects the oracle job, or forged compiler output, is residual 1.
+- The gate environment now carries the oracle's MIR flag; that is a deliberate parity commitment (architecture, contested 2–2–1).
+
 ### Podman invocation
 
 Every gate job runs `$DDF_COUNCIL_PODMAN run` (the default runtime is `podman`) with these flags. The source of truth is `sandbox.rs` `Sandbox::argv`.

@@ -867,10 +867,12 @@ fn vendored_dependencies(
 
 /// Refuse, before the mutation gate's job slot exists, a candidate whose shipped code cargo-mutants
 /// would skip. The embedded oracle lists the mutation scope with the gate's cargo-mutants and with
-/// the image's no-exclusion build, neutralises what only the second listed, and refuses when that
-/// changes the package's non-test MIR in the gate's own build (`cargo test --workspace --no-run`).
-/// It runs once per run, offline, in its own sandbox job with the mutation gate's environment;
-/// candidate build scripts and proc macros run there, never in the controller.
+/// the image's no-exclusion build, neutralises what only the second listed, and requires each such
+/// function to be genuine test code: its neutralisation must change or break a test harness of the
+/// gate configuration and change no non-test unit of the gate, release, all-features or
+/// no-default-features builds (`policy/exemption_oracle.py` has the detail). It runs once per run,
+/// offline, in its own sandbox job with the mutation gate's environment; candidate build scripts
+/// and proc macros run there, never in the controller.
 fn refuse_hidden_exemptions(
     directory: &Path,
     manifest: &Manifest,

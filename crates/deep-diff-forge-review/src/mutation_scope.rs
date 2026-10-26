@@ -175,15 +175,6 @@ fn capture_from(
         if base_id.is_some_and(|base_id| base_id.as_bytes() == id) {
             continue;
         }
-        // Headers are line-oriented, a space can end a name for some diff parsers (Git appends a
-        // tab after such names), and a leading quote reads as Git's path quoting: any of them
-        // could forge or misattribute a header or a hunk. Only a changed file gets a header, so an
-        // unchanged `docs/Design Notes.md` does not block the diff scope (council r13); the check
-        // comes before any read of the file (council r14).
-        require(
-            !path.starts_with('"') && !path.chars().any(char::is_whitespace),
-            "mutation scope path contains whitespace or a leading quote",
-        )?;
         let new = storage::read_untrusted(snapshot, Path::new(path), FILE_CAP)?;
         if std::str::from_utf8(&new).is_err() {
             continue;
@@ -197,6 +188,15 @@ fn capture_from(
         } else {
             Vec::new()
         };
+        // Headers are line-oriented, a space can end a name for some diff parsers (Git appends a
+        // tab after such names), and a leading quote reads as Git's path quoting: any of them
+        // could forge or misattribute a header or a hunk. Only a changed text file gets a header,
+        // so neither an unchanged `docs/Design Notes.md` (council r13) nor a changed binary
+        // `assets/My Logo.png` (council r15) blocks the diff scope.
+        require(
+            !path.starts_with('"') && !path.chars().any(char::is_whitespace),
+            "mutation scope path contains whitespace or a leading quote",
+        )?;
         unified(path, &old, &new, &mut spent, &mut diff)?;
         require(
             diff.len() as u64 <= MUTATION_DIFF_CAP,
@@ -881,9 +881,17 @@ mod tests {
                 String::from_utf8_lossy(rest)
             );
         }
-        // A long run of `#` is scanned once per byte, not once per position.
-        let run = vec![b'#'; 1 << 16];
-        assert_eq!(code_lines(&[&run[..]]), [true]);
+        // A run of `#` is scanned once per byte, not once per position (council r14), in code and
+        // inside a raw string (council r15: the former test never reached that path). Eager
+        // counting would take about 2^39 comparisons here and time out rather than pass.
+        let run = vec![b'#'; 1 << 20];
+        let mut raw = b"let s = r#\"".to_vec();
+        raw.extend_from_slice(&run);
+        raw.extend_from_slice(b"\"#;");
+        assert_eq!(
+            code_lines(&[&run[..], &raw[..], b"/* after */"]),
+            [true, true, false]
+        );
         // The skip ends exactly at the closing quote, so a comment right after it still opens; a
         // literal alone is code, and one inside an attribute is not.
         let source: [&[u8]; 5] = [

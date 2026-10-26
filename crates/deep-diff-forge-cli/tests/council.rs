@@ -512,7 +512,8 @@ const FAKE_IMAGE_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef012
 /// production build compiles (`exempt_txt`: in a non-`.rs` module), `hidden_test` hides one it
 /// does not but a test harness does, `absent` hides one compiled nowhere, `mir_blind` emits MIR no
 /// change can alter, `neutral_fails` and `harness_fails` stop the non-test unit or only the test
-/// harness building when `hidden` is neutralised, and `unreproducible` differs on every build.
+/// harness building when `hidden` is neutralised, `unreproducible` differs on every build, and
+/// `release_ships` compiles `hidden` into the non-test unit of release builds only.
 const FAKE_GATE: &str = r"#!/usr/bin/python3
 import json,os,pathlib,sys
 mode='@MODE@'
@@ -525,7 +526,7 @@ if '--list' in sys.argv:
         return {'file':file,'genre':'FnValue','span':body,'function':{'function_name':name,'span':span}}
     rows=[fn('shipped',1)]
     if 'noexclude' in os.path.basename(sys.argv[0]):
-        if mode in ('exempt','hidden_test','mir_blind','neutral_fails','unreproducible','absent','harness_fails'):rows.append(fn('hidden',4))
+        if mode in ('exempt','hidden_test','mir_blind','neutral_fails','unreproducible','absent','harness_fails','release_ships'):rows.append(fn('hidden',4))
         # A `#[path]` module need not end in `.rs` (council r10).
         if mode=='exempt_txt':rows.append(fn('hidden',1,'src/hidden.txt'))
     print(json.dumps(rows));sys.exit(0)
@@ -533,26 +534,35 @@ if sys.argv[1:2]==['metadata']:
     root=os.path.join(os.getcwd(),'src','lib.rs')
     package={'name':'deep-diff-forge-review','manifest_path':os.path.join(os.getcwd(),'Cargo.toml'),'targets':[{'name':'deep-diff-forge-review','kind':['rlib','cdylib'],'src_path':root}]}
     print(json.dumps({'packages':[package]}));sys.exit(0)
-if sys.argv[1:2]==['build'] and '--tests' in sys.argv:
-    # The oracle's gate build. Non-test and test-harness MIR stand in as the source text each ships.
+if sys.argv[1:2]==['build'] and '--keep-going' in sys.argv:
+    # The oracle's builds. MIR stands in as the source text each unit compiles, with `pub fn`
+    # turned into MIR-style `fn` sections; `--tests` (the gate configuration) adds a harness.
     assert 'CARGO_TARGET_DIR' not in os.environ and 'CARGO_INCREMENTAL' not in os.environ,'not the gate environment'
     assert os.environ.get('CARGO_ENCODED_RUSTFLAGS')=='--emit=link,mir' and os.environ.get('INSTA_UPDATE')=='no'
-    assert '--keep-going' in sys.argv
+    gate='--tests' in sys.argv
+    assert not gate or sys.argv[sys.argv.index('--profile')+1]=='test','the gate builds the test profile'
     lines=pathlib.Path('src/lib.rs').read_text().split('\n')
     neutralised=lines[4]!='    2'
-    shipped,hidden='\n'.join(lines[:3]),'\n'.join(lines[3:])
-    nontest={'hidden_test':shipped,'absent':shipped,'harness_fails':shipped,'mir_blind':'constant'}.get(mode,shipped+hidden)
-    if mode=='exempt_txt':nontest+=pathlib.Path('src/hidden.txt').read_text()
-    if mode=='unreproducible':import time;nontest+=str(time.time_ns())
-    harness={'absent':shipped,'mir_blind':'constant'}.get(mode,shipped+hidden)
-    deps=pathlib.Path(os.getcwd(),'target','debug','deps');deps.mkdir(parents=True,exist_ok=True)
+    as_mir=lambda text:text.replace('pub fn ','fn ')
+    shipped,hidden=as_mir('\n'.join(lines[:3])),as_mir('\n'.join(lines[3:]))
+    test_only={'hidden_test','absent','harness_fails','mir_blind'}
+    nontest=shipped if mode in test_only or (mode=='release_ships' and '--release' not in sys.argv) else shipped+'\n'+hidden
+    if mode=='exempt_txt':nontest+=as_mir(pathlib.Path('src/hidden.txt').read_text())
+    if mode=='mir_blind':nontest='fn constant() {}'
+    if mode=='unreproducible':import time;nontest+='\n// '+str(time.time_ns())
+    harness={'absent':shipped,'mir_blind':'fn constant() {}'}.get(mode,shipped+'\n'+hidden)
+    deps=pathlib.Path(os.getcwd(),'target','release' if '--release' in sys.argv else 'debug','deps');deps.mkdir(parents=True,exist_ok=True)
     def artifact(test,name,mir):
-        (deps/name).write_text('binary');(deps/(name.split('.')[0].removeprefix('lib')+'.mir')).write_text(mir)
+        (deps/name).write_text('binary')
+        stem=name.split('.')[0].removeprefix('lib') if '.' in name else name
+        (deps/(stem+'.mir')).write_text(mir)
         print(json.dumps({'reason':'compiler-artifact','manifest_path':os.path.join(os.getcwd(),'Cargo.toml'),'target':{'name':'deep-diff-forge-review','kind':['rlib','cdylib']},'profile':{'test':test},'filenames':[str(deps/name)]}))
-    if mode=='neutral_fails' and neutralised:sys.exit(101)
+    def error():
+        print(json.dumps({'reason':'compiler-message','message':{'level':'error','spans':[{'file_name':'src/lib.rs','line_start':5,'line_end':5}]}}))
+    if mode=='neutral_fails' and neutralised:error();sys.exit(101)
     artifact(False,'libdeep_diff_forge_review-0f.rlib',nontest)
-    if mode=='harness_fails' and neutralised:sys.exit(101)
-    artifact(True,'deep_diff_forge_review-7e','harness '+harness)
+    if gate and mode=='harness_fails' and neutralised:error();sys.exit(101)
+    if gate:artifact(True,'deep_diff_forge_review-7e',harness)
     sys.exit(0)
 if sys.argv[1:2]==['vendor']:
     out=pathlib.Path(sys.argv[-1])
@@ -974,6 +984,31 @@ fn the_mutation_job_emits_mir_like_the_oracle() {
 }
 
 #[test]
+fn test_code_that_ships_in_another_configuration_is_refused() {
+    // `cfg(any(test, not(debug_assertions)))`: a harness in the gate build, shipped in release
+    // (council r15). The gate configuration alone would call it test code.
+    let f = oracle_fixture("release_ships");
+    let result = f.gate("mutation");
+    assert_eq!(
+        result.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let witness = oracle_witness(&f);
+    assert_eq!(witness["state"], "refused", "{witness}");
+    assert_eq!(witness["refused"][0]["reason"], "ships");
+    assert!(
+        witness["shipping_configurations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "release"),
+        "{witness}"
+    );
+}
+
+#[test]
 fn a_comparison_the_positive_control_cannot_move_is_inconclusive_and_refused() {
     // MIR that no change alters cannot clear anything, whatever the listings say.
     let f = oracle_fixture("mir_blind");
@@ -1204,6 +1239,26 @@ fn path_characters_that_could_confuse_a_diff_parser_are_refused() {
             assert!(sealed.contains(&format!("+++ b/{name}\n")), "{sealed}");
         }
     }
+}
+
+#[test]
+fn a_changed_binary_file_needs_no_header_safe_name() {
+    // A changed non-UTF-8 file is out of scope and gets no header (council r15).
+    let f = Fixture::new();
+    f.commit("assets/My Logo.png", "old");
+    let result = prepare_with_mutation_base(&f, |f| {
+        fs::write(
+            f.repository.join("assets/My Logo.png"),
+            [0xff_u8, 0xfe, 0x00],
+        )
+        .unwrap();
+        fs::write(f.repository.join("changed.rs"), "pub fn changed() {}\n").unwrap();
+    });
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 }
 
 #[test]

@@ -3,36 +3,36 @@
 
 cargo-mutants 27.1.0 skips, by design, any item carrying `#[mutants::skip]`, `#[cfg(test)]`, an
 attribute whose path ends in `test`, and every `unsafe fn`, together with everything inside such an
-item. A candidate reaches those exclusions in spellings no syntactic scan predicts: an imported macro
-shadowing the built-in `#[test]`, a build script printing `cargo:rustc-cfg=test`, or an attribute
-macro that renames or re-spans the item or an enclosing module (councils r12 and r13).
+item. A candidate reaches those exclusions in spellings no syntactic scan predicts (councils r12-r15).
 
-An exclusion is legitimate only for test code. Code the gate never compiles is not test code
-either: listed, its mutants would survive and hold the gate, so hiding it must not clear it
-(council r14). This oracle therefore requires every hidden function to be genuine test code in the
-gate's own build, by changing it and watching what that build compiles:
+An exclusion is legitimate only for test code: code that is compiled into a test harness of the
+gate's build and into no non-test unit of any configuration that ships. Code compiled nowhere is
+not test code either: listed, its mutants would survive and hold the gate (council r14). This
+oracle checks both halves by changing the hidden code and watching the compiler:
 
-1. List the scope twice: with the gate's cargo-mutants and with `ddf-cargo-mutants-noexclude`, the
-   same pinned crate built with attribute and `unsafe fn` exclusions switched off. A function only
-   the second lists was hidden. With nothing hidden, the oracle passes unbuilt.
+1. List the scope with the gate's cargo-mutants and with `ddf-cargo-mutants-noexclude` (the same
+   pinned crate with attribute and `unsafe fn` exclusions off). Hidden = listed only by the second.
+   With nothing hidden, the oracle passes unbuilt.
 2. Copy the snapshot once to a cargo-mutants-style directory (`$TMPDIR/cargo-mutants-src-*.tmp`,
-   target inside) and build the units the mutation gate's `cargo test --workspace --no-run` builds
-   (`cargo build --workspace --lib --bins --tests --keep-going`: the same unit hashes, measured),
-   which also builds the non-test binaries a test build links only for integration tests. The environment is the mutation gate's own: the controller gives both jobs
-   `--emit=link,mir`, so the flag tells a build script nothing (council r14).
-3. Observables: the package's non-test lib and bin MIR, and its test-harness MIR, with allocations
-   renamed by content so incremental reordering cancels out (measured). The unmodified tree is built
-   twice, the second time touching every target root, and the two must agree.
+   target inside). Build, with `--keep-going`, the gate configuration (`--profile test --lib --bins
+   --tests`: the gate's own `cargo test --no-run` units, measured equal even with a customised
+   `[profile.test]`) and the shipping configurations a test build never compiles (`--release`,
+   `--all-features`, `--no-default-features`, `--release --all-features`; council r15). Every
+   unmodified build must succeed completely, and the gate configuration must reproduce.
+3. Observable: per-unit MIR (`--emit=link,mir`, which the controller also gives the mutation job,
+   so it is no tell), canonicalised by an order-independent refinement of allocation contents.
 4. Neutralise hidden bodies (cargo-mutants' `FnValue` spans) with `loop {}` and with `panic!()`,
-   keeping lines. A function ships if either replacement changes non-test MIR or stops a non-test
-   unit building; it is genuine test code if it ships nowhere and some replacement changes or breaks
-   a test harness. Anything else was compiled nowhere and is refused too.
-5. Positive control: neutralising a function the gate mutates must build and change non-test MIR.
+   keeping lines. A function ships if, in any configuration, a replacement changes a non-test
+   unit's MIR or breaks a non-test unit with an error in an edited file. It is test code only if,
+   in the gate configuration, its own MIR section in a harness changes, or a harness breaks with an
+   error inside its body. Anything else was compiled nowhere and is refused.
+5. Positive control: neutralising a function the gate mutates must leave every non-test unit
+   building and change at least one.
 
-The controller embeds this file and runs it in the gate sandbox. Candidate build scripts and proc
-macros run during the builds; one that detects this job anyway (the parent process, timing) and
-builds differently, or forges compiler output, is the documented "lying to the tool" residual
-(docs/REVIEW_COUNCIL.md). Exit status: 0 passed, 1 refused, 2 inconclusive.
+Candidate build scripts and proc macros run during the builds; one that detects this job (the
+parent process, timing) and builds differently, or forges compiler output, is the documented "lying
+to the tool" residual (docs/REVIEW_COUNCIL.md). Other target triples are not built here. Exit
+status: 0 passed, 1 refused, 2 inconclusive.
 """
 import argparse
 import glob
@@ -46,14 +46,24 @@ import sys
 import tempfile
 
 NOEXCLUDE = "ddf-cargo-mutants-noexclude"
-SCHEMA = "deep-diff-forge.exemption-oracle.v4"
+SCHEMA = "deep-diff-forge.exemption-oracle.v5"
 LIBRARY_KINDS = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
+LIBRARY_EXTENSIONS = {"rlib", "rmeta", "so", "a", "dylib", "dll"}
 REPLACEMENTS = ("loop {}", "panic!()")
 EMIT = "--emit=link,mir"
-# Functions individually re-built to name what ships or to prove test code; beyond, unnamed.
-ATTRIBUTION_LIMIT = 64
+GATE = "gate"
+# The gate configuration builds test harnesses; the others are shipping configurations it never
+# compiles. Each is (cargo arguments, target subdirectory).
+CONFIGS = {
+    GATE: (["--profile", "test", "--lib", "--bins", "--tests"], "debug"),
+    "release": (["--release", "--lib", "--bins"], "release"),
+    "all-features": (["--profile", "test", "--all-features", "--lib", "--bins"], "debug"),
+    "no-default-features": (["--profile", "test", "--no-default-features", "--lib", "--bins"], "debug"),
+    "release-all-features": (["--release", "--all-features", "--lib", "--bins"], "release"),
+}
+# Individual proofs (one build pair each) when a function's MIR section is not found by name.
+INDIVIDUAL_LIMIT = 64
 CONTROL_TRIES = 5
-FAILED = "build failed"
 
 
 def run(argv, cwd=None, env=None, check=True):
@@ -87,15 +97,11 @@ def position(span, end):
 
 def outermost(spans):
     """Drop body spans nested in another of the same file: the outer replacement removes them."""
-    kept = []
-    for path, span in spans:
-        inside = any(other_path == path and other is not span
-                     and position(other, False) <= position(span, False)
-                     and position(span, True) <= position(other, True)
-                     for other_path, other in spans)
-        if not inside:
-            kept.append((path, span))
-    return kept
+    return [(path, span) for path, span in spans
+            if not any(other_path == path and other is not span
+                       and position(other, False) <= position(span, False)
+                       and position(span, True) <= position(other, True)
+                       for other_path, other in spans)]
 
 
 def neutralised(text, spans, replacement):
@@ -116,12 +122,18 @@ def neutralised(text, spans, replacement):
 
 
 ALLOC_HEAD = re.compile(r"^alloc(\d+) (\(.*\)) \{(\})?$")
-ALLOC_REF = re.compile(r"\balloc(\d+)\b")
+# A string literal is kept whole, so `"alloc1"` in program data is never taken for a reference.
+ALLOC_TOKEN = re.compile(r'"(?:[^"\\]|\\.)*"|\balloc(\d+)\b')
+
+
+def substitute(text, names):
+    return ALLOC_TOKEN.sub(lambda m: m[0] if m[1] is None else names(m[1]), text)
 
 
 def canonical_mir(text):
-    """MIR with each allocation named by a hash of its contents and the definitions sorted: rustc
-    numbers and orders allocations by interning, which incremental reuse changes (measured)."""
+    """MIR with every allocation named by an order-independent refinement of its contents: rustc
+    numbers and orders allocations by interning, which incremental reuse changes (measured), and
+    allocations may reference each other in cycles (council r15)."""
     lines, body, allocations, i = text.split("\n"), [], {}, 0
     while i < len(lines):
         head = ALLOC_HEAD.match(lines[i])
@@ -136,24 +148,63 @@ def canonical_mir(text):
         else:
             body.append(lines[i])
         i += 1
-    names = {}
+    referenced = {m[1] for m in ALLOC_TOKEN.finditer("\n".join(body) + "\n".join(allocations.values())) if m[1]}
+    missing = referenced - set(allocations)
+    if missing:
+        raise RuntimeError(f"MIR references undefined allocations {sorted(missing)[:5]}")
+    # Colour refinement: start from contents with references blanked, then repeatedly fold in the
+    # neighbours' labels until the partition stops splitting. The result does not depend on
+    # allocation numbers or visit order, and handles cycles.
+    labels = {n: "" for n in allocations}
+    for _ in range(len(allocations) + 1):
+        refined = {n: hashlib.sha256(substitute(c, lambda r: "alloc<" + labels[r] + ">").encode()).hexdigest()[:24]
+                   for n, c in allocations.items()}
+        stable = len(set(refined.values())) == len(set(labels.values()))
+        labels = refined
+        if stable:
+            break
+    named = substitute("\n".join(body), lambda r: "alloc<" + labels[r] + ">")
+    definitions = sorted({labels[n] + substitute(c, lambda r: "alloc<" + labels[r] + ">") for n, c in allocations.items()})
+    return named + "\n" + "\n".join(definitions)
 
-    def name(number, seen=()):
-        if number in names:
-            return names[number]
-        if number not in allocations or number in seen:
-            return f"alloc<unresolved {number in seen}>"
-        content = ALLOC_REF.sub(lambda m: name(m[1], (*seen, number)), allocations[number])
-        names[number] = "alloc<" + hashlib.sha256(content.encode()).hexdigest()[:24] + ">"
-        return names[number]
 
-    definitions = sorted({name(n) + ALLOC_REF.sub(lambda m: name(m[1]), c) for n, c in allocations.items()})
-    return ALLOC_REF.sub(lambda m: name(m[1]), "\n".join(body)) + "\n" + "\n".join(definitions)
+SECTION = re.compile(r"^(?:const )?fn (.+?)\(", re.M)
 
 
-def digest_file(path):
-    with open(path, encoding="utf-8", errors="replace") as mir:
-        return hashlib.sha256(canonical_mir(mir.read()).encode()).hexdigest()
+def sections(text):
+    """{function path: canonical body} for each `fn` in a MIR dump."""
+    canonical = canonical_mir(text)
+    starts = [(m.start(), m[1]) for m in SECTION.finditer(canonical)]
+    return {name: canonical[start:(starts[k + 1][0] if k + 1 < len(starts) else len(canonical))]
+            for k, (start, name) in enumerate(starts)}
+
+
+IMPL_PATH = re.compile(r"<impl at (\S+?):(\d+):\d+: (\d+):\d+>::([^:<>]+)$")
+
+
+def section_of(key, names):
+    """The one MIR section that is this hidden function, or None when no unique match exists (the
+    caller then proves it with an individual build). A free function matches by its module-path
+    suffix; a method by the `<impl at file:line>` span that contains its own start line."""
+    path, function, line = key[0], key[1], key[2]
+    leaf = function.split("::")[-1]
+    matches = [n for n in names if n == function or n.endswith("::" + function)]
+    for name in names:
+        impl = IMPL_PATH.search(name)
+        if impl and impl[4] == leaf and (path.endswith(impl[1]) or impl[1].endswith(path)) \
+                and int(impl[2]) <= line <= int(impl[3]):
+            matches.append(name)
+    return matches[0] if len(set(matches)) == 1 else None
+
+
+def digest_text(text):
+    return hashlib.sha256(canonical_mir(text).encode()).hexdigest()
+
+
+def stem_of(path):
+    """The MIR stem of an artifact: `lib` is a prefix of library files only (council r15)."""
+    name, _, extension = os.path.basename(path).partition(".")
+    return name.removeprefix("lib") if extension in LIBRARY_EXTENSIONS else name
 
 
 class GateBuild:
@@ -174,7 +225,6 @@ class GateBuild:
             raise RuntimeError(f"package {package} is not exactly one workspace member")
         self.manifest = members[0]["manifest_path"]
         self.roots = sorted({t["src_path"] for t in members[0]["targets"]})
-        self.deps = os.path.join(self.tree, "target", "debug", "deps")
         # The mutation gate's environment: cargo-mutants adds these two, and the controller gives
         # both jobs the emitted-MIR flag.
         self.env = dict(os.environ, INSTA_UPDATE="no", INSTA_FORCE_PASS="0")
@@ -182,40 +232,25 @@ class GateBuild:
         self.env.pop("CARGO_TARGET_DIR", None)
         if EMIT not in self.env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f"):
             raise RuntimeError("the build environment does not emit MIR")
+        self.home = os.path.realpath(self.env.get("CARGO_HOME", os.path.expanduser("~/.cargo")))
 
-    def artifacts(self, argv):
-        """(test, kinds, deps stems, executable) for each artifact of the package a build made."""
-        done = run(argv, cwd=self.tree, env=self.env, check=False)
-        self.stderr = done.stderr[-600:]
-        # Cargo reports uplifted paths (target/debug/libfoo.rlib, target/debug/foo) for some units;
-        # each is a hard link to its deps/ original, whose name carries the unit's MIR stem.
-        twins = {}
-        for path in glob.glob(os.path.join(self.deps, "*")):
-            if os.path.isfile(path) and not path.endswith((".d", ".mir")):
-                twins.setdefault(os.stat(path).st_ino, []).append(path)
-        found = []
-        for line in done.stdout.splitlines():
-            message = json.loads(line) if line.startswith("{") else {}
-            if message.get("reason") != "compiler-artifact" or message.get("manifest_path") != self.manifest:
-                continue
-            kinds, test = set(message["target"]["kind"]), message["profile"]["test"]
-            if not (test or kinds & (LIBRARY_KINDS | {"bin"})):
-                continue  # build scripts, examples: not the package's shipped or test code
-            stems = set()
-            for name in message["filenames"]:
-                for twin in ([name] if os.path.dirname(name) == self.deps
-                             else twins.get(os.stat(name).st_ino, [])):
-                    stem = os.path.basename(twin).split(".")[0].removeprefix("lib")
-                    if os.path.exists(os.path.join(self.deps, f"{stem}.mir")):
-                        stems.add(stem)
-            if not stems:
-                raise RuntimeError(f"no MIR found for {message['target']['name']} ({message['filenames']})")
-            found.append((test, kinds, stems))
-        return found
+    def refuse_runtime_config(self):
+        """Cargo reads `.cargo/config*` from the build directory and every ancestor. Admission
+        refuses candidate config in the snapshot; a build script could still write one at runtime
+        to steer a later build (council r15), so none may exist outside CARGO_HOME."""
+        directory = os.path.realpath(self.tree)
+        while True:
+            for name in ("config", "config.toml"):
+                found = os.path.join(directory, ".cargo", name)
+                if os.path.exists(found) and os.path.realpath(os.path.dirname(found)) != self.home:
+                    raise RuntimeError(f"runtime Cargo configuration appeared at {found}")
+            parent = os.path.dirname(directory)
+            if parent == directory:
+                return
+            directory = parent
 
-    def digest(self, spans=(), replacement=None, touch=()):
-        """{"nontest": {...}, "harness": {...}}: canonical MIR digests per unit, FAILED for a unit
-        that did not build. The unmodified tree must build completely."""
+    def build(self, config, spans=(), replacement=None, touch=()):
+        """{"nontest": {stem: digest}, "harness": {stem: text}, "errors": [(file, line)], "ok": bool}."""
         for path in self.edited:
             shutil.copyfile(os.path.join(self.source, path), os.path.join(self.tree, path))
         self.edited = set()
@@ -231,26 +266,53 @@ class GateBuild:
             self.edited.add(path)
         for root in touch:
             os.utime(root)
-        units = {"nontest": {}, "harness": {}}
-        # The units of the gate's `cargo test --workspace --no-run` (measured: the same unit hashes,
-        # reused fresh), plus the non-test bins, which a test build links only for integration
-        # tests; `cargo test` has no `--keep-going`, so one unit's failure cannot hide the others.
-        built = self.artifacts(["cargo", "build", "--workspace", "--lib", "--bins", "--tests", "--locked",
-                                "--keep-going", "--message-format=json"])
-        for test, _, stems in built:
+        self.refuse_runtime_config()
+        arguments, subdirectory = CONFIGS[config]
+        deps = os.path.join(self.tree, "target", subdirectory, "deps")
+        done = run(["cargo", "build", "--workspace", *arguments, "--locked", "--keep-going",
+                    "--message-format=json"], cwd=self.tree, env=self.env, check=False)
+        self.refuse_runtime_config()
+        # Cargo reports uplifted paths for some units; each is a hard link to its deps/ original.
+        twins = {}
+        for path in glob.glob(os.path.join(deps, "*")):
+            if os.path.isfile(path) and not path.endswith((".d", ".mir")):
+                twins.setdefault(os.stat(path).st_ino, []).append(path)
+        result = {"nontest": {}, "harness": {}, "errors": [], "ok": done.returncode == 0}
+        for line in done.stdout.splitlines():
+            message = json.loads(line) if line.startswith("{") else {}
+            if message.get("reason") == "compiler-message" and message["message"].get("level") == "error":
+                result["errors"] += [(s["file_name"], s["line_start"], s["line_end"])
+                                     for s in message["message"].get("spans", [])]
+            if message.get("reason") != "compiler-artifact" or message.get("manifest_path") != self.manifest:
+                continue
+            kinds, test = set(message["target"]["kind"]), message["profile"]["test"]
+            if not (test or kinds & (LIBRARY_KINDS | {"bin"})):
+                continue  # build scripts, examples: not the package's shipped or test code
+            stems = set()
+            for name in message["filenames"]:
+                for twin in ([name] if os.path.dirname(name) == deps else twins.get(os.stat(name).st_ino, [])):
+                    if os.path.exists(os.path.join(deps, f"{stem_of(twin)}.mir")):
+                        stems.add(stem_of(twin))
+            if not stems:
+                raise RuntimeError(f"no MIR found for {message['target']['name']} ({message['filenames']})")
             for stem in stems:
-                units["harness" if test else "nontest"][stem] = digest_file(os.path.join(self.deps, f"{stem}.mir"))
-        if not units["nontest"]:
-            if not spans:
-                raise RuntimeError(f"the gate build produced no non-test lib or bin of {self.package}: {self.stderr}")
-        return units
+                with open(os.path.join(deps, f"{stem}.mir"), encoding="utf-8", errors="replace") as mir:
+                    text = mir.read()
+                if test:
+                    result["harness"][stem] = text
+                else:
+                    result["nontest"][stem] = digest_text(text)
+        if not spans and not result["ok"]:
+            raise RuntimeError(f"the unmodified tree does not build in configuration {config}: {done.stderr[-600:]}")
+        if not spans and not result["nontest"]:
+            raise RuntimeError(f"configuration {config} produced no non-test lib or bin of {self.package}")
+        return result
 
 
-def compare(original, edited):
-    """(non-test changed or broken, harness changed or broken) against the unmodified build."""
-    def moved(kind):
-        return any(edited[kind].get(unit, FAILED) != value for unit, value in original[kind].items())
-    return moved("nontest"), moved("harness")
+def in_body(errors, key, body):
+    """Whether an error points inside this function's body (a harness broken by its edit)."""
+    start, end = body["start"]["line"], body["end"]["line"]
+    return any(file == key[0] and line_start <= end and line_end >= start for file, line_start, line_end in errors)
 
 
 def judge(package, in_diff):
@@ -259,7 +321,7 @@ def judge(package, in_diff):
     examined, bodies = listing(NOEXCLUDE, scope)
     hidden = sorted(examined - stock)
     verdict = {"schema": SCHEMA, "package": package, "in_diff": bool(in_diff),
-               "hidden_functions": len(hidden), "builds": 0, "refused": [], "reasons": []}
+               "hidden_functions": len(hidden), "builds": 0, "refused": [], "reasons": [], "configurations": {}}
     if not hidden:
         verdict["state"] = "passed"
         return verdict
@@ -267,50 +329,100 @@ def judge(package, in_diff):
     if unbodied:
         verdict["reasons"].append(f"{len(unbodied)} hidden functions have no body to neutralise: {unbodied[:5]}")
     build = GateBuild(os.getcwd(), package)
-    original = build.digest()
-    verdict["reproducible"] = build.digest(touch=build.roots) == original
+    original = {}
+    for config in CONFIGS:
+        try:
+            original[config] = build.build(config)
+            verdict["configurations"][config] = "built"
+        except RuntimeError as error:
+            if config == GATE:
+                raise
+            # A configuration that does not build cannot ship anything.
+            verdict["configurations"][config] = f"does not build: {str(error)[-200:]}"
+    gate = original[GATE]
+    verdict["reproducible"] = build.build(GATE, touch=build.roots)["nontest"] == gate["nontest"]
     if not verdict["reproducible"]:
         verdict["reasons"].append("two builds of the unmodified tree disagree: the comparison cannot be trusted")
+    edited_files = {key[0] for key in hidden}
+
+    def ships(config, result):
+        """A non-test unit changed, or one broke with an error in an edited file."""
+        base = original[config]["nontest"]
+        if any(result["nontest"].get(stem, digest) != digest for stem, digest in base.items() if stem in result["nontest"]):
+            return True
+        broken = set(base) - set(result["nontest"])
+        return bool(broken) and any(file in edited_files for file, _, _ in result["errors"])
+
     if not stock_bodies:
         stock, stock_bodies = listing("cargo", ["--package", package])
     verdict["control"] = {"mir_changed": False}
     for control in sorted(key for key in stock if key in stock_bodies)[:CONTROL_TRIES]:
-        edited = build.digest([(control[0], stock_bodies[control])], REPLACEMENTS[0])
-        built = all(value != FAILED for value in edited["nontest"].values()) and edited["nontest"]
-        if built and compare(original, edited)[0]:
+        edited = build.build(GATE, [(control[0], stock_bodies[control])], REPLACEMENTS[0])
+        complete = set(edited["nontest"]) == set(gate["nontest"])
+        if complete and edited["nontest"] != gate["nontest"]:
             verdict["control"] = {"file": control[0], "function": control[1], "mir_changed": True}
             break
     if not verdict["control"]["mir_changed"]:
-        verdict["reasons"].append("no mutated function both built and changed non-test MIR when neutralised")
-
-    def effects(keys):
-        """(ships, test code) for neutralising `keys` together, over both replacements."""
-        ships = harness = False
-        for replacement in REPLACEMENTS:
-            moved_nontest, moved_harness = compare(original, build.digest(
-                [(key[0], bodies[key]) for key in keys], replacement))
-            ships, harness = ships or moved_nontest, harness or moved_harness
-            if ships:
-                break
-        return ships, harness
+        verdict["reasons"].append("no mutated function both built completely and changed non-test MIR when neutralised")
 
     neutralisable = [key for key in hidden if key in bodies]
-    ships, harness = effects(neutralisable)
-    refused = []
-    if ships or not harness or len(neutralisable) > 1:
-        # Name each function: some may ship, and some may be compiled nowhere at all.
-        if len(neutralisable) > ATTRIBUTION_LIMIT:
-            if ships or not harness:
-                refused.append({"file": None, "function": f"{len(neutralisable)} hidden functions",
-                                "line": None, "reason": "ships" if ships else "compiled nowhere"})
-            else:
-                verdict["reasons"].append(f"more than {ATTRIBUTION_LIMIT} hidden functions to prove test code")
-        else:
-            for key in neutralisable:
-                one_ships, one_harness = effects([key])
-                if one_ships or not one_harness:
-                    refused.append({"file": key[0], "function": key[1], "line": key[2],
-                                    "reason": "ships" if one_ships else "compiled nowhere"})
+    spans = [(key[0], bodies[key]) for key in neutralisable]
+    shipped_in = set()
+    proven = set()
+    gate_sections = {stem: sections(text) for stem, text in gate["harness"].items()}
+    for replacement in REPLACEMENTS:
+        for config in original:
+            result = build.build(config, spans, replacement)
+            if ships(config, result):
+                shipped_in.add(config)
+            if config == GATE:
+                after = {stem: sections(text) for stem, text in result["harness"].items()}
+                for key in neutralisable:
+                    for stem, base in gate_sections.items():
+                        name = section_of(key, base)
+                        if name is not None and stem in after and after[stem].get(name) != base[name]:
+                            proven.add(key)
+                    if set(gate["harness"]) - set(result["harness"]) and in_body(result["errors"], key, bodies[key]):
+                        proven.add(key)
+    verdict["shipping_configurations"] = sorted(shipped_in)
+
+    refused, individual = [], 0
+    for key in neutralisable:
+        body = bodies[key]
+        one_ships = False
+        if shipped_in:
+            # Name what ships: only the configurations where the batch showed it.
+            for config in sorted(shipped_in):
+                for replacement in REPLACEMENTS:
+                    individual += 1
+                    if individual > INDIVIDUAL_LIMIT:
+                        break
+                    if ships(config, build.build(config, [(key[0], body)], replacement)):
+                        one_ships = True
+                        break
+                if one_ships:
+                    break
+        if not one_ships and key not in proven:
+            for replacement in REPLACEMENTS:
+                individual += 1
+                if individual > INDIVIDUAL_LIMIT:
+                    break
+                result = build.build(GATE, [(key[0], body)], replacement)
+                moved = any(result["harness"].get(stem) is not None and digest_text(result["harness"][stem]) != digest_text(text)
+                            for stem, text in gate["harness"].items())
+                broke = set(gate["harness"]) - set(result["harness"]) and in_body(result["errors"], key, body)
+                if moved or broke:
+                    proven.add(key)
+                    break
+        if individual > INDIVIDUAL_LIMIT:
+            verdict["reasons"].append(f"more than {INDIVIDUAL_LIMIT} individual builds needed to prove hidden functions")
+            break
+        if one_ships or key not in proven:
+            refused.append({"file": key[0], "function": key[1], "line": key[2],
+                            "reason": "ships" if one_ships else "compiled nowhere"})
+    if shipped_in and not any(row["reason"] == "ships" for row in refused):
+        refused.append({"file": None, "function": f"{len(neutralisable)} hidden functions together", "line": None,
+                        "reason": "ships in " + ", ".join(sorted(shipped_in))})
     verdict["refused"] = refused
     verdict["builds"] = build.count
     verdict["state"] = "inconclusive" if verdict["reasons"] else ("refused" if refused else "passed")

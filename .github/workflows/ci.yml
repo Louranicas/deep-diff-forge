@@ -71,6 +71,8 @@ jobs:
         run: |
           python3 scripts/security/review_policy_check.py --selftest
           python3 scripts/security/review_policy_check.py
+      - name: exemption oracle unit tests
+        run: python3 -I crates/deep-diff-forge-review/policy/test_exemption_oracle.py
       - name: format
         run: cargo fmt --all --check
       - name: compile
