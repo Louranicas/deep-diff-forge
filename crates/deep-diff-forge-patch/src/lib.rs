@@ -24,6 +24,7 @@
 
 mod git_acquire;
 mod git_raw;
+mod guards;
 mod parser;
 mod paths;
 mod render;
@@ -35,6 +36,7 @@ pub use git_acquire::{GitAcquireOptions, GitAcquisition, GitSelection, acquire a
 pub use git_raw::{
     GitAcquireError, GitChange, GitChangeKind, GitChangeOrigin, GitPath, StructuredDiff,
 };
+pub use guards::{InputGuards, has_reviewable_hunks};
 pub use parser::{ParseOptions, parse, parse_with};
 pub use render::render_unified;
 

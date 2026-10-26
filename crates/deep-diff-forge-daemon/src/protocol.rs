@@ -1,7 +1,8 @@
 use serde_json::{Value, json};
 
-/// Engine protocol version advertised by `engine.initialize`/`daemon.health`.
-pub const PROTOCOL_VERSION: u32 = 0;
+/// Engine protocol version advertised by `engine.initialize`/`daemon.health`. Version 1 adds
+/// `engine.methods`, `diff.compute` and protocol negotiation; every version-0 method is unchanged.
+pub const PROTOCOL_VERSION: u32 = 1;
 
 /// JSON-RPC standard error code: invalid JSON was received.
 pub const PARSE_ERROR: i64 = -32700;
@@ -19,6 +20,11 @@ pub const SESSION_NOT_FOUND: i64 = 1;
 pub const PATCH_PARSE_FAILED: i64 = 4;
 /// Domain error code: a bounded daemon resource budget would be exceeded.
 pub const RESOURCE_EXHAUSTED: i64 = 8;
+/// Domain error code: the client asked for a protocol version this daemon does not speak.
+pub const PROTOCOL_UNSUPPORTED: i64 = 2;
+/// Domain error code: a well-formed patch broke a contract the caller required
+/// (`require_files`, `require_hunks`); the same refusal as the CLI's exit 7.
+pub const INPUT_CONTRACT_REFUSED: i64 = 7;
 
 /// A parsed JSON-RPC request. Missing optional fields default rather than
 /// failing, so a terse client (`{"method":"daemon.health"}`) is accepted.
@@ -267,7 +273,7 @@ mod tests {
 
     #[test]
     fn protocol_version_is_zero() {
-        assert_eq!(PROTOCOL_VERSION, 0);
+        assert_eq!(PROTOCOL_VERSION, 1);
     }
 
     #[test]

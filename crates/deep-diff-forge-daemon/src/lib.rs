@@ -34,11 +34,11 @@ mod protocol;
 mod security;
 mod serve;
 
-pub use handler::{Engine, dispatch};
+pub use handler::{Engine, METHODS, MethodSpec, dispatch};
 pub use protocol::{
-    INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR,
-    PATCH_PARSE_FAILED, PROTOCOL_VERSION, Request, RpcError, SESSION_NOT_FOUND, error_response,
-    parse_request, success_response,
+    INPUT_CONTRACT_REFUSED, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
+    PARSE_ERROR, PATCH_PARSE_FAILED, PROTOCOL_UNSUPPORTED, PROTOCOL_VERSION, Request, RpcError,
+    SESSION_NOT_FOUND, error_response, parse_request, success_response,
 };
 pub use security::{
     SECURE_DIR_MODE, SECURE_SOCKET_MODE, SocketError, default_socket_path, ensure_runtime_dir,

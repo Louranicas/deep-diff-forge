@@ -71,9 +71,41 @@ deep-diff-forge loom-contract
 ## JSON-RPC Method Map
 
 The implemented daemon uses newline-delimited JSON-RPC 2.0 over filesystem
-Unix-domain sockets. The method map below includes planned surface area; Windows
-named pipes and TCP listeners are not implemented and must not be treated as
-security boundaries.
+Unix-domain sockets. Windows named pipes and TCP listeners are not implemented
+and must not be treated as security boundaries.
+
+### Implemented (protocol 1)
+
+`engine.methods` is the authoritative list. A test keeps that list and the
+dispatcher in step. A client may pass `{"protocol": 1}` to `engine.initialize`;
+any other version is refused with domain error 2 rather than answered in another
+dialect.
+
+| Method | Params | Result | Since |
+| --- | --- | --- | --- |
+| `engine.initialize` | `protocol?` | server, version, protocol, method names | 0 |
+| `engine.methods` | — | each method's params, result and protocol version | 1 |
+| `daemon.health` / `daemon.status` / `daemon.shutdown` | — | liveness, counters, stop | 0 |
+| `diff.plan` | `patch` | ranked files | 0 |
+| `diff.compute` | `patch`, `require_files?`, `require_hunks?` | the `deep-diff-forge.review.v0` document `--stdin-patch --json` prints for the same bytes | 1 |
+| `session.open` / `session.snapshot` / `session.close` | `patch` / `session` | session id; ranked files; closed | 0 |
+
+**Parity:** `diff.compute` and the CLI share the parser, the input seal, the JSON
+projection and one input-contract predicate (`deep_diff_forge_patch::InputGuards`).
+A test feeds six fixtures under all four guard combinations to both surfaces and
+requires the same document, the same refusal text, or the same failure.
+
+| Domain error | Meaning | CLI exit (engine family) |
+| --- | --- | --- |
+| 1 | No such session | — |
+| 2 | Protocol not supported | — |
+| 4 | Patch parse failed | 4 (`invalid_input`) |
+| 7 | Input contract refused (`refused: …`) | 7 (`input_contract_refused`) |
+| 8 | Resource budget exceeded | — |
+
+### Planned surface
+
+The planned methods below are not implemented unless they appear above.
 
 | Method | Direction | Purpose |
 | --- | --- | --- |

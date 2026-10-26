@@ -128,14 +128,17 @@ Remaining, in order:
      command one `ddf.result.v1` envelope without changing its own output.
      Also `schema`, `explain`, and one exit-code registry by family, guarded
      against README drift.
-   - **B. Daemon parity:** the planned JSON-RPC methods and a versioned
-     protocol.
+   - **B. Daemon parity (implemented: protocol 1):** `diff.compute` matches
+     the CLI's review document, with a parity test; there is method discovery
+     (`engine.methods`) and protocol negotiation. The remaining planned methods
+     (subscriptions, projection, annotations, cache) stay planned.
    - **C. SDK:** a semver-checked Rust facade crate, a thin Python client over
      the daemon socket, and `ddf rpc` over stdio.
    - **D. MCP server:** `ddf mcp` over stdio, read-only by default, with each
      write tool opt-in.
 
-   A comes first, then B and D together, then C. A is implemented; B–D are not.
+   A comes first, then B and D together, then C. A and B are implemented; C and D
+   are not.
 2. **GitLab `main` divergence:** reconcile it before any GitLab push of `main`.
 3. **Ubuntu 26:** a measured move off the `ubuntu-24.04` pin, re-checking
    rootless Podman.
