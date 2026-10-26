@@ -1,5 +1,7 @@
 //! `Client` against a real daemon, run in-process on a private socket: the daemon's
 //! `diff.compute` and the facade's `review` give the same document, and errors keep their codes.
+//! Unix only, as `Client` is.
+#![cfg(unix)]
 use deep_diff_forge_sdk::{Client, Error, Guards, review};
 use serde_json::{Value, json};
 use std::os::unix::fs::DirBuilderExt as _;

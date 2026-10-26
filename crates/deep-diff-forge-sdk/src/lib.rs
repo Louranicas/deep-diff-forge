@@ -199,7 +199,8 @@ mod client {
 
 /// Validate a JSON-RPC 2.0 response to request `id` and take its result: the version, the id and
 /// the error object's shape are all checked, so an unrelated or malformed answer is never taken
-/// for this call's (council sdc1).
+/// for this call's (council sdc1). Only `Client` and the tests use it, so non-Unix builds omit it.
+#[cfg(any(unix, test))]
 fn parse_response(answer: &str, id: i64) -> Result<serde_json::Value, Error> {
     use serde_json::Value;
     let bad = |what: &str| Error::Transport(format!("not a valid response: {what}"));
