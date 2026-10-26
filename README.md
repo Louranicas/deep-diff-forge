@@ -16,7 +16,7 @@ while layering syntax-aware understanding, syntax highlighting, structural
 cockpit, and bounded parallel execution on top — every layer a projection over
 one stable model, none of them ever allowed to corrupt the patch.
 
-> **Local development cut.** This branch adds source-pair analysis, correctness/trust repairs and a runnable multi-provider review council. Existing L0–L9 labels are historical capability declarations, not proof that every end-to-end integration is complete. Current verification and remaining gates are in [the integration ledger](docs/RECOMMENDATION_INTEGRATION.md) and [review council design](docs/REVIEW_COUNCIL.md). The new public model/API changes require a release/versioning decision; this local cut has not been merged, published or release-qualified.
+> **Development status (2026-10-26).** Source-pair analysis, correctness/trust repairs and a runnable multi-provider [review council](#review-council-and-evidence-gates) are merging into `main` in reviewed stages: stage A ([#3](https://github.com/Louranicas/deep-diff-forge/pull/3)) and stage B ([#4](https://github.com/Louranicas/deep-diff-forge/pull/4)) are merged and `main` CI is green (run [40274253094](https://github.com/Louranicas/deep-diff-forge/actions/runs/40274253094)); stage C ([#5](https://github.com/Louranicas/deep-diff-forge/pull/5)) is open. Existing L0–L9 labels are historical capability declarations, not proof that every end-to-end integration is complete. Current verification and remaining gates are in [the integration ledger](docs/RECOMMENDATION_INTEGRATION.md) and [review council design](docs/REVIEW_COUNCIL.md). The new public model/API changes require a release/versioning decision. Nothing after 0.2.1 is tagged or published, and **crates.io publication is on hold until the codebase is production-ready** (see [Project status](#project-status)).
 
 <p align="center">
   <img src="assets/review-cockpit.png" alt="The deep-diff-forge review cockpit: a ranked file sidebar, a side-by-side syntax-highlighted diff, and the top command menu bar" width="100%">
@@ -43,6 +43,7 @@ one stable model, none of them ever allowed to corrupt the patch.
 - [Architecture](#architecture)
 - [The deployment framework](#the-deployment-framework)
 - [Building, testing, and quality gates](#building-testing-and-quality-gates)
+- [Review council and evidence gates](#review-council-and-evidence-gates)
 - [Project status](#project-status)
 - [License](#license)
 
@@ -267,7 +268,9 @@ Recommended release proof for GitHub:
 - state that `just gate-release` passed;
 - include the TUI test count from the gate output;
 - include the daemon soak receipt and `verdict=PASS`;
-- call out that crates.io publishing is token-gated by `CARGO_REGISTRY_TOKEN`.
+- state that crates.io publication is on hold: it is a deliberate project
+  decision, not only a missing `CARGO_REGISTRY_TOKEN`, until the codebase is
+  production-ready and its documentation is current.
 
 Honest boundary: Deep-Diff-Forge is production-ready as a local, scriptable,
 agent-usable diff review and triage engine. Hosted review services, CI bot
@@ -433,7 +436,8 @@ Reports the per-target publication state for the current version — GitHub, Git
 the GitHub release, and crates.io. This is a declared snapshot (the actual release
 acts are `git tag`, `gh release`, and `cargo publish`); `crates.io` is reported
 `blocked` until a registry token is configured, and `pending` lists every
-not-yet-published target.
+not-yet-published target. Independently of the token, crates.io publication is
+on hold as a project decision until the codebase is production-ready.
 
 ### `daemon` — optional UDS JSON-RPC service
 
@@ -709,6 +713,55 @@ the patch parser, review JSON, daemon protocol, and agent annotations. See
 
 Durable engineering lessons are recorded in [`NOTES.md`](NOTES.md).
 
+## Review council and evidence gates
+
+The full design, CLI usage, threat model and per-round history live in
+[`docs/REVIEW_COUNCIL.md`](docs/REVIEW_COUNCIL.md); this section is a map, not a
+copy. Evidence for each council run is in [`EVIDENCE.md`](EVIDENCE.md#review-council-and-ci-2026-10-26).
+
+- **The council.** `deep-diff-forge council prepare|status|review|gate` runs six
+  default reviewer slots (correctness, security, architecture, falsifier,
+  performance and subtractor), split between Claude Code and Codex, over a
+  sealed snapshot in an independent round and then a challenge round. The controller
+  admits a report only if its citations resolve to real bytes in the snapshot
+  (a fabricated citation is rejected), and missing evidence is `HOLD` with exit
+  7, never an empty pass. Nothing is approved automatically.
+- **Eight evidence gates** — format, check, clippy, pedantic, tests,
+  antipatterns, fuzz and mutation — run only inside a
+  [rootless Podman sandbox](docs/REVIEW_COUNCIL.md#gate-sandbox): the
+  operator-admitted image by ID, `--network=none` (dependency vendoring is the
+  only networked job), read-only root and source, all capabilities dropped,
+  `no-new-privileges`, `--userns=keep-id`, and `--user=<uid>:<gid>` read from
+  `/proc/self`, so the operator's own uid runs the job (before stage A it only
+  worked for uid 1000). The real-Podman planted-breach suite (12 probes) runs
+  in CI on GitHub-hosted runners.
+- **Diff-scoped mutation gate.** cargo-mutants 27.1.0 runs `--in-diff` against a
+  scope diff built from the sealed base and candidate blobs (each Git object is
+  verified on read), with a 300 s per-mutant timeout, 4 jobs and `--no-config`, so a candidate's
+  own `mutants.toml` cannot shrink the scope.
+- **Exemption oracle.** Before any mutation job,
+  [`exemption_oracle.py`](crates/deep-diff-forge-review/policy/exemption_oracle.py)
+  compares cargo-mutants' stock listing with a strict build that honours only
+  `#[cfg(test)]` and a build that excludes nothing. Code hidden by anything
+  other than `#[cfg(test)]` is refused with no builds; `#[cfg(test)]` code must
+  leave every workspace member's non-test MIR unchanged in the gate and release
+  configurations, with a positive control and a reproducibility check in each.
+  See [r18](docs/REVIEW_COUNCIL.md#cfg-test-only-r18) for the current rule and
+  [r12](docs/REVIEW_COUNCIL.md#exemption-oracle-r12) onward for how it got there.
+- **tuicr export and decision journal.** `council export-tuicr` files admitted
+  findings into a local tuicr session as draft notes (dry run by default);
+  `council import-tuicr` appends human dispositions to an append-only
+  `decisions.jsonl` in the run. See [tuicr export](docs/REVIEW_COUNCIL.md#tuicr-export)
+  and [decision journal](docs/REVIEW_COUNCIL.md#decision-journal).
+- **Git acquisition.** Instead of piping a patch, the CLI can acquire one itself:
+  `--git-working-tree [--include-untracked]`, `--git-staged` or
+  `--git-range A..B`, with `--repo PATH` and `--acquisition-json` for the
+  `deep-diff-forge.git-acquisition.v0` identity document. Git runs with a fixed
+  argv, and paths, modes and blob IDs come from NUL-delimited raw records
+  ([integration ledger](docs/RECOMMENDATION_INTEGRATION.md)).
+
+---
+
 ## Project status
 
 This is an actively-built engine at **L9 maturity**. Everything documented above
@@ -723,7 +776,8 @@ is implemented, gated, and live-proven. Honest current limitations:
 - **L9 Learning**: the learning loop records and scores receipts and gates
   promotion; wiring the engine's hot path to *emit* receipts automatically (vs.
   the explicit `learn record`) lands as live signal accrues.
-- **Release**: this local development cut extends the 0.2.1 base and is not newly publish-qualified. Registry credentials alone are insufficient; quality, supply-chain, API versioning and release checks must pass first.
+- **Release**: the staged merges extend the 0.2.1 base and are not newly publish-qualified. **crates.io publication is on hold until the codebase is production-ready**; registry credentials alone are insufficient, and quality, supply-chain, API versioning and release checks must pass first.
+- **Remaining before a release (2026-10-26):** council r18 triage and the stage C merge ([#5](https://github.com/Louranicas/deep-diff-forge/pull/5)); the CLI contract, daemon parity, SDK and MCP slices A–D ([roadmap](docs/ROADMAP.md#status-2026-10-26)); reconciling the diverged GitLab `main`; and two CI platform migrations announced in the run annotations (Node 20 actions are deprecated, and `ubuntu-latest` moves to Ubuntu 26).
 - Semantic parsing now has cooperative progress-callback cancellation; node limits remain post-parse, and this is not an OS hard-time isolation boundary.
 
 ## License

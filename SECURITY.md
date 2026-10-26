@@ -136,7 +136,12 @@ selection.
   provenance attestations. Dependabot monitors both Cargo graphs and Actions.
 - crates.io publication currently uses a repository secret. Moving to crates.io
   trusted publishing remains an account-level hardening step outside this
-  repository.
+  repository. As of 2026-10-26, crates.io publication is on hold until the
+  codebase is production-ready; no version after 0.2.1 is published.
+- CI and release toolchains are pinned (stable 1.99.1, `nightly-2026-10-25`),
+  so a toolchain release cannot change a gate's result. The committed SBOM is
+  reproducible: its namespace is content-addressed and `created` comes from the
+  last `Cargo.lock` commit.
 
 ## Secure operation
 
@@ -212,3 +217,18 @@ The current posture follows these review cycles:
   privacy; and closed non-tag release publication. Full tests, strict lint/docs,
   fuzz compilation, RustSec/cargo-deny, privacy probing, and hostile daemon soak
   passed at completion.
+- **Review council r4–r18 (2026-10-25 to 2026-10-26)** — council evidence
+  gates run on a sealed snapshot in a rootless Podman sandbox (image by ID,
+  no network except dependency vendoring, read-only root and source, no
+  capabilities, `no-new-privileges`, the operator's own uid); a 12-probe
+  planted-breach suite runs in CI on GitHub-hosted runners; the diff-scoped
+  mutation gate ignores the candidate's cargo-mutants config, and an exemption
+  oracle refuses code hidden from mutation by anything but `#[cfg(test)]`.
+  Threat model, controls and residual risks:
+  [`docs/REVIEW_COUNCIL.md`](docs/REVIEW_COUNCIL.md#gate-sandbox). Evidence:
+  [`EVIDENCE.md`](EVIDENCE.md#review-council-and-ci-2026-10-26).
+
+Open security-relevant work (2026-10-26): council r18 triage; an MCP server
+(slice D) must stay read-only by default with each write tool opt-in; the
+`ubuntu-latest` move to Ubuntu 26 needs the rootless-Podman CI step
+re-measured; and Node 20 actions are deprecated.

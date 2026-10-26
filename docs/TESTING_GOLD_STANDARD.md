@@ -189,6 +189,29 @@ deep-diff-forge deploy gate --mode feature
 deep-diff-forge deploy test-audit --json
 ```
 
+### Status (2026-10-26)
+
+Done, for the review-council stack:
+
+- **Mutation as a gate, not a report.** The council's mutation gate runs
+  cargo-mutants on the diff's scope in the Podman sandbox. Councils r13–r16
+  each finished with 0 missed mutants (for example 76/76 caught in r14 and
+  r15), and surviving mutants from each pre-council rehearsal were closed by
+  new tests before review (the `test:` commits for the r9–r15 rehearsals' surviving mutants).
+- **Exclusions are controlled.** Only `#[cfg(test)]` may hide code from
+  mutation; the exemption oracle refuses anything else and proves the hidden
+  code leaves non-test MIR unchanged, with positive controls
+  ([review council](REVIEW_COUNCIL.md#cfg-test-only-r18)).
+- **Tests that fail against the old code.** Fixes in r12–r18 came with tests
+  shown to fail before the fix, such as the `mutation_scope` property tests
+  that now assert hunk ordering.
+- **CI runs the real thing.** `main` CI runs the real-Podman planted-breach
+  suite on a GitHub-hosted runner and is green at run 40274253094.
+
+Remaining: the `deploy gate` and `deploy test-audit` commands above are still
+future work, and the 50-test minimum is not yet audited per module by a tool.
+Evidence: [`EVIDENCE.md`](../EVIDENCE.md#review-council-and-ci-2026-10-26).
+
 ## Deployment Link
 
 - Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

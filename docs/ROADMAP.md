@@ -95,6 +95,48 @@
 - Add review graph ranking evaluation.
 - Add annotation grounding evaluation.
 
+## Status (2026-10-26)
+
+The phases above are the original plan; this section records where the review
+council stack stands. Measured evidence is in
+[`EVIDENCE.md`](../EVIDENCE.md#review-council-and-ci-2026-10-26).
+
+Done:
+
+- **Staged merges:** stage A (PR #3, `88e1cc0`) and stage B (PR #4,
+  `b50b3f0`) are merged into `main`.
+- **Green CI:** `main` passes all five jobs at run 40274253094, including the
+  real-Podman sandbox suite on a GitHub-hosted runner (Phase 9's CI workflow).
+- **Gate sandbox:** the eight council gates run only in a rootless Podman
+  container, as the operator's own uid
+  ([gate sandbox](REVIEW_COUNCIL.md#gate-sandbox)).
+- **Exemption oracle:** only `#[cfg(test)]` may hide code from the
+  diff-scoped mutation gate ([r18](REVIEW_COUNCIL.md#cfg-test-only-r18)).
+- **Review interop:** Git acquisition (P1a), tuicr export (P1b) and the
+  decision journal (P1c).
+
+Remaining, in order:
+
+1. **Council r18 triage** (run `f2baaa43`), then merge stage C (PR #5).
+2. **CLI contract, daemon parity, SDK and MCP**, as four slices, each gated like
+   a council round:
+   - **A. CLI contract v1:** one `ddf.result.v1` envelope, uniform `--json`,
+     a documented exit-code table, `ddf schema` and `ddf explain`.
+   - **B. Daemon parity:** the planned JSON-RPC methods and a versioned
+     protocol.
+   - **C. SDK:** a semver-checked Rust facade crate, a thin Python client over
+     the daemon socket, and `ddf rpc` over stdio.
+   - **D. MCP server:** `ddf mcp` over stdio, read-only by default, with each
+     write tool opt-in.
+
+   A comes first, then B and D together, then C. None of this is implemented.
+3. **GitLab `main` divergence:** reconcile it before any GitLab push of `main`.
+4. **CI platform migrations:** Node 20 actions are deprecated, and the
+   `ubuntu-latest` label moves to Ubuntu 26; the rootless-Podman step was
+   measured on Ubuntu 24.04 only.
+5. **crates.io:** on hold until the codebase is production-ready and the
+   repository documentation is current.
+
 ## Deployment Link
 
 - Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

@@ -8,6 +8,28 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **Review council** (`council prepare|status|review|gate`) — six default
+  reviewer slots across Claude Code and Codex, independent then challenge
+  rounds, controller admission that rejects fabricated citations, and `HOLD`
+  (exit 7) for missing evidence. See `docs/REVIEW_COUNCIL.md`.
+- **Gate sandbox** — the eight evidence gates (format, check, clippy, pedantic,
+  tests, antipatterns, fuzz, mutation) run on a sealed snapshot in a rootless
+  Podman container: image by ID, `--network=none` except dependency vendoring,
+  read-only root and source, all capabilities dropped, `--userns=keep-id`. A
+  real-Podman planted-breach suite (12 probes) guards it.
+- **Diff-scoped mutation gate** — cargo-mutants 27.1.0 `--no-config --in-diff`
+  against a scope diff built from verified base and candidate blobs
+  (`mutation_scope`, `mutation_base`), 300 s per mutant, 4 jobs.
+- **Exemption oracle** (`policy/exemption_oracle.py`, schema v7) — run before
+  the mutation job; only `#[cfg(test)]` may hide code from mutation, and that
+  code must leave every workspace member's non-test MIR unchanged in the gate
+  and release builds. Anything else hidden is refused with no builds.
+- **Git acquisition** (P1a) — `--git-working-tree [--include-untracked]`,
+  `--git-staged`, `--git-range A..B`, `--repo`, `--acquisition-json`
+  (`deep-diff-forge.git-acquisition.v0`).
+- **`council import-tuicr`** decision journal (P1c, DDF-R18) — appends tuicr
+  dispositions to an append-only `<run>/decisions.jsonl`; dry run by default.
+
 - **`council export-tuicr`** (DDF-R54) — files controller-admitted council
   findings into a local tuicr 1.3 session as local draft notes. Dry run by
   default; `--execute` writes through `tuicr review add` with fixed argv.
@@ -46,6 +68,55 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - README exit-code table gains code 7 and the recommended gate command now
   reads `--require-files --require-hunks`; the documented test count is the
   measured 991.
+- The exemption control evolved through councils r10–r18: a skip-attribute
+  lexer, then oracle spans (r12), differential MIR compilation (r13), the
+  gate's own build (r14), proven test code (r15), five configurations (r16),
+  an allow-list (r17) and, finally, `#[cfg(test)]` only (r18). Each step
+  answered a council finding; `docs/REVIEW_COUNCIL.md` keeps the history.
+- The skip-attribute lexer (about 580 lines) is retired (r13); the oracle is
+  the single control. `code_lines` widening follows nested comments, attribute
+  brackets, plain/byte/raw strings and character literals.
+- The mutation job carries `CARGO_ENCODED_RUSTFLAGS=--emit=link,mir`, the same
+  flag as the oracle's builds, so the two are indistinguishable by flags.
+- Structural diff trims the common token prefix and suffix before the LCS and
+  anchors oversize diffs on unchanged lines.
+- CI: every toolchain pinned (stable 1.99.1, `nightly-2026-10-25`); the
+  evidence job's mutation timeout raised to 300 s; the real-Podman sandbox
+  suite runs on GitHub-hosted runners with canary (non-secret) credential
+  files and prints job diagnostics on failure; pedantic clippy covers the
+  no-default-features build and the fuzz crate; gitleaks 8.30.1 (checksum
+  pinned) scans full history. `.gitignore` covers `__pycache__/`.
+
+### Fixed
+
+- **main's red CI** (failing since 2026-06, run 37532439196): a floating
+  `stable` toolchain deprecated `fetch_update` under `-D warnings`; `cargo deny`
+  was called without being installed; the SBOM `documentNamespace` embedded
+  wall-clock time. The namespace is now content-addressed and `created` comes
+  from `SOURCE_DATE_EPOCH` or the last `Cargo.lock` commit, so regenerations are
+  byte-identical. main CI is green at run 40274253094.
+- **Sandbox worked only for uid 1000**: gate containers ran as the image's
+  `USER 1000`, so an operator with another uid (1001 on GitHub runners) could
+  not read the private source copy. Containers now run as
+  `--user=<uid>:<gid>` read from `/proc/self`.
+- **Probe verdict race**: parallel probe tests could write a verdict mid-line
+  after libtest's `test name ... `, losing it (main run 40268250417). Verdicts
+  now start with a newline and are parsed anywhere in a line.
+- **`mutation_scope` emitted touching hunks** (latent since r10): a widened
+  pure insertion could start on the line the previous hunk ended on, and
+  cargo-mutants rejected the diff. Regions now merge on touching; property
+  tests assert header ordering. Surfaced by council r17.
+- The oracle removes its build trees on exit (they filled `/tmp`).
+- `council_report` fuzz target builds again after the `mutation_diff_sha256`
+  field.
+
+### Security
+
+- Council gates never fall back to the host: a missing gate image or a failed
+  dependency-vendoring job is a refusal. Vendored dependencies are sealed and
+  re-measured before each gate; base Git objects are verified on read.
+- The mutation gate ignores the candidate's cargo-mutants config, and code
+  hidden from mutation by anything other than `#[cfg(test)]` is refused.
 
 ## [0.2.1] - 2026-09-04
 

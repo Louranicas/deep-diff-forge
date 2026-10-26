@@ -211,6 +211,22 @@ git push gitlab main
 git push gitlab vX.Y.Z
 ```
 
+Current status (2026-10-26):
+
+- **Do not push GitLab `main`.** It has diverged from GitHub `main` and must be
+  reconciled first; branch pushes are unaffected.
+- **crates.io (step 6) is on hold** until the codebase is production-ready and
+  its documentation is current. A configured token does not lift the hold.
+- Changes reach GitHub `main` through staged pull requests merged as merge
+  commits (stage A, PR #3; stage B, PR #4; stage C, PR #5 open), each passing
+  CI first. `main` CI is green at run 40274253094; see
+  [`EVIDENCE.md`](../EVIDENCE.md#review-council-and-ci-2026-10-26).
+- Gates 2 and 3 are additionally covered for review-council runs by the eight
+  sandboxed evidence gates ([review council](REVIEW_COUNCIL.md#gate-sandbox)).
+- Open before the next release: council r18 triage and the stage C merge; the
+  CLI/SDK/MCP slices A–D ([roadmap](ROADMAP.md#status-2026-10-26)); Node 20
+  action deprecation; and the `ubuntu-latest` move to Ubuntu 26.
+
 ### Gate 8: Post-Release Learning
 
 After release, record:
