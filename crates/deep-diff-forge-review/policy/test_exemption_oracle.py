@@ -93,14 +93,13 @@ class Artifacts(unittest.TestCase):
 
     def test_dep_info_lines_end_only_at_newlines_and_prerequisites_keep_colons(self):
         text = "/t/p.d: src/a\u2028b.rs src/bin/x:\n"
-        self.assertEqual(oracle.dep_info_paths(text), ["/t/p.d", "src/a\u2028b.rs", "src/bin/x:"])
+        self.assertEqual(oracle.dep_info_rules(text), [("/t/p.d", ["src/a\u2028b.rs", "src/bin/x:"])])
 
-    def test_dep_info_names_every_file_with_escaped_spaces(self):
-        text = ("/t/deps/p-1a.d: src/lib.rs /src/src/t.rs src/a\\ b.rs\n\n"
-                "src/lib.rs:\n/src/src/t.rs:\n# env-dep:CARGO_PKG_NAME=p\n")
-        self.assertEqual(oracle.dep_info_paths(text),
-                         ["/t/deps/p-1a.d", "src/lib.rs", "/src/src/t.rs", "src/a b.rs",
-                          "src/lib.rs", "/src/src/t.rs"])
+    def test_dep_info_keeps_targets_apart_from_what_was_read(self):
+        text = ("/t/deps/libp-1a.rlib: src/lib.rs src/a\\ b.rs\n\n"
+                "src/lib.rs:\n# env-dep:CARGO_PKG_NAME=p\n")
+        self.assertEqual(oracle.dep_info_rules(text),
+                         [("/t/deps/libp-1a.rlib", ["src/lib.rs", "src/a b.rs"]), ("src/lib.rs", [])])
 
 
 if __name__ == "__main__":

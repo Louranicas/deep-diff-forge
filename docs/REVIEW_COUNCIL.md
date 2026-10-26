@@ -701,6 +701,23 @@ Council r20 (run `0fd3cac8…`) reviewed `d3498a1..36d5e7c` with all 12 reports 
 | Two precondition witnesses also lacked the configuration maps (falsifier 5/0) | Each is complete except for its one field | — |
 | **A run-time build script can read or copy the snapshot, or play symlink games** (architecture 2/3, security; challenge HIGH) | **Stop rule (architecture, "detector growth"):** the oracle observes what cargo and rustc report. Run-time behaviour of build scripts and proc macros is one residual class: reading, copying, symlinking, generating code, detecting the job. It is visible in the reviewed diff, and no further detector is added for it | Recorded in the oracle docstring and here |
 
+<a id="dep-info-roles-r22"></a>
+
+### r22: council r21 follow-ups — dep-info rules by role; stage C closes
+
+Council r21 (run `b3aa0f3c…`) reviewed `36d5e7c..1f9dbc0` with all 12 reports and 7/7 evidence gates.
+- **No HIGH findings.** The three Claude reviewers returned *no blockers*; the three Codex reviewers requested changes for consensus MEDIUMs, all addressed here.
+- The mutation gate was **inconclusive by design**: the diff changes no Rust in the mutation package, so cargo-mutants reported "No mutants to filter", and an empty run is unmeasured, not a pass.
+
+| Finding (r21) | Control | Evidence |
+| --- | --- | --- |
+| dep-info roles were merged, so a missing input under `target/` was exempt; an empty `.d`, or a planted `.d` naming another output, counted as evidence (correctness 5/0, falsifier 5/0, architecture challenge) | The dep-info is parsed into **rules**. A unit's evidence is only a rule whose **target is one of the unit's own files**. Every **prerequisite must exist**, `target/` included, and lie in the tree (path package), the package's own directory (registry or git) or `target/`. A rule with no input is unverified | **Fake:** `planted_dep_info`, `empty_dep_info` and `missing_generated` are inconclusive and fail against v10. **Measured on DDF:** passed, 12 builds, 127 s; every real unit's rule names its own output |
+| Witnesses still confounded two preconditions (correctness, falsifier 5/0) | The build-status witness now carries `control.configurations` | — |
+| The sibling scan was quadratic (performance 5/0, subtractor 5/0) | Each directory other than `deps/` is indexed once per build | — |
+| **The stop rule's premise is false for dependencies** (architecture 5/0, security 5/0): a registry crate's build script is not in the reviewed diff | **Premise corrected:** for path packages the code is in the diff; for a dependency only the `Cargo.lock` change is, and its code is governed by the supply-chain gate (`cargo-deny`: crates.io only, no unknown git), not by the oracle | Docstring and here |
+
+**Close-out:** with no HIGH findings in r21 and every consensus MEDIUM addressed with a failing-first control, stage C merges under the stop rule.
+
 ### Podman invocation
 
 Every gate job runs `$DDF_COUNCIL_PODMAN run` (the default runtime is `podman`) with these flags. The source of truth is `sandbox.rs` `Sandbox::argv`.
