@@ -13,3 +13,7 @@
 # Local tool state — morph-IR pipeline output + Pi workspace (not part of the crate)
 /.morph/
 /.pi/
+
+# Python bytecode from the policy, SBOM and probe scripts
+__pycache__/
+*.pyc

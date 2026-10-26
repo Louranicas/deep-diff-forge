@@ -12,6 +12,8 @@ description = "Composable Unix-filter pipeline stages (ingest, render, JSONL) fo
 
 [dependencies]
 deep-diff-forge-core.workspace = true
+deep-diff-forge-syntax.workspace = true
+deep-diff-forge-graph.workspace = true
 deep-diff-forge-patch.workspace = true
 deep-diff-forge-projection.workspace = true
 

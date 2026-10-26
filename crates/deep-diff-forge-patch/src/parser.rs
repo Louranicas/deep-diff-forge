@@ -1,3 +1,6 @@
+// DDF integration: R02, R03, R04, R05, R06, R07, R44, R46. Preserve source bytes and exact original input independently of normalized display; use Git as the application oracle.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--parser
 use crate::{DEFAULT_BYTE_BUDGET, DEFAULT_LINE_BUDGET, PatchParseError};
 use deep_diff_forge_core::{
     DiffStrategy, FileStatus, HunkId, PatchHunk, PatchLine, PatchLineKind, PatchTwin,
@@ -63,7 +66,7 @@ pub fn parse_with(input: &str, options: ParseOptions) -> Result<Vec<ReviewFile>,
     }
 
     let mut parser = Parser::default();
-    for (index, line) in input.lines().enumerate() {
+    for (index, line) in input.split_terminator('\n').enumerate() {
         if index >= DEFAULT_LINE_BUDGET {
             return Err(PatchParseError::LineBudgetExceeded {
                 limit_lines: DEFAULT_LINE_BUDGET,
@@ -85,6 +88,7 @@ struct FileBuf {
     rename_from: Option<String>,
     rename_to: Option<String>,
     metadata: Vec<String>,
+    binary_body: Vec<String>,
     hunks: Vec<PatchHunk>,
 }
 
@@ -108,17 +112,30 @@ struct Parser {
     next_hunk_id: u64,
     /// Last line number fed, so end-of-input truncation can be located.
     last_line: usize,
+    can_mark_eof: bool,
 }
 
 impl Parser {
     fn feed(&mut self, line: &str, line_number: usize) -> Result<(), PatchParseError> {
         self.last_line = line_number;
+        let can_mark_eof = std::mem::take(&mut self.can_mark_eof);
         // The "\ No newline at end of file" marker applies to the preceding
         // line and is recorded as file metadata, whether or not a hunk is still
         // open (it can arrive after the hunk's line counts are exhausted).
         if line.starts_with('\\') {
+            if !can_mark_eof || line != "\\ No newline at end of file" {
+                return Err(PatchParseError::InvalidEofMarker { line_number });
+            }
             if let Some(file) = self.file.as_mut() {
                 file.metadata.push(line.to_string());
+                let previous = self
+                    .hunk
+                    .as_mut()
+                    .and_then(|h| h.lines.last_mut())
+                    .or_else(|| file.hunks.last_mut().and_then(|h| h.lines.last_mut()));
+                if let Some(previous) = previous {
+                    previous.no_newline = true;
+                }
             }
             return Ok(());
         }
@@ -128,6 +145,7 @@ impl Parser {
                 && let Some(consumed) = hunk.consume_body(line, line_number)
             {
                 consumed?;
+                self.can_mark_eof = true;
                 if hunk.rem_old == 0 && hunk.rem_new == 0 {
                     // Counts satisfied: a clean close (cannot truncate).
                     self.close_hunk(line_number)?;
@@ -142,20 +160,28 @@ impl Parser {
     }
 
     fn dispatch_non_body(&mut self, line: &str, line_number: usize) -> Result<(), PatchParseError> {
+        if line.starts_with("diff --cc ") || line.starts_with("diff --combined ") {
+            return Err(PatchParseError::UnsupportedFormat { line_number });
+        }
         if let Some(rest) = line.strip_prefix("diff --git ") {
             return self.start_git_file(rest, line_number);
+        }
+        if let Some(file) = self.file.as_mut()
+            && file.metadata.iter().any(|m| m == "GIT binary patch")
+        {
+            file.binary_body.push(line.to_string());
+            return Ok(());
         }
         if let Some(rest) = line.strip_prefix("--- ") {
             return self.on_old_header(rest, line_number);
         }
         if let Some(rest) = line.strip_prefix("+++ ") {
-            self.on_new_header(rest);
-            return Ok(());
+            return self.on_new_header(rest, line_number);
         }
         if line.starts_with("@@") {
             return self.open_hunk(line, line_number);
         }
-        if self.try_metadata(line) {
+        if self.try_metadata(line, line_number)? {
             return Ok(());
         }
         // A stray body marker outside any hunk is malformed; quiet preamble
@@ -171,7 +197,7 @@ impl Parser {
 
     fn start_git_file(&mut self, rest: &str, line_number: usize) -> Result<(), PatchParseError> {
         self.close_hunk(line_number)?;
-        self.flush_file();
+        self.flush_file()?;
         let mut file = FileBuf::default();
         // `diff --git a/OLD b/NEW` — split on the rightmost ` b/` occurrence.
         // Using split_whitespace() breaks on paths that contain spaces; git's
@@ -181,9 +207,22 @@ impl Parser {
         // for the final path, so an incorrect git-header split is harmless in
         // practice.  An absent ` b/` (unusual / malformed) leaves both None so
         // the caller falls back to the `---`/`+++` paths.
-        if let Some(sep) = rest.rfind(" b/") {
-            file.git_old = Some(strip_ab(&rest[..sep]));
-            file.git_new = Some(strip_ab(&rest[sep + 1..]));
+        if rest.starts_with('"') {
+            let (old, remaining) = super::paths::decode_quoted_prefix(rest)
+                .ok_or(PatchParseError::InvalidPath { line_number })?;
+            let new = super::paths::decode_path(remaining.trim_start())
+                .ok_or(PatchParseError::InvalidPath { line_number })?;
+            file.git_old = Some(strip_ab(&old));
+            file.git_new = Some(strip_ab(&new));
+        } else if let Some(sep) = rest.rfind(" \"b/").or_else(|| rest.rfind(" b/")) {
+            file.git_old = Some(strip_ab(
+                &super::paths::decode_path(&rest[..sep])
+                    .ok_or(PatchParseError::InvalidPath { line_number })?,
+            ));
+            file.git_new = Some(strip_ab(
+                &super::paths::decode_path(&rest[sep + 1..])
+                    .ok_or(PatchParseError::InvalidPath { line_number })?,
+            ));
         }
         self.file = Some(file);
         Ok(())
@@ -196,22 +235,29 @@ impl Parser {
             .as_ref()
             .is_some_and(|f| f.new_raw.is_some() || !f.hunks.is_empty());
         if self.file.is_none() || needs_new {
-            self.flush_file();
+            self.flush_file()?;
             self.file = Some(FileBuf::default());
         }
         if let Some(file) = self.file.as_mut() {
-            file.old_raw = Some(header_path(rest));
+            file.old_raw = Some(
+                super::paths::decode_path(&header_path(rest))
+                    .ok_or(PatchParseError::InvalidPath { line_number })?,
+            );
         }
         Ok(())
     }
 
-    fn on_new_header(&mut self, rest: &str) {
+    fn on_new_header(&mut self, rest: &str, line_number: usize) -> Result<(), PatchParseError> {
         if self.file.is_none() {
             self.file = Some(FileBuf::default());
         }
         if let Some(file) = self.file.as_mut() {
-            file.new_raw = Some(header_path(rest));
+            file.new_raw = Some(
+                super::paths::decode_path(&header_path(rest))
+                    .ok_or(PatchParseError::InvalidPath { line_number })?,
+            );
         }
+        Ok(())
     }
 
     fn open_hunk(&mut self, line: &str, line_number: usize) -> Result<(), PatchParseError> {
@@ -238,25 +284,37 @@ impl Parser {
         Ok(())
     }
 
-    fn try_metadata(&mut self, line: &str) -> bool {
+    fn try_metadata(&mut self, line: &str, line_number: usize) -> Result<bool, PatchParseError> {
         let Some(file) = self.file.as_mut() else {
-            return false;
+            return Ok(false);
         };
         if let Some(path) = line.strip_prefix("rename from ") {
-            file.rename_from = Some(path.to_string());
+            file.rename_from = Some(
+                super::paths::decode_path(path)
+                    .ok_or(PatchParseError::InvalidPath { line_number })?,
+            );
             file.metadata.push(line.to_string());
-            return true;
+            return Ok(true);
         }
         if let Some(path) = line.strip_prefix("rename to ") {
-            file.rename_to = Some(path.to_string());
+            file.rename_to = Some(
+                super::paths::decode_path(path)
+                    .ok_or(PatchParseError::InvalidPath { line_number })?,
+            );
             file.metadata.push(line.to_string());
-            return true;
+            return Ok(true);
+        }
+        if let Some(path) = line
+            .strip_prefix("copy from ")
+            .or_else(|| line.strip_prefix("copy to "))
+        {
+            super::paths::decode_path(path).ok_or(PatchParseError::InvalidPath { line_number })?;
         }
         if META_PREFIXES.iter().any(|p| line.starts_with(p)) {
             file.metadata.push(line.to_string());
-            return true;
+            return Ok(true);
         }
-        false
+        Ok(false)
     }
 
     /// Close the open hunk, if any. A hunk whose declared old/new counts are not
@@ -283,16 +341,63 @@ impl Parser {
         Ok(())
     }
 
-    fn flush_file(&mut self) {
+    fn flush_file(&mut self) -> Result<(), PatchParseError> {
         if let Some(file) = self.file.take() {
+            if !file.hunks.is_empty()
+                && file
+                    .metadata
+                    .iter()
+                    .any(|m| m == "GIT binary patch" || m.starts_with("Binary files "))
+            {
+                return Err(PatchParseError::UnsupportedFormat {
+                    line_number: self.last_line,
+                });
+            }
+            // Contradictory rename/copy labels cannot be faithfully reconstructed.
+            // Reject them rather than choosing one path and silently changing truth.
+            let mut declared_old: Option<String> = None;
+            for meta in &file.metadata {
+                if let Some(from) = meta
+                    .strip_prefix("rename from ")
+                    .or_else(|| meta.strip_prefix("copy from "))
+                {
+                    let from =
+                        super::paths::decode_path(from).ok_or(PatchParseError::InvalidPath {
+                            line_number: self.last_line,
+                        })?;
+                    if declared_old
+                        .as_ref()
+                        .is_some_and(|previous| previous != &from)
+                    {
+                        return Err(PatchParseError::InvalidPath {
+                            line_number: self.last_line,
+                        });
+                    }
+                    declared_old = Some(from.clone());
+                    if file
+                        .old_raw
+                        .as_deref()
+                        .is_some_and(|old| strip_ab(old) != from)
+                        || file.new_raw.as_deref() == Some("/dev/null")
+                        || file.metadata.iter().any(|m| {
+                            m.starts_with("new file mode ") || m.starts_with("deleted file mode ")
+                        })
+                    {
+                        return Err(PatchParseError::InvalidPath {
+                            line_number: self.last_line,
+                        });
+                    }
+                }
+            }
             self.files.push(file.into_review_file());
         }
+        Ok(())
     }
 
     fn finish(mut self) -> Result<Vec<ReviewFile>, PatchParseError> {
         // End of input: any still-open hunk must have satisfied its counts.
         self.close_hunk(self.last_line)?;
-        self.flush_file();
+        self.flush_file()?;
         Ok(self.files)
     }
 }
@@ -324,6 +429,7 @@ impl HunkBuf {
                     return Some(Err(mismatch()));
                 }
                 self.lines.push(PatchLine {
+                    no_newline: false,
                     kind: PatchLineKind::Context,
                     old_line: Some(self.old_line),
                     new_line: Some(self.new_line),
@@ -340,6 +446,7 @@ impl HunkBuf {
                     return Some(Err(mismatch()));
                 }
                 self.lines.push(PatchLine {
+                    no_newline: false,
                     kind: PatchLineKind::Added,
                     old_line: None,
                     new_line: Some(self.new_line),
@@ -354,6 +461,7 @@ impl HunkBuf {
                     return Some(Err(mismatch()));
                 }
                 self.lines.push(PatchLine {
+                    no_newline: false,
                     kind: PatchLineKind::Removed,
                     old_line: Some(self.old_line),
                     new_line: None,
@@ -381,6 +489,7 @@ impl FileBuf {
             path,
             status,
             patch_twin: PatchTwin {
+                binary_body: self.binary_body,
                 hunks: self.hunks,
                 metadata: self.metadata,
             },
@@ -510,11 +619,7 @@ fn strip_ab(path: &str) -> String {
 /// Extract the path from a `---`/`+++` header value, dropping a trailing tab
 /// timestamp that some `diff -u` variants append.
 fn header_path(rest: &str) -> String {
-    rest.split('\t')
-        .next()
-        .unwrap_or(rest)
-        .trim_end()
-        .to_string()
+    rest.split('\t').next().unwrap_or(rest).to_string()
 }
 
 #[cfg(test)]

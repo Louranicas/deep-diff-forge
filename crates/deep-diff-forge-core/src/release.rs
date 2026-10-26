@@ -145,7 +145,7 @@ mod tests {
     fn plan_starts_empty() {
         let p = ReleasePlan::new("0.1.0");
         assert_eq!(p.version, "0.1.0");
-        assert!(p.targets.is_empty());
+        assert_eq!(p.targets.len(), 0);
     }
 
     #[test]
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn pending_empty_when_all_published() {
         let p = ReleasePlan::new("1").with_target("a", TargetState::Published);
-        assert!(p.pending().is_empty());
+        assert_eq!(p.pending().len(), 0);
     }
 
     #[test]

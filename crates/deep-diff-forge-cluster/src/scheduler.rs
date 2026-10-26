@@ -1,3 +1,6 @@
+// DDF review route: DDF-R24. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-cluster--src--scheduler
 use deep_diff_forge_core::{Parallelism, ReviewFile};
 
 /// Maximum worker count for `Parallelism::Fixed`, expressed as a multiple of
@@ -151,7 +154,7 @@ mod tests {
 
     #[test]
     fn chunks_empty_for_zero_items() {
-        assert!(contiguous_chunks(0, 4).is_empty());
+        assert_eq!(contiguous_chunks(0, 4).len(), 0);
     }
 
     #[test]
@@ -189,7 +192,7 @@ mod tests {
     #[test]
     fn run_lane_empty_is_empty() {
         let out = run_lane(&[], Parallelism::Auto, |i, _| i);
-        assert!(out.is_empty());
+        assert_eq!(out.len(), 0);
     }
 
     #[test]

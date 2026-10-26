@@ -1,13 +1,13 @@
 {
   "SPDXID": "SPDXRef-DOCUMENT",
   "creationInfo": {
-    "created": "2026-09-04T09:08:44Z",
+    "created": "2026-10-25T07:31:39Z",
     "creators": [
       "Tool: deep-diff-forge scripts/security/generate_spdx_sbom.py"
     ]
   },
   "dataLicense": "CC0-1.0",
-  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/2026-09-04T09:08:44Z",
+  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/bfca80911177e10e3cb9030633ed0644",
   "name": "deep-diff-forge-cargo-lock-sbom",
   "packages": [
     {
@@ -227,6 +227,30 @@
       "versionInfo": "1.0.4"
     },
     {
+      "SPDXID": "SPDXRef-Package-cfg-aliases-a99f2711de887be5",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "714317efebb5635660abe816709d2a7e5831cd9496bc169d2f898c4bbcf470c1"
+        }
+      ],
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/cfg_aliases@0.2.2",
+          "referenceType": "purl"
+        }
+      ],
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "name": "cfg_aliases",
+      "primaryPackagePurpose": "LIBRARY",
+      "versionInfo": "0.2.2"
+    },
+    {
       "SPDXID": "SPDXRef-Package-compact-str-9bb9a239076a40c6",
       "checksums": [
         {
@@ -441,7 +465,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "b1469a832d8f234a189a54ba74e46533bdb2302192f2ca8e98132cc0770cec08"
+          "checksumValue": "3d876fbd156ef5dc495a5b6abb53530f658fe8676c1df183ba01caee22095752"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -567,7 +591,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "e1cf66d2a13b7f4af5b66d4faff2d66741869bf14996c61ed41790d40f279034"
+          "checksumValue": "93337b66b6142d58c0eba396670526a47bb79d3c6a47ae5b624c0296b4eee566"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -585,7 +609,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "819701cce04667f0bc86ec8ab280be2081589c5d6b5eaa9cd8b678aaf33afd2e"
+          "checksumValue": "39a54e1d0940ddadd9fed27cb52419d92e28968b8c581de7184953d25fac7ed6"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -595,6 +619,24 @@
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "deep-diff-forge-projection",
+      "primaryPackagePurpose": "APPLICATION",
+      "versionInfo": "0.2.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-deep-diff-forge-review-560e32f6a2f6cacc",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a4f0a4c7ebdf3c031136b6c829a0f1ad5c8ad4e39147617c894b43b9d72f0681"
+        }
+      ],
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "NOASSERTION",
+      "externalRefs": [],
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "deep-diff-forge-review",
       "primaryPackagePurpose": "APPLICATION",
       "versionInfo": "0.2.1"
     },
@@ -1329,6 +1371,30 @@
       "name": "mio",
       "primaryPackagePurpose": "LIBRARY",
       "versionInfo": "1.2.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-nix-0b222db49a8b7665",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "36654c48d8a7941649b643d42b15750a0dd024095f8670b3e928c503339eefe6"
+        }
+      ],
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/nix@0.31.3",
+          "referenceType": "purl"
+        }
+      ],
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "name": "nix",
+      "primaryPackagePurpose": "LIBRARY",
+      "versionInfo": "0.31.3"
     },
     {
       "SPDXID": "SPDXRef-Package-num-conv-200346a644f35b8e",
@@ -2823,6 +2889,11 @@
       "spdxElementId": "SPDXRef-DOCUMENT"
     },
     {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-review-560e32f6a2f6cacc",
+      "relationshipType": "DESCRIBES",
+      "spdxElementId": "SPDXRef-DOCUMENT"
+    },
+    {
       "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-syntax-42255d0cdce40bce",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
@@ -3048,12 +3119,22 @@
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-9f0aabcd08bf83ea"
     },
     {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-review-560e32f6a2f6cacc",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-9f0aabcd08bf83ea"
+    },
+    {
       "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-syntax-42255d0cdce40bce",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-9f0aabcd08bf83ea"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-tui-257a7b8109de5343",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-9f0aabcd08bf83ea"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde-json-acf426ebeed10d1e",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-9f0aabcd08bf83ea"
     },
@@ -3138,12 +3219,22 @@
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-pipeline-f971ce2b2cc1fb4f"
     },
     {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-graph-a920cd60e4c30836",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-pipeline-f971ce2b2cc1fb4f"
+    },
+    {
       "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b1e97c0efec89d9e",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-pipeline-f971ce2b2cc1fb4f"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-projection-2f0727e73f556886",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-pipeline-f971ce2b2cc1fb4f"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-syntax-42255d0cdce40bce",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-pipeline-f971ce2b2cc1fb4f"
     },
@@ -3156,6 +3247,36 @@
       "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b1e97c0efec89d9e",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-projection-2f0727e73f556886"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-unicode-segmentation-50bc3c61e7242234",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-projection-2f0727e73f556886"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-unicode-width-8406a40b1e839ff7",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-projection-2f0727e73f556886"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-2ea707046c74bdc3",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-560e32f6a2f6cacc"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-nix-0b222db49a8b7665",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-560e32f6a2f6cacc"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde-ef221445decddc3c",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-560e32f6a2f6cacc"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-serde-json-acf426ebeed10d1e",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-560e32f6a2f6cacc"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-2ea707046c74bdc3",
@@ -3396,6 +3517,26 @@
       "relatedSpdxElement": "SPDXRef-Package-windows-sys-27c68f22007adecb",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-mio-3a6edb0f098ada1b"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-bitflags-d4d563d60049bd9b",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-nix-0b222db49a8b7665"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-cfg-if-06849f4c59d3089b",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-nix-0b222db49a8b7665"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-cfg-aliases-a99f2711de887be5",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-nix-0b222db49a8b7665"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-libc-06536456656c676c",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-nix-0b222db49a8b7665"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-autocfg-a8f325257dbe2e15",

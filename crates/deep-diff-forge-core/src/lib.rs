@@ -1,3 +1,6 @@
+// DDF integration: R02, R03, R04, R05, R06, R07, R44, R46. Preserve source bytes and exact original input independently of normalized display; use Git as the application oracle.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-core--lib
 mod deploy;
 mod release;
 mod seal;
@@ -136,6 +139,8 @@ mod file_status_tests {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchTwin {
+    /// Encoded Git binary payload, including literal/delta headers and separators.
+    pub binary_body: Vec<String>,
     pub hunks: Vec<PatchHunk>,
     pub metadata: Vec<String>,
 }
@@ -153,6 +158,8 @@ pub struct HunkId(pub u64);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchLine {
+    /// This source line has no terminating LF on its corresponding side(s).
+    pub no_newline: bool,
     pub kind: PatchLineKind,
     pub old_line: Option<u32>,
     pub new_line: Option<u32>,
@@ -275,3 +282,6 @@ impl ReviewDocument {
         Self { files: Vec::new() }
     }
 }
+
+mod snapshot;
+pub use snapshot::changed_source_snapshot_id;

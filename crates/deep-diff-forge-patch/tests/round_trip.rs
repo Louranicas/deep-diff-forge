@@ -1,3 +1,6 @@
+// DDF integration: R02, R03, R04, R05, R06, R07, R44, R46. Preserve source bytes and exact original input independently of normalized display; use Git as the application oracle.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--round_trip
 //! Round-trip property tests: parsing the rendered output of a parsed patch
 //! must reproduce the same model (`parse(render(parse(x))) == parse(x)`), the
 //! core patch-truth invariant of the deployment framework.
@@ -43,15 +46,10 @@ fn rename_round_trips() {
 }
 
 #[test]
-fn no_newline_hunks_round_trip_even_though_marker_is_dropped() {
-    // The render intentionally does not reconstruct the `\ No newline` marker
-    // (it would break apply-ability), so strict equality is not expected; the
-    // hunk content must still round-trip.
-    let src = load("no_newline.patch");
-    let first = parse(&src).unwrap();
-    let second = parse(&render_unified(&first)).unwrap();
-    assert_eq!(first[0].patch_twin.hunks, second[0].patch_twin.hunks);
-    assert_eq!(first[0].path, second[0].path);
+fn no_newline_markers_round_trip() {
+    assert_model_stable("no_newline.patch");
+    let rendered = render_unified(&parse(&load("no_newline.patch")).unwrap());
+    assert!(rendered.contains("\\ No newline at end of file"));
 }
 
 #[test]
@@ -60,4 +58,21 @@ fn double_render_is_idempotent() {
     let once = render_unified(&first);
     let twice = render_unified(&parse(&once).unwrap());
     assert_eq!(once, twice);
+}
+
+#[test]
+fn discovered_fuzz_inputs_fail_explicitly_or_render_stably() {
+    let directory = format!(
+        "{}/../../fixtures/patch/regressions",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    for entry in std::fs::read_dir(directory).unwrap() {
+        let path = entry.unwrap().path();
+        let input = std::fs::read_to_string(&path).unwrap();
+        if let Ok(files) = parse(&input) {
+            let rendered = render_unified(&files);
+            let reparsed = parse(&rendered).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert_eq!(rendered, render_unified(&reparsed), "{}", path.display());
+        }
+    }
 }

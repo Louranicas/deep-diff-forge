@@ -8,6 +8,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **`council export-tuicr`** (DDF-R54) — files controller-admitted council
+  findings into a local tuicr 1.3 session as local draft notes. Dry run by
+  default; `--execute` writes through `tuicr review add` with fixed argv.
+  Refuses tampered reports, forge sessions, a different repository and, unless
+  `--allow-review-level` is given, findings whose cited bytes in the session's
+  revision differ from the run's sealed snapshot. A create-new ledger in the
+  run makes re-runs no-ops. See `docs/REVIEW_COUNCIL.md#tuicr-export`.
 - **Input sealing** — every input-derived machine document (`review.v0`,
   `rank.v0`, `cluster.v0`, `semantic.v0`) now carries two additive top-level
   members directly after `schema`: `input_sha256` (lowercase hex SHA-256 over

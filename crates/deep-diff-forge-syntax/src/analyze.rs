@@ -1,3 +1,6 @@
+// DDF integration: R08, R10, R11. Never turn a failed analysis into formatting-only or behavioral safety; parser time cancellation is cooperative, node limits are post-parse.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#syntax-availability
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--analyze
 use crate::Symbol;
 use crate::language::{Language, detect_language};
 use deep_diff_forge_core::{FallbackReason, ParseStatus};
@@ -74,8 +77,8 @@ pub fn analyze_language(
     {
         return SemanticAnalysis::fallback(language, FallbackReason::UnsupportedLanguage);
     }
-    let Some(tree) = parser.parse(source, None) else {
-        return SemanticAnalysis::fallback(language, FallbackReason::ParseErrorsExceeded);
+    let Some(tree) = crate::parse_bounded(&mut parser, source) else {
+        return SemanticAnalysis::fallback(language, FallbackReason::TimeBudgetExceeded);
     };
 
     let root = tree.root_node();
@@ -334,7 +337,7 @@ impl Point {
     fn empty_source_is_parsed_with_no_symbols() {
         let a = analyze_rs("");
         assert_eq!(a.parse_status, ParseStatus::Parsed);
-        assert!(a.symbols.is_empty());
+        assert_eq!(a.symbols.len(), 0);
     }
 
     #[test]
@@ -347,7 +350,7 @@ impl Point {
                 reason: FallbackReason::UnsupportedLanguage
             }
         );
-        assert!(a.symbols.is_empty());
+        assert_eq!(a.symbols.len(), 0);
     }
 
     #[test]
@@ -378,13 +381,13 @@ impl Point {
                 reason: FallbackReason::NodeBudgetExceeded
             }
         );
-        assert!(a.symbols.is_empty());
+        assert_eq!(a.symbols.len(), 0);
     }
 
     #[test]
     fn fallback_yields_no_symbols() {
         let a = analyze("notes.txt", "x", SyntaxOptions::default());
-        assert!(a.symbols.is_empty());
+        assert_eq!(a.symbols.len(), 0);
     }
 
     #[test]

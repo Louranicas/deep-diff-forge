@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# DDF integration: R39, R40, R41, R42, R43, R44, R45, R46, R57, R58, R59. Make checks fail closed, preserve fuzz crash evidence, use the actual build output path and gate tag publication on the quality workflow.
+# Design/status: docs/RECOMMENDATION_INTEGRATION.md#quality-gates
+# Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--privacy_probe
 """Privacy probe for the L9 learning store and receipt schema.
 
 Asserts that learned receipts carry only redacted IDs and aggregate metrics; raw
@@ -9,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -33,7 +37,7 @@ def main() -> int:
         "checks": [],
         "verdict": "FAIL",
     }
-    binary = REPO / "target" / "debug" / "deep-diff-forge"
+    binary = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", str(REPO / "target"))) / "debug" / "deep-diff-forge"
     if not binary.exists():
         build = run(["cargo", "build", "-p", "deep-diff-forge-cli"])
         receipt["checks"].append({"kind": "build", "code": build.returncode})
@@ -67,7 +71,14 @@ def main() -> int:
     status = run([str(binary), "learn", "status", "--json"])
     receipt["checks"].append({"kind": "learn_status_json", "code": status.returncode})
     if status.returncode == 0:
-        parsed = json.loads(status.stdout)
+        try:
+            parsed = json.loads(status.stdout)
+        except (ValueError, TypeError) as error:
+            receipt["error"] = f"invalid learning status JSON: {error}"
+            return write(receipt)
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("scores"), list):
+            receipt["error"] = "learning status is not an object with a scores array"
+            return write(receipt)
         if parsed.get("schema") != "deep-diff-forge.learning.v0":
             receipt["error"] = "unexpected learning status schema"
             return write(receipt)
@@ -80,6 +91,8 @@ def main() -> int:
             return write(receipt)
     else:
         receipt["learn_status_stderr"] = status.stderr[-1000:]
+        receipt["error"] = "learning status command failed"
+        return write(receipt)
 
     receipt["verdict"] = "PASS"
     return write(receipt)

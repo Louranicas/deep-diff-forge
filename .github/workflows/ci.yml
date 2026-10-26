@@ -1,6 +1,10 @@
+# DDF integration: R39, R40, R41, R42, R43, R44, R45, R46, R57, R58, R59. Make checks fail closed, preserve fuzz crash evidence, use the actual build output path and gate tag publication on the quality workflow.
+# Design/status: docs/RECOMMENDATION_INTEGRATION.md#quality-gates
+# Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--ci
 name: ci
 
 on:
+  workflow_call:
   pull_request:
   push:
     branches: [main]
@@ -18,6 +22,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  secrets:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: gitleaks (pinned release, checksum-verified)
+        # Same version as the local pre-push hook. No GitHub attestation is published for it,
+        # so the release tarball is pinned by its SHA-256.
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          curl -fsSLo gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks git --no-banner --redact --exit-code 1 .
+
+  msrv:
+    name: declared Rust 1.88 compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.88.0
+      - run: cargo check --workspace --all-targets --locked
+
   gate:
     name: deploy gate-feature
     runs-on: ubuntu-latest
@@ -26,9 +64,16 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      # Pinned to the gate image's toolchain: a floating `stable` broke main when a new release
+      # deprecated `fetch_update` under `-D warnings`.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
+          toolchain: 1.99.1
           components: rustfmt, clippy
+      - name: parsed antipattern policy and planted refusal controls
+        run: |
+          python3 scripts/security/review_policy_check.py --selftest
+          python3 scripts/security/review_policy_check.py
       - name: format
         run: cargo fmt --all --check
       - name: compile
@@ -37,6 +82,11 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: pedantic
         run: cargo clippy --workspace --all-targets --locked -- -D warnings -W clippy::pedantic
+      - name: pedantic (feature and fuzz coverage)
+        # The workspace pass builds default features only, and the fuzz crate is outside the workspace.
+        run: |
+          cargo clippy -p deep-diff-forge-patch --no-default-features --all-targets --locked -- -D warnings -W clippy::pedantic
+          cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings -W clippy::pedantic
       - name: test
         run: cargo test --workspace --locked
       - name: docs
@@ -61,8 +111,90 @@ jobs:
         env:
           DDF_SOAK_SECONDS: 10
         run: python3 scripts/security/daemon_soak.py
+      - name: privacy probe failure regressions
+        run: python3 scripts/security/test_privacy_probe.py
       - name: learning privacy probe
         run: python3 scripts/security/privacy_probe.py
+
+  review-controller-evidence:
+    name: review controller mutation and fuzz evidence
+    runs-on: ubuntu-latest
+    # Raised from 30: the gate image build installs two Rust toolchains and compiles
+    # cargo-mutants and cargo-fuzz inside the image.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.1
+      - name: install pinned evidence tools
+        run: |
+          cargo install cargo-mutants --version 27.1.0 --locked
+          cargo install cargo-fuzz --version 0.13.2 --locked
+          rustup toolchain install nightly-2026-10-25 --profile minimal
+      - name: scoped mutation of admission and receipt qualification
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/ddf-review-mutation-target
+        run: cargo mutants --package deep-diff-forge-review --re 'identifier|check_execution' --test-workspace true --timeout 300
+      - name: instrumented council-report fuzz smoke
+        run: |
+          mkdir -p /tmp/ddf-council-corpus
+          cp review-policy/fuzz-seeds/council_report.json /tmp/ddf-council-corpus/seed.json
+          cargo +nightly-2026-10-25 fuzz run council_report /tmp/ddf-council-corpus -- -max_total_time=10 -max_len=4096
+      # Council quality gates only run inside the rootless Podman gate sandbox
+      # (docs/REVIEW_COUNCIL.md#gate-sandbox). The ubuntu runner images ship podman.
+      #
+      # UNVERIFIED on GitHub-hosted runners: Ubuntu 23.10+ (so ubuntu-24.04 / ubuntu-latest)
+      # restricts unprivileged user namespaces through AppArmor, which can make rootless
+      # podman fail with "unshare(...): Operation not permitted". Ubuntu documents the switch
+      # kernel.apparmor_restrict_unprivileged_userns (set it to 0 to lift the restriction):
+      #   https://ubuntu.com/blog/ubuntu-23-10-restricted-unprivileged-user-namespaces
+      # The runner-images tracker records the 22.04 -> 24.04 breakage but no official fix:
+      #   https://github.com/actions/runner-images/issues/10443
+      # No GitHub-maintained recommendation for rootless podman on ubuntu-24.04 was found, so
+      # this relaxes the sysctl on the ephemeral runner VM only when it is present and set.
+      # The alternative is a per-binary AppArmor profile granting `userns,` (same Ubuntu post).
+      - name: allow rootless podman user namespaces (ubuntu-24.04; measured working 2026-10-26)
+        run: |
+          podman --version
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = "1" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: build council gate image
+        run: |
+          # The Containerfile builds with --pull=never, so pull its digest-pinned base first.
+          base="$(sed -n 's/^FROM \([^ ]*@sha256:[0-9a-f]*\).*/\1/p' review-policy/sandbox/Containerfile | sort -u)"
+          test "$(printf '%s\n' "$base" | wc -l)" -eq 1
+          podman pull "$base"
+          podman build --pull=never -t localhost/ddf-council-gate:ci -f review-policy/sandbox/Containerfile review-policy/sandbox
+          podman image inspect --format '{{.Id}}' localhost/ddf-council-gate:ci
+      # The credential probes must have something to fail to read, or their refusal is vacuous
+      # (council_sandbox.rs asserts the files exist). A runner has no agent credentials, so plant
+      # canaries with no secret in them at the paths the probes target.
+      - name: plant canary credentials for the sandbox probes
+        run: |
+          mkdir -p "$HOME/.codex" "$HOME/.claude"
+          printf 'ddf-ci-canary\n' > "$HOME/.codex/auth.json"
+          printf 'ddf-ci-canary\n' > "$HOME/.claude/.credentials.json"
+          chmod 600 "$HOME/.codex/auth.json" "$HOME/.claude/.credentials.json"
+      - name: council gate sandbox integration
+        env:
+          DDF_COUNCIL_SANDBOX_IT: "1"
+          DDF_COUNCIL_PODMAN: podman
+          DDF_COUNCIL_GATE_IMAGE: localhost/ddf-council-gate:ci
+        run: cargo test --locked -p deep-diff-forge-cli --test council_sandbox -- --nocapture
+      # A failed probe run leaves its run directory behind; show why each job failed.
+      - name: sandbox diagnostics on failure
+        if: failure()
+        run: |
+          podman info --format 'network={{.Host.NetworkBackend}} pasta={{.Host.Pasta.Executable}} slirp={{.Host.Slirp4NetNS.Executable}}' || true
+          podman --version
+          for f in /tmp/ddf-council-sandbox-*/run/jobs/*/stderr.log /tmp/ddf-council-sandbox-*/run/jobs/*/protocol-error.txt /tmp/ddf-council-sandbox-*/run/jobs/*/qualification-error.txt; do
+            [ -f "$f" ] && { echo "== $f"; tail -n 40 "$f"; }
+          done
+          true
 
   supply-chain:
     name: supply chain audit
@@ -72,11 +204,15 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.1
       - name: cargo-deny (bans, licenses, sources, advisories)
         uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87 # v2
         with:
           command: check
+      - name: install host cargo-deny
+        run: cargo install cargo-deny --version 0.20.2 --locked
       - name: cargo-deny fuzz harness
         run: cargo deny --manifest-path fuzz/Cargo.toml --locked check
       # cargo-deny does not fail on every informational unsoundness advisory, so

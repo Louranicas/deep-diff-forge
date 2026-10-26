@@ -20,7 +20,7 @@ fn analyzes_own_lib_rs() {
 fn own_lib_rs_has_symbols() {
     let src = read("src/lib.rs");
     let a = analyze("src/lib.rs", &src, SyntaxOptions::default());
-    assert!(!a.symbols.is_empty());
+    assert_ne!(a.symbols.len(), 0);
     assert!(
         a.symbols
             .iter()
@@ -73,7 +73,7 @@ fn non_rust_path_falls_back_even_with_rust_content() {
     // Detection is by extension: a .txt file is unsupported regardless of bytes.
     let a = analyze("snippet.txt", "fn main() {}", SyntaxOptions::default());
     assert_eq!(a.language, Language::Unsupported);
-    assert!(a.symbols.is_empty());
+    assert_eq!(a.symbols.len(), 0);
 }
 
 #[test]

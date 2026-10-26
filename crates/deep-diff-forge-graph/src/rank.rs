@@ -113,7 +113,7 @@ diff --git a/src/generated/g.rs b/src/generated/g.rs
 
     #[test]
     fn empty_review_ranks_empty() {
-        assert!(rank(&[]).is_empty());
+        assert_eq!(rank(&[]).len(), 0);
     }
 
     #[test]

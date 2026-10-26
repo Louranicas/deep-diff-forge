@@ -1,0 +1,574 @@
+# Review roster, adversarial council and verification controller
+
+This is the local implementation of the requested Claude Code/Codex review roster and expert circle. It connects the existing analysis.v1 artifact to captured review context, independent provider rounds, explicit counter-review and measured quality gates. It makes unsupported, missing, failed and stale results visible. The final state is **ready_for_human_review**, never automatic approval.
+
+[Vault hub](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FReview%20Council) · [Implementation ledger](RECOMMENDATION_INTEGRATION.md) · [Quality workflow](../.github/workflows/ci.yml) · [HDD reference provenance](../review-policy/provenance.json)
+
+## Scope and maturity
+
+The new `deep-diff-forge-review` crate is a runnable Unix CLI/library workflow. It adds no daemon or automatic background model calls. Existing TUI/daemon clients are not yet council clients. All selected provider calls and verification jobs are explicit operator actions. No model is allowed to install a plugin, change code, select arbitrary shell commands, write a gate result, merge or publish.
+
+A roster must contain two configured adapter families. Multiple personas on one client do not satisfy that check. These are **configured adapter identities**, not a cryptographic attestation of the model behind a custom endpoint. When `model` is null, the client's default model is used and its actual model identity is unmeasured. Pin concrete available model IDs for controlled comparisons. Code does not claim that personas produce statistically independent reasoning. Builder family is explicit and self-reviews are identified in the prompts. Neither configured diversity nor consensus proves correctness.
+
+The analysis scope is the supplied changed-source artifact, not every outstanding Git change or a complete repository review. Candidate file bytes are independently checked against the shared snapshot digest and captured in full. Optional context is selected by the operator. The workspace fingerprint binds tool/review receipts to tracked and non-ignored untracked files, modes and HEAD. Every candidate file must be inside that fingerprinted inventory; a gitignored candidate file is refused at `prepare`. Quality gates do not run in the repository: they run in a sandbox against a copy of the source snapshot sealed at `prepare` (see [Gate sandbox](#gate-sandbox)). Ignored files, the dependency sources fetched by the vendoring step, and the host environment are outside the fingerprint; the gate toolchain is identified by the recorded local image ID, not by the fingerprint. Do not interpret it as a whole-system provenance proof.
+
+## Source findings and provenance
+
+The HDD sources are:
+
+- HEE-v5: `/var/mnt/storage/herdr-engineering-engine-v5`, observed HEAD `a75c914bfa79a74d9aec2980ba08ffa845f1f03a`. The read references are `.claude/AGENT_ROSTER.md`, `.claude/RUST.md`, `.claude/TESTING.md` and `.claude/tools/source_scan.py`. Their source hashes are recorded. HEE itself was neither modified nor built.
+- Antipattern crosswalk: `/var/mnt/storage/hee5-evidence/reference/drive-heev5-friday-20261017/extracted/HEEv5_Antipattern_Integration_v0.8-R5/HEEv5_Antipattern_Integration_v0.8-R5/AP_CROSSWALK.json`. All **50 entries** are preserved verbatim, including `SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED`, original source links and the instruction to inspect original source rows before implementing a detector. It is a review inventory, not a finding that every pattern exists here.
+- Lauren Tan's pstack: `/var/mnt/storage/hee5-evidence/reference/pstack-e43c7ee`, version **0.15.9**, commit `e43c7ee26e0038c6c1fa8380dd34ce86ff94cb2a`. The HDD upstream clone at `/var/mnt/storage/exemplars/poteto/upstream/cursor-plugins` has the same HEAD. All 162 manifest entries (161 source files plus pin metadata) were checksum-verified. This is a pinned HDD reference, not a claim to the latest online release.
+
+Selected pstack documents and the complete MIT license are packaged under [the review crate's policy directory](../crates/deep-diff-forge-review/policy/). The rubric, encode-lessons principle and prove-it-works principle enter every captured manifest and prompt. The 50-row advisory antipattern index also enters the context. `review_policy_check.py` verifies the imported policy digests. The full Cursor plugin is not globally installed or executed. Its Cursor-specific agents, model aliases, PR automations and unrelated scripts are not silently enabled. HEE's authority/HOLD/fence rules are reference context for that project, not permissions granted to this product.
+
+HEE learning → DDF mechanism:
+
+| Learning | Implemented control | Remaining qualification |
+| --- | --- | --- |
+| Independent verifier/refuter, not a builder's self-grade | Distinct configured provider families; blind initial round; explicit cross-review; immutable raw provider artifacts | Actual runtime model identity and empirical independence need verification for the chosen deployment |
+| AP-04 / AP-14: bound acquisition, do not silently clip | Bounded context/report/source reads; explicit rejection; output-limit diagnostics mark incomplete transcripts | Output limit detection is cooperative, not an OS disk quota |
+| AP-15 / AP-35: structural ownership and bounded fan-out | Exclusive controller lock; create-new jobs; 2–12 admitted reviewers; serial explicit jobs | No distributed scheduler or multi-host lock is claimed |
+| AP-29: exit zero is insufficient | Model output must pass typed admission; test/fuzz jobs need nonzero observed work; mutation needs successful baseline and coherent outcome rows | Test and fuzz work witnesses are parsed from output the candidate's own code can print, and the mutation witness is written inside the job's writable directory; they are sanity checks, not adversarial proof (see [residual risks](#gate-sandbox-residual-risks)) |
+| AP-30 / AP-34: bind results to real artifacts | Sealed source snapshot exported at `prepare`; each gate's private copy fingerprinted before and after against the sealed tree; live checkout still checked before every job; captured candidate digest; output/report hashes; finalized qualification separate from process exit; refusal markers cannot be overridden by a qualification | No cryptographic signer authentication against a hostile local account |
+| AP-32: isolate mutation state | Every gate job, including mutation, runs in its own `work/` copy with its own `CARGO_HOME`, `TMPDIR` and (except mutation) `CARGO_TARGET_DIR` under `/work`; the shared normal target is never mounted. A real contamination failure and its regression are retained in the evidence note | The gate toolchain is a pinned image identified by local image ID, not a reproducible or signature-verified build |
+| AP-31 / AP-38: bound waits, do not kill by process name | Deadline and owned process group cleanup, tested with a child process; gate containers carry a conmon `--timeout` backstop and are removed by their unique name | Container limits cover PIDs and memory only; no CPU or disk quota |
+| AP-26: do not regex Rust declarations | Parsed TOML and JSON for policy checks; common typed Rust controller | Fifty semantic antipattern detectors are **not** implemented |
+| AP-01 / AP-41: one owner for shared facts | Canonical core changed-source digest reused by analysis and council | Further cache/build identities remain separate work |
+| pstack: go deep, attack premise, encode recurring fixes structurally | Common rubric plus specialist lenses; falsification routes; mandatory measured checks; subtractor role | Outcome quality needs held-out evaluation; no novelty or superiority claim |
+
+## Architecture
+
+```mermaid
+flowchart TD
+  A[Shared-service analysis.v1] --> P[Prepare and validate request]
+  D[Decision and selected context] --> P
+  S[Current candidate source bytes] --> P
+  X[Pinned pstack + advisory AP index] --> P
+  P --> M[Sealed private run manifest]
+  M --> I[Independent round: each reviewer sees the same evidence]
+  I --> C[Challenge round: address every other finding]
+  M --> N[Sealed source snapshot + inventory]
+  N --> Q[Controller-owned fixed quality commands in rootless Podman, per-job snapshot copy]
+  C --> V[Validate citations, identities, phases and requested checks]
+  Q --> E[Exit + raw logs + work witness + environment record + final qualification]
+  V --> J[Fail-closed synthesis]
+  E --> J
+  T[Current workspace fingerprint] --> J
+  J --> H[HOLD: missing, failed, stale, abstained or unresolved]
+  J --> R[Ready for human review]
+  R --> O[Human owns decision; no automatic apply/merge]
+```
+
+```mermaid
+sequenceDiagram
+  participant Human
+  participant Controller
+  participant Codex
+  participant Claude as Claude Code
+  participant Tools as Verification tools
+  Human->>Controller: prepare request + analysis + decision
+  Controller->>Controller: verify candidate digest; seal context, roster and source tree; export source snapshot
+  Human->>Controller: run configured independent reviewer
+  Controller->>Codex: captured prompt + common strict response schema
+  Codex-->>Controller: untrusted structured report
+  Controller->>Controller: validate; retain raw output; qualify accepted artifact
+  Human->>Controller: run other independent reviewer
+  Controller->>Claude: same captured evidence, no earlier review
+  Claude-->>Controller: untrusted structured report
+  Human->>Controller: challenge round after all independent reports exist
+  Controller->>Codex: other reviewers' findings + captured evidence
+  Controller->>Claude: other reviewers' findings + captured evidence
+  Human->>Controller: run specific required quality gate
+  Controller->>Tools: fixed argv in rootless Podman on a private snapshot copy, deadline, owned process group
+  Tools-->>Controller: logs and measurements
+  Controller->>Controller: remove container by name; validate work witness and before/after snapshot-copy identity
+  Human->>Controller: status
+  Controller-->>Human: HOLD or ready_for_human_review, reasons and exact scope
+```
+
+## Review roster and expert personas
+
+Every reviewer applies the same correctness, boundary, verification and complexity rubric. The persona adds a lens; it does not exempt that reviewer from the common rubric.
+
+| Default slot | Adapter | Persona and adversarial responsibility |
+| --- | --- | --- |
+| correctness-codex | Codex | Reachable invariants, errors, boundary values, encodings and compatibility |
+| security-claude | Claude Code | Injection, authority, hostile input, credentials and resource amplification |
+| architecture-claude | Claude Code | Attack the premise, compare smaller alternatives, ownership, dependency direction and migration cost |
+| falsifier-codex | Codex | Break what passed; find vacuous assertions, missing controls and surviving mutants |
+| performance-claude | Claude Code | Complexity, allocation, contention, latency; require a reproducible measurement |
+| subtractor-codex | Codex | Remove unnecessary machinery and duplicated authority while preserving required behavior |
+
+`roster` profile permits a smaller two-family roster. `important_decision` additionally requires correctness, security, architecture and falsifier lenses and fuzz/mutation gates. Missing reviewers do not lower a quorum. A failed provider is not silently replaced. Findings remain claims; citations establish location/integrity, not semantic support. High/critical independent findings cannot be erased by later agreement or retraction: revise the candidate/decision and create a new run.
+
+## CLI usage
+
+Build with `cargo build --locked -p deep-diff-forge-cli`. The local reviewed build is also reachable via `ddf-integration-20261025` on this machine.
+
+```sh
+ddf-integration-20261025 council example > council-request.json
+```
+
+Edit the concrete repository, analysis/decision paths, builder family, selected contexts, providers/models and budgets. The template intentionally does not invent a latest model slug or credentials. Produce analysis.v1 with the existing `analyze` command from stable base/candidate snapshot directories. All source paths in that artifact must match current candidate file bytes; renamed/copied/binary source adaptation remains unsupported.
+
+```sh
+ddf-integration-20261025 council prepare council-request.json /absolute/new-run-directory
+ddf-integration-20261025 council status /absolute/new-run-directory
+# Missing evidence returns HOLD and exit 7, never a successful empty review.
+
+ddf-integration-20261025 council review /absolute/new-run-directory correctness-codex independent --execute
+ddf-integration-20261025 council review /absolute/new-run-directory security-claude independent --execute
+# Run every other configured reviewer before beginning any challenge job.
+ddf-integration-20261025 council review /absolute/new-run-directory correctness-codex challenge --execute
+# Run the challenge job for every configured reviewer.
+
+# Gates refuse unless the gate image is set and present locally; see "Gate sandbox".
+export DDF_COUNCIL_GATE_IMAGE=localhost/ddf-council-gate:20261025c
+ddf-integration-20261025 council gate /absolute/new-run-directory format --execute
+ddf-integration-20261025 council gate /absolute/new-run-directory check --execute
+ddf-integration-20261025 council gate /absolute/new-run-directory clippy --execute
+ddf-integration-20261025 council gate /absolute/new-run-directory pedantic --execute
+ddf-integration-20261025 council gate /absolute/new-run-directory tests --execute
+ddf-integration-20261025 council gate /absolute/new-run-directory antipatterns --execute
+ddf-integration-20261025 council gate /absolute/new-run-directory fuzz --execute
+ddf-integration-20261025 council gate /absolute/new-run-directory mutation --execute
+ddf-integration-20261025 council status /absolute/new-run-directory
+```
+
+The output directory's parent must exist, and the new run must be outside the reviewed repository. Existing runs/jobs/reports are never overwritten. `council import <run> <report.json>` admits external structured reports but explicitly labels manual import unverified; it cannot satisfy a missing measured provider invocation. The run's `manifest.json` and captured artifacts are reviewable before `--execute`. Preparation/status do not launch a hosted model. No execution occurs merely because a reviewer requested a check.
+
+Exit 0 means the requested operation completed under its contract; status exit 0 specifically means ready for human review. Exit 7 is HOLD/failed/inconclusive execution. Exit 4 is malformed input, stale admission, existing artifact or protocol/IO failure. No command implies acceptance, merge, release or deployment.
+
+<a id="tuicr-export"></a>
+
+### Exporting admitted findings to tuicr (DDF-R54)
+
+`council export-tuicr` files admitted council findings into a local tuicr (0.27.0) review session as *local draft notes*. It is a read-only analysis adapter in the sense of the vault plan: it never submits to a forge, marks a file or hunk reviewed, resolves or deletes a comment, or turns a model claim into an approval.
+
+```sh
+# Dry run (default): every identity check, then the planned notes as JSON. Never invokes tuicr, never writes.
+ddf-integration-20261025 council export-tuicr /absolute/run-directory --session ~/.local/share/tuicr/reviews/sessions/<hash>.json
+# Perform the writes through `tuicr review add`.
+ddf-integration-20261025 council export-tuicr /absolute/run-directory --session <session.json> --execute
+# Explicitly file findings whose anchor cannot be verified as review-level notes instead of refusing.
+ddf-integration-20261025 council export-tuicr /absolute/run-directory --session <session.json> --allow-review-level --execute
+```
+
+Find the session path with `tuicr review list --repo <repository>`. Rules, each covered by [the export tests](../crates/deep-diff-forge-cli/tests/council_tuicr.rs):
+
+- **Admission.** Only reports whose bytes validate against the sealed manifest *and* match a passed controller `qualification.json` digest are exported; the provider transcript must match its execution receipt. A tampered report or transcript refuses the whole export. A manual `council import` (no qualification) is listed under `skipped_reports` and never exported.
+- **Repository identity.** The session's `repo_path` must canonicalize to the run's repository. Pull-request sessions (`pr_session_key` set or `diff_source: pull_request`), unknown `diff_source` values and session versions other than `1.3` are refused.
+- **Anchoring.** A finding's first `candidate:<path>` citation is its anchor; findings citing only analysis/decision/policy artifacts become review-level notes. The anchor is accepted only if the session lists the file and the bytes the session's new side shows equal the run's sealed snapshot copy `<run>/source/<path>` (whose digest must still equal the manifest artifact). Those bytes are determined from `diff_source`: the working-tree file for `working_tree`, `unstaged`, `staged_and_unstaged`, `working_tree_and_commits`, `staged_unstaged_and_commits`, `file` and `pristine`; the index blob (`git cat-file blob :<path>`) for `staged`; and the blob at `base_commit` for `commit_range`, which tuicr sets to the newest commit of `commit_range` (the adapter checks that). Ranges must lie within the reviewed file's line count and always target the `new` side.
+- **Mismatch policy.** A mismatch means the run did not review what the session shows, so by default the export is refused with a typed `unanchored` error before anything is written: rejecting a mismatched revision is the successful boundary outcome. `--allow-review-level` is the explicit downgrade: such findings become review-level notes whose text records why they are not anchored. Session/repository identity failures are never downgradable.
+- **Provenance.** Every note starts with `[DDF-COUNCIL run=<run-id> reviewer=<id> round=<round> finding=<id>]`, then severity, the observed model identity (Claude's stdout `modelUsage` keys or Codex's stderr `model:` line; `unknown` otherwise), the requested model, the admitted report path and SHA-256, and the statement "Model claim, not verified fact". The tuicr author is `council:<reviewer> (<observed model>)`.
+- **Idempotency.** The ledger lives in the run at `exports/tuicr/<session-id>/`. Before each write a create-new intent marker `<sha256(key)>.pending` is written; after tuicr reports the comment and the session file is re-read to contain it, a create-new record `<sha256(key)>.json` stores the tuicr comment id. Re-running is a no-op. If tuicr fails and the session provably lacks the comment, the marker is removed; a marker left by an interrupted run is resolved by adopting the matching comment from the session, or else refused as `interrupted` for an operator to inspect.
+- **tuicr invocation.** The binary is the first executable `tuicr` in an absolute `PATH` entry. It runs with fixed argv and no shell: `tuicr review list --repo <repository>` (the session must be listed, so tuicr saves into the same file; it may be open in a live tuicr, because tuicr locks CLI writes and the running TUI polls and merges external edits) and `tuicr review add --session <path> --input -` with the JSON payload on stdin. A non-zero exit is a typed `tuicr failed` error carrying tuicr's stderr; the returned JSON must describe the requested new-side local draft.
+
+tuicr locates its store with `directories::ProjectDirs` (`$XDG_DATA_HOME/tuicr/reviews`, default `~/.local/share/tuicr/reviews`) and saves an edited session at a path derived from its slug and canonical repository, not necessarily at the `--session` path given; hence the `review list` preflight and the post-write re-read. tuicr has no non-interactive way to create a session. The opt-in real-tuicr test (`DDF_TUICR_IT=1`) therefore writes a minimal 1.3 session file in an isolated `HOME`/`XDG_DATA_HOME`/`XDG_CONFIG_HOME`, lets `tuicr review add` save it into the isolated store, asserts the stored path lies under the isolated data directory, and then exports into it. Without the variable it prints `UNMEASURED:`.
+
+<a id="decision-journal"></a>
+
+### Decision journal fed by tuicr dispositions (DDF-R18)
+
+`council import-tuicr` is the reverse direction. It reads a local tuicr (0.27.0) session and appends what humans did there to an append-only journal in the run, `<run>/decisions.jsonl`. It never writes to tuicr. A recorded event is an observation of a human decision, not an approval or a verified fact.
+
+```sh
+# Dry run (default): every check, then the events it would append, as JSON. Writes nothing.
+ddf-integration-20261025 council import-tuicr /absolute/run-directory --session <session.json>
+# Append the events.
+ddf-integration-20261025 council import-tuicr /absolute/run-directory --session <session.json> --execute
+```
+
+Exit 0 means the import completed. Exit 7 means the events include a conflict; they are still appended in `--execute` mode. Exit 4 is a refusal, and nothing is appended. Rules, each covered by [the journal tests](../crates/deep-diff-forge-cli/tests/council_tuicr.rs):
+
+- **Event schema** (`deep-diff-forge.decision.v1`, one JSON object per line):
+  - Identity: `seq`, `prev`, `run_id`, `session_id`, `revision` (`diff_source`, `base_commit`, `new_side`), `comment_id`, and `content_sha256` of the comment text.
+  - Anchoring: `anchor` (`review`, `file`, or `lines` with `file`, `side`, `start_line`, `end_line`), and `content_hash`, the tuicr `FileReview.content_hash` of the anchored file.
+  - Payload: `kind`, `actor` (`name`, `basis`), `ddf_authored`, `comment_type`, `lifecycle_state`, `previous_lifecycle_state`, `content` (verbatim, untrusted), `links`, `reviewed`, `reviewed_hunks`, `conflict`, `supersedes`, and `hash`.
+  - `hash` is the SHA-256 of the line serialized with `hash` set to `""`.
+  - `kind` is one of:
+    - `comment_added`: a comment not written by this run's export.
+    - `disposition`: such a comment linked to a council finding.
+    - `revised`: changed content.
+    - `restored`
+    - `lifecycle`: a `local_draft`/`pushed_draft`/`submitted` transition.
+    - `deleted`: a tombstone.
+    - `file_review`: a change in `reviewed` or `reviewed_hunks`.
+- **DDF authorship and actors.** A comment counts as DDF-authored only if its id is in this run's export ledger (`exports/tuicr/<session-id>/*.json`). The author string is not used for this. An export intent marker without a completion record refuses the import.
+  - For human comments, `actor.name` is the tuicr `author` field, with basis `tuicr_author`. It is free-form and unauthenticated.
+  - tuicr records no editor for changes to council notes and no actor for reviewed marks. Those events carry the name `unrecorded`, with basis `unrecorded`.
+- **Linking rule.** Tags in the comment text take precedence. A tag is `[ddf:<reviewer>/<round>/finding/<finding-id>]` (the export ledger key), or a quoted note header `[DDF-COUNCIL run=<this run> reviewer=<r> round=<round> finding=<id>]`. Each tag must name an exported finding note. Tags for other runs, unknown keys, summaries and response notes link nothing. A tag is at most 256 bytes.
+  - With no valid tag, the comment links to every exported finding note on the same file and side whose line range overlaps its own.
+  - Review-level and file-level comments link only by tag.
+- **Conflicts, not last-writer-wins.**
+  - A journaled or exported comment whose text changed gets a new `revised` event. The event references the prior event by `supersedes`.
+  - If that comment is a council note, which changes only when someone outside DDF edits it, the event carries a `conflict` reason and the command exits 7. The baseline for a council note is the ledger's `content_sha256`.
+  - Earlier events are never changed or removed. A comment that disappears gets a `deleted` tombstone.
+- **Chain and tamper evidence.**
+  - `prev` chains every event to the one before it. The first event's `prev` is 64 zeros.
+  - Each import that appends also writes a create-new checkpoint `<run>/decisions.checkpoints/<seq>.json` holding the head hash.
+  - Before planning, the whole journal is verified: each line must be the event's own canonical serialization, `seq` must be consecutive, every `prev` and `hash` must recompute, and `run_id` must match. Every checkpoint must still name an event the journal holds.
+  - An edited, reordered, partially written or truncated journal is refused. This includes a deleted journal whose checkpoints remain.
+  - Appends use `O_APPEND` after checking that the file length still equals the verified length, under a create-new `decisions.lock`.
+  - These are local consistency checks, not signatures. A same-uid process that rewrites the journal, its checkpoints and all hashes together is not detected.
+- **Stale revision refusal.** All refusals reject the whole import, and nothing is appended.
+  - The session must pass the export's identity checks: version, no forge session, and the same repository.
+  - Its `base_commit` must be a full commit id equal to the HEAD in the run's `source-inventory.json`. That inventory and the sealed snapshot are first re-verified against the manifest's `source_tree` fingerprint.
+  - Every event anchored to a file requires the bytes the session shows for that file to equal `<run>/source/<path>`. These bytes are resolved per `diff_source`, as in the export. The file must also be in the inventory.
+  - A review-level event requires this for every file the session lists. A listed file outside the inventory is refused if the session can show bytes for it, and is otherwise skipped (for example, tuicr's commit-message pseudo-files).
+- **Reviewed marks.** tuicr's `content_hash` is an FNV-1a hash over its own rendered diff hunks, so DDF cannot recompute it from the snapshot. A positive mark (`reviewed` or any `reviewed_hunks`) is therefore refused in two cases:
+  - It has no `content_hash`.
+  - Its `content_hash` differs from the one pinned by the first journaled positive mark for that file.
+
+  The byte check above also applies to the mark.
+- **Idempotency and bounds.** Re-running against an unchanged session plans and appends nothing.
+  - The session file is capped at 32 MiB and the journal at 64 MiB.
+  - Comment ids must be short identifiers and must be unique across the session.
+  - File keys must be relative paths with only normal components.
+  - Unknown lifecycle states and comment sides are refused.
+
+## Exact quality checks
+
+Every command below runs inside the [gate sandbox](#gate-sandbox) with working directory `/src`, the job's private copy of the sealed snapshot, mounted read-only. Paths beginning `/work` are container paths inside that job's own writable `jobs/<job>/work/` directory.
+
+| Gate | Fixed command/measurement | Failure semantics |
+| --- | --- | --- |
+| format | cargo fmt --all --check | Tool failure/timeout/source change holds |
+| check | cargo check --workspace --all-targets --locked | Compilation failure/missing tool/source change holds |
+| clippy | cargo clippy --workspace --all-targets --locked -- -D warnings | Warnings are failures |
+| pedantic | Same with -W clippy::pedantic | No lint waiver is introduced |
+| tests | cargo test --workspace --locked | Requires successful tool plus nonzero observed passed tests; zero work is inconclusive |
+| antipatterns | python3 /work/review_policy_check.py (the controller's embedded copy of the pinned checker, not the candidate's script) | Parses manifests and pinned metadata of the snapshot; requires `state: passed` and nonzero workspace members checked; does not certify the 50 semantic patterns absent |
+| fuzz | cargo +nightly fuzz run for each explicit target, corpus `/work/corpus` seeded from the snapshot, artifacts in `/work/fuzz-artifacts/`, declared time/input budgets | Every target must succeed and show nonzero executed cases; empty/unavailable/timeout/crash is not PASS |
+| mutation | cargo mutants --package the-explicit-package --test-workspace true --timeout 30 --output /work/mutation-results | Requires successful baseline, coherent per-mutant outcomes, nonzero caught mutants, zero missed, zero timeouts; unviable outcomes remain visible |
+
+Each gate job, including mutation, gets its own `work/` directory and never sees the normal build cache (AP-32). Non-mutation gates set `CARGO_TARGET_DIR=/work/target`; the mutation gate deliberately leaves `CARGO_TARGET_DIR` unset, because cargo-mutants copies the tree per build and a shared target directory would cross-contaminate those copies. The mutation witness is `jobs/gate-mutation/work/mutation-results/mutants.out/outcomes.json`; it is read without following any symlink or opening a FIFO, and the SHA-256 of exactly the bytes judged is recorded in the job's qualification and rechecked on every status. Mutation scope is the explicitly named package, while the test scope is the entire workspace so CLI/dependent integration tests can kill mutations in the review library. Requested checks appearing in model findings become additional outstanding evidence requirements. They are never executed automatically. The controller does not interpret a model's shell snippet as a command. No percentage score or majority vote overrides these requirements.
+
+The subprocess output limit is an 8 MiB combined trigger checked cooperatively. Owned processes are killed on timeout/output excess. Retained streams are capped to 8 MiB each, and `transcript-limit.json` explicitly marks incomplete transcripts and observed byte counts. Such runs never qualify. This is not an OS disk quota and a burst may exceed the trigger before detection. Gate containers additionally carry `--pids-limit=8192`, `--memory=32g`, `--memory-swap=32g` (no swap) and `--cpus=<host CPUs − 1>`; there is no disk quota. Files and run directories are private, create-new and fsynced. A stale controller lock after interruption requires operator inspection; there is no unsafe automatic lock-stealing or silent result replay.
+
+<a id="gate-sandbox"></a>
+
+## Gate sandbox
+
+The first live council run (r2) produced seven HIGH findings from both provider families against the earlier gate design, in which quality gates ran as the controller's own user in the live, mutable checkout. In summary:
+
+1. **Receipt forgery.** Gate subprocesses (build scripts, tests, fuzz targets, the repository's own policy script) could write passing receipts and qualification files into the run directory.
+2. **Unproven tested bytes.** Before/after fingerprints of a mutable tree do not prove which bytes were tested (an A→B→A change between the two observations is invisible), and gitignored candidate files sat outside the fingerprint.
+3. **Ambient authority and self-grading.** Gates inherited credentials and network, and the antipatterns gate executed the candidate's own `scripts/security/review_policy_check.py`.
+4. **Refusal override.** A `qualification.json` could overwrite refusal markers; this was confirmed in `storage.rs`.
+
+This section describes the replacement. Gates now run in a rootless Podman container against a private, read-only-mounted copy of a source snapshot sealed at `prepare`.
+
+Council run r4 then reviewed that sandbox, and six reviewers concurred on four HIGH findings, four MEDIUM and three LOW:
+
+1. (HIGH) The networked vendoring job ran candidate-selected code: `cargo` resolved through the rustup proxy with the snapshot as working directory, so a candidate `rust-toolchain(.toml)` could select a toolchain path and a candidate `.cargo/config.toml` could select credential providers and other executables.
+2. (HIGH) The vendoring output `jobs/sandbox-vendor/work/vendor` was candidate-writable. It was accepted with a check that follows symlinks, then mounted into later gates with `:z`, so a symlink could make Podman mount and relabel a host directory.
+3. (HIGH) Gates ran on a writable `/work/src`, so a build script or `rustc` wrapper could change a file and restore it between the before and after fingerprints (A→B→A).
+4. (HIGH) The mutation witness read blocked forever on a FIFO. (MEDIUM) Host-side reads rejected only a symlink leaf, so a container-written directory symlink was followed.
+5. (MEDIUM) Jobs launched the mutable tag, not the resolved image ID. (LOW) Receipts did not name the sandbox image.
+6. (MEDIUM) The status of `podman rm` was ignored, and the runtime control commands had no deadline.
+7. (MEDIUM) A job slot was created before the lock and workspace-staleness checks, so a refused job still consumed it.
+8. (LOW) Container names were derived from the run ID alone and could collide across invocations.
+9. (LOW) There was no swap bound and no CPU bound.
+10. (MEDIUM) Some real-Podman probes were vacuous: any connect error counted as "no network", and a read-only root could not be told apart from a permission refusal.
+
+[r4 hardening](#gate-sandbox-r4) maps each of them to its control and to the test that shows it refusing a planted breach.
+
+### Threat model
+
+- **Untrusted:** the candidate code under review, and everything it can cause to run. That includes build scripts, proc macros, tests, fuzz targets, benches, its Cargo configuration, its lockfile and the dependencies that lockfile names.
+- **Trusted:** the controller binary (including the policy checker compiled into it), the operator, the operator-built gate image and the Podman installation.
+- **Out of scope:** other processes running as the operator's uid *outside* the sandbox. Run directories are protected only by file mode (private, create-new) and receipts are not signed. Any same-uid process can already rewrite the run directory, replace the controller binary or read the operator's credentials directly, so there is nothing for the controller to defend. Defending against such processes would need a separate uid or signed receipts. Neither is implemented.
+
+### Controls and the findings they answer
+
+| Control | Code | Finding answered |
+| --- | --- | --- |
+| `prepare` builds a source inventory (Git HEAD plus tracked and non-ignored untracked paths). It copies exactly those files into `<run>/source/`, writes `source-inventory.json`, then re-fingerprints the copy and refuses if it differs from the sealed `source_tree` | `storage.rs` `inventory`, `copy_tree`, `fingerprint_tree`, `prepare` | r2 (2): the tested bytes are a sealed copy, not the live tree |
+| Candidate files must be members of the inventory, so a gitignored candidate file is refused | `storage.rs` `verify_candidate` | r2 (2): gitignored candidates outside the fingerprint |
+| Each gate job gets `jobs/<job>/src`, a fresh copy of the sealed snapshot, mounted **read-only** at `/src` (the working directory). Writable scratch is a separate `jobs/<job>/work` at `/work`. The copy is fingerprinted against the sealed tree before and after the run, and any difference is not PASS | `execution.rs` `prepare_work`, `run`; `sandbox.rs` `argv` | r2 (2), r4 (3): A→B→A needs a writable source, and the gate has none |
+| Only `jobs/<job>/work/` is writable (at `/work`). Receipts, logs, `environment.json`, `qualification.json` and refusal markers live in `jobs/<job>/`, which the container cannot reach | `sandbox.rs` `argv`, `execution.rs` `launch_argv` | r2 (1): gate code writing receipts into the run directory |
+| No host home is mounted. `HOME` and `TMPDIR` point into `/work`, `CARGO_HOME` is a controller-written read-only mount (see below), and only the variables listed in `environment.json` are passed. Gates run with `--network=none` and `CARGO_NET_OFFLINE=true`, except for the one vendoring job | `sandbox.rs` `env`, `argv` | r2 (3): inherited credentials and network |
+| The antipatterns gate runs `python3 /work/review_policy_check.py`. That file is the controller's embedded copy (`include_str!`) of `crates/deep-diff-forge-review/policy/review_policy_check.py`, and it checks the snapshot from its working directory | `execution.rs` `POLICY_CHECK`, `gate_argv` | r2 (3): self-grading |
+| In `executions()`, a `protocol-error.txt` or `qualification-error.txt` marker lowers any outcome that would otherwise be `Passed`. A qualification can lower an outcome but cannot restore `Passed` over a marker | `storage.rs` `executions` | r2 (4): qualification overriding refusal |
+| Before any job slot exists, `run_gate` checks, in order: the runtime and image ID; candidate toolchain configuration; the controller lock; the live workspace fingerprint; and the sealed snapshot's fingerprint. The live workspace is checked again before each later job's slot | `execution.rs` `run_gate`, `admit`, `require_fresh` | r4 (7): a refusal never burns a slot |
+
+<a id="gate-sandbox-r4"></a>
+
+### r4 hardening
+
+Each control below was demonstrated against a planted breach. **Fake** marks the deterministic fake-Podman tests in `crates/deep-diff-forge-cli/tests/council.rs`, which exercise controller logic against real files, symlinks and FIFOs on the host. **Real** marks the opt-in real-Podman test `real_sandbox_refuses_planted_breaches` in `council_sandbox.rs`. "Mutation-checked" means the control was disabled in the source and its test then failed; the code was restored afterwards.
+
+| Finding | Control | Evidence |
+| --- | --- | --- |
+| 1 Vendoring ran candidate-selected code | **Refusal:** a snapshot whose inventory contains `.cargo/config`, `.cargo/config.toml`, `rust-toolchain` or `rust-toolchain.toml` at *any* depth is refused by every gate, before the lock or any job slot ("snapshot contains candidate toolchain configuration …"). **Override:** every job, including vendoring, gets `RUSTUP_TOOLCHAIN=1.99.1`. Precedence is `+toolchain` > `RUSTUP_TOOLCHAIN` > toolchain file, so the fuzz gate's explicit `cargo +nightly` still selects nightly. **No candidate config in reach:** with the working directory `/src`, Cargo's config search covers only `/src/.cargo` and `/.cargo` (read-only image root) plus `CARGO_HOME`, and the controller writes `CARGO_HOME` | **Measured, fake:** `candidate_toolchain_configuration_is_refused_before_any_job_slot` (four names plus a nested `fuzz/.cargo/config.toml`; jobs dir empty; mutation-checked). **Measured, real:** the planted `rust-toolchain.toml` and `.cargo/config.toml` are refused with no job created. The "toolchain file" probe uses the container's initial environment (`/proc/1/environ`): a planted `channel = "nightly"` file yields `rustc 1.99.1`, and its positive control (the same environment without `RUSTUP_TOOLCHAIN`) yields nightly. Against the bce40ee controller the probe reports BREACH. **Measured (manual Podman):** a `rust-toolchain.toml` with `path = "/work/evil"` is honoured without `RUSTUP_TOOLCHAIN` ("invalid toolchain: the path '/work/evil' has no bin/ directory") and ignored with it |
+| 2 Vendoring output symlink → host bind mount | After the vendoring container is proved gone, the controller walks `jobs/sandbox-vendor/work/vendor` with `symlink_metadata`, never following a link. It accepts only real directories and regular files, within 100,000 files and 2 GiB, and refuses anything else before creating anything. It then copies the tree into a new controller-owned `<run>/vendor` (files `0400`/`0500`) and re-measures the copy. The digest of names, kinds, executable bits and contents goes into `jobs/sandbox-vendor/vendor-seal.json`. Gates mount only `<run>/vendor`, and only after re-measuring it against that seal. Each gate's `environment.json` records `vendor_sha256` | **Measured, fake:** `vendoring_output_is_sealed_and_planted_links_or_fifos_are_never_mounted` (a symlink inside the output, a symlinked output root and a FIFO are all refused with no seal, no `<run>/vendor` and no gate slot; a byte added to the sealed copy is refused before the next gate's slot; mutation-checked, both for the refusal and for the re-measure). **Measured, real:** a wrapper plants `vendor/escape → <host dir>` after the real vendoring container exits; vendoring is refused ("symlink or special file"), and neither `<run>/vendor` nor `jobs/gate-check` exists |
+| 3 Writable source A→B→A | Source mounted `/src:ro,Z`. Empirically (see below), no gate needs to write the source except cargo-fuzz, which always creates `fuzz/artifacts/<target>`. The controller pre-creates that mountpoint in its copy, outside the inventory, and mounts a 64 MiB `nosuid,nodev,noexec` tmpfs there, owned by the job user. Crash inputs still go to `-artifact_prefix=/work/fuzz-artifacts/`. Cargo-config-selected wrappers and runners (`build.rustc-wrapper`, `target.*.runner`, linkers, `[env]` and so on) are not neutralised through environment variables, which could never cover every key. They are unreachable instead, because candidate Cargo config is refused (finding 1) and the controller's `CARGO_HOME` is mounted `ro`. A candidate process can still create `/work/.cargo/config.toml`, but `/work` is not an ancestor of the working directory `/src` | **Measured, real:** probe "write /src/src/lib.rs" fails with EROFS (os error 30). The file is owned by the job's uid through keep-id, so only the read-only mount can produce EROFS. **Measured, fake:** `gates_launch_the_resolved_image_id_with_read_only_inputs_and_bounded_resources` and `fuzz_jobs_get_a_scratch_artifact_mount_over_the_read_only_source` check the exact mounts |
+| 4 FIFO hang, directory symlinks followed | `storage::read_bytes` opens with `O_NOFOLLOW \| O_NONBLOCK`, then `fstat`s and refuses anything that is not a regular file. `read_untrusted` and `untrusted_metadata` additionally refuse a symlink or non-directory in *every* component below a trusted root. They are used for the mutation witness (at qualification and on every `status`), the before and after source fingerprints, the snapshot copy, fuzz seeds and the vendoring walk. Mutation qualification reads the witness once and digests exactly the bytes it judged | **Measured, fake:** `a_fifo_or_symlinked_directory_mutation_witness_is_refused_without_hanging` (a real FIFO at `outcomes.json` and a symlinked `mutants.out` each give `inconclusive` with "mutation witness refused"). Mutation checks: following intermediate symlinks makes it fail; with no leaf pre-check `O_NONBLOCK`+`fstat` alone still refuses the FIFO; with neither, the controller hangs (the test's 150 s watchdog fires). **Measured, real:** the probe crate's own test, run by real cargo-mutants, renames `mutants.out` and leaves a symlink. The gate is `inconclusive` ("mutation witness refused"), while the unplanted positive control on the same crate passes with a recorded witness digest |
+| 5 Tag race; receipts lacked sandbox identity | The tag is resolved to a 64-hex image ID before any slot exists, and the container is launched by that ID. The ID is recorded in `environment.json` and in a new `image_id` field of the execution receipt (absent for provider jobs, so older receipts still load) | **Measured, fake:** the fake runtime refuses to run anything but the resolved ID, and the receipt carries it (mutation-checked by launching the tag); an ID that is not 64-hex is refused before any slot. **Measured, real:** the receipt's `image_id` equals `podman image inspect` |
+| 6 `rm` status ignored; no deadlines | After every gate job: `podman rm --force --time 0 <name>`, then `podman container exists <name>`, which must answer exit 1. Any other answer, or none within 30 s, writes `qualification-error.txt` and lowers `Passed` to `Inconclusive`, and nothing in `work/` is read for qualification. `image inspect`, `rm` and `container exists` each run in their own process group under a 30 s deadline, with a detached output reader so a lingering descendant cannot hold the deadline open | **Measured, fake:** `a_container_that_is_not_provably_removed_never_qualifies` (`exists` answers 0, or hangs: gate `inconclusive`; the same fault on the vendoring job: no seal, no `<run>/vendor`; mutation-checked) and `an_unresolvable_or_hanging_image_lookup_is_refused_before_any_job_slot` (a hanging inspect is refused within the deadline with jobs empty; mutation-checked by raising the deadline). **Measured, real:** `container exists` answers 1 after a real gate, also through `flatpak-spawn --host` |
+| 7 Slot burned before admission | Order is as in the controls table above; the lock is held for the whole gate invocation | **Measured, fake:** `a_changed_workspace_or_held_lock_is_refused_before_any_job_slot` and the tampered-snapshot case of `gates_run_on_the_sealed_snapshot_and_refuse_a_tampered_one` (jobs dir empty; mutation-checked) |
+| 8 Name collision | Container name `ddf-council-<16 of run id>-<job>-<16 hex nonce from /dev/urandom>`, recorded as `container_name` | **Measured, fake:** `container_names_carry_a_per_invocation_nonce` (the old derived name is held by "another invocation", the gate still passes, and that name is never removed; mutation-checked) |
+| 9 Resources | `--memory=32g --memory-swap=32g` (no swap) and `--cpus=<host CPUs − 1, min 1>` | **Measured, real:** probe "cgroup bounds" reads `memory.max=34359738368 memory.swap.max=0 cpu.max=1500000 100000 pids.max=8192` on this 16-CPU host. Against the bce40ee controller it reports BREACH (`memory.swap.max=34359738368`, `cpu.max=max`) |
+| 10 Vacuous probes | Every refusal must carry the specific errno only the control produces: credentials `ENOENT`; connect `ENETUNREACH` (101), since a timeout or reset would mean packets left; run-directory write `ENOENT`; writes to `/etc`, `/opt/ddf-probe-writable` and `/src` `EROFS` (30). Positive controls: `/opt/ddf-probe-writable` (new in image `:20261025c`) is owned by the gate user, and the test first shows a container without `--read-only` can write there; the toolchain probe has its unpinned control; the witness probe has its unplanted control | **Measured, real:** all 12 probes `refused` with those errnos. Against the bce40ee controller, three report BREACH (source write, cgroup bounds, toolchain file) |
+
+**What each gate writes (measured 2026-10-25, manual Podman, DDF at bce40ee, source mounted read-only on `:20261025b`):** `cargo fmt --all --check`, `cargo check --workspace --all-targets --locked`, the pedantic clippy command and `cargo test --workspace --locked` (1,085 passed) all succeed with no source writes. `--locked` stops lockfile writes, and `CARGO_TARGET_DIR=/work/target` takes build output. `cargo +nightly fuzz run` fails with EROFS creating `/src/fuzz/artifacts/council_report/` until the tmpfs is mounted, then succeeds (2,435,420 runs in 11 s). cargo-mutants copies the source into `$TMPDIR` (`/work/tmp`) and writes only `--output`; a sharded run caught 1 of 1 mutants. With `CARGO_HOME` mounted read-only, the workspace check, a fuzz run and a sharded mutants run all still succeed. The antipatterns checker writes nothing (`state: passed`, 13 members).
+
+**Through the real controller (measured 2026-10-25, image `:20261025c`):** a council run on a copy of this branch's working tree, with the toolbox-built controller and `DDF_COUNCIL_PODMAN="flatpak-spawn --host podman"`, gave these results. Vendoring sealed 9,008 files and 204,093,575 bytes into `<run>/vendor` (digest `942c5ce9…`). `format` passed (167 s including vendoring and sealing), `pedantic` passed (56 s), `tests` passed with 1,094 observed passed tests (336 s), `fuzz` (`council_report`, 20 s budget) passed with 3,301,024 runs in 21 s (209 s including the nightly release build), and `antipatterns` passed (`state: passed`, 13 members; the job itself took 0.7 s). Wall time between gates also includes controller admission, which measured 4.7 s when the host was idle. One stall of about 4.7 minutes before the antipatterns slot was not reproduced; the inferred cause is filesystem flush contention after the fuzz build, and it was not measured.
+
+### Podman invocation
+
+Every gate job runs `$DDF_COUNCIL_PODMAN run` (the default runtime is `podman`) with these flags. The source of truth is `sandbox.rs` `Sandbox::argv`.
+
+| Flag | Why |
+| --- | --- |
+| `--rm` | Leave no container state behind after a normal exit. Removal by name, followed by `container exists`, covers abnormal exits |
+| `--pull=never` | Run only the operator-admitted local image; Podman "never pull[s] the image but use[s] the one from the local containers storage" |
+| `--read-only` | The image root filesystem cannot be modified, so toolchains cannot be altered between or during jobs. Podman's default `--read-only-tmpfs` still mounts tmpfs on `/tmp`, `/var/tmp`, `/run` and `/dev/shm`; those are per-container and discarded |
+| `--cap-drop=all`, `--security-opt=no-new-privileges` | No capabilities, and no privilege gain through setuid binaries |
+| `--userns=keep-id` | Podman "creates a user namespace where the current user's UID:GID are mapped to the same values in the container", so `/work` files stay owned by the operator and nothing runs as container root |
+| `--init` | An init "forwards signals and reaps processes", so test and fuzz children are reaped and signalled |
+| `--pids-limit=8192`, `--memory=32g`, `--memory-swap=32g`, `--cpus=<host CPUs − 1>` | Bound fork and memory amplification, with no swap, and leave one CPU to the supervising controller. This is not a disk quota |
+| `--log-driver=none` | Measured on this host on 2026-10-25, with the Podman client's stdout/stderr redirected to files. `passthrough` produced an empty transcript at exit 0, while `none`, `k8s-file` and the default all delivered both streams. `none` was chosen so candidate output is not also duplicated into container logs |
+| `--name=ddf-council-…-<nonce>` | A handle unique to this invocation, used for forced removal and the removal proof |
+| `--timeout=<request timeout + 60>` | Podman's `--timeout` is the "maximum time a container is allowed to run before conmon sends it the kill signal". It backs up the controller's own deadline. Podman also documents that "Podman can exit but conmon continues to run", which is why killing the client is not enough and the controller removes the container by name |
+| `--network=none` | No network for any gate. Only the vendoring job omits this flag |
+| `--volume=<job>/work:/work:Z` | The job's only writable mount. `Z` relabels it private to this container for SELinux |
+| `--volume=<job>/src:/src:ro,Z` | The job's copy of the sealed snapshot, read-only |
+| `--volume=<job>/cargo-home:/cargo-home:ro,Z` | Controller-written `config.toml` that replaces `crates-io` with `/vendor`; read-only, so candidate code cannot redirect later Cargo invocations in the same job (all gates except vendoring and antipatterns) |
+| `--volume=<run>/vendor:/vendor:ro,z` | The controller's sealed copy of the vendored dependencies, read-only, with a shared label because every gate job mounts the same directory. It is a real directory the controller created, so the relabel cannot reach a path the candidate chose |
+| `--tmpfs=/src/fuzz/artifacts:rw,nosuid,nodev,noexec,size=64m,U` | Fuzz gate only, when the snapshot has `fuzz/`: the directory cargo-fuzz insists on creating |
+| `--env=HOME=/work/home`, `CARGO_HOME=/cargo-home` (vendoring and antipatterns: `/work/cargo-home`), `TMPDIR=/work/tmp`, `RUSTUP_TOOLCHAIN=1.99.1`, `CARGO_NET_OFFLINE=true`, and `CARGO_TARGET_DIR=/work/target` for every gate except mutation | Explicit, recorded environment, with no inherited variables |
+| `--workdir=/src` | Commands run in the read-only snapshot copy |
+| image **ID** (not tag) | Resolved once before any slot; see finding 5 |
+
+The toolchains are baked into the image rather than mounted from the host `~/.rustup` or `~/.cargo`. Podman's volume documentation says "Do not relabel system files and directories", and its example for sharing a home directory disables SELinux separation instead (`--security-opt label=disable`). Mounting the operator's home would also expose credentials. Source: [podman-run(1)](https://docs.podman.io/en/latest/markdown/podman-run.1.html), for `--timeout`, conmon, `:z`/`:Z`, `--userns=keep-id`, `--pull`, `--init` and `--read-only`.
+
+The image is defined by [`review-policy/sandbox/Containerfile`](../review-policy/sandbox/Containerfile). It is a Fedora 44 base pinned by digest, with Rust 1.99.1 (clippy and rustfmt), `nightly-2026-10-25` reachable as `cargo +nightly`, cargo-mutants 27.1.0, cargo-fuzz 0.13.2, gcc and python3, and the probe positive-control directory `/opt/ddf-probe-writable`. It runs as `USER 1000:1000`. The controller's `STABLE_TOOLCHAIN` constant must name a toolchain installed in the image; if it does not, every Rust gate fails closed (inferred: rustup cannot install into the read-only image root, and gates have no network).
+
+### Dependency vendoring
+
+Offline gates still need crate sources. Before the first gate that builds Rust (every gate except antipatterns), `run_gate` runs a `sandbox-vendor` job once per run. That job runs in the same sandbox, against its own read-only snapshot copy, with the default network and a scratch `CARGO_HOME`:
+
+```text
+cargo vendor --locked --versioned-dirs [--sync fuzz/Cargo.toml] /work/vendor
+```
+
+The `--sync fuzz/Cargo.toml` part is added only if the snapshot contains that file. The job must reach `Passed`, the container must be proved removed, and its output must pass the seal walk (finding 2). Otherwise every later gate refuses with "dependency vendoring did not pass; inspect jobs/sandbox-vendor and prepare a new run". Gates mount only the sealed `<run>/vendor`, re-measured against `vendor-seal.json` before each gate's slot is created. Measured for this repository: 9,008 files, 204,093,575 bytes.
+
+This is the only networked job. Two things are measured: candidate toolchain files and Cargo config cannot reach it (finding 1), and `cargo vendor` succeeds against a read-only source. Two are inferred from Cargo's documented behaviour, not adversarially tested here: that `cargo vendor` compiles nothing (no build script, proc macro, test or fuzz target runs while the network is available), and that it checks downloaded registry crates against the `Cargo.lock` checksums.
+
+Only `crates-io` is replaced. A candidate with git or alternative-registry dependencies would fail offline gates (inferred, not tested).
+
+### Operator setup
+
+1. Build the image. The header of the Containerfile gives the command:
+
+   ```sh
+   podman build --pull=never -t localhost/ddf-council-gate:20261025c -f review-policy/sandbox/Containerfile review-policy/sandbox
+   ```
+
+   `--pull=never` refuses to fetch the base image, so on a fresh machine first pull the digest-pinned `FROM` reference: `podman pull registry.fedoraproject.org/fedora:44@sha256:0d2a354d…`, using the full digest from the Containerfile. The build itself needs network; the gates do not.
+2. Set `DDF_COUNCIL_GATE_IMAGE=localhost/ddf-council-gate:20261025c`, or another local tag you built. On this host, `podman image inspect` gives that tag the image ID `74a31d365814e21a283356770ad198afb16beb12fae9bf315a91bd6c123bbfd7` (measured 2026-10-25). Earlier images: `:20261025b` (`d26503c7…`) lacks `/opt/ddf-probe-writable`, so the planted-breach test's positive control fails on it. The first image, `:20261025` (`bb89cf38…`), lacked `git` and a C++ compiler. Council r4's tests and fuzz gates failed closed on it: the Git-backed fixtures could not run, and `libfuzzer-sys` could not compile.
+3. On Fedora Atomic (Silverblue/Kinoite), Podman is on the host and not in the default Toolbx container. Measured here: `fedora-toolbox-44` has `flatpak-spawn` but no `podman`. You have two options:
+   - Run the controller on the host.
+   - From a toolbox, set `DDF_COUNCIL_PODMAN="flatpak-spawn --host podman"`. The variable is split on whitespace into the runtime argv. Exit statuses propagate through it; `container exists` answers 1 for an absent container (measured).
+
+   Do not treat Toolbx as the isolation layer. It is documented to give "seamless access to the user's home directory", sockets, D-Bus, the SSH agent, `/dev` and the host filesystem at `/run/host` ([containertoolbx.org](https://containertoolbx.org/)), so it is not a security boundary.
+
+<a id="gate-sandbox-residual-risks"></a>
+
+### Residual risks
+
+- **Work witnesses are sanity checks, not adversarial proof.** The tests witness counts `test result: ok. N` lines on stdout, and the fuzz witness parses libFuzzer's `Done N runs in S second(s)` on stderr. Candidate code shares those streams and can print fabricated lines. The mutation witness `outcomes.json` is written by cargo-mutants inside `/work`, which candidate test code can also write; the strict reader stops it from hanging or redirecting the controller, but not from writing plausible JSON. Within one mutation job, candidate code can also influence later cargo-mutants steps through `/work` (for example its copied tree in `/work/tmp`). The sandbox stops a gate from forging the *controller's* receipt, qualification or markers, and from changing the source it is fingerprinted on. It does not stop the candidate from lying to the tool whose output is being parsed.
+- **Image admission is local tag plus recorded image ID, not signature verification.** Anyone who can write the operator's container storage can replace the tag. The ID is pinned from admission to launch within one gate invocation and recorded in the receipt. Status does not re-verify that the image still exists or still has that ID.
+- **`keep-id` maps the operator's uid into the container.** Isolation rests on namespaces, the mount set, dropped capabilities and `no-new-privileges`, not on a separate uid. A container or kernel escape lands as the operator.
+- **The vendoring step fetches what the candidate's lockfile and manifests name.** Candidate Cargo config and toolchain files are refused, but `[patch]`, git and path entries in `Cargo.toml` and `Cargo.lock` still direct which hosts it contacts and which sources it downloads. Those sources then run, offline, inside later gates.
+- **The toolchain-config refusal is name-based.** It covers the four file names Cargo and rustup read, at any depth in the inventory. A future Cargo or rustup that reads another file name would not be covered until it is added; `RUSTUP_TOOLCHAIN` and the read-only `CARGO_HOME` remain as independent layers.
+- **The real-Podman FIFO probe is unmeasured.** The FIFO control is measured with a real FIFO on the host in the fake-Podman test. The real-Podman witness probe plants a directory symlink instead: a FIFO planted before cargo-mutants' own final write would block cargo-mutants itself (a timeout, not a witness read), and a plant after it cannot happen because `--init` ends every process when cargo-mutants exits (inferred).
+- **Host reads are component-checked, not `openat`-anchored.** There is a window between the component checks and the open. Reads happen only after the container is proved gone, so the remaining racer would be a same-uid process outside the sandbox, which is out of scope.
+- **Out of scope for this change:** a disk quota on `/work` (a gate can fill the host disk); per-gate timeouts (one request-wide timeout applies to every gate); and a generic controller (gate commands, toolchain constant and fuzz layout are specific to this Rust workspace's needs).
+- **Same-uid processes outside the sandbox remain out of scope**, as described in the threat model.
+
+### Evidence status
+
+- **Measured (2026-10-25, this host):**
+  - Every r4 control in the [r4 hardening](#gate-sandbox-r4) table, with the evidence given in its row: fake-Podman negative controls (each mutation-checked as stated) and the real-Podman planted-breach test on `:20261025c` (all 12 probes refused with their specific errnos, the positive controls succeed, and the witness, vendor-symlink and toolchain-config plants are refused).
+  - The same real-Podman test against the bce40ee controller: BREACH on the source write, the cgroup bounds and the toolchain file.
+  - The per-gate write survey and the run through the real controller described above.
+  - The `--log-driver` comparison. `passthrough` dropped redirected streams; `none` delivered them.
+  - Council r4 found two gate-image gaps (missing `git`, missing `c++`). Both gates failed closed and neither was reported as passed.
+- **Inferred:** Cargo's checksum and no-compilation behaviour during vendoring; the git-dependency limitation; the fail-closed behaviour if `STABLE_TOOLCHAIN` is missing from the image; that a post-exit FIFO plant is impossible under `--init`.
+- **Unmeasured in this document:**
+  - The real-Podman FIFO witness probe (see residual risks).
+  - The mutation gate on this repository's own `deep-diff-forge-review` package in the new sandbox. Mutation was measured on the probe crate and on a sharded `deep-diff-forge-core` run only.
+  - The CI step that builds the image and runs the planted-breach test on GitHub-hosted runners.
+  - Container or kernel escape attempts beyond the planted probes, and forging parsed tool output (see residual risks).
+
+  For test results, see the vault verification receipt.
+
+## Provider contracts
+
+Codex runs non-interactively with a read-only sandbox, ignored ambient user config/rules, ephemeral session, disabled shell/unified-exec/apps features, strict output schema and a private working directory. Claude Code runs in print/safe/restricted mode with an empty tool list, strict empty MCP configuration, no slash commands and no session persistence. No bypass-permissions option is used. The captured code and policy are passed explicitly as input.
+
+These flags reduce ambient capabilities; they are not a claim of a fully hermetic operating-system sandbox or independently authenticated model lineage. Client versions/availability and their actual account configuration matter. Failed auth or unsupported flags produce a visible failed/unavailable required reviewer. Current protocol tests use deterministic fake CLI executables, not live authenticated hosted model runs.
+
+Primary protocol references: [OpenAI non-interactive Codex](https://learn.chatgpt.com/docs/non-interactive-mode) and [Anthropic programmatic Claude Code](https://code.claude.com/docs/en/headless). Local installed `--help`/feature output was cross-checked. The response contract is validated again by typed Rust; a subprocess exit 0, a no-blockers caption, missing structured_output, stale run ID, unknown reviewer, duplicate finding, fabricated citation or invalid range cannot mint accepted evidence.
+
+## Verification and remaining work
+
+The current verification receipt and exact scope live in the vault's **Implementation/Review Council Verification 2026-10-25**. Historical first-increment evidence remains separate. Tests include policy refusals, actual CLI processes with two deterministic provider substitutes, phase ordering, missing gates, stale workspace/report rejection, protocol failure, timeouts, owned child cleanup, explicit transcript limits and zero-work tool refusals. The short local report fuzz campaign and scoped mutation campaign are bounded measurements, not full-codebase qualification. The gate sandbox change is covered by its own evidence status in [Gate sandbox](#gate-sandbox); this document does not assert that its tests pass.
+
+Remaining work includes live provider/account qualification, observed actual model identity, held-out review-quality evaluation, adversarially robust work witnesses (test/fuzz/mutation counts that candidate code cannot fabricate), signature-verified or reproducible gate images, CPU/disk quotas for gate containers, protection against same-uid processes outside the sandbox (separate uid or signed receipts), git/alternative-registry dependency vendoring, broader or crate-specific antipattern detectors with planted controls, complete mutation/fuzz campaigns, durable human finding dispositions/exception handling, cancellation/recovery UX, and migration into daemon/TUI consumers. No automatic approval mechanism has been added.
+
+## Exact module routes
+
+<a id="council-boundary"></a>
+
+### crates/deep-diff-forge-review/src/lib.rs
+
+Public API boundary; separate typed review claims from controller-owned execution and human authority.
+
+[Exact crate/module](../crates/deep-diff-forge-review/src/lib.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--lib)
+
+<a id="typed-protocol"></a>
+
+### crates/deep-diff-forge-review/src/model.rs
+
+Typed providers, personas, phases, findings, citations, execution outcomes and final qualification.
+
+[Exact crate/module](../crates/deep-diff-forge-review/src/model.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--model)
+
+<a id="admission-and-synthesis"></a>
+
+### crates/deep-diff-forge-review/src/policy.rs
+
+Fail-closed request/report admission and synthesis: no missing quorum, stale evidence or vote-based approval.
+
+[Exact crate/module](../crates/deep-diff-forge-review/src/policy.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--policy)
+
+<a id="capture-and-storage"></a>
+
+### crates/deep-diff-forge-review/src/storage.rs
+
+Bounded private context capture, canonical candidate snapshot verification, source inventory and identity, sealed source snapshot export, and immutable qualified artifacts in which refusal markers win.
+
+[Exact crate/module](../crates/deep-diff-forge-review/src/storage.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--storage)
+
+<a id="execution-controller"></a>
+
+### crates/deep-diff-forge-review/src/execution.rs
+
+Fixed provider/gate argv, admission before any job slot, sandboxed gate jobs on read-only per-job snapshot copies, candidate toolchain-config refusal, one networked vendoring job whose output is sealed before use, the embedded policy checker, deadlines, owned process groups, output limits and non-vacuous work qualification.
+
+[Exact crate/module](../crates/deep-diff-forge-review/src/execution.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--execution)
+
+<a id="gate-sandbox-module"></a>
+
+### crates/deep-diff-forge-review/src/sandbox.rs
+
+Rootless Podman gate sandbox: fixed flags launched by image ID, explicit environment with a pinned `RUSTUP_TOOLCHAIN`, writable `/work` plus read-only `/src`, `/cargo-home` and `/vendor` mounts, `environment.json` record, nonce container naming, and forced removal with a removal proof under deadlines. Design: [Gate sandbox](#gate-sandbox).
+
+[Exact crate/module](../crates/deep-diff-forge-review/src/sandbox.rs)
+
+<a id="gate-image"></a>
+
+### review-policy/sandbox/Containerfile
+
+Digest-pinned gate image with the exact toolchains and tools gates run; built by the operator, never pulled by the controller.
+
+[Exact file](../review-policy/sandbox/Containerfile)
+
+<a id="council-cli"></a>
+
+### crates/deep-diff-forge-review/src/cli.rs
+
+Explicit preparation/status/import and opt-in execution commands; manual reports cannot mint provider evidence.
+
+[Exact crate/module](../crates/deep-diff-forge-review/src/cli.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--cli)
+
+<a id="policy-controls"></a>
+
+### crates/deep-diff-forge-review/tests/contracts.rs
+
+Planted negative controls for authority, phase, freshness, citations, missing evidence and budgets.
+
+[Exact crate/module](../crates/deep-diff-forge-review/tests/contracts.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--tests--contracts)
+
+<a id="cli-controls"></a>
+
+### crates/deep-diff-forge-cli/tests/council.rs
+
+Actual CLI process lifecycle with fake providers and tools, plus timeout/owned-child cleanup and zero-work refusals.
+
+[Exact crate/module](../crates/deep-diff-forge-cli/tests/council.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-cli--tests--council)
+
+<a id="tuicr-export-module"></a>
+
+### crates/deep-diff-forge-review/src/tuicr.rs
+
+Read-only DDF→tuicr export: admitted reports only, repository and per-file byte identity per `diff_source`, new-side anchors, provenance text, create-new ledger and fixed-argv tuicr calls. Design: [Exporting admitted findings to tuicr](#tuicr-export).
+
+[Exact crate/module](../crates/deep-diff-forge-review/src/tuicr.rs)
+
+<a id="decision-journal-module"></a>
+
+### crates/deep-diff-forge-review/src/journal.rs
+
+tuicr→DDF decision journal: an append-only, hash-chained `decisions.jsonl` with checkpoints. It records actor-attributed dispositions, revisions and conflicts, lifecycle transitions, tombstones and reviewed marks. It refuses stale revisions and bytes. Design: [Decision journal](#decision-journal).
+
+[Exact crate/module](../crates/deep-diff-forge-review/src/journal.rs)
+
+<a id="tuicr-export-controls"></a>
+
+### crates/deep-diff-forge-cli/tests/council_tuicr.rs
+
+Export and decision-journal import through the actual CLI with fake providers and a fake tuicr. It also has two opt-in real-tuicr tests in an isolated store: the export round trip, and a `tuicr review add` human comment imported as a disposition.
+
+[Exact crate/module](../crates/deep-diff-forge-cli/tests/council_tuicr.rs)
+
+<a id="canonical-snapshot"></a>
+
+### crates/deep-diff-forge-core/src/snapshot.rs
+
+One canonical changed-source digest reused by analysis and council; explicit absence and framed paths/bytes.
+
+[Exact crate/module](../crates/deep-diff-forge-core/src/snapshot.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-core--src--snapshot)
+
+<a id="parsed-antipattern-guard"></a>
+
+### crates/deep-diff-forge-review/policy/review_policy_check.py
+
+Canonical, pinned checker: parse workspace TOML and provenance JSON; check lint inheritance and source labels without pretending to detect all semantic antipatterns. The controller embeds this file and runs it inside the gate sandbox with the snapshot copy as working directory. `scripts/security/review_policy_check.py` is a compatibility wrapper for CI and humans that runs it against the repository root; council gates never execute the wrapper.
+
+[Exact crate/module](../crates/deep-diff-forge-review/policy/review_policy_check.py) · [compatibility wrapper](../scripts/security/review_policy_check.py) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--scripts--security--review_policy_check)
+
+<a id="report-fuzz"></a>
+
+### fuzz/fuzz_targets/council_report.rs
+
+Bounded untrusted report parsing, validation and accepted-output serialization stability.
+
+[Exact crate/module](../fuzz/fuzz_targets/council_report.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--fuzz--fuzz_targets--council_report)
+
+<a id="reference-provenance"></a>
+
+### review-policy/provenance.json
+
+Exact HDD paths, source commits and checksums; copied references retain their original qualification and license.
+
+[Exact crate/module](../review-policy/provenance.json) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--review-policy--provenance)
+
+<a id="advisory-catalogue"></a>
+
+### crates/deep-diff-forge-review/policy/antipatterns.json
+
+All 50 imported AP rows are byte-preserved advisory reference data, not automatic findings or qualified detectors.
+
+[Exact crate/module](../crates/deep-diff-forge-review/policy/antipatterns.json) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--policy--antipatterns)
+
+
+## Local execution environment
+
+On this machine, `ddf-council-20261025` runs the council subcommand in the existing `fedora-toolbox-44` environment with the explicit integration target directory. For example: `ddf-council-20261025 gate /absolute/run pedantic --execute`. The host helper `ddf-integration-20261025` also exposes council commands. Gate commands no longer use the caller's compiler or tools: they run in the gate image (see [Gate sandbox](#gate-sandbox)). That toolbox has no `podman` (measured 2026-10-25), so a gate launched from it needs `DDF_COUNCIL_PODMAN="flatpak-spawn --host podman"`; otherwise run the controller on the host. Either way `DDF_COUNCIL_GATE_IMAGE` must be set, and gates refuse without it. No fallback silently changes the environment or lowers permissions. Model authentication/availability inside the chosen environment still requires live qualification. Installed CLI versions observed were codex-cli 0.164.0 and Claude Code 2.1.310; these are observations, not minimum-version or backend-identity guarantees.

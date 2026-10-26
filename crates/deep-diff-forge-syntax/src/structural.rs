@@ -1,3 +1,6 @@
+// DDF integration: R08, R10, R11. Never turn a failed analysis into formatting-only or behavioral safety; parser time cancellation is cooperative, node limits are post-parse.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#syntax-availability
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--structural
 //! Token-level structural (AST-leaf) diffing.
 //!
 //! Unlike a line-oriented diff, this compares the *token streams* produced by
@@ -92,52 +95,88 @@ pub struct StructuralDiff {
     pub reformat_only: bool,
     /// True when the LCS was skipped for size and a coarse diff was produced.
     pub degraded: bool,
+    /// Why structural analysis is unavailable; never interpreted as unchanged.
+    pub unavailable: Option<deep_diff_forge_core::FallbackReason>,
 }
 
 /// Structurally diff `old_source` against `new_source` for `language`.
 ///
-/// For an unsupported language both sides tokenize to empty and the diff is an
-/// empty, `reformat_only` result (callers should fall back to a line diff).
+/// Unsupported, oversized or invalid sources produce an explicit unavailable
+/// result. Such a result never asserts that a change is formatting only.
 #[must_use]
 pub fn structural_diff(language: Language, old_source: &str, new_source: &str) -> StructuralDiff {
-    let old = tokenize(language, old_source);
-    let new = tokenize(language, new_source);
-    diff_tokens(language, &old, &new)
+    match (
+        tokenize_checked(language, old_source),
+        tokenize_checked(language, new_source),
+    ) {
+        (Ok(old), Ok(new)) => diff_tokens(language, &old, &new),
+        (Err(reason), _) | (_, Err(reason)) => StructuralDiff {
+            language,
+            changes: Vec::new(),
+            unchanged: 0,
+            added: 0,
+            removed: 0,
+            moved: 0,
+            reformat_only: false,
+            degraded: true,
+            unavailable: Some(reason),
+        },
+    }
 }
 
 /// Tokenize `source` into its tree-sitter leaf tokens (source order).
 #[must_use]
 pub fn tokenize(language: Language, source: &str) -> Vec<Token> {
+    tokenize_checked(language, source).unwrap_or_default()
+}
+
+/// Tokenize with explicit failure information. Use this for correctness decisions.
+/// The compatibility `tokenize` helper alone cannot distinguish empty from failed.
+///
+/// # Errors
+/// Returns a typed fallback for unsupported, oversized, erroneous or over-budget trees.
+pub fn tokenize_checked(
+    language: Language,
+    source: &str,
+) -> Result<Vec<Token>, deep_diff_forge_core::FallbackReason> {
+    use deep_diff_forge_core::FallbackReason;
     if language != Language::Rust {
-        return Vec::new();
+        return Err(FallbackReason::UnsupportedLanguage);
     }
     // Guard against unbounded parse + allocation cost on adversarially large
     // inputs; mirrors the byte_budget applied in analyze_language().
     if source.len() > crate::analyze::DEFAULT_BYTE_BUDGET {
-        return Vec::new();
+        return Err(FallbackReason::ByteBudgetExceeded);
     }
     let ts_language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(&ts_language).is_err() {
-        return Vec::new();
+        return Err(FallbackReason::UnsupportedLanguage);
     }
-    let Some(tree) = parser.parse(source, None) else {
-        return Vec::new();
+    let Some(tree) = crate::parse_bounded(&mut parser, source) else {
+        return Err(FallbackReason::TimeBudgetExceeded);
     };
+    if tree.root_node().has_error() {
+        return Err(FallbackReason::ParseErrorsExceeded);
+    }
 
     let mut tokens = Vec::new();
     // Iterative pre-order leaf walk (no recursion → no stack overflow on deep
     // trees). Children are pushed reversed so popping yields source order.
     let mut stack = vec![tree.root_node()];
+    let mut visited = 0usize;
     while let Some(node) = stack.pop() {
+        visited += 1;
+        if visited > 200_000 {
+            return Err(FallbackReason::NodeBudgetExceeded);
+        }
         if node.child_count() == 0 {
             if let Some(text) = source.get(node.start_byte()..node.end_byte())
                 && !text.trim().is_empty()
             {
                 tokens.push(Token {
                     text: text.to_string(),
-                    #[allow(clippy::cast_possible_truncation)]
-                    line: node.start_position().row as u32 + 1,
+                    line: u32::try_from(node.start_position().row + 1).unwrap_or(u32::MAX),
                 });
             }
             continue;
@@ -148,7 +187,7 @@ pub fn tokenize(language: Language, source: &str) -> Vec<Token> {
             stack.push(child);
         }
     }
-    tokens
+    Ok(tokens)
 }
 
 fn diff_tokens(language: Language, old: &[Token], new: &[Token]) -> StructuralDiff {
@@ -187,6 +226,7 @@ fn diff_tokens(language: Language, old: &[Token], new: &[Token]) -> StructuralDi
         moved,
         reformat_only,
         degraded: false,
+        unavailable: None,
     }
 }
 
@@ -371,6 +411,7 @@ fn coarse_diff(language: Language, old: &[Token], new: &[Token]) -> StructuralDi
         moved: 0,
         reformat_only: false,
         degraded: true,
+        unavailable: None,
     }
 }
 
@@ -385,9 +426,93 @@ mod tests {
         assert_eq!(texts, vec!["fn", "main", "(", ")", "{", "}"]);
     }
 
+    /// Independent forward-DP reference for the length of the longest common subsequence.
+    fn reference_lcs_len(a: &[&str], b: &[&str]) -> usize {
+        let mut prev = vec![0usize; b.len() + 1];
+        for x in a {
+            let mut row = vec![0usize; b.len() + 1];
+            for (j, y) in b.iter().enumerate() {
+                row[j + 1] = if x == y {
+                    prev[j] + 1
+                } else {
+                    row[j].max(prev[j + 1])
+                };
+            }
+            prev = row;
+        }
+        prev[b.len()]
+    }
+
+    /// Every sequence of length 0..=`max_len` over `alphabet`.
+    fn all_sequences(alphabet: &[&'static str], max_len: usize) -> Vec<Vec<&'static str>> {
+        let mut all = vec![Vec::new()];
+        let mut frontier = vec![Vec::new()];
+        for _ in 0..max_len {
+            frontier = frontier
+                .iter()
+                .flat_map(|seq: &Vec<&'static str>| {
+                    alphabet.iter().map(move |t| {
+                        let mut next = seq.clone();
+                        next.push(*t);
+                        next
+                    })
+                })
+                .collect();
+            all.extend(frontier.iter().cloned());
+        }
+        all
+    }
+
+    // Mutation testing found that corrupting the DP's diagonal (match) cell survived every
+    // fixture test: greedy backtracking hid it. Check optimality and edit-script validity
+    // exhaustively on small inputs instead.
+    #[test]
+    fn lcs_ops_is_a_valid_optimal_edit_script() {
+        let sequences = all_sequences(&["a", "b", "c"], 5);
+        let tokens = |seq: &[&str]| -> Vec<Token> {
+            seq.iter()
+                .map(|t| Token {
+                    text: (*t).to_owned(),
+                    line: 1,
+                })
+                .collect()
+        };
+        for old in &sequences {
+            for new in &sequences {
+                let ops = lcs_ops(&tokens(old), &tokens(new));
+                let (mut next_old, mut next_new, mut equal) = (0, 0, 0);
+                for op in &ops {
+                    match *op {
+                        Op::Equal(i, j) => {
+                            assert_eq!((i, j), (next_old, next_new), "{old:?} -> {new:?}");
+                            assert_eq!(old[i], new[j], "{old:?} -> {new:?}");
+                            next_old += 1;
+                            next_new += 1;
+                            equal += 1;
+                        }
+                        Op::Delete(i) => {
+                            assert_eq!(i, next_old, "{old:?} -> {new:?}");
+                            next_old += 1;
+                        }
+                        Op::Insert(j) => {
+                            assert_eq!(j, next_new, "{old:?} -> {new:?}");
+                            next_new += 1;
+                        }
+                    }
+                }
+                assert_eq!((next_old, next_new), (old.len(), new.len()));
+                assert_eq!(
+                    equal,
+                    reference_lcs_len(old, new),
+                    "not a longest common subsequence: {old:?} -> {new:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn tokenize_unsupported_is_empty() {
-        assert!(tokenize(Language::Unsupported, "fn main() {}").is_empty());
+        assert_eq!(tokenize(Language::Unsupported, "fn main() {}").len(), 0);
     }
 
     #[test]
@@ -568,5 +693,27 @@ mod tests {
         assert!(d.added > 0);
         assert_eq!(d.removed, 0);
         assert!(!d.reformat_only);
+    }
+}
+
+#[cfg(test)]
+mod failure_regressions {
+    use super::*;
+    #[test]
+    fn oversize_invalid_and_unsupported_never_report_formatting_only() {
+        for (language, old, new) in [
+            (
+                Language::Rust,
+                "x".repeat(2 * 1024 * 1024 + 1),
+                "y".repeat(2 * 1024 * 1024 + 1),
+            ),
+            (Language::Rust, "fn {".into(), "fn }".into()),
+            (Language::Unsupported, "old".into(), "new".into()),
+        ] {
+            let diff = structural_diff(language, &old, &new);
+            assert!(!diff.reformat_only);
+            assert!(diff.degraded);
+            assert!(diff.unavailable.is_some());
+        }
     }
 }

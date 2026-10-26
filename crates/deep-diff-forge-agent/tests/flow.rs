@@ -1,3 +1,6 @@
+// DDF integration: R14, R15, R16, R17, R52. Separate asserted citations from captured artifact integrity, trusted evaluator support and revision freshness. Do not resolve duplicate IDs together.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#evidence
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--tests--flow
 //! Integration tests: annotate a real review end to end.
 
 use deep_diff_forge_agent::{
@@ -47,7 +50,7 @@ fn grounded_agent_annotation_against_real_hunk() {
         true,
     );
     assert!(validate_anchor(&a.anchor, &files));
-    assert_eq!(grounding_of(&a), GroundingLevel::Grounded);
+    assert_eq!(grounding_of(&a), GroundingLevel::PartiallyGrounded);
     assert_eq!(source_of(&a), AnnotationSource::Agent);
 }
 
@@ -103,7 +106,10 @@ fn store_separates_grounded_from_ungrounded() {
         &[],
         true,
     ));
-    assert_eq!(store.by_grounding(GroundingLevel::Grounded).len(), 1);
+    assert_eq!(
+        store.by_grounding(GroundingLevel::PartiallyGrounded).len(),
+        1
+    );
     assert_eq!(store.by_grounding(GroundingLevel::Ungrounded).len(), 1);
 }
 
@@ -121,7 +127,7 @@ fn reviewer_resolves_an_annotation() {
     ));
     assert_eq!(store.unresolved().len(), 1);
     assert!(store.resolve("a"));
-    assert!(store.unresolved().is_empty());
+    assert_eq!(store.unresolved().len(), 0);
 }
 
 #[test]
@@ -210,10 +216,10 @@ fn full_triage_flow() {
         assert!(validate_anchor(&a.anchor, &files));
         store.add(a);
     }
-    assert_eq!(store.by_grounding(GroundingLevel::Grounded).len(), 1);
+    assert_eq!(store.by_grounding(GroundingLevel::Grounded).len(), 0);
     assert_eq!(
         store.by_grounding(GroundingLevel::PartiallyGrounded).len(),
-        1
+        2
     );
     assert_eq!(store.by_grounding(GroundingLevel::Ungrounded).len(), 1);
     store.resolve("a");

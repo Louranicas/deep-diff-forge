@@ -410,9 +410,9 @@ mod tests {
     #[test]
     fn all_commands_have_label_and_hint() {
         for c in Command::all() {
-            assert!(!c.label().is_empty());
-            assert!(!c.hint().is_empty());
-            assert!(!c.menu().is_empty());
+            assert_ne!(c.label().len(), 0);
+            assert_ne!(c.hint().len(), 0);
+            assert_ne!(c.menu().len(), 0);
             assert_eq!(c.shortcut(), ":");
         }
         assert_eq!(Command::all().len(), 9);
@@ -439,7 +439,7 @@ mod tests {
         // Whether or not a daemon is up, this must never panic and must title.
         let out = run(Command::Daemon, &app());
         assert!(out.title.contains("daemon"));
-        assert!(!out.lines.is_empty());
+        assert_ne!(out.lines.len(), 0);
     }
 
     #[test]
@@ -496,7 +496,7 @@ mod tests {
         // Whether or not a store exists, this must never panic and must title.
         let out = run(Command::Learning, &app());
         assert!(out.title.contains("learning"));
-        assert!(!out.lines.is_empty());
+        assert_ne!(out.lines.len(), 0);
     }
 
     #[test]
@@ -514,7 +514,7 @@ mod tests {
         let a = app();
         for c in Command::all() {
             let out = run(c, &a);
-            assert!(!out.title.is_empty());
+            assert_ne!(out.title.len(), 0);
         }
     }
 }

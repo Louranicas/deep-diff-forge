@@ -1,3 +1,6 @@
+// DDF review route: DDF-R38. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-learning--src--store
 //! Local-only learning store.
 //!
 //! All learning data lives under `$XDG_STATE_HOME/deep-diff-forge/learning/`

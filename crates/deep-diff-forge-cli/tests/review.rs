@@ -55,7 +55,7 @@ fn probe_renders_the_review_frame() {
 fn review_help_does_not_require_a_tty_or_patch() {
     let (code, stdout, stderr) = run(&["review", "--help"], "");
     assert_eq!(code, 0);
-    assert!(stderr.is_empty());
+    assert_eq!(stderr.len(), 0);
     assert!(stdout.contains("deep-diff-forge review"));
     assert!(stdout.contains("--probe"));
     assert!(stdout.contains("--cmd NAME"));
@@ -77,7 +77,7 @@ fn probe_shows_diff_and_engine_note() {
 fn probe_on_malformed_patch_exits_four() {
     let (code, stdout, stderr) = run(&["review", "--probe"], "--- a/x\n+++ b/x\n+stray\n");
     assert_eq!(code, 4);
-    assert!(stdout.is_empty());
+    assert_eq!(stdout.len(), 0);
     assert!(stderr.contains("patch parse failed"));
 }
 

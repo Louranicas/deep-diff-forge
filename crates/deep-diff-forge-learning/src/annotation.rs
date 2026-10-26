@@ -1,3 +1,6 @@
+// DDF review route: DDF-R37. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-learning--src--annotation
 //! Annotation learning unit.
 //!
 //! Scores how much to trust an agent's annotations based on their track record:

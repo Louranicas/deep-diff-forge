@@ -1,3 +1,6 @@
+// DDF integration: R02, R09, R19, R21. Validate that a patch transforms the captured base into the captured candidate before attaching semantics; export explicit coverage and snapshot scope.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#shared-service
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-pipeline--lib
 //! Composable Unix-filter pipeline for Deep-Diff-Forge (L3).
 //!
 //! A pipeline is an ordered list of [`ChainStage`]s, each transforming a
@@ -10,6 +13,7 @@
 //! including a JSONL event stream). Patch truth is never mutated by a stage.
 
 mod jsonl;
+pub mod review;
 mod stages;
 
 pub use jsonl::jsonl_events;
@@ -124,7 +128,7 @@ mod tests {
     #[test]
     fn empty_pipeline_returns_input() {
         let p = Pipeline::new();
-        assert!(p.is_empty());
+        assert_eq!(p.len(), 0);
         let out = p.run(PipelineData::Patch("x".into())).unwrap();
         assert_eq!(out, PipelineData::Patch("x".into()));
     }
@@ -135,7 +139,7 @@ mod tests {
             .with(Box::new(IngestStage))
             .with(Box::new(RenderStage::new(RenderMode::Json)));
         assert_eq!(p.len(), 2);
-        assert!(!p.is_empty());
+        assert_ne!(p.len(), 0);
     }
 
     #[test]
@@ -217,7 +221,7 @@ mod tests {
 
     #[test]
     fn default_pipeline_is_empty() {
-        assert!(Pipeline::default().is_empty());
+        assert_eq!(Pipeline::default().len(), 0);
     }
 
     #[test]

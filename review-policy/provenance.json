@@ -1,0 +1,58 @@
+{
+  "hee_v5_commit": "a75c914bfa79a74d9aec2980ba08ffa845f1f03a",
+  "pstack_commit": "e43c7ee26e0038c6c1fa8380dd34ce86ff94cb2a",
+  "pstack_version": "0.15.9",
+  "qualification": "Imported AP crosswalk is advisory; original source rows and project-specific controls must be qualified separately.",
+  "files": [
+    {
+      "source": "/var/mnt/storage/hee5-evidence/reference/pstack-e43c7ee/src/skills/interrogate/references/rubric.md",
+      "destination": "crates/deep-diff-forge-review/policy/pstack/review-rubric.md",
+      "sha256": "a85aa801abbaf14434f00579440abc0d8e2723227ba8bf57de7cca8d6e7d2f25"
+    },
+    {
+      "source": "/var/mnt/storage/hee5-evidence/reference/pstack-e43c7ee/src/skills/principle-encode-lessons-in-structure/SKILL.md",
+      "destination": "crates/deep-diff-forge-review/policy/pstack/encode-lessons.md",
+      "sha256": "77044c83a9ac6df78fc643887ea5f1f11f082adaf14b717c060cdaed03cce863"
+    },
+    {
+      "source": "/var/mnt/storage/hee5-evidence/reference/pstack-e43c7ee/src/skills/principle-prove-it-works/SKILL.md",
+      "destination": "crates/deep-diff-forge-review/policy/pstack/prove-it-works.md",
+      "sha256": "ec79a15025bac8d33d62011c54f3b612733fd2a024e623b531b3637aa75070e2"
+    },
+    {
+      "source": "/var/mnt/storage/hee5-evidence/reference/pstack-e43c7ee/src/LICENSE",
+      "destination": "crates/deep-diff-forge-review/policy/pstack/LICENSE",
+      "sha256": "bc957ca6bee02792566a1a028d105e02e247c6e77cf057061674273da77b200e"
+    },
+    {
+      "source": "/var/mnt/storage/hee5-evidence/reference/drive-heev5-friday-20261017/extracted/HEEv5_Antipattern_Integration_v0.8-R5/HEEv5_Antipattern_Integration_v0.8-R5/AP_CROSSWALK.json",
+      "sha256": "7a0c2853062abfef48524ea5fdc257da3bbb3765d30d658098dc979183d0a2f7",
+      "use": "reference only; not installed or executed"
+    },
+    {
+      "source": "/var/mnt/storage/herdr-engineering-engine-v5/.claude/AGENT_ROSTER.md",
+      "sha256": "756ce4e08a8b699119d02c1bd16040a7a69d5435e68bd3b7f87ad962f8a23011",
+      "use": "reference only; not installed or executed"
+    },
+    {
+      "source": "/var/mnt/storage/herdr-engineering-engine-v5/.claude/RUST.md",
+      "sha256": "1c05b0132fbc913687864c691b6a53f94319fa9f3265131d85fc11e104033bd4",
+      "use": "reference only; not installed or executed"
+    },
+    {
+      "source": "/var/mnt/storage/herdr-engineering-engine-v5/.claude/TESTING.md",
+      "sha256": "609d96ffb304af359634ceeb268ed35b8598fb6e2174033c707d52cf07aac899",
+      "use": "reference only; not installed or executed"
+    },
+    {
+      "source": "/var/mnt/storage/herdr-engineering-engine-v5/.claude/tools/source_scan.py",
+      "sha256": "36f7d6126cfa51dc802008e61e9696c83da93958a30454517ddd698cda661512",
+      "use": "reference only; not installed or executed"
+    },
+    {
+      "source": "/var/mnt/storage/hee5-evidence/reference/pstack-e43c7ee/pin.json",
+      "sha256": "53d3ee991b428ce23474ef2863675a1e7b813b7262daa90194b593048d24fa93",
+      "use": "reference only; not installed or executed"
+    }
+  ]
+}

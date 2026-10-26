@@ -1,3 +1,6 @@
+// DDF integration: R14, R15, R16, R17, R52. Separate asserted citations from captured artifact integrity, trusted evaluator support and revision freshness. Do not resolve duplicate IDs together.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#evidence
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--store
 use crate::{AnnotationSource, GroundingLevel, SYSTEM_AGENT_ID, grounding_of, source_of};
 use deep_diff_forge_core::AgentAnnotation;
 
@@ -21,9 +24,14 @@ impl AnnotationStore {
     /// Add an annotation produced by trusted internal engine code.
     ///
     /// Callers must be internal (engine, TUI) — never an external wire source.
+    /// Returns false for an empty or duplicate ID; existing resolution is preserved.
     /// For untrusted external input use [`add_untrusted`][Self::add_untrusted].
-    pub fn add(&mut self, annotation: AgentAnnotation) {
+    pub fn add(&mut self, annotation: AgentAnnotation) -> bool {
+        if annotation.id.is_empty() || self.annotations.iter().any(|a| a.id == annotation.id) {
+            return false;
+        }
         self.annotations.push(annotation);
+        true
     }
 
     /// Add an annotation from an **untrusted external source** (file, wire,
@@ -31,13 +39,15 @@ impl AnnotationStore {
     ///
     /// If the annotation claims to be the engine itself (`provenance.agent ==
     /// SYSTEM_AGENT_ID`), that claim is silently downgraded to an empty agent
-    /// id so it can never masquerade as `AnnotationSource::System`. All other
-    /// fields are accepted verbatim (body sanitization is the caller's concern).
-    pub fn add_untrusted(&mut self, mut annotation: AgentAnnotation) {
+    /// id so it can never masquerade as `AnnotationSource::System`. Bodies are
+    /// sanitized and self-asserted grounding is cleared. Duplicate IDs are rejected.
+    pub fn add_untrusted(&mut self, mut annotation: AgentAnnotation) -> bool {
         if annotation.provenance.agent == SYSTEM_AGENT_ID {
             annotation.provenance.agent = String::new();
         }
-        self.annotations.push(annotation);
+        annotation.grounded = false;
+        annotation.body = crate::sanitize_body(&annotation.body);
+        self.add(annotation)
     }
 
     /// Number of annotations.
@@ -127,7 +137,7 @@ mod tests {
     #[test]
     fn new_store_is_empty() {
         let s = AnnotationStore::new();
-        assert!(s.is_empty());
+        assert_eq!(s.len(), 0);
         assert_eq!(s.len(), 0);
     }
 
@@ -136,7 +146,7 @@ mod tests {
         let mut s = AnnotationStore::new();
         s.add(ann("a", "claude", &[], false));
         assert_eq!(s.len(), 1);
-        assert!(!s.is_empty());
+        assert_ne!(s.len(), 0);
     }
 
     #[test]
@@ -193,7 +203,7 @@ mod tests {
         let mut s = AnnotationStore::new();
         s.add(ann("a", "claude", &["e"], true));
         s.add(ann("b", "claude", &[], true));
-        let grounded = s.by_grounding(GroundingLevel::Grounded);
+        let grounded = s.by_grounding(GroundingLevel::PartiallyGrounded);
         assert_eq!(grounded.len(), 1);
         assert_eq!(grounded[0].id, "a");
     }
@@ -238,9 +248,9 @@ mod tests {
     #[test]
     fn empty_store_filters_are_empty() {
         let s = AnnotationStore::new();
-        assert!(s.by_grounding(GroundingLevel::Grounded).is_empty());
-        assert!(s.by_source(AnnotationSource::Agent).is_empty());
-        assert!(s.unresolved().is_empty());
+        assert_eq!(s.by_grounding(GroundingLevel::PartiallyGrounded).len(), 0);
+        assert_eq!(s.by_source(AnnotationSource::Agent).len(), 0);
+        assert_eq!(s.unresolved().len(), 0);
     }
 
     #[test]
@@ -262,7 +272,7 @@ mod tests {
         let mut s = AnnotationStore::new();
         s.add_untrusted(ann("a", crate::SYSTEM_AGENT_ID, &[], false));
         // Must NOT appear as System.
-        assert!(s.by_source(AnnotationSource::System).is_empty());
+        assert_eq!(s.by_source(AnnotationSource::System).len(), 0);
         // The annotation is still stored (it is Agent-classified), not silently dropped.
         assert_eq!(s.len(), 1);
     }
@@ -273,5 +283,34 @@ mod tests {
         s.add_untrusted(ann("b", "some-agent", &["e"], true));
         assert_eq!(s.len(), 1);
         assert_eq!(s.by_source(AnnotationSource::Agent).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod identity_regressions {
+    use super::*;
+    use deep_diff_forge_core::{AnnotationAnchor, AnnotationProvenance};
+    #[test]
+    fn duplicates_cannot_alias_or_inherit_resolution() {
+        let mut store = AnnotationStore::new();
+        let annotation = AgentAnnotation {
+            id: "same".into(),
+            anchor: AnnotationAnchor::File { path: "x".into() },
+            body: "\u{1b}[31m claim".into(),
+            provenance: AnnotationProvenance {
+                agent: SYSTEM_AGENT_ID.into(),
+                model: None,
+                evidence: vec!["fabricated".into()],
+            },
+            grounded: true,
+        };
+        assert!(store.add_untrusted(annotation.clone()));
+        assert_eq!(store.list()[0].provenance.agent, "");
+        assert!(!store.list()[0].grounded);
+        assert!(!store.list()[0].body.contains('\u{1b}'));
+        assert!(store.resolve("same"));
+        assert!(!store.add(annotation));
+        assert_eq!(store.len(), 1);
+        assert!(store.is_resolved("same"));
     }
 }

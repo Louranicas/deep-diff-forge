@@ -154,3 +154,8 @@ Minimum fixture classes:
 ## Deployment Link
 
 - Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)
+
+
+## Review integration route
+
+[Implementation status and delivery gates](RECOMMENDATION_INTEGRATION.md#remaining-module-routes) ↔ [Module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--PERFORMANCE_AND_NOVELTY). This route records planned and evaluation-dependent work without claiming it is implemented.

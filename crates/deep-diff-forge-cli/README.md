@@ -25,6 +25,21 @@ deep-diff-forge learn status                                   # L9 local learni
 deep-diff-forge --help
 ```
 
+Structured Git input runs Git itself (fixed argv, no shell) and takes paths,
+statuses, modes and blob IDs from `git diff --raw -z` records instead of display
+headers; `git diff |` piping misses untracked files and C-quoted paths:
+
+```bash
+deep-diff-forge --git-working-tree --include-untracked --json  # staged + unstaged + untracked vs HEAD
+deep-diff-forge --git-staged --rank                            # index vs HEAD
+deep-diff-forge --git-range main..HEAD --repo ../other --json  # commit range
+deep-diff-forge --git-working-tree --acquisition-json          # deep-diff-forge.git-acquisition.v0 records
+```
+
+Untracked files are diffed with `git diff --no-index -- /dev/null <path>`; the
+index is never written (no `git add -N`). `--stdin-patch` cannot be combined
+with a Git selection.
+
 Bulk output is broken-pipe-tolerant: `deep-diff-forge … | head` exits cleanly.
 
 ## Where this fits

@@ -1,3 +1,6 @@
+// DDF integration: R31, R32. Measure displayed cells and preserve grapheme boundaries after terminal-safety escaping; keep remaining chrome/wrap geometry visible as work.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#terminal-geometry
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-projection--side_by_side
 use deep_diff_forge_core::{PatchLine, PatchLineKind, ReviewFile, display_safe};
 use std::fmt::Write as _;
 
@@ -103,12 +106,7 @@ fn truncate_pad(text: &str, width: usize) -> String {
     // is what gets measured, truncated, and padded (an attacker cannot use a
     // zero-width control sequence to desync column alignment).
     let safe = display_safe(text);
-    let count = safe.chars().count();
-    if count > width {
-        safe.chars().take(width).collect()
-    } else {
-        format!("{safe}{}", " ".repeat(width - count))
-    }
+    crate::fit_cells(&safe, width)
 }
 
 /// Render every file as two aligned columns with the given per-column text width.
@@ -213,7 +211,7 @@ mod tests {
     fn binary_file_has_no_rows() {
         let files =
             parse("diff --git a/p.png b/p.png\nBinary files a/p.png and b/p.png differ\n").unwrap();
-        assert!(side_rows(&files[0]).is_empty());
+        assert_eq!(side_rows(&files[0]).len(), 0);
     }
 
     #[test]

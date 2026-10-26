@@ -1,3 +1,6 @@
+// DDF review route: DDF-R28. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-daemon--src--security
 use std::ffi::OsString;
 use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::fs::PermissionsExt as _;
@@ -273,6 +276,33 @@ mod tests {
         let mode = std::fs::metadata(&target).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o755, "target permissions must be untouched");
         let _ = std::fs::remove_file(&link);
+    }
+
+    // The live wrappers must resolve exactly what the pure resolver yields for
+    // the current environment, whether `XDG_RUNTIME_DIR` is set or not. Reads
+    // the environment only; nothing in this crate mutates it.
+    #[test]
+    fn live_resolvers_match_the_environment() {
+        let expected = runtime_base_from(std::env::var_os("XDG_RUNTIME_DIR"));
+        assert_eq!(runtime_base(), expected);
+        let expected_dir = expected.map(|base| base.join("deep-diff-forge"));
+        assert_eq!(runtime_dir(), expected_dir);
+        assert_eq!(
+            default_socket_path(),
+            expected_dir.map(|dir| dir.join("deep-diff-forge.sock"))
+        );
+    }
+
+    #[test]
+    fn ensure_runtime_dir_propagates_non_missing_errors_without_creating() {
+        // A regular file used as a parent makes lstat fail with ENOTDIR, not
+        // ENOENT; that must be reported, not treated as "absent, create it".
+        let file = std::env::temp_dir().join(format!("ddf-sec-notdir-{}", std::process::id()));
+        std::fs::write(&file, b"x").expect("write");
+        let err = ensure_runtime_dir(&file.join("deep-diff-forge")).expect_err("ENOTDIR");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
+        assert!(std::fs::metadata(&file).unwrap().is_file());
+        let _ = std::fs::remove_file(&file);
     }
 
     #[test]

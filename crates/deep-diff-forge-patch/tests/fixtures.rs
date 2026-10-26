@@ -62,7 +62,7 @@ fn rename_fixture_is_renamed_to_new_path() {
 fn binary_fixture_is_binary_changed_with_no_hunks() {
     let files = parse(&load("binary.patch")).unwrap();
     assert_eq!(files[0].status, FileStatus::BinaryChanged);
-    assert!(files[0].patch_twin.hunks.is_empty());
+    assert_eq!(files[0].patch_twin.hunks.len(), 0);
 }
 
 #[test]

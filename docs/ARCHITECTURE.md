@@ -90,3 +90,13 @@ Detailed diagrams and API maps live in:
 ## Deployment Link
 
 - Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)
+
+
+## Review integration route
+
+[Implementation status and delivery gates](RECOMMENDATION_INTEGRATION.md#remaining-module-routes) ↔ [Module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--ARCHITECTURE). This route records planned and evaluation-dependent work without claiming it is implemented.
+
+
+## Captured multi-provider review controller
+
+`deep-diff-forge-review` depends inward on core vocabulary and the canonical changed-source digest. It admits shared-service analysis artifacts and emits review/verification artifacts through the CLI. Existing daemon and TUI routes are not yet migrated. [Full implemented workflow, interfaces and limits](REVIEW_COUNCIL.md) ↔ [Vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FReview%20Council).

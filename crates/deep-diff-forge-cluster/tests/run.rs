@@ -131,5 +131,5 @@ fn auto_and_serial_agree_on_fixtures() {
 fn empty_cluster_has_empty_receipt() {
     let run = run_risk_cluster(&[], Parallelism::Auto, JoinPolicy::RankedReviewOrder);
     assert_eq!(run.receipt.file_count, 0);
-    assert!(run.ranked.is_empty());
+    assert_eq!(run.ranked.len(), 0);
 }

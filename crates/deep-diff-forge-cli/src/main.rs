@@ -1,3 +1,8 @@
+// DDF integration: R02, R09, R19, R21. Validate that a patch transforms the captured base into the captured candidate before attaching semantics; export explicit coverage and snapshot scope.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#shared-service
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--main
+mod analysis;
+mod git_input;
 use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe};
 
 /// Write `s` to stdout, treating a reader that closed the pipe (`… | head`) as
@@ -64,6 +69,25 @@ fn main() {
             let rest: Vec<String> = args.collect();
             deploy_cmd(&rest);
         }
+        Some("council") => match deep_diff_forge_review::cli::dispatch(&args.collect::<Vec<_>>()) {
+            Ok((output, code)) => {
+                emit(&output);
+                if code != 0 {
+                    std::process::exit(code);
+                }
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                std::process::exit(4);
+            }
+        },
+        Some("analyze") => match analysis::run(&args.collect::<Vec<_>>()) {
+            Ok(json) => emit(&json),
+            Err(error) => {
+                eprintln!("error: {error}");
+                std::process::exit(4);
+            }
+        },
         Some("semantic") => {
             let rest: Vec<String> = args.collect();
             semantic_cmd(&rest);
@@ -91,6 +115,11 @@ fn main() {
         Some("--stdin-patch") => {
             let rest: Vec<String> = args.collect();
             stdin_patch(&rest);
+        }
+        Some(selector @ ("--git-working-tree" | "--git-staged" | "--git-range")) => {
+            let selector = selector.to_owned();
+            let rest: Vec<String> = args.collect();
+            git_input::run(&selector, &rest);
         }
         Some("claude-code-contract") => claude_code_contract(),
         Some("chain-contract") => chain_contract(),
@@ -192,6 +221,7 @@ fn seal_of(input: &str) -> InputSeal {
 /// 4 = patch parse failure, 7 = `--require-files` / `--require-hunks` refused
 /// a patch with nothing to review.
 fn stdin_patch(opts: &[String]) {
+    git_input::reject_with_stdin(opts);
     let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
     let guards = InputGuards::from_opts(opts);
     // --jsonl streams one event per file through the real pipeline runner.
@@ -207,20 +237,26 @@ fn stdin_patch(opts: &[String]) {
 
     let files = parse_or_exit(&input);
     guards.enforce(&files);
+    emit_review(&files, opts, &input);
+}
 
+/// Emit the selected review output for already-parsed `files`; `input` is the
+/// exact patch text that is sealed into machine-readable documents. Shared by
+/// `--stdin-patch` and the structured Git selections.
+fn emit_review(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], input: &str) {
     if opts.iter().any(|a| a == "--cluster") {
-        run_cluster(&files, opts, &input);
+        run_cluster(files, opts, input);
     } else if opts.iter().any(|a| a == "--rank") {
-        let ranked = deep_diff_forge_graph::rank(&files);
+        let ranked = deep_diff_forge_graph::rank(files);
         if opts.iter().any(|a| a == "--json") {
-            print_rank_json(&ranked, &seal_of(&input));
+            print_rank_json(&ranked, &seal_of(input));
         } else {
             print_rank_human(&ranked);
         }
     } else if opts.iter().any(|a| a == "--json") {
         emit(&deep_diff_forge_patch::to_json_sealed(
-            &files,
-            &seal_of(&input),
+            files,
+            &seal_of(input),
         ));
     } else if let Some(name) = flag_value(opts, "--layout") {
         if let Some(layout) = deep_diff_forge_projection::layout_from_str(&name) {
@@ -228,7 +264,7 @@ fn stdin_patch(opts: &[String]) {
                 layout,
                 side_width: deep_diff_forge_projection::DEFAULT_SIDE_WIDTH,
             };
-            emit(&deep_diff_forge_projection::render(&files, options));
+            emit(&deep_diff_forge_projection::render(files, options));
         } else {
             eprintln!(
                 "error: unknown layout: {} (expected inline|side-by-side)",
@@ -237,7 +273,7 @@ fn stdin_patch(opts: &[String]) {
             std::process::exit(2);
         }
     } else {
-        print_patch_summary(&files);
+        print_patch_summary(files);
     }
 }
 
@@ -250,6 +286,17 @@ const CURRENT_MATURITY: deep_diff_forge_core::MaturityLevel =
 /// UDS JSON-RPC review daemon.
 fn daemon_cmd(opts: &[String]) {
     use deep_diff_forge_daemon::SocketLocation;
+    let sub = opts
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .map(String::as_str);
+    // Validate the subcommand first, so an unknown one reports usage whatever the environment.
+    if !matches!(sub, Some("path" | "start" | "health" | "status" | "stop")) {
+        eprintln!(
+            "usage: deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]"
+        );
+        std::process::exit(2);
+    }
     // One resolution point: explicit `--socket` override, else $XDG_RUNTIME_DIR,
     // else fail closed (no world-writable /tmp fallback). The result is a
     // valid-by-construction location, so no path `Option` is threaded below.
@@ -262,10 +309,6 @@ fn daemon_cmd(opts: &[String]) {
         eprintln!("       set XDG_RUNTIME_DIR, or pass an explicit --socket PATH.");
         std::process::exit(2);
     };
-    let sub = opts
-        .iter()
-        .find(|a| !a.starts_with("--"))
-        .map(String::as_str);
     match sub {
         Some("path") => emitln!("{}", location.path().display()),
         Some("start") => {
@@ -572,6 +615,10 @@ fn structural_cmd(opts: &[String]) {
 
 fn print_structural_human(diff: &deep_diff_forge_syntax::StructuralDiff) {
     use deep_diff_forge_syntax::ChangeKind;
+    if let Some(reason) = &diff.unavailable {
+        emitln!("structural: unavailable ({reason:?}); use patch review");
+        return;
+    }
     if diff.reformat_only {
         emitln!("structural: no token changes (formatting only)");
     }
@@ -641,10 +688,14 @@ fn print_structural_json(diff: &deep_diff_forge_syntax::StructuralDiff) {
         "unsupported"
     };
     emitln!(
-        "{{\n  \"schema\": \"deep-diff-forge.structural.v0\",\n  \"language\": {},\n  \"reformat_only\": {},\n  \"degraded\": {},\n  \"summary\": {{\"unchanged\": {}, \"added\": {}, \"removed\": {}, \"moved\": {}}},\n  \"changes\": [{}]\n}}",
+        "{{\n  \"schema\": \"deep-diff-forge.structural.v0\",\n  \"language\": {},\n  \"reformat_only\": {},\n  \"degraded\": {},\n  \"unavailable\": {},\n  \"summary\": {{\"unchanged\": {}, \"added\": {}, \"removed\": {}, \"moved\": {}}},\n  \"changes\": [{}]\n}}",
         json_escape(lang),
         diff.reformat_only,
         diff.degraded,
+        diff.unavailable.as_ref().map_or_else(
+            || "null".into(),
+            |reason| json_escape(&format!("{reason:?}"))
+        ),
         diff.unchanged,
         diff.added,
         diff.removed,
@@ -1064,11 +1115,14 @@ USAGE:
   deep-diff-forge deploy {{status|release}} [--json]
   deep-diff-forge semantic <path> [--json]
   deep-diff-forge highlight <path> [--color|--no-color]
+  deep-diff-forge council <example|prepare|review|gate|status|import|export-tuicr|import-tuicr>
+  deep-diff-forge analyze <patch-file> <base-directory> <candidate-directory>
   deep-diff-forge structural <old> <new> [--json]
   deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME]
   deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]
   deep-diff-forge learn {{status|record --stdin}} [--json]
   deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side] [--require-files] [--require-hunks]
+  deep-diff-forge {{--git-working-tree [--include-untracked] | --git-staged | --git-range A..B}} [--repo PATH] [--acquisition-json | <--stdin-patch output flags>]
   deep-diff-forge claude-code-contract
   deep-diff-forge chain-contract
   deep-diff-forge cluster-contract
@@ -1102,7 +1156,7 @@ fn print_version() {
 
 fn self_test() {
     let document = ReviewDocument::empty();
-    assert!(document.files.is_empty());
+    assert_eq!(document.files.len(), 0);
     emitln!("self-test ok: core model initialized");
 }
 
