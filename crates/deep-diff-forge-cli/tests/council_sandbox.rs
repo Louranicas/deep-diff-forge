@@ -389,14 +389,16 @@ fn exemption_oracle_probe(home: &str, uid: u32) {
     );
     let witness = json(&run.join("jobs/sandbox-exemption-oracle/work/exemption-oracle.json"));
     assert_eq!(witness["state"], "refused", "{witness}");
-    assert!(
-        witness["refused"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["function"].as_str().unwrap().starts_with("tests::")),
+    // Seen in cargo's own build-script report, before any neutralised build (council r18).
+    assert_eq!(
+        witness["refused"][0]["function"], "build script",
         "{witness}"
     );
+    assert_eq!(
+        witness["refused"][0]["reason"], "a build script sets cfg(test)",
+        "{witness}"
+    );
+    assert_eq!(witness["builds"], 2, "{witness}");
     assert!(!run.join("jobs/gate-mutation").exists());
     let _ = fs::remove_dir_all(&root);
 }
