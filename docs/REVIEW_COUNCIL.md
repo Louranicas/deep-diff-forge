@@ -687,6 +687,20 @@ Council r19 (run `4946f232…`) reviewed `e45aad0..d3498a1` with **all 12 report
 
 **Cost.** Typical 12 builds (10 + drift). Worst case 54. The job keeps the request timeout.
 
+<a id="stop-rule-r21"></a>
+
+### r21: council r20 follow-ups — dep-info fails closed, as an allow-list; the stop rule
+
+Council r20 (run `0fd3cac8…`) reviewed `d3498a1..36d5e7c` with all 12 reports and 8/8 gates; mutation caught 7 of 7. Hosted CI on PR #5 was green at `5aa9675`.
+
+| Finding (r20) | Control | Evidence |
+| --- | --- | --- |
+| **The dep-info check failed open** (HIGH; architecture 4/0, correctness 4/0, falsifier 5/0, security 5/0, subtractor 5/0). Cargo reports a build script as `build/<pkg>-<hash>/build-script-build`; its dep-info belongs to the hard-linked `build_script_build-<hash>` beside it, and the lookup searched `deps/` only | A unit whose dep-info cannot be found, or that names a file which no longer exists, makes the verdict **inconclusive**. Same-inode siblings in the unit's own directory are searched | **Measured on DDF:** with the fail-closed rule and the old lookup, **38 units (every build script) had no dep-info**, so v9 never inspected them. With the sibling lookup: passed, 12 builds, 134 s. **Fake:** the build-script shape fails 12 tests without the sibling lookup |
+| A deny-list of places (security, 2/3) | **Allow-list:** a path package may read the build tree; a registry or git package its own directory; every unit `target/` (outputs and `OUT_DIR`). Without `-Z binary-dep-depinfo`, rustc names no sysroot files (measured) | **Fake:** `reads_elsewhere` is refused, and `vanished` and `no_dep_info` are inconclusive; this fails against v9 |
+| U+2028 split dep-info lines; trailing `:` was stripped from prerequisites | Lines end only at `\n`; only the target loses its colon | **Unit tests** |
+| Two precondition witnesses also lacked the configuration maps (falsifier 5/0) | Each is complete except for its one field | — |
+| **A run-time build script can read or copy the snapshot, or play symlink games** (architecture 2/3, security; challenge HIGH) | **Stop rule (architecture, "detector growth"):** the oracle observes what cargo and rustc report. Run-time behaviour of build scripts and proc macros is one residual class: reading, copying, symlinking, generating code, detecting the job. It is visible in the reviewed diff, and no further detector is added for it | Recorded in the oracle docstring and here |
+
 ### Podman invocation
 
 Every gate job runs `$DDF_COUNCIL_PODMAN run` (the default runtime is `podman`) with these flags. The source of truth is `sandbox.rs` `Sandbox::argv`.

@@ -523,7 +523,9 @@ const FAKE_IMAGE_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef012
 /// `incremental_history` changes unchanged code's MIR after an edit unless the incremental
 /// directory was removed, and `drifts` does so whatever the oracle removes; `drift_on_pass` moves
 /// only unmodified builds after an edit, so the neutralised ones look unchanged.
-/// `foreign_reads_tree` has a registry unit whose dep-info names a file of the tree.
+/// `foreign_reads_tree` has a registry unit whose dep-info names a file of the tree;
+/// `reads_elsewhere`, `vanished` and `no_dep_info` give the package's own unit a dep-info naming a
+/// file outside the tree, a file that is gone, or none at all.
 const FAKE_GATE: &str = r"#!/usr/bin/python3
 import json,os,pathlib,sys
 mode='@MODE@'
@@ -537,17 +539,20 @@ if '--list' in sys.argv:
         return {'file':file,'genre':'FnValue','span':body,'function':{'function_name':name,'span':span}}
     tool=os.path.basename(sys.argv[0]);rows=[fn('shipped',1)]
     hidden=fn('hidden',1,'src/hidden.txt') if mode=='exempt_txt' else fn('hidden',4)
-    allow_listed={'hidden_test','shadowed','release_ships','neutral_fails','harness_fails','mir_blind','unreproducible','restores','path_dep_ships','build_script_cfg','incremental_history','drifts','drift_on_pass','foreign_reads_tree'}
+    allow_listed={'hidden_test','shadowed','release_ships','neutral_fails','harness_fails','mir_blind','unreproducible','restores','path_dep_ships','build_script_cfg','incremental_history','drifts','drift_on_pass','foreign_reads_tree','reads_elsewhere','vanished','no_dep_info'}
     if 'noexclude' in tool and (mode in allow_listed or mode.startswith('exempt')):rows.append(hidden)
     if 'strict' in tool and mode.startswith('exempt'):rows.append(hidden)
     print(json.dumps(rows));sys.exit(0)
+# A registry package's sources, beside the build tree like a vendor directory.
+REGISTRY=os.path.join(os.path.dirname(os.getcwd()),'registry-dep')
+if sys.argv[1:2] in (['metadata'],['build']):os.makedirs(os.path.join(REGISTRY,'src'),exist_ok=True);pathlib.Path(REGISTRY,'src','lib.rs').write_text('')
 if sys.argv[1:2]==['metadata']:
     root=os.path.join(os.getcwd(),'src','lib.rs')
     package={'name':'deep-diff-forge-review','id':'review','source':None,'manifest_path':os.path.join(os.getcwd(),'Cargo.toml'),'targets':[{'name':'deep-diff-forge-review','kind':['rlib','cdylib'],'src_path':root}]}
     packages=[package]
     if '--no-deps' not in sys.argv:
         # A registry dependency, and (`path_dep_ships`) a path dependency outside the workspace.
-        packages.append({'name':'dep','id':'dep','source':'registry+https://github.com/rust-lang/crates.io-index','manifest_path':'/cargo-home/dep/Cargo.toml','targets':[]})
+        packages.append({'name':'dep','id':'dep','source':'registry+https://github.com/rust-lang/crates.io-index','manifest_path':os.path.join(REGISTRY,'Cargo.toml'),'targets':[]})
         if mode=='path_dep_ships':packages.append({'name':'helper','id':'helper','source':None,'manifest_path':os.path.join(os.getcwd(),'helper','Cargo.toml'),'targets':[{'name':'helper','kind':['lib'],'src_path':root}]})
     print(json.dumps({'packages':packages,'workspace_members':['review']}));sys.exit(0)
 if sys.argv[1:2]==['build'] and '--keep-going' in sys.argv:
@@ -590,12 +595,23 @@ if sys.argv[1:2]==['build'] and '--keep-going' in sys.argv:
     # A registry unit is never observed, whatever its MIR.
     (deps/'libdep-2b.rlib').write_text('binary');(deps/'dep-2b.mir').write_text(str(os.urandom(8)))
     # Its dep-info: vendored source and its own OUT_DIR are fine; a file of the tree is not.
-    read=[os.path.join(os.getcwd(),'target',profile,'build','dep-3c','out','gen.rs'),'/cargo-home/dep/src/lib.rs']
+    read=[os.path.join(os.getcwd(),'target',profile,'build','dep-3c','out','gen.rs'),os.path.join(REGISTRY,'src','lib.rs')]
     if mode=='foreign_reads_tree':read.append('src/lib.rs')
     (deps/'dep-2b.d').write_text(str(deps/'dep-2b.d')+': '+' '.join(read)+'\n')
-    # Cargo names workspace files relative to the directory it ran in (measured, real rustc).
-    (deps/'deep_diff_forge_review-0f.d').write_text(str(deps/'deep_diff_forge_review-0f.d')+': src/lib.rs\n\nsrc/lib.rs:\n')
-    print(json.dumps({'reason':'compiler-artifact','manifest_path':'/cargo-home/dep/Cargo.toml','target':{'name':'dep','kind':['lib']},'profile':{'test':False},'filenames':[str(deps/'libdep-2b.rlib')]}))
+    # Cargo names workspace files relative to the directory it ran in (measured, real rustc); its
+    # targets include outputs never emitted. `reads_elsewhere` reads a file outside its allow-list,
+    # `vanished` one that is gone, `no_dep_info` leaves none.
+    own=['src/lib.rs']+(['src/gone.rs'] if mode=='vanished' else [])+([os.path.join(REGISTRY,'src','lib.rs')] if mode=='reads_elsewhere' else [])
+    if mode!='no_dep_info':(deps/'deep_diff_forge_review-0f.d').write_text(str(deps/'libdeep_diff_forge_review-0f.rmeta')+': '+' '.join(own)+'\n\nsrc/lib.rs:\n')
+    if mode=='path_dep_ships':(deps/'helper-1a.d').write_text(str(deps/'helper-1a.d')+': src/lib.rs\n')
+    # A build script, reported as Cargo does: `build-script-build`, a hard link to the hashed
+    # executable beside it, whose dep-info that is (measured).
+    script=pathlib.Path(os.getcwd(),'target',profile,'build','review-9a');script.mkdir(parents=True,exist_ok=True)
+    hashed=script/'build_script_build-9a'
+    if not hashed.exists():hashed.write_text('binary');os.link(hashed,script/'build-script-build')
+    (script/'build_script_build-9a.d').write_text(str(script/'build_script_build-9a.d')+': src/lib.rs\n')
+    print(json.dumps({'reason':'compiler-artifact','manifest_path':os.path.join(os.getcwd(),'Cargo.toml'),'target':{'name':'build-script-build','kind':['custom-build']},'profile':{'test':False},'filenames':[str(script/'build-script-build')]}))
+    print(json.dumps({'reason':'compiler-artifact','manifest_path':os.path.join(REGISTRY,'Cargo.toml'),'target':{'name':'dep','kind':['lib']},'profile':{'test':False},'filenames':[str(deps/'libdep-2b.rlib')]}))
     harness_breaks=mode=='harness_fails' and neutralised
     if gate and not harness_breaks:artifact(True,'deep_diff_forge_review-7e',shipped+'\n'+hidden)
     sys.exit(101 if (mode=='neutral_fails' and neutralised) or (gate and harness_breaks) else 0)
@@ -1059,6 +1075,27 @@ fn a_registry_unit_that_reads_the_tree_is_refused() {
 }
 
 #[test]
+fn dep_info_is_an_allow_list_and_missing_evidence_is_inconclusive() {
+    // Council r20: the dep-info check failed open and only denied named places.
+    for (mode, state, needle) in [
+        (
+            "reads_elsewhere",
+            "refused",
+            "a unit reads files outside the neutralised tree",
+        ),
+        ("vanished", "inconclusive", "no longer exists"),
+        ("no_dep_info", "inconclusive", "no dep-info found"),
+    ] {
+        let f = oracle_fixture(mode);
+        assert_eq!(f.gate("mutation").status.code(), Some(4), "{mode}");
+        let witness = oracle_witness(&f);
+        assert_eq!(witness["state"], state, "{mode}: {witness}");
+        assert!(witness.to_string().contains(needle), "{mode}: {witness}");
+        assert_eq!(witness["builds"], 2, "{mode}: {witness}");
+    }
+}
+
+#[test]
 fn a_complete_witness_with_a_zero_exit_passes() {
     // The positive control for the forged-witness refusals above.
     let witness = r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":true,"configurations":{"gate":{"function":"f"},"release":{"function":"f"}}},"reproducible":true,"configurations":{"gate":"built","release":"built"}}"#;
@@ -1165,11 +1202,11 @@ fn the_controller_checks_the_oracle_witness_as_well_as_its_exit() {
     // A zero exit cannot pass a vacuous witness, and a passing witness cannot pass a failed exit.
     for (witness, code) in [
         (
-            r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":false},"reproducible":true}"#,
+            r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":false,"configurations":{"gate":{"function":"f"},"release":{"function":"f"}}},"reproducible":true,"configurations":{"gate":"built","release":"built"}}"#,
             0,
         ),
         (
-            r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":true},"reproducible":false}"#,
+            r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":true,"configurations":{"gate":{"function":"f"},"release":{"function":"f"}}},"reproducible":false,"configurations":{"gate":"built","release":"built"}}"#,
             0,
         ),
         (
