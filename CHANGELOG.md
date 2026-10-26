@@ -62,6 +62,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   reports first. Default behaviour without the flag is unchanged.
 - Determinism contract test: `--rank --json --require-files` is byte-identical
   across runs with an identical `input_sha256`.
+- **Stdio server fuzz targets** — `stdio_mcp` and `stdio_rpc` compile the
+  CLI's `mcp.rs` and `rpc.rs` into the fuzz crate and drive their stdio
+  loops in process, at the real cap or a small one. They assert one JSON-RPC
+  2.0 object per output line, exactly one of `result`/`error`, and at most one
+  answer per input line. CI runs a 10 s instrumented smoke from
+  `fuzz/seeds/`.
 
 ### Added (slice C: SDKs)
 
@@ -165,6 +171,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- Non-Unix `path_from_bytes` (`deep-diff-forge-patch`) reuses valid UTF-8
+  without a copy, which clears `clippy::needless_pass_by_value` in a
+  Windows-target pedantic build.
 - **main's red CI** (failing since 2026-06, run 37532439196): a floating
   `stable` toolchain deprecated `fetch_update` under `-D warnings`; `cargo deny`
   was called without being installed; the SBOM `documentNamespace` embedded

@@ -20,8 +20,9 @@ pub fn serve(input: &mut impl BufRead, output: &mut impl Write) -> std::io::Resu
 
 /// [`serve`] with an explicit request cap. The framing is the socket server's own
 /// (`read_capped_line`): the cap counts the newline, and an oversized request is refused as soon
-/// as `cap + 1` bytes have arrived, then the stream is closed (council sdc1).
-fn serve_with(
+/// as `cap + 1` bytes have arrived, then the stream is closed (council sdc1). Crate-visible so
+/// the `stdio_rpc` fuzz target can drive small caps.
+pub(crate) fn serve_with(
     input: &mut impl BufRead,
     output: &mut impl Write,
     cap: usize,

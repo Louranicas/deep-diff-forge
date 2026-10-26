@@ -338,8 +338,16 @@ fn path_from_bytes(bytes: Vec<u8>) -> PathBuf {
 }
 
 #[cfg(not(unix))]
-fn path_from_bytes(bytes: Vec<u8>) -> PathBuf {
-    PathBuf::from(String::from_utf8_lossy(&bytes).into_owned())
+use utf8_path_from_bytes as path_from_bytes;
+
+/// Off Unix a path is text: valid UTF-8 (the usual case) is reused without a copy, and anything
+/// else is decoded lossily. Unix test builds compile it too, so its tests run on Unix CI.
+#[cfg(any(not(unix), test))]
+fn utf8_path_from_bytes(bytes: Vec<u8>) -> PathBuf {
+    PathBuf::from(
+        String::from_utf8(bytes)
+            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
+    )
 }
 
 /// Acquire `selection` from the repository containing `repo`.
@@ -486,4 +494,21 @@ fn capture_untracked(
         }
     }
     Ok(omitted_untracked)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn off_unix_paths_keep_utf8_and_decode_other_bytes_lossily() {
+        assert_eq!(
+            utf8_path_from_bytes(b"src/caf\xc3\xa9.rs".to_vec()),
+            PathBuf::from("src/caf\u{e9}.rs")
+        );
+        assert_eq!(
+            utf8_path_from_bytes(b"src/a\xffb.rs".to_vec()),
+            PathBuf::from("src/a\u{fffd}b.rs")
+        );
+    }
 }

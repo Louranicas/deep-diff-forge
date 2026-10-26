@@ -1,0 +1,5 @@
+ÿ{"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}}
+{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}, "name": "rank_patch", "arguments": {"patch": "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1,2 +1,2 @@\n fn a() {}\n-let x = 1;\n+let x = 2;\n"}}}
+{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}, "name": "explain_exit_code", "arguments": {"code": 4, "family": "engine"}}}
+{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}, "name": "list_exit_codes", "arguments": {}}}
+{"jsonrpc": "2.0", "id": 5, "method": "ping", "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}}
