@@ -272,6 +272,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "deep-diff-forge-sdk"
+version = "0.2.1"
+dependencies = [
+ "deep-diff-forge-core",
+ "deep-diff-forge-daemon",
+ "deep-diff-forge-graph",
+ "deep-diff-forge-patch",
+ "serde_json",
+]
+
+[[package]]
 name = "deep-diff-forge-syntax"
 version = "0.2.1"
 dependencies = [

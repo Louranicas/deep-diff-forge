@@ -129,7 +129,7 @@ impl SocketLocation {
 /// envelope; this leaves generous framing headroom while hard-bounding a single
 /// oversized line so a newline-less stream cannot exhaust memory (denial of
 /// service).
-const MAX_REQUEST_BYTES: usize = 80 * 1024 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 80 * 1024 * 1024;
 
 /// Maximum bytes accepted from a daemon response by the client helper.
 const MAX_RESPONSE_BYTES: usize = MAX_REQUEST_BYTES;

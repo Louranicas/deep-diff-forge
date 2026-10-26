@@ -5,6 +5,7 @@ mod analysis;
 mod contract;
 mod git_input;
 mod mcp;
+mod rpc;
 use deep_diff_forge_core::exit;
 use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe};
 
@@ -128,6 +129,7 @@ fn main() {
         Some("explain") => contract_output(contract::explain(&args.collect::<Vec<_>>())),
         Some("envelope") => run_envelope(&args.collect::<Vec<_>>()),
         Some("mcp") => run_mcp(&args.collect::<Vec<_>>()),
+        Some("rpc") => run_rpc(&args.collect::<Vec<_>>()),
         Some("claude-code-contract") => claude_code_contract(),
         Some("chain-contract") => chain_contract(),
         Some("cluster-contract") => cluster_contract(),
@@ -1107,6 +1109,7 @@ USAGE:
   deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side] [--require-files] [--require-hunks]
   deep-diff-forge {{--git-working-tree [--include-untracked] | --git-staged | --git-range A..B}} [--repo PATH] [--acquisition-json | <--stdin-patch output flags>]
   deep-diff-forge mcp
+  deep-diff-forge rpc
   deep-diff-forge envelope -- <command> [args…]
   deep-diff-forge schema [result|exit-codes]
   deep-diff-forge explain <code> [--family engine|council] [--json]
@@ -1129,7 +1132,8 @@ MACHINE CONTRACT:
   object (exit code, registry outcome, stdout, stderr) and exits with its code.
   schema prints the envelope's JSON Schema or the exit-code registry; explain
   names one exit code. mcp serves read-only MCP tools over stdio (review_patch,
-  rank_patch, explain_exit_code, exit_code_registry).
+  rank_patch, explain_exit_code, exit_code_registry). rpc speaks the daemon's
+  JSON-RPC protocol over stdio without a daemon.
 
 FUTURE PRIMARY MODES:
   deep-diff-forge <old> <new>
@@ -1161,6 +1165,22 @@ fn run_envelope(args: &[String]) {
         Err(error) => {
             eprintln!("error: {error}");
             std::process::exit(exit::USAGE);
+        }
+    }
+}
+
+/// `rpc`: the daemon's JSON-RPC over stdio, in-process.
+fn run_rpc(args: &[String]) {
+    if !args.is_empty() {
+        eprintln!("error: rpc takes no arguments (it serves the daemon protocol over stdio)");
+        std::process::exit(exit::USAGE);
+    }
+    match rpc::serve(&mut std::io::stdin().lock(), &mut std::io::stdout().lock()) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(err) => {
+            eprintln!("error: rpc transport failed: {err}");
+            std::process::exit(exit::IO);
         }
     }
 }

@@ -132,15 +132,16 @@ Remaining, in order:
      the CLI's review document, with a parity test; there is method discovery
      (`engine.methods`) and protocol negotiation. The remaining planned methods
      (subscriptions, projection, annotations, cache) stay planned.
-   - **C. SDK:** a semver-checked Rust facade crate, a thin Python client over
-     the daemon socket, and `ddf rpc` over stdio.
+   - **C. SDK (implemented):** the `deep-diff-forge-sdk` Rust facade, with
+     signatures pinned by a compile-checked test (`cargo-semver-checks` waits for
+     a published baseline); a stdlib Python client over the socket and over
+     `deep-diff-forge rpc`; and `rpc` itself.
    - **D. MCP server (implemented):** `deep-diff-forge mcp` over stdio, dual-era
      (2026-07-28 and the legacy handshake). It has four read-only tools, with
      `review_patch` tested for parity with the CLI. No write tool exists; any
      future one must be opt-in.
 
-   A comes first, then B and D together, then C. A, B and D are implemented; C
-   is not.
+   A comes first, then B and D together, then C. All four are implemented.
 2. **GitLab `main` divergence:** reconcile it before any GitLab push of `main`.
 3. **Ubuntu 26:** a measured move off the `ubuntu-24.04` pin, re-checking
    rootless Podman.

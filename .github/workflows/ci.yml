@@ -117,6 +117,10 @@ jobs:
         run: python3 scripts/security/test_privacy_probe.py
       - name: learning privacy probe
         run: python3 scripts/security/privacy_probe.py
+      - name: python SDK against the built binary
+        run: |
+          cargo build --locked -p deep-diff-forge-cli
+          python3 -I sdk/python/test_deep_diff_forge.py
 
   review-controller-evidence:
     name: review controller mutation and fuzz evidence

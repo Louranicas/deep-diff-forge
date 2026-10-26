@@ -350,7 +350,7 @@ fn tool_error(message: &str) -> Value {
 
 /// Read one line of at most `cap` bytes. `Ok(None)` at end of input; an over-long line is drained
 /// to its newline and reported as `Ok(Some(Err(())))`.
-pub fn read_line(
+pub(crate) fn read_line(
     input: &mut impl BufRead,
     cap: usize,
 ) -> std::io::Result<Option<Result<Vec<u8>, ()>>> {

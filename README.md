@@ -617,6 +617,32 @@ Every tool is annotated `readOnlyHint: true`, and none writes anything.
 {"mcpServers": {"deep-diff-forge": {"command": "deep-diff-forge", "args": ["mcp"]}}}
 ```
 
+## SDKs
+
+**Rust:** the `deep-diff-forge-sdk` crate is a stable facade over the same crates the CLI and the daemon use.
+
+```rust
+use deep_diff_forge_sdk::{review, rank, InputGuards};
+let review = review(patch, InputGuards { files: true, hunks: true })?;
+let document = review.to_json();   // byte for byte what `--stdin-patch --json` prints
+let ranked = rank(&review);
+```
+
+`Client::at(socket).call(method, &params)` calls a running daemon. Errors map to the CLI's exit codes (`Error::exit_code`). `tests/api.rs` pins every public signature, so a change there is a deliberate breaking change.
+
+**Python:** `sdk/python/deep_diff_forge.py` uses the standard library only. It speaks the daemon protocol over either of two transports, with the same calls:
+
+- `deep-diff-forge rpc` over a pipe (`StdioClient`), which needs no daemon;
+- a running daemon's socket (`SocketClient`).
+
+```python
+from deep_diff_forge import StdioClient
+with StdioClient() as client:
+    document = client.review_patch(patch, require_files=True, require_hunks=True)
+```
+
+`deep-diff-forge rpc` answers each stdin line with the socket server's own request handler, under the same 80 MiB request cap, and stops at `daemon.shutdown`. CI runs the Python tests against the built binary, over both transports.
+
 ## The optional daemon
 
 The daemon accelerates repeated review and multi-client workflows. It is
