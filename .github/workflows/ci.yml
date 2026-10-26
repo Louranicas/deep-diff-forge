@@ -156,7 +156,7 @@ jobs:
       # No GitHub-maintained recommendation for rootless podman on ubuntu-24.04 was found, so
       # this relaxes the sysctl on the ephemeral runner VM only when it is present and set.
       # The alternative is a per-binary AppArmor profile granting `userns,` (same Ubuntu post).
-      - name: allow rootless podman user namespaces (ubuntu-24.04, unverified)
+      - name: allow rootless podman user namespaces (ubuntu-24.04; measured working 2026-10-26)
         run: |
           podman --version
           if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = "1" ]; then
@@ -170,11 +170,21 @@ jobs:
           podman pull "$base"
           podman build --pull=never -t localhost/ddf-council-gate:ci -f review-policy/sandbox/Containerfile review-policy/sandbox
           podman image inspect --format '{{.Id}}' localhost/ddf-council-gate:ci
+      # The credential probes must have something to fail to read, or their refusal is vacuous
+      # (council_sandbox.rs asserts the files exist). A runner has no agent credentials, so plant
+      # canaries with no secret in them at the paths the probes target.
+      - name: plant canary credentials for the sandbox probes
+        run: |
+          mkdir -p "$HOME/.codex" "$HOME/.claude"
+          printf 'ddf-ci-canary\n' > "$HOME/.codex/auth.json"
+          printf 'ddf-ci-canary\n' > "$HOME/.claude/.credentials.json"
+          chmod 600 "$HOME/.codex/auth.json" "$HOME/.claude/.credentials.json"
       - name: council gate sandbox integration
         env:
           DDF_COUNCIL_SANDBOX_IT: "1"
+          DDF_COUNCIL_PODMAN: podman
           DDF_COUNCIL_GATE_IMAGE: localhost/ddf-council-gate:ci
-        run: cargo test --locked -p deep-diff-forge-cli --test council_sandbox
+        run: cargo test --locked -p deep-diff-forge-cli --test council_sandbox -- --nocapture
 
   supply-chain:
     name: supply chain audit
