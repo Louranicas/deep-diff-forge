@@ -47,6 +47,55 @@ class Stdio(unittest.TestCase):
                 client.review_patch("x" * ddf.MAX_REQUEST_BYTES)
 
 
+class Responses(unittest.TestCase):
+    """The answer is checked before it is believed, errors included (council sdc1)."""
+
+    def test_valid_answers(self):
+        self.assertEqual(ddf._result({"jsonrpc": "2.0", "id": 1, "result": {"a": 1}}, 1), {"a": 1})
+        with self.assertRaises(ddf.RpcError) as error:
+            ddf._result({"jsonrpc": "2.0", "id": 1, "error": {"code": 7, "message": "m"}}, 1)
+        self.assertEqual(error.exception.code, 7)
+
+    def test_invalid_answers_are_transport_errors(self):
+        for bad in [
+            {"jsonrpc": "2.0", "id": 999, "error": {"code": 4, "message": "another call"}},
+            {"jsonrpc": "2.0", "id": 2, "result": {}},
+            {"jsonrpc": "2.0", "id": True, "result": {}},
+            {"jsonrpc": "1.0", "id": 1, "result": {}},
+            {"id": 1, "result": {}},
+            {"jsonrpc": "2.0", "id": 1},
+            {"jsonrpc": "2.0", "id": 1, "result": 1, "error": {"code": 1, "message": "m"}},
+            {"jsonrpc": "2.0", "id": 1, "error": {"code": "4", "message": "m"}},
+            {"jsonrpc": "2.0", "id": 1, "error": {"code": 4}},
+            [],
+        ]:
+            with self.subTest(bad=bad), self.assertRaises(ddf.TransportError):
+                ddf._result(bad, 1)
+
+
+class Bounds(unittest.TestCase):
+    """A child that never answers, or answers without end, cannot hang or exhaust the caller."""
+
+    def test_a_silent_child_times_out_and_is_killed(self):
+        client = ddf.StdioClient((sys.executable, "-c", "import time; time.sleep(60)"), timeout=0.5)
+        started = time.monotonic()
+        with self.assertRaises(ddf.TransportError):
+            client.call("daemon.health")
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertIsNotNone(client._process.poll())
+
+    def test_a_runaway_answer_is_cut_off(self):
+        original = ddf.MAX_REQUEST_BYTES
+        ddf.MAX_REQUEST_BYTES = 1 << 16
+        try:
+            client = ddf.StdioClient((sys.executable, "-c", "import sys\nwhile True: sys.stdout.write('x' * 65536); sys.stdout.flush()"), timeout=10)
+            with self.assertRaises(ddf.TransportError):
+                client.call("daemon.health")
+            self.assertIsNotNone(client._process.poll())
+        finally:
+            ddf.MAX_REQUEST_BYTES = original
+
+
 class Socket(unittest.TestCase):
     def test_a_live_daemon_answers_like_the_cli(self):
         with tempfile.TemporaryDirectory() as directory:

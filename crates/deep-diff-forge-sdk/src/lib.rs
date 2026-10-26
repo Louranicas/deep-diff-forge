@@ -4,27 +4,62 @@
 //! Everything here is a thin layer over the crates the CLI and the daemon use, so an SDK caller gets
 //! exactly their answers:
 //!
-//! - [`review`] parses a patch under the input contracts ([`InputGuards`]) and returns a
-//!   [`Review`] whose [`Review::to_json`] is the `deep-diff-forge.review.v0` document
+//! - [`review`] parses a patch under the input contracts ([`Guards`]) and returns a [`Review`]
+//!   whose [`Review::to_json`] is the `deep-diff-forge.review.v0` document
 //!   `deep-diff-forge --stdin-patch --json` prints for the same bytes.
 //! - [`rank`] orders a review's files by review risk.
 //! - [`exit`] is the exit-code registry the CLI uses.
-//! - [`Client`] calls a running daemon over its Unix socket.
+//! - `Client` (Unix only) calls a running daemon over its Unix socket.
 //!
-//! The public signatures are pinned by `tests/api.rs`: changing one is a breaking change and must
-//! be a deliberate edit there.
+//! **Stability.** The SDK owns [`Guards`], [`Review`] and [`Error`]: the first two are opaque, and
+//! [`Error`] is `#[non_exhaustive]`, so they can grow without breaking callers. [`ReviewFile`],
+//! [`InputSeal`] and [`RankedFile`] are Deep-Diff-Forge's own model types, re-exported as the
+//! review document's Rust form; they change only with that document's schema version. The public
+//! signatures are pinned by `tests/api.rs`, and the review, rank and exit functions build on every
+//! platform: only `Client` needs Unix.
 
-use serde_json::Value;
 use std::fmt;
-use std::path::Path;
 
 pub use deep_diff_forge_core::exit;
 pub use deep_diff_forge_core::{InputSeal, ReviewFile};
 pub use deep_diff_forge_graph::RankedFile;
-pub use deep_diff_forge_patch::InputGuards;
+
+/// Which input contracts [`review`] applies: `Guards::none()`, then `require_files` and
+/// `require_hunks`, as the CLI's `--require-files` and `--require-hunks`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Guards(deep_diff_forge_patch::InputGuards);
+
+impl Guards {
+    /// No contract: any patch that parses is reviewed, even an empty one.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Both contracts, as a gate should apply them.
+    #[must_use]
+    pub fn all() -> Self {
+        Self::none().require_files().require_hunks()
+    }
+
+    /// Refuse a patch with 0 files.
+    #[must_use]
+    pub fn require_files(mut self) -> Self {
+        self.0.files = true;
+        self
+    }
+
+    /// Refuse a patch with 0 hunks or 0 changed lines.
+    #[must_use]
+    pub fn require_hunks(mut self) -> Self {
+        self.0.hunks = true;
+        self
+    }
+}
 
 /// Why a call into the SDK did not produce its result.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Error {
     /// The patch could not be parsed (CLI exit 4, daemon error 4).
     Parse(String),
@@ -32,7 +67,7 @@ pub enum Error {
     Refused(&'static str),
     /// The daemon answered with a JSON-RPC error.
     Rpc { code: i64, message: String },
-    /// The daemon could not be reached, or its answer was not a JSON-RPC response.
+    /// The daemon could not be reached, or its answer was not a valid response to the request.
     Transport(String),
 }
 
@@ -50,12 +85,14 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 impl Error {
-    /// The CLI exit code (engine family) this error corresponds to.
+    /// The CLI exit code (engine family) this error corresponds to. A daemon's domain errors keep
+    /// their meaning: error 4 is invalid input and error 7 a refused contract, as on the CLI
+    /// (council sdc1).
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::Parse(_) => exit::INVALID_INPUT,
-            Self::Refused(_) => exit::INPUT_CONTRACT_REFUSED,
+            Self::Parse(_) | Self::Rpc { code: 4, .. } => exit::INVALID_INPUT,
+            Self::Refused(_) | Self::Rpc { code: 7, .. } => exit::INPUT_CONTRACT_REFUSED,
             Self::Rpc { .. } | Self::Transport(_) => exit::DAEMON_OR_TERMINAL,
         }
     }
@@ -64,13 +101,23 @@ impl Error {
 /// A parsed patch, sealed over the exact bytes it was parsed from.
 #[derive(Debug, Clone)]
 pub struct Review {
-    /// The files, hunks and lines of the patch.
-    pub files: Vec<ReviewFile>,
-    /// The digest of the input bytes and the tool version that read them.
-    pub seal: InputSeal,
+    files: Vec<ReviewFile>,
+    seal: InputSeal,
 }
 
 impl Review {
+    /// The files, hunks and lines of the patch.
+    #[must_use]
+    pub fn files(&self) -> &[ReviewFile] {
+        &self.files
+    }
+
+    /// The digest of the input bytes and the tool version that read them.
+    #[must_use]
+    pub fn seal(&self) -> &InputSeal {
+        &self.seal
+    }
+
     /// The `deep-diff-forge.review.v0` document, byte for byte what the CLI prints for the same
     /// patch.
     #[must_use]
@@ -85,9 +132,9 @@ impl Review {
 ///
 /// [`Error::Parse`] for a patch that does not parse; [`Error::Refused`] for one that breaks a
 /// contract in `guards`.
-pub fn review(patch: &str, guards: InputGuards) -> Result<Review, Error> {
+pub fn review(patch: &str, guards: Guards) -> Result<Review, Error> {
     let files = deep_diff_forge_patch::parse(patch).map_err(|e| Error::Parse(e.to_string()))?;
-    if let Some(reason) = guards.refusal(&files) {
+    if let Some(reason) = guards.0.refusal(&files) {
         return Err(Error::Refused(reason));
     }
     Ok(Review {
@@ -102,46 +149,79 @@ pub fn rank(review: &Review) -> Vec<RankedFile> {
     deep_diff_forge_graph::rank(&review.files)
 }
 
-/// A client for a running `deep-diff-forge daemon`. Each call is one request on a fresh
-/// connection, under the daemon's own size and time limits.
-#[derive(Debug, Clone)]
-pub struct Client {
-    location: deep_diff_forge_daemon::SocketLocation,
-}
+#[cfg(unix)]
+pub use client::Client;
 
-impl Client {
-    /// A client for the daemon listening at `socket`.
-    #[must_use]
-    pub fn at(socket: &Path) -> Self {
-        Self {
-            location: deep_diff_forge_daemon::SocketLocation::at(socket),
-        }
+#[cfg(unix)]
+mod client {
+    use super::{Error, parse_response};
+    use serde_json::Value;
+    use std::path::Path;
+
+    /// A client for a running `deep-diff-forge daemon`. Each call is one request on a fresh
+    /// connection, under the daemon's own size and time limits.
+    #[derive(Debug, Clone)]
+    pub struct Client {
+        location: deep_diff_forge_daemon::SocketLocation,
     }
 
-    /// Call `method` with `params` (an object, or null) and return its result.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Rpc`] when the daemon answers with an error; [`Error::Transport`] when it cannot be
-    /// reached or its answer is not a JSON-RPC response.
-    pub fn call(&self, method: &str, params: &Value) -> Result<Value, Error> {
-        let line =
-            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-                .to_string();
-        let answer = deep_diff_forge_daemon::request(&self.location, &line)
-            .map_err(|e| Error::Transport(e.to_string()))?;
-        let mut response: Value = serde_json::from_str(answer.trim())
-            .map_err(|e| Error::Transport(format!("not JSON: {e}")))?;
-        if let Some(error) = response.get("error") {
-            return Err(Error::Rpc {
-                code: error["code"].as_i64().unwrap_or_default(),
-                message: error["message"].as_str().unwrap_or_default().to_owned(),
-            });
+    impl Client {
+        /// A client for the daemon listening at `socket`.
+        #[must_use]
+        pub fn at(socket: &Path) -> Self {
+            Self {
+                location: deep_diff_forge_daemon::SocketLocation::at(socket),
+            }
         }
-        response
-            .get_mut("result")
-            .map(Value::take)
-            .ok_or_else(|| Error::Transport("a response with neither result nor error".into()))
+
+        /// Call `method` with `params` (an object, or null) and return its result.
+        ///
+        /// # Errors
+        ///
+        /// [`Error::Rpc`] when the daemon answers with an error; [`Error::Transport`] when it
+        /// cannot be reached or its answer is not a valid response to this request.
+        pub fn call(&self, method: &str, params: &Value) -> Result<Value, Error> {
+            const ID: i64 = 1;
+            let line =
+                serde_json::json!({"jsonrpc": "2.0", "id": ID, "method": method, "params": params})
+                    .to_string();
+            let answer = deep_diff_forge_daemon::request(&self.location, &line)
+                .map_err(|e| Error::Transport(e.to_string()))?;
+            parse_response(&answer, ID)
+        }
+    }
+}
+
+/// Validate a JSON-RPC 2.0 response to request `id` and take its result: the version, the id and
+/// the error object's shape are all checked, so an unrelated or malformed answer is never taken
+/// for this call's (council sdc1).
+fn parse_response(answer: &str, id: i64) -> Result<serde_json::Value, Error> {
+    use serde_json::Value;
+    let bad = |what: &str| Error::Transport(format!("not a valid response: {what}"));
+    let mut response: Value =
+        serde_json::from_str(answer.trim()).map_err(|e| bad(&e.to_string()))?;
+    if response.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Err(bad("jsonrpc is not \"2.0\""));
+    }
+    if response.get("id").and_then(Value::as_i64) != Some(id) {
+        return Err(bad(&format!("its id is not {id}")));
+    }
+    match (
+        response.get_mut("result").map(Value::take),
+        response.get("error"),
+    ) {
+        (Some(result), None) => Ok(result),
+        (None, Some(error)) => match (
+            error.get("code").and_then(Value::as_i64),
+            error.get("message").and_then(Value::as_str),
+        ) {
+            (Some(code), Some(message)) => Err(Error::Rpc {
+                code,
+                message: message.to_owned(),
+            }),
+            _ => Err(bad("the error has no integer code and string message")),
+        },
+        _ => Err(bad("it must have exactly one of result and error")),
     }
 }
 
@@ -153,28 +233,30 @@ mod tests {
 
     #[test]
     fn review_seals_the_bytes_and_applies_the_contracts() {
-        let both = InputGuards {
-            files: true,
-            hunks: true,
-        };
-        let review = review(PATCH, both).unwrap();
-        assert_eq!(review.files.len(), 1);
+        let review = review(PATCH, Guards::all()).unwrap();
+        assert_eq!(review.files().len(), 1);
         assert!(
             review
                 .to_json()
                 .contains("\"schema\": \"deep-diff-forge.review.v0\"")
         );
         assert_eq!(
-            review.seal,
-            InputSeal::of(PATCH.as_bytes(), env!("CARGO_PKG_VERSION"))
+            review.seal(),
+            &InputSeal::of(PATCH.as_bytes(), env!("CARGO_PKG_VERSION"))
         );
         assert_eq!(rank(&review).len(), 1);
         assert_eq!(
-            super::review("", both).unwrap_err(),
+            super::review("", Guards::all()).unwrap_err(),
             Error::Refused("0 files in input (--require-files)")
         );
-        assert!(super::review("", InputGuards::default()).is_ok());
-        let err = super::review("--- a/x\n+++ b/x\n+stray\n", both).unwrap_err();
+        assert_eq!(
+            super::review("", Guards::none().require_hunks()).unwrap_err(),
+            Error::Refused("0 hunks in input (--require-hunks)")
+        );
+        assert!(super::review("", Guards::none().require_files()).is_err());
+        assert!(super::review("diff --git a/x b/x\n", Guards::none().require_files()).is_ok());
+        assert!(super::review("", Guards::none()).is_ok());
+        let err = super::review("--- a/x\n+++ b/x\n+stray\n", Guards::all()).unwrap_err();
         assert!(matches!(err, Error::Parse(_)), "{err}");
     }
 
@@ -182,6 +264,22 @@ mod tests {
     fn errors_map_to_the_registry_and_read_well() {
         assert_eq!(Error::Parse("x".into()).exit_code(), 4);
         assert_eq!(Error::Refused("r").exit_code(), 7);
+        assert_eq!(
+            Error::Rpc {
+                code: 4,
+                message: "m".into()
+            }
+            .exit_code(),
+            4
+        );
+        assert_eq!(
+            Error::Rpc {
+                code: 7,
+                message: "m".into()
+            }
+            .exit_code(),
+            7
+        );
         assert_eq!(
             Error::Rpc {
                 code: 1,
@@ -211,10 +309,46 @@ mod tests {
     }
 
     #[test]
+    fn responses_are_validated_before_they_are_believed() {
+        assert_eq!(
+            parse_response(r#"{"jsonrpc":"2.0","id":1,"result":{"a":1}}"#, 1).unwrap()["a"],
+            1
+        );
+        assert_eq!(
+            parse_response(
+                r#"{"jsonrpc":"2.0","id":1,"error":{"code":7,"message":"refused: x"}}"#,
+                1
+            ),
+            Err(Error::Rpc {
+                code: 7,
+                message: "refused: x".into()
+            })
+        );
+        for bad in [
+            r#"{"jsonrpc":"2.0","id":2,"result":{}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"error":{"code":4,"message":"other call"}}"#,
+            r#"{"jsonrpc":"1.0","id":1,"result":{}}"#,
+            r#"{"id":1,"result":{}}"#,
+            r#"{"jsonrpc":"2.0","result":{}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"error":{"message":"no code"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":4}}"#,
+            r#"{"jsonrpc":"2.0","id":1}"#,
+            r#"{"jsonrpc":"2.0","id":1,"result":1,"error":{"code":1,"message":"m"}}"#,
+            "not json",
+        ] {
+            assert!(
+                matches!(parse_response(bad, 1), Err(Error::Transport(_))),
+                "{bad}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_missing_daemon_is_a_transport_error() {
-        let client = Client::at(Path::new("/nonexistent/deep-diff-forge.sock"));
+        let client = Client::at(std::path::Path::new("/nonexistent/deep-diff-forge.sock"));
         assert!(matches!(
-            client.call("daemon.health", &Value::Null),
+            client.call("daemon.health", &serde_json::Value::Null),
             Err(Error::Transport(_))
         ));
     }

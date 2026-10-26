@@ -5,7 +5,8 @@
 //! the same framing rules, so an SDK can speak one protocol over a socket or a pipe.
 
 use deep_diff_forge_daemon::{
-    Engine, INVALID_REQUEST, MAX_REQUEST_BYTES, PARSE_ERROR, RpcError, error_response, process_line,
+    Engine, INVALID_REQUEST, MAX_REQUEST_BYTES, PARSE_ERROR, RpcError, error_response,
+    process_line, read_capped_line,
 };
 use serde_json::Value;
 use std::io::{BufRead, Write};
@@ -16,22 +17,28 @@ pub fn serve(input: &mut impl BufRead, output: &mut impl Write) -> std::io::Resu
     serve_with(input, output, MAX_REQUEST_BYTES)
 }
 
-/// [`serve`] with an explicit request cap.
+/// [`serve`] with an explicit request cap. The framing is the socket server's own
+/// (`read_capped_line`): the cap counts the newline, and an oversized request is refused as soon
+/// as `cap + 1` bytes have arrived, then the stream is closed (council sdc1).
 fn serve_with(
     input: &mut impl BufRead,
     output: &mut impl Write,
     cap: usize,
 ) -> std::io::Result<()> {
     let engine = Mutex::new(Engine::new());
-    while let Some(line) = crate::mcp::read_line(input, cap)? {
-        let Ok(bytes) = line else {
-            // As on the socket: past the cap the stream position is unreliable, so stop.
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        if read_capped_line(input, &mut buf, cap)? == 0 {
+            return Ok(());
+        }
+        if buf.len() > cap {
             let error = RpcError::new(INVALID_REQUEST, "request exceeds maximum size");
             writeln!(output, "{}", error_response(&Value::Null, &error))?;
             output.flush()?;
             return Ok(());
-        };
-        let response = match std::str::from_utf8(&bytes) {
+        }
+        let response = match std::str::from_utf8(&buf) {
             Ok(text) if text.trim().is_empty() => continue,
             Ok(text) => process_line(text.trim(), &engine),
             Err(_) => error_response(
@@ -45,7 +52,6 @@ fn serve_with(
             return Ok(());
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -116,6 +122,41 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0]["error"]["code"], PARSE_ERROR);
         assert_eq!(out[1]["id"], 3);
+    }
+
+    /// The cap counts the newline, as on the socket: `cap` bytes plus a newline is one too many.
+    #[test]
+    fn the_cap_counts_the_newline() {
+        let request = br#"{"id":1,"method":"daemon.health"}"#;
+        let mut input = request.to_vec();
+        input.push(b'\n');
+        assert_eq!(run(&input, request.len() + 1)[0]["id"], 1);
+        assert_eq!(
+            run(&input, request.len())[0]["error"]["code"],
+            INVALID_REQUEST
+        );
+    }
+
+    /// An oversized request with no newline yet is refused at once: the stream is not drained.
+    #[test]
+    fn an_unterminated_oversize_request_is_refused_without_waiting() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        writer.write_all(&[b'x'; 64]).unwrap(); // writer stays open: no newline, no EOF
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            serve_with(&mut std::io::BufReader::new(reader), &mut out, 32).unwrap();
+            send.send(out)
+        });
+        let out = receive
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("rpc waited for a newline");
+        assert!(
+            String::from_utf8(out)
+                .unwrap()
+                .contains("request exceeds maximum size")
+        );
+        drop(writer);
     }
 
     #[test]

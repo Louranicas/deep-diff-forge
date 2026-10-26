@@ -1,6 +1,6 @@
 //! `Client` against a real daemon, run in-process on a private socket: the daemon's
 //! `diff.compute` and the facade's `review` give the same document, and errors keep their codes.
-use deep_diff_forge_sdk::{Client, Error, InputGuards, review};
+use deep_diff_forge_sdk::{Client, Error, Guards, review};
 use serde_json::{Value, json};
 use std::os::unix::fs::DirBuilderExt as _;
 
@@ -27,7 +27,7 @@ fn the_client_and_the_facade_agree_with_a_live_daemon() {
         .call("diff.compute", &json!({"patch": patch}))
         .unwrap();
     let local: Value =
-        serde_json::from_str(&review(patch, InputGuards::default()).unwrap().to_json()).unwrap();
+        serde_json::from_str(&review(patch, Guards::none()).unwrap().to_json()).unwrap();
     assert_eq!(remote, local);
 
     let refused = client
