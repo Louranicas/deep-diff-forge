@@ -51,7 +51,7 @@ pub struct Server {
 impl Server {
     /// Answer one line: `Some(response)` for a request, `None` for a notification.
     pub fn handle_line(&mut self, line: &str) -> Option<Value> {
-        let message: Value = match serde_json::from_str(line) {
+        let mut message: Value = match serde_json::from_str(line) {
             Ok(value) => value,
             Err(e) => {
                 return Some(error(
@@ -62,7 +62,7 @@ impl Server {
                 ));
             }
         };
-        let Some(object) = message.as_object() else {
+        let Some(object) = message.as_object_mut() else {
             return Some(error(
                 &Value::Null,
                 -32600,
@@ -70,39 +70,51 @@ impl Server {
                 None,
             ));
         };
-        let method = object.get("method").and_then(Value::as_str);
-        let Some(id) = object
-            .get("id")
-            .filter(|id| id.is_string() || id.is_i64() || id.is_u64())
-        else {
+        let method = object
+            .get("method")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let id = object.get("id").cloned();
+        let valid_id = id
+            .as_ref()
+            .filter(|id| id.is_string() || id.is_i64() || id.is_u64());
+        // Only a JSON-RPC 2.0 envelope is acted on, before any state can change (council sdc1).
+        if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+            return valid_id
+                .map(|id| error(id, -32600, "jsonrpc must be \"2.0\"", None))
+                .or_else(|| {
+                    id.is_some()
+                        .then(|| error(&Value::Null, -32600, "jsonrpc must be \"2.0\"", None))
+                });
+        }
+        let Some(id) = valid_id.cloned() else {
             // A notification (or a malformed id): never answered. `notifications/initialized`
             // and `notifications/cancelled` need no action from a synchronous server.
-            return if object.contains_key("id") && method.is_some() {
-                Some(error(
+            return (id.is_some() && method.is_some()).then(|| {
+                error(
                     &Value::Null,
                     -32600,
                     "id must be a string or an integer",
                     None,
-                ))
-            } else {
-                None
-            };
+                )
+            });
         };
         let Some(method) = method else {
-            return Some(error(id, -32600, "a request needs a method", None));
+            return Some(error(&id, -32600, "a request needs a method", None));
         };
-        let params = object.get("params").cloned().unwrap_or_else(|| json!({}));
+        // Moved, not cloned: the patch inside is the largest thing a request carries (council sdc1).
+        let params = object.remove("params").unwrap_or_else(|| json!({}));
         if !params.is_object() {
-            return Some(error(id, INVALID_PARAMS, "params must be an object", None));
+            return Some(error(&id, INVALID_PARAMS, "params must be an object", None));
         }
-        Some(self.request(id, method, &params))
+        Some(self.request(&id, &method, params))
     }
 
-    fn request(&mut self, id: &Value, method: &str, params: &Value) -> Value {
+    fn request(&mut self, id: &Value, method: &str, params: Value) -> Value {
         if method == "initialize" {
-            return self.initialize(id, params);
+            return self.initialize(id, &params);
         }
-        let era = match era_of(params, self.legacy.as_deref()) {
+        let era = match era_of(&params, self.legacy.as_deref()) {
             Ok(era) => era,
             Err(response) => return response(id),
         };
@@ -262,21 +274,21 @@ fn tools() -> Value {
 /// `tools/call`. An unknown tool or malformed call is a protocol error; a domain refusal (a parse
 /// failure, a broken input contract, an undocumented code) is a tool execution error the model
 /// can act on.
-fn call_tool(params: &Value) -> Result<Value, (i64, String)> {
+fn call_tool(mut params: Value) -> Result<Value, (i64, String)> {
     let name = params
         .get("name")
         .and_then(Value::as_str)
-        .ok_or((INVALID_PARAMS, "tools/call needs a name".to_owned()))?;
-    let empty = Map::new();
-    let arguments = match params.get("arguments") {
-        None => &empty,
+        .ok_or((INVALID_PARAMS, "tools/call needs a name".to_owned()))?
+        .to_owned();
+    let arguments = match params.as_object_mut().and_then(|p| p.remove("arguments")) {
+        None => Map::new(),
         Some(Value::Object(arguments)) => arguments,
         Some(_) => return Err((INVALID_PARAMS, "arguments must be an object".to_owned())),
     };
     let known = tools();
     let spec = known
         .as_array()
-        .and_then(|tools| tools.iter().find(|t| t["name"] == name))
+        .and_then(|tools| tools.iter().find(|t| t["name"] == name.as_str()))
         .ok_or((INVALID_PARAMS, format!("Unknown tool: {name}")))?;
     if let Some(extra) = arguments
         .keys()
@@ -284,30 +296,33 @@ fn call_tool(params: &Value) -> Result<Value, (i64, String)> {
     {
         return Ok(tool_error(&format!("unknown argument: {extra}")));
     }
-    Ok(match name {
+    Ok(match name.as_str() {
         "review_patch" => daemon_tool("diff.compute", arguments),
         "rank_patch" => daemon_tool("diff.plan", arguments),
-        "explain_exit_code" => explain(arguments),
+        "explain_exit_code" => explain(&arguments),
         _ => structured(
             json!({"codes": EXIT_CODES.iter().map(|e| json!({"family": e.family, "code": e.code, "name": e.name, "meaning": e.meaning})).collect::<Vec<_>>()}),
         ),
     })
 }
 
-/// Run a daemon method in-process: the same dispatcher, so the same answer.
-fn daemon_tool(method: &str, arguments: &Map<String, Value>) -> Value {
+/// Run a daemon method in-process: the same dispatcher, so the same answer. As on the socket
+/// (`process_line`), a panic inside it is contained and reported, never fatal to the server.
+fn daemon_tool(method: &str, arguments: Map<String, Value>) -> Value {
     let request = Request {
         jsonrpc: "2.0".into(),
         id: json!(1),
         method: method.into(),
-        params: Value::Object(arguments.clone()),
+        params: Value::Object(arguments),
     };
-    match dispatch(&request, &mut Engine::new()) {
-        Ok(value) => structured(value),
-        Err(RpcError { code, message }) => tool_error(&match code {
+    let outcome = std::panic::catch_unwind(|| dispatch(&request, &mut Engine::new()));
+    match outcome {
+        Ok(Ok(value)) => structured(value),
+        Ok(Err(RpcError { code, message })) => tool_error(&match code {
             INPUT_CONTRACT_REFUSED | PATCH_PARSE_FAILED | INVALID_PARAMS => message,
             other => format!("daemon error {other}: {message}"),
         }),
+        Err(_) => tool_error("internal error"),
     }
 }
 
@@ -690,6 +705,38 @@ mod tests {
                 json!({"name": "review_patch", "arguments": []})
             )["error"]["code"],
             INVALID_PARAMS
+        );
+    }
+
+    #[test]
+    fn only_a_jsonrpc_2_envelope_is_acted_on() {
+        let mut server = Server::default();
+        for bad in [
+            r#"{"jsonrpc":"1.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#,
+            r#"{"id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#,
+            r#"{"jsonrpc":2,"id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#,
+        ] {
+            let v = server.handle_line(bad).unwrap();
+            assert_eq!(
+                (v["error"]["code"].as_i64(), v["id"].as_i64()),
+                (Some(-32600), Some(1)),
+                "{bad}"
+            );
+        }
+        // None of them established the legacy handshake.
+        let v = server
+            .handle_line(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#)
+            .unwrap();
+        assert_eq!(v["error"]["code"], INVALID_PARAMS);
+        assert_eq!(
+            server.handle_line(r#"{"jsonrpc":"1.0","method":"notifications/initialized"}"#),
+            None
+        );
+        assert_eq!(
+            server
+                .handle_line(r#"{"jsonrpc":"1.0","id":null,"method":"ping"}"#)
+                .unwrap()["error"]["code"],
+            -32600
         );
     }
 
