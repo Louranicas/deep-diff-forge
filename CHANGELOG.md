@@ -83,8 +83,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   implements the 2026-07-28 specification (per-request `_meta`,
   `server/discover`, `resultType`, `UnsupportedProtocolVersion` -32022) and keeps
   the `initialize` handshake for 2025-11-25 and earlier clients. Its tools are
-  `review_patch` (the daemon's `diff.compute`, with byte-for-byte parity with the
-  CLI tested over real stdio), `rank_patch`, `explain_exit_code` and
+  `review_patch` (the daemon's `diff.compute`, the same JSON value as the CLI's
+  document, tested over real stdio), `rank_patch`, `explain_exit_code` and
   `exit_code_registry`. All are annotated read-only. Domain refusals are tool
   errors (`isError`); malformed calls are protocol errors. Request lines are
   capped and stdout carries only protocol messages.
