@@ -871,6 +871,8 @@ mod tests {
             (b"'static", None),
             (b"x'", None),
             (b"'\\x", None),
+            // A stray continuation byte is not a one-byte character.
+            (b"'\x80'", None),
         ] {
             assert_eq!(
                 char_literal(rest),
@@ -882,6 +884,16 @@ mod tests {
         // A long run of `#` is scanned once per byte, not once per position.
         let run = vec![b'#'; 1 << 16];
         assert_eq!(code_lines(&[&run[..]]), [true]);
+        // The skip ends exactly at the closing quote, so a comment right after it still opens; a
+        // literal alone is code, and one inside an attribute is not.
+        let source: [&[u8]; 5] = [
+            b"let a = 'x'/*",
+            b"inner",
+            b"*/ let b = 1;",
+            b"'x'",
+            b"#[doc = 'x']",
+        ];
+        assert_eq!(code_lines(&source), [true, false, true, true, false]);
     }
 
     #[test]
