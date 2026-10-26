@@ -7,7 +7,7 @@
     ]
   },
   "dataLicense": "CC0-1.0",
-  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/bfca80911177e10e3cb9030633ed0644",
+  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/126a31962f68ef624403024e7ac0c3ea",
   "name": "deep-diff-forge-cargo-lock-sbom",
   "packages": [
     {
@@ -465,7 +465,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "3d876fbd156ef5dc495a5b6abb53530f658fe8676c1df183ba01caee22095752"
+          "checksumValue": "c859bc1ac2dfc738a634260c60e081fb257fdff2291f3d5c317e79cbbbadc660"
         }
       ],
       "copyrightText": "NOASSERTION",
