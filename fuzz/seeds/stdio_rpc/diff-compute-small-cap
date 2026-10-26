@@ -1,0 +1,1 @@
+{"jsonrpc": "2.0", "id": 1, "method": "diff.compute", "params": {"patch": "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1,2 +1,2 @@\n fn a() {}\n-let x = 1;\n+let x = 2;\n", "require_files": true}}

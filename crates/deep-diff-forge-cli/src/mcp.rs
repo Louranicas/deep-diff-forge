@@ -408,8 +408,9 @@ pub fn serve(input: &mut impl BufRead, output: &mut impl Write) -> std::io::Resu
     serve_with(input, output, LINE_CAP)
 }
 
-/// [`serve`] with an explicit line cap.
-fn serve_with(
+/// [`serve`] with an explicit line cap. Crate-visible so the `stdio_mcp` fuzz target can drive
+/// small caps.
+pub(crate) fn serve_with(
     input: &mut impl BufRead,
     output: &mut impl Write,
     cap: usize,

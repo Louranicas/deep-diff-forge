@@ -54,3 +54,17 @@ path = "fuzz_targets/council_report.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "stdio_mcp"
+path = "fuzz_targets/stdio_mcp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stdio_rpc"
+path = "fuzz_targets/stdio_rpc.rs"
+test = false
+doc = false
+bench = false

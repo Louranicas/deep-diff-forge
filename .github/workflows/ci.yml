@@ -149,6 +149,15 @@ jobs:
           mkdir -p /tmp/ddf-council-corpus
           cp review-policy/fuzz-seeds/council_report.json /tmp/ddf-council-corpus/seed.json
           cargo +nightly-2026-10-25 fuzz run council_report /tmp/ddf-council-corpus -- -max_total_time=10 -max_len=4096
+      - name: instrumented stdio server fuzz smoke (mcp, rpc)
+        # Each seed is a cap byte (255 = the server's real cap) then stdio lines; see
+        # fuzz/fuzz_targets/stdio_invariants.rs. The copies keep the committed seeds unchanged.
+        run: |
+          for target in stdio_mcp stdio_rpc; do
+            mkdir -p "/tmp/ddf-$target-corpus"
+            cp fuzz/seeds/$target/* "/tmp/ddf-$target-corpus/"
+            cargo +nightly-2026-10-25 fuzz run "$target" "/tmp/ddf-$target-corpus" -- -max_total_time=10 -max_len=65536
+          done
       # Council quality gates only run inside the rootless Podman gate sandbox
       # (docs/REVIEW_COUNCIL.md#gate-sandbox). The ubuntu runner images ship podman.
       #
