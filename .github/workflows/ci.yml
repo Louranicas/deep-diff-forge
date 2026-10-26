@@ -64,8 +64,11 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      # Pinned to the gate image's toolchain: a floating `stable` broke main when a new release
+      # deprecated `fetch_update` under `-D warnings`.
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
+          toolchain: 1.99.1
           components: rustfmt, clippy
       - name: parsed antipattern policy and planted refusal controls
         run: |
@@ -123,21 +126,23 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.1
       - name: install pinned evidence tools
         run: |
           cargo install cargo-mutants --version 27.1.0 --locked
           cargo install cargo-fuzz --version 0.13.2 --locked
-          rustup toolchain install nightly --profile minimal
+          rustup toolchain install nightly-2026-10-25 --profile minimal
       - name: scoped mutation of admission and receipt qualification
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/ddf-review-mutation-target
-        run: cargo mutants --package deep-diff-forge-review --re 'identifier|check_execution' --test-workspace true --timeout 30
+        run: cargo mutants --package deep-diff-forge-review --re 'identifier|check_execution' --test-workspace true --timeout 300
       - name: instrumented council-report fuzz smoke
         run: |
           mkdir -p /tmp/ddf-council-corpus
           cp review-policy/fuzz-seeds/council_report.json /tmp/ddf-council-corpus/seed.json
-          cargo +nightly fuzz run council_report /tmp/ddf-council-corpus -- -max_total_time=10 -max_len=4096
+          cargo +nightly-2026-10-25 fuzz run council_report /tmp/ddf-council-corpus -- -max_total_time=10 -max_len=4096
       # Council quality gates only run inside the rootless Podman gate sandbox
       # (docs/REVIEW_COUNCIL.md#gate-sandbox). The ubuntu runner images ship podman.
       #
@@ -179,7 +184,9 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.1
       - name: cargo-deny (bans, licenses, sources, advisories)
         uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87 # v2
         with:

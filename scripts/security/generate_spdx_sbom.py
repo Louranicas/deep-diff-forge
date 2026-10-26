@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import hashlib
+import os
 import json
 import pathlib
 import subprocess
@@ -20,6 +21,21 @@ from typing import Any
 REPO = pathlib.Path(__file__).resolve().parents[2]
 OUTPUT = REPO / "sbom.spdx.json"
 SPDX = "SPDXRef-"
+
+
+def _created() -> str:
+    """SOURCE_DATE_EPOCH, else the time of the last commit to Cargo.lock (the SBOM's input),
+    else now (UTC, seconds)."""
+    epoch = None
+    if "SOURCE_DATE_EPOCH" in os.environ:
+        epoch = int(os.environ["SOURCE_DATE_EPOCH"])
+    else:
+        proc = subprocess.run(["git", "log", "-1", "--format=%ct", "--", "Cargo.lock"], cwd=REPO, text=True,
+                              capture_output=True, check=False)
+        if proc.returncode == 0 and proc.stdout.strip():
+            epoch = int(proc.stdout.strip())
+    moment = _dt.datetime.fromtimestamp(epoch, _dt.timezone.utc) if epoch is not None else _dt.datetime.now(_dt.timezone.utc)
+    return moment.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _run_metadata() -> dict[str, Any]:
@@ -117,13 +133,20 @@ def main() -> int:
                 }
             )
 
-    now = _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    # Reproducible: the namespace is addressed by the SBOM's own content, so regenerating an
+    # unchanged graph yields identical bytes apart from `created`, which comes from
+    # SOURCE_DATE_EPOCH or the last commit to Cargo.lock (the CI drift gate ignores only `created`; a
+    # wall-clock namespace made that gate fail on every regeneration).
+    content = hashlib.sha256(
+        json.dumps({"packages": spdx_packages, "relationships": relationships}, sort_keys=True).encode()
+    ).hexdigest()
+    now = _created()
     doc = {
         "spdxVersion": "SPDX-2.3",
         "dataLicense": "CC0-1.0",
         "SPDXID": document_id,
         "name": "deep-diff-forge-cargo-lock-sbom",
-        "documentNamespace": f"https://github.com/Louranicas/deep-diff-forge/sbom/{now}",
+        "documentNamespace": f"https://github.com/Louranicas/deep-diff-forge/sbom/{content[:32]}",
         "creationInfo": {
             "created": now,
             "creators": ["Tool: deep-diff-forge scripts/security/generate_spdx_sbom.py"],

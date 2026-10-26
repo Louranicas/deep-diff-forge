@@ -1,13 +1,13 @@
 {
   "SPDXID": "SPDXRef-DOCUMENT",
   "creationInfo": {
-    "created": "2026-10-25T05:30:43Z",
+    "created": "2026-10-25T07:31:39Z",
     "creators": [
       "Tool: deep-diff-forge scripts/security/generate_spdx_sbom.py"
     ]
   },
   "dataLicense": "CC0-1.0",
-  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/2026-10-25T05:30:43Z",
+  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/bfca80911177e10e3cb9030633ed0644",
   "name": "deep-diff-forge-cargo-lock-sbom",
   "packages": [
     {
