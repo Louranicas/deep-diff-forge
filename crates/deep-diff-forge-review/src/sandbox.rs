@@ -157,6 +157,10 @@ impl Sandbox {
             .map(str::to_owned),
         );
         argv.push(format!("--cpus={}", cpus()));
+        // keep-id maps the operator's uid into the container, but the image's own USER would still
+        // run the job; when the two differ (uid 1001 on a GitHub runner) the job cannot read the
+        // controller's private source copy (measured: "could not find `Cargo.toml` in `/src`").
+        argv.push(format!("--user={}", operator()));
         argv.push(format!("--name={}", spec.name));
         // conmon's own deadline backs up the controller's; the controller still removes by name.
         argv.push(format!(
@@ -202,6 +206,7 @@ impl Sandbox {
             "capabilities": "all dropped",
             "no_new_privileges": true,
             "userns": "keep-id",
+            "user": operator(),
             "host_home_mounted": false,
             "writable_mounts": [WORK],
             "read_only_mounts": read_only,
@@ -234,6 +239,13 @@ pub(crate) struct Spec<'a> {
     /// cargo-mutants copies the tree per mutant; a shared target dir would cross-contaminate (AP-32).
     pub(crate) mutation: bool,
     pub(crate) fuzz: bool,
+}
+/// The controller's own `uid:gid` (`/proc/self` belongs to the process that reads it), which every
+/// gate container runs as.
+fn operator() -> String {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata("/proc/self")
+        .map_or_else(|_| "0:0".into(), |m| format!("{}:{}", m.uid(), m.gid()))
 }
 /// All host CPUs but one, so a gate cannot starve the controller that supervises it.
 fn cpus() -> usize {
