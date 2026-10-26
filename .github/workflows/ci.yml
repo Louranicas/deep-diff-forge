@@ -24,10 +24,10 @@ concurrency:
 jobs:
   secrets:
     name: secret scan (gitleaks)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -45,10 +45,10 @@ jobs:
 
   msrv:
     name: declared Rust 1.88 compatibility
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
@@ -58,10 +58,10 @@ jobs:
 
   gate:
     name: deploy gate-feature
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
         with:
           persist-credentials: false
       # Pinned to the gate image's toolchain: a floating `stable` broke main when a new release
@@ -120,12 +120,12 @@ jobs:
 
   review-controller-evidence:
     name: review controller mutation and fuzz evidence
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Raised from 30: the gate image build installs two Rust toolchains and compiles
     # cargo-mutants and cargo-fuzz inside the image.
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
@@ -148,7 +148,10 @@ jobs:
       # Council quality gates only run inside the rootless Podman gate sandbox
       # (docs/REVIEW_COUNCIL.md#gate-sandbox). The ubuntu runner images ship podman.
       #
-      # UNVERIFIED on GitHub-hosted runners: Ubuntu 23.10+ (so ubuntu-24.04 / ubuntu-latest)
+      # Every job is pinned to ubuntu-24.04, the image this step was measured on (2026-10-26):
+      # `ubuntu-latest` moves to Ubuntu 26 from 2026-10-19 (actions/runner-images#14748), and
+      # that move is taken as its own measured change, not silently.
+      # Originally UNVERIFIED on GitHub-hosted runners: Ubuntu 23.10+ (so ubuntu-24.04)
       # restricts unprivileged user namespaces through AppArmor, which can make rootless
       # podman fail with "unshare(...): Operation not permitted". Ubuntu documents the switch
       # kernel.apparmor_restrict_unprivileged_userns (set it to 0 to lift the restriction):
@@ -200,10 +203,10 @@ jobs:
 
   supply-chain:
     name: supply chain audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
