@@ -644,6 +644,27 @@ Council r17 (run `8a35a3d1…`) reviewed `1ff04ff..a2b362e` with all 12 reports.
 
 **Residual:** a build script or proc macro that sets `cfg(test)` or changes its output only in a configuration other than gate and release, or detects the oracle, is residual 1.
 
+<a id="incremental-history-r19"></a>
+
+### r19: council r18 follow-ups — incremental history, path dependencies, cargo's own build-script report
+
+Council r18 (run `f2baaa43…`) reviewed `a2b362e..e45aad0` with 11 of 12 reports; the falsifier's challenge round failed its protocol. All 7 evidence gates passed. **The oracle refused DDF's own diff**: three genuine `#[cfg(test)]` functions in `mutation_scope.rs` were reported as compiled into the gate build. That was a false refusal, and it blocked the mutation gate.
+
+| Finding (r18) | Control | Evidence |
+| --- | --- | --- |
+| **False refusal: incremental history** (operator, from the r18 witness) | `target/<profile>/incremental` is removed before every oracle build, so the changed units compile from scratch. The environment stays the gate's: no `CARGO_INCREMENTAL` variable for a build script to read. Before a batch is called shipped, the unmodified tree is rebuilt, and drift from its first build makes the verdict **inconclusive**, not a refusal of test code | **Measured, gate image `:20261026c`:** with incremental reuse, a plain rebuild after the control's edit was restored differs from the first build (rustc duplicated the `"passed"` and `"state"` allocations of `oracle_passed`), and both neutralisations "moved". Without incremental state, rebuild = base, both "same". The v8 oracle passes the r18 snapshot in 10 builds and 108 s. **Fake:** `incremental_history_does_not_read_as_shipped_test_code` and `a_comparison_that_drifted_is_inconclusive_not_a_refusal_of_test_code`, both fail against r18 |
+| A path dependency outside the workspace can `#[path]`-include the code; `cargo metadata --no-deps` lists members only (HIGH; security 4/0, architecture 4/0) | Every **path package** is observed (`source` null in the full, offline `cargo metadata`). Members are identified by `workspace_members`. Registry and git packages cannot name a snapshot file. Reproducibility touches every observed root inside the tree (falsifier, 3/1) | **Fake:** `a_path_dependency_outside_the_workspace_is_observed` (fails against r18); the real r18 snapshot resolves offline from the sealed vendor copy |
+| The controller accepted a witness that omitted a configuration (HIGH; falsifier 4/1, subtractor 4/0, security 4/0) | The controller owns `ORACLE_CONFIGURATIONS = [gate, release]`. `configurations` and `control.configurations` must each be keyed by **exactly** that set | **Fake:** omitted-release, omitted-control and extra-configuration witnesses are refused (fail against r18). A complete witness passes (positive control) |
+| A build script's `cfg(test)` was only inferred from MIR (challenge HIGH, security; architecture) | Cargo's `build-script-executed` message lists each `rustc-cfg`, so `test` from any path package's build script is refused directly, after the two unmodified builds | **Measured, cargo 1.99.1:** the message names the package by `package_id` only (no `manifest_path`), and the first draft missed it. Caught by the real-Podman probe, which now asserts the direct refusal in 2 builds |
+| One control had to move both configurations (correctness 4/0) | Each configuration finds its own control | Witness shape `control.configurations.{gate,release}` |
+| The control loop and attribution did not short-circuit (performance 4/0) | Attribution stops at the first configuration that moves | Worst case: 2 + 2 + 10 + 4 + 2 + 8×4 = **52 builds**; typical: 10 |
+| `check`'s doc comment sat on `assert_hunks_ordered` (architecture 4/0) | Split | — |
+
+**Residual, recorded:**
+- A build script that copies hidden code into `OUT_DIR` for an `include!` that ships (correctness): generated code is outside cargo-mutants' reach whatever its origin, so it is the same class as code generated from a non-Rust file.
+- A proc macro that always emits the same body, so neutralising cannot move it (subtractor): it needs a `cfg(test)` build script, which is now refused directly. Otherwise it is residual 1 (lying to the tool).
+- Incremental history is suppressed, not modelled. Any remaining build-history effect reads as drift (inconclusive), never as a refusal or a pass.
+
 ### Podman invocation
 
 Every gate job runs `$DDF_COUNCIL_PODMAN run` (the default runtime is `podman`) with these flags. The source of truth is `sandbox.rs` `Sandbox::argv`.

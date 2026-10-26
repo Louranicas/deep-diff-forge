@@ -865,19 +865,36 @@ fn vendored_dependencies(
     Ok((sealed, seal.sha256))
 }
 
+/// The configurations the oracle must compare (its `CONFIGS`). The controller owns this list: a
+/// witness that omits one has not shown it (council r18).
+const ORACLE_CONFIGURATIONS: [&str; 2] = ["gate", "release"];
+
+/// True when `value` is an object keyed by exactly [`ORACLE_CONFIGURATIONS`] whose values all pass
+/// `accept`.
+fn every_configuration(
+    value: &serde_json::Value,
+    accept: impl Fn(&serde_json::Value) -> bool,
+) -> bool {
+    value.as_object().is_some_and(|configs| {
+        configs.len() == ORACLE_CONFIGURATIONS.len()
+            && ORACLE_CONFIGURATIONS
+                .iter()
+                .all(|name| configs.get(*name).is_some_and(&accept))
+    })
+}
+
 /// The controller's own reading of the oracle's witness: `passed`, and either nothing hidden or a
-/// reproducible comparison, in configurations that all built, whose positive control moved. The
-/// exit status alone is not trusted, nor the oracle's `state` alone.
+/// reproducible comparison in which every required configuration built and had a positive control
+/// that moved. The exit status alone is not trusted, nor the oracle's `state` alone.
 fn oracle_passed(verdict: &serde_json::Value) -> bool {
-    // Every configuration the oracle compared must have been built (council r17).
-    let built = verdict["configurations"]
-        .as_object()
-        .is_some_and(|configs| !configs.is_empty() && configs.values().all(|v| v == "built"));
     verdict["state"] == "passed"
         && (verdict["hidden_functions"] == 0
             || verdict["control"]["mir_changed"] == true
                 && verdict["reproducible"] == true
-                && built)
+                && every_configuration(&verdict["configurations"], |v| v == "built")
+                && every_configuration(&verdict["control"]["configurations"], |v| {
+                    v["function"].is_string()
+                }))
 }
 
 /// Refuse, before the mutation gate's job slot exists, a candidate whose shipped code cargo-mutants
