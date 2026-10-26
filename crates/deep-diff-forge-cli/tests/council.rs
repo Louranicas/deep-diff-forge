@@ -518,7 +518,16 @@ const FAKE_IMAGE_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef012
 /// `cfg(test)`), `restores` puts the neutralised file back during the build,
 /// `release_ships` only in release, `neutral_fails`/`harness_fails` stop the non-test unit or
 /// only the harness building when it is neutralised, `mir_blind` emits MIR no change can alter,
-/// and `unreproducible` differs on every build.
+/// and `unreproducible` differs on every build. `path_dep_ships` compiles it into a path
+/// dependency outside the workspace, `build_script_cfg` reports a build script setting `cfg(test)`,
+/// `incremental_history` changes unchanged code's MIR after an edit unless the incremental
+/// directory was removed, and `drifts` does so whatever the oracle removes; `drift_on_pass` moves
+/// only unmodified builds after an edit, so the neutralised ones look unchanged.
+/// `foreign_reads_tree` has a registry unit whose dep-info names a file of the tree;
+/// `reads_elsewhere`, `vanished` and `no_dep_info` give the package's own unit a dep-info naming a
+/// file outside the tree, a file that is gone, or none at all; `empty_dep_info` a rule with no
+/// input, `planted_dep_info` a `.d` naming another output, and `missing_generated` a registry
+/// unit whose generated `OUT_DIR` input is gone.
 const FAKE_GATE: &str = r"#!/usr/bin/python3
 import json,os,pathlib,sys
 mode='@MODE@'
@@ -532,14 +541,22 @@ if '--list' in sys.argv:
         return {'file':file,'genre':'FnValue','span':body,'function':{'function_name':name,'span':span}}
     tool=os.path.basename(sys.argv[0]);rows=[fn('shipped',1)]
     hidden=fn('hidden',1,'src/hidden.txt') if mode=='exempt_txt' else fn('hidden',4)
-    allow_listed={'hidden_test','shadowed','release_ships','neutral_fails','harness_fails','mir_blind','unreproducible','restores'}
+    allow_listed={'hidden_test','shadowed','release_ships','neutral_fails','harness_fails','mir_blind','unreproducible','restores','path_dep_ships','build_script_cfg','incremental_history','drifts','drift_on_pass','foreign_reads_tree','reads_elsewhere','vanished','no_dep_info','empty_dep_info','missing_generated','planted_dep_info'}
     if 'noexclude' in tool and (mode in allow_listed or mode.startswith('exempt')):rows.append(hidden)
     if 'strict' in tool and mode.startswith('exempt'):rows.append(hidden)
     print(json.dumps(rows));sys.exit(0)
+# A registry package's sources, beside the build tree like a vendor directory.
+REGISTRY=os.path.join(os.path.dirname(os.getcwd()),'registry-dep')
+if sys.argv[1:2] in (['metadata'],['build']):os.makedirs(os.path.join(REGISTRY,'src'),exist_ok=True);pathlib.Path(REGISTRY,'src','lib.rs').write_text('')
 if sys.argv[1:2]==['metadata']:
     root=os.path.join(os.getcwd(),'src','lib.rs')
-    package={'name':'deep-diff-forge-review','manifest_path':os.path.join(os.getcwd(),'Cargo.toml'),'targets':[{'name':'deep-diff-forge-review','kind':['rlib','cdylib'],'src_path':root}]}
-    print(json.dumps({'packages':[package]}));sys.exit(0)
+    package={'name':'deep-diff-forge-review','id':'review','source':None,'manifest_path':os.path.join(os.getcwd(),'Cargo.toml'),'targets':[{'name':'deep-diff-forge-review','kind':['rlib','cdylib'],'src_path':root}]}
+    packages=[package]
+    if '--no-deps' not in sys.argv:
+        # A registry dependency, and (`path_dep_ships`) a path dependency outside the workspace.
+        packages.append({'name':'dep','id':'dep','source':'registry+https://github.com/rust-lang/crates.io-index','manifest_path':os.path.join(REGISTRY,'Cargo.toml'),'targets':[]})
+        if mode=='path_dep_ships':packages.append({'name':'helper','id':'helper','source':None,'manifest_path':os.path.join(os.getcwd(),'helper','Cargo.toml'),'targets':[{'name':'helper','kind':['lib'],'src_path':root}]})
+    print(json.dumps({'packages':packages,'workspace_members':['review']}));sys.exit(0)
 if sys.argv[1:2]==['build'] and '--keep-going' in sys.argv:
     ORACLE_SOURCE='pub fn shipped() -> u32 {\n    1\n}\npub fn hidden() -> u32 {\n    2\n}\n'
     # The oracle's builds. Non-test MIR stands in as the source text the unit compiles; `--tests`
@@ -550,6 +567,13 @@ if sys.argv[1:2]==['build'] and '--keep-going' in sys.argv:
     assert not gate or sys.argv[sys.argv.index('--profile')+1]=='test','the gate builds the test profile'
     lines=pathlib.Path('src/lib.rs').read_text().split('\n')
     neutralised=lines[4]!='    2'
+    profile='release' if '--release' in sys.argv else 'debug'
+    edited=neutralised or lines[1]!='    1'
+    # `incremental_history` keeps its trace in the incremental directory, `drifts` beside it.
+    trace=pathlib.Path('target',profile,'incremental' if mode=='incremental_history' else 'drift','edited')
+    historic=mode in ('incremental_history','drifts','drift_on_pass')
+    history=historic and trace.exists() and not (mode=='drift_on_pass' and neutralised)
+    if historic and edited:trace.parent.mkdir(parents=True,exist_ok=True);trace.write_text('')
     # `restores`: a build script that puts the neutralised file back during the build.
     if mode=='restores' and neutralised:pathlib.Path('src/lib.rs').write_text(ORACLE_SOURCE)
     shipped,hidden='\n'.join(lines[:3]),'\n'.join(lines[3:])
@@ -557,6 +581,7 @@ if sys.argv[1:2]==['build'] and '--keep-going' in sys.argv:
     nontest=shipped+'\n'+hidden if ships else shipped
     if mode=='mir_blind':nontest='constant'
     if mode=='unreproducible':import time;nontest+='\n'+str(time.time_ns())
+    if history:nontest+='\nduplicate allocation'
     deps=pathlib.Path(os.getcwd(),'target','release' if '--release' in sys.argv else 'debug','deps');deps.mkdir(parents=True,exist_ok=True)
     def artifact(test,name,mir):
         (deps/name).write_text('binary')
@@ -564,6 +589,37 @@ if sys.argv[1:2]==['build'] and '--keep-going' in sys.argv:
         (deps/(stem+'.mir')).write_text(mir)
         print(json.dumps({'reason':'compiler-artifact','manifest_path':os.path.join(os.getcwd(),'Cargo.toml'),'target':{'name':'deep-diff-forge-review','kind':['rlib','cdylib']},'profile':{'test':test},'filenames':[str(deps/name)]}))
     if not (mode=='neutral_fails' and neutralised):artifact(False,'libdeep_diff_forge_review-0f.rlib',nontest)
+    if mode=='build_script_cfg':
+        print(json.dumps({'reason':'build-script-executed','package_id':'review','cfgs':['test']}))
+    if mode=='path_dep_ships':
+        (deps/'libhelper-1a.rlib').write_text('binary');(deps/'helper-1a.mir').write_text(hidden)
+        print(json.dumps({'reason':'compiler-artifact','manifest_path':os.path.join(os.getcwd(),'helper','Cargo.toml'),'target':{'name':'helper','kind':['lib']},'profile':{'test':False},'filenames':[str(deps/'libhelper-1a.rlib')]}))
+    # A registry unit is never observed, whatever its MIR.
+    (deps/'libdep-2b.rlib').write_text('binary');(deps/'dep-2b.mir').write_text(str(os.urandom(8)))
+    # Its dep-info: vendored source and its own OUT_DIR are fine; a file of the tree is not.
+    generated=pathlib.Path(os.getcwd(),'target',profile,'build','dep-3c','out','gen.rs');generated.parent.mkdir(parents=True,exist_ok=True)
+    if mode!='missing_generated':generated.write_text('')
+    read=[str(generated),os.path.join(REGISTRY,'src','lib.rs')]
+    if mode=='foreign_reads_tree':read.append('src/lib.rs')
+    (deps/'dep-2b.d').write_text(str(deps/'libdep-2b.rlib')+': '+' '.join(read)+'\n')
+    # Cargo names workspace files relative to the directory it ran in (measured, real rustc); its
+    # targets include outputs never emitted. `reads_elsewhere` reads a file outside its allow-list,
+    # `vanished` one that is gone, `no_dep_info` leaves none.
+    own=['src/lib.rs']+(['src/gone.rs'] if mode=='vanished' else [])+([os.path.join(REGISTRY,'src','lib.rs')] if mode=='reads_elsewhere' else [])
+    # Its rule names the unit's own output; `empty_dep_info` lists no input, `planted_dep_info` a
+    # `.d` whose rules name some other output.
+    rule=str(deps/('other-9f.rlib' if mode=='planted_dep_info' else 'libdeep_diff_forge_review-0f.rlib'))
+    if mode=='empty_dep_info':own=[]
+    if mode!='no_dep_info':(deps/'deep_diff_forge_review-0f.d').write_text(rule+': '+' '.join(own)+'\n\nsrc/lib.rs:\n')
+    if mode=='path_dep_ships':(deps/'helper-1a.d').write_text(str(deps/'libhelper-1a.rlib')+': src/lib.rs\n')
+    # A build script, reported as Cargo does: `build-script-build`, a hard link to the hashed
+    # executable beside it, whose dep-info that is (measured).
+    script=pathlib.Path(os.getcwd(),'target',profile,'build','review-9a');script.mkdir(parents=True,exist_ok=True)
+    hashed=script/'build_script_build-9a'
+    if not hashed.exists():hashed.write_text('binary');os.link(hashed,script/'build-script-build')
+    (script/'build_script_build-9a.d').write_text(str(hashed)+': src/lib.rs\n')
+    print(json.dumps({'reason':'compiler-artifact','manifest_path':os.path.join(os.getcwd(),'Cargo.toml'),'target':{'name':'build-script-build','kind':['custom-build']},'profile':{'test':False},'filenames':[str(script/'build-script-build')]}))
+    print(json.dumps({'reason':'compiler-artifact','manifest_path':os.path.join(REGISTRY,'Cargo.toml'),'target':{'name':'dep','kind':['lib']},'profile':{'test':False},'filenames':[str(deps/'libdep-2b.rlib')]}))
     harness_breaks=mode=='harness_fails' and neutralised
     if gate and not harness_breaks:artifact(True,'deep_diff_forge_review-7e',shipped+'\n'+hidden)
     sys.exit(101 if (mode=='neutral_fails' and neutralised) or (gate and harness_breaks) else 0)
@@ -999,6 +1055,142 @@ fn the_mutation_job_emits_mir_like_the_oracle() {
 }
 
 #[test]
+fn drift_on_a_passing_comparison_is_inconclusive() {
+    // History that leaves the neutralised builds looking unchanged would otherwise pass (council r19).
+    let f = oracle_fixture("drift_on_pass");
+    assert_eq!(f.gate("mutation").status.code(), Some(4));
+    let witness = oracle_witness(&f);
+    assert_eq!(witness["state"], "inconclusive", "{witness}");
+    assert_eq!(witness["shipping_configurations"], serde_json::json!([]));
+    assert!(
+        witness["reasons"][0].as_str().unwrap().contains("drifted"),
+        "{witness}"
+    );
+}
+
+#[test]
+fn a_registry_unit_that_reads_the_tree_is_refused() {
+    // A non-path package compiling a snapshot file is out of the neutralisation's reach (council r19).
+    let f = oracle_fixture("foreign_reads_tree");
+    assert_eq!(f.gate("mutation").status.code(), Some(4));
+    let witness = oracle_witness(&f);
+    assert_eq!(witness["state"], "refused", "{witness}");
+    assert_eq!(
+        witness["refused"][0]["reason"],
+        "a unit reads files outside the neutralised tree"
+    );
+    assert_eq!(witness["builds"], 2, "{witness}");
+}
+
+#[test]
+fn dep_info_is_an_allow_list_and_missing_evidence_is_inconclusive() {
+    // Council r20: the dep-info check failed open and only denied named places.
+    for (mode, state, needle) in [
+        (
+            "reads_elsewhere",
+            "refused",
+            "a unit reads files outside the neutralised tree",
+        ),
+        ("vanished", "inconclusive", "no longer exists"),
+        ("no_dep_info", "inconclusive", "no dep-info rule names"),
+        // Council r21: evidence must name the unit, list inputs, and every input must exist.
+        ("planted_dep_info", "inconclusive", "no dep-info rule names"),
+        ("empty_dep_info", "inconclusive", "names no input"),
+        ("missing_generated", "inconclusive", "no longer exists"),
+    ] {
+        let f = oracle_fixture(mode);
+        assert_eq!(f.gate("mutation").status.code(), Some(4), "{mode}");
+        let witness = oracle_witness(&f);
+        assert_eq!(witness["state"], state, "{mode}: {witness}");
+        assert!(witness.to_string().contains(needle), "{mode}: {witness}");
+        assert_eq!(witness["builds"], 2, "{mode}: {witness}");
+    }
+}
+
+#[test]
+fn a_complete_witness_with_a_zero_exit_passes() {
+    // The positive control for the forged-witness refusals above.
+    let witness = r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":true,"configurations":{"gate":{"function":"f"},"release":{"function":"f"}}},"reproducible":true,"configurations":{"gate":"built","release":"built"}}"#;
+    let f = Fixture::new();
+    f.prepare();
+    f.install_gate("valid");
+    let oracle = f.bin.join("python3");
+    fs::write(
+        &oracle,
+        FAKE_ORACLE
+            .replace("@WITNESS@", witness)
+            .replace("@CODE@", "0"),
+    )
+    .unwrap();
+    fs::set_permissions(&oracle, fs::Permissions::from_mode(0o700)).unwrap();
+    let result = f.gate("mutation");
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn a_path_dependency_outside_the_workspace_is_observed() {
+    // `cargo metadata --no-deps` lists members only; a `#[path]` include in a non-member path
+    // dependency still ships the code (council r18).
+    let f = oracle_fixture("path_dep_ships");
+    assert_eq!(f.gate("mutation").status.code(), Some(4));
+    let witness = oracle_witness(&f);
+    assert_eq!(witness["state"], "refused", "{witness}");
+    assert_eq!(witness["refused"][0]["function"], "hidden", "{witness}");
+}
+
+#[test]
+fn a_build_script_setting_cfg_test_is_refused_from_cargos_report() {
+    let f = oracle_fixture("build_script_cfg");
+    assert_eq!(f.gate("mutation").status.code(), Some(4));
+    let witness = oracle_witness(&f);
+    assert_eq!(witness["state"], "refused", "{witness}");
+    assert_eq!(
+        witness["refused"][0]["reason"],
+        "a build script sets cfg(test)"
+    );
+    // Certain after the two unmodified builds: nothing is neutralised.
+    assert_eq!(witness["builds"], 2, "{witness}");
+}
+
+#[test]
+fn incremental_history_does_not_read_as_shipped_test_code() {
+    // Council r18's false refusal: after the control's edit was restored, incremental reuse moved
+    // unchanged code's MIR. Each build starts without incremental state.
+    let f = oracle_fixture("incremental_history");
+    let result = f.gate("mutation");
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let witness = oracle_witness(&f);
+    assert_eq!(witness["state"], "passed", "{witness}");
+    assert_eq!(
+        witness["control"]["configurations"]["release"]["function"],
+        "shipped"
+    );
+}
+
+#[test]
+fn a_comparison_that_drifted_is_inconclusive_not_a_refusal_of_test_code() {
+    let f = oracle_fixture("drifts");
+    assert_eq!(f.gate("mutation").status.code(), Some(4));
+    let witness = oracle_witness(&f);
+    assert_eq!(witness["state"], "inconclusive", "{witness}");
+    assert!(
+        witness["reasons"][0].as_str().unwrap().contains("drifted"),
+        "{witness}"
+    );
+    assert_eq!(witness["refused"].as_array().unwrap().len(), 0, "{witness}");
+}
+
+#[test]
 fn a_comparison_the_positive_control_cannot_move_is_inconclusive_and_refused() {
     let f = oracle_fixture("mir_blind");
     let result = f.gate("mutation");
@@ -1022,16 +1214,54 @@ fn the_controller_checks_the_oracle_witness_as_well_as_its_exit() {
     // A zero exit cannot pass a vacuous witness, and a passing witness cannot pass a failed exit.
     for (witness, code) in [
         (
-            r#"{"state":"passed","hidden_functions":1,"control":{"mir_changed":false},"reproducible":true}"#,
+            r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":false,"configurations":{"gate":{"function":"f"},"release":{"function":"f"}}},"reproducible":true,"configurations":{"gate":"built","release":"built"}}"#,
             0,
         ),
         (
-            r#"{"state":"passed","hidden_functions":1,"control":{"mir_changed":true},"reproducible":false}"#,
+            r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":true,"configurations":{"gate":{"function":"f"},"release":{"function":"f"}}},"reproducible":false,"configurations":{"gate":"built","release":"built"}}"#,
             0,
         ),
-        (r#"{"state":"passed","hidden_functions":0}"#, 1),
         (
-            r#"{"state":"passed","hidden_functions":1,"control":{"mir_changed":true},"reproducible":true,"configurations":{"gate":"built","release":"does not build"}}"#,
+            r#"{"state":"passed","hidden_functions":0,"refused":[],"reasons":[]}"#,
+            1,
+        ),
+        (
+            r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":true,"configurations":{"gate":{"function":"f"},"release":{"function":"f"}}},"reproducible":true,"configurations":{"gate":"built","release":"does not build"}}"#,
+            0,
+        ),
+        // An omitted configuration was never shown (council r18).
+        (
+            r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":true,"configurations":{"gate":{"function":"f"},"release":{"function":"f"}}},"reproducible":true,"configurations":{"gate":"built"}}"#,
+            0,
+        ),
+        (
+            r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":true,"configurations":{"gate":{"function":"f"}}},"reproducible":true,"configurations":{"gate":"built","release":"built"}}"#,
+            0,
+        ),
+        // Each exact-set boundary on its own (council r19: one witness exercised both).
+        (
+            r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":true,"configurations":{"gate":{"function":"f"},"release":{"function":"f"}}},"reproducible":true,"configurations":{"gate":"built","release":"built","debug":"built"}}"#,
+            0,
+        ),
+        (
+            r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":true,"configurations":{"gate":{"function":"f"},"release":{"function":"f"},"debug":{"function":"f"}}},"reproducible":true,"configurations":{"gate":"built","release":"built"}}"#,
+            0,
+        ),
+        // The outcome, not only the preconditions (council r19).
+        (
+            r#"{"state":"passed","hidden_functions":1,"refused":[{"function":"hidden"}],"reasons":[],"shipping_configurations":[],"control":{"mir_changed":true,"configurations":{"gate":{"function":"f"},"release":{"function":"f"}}},"reproducible":true,"configurations":{"gate":"built","release":"built"}}"#,
+            0,
+        ),
+        (
+            r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":["drifted"],"shipping_configurations":[],"control":{"mir_changed":true,"configurations":{"gate":{"function":"f"},"release":{"function":"f"}}},"reproducible":true,"configurations":{"gate":"built","release":"built"}}"#,
+            0,
+        ),
+        (
+            r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"shipping_configurations":["gate"],"control":{"mir_changed":true,"configurations":{"gate":{"function":"f"},"release":{"function":"f"}}},"reproducible":true,"configurations":{"gate":"built","release":"built"}}"#,
+            0,
+        ),
+        (
+            r#"{"state":"passed","hidden_functions":1,"refused":[],"reasons":[],"control":{"mir_changed":true,"configurations":{"gate":{"function":"f"},"release":{"function":"f"}}},"reproducible":true,"configurations":{"gate":"built","release":"built"}}"#,
             0,
         ),
     ] {

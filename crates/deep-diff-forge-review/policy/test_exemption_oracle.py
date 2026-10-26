@@ -91,6 +91,16 @@ class Artifacts(unittest.TestCase):
         self.assertEqual(oracle.stem_of("/t/deps/library-2b"), "library-2b")
         self.assertEqual(oracle.stem_of("/t/deps/liberty-3c"), "liberty-3c")
 
+    def test_dep_info_lines_end_only_at_newlines_and_prerequisites_keep_colons(self):
+        text = "/t/p.d: src/a\u2028b.rs src/bin/x:\n"
+        self.assertEqual(oracle.dep_info_rules(text), [("/t/p.d", ["src/a\u2028b.rs", "src/bin/x:"])])
+
+    def test_dep_info_keeps_targets_apart_from_what_was_read(self):
+        text = ("/t/deps/libp-1a.rlib: src/lib.rs src/a\\ b.rs\n\n"
+                "src/lib.rs:\n# env-dep:CARGO_PKG_NAME=p\n")
+        self.assertEqual(oracle.dep_info_rules(text),
+                         [("/t/deps/libp-1a.rlib", ["src/lib.rs", "src/a b.rs"]), ("src/lib.rs", [])])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

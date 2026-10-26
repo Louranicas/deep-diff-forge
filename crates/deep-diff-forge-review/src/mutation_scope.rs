@@ -593,8 +593,6 @@ mod tests {
         lines
     }
 
-    /// The diff is valid, its minimal regions are exactly the lines outside one longest common
-    /// subsequence, and the output marks those plus one neighbouring line per pure deletion.
     /// Each hunk on each side starts after the last line the previous hunk names, as a unified-diff
     /// parser requires: an empty side's start is the line it follows (council r17: cargo-mutants
     /// rejected a pure insertion that started on the previous hunk's last line).
@@ -616,6 +614,8 @@ mod tests {
         }
     }
 
+    /// The diff is valid, its minimal regions are exactly the lines outside one longest common
+    /// subsequence, and the output marks those plus one neighbouring line per pure deletion.
     fn check(old: &[u8], new: &[u8]) {
         let diff = diff_of(old, new, &mut 0);
         assert_eq!(apply(&diff, old), new, "{old:?} -> {new:?}");

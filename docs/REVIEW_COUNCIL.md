@@ -644,6 +644,80 @@ Council r17 (run `8a35a3d1…`) reviewed `1ff04ff..a2b362e` with all 12 reports.
 
 **Residual:** a build script or proc macro that sets `cfg(test)` or changes its output only in a configuration other than gate and release, or detects the oracle, is residual 1.
 
+<a id="incremental-history-r19"></a>
+
+### r19: council r18 follow-ups — incremental history, path dependencies, cargo's own build-script report
+
+Council r18 (run `f2baaa43…`) reviewed `a2b362e..e45aad0` with 11 of 12 reports; the falsifier's challenge round failed its protocol. All 7 evidence gates passed. **The oracle refused DDF's own diff**: three genuine `#[cfg(test)]` functions in `mutation_scope.rs` were reported as compiled into the gate build. That was a false refusal, and it blocked the mutation gate.
+
+| Finding (r18) | Control | Evidence |
+| --- | --- | --- |
+| **False refusal: incremental history** (operator, from the r18 witness) | `target/<profile>/incremental` is removed before every oracle build, so the changed units compile from scratch. The environment stays the gate's: no `CARGO_INCREMENTAL` variable for a build script to read. Before a batch is called shipped, the unmodified tree is rebuilt, and drift from its first build makes the verdict **inconclusive**, not a refusal of test code | **Measured, gate image `:20261026c`:** with incremental reuse, a plain rebuild after the control's edit was restored differs from the first build (rustc duplicated the `"passed"` and `"state"` allocations of `oracle_passed`), and both neutralisations "moved". Without incremental state, rebuild = base, both "same". The v8 oracle passes the r18 snapshot in 10 builds and 108 s. **Fake:** `incremental_history_does_not_read_as_shipped_test_code` and `a_comparison_that_drifted_is_inconclusive_not_a_refusal_of_test_code`, both fail against r18 |
+| A path dependency outside the workspace can `#[path]`-include the code; `cargo metadata --no-deps` lists members only (HIGH; security 4/0, architecture 4/0) | Every **path package** is observed (`source` null in the full, offline `cargo metadata`). Members are identified by `workspace_members`. Registry and git packages cannot name a snapshot file. Reproducibility touches every observed root inside the tree (falsifier, 3/1) | **Fake:** `a_path_dependency_outside_the_workspace_is_observed` (fails against r18); the real r18 snapshot resolves offline from the sealed vendor copy |
+| The controller accepted a witness that omitted a configuration (HIGH; falsifier 4/1, subtractor 4/0, security 4/0) | The controller owns `ORACLE_CONFIGURATIONS = [gate, release]`. `configurations` and `control.configurations` must each be keyed by **exactly** that set | **Fake:** omitted-release, omitted-control and extra-configuration witnesses are refused (fail against r18). A complete witness passes (positive control) |
+| A build script's `cfg(test)` was only inferred from MIR (challenge HIGH, security; architecture) | Cargo's `build-script-executed` message lists each `rustc-cfg`, so `test` from any path package's build script is refused directly, after the two unmodified builds | **Measured, cargo 1.99.1:** the message names the package by `package_id` only (no `manifest_path`), and the first draft missed it. Caught by the real-Podman probe, which now asserts the direct refusal in 2 builds |
+| One control had to move both configurations (correctness 4/0) | Each configuration finds its own control | Witness shape `control.configurations.{gate,release}` |
+| The control loop and attribution did not short-circuit (performance 4/0) | Attribution stops at the first configuration that moves | Worst case: 2 + 2 + 10 + 4 + 2 + 8×4 = **52 builds**; typical: 10 |
+| `check`'s doc comment sat on `assert_hunks_ordered` (architecture 4/0) | Split | — |
+
+**Residual, recorded:**
+- A build script that copies hidden code into `OUT_DIR` for an `include!` that ships (correctness): generated code is outside cargo-mutants' reach whatever its origin, so it is the same class as code generated from a non-Rust file.
+- A proc macro that always emits the same body, so neutralising cannot move it (subtractor): it needs a `cfg(test)` build script, which is now refused directly. Otherwise it is residual 1 (lying to the tool).
+- Incremental history is suppressed, not modelled. Any remaining build-history effect reads as drift (inconclusive), never as a refusal or a pass.
+
+<a id="dep-info-r20"></a>
+
+### r20: council r19 follow-ups — what rustc read, drift on every path, the controller reads the outcome
+
+Council r19 (run `4946f232…`) reviewed `e45aad0..d3498a1` with **all 12 reports and 8/8 gates**:
+- the oracle passed 2 hidden functions in 10 builds;
+- the mutation gate caught 12 of 12 mutants.
+
+| Finding (r19) | Control | Evidence |
+| --- | --- | --- |
+| A unit can compile code the neutralisation never touches. The finding named non-path packages (HIGH; security 5/0, architecture challenge). Its premise is partly wrong: a dependency's `rustc-cfg=test` applies only to that dependency. The class is real, though: an absolute `include!("/src/…")` compiles the **unneutralised snapshot** | **Each non-test unit's dep-info** (the files rustc read) is checked after every build. Refused: any unit reading the snapshot outside the build tree, and any registry or git unit reading a tree file other than its own `OUT_DIR` output. Workspace paths in dep-info are relative to the tree (measured; the first draft resolved them against `/src`, and the real-Podman positive control refused clean code until fixed) | **Real Podman:** a binary `include!`ing `/src/src/t.rs` is **not refused by v8** (gate exit 7) and is refused by v9. **Fake:** `a_registry_unit_that_reads_the_tree_is_refused` fails against v8 |
+| The drift guard ran only when something already shipped, so history that masked a neutralisation could pass (HIGH; falsifier 4/1, correctness 5/0, architecture) | The unmodified tree is rebuilt in **every** configuration after the neutralised builds; drift is inconclusive. Cost: +2 builds | **Fake:** `drift_on_a_passing_comparison_is_inconclusive` fails against v8 |
+| The controller checked preconditions, not the outcome (architecture 5/0) | `oracle_passed` also requires `refused` and `reasons` to be empty arrays, and, with hidden functions, `shipping_configurations` too | **Fake:** forged witnesses with refusals, reasons, shipping or a missing field are refused; fails against v8 |
+| One forged witness exercised both exact-set checks (falsifier 5/0) | Split into one witness per map | — |
+| Build-script `cfg(test)` was consulted only after the first builds (architecture 5/0) | Direct reports from any build are acted on before the verdict | — |
+| A candidate `target/` without `CACHEDIR.TAG` was copied (security) | The snapshot's top-level `target/` is never copied | — |
+| No real-rustc witness of the MIR comparison (architecture 4/1) | A real probe: a binary `include!`s another binary's `#[cfg(test)]` module file | **Real Podman:** refused as "allow-listed but compiled into …" |
+| An attribute macro emits a fixed body for a `#[cfg(test)]` function (subtractor, 3/2) | **Scope, documented:** the hidden body never ships; the shipped body is the macro's. Code from dependencies, from another crate's macro expansion, or generated files is outside the mutation gate by construction | — |
+| The oracle shares a uid with candidate build scripts, which could tamper with the witness (security challenge) | Recorded as the same trust class as the mutation job, whose outcomes candidate tests already influence (see residuals) | — |
+
+**Cost.** Typical 12 builds (10 + drift). Worst case 54. The job keeps the request timeout.
+
+<a id="stop-rule-r21"></a>
+
+### r21: council r20 follow-ups — dep-info fails closed, as an allow-list; the stop rule
+
+Council r20 (run `0fd3cac8…`) reviewed `d3498a1..36d5e7c` with all 12 reports and 8/8 gates; mutation caught 7 of 7. Hosted CI on PR #5 was green at `5aa9675`.
+
+| Finding (r20) | Control | Evidence |
+| --- | --- | --- |
+| **The dep-info check failed open** (HIGH; architecture 4/0, correctness 4/0, falsifier 5/0, security 5/0, subtractor 5/0). Cargo reports a build script as `build/<pkg>-<hash>/build-script-build`; its dep-info belongs to the hard-linked `build_script_build-<hash>` beside it, and the lookup searched `deps/` only | A unit whose dep-info cannot be found, or that names a file which no longer exists, makes the verdict **inconclusive**. Same-inode siblings in the unit's own directory are searched | **Measured on DDF:** with the fail-closed rule and the old lookup, **38 units (every build script) had no dep-info**, so v9 never inspected them. With the sibling lookup: passed, 12 builds, 134 s. **Fake:** the build-script shape fails 12 tests without the sibling lookup |
+| A deny-list of places (security, 2/3) | **Allow-list:** a path package may read the build tree; a registry or git package its own directory; every unit `target/` (outputs and `OUT_DIR`). Without `-Z binary-dep-depinfo`, rustc names no sysroot files (measured) | **Fake:** `reads_elsewhere` is refused, and `vanished` and `no_dep_info` are inconclusive; this fails against v9 |
+| U+2028 split dep-info lines; trailing `:` was stripped from prerequisites | Lines end only at `\n`; only the target loses its colon | **Unit tests** |
+| Two precondition witnesses also lacked the configuration maps (falsifier 5/0) | Each is complete except for its one field | — |
+| **A run-time build script can read or copy the snapshot, or play symlink games** (architecture 2/3, security; challenge HIGH) | **Stop rule (architecture, "detector growth"):** the oracle observes what cargo and rustc report. Run-time behaviour of build scripts and proc macros is one residual class: reading, copying, symlinking, generating code, detecting the job. It is visible in the reviewed diff, and no further detector is added for it | Recorded in the oracle docstring and here |
+
+<a id="dep-info-roles-r22"></a>
+
+### r22: council r21 follow-ups — dep-info rules by role; stage C closes
+
+Council r21 (run `b3aa0f3c…`) reviewed `36d5e7c..1f9dbc0` with all 12 reports and 7/7 evidence gates.
+- **No HIGH findings.** The three Claude reviewers returned *no blockers*; the three Codex reviewers requested changes for consensus MEDIUMs, all addressed here.
+- The mutation gate was **inconclusive by design**: the diff changes no Rust in the mutation package, so cargo-mutants reported "No mutants to filter", and an empty run is unmeasured, not a pass.
+
+| Finding (r21) | Control | Evidence |
+| --- | --- | --- |
+| dep-info roles were merged, so a missing input under `target/` was exempt; an empty `.d`, or a planted `.d` naming another output, counted as evidence (correctness 5/0, falsifier 5/0, architecture challenge) | The dep-info is parsed into **rules**. A unit's evidence is only a rule whose **target is one of the unit's own files**. Every **prerequisite must exist**, `target/` included, and lie in the tree (path package), the package's own directory (registry or git) or `target/`. A rule with no input is unverified | **Fake:** `planted_dep_info`, `empty_dep_info` and `missing_generated` are inconclusive and fail against v10. **Measured on DDF:** passed, 12 builds, 127 s; every real unit's rule names its own output |
+| Witnesses still confounded two preconditions (correctness, falsifier 5/0) | The build-status witness now carries `control.configurations` | — |
+| The sibling scan was quadratic (performance 5/0, subtractor 5/0) | Each directory other than `deps/` is indexed once per build | — |
+| **The stop rule's premise is false for dependencies** (architecture 5/0, security 5/0): a registry crate's build script is not in the reviewed diff | **Premise corrected:** for path packages the code is in the diff; for a dependency only the `Cargo.lock` change is, and its code is governed by the supply-chain gate (`cargo-deny`: crates.io only, no unknown git), not by the oracle | Docstring and here |
+
+**Close-out:** with no HIGH findings in r21 and every consensus MEDIUM addressed with a failing-first control, stage C merges under the stop rule.
+
 ### Podman invocation
 
 Every gate job runs `$DDF_COUNCIL_PODMAN run` (the default runtime is `podman`) with these flags. The source of truth is `sandbox.rs` `Sandbox::argv`.

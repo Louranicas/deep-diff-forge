@@ -22,11 +22,35 @@ oracle no longer classifies exclusions; it allow-lists them:
    (`cargo build --profile test --lib --bins --tests`, measured to reproduce cargo test's units)
    and in release, with MIR emitted (`--emit=link,mir`, which the mutation job carries too).
    Neutralising the allow-listed bodies (`loop {}` and `panic!()`, keeping lines) must leave the
-   canonical MIR of every non-test unit of every workspace member unchanged (council r17: a
-   `#[path]` include can ship the code from another member), and every build must succeed.
+   canonical MIR of every non-test unit of every path package (workspace members and path
+   dependencies: a `#[path]` include can ship the code from another one, councils r17-r18)
+   unchanged, and every build must succeed. A build script of a path package that sets `cfg(test)`
+   is observed directly in cargo's `build-script-executed` messages and refused (council r18).
+   Incremental state is removed before every build: rustc's incremental reuse after an edit and
+   its restore was measured to duplicate allocations and move the MIR of unchanged code.
+   Every non-test unit's dep-info (the files rustc read) is checked against an allow-list
+   (councils r19-r20): a path package may read the build tree, a registry or git package its own
+   directory, and any unit `target/` (outputs and `OUT_DIR`). Anything else, such as
+   the unneutralised snapshot through an absolute `include!`, is refused. A unit whose dep-info
+   cannot be found, or that names a file which no longer exists, makes the verdict inconclusive.
 4. Controls, in both configurations: the unmodified build succeeds and reproduces, and
-   neutralising a function the gate mutates keeps every unit building and changes one. After
-   every edited build, the edited files must still hold what the oracle wrote.
+   neutralising a function the gate mutates (chosen per configuration) keeps every unit building
+   and changes one. After every edited build, the edited files must still hold what the oracle
+   wrote. After the neutralised builds, the unmodified tree is rebuilt in every configuration: if
+   it no longer matches its first build, the comparison drifted and the verdict is inconclusive,
+   whatever the neutralised builds showed (council r19: the guard ran only on refusals).
+
+Stop rule (council r20): the oracle observes what cargo and rustc report. Run-time behaviour of
+build scripts and proc macros (reading or copying files, creating symlinks, generating code,
+detecting this job) is one residual class; no further detector is added for it. For path packages
+that code is in the reviewed diff. For a registry dependency only the Cargo.lock change is: its
+code is governed by the supply-chain gate (cargo-deny: crates.io only, no unknown git), not here
+(council r21 corrected this premise).
+
+Scope: the guarantee is about function bodies written in the mutation package's sources. Code that
+ships from dependencies, from another crate's macro expansion or from generated files is outside the
+mutation gate by construction, whatever its origin (a macro may ignore a `#[cfg(test)]` body and
+emit its own; that body is the macro's, not the hidden one).
 
 A build script or proc macro that detects this job and behaves differently, or that keys
 `cfg(test)` to a configuration not built here, is the documented "lying to the tool" residual
@@ -45,7 +69,7 @@ import tempfile
 
 NOEXCLUDE = "ddf-cargo-mutants-noexclude"
 STRICT = "ddf-cargo-mutants-strict"
-SCHEMA = "deep-diff-forge.exemption-oracle.v7"
+SCHEMA = "deep-diff-forge.exemption-oracle.v11"
 LIBRARY_KINDS = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
 LIBRARY_EXTENSIONS = {"rlib", "rmeta", "so", "a", "dylib", "dll"}
 REPLACEMENTS = ("loop {}", "panic!()")
@@ -56,7 +80,7 @@ CONFIGS = {
     "release": (["--release", "--lib", "--bins"], "release"),
 }
 CONTROL_TRIES = 5
-# Allow-listed functions named individually when their batch ships (4 builds each).
+# Allow-listed functions named individually when their batch ships (at most 4 builds each).
 ATTRIBUTION_LIMIT = 8
 # Build trees this process created, removed on exit: each holds a full target directory.
 TREES = []
@@ -177,6 +201,21 @@ def digest_text(text):
     return hashlib.sha256(canonical_mir(text).encode()).hexdigest()
 
 
+def dep_info_rules(text):
+    """The rules of a Makefile-style dep-info, as (target, prerequisites), unescaped. Lines end only
+    at a newline (a filename may hold U+2028), and only the target loses its colon: a prerequisite
+    named `x:` stays `x:` (council r20). Targets are outputs, which may never have been written;
+    prerequisites are what rustc read (council r21: the roles were merged)."""
+    rules = []
+    for line in text.split("\n"):
+        if not line or line.startswith("#"):
+            continue
+        tokens = [t.replace("\\ ", " ") for t in re.split(r"(?<!\\) ", line) if t]
+        if tokens and tokens[0].endswith(":"):
+            rules.append((tokens[0][:-1], tokens[1:]))
+    return rules
+
+
 def stem_of(path):
     """The MIR stem of an artifact: `lib` is a prefix of library files only (council r15)."""
     name, _, extension = os.path.basename(path).partition(".")
@@ -191,20 +230,31 @@ class GateBuild:
         name = os.path.basename(source.rstrip("/")) or "src"
         self.tree = tempfile.mkdtemp(prefix=f"cargo-mutants-{name}-", suffix=".tmp")
         TREES.append(self.tree)
-        # A Cargo build directory carries CACHEDIR.TAG; a source directory named `target` does not.
-        stale = os.path.exists(os.path.join(source, "target", "CACHEDIR.TAG"))
+        # The snapshot's own `target/` is never reused: planted fingerprints or MIR could replay a
+        # stale unit (council r19). A source directory named `target` fails the build: inconclusive.
         shutil.copytree(source, self.tree, symlinks=True, dirs_exist_ok=True,
-                        ignore=lambda d, names: {"target"} if stale and d == source else set())
-        metadata = json.loads(run(["cargo", "metadata", "--locked", "--no-deps", "--format-version=1"],
+                        ignore=lambda d, names: {"target"} if d == source else set())
+        self.snapshot = os.path.realpath(source) + os.sep
+        metadata = json.loads(run(["cargo", "metadata", "--locked", "--format-version=1"],
                                   cwd=self.tree).stdout)
-        members = [p for p in metadata["packages"] if p["name"] == package]
+        members = [p for p in metadata["packages"] if p["name"] == package and p["id"] in metadata["workspace_members"]]
         if len(members) != 1:
             raise RuntimeError(f"package {package} is not exactly one workspace member")
-        # Every member's non-test units are observed: a `#[path]` include can ship the mutation
-        # package's code from another member (council r17).
-        self.manifests = {p["manifest_path"] for p in metadata["packages"]}
-        self.roots = sorted({t["src_path"] for t in members[0]["targets"]})
-        self.expected = {}
+        # Every path package's non-test units are observed, members and path dependencies alike: a
+        # `#[path]` include can ship the mutation package's code from any of them (councils r17-r18).
+        # Registry and git packages cannot name a file in the snapshot.
+        local = [p for p in metadata["packages"] if p.get("source") is None]
+        self.manifests = {p["manifest_path"] for p in local}
+        # A `build-script-executed` message names its package by id only (measured, cargo 1.99.1).
+        self.ids = {p["id"]: p["manifest_path"] for p in local}
+        # Where each package's own sources live, for the dep-info allow-list.
+        self.package_dirs = {p["manifest_path"]: os.path.dirname(os.path.realpath(p["manifest_path"])) + os.sep
+                             for p in metadata["packages"]}
+        # Touched before the reproducibility build, so no observed unit is merely replayed (council r18).
+        inside = os.path.realpath(self.tree) + os.sep
+        self.roots = sorted({t["src_path"] for p in local for t in p["targets"]
+                             if os.path.realpath(t["src_path"]).startswith(inside)})
+        self.expected, self.test_cfg, self.escapes, self.unverified = {}, set(), set(), set()
         # The mutation gate's environment: cargo-mutants adds these two, and the controller gives
         # both jobs the emitted-MIR flag.
         self.env = dict(os.environ, INSTA_UPDATE="no", INSTA_FORCE_PASS="0")
@@ -229,6 +279,47 @@ class GateBuild:
                 return
             directory = parent
 
+    def check_dep_info(self, message, twins, siblings):
+        """Hold a non-test unit to the files it read (fail closed). Its evidence is the dep-info rule
+        whose target is one of the unit's own files, so a planted `.d` naming something else proves
+        nothing. Every prerequisite must exist, and lie in the tree (a path package) or the
+        package's own directory (a registry or git package), or under `target/` (`OUT_DIR`)."""
+        manifest = message.get("manifest_path")
+        inside = os.path.realpath(self.tree) + os.sep
+        produced = os.path.join(inside, "target") + os.sep
+        own = inside if manifest in self.manifests else self.package_dirs.get(manifest, "\0")
+        unit = message["target"]["name"]
+        files = set()
+        for name in message["filenames"]:
+            files.add(name)
+            if os.path.exists(name):
+                # A build script is reported as `build/<pkg>-<hash>/build-script-build`, a hard link
+                # to the `build_script_build-<hash>` beside it, whose dep-info that is (measured).
+                inode = os.stat(name).st_ino
+                files.update(twins.get(inode, []))
+                files.update(siblings(os.path.dirname(name)).get(inode, []))
+        reals = {os.path.realpath(f) for f in files}
+        rules = []
+        for twin in files:
+            info = os.path.join(os.path.dirname(twin), stem_of(twin) + ".d")
+            if os.path.isfile(info):
+                with open(info, encoding="utf-8", errors="replace") as text:
+                    rules += [r for r in dep_info_rules(text.read())
+                              if os.path.realpath(os.path.join(self.tree, r[0])) in reals]
+        if not rules:
+            self.unverified.add(f"no dep-info rule names {unit} ({message['filenames'][:2]})")
+        for _, prerequisites in rules:
+            if not prerequisites:
+                self.unverified.add(f"the dep-info rule for {unit} names no input")
+            for path in prerequisites:
+                # Workspace paths are relative to the tree cargo ran in (measured).
+                joined = os.path.join(self.tree, path)
+                real = os.path.realpath(joined)
+                if not os.path.lexists(joined):
+                    self.unverified.add(f"{unit} read {path}, which no longer exists")
+                elif not (real.startswith(own) or real.startswith(produced)):
+                    self.escapes.add((unit, real))
+
     def build(self, config, spans=(), replacement=None, touch=()):
         """Canonical MIR digests of the package's non-test units that built. A unit missing from an
     edited build reads as changed (fail closed); the unmodified build must succeed completely."""
@@ -250,6 +341,10 @@ class GateBuild:
             os.utime(root)
         self.refuse_runtime_config()
         arguments, subdirectory = CONFIGS[config]
+        # rustc's incremental reuse depends on build history: after the positive control's edit was
+        # restored, unchanged code's MIR gained duplicate allocations (council r18, measured). Each
+        # build compiles the changed units from scratch; the environment stays the gate's.
+        shutil.rmtree(os.path.join(self.tree, "target", subdirectory, "incremental"), ignore_errors=True)
         deps = os.path.join(self.tree, "target", subdirectory, "deps")
         # --keep-going: a test harness that a neutralised test-only `const fn` breaks must not hide
         # whether the non-test units still build.
@@ -269,9 +364,24 @@ class GateBuild:
         for path in glob.glob(os.path.join(deps, "*")):
             if os.path.isfile(path) and not path.endswith((".d", ".mir")):
                 twins.setdefault(os.stat(path).st_ino, []).append(path)
+        listed = {deps: {}}  # deps/ is indexed by `twins`; any other directory once per build
+
+        def siblings(directory):
+            if directory not in listed:
+                index = listed[directory] = {}
+                for entry in os.scandir(directory):
+                    if entry.is_file(follow_symlinks=False):
+                        index.setdefault(entry.inode(), []).append(entry.path)
+            return listed[directory]
+
         digests = {}
         for line in done.stdout.splitlines():
             message = json.loads(line) if line.startswith("{") else {}
+            if (message.get("reason") == "build-script-executed" and message.get("package_id") in self.ids
+                    and "test" in message.get("cfgs", [])):
+                self.test_cfg.add(self.ids[message["package_id"]])  # seen directly, not inferred (council r18)
+            if message.get("reason") == "compiler-artifact" and not message["profile"]["test"]:
+                self.check_dep_info(message, twins, siblings)
             if message.get("reason") != "compiler-artifact" or message.get("manifest_path") not in self.manifests:
                 continue
             kinds = set(message["target"]["kind"])
@@ -290,6 +400,26 @@ class GateBuild:
         if not digests and not spans:
             raise RuntimeError(f"configuration {config} produced no non-test lib or bin")
         return digests
+
+
+def certain(build, verdict):
+    """Settle what cargo or rustc reported directly, from any build so far: refuse a build script
+    setting cfg(test) or a unit reading files outside its allow-list; a unit whose reads cannot be
+    verified makes the verdict inconclusive."""
+    rows = [{"file": os.path.relpath(path, build.tree), "function": "build script", "line": 0,
+             "reason": "a build script sets cfg(test)"} for path in sorted(build.test_cfg)]
+    rows += [{"file": path, "function": f"unit {unit}", "line": 0,
+              "reason": "a unit reads files outside the neutralised tree"} for unit, path in sorted(build.escapes)]
+    if rows:
+        verdict["refused"], verdict["state"] = rows, "refused"
+    elif build.unverified:
+        verdict["reasons"].append(f"the files {len(build.unverified)} units read are unverified: "
+                                  f"{sorted(build.unverified)[:3]}")
+        verdict["state"] = "inconclusive"
+    else:
+        return False
+    verdict["builds"] = build.count
+    return True
 
 
 def judge(package, in_diff):
@@ -316,6 +446,8 @@ def judge(package, in_diff):
     build = GateBuild(os.getcwd(), package)
     original = {config: build.build(config) for config in CONFIGS}
     verdict["configurations"] = {config: "built" for config in original}
+    if certain(build, verdict):
+        return verdict
     # Both configurations get a reproducibility check and a positive control (council r17: a
     # release comparison that cannot move would otherwise pass unnoticed).
     verdict["reproducible"] = all(build.build(config, touch=build.roots) == original[config] for config in CONFIGS)
@@ -323,31 +455,45 @@ def judge(package, in_diff):
         verdict["reasons"].append("two builds of the unmodified tree disagree: the comparison cannot be trusted")
     if not stock_bodies:
         stock, stock_bodies = listing("cargo", ["--package", package])
-    verdict["control"] = {"mir_changed": False}
-    for control in sorted(key for key in stock if key in stock_bodies)[:CONTROL_TRIES]:
-        moved = []
-        for config in CONFIGS:
+    # Each configuration finds its own control: a function compiled in one profile only is a valid
+    # control there (council r18).
+    controls = {}
+    for config in CONFIGS:
+        for control in sorted(key for key in stock if key in stock_bodies)[:CONTROL_TRIES]:
             edited = build.build(config, [(control[0], stock_bodies[control])], REPLACEMENTS[0])
-            moved.append(set(edited) == set(original[config]) and edited != original[config])
-        if all(moved):
-            verdict["control"] = {"file": control[0], "function": control[1], "mir_changed": True,
-                                  "configurations": sorted(CONFIGS)}
-            break
+            if set(edited) == set(original[config]) and edited != original[config]:
+                controls[config] = {"file": control[0], "function": control[1]}
+                break
+    verdict["control"] = {"mir_changed": len(controls) == len(CONFIGS), "configurations": controls}
     if not verdict["control"]["mir_changed"]:
         verdict["reasons"].append("no mutated function built completely and changed non-test MIR in every configuration")
     spans = [(key[0], bodies[key]) for key in allowed if key in bodies]
-    def shipping(selected):
-        return sorted({config for config in CONFIGS for replacement in REPLACEMENTS
-                       if build.build(config, selected, replacement) != original[config]})
+    def shipping(selected, first=False):
+        """The configurations whose non-test MIR moves; each stops at its first moving build."""
+        shipped = []
+        for config in CONFIGS:
+            if any(build.build(config, selected, r) != original[config] for r in REPLACEMENTS):
+                shipped.append(config)
+                if first:
+                    break
+        return shipped
 
     shipped_in = shipping(spans)
     verdict["shipping_configurations"] = shipped_in
-    if shipped_in:
+    # Every configuration, passing or not: history that masked a neutralisation would otherwise
+    # pass unseen (council r19).
+    drifted = [config for config in CONFIGS if build.build(config) != original[config]]
+    if certain(build, verdict):
+        return verdict
+    if drifted:
+        # The unmodified tree no longer builds as it first did: what moved is not attributable.
+        verdict["reasons"].append(f"the unmodified tree drifted from its first build in {drifted}")
+    elif shipped_in:
         # Allow-listed by source yet compiled into shipped code: a shadowed `#[test]` or a build
         # script setting cfg(test). Named one by one when few; otherwise the batch is refused whole.
         named = [key for key in allowed if key in bodies]
         if len(named) <= ATTRIBUTION_LIMIT:
-            named = [key for key in named if shipping([(key[0], bodies[key])])]
+            named = [key for key in named if shipping([(key[0], bodies[key])], first=True)]
         verdict["refused"] += [{"file": f, "function": n, "line": line,
                                 "reason": "allow-listed but compiled into " + ", ".join(shipped_in)}
                                for f, n, line, _ in named or allowed]
