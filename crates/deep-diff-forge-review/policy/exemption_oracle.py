@@ -2,37 +2,32 @@
 """Mutation-exemption oracle for the council mutation gate (DDF, decision record 2026-10-26).
 
 cargo-mutants 27.1.0 skips, by design, any item carrying `#[mutants::skip]`, `#[cfg(test)]`, an
-attribute whose path ends in `test`, and every `unsafe fn`, together with everything inside such an
-item. A candidate reaches those exclusions in spellings no syntactic scan predicts (councils r12-r15).
+attribute whose path ends in `test`, and every `unsafe fn`, with everything inside such an item.
+Councils r12-r16 showed that judging what an exclusion hides by observing builds can always be
+outflanked by a configuration the oracle did not sample (features, profiles, targets). So the
+oracle no longer classifies exclusions; it allow-lists them:
 
-An exclusion is legitimate only for test code: code that is compiled into a test harness of the
-gate's build and into no non-test unit of any configuration that ships. Code compiled nowhere is
-not test code either: listed, its mutants would survive and hold the gate (council r14). This
-oracle checks both halves by changing the hidden code and watching the compiler:
+1. List the scope three times, all with the same pinned cargo-mutants crate: the gate's build;
+   `ddf-cargo-mutants-strict`, which honours only exact `#[cfg(test)]` and a bare `#[test]`; and
+   `ddf-cargo-mutants-noexclude`, which honours nothing. cargo-mutants' own `syn` parse decides
+   all three, so there is no second parser to diverge from it.
+2. A function the gate skips but the strict build lists was hidden by something other than the
+   allow-list (`mutants::skip`, a test-suffixed attribute, `unsafe fn`). It is refused outright,
+   whatever its cfg, so no feature or profile combination can matter (council r16).
+3. A function only the allow-list hides is test code by its source, unless the build disagrees:
+   an imported macro shadowing the built-in `#[test]`, or a build script printing
+   `cargo:rustc-cfg=test`. Those are checked by changing the code and watching the compiler: the
+   snapshot is copied once to a cargo-mutants-style directory, built as the gate builds it
+   (`cargo build --profile test --lib --bins --tests`, measured to reproduce cargo test's units)
+   and in release, with MIR emitted (`--emit=link,mir`, which the mutation job carries too).
+   Neutralising the allow-listed bodies (`loop {}` and `panic!()`, keeping lines) must leave every
+   non-test unit's canonical MIR unchanged, and every build must succeed.
+4. Controls: both unmodified builds must succeed and the gate build must reproduce; neutralising a
+   function the gate mutates must keep every unit building and change one.
 
-1. List the scope with the gate's cargo-mutants and with `ddf-cargo-mutants-noexclude` (the same
-   pinned crate with attribute and `unsafe fn` exclusions off). Hidden = listed only by the second.
-   With nothing hidden, the oracle passes unbuilt.
-2. Copy the snapshot once to a cargo-mutants-style directory (`$TMPDIR/cargo-mutants-src-*.tmp`,
-   target inside). Build, with `--keep-going`, the gate configuration (`--profile test --lib --bins
-   --tests`: the gate's own `cargo test --no-run` units, measured equal even with a customised
-   `[profile.test]`) and the shipping configurations a test build never compiles (`--release`,
-   `--all-features`, `--no-default-features`, `--release --all-features`; council r15). Every
-   unmodified build must succeed completely, and the gate configuration must reproduce.
-3. Observable: per-unit MIR (`--emit=link,mir`, which the controller also gives the mutation job,
-   so it is no tell), canonicalised by an order-independent refinement of allocation contents.
-4. Neutralise hidden bodies (cargo-mutants' `FnValue` spans) with `loop {}` and with `panic!()`,
-   keeping lines. A function ships if, in any configuration, a replacement changes a non-test
-   unit's MIR or breaks a non-test unit with an error in an edited file. It is test code only if,
-   in the gate configuration, its own MIR section in a harness changes, or a harness breaks with an
-   error inside its body. Anything else was compiled nowhere and is refused.
-5. Positive control: neutralising a function the gate mutates must leave every non-test unit
-   building and change at least one.
-
-Candidate build scripts and proc macros run during the builds; one that detects this job (the
-parent process, timing) and builds differently, or forges compiler output, is the documented "lying
-to the tool" residual (docs/REVIEW_COUNCIL.md). Other target triples are not built here. Exit
-status: 0 passed, 1 refused, 2 inconclusive.
+A build script or proc macro that detects this job and behaves differently, or that keys
+`cfg(test)` to a configuration not built here, is the documented "lying to the tool" residual
+(docs/REVIEW_COUNCIL.md). Exit status: 0 passed, 1 refused, 2 inconclusive.
 """
 import argparse
 import glob
@@ -46,24 +41,23 @@ import sys
 import tempfile
 
 NOEXCLUDE = "ddf-cargo-mutants-noexclude"
-SCHEMA = "deep-diff-forge.exemption-oracle.v5"
+STRICT = "ddf-cargo-mutants-strict"
+SCHEMA = "deep-diff-forge.exemption-oracle.v6"
 LIBRARY_KINDS = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
 LIBRARY_EXTENSIONS = {"rlib", "rmeta", "so", "a", "dylib", "dll"}
 REPLACEMENTS = ("loop {}", "panic!()")
 EMIT = "--emit=link,mir"
-GATE = "gate"
-# The gate configuration builds test harnesses; the others are shipping configurations it never
-# compiles. Each is (cargo arguments, target subdirectory).
+# The gate's own units, and release: the configuration a build script most often keys on.
 CONFIGS = {
-    GATE: (["--profile", "test", "--lib", "--bins", "--tests"], "debug"),
+    "gate": (["--profile", "test", "--lib", "--bins", "--tests"], "debug"),
     "release": (["--release", "--lib", "--bins"], "release"),
-    "all-features": (["--profile", "test", "--all-features", "--lib", "--bins"], "debug"),
-    "no-default-features": (["--profile", "test", "--no-default-features", "--lib", "--bins"], "debug"),
-    "release-all-features": (["--release", "--all-features", "--lib", "--bins"], "release"),
 }
-# Individual proofs (one build pair each) when a function's MIR section is not found by name.
-INDIVIDUAL_LIMIT = 64
 CONTROL_TRIES = 5
+# Allow-listed functions named individually when their batch ships (4 builds each).
+ATTRIBUTION_LIMIT = 8
+# Colour-refinement rounds: each is a pure function of the last, so any bound stays
+# order-independent; allocation chains deeper than this are merely less distinguished.
+REFINEMENT_ROUNDS = 16
 
 
 def run(argv, cwd=None, env=None, check=True):
@@ -122,12 +116,14 @@ def neutralised(text, spans, replacement):
 
 
 ALLOC_HEAD = re.compile(r"^alloc(\d+) (\(.*\)) \{(\})?$")
-# A string literal is kept whole, so `"alloc1"` in program data is never taken for a reference.
-ALLOC_TOKEN = re.compile(r'"(?:[^"\\]|\\.)*"|\balloc(\d+)\b')
+# A string literal is kept whole (on one line), so `"alloc1"` in program data is never a reference.
+ALLOC_TOKEN = re.compile(r'"(?:[^"\\\n]|\\.)*"|\balloc(\d+)\b')
 
 
-def substitute(text, names):
-    return ALLOC_TOKEN.sub(lambda m: m[0] if m[1] is None else names(m[1]), text)
+def substitute(text, label):
+    """Rename allocation references; an `allocN` that names no allocation (an identifier such as
+    `fn alloc7`) is left as written."""
+    return ALLOC_TOKEN.sub(lambda m: m[0] if m[1] is None else label(m[1]) or m[0], text)
 
 
 def canonical_mir(text):
@@ -148,53 +144,20 @@ def canonical_mir(text):
         else:
             body.append(lines[i])
         i += 1
-    referenced = {m[1] for m in ALLOC_TOKEN.finditer("\n".join(body) + "\n".join(allocations.values())) if m[1]}
-    missing = referenced - set(allocations)
-    if missing:
-        raise RuntimeError(f"MIR references undefined allocations {sorted(missing)[:5]}")
-    # Colour refinement: start from contents with references blanked, then repeatedly fold in the
-    # neighbours' labels until the partition stops splitting. The result does not depend on
-    # allocation numbers or visit order, and handles cycles.
     labels = {n: "" for n in allocations}
-    for _ in range(len(allocations) + 1):
-        refined = {n: hashlib.sha256(substitute(c, lambda r: "alloc<" + labels[r] + ">").encode()).hexdigest()[:24]
-                   for n, c in allocations.items()}
+    for _ in range(REFINEMENT_ROUNDS):
+        refined = {n: hashlib.sha256(substitute(c, lambda r: "alloc<" + labels[r] + ">" if r in labels else None)
+                                     .encode()).hexdigest()[:24] for n, c in allocations.items()}
         stable = len(set(refined.values())) == len(set(labels.values()))
         labels = refined
         if stable:
             break
-    named = substitute("\n".join(body), lambda r: "alloc<" + labels[r] + ">")
-    definitions = sorted({labels[n] + substitute(c, lambda r: "alloc<" + labels[r] + ">") for n, c in allocations.items()})
-    return named + "\n" + "\n".join(definitions)
 
+    def name(r):
+        return "alloc<" + labels[r] + ">" if r in labels else None
 
-SECTION = re.compile(r"^(?:const )?fn (.+?)\(", re.M)
-
-
-def sections(text):
-    """{function path: canonical body} for each `fn` in a MIR dump."""
-    canonical = canonical_mir(text)
-    starts = [(m.start(), m[1]) for m in SECTION.finditer(canonical)]
-    return {name: canonical[start:(starts[k + 1][0] if k + 1 < len(starts) else len(canonical))]
-            for k, (start, name) in enumerate(starts)}
-
-
-IMPL_PATH = re.compile(r"<impl at (\S+?):(\d+):\d+: (\d+):\d+>::([^:<>]+)$")
-
-
-def section_of(key, names):
-    """The one MIR section that is this hidden function, or None when no unique match exists (the
-    caller then proves it with an individual build). A free function matches by its module-path
-    suffix; a method by the `<impl at file:line>` span that contains its own start line."""
-    path, function, line = key[0], key[1], key[2]
-    leaf = function.split("::")[-1]
-    matches = [n for n in names if n == function or n.endswith("::" + function)]
-    for name in names:
-        impl = IMPL_PATH.search(name)
-        if impl and impl[4] == leaf and (path.endswith(impl[1]) or impl[1].endswith(path)) \
-                and int(impl[2]) <= line <= int(impl[3]):
-            matches.append(name)
-    return matches[0] if len(set(matches)) == 1 else None
+    definitions = sorted({labels[n] + substitute(c, name) for n, c in allocations.items()})
+    return substitute("\n".join(body), name) + "\n" + "\n".join(definitions)
 
 
 def digest_text(text):
@@ -250,7 +213,8 @@ class GateBuild:
             directory = parent
 
     def build(self, config, spans=(), replacement=None, touch=()):
-        """{"nontest": {stem: digest}, "harness": {stem: text}, "errors": [(file, line)], "ok": bool}."""
+        """Canonical MIR digests of the package's non-test units that built. A unit missing from an
+    edited build reads as changed (fail closed); the unmodified build must succeed completely."""
         for path in self.edited:
             shutil.copyfile(os.path.join(self.source, path), os.path.join(self.tree, path))
         self.edited = set()
@@ -269,25 +233,26 @@ class GateBuild:
         self.refuse_runtime_config()
         arguments, subdirectory = CONFIGS[config]
         deps = os.path.join(self.tree, "target", subdirectory, "deps")
+        # --keep-going: a test harness that a neutralised test-only `const fn` breaks must not hide
+        # whether the non-test units still build.
         done = run(["cargo", "build", "--workspace", *arguments, "--locked", "--keep-going",
                     "--message-format=json"], cwd=self.tree, env=self.env, check=False)
         self.refuse_runtime_config()
+        if done.returncode != 0 and not spans:
+            raise RuntimeError(f"the unmodified tree does not build in {config}: {done.stderr[-600:]}")
         # Cargo reports uplifted paths for some units; each is a hard link to its deps/ original.
         twins = {}
         for path in glob.glob(os.path.join(deps, "*")):
             if os.path.isfile(path) and not path.endswith((".d", ".mir")):
                 twins.setdefault(os.stat(path).st_ino, []).append(path)
-        result = {"nontest": {}, "harness": {}, "errors": [], "ok": done.returncode == 0}
+        digests = {}
         for line in done.stdout.splitlines():
             message = json.loads(line) if line.startswith("{") else {}
-            if message.get("reason") == "compiler-message" and message["message"].get("level") == "error":
-                result["errors"] += [(s["file_name"], s["line_start"], s["line_end"])
-                                     for s in message["message"].get("spans", [])]
             if message.get("reason") != "compiler-artifact" or message.get("manifest_path") != self.manifest:
                 continue
-            kinds, test = set(message["target"]["kind"]), message["profile"]["test"]
-            if not (test or kinds & (LIBRARY_KINDS | {"bin"})):
-                continue  # build scripts, examples: not the package's shipped or test code
+            kinds = set(message["target"]["kind"])
+            if message["profile"]["test"] or not kinds & (LIBRARY_KINDS | {"bin"}):
+                continue  # test harnesses, build scripts, examples: not shipped code
             stems = set()
             for name in message["filenames"]:
                 for twin in ([name] if os.path.dirname(name) == deps else twins.get(os.stat(name).st_ino, [])):
@@ -297,135 +262,66 @@ class GateBuild:
                 raise RuntimeError(f"no MIR found for {message['target']['name']} ({message['filenames']})")
             for stem in stems:
                 with open(os.path.join(deps, f"{stem}.mir"), encoding="utf-8", errors="replace") as mir:
-                    text = mir.read()
-                if test:
-                    result["harness"][stem] = text
-                else:
-                    result["nontest"][stem] = digest_text(text)
-        if not spans and not result["ok"]:
-            raise RuntimeError(f"the unmodified tree does not build in configuration {config}: {done.stderr[-600:]}")
-        if not spans and not result["nontest"]:
+                    digests[stem] = digest_text(mir.read())
+        if not digests and not spans:
             raise RuntimeError(f"configuration {config} produced no non-test lib or bin of {self.package}")
-        return result
-
-
-def in_body(errors, key, body):
-    """Whether an error points inside this function's body (a harness broken by its edit)."""
-    start, end = body["start"]["line"], body["end"]["line"]
-    return any(file == key[0] and line_start <= end and line_end >= start for file, line_start, line_end in errors)
+        return digests
 
 
 def judge(package, in_diff):
     scope = ["--package", package] + (["--in-diff", in_diff] if in_diff else [])
     stock, stock_bodies = listing("cargo", scope)
-    examined, bodies = listing(NOEXCLUDE, scope)
-    hidden = sorted(examined - stock)
-    verdict = {"schema": SCHEMA, "package": package, "in_diff": bool(in_diff),
-               "hidden_functions": len(hidden), "builds": 0, "refused": [], "reasons": [], "configurations": {}}
-    if not hidden:
-        verdict["state"] = "passed"
+    strict, _ = listing(STRICT, scope)
+    everything, bodies = listing(NOEXCLUDE, scope)
+    hidden = everything - stock
+    # Hidden by something other than exact `#[cfg(test)]` or a bare `#[test]`: refused outright.
+    disallowed = sorted(hidden & strict)
+    allowed = sorted(hidden - strict)
+    verdict = {"schema": SCHEMA, "package": package, "in_diff": bool(in_diff), "hidden_functions": len(hidden),
+               "allow_listed": len(allowed), "builds": 0, "refused": [], "reasons": [], "configurations": {}}
+    verdict["refused"] = [{"file": f, "function": n, "line": line,
+                           "reason": "excluded by something other than #[cfg(test)] or #[test]"}
+                          for f, n, line, _ in disallowed]
+    if not allowed:
+        verdict["state"] = "refused" if disallowed else "passed"
         return verdict
-    unbodied = [key for key in hidden if key not in bodies]
+    unbodied = [key for key in allowed if key not in bodies]
     if unbodied:
-        verdict["reasons"].append(f"{len(unbodied)} hidden functions have no body to neutralise: {unbodied[:5]}")
+        verdict["reasons"].append(f"{len(unbodied)} allow-listed functions have no body to neutralise: {unbodied[:5]}")
     build = GateBuild(os.getcwd(), package)
-    original = {}
-    for config in CONFIGS:
-        try:
-            original[config] = build.build(config)
-            verdict["configurations"][config] = "built"
-        except RuntimeError as error:
-            if config == GATE:
-                raise
-            # A configuration that does not build cannot ship anything.
-            verdict["configurations"][config] = f"does not build: {str(error)[-200:]}"
-    gate = original[GATE]
-    verdict["reproducible"] = build.build(GATE, touch=build.roots)["nontest"] == gate["nontest"]
+    original = {config: build.build(config) for config in CONFIGS}
+    verdict["configurations"] = {config: "built" for config in original}
+    verdict["reproducible"] = build.build("gate", touch=build.roots) == original["gate"]
     if not verdict["reproducible"]:
         verdict["reasons"].append("two builds of the unmodified tree disagree: the comparison cannot be trusted")
-    edited_files = {key[0] for key in hidden}
-
-    def ships(config, result):
-        """A non-test unit changed, or one broke with an error in an edited file."""
-        base = original[config]["nontest"]
-        if any(result["nontest"].get(stem, digest) != digest for stem, digest in base.items() if stem in result["nontest"]):
-            return True
-        broken = set(base) - set(result["nontest"])
-        return bool(broken) and any(file in edited_files for file, _, _ in result["errors"])
-
     if not stock_bodies:
         stock, stock_bodies = listing("cargo", ["--package", package])
     verdict["control"] = {"mir_changed": False}
     for control in sorted(key for key in stock if key in stock_bodies)[:CONTROL_TRIES]:
-        edited = build.build(GATE, [(control[0], stock_bodies[control])], REPLACEMENTS[0])
-        complete = set(edited["nontest"]) == set(gate["nontest"])
-        if complete and edited["nontest"] != gate["nontest"]:
+        edited = build.build("gate", [(control[0], stock_bodies[control])], REPLACEMENTS[0])
+        if set(edited) == set(original["gate"]) and edited != original["gate"]:
             verdict["control"] = {"file": control[0], "function": control[1], "mir_changed": True}
             break
     if not verdict["control"]["mir_changed"]:
         verdict["reasons"].append("no mutated function both built completely and changed non-test MIR when neutralised")
+    spans = [(key[0], bodies[key]) for key in allowed if key in bodies]
+    def shipping(selected):
+        return sorted({config for config in CONFIGS for replacement in REPLACEMENTS
+                       if build.build(config, selected, replacement) != original[config]})
 
-    neutralisable = [key for key in hidden if key in bodies]
-    spans = [(key[0], bodies[key]) for key in neutralisable]
-    shipped_in = set()
-    proven = set()
-    gate_sections = {stem: sections(text) for stem, text in gate["harness"].items()}
-    for replacement in REPLACEMENTS:
-        for config in original:
-            result = build.build(config, spans, replacement)
-            if ships(config, result):
-                shipped_in.add(config)
-            if config == GATE:
-                after = {stem: sections(text) for stem, text in result["harness"].items()}
-                for key in neutralisable:
-                    for stem, base in gate_sections.items():
-                        name = section_of(key, base)
-                        if name is not None and stem in after and after[stem].get(name) != base[name]:
-                            proven.add(key)
-                    if set(gate["harness"]) - set(result["harness"]) and in_body(result["errors"], key, bodies[key]):
-                        proven.add(key)
-    verdict["shipping_configurations"] = sorted(shipped_in)
-
-    refused, individual = [], 0
-    for key in neutralisable:
-        body = bodies[key]
-        one_ships = False
-        if shipped_in:
-            # Name what ships: only the configurations where the batch showed it.
-            for config in sorted(shipped_in):
-                for replacement in REPLACEMENTS:
-                    individual += 1
-                    if individual > INDIVIDUAL_LIMIT:
-                        break
-                    if ships(config, build.build(config, [(key[0], body)], replacement)):
-                        one_ships = True
-                        break
-                if one_ships:
-                    break
-        if not one_ships and key not in proven:
-            for replacement in REPLACEMENTS:
-                individual += 1
-                if individual > INDIVIDUAL_LIMIT:
-                    break
-                result = build.build(GATE, [(key[0], body)], replacement)
-                moved = any(result["harness"].get(stem) is not None and digest_text(result["harness"][stem]) != digest_text(text)
-                            for stem, text in gate["harness"].items())
-                broke = set(gate["harness"]) - set(result["harness"]) and in_body(result["errors"], key, body)
-                if moved or broke:
-                    proven.add(key)
-                    break
-        if individual > INDIVIDUAL_LIMIT:
-            verdict["reasons"].append(f"more than {INDIVIDUAL_LIMIT} individual builds needed to prove hidden functions")
-            break
-        if one_ships or key not in proven:
-            refused.append({"file": key[0], "function": key[1], "line": key[2],
-                            "reason": "ships" if one_ships else "compiled nowhere"})
-    if shipped_in and not any(row["reason"] == "ships" for row in refused):
-        refused.append({"file": None, "function": f"{len(neutralisable)} hidden functions together", "line": None,
-                        "reason": "ships in " + ", ".join(sorted(shipped_in))})
-    verdict["refused"] = refused
+    shipped_in = shipping(spans)
+    verdict["shipping_configurations"] = shipped_in
+    if shipped_in:
+        # Allow-listed by source yet compiled into shipped code: a shadowed `#[test]` or a build
+        # script setting cfg(test). Named one by one when few; otherwise the batch is refused whole.
+        named = [key for key in allowed if key in bodies]
+        if len(named) <= ATTRIBUTION_LIMIT:
+            named = [key for key in named if shipping([(key[0], bodies[key])])]
+        verdict["refused"] += [{"file": f, "function": n, "line": line,
+                                "reason": "allow-listed but compiled into " + ", ".join(shipped_in)}
+                               for f, n, line, _ in named or allowed]
     verdict["builds"] = build.count
-    verdict["state"] = "inconclusive" if verdict["reasons"] else ("refused" if refused else "passed")
+    verdict["state"] = "inconclusive" if verdict["reasons"] else ("refused" if verdict["refused"] else "passed")
     return verdict
 
 

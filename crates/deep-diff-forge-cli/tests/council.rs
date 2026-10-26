@@ -115,7 +115,11 @@ impl Fixture {
     }
     /// Install the fake `cargo` with its mode baked in: the sandbox has no ambient environment.
     fn install_gate(&self, mode: &str) {
-        for name in ["cargo", "ddf-cargo-mutants-noexclude"] {
+        for name in [
+            "cargo",
+            "ddf-cargo-mutants-noexclude",
+            "ddf-cargo-mutants-strict",
+        ] {
             let tool = self.bin.join(name);
             fs::write(&tool, FAKE_GATE.replace("@MODE@", mode)).unwrap();
             fs::set_permissions(&tool, fs::Permissions::from_mode(0o700)).unwrap();
@@ -506,64 +510,59 @@ sys.exit(subprocess.run([exe]+[host(a) for a in inner[1:]],cwd=host(workdir),env
 const FAKE_IMAGE_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 /// Fake `cargo` inside the fake sandbox. Modes plant what a hostile candidate (or its tools) could
 /// leave in the job's writable `/work`: `vendor_symlink`, `vendor_root_symlink`, `vendor_fifo` and
-/// `vendor_dirs` (more empty directories than the seal's entry budget) in
-/// the vendoring output; `fifo` and `symlinked_dir` at the mutation witness. It also answers the
-/// exemption oracle (installed again as `ddf-cargo-mutants-noexclude`): `exempt` hides a function the
-/// production build compiles (`exempt_txt`: in a non-`.rs` module), `hidden_test` hides one it
-/// does not but a test harness does, `absent` hides one compiled nowhere, `mir_blind` emits MIR no
-/// change can alter, `neutral_fails` and `harness_fails` stop the non-test unit or only the test
-/// harness building when `hidden` is neutralised, `unreproducible` differs on every build, and
-/// `release_ships` compiles `hidden` into the non-test unit of release builds only.
+/// `vendor_dirs` (more empty directories than the seal's entry budget) in the vendoring output;
+/// `fifo` and `symlinked_dir` at the mutation witness. For the exemption oracle (installed again
+/// as `ddf-cargo-mutants-noexclude` and `ddf-cargo-mutants-strict`): `exempt`/`exempt_txt` hide
+/// `hidden` with something other than the allow-list; the rest hide it with `#[cfg(test)]`, and
+/// `hidden_test` keeps it out of non-test units, `shadowed` compiles it in (a shadowed `#[test]`),
+/// `release_ships` only in release, `neutral_fails`/`harness_fails` stop the non-test unit or
+/// only the harness building when it is neutralised, `mir_blind` emits MIR no change can alter,
+/// and `unreproducible` differs on every build.
 const FAKE_GATE: &str = r"#!/usr/bin/python3
 import json,os,pathlib,sys
 mode='@MODE@'
 if '--list' in sys.argv:
     # Exemption oracle listings over `ORACLE_LIB`: `shipped` (lines 1-3) is always mutated; the
-    # no-exclusion build also names `hidden` (lines 4-6, or 1-3 of the `.txt` module).
+    # no-exclusion build also names `hidden` (lines 4-6, or 1-3 of the `.txt` module); the strict
+    # build names it too when something other than `#[cfg(test)]`/`#[test]` hid it (`exempt*`).
     def fn(name,first,file='src/lib.rs'):
         span={'start':{'line':first,'column':1},'end':{'line':first+2,'column':2}}
         body={'start':{'line':first+1,'column':5},'end':{'line':first+1,'column':6}}
         return {'file':file,'genre':'FnValue','span':body,'function':{'function_name':name,'span':span}}
-    rows=[fn('shipped',1)]
-    if 'noexclude' in os.path.basename(sys.argv[0]):
-        if mode in ('exempt','hidden_test','mir_blind','neutral_fails','unreproducible','absent','harness_fails','release_ships'):rows.append(fn('hidden',4))
-        # A `#[path]` module need not end in `.rs` (council r10).
-        if mode=='exempt_txt':rows.append(fn('hidden',1,'src/hidden.txt'))
+    tool=os.path.basename(sys.argv[0]);rows=[fn('shipped',1)]
+    hidden=fn('hidden',1,'src/hidden.txt') if mode=='exempt_txt' else fn('hidden',4)
+    allow_listed={'hidden_test','shadowed','release_ships','neutral_fails','harness_fails','mir_blind','unreproducible'}
+    if 'noexclude' in tool and (mode in allow_listed or mode.startswith('exempt')):rows.append(hidden)
+    if 'strict' in tool and mode.startswith('exempt'):rows.append(hidden)
     print(json.dumps(rows));sys.exit(0)
 if sys.argv[1:2]==['metadata']:
     root=os.path.join(os.getcwd(),'src','lib.rs')
     package={'name':'deep-diff-forge-review','manifest_path':os.path.join(os.getcwd(),'Cargo.toml'),'targets':[{'name':'deep-diff-forge-review','kind':['rlib','cdylib'],'src_path':root}]}
     print(json.dumps({'packages':[package]}));sys.exit(0)
 if sys.argv[1:2]==['build'] and '--keep-going' in sys.argv:
-    # The oracle's builds. MIR stands in as the source text each unit compiles, with `pub fn`
-    # turned into MIR-style `fn` sections; `--tests` (the gate configuration) adds a harness.
+    # The oracle's builds. Non-test MIR stands in as the source text the unit compiles; `--tests`
+    # (the gate configuration) also builds a harness.
     assert 'CARGO_TARGET_DIR' not in os.environ and 'CARGO_INCREMENTAL' not in os.environ,'not the gate environment'
     assert os.environ.get('CARGO_ENCODED_RUSTFLAGS')=='--emit=link,mir' and os.environ.get('INSTA_UPDATE')=='no'
     gate='--tests' in sys.argv
     assert not gate or sys.argv[sys.argv.index('--profile')+1]=='test','the gate builds the test profile'
     lines=pathlib.Path('src/lib.rs').read_text().split('\n')
     neutralised=lines[4]!='    2'
-    as_mir=lambda text:text.replace('pub fn ','fn ')
-    shipped,hidden=as_mir('\n'.join(lines[:3])),as_mir('\n'.join(lines[3:]))
-    test_only={'hidden_test','absent','harness_fails','mir_blind'}
-    nontest=shipped if mode in test_only or (mode=='release_ships' and '--release' not in sys.argv) else shipped+'\n'+hidden
-    if mode=='exempt_txt':nontest+=as_mir(pathlib.Path('src/hidden.txt').read_text())
-    if mode=='mir_blind':nontest='fn constant() {}'
-    if mode=='unreproducible':import time;nontest+='\n// '+str(time.time_ns())
-    harness={'absent':shipped,'mir_blind':'fn constant() {}'}.get(mode,shipped+'\n'+hidden)
+    shipped,hidden='\n'.join(lines[:3]),'\n'.join(lines[3:])
+    ships=mode=='shadowed' or (mode=='release_ships' and '--release' in sys.argv)
+    nontest=shipped+'\n'+hidden if ships else shipped
+    if mode=='mir_blind':nontest='constant'
+    if mode=='unreproducible':import time;nontest+='\n'+str(time.time_ns())
     deps=pathlib.Path(os.getcwd(),'target','release' if '--release' in sys.argv else 'debug','deps');deps.mkdir(parents=True,exist_ok=True)
     def artifact(test,name,mir):
         (deps/name).write_text('binary')
         stem=name.split('.')[0].removeprefix('lib') if '.' in name else name
         (deps/(stem+'.mir')).write_text(mir)
         print(json.dumps({'reason':'compiler-artifact','manifest_path':os.path.join(os.getcwd(),'Cargo.toml'),'target':{'name':'deep-diff-forge-review','kind':['rlib','cdylib']},'profile':{'test':test},'filenames':[str(deps/name)]}))
-    def error():
-        print(json.dumps({'reason':'compiler-message','message':{'level':'error','spans':[{'file_name':'src/lib.rs','line_start':5,'line_end':5}]}}))
-    if mode=='neutral_fails' and neutralised:error();sys.exit(101)
-    artifact(False,'libdeep_diff_forge_review-0f.rlib',nontest)
-    if gate and mode=='harness_fails' and neutralised:error();sys.exit(101)
-    if gate:artifact(True,'deep_diff_forge_review-7e',harness)
-    sys.exit(0)
+    if not (mode=='neutral_fails' and neutralised):artifact(False,'libdeep_diff_forge_review-0f.rlib',nontest)
+    harness_breaks=mode=='harness_fails' and neutralised
+    if gate and not harness_breaks:artifact(True,'deep_diff_forge_review-7e',shipped+'\n'+hidden)
+    sys.exit(101 if (mode=='neutral_fails' and neutralised) or (gate and harness_breaks) else 0)
 if sys.argv[1:2]==['vendor']:
     out=pathlib.Path(sys.argv[-1])
     if mode=='vendor_root_symlink':out.symlink_to('/etc');sys.exit(0)
@@ -864,9 +863,10 @@ fn oracle_witness(f: &Fixture) -> serde_json::Value {
 }
 
 #[test]
-fn shipped_code_hidden_from_cargo_mutants_refuses_the_mutation_gate() {
+fn exclusions_other_than_cfg_test_are_refused_without_building() {
     for mode in ["exempt", "exempt_txt"] {
-        // Neutralising `hidden`'s body changes the production MIR, so it ships.
+        // The strict listing still names `hidden`: something other than `#[cfg(test)]` or a bare
+        // `#[test]` hid it, so no build can clear it (council r16).
         let f = oracle_fixture(mode);
         let result = f.gate("mutation");
         let stderr = String::from_utf8_lossy(&result.stderr);
@@ -879,8 +879,7 @@ fn shipped_code_hidden_from_cargo_mutants_refuses_the_mutation_gate() {
         let witness = oracle_witness(&f);
         assert_eq!(witness["state"], "refused", "{witness}");
         assert_eq!(witness["refused"][0]["function"], "hidden");
-        assert_eq!(witness["control"]["mir_changed"], true);
-        // Refused before the mutation gate's slot exists, and a rerun repeats the refusal.
+        assert_eq!(witness["builds"], 0, "{witness}");
         assert!(!f.run.join("jobs/gate-mutation").exists());
         assert_eq!(f.gate("mutation").status.code(), Some(4));
         let argv = f.runtime_argv("sandbox-exemption-oracle").concat();
@@ -893,8 +892,7 @@ fn shipped_code_hidden_from_cargo_mutants_refuses_the_mutation_gate() {
 }
 
 #[test]
-fn test_only_code_hidden_from_cargo_mutants_is_allowed() {
-    // `hidden` is listed only without exclusions, and changing it leaves the production MIR alone.
+fn allow_listed_test_code_passes() {
     let f = oracle_fixture("hidden_test");
     let result = f.gate("mutation");
     assert_eq!(
@@ -905,58 +903,45 @@ fn test_only_code_hidden_from_cargo_mutants_is_allowed() {
     );
     let witness = oracle_witness(&f);
     assert_eq!(witness["state"], "passed", "{witness}");
-    assert_eq!(witness["hidden_functions"], 1);
+    assert_eq!(witness["allow_listed"], 1);
     assert_eq!(witness["control"]["mir_changed"], true);
 }
 
 #[test]
-fn hidden_code_whose_neutralisation_breaks_the_build_ships() {
-    // Code absent from the production build cannot break it, so a failed build is a change.
+fn allow_listed_code_compiled_into_shipped_units_is_refused() {
+    // A shadowed `#[test]`, a build script setting cfg(test), or either only in release.
+    for (mode, configuration) in [("shadowed", "gate"), ("release_ships", "release")] {
+        let f = oracle_fixture(mode);
+        let result = f.gate("mutation");
+        assert_eq!(
+            result.status.code(),
+            Some(4),
+            "{mode}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let witness = oracle_witness(&f);
+        assert_eq!(witness["state"], "refused", "{witness}");
+        assert!(
+            witness["shipping_configurations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c == configuration),
+            "{witness}"
+        );
+    }
+}
+
+#[test]
+fn a_non_test_unit_that_stops_building_counts_as_shipping() {
     let f = oracle_fixture("neutral_fails");
-    let result = f.gate("mutation");
-    assert_eq!(
-        result.status.code(),
-        Some(4),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let witness = oracle_witness(&f);
-    assert_eq!(witness["state"], "refused", "{witness}");
-    assert_eq!(witness["refused"][0]["function"], "hidden");
+    assert_eq!(f.gate("mutation").status.code(), Some(4));
+    assert_eq!(oracle_witness(&f)["state"], "refused");
 }
 
 #[test]
-fn a_build_that_does_not_reproduce_is_inconclusive_and_refused() {
-    // Two builds of the unmodified tree must agree before any difference can mean anything.
-    let f = oracle_fixture("unreproducible");
-    let result = f.gate("mutation");
-    let stderr = String::from_utf8_lossy(&result.stderr);
-    assert_eq!(result.status.code(), Some(4), "{stderr}");
-    let witness = oracle_witness(&f);
-    assert_eq!(witness["state"], "inconclusive", "{witness}");
-    assert_eq!(witness["reproducible"], false);
-    assert!(!f.run.join("jobs/gate-mutation").exists());
-}
-
-#[test]
-fn hidden_code_compiled_nowhere_is_refused() {
-    // Listed, its mutants would survive and hold the gate; hiding it must not clear it (council r14).
-    let f = oracle_fixture("absent");
-    let result = f.gate("mutation");
-    assert_eq!(
-        result.status.code(),
-        Some(4),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let witness = oracle_witness(&f);
-    assert_eq!(witness["state"], "refused", "{witness}");
-    assert_eq!(witness["refused"][0]["reason"], "compiled nowhere");
-}
-
-#[test]
-fn a_test_harness_that_stops_building_proves_test_code_not_shipping() {
-    // A test-only `const fn` evaluated in a test constant breaks only the harness (council r14).
+fn a_test_harness_that_stops_building_is_still_test_code() {
+    // A neutralised test-only `const fn` used in a test constant breaks only the harness.
     let f = oracle_fixture("harness_fails");
     let result = f.gate("mutation");
     assert_eq!(
@@ -966,6 +951,16 @@ fn a_test_harness_that_stops_building_proves_test_code_not_shipping() {
         String::from_utf8_lossy(&result.stderr)
     );
     assert_eq!(oracle_witness(&f)["state"], "passed");
+}
+
+#[test]
+fn a_build_that_does_not_reproduce_is_inconclusive_and_refused() {
+    let f = oracle_fixture("unreproducible");
+    assert_eq!(f.gate("mutation").status.code(), Some(4));
+    let witness = oracle_witness(&f);
+    assert_eq!(witness["state"], "inconclusive", "{witness}");
+    assert_eq!(witness["reproducible"], false);
+    assert!(!f.run.join("jobs/gate-mutation").exists());
 }
 
 #[test]
@@ -984,33 +979,7 @@ fn the_mutation_job_emits_mir_like_the_oracle() {
 }
 
 #[test]
-fn test_code_that_ships_in_another_configuration_is_refused() {
-    // `cfg(any(test, not(debug_assertions)))`: a harness in the gate build, shipped in release
-    // (council r15). The gate configuration alone would call it test code.
-    let f = oracle_fixture("release_ships");
-    let result = f.gate("mutation");
-    assert_eq!(
-        result.status.code(),
-        Some(4),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let witness = oracle_witness(&f);
-    assert_eq!(witness["state"], "refused", "{witness}");
-    assert_eq!(witness["refused"][0]["reason"], "ships");
-    assert!(
-        witness["shipping_configurations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|c| c == "release"),
-        "{witness}"
-    );
-}
-
-#[test]
 fn a_comparison_the_positive_control_cannot_move_is_inconclusive_and_refused() {
-    // MIR that no change alters cannot clear anything, whatever the listings say.
     let f = oracle_fixture("mir_blind");
     let result = f.gate("mutation");
     let stderr = String::from_utf8_lossy(&result.stderr);

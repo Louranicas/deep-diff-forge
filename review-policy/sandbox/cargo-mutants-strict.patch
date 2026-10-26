@@ -1,0 +1,27 @@
+--- a/src/visit.rs
++++ b/src/visit.rs
+@@ -849,8 +849,8 @@
+ /// True if the signature of a function is such that it should be excluded.
+ fn fn_sig_excluded(sig: &syn::Signature) -> bool {
+     if sig.unsafety.is_some() {
+-        trace!("Skip unsafe fn");
+-        true
++        // Deep-Diff-Forge strict build: an unsafe fn is listed like any other.
++        false
+     } else {
+         false
+     }
+@@ -860,9 +860,12 @@
+ ///
+ /// This checks for `#[cfg(test)]`, attributes whose path ends with `test` (like `#[test]` or `#[tokio::test]`), and `#[mutants::skip]`.
+ fn attrs_excluded(attrs: &[Attribute]) -> bool {
++    // Deep-Diff-Forge strict build (review-policy/sandbox): only exact `#[cfg(test)]` and a bare
++    // `#[test]` hide an item, so the exemption oracle can refuse every other exclusion outright.
++    let _ = (attr_is_test, attr_is_mutants_skip);
+     attrs
+         .iter()
+-        .any(|attr| attr_is_cfg_test(attr) || attr_is_test(attr) || attr_is_mutants_skip(attr))
++        .any(|attr| attr_is_cfg_test(attr) || path_is(attr.path(), &["test"]))
+ }
+ 
+ /// True if the block (e.g. the contents of a function) is empty.
