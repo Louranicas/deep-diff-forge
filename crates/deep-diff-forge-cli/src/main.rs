@@ -217,7 +217,7 @@ const EXIT_REFUSED: i32 = exit::INPUT_CONTRACT_REFUSED;
 
 /// The `--require-files` / `--require-hunks` input contracts, parsed from the CLI flags; the
 /// predicate itself is [`deep_diff_forge_patch::InputGuards`], shared with the daemon.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct InputGuards(deep_diff_forge_patch::InputGuards);
 
 impl InputGuards {

@@ -5,8 +5,18 @@
 
 use deep_diff_forge_core::{PatchLineKind, ReviewFile};
 
-/// Which input contracts to apply.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Which input contracts to apply. There is no `Default` (anchor C-04): "no guards" must be
+/// written out, so `..Default::default()` cannot silently drop a contract a caller asked for.
+///
+/// ```
+/// let none = deep_diff_forge_patch::InputGuards { files: false, hunks: false };
+/// assert_eq!(none.refusal(&[]), None);
+/// ```
+///
+/// ```compile_fail
+/// let _ = deep_diff_forge_patch::InputGuards::default();
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputGuards {
     /// Refuse a patch that parses to 0 files.
     pub files: bool,
@@ -68,7 +78,11 @@ mod tests {
             .refusal(&[]),
             Some("0 hunks in input (--require-hunks)")
         );
-        assert_eq!(InputGuards::default().refusal(&[]), None);
+        let none = InputGuards {
+            files: false,
+            hunks: false,
+        };
+        assert_eq!(none.refusal(&[]), None);
         let header_only = files("diff --git a/x b/x\nindex 1..2 100644\n");
         assert_eq!(
             both.refusal(&header_only),

@@ -178,6 +178,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **`InputGuards` has no `Default`** (anchor C-04; library API). "No guards"
+  is written out as `InputGuards { files: false, hunks: false }`, so
+  `..Default::default()` can no longer silently drop a contract a caller asked
+  for; the SDK's `Guards` already worked this way. A `compile_fail` doctest
+  holds it.
 - **The test-count floor is retired** (anchor B-09). The 50-tests-per-crate
   rule was never enforced, and `just test-audit` always exited 0 (and read 0
   without `rg`); the project's own antipattern catalogue lists count literals
