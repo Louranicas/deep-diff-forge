@@ -8,6 +8,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **The crate graph is a committed table** (anchor B-05).
+  `docs/crate-edges.txt` lists every edge between workspace crates (normal,
+  dev and target-specific kept apart), and `tests/crate_edges.rs` compares it
+  with `cargo metadata`: a new dependency between workspace crates fails until
+  the table is changed in a reviewed diff, and a row no `Cargo.toml` declares
+  fails as stale.
 - **Effects go through named doors** (anchor B-04). A new `clippy.toml`
   disallows `Command::new`, `env::var`/`var_os`, `Instant::now`,
   `SystemTime::now` and `thread::sleep`. The 21 functions that legitimately
