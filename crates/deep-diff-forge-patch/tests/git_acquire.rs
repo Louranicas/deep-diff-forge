@@ -606,3 +606,44 @@ fn repository_config_cannot_reshape_the_acquisition() {
     let after = acquire_git(r, &GitSelection::WorkingTree, &options(true)).unwrap();
     assert_eq!(after.diff(), before.diff());
 }
+
+/// Anchor A-02: acquisition in a partial clone must not fetch. Before, `git diff` lazily ran
+/// `git fetch origin` against the promisor remote (a network effect from a read-only command);
+/// now transports are off, so a missing blob is an error and no object arrives.
+#[test]
+fn a_partial_clone_is_never_fetched_from() {
+    let root = std::env::temp_dir().join(format!("ddf-git-acq-promisor-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let origin = root.join("origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    git_out(&origin, &["init", "-q"]);
+    for n in 1..=2 {
+        std::fs::write(origin.join("f.txt"), format!("version {n}\n")).unwrap();
+        git_out(&origin, &["add", "-A"]);
+        git_out(&origin, &["commit", "-q", "-m", "c"]);
+    }
+    git_out(&origin, &["config", "uploadpack.allowFilter", "true"]);
+    let url = format!("file://{}", origin.display());
+    git_out(
+        &root,
+        &[
+            "clone",
+            "-q",
+            "--filter=blob:none",
+            "--no-checkout",
+            &url,
+            "clone",
+        ],
+    );
+    let clone = root.join("clone");
+    let objects = || git_text(&clone, &["count-objects", "-v"]);
+    let before = objects();
+    let range = GitSelection::parse_range("HEAD~1..HEAD").unwrap();
+    assert!(acquire_git(&clone, &range, &options(false)).is_err());
+    assert_eq!(
+        objects(),
+        before,
+        "acquisition fetched from the promisor remote"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

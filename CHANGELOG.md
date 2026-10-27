@@ -204,6 +204,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Security
 
+- **One hardened Git door** (anchor A-02). Git acquisition (`patch`) and
+  council storage (`review`) now apply the same set from
+  `deep_diff_forge_core::git`: no optional locks, replacement refs, fsmonitor,
+  hooks, external diff or transports (`protocol.allow=never`,
+  `GIT_NO_LAZY_FETCH`), and every inherited variable that would point Git at
+  another repository removed. Measured before: `--git-range` in a partial clone
+  ran `git fetch origin` against the promisor remote (a network effect from a
+  read-only command); council storage honoured an inherited `GIT_DIR`, so
+  `rev-parse HEAD` named another repository while the top-level check passed.
+  A partial clone's missing blob is now an error, not a fetch.
 - Council gates never fall back to the host: a missing gate image or a failed
   dependency-vendoring job is a refusal. Vendored dependencies are sealed and
   re-measured before each gate; base Git objects are verified on read.
