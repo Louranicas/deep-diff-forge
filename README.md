@@ -866,7 +866,7 @@ implemented and gated by tests; per-feature end-to-end proof is tracked in the
   promotion; wiring the engine's hot path to *emit* receipts automatically (vs.
   the explicit `learn record`) lands as live signal accrues.
 - **Release**: the staged merges extend the 0.2.1 base and are not newly publish-qualified. **crates.io publication is on hold until the codebase is production-ready**; registry credentials alone are insufficient, and quality, supply-chain, API versioning and release checks must pass first.
-- **Remaining before a release (2026-10-26):** the CLI contract, daemon parity, SDK and MCP slices A–D ([roadmap](docs/ROADMAP.md#status-2026-10-26)); reconciling the diverged GitLab `main`; and a measured move from the `ubuntu-24.04` runner pin to Ubuntu 26 (Node 20 actions are already replaced by their Node 24 releases).
+- **Remaining before a release (2026-10-26):** the CLI contract, daemon parity, SDK and MCP slices A–D ([roadmap](docs/ROADMAP.md#status-2026-10-26)); reconciling the diverged GitLab `main`; and a measured move from the `ubuntu-24.04` runner pin to Ubuntu 26 (Node 20 actions are already replaced by their Node 24 releases). As of 2026-10-27 all three are done: slices A–D are merged, GitHub and GitLab `main` share one history, and CI runs on `ubuntu-26.04`.
 - Semantic parsing now has cooperative progress-callback cancellation; node limits remain post-parse, and this is not an OS hard-time isolation boundary.
 - **Local integration (operator workstation only, not a DDF feature):** Herdr's Poteto Weave index (`/mnt/storage-10tb/hee4-evidence/prototypes/turso-tool-context/assimilation-20261005/`) indexes DDF context, and HEE's DDF adapter consumes review observations; HEE retains verdict authority.
 

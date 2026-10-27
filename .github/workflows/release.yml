@@ -28,7 +28,7 @@ jobs:
   # this is a hard prerequisite of every downstream job.
   supply-chain:
     name: supply chain gate
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
@@ -79,6 +79,9 @@ jobs:
         # not compile on Windows (the crate emits a clear compile_error there).
         # Targets are Linux + macOS to match the code's platform contract.
         include:
+          # The Linux binary stays on the older LTS on purpose: a binary links against the
+          # glibc of the image that built it, so building on 26.04 would stop it running on
+          # 24.04-era distributions (decision of the Ubuntu 26 move, 2026-10-27).
           - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
           - { os: macos-latest, target: x86_64-apple-darwin }
           - { os: macos-latest, target: aarch64-apple-darwin }
@@ -142,7 +145,7 @@ jobs:
     name: crates.io publish (token-gated)
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)

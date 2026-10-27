@@ -116,7 +116,7 @@ Done:
   under a stop rule ([r18–r22](REVIEW_COUNCIL.md#cfg-test-only-r18)).
 - **CI platform:** every job runs on `ubuntu-24.04`, the image the Podman step
   was measured on, and the Node 20 actions moved to their Node 24 releases
-  (stage D).
+  (stage D). Since 2026-10-27, CI runs on `ubuntu-26.04` (item 3 below).
 - **Review interop:** Git acquisition (P1a), tuicr export (P1b) and the
   decision journal (P1c).
 
@@ -143,8 +143,10 @@ Remaining, in order:
 
    A comes first, then B and D together, then C. All four are implemented.
 2. **GitLab `main` divergence:** reconcile it before any GitLab push of `main`.
-3. **Ubuntu 26:** a measured move off the `ubuntu-24.04` pin, re-checking
-   rootless Podman.
+3. **Ubuntu 26:** done 2026-10-27. CI moved to `ubuntu-26.04` after a measured
+   trial: rootless Podman 5.7.0 needed the same AppArmor user-namespace step as
+   24.04, and all 12 sandbox probes were refused. The Linux release binary is
+   still built on `ubuntu-24.04` for glibc compatibility.
 4. **crates.io:** on hold until the codebase is production-ready and the
    repository documentation is current.
 

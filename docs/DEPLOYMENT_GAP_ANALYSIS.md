@@ -89,7 +89,9 @@ Still open:
   and must be reconciled before it is pushed.
 - **CI platform drift** — Node 20 actions are deprecated, and `ubuntu-latest`
   moves to Ubuntu 26; the rootless-Podman CI step is measured on Ubuntu 24.04
-  only.
+  only. (Corrected 2026-10-27: CI now runs on `ubuntu-26.04`, measured with
+  rootless Podman 5.7.0; the Linux release binary is still built on 24.04 for
+  glibc reach.)
 
 ## Executive Gaps
 

@@ -28,7 +28,7 @@ concurrency:
 jobs:
   secrets:
     name: secret scan (gitleaks)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
@@ -49,7 +49,7 @@ jobs:
 
   msrv:
     name: declared Rust 1.88 compatibility
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
@@ -63,7 +63,7 @@ jobs:
 
   gate:
     name: deploy gate-feature
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
@@ -129,7 +129,7 @@ jobs:
 
   review-controller-evidence:
     name: review controller mutation and fuzz evidence
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Raised from 30: the gate image build installs two Rust toolchains and compiles
     # cargo-mutants and cargo-fuzz inside the image.
     timeout-minutes: 75
@@ -178,9 +178,11 @@ jobs:
       # Council quality gates only run inside the rootless Podman gate sandbox
       # (docs/REVIEW_COUNCIL.md#gate-sandbox). The ubuntu runner images ship podman.
       #
-      # Every job is pinned to ubuntu-24.04, the image this step was measured on (2026-10-26):
-      # `ubuntu-latest` moves to Ubuntu 26 from 2026-10-19 (actions/runner-images#14748), and
-      # that move is taken as its own measured change, not silently.
+      # Every job is pinned to ubuntu-26.04, the image this step was last measured on: on
+      # 2026-10-27 (PR #19, run 40475668326) Ubuntu 26.04.1 LTS, kernel 7.0.0-1017-azure and
+      # podman 5.7.0 started with kernel.apparmor_restrict_unprivileged_userns=1, as 24.04 did;
+      # the step below lifted it and all 12 planted-breach probes were refused. The pin is
+      # explicit (not ubuntu-latest), so the next image move is again its own measured change.
       # Originally UNVERIFIED on GitHub-hosted runners: Ubuntu 23.10+ (so ubuntu-24.04)
       # restricts unprivileged user namespaces through AppArmor, which can make rootless
       # podman fail with "unshare(...): Operation not permitted". Ubuntu documents the switch
@@ -191,9 +193,13 @@ jobs:
       # No GitHub-maintained recommendation for rootless podman on ubuntu-24.04 was found, so
       # this relaxes the sysctl on the ephemeral runner VM only when it is present and set.
       # The alternative is a per-binary AppArmor profile granting `userns,` (same Ubuntu post).
-      - name: allow rootless podman user namespaces (ubuntu-24.04; measured working 2026-10-26)
+      - name: allow rootless podman user namespaces (measured on ubuntu-24.04 2026-10-26, ubuntu-26.04 2026-10-27)
         run: |
           podman --version
+          # Ubuntu 26 trial: record the image, kernel and the restriction's starting value.
+          grep -E '^(PRETTY_NAME|VERSION_ID)=' /etc/os-release
+          uname -r
+          echo "apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
           if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = "1" ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
@@ -236,7 +242,7 @@ jobs:
     # one missed mutant or timeout fails. Sharded four ways so a large change still fits.
     name: diff mutation (shard ${{ matrix.shard }}/4)
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -262,7 +268,7 @@ jobs:
 
   supply-chain:
     name: supply chain audit
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
