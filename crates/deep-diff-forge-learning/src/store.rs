@@ -587,6 +587,16 @@ mod tests {
         assert!(count_receipts(&dir).is_err());
     }
 
+    /// The budgets are part of the store's contract: 1 MiB per record, 64 MiB on disk and
+    /// 100,000 records.
+    #[test]
+    fn the_store_budgets_are_the_documented_ones() {
+        assert_eq!(
+            (MAX_RECEIPT_LINE_BYTES, MAX_RECEIPTS_BYTES, MAX_RECEIPTS),
+            (1_048_576, 67_108_864, 100_000)
+        );
+    }
+
     /// The per-record budget is inclusive: a line of exactly `MAX_RECEIPT_LINE_BYTES` (newline
     /// included) is read, one byte more is refused by name, on both read paths.
     #[test]
@@ -653,6 +663,48 @@ mod tests {
             .to_string();
         assert!(error.contains("on-disk size budget"), "{error}");
         assert_eq!(fs::metadata(&path).unwrap().len(), MAX_RECEIPTS_BYTES);
+    }
+
+    /// Blank padding: `bytes` bytes of whitespace lines, each within the per-record budget.
+    fn blank_padding(bytes: usize) -> Vec<u8> {
+        // A budget mutated to a few bytes would make this loop run 64M times; refuse to build.
+        const { assert!(MAX_RECEIPT_LINE_BYTES >= 1024) };
+        let mut body = Vec::with_capacity(bytes);
+        while body.len() < bytes {
+            let line = (bytes - body.len()).min(MAX_RECEIPT_LINE_BYTES);
+            body.extend(std::iter::repeat_n(b' ', line - 1));
+            body.push(b'\n');
+        }
+        body
+    }
+
+    /// The on-disk budget is inclusive on read: a store of exactly `MAX_RECEIPTS_BYTES` is read
+    /// whole by both read paths.
+    #[test]
+    fn a_store_exactly_at_the_size_budget_is_readable() {
+        let dir = temp_dir();
+        let _guard = Scratch(dir.clone());
+        let path = receipts_path(&dir);
+        let size = usize::try_from(MAX_RECEIPTS_BYTES).unwrap();
+        write_private(&path, &blank_padding(size));
+        assert_eq!(fs::metadata(&path).unwrap().len(), MAX_RECEIPTS_BYTES);
+        assert_eq!(count_receipts(&dir).unwrap(), 0);
+        assert_eq!(load_receipts(&dir).unwrap().len(), 0);
+    }
+
+    /// The on-disk budget is inclusive on append: an append that lands exactly on it succeeds.
+    #[test]
+    fn an_append_that_reaches_the_size_budget_exactly_is_kept() {
+        let dir = temp_dir();
+        let _guard = Scratch(dir.clone());
+        let path = receipts_path(&dir);
+        let new = receipt(Strategy::Patch, ReviewOutcome::Accepted);
+        let line = new.to_json().unwrap().len() + 1;
+        let size = usize::try_from(MAX_RECEIPTS_BYTES).unwrap();
+        write_private(&path, &blank_padding(size - line));
+        append_receipt(&dir, &new).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), MAX_RECEIPTS_BYTES);
+        assert_eq!(load_receipts(&dir).unwrap(), vec![new]);
     }
 
     /// Anchor C-07: an unredacted identity cannot be built at all; the JSON form of one is refused
