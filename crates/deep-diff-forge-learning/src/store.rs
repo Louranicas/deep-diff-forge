@@ -285,7 +285,9 @@ fn read_capped_line(
 /// A missing store is not an error — it yields an empty vector (the loop is
 /// fail-soft: "no data yet" is a normal state). Blank lines are skipped. A
 /// single corrupt line aborts with [`LearningError::Deserialize`] rather than
-/// silently dropping data, so corruption is visible rather than masked.
+/// silently dropping data, so corruption is visible rather than masked. Every
+/// record must also pass the privacy checks [`append_receipt`] applies, so a
+/// hand-edited line holding a path is refused, naming its line (anchor A-05).
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read, or if a non-blank
@@ -300,12 +302,14 @@ pub fn load_receipts(dir: &Path) -> Result<Vec<StrategyReceipt>, LearningError> 
     let mut receipts = Vec::new();
     let mut line = Vec::new();
     let mut total_read = 0_u64;
+    let mut number = 0_usize;
     loop {
         line.clear();
         let read = read_capped_line(&mut reader, &mut line)?;
         if read == 0 {
             break;
         }
+        number += 1;
         total_read = total_read.saturating_add(read as u64);
         if total_read > MAX_RECEIPTS_BYTES {
             return Err(invalid_data(
@@ -323,7 +327,14 @@ pub fn load_receipts(dir: &Path) -> Result<Vec<StrategyReceipt>, LearningError> 
                 "receipt store exceeds the record-count budget",
             ));
         }
-        receipts.push(StrategyReceipt::from_json(trimmed)?);
+        let receipt = StrategyReceipt::from_json(trimmed)?;
+        validate_receipt_for_storage(&receipt).map_err(|error| {
+            LearningError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("receipt store line {number}: {error}"),
+            ))
+        })?;
+        receipts.push(receipt);
     }
     Ok(receipts)
 }
@@ -581,6 +592,28 @@ mod tests {
         let receipt = StrategyReceipt::new("secret/source/path.rs", "rust", "v1", Strategy::Patch);
         assert!(append_receipt(&dir, &receipt).is_err());
         assert!(!receipts_path(&dir).exists());
+    }
+
+    /// Anchor A-05: a hand-edited store cannot smuggle a path past the privacy contract; before,
+    /// only `append_receipt` checked it and `load_receipts` accepted any parseable line.
+    #[test]
+    fn load_refuses_records_that_append_would_refuse() {
+        let dir = temp_dir();
+        let _guard = Scratch(dir.clone());
+        append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted)).unwrap();
+        assert_eq!(load_receipts(&dir).unwrap().len(), 1);
+        let good = fs::read(receipts_path(&dir)).unwrap();
+        for bad in [
+            StrategyReceipt::new("/home/x/secret.rs", "rust", "v1", Strategy::Patch),
+            StrategyReceipt::new("0123456789abcdef", "../../secret", "v1", Strategy::Patch),
+        ] {
+            let mut store = good.clone();
+            store.extend_from_slice(bad.to_json().unwrap().as_bytes());
+            store.push(b'\n');
+            write_private(&receipts_path(&dir), &store);
+            let error = load_receipts(&dir).unwrap_err().to_string();
+            assert!(error.contains("receipt store line 2: "), "{error}");
+        }
     }
 
     #[test]

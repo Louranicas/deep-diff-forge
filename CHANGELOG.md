@@ -201,6 +201,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   names the side (removed: old, added: new, context: both). Before, patches
   that differed only in which side lacked the newline produced identical JSON,
   although git applies one and refuses the other. Other output is unchanged.
+- **The learning store validates records on load** (anchor A-05). A hand-edited
+  line holding a path (or a path-like token) is refused, naming its line; before,
+  only `append_receipt` applied the privacy checks.
 - Non-Unix `path_from_bytes` (`deep-diff-forge-patch`) reuses valid UTF-8
   without a copy, which clears `clippy::needless_pass_by_value` in a
   Windows-target pedantic build.
