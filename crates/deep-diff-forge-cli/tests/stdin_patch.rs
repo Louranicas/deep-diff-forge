@@ -185,3 +185,65 @@ fn diagnostics_go_to_stderr_not_stdout() {
     assert!(stdout.is_empty(), "stdout must stay clean on error");
     assert!(!stderr.is_empty(), "stderr must carry the diagnostic");
 }
+
+fn run_bytes(args: &[&str], stdin: &[u8]) -> (i32, String, String) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    child
+        .stdin
+        .take()
+        .expect("stdin handle")
+        .write_all(stdin)
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8(out.stdout).expect("stdout is UTF-8"),
+        String::from_utf8(out.stderr).expect("stderr is UTF-8"),
+    )
+}
+
+const MIXED: &[u8] = b"diff --git a/ok.rs b/ok.rs\n--- a/ok.rs\n+++ b/ok.rs\n@@ -1 +1 @@\n-a\n+b\n\
+diff --git a/seed b/seed\nnew file mode 100644\n--- /dev/null\n+++ b/seed\n@@ -0,0 +1 @@\n+\xff{\"jsonrpc\"}\n";
+
+/// Anchor C-12: before, one non-UTF-8 line refused the whole review ("stdin is not valid UTF-8",
+/// exit 3; DDF could not review its own merge #11, whose fuzz seeds start with 0xff).
+#[test]
+fn non_utf8_content_is_reviewed_with_its_file_marked_and_bytes_sealed() {
+    let (code, stdout, stderr) = run_bytes(&["--stdin-patch", "--json"], MIXED);
+    assert_eq!(code, 0, "{stderr}");
+    let doc: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(doc["input_sha256"], deep_diff_forge_core::sha256_hex(MIXED));
+    let files = doc["files"].as_array().unwrap();
+    assert_eq!(files[0]["path"], "ok.rs");
+    assert!(files[0].get("lossy_lines").is_none());
+    assert_eq!(files[1]["path"], "seed");
+    assert_eq!(files[1]["lossy_lines"], 1);
+    assert_eq!(
+        files[1]["hunks"][0]["lines"][0]["text"],
+        "\u{fffd}{\"jsonrpc\"}"
+    );
+
+    let (code, stdout, _) = run_bytes(&["--stdin-patch", "--jsonl"], MIXED);
+    assert_eq!(code, 0);
+    let events: Vec<&str> = stdout.lines().collect();
+    assert_eq!(events.len(), 2);
+    assert!(!events[0].contains("lossy_lines"));
+    assert!(events[1].ends_with(",\"lossy_lines\":1}"), "{}", events[1]);
+
+    let (code, stdout, _) = run_bytes(&["--stdin-patch"], MIXED);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("seed  (+1 -0, 1 hunks)  [1 non-UTF-8 line(s) shown lossily]"),
+        "{stdout}"
+    );
+
+    // The guards still apply to the decoded patch.
+    let (code, _, _) = run_bytes(&["--stdin-patch", "--json", "--require-hunks"], MIXED);
+    assert_eq!(code, 0);
+}

@@ -178,6 +178,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   with exit 0. Commands that take no arguments (`doctor`, `--version`, the
   `*-contract` printers) and `schema` now refuse extra ones too. A test ties
   every option in `--help` to an invocation that admits it.
+- **A non-UTF-8 line no longer refuses the whole review** (anchor C-12).
+  Real repositories commit non-UTF-8 content (Latin-1 sources, fuzz corpora):
+  2 of 33 HEE v5 commits, and DDF's own merge #11 (binary fuzz seeds), failed
+  with exit 3. Now `patch::decode` keeps valid lines byte-exact and decodes an
+  invalid line lossily (U+FFFD); the parser marks only that line's file
+  (`PatchTwin::lossy_lines`, shown as `"lossy_lines": N` in the review JSON and
+  JSONL, and in the human summary), and every seal covers the exact input
+  bytes (`seal_of` takes bytes; `CapturedPatch::capture_bytes`,
+  `original_bytes`, `is_exact`). Output for UTF-8 input is byte-identical. A
+  non-UTF-8 *path* is still refused, because a path is an identity.
+  `GitAcquireError::NonUtf8Patch` is removed.
 - Non-Unix `path_from_bytes` (`deep-diff-forge-patch`) reuses valid UTF-8
   without a copy, which clears `clippy::needless_pass_by_value` in a
   Windows-target pedantic build.
