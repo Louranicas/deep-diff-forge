@@ -127,7 +127,25 @@ impl FileStatus {
 
 #[cfg(test)]
 mod file_status_tests {
-    use super::FileStatus;
+    use super::{FileStatus, SemanticChangeKind};
+
+    /// Semantic regions sort by kind in this order; the JSON regions of every review depend on it.
+    #[test]
+    fn semantic_kinds_rank_in_their_published_order() {
+        use SemanticChangeKind::{
+            AddedNode, ModifiedNode, MovedNode, ReformattedOnly, RemovedNode, RenamedSymbol,
+        };
+        let ranks = [
+            AddedNode,
+            RemovedNode,
+            ModifiedNode,
+            MovedNode,
+            ReformattedOnly,
+            RenamedSymbol,
+        ]
+        .map(SemanticChangeKind::rank);
+        assert_eq!(ranks, [0, 1, 2, 3, 4, 5]);
+    }
 
     #[test]
     fn labels_are_snake_case() {
@@ -212,6 +230,23 @@ pub enum SemanticChangeKind {
     MovedNode,
     ReformattedOnly,
     RenamedSymbol,
+}
+
+impl SemanticChangeKind {
+    /// The position of this kind in sorted output. Written out, not `self as u8`, so reordering
+    /// or inserting a variant cannot silently reorder output that callers compare (anchor D-02);
+    /// a new variant fails to compile until it is given a rank.
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::AddedNode => 0,
+            Self::RemovedNode => 1,
+            Self::ModifiedNode => 2,
+            Self::MovedNode => 3,
+            Self::ReformattedOnly => 4,
+            Self::RenamedSymbol => 5,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

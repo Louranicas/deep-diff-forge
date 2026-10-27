@@ -305,7 +305,7 @@ fn regions_json(spans: &[SemanticSpan]) -> String {
     sorted.sort_by_key(|s| {
         (
             s.hunk_id.0,
-            s.kind as u8,
+            s.kind.rank(),
             lines(s.old_range),
             lines(s.new_range),
         )
