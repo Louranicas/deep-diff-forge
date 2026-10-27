@@ -842,6 +842,51 @@ mod tests {
         assert_eq!(MANIFEST_SCHEMA, "deep-diff-forge.council.v1");
     }
 
+    /// The seal needs both the schema and the digest: a resealed manifest with another schema, and
+    /// a correct schema over a tampered body, are each refused by name.
+    #[test]
+    fn the_seal_needs_the_schema_and_the_digest() {
+        let directory = std::env::temp_dir().join(format!("ddf-seal-{}", std::process::id()));
+        let mut request = crate::cli::example();
+        request.profile = crate::model::Profile::Roster;
+        request.reviewers.truncate(2);
+        let build = |schema: &str| {
+            let mut manifest = Manifest {
+                schema: schema.into(),
+                run_id: String::new(),
+                review_id: "c".repeat(64),
+                source_tree: "d".repeat(64),
+                request: request.clone(),
+                artifacts: Vec::new(),
+                mutation_diff_sha256: None,
+            };
+            manifest.run_id = manifest_digest(&manifest).unwrap();
+            manifest
+        };
+        let mut tampered = build(MANIFEST_SCHEMA);
+        tampered.source_tree = "e".repeat(64);
+        for (manifest, sealed) in [
+            (build(MANIFEST_SCHEMA), true),
+            (build("deep-diff-forge.council.v0"), false),
+            (tampered, false),
+        ] {
+            let _ = fs::remove_dir_all(&directory);
+            fs::create_dir_all(&directory).unwrap();
+            write_json(&directory.join("manifest.json"), &manifest).unwrap();
+            match load_manifest(&directory) {
+                Ok(_) => assert!(sealed, "{}", manifest.schema),
+                Err(error) => {
+                    assert!(!sealed, "{error}");
+                    assert!(
+                        error.to_string().contains("manifest seal mismatch"),
+                        "{error}"
+                    );
+                }
+            }
+        }
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
     #[test]
     fn a_resealed_manifest_with_half_a_mutation_scope_is_refused() {
         let directory = std::env::temp_dir().join(format!("ddf-c03-{}", std::process::id()));
