@@ -161,15 +161,41 @@ pub fn process_line(line: &str, engine: &Mutex<Engine>) -> String {
                     Ok(g) => g,
                     Err(poison) => poison.into_inner(),
                 };
+                #[cfg(test)]
+                panic_on_test_method(&request.method);
                 dispatch(&request, &mut guard)
             }));
             match outcome {
                 Ok(Ok(result)) => success_response(&id, result),
                 Ok(Err(err)) => error_response(&id, &err),
-                Err(_) => error_response(&id, &RpcError::new(INTERNAL_ERROR, "internal error")),
+                Err(_) => {
+                    recover(engine);
+                    error_response(&id, &RpcError::new(INTERNAL_ERROR, "internal error"))
+                }
             }
         }
     }
+}
+
+/// Test-only: `test.panic` panics while the engine is held, to exercise [`recover`].
+#[cfg(test)]
+fn panic_on_test_method(method: &str) {
+    assert!(
+        method != "test.panic",
+        "test-only panic while holding the engine"
+    );
+}
+
+/// After a contained panic: reset the sessions the panic may have left inconsistent and clear the
+/// poison, so every later request is served as before. Before, the lock stayed poisoned, and each
+/// connection loop read that as "not running": every later connection got one answer and was
+/// dropped (anchor A-03).
+fn recover(engine: &Mutex<Engine>) {
+    engine
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .reset_sessions();
+    engine.clear_poison();
 }
 
 /// Read one newline-terminated line into `buf`, reading at most `cap + 1` bytes.
@@ -639,6 +665,51 @@ mod tests {
         let resp = process_line(r#"{"id":2,"method":"nope"}"#, &e);
         let v: Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["error"]["code"], crate::protocol::METHOD_NOT_FOUND);
+    }
+
+    /// Anchor A-03: a contained panic drops the sessions it may have corrupted and clears the
+    /// poison, so the engine keeps serving.
+    #[test]
+    fn a_contained_panic_resets_sessions_and_clears_the_poison() {
+        let e = engine();
+        let open = r#"{"id":1,"method":"session.open","params":{"patch":"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"}}"#;
+        let opened: Value = serde_json::from_str(&process_line(open, &e)).unwrap();
+        assert!(opened["result"]["session"].is_string(), "{opened}");
+        assert_eq!(e.lock().unwrap().session_count(), 1);
+        let crashed: Value =
+            serde_json::from_str(&process_line(r#"{"id":2,"method":"test.panic"}"#, &e)).unwrap();
+        assert_eq!(crashed["error"]["code"], crate::protocol::INTERNAL_ERROR);
+        assert_eq!(crashed["id"], 2);
+        assert!(!e.is_poisoned());
+        let guard = e.lock().unwrap();
+        assert_eq!((guard.session_count(), guard.is_running()), (0, true));
+        drop(guard);
+        let health: Value =
+            serde_json::from_str(&process_line(r#"{"id":3,"method":"daemon.health"}"#, &e))
+                .unwrap();
+        assert_eq!(health["result"]["status"], "ok");
+    }
+
+    /// The connection that saw the panic keeps being served (before, its loop ended).
+    #[test]
+    fn a_connection_keeps_serving_after_a_contained_panic() {
+        let (client, server) = UnixStream::pair().expect("socketpair");
+        let handle = thread::spawn(move || {
+            let e = engine();
+            handle_connection(server, &e)
+        });
+        let mut writer = client.try_clone().unwrap();
+        writeln!(writer, r#"{{"id":1,"method":"test.panic"}}"#).unwrap();
+        writeln!(writer, r#"{{"id":2,"method":"daemon.health"}}"#).unwrap();
+        writer.flush().unwrap();
+        writer.shutdown(std::net::Shutdown::Write).unwrap();
+        let lines: Vec<Value> = BufReader::new(client)
+            .lines()
+            .map(|l| serde_json::from_str(&l.unwrap()).unwrap())
+            .collect();
+        handle.join().unwrap().unwrap();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines[1]["result"]["status"], "ok");
     }
 
     #[test]
