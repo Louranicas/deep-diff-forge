@@ -6,6 +6,9 @@ name: release
 on:
   push:
     tags: ['v*']
+  # Dry run: the same quality gate, supply-chain gate, builds, binary smoke and checksum checks
+  # on any branch, with nothing published, released or attested (only tag refs do those).
+  workflow_dispatch:
 
 # Least privilege by default; the job that creates the GitHub Release elevates.
 permissions:
@@ -82,9 +85,11 @@ jobs:
           # The Linux binary stays on the older LTS on purpose: a binary links against the
           # glibc of the image that built it, so building on 26.04 would stop it running on
           # 24.04-era distributions (decision of the Ubuntu 26 move, 2026-10-27).
-          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
-          - { os: macos-latest, target: x86_64-apple-darwin }
-          - { os: macos-latest, target: aarch64-apple-darwin }
+          # `smoke` marks the targets the runner can execute: macos-latest is arm64, so the
+          # x86_64 macOS binary is cross-built and only its checksum is verified.
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, smoke: true }
+          - { os: macos-latest, target: x86_64-apple-darwin, smoke: false }
+          - { os: macos-latest, target: aarch64-apple-darwin, smoke: true }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
         with:
@@ -97,6 +102,23 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: cargo build --release --locked -p deep-diff-forge-cli --target "${TARGET}"
+      # The shipped binary must run and review a patch before anything is published from it.
+      - name: smoke the release binary
+        if: matrix.smoke
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          bin="target/${TARGET}/release/deep-diff-forge"
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          test "$("${bin}" --version)" = "deep-diff-forge ${version}" || {
+            echo "::error::${bin} --version does not report ${version}"; exit 1
+          }
+          "${bin}" --stdin-patch --json --require-files < fixtures/patch/basic.patch > smoke.json
+          grep -q '"schema": "deep-diff-forge.review.v0"' smoke.json || {
+            echo "::error::${bin} did not produce a review document"; exit 1
+          }
       - name: generate SPDX SBOM (single canonical release artifact)
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: python3 scripts/security/generate_spdx_sbom.py
@@ -117,14 +139,22 @@ jobs:
           else
             shasum -a 256 "${dist}.tar.gz" > "${dist}.tar.gz.sha256"
           fi
+          # The checksum that ships must verify the archive that ships.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c "${dist}.tar.gz.sha256"
+          else
+            shasum -a 256 -c "${dist}.tar.gz.sha256"
+          fi
+      # Attestations go to a public transparency log, so only a release tag makes them.
       - name: attest release provenance
+        if: startsWith(github.ref, 'refs/tags/')
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
           subject-path: |
             deep-diff-forge-*.tar.gz
             deep-diff-forge-*.tar.gz.sha256
       - name: attest SBOM provenance
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.target == 'x86_64-unknown-linux-gnu' && startsWith(github.ref, 'refs/tags/')
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
           subject-path: sbom.spdx.json
@@ -141,10 +171,13 @@ jobs:
         with:
           files: sbom.spdx.json
 
+  # crates.io publication is irreversible and on hold by owner decision (2026-10-27) until the
+  # codebase is production-hardened. The hold is this condition, not the absence of a token: the
+  # job runs only after the owner sets the repository variable DDF_CRATES_IO to `open`.
   publish:
-    name: crates.io publish (token-gated)
+    name: crates.io publish (owner-gated)
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && vars.DDF_CRATES_IO == 'open'
     runs-on: ubuntu-26.04
     timeout-minutes: 180
     steps:
