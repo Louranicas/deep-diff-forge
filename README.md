@@ -602,7 +602,7 @@ The command's own output is unchanged, and `envelope` exits with the command's c
 
 | Tool | What it returns |
 | --- | --- |
-| `review_patch` | The `deep-diff-forge.review.v0` document for `patch`: the same JSON value `--stdin-patch --json` prints. `require_files` / `require_hunks` refuse as the CLI flags do |
+| `review_patch` | The `deep-diff-forge.review.v0` document for `patch`: the same JSON value `--stdin-patch --json` prints, up to 256 KiB (see *Large reviews*). `require_files` / `require_hunks` refuse as the CLI flags do; `paths` limits the document to chosen files |
 | `rank_patch` | The patch's files ordered by review risk |
 | `explain_exit_code` | One exit code's family, name and meaning |
 | `exit_code_registry` | Every documented exit code |
@@ -611,6 +611,7 @@ Every tool is annotated `readOnlyHint: true`, and none writes anything.
 
 - **Errors:** a malformed call or an unknown tool is a JSON-RPC error. A parse failure or a broken input contract is a tool result with `isError: true`, so a model can correct its input.
 - **Limits:** a request line is capped at the 64 MiB patch budget plus 1 MiB.
+- **Large reviews:** `review_patch` returns the full document while it is at most 256 KiB. A larger review returns a bounded `deep-diff-forge.review-summary.v0` instead: the same seal and totals, and per-file counts for up to 1,000 files, with `reason` and `omitted_files`. Pass `paths` to get chosen files in full, or `detail: "summary"` to ask for the summary.
 - **Lifetime:** the server exits when stdin closes.
 
 ```json

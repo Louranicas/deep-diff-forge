@@ -217,6 +217,14 @@ fn error(id: &Value, code: i64, message: &str, data: Option<Value>) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": error})
 }
 
+/// The largest `review_patch` document returned in full. A larger review comes back as a bounded
+/// summary that names how to zoom in (`paths`), mirroring the inbound [`LINE_CAP`]: before, a 30 MB
+/// patch produced one 178 MB response line (anchor A-07).
+pub const REVIEW_FULL_CAP: usize = 256 * 1024;
+
+/// The most files a review summary lists; the rest are counted in `omitted_files`.
+pub const SUMMARY_FILE_LIMIT: usize = 1000;
+
 const READ_ONLY: &str = r#"{"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}"#;
 
 /// The tools, in a fixed order.
@@ -227,13 +235,15 @@ fn tools() -> Value {
         {
             "name": "review_patch",
             "title": "Review a patch",
-            "description": "Parse a patch into the deep-diff-forge.review.v0 document: files, hunks and lines, sealed over the patch bytes. Identical to `deep-diff-forge --stdin-patch --json`. require_files / require_hunks refuse an empty or change-less patch, as the CLI's --require-files / --require-hunks do.",
+            "description": "Parse a patch into the deep-diff-forge.review.v0 document: files, hunks and lines, sealed over the patch bytes. Identical to `deep-diff-forge --stdin-patch --json` while the document is at most 256 KiB; a larger review returns a deep-diff-forge.review-summary.v0 summary (per-file counts, same seal) instead, and `paths` returns chosen files in full. require_files / require_hunks refuse an empty or change-less patch, as the CLI's --require-files / --require-hunks do.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "patch": patch,
                     "require_files": {"type": "boolean", "description": "Refuse a patch with 0 files."},
                     "require_hunks": {"type": "boolean", "description": "Refuse a patch with 0 hunks or 0 changed lines."},
+                    "detail": {"enum": ["auto", "summary"], "description": "auto (default): the full document up to 256 KiB, else a summary. summary: always the summary."},
+                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Return only these files (paths as the review names them); each must be in the patch."},
                 },
                 "required": ["patch"],
                 "additionalProperties": false,
@@ -298,7 +308,7 @@ fn call_tool(mut params: Value) -> Result<Value, (i64, String)> {
         return Ok(tool_error(&format!("unknown argument: {extra}")));
     }
     Ok(match name.as_str() {
-        "review_patch" => daemon_tool("diff.compute", arguments),
+        "review_patch" => review_tool(arguments),
         "rank_patch" => daemon_tool("diff.plan", arguments),
         "explain_exit_code" => explain(&arguments),
         _ => structured(
@@ -310,6 +320,11 @@ fn call_tool(mut params: Value) -> Result<Value, (i64, String)> {
 /// Run a daemon method in-process: the same dispatcher, so the same answer. As on the socket
 /// (`process_line`), a panic inside it is contained and reported, never fatal to the server.
 fn daemon_tool(method: &str, arguments: Map<String, Value>) -> Value {
+    daemon_value(method, arguments).map_or_else(|error| error, structured)
+}
+
+/// [`daemon_tool`]'s value, or the tool error to return.
+fn daemon_value(method: &str, arguments: Map<String, Value>) -> Result<Value, Value> {
     let request = Request {
         jsonrpc: "2.0".into(),
         id: json!(1),
@@ -318,13 +333,118 @@ fn daemon_tool(method: &str, arguments: Map<String, Value>) -> Value {
     };
     let outcome = std::panic::catch_unwind(|| dispatch(&request, &mut Engine::new()));
     match outcome {
-        Ok(Ok(value)) => structured(value),
-        Ok(Err(RpcError { code, message })) => tool_error(&match code {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(RpcError { code, message })) => Err(tool_error(&match code {
             INPUT_CONTRACT_REFUSED | PATCH_PARSE_FAILED | INVALID_PARAMS => message,
             other => format!("daemon error {other}: {message}"),
-        }),
-        Err(_) => tool_error("internal error"),
+        })),
+        Err(_) => Err(tool_error("internal error")),
     }
+}
+
+/// `review_patch`: the daemon's `diff.compute`, limited to `paths` if given, and returned in full
+/// only while it fits [`REVIEW_FULL_CAP`] (anchor A-07).
+fn review_tool(arguments: Map<String, Value>) -> Value {
+    review_tool_with(arguments, REVIEW_FULL_CAP)
+}
+
+/// [`review_tool`] with an explicit cap, so the boundary can be tested.
+fn review_tool_with(mut arguments: Map<String, Value>, cap: usize) -> Value {
+    let summary_only = match arguments.remove("detail") {
+        None => false,
+        Some(Value::String(detail)) if detail == "auto" => false,
+        Some(Value::String(detail)) if detail == "summary" => true,
+        Some(_) => return tool_error("detail must be \"auto\" or \"summary\""),
+    };
+    let paths = match arguments.remove("paths") {
+        None => None,
+        Some(Value::Array(items)) => {
+            let Some(paths) = items
+                .iter()
+                .map(|item| item.as_str().map(str::to_owned))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return tool_error("paths must be an array of strings");
+            };
+            Some(paths)
+        }
+        Some(_) => return tool_error("paths must be an array of strings"),
+    };
+    let mut review = match daemon_value("diff.compute", arguments) {
+        Ok(review) => review,
+        Err(error) => return error,
+    };
+    if let Some(paths) = &paths {
+        let Some(files) = review.get_mut("files").and_then(Value::as_array_mut) else {
+            return tool_error("internal error");
+        };
+        if let Some(missing) = paths
+            .iter()
+            .find(|p| !files.iter().any(|f| f["path"] == p.as_str()))
+        {
+            return tool_error(&format!("no file in the patch is named {missing}"));
+        }
+        files.retain(|f| paths.iter().any(|p| f["path"] == p.as_str()));
+        review["selected"] = json!(paths);
+    }
+    let full_bytes = review.to_string().len();
+    if summary_only {
+        structured(summarize(&review, full_bytes, "summary requested"))
+    } else if full_bytes > cap {
+        let reason = format!(
+            "the full review is {full_bytes} bytes, over the {cap}-byte cap; pass paths to see chosen files in full, or rank_patch for risk order"
+        );
+        structured(summarize(&review, full_bytes, &reason))
+    } else {
+        structured(review)
+    }
+}
+
+/// A bounded `deep-diff-forge.review-summary.v0`: the review's seal and totals, and per-file counts
+/// for at most [`SUMMARY_FILE_LIMIT`] files in patch order.
+fn summarize(review: &Value, full_bytes: usize, reason: &str) -> Value {
+    let files = review["files"].as_array().map_or(&[][..], Vec::as_slice);
+    let listed: Vec<Value> = files
+        .iter()
+        .take(SUMMARY_FILE_LIMIT)
+        .map(|file| {
+            let (mut additions, mut deletions) = (0_u64, 0_u64);
+            let hunks = file["hunks"].as_array().map_or(&[][..], Vec::as_slice);
+            for line in hunks.iter().filter_map(|h| h["lines"].as_array()).flatten() {
+                match line["kind"].as_str() {
+                    Some("added") => additions += 1,
+                    Some("removed") => deletions += 1,
+                    _ => {}
+                }
+            }
+            let mut entry = json!({
+                "path": file["path"],
+                "status": file["status"],
+                "hunks": hunks.len(),
+                "additions": additions,
+                "deletions": deletions,
+            });
+            if let Some(lossy) = file.get("lossy_lines") {
+                entry["lossy_lines"] = lossy.clone();
+            }
+            entry
+        })
+        .collect();
+    let mut summary = json!({
+        "schema": "deep-diff-forge.review-summary.v0",
+        "input_sha256": review["input_sha256"],
+        "tool": review["tool"],
+        "detail": "summary",
+        "reason": reason,
+        "full_bytes": full_bytes,
+        "summary": review["summary"],
+        "files": listed,
+        "omitted_files": files.len().saturating_sub(SUMMARY_FILE_LIMIT),
+    });
+    if let Some(selected) = review.get("selected") {
+        summary["selected"] = selected.clone();
+    }
+    summary
 }
 
 fn explain(arguments: &Map<String, Value>) -> Value {
@@ -503,6 +623,43 @@ mod tests {
             (Some(-32600), true)
         );
         assert_eq!(lines[1]["id"], 1);
+    }
+
+    /// A review exactly at the cap is returned in full; one byte over, it is summarised.
+    #[test]
+    fn the_review_cap_is_inclusive() {
+        let patch = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n";
+        let arguments = |detail: &str| {
+            let mut map = Map::new();
+            map.insert("patch".into(), json!(patch));
+            map.insert("detail".into(), json!(detail));
+            map
+        };
+        let full = review_tool_with(arguments("auto"), usize::MAX);
+        let size = full["structuredContent"].to_string().len();
+        assert_eq!(
+            full["structuredContent"]["schema"],
+            "deep-diff-forge.review.v0"
+        );
+        let at = review_tool_with(arguments("auto"), size);
+        assert_eq!(
+            at["structuredContent"]["schema"],
+            "deep-diff-forge.review.v0"
+        );
+        let over = review_tool_with(arguments("auto"), size - 1);
+        assert_eq!(
+            over["structuredContent"]["schema"],
+            "deep-diff-forge.review-summary.v0"
+        );
+        assert_eq!(over["structuredContent"]["full_bytes"], size);
+    }
+
+    #[test]
+    fn the_readme_states_the_review_caps() {
+        assert_eq!((REVIEW_FULL_CAP, SUMMARY_FILE_LIMIT), (256 * 1024, 1000));
+        let readme = include_str!("../../../README.md");
+        assert!(readme.contains("while it is at most 256 KiB"));
+        assert!(readme.contains("per-file counts for up to 1,000 files"));
     }
 
     #[test]

@@ -8,6 +8,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **MCP `review_patch` returns a bounded summary for large reviews** (anchor
+  A-07; Luke's decision). The full document is returned while it is at most
+  256 KiB; a larger one comes back as `deep-diff-forge.review-summary.v0` (the
+  same seal and totals, per-file counts for up to 1,000 files, `reason`,
+  `omitted_files`). `paths` returns chosen files in full and `detail: "summary"`
+  asks for the summary. A 30 MB patch now answers in 181 KB instead of one
+  178 MB line.
 - **Review council** (`council prepare|status|review|gate`) — six default
   reviewer slots across Claude Code and Codex, independent then challenge
   rounds, controller admission that rejects fabricated citations, and `HOLD`
