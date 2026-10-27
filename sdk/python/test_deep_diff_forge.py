@@ -106,6 +106,17 @@ class Bounds(unittest.TestCase):
 
 
 class Socket(unittest.TestCase):
+    def test_an_unreachable_daemon_is_a_transport_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = pathlib.Path(directory) / "absent.sock"
+            with self.assertRaises(ddf.TransportError) as caught:
+                ddf.SocketClient(missing, timeout=1).call("daemon.health")
+            self.assertIsInstance(caught.exception.__cause__, OSError)
+            not_a_socket = pathlib.Path(directory) / "file"
+            not_a_socket.write_text("x")
+            with self.assertRaises(ddf.TransportError):
+                ddf.SocketClient(not_a_socket, timeout=1).call("daemon.health")
+
     def test_a_live_daemon_answers_like_the_cli(self):
         with tempfile.TemporaryDirectory() as directory:
             os.chmod(directory, 0o700)
@@ -119,7 +130,7 @@ class Socket(unittest.TestCase):
                     try:
                         client.call("daemon.health")
                         break
-                    except OSError:
+                    except ddf.TransportError:
                         if time.monotonic() > deadline:
                             raise
                         time.sleep(0.05)

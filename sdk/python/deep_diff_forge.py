@@ -155,12 +155,17 @@ class SocketClient(_Client):
         self._timeout = timeout
 
     def _exchange(self, line):
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.settimeout(self._timeout)
-            connection.connect(self._path)
-            connection.sendall((line + "\n").encode())
-            with connection.makefile("r", encoding="utf-8") as reader:
-                answer = reader.readline(MAX_REQUEST_BYTES + 1)
+        # A missing socket, a refused connection or a timeout is "could not be reached", the
+        # same TransportError the stdio client raises, not a bare OSError.
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.settimeout(self._timeout)
+                connection.connect(self._path)
+                connection.sendall((line + "\n").encode())
+                with connection.makefile("r", encoding="utf-8") as reader:
+                    answer = reader.readline(MAX_REQUEST_BYTES + 1)
+        except OSError as error:
+            raise TransportError(f"the daemon at {self._path} could not be reached: {error}") from error
         if not answer.endswith("\n"):
             raise TransportError("the daemon closed without a complete answer")
         return answer
