@@ -8,6 +8,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **Antipattern rows record what enforces them** (anchor B-10). A catalogue
+  row may carry a DDF-owned `ddf_enforcement` claim beside its verbatim import
+  labels; the policy checker accepts it only when every piece of evidence
+  resolves against parsed configuration (a workspace lint at `deny`, a path
+  in `clippy.toml`'s `disallowed-methods`), and its report lists the enforced
+  rows. AP-17 (unreviewed lint suppression, B-03) and AP-06 (policy coupled to
+  clock or host, B-04, with its scope stated) are the first two.
 - **Every pull request is mutation-tested on its changed lines** (anchor
   B-01). A new four-shard `diff mutation` job runs `scripts/diff_mutation.sh`,
   which mutates the Rust lines the pull request changes since its merge base
