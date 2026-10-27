@@ -289,6 +289,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `allow_attributes_without_reason` are denied in the workspace and fuzz
   manifests: a bare `#[allow]` no longer builds, and an expectation whose lint
   stops firing fails as unfulfilled.
+- **Code-literal scans cover every source file** (anchor B-02). The exit-code
+  scan read a hard-coded list of five files and stopped at the first
+  `#[cfg(test)]`, which hid the production code after a mid-file test item
+  (`core/src/lib.rs` from line 128, `daemon/src/serve.rs` from 181). It now
+  walks every `crates/*/src` file, skips each test item on its own, and also
+  catches bare `exit(N)`, `ExitCode::from(N)` and `code: N`. A new scan refuses
+  JSON-RPC error-code literals outside their named constants; the MCP server's
+  six `-32600` and the SDK's daemon codes `4` and `7` now use the constants.
 - **One status vocabulary** (anchor D-01). The JSON, JSONL and projection label
   tables are replaced by `FileStatus::label`, and the human summary no longer
   prints `{:?}` (it printed `binarychanged` and `typechanged` where every other

@@ -96,8 +96,14 @@ impl Error {
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::Parse(_) | Self::Rpc { code: 4, .. } => exit::INVALID_INPUT,
-            Self::Refused(_) | Self::Rpc { code: 7, .. } => exit::INPUT_CONTRACT_REFUSED,
+            Self::Parse(_) => exit::INVALID_INPUT,
+            Self::Refused(_) => exit::INPUT_CONTRACT_REFUSED,
+            Self::Rpc { code, .. } if *code == i64::from(exit::INVALID_INPUT) => {
+                exit::INVALID_INPUT
+            }
+            Self::Rpc { code, .. } if *code == i64::from(exit::INPUT_CONTRACT_REFUSED) => {
+                exit::INPUT_CONTRACT_REFUSED
+            }
             Self::Rpc { .. } | Self::Transport(_) => exit::DAEMON_OR_TERMINAL,
         }
     }
@@ -263,6 +269,19 @@ mod tests {
         assert!(super::review("", Guards::none()).is_ok());
         let err = super::review("--- a/x\n+++ b/x\n+stray\n", Guards::all()).unwrap_err();
         assert!(matches!(err, Error::Parse(_)), "{err}");
+    }
+
+    /// The daemon's domain codes for a parse failure and a refused contract are the CLI's exit
+    /// codes, which is what lets `Error::exit_code` match them by the registry's names.
+    #[cfg(unix)]
+    #[test]
+    fn the_daemons_domain_codes_are_the_cli_exit_codes() {
+        use deep_diff_forge_daemon::{INPUT_CONTRACT_REFUSED, PATCH_PARSE_FAILED};
+        assert_eq!(PATCH_PARSE_FAILED, i64::from(exit::INVALID_INPUT));
+        assert_eq!(
+            INPUT_CONTRACT_REFUSED,
+            i64::from(exit::INPUT_CONTRACT_REFUSED)
+        );
     }
 
     #[test]
