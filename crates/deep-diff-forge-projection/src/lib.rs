@@ -21,25 +21,10 @@ mod side_by_side;
 pub use inline::{InlineRow, inline_rows, render_inline};
 pub use side_by_side::{SideCell, SideRow, render_side_by_side, side_rows};
 
-use deep_diff_forge_core::{FileStatus, ReviewFile};
+use deep_diff_forge_core::ReviewFile;
 
 /// Default column width for the side-by-side layout.
 pub const DEFAULT_SIDE_WIDTH: usize = 60;
-
-/// Snake-case status label, matching the JSON projection's spelling so every
-/// surface names a status identically.
-#[must_use]
-pub(crate) fn status_label(status: FileStatus) -> &'static str {
-    match status {
-        FileStatus::Added => "added",
-        FileStatus::Modified => "modified",
-        FileStatus::Deleted => "deleted",
-        FileStatus::Renamed => "renamed",
-        FileStatus::TypeChanged => "type_changed",
-        FileStatus::BinaryChanged => "binary_changed",
-        FileStatus::Unknown => "unknown",
-    }
-}
 
 /// Output layout selected by the caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

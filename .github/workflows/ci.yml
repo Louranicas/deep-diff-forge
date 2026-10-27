@@ -149,14 +149,26 @@ jobs:
           mkdir -p /tmp/ddf-council-corpus
           cp review-policy/fuzz-seeds/council_report.json /tmp/ddf-council-corpus/seed.json
           cargo +nightly-2026-10-25 fuzz run council_report /tmp/ddf-council-corpus -- -max_total_time=10 -max_len=4096
-      - name: instrumented stdio server fuzz smoke (mcp, rpc)
-        # Each seed is a cap byte (255 = the server's real cap) then stdio lines; see
-        # fuzz/fuzz_targets/stdio_invariants.rs. The copies keep the committed seeds unchanged.
+      - name: instrumented fuzz smoke for every other target
+        # Every target in fuzz/Cargo.toml runs here or in the council-report step above (anchor
+        # B-06); before, four only ever compiled. The list is checked against the manifest first,
+        # so a new target cannot be added without running. Seeds: the patch fixtures for the patch
+        # parsers, fuzz/seeds/<target> for the rest (stdio seeds are a cap byte, 255 = the server's
+        # real cap, then stdio lines; see fuzz/fuzz_targets/stdio_invariants.rs). The copies keep
+        # the committed seeds unchanged.
         run: |
-          for target in stdio_mcp stdio_rpc; do
-            mkdir -p "/tmp/ddf-$target-corpus"
-            cp fuzz/seeds/$target/* "/tmp/ddf-$target-corpus/"
-            cargo +nightly-2026-10-25 fuzz run "$target" "/tmp/ddf-$target-corpus" -- -max_total_time=10 -max_len=65536
+          targets="patch_parser review_json daemon_protocol agent_annotation stdio_mcp stdio_rpc"
+          declared=$(grep -A1 '^\[\[bin\]\]' fuzz/Cargo.toml | sed -n 's/^name = "\(.*\)"/\1/p' | sort)
+          missing=$(comm -23 <(echo "$declared") <(printf '%s\n' council_report $targets | sort))
+          if [ -n "$missing" ]; then echo "fuzz targets never run in CI: $missing"; exit 1; fi
+          for target in $targets; do
+            corpus="/tmp/ddf-$target-corpus"
+            mkdir -p "$corpus"
+            case "$target" in
+              patch_parser|review_json) cp fixtures/patch/*.patch "$corpus/" ;;
+              *) cp fuzz/seeds/$target/* "$corpus/" ;;
+            esac
+            cargo +nightly-2026-10-25 fuzz run "$target" "$corpus" -- -max_total_time=10 -max_len=65536
           done
       # Council quality gates only run inside the rootless Podman gate sandbox
       # (docs/REVIEW_COUNCIL.md#gate-sandbox). The ubuntu runner images ship podman.

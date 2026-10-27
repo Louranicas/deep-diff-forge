@@ -14,12 +14,39 @@
 //! cancels long parses; node count is capped after parsing. This is not process
 //! isolation or a hard real-time guarantee (R10).
 
+/// Wall-clock backstop for one parse (anchor A-04): a floor plus an allowance per KiB of source.
+/// Ordinary Rust parses in linear time, about 0.29 ms per KiB in a release build (a 1.9 MB file in
+/// 0.55 s), so the allowance leaves about seventeen times that at every size: ordinary code gets the
+/// same result whatever the machine's load. The backstop exists for hostile input, where
+/// tree-sitter's error recovery is super-linear (a 455 KiB token soup ran for 125 s; it is now cut
+/// at about 3 s). Counting progress callbacks is no substitute: that input made 19 calls per KiB,
+/// fewer than ordinary code (27.5), because each recovery step is slow. The previous flat 250 ms
+/// made one 220 KB file complete in 9 and time out in 55 of 64 parallel runs.
+pub(crate) const BACKSTOP_FLOOR: std::time::Duration = std::time::Duration::from_secs(1);
+/// The backstop's allowance per KiB of source (see [`BACKSTOP_FLOOR`]).
+pub(crate) const BACKSTOP_PER_KIB: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// The parse deadline for `bytes` of source.
+pub(crate) fn backstop_for(bytes: usize) -> std::time::Duration {
+    let kib = u32::try_from(bytes / 1024).unwrap_or(u32::MAX);
+    BACKSTOP_FLOOR.saturating_add(BACKSTOP_PER_KIB.saturating_mul(kib))
+}
+
 /// Cooperative parser deadline; checked by tree-sitter's progress callback.
 /// The source byte guard and post-parse node cap remain independently necessary.
 fn parse_bounded(parser: &mut tree_sitter::Parser, source: &str) -> Option<tree_sitter::Tree> {
+    parse_within(parser, source, backstop_for(source.len()))
+}
+
+/// [`parse_bounded`] with an explicit deadline, so the cancellation path can be tested.
+fn parse_within(
+    parser: &mut tree_sitter::Parser,
+    source: &str,
+    deadline: std::time::Duration,
+) -> Option<tree_sitter::Tree> {
     let start = std::time::Instant::now();
-    let mut cancel =
-        |_: &tree_sitter::ParseState| start.elapsed() > std::time::Duration::from_millis(250);
+    // `checked_sub` is `None` exactly when more than `deadline` has elapsed.
+    let mut cancel = |_: &tree_sitter::ParseState| deadline.checked_sub(start.elapsed()).is_none();
     let options = tree_sitter::ParseOptions::new().progress_callback(&mut cancel);
     parser.parse_with_options(
         &mut |offset, _| &source.as_bytes()[offset..],
@@ -75,6 +102,35 @@ impl Symbol {
 
 #[cfg(test)]
 mod tests {
+    fn rust_parser() -> tree_sitter::Parser {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+        parser
+    }
+
+    /// The cancellation path is reachable: an exhausted deadline stops the parse at the first
+    /// progress check (`TimeBudgetExceeded` had no test).
+    #[test]
+    fn an_exhausted_deadline_cancels_the_parse() {
+        let source = "fn f() { let x = 1; }\n".repeat(2000);
+        assert!(parse_within(&mut rust_parser(), &source, std::time::Duration::ZERO).is_none());
+        assert!(parse_bounded(&mut rust_parser(), &source).is_some());
+    }
+
+    /// The deadline grows with the source: a floor, plus a fixed allowance per KiB.
+    #[test]
+    fn the_backstop_scales_with_source_size() {
+        assert_eq!(backstop_for(0), std::time::Duration::from_secs(1));
+        assert_eq!(backstop_for(1023), std::time::Duration::from_secs(1));
+        assert_eq!(backstop_for(1024), std::time::Duration::from_millis(1005));
+        assert_eq!(
+            backstop_for(2 * 1024 * 1024),
+            std::time::Duration::from_millis(11_240)
+        );
+    }
+
     use super::*;
 
     fn sym(start: u32, end: u32) -> Symbol {

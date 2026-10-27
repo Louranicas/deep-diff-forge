@@ -49,7 +49,7 @@ fn num(value: Option<u32>) -> String {
 pub fn render_inline(files: &[ReviewFile]) -> String {
     let mut out = String::new();
     for file in files {
-        let status = crate::status_label(file.status);
+        let status = file.status.label();
         // Paths and line text are attacker-controlled; neutralise terminal
         // escapes before they reach a reviewer's terminal.
         let _ = writeln!(out, "{status}  {}", display_safe(&file.path));

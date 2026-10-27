@@ -247,3 +247,19 @@ fn non_utf8_content_is_reviewed_with_its_file_marked_and_bytes_sealed() {
     let (code, _, _) = run_bytes(&["--stdin-patch", "--json", "--require-hunks"], MIXED);
     assert_eq!(code, 0);
 }
+
+/// Anchor D-01: every surface names a status with `FileStatus::label`. The human summary used
+/// `{:?}` lowercased, printing `binarychanged` where JSON, JSONL and the projections print
+/// `binary_changed`.
+#[test]
+fn every_surface_names_a_status_with_the_one_label() {
+    let patch = "diff --git a/x.bin b/x.bin\nindex 1111111..2222222 100644\nBinary files a/x.bin and b/x.bin differ\n";
+    let (_, human, _) = run(&["--stdin-patch"], patch);
+    let (_, json, _) = run(&["--stdin-patch", "--json"], patch);
+    let (_, jsonl, _) = run(&["--stdin-patch", "--jsonl"], patch);
+    let (_, inline, _) = run(&["--stdin-patch", "--layout", "inline"], patch);
+    assert!(human.contains("binary_changed  x.bin"), "{human}");
+    assert!(json.contains("\"status\": \"binary_changed\""), "{json}");
+    assert!(jsonl.contains("\"status\":\"binary_changed\""), "{jsonl}");
+    assert!(inline.contains("binary_changed"), "{inline}");
+}

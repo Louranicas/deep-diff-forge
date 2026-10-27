@@ -1,7 +1,7 @@
 //! Slice D: `deep-diff-forge mcp` over real stdio — framing, both protocol eras, and parity of
 //! `review_patch` with `deep-diff-forge --stdin-patch --json`.
 use serde_json::{Value, json};
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::process::{Command, Stdio};
 
 const PATCH: &str = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n";
@@ -19,17 +19,30 @@ fn exchange(lines: &[String]) -> (i32, Vec<Value>, String) {
         writeln!(stdin, "{line}").unwrap();
     }
     drop(stdin); // end of input is the shutdown signal
+    // Drain the pipes while waiting: a response larger than the pipe buffer would otherwise block
+    // the server's write and look like a hang.
+    let drain = |mut pipe: Box<dyn std::io::Read + Send>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes).unwrap();
+            bytes
+        })
+    };
+    let stdout = drain(Box::new(child.stdout.take().unwrap()));
+    let stderr = drain(Box::new(child.stderr.take().unwrap()));
     // A server that never exits fails here instead of hanging the suite.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while child.try_wait().unwrap().is_none() {
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
         if std::time::Instant::now() > deadline {
             child.kill().unwrap();
             panic!("the server did not exit when stdin closed");
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    let out = child.wait_with_output().unwrap();
-    let stdout = String::from_utf8(out.stdout).unwrap();
+    };
+    let stdout = String::from_utf8(stdout.join().unwrap()).unwrap();
     // Nothing but JSON-RPC responses on stdout, one per line.
     let messages = stdout
         .lines()
@@ -37,9 +50,9 @@ fn exchange(lines: &[String]) -> (i32, Vec<Value>, String) {
         .inspect(|m| assert_eq!(m["jsonrpc"], "2.0", "{m}"))
         .collect();
     (
-        out.status.code().unwrap(),
+        status.code().unwrap(),
         messages,
-        String::from_utf8(out.stderr).unwrap(),
+        String::from_utf8(stderr.join().unwrap()).unwrap(),
     )
 }
 
@@ -161,4 +174,102 @@ fn a_closed_reader_ends_cleanly_and_a_failed_write_is_an_io_failure() {
         drop(stdin);
         assert_eq!(child.wait().unwrap().code(), Some(expected));
     }
+}
+
+fn call(name: &str, arguments: &Value) -> Value {
+    let request = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"_meta": meta(), "name": name, "arguments": arguments}});
+    let (code, messages, stderr) = exchange(&[request.to_string()]);
+    assert_eq!(code, 0, "{stderr}");
+    messages.into_iter().next().unwrap()["result"].clone()
+}
+
+/// A patch whose full review is over the 256 KiB cap: 400 files of 20 changed lines each.
+fn big_patch() -> String {
+    use std::fmt::Write as _;
+    let mut patch = String::new();
+    for f in 0..400 {
+        let _ = write!(
+            patch,
+            "diff --git a/f{f}.rs b/f{f}.rs\n--- a/f{f}.rs\n+++ b/f{f}.rs\n@@ -1,10 +1,10 @@\n"
+        );
+        for i in 0..10 {
+            let _ = write!(
+                patch,
+                "-let old_{i} = \"{}\";\n+let new_{i} = \"{}\";\n",
+                "x".repeat(40),
+                "y".repeat(40)
+            );
+        }
+    }
+    patch
+}
+
+/// Anchor A-07: a review over the cap comes back as a bounded summary, not one enormous line (a
+/// 30 MB patch produced a 178 MB response). Before, the full document was always returned.
+#[test]
+fn an_oversized_review_returns_a_bounded_summary() {
+    let patch = big_patch();
+    let full = cli_review(&patch);
+    assert!(full.to_string().len() > 256 * 1024);
+    let result = call("review_patch", &json!({"patch": patch}));
+    assert_eq!(result["isError"], false, "{result}");
+    let summary = &result["structuredContent"];
+    assert_eq!(summary["schema"], "deep-diff-forge.review-summary.v0");
+    assert_eq!(summary["input_sha256"], full["input_sha256"]);
+    assert_eq!(summary["summary"], full["summary"]);
+    assert_eq!(summary["files"].as_array().unwrap().len(), 400);
+    assert_eq!(summary["omitted_files"], 0);
+    assert_eq!(
+        summary["files"][7],
+        json!({"path": "f7.rs", "status": "modified", "hunks": 1, "additions": 10, "deletions": 10})
+    );
+    assert!(summary["reason"].as_str().unwrap().contains("pass paths"));
+    assert!(result.to_string().len() < 256 * 1024);
+}
+
+/// The legitimate side: under the cap the document is the CLI's, and `paths` zooms in to full
+/// detail for chosen files while keeping the whole patch's seal.
+#[test]
+fn paths_return_chosen_files_in_full_and_small_reviews_are_unchanged() {
+    let small = call("review_patch", &json!({"patch": PATCH}));
+    assert_eq!(small["structuredContent"], cli_review(PATCH));
+
+    let patch = big_patch();
+    let full = cli_review(&patch);
+    let zoom = call(
+        "review_patch",
+        &json!({"patch": patch, "paths": ["f3.rs", "f9.rs"]}),
+    );
+    let doc = &zoom["structuredContent"];
+    assert_eq!(doc["schema"], "deep-diff-forge.review.v0");
+    assert_eq!(doc["input_sha256"], full["input_sha256"]);
+    assert_eq!(doc["selected"], json!(["f3.rs", "f9.rs"]));
+    assert_eq!(doc["files"], json!([full["files"][3], full["files"][9]]));
+
+    let asked = call(
+        "review_patch",
+        &json!({"patch": PATCH, "detail": "summary"}),
+    );
+    assert_eq!(asked["structuredContent"]["reason"], "summary requested");
+}
+
+#[test]
+fn bad_detail_or_paths_are_tool_errors() {
+    for arguments in [
+        json!({"patch": PATCH, "detail": "full"}),
+        json!({"patch": PATCH, "paths": "src/lib.rs"}),
+        json!({"patch": PATCH, "paths": [1]}),
+        json!({"patch": PATCH, "paths": ["nope.rs"]}),
+    ] {
+        let result = call("review_patch", &arguments);
+        assert_eq!(result["isError"], true, "{arguments}: {result}");
+    }
+    let missing = call(
+        "review_patch",
+        &json!({"patch": PATCH, "paths": ["nope.rs"]}),
+    );
+    assert_eq!(
+        missing["content"][0]["text"],
+        "no file in the patch is named nope.rs"
+    );
 }

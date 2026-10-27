@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":2,"method":"diff.compute","params":{"patch":"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n","require_files":true}}

@@ -8,6 +8,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **MCP `review_patch` returns a bounded summary for large reviews** (anchor
+  A-07; Luke's decision). The full document is returned while it is at most
+  256 KiB; a larger one comes back as `deep-diff-forge.review-summary.v0` (the
+  same seal and totals, per-file counts for up to 1,000 files, `reason`,
+  `omitted_files`). `paths` returns chosen files in full and `detail: "summary"`
+  asks for the summary. A 30 MB patch now answers in 181 KB instead of one
+  178 MB line.
 - **Review council** (`council prepare|status|review|gate`) — six default
   reviewer slots across Claude Code and Codex, independent then challenge
   rounds, controller admission that rejects fabricated citations, and `HOLD`
@@ -171,6 +178,32 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **One status vocabulary** (anchor D-01). The JSON, JSONL and projection label
+  tables are replaced by `FileStatus::label`, and the human summary no longer
+  prints `{:?}` (it printed `binarychanged` and `typechanged` where every other
+  surface prints `binary_changed` and `type_changed`).
+- **Syntax analysis no longer depends on machine load** (anchor A-04). The
+  flat 250 ms parse deadline made one 220 KB Rust file come out complete in 9
+  and timed out in 55 of 64 parallel runs, and timed out every 1 MB file even
+  on an idle machine. The deadline is now a backstop of 1 s plus 5 ms per KiB,
+  about seventeen times the measured linear parse rate at every size: under a
+  load average of 33–39, 64 parallel runs of 220 KB, 1 MB and 1.9 MB inputs
+  gave one result each. Hostile input is still cut (a 455 KiB token soup that
+  ran for 125 s now stops at about 3 s). Counting tree-sitter progress
+  callbacks was measured and rejected: that input made fewer callbacks per KiB
+  than ordinary code.
+- **The daemon recovers fully from a contained panic** (anchor A-03). It used
+  to keep answering through the poisoned engine lock while each connection loop
+  read the poison as "not running", so after one panic every connection got a
+  single answer and was dropped. The sessions the panic may have left
+  inconsistent are now cleared (`Engine::reset_sessions`; the pid, start time
+  and session-id counter are kept) and the poison is cleared, so the
+  connection and later ones are served as before.
+- **Every fuzz target runs in CI** (anchor B-06). `patch_parser`,
+  `review_json`, `daemon_protocol` and `agent_annotation` only ever compiled;
+  the instrumented smoke now runs all seven targets for 10 s each and refuses a
+  `fuzz/Cargo.toml` target that the step does not run. New seeds for
+  `daemon_protocol` and `agent_annotation`; Dependabot now watches `/fuzz`.
 - **Unknown options are refused, not ignored** (anchor A-01). Every entry point
   admits its arguments against a closed set (`cli/src/args.rs`) and exits 2,
   naming the option, with an empty stdout. Before, a misspelt guard such as
@@ -189,6 +222,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `original_bytes`, `is_exact`). Output for UTF-8 input is byte-identical. A
   non-UTF-8 *path* is still refused, because a path is an identity.
   `GitAcquireError::NonUtf8Patch` is removed.
+- **The review JSON records which side lacks a final newline** (anchor A-06).
+  A line carries `"no_newline": true` when the marker follows it; its `kind`
+  names the side (removed: old, added: new, context: both). Before, patches
+  that differed only in which side lacked the newline produced identical JSON,
+  although git applies one and refuses the other. Other output is unchanged.
+- **The learning store validates records on load** (anchor A-05). A hand-edited
+  line holding a path (or a path-like token) is refused, naming its line; before,
+  only `append_receipt` applied the privacy checks.
 - Non-Unix `path_from_bytes` (`deep-diff-forge-patch`) reuses valid UTF-8
   without a copy, which clears `clippy::needless_pass_by_value` in a
   Windows-target pedantic build.
@@ -215,6 +256,21 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Security
 
+- **MCP marks patch text as untrusted for the consuming model** (anchor E-07).
+  The server instructions and the `review_patch` / `rank_patch` descriptions
+  say that paths and line text come from the patch, whose authors wrote them,
+  and are data to review, never instructions. Reviewed code and comments are
+  an injection channel into a model's context; nothing said so before.
+- **One hardened Git door** (anchor A-02). Git acquisition (`patch`) and
+  council storage (`review`) now apply the same set from
+  `deep_diff_forge_core::git`: no optional locks, replacement refs, fsmonitor,
+  hooks, external diff or transports (`protocol.allow=never`,
+  `GIT_NO_LAZY_FETCH`), and every inherited variable that would point Git at
+  another repository removed. Measured before: `--git-range` in a partial clone
+  ran `git fetch origin` against the promisor remote (a network effect from a
+  read-only command); council storage honoured an inherited `GIT_DIR`, so
+  `rev-parse HEAD` named another repository while the top-level check passed.
+  A partial clone's missing blob is now an error, not a fetch.
 - Council gates never fall back to the host: a missing gate image or a failed
   dependency-vendoring job is a refusal. Vendored dependencies are sealed and
   re-measured before each gate; base Git objects are verified on read.

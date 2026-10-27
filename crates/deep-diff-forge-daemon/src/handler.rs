@@ -84,6 +84,15 @@ impl Engine {
         }
     }
 
+    /// Drop every session after a contained panic (anchor A-03). Whatever dispatch was doing may have
+    /// left the session table and its byte accounting inconsistent, so they start again empty; the
+    /// pid, start time, `running` and the session-id counter are kept, so no old id is reused.
+    pub(crate) fn reset_sessions(&mut self) {
+        self.sessions.clear();
+        self.retained_bytes = 0;
+        self.tick = 0;
+    }
+
     /// Whether the engine is still serving (cleared by `daemon.shutdown`).
     #[must_use]
     pub fn is_running(&self) -> bool {

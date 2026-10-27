@@ -114,7 +114,7 @@ fn truncate_pad(text: &str, width: usize) -> String {
 pub fn render_side_by_side(files: &[ReviewFile], width: usize) -> String {
     let mut out = String::new();
     for file in files {
-        let status = crate::status_label(file.status);
+        let status = file.status.label();
         let _ = writeln!(out, "{status}  {}", display_safe(&file.path));
         for row in side_rows(file) {
             let _ = writeln!(
