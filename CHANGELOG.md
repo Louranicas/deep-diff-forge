@@ -171,6 +171,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **Syntax analysis no longer depends on machine load** (anchor A-04). The
+  flat 250 ms parse deadline made one 220 KB Rust file come out complete in 9
+  and timed out in 55 of 64 parallel runs, and timed out every 1 MB file even
+  on an idle machine. The deadline is now a backstop of 1 s plus 5 ms per KiB,
+  about seventeen times the measured linear parse rate at every size: under a
+  load average of 33–39, 64 parallel runs of 220 KB, 1 MB and 1.9 MB inputs
+  gave one result each. Hostile input is still cut (a 455 KiB token soup that
+  ran for 125 s now stops at about 3 s). Counting tree-sitter progress
+  callbacks was measured and rejected: that input made fewer callbacks per KiB
+  than ordinary code.
 - **Unknown options are refused, not ignored** (anchor A-01). Every entry point
   admits its arguments against a closed set (`cli/src/args.rs`) and exits 2,
   naming the option, with an empty stdout. Before, a misspelt guard such as
