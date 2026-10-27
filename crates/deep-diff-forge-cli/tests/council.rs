@@ -2332,3 +2332,56 @@ fn container_names_carry_a_per_invocation_nonce() {
     assert!(log.iter().all(|c| c.last().unwrap() != &prefix), "{log:?}");
     assert!(log.iter().any(|c| c.last().unwrap() == name));
 }
+
+/// `council import` stores a hand-supplied report as manual and unverified; a report for another
+/// run is refused and writes nothing. Before, no test ran the command, so replacing it with a
+/// no-op survived diff mutation (wave 3, review/cli.rs `import`).
+#[test]
+fn a_manual_import_is_stored_unverified_and_a_foreign_report_is_refused() {
+    let f = Fixture::new();
+    f.prepare();
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.run.join("manifest.json")).unwrap()).unwrap();
+    let reviewer = manifest["request"]["reviewers"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let report = serde_json::json!({
+        "run_id": manifest["run_id"],
+        "reviewer_id": reviewer,
+        "round": "independent",
+        "verdict": "no_blockers",
+        "summary": "Manual review of the captured scope",
+        "findings": [],
+        "responses": [],
+    });
+    let foreign = f.root.join("foreign.json");
+    let mut stale = report.clone();
+    stale["run_id"] = "0".repeat(64).into();
+    fs::write(&foreign, serde_json::to_vec(&stale).unwrap()).unwrap();
+    let refused = f.call(
+        &["import", f.run.to_str().unwrap(), foreign.to_str().unwrap()],
+        "normal",
+    );
+    assert!(!refused.status.success());
+    let stored = f.run.join(format!("reports/{reviewer}-independent.json"));
+    assert!(!stored.exists());
+    let manual = f.root.join("manual.json");
+    fs::write(&manual, serde_json::to_vec(&report).unwrap()).unwrap();
+    let imported = f.call(
+        &["import", f.run.to_str().unwrap(), manual.to_str().unwrap()],
+        "normal",
+    );
+    assert!(
+        imported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    let out: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    assert_eq!(
+        out,
+        serde_json::json!({"imported": true, "provenance": "manual_unverified", "satisfies_execution_gate": false})
+    );
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&stored).unwrap()).unwrap();
+    assert_eq!(saved, report);
+}
