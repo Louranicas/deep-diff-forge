@@ -110,7 +110,11 @@ Still open:
   x86_64 and aarch64 macOS) passed. crates.io has v0.2.0 of
   `deep-diff-forge-core`, `-cli` and `-tui`; `-sdk` and `-review` were never
   published. crates.io stays on hold by owner decision until the codebase is
-  production-hardened.
+  production-hardened. The hold is a condition in `release.yml`: the publish
+  job runs only when the repository variable `DDF_CRATES_IO` is `open`, so a
+  configured token alone publishes nothing. A `workflow_dispatch` run is a dry
+  run: gates, builds, a binary smoke test and checksum verification, with
+  nothing released or attested.
 - **Still open** — the `deploy doctor` and `deploy receipt` commands,
   per-target publication states, and a release run since the Node 24, SDK and
   Ubuntu 26 changes.
