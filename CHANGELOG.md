@@ -178,6 +178,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **One parse → guard → seal path** (anchor C-05; library API).
+  `deep_diff_forge_patch::SealedReview::new` decodes, parses, applies the input
+  contracts and seals the same bytes; the CLI's `--stdin-patch`, the daemon's
+  `diff.compute` and the SDK's `review` all use it, and Git selections seal
+  through `StructuredDiff::sealed_review` from the same capture.
+  `to_json_sealed` is no longer public, so a seal can no longer be paired with
+  files parsed from other bytes. Every output is byte-identical.
 - **The design docs say they are target design** (anchor E-01).
   `SCHEMATICS.md`, `ARCHITECTURE.md` and `MODULE_STRUCTURE_PLAN.md` open with
   a target-design banner, and `SCHEMATICS.md` carries a generated "current

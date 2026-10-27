@@ -124,19 +124,19 @@ pub(crate) fn run(selector: &str, opts: &[String]) {
         );
     }
     let captured = acquisition.diff().capture().unwrap_or_else(|e| fail(&e));
-    let files = acquisition
+    let review = acquisition
         .diff()
-        .review_files(&captured)
+        .sealed_review(&captured, env!("CARGO_PKG_VERSION"))
         .unwrap_or_else(|e| fail(&e));
     let input = captured.original_bytes();
     let guards = InputGuards::from_opts(opts);
-    guards.enforce(&files);
+    guards.enforce(review.files());
     if opts.iter().any(|a| a == "--acquisition-json") {
         emit(&acquisition_json(&acquisition, include_untracked, input));
     } else if opts.iter().any(|a| a == "--jsonl") {
-        emit(&deep_diff_forge_pipeline::jsonl_events(&files));
+        emit(&deep_diff_forge_pipeline::jsonl_events(review.files()));
     } else {
-        emit_review(&files, opts, input);
+        emit_review(&review, opts);
     }
 }
 

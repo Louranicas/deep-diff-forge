@@ -105,29 +105,26 @@ impl Error {
 
 /// A parsed patch, sealed over the exact bytes it was parsed from.
 #[derive(Debug, Clone)]
-pub struct Review {
-    files: Vec<ReviewFile>,
-    seal: InputSeal,
-}
+pub struct Review(deep_diff_forge_patch::SealedReview);
 
 impl Review {
     /// The files, hunks and lines of the patch.
     #[must_use]
     pub fn files(&self) -> &[ReviewFile] {
-        &self.files
+        self.0.files()
     }
 
     /// The digest of the input bytes and the tool version that read them.
     #[must_use]
     pub fn seal(&self) -> &InputSeal {
-        &self.seal
+        self.0.seal()
     }
 
     /// The `deep-diff-forge.review.v0` document, byte for byte what the CLI prints for the same
     /// patch.
     #[must_use]
     pub fn to_json(&self) -> String {
-        deep_diff_forge_patch::to_json_sealed(&self.files, &self.seal)
+        self.0.to_json()
     }
 }
 
@@ -138,20 +135,19 @@ impl Review {
 /// [`Error::Parse`] for a patch that does not parse; [`Error::Refused`] for one that breaks a
 /// contract in `guards`.
 pub fn review(patch: &str, guards: Guards) -> Result<Review, Error> {
-    let files = deep_diff_forge_patch::parse(patch).map_err(|e| Error::Parse(e.to_string()))?;
-    if let Some(reason) = guards.0.refusal(&files) {
-        return Err(Error::Refused(reason));
-    }
-    Ok(Review {
-        files,
-        seal: InputSeal::of(patch.as_bytes(), env!("CARGO_PKG_VERSION")),
-    })
+    // The one parse → guard → seal path shared with the CLI and the daemon (anchor C-05).
+    deep_diff_forge_patch::SealedReview::new(patch.as_bytes(), guards.0, env!("CARGO_PKG_VERSION"))
+        .map(Review)
+        .map_err(|error| match error {
+            deep_diff_forge_patch::ReviewError::Parse(e) => Error::Parse(e.to_string()),
+            deep_diff_forge_patch::ReviewError::Refused(reason) => Error::Refused(reason),
+        })
 }
 
 /// The review's files ordered by review risk (the daemon's `diff.plan`).
 #[must_use]
 pub fn rank(review: &Review) -> Vec<RankedFile> {
-    deep_diff_forge_graph::rank(&review.files)
+    deep_diff_forge_graph::rank(review.files())
 }
 
 #[cfg(unix)]

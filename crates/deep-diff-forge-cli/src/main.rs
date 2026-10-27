@@ -312,29 +312,43 @@ fn stdin_patch(opts: &[String]) {
         return;
     }
 
-    let files = parse_decoded_or_exit(&decoded);
-    guards.enforce(&files);
-    emit_review(&files, opts, &bytes);
+    let review = sealed_review_or_exit(&bytes, guards);
+    emit_review(&review, opts);
 }
 
-/// Emit the selected review output for already-parsed `files`; `input` is the
-/// exact patch bytes that are sealed into machine-readable documents. Shared by
-/// `--stdin-patch` and the structured Git selections.
-fn emit_review(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], input: &[u8]) {
+/// The one parse → guard → seal path ([`deep_diff_forge_patch::SealedReview`], anchor C-05), with
+/// the CLI's exits: 4 for a parse failure, 7 for a refused contract.
+fn sealed_review_or_exit(bytes: &[u8], guards: InputGuards) -> deep_diff_forge_patch::SealedReview {
+    use deep_diff_forge_patch::ReviewError;
+    match deep_diff_forge_patch::SealedReview::new(bytes, guards.0, env!("CARGO_PKG_VERSION")) {
+        Ok(review) => review,
+        Err(ReviewError::Parse(error)) => {
+            eprintln!("error: patch parse failed: {error}");
+            std::process::exit(exit::INVALID_INPUT);
+        }
+        Err(refused @ ReviewError::Refused(_)) => {
+            eprintln!("{refused}");
+            std::process::exit(EXIT_REFUSED);
+        }
+    }
+}
+
+/// Emit the selected review output for `review`, whose seal covers the exact patch bytes its
+/// files were parsed from and goes into machine-readable documents. Shared by `--stdin-patch`
+/// and the structured Git selections.
+fn emit_review(review: &deep_diff_forge_patch::SealedReview, opts: &[String]) {
+    let (files, seal) = (review.files(), review.seal());
     if opts.iter().any(|a| a == "--cluster") {
-        run_cluster(files, opts, input);
+        run_cluster(files, opts, seal);
     } else if opts.iter().any(|a| a == "--rank") {
         let ranked = deep_diff_forge_graph::rank(files);
         if opts.iter().any(|a| a == "--json") {
-            print_rank_json(&ranked, &seal_of(input));
+            print_rank_json(&ranked, seal);
         } else {
             print_rank_human(&ranked);
         }
     } else if opts.iter().any(|a| a == "--json") {
-        emit(&deep_diff_forge_patch::to_json_sealed(
-            files,
-            &seal_of(input),
-        ));
+        emit(&review.to_json());
     } else if let Some(name) = flag_value(opts, "--layout") {
         if let Some(layout) = deep_diff_forge_projection::layout_from_str(&name) {
             let options = deep_diff_forge_projection::ProjectionOptions {
@@ -1106,13 +1120,13 @@ fn parse_parallelism(opts: &[String]) -> deep_diff_forge_core::Parallelism {
 
 /// Run the patch+risk cluster with bounded parallelism and a deterministic join.
 /// `input` is the raw patch text, sealed into the `--json` document.
-fn run_cluster(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], input: &[u8]) {
+fn run_cluster(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], seal: &InputSeal) {
     use deep_diff_forge_cluster::{join_label, parallelism_label, run_risk_cluster};
     use deep_diff_forge_core::JoinPolicy;
     let parallelism = parse_parallelism(opts);
     let run = run_risk_cluster(files, parallelism, JoinPolicy::RankedReviewOrder);
     if opts.iter().any(|a| a == "--json") {
-        print_cluster_json(&run, &seal_of(input));
+        print_cluster_json(&run, seal);
     } else {
         print_rank_human(&run.ranked);
         emitln!(
