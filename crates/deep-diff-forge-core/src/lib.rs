@@ -144,6 +144,9 @@ pub struct PatchTwin {
     pub binary_body: Vec<String>,
     pub hunks: Vec<PatchHunk>,
     pub metadata: Vec<String>,
+    /// Patch lines of this file that were not UTF-8 and were decoded lossily (U+FFFD). 0 means
+    /// every line is the exact input text; the input seal always covers the exact bytes.
+    pub lossy_lines: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

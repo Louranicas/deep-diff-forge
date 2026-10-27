@@ -57,6 +57,14 @@ fn render(files: &[ReviewFile], seal: Option<&InputSeal>) -> String {
             "      \"strategy\": {},",
             quote(strategy_str(file.planner.strategy))
         );
+        // Present only for a file with non-UTF-8 lines, so exact output is unchanged (C-12).
+        if file.patch_twin.lossy_lines > 0 {
+            let _ = writeln!(
+                out,
+                "      \"lossy_lines\": {},",
+                file.patch_twin.lossy_lines
+            );
+        }
         out.push_str("      \"hunks\": [");
         render_hunks(&mut out, file, &mut additions, &mut deletions);
         out.push_str("],\n");

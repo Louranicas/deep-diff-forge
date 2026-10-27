@@ -223,9 +223,6 @@ pub enum GitAcquireError {
         /// Which check failed.
         detail: String,
     },
-    /// The authoritative patch is not UTF-8, so it cannot become a
-    /// [`crate::CapturedPatch`] (the bytes are still available).
-    NonUtf8Patch,
     /// A reviewed path is not UTF-8 and cannot be named in the text review model.
     NonUtf8Path {
         /// 0-based record index.
@@ -281,7 +278,6 @@ impl std::fmt::Display for GitAcquireError {
                     "patch block for raw record {record} does not match it: {detail}"
                 )
             }
-            Self::NonUtf8Patch => write!(f, "authoritative patch bytes are not UTF-8"),
             Self::NonUtf8Path { record } => write!(f, "path of raw record {record} is not UTF-8"),
             Self::Parse(err) => write!(f, "authoritative patch failed to parse: {err}"),
             Self::ParsedFileCountMismatch { blocks, files } => write!(
@@ -384,15 +380,14 @@ impl StructuredDiff {
     }
 
     /// Seal the authoritative bytes as a [`crate::CapturedPatch`] and check
-    /// that DDF's parser sees one file per Git block.
+    /// that DDF's parser sees one file per Git block. Non-UTF-8 content is
+    /// decoded lossily per line and its file marked (`PatchTwin::lossy_lines`).
     ///
     /// # Errors
-    /// [`GitAcquireError::NonUtf8Patch`], [`GitAcquireError::Parse`] or
-    /// [`GitAcquireError::ParsedFileCountMismatch`].
+    /// [`GitAcquireError::Parse`] or [`GitAcquireError::ParsedFileCountMismatch`].
     pub fn capture(&self) -> Result<crate::CapturedPatch, GitAcquireError> {
-        let text =
-            String::from_utf8(self.patch.clone()).map_err(|_| GitAcquireError::NonUtf8Patch)?;
-        let captured = crate::CapturedPatch::capture(text).map_err(GitAcquireError::Parse)?;
+        let captured = crate::CapturedPatch::capture_bytes(self.patch.clone())
+            .map_err(GitAcquireError::Parse)?;
         let blocks: usize = self.changes.iter().map(|c| c.block_count).sum();
         if captured.files().len() != blocks {
             return Err(GitAcquireError::ParsedFileCountMismatch {
@@ -875,6 +870,45 @@ fn check_block(
 mod tests {
     use super::*;
 
+    /// The messages reach users verbatim through the CLI (`error: structured Git acquisition
+    /// failed: ...`), so each variant must say what went wrong.
+    #[test]
+    fn each_acquisition_error_names_its_cause() {
+        let cases = [
+            (
+                GitAcquireError::InvalidSelection {
+                    detail: "bad".into(),
+                },
+                "invalid Git selection: bad",
+            ),
+            (
+                GitAcquireError::BudgetExceeded { limit_bytes: 8 },
+                "Git output exceeds the 8-byte budget",
+            ),
+            (
+                GitAcquireError::UnsupportedStatus {
+                    record: 2,
+                    status: 'X',
+                },
+                "raw record 2 has unsupported status `X`",
+            ),
+            (
+                GitAcquireError::NonUtf8Path { record: 1 },
+                "path of raw record 1 is not UTF-8",
+            ),
+            (
+                GitAcquireError::ParsedFileCountMismatch {
+                    blocks: 3,
+                    files: 2,
+                },
+                "Git emitted 3 patch block(s) but the parser produced 2 file(s)",
+            ),
+        ];
+        for (error, message) in cases {
+            assert_eq!(error.to_string(), message);
+        }
+    }
+
     const Z: &str = "0000000000000000000000000000000000000000";
     const A1: &str = "1111111111111111111111111111111111111111";
     const B2: &str = "2222222222222222222222222222222222222222";
@@ -1001,7 +1035,16 @@ mod tests {
             diff.changes()[0].old_path.as_ref().unwrap().as_bytes(),
             b"bad-\xff"
         );
-        assert_eq!(diff.capture().unwrap_err(), GitAcquireError::NonUtf8Patch);
+        // Non-UTF-8 content is captured (lossily, marked) with its exact bytes sealed; a
+        // non-UTF-8 path is still refused, because a path is an identity.
+        let captured = diff.capture().unwrap();
+        assert!(!captured.is_exact());
+        assert_eq!(captured.original_bytes(), diff.patch_bytes());
+        assert_eq!(captured.files()[0].patch_twin.lossy_lines, 1);
+        assert!(matches!(
+            diff.review_files(&captured),
+            Err(GitAcquireError::NonUtf8Path { .. })
+        ));
     }
 
     #[test]

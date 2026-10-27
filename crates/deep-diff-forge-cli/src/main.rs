@@ -43,6 +43,17 @@ macro_rules! emitln {
 /// closes the gap between "input arrives" and "parser sees it". Exits the
 /// process on any failure (3 = read/encoding, 4 = over budget).
 fn read_capped_or_exit(reader: impl std::io::Read, what: &str) -> String {
+    let buf = read_capped_bytes_or_exit(reader, what);
+    let Ok(text) = String::from_utf8(buf) else {
+        eprintln!("error: {what} is not valid UTF-8");
+        std::process::exit(exit::IO);
+    };
+    text
+}
+
+/// [`read_capped_or_exit`] without the UTF-8 requirement: a patch's non-UTF-8 lines are decoded
+/// per file instead (anchor C-12), and its seal covers these exact bytes.
+fn read_capped_bytes_or_exit(reader: impl std::io::Read, what: &str) -> Vec<u8> {
     use std::io::Read as _;
     let cap = deep_diff_forge_patch::DEFAULT_BYTE_BUDGET;
     let mut buf = Vec::new();
@@ -56,11 +67,7 @@ fn read_capped_or_exit(reader: impl std::io::Read, what: &str) -> String {
         eprintln!("error: {what} exceeds the {cap}-byte input budget");
         std::process::exit(exit::INVALID_INPUT);
     }
-    let Ok(text) = String::from_utf8(buf) else {
-        eprintln!("error: {what} is not valid UTF-8");
-        std::process::exit(exit::IO);
-    };
-    text
+    buf
 }
 
 fn main() {
@@ -237,6 +244,22 @@ impl InputGuards {
     }
 }
 
+/// [`parse_or_exit`] for decoded bytes: a file with non-UTF-8 lines is parsed lossily and marked.
+fn parse_decoded_or_exit(
+    decoded: &deep_diff_forge_patch::DecodedPatch<'_>,
+) -> Vec<deep_diff_forge_core::ReviewFile> {
+    match deep_diff_forge_patch::parse_decoded(
+        decoded,
+        deep_diff_forge_patch::ParseOptions::default(),
+    ) {
+        Ok(files) => files,
+        Err(err) => {
+            eprintln!("error: patch parse failed: {err}");
+            std::process::exit(exit::INVALID_INPUT);
+        }
+    }
+}
+
 /// Parse a patch or exit 4 with a stderr diagnostic (the CLI contract for a
 /// patch parse failure). Shared by every stdin-patch entry point.
 fn parse_or_exit(input: &str) -> Vec<deep_diff_forge_core::ReviewFile> {
@@ -252,8 +275,8 @@ fn parse_or_exit(input: &str) -> Vec<deep_diff_forge_core::ReviewFile> {
 /// Seal the exact input bytes for a machine-readable document. UTF-8
 /// validation in [`read_capped_or_exit`] is lossless, so the `String`'s bytes
 /// are precisely the bytes read — hashed before any parsing or normalisation.
-fn seal_of(input: &str) -> InputSeal {
-    InputSeal::of(input.as_bytes(), env!("CARGO_PKG_VERSION"))
+fn seal_of(input: &[u8]) -> InputSeal {
+    InputSeal::of(input, env!("CARGO_PKG_VERSION"))
 }
 
 /// Read a unified/Git patch from stdin and emit one of: the
@@ -267,28 +290,37 @@ fn seal_of(input: &str) -> InputSeal {
 fn stdin_patch(opts: &[String]) {
     git_input::reject_with_stdin(opts);
     args::admit_or_exit(opts, &STDIN_PATCH, STDIN_PATCH_USAGE);
-    let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
+    let bytes = read_capped_bytes_or_exit(std::io::stdin().lock(), "stdin");
+    let decoded = deep_diff_forge_patch::decode(&bytes);
     let guards = InputGuards::from_opts(opts);
     // --jsonl streams one event per file through the real pipeline runner.
     if opts.iter().any(|a| a == "--jsonl") {
+        if !decoded.is_exact() {
+            // The runner parses text and would drop the lossy marks: emit the same events from
+            // the marked files instead.
+            let files = parse_decoded_or_exit(&decoded);
+            guards.enforce(&files);
+            emit(&deep_diff_forge_pipeline::jsonl_events(&files));
+            return;
+        }
         if guards.any() {
             // The pipeline parses internally; the gate needs the counts
             // before anything is streamed, so pre-flight the parse here.
-            guards.enforce(&parse_or_exit(&input));
+            guards.enforce(&parse_or_exit(decoded.text()));
         }
-        run_jsonl_pipeline(input);
+        run_jsonl_pipeline(decoded.text().to_owned());
         return;
     }
 
-    let files = parse_or_exit(&input);
+    let files = parse_decoded_or_exit(&decoded);
     guards.enforce(&files);
-    emit_review(&files, opts, &input);
+    emit_review(&files, opts, &bytes);
 }
 
 /// Emit the selected review output for already-parsed `files`; `input` is the
-/// exact patch text that is sealed into machine-readable documents. Shared by
+/// exact patch bytes that are sealed into machine-readable documents. Shared by
 /// `--stdin-patch` and the structured Git selections.
-fn emit_review(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], input: &str) {
+fn emit_review(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], input: &[u8]) {
     if opts.iter().any(|a| a == "--cluster") {
         run_cluster(files, opts, input);
     } else if opts.iter().any(|a| a == "--rank") {
@@ -851,7 +883,7 @@ fn semantic_cmd(opts: &[String]) {
     );
     if opts.iter().any(|a| a == "--json") {
         // For `semantic` the sealed input is the source file's exact bytes.
-        print_semantic_json(path, &analysis, &seal_of(&source));
+        print_semantic_json(path, &analysis, &seal_of(source.as_bytes()));
     } else {
         print_semantic_human(path, &analysis);
     }
@@ -1074,7 +1106,7 @@ fn parse_parallelism(opts: &[String]) -> deep_diff_forge_core::Parallelism {
 
 /// Run the patch+risk cluster with bounded parallelism and a deterministic join.
 /// `input` is the raw patch text, sealed into the `--json` document.
-fn run_cluster(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], input: &str) {
+fn run_cluster(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], input: &[u8]) {
     use deep_diff_forge_cluster::{join_label, parallelism_label, run_risk_cluster};
     use deep_diff_forge_core::JoinPolicy;
     let parallelism = parse_parallelism(opts);
@@ -1202,8 +1234,12 @@ fn print_patch_summary(files: &[deep_diff_forge_core::ReviewFile]) {
         }
         let hunks = file.patch_twin.hunks.len();
         let status = format!("{:?}", file.status).to_lowercase();
+        let lossy = match file.patch_twin.lossy_lines {
+            0 => String::new(),
+            n => format!("  [{n} non-UTF-8 line(s) shown lossily]"),
+        };
         emitln!(
-            "{status:>14}  {}  (+{adds} -{dels}, {hunks} hunks)",
+            "{status:>14}  {}  (+{adds} -{dels}, {hunks} hunks){lossy}",
             display_safe(&file.path)
         );
     }

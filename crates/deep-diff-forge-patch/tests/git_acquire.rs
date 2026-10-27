@@ -606,3 +606,30 @@ fn repository_config_cannot_reshape_the_acquisition() {
     let after = acquire_git(r, &GitSelection::WorkingTree, &options(true)).unwrap();
     assert_eq!(after.diff(), before.diff());
 }
+
+/// Anchor C-12: committed non-UTF-8 content is acquired, lossily decoded and marked on its own file,
+/// with the exact bytes sealed. Before, the whole acquisition failed ("not UTF-8", exit 3).
+#[test]
+fn non_utf8_content_is_acquired_marked_and_sealed_exactly() {
+    let root = std::env::temp_dir().join(format!("ddf-git-acq-latin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    git_out(&root, &["init", "-q"]);
+    std::fs::write(root.join("latin.txt"), b"caf\xe9\n").unwrap();
+    std::fs::write(root.join("ok.txt"), b"a\n").unwrap();
+    git_out(&root, &["add", "-A"]);
+    git_out(&root, &["commit", "-q", "-m", "base"]);
+    std::fs::write(root.join("latin.txt"), b"caf\xe9s\n").unwrap();
+    std::fs::write(root.join("ok.txt"), b"b\n").unwrap();
+    let acq = acquire_git(&root, &GitSelection::WorkingTree, &options(false)).unwrap();
+    let captured = acq.diff().capture().unwrap();
+    assert!(!captured.is_exact());
+    assert_eq!(captured.original_bytes(), acq.diff().patch_bytes());
+    let files = acq.diff().review_files(&captured).unwrap();
+    let lossy: Vec<(&str, u32)> = files
+        .iter()
+        .map(|f| (f.path.as_str(), f.patch_twin.lossy_lines))
+        .collect();
+    assert_eq!(lossy, [("latin.txt", 2), ("ok.txt", 0)]);
+    let _ = std::fs::remove_dir_all(&root);
+}
