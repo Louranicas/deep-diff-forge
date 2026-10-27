@@ -1201,7 +1201,7 @@ fn print_patch_summary(files: &[deep_diff_forge_core::ReviewFile]) {
             }
         }
         let hunks = file.patch_twin.hunks.len();
-        let status = format!("{:?}", file.status).to_lowercase();
+        let status = file.status.label();
         emitln!(
             "{status:>14}  {}  (+{adds} -{dels}, {hunks} hunks)",
             display_safe(&file.path)

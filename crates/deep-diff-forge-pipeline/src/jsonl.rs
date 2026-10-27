@@ -1,7 +1,7 @@
 // DDF review route: DDF-R20. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-pipeline--src--jsonl
-use deep_diff_forge_core::{FileStatus, PatchLineKind, ReviewFile};
+use deep_diff_forge_core::{PatchLineKind, ReviewFile};
 use std::fmt::Write as _;
 
 /// Render one newline-delimited JSON event per file (`--jsonl`).
@@ -28,25 +28,13 @@ pub fn jsonl_events(files: &[ReviewFile]) -> String {
             out,
             "{{\"event\":\"diff.file\",\"path\":{},\"status\":\"{}\",\"additions\":{},\"deletions\":{},\"hunks\":{}}}",
             quote(&file.path),
-            status_str(file.status),
+            file.status.label(),
             additions,
             deletions,
             file.patch_twin.hunks.len(),
         );
     }
     out
-}
-
-fn status_str(status: FileStatus) -> &'static str {
-    match status {
-        FileStatus::Added => "added",
-        FileStatus::Modified => "modified",
-        FileStatus::Deleted => "deleted",
-        FileStatus::Renamed => "renamed",
-        FileStatus::TypeChanged => "type_changed",
-        FileStatus::BinaryChanged => "binary_changed",
-        FileStatus::Unknown => "unknown",
-    }
 }
 
 /// Quote and escape a string as a JSON string literal (RFC 8259).
@@ -138,17 +126,6 @@ mod tests {
     #[test]
     fn quote_passes_unicode_paths() {
         assert_eq!(quote("café/x"), "\"café/x\"");
-    }
-
-    #[test]
-    fn status_str_maps_all_variants() {
-        assert_eq!(status_str(FileStatus::Added), "added");
-        assert_eq!(status_str(FileStatus::Modified), "modified");
-        assert_eq!(status_str(FileStatus::Deleted), "deleted");
-        assert_eq!(status_str(FileStatus::Renamed), "renamed");
-        assert_eq!(status_str(FileStatus::TypeChanged), "type_changed");
-        assert_eq!(status_str(FileStatus::BinaryChanged), "binary_changed");
-        assert_eq!(status_str(FileStatus::Unknown), "unknown");
     }
 
     #[test]
