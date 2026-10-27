@@ -22,12 +22,6 @@ one stable model, none of them ever allowed to corrupt the patch.
   <sub>The review cockpit in side-by-side layout — a risk-ranked file sidebar, a syntax-highlighted two-column diff, and the menu bar. Launch with <code>git diff | deep-diff-forge review</code>.</sub>
 </p>
 
-<p align="center">
-  <img src="assets/review-cockpit.png" alt="The deep-diff-forge review cockpit: a ranked file sidebar, a side-by-side syntax-highlighted diff, and the top command menu bar" width="100%">
-  <br>
-  <sub>The review cockpit in side-by-side layout — a risk-ranked file sidebar, a syntax-highlighted two-column diff, and the menu bar. Launch with <code>git diff | deep-diff-forge review</code>.</sub>
-</p>
-
 ---
 
 ## Table of contents
