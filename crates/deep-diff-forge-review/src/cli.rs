@@ -89,7 +89,7 @@ fn import(directory: &Path, path: &Path) -> Result<(String, i32)> {
         "source changed; import would be stale",
     )?;
     storage::write_json(
-        &storage::report_path(directory, &report.reviewer_id, report.round),
+        &storage::report_path(directory, &report.reviewer_id, report.round)?,
         &report,
     )?;
     Ok(("{\"imported\":true,\"provenance\":\"manual_unverified\",\"satisfies_execution_gate\":false}\n".into(), exit::COUNCIL_COMPLETED))

@@ -69,7 +69,7 @@ fn run(
     gate: Option<&GateLaunch<'_>>,
 ) -> Result<Execution> {
     let repository = Path::new(&manifest.request.repository);
-    let jobdir = directory.join("jobs").join(job);
+    let jobdir = storage::job_dir(directory, job)?;
     // Gates are measured on their own read-only snapshot copy; providers read only the captured prompt.
     let inventory: Option<Inventory> = gate
         .map(|_| storage::read_json(&directory.join(INVENTORY_FILE), storage::INVENTORY_CAP))
@@ -340,7 +340,7 @@ pub fn run_reviewer(directory: &Path, id: &str, round: Round) -> Result<Executio
     }
     let text = prompt(&manifest, reviewer, round, &prior)?;
     let job = format!("review-{}-{}", reviewer.id, round.label());
-    let candidate = directory.join("jobs").join(&job).join("candidate.json");
+    let candidate = storage::job_dir(directory, &job)?.join("candidate.json");
     let argv = provider_argv(directory, reviewer, &candidate)?;
     let _lock = admit(directory, &manifest)?;
     let mut receipt = run(
@@ -362,17 +362,17 @@ pub fn run_reviewer(directory: &Path, id: &str, round: Round) -> Result<Executio
             report.reviewer_id == id && report.round == round,
             "provider returned wrong reviewer/round",
         )?;
-        storage::write_json(&storage::report_path(directory, id, round), &report)
+        storage::write_json(&storage::report_path(directory, id, round)?, &report)
     });
     if let Err(error) = accepted {
         // Keep the subprocess receipt verbatim; protocol failure is a distinct immutable artifact.
         storage::write_new(
-            &directory.join("jobs").join(&job).join("protocol-error.txt"),
+            &storage::job_dir(directory, &job)?.join("protocol-error.txt"),
             error.to_string().as_bytes(),
         )?;
         receipt.outcome = Outcome::Failed;
     }
-    let report_path = storage::report_path(directory, id, round);
+    let report_path = storage::report_path(directory, id, round)?;
     let digest = if receipt.outcome == Outcome::Passed {
         Some(sha256_hex(&storage::read_bytes(
             &report_path,
@@ -382,7 +382,7 @@ pub fn run_reviewer(directory: &Path, id: &str, round: Round) -> Result<Executio
         None
     };
     storage::write_json(
-        &directory.join("jobs").join(&job).join("qualification.json"),
+        &storage::job_dir(directory, &job)?.join("qualification.json"),
         &Qualification {
             outcome: receipt.outcome.clone(),
             report_sha256: digest,
@@ -406,7 +406,7 @@ fn provider_report(
                 structured_output: Option<Report>,
             }
             storage::read_json::<Envelope>(
-                &directory.join("jobs").join(job).join("stdout.log"),
+                &storage::job_dir(directory, job)?.join("stdout.log"),
                 storage::REPORT_CAP,
             )
             .and_then(|e| {
@@ -646,7 +646,7 @@ fn qualify_gate(
     if receipt.outcome != Outcome::Passed {
         return Ok(None);
     }
-    let jobdir = directory.join("jobs").join(job);
+    let jobdir = storage::job_dir(directory, job)?;
     let mut witness = None;
     let mut detail = String::new();
     let measured = match gate {
@@ -1046,8 +1046,10 @@ fn stage_inputs(
             storage::make_dir(&work.join("fuzz-artifacts"))?;
             // Seeds come from the sealed snapshot, never the live checkout.
             let source = jobdir.join("src");
-            let seed = Path::new("review-policy/fuzz-seeds")
-                .join(format!("{}.json", manifest.request.fuzz_targets[index]));
+            let seed = Path::new("review-policy/fuzz-seeds").join(format!(
+                "{}.json",
+                crate::segment(&manifest.request.fuzz_targets[index])?
+            ));
             if storage::untrusted_metadata(&source, &seed)?.is_some() {
                 storage::write_new(
                     &work.join("corpus/seed.json"),
@@ -1114,7 +1116,7 @@ pub fn run_gate(directory: &Path, gate: Gate) -> Result<Vec<Execution>> {
         } else {
             format!("gate-{}-{i}", gate.label())
         };
-        let jobdir = directory.join("jobs").join(&job);
+        let jobdir = storage::job_dir(directory, &job)?;
         // An earlier job can run for a long time; a workspace edited meanwhile stales the rest.
         require_fresh(&manifest)?;
         let work = prepare_work(directory, &jobdir, vendor.is_some(), gate == Gate::Fuzz)?;
@@ -1144,7 +1146,7 @@ pub fn run_gate(directory: &Path, gate: Gate) -> Result<Vec<Execution>> {
         )?;
         let witness_sha256 = qualify_gate(directory, &job, gate, &mut receipt)?;
         storage::write_json(
-            &directory.join("jobs").join(&job).join("qualification.json"),
+            &storage::job_dir(directory, &job)?.join("qualification.json"),
             &Qualification {
                 outcome: receipt.outcome.clone(),
                 report_sha256: None,
@@ -1164,7 +1166,7 @@ pub fn run_gate(directory: &Path, gate: Gate) -> Result<Vec<Execution>> {
             Outcome::Failed
         };
         summary.argv = vec!["controller:all-required-targets".into()];
-        let jobdir = directory.join("jobs").join(&summary.job);
+        let jobdir = storage::job_dir(directory, &summary.job)?;
         storage::make_dir(&jobdir)?;
         storage::write_json(&jobdir.join("children.json"), &receipts)?;
         storage::write_json(&jobdir.join("execution.json"), &summary)?;

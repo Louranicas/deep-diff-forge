@@ -706,27 +706,28 @@ pub fn load_manifest(directory: &Path) -> Result<SealedManifest> {
     }
     Ok(SealedManifest(manifest))
 }
-pub(crate) fn report_path(directory: &Path, id: &str, round: Round) -> PathBuf {
-    directory
+/// A job's directory under the run directory; the job name must be one safe path segment (C-09).
+pub(crate) fn job_dir(directory: &Path, job: &str) -> Result<PathBuf> {
+    Ok(directory.join("jobs").join(crate::segment(job)?))
+}
+pub(crate) fn report_path(directory: &Path, id: &str, round: Round) -> Result<PathBuf> {
+    Ok(directory
         .join("reports")
-        .join(format!("{id}-{}.json", round.label()))
+        .join(format!("{}-{}.json", crate::segment(id)?, round.label())))
 }
 pub(crate) fn reports(directory: &Path, manifest: &Manifest) -> Result<Vec<Report>> {
     let mut result = Vec::new();
     for reviewer in &manifest.request.reviewers {
         for round in [Round::Independent, Round::Challenge] {
-            let path = report_path(directory, &reviewer.id, round);
+            let path = report_path(directory, &reviewer.id, round)?;
             if path.exists() {
                 let report = read_json(&path, REPORT_CAP)?;
                 validate_report(manifest, &report)?;
-                let qpath = directory
-                    .join("jobs")
-                    .join(format!(
-                        "review-{}-{}",
-                        report.reviewer_id,
-                        report.round.label()
-                    ))
-                    .join("qualification.json");
+                let qpath = job_dir(
+                    directory,
+                    &format!("review-{}-{}", report.reviewer_id, report.round.label()),
+                )?
+                .join("qualification.json");
                 if qpath.exists() {
                     let q: Qualification = read_json(&qpath, REPORT_CAP)?;
                     require(

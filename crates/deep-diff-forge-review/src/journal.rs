@@ -458,7 +458,10 @@ struct Ledger {
 }
 impl Ledger {
     fn load(directory: &Path, run_id: &str, session_id: &str) -> Result<Self> {
-        let dir = directory.join(LEDGER_DIR).join("tuicr").join(session_id);
+        let dir = directory
+            .join(LEDGER_DIR)
+            .join("tuicr")
+            .join(crate::segment(session_id)?);
         let mut by_comment = BTreeMap::new();
         if !dir.exists() {
             return Ok(Self { by_comment });

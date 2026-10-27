@@ -356,6 +356,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Security
 
+- **Ids become paths only as checked segments** (anchor C-09). Every reviewer,
+  job, session and fuzz-target id joined into a council run directory now goes
+  through one check (`segment`, `job_dir`, `report_path`) at the join, so a
+  path cannot leave the run directory even where the id was not validated
+  first; before, the joins relied on `identifier()` having been called
+  earlier.
 - **MCP marks patch text as untrusted for the consuming model** (anchor E-07).
   The server instructions and the `review_patch` / `rank_patch` descriptions
   say that paths and line text come from the patch, whose authors wrote them,
