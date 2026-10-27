@@ -740,6 +740,40 @@ mod tests {
         );
     }
 
+    /// The summary keeps exactly the longest rank-order prefix whose entries (each with its comma)
+    /// fit the cap less the summary's own overhead: no fewer files than fit, and no more.
+    #[test]
+    fn the_rank_summary_is_filled_exactly() {
+        use std::fmt::Write as _;
+        let mut patch = String::new();
+        for i in 0..200 {
+            let _ = write!(patch, "--- a/f{i}.rs\n+++ b/f{i}.rs\n@@ -1 +1 @@\n-a\n+b\n");
+        }
+        let arguments = || {
+            let mut map = Map::new();
+            map.insert("patch".into(), json!(patch));
+            map
+        };
+        let plan = rank_tool_with(arguments(), usize::MAX)["structuredContent"].clone();
+        let entries = plan.as_array().unwrap();
+        let fit: usize = entries[..100]
+            .iter()
+            .map(|entry| entry.to_string().len() + 1)
+            .sum();
+        for (slack, kept) in [
+            (0, 100),
+            (entries[100].to_string().len(), 100),
+            (entries[100].to_string().len() + 1, 101),
+        ] {
+            let over = rank_tool_with(arguments(), RANK_SUMMARY_OVERHEAD + fit + slack);
+            assert_eq!(
+                over["structuredContent"]["files"].as_array().map(Vec::len),
+                Some(kept),
+                "slack {slack}"
+            );
+        }
+    }
+
     /// A refused patch stays a tool error, not a summary.
     #[test]
     fn the_rank_cap_leaves_refusals_alone() {
