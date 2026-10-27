@@ -171,6 +171,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **The learning store validates records on load** (anchor A-05). A hand-edited
+  line holding a path (or a path-like token) is refused, naming its line; before,
+  only `append_receipt` applied the privacy checks.
 - Non-Unix `path_from_bytes` (`deep-diff-forge-patch`) reuses valid UTF-8
   without a copy, which clears `clippy::needless_pass_by_value` in a
   Windows-target pedantic build.
