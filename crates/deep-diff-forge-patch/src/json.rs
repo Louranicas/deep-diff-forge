@@ -4,7 +4,7 @@
 // DDF review route: DDF-R21. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-patch--src--json
-use deep_diff_forge_core::{DiffStrategy, FileStatus, InputSeal, PatchLineKind, ReviewFile};
+use deep_diff_forge_core::{DiffStrategy, InputSeal, PatchLineKind, ReviewFile};
 use std::fmt::Write as _;
 
 /// Schema identifier for the JSON document this module emits.
@@ -51,7 +51,7 @@ fn render(files: &[ReviewFile], seal: Option<&InputSeal>) -> String {
         }
         out.push_str("    {\n");
         let _ = writeln!(out, "      \"path\": {},", quote(&file.path));
-        let _ = writeln!(out, "      \"status\": {},", quote(status_str(file.status)));
+        let _ = writeln!(out, "      \"status\": {},", quote(file.status.label()));
         let _ = writeln!(
             out,
             "      \"strategy\": {},",
@@ -161,18 +161,6 @@ fn render_hunks(out: &mut String, file: &ReviewFile, additions: &mut usize, dele
 
 fn opt_num(value: Option<u32>) -> String {
     value.map_or_else(|| "null".to_string(), |n| n.to_string())
-}
-
-fn status_str(status: FileStatus) -> &'static str {
-    match status {
-        FileStatus::Added => "added",
-        FileStatus::Modified => "modified",
-        FileStatus::Deleted => "deleted",
-        FileStatus::Renamed => "renamed",
-        FileStatus::TypeChanged => "type_changed",
-        FileStatus::BinaryChanged => "binary_changed",
-        FileStatus::Unknown => "unknown",
-    }
 }
 
 fn strategy_str(strategy: DiffStrategy) -> &'static str {

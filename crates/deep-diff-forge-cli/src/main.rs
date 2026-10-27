@@ -1233,7 +1233,7 @@ fn print_patch_summary(files: &[deep_diff_forge_core::ReviewFile]) {
             }
         }
         let hunks = file.patch_twin.hunks.len();
-        let status = format!("{:?}", file.status).to_lowercase();
+        let status = file.status.label();
         let lossy = match file.patch_twin.lossy_lines {
             0 => String::new(),
             n => format!("  [{n} non-UTF-8 line(s) shown lossily]"),

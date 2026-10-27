@@ -178,6 +178,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **One status vocabulary** (anchor D-01). The JSON, JSONL and projection label
+  tables are replaced by `FileStatus::label`, and the human summary no longer
+  prints `{:?}` (it printed `binarychanged` and `typechanged` where every other
+  surface prints `binary_changed` and `type_changed`).
 - **Unknown options are refused, not ignored** (anchor A-01). Every entry point
   admits its arguments against a closed set (`cli/src/args.rs`) and exits 2,
   naming the option, with an empty stdout. Before, a misspelt guard such as
