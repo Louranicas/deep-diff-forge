@@ -129,7 +129,7 @@ jobs:
 
   review-controller-evidence:
     name: review controller mutation and fuzz evidence
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Raised from 30: the gate image build installs two Rust toolchains and compiles
     # cargo-mutants and cargo-fuzz inside the image.
     timeout-minutes: 75
@@ -194,6 +194,10 @@ jobs:
       - name: allow rootless podman user namespaces (ubuntu-24.04; measured working 2026-10-26)
         run: |
           podman --version
+          # Ubuntu 26 trial: record the image, kernel and the restriction's starting value.
+          grep -E '^(PRETTY_NAME|VERSION_ID)=' /etc/os-release
+          uname -r
+          echo "apparmor_restrict_unprivileged_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo absent)"
           if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)" = "1" ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
