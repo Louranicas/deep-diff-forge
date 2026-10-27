@@ -8,6 +8,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **The local CI replica and pre-push hook are versioned** (anchor B-07).
+  `scripts/ci_local.sh` replicates every step of the CI gate jobs and fails
+  closed; each step is labelled with the CI step it replicates, and
+  `tests/ci_replica.rs` fails when a CI step has no replica step or a replica
+  step names no CI step. `just ci` runs it (before, `just ci` was the feature
+  gate alone, without docs, deny, audit, SBOM, MSRV, soak, probes, the SDK test
+  or the fuzz compile). The gitleaks pre-push hook is `scripts/hooks/pre-push`;
+  `just install-hooks` installs it and `just doctor` reports whether it is
+  installed.
 - **CI runs weekly** (anchor B-11). A `schedule:` trigger (Monday 04:23 UTC)
   runs the full workflow, so a new RustSec advisory or a yanked dependency
   fails within a week even when nothing is merged.
