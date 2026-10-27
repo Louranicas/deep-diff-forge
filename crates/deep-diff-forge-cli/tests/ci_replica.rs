@@ -6,7 +6,8 @@
 use std::collections::BTreeSet;
 
 /// The CI jobs the replica stands in for. The council sandbox and diff-mutation jobs need Podman
-/// or hours of mutation and are run separately (`scripts/diff_mutation.sh`).
+/// or hours of mutation and are run separately (`scripts/diff_mutation.sh`); the macOS job needs a
+/// macOS runner.
 const GATE_JOBS: &[&str] = &["secrets", "msrv", "gate", "supply-chain"];
 
 /// CI steps that only install a tool the replica expects on the machine already.
