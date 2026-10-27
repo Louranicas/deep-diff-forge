@@ -178,6 +178,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **Unknown options are refused, not ignored** (anchor A-01). Every entry point
+  admits its arguments against a closed set (`cli/src/args.rs`) and exits 2,
+  naming the option, with an empty stdout. Before, a misspelt guard such as
+  `--require-file` was silently skipped, so a gate passed every empty patch
+  with exit 0. Commands that take no arguments (`doctor`, `--version`, the
+  `*-contract` printers) and `schema` now refuse extra ones too. A test ties
+  every option in `--help` to an invocation that admits it.
 - Non-Unix `path_from_bytes` (`deep-diff-forge-patch`) reuses valid UTF-8
   without a copy, which clears `clippy::needless_pass_by_value` in a
   Windows-target pedantic build.

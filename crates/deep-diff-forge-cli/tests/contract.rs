@@ -239,3 +239,127 @@ fn envelope_keeps_the_commands_code_when_its_reader_closes() {
     drop(child.stdin.take());
     assert_eq!(child.wait().unwrap().code(), Some(7));
 }
+
+/// Anchor A-01: a misspelt or invented option is refused with exit 2 and an empty stdout, so a
+/// gate typo cannot silently drop the guard it names. Before this, `--require-file` on an empty
+/// input exited 0.
+#[test]
+fn unknown_options_are_refused_not_ignored() {
+    for args in [
+        &["--stdin-patch", "--require-file"][..],
+        &["--stdin-patch", "--requre-files"],
+        &["--stdin-patch", "--jsno"],
+        &["--stdin-patch", "--json=true"],
+        &["--stdin-patch", "--layout"],
+        &["--git-staged", "--rpo", "."],
+        &["doctor", "--json"],
+        &["--version", "extra"],
+        &["schema", "result", "extra"],
+        &["deploy", "status", "--jsn"],
+        &["learn", "status", "--jsonn"],
+        &["daemon", "path", "--sockett", "x"],
+        &["semantic", "a.rs", "b.rs"],
+        &["structural", "a.rs", "b.rs", "--jsn"],
+        &["highlight", "a.rs", "--colour"],
+        &["review", "--prob"],
+    ] {
+        let (code, stdout, stderr) = run(args, "");
+        assert_eq!(code, 2, "{args:?}: {stderr}");
+        assert!(stdout.is_empty(), "{args:?} wrote stdout");
+        assert!(stderr.starts_with("error: "), "{args:?}: {stderr}");
+    }
+    let (_, _, stderr) = run(&["--stdin-patch", "--require-file"], "");
+    assert!(
+        stderr.contains("unknown option: --require-file\n"),
+        "{stderr}"
+    );
+}
+
+/// The legitimate side of A-01: every option `--help` documents is admitted by a real invocation,
+/// and a newly documented option needs a row here.
+#[test]
+fn every_documented_option_is_admitted() {
+    let dir = std::env::temp_dir().join(format!("ddf-a01-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("a.rs");
+    std::fs::write(&source, "fn a() {}\n").unwrap();
+    let source = source.to_str().unwrap();
+    let repo = env!("CARGO_MANIFEST_DIR");
+    let socket = dir.join("s.sock");
+    let socket = socket.to_str().unwrap();
+    let rows: &[(&str, &[&str])] = &[
+        ("--json", &["--stdin-patch", "--json"]),
+        ("--jsonl", &["--stdin-patch", "--jsonl"]),
+        ("--rank", &["--stdin-patch", "--rank"]),
+        ("--cluster", &["--stdin-patch", "--cluster"]),
+        (
+            "--parallel",
+            &["--stdin-patch", "--cluster", "--parallel", "2"],
+        ),
+        ("--layout", &["--stdin-patch", "--layout", "side-by-side"]),
+        ("--require-files", &["--stdin-patch", "--require-files"]),
+        ("--require-hunks", &["--stdin-patch", "--require-hunks"]),
+        ("--stdin-patch", &["--stdin-patch"]),
+        (
+            "--git-working-tree",
+            &["--git-working-tree", "--repo", repo, "--acquisition-json"],
+        ),
+        (
+            "--include-untracked",
+            &[
+                "--git-working-tree",
+                "--include-untracked",
+                "--repo",
+                repo,
+                "--rank",
+            ],
+        ),
+        ("--git-staged", &["--git-staged", "--repo", repo, "--rank"]),
+        (
+            "--git-range",
+            &["--git-range", "HEAD..HEAD", "--repo", repo, "--rank"],
+        ),
+        ("--repo", &["--git-staged", "--repo", repo]),
+        (
+            "--acquisition-json",
+            &["--git-staged", "--repo", repo, "--acquisition-json"],
+        ),
+        ("--socket", &["daemon", "path", "--socket", socket]),
+        (
+            "--foreground",
+            &["daemon", "path", "--foreground", "--socket", socket],
+        ),
+        ("--stdin", &["learn", "record", "--stdin"]),
+        ("--family", &["explain", "7", "--family", "engine"]),
+        ("--color", &["highlight", source, "--color"]),
+        ("--no-color", &["highlight", source, "--no-color"]),
+        ("--probe", &["review", "--probe"]),
+        ("--side", &["review", "--probe", "--side"]),
+        ("--palette", &["review", "--probe", "--palette"]),
+        ("--cmd", &["review", "--probe", "--cmd", "rank"]),
+        ("--cols", &["review", "--probe", "--cols", "80"]),
+        ("--rows", &["review", "--probe", "--rows", "20"]),
+        ("--help", &["--help"]),
+        ("--version", &["--version"]),
+        ("--self-test", &["--self-test"]),
+    ];
+    let (_, help, _) = run(&["--help"], "");
+    let current = help.split("FUTURE PRIMARY MODES").next().unwrap();
+    let mut documented: Vec<&str> = current
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .filter(|word| word.starts_with("--") && word.len() > 2)
+        .collect();
+    documented.sort_unstable();
+    documented.dedup();
+    let mut covered: Vec<&str> = rows.iter().map(|(option, _)| *option).collect();
+    covered.sort_unstable();
+    assert_eq!(
+        documented, covered,
+        "each option in --help needs a row here"
+    );
+    for (option, args) in rows {
+        let (code, _, stderr) = run(args, PATCH);
+        assert_ne!(code, 2, "{option} via {args:?} was refused: {stderr}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

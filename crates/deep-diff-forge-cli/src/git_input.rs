@@ -59,6 +59,18 @@ fn fail(err: &GitAcquireError) -> ! {
     std::process::exit(exit_code(err));
 }
 
+/// The structured Git selections' own options plus the shared review output and guard options.
+const GIT_FLAGS: [&str; 8] = [
+    "--include-untracked",
+    "--acquisition-json",
+    "--json",
+    "--jsonl",
+    "--rank",
+    "--cluster",
+    "--require-files",
+    "--require-hunks",
+];
+
 /// Entry point: `selector` is the first argument, `opts` the rest.
 pub(crate) fn run(selector: &str, opts: &[String]) {
     if opts.iter().any(|a| a == "--stdin-patch") {
@@ -79,6 +91,14 @@ pub(crate) fn run(selector: &str, opts: &[String]) {
     };
     if let Some(extra) = opts.iter().find(|a| SELECTORS.contains(&a.as_str())) {
         usage(&format!("{selector} cannot be combined with {extra}"));
+    }
+    let spec = crate::args::Spec {
+        flags: &GIT_FLAGS,
+        valued: &["--repo", "--layout", "--parallel"],
+        positionals: 0,
+    };
+    if let Err(reason) = crate::args::admit(opts, &spec) {
+        usage(&display_safe(&reason));
     }
     let include_untracked = opts.iter().any(|a| a == "--include-untracked");
     if include_untracked && selection != GitSelection::WorkingTree {
