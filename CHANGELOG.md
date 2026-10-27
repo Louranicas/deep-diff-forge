@@ -171,6 +171,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **The daemon recovers fully from a contained panic** (anchor A-03). It used
+  to keep answering through the poisoned engine lock while each connection loop
+  read the poison as "not running", so after one panic every connection got a
+  single answer and was dropped. The sessions the panic may have left
+  inconsistent are now cleared (`Engine::reset_sessions`; the pid, start time
+  and session-id counter are kept) and the poison is cleared, so the
+  connection and later ones are served as before.
 - **Unknown options are refused, not ignored** (anchor A-01). Every entry point
   admits its arguments against a closed set (`cli/src/args.rs`) and exits 2,
   naming the option, with an empty stdout. Before, a misspelt guard such as
