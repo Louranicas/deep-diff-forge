@@ -810,6 +810,51 @@ pub(crate) fn executions(directory: &Path, manifest: &Manifest) -> Result<Vec<Ex
 mod tests {
     use super::*;
 
+    /// Anchor C-03: the run id is an unkeyed digest of the manifest, so a manifest edited and
+    /// resealed passes the seal. A mutation base without its sealed diff (or the reverse) must
+    /// still be refused at load, by name, rather than silently mutating the whole package.
+    #[test]
+    fn a_resealed_manifest_with_half_a_mutation_scope_is_refused() {
+        let directory = std::env::temp_dir().join(format!("ddf-c03-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        let mut request = crate::cli::example();
+        request.profile = crate::model::Profile::Roster;
+        request.reviewers.truncate(2);
+        let base = Some("a".repeat(40));
+        for (mutation_base, digest, refused) in [
+            (base.clone(), None, true),
+            (None, Some("b".repeat(64)), true),
+            (base.clone(), Some("b".repeat(64)), false),
+            (None, None, false),
+        ] {
+            fs::create_dir_all(&directory).unwrap();
+            let mut manifest = Manifest {
+                schema: "deep-diff-forge.council.v1".into(),
+                run_id: String::new(),
+                review_id: "c".repeat(64),
+                source_tree: "d".repeat(64),
+                request: Request {
+                    mutation_base: mutation_base.clone(),
+                    ..request.clone()
+                },
+                artifacts: Vec::new(),
+                mutation_diff_sha256: digest.clone(),
+            };
+            manifest.run_id = manifest_digest(&manifest).unwrap();
+            write_json(&directory.join("manifest.json"), &manifest).unwrap();
+            let loaded = load_manifest(&directory);
+            let together = loaded
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.to_string().contains("must appear together"));
+            assert_eq!(
+                together, refused,
+                "{mutation_base:?} {digest:?}: {loaded:?}"
+            );
+            fs::remove_dir_all(&directory).unwrap();
+        }
+    }
+
     /// Anchor A-02: council storage strips every inherited variable that would point Git at
     /// another repository. Before, an inherited `GIT_DIR` made `rev-parse HEAD` name another
     /// repository while `--show-toplevel` still passed the top-level check.
