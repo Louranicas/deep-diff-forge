@@ -384,6 +384,7 @@ pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcErro
             "pid": engine.pid,
             "sessions": engine.session_count(),
             "retained_bytes": engine.retained_bytes,
+            // Reserved: there is no response cache, so the count is truly 0 (decision D-03).
             "cache_entries": 0,
             "protocol": PROTOCOL_VERSION,
         })),

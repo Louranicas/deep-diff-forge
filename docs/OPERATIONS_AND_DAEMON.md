@@ -86,10 +86,15 @@ Response:
     "sessions": 0,
     "retained_bytes": 0,
     "cache_entries": 0,
-    "protocol": 0
+    "protocol": 1
   }
 }
 ```
+
+`cache_entries` is reserved: the daemon keeps no response cache, so it is always `0`, a true
+count of an empty cache rather than a measurement. It stays in the result so protocol-1
+clients that read it keep working; a cache, if one is ever added, reports its real size here
+(decision D-03, 2026-10-27).
 
 ## Status RPC
 
