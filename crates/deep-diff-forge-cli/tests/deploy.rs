@@ -38,6 +38,8 @@ fn status_json_lists_gate_stack() {
         assert!(stdout.contains(gate), "missing gate {gate}");
     }
     assert!(stdout.contains("\"state\": \"not-run\""));
+    // Anchor E-06: the snapshot says it ran nothing, so `not-run` cannot be read as a verdict.
+    assert!(stdout.contains("\"gates_run\": false"));
 }
 
 #[test]
@@ -45,7 +47,7 @@ fn status_human_shows_maturity_name() {
     let (code, stdout, _) = run(&["deploy", "status"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("L9 (Learning)"));
-    assert!(stdout.contains("just gate-feature"));
+    assert!(stdout.contains("not run by this command; run them with: just ci"));
 }
 
 #[test]

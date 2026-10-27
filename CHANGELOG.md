@@ -178,6 +178,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **`deploy status` says it ran nothing** (anchor E-06). Its gates are a
+  static `not-run` list; the JSON now carries `"gates_run": false` so a caller
+  cannot read `not-run` as a verdict, and the human output points at `just ci`.
 - **Council fields that take a closed set are enums** (anchor C-02; library
   API). `Request.builder_family` (`BuilderFamily`), a challenge's
   `disposition` (`Disposition`) and `Assessment.state` (`AssessmentState`)

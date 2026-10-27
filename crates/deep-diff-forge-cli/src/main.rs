@@ -1027,8 +1027,8 @@ fn deploy_release(json: bool) {
 
 /// Emit a machine- or human-readable deployment status snapshot.
 ///
-/// Gates are reported `not-run`: this is a status snapshot, not a gate run.
-/// Execute the gates with `just gate-feature`.
+/// Gates are reported `not-run`: this is a static snapshot, not a gate run, and the JSON says so
+/// with `"gates_run": false` (anchor E-06). Execute the gates with `just ci`.
 fn deploy_status(json: bool) {
     use deep_diff_forge_core::{DeploymentStatus, GateState};
     const GATES: [&str; 7] = [
@@ -1054,7 +1054,7 @@ fn deploy_status(json: bool) {
             );
         }
         emitln!(
-            "{{\n  \"schema\": \"deep-diff-forge.deployment-status.v0\",\n  \"repo\": \"{}\",\n  \"maturity\": \"{}\",\n  \"maturity_name\": \"{}\",\n  \"gates\": [{}],\n  \"external_observers\": {{\"zellij\": \"observed\", \"habitat\": \"optional\"}}\n}}",
+            "{{\n  \"schema\": \"deep-diff-forge.deployment-status.v0\",\n  \"repo\": \"{}\",\n  \"maturity\": \"{}\",\n  \"maturity_name\": \"{}\",\n  \"gates_run\": false,\n  \"gates\": [{}],\n  \"external_observers\": {{\"zellij\": \"observed\", \"habitat\": \"optional\"}}\n}}",
             status.repo,
             status.maturity.as_str(),
             status.maturity.name(),
@@ -1070,7 +1070,7 @@ fn deploy_status(json: bool) {
         );
         let names: Vec<&str> = status.gates.iter().map(|g| g.name.as_str()).collect();
         emitln!(
-            "gates:    {} (run via: just gate-feature)",
+            "gates:    {} (not run by this command; run them with: just ci)",
             names.join(", ")
         );
     }
