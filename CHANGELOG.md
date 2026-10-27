@@ -178,6 +178,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **Lint suppressions carry a reason and cannot go stale** (anchor B-03). The
+  nine workspace `#[allow]` sites (and two in the fuzz targets) are now
+  `#[expect(.., reason = "..")]`, and clippy's `allow_attributes` and
+  `allow_attributes_without_reason` are denied in the workspace and fuzz
+  manifests: a bare `#[allow]` no longer builds, and an expectation whose lint
+  stops firing fails as unfulfilled.
 - **One status vocabulary** (anchor D-01). The JSON, JSONL and projection label
   tables are replaced by `FileStatus::label`, and the human summary no longer
   prints `{:?}` (it printed `binarychanged` and `typechanged` where every other

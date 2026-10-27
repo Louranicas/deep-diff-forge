@@ -17,7 +17,10 @@ use crate::util::clamp_f64;
 /// Learning inputs); modelling each as its own two-variant enum would obscure
 /// the one-to-one mapping to the specification without adding safety, so the
 /// `struct_excessive_bools` lint is allowed here deliberately.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one bool per specified reviewer signal; see the doc comment"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RankingObservation {
     /// Reviewer opened this file first.
@@ -159,7 +162,10 @@ fn conditional_risk(
         return prior;
     }
     let risky = with_signal.iter().filter(|o| o.realized_risk()).count();
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "observation counts stay far below 2^52, so the f64 rate is exact"
+    )]
     let rate = risky as f64 / with_signal.len() as f64;
     clamp_f64(rate, 0.0, 1.0)
 }

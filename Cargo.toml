@@ -46,6 +46,10 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 unwrap_in_result = "deny"
 panic_in_result_fn = "deny"
+# A lint is silenced only by `#[expect(.., reason = "..")]` (anchor B-03): the reason is
+# reviewed, and an expectation that stops firing fails the build, so it cannot go stale.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
 
 # Internal crates are declared once here with paired path + version — the
 # publishable-workspace pattern (cargo-deny `wildcards = "deny"` requires a
