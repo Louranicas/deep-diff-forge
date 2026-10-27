@@ -199,6 +199,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   inconsistent are now cleared (`Engine::reset_sessions`; the pid, start time
   and session-id counter are kept) and the poison is cleared, so the
   connection and later ones are served as before.
+- **Every fuzz target runs in CI** (anchor B-06). `patch_parser`,
+  `review_json`, `daemon_protocol` and `agent_annotation` only ever compiled;
+  the instrumented smoke now runs all seven targets for 10 s each and refuses a
+  `fuzz/Cargo.toml` target that the step does not run. New seeds for
+  `daemon_protocol` and `agent_annotation`; Dependabot now watches `/fuzz`.
 - **Unknown options are refused, not ignored** (anchor A-01). Every entry point
   admits its arguments against a closed set (`cli/src/args.rs`) and exits 2,
   naming the option, with an empty stdout. Before, a misspelt guard such as

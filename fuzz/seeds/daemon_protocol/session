@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":3,"method":"session.open","params":{"patch":"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"}}
