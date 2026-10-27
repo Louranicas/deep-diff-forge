@@ -155,6 +155,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **The test-count floor is retired** (anchor B-09). The 50-tests-per-crate
+  rule was never enforced, and `just test-audit` always exited 0 (and read 0
+  without `rg`); the project's own antipattern catalogue lists count literals
+  as a false oracle. The Testing Gold Standard and the deployment docs now
+  name diff-scoped mutation (0 missed in the changed code) as the coverage
+  oracle, and the `test-audit` recipe is removed.
 - README exit-code table gains code 7 and the recommended gate command now
   reads `--require-files --require-hunks`. The workspace has 1,192 passing tests
   (1 ignored), measured 2026-10-26 on the stage D tree; the 991 baseline is
