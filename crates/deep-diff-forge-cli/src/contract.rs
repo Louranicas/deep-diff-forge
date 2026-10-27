@@ -70,8 +70,9 @@ pub fn explain(args: &[String]) -> Result<String, String> {
     })
 }
 
-fn entry_json(entry: &ExitCode) -> Value {
-    json!({"family": entry.family, "code": entry.code, "name": entry.name, "meaning": entry.meaning})
+/// One registry entry as JSON, the same in `explain --json`, `schema exit-codes` and MCP.
+pub(crate) fn entry_json(entry: &ExitCode) -> Value {
+    json!({"family": entry.family, "code": entry.code, "name": entry.name, "meaning": entry.meaning, "action": entry.action.name(), "may_be_transient": entry.action.may_be_transient()})
 }
 
 /// `schema [result|exit-codes]`: the JSON Schema of the envelope, or the exit-code registry.

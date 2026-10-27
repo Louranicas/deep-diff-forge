@@ -9,6 +9,7 @@
 //! Framing is the stdio binding's: one JSON-RPC message per line, nothing else on stdout. A line
 //! longer than [`LINE_CAP`] is refused and skipped, so input can never grow memory past the cap.
 
+use crate::contract::entry_json;
 use deep_diff_forge_core::exit::{EXIT_CODES, lookup};
 use deep_diff_forge_daemon::{
     Engine, INPUT_CONTRACT_REFUSED, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR,
@@ -326,9 +327,7 @@ fn call_tool(mut params: Value) -> Result<Value, (i64, String)> {
         "review_patch" => review_tool(arguments),
         "rank_patch" => rank_tool_with(arguments, REVIEW_FULL_CAP),
         "explain_exit_code" => explain(&arguments),
-        _ => structured(
-            json!({"codes": EXIT_CODES.iter().map(|e| json!({"family": e.family, "code": e.code, "name": e.name, "meaning": e.meaning})).collect::<Vec<_>>()}),
-        ),
+        _ => structured(json!({"codes": EXIT_CODES.iter().map(entry_json).collect::<Vec<_>>()})),
     })
 }
 
@@ -515,11 +514,7 @@ fn explain(arguments: &Map<String, Value>) -> Value {
                 "exit code {code} is not documented for the {family} family"
             ))
         },
-        |e| {
-            structured(
-                json!({"family": e.family, "code": e.code, "name": e.name, "meaning": e.meaning}),
-            )
-        },
+        |e| structured(entry_json(e)),
     )
 }
 
