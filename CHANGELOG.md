@@ -178,6 +178,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **CI runs on Ubuntu 26** (Luke's decision, a measured trial, 2026-10-27).
+  Every CI job and the release workflow's supply-chain and publish jobs run on
+  `ubuntu-26.04`. The trial measured rootless Podman 5.7.0 on Ubuntu 26.04.1
+  (kernel 7.0.0): the AppArmor user-namespace restriction starts on, as on
+  24.04; the existing guarded step lifts it; and all 12 planted-breach probes
+  were refused. The Linux release binary is still built on `ubuntu-24.04`, so
+  its glibc requirement keeps it running on older distributions.
 - **GitHub and GitLab `main` share one history again** (Luke's decision,
   2026-10-27). GitLab `main` carried three commits from 2026-06-23 (review
   cockpit hardening) that GitHub never received; their code had already

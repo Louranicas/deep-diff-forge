@@ -223,9 +223,10 @@ Current status (2026-10-26):
   [`EVIDENCE.md`](../EVIDENCE.md#review-council-and-ci-2026-10-26).
 - Gates 2 and 3 are additionally covered for review-council runs by the eight
   sandboxed evidence gates ([review council](REVIEW_COUNCIL.md#gate-sandbox)).
-- Open before the next release: the CLI/SDK/MCP slices A–D
-  ([roadmap](ROADMAP.md#status-2026-10-26)) and a measured move from the
-  `ubuntu-24.04` pin to Ubuntu 26.
+- Before the next release, the CLI/SDK/MCP slices A–D
+  ([roadmap](ROADMAP.md#status-2026-10-26)) and the measured move to Ubuntu 26
+  were open; both are done (2026-10-27). CI runs on `ubuntu-26.04`, and the Linux
+  release binary is built on `ubuntu-24.04` so it runs on older distributions.
 
 ### Gate 8: Post-Release Learning
 
