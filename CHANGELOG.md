@@ -196,6 +196,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `original_bytes`, `is_exact`). Output for UTF-8 input is byte-identical. A
   non-UTF-8 *path* is still refused, because a path is an identity.
   `GitAcquireError::NonUtf8Patch` is removed.
+- **The review JSON records which side lacks a final newline** (anchor A-06).
+  A line carries `"no_newline": true` when the marker follows it; its `kind`
+  names the side (removed: old, added: new, context: both). Before, patches
+  that differed only in which side lacked the newline produced identical JSON,
+  although git applies one and refuses the other. Other output is unchanged.
 - Non-Unix `path_from_bytes` (`deep-diff-forge-patch`) reuses valid UTF-8
   without a copy, which clears `clippy::needless_pass_by_value` in a
   Windows-target pedantic build.

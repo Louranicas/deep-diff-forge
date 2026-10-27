@@ -368,3 +368,69 @@ fn rank_json_require_files_is_byte_identical_across_runs() {
     );
     assert!(doc1.contains("\"path\": \"src/lib.rs\""));
 }
+
+fn review_json(patch: &str) -> serde_json::Value {
+    let (code, stdout, stderr) = run_text(&["--stdin-patch", "--json"], patch);
+    assert_eq!(code, 0, "{stderr}");
+    serde_json::from_str(&stdout).unwrap()
+}
+
+/// Anchor A-06: the review JSON says which side lacks its final newline. Before, `OLD_SIDE` and
+/// `NEW_SIDE` (git applies one to a file and refuses the other) gave identical JSON apart from
+/// `input_sha256`, because the marker was only file-level `metadata`.
+#[test]
+fn the_review_json_records_which_side_lacks_a_final_newline() {
+    const OLD_SIDE: &str = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-let x = 1;\n\\ No newline at end of file\n+let x = 2;\n";
+    const NEW_SIDE: &str = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-let x = 1;\n+let x = 2;\n\\ No newline at end of file\n";
+    const BOTH: &str = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1,2 +1,2 @@\n-a\n+b\n c\n\\ No newline at end of file\n";
+    let marks = |patch: &str| -> Vec<(String, bool)> {
+        review_json(patch)["files"][0]["hunks"][0]["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                (
+                    l["kind"].as_str().unwrap().to_owned(),
+                    l["no_newline"] == true,
+                )
+            })
+            .collect()
+    };
+    let expect = |list: &[(&str, bool)]| -> Vec<(String, bool)> {
+        list.iter().map(|(k, m)| ((*k).to_owned(), *m)).collect()
+    };
+    assert_eq!(
+        marks(OLD_SIDE),
+        expect(&[("removed", true), ("added", false)])
+    );
+    assert_eq!(
+        marks(NEW_SIDE),
+        expect(&[("removed", false), ("added", true)])
+    );
+    assert_eq!(
+        marks(BOTH),
+        expect(&[("removed", false), ("added", false), ("context", true)])
+    );
+    // Lossless: each hunk body rebuilt from the JSON alone is the input's, byte for byte.
+    for patch in [OLD_SIDE, NEW_SIDE, BOTH] {
+        let mut body = String::new();
+        for line in review_json(patch)["files"][0]["hunks"][0]["lines"]
+            .as_array()
+            .unwrap()
+        {
+            body.push(match line["kind"].as_str().unwrap() {
+                "added" => '+',
+                "removed" => '-',
+                _ => ' ',
+            });
+            body.push_str(line["text"].as_str().unwrap());
+            body.push('\n');
+            if line["no_newline"] == true {
+                body.push_str("\\ No newline at end of file\n");
+            }
+        }
+        let header = patch.find("@@ -").unwrap();
+        let hunk_body = &patch[header + patch[header..].find('\n').unwrap() + 1..];
+        assert_eq!(body, hunk_body);
+    }
+}

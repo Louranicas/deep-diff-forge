@@ -131,6 +131,11 @@ fn render_hunks(out: &mut String, file: &ReviewFile, additions: &mut usize, dele
             let _ = write!(out, "\"old_line\": {}, ", opt_num(line.old_line));
             let _ = write!(out, "\"new_line\": {}, ", opt_num(line.new_line));
             let _ = write!(out, "\"text\": {}", quote(&line.text));
+            // Which side lacks its final LF follows from `kind` (removed: old, added: new,
+            // context: both); present only when true, so other output is unchanged (anchor A-06).
+            if line.no_newline {
+                out.push_str(", \"no_newline\": true");
+            }
             out.push('}');
             if l + 1 < hunk.lines.len() {
                 out.push(',');
