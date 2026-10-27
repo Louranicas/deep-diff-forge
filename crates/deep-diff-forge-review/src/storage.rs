@@ -483,6 +483,9 @@ fn verify_candidate(
     )
 }
 
+/// The sealed council manifest's schema: written at prepare, required at load (anchor D-04).
+const MANIFEST_SCHEMA: &str = "deep-diff-forge.council.v1";
+
 fn manifest_digest(manifest: &Manifest) -> Result<String> {
     let mut unsealed = manifest.clone();
     unsealed.run_id.clear();
@@ -641,7 +644,7 @@ fn seal_run(
         request.mutation_base.as_deref(),
     )?;
     let mut manifest = Manifest {
-        schema: "deep-diff-forge.council.v1".into(),
+        schema: MANIFEST_SCHEMA.into(),
         run_id: String::new(),
         review_id,
         source_tree,
@@ -668,8 +671,7 @@ pub fn load_manifest(directory: &Path) -> Result<Manifest> {
     let manifest: Manifest = read_json(&directory.join("manifest.json"), 2 * 1024 * 1024)?;
     validate_request(&manifest.request)?;
     require(
-        manifest.schema == "deep-diff-forge.council.v1"
-            && manifest_digest(&manifest)? == manifest.run_id,
+        manifest.schema == MANIFEST_SCHEMA && manifest_digest(&manifest)? == manifest.run_id,
         "manifest seal mismatch",
     )?;
     require(
@@ -813,6 +815,12 @@ mod tests {
     /// Anchor C-03: the run id is an unkeyed digest of the manifest, so a manifest edited and
     /// resealed passes the seal. A mutation base without its sealed diff (or the reverse) must
     /// still be refused at load, by name, rather than silently mutating the whole package.
+    /// The manifest schema is a wire value: renaming the constant must not change it.
+    #[test]
+    fn the_manifest_schema_is_pinned() {
+        assert_eq!(MANIFEST_SCHEMA, "deep-diff-forge.council.v1");
+    }
+
     #[test]
     fn a_resealed_manifest_with_half_a_mutation_scope_is_refused() {
         let directory = std::env::temp_dir().join(format!("ddf-c03-{}", std::process::id()));
