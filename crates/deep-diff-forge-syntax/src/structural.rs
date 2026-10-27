@@ -101,15 +101,64 @@ pub struct StructuralDiff {
     pub removed: usize,
     /// Count of tokens belonging to a moved block.
     pub moved: usize,
+    /// How the script was produced. One state replaces three flags and an `Option` whose
+    /// contradictory combinations (degraded and minimal, reformat-only and unavailable) could be
+    /// built before (anchor C-06).
+    pub state: StructuralState,
+}
+
+/// How a [`StructuralDiff`] was produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StructuralState {
+    /// No structural analysis: unsupported, oversized or invalid input. Never read as unchanged.
+    Unavailable(deep_diff_forge_core::FallbackReason),
+    /// The changed middle was too large for any token table: one coarse whole-file change.
+    Degraded,
+    /// Anchored on unchanged lines: a valid script, not necessarily minimal, with real edits.
+    LineAnchored,
+    /// A minimal (longest-common-subsequence) script; `reformat_only` when it has no edits, so
+    /// the token streams are identical and only formatting differs.
+    Minimal {
+        /// No token was added, removed or moved.
+        reformat_only: bool,
+    },
+}
+
+impl StructuralDiff {
     /// True when the token streams are identical (only formatting differs).
-    pub reformat_only: bool,
-    /// True when the LCS was skipped for size and a coarse diff was produced.
-    pub degraded: bool,
-    /// True when `changes` is a minimal (longest-common-subsequence) script. The line-anchored
-    /// path is valid but not necessarily minimal, and a degraded or unavailable diff never is.
-    pub minimal: bool,
-    /// Why structural analysis is unavailable; never interpreted as unchanged.
-    pub unavailable: Option<deep_diff_forge_core::FallbackReason>,
+    #[must_use]
+    pub fn reformat_only(&self) -> bool {
+        matches!(
+            self.state,
+            StructuralState::Minimal {
+                reformat_only: true
+            }
+        )
+    }
+
+    /// True when no full token script was produced (coarse, or unavailable).
+    #[must_use]
+    pub fn degraded(&self) -> bool {
+        matches!(
+            self.state,
+            StructuralState::Degraded | StructuralState::Unavailable(_)
+        )
+    }
+
+    /// True when `changes` is a minimal (longest-common-subsequence) script.
+    #[must_use]
+    pub fn minimal(&self) -> bool {
+        matches!(self.state, StructuralState::Minimal { .. })
+    }
+
+    /// Why structural analysis is unavailable, if it is.
+    #[must_use]
+    pub fn unavailable(&self) -> Option<&deep_diff_forge_core::FallbackReason> {
+        match &self.state {
+            StructuralState::Unavailable(reason) => Some(reason),
+            _ => None,
+        }
+    }
 }
 
 /// Structurally diff `old_source` against `new_source` for `language`.
@@ -130,10 +179,7 @@ pub fn structural_diff(language: Language, old_source: &str, new_source: &str) -
             added: 0,
             removed: 0,
             moved: 0,
-            reformat_only: false,
-            degraded: true,
-            minimal: false,
-            unavailable: Some(reason),
+            state: StructuralState::Unavailable(reason),
         },
     }
 }
@@ -244,10 +290,18 @@ fn diff_tokens(language: Language, old: &[Token], new: &[Token]) -> StructuralDi
         added,
         removed,
         moved,
-        reformat_only,
-        degraded: false,
-        minimal,
-        unavailable: None,
+        // An empty edit script is minimal whichever path produced it.
+        state: if reformat_only {
+            StructuralState::Minimal {
+                reformat_only: true,
+            }
+        } else if minimal {
+            StructuralState::Minimal {
+                reformat_only: false,
+            }
+        } else {
+            StructuralState::LineAnchored
+        },
     }
 }
 
@@ -576,16 +630,59 @@ fn coarse_diff(language: Language, old: &[Token], new: &[Token]) -> StructuralDi
         added: new.len(),
         removed: old.len(),
         moved: 0,
-        reformat_only: false,
-        degraded: true,
-        minimal: false,
-        unavailable: None,
+        state: StructuralState::Degraded,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Anchor C-06: each state reports the flags the JSON outputs carry, exactly as the four
+    /// separate fields did on the paths that built them.
+    #[test]
+    fn each_state_reports_the_flags_its_path_used_to_set() {
+        use deep_diff_forge_core::FallbackReason;
+        let flags = |state: StructuralState| {
+            let diff = StructuralDiff {
+                language: Language::Rust,
+                changes: Vec::new(),
+                unchanged: 0,
+                added: 0,
+                removed: 0,
+                moved: 0,
+                state,
+            };
+            (
+                diff.reformat_only(),
+                diff.degraded(),
+                diff.minimal(),
+                diff.unavailable().cloned(),
+            )
+        };
+        let reason = FallbackReason::UnsupportedLanguage;
+        assert_eq!(
+            flags(StructuralState::Unavailable(reason.clone())),
+            (false, true, false, Some(reason))
+        );
+        assert_eq!(flags(StructuralState::Degraded), (false, true, false, None));
+        assert_eq!(
+            flags(StructuralState::LineAnchored),
+            (false, false, false, None)
+        );
+        assert_eq!(
+            flags(StructuralState::Minimal {
+                reformat_only: false
+            }),
+            (false, false, true, None)
+        );
+        assert_eq!(
+            flags(StructuralState::Minimal {
+                reformat_only: true
+            }),
+            (true, false, true, None)
+        );
+    }
 
     #[test]
     fn tokenize_drops_whitespace() {
@@ -703,8 +800,8 @@ mod tests {
         let tokens = tokenize(Language::Rust, &old).len();
         assert!(tokens * tokens > LCS_CELL_BUDGET, "{tokens} tokens");
         let d = structural_diff(Language::Rust, &old, &new);
-        assert!(!d.degraded);
-        assert!(d.minimal);
+        assert!(!d.degraded());
+        assert!(d.minimal());
         assert_eq!((d.added, d.removed, d.moved), (1, 1, 0));
         assert_eq!(d.unchanged, tokens - 1);
         let changed: Vec<_> = d
@@ -727,7 +824,7 @@ mod tests {
             _ => format!("f{i}"),
         });
         let d = structural_diff(Language::Rust, &old, &two_edits);
-        assert!(!d.degraded);
+        assert!(!d.degraded());
         assert_eq!((d.added, d.removed), (2, 2));
         // Edits at both ends leave a middle of ~4,700 tokens (21.9 M cells): anchored on the
         // unchanged lines between them, it is still analysed exactly.
@@ -736,8 +833,8 @@ mod tests {
             _ => format!("f{i}"),
         });
         let d = structural_diff(Language::Rust, &old, &both_ends);
-        assert!(!d.degraded);
-        assert!(!d.minimal, "anchored, so not claimed minimal");
+        assert!(!d.degraded());
+        assert!(!d.minimal(), "anchored, so not claimed minimal");
         assert_eq!((d.added, d.removed, d.moved), (2, 2, 0));
         // A rewritten block of 160 functions near the end (a 960-token gap, 0.92 M cells) plus an
         // edit near the start: the gap is measured on its own, so the file is still analysed.
@@ -746,11 +843,11 @@ mod tests {
             _ => format!("f{i}"),
         });
         let d = structural_diff(Language::Rust, &old, &block);
-        assert!(!d.degraded);
+        assert!(!d.degraded());
         assert_eq!((d.added, d.removed), (161, 161));
         // A changed middle that is itself beyond the budget still degrades.
         let rewritten = source(&|i| format!("g{i}"));
-        assert!(structural_diff(Language::Rust, &old, &rewritten).degraded);
+        assert!(structural_diff(Language::Rust, &old, &rewritten).degraded());
     }
 
     // 2,100 lines a side (4.41 M line-table cells): even with only two edits, the line table
@@ -773,8 +870,8 @@ mod tests {
             text
         };
         let d = structural_diff(Language::Rust, &source(false), &source(true));
-        assert!(d.degraded);
-        assert!(d.unavailable.is_none());
+        assert!(d.degraded());
+        assert!(d.unavailable().is_none());
     }
 
     // Each rewritten block is a gap well inside the budget; together they are not. The work bound
@@ -794,9 +891,9 @@ mod tests {
         };
         let old = source(0);
         let four = structural_diff(Language::Rust, &old, &source(4));
-        assert!(!four.degraded && !four.minimal);
+        assert!(!four.degraded() && !four.minimal());
         assert_eq!((four.added, four.removed), (600, 600));
-        assert!(structural_diff(Language::Rust, &old, &source(8)).degraded);
+        assert!(structural_diff(Language::Rust, &old, &source(8)).degraded());
     }
 
     #[test]
@@ -894,7 +991,7 @@ mod tests {
     fn identical_sources_are_all_unchanged() {
         let src = "fn main() { let x = 1; }";
         let d = structural_diff(Language::Rust, src, src);
-        assert!(d.reformat_only);
+        assert!(d.reformat_only());
         assert_eq!(d.added, 0);
         assert_eq!(d.removed, 0);
         assert!(d.unchanged > 0);
@@ -907,7 +1004,7 @@ mod tests {
         let new = "fn   main ( ) {\n    let x = 1 ;\n}\n";
         let d = structural_diff(Language::Rust, old, new);
         assert!(
-            d.reformat_only,
+            d.reformat_only(),
             "pure reformat must report no structural change"
         );
         assert_eq!(d.added + d.removed + d.moved, 0);
@@ -918,7 +1015,7 @@ mod tests {
         let old = "fn f() { a(); }";
         let new = "fn f() { a(); b(); }";
         let d = structural_diff(Language::Rust, old, new);
-        assert!(!d.reformat_only);
+        assert!(!d.reformat_only());
         assert!(d.added > 0);
         assert!(
             d.changes
@@ -945,7 +1042,7 @@ mod tests {
         let old = "fn alpha() {}";
         let new = "fn bravo() {}";
         let d = structural_diff(Language::Rust, old, new);
-        assert!(!d.reformat_only);
+        assert!(!d.reformat_only());
         assert!(
             d.changes
                 .iter()
@@ -1030,7 +1127,7 @@ mod tests {
         let old = "fn a() { alpha(); } fn b() { bravo(); }";
         let new = "fn b() { bravo(); } fn a() { alpha(); }";
         let d = structural_diff(Language::Rust, old, new);
-        assert!(!d.reformat_only);
+        assert!(!d.reformat_only());
     }
 
     #[test]
@@ -1067,7 +1164,7 @@ mod tests {
         let d = structural_diff(Language::Rust, "", "fn main() {}");
         assert!(d.added > 0);
         assert_eq!(d.removed, 0);
-        assert!(!d.reformat_only);
+        assert!(!d.reformat_only());
     }
 }
 
@@ -1086,9 +1183,9 @@ mod failure_regressions {
             (Language::Unsupported, "old".into(), "new".into()),
         ] {
             let diff = structural_diff(language, &old, &new);
-            assert!(!diff.reformat_only);
-            assert!(diff.degraded);
-            assert!(diff.unavailable.is_some());
+            assert!(!diff.reformat_only());
+            assert!(diff.degraded());
+            assert!(diff.unavailable().is_some());
         }
     }
 }

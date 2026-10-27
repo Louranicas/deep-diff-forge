@@ -728,11 +728,11 @@ fn structural_cmd(opts: &[String]) {
 
 fn print_structural_human(diff: &deep_diff_forge_syntax::StructuralDiff) {
     use deep_diff_forge_syntax::ChangeKind;
-    if let Some(reason) = &diff.unavailable {
+    if let Some(reason) = diff.unavailable() {
         emitln!("structural: unavailable ({reason:?}); use patch review");
         return;
     }
-    if diff.reformat_only {
+    if diff.reformat_only() {
         emitln!("structural: no token changes (formatting only)");
     }
     for change in &diff.changes {
@@ -758,7 +758,7 @@ fn print_structural_human(diff: &deep_diff_forge_syntax::StructuralDiff) {
         diff.added,
         diff.removed,
         diff.moved,
-        if diff.degraded {
+        if diff.degraded() {
             " (degraded: input too large for token LCS)"
         } else {
             ""
@@ -803,9 +803,9 @@ fn print_structural_json(diff: &deep_diff_forge_syntax::StructuralDiff) {
     emitln!(
         "{{\n  \"schema\": \"deep-diff-forge.structural.v0\",\n  \"language\": {},\n  \"reformat_only\": {},\n  \"degraded\": {},\n  \"unavailable\": {},\n  \"summary\": {{\"unchanged\": {}, \"added\": {}, \"removed\": {}, \"moved\": {}}},\n  \"changes\": [{}]\n}}",
         json_escape(lang),
-        diff.reformat_only,
-        diff.degraded,
-        diff.unavailable.as_ref().map_or_else(
+        diff.reformat_only(),
+        diff.degraded(),
+        diff.unavailable().map_or_else(
             || "null".into(),
             |reason| json_escape(&format!("{reason:?}"))
         ),

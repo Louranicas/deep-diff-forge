@@ -178,6 +178,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **`StructuralDiff` has one state, not three flags and an `Option`**
+  (anchor C-06; library API). `state: StructuralState` is `Unavailable(reason)`,
+  `Degraded`, `LineAnchored` or `Minimal { reformat_only }`, so combinations
+  such as "reformat-only and unavailable" can no longer be built. The
+  `reformat_only()`, `degraded()`, `minimal()` and `unavailable()` accessors
+  report what the fields did, and every JSON output is byte-identical.
 - **A learning receipt cannot carry a path** (anchor C-07; library API).
   `StrategyReceipt.file_hash` is a `RedactedId`, which only `redacted_id()`
   makes and which deserializing checks (16–64 lowercase hex characters), so a
