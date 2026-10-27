@@ -664,10 +664,30 @@ fn seal_run(
     write_json(&directory.join(INVENTORY_FILE), inventory)?;
     Ok(manifest)
 }
+/// A manifest whose seal, request and embedded artifact digests [`load_manifest`] verified. Only
+/// loading makes one, so [`assess`](crate::assess) cannot grade a manifest nobody checked
+/// (anchor C-01); it reads as the [`Manifest`] it wraps.
+///
+/// ```compile_fail
+/// fn forge(m: deep_diff_forge_review::Manifest) -> deep_diff_forge_review::SealedManifest {
+///     deep_diff_forge_review::SealedManifest(m)
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct SealedManifest(Manifest);
+
+impl std::ops::Deref for SealedManifest {
+    type Target = Manifest;
+
+    fn deref(&self) -> &Manifest {
+        &self.0
+    }
+}
+
 /// Load a sealed local manifest and verify every embedded artifact digest.
 /// # Errors
 /// Refuses modified manifests, invalid requests and changed embedded context.
-pub fn load_manifest(directory: &Path) -> Result<Manifest> {
+pub fn load_manifest(directory: &Path) -> Result<SealedManifest> {
     let manifest: Manifest = read_json(&directory.join("manifest.json"), 2 * 1024 * 1024)?;
     validate_request(&manifest.request)?;
     require(
@@ -684,7 +704,7 @@ pub fn load_manifest(directory: &Path) -> Result<Manifest> {
             "captured artifact digest mismatch",
         )?;
     }
-    Ok(manifest)
+    Ok(SealedManifest(manifest))
 }
 pub(crate) fn report_path(directory: &Path, id: &str, round: Round) -> PathBuf {
     directory

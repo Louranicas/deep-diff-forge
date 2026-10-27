@@ -178,6 +178,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **The council grades only a verified manifest** (anchor C-01; library API).
+  `load_manifest` returns a `SealedManifest`, which nothing else can construct,
+  and `assess` takes it, so an in-memory `Manifest` that skipped the seal,
+  request and artifact-digest checks can no longer be assessed. It reads as
+  the `Manifest` it wraps.
 - **`StructuralDiff` has one state, not three flags and an `Option`**
   (anchor C-06; library API). `state: StructuralState` is `Unavailable(reason)`,
   `Degraded`, `LineAnchored` or `Minimal { reformat_only }`, so combinations

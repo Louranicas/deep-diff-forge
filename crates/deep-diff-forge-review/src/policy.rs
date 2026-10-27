@@ -177,11 +177,19 @@ pub fn validate_report(manifest: &Manifest, report: &Report) -> Result<()> {
     }
     Ok(())
 }
-/// Synthesize measured receipts and untrusted reviews without majority-vote approval.
+/// Synthesize measured receipts and untrusted reviews without majority-vote approval. It takes a
+/// [`SealedManifest`](crate::SealedManifest), so only a manifest [`load_manifest`](crate::load_manifest)
+/// verified can be graded; an in-memory `Manifest` no longer compiles here (anchor C-01):
+///
+/// ```compile_fail
+/// fn grade(m: &deep_diff_forge_review::Manifest) {
+///     let _ = deep_diff_forge_review::assess(m, &[], &[], "tree");
+/// }
+/// ```
 /// # Errors
 /// Rejects invalid/duplicate reports rather than silently dropping them from the roster.
 pub fn assess(
-    manifest: &Manifest,
+    manifest: &crate::SealedManifest,
     reports: &[Report],
     executions: &[Execution],
     current_tree: &str,

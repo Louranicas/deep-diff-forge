@@ -4,9 +4,39 @@
 //! Negative controls for review authority, freshness, blind phases and non-vacuous gates.
 use deep_diff_forge_review::{
     Artifact, Assessment, Citation, Execution, Finding, Gate, Manifest, Outcome, Persona, Profile,
-    Provider, Report, Round, Severity, Verdict, assess, validate_report, validate_request,
+    Provider, Report, Round, SealedManifest, Severity, Verdict, assess, load_manifest,
+    validate_report, validate_request,
 };
-fn manifest() -> Manifest {
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Seal `m` as `prepare` does and read it back through `load_manifest`, the only way to get the
+/// `SealedManifest` that `assess` takes (anchor C-01).
+fn seal(mut m: Manifest) -> SealedManifest {
+    static RUN: AtomicUsize = AtomicUsize::new(0);
+    for artifact in &mut m.artifacts {
+        artifact.sha256 = deep_diff_forge_core::sha256_hex(artifact.text.as_bytes());
+    }
+    m.run_id.clear();
+    m.run_id = deep_diff_forge_core::sha256_hex(&serde_json::to_vec(&m).unwrap());
+    let directory = std::env::temp_dir().join(format!(
+        "ddf-review-contracts-{}-{}",
+        std::process::id(),
+        RUN.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("manifest.json"),
+        serde_json::to_vec_pretty(&m).unwrap(),
+    )
+    .unwrap();
+    let sealed = load_manifest(&directory).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+    sealed
+}
+fn manifest() -> SealedManifest {
+    seal(unsealed())
+}
+fn unsealed() -> Manifest {
     let mut request = deep_diff_forge_review::cli::example();
     request.profile = Profile::Roster;
     request.reviewers.truncate(2);
@@ -65,7 +95,7 @@ fn complete(m: &Manifest) -> (Vec<Report>, Vec<Execution>) {
     }
     (reports, executions)
 }
-fn evaluation(m: &Manifest, reports: &[Report], executions: &[Execution]) -> Assessment {
+fn evaluation(m: &SealedManifest, reports: &[Report], executions: &[Execution]) -> Assessment {
     assess(m, reports, executions, &m.source_tree).unwrap()
 }
 fn finding(id: &str, severity: Severity) -> Finding {
@@ -149,7 +179,7 @@ fn duplicate_receipts_reports_and_roster_identities_refuse() {
     reports.pop();
     executions.push(executions[0].clone());
     assert!(assess(&m, &reports, &executions, "tree").is_err());
-    let mut request = m.request;
+    let mut request = m.request.clone();
     request.reviewers[1].id = request.reviewers[0].id.clone();
     assert!(validate_request(&request).is_err());
 }
@@ -178,7 +208,7 @@ fn invented_evidence_stale_reports_and_wrong_ranges_refuse() {
 }
 #[test]
 fn self_grading_personas_do_not_create_provider_diversity() {
-    let mut m = manifest();
+    let mut m = unsealed();
     m.request.reviewers[1].provider = Provider::Codex;
     m.request.reviewers[1].persona = Persona::Security;
     assert!(validate_request(&m.request).is_err());
@@ -250,7 +280,7 @@ fn important_profile_requires_adversarial_lenses_and_real_fuzz_mutation_gates() 
 }
 #[test]
 fn mutation_base_is_a_full_commit_id_never_a_revision_expression() {
-    let valid = manifest().request;
+    let valid = unsealed().request;
     for base in ["0".repeat(40), "a".repeat(64)] {
         let mut p = valid.clone();
         p.mutation_base = Some(base);
@@ -278,7 +308,7 @@ fn mutation_base_is_a_full_commit_id_never_a_revision_expression() {
 }
 #[test]
 fn execution_options_and_budget_values_are_admitted_not_silently_clamped() {
-    let valid = manifest().request;
+    let valid = unsealed().request;
     for timeout in [0, 3601, u64::MAX] {
         let mut p = valid.clone();
         p.timeout_seconds = timeout;
@@ -303,7 +333,7 @@ fn execution_options_and_budget_values_are_admitted_not_silently_clamped() {
 }
 #[test]
 fn identifier_boundaries_do_not_admit_shell_or_path_syntax() {
-    let valid = manifest().request;
+    let valid = unsealed().request;
     for id in ["a", "_", "-", "Z09_-", &"x".repeat(80)] {
         let mut p = valid.clone();
         p.reviewers[0].id = id.into();
