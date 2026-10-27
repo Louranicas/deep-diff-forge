@@ -587,6 +587,74 @@ mod tests {
         assert!(count_receipts(&dir).is_err());
     }
 
+    /// The per-record budget is inclusive: a line of exactly `MAX_RECEIPT_LINE_BYTES` (newline
+    /// included) is read, one byte more is refused by name, on both read paths.
+    #[test]
+    fn the_per_record_budget_is_inclusive_on_read() {
+        let dir = temp_dir();
+        let _guard = Scratch(dir.clone());
+        let path = receipts_path(&dir);
+        let mut line = vec![b'x'; MAX_RECEIPT_LINE_BYTES - 1];
+        line.push(b'\n');
+        write_private(&path, &line);
+        assert_eq!(count_receipts(&dir).unwrap(), 1);
+        line.insert(0, b'x');
+        write_private(&path, &line);
+        for error in [
+            count_receipts(&dir).unwrap_err().to_string(),
+            load_receipts(&dir).unwrap_err().to_string(),
+        ] {
+            assert!(error.contains("per-record budget"), "{error}");
+        }
+    }
+
+    /// The record-count budget is inclusive: `MAX_RECEIPTS` records load and count, one more is
+    /// refused by name. Blank lines are not records.
+    #[test]
+    fn the_record_count_budget_is_inclusive() {
+        let dir = temp_dir();
+        let _guard = Scratch(dir.clone());
+        let path = receipts_path(&dir);
+        let mut one = receipt(Strategy::Patch, ReviewOutcome::Accepted)
+            .to_json()
+            .unwrap();
+        one.push('\n');
+        let mut body = one.repeat(MAX_RECEIPTS);
+        body.push_str("\n\n");
+        write_private(&path, body.as_bytes());
+        assert_eq!(count_receipts(&dir).unwrap(), MAX_RECEIPTS);
+        assert_eq!(load_receipts(&dir).unwrap().len(), MAX_RECEIPTS);
+        body.push_str(&one);
+        write_private(&path, body.as_bytes());
+        for error in [
+            count_receipts(&dir).unwrap_err().to_string(),
+            load_receipts(&dir).unwrap_err().to_string(),
+        ] {
+            assert!(error.contains("record-count budget"), "{error}");
+        }
+    }
+
+    /// An append that would take the store past its on-disk budget is refused, and the store is
+    /// left as it was. A store exactly at the budget is still readable.
+    #[test]
+    fn append_refuses_to_grow_the_store_past_its_budget() {
+        let dir = temp_dir();
+        let _guard = Scratch(dir.clone());
+        append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted)).unwrap();
+        let path = receipts_path(&dir);
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(MAX_RECEIPTS_BYTES)
+            .unwrap();
+        let error = append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("on-disk size budget"), "{error}");
+        assert_eq!(fs::metadata(&path).unwrap().len(), MAX_RECEIPTS_BYTES);
+    }
+
     /// Anchor C-07: an unredacted identity cannot be built at all; the JSON form of one is refused
     /// when it is read, by name. Before, only the store checked, after construction.
     #[test]
