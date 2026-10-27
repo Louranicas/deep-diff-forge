@@ -213,6 +213,9 @@ pub struct HunkId(pub u64);
 pub struct PatchLine {
     /// This source line has no terminating LF on its corresponding side(s).
     pub no_newline: bool,
+    /// This line was not UTF-8 in the patch and `text` is its lossy decoding (U+FFFD); the input
+    /// seal covers the exact bytes. Counted per file in `PatchTwin::lossy_lines`.
+    pub lossy: bool,
     pub kind: PatchLineKind,
     pub old_line: Option<u32>,
     pub new_line: Option<u32>,

@@ -233,6 +233,14 @@ fn non_utf8_content_is_reviewed_with_its_file_marked_and_bytes_sealed() {
         files[1]["hunks"][0]["lines"][0]["text"],
         "\u{fffd}{\"jsonrpc\"}"
     );
+    assert_eq!(files[1]["hunks"][0]["lines"][0]["lossy"], true);
+    assert!(
+        files[0]["hunks"][0]["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|line| line.get("lossy").is_none())
+    );
 
     let (code, stdout, _) = run_bytes(&["--stdin-patch", "--jsonl"], MIXED);
     assert_eq!(code, 0);

@@ -137,6 +137,11 @@ fn render_hunks(out: &mut String, file: &ReviewFile, additions: &mut usize, dele
             if line.no_newline {
                 out.push_str(", \"no_newline\": true");
             }
+            // Which line was decoded lossily, so a consumer need not guess from U+FFFD (a literal
+            // U+FFFD in valid input is not lossy); present only when true.
+            if line.lossy {
+                out.push_str(", \"lossy\": true");
+            }
             out.push('}');
             if l + 1 < hunk.lines.len() {
                 out.push(',');

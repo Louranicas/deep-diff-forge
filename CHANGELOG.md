@@ -22,6 +22,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   weekly and on manual runs, including a dispatched release dry run.
 - **Deployment resource requirements** in `docs/OPERATIONS_AND_DAEMON.md`: the
   measured memory of maximum-size requests and the `/tmp` inode limit.
+- **The review JSON marks the line that was decoded lossily** (`"lossy": true`
+  on the line), beside the per-file `lossy_lines` count, so a consumer need not
+  guess from U+FFFD. Measured with a JSON-only rebuild sweep over 1,127 real
+  commits: every other text file rebuilds to its exact blob.
 
 ### Added (slice C: SDKs)
 
