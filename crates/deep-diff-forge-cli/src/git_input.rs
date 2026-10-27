@@ -45,7 +45,6 @@ fn exit_code(err: &GitAcquireError) -> i32 {
         GitAcquireError::InvalidSelection { .. } => exit::USAGE,
         GitAcquireError::Spawn { .. }
         | GitAcquireError::CommandFailed { .. }
-        | GitAcquireError::NonUtf8Patch
         | GitAcquireError::NonUtf8Path { .. } => exit::IO,
         _ => exit::INVALID_INPUT,
     }
@@ -109,7 +108,7 @@ pub(crate) fn run(selector: &str, opts: &[String]) {
         .diff()
         .review_files(&captured)
         .unwrap_or_else(|e| fail(&e));
-    let input = captured.original();
+    let input = captured.original_bytes();
     let guards = InputGuards::from_opts(opts);
     guards.enforce(&files);
     if opts.iter().any(|a| a == "--acquisition-json") {
@@ -152,7 +151,7 @@ fn mode_json(mode: Option<u32>) -> String {
 
 /// The `deep-diff-forge.git-acquisition.v0` document: the structured records
 /// alongside the seal of the exact patch bytes they describe.
-fn acquisition_json(acq: &GitAcquisition, include_untracked: bool, input: &str) -> String {
+fn acquisition_json(acq: &GitAcquisition, include_untracked: bool, input: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut changes = String::new();
     for (i, c) in acq.diff().changes().iter().enumerate() {

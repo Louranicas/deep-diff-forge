@@ -58,14 +58,44 @@ pub fn parse(input: &str) -> Result<Vec<ReviewFile>, PatchParseError> {
 /// Returns [`PatchParseError`] when the input exceeds the byte budget, contains
 /// a malformed hunk header, or places a diff body line outside any hunk.
 pub fn parse_with(input: &str, options: ParseOptions) -> Result<Vec<ReviewFile>, PatchParseError> {
-    if input.len() > options.byte_budget {
+    parse_lines(input, input.len(), &[], options)
+}
+
+/// Parse patch bytes that may not be UTF-8 (see [`crate::decode`]). Each file that holds a lossily
+/// decoded line reports it in `PatchTwin::lossy_lines`; the byte budget applies to the original
+/// bytes, not to the longer decoded text.
+///
+/// # Errors
+///
+/// As [`parse_with`].
+pub fn parse_decoded(
+    decoded: &crate::DecodedPatch<'_>,
+    options: ParseOptions,
+) -> Result<Vec<ReviewFile>, PatchParseError> {
+    parse_lines(
+        decoded.text(),
+        decoded.byte_len(),
+        decoded.lossy_lines(),
+        options,
+    )
+}
+
+/// `lossy` holds the 1-based numbers of lossily decoded lines, ascending.
+fn parse_lines(
+    input: &str,
+    byte_len: usize,
+    lossy: &[usize],
+    options: ParseOptions,
+) -> Result<Vec<ReviewFile>, PatchParseError> {
+    if byte_len > options.byte_budget {
         return Err(PatchParseError::BudgetExceeded {
             limit_bytes: options.byte_budget,
-            actual_bytes: input.len(),
+            actual_bytes: byte_len,
         });
     }
 
     let mut parser = Parser::default();
+    let mut lossy = lossy.iter().peekable();
     for (index, line) in input.split_terminator('\n').enumerate() {
         if index >= DEFAULT_LINE_BUDGET {
             return Err(PatchParseError::LineBudgetExceeded {
@@ -74,6 +104,11 @@ pub fn parse_with(input: &str, options: ParseOptions) -> Result<Vec<ReviewFile>,
             });
         }
         parser.feed(line, index + 1)?;
+        if lossy.next_if_eq(&&(index + 1)).is_some()
+            && let Some(file) = parser.file.as_mut()
+        {
+            file.lossy_lines = file.lossy_lines.saturating_add(1);
+        }
     }
     parser.finish()
 }
@@ -90,6 +125,7 @@ struct FileBuf {
     metadata: Vec<String>,
     binary_body: Vec<String>,
     hunks: Vec<PatchHunk>,
+    lossy_lines: u32,
 }
 
 /// Working accumulator for one hunk.
@@ -492,6 +528,7 @@ impl FileBuf {
                 binary_body: self.binary_body,
                 hunks: self.hunks,
                 metadata: self.metadata,
+                lossy_lines: self.lossy_lines,
             },
             semantic_twin: None,
             planner: PlannerDecision {

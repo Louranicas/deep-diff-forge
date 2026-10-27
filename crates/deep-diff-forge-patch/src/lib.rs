@@ -22,6 +22,7 @@
 //! size with an explicit byte budget so a pathological input degrades instead
 //! of exhausting memory.
 
+mod decode;
 mod git_acquire;
 mod git_raw;
 mod guards;
@@ -32,12 +33,13 @@ mod render;
 #[cfg(feature = "json")]
 mod json;
 
+pub use decode::{DecodedPatch, decode};
 pub use git_acquire::{GitAcquireOptions, GitAcquisition, GitSelection, acquire as acquire_git};
 pub use git_raw::{
     GitAcquireError, GitChange, GitChangeKind, GitChangeOrigin, GitPath, StructuredDiff,
 };
 pub use guards::{InputGuards, has_reviewable_hunks};
-pub use parser::{ParseOptions, parse, parse_with};
+pub use parser::{ParseOptions, parse, parse_decoded, parse_with};
 pub use render::render_unified;
 
 #[cfg(feature = "json")]
@@ -180,6 +182,8 @@ impl std::error::Error for PatchParseError {}
 #[derive(Debug, Clone)]
 pub struct CapturedPatch {
     raw: String,
+    /// The original bytes, kept only when they are not UTF-8 (then `raw` is their lossy decoding).
+    bytes: Option<Vec<u8>>,
     digest: String,
     files: Vec<deep_diff_forge_core::ReviewFile>,
 }
@@ -191,12 +195,51 @@ impl CapturedPatch {
     pub fn capture(raw: String) -> Result<Self, PatchParseError> {
         let files = parse(&raw)?;
         let digest = deep_diff_forge_core::sha256_hex(raw.as_bytes());
-        Ok(Self { raw, digest, files })
+        Ok(Self {
+            raw,
+            bytes: None,
+            digest,
+            files,
+        })
     }
-    /// Original input, byte for byte (including cosmetic headings and final LF state).
+    /// Parse and seal bytes that may not be UTF-8: a non-UTF-8 line is decoded lossily and its
+    /// file reports it in `PatchTwin::lossy_lines`, while the digest is of the exact bytes.
+    ///
+    /// # Errors
+    /// Returns the parser's typed error without retaining an invalid artifact.
+    pub fn capture_bytes(bytes: Vec<u8>) -> Result<Self, PatchParseError> {
+        match String::from_utf8(bytes) {
+            Ok(raw) => Self::capture(raw),
+            Err(error) => {
+                let bytes = error.into_bytes();
+                let decoded = decode(&bytes);
+                let files = parse_decoded(&decoded, ParseOptions::default())?;
+                let raw = decoded.text().to_owned();
+                let digest = deep_diff_forge_core::sha256_hex(&bytes);
+                Ok(Self {
+                    raw,
+                    bytes: Some(bytes),
+                    digest,
+                    files,
+                })
+            }
+        }
+    }
+    /// The text the patch was parsed from: the original input byte for byte (including cosmetic
+    /// headings and final LF state) when [`Self::is_exact`], else its lossy decoding.
     #[must_use]
     pub fn original(&self) -> &str {
         &self.raw
+    }
+    /// The original input bytes, always exact.
+    #[must_use]
+    pub fn original_bytes(&self) -> &[u8] {
+        self.bytes.as_deref().unwrap_or(self.raw.as_bytes())
+    }
+    /// Whether [`Self::original`] is the exact input (every line was UTF-8).
+    #[must_use]
+    pub fn is_exact(&self) -> bool {
+        self.bytes.is_none()
     }
     /// SHA-256 of the original bytes.
     #[must_use]

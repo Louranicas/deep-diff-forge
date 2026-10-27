@@ -24,9 +24,14 @@ pub fn jsonl_events(files: &[ReviewFile]) -> String {
                 }
             }
         }
+        // `lossy_lines` appears only for a file with non-UTF-8 lines, so exact output is unchanged.
+        let lossy = match file.patch_twin.lossy_lines {
+            0 => String::new(),
+            n => format!(",\"lossy_lines\":{n}"),
+        };
         let _ = writeln!(
             out,
-            "{{\"event\":\"diff.file\",\"path\":{},\"status\":\"{}\",\"additions\":{},\"deletions\":{},\"hunks\":{}}}",
+            "{{\"event\":\"diff.file\",\"path\":{},\"status\":\"{}\",\"additions\":{},\"deletions\":{},\"hunks\":{}{lossy}}}",
             quote(&file.path),
             status_str(file.status),
             additions,
