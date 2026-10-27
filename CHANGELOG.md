@@ -211,6 +211,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Security
 
+- **MCP marks patch text as untrusted for the consuming model** (anchor E-07).
+  The server instructions and the `review_patch` / `rank_patch` descriptions
+  say that paths and line text come from the patch, whose authors wrote them,
+  and are data to review, never instructions. Reviewed code and comments are
+  an injection channel into a model's context; nothing said so before.
 - Council gates never fall back to the host: a missing gate image or a failed
   dependency-vendoring job is a refusal. Vendored dependencies are sealed and
   re-measured before each gate; base Git objects are verified on read.
