@@ -283,7 +283,7 @@ fn prompt(
         manifest.run_id,
         round.label(),
         reviewer.persona.lens(),
-        manifest.request.builder_family,
+        manifest.request.builder_family.label(),
         reviewer.provider.family(),
         reviewer.id
     );

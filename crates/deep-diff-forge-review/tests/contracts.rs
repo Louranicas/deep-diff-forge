@@ -3,9 +3,9 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--tests--contracts
 //! Negative controls for review authority, freshness, blind phases and non-vacuous gates.
 use deep_diff_forge_review::{
-    Artifact, Assessment, Citation, Execution, Finding, Gate, Manifest, Outcome, Persona, Profile,
-    Provider, Report, Round, SealedManifest, Severity, Verdict, assess, load_manifest,
-    validate_report, validate_request,
+    Artifact, Assessment, AssessmentState, Citation, Disposition, Execution, Finding, Gate,
+    Manifest, Outcome, Persona, Profile, Provider, Report, Round, SealedManifest, Severity,
+    Verdict, assess, load_manifest, validate_report, validate_request,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -117,7 +117,7 @@ fn complete_measured_review_only_becomes_ready_for_a_human() {
     let m = manifest();
     let (reports, executions) = complete(&m);
     let a = evaluation(&m, &reports, &executions);
-    assert_eq!(a.state, "ready_for_human_review");
+    assert_eq!(a.state, AssessmentState::ReadyForHumanReview);
     assert_eq!(a.decision_owner, "human");
     assert_eq!(a.provider_families, vec!["anthropic", "openai"]);
     assert_eq!(a.reasons.len(), 0);
@@ -129,10 +129,16 @@ fn unanimous_models_cannot_replace_missing_gate_evidence() {
     for gate in Gate::required(m.request.profile) {
         let mut planted = executions.clone();
         planted.retain(|e| e.job != format!("gate-{}", gate.label()));
-        assert_eq!(evaluation(&m, &reports, &planted).state, "hold");
+        assert_eq!(
+            evaluation(&m, &reports, &planted).state,
+            AssessmentState::Hold
+        );
     }
     executions.clear();
-    assert_eq!(evaluation(&m, &reports, &executions).state, "hold");
+    assert_eq!(
+        evaluation(&m, &reports, &executions).state,
+        AssessmentState::Hold
+    );
 }
 #[test]
 fn every_reviewer_and_round_is_required() {
@@ -141,7 +147,10 @@ fn every_reviewer_and_round_is_required() {
     for i in 0..reports.len() {
         let mut planted = reports.clone();
         planted.remove(i);
-        assert_eq!(evaluation(&m, &planted, &executions).state, "hold");
+        assert_eq!(
+            evaluation(&m, &planted, &executions).state,
+            AssessmentState::Hold
+        );
     }
 }
 #[test]
@@ -158,17 +167,23 @@ fn timeout_failure_unavailable_inconclusive_and_stale_never_pass() {
     ] {
         let mut planted = executions.clone();
         planted[0].outcome = state;
-        assert_eq!(evaluation(&m, &reports, &planted).state, "hold");
+        assert_eq!(
+            evaluation(&m, &reports, &planted).state,
+            AssessmentState::Hold
+        );
     }
     assert_eq!(
         assess(&m, &reports, &executions, "different tree")
             .unwrap()
             .state,
-        "hold"
+        AssessmentState::Hold
     );
     let mut planted = executions;
     planted[0].source_tree_before = "older".into();
-    assert_eq!(evaluation(&m, &reports, &planted).state, "hold");
+    assert_eq!(
+        evaluation(&m, &reports, &planted).state,
+        AssessmentState::Hold
+    );
 }
 #[test]
 fn duplicate_receipts_reports_and_roster_identities_refuse() {
@@ -221,7 +236,7 @@ fn severe_dissent_cannot_be_voted_away() {
     reports[0].findings.push(finding(&id, Severity::High));
     reports[0].verdict = Verdict::ChangesRequested;
     let a = evaluation(&m, &reports, &executions);
-    assert_eq!(a.state, "hold");
+    assert_eq!(a.state, AssessmentState::Hold);
     assert!(a.reasons.iter().any(|r| r.contains("high/critical")));
     reports[0].verdict = Verdict::NoBlockers;
     assert!(validate_report(&m, &reports[0]).is_err());
@@ -232,21 +247,30 @@ fn challenge_requires_exact_other_findings_and_keeps_test_requests_open() {
     let (mut reports, mut executions) = complete(&m);
     let id = reports[0].reviewer_id.clone();
     reports[0].findings.push(finding(&id, Severity::Medium));
-    assert_eq!(evaluation(&m, &reports, &executions).state, "hold");
+    assert_eq!(
+        evaluation(&m, &reports, &executions).state,
+        AssessmentState::Hold
+    );
     reports[3]
         .responses
         .push(deep_diff_forge_review::Challenge {
             finding_id: format!("{id}:one"),
-            disposition: "needs_test".into(),
+            disposition: Disposition::NeedsTest,
             rationale: "Need the hostile-input test".into(),
         });
-    assert_eq!(evaluation(&m, &reports, &executions).state, "hold");
-    reports[3].responses[0].disposition = "concur".into();
-    assert_eq!(evaluation(&m, &reports, &executions).state, "hold");
+    assert_eq!(
+        evaluation(&m, &reports, &executions).state,
+        AssessmentState::Hold
+    );
+    reports[3].responses[0].disposition = Disposition::Concur;
+    assert_eq!(
+        evaluation(&m, &reports, &executions).state,
+        AssessmentState::Hold
+    );
     executions.push(execution(&m, "gate-fuzz".into()));
     assert_eq!(
         evaluation(&m, &reports, &executions).state,
-        "ready_for_human_review"
+        AssessmentState::ReadyForHumanReview
     );
 }
 #[test]
@@ -351,11 +375,11 @@ fn receipt_identity_both_source_sides_and_nonzero_exit_refuse() {
     let (reports, executions) = complete(&m);
     let mut bad = executions.clone();
     bad[0].run_id = "other".into();
-    assert_eq!(evaluation(&m, &reports, &bad).state, "hold");
+    assert_eq!(evaluation(&m, &reports, &bad).state, AssessmentState::Hold);
     let mut bad = executions.clone();
     bad[0].source_tree_after = "other".into();
-    assert_eq!(evaluation(&m, &reports, &bad).state, "hold");
+    assert_eq!(evaluation(&m, &reports, &bad).state, AssessmentState::Hold);
     let mut bad = executions;
     bad[0].exit_code = Some(1);
-    assert_eq!(evaluation(&m, &reports, &bad).state, "hold");
+    assert_eq!(evaluation(&m, &reports, &bad).state, AssessmentState::Hold);
 }

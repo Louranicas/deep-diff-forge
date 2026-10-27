@@ -684,7 +684,7 @@ fn plan(
                     format!(
                         "- {}: {}: {}",
                         r.finding_id,
-                        r.disposition,
+                        r.disposition.label(),
                         r.rationale.trim()
                     )
                 })

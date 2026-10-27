@@ -178,6 +178,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **Council fields that take a closed set are enums** (anchor C-02; library
+  API). `Request.builder_family` (`BuilderFamily`), a challenge's
+  `disposition` (`Disposition`) and `Assessment.state` (`AssessmentState`)
+  were strings checked after parsing; an invalid value is now refused when it
+  is read. The JSON is unchanged, and a test holds the reviewer-facing
+  report schema's enum lists equal to the Rust enums.
 - **The council grades only a verified manifest** (anchor C-01; library API).
   `load_manifest` returns a `SealedManifest`, which nothing else can construct,
   and `assess` takes it, so an in-memory `Manifest` that skipped the seal,
