@@ -6,6 +6,11 @@
 //! patch laced with raw escape sequences through every human-facing output mode
 //! and assert that no raw `ESC` (0x1b) byte survives to stdout.
 
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 

@@ -1,5 +1,10 @@
 //! CLI contract tests for `deploy status`.
 
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use std::process::Command;
 
 fn run(args: &[&str]) -> (i32, String, String) {

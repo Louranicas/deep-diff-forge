@@ -1,0 +1,12 @@
+# Effect doors (anchor B-04). Each method below reaches outside the process: it spawns a program,
+# reads the environment, reads a clock or sleeps. Production code reaches them only through a
+# named door: a function carrying `#[expect(clippy::disallowed_methods, reason = "<door>")]`, so a
+# new effect is a reviewed diff rather than a line anywhere. Integration tests opt in per file.
+disallowed-methods = [
+    { path = "std::process::Command::new", reason = "spawn a process only through a named door" },
+    { path = "std::env::var", reason = "read the environment only through a named door" },
+    { path = "std::env::var_os", reason = "read the environment only through a named door" },
+    { path = "std::time::Instant::now", reason = "read a clock only through a named door" },
+    { path = "std::time::SystemTime::now", reason = "read a clock only through a named door" },
+    { path = "std::thread::sleep", reason = "sleep only through a named door" },
+]

@@ -71,6 +71,10 @@ impl Default for Engine {
 impl Engine {
     /// Create a fresh engine bound to the current process.
     #[must_use]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the daemon uptime clock, read once when the engine starts"
+    )]
     pub fn new() -> Self {
         Self {
             sessions: HashMap::new(),

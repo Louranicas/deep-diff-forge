@@ -7,6 +7,11 @@
 //! positive control. Further runs plant a symlinked mutation witness, a symlink in the vendoring output
 //! and candidate toolchain configuration. Runs only with `DDF_COUNCIL_SANDBOX_IT=1` plus
 //! `DDF_COUNCIL_PODMAN` / `DDF_COUNCIL_GATE_IMAGE`; otherwise it prints an `UNMEASURED` line and returns.
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use deep_diff_forge_review::Profile;
 use std::os::unix::fs::MetadataExt;
 use std::{

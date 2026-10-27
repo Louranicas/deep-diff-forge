@@ -207,6 +207,10 @@ struct Runner<'a> {
 
 impl Runner<'_> {
     /// Run Git; accept only the listed exit codes; never buffer past `budget`.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the git-acquisition door: patch acquisition spawns git only here, hardened by core::git"
+    )]
     fn run(
         &self,
         command: &'static str,

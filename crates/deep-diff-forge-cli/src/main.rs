@@ -1381,6 +1381,10 @@ fn self_test() {
     emitln!("self-test ok: core model initialized");
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the doctor door: reports the XDG cache and state locations"
+)]
 fn doctor() {
     let cache_dir = std::env::var("XDG_CACHE_HOME").map_or_else(
         |_| "~/.cache/deep-diff-forge".into(),

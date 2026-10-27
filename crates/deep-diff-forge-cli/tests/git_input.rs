@@ -5,6 +5,10 @@
 //! usage errors, outputs reuse the `--stdin-patch` documents, and paths come
 //! from raw records.
 #![cfg(unix)]
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -220,6 +220,10 @@ pub fn read_capped_line<R: BufRead>(
 }
 
 /// Read one bounded line from a socket under an absolute deadline.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the socket read deadline: bounds a slow client in wall-clock time"
+)]
 fn read_capped_line_deadline(
     reader: &mut BufReader<UnixStream>,
     buf: &mut Vec<u8>,
@@ -596,6 +600,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test: drips bytes in real time to check the absolute deadline"
+    )]
     fn socket_line_deadline_is_absolute_across_dripped_bytes() {
         let (mut client, server) = UnixStream::pair().expect("socketpair");
         let drip = thread::spawn(move || {
@@ -831,6 +839,10 @@ mod tests {
         active.fetch_sub(1, Ordering::AcqRel);
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test: polls for the server socket to appear"
+    )]
     fn wait_for_socket(path: &Path) {
         for _ in 0..50 {
             if path.exists() {
@@ -1278,6 +1290,10 @@ mod tests {
     // is ignored and a no-op unless the parent test sets the socket variable.
     #[test]
     #[ignore = "spawned as a child process by run_server_returns_persistent_accept_errors"]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test: the child half reads its socket path from the environment"
+    )]
     fn accept_error_child() {
         use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
         use std::os::fd::AsRawFd as _;
@@ -1303,6 +1319,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test: spawns itself as the child server and waits on a deadline"
+    )]
     fn run_server_returns_persistent_accept_errors() {
         // A non-EINTR accept error must end run_server with that error rather
         // than spin forever retrying it.

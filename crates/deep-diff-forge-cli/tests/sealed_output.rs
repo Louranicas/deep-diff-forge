@@ -4,6 +4,11 @@
 //! zero-file patch with exit 7, and `--rank --json --require-files` is
 //! byte-for-byte deterministic across runs.
 
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 

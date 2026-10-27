@@ -2,6 +2,11 @@
 // Design/status: docs/REVIEW_COUNCIL.md#cli-controls
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-cli--tests--council
 //! Actual CLI/driver lifecycle against deterministic fake providers; no model/API calls.
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use deep_diff_forge_review::{Profile, Request};
 use std::os::unix::fs::PermissionsExt;
 use std::{

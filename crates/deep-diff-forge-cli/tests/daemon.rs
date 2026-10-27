@@ -1,6 +1,11 @@
 //! CLI contract tests for the `daemon` subcommand, including a full
 //! start -> health -> stop lifecycle over a real Unix socket.
 
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;

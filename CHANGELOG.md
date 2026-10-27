@@ -8,6 +8,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **Effects go through named doors** (anchor B-04). A new `clippy.toml`
+  disallows `Command::new`, `env::var`/`var_os`, `Instant::now`,
+  `SystemTime::now` and `thread::sleep`. The 21 functions that legitimately
+  spawn, read the environment or read a clock each carry
+  `#[expect(clippy::disallowed_methods, reason = "<door>")]` naming the door,
+  and the 20 integration-test files that drive real processes opt in once at
+  the top. A new effect anywhere else no longer passes clippy.
 - **MCP `review_patch` returns a bounded summary for large reviews** (anchor
   A-07; Luke's decision). The full document is returned while it is at most
   256 KiB; a larger one comes back as `deep-diff-forge.review-summary.v0` (the

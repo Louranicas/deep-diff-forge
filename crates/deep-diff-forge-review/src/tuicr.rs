@@ -706,6 +706,10 @@ fn plan(
 }
 
 /// Locate `tuicr` on `PATH`; only absolute, executable regular files qualify.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the tuicr door: locates the binary on PATH"
+)]
 fn tuicr_binary() -> Result<PathBuf> {
     let path = std::env::var_os("PATH")
         .ok_or_else(|| TuicrExportError::TuicrUnavailable("PATH is unset".into()))?;
@@ -719,6 +723,10 @@ fn tuicr_binary() -> Result<PathBuf> {
         .ok_or_else(|| TuicrExportError::TuicrUnavailable("no executable tuicr on PATH".into()))
 }
 /// Run tuicr with fixed argv (no shell), feeding `input` on stdin; returns stdout.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the tuicr door: spawns the review TUI"
+)]
 fn tuicr(binary: &Path, cwd: &Path, args: &[&str], input: &[u8]) -> Result<Vec<u8>> {
     let mut child = Command::new(binary)
         .args(args)

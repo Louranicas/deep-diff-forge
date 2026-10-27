@@ -1,4 +1,9 @@
 //! Slice A: the machine contract (`envelope`, `schema`, `explain`) from the outside.
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 

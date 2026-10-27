@@ -7,6 +7,10 @@
 //! untracked/ignored files. Unix-only: the fixture needs byte filenames and
 //! executable bits.
 #![cfg(unix)]
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
 
 use deep_diff_forge_patch::{
     GitAcquireError, GitAcquireOptions, GitAcquisition, GitChange, GitChangeKind, GitChangeOrigin,

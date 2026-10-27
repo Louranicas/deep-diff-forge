@@ -5,6 +5,11 @@
 //! the decision-journal controls for `council import-tuicr` (dispositions, conflicts, tombstones,
 //! stale revisions, tamper and truncation). The real-tuicr tests run only with `DDF_TUICR_IT=1`,
 //! against an isolated XDG data/config store.
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use deep_diff_forge_review::Profile;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;

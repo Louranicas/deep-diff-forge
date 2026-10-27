@@ -39,6 +39,10 @@ fn parse_bounded(parser: &mut tree_sitter::Parser, source: &str) -> Option<tree_
 }
 
 /// [`parse_bounded`] with an explicit deadline, so the cancellation path can be tested.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the parse backstop clock (anchor A-04): bounds tree-sitter in wall-clock time"
+)]
 fn parse_within(
     parser: &mut tree_sitter::Parser,
     source: &str,
