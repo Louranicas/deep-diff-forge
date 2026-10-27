@@ -9,8 +9,7 @@
 //! Framing is the stdio binding's: one JSON-RPC message per line, nothing else on stdout. A line
 //! longer than [`LINE_CAP`] is refused and skipped, so input can never grow memory past the cap.
 
-use crate::contract::entry_json;
-use deep_diff_forge_core::exit::{EXIT_CODES, lookup};
+use deep_diff_forge_core::exit::{EXIT_CODES, ExitCode, lookup};
 use deep_diff_forge_daemon::{
     Engine, INPUT_CONTRACT_REFUSED, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR,
     PATCH_PARSE_FAILED, Request, RpcError, dispatch,
@@ -495,6 +494,12 @@ fn summarize(review: &Value, full_bytes: usize, reason: &str) -> Value {
         summary["selected"] = selected.clone();
     }
     summary
+}
+
+/// One registry entry as JSON, the same in `explain --json`, `schema exit-codes` and MCP. It lives
+/// here, not in `contract`, because the `stdio_mcp` fuzz target compiles this module on its own.
+pub(crate) fn entry_json(entry: &ExitCode) -> Value {
+    json!({"family": entry.family, "code": entry.code, "name": entry.name, "meaning": entry.meaning, "action": entry.action.name(), "may_be_transient": entry.action.may_be_transient()})
 }
 
 fn explain(arguments: &Map<String, Value>) -> Value {

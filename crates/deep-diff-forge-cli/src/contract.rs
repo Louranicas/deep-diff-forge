@@ -8,7 +8,8 @@
 //! its stdout (parsed when it is one JSON value), and its stderr. The child's own output is never
 //! changed, so every existing consumer keeps working, and the envelope exits with the child's code.
 
-use deep_diff_forge_core::exit::{EXIT_CODES, ExitCode, lookup};
+use crate::mcp::entry_json;
+use deep_diff_forge_core::exit::{EXIT_CODES, lookup};
 use serde_json::{Value, json};
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -68,11 +69,6 @@ pub fn explain(args: &[String]) -> Result<String, String> {
             entry.family, entry.code, entry.name, entry.meaning
         )
     })
-}
-
-/// One registry entry as JSON, the same in `explain --json`, `schema exit-codes` and MCP.
-pub(crate) fn entry_json(entry: &ExitCode) -> Value {
-    json!({"family": entry.family, "code": entry.code, "name": entry.name, "meaning": entry.meaning, "action": entry.action.name(), "may_be_transient": entry.action.may_be_transient()})
 }
 
 /// `schema [result|exit-codes]`: the JSON Schema of the envelope, or the exit-code registry.
