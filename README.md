@@ -613,7 +613,7 @@ The server instructions and the patch-reading tools' descriptions tell the model
 
 - **Errors:** a malformed call or an unknown tool is a JSON-RPC error. A parse failure or a broken input contract is a tool result with `isError: true`, so a model can correct its input.
 - **Limits:** a request line is capped at the 64 MiB patch budget plus 1 MiB.
-- **Large reviews:** `review_patch` returns the full document while it is at most 256 KiB. A larger review returns a bounded `deep-diff-forge.review-summary.v0` instead: the same seal and totals, and per-file counts for up to 1,000 files, with `reason` and `omitted_files`. Pass `paths` to get chosen files in full, or `detail: "summary"` to ask for the summary.
+- **Large reviews:** `review_patch` returns the full document while it is at most 256 KiB. A larger review returns a bounded `deep-diff-forge.review-summary.v0` instead: the same seal and totals, and per-file counts for up to 1,000 files, with `reason` and `omitted_files`. Pass `paths` to get chosen files in full, or `detail: "summary"` to ask for the summary. `rank_patch` returns the full ranking while it is at most 256 KiB; a larger one returns `deep-diff-forge.rank-summary.v0`: the highest-ranked files that fit, in order, with `total_files` and `omitted_files`.
 - **Lifetime:** the server exits when stdin closes.
 
 ```json
