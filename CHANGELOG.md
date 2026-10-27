@@ -171,6 +171,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **Unknown options are refused, not ignored** (anchor A-01). Every entry point
+  admits its arguments against a closed set (`cli/src/args.rs`) and exits 2,
+  naming the option, with an empty stdout. Before, a misspelt guard such as
+  `--require-file` was silently skipped, so a gate passed every empty patch
+  with exit 0. Commands that take no arguments (`doctor`, `--version`, the
+  `*-contract` printers) and `schema` now refuse extra ones too. A test ties
+  every option in `--help` to an invocation that admits it.
 - **A non-UTF-8 line no longer refuses the whole review** (anchor C-12).
   Real repositories commit non-UTF-8 content (Latin-1 sources, fuzz corpora):
   2 of 33 HEE v5 commits, and DDF's own merge #11 (binary fuzz seeds), failed

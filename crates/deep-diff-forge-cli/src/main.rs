@@ -2,6 +2,7 @@
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#shared-service
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--main
 mod analysis;
+mod args;
 mod contract;
 mod git_input;
 mod mcp;
@@ -70,8 +71,10 @@ fn read_capped_bytes_or_exit(reader: impl std::io::Read, what: &str) -> Vec<u8> 
 }
 
 fn main() {
-    let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
+    let mut args = std::env::args().skip(1).peekable();
+    let command = args.next();
+    refuse_arguments_to_bare_commands(command.as_deref(), args.peek());
+    match command.as_deref() {
         None | Some("--help" | "-h" | "help") => print_help(),
         Some("--version" | "-V" | "version") => print_version(),
         Some("--self-test" | "self-test") => self_test(),
@@ -132,7 +135,7 @@ fn main() {
             let rest: Vec<String> = args.collect();
             git_input::run(&selector, &rest);
         }
-        Some("schema") => contract_output(contract::schema(&args.collect::<Vec<_>>())),
+        Some("schema") => schema_cmd(&args.collect::<Vec<_>>()),
         Some("explain") => contract_output(contract::explain(&args.collect::<Vec<_>>())),
         Some("envelope") => run_envelope(&args.collect::<Vec<_>>()),
         Some("mcp") => run_mcp(&args.collect::<Vec<_>>()),
@@ -148,6 +151,62 @@ fn main() {
         }
     }
 }
+
+/// The commands that take no arguments: an extra one is refused, not ignored (anchor A-01).
+fn refuse_arguments_to_bare_commands(command: Option<&str>, extra: Option<&String>) {
+    if let (
+        Some(
+            name @ ("--help"
+            | "-h"
+            | "help"
+            | "--version"
+            | "-V"
+            | "version"
+            | "--self-test"
+            | "self-test"
+            | "doctor"
+            | "claude-code-contract"
+            | "chain-contract"
+            | "cluster-contract"
+            | "loom-contract"),
+        ),
+        Some(extra),
+    ) = (command, extra)
+    {
+        args::admit_or_exit(
+            std::slice::from_ref(extra),
+            &args::NONE,
+            &format!("deep-diff-forge {name}"),
+        );
+    }
+}
+
+/// `schema [result|exit-codes]`: print a machine contract's JSON Schema.
+fn schema_cmd(opts: &[String]) {
+    args::admit_or_exit(opts, &SCHEMA, "deep-diff-forge schema [result|exit-codes]");
+    contract_output(contract::schema(opts));
+}
+
+/// The output and guard options shared by `--stdin-patch` and the structured Git selections.
+const REVIEW_FLAGS: [&str; 6] = [
+    "--json",
+    "--jsonl",
+    "--rank",
+    "--cluster",
+    "--require-files",
+    "--require-hunks",
+];
+const STDIN_PATCH: args::Spec = args::Spec {
+    flags: &REVIEW_FLAGS,
+    valued: &["--layout", "--parallel"],
+    positionals: 0,
+};
+const STDIN_PATCH_USAGE: &str = "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side] [--require-files] [--require-hunks]";
+const SCHEMA: args::Spec = args::Spec {
+    flags: &[],
+    valued: &[],
+    positionals: 1,
+};
 
 /// Exit code for an input-contract refusal: the caller passed `--require-files`
 /// or `--require-hunks` and the (well-formed) patch has nothing to review.
@@ -230,6 +289,7 @@ fn seal_of(input: &[u8]) -> InputSeal {
 /// a patch with nothing to review.
 fn stdin_patch(opts: &[String]) {
     git_input::reject_with_stdin(opts);
+    args::admit_or_exit(opts, &STDIN_PATCH, STDIN_PATCH_USAGE);
     let bytes = read_capped_bytes_or_exit(std::io::stdin().lock(), "stdin");
     let decoded = deep_diff_forge_patch::decode(&bytes);
     let guards = InputGuards::from_opts(opts);
@@ -303,6 +363,15 @@ const CURRENT_MATURITY: deep_diff_forge_core::MaturityLevel =
 /// UDS JSON-RPC review daemon.
 fn daemon_cmd(opts: &[String]) {
     use deep_diff_forge_daemon::SocketLocation;
+    args::admit_or_exit(
+        opts,
+        &args::Spec {
+            flags: &["--foreground"],
+            valued: &["--socket"],
+            positionals: 1,
+        },
+        "deep-diff-forge daemon {path|start [--foreground]|health|status|stop} [--socket PATH]",
+    );
     let sub = opts
         .iter()
         .find(|a| !a.starts_with("--"))
@@ -364,6 +433,15 @@ fn daemon_client(location: &deep_diff_forge_daemon::SocketLocation, line: &str) 
 /// The learning loop is local-only and fail-soft: a fresh machine with no store
 /// reports zero receipts and no trusted default, never an error.
 fn learn_cmd(opts: &[String]) {
+    args::admit_or_exit(
+        opts,
+        &args::Spec {
+            flags: &["--json", "--stdin"],
+            valued: &[],
+            positionals: 1,
+        },
+        "deep-diff-forge learn {status|record --stdin} [--json]",
+    );
     let json = opts.iter().any(|a| a == "--json");
     match opts
         .iter()
@@ -507,6 +585,15 @@ fn review_cmd(opts: &[String]) {
         print_review_help();
         return;
     }
+    args::admit_or_exit(
+        opts,
+        &args::Spec {
+            flags: &["--probe", "--side", "--palette"],
+            valued: &["--cmd", "--cols", "--rows"],
+            positionals: 0,
+        },
+        "deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME]",
+    );
 
     let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
     let files = parse_or_exit(&input);
@@ -604,6 +691,15 @@ fn read_source_file_or_exit(path: &str) -> String {
 /// `structural <old> <new> [--json]`: token-level (AST-leaf) structural diff —
 /// reformat-aware, never touching patch truth.
 fn structural_cmd(opts: &[String]) {
+    args::admit_or_exit(
+        opts,
+        &args::Spec {
+            flags: &["--json"],
+            valued: &[],
+            positionals: 2,
+        },
+        "deep-diff-forge structural <old> <new> [--json]",
+    );
     let paths: Vec<&String> = opts.iter().filter(|a| !a.starts_with("--")).collect();
     let (Some(old_path), Some(new_path)) = (paths.first(), paths.get(1)) else {
         eprintln!("usage: deep-diff-forge structural <old> <new> [--json]");
@@ -730,6 +826,15 @@ fn print_structural_json(diff: &deep_diff_forge_syntax::StructuralDiff) {
 /// inject escapes — only fixed SGR colour codes are emitted.
 fn highlight_cmd(opts: &[String]) {
     use std::io::IsTerminal as _;
+    args::admit_or_exit(
+        opts,
+        &args::Spec {
+            flags: &["--color", "--no-color"],
+            valued: &[],
+            positionals: 1,
+        },
+        "deep-diff-forge highlight <path> [--color|--no-color]",
+    );
     let Some(path) = opts.iter().find(|a| !a.starts_with("--")) else {
         eprintln!("usage: deep-diff-forge highlight <path> [--color|--no-color]");
         std::process::exit(exit::USAGE);
@@ -757,6 +862,15 @@ fn highlight_cmd(opts: &[String]) {
 
 /// `semantic <path> [--json]`: parse a source file and report its symbols.
 fn semantic_cmd(opts: &[String]) {
+    args::admit_or_exit(
+        opts,
+        &args::Spec {
+            flags: &["--json"],
+            valued: &[],
+            positionals: 1,
+        },
+        "deep-diff-forge semantic <path> [--json]",
+    );
     let Some(path) = opts.iter().find(|a| !a.starts_with("--")) else {
         eprintln!("usage: deep-diff-forge semantic <path> [--json]");
         std::process::exit(exit::USAGE);
@@ -837,6 +951,15 @@ fn print_semantic_json(
 
 /// Dispatch `deploy` subcommands.
 fn deploy_cmd(opts: &[String]) {
+    args::admit_or_exit(
+        opts,
+        &args::Spec {
+            flags: &["--json"],
+            valued: &[],
+            positionals: 1,
+        },
+        "deep-diff-forge deploy {status|release} [--json]",
+    );
     let json = opts.iter().any(|a| a == "--json");
     match opts
         .iter()
