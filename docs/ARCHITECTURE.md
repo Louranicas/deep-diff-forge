@@ -10,6 +10,14 @@ and the CLI and TUI depend on it unconditionally. The crates are not split to ma
 possible; library crates that happen to build on Windows (`patch`, `learning`) are not tested or
 released there.
 
+## Source headers (decision E-05, 2026-10-27)
+
+Some files open with `// DDF integration`, `// Design/status` and `// Module vault note` lines that
+link to a design section and to the maintainer's local Obsidian vault (65 of 120 Rust files on
+2026-10-27; all 79 links resolved). They are optional and not enforced: CI cannot see the vault, so
+a scan could check only that a header is present, which would push headers onto files with no note
+to link. Add one when a vault note exists for the file; never add a link to a note that does not.
+
 ## Layers
 
 1. **Input Layer**
