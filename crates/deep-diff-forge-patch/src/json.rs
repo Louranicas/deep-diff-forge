@@ -19,7 +19,8 @@ pub const SCHEMA: &str = "deep-diff-forge.review.v0";
 ///
 /// This form carries no input seal (the caller has no raw input bytes — e.g.
 /// the TUI's in-memory review); the CLI's `--stdin-patch --json` uses
-/// [`to_json_sealed`] so a consumer can tie the document to its exact input.
+/// [`SealedReview::to_json`](crate::SealedReview::to_json) so a consumer can tie the document
+/// to its exact input.
 #[must_use]
 pub fn to_json(files: &[ReviewFile]) -> String {
     render(files, None)

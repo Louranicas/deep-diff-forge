@@ -19,6 +19,54 @@ impl Provider {
         }
     }
 }
+/// Which provider family built the candidate, so a reviewer of the same family is not counted
+/// as independent (anchor C-02: a closed set, not a string checked after parsing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuilderFamily {
+    Openai,
+    Anthropic,
+    Human,
+    Other,
+}
+impl BuilderFamily {
+    /// The family name, as [`Provider::family`] spells it.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Human => "human",
+            Self::Other => "other",
+        }
+    }
+}
+/// A challenge-round reviewer's answer to another reviewer's finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Disposition {
+    Concur,
+    Rebut,
+    NeedsTest,
+}
+impl Disposition {
+    /// The wire name.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Concur => "concur",
+            Self::Rebut => "rebut",
+            Self::NeedsTest => "needs_test",
+        }
+    }
+}
+/// The council's qualification of a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssessmentState {
+    ReadyForHumanReview,
+    Hold,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Persona {
@@ -79,7 +127,7 @@ pub struct Request {
     pub analysis_file: String,
     pub decision_file: String,
     pub context_files: Vec<String>,
-    pub builder_family: String,
+    pub builder_family: BuilderFamily,
     pub profile: Profile,
     pub reviewers: Vec<Reviewer>,
     pub mutation_package: String,
@@ -163,7 +211,7 @@ pub struct Finding {
 #[serde(deny_unknown_fields)]
 pub struct Challenge {
     pub finding_id: String,
-    pub disposition: String,
+    pub disposition: Disposition,
     pub rationale: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,7 +298,7 @@ pub struct Execution {
 #[derive(Debug, Clone, Serialize)]
 pub struct Assessment {
     pub run_id: String,
-    pub state: String,
+    pub state: AssessmentState,
     pub reasons: Vec<String>,
     pub reports_received: usize,
     pub reports_expected: usize,

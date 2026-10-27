@@ -3,10 +3,40 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--tests--contracts
 //! Negative controls for review authority, freshness, blind phases and non-vacuous gates.
 use deep_diff_forge_review::{
-    Artifact, Assessment, Citation, Execution, Finding, Gate, Manifest, Outcome, Persona, Profile,
-    Provider, Report, Round, Severity, Verdict, assess, validate_report, validate_request,
+    Artifact, Assessment, AssessmentState, Citation, Disposition, Execution, Finding, Gate,
+    Manifest, Outcome, Persona, Profile, Provider, Report, Round, SealedManifest, Severity,
+    Verdict, assess, load_manifest, validate_report, validate_request,
 };
-fn manifest() -> Manifest {
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Seal `m` as `prepare` does and read it back through `load_manifest`, the only way to get the
+/// `SealedManifest` that `assess` takes (anchor C-01).
+fn seal(mut m: Manifest) -> SealedManifest {
+    static RUN: AtomicUsize = AtomicUsize::new(0);
+    for artifact in &mut m.artifacts {
+        artifact.sha256 = deep_diff_forge_core::sha256_hex(artifact.text.as_bytes());
+    }
+    m.run_id.clear();
+    m.run_id = deep_diff_forge_core::sha256_hex(&serde_json::to_vec(&m).unwrap());
+    let directory = std::env::temp_dir().join(format!(
+        "ddf-review-contracts-{}-{}",
+        std::process::id(),
+        RUN.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("manifest.json"),
+        serde_json::to_vec_pretty(&m).unwrap(),
+    )
+    .unwrap();
+    let sealed = load_manifest(&directory).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+    sealed
+}
+fn manifest() -> SealedManifest {
+    seal(unsealed())
+}
+fn unsealed() -> Manifest {
     let mut request = deep_diff_forge_review::cli::example();
     request.profile = Profile::Roster;
     request.reviewers.truncate(2);
@@ -65,7 +95,12 @@ fn complete(m: &Manifest) -> (Vec<Report>, Vec<Execution>) {
     }
     (reports, executions)
 }
-fn evaluation(m: &Manifest, reports: &[Report], executions: &[Execution]) -> Assessment {
+/// Whether the assessment holds for a reason containing `text` (a state alone can hold for
+/// another reason, so a control asserts the reason it targets).
+fn holds_for(a: &Assessment, text: &str) -> bool {
+    a.reasons.iter().any(|reason| reason.contains(text))
+}
+fn evaluation(m: &SealedManifest, reports: &[Report], executions: &[Execution]) -> Assessment {
     assess(m, reports, executions, &m.source_tree).unwrap()
 }
 fn finding(id: &str, severity: Severity) -> Finding {
@@ -87,7 +122,7 @@ fn complete_measured_review_only_becomes_ready_for_a_human() {
     let m = manifest();
     let (reports, executions) = complete(&m);
     let a = evaluation(&m, &reports, &executions);
-    assert_eq!(a.state, "ready_for_human_review");
+    assert_eq!(a.state, AssessmentState::ReadyForHumanReview);
     assert_eq!(a.decision_owner, "human");
     assert_eq!(a.provider_families, vec!["anthropic", "openai"]);
     assert_eq!(a.reasons.len(), 0);
@@ -99,10 +134,16 @@ fn unanimous_models_cannot_replace_missing_gate_evidence() {
     for gate in Gate::required(m.request.profile) {
         let mut planted = executions.clone();
         planted.retain(|e| e.job != format!("gate-{}", gate.label()));
-        assert_eq!(evaluation(&m, &reports, &planted).state, "hold");
+        assert_eq!(
+            evaluation(&m, &reports, &planted).state,
+            AssessmentState::Hold
+        );
     }
     executions.clear();
-    assert_eq!(evaluation(&m, &reports, &executions).state, "hold");
+    assert_eq!(
+        evaluation(&m, &reports, &executions).state,
+        AssessmentState::Hold
+    );
 }
 #[test]
 fn every_reviewer_and_round_is_required() {
@@ -111,7 +152,10 @@ fn every_reviewer_and_round_is_required() {
     for i in 0..reports.len() {
         let mut planted = reports.clone();
         planted.remove(i);
-        assert_eq!(evaluation(&m, &planted, &executions).state, "hold");
+        assert_eq!(
+            evaluation(&m, &planted, &executions).state,
+            AssessmentState::Hold
+        );
     }
 }
 #[test]
@@ -128,17 +172,23 @@ fn timeout_failure_unavailable_inconclusive_and_stale_never_pass() {
     ] {
         let mut planted = executions.clone();
         planted[0].outcome = state;
-        assert_eq!(evaluation(&m, &reports, &planted).state, "hold");
+        assert_eq!(
+            evaluation(&m, &reports, &planted).state,
+            AssessmentState::Hold
+        );
     }
     assert_eq!(
         assess(&m, &reports, &executions, "different tree")
             .unwrap()
             .state,
-        "hold"
+        AssessmentState::Hold
     );
     let mut planted = executions;
     planted[0].source_tree_before = "older".into();
-    assert_eq!(evaluation(&m, &reports, &planted).state, "hold");
+    assert_eq!(
+        evaluation(&m, &reports, &planted).state,
+        AssessmentState::Hold
+    );
 }
 #[test]
 fn duplicate_receipts_reports_and_roster_identities_refuse() {
@@ -149,7 +199,7 @@ fn duplicate_receipts_reports_and_roster_identities_refuse() {
     reports.pop();
     executions.push(executions[0].clone());
     assert!(assess(&m, &reports, &executions, "tree").is_err());
-    let mut request = m.request;
+    let mut request = m.request.clone();
     request.reviewers[1].id = request.reviewers[0].id.clone();
     assert!(validate_request(&request).is_err());
 }
@@ -178,7 +228,7 @@ fn invented_evidence_stale_reports_and_wrong_ranges_refuse() {
 }
 #[test]
 fn self_grading_personas_do_not_create_provider_diversity() {
-    let mut m = manifest();
+    let mut m = unsealed();
     m.request.reviewers[1].provider = Provider::Codex;
     m.request.reviewers[1].persona = Persona::Security;
     assert!(validate_request(&m.request).is_err());
@@ -191,7 +241,7 @@ fn severe_dissent_cannot_be_voted_away() {
     reports[0].findings.push(finding(&id, Severity::High));
     reports[0].verdict = Verdict::ChangesRequested;
     let a = evaluation(&m, &reports, &executions);
-    assert_eq!(a.state, "hold");
+    assert_eq!(a.state, AssessmentState::Hold);
     assert!(a.reasons.iter().any(|r| r.contains("high/critical")));
     reports[0].verdict = Verdict::NoBlockers;
     assert!(validate_report(&m, &reports[0]).is_err());
@@ -202,21 +252,40 @@ fn challenge_requires_exact_other_findings_and_keeps_test_requests_open() {
     let (mut reports, mut executions) = complete(&m);
     let id = reports[0].reviewer_id.clone();
     reports[0].findings.push(finding(&id, Severity::Medium));
-    assert_eq!(evaluation(&m, &reports, &executions).state, "hold");
+    let a = evaluation(&m, &reports, &executions);
+    assert_eq!(a.state, AssessmentState::Hold);
+    assert!(holds_for(&a, "does not address exactly"), "{:?}", a.reasons);
     reports[3]
         .responses
         .push(deep_diff_forge_review::Challenge {
             finding_id: format!("{id}:one"),
-            disposition: "needs_test".into(),
+            disposition: Disposition::NeedsTest,
             rationale: "Need the hostile-input test".into(),
         });
-    assert_eq!(evaluation(&m, &reports, &executions).state, "hold");
-    reports[3].responses[0].disposition = "concur".into();
-    assert_eq!(evaluation(&m, &reports, &executions).state, "hold");
+    let a = evaluation(&m, &reports, &executions);
+    assert_eq!(a.state, AssessmentState::Hold);
+    assert!(
+        holds_for(&a, "requests unresolved verification"),
+        "{:?}",
+        a.reasons
+    );
+    assert!(
+        !holds_for(&a, "does not address exactly"),
+        "{:?}",
+        a.reasons
+    );
+    reports[3].responses[0].disposition = Disposition::Concur;
+    let a = evaluation(&m, &reports, &executions);
+    assert_eq!(a.state, AssessmentState::Hold);
+    assert!(
+        !holds_for(&a, "requests unresolved verification"),
+        "{:?}",
+        a.reasons
+    );
     executions.push(execution(&m, "gate-fuzz".into()));
     assert_eq!(
         evaluation(&m, &reports, &executions).state,
-        "ready_for_human_review"
+        AssessmentState::ReadyForHumanReview
     );
 }
 #[test]
@@ -250,7 +319,7 @@ fn important_profile_requires_adversarial_lenses_and_real_fuzz_mutation_gates() 
 }
 #[test]
 fn mutation_base_is_a_full_commit_id_never_a_revision_expression() {
-    let valid = manifest().request;
+    let valid = unsealed().request;
     for base in ["0".repeat(40), "a".repeat(64)] {
         let mut p = valid.clone();
         p.mutation_base = Some(base);
@@ -278,7 +347,7 @@ fn mutation_base_is_a_full_commit_id_never_a_revision_expression() {
 }
 #[test]
 fn execution_options_and_budget_values_are_admitted_not_silently_clamped() {
-    let valid = manifest().request;
+    let valid = unsealed().request;
     for timeout in [0, 3601, u64::MAX] {
         let mut p = valid.clone();
         p.timeout_seconds = timeout;
@@ -303,7 +372,7 @@ fn execution_options_and_budget_values_are_admitted_not_silently_clamped() {
 }
 #[test]
 fn identifier_boundaries_do_not_admit_shell_or_path_syntax() {
-    let valid = manifest().request;
+    let valid = unsealed().request;
     for id in ["a", "_", "-", "Z09_-", &"x".repeat(80)] {
         let mut p = valid.clone();
         p.reviewers[0].id = id.into();
@@ -321,11 +390,30 @@ fn receipt_identity_both_source_sides_and_nonzero_exit_refuse() {
     let (reports, executions) = complete(&m);
     let mut bad = executions.clone();
     bad[0].run_id = "other".into();
-    assert_eq!(evaluation(&m, &reports, &bad).state, "hold");
+    assert_eq!(evaluation(&m, &reports, &bad).state, AssessmentState::Hold);
     let mut bad = executions.clone();
     bad[0].source_tree_after = "other".into();
-    assert_eq!(evaluation(&m, &reports, &bad).state, "hold");
+    assert_eq!(evaluation(&m, &reports, &bad).state, AssessmentState::Hold);
     let mut bad = executions;
     bad[0].exit_code = Some(1);
-    assert_eq!(evaluation(&m, &reports, &bad).state, "hold");
+    assert_eq!(evaluation(&m, &reports, &bad).state, AssessmentState::Hold);
+}
+
+/// A builder outside every reviewer family has independent lineage: the reviewers' mixed families
+/// never count as self-review. (The opposite case cannot be built: `validate_request` already
+/// requires provider diversity.)
+#[test]
+fn a_human_builder_reviewed_by_both_families_has_independent_lineage() {
+    let mut raw = unsealed();
+    raw.request.builder_family = deep_diff_forge_review::BuilderFamily::Human;
+    let m = seal(raw);
+    let (reports, executions) = complete(&m);
+    let a = evaluation(&m, &reports, &executions);
+    assert!(!holds_for(&a, "lineage"), "{:?}", a.reasons);
+    assert_eq!(
+        a.state,
+        AssessmentState::ReadyForHumanReview,
+        "{:?}",
+        a.reasons
+    );
 }

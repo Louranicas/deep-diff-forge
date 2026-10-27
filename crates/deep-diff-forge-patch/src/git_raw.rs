@@ -398,6 +398,24 @@ impl StructuredDiff {
         Ok(captured)
     }
 
+    /// [`review_files`](Self::review_files) sealed over `captured`'s exact bytes: the files and
+    /// the seal come from the same capture (anchor C-05).
+    ///
+    /// # Errors
+    /// As [`review_files`](Self::review_files).
+    pub fn sealed_review(
+        &self,
+        captured: &crate::CapturedPatch,
+        version: &str,
+    ) -> Result<crate::SealedReview, GitAcquireError> {
+        let files = self.review_files(captured)?;
+        Ok(crate::SealedReview::from_capture(
+            files,
+            captured.original_bytes(),
+            version,
+        ))
+    }
+
     /// A review-model copy of `captured`'s files whose paths come from the raw
     /// records, not from display headers. `captured` itself is not modified.
     ///

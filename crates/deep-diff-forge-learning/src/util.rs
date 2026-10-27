@@ -28,13 +28,66 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
     hash
 }
 
+/// A redacted file identity: 16 to 64 lowercase hexadecimal characters, never a path. Only
+/// [`redacted_id`] makes one from a path, and deserializing one checks its form, so a
+/// [`StrategyReceipt`](crate::StrategyReceipt) cannot carry a path at all (anchor C-07). On the
+/// wire it is the bare string.
+///
+/// ```
+/// let id = deep_diff_forge_learning::redacted_id("src/lib.rs");
+/// assert_eq!(id.as_str().len(), 16);
+/// ```
+///
+/// ```compile_fail
+/// let _ = deep_diff_forge_learning::RedactedId(String::from("src/lib.rs"));
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct RedactedId(String);
+
+impl RedactedId {
+    /// The hexadecimal token.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for RedactedId {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let valid = (16..=64).contains(&value.len())
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+        if valid {
+            Ok(Self(value))
+        } else {
+            Err("file_hash must be a 16-64 character lowercase hexadecimal redacted id")
+        }
+    }
+}
+
+impl From<RedactedId> for String {
+    fn from(id: RedactedId) -> Self {
+        id.0
+    }
+}
+
+impl std::fmt::Display for RedactedId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// A stable, pseudonymous identity token for `input`, rendered as a 16-character
 /// lowercase hex string. Used as `StrategyReceipt::file_hash` so receipts never
 /// carry a path.
 /// See [`fnv1a`] for its dictionary-guessing and collision caveats.
 #[must_use]
-pub fn redacted_id(input: &str) -> String {
-    format!("{:016x}", fnv1a(input.as_bytes()))
+pub fn redacted_id(input: &str) -> RedactedId {
+    RedactedId(format!("{:016x}", fnv1a(input.as_bytes())))
 }
 
 /// Clamp `value` into the inclusive range `[lo, hi]`.
@@ -83,7 +136,7 @@ mod tests {
 
     #[test]
     fn redacted_id_is_sixteen_hex_chars() {
-        let id = redacted_id("crates/deep-diff-forge-core/src/lib.rs");
+        let id = redacted_id("crates/deep-diff-forge-core/src/lib.rs").to_string();
         assert_eq!(id.len(), 16);
         assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
         assert!(id.chars().all(|c| !c.is_ascii_uppercase()));
@@ -97,7 +150,7 @@ mod tests {
     #[test]
     fn redacted_id_does_not_contain_the_path() {
         let path = "secret/internal/path.rs";
-        let id = redacted_id(path);
+        let id = redacted_id(path).to_string();
         assert!(!id.contains("secret"));
         assert!(!id.contains('/'));
     }
@@ -109,13 +162,13 @@ mod tests {
 
     #[test]
     fn redacted_id_handles_empty() {
-        let id = redacted_id("");
+        let id = redacted_id("").to_string();
         assert_eq!(id.len(), 16);
     }
 
     #[test]
     fn redacted_id_handles_unicode() {
-        let id = redacted_id("crates/café/源.rs");
+        let id = redacted_id("crates/café/源.rs").to_string();
         assert_eq!(id.len(), 16);
     }
 

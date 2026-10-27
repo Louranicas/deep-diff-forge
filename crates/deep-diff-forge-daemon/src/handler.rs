@@ -384,6 +384,7 @@ pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcErro
             "pid": engine.pid,
             "sessions": engine.session_count(),
             "retained_bytes": engine.retained_bytes,
+            // Reserved: there is no response cache, so the count is truly 0 (decision D-03).
             "cache_entries": 0,
             "protocol": PROTOCOL_VERSION,
         })),
@@ -435,16 +436,21 @@ fn compute(request: &Request) -> Result<Value, RpcError> {
         files: bool_param(&request.params, "require_files")?,
         hunks: bool_param(&request.params, "require_hunks")?,
     };
-    let files = deep_diff_forge_patch::parse(&patch)
-        .map_err(|e| RpcError::new(PATCH_PARSE_FAILED, e.to_string()))?;
-    if let Some(reason) = guards.refusal(&files) {
-        return Err(RpcError::new(
-            INPUT_CONTRACT_REFUSED,
-            format!("refused: {reason}"),
-        ));
-    }
-    let seal = deep_diff_forge_core::InputSeal::of(patch.as_bytes(), env!("CARGO_PKG_VERSION"));
-    serde_json::from_str(&deep_diff_forge_patch::to_json_sealed(&files, &seal)).map_err(|e| {
+    // The one parse → guard → seal path (anchor C-05), as the CLI's `--stdin-patch --json`.
+    let review = deep_diff_forge_patch::SealedReview::new(
+        patch.as_bytes(),
+        guards,
+        env!("CARGO_PKG_VERSION"),
+    )
+    .map_err(|error| match error {
+        deep_diff_forge_patch::ReviewError::Parse(e) => {
+            RpcError::new(PATCH_PARSE_FAILED, e.to_string())
+        }
+        refused @ deep_diff_forge_patch::ReviewError::Refused(_) => {
+            RpcError::new(INPUT_CONTRACT_REFUSED, refused.to_string())
+        }
+    })?;
+    serde_json::from_str(&review.to_json()).map_err(|e| {
         RpcError::new(
             crate::protocol::INTERNAL_ERROR,
             format!("review document is not JSON: {e}"),

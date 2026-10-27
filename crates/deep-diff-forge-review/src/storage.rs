@@ -483,6 +483,9 @@ fn verify_candidate(
     )
 }
 
+/// The sealed council manifest's schema: written at prepare, required at load (anchor D-04).
+const MANIFEST_SCHEMA: &str = "deep-diff-forge.council.v1";
+
 fn manifest_digest(manifest: &Manifest) -> Result<String> {
     let mut unsealed = manifest.clone();
     unsealed.run_id.clear();
@@ -641,7 +644,7 @@ fn seal_run(
         request.mutation_base.as_deref(),
     )?;
     let mut manifest = Manifest {
-        schema: "deep-diff-forge.council.v1".into(),
+        schema: MANIFEST_SCHEMA.into(),
         run_id: String::new(),
         review_id,
         source_tree,
@@ -661,15 +664,34 @@ fn seal_run(
     write_json(&directory.join(INVENTORY_FILE), inventory)?;
     Ok(manifest)
 }
+/// A manifest whose seal, request and embedded artifact digests [`load_manifest`] verified. Only
+/// loading makes one, so [`assess`](crate::assess) cannot grade a manifest nobody checked
+/// (anchor C-01); it reads as the [`Manifest`] it wraps.
+///
+/// ```compile_fail
+/// fn forge(m: deep_diff_forge_review::Manifest) -> deep_diff_forge_review::SealedManifest {
+///     deep_diff_forge_review::SealedManifest(m)
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct SealedManifest(Manifest);
+
+impl std::ops::Deref for SealedManifest {
+    type Target = Manifest;
+
+    fn deref(&self) -> &Manifest {
+        &self.0
+    }
+}
+
 /// Load a sealed local manifest and verify every embedded artifact digest.
 /// # Errors
 /// Refuses modified manifests, invalid requests and changed embedded context.
-pub fn load_manifest(directory: &Path) -> Result<Manifest> {
+pub fn load_manifest(directory: &Path) -> Result<SealedManifest> {
     let manifest: Manifest = read_json(&directory.join("manifest.json"), 2 * 1024 * 1024)?;
     validate_request(&manifest.request)?;
     require(
-        manifest.schema == "deep-diff-forge.council.v1"
-            && manifest_digest(&manifest)? == manifest.run_id,
+        manifest.schema == MANIFEST_SCHEMA && manifest_digest(&manifest)? == manifest.run_id,
         "manifest seal mismatch",
     )?;
     require(
@@ -682,29 +704,30 @@ pub fn load_manifest(directory: &Path) -> Result<Manifest> {
             "captured artifact digest mismatch",
         )?;
     }
-    Ok(manifest)
+    Ok(SealedManifest(manifest))
 }
-pub(crate) fn report_path(directory: &Path, id: &str, round: Round) -> PathBuf {
-    directory
+/// A job's directory under the run directory; the job name must be one safe path segment (C-09).
+pub(crate) fn job_dir(directory: &Path, job: &str) -> Result<PathBuf> {
+    Ok(directory.join("jobs").join(crate::segment(job)?))
+}
+pub(crate) fn report_path(directory: &Path, id: &str, round: Round) -> Result<PathBuf> {
+    Ok(directory
         .join("reports")
-        .join(format!("{id}-{}.json", round.label()))
+        .join(format!("{}-{}.json", crate::segment(id)?, round.label())))
 }
 pub(crate) fn reports(directory: &Path, manifest: &Manifest) -> Result<Vec<Report>> {
     let mut result = Vec::new();
     for reviewer in &manifest.request.reviewers {
         for round in [Round::Independent, Round::Challenge] {
-            let path = report_path(directory, &reviewer.id, round);
+            let path = report_path(directory, &reviewer.id, round)?;
             if path.exists() {
                 let report = read_json(&path, REPORT_CAP)?;
                 validate_report(manifest, &report)?;
-                let qpath = directory
-                    .join("jobs")
-                    .join(format!(
-                        "review-{}-{}",
-                        report.reviewer_id,
-                        report.round.label()
-                    ))
-                    .join("qualification.json");
+                let qpath = job_dir(
+                    directory,
+                    &format!("review-{}-{}", report.reviewer_id, report.round.label()),
+                )?
+                .join("qualification.json");
                 if qpath.exists() {
                     let q: Qualification = read_json(&qpath, REPORT_CAP)?;
                     require(
@@ -809,6 +832,102 @@ pub(crate) fn executions(directory: &Path, manifest: &Manifest) -> Result<Vec<Ex
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Anchor C-03: the run id is an unkeyed digest of the manifest, so a manifest edited and
+    /// resealed passes the seal. A mutation base without its sealed diff (or the reverse) must
+    /// still be refused at load, by name, rather than silently mutating the whole package.
+    /// The manifest schema is a wire value: renaming the constant must not change it.
+    #[test]
+    fn the_manifest_schema_is_pinned() {
+        assert_eq!(MANIFEST_SCHEMA, "deep-diff-forge.council.v1");
+    }
+
+    /// The seal needs both the schema and the digest: a resealed manifest with another schema, and
+    /// a correct schema over a tampered body, are each refused by name.
+    #[test]
+    fn the_seal_needs_the_schema_and_the_digest() {
+        let directory = std::env::temp_dir().join(format!("ddf-seal-{}", std::process::id()));
+        let mut request = crate::cli::example();
+        request.profile = crate::model::Profile::Roster;
+        request.reviewers.truncate(2);
+        let build = |schema: &str| {
+            let mut manifest = Manifest {
+                schema: schema.into(),
+                run_id: String::new(),
+                review_id: "c".repeat(64),
+                source_tree: "d".repeat(64),
+                request: request.clone(),
+                artifacts: Vec::new(),
+                mutation_diff_sha256: None,
+            };
+            manifest.run_id = manifest_digest(&manifest).unwrap();
+            manifest
+        };
+        let mut tampered = build(MANIFEST_SCHEMA);
+        tampered.source_tree = "e".repeat(64);
+        for (manifest, sealed) in [
+            (build(MANIFEST_SCHEMA), true),
+            (build("deep-diff-forge.council.v0"), false),
+            (tampered, false),
+        ] {
+            let _ = fs::remove_dir_all(&directory);
+            fs::create_dir_all(&directory).unwrap();
+            write_json(&directory.join("manifest.json"), &manifest).unwrap();
+            match load_manifest(&directory) {
+                Ok(_) => assert!(sealed, "{}", manifest.schema),
+                Err(error) => {
+                    assert!(!sealed, "{error}");
+                    assert!(
+                        error.to_string().contains("manifest seal mismatch"),
+                        "{error}"
+                    );
+                }
+            }
+        }
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_resealed_manifest_with_half_a_mutation_scope_is_refused() {
+        let directory = std::env::temp_dir().join(format!("ddf-c03-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        let mut request = crate::cli::example();
+        request.profile = crate::model::Profile::Roster;
+        request.reviewers.truncate(2);
+        let base = Some("a".repeat(40));
+        for (mutation_base, digest, refused) in [
+            (base.clone(), None, true),
+            (None, Some("b".repeat(64)), true),
+            (base.clone(), Some("b".repeat(64)), false),
+            (None, None, false),
+        ] {
+            fs::create_dir_all(&directory).unwrap();
+            let mut manifest = Manifest {
+                schema: "deep-diff-forge.council.v1".into(),
+                run_id: String::new(),
+                review_id: "c".repeat(64),
+                source_tree: "d".repeat(64),
+                request: Request {
+                    mutation_base: mutation_base.clone(),
+                    ..request.clone()
+                },
+                artifacts: Vec::new(),
+                mutation_diff_sha256: digest.clone(),
+            };
+            manifest.run_id = manifest_digest(&manifest).unwrap();
+            write_json(&directory.join("manifest.json"), &manifest).unwrap();
+            let loaded = load_manifest(&directory);
+            let together = loaded
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.to_string().contains("must appear together"));
+            assert_eq!(
+                together, refused,
+                "{mutation_base:?} {digest:?}: {loaded:?}"
+            );
+            fs::remove_dir_all(&directory).unwrap();
+        }
+    }
 
     /// Anchor A-02: council storage strips every inherited variable that would point Git at
     /// another repository. Before, an inherited `GIT_DIR` made `rev-parse HEAD` name another

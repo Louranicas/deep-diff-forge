@@ -157,7 +157,6 @@ Later release forms:
 - cargo-binstall metadata
 - Linux tarball
 - macOS tarball
-- Windows zip
 - optional DEB/RPM after daemon/systemd assets exist
 
 ### Gate 6: Runtime Smoke

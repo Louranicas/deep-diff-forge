@@ -68,7 +68,8 @@ pub use analyze::{SemanticAnalysis, SyntaxOptions, analyze, analyze_language, en
 pub use highlight::{HighlightClass, HighlightSpan, highlight, highlight_to_ansi, to_ansi};
 pub use language::{Language, detect_language};
 pub use structural::{
-    ChangeKind, StructuralDiff, Token, TokenChange, structural_diff, tokenize, tokenize_checked,
+    ChangeKind, StructuralDiff, StructuralState, Token, TokenChange, structural_diff, tokenize,
+    tokenize_checked,
 };
 
 /// A top-level named item discovered in a source file.

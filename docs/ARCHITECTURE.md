@@ -1,6 +1,24 @@
 # Architecture
 
+> **Target design, not a description of the code** (anchor E-01, 2026-10-27). Crates, commands and caches named here may not exist. The crates and edges that do exist are generated in [Current crates and edges](SCHEMATICS.md#current-crates-and-edges) from `docs/crate-edges.txt`, which a test holds equal to `cargo metadata`.
+
 Deep-Diff-Forge is organized around a layered core.
+
+## Platform scope (decision D-05, 2026-10-27)
+
+Deep-Diff-Forge targets Linux and macOS. Windows is not a goal: the daemon uses Unix-domain
+sockets and refuses to compile elsewhere (`deep-diff-forge-daemon/src/lib.rs`, `compile_error!`),
+and the CLI and TUI depend on it unconditionally. The crates are not split to make a Windows build
+possible; library crates that happen to build on Windows (`patch`, `learning`) are not tested or
+released there.
+
+## Source headers (decision E-05, 2026-10-27)
+
+Some files open with `// DDF integration`, `// Design/status` and `// Module vault note` lines that
+link to a design section and to the maintainer's local Obsidian vault (65 of 120 Rust files on
+2026-10-27; all 79 links resolved). They are optional and not enforced: CI cannot see the vault, so
+a scan could check only that a header is present, which would push headers onto files with no note
+to link. Add one when a vault note exists for the file; never add a link to a note that does not.
 
 ## Layers
 

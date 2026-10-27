@@ -1,6 +1,30 @@
 # Architectural Schematics
 
-This document is the implementation map for Deep-Diff-Forge. It turns the product vision into concrete boundaries, APIs, processes, and data flows.
+> **Target design, not a description of the code** (anchor E-01, 2026-10-27). Crates, commands and caches named here may not exist. The crates and edges that do exist are generated in [Current crates and edges](SCHEMATICS.md#current-crates-and-edges) from `docs/crate-edges.txt`, which a test holds equal to `cargo metadata`.
+
+This document is the target implementation map for Deep-Diff-Forge. It turns the product vision into concrete boundaries, APIs, processes, and data flows.
+
+## Current crates and edges
+
+Generated from `docs/crate-edges.txt` (checked against `cargo metadata` by
+`crates/deep-diff-forge-cli/tests/crate_edges.rs`); edit the table, not this block.
+
+<!-- crate-edges:begin -->
+- `agent` → core, patch [dev]
+- `cli` → cluster, core, daemon, graph, learning, patch, pipeline, projection, review, syntax, tui
+- `cluster` → core, graph, patch [dev]
+- `core` → (no workspace dependencies)
+- `daemon` → core, graph, patch
+- `graph` → core, patch [dev]
+- `learning` → (no workspace dependencies)
+- `patch` → core
+- `pipeline` → core, graph, patch, projection, syntax
+- `projection` → core, patch [dev]
+- `review` → core
+- `sdk` → core, daemon (cfg(unix)), graph, patch
+- `syntax` → core
+- `tui` → agent, cluster, core, daemon, graph, learning, patch, projection, syntax
+<!-- crate-edges:end -->
 
 ## Exemplar Lessons
 

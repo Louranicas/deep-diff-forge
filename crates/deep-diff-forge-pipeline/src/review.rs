@@ -192,10 +192,10 @@ fn enrich_file(file: &mut ReviewFile, pair: &SourcePair, span_id: &mut u64) -> F
     let old_ranges = line_ranges(old);
     let new_ranges = line_ranges(new);
     let diff = structural_diff(detect_language(&file.path), old, new);
-    let coverage = if let Some(reason) = &diff.unavailable {
+    let coverage = if let Some(reason) = diff.unavailable() {
         file.planner.fallback = Some(reason.clone());
         Coverage::Unavailable(format!("{reason:?}"))
-    } else if diff.degraded {
+    } else if diff.degraded() {
         Coverage::PartialLcs
     } else {
         Coverage::Analyzed
@@ -244,14 +244,14 @@ fn enrich_file(file: &mut ReviewFile, pair: &SourcePair, span_id: &mut u64) -> F
     file.semantic_twin = Some(SemanticTwin {
         language: diff.language.name().into(),
         parse_status: diff
-            .unavailable
-            .clone()
+            .unavailable()
+            .cloned()
             .map_or(ParseStatus::Parsed, |reason| ParseStatus::Fallback {
                 reason,
             }),
         spans,
     });
-    if diff.unavailable.is_none() {
+    if diff.unavailable().is_none() {
         file.planner.strategy = DiffStrategy::Syntax;
     }
     FileAnalysis {
@@ -305,7 +305,7 @@ fn regions_json(spans: &[SemanticSpan]) -> String {
     sorted.sort_by_key(|s| {
         (
             s.hunk_id.0,
-            s.kind as u8,
+            s.kind.rank(),
             lines(s.old_range),
             lines(s.new_range),
         )
@@ -451,9 +451,9 @@ impl ReviewBundle {
                 let _ = write!(
                     record,
                     ",\"reformat_only\":{},\"degraded\":{},\"minimal\":{},\"added\":{},\"removed\":{},\"moved\":{}",
-                    diff.reformat_only,
-                    diff.degraded,
-                    diff.minimal,
+                    diff.reformat_only(),
+                    diff.degraded(),
+                    diff.minimal(),
                     diff.added,
                     diff.removed,
                     diff.moved
@@ -559,7 +559,7 @@ mod tests {
                 .structural
                 .as_ref()
                 .unwrap()
-                .reformat_only
+                .reformat_only()
         );
     }
     #[test]

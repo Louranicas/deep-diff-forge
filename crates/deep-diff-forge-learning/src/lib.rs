@@ -43,7 +43,7 @@ pub use promote::{PromotionCandidate, PromotionDecision, PromotionPolicy, evalua
 pub use ranking::{RankingObservation, RankingWeights, fit_weights};
 pub use receipt::{CacheState, FallbackReason, ReviewOutcome, Strategy, StrategyReceipt};
 pub use score::{StrategyScore, TrustPolicy, best_trusted, score_one, score_strategies};
-pub use util::redacted_id;
+pub use util::{RedactedId, redacted_id};
 
 use std::path::Path;
 
@@ -120,7 +120,7 @@ mod tests {
     fn accepted(strategy: Strategy, n: usize) -> Vec<StrategyReceipt> {
         (0..n)
             .map(|_| {
-                StrategyReceipt::new("h", "rust", "v", strategy)
+                StrategyReceipt::new(crate::redacted_id("h"), "rust", "v", strategy)
                     .with_outcome(ReviewOutcome::Accepted, false)
                     .with_elapsed_ms(8)
             })

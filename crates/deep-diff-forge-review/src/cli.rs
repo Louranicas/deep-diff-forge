@@ -70,12 +70,15 @@ fn status(directory: &Path) -> Result<(String, i32)> {
     let tree = source_fingerprint(Path::new(&manifest.request.repository))?;
     let mut result = assess(&manifest, &reports, &executions, &tree)?;
     if directory.join("controller.lock").exists() {
-        result.state = "hold".into();
+        result.state = crate::AssessmentState::Hold;
         result
             .reasons
             .push("controller execution is active or interrupted".into());
     }
-    output(&result, result.state == "ready_for_human_review")
+    output(
+        &result,
+        result.state == crate::AssessmentState::ReadyForHumanReview,
+    )
 }
 fn import(directory: &Path, path: &Path) -> Result<(String, i32)> {
     let manifest = load_manifest(directory)?;
@@ -86,7 +89,7 @@ fn import(directory: &Path, path: &Path) -> Result<(String, i32)> {
         "source changed; import would be stale",
     )?;
     storage::write_json(
-        &storage::report_path(directory, &report.reviewer_id, report.round),
+        &storage::report_path(directory, &report.reviewer_id, report.round)?,
         &report,
     )?;
     Ok(("{\"imported\":true,\"provenance\":\"manual_unverified\",\"satisfies_execution_gate\":false}\n".into(), exit::COUNCIL_COMPLETED))
@@ -151,7 +154,7 @@ pub fn example() -> Request {
         analysis_file: "/path/to/analysis.json".into(),
         decision_file: "/path/to/decision.md".into(),
         context_files: vec![],
-        builder_family: "openai".into(),
+        builder_family: crate::BuilderFamily::Openai,
         profile: Profile::ImportantDecision,
         reviewers: vec![
             Reviewer {

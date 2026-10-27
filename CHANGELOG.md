@@ -178,6 +178,49 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **One parse → guard → seal path** (anchor C-05; library API).
+  `deep_diff_forge_patch::SealedReview::new` decodes, parses, applies the input
+  contracts and seals the same bytes; the CLI's `--stdin-patch`, the daemon's
+  `diff.compute` and the SDK's `review` all use it, and Git selections seal
+  through `StructuredDiff::sealed_review` from the same capture.
+  `to_json_sealed` is no longer public, so a seal can no longer be paired with
+  files parsed from other bytes. Every output is byte-identical.
+- **The design docs say they are target design** (anchor E-01).
+  `SCHEMATICS.md`, `ARCHITECTURE.md` and `MODULE_STRUCTURE_PLAN.md` open with
+  a target-design banner, and `SCHEMATICS.md` carries a generated "current
+  crates and edges" block rendered from `docs/crate-edges.txt`; a test fails
+  when the block is stale (`DDF_BLESS_SCHEMATICS=1` regenerates it).
+- **`deploy status` says it ran nothing** (anchor E-06). Its gates are a
+  static `not-run` list; the JSON now carries `"gates_run": false` so a caller
+  cannot read `not-run` as a verdict, and the human output points at `just ci`.
+- **Council fields that take a closed set are enums** (anchor C-02; library
+  API). `Request.builder_family` (`BuilderFamily`), a challenge's
+  `disposition` (`Disposition`) and `Assessment.state` (`AssessmentState`)
+  were strings checked after parsing; an invalid value is now refused when it
+  is read. The JSON is unchanged, and a test holds the reviewer-facing
+  report schema's enum lists equal to the Rust enums.
+- **The council grades only a verified manifest** (anchor C-01; library API).
+  `load_manifest` returns a `SealedManifest`, which nothing else can construct,
+  and `assess` takes it, so an in-memory `Manifest` that skipped the seal,
+  request and artifact-digest checks can no longer be assessed. It reads as
+  the `Manifest` it wraps.
+- **`StructuralDiff` has one state, not three flags and an `Option`**
+  (anchor C-06; library API). `state: StructuralState` is `Unavailable(reason)`,
+  `Degraded`, `LineAnchored` or `Minimal { reformat_only }`, so combinations
+  such as "reformat-only and unavailable" can no longer be built. The
+  `reformat_only()`, `degraded()`, `minimal()` and `unavailable()` accessors
+  report what the fields did, and every JSON output is byte-identical.
+- **A learning receipt cannot carry a path** (anchor C-07; library API).
+  `StrategyReceipt.file_hash` is a `RedactedId`, which only `redacted_id()`
+  makes and which deserializing checks (16–64 lowercase hex characters), so a
+  path is refused when a receipt is built or read, not only when it is stored.
+  On disk the field is the same bare string. A load error now names its store
+  line for malformed JSON too.
+- **`InputGuards` has no `Default`** (anchor C-04; library API). "No guards"
+  is written out as `InputGuards { files: false, hunks: false }`, so
+  `..Default::default()` can no longer silently drop a contract a caller asked
+  for; the SDK's `Guards` already worked this way. A `compile_fail` doctest
+  holds it.
 - **The test-count floor is retired** (anchor B-09). The 50-tests-per-crate
   rule was never enforced, and `just test-audit` always exited 0 (and read 0
   without `rg`); the project's own antipattern catalogue lists count literals
@@ -223,6 +266,24 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **`learn` is tested end to end** (anchor A-08, from Parking). Recording a
+  receipt, reading the count back, the default `status` subcommand, and the
+  refusals (a path in place of the redacted id, a self-contradicting receipt,
+  an unknown subcommand, `record` without `--stdin`) now run against the
+  binary in an isolated `XDG_STATE_HOME`. Before, replacing `learn_cmd` with a
+  no-op survived mutation.
+- **A self-contradicting learning receipt is refused** (anchor C-11). A
+  receipt whose outcome is `revisited` but whose `revisited` flag is false is
+  refused on append and on load, so scoring cannot count the revisit in one
+  rate and not the other.
+- **Contradicted facts corrected** (anchor E-02). `--help` no longer lists
+  shipped commands (`review`, `daemon start`, the `--git-*` family) as future
+  modes; its "not yet implemented" list is checked to be refused. The
+  crates.io publish loop in `release.yml` now includes `sdk`, and a test keeps
+  it naming every workspace crate after its dependencies. The API doc states
+  protocol 1, the release doc describes per-archive SHA-256 files and
+  attestations (no signed `checksums.txt`), and the feature matrix marks the
+  options that do not exist.
 - **An unmeasured test no longer shows as passed** (anchor B-08). The
   real-Podman sandbox test and the two real-tuicr tests printed `UNMEASURED`
   and returned, so `cargo test` reported them `ok`. They are now `#[ignore]`d
@@ -320,6 +381,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Security
 
+- **Ids become paths only as checked segments** (anchor C-09). Every reviewer,
+  job, session and fuzz-target id joined into a council run directory now goes
+  through one check (`segment`, `job_dir`, `report_path`) at the join, so a
+  path cannot leave the run directory even where the id was not validated
+  first; before, the joins relied on `identifier()` having been called
+  earlier.
 - **MCP marks patch text as untrusted for the consuming model** (anchor E-07).
   The server instructions and the `review_patch` / `rank_patch` descriptions
   say that paths and line text come from the patch, whose authors wrote them,

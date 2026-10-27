@@ -29,6 +29,7 @@ mod guards;
 mod parser;
 mod paths;
 mod render;
+mod sealed;
 
 #[cfg(feature = "json")]
 mod json;
@@ -41,9 +42,12 @@ pub use git_raw::{
 pub use guards::{InputGuards, has_reviewable_hunks};
 pub use parser::{ParseOptions, parse, parse_decoded, parse_with};
 pub use render::render_unified;
+pub use sealed::{ReviewError, SealedReview};
 
 #[cfg(feature = "json")]
-pub use json::{to_json, to_json_sealed};
+pub use json::to_json;
+#[cfg(feature = "json")]
+pub(crate) use json::to_json_sealed;
 
 /// Default maximum input size accepted by the parser, in bytes.
 ///

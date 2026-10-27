@@ -1,5 +1,7 @@
 # Module Structure Plan
 
+> **Target design, not a description of the code** (anchor E-01, 2026-10-27). Crates, commands and caches named here may not exist. The crates and edges that do exist are generated in [Current crates and edges](SCHEMATICS.md#current-crates-and-edges) from `docs/crate-edges.txt`, which a test holds equal to `cargo metadata`.
+
 Deep-Diff-Forge will be a Rust workspace with narrow crates, small modules, and
 one-way dependency flow. The design draws from the local exemplar corpus:
 

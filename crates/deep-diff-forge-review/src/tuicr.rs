@@ -410,7 +410,7 @@ fn admitted_reports(
     let mut skipped = Vec::new();
     for reviewer in &manifest.request.reviewers {
         for round in [Round::Independent, Round::Challenge] {
-            let path = storage::report_path(directory, &reviewer.id, round);
+            let path = storage::report_path(directory, &reviewer.id, round)?;
             if !path.exists() {
                 continue;
             }
@@ -426,10 +426,10 @@ fn admitted_reports(
             if report.reviewer_id != reviewer.id || report.round != round {
                 return Err(refuse("report identity does not match its file".into()));
             }
-            let job =
-                directory
-                    .join("jobs")
-                    .join(format!("review-{}-{}", reviewer.id, round.label()));
+            let job = storage::job_dir(
+                directory,
+                &format!("review-{}-{}", reviewer.id, round.label()),
+            )?;
             let qualification = job.join("qualification.json");
             if !qualification.exists() {
                 skipped.push(SkippedReport {
@@ -684,7 +684,7 @@ fn plan(
                     format!(
                         "- {}: {}: {}",
                         r.finding_id,
-                        r.disposition,
+                        r.disposition.label(),
                         r.rationale.trim()
                     )
                 })
@@ -1020,7 +1020,10 @@ pub fn export_tuicr(
     };
     let mut notes = plan(&binding, &admitted, options)?;
     let ledger = Ledger {
-        dir: directory.join(LEDGER_DIR).join("tuicr").join(&session.id),
+        dir: directory
+            .join(LEDGER_DIR)
+            .join("tuicr")
+            .join(crate::segment(&session.id)?),
         run_id: &manifest.run_id,
         session_id: &session.id,
     };

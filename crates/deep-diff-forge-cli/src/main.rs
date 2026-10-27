@@ -217,7 +217,7 @@ const EXIT_REFUSED: i32 = exit::INPUT_CONTRACT_REFUSED;
 
 /// The `--require-files` / `--require-hunks` input contracts, parsed from the CLI flags; the
 /// predicate itself is [`deep_diff_forge_patch::InputGuards`], shared with the daemon.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct InputGuards(deep_diff_forge_patch::InputGuards);
 
 impl InputGuards {
@@ -312,29 +312,43 @@ fn stdin_patch(opts: &[String]) {
         return;
     }
 
-    let files = parse_decoded_or_exit(&decoded);
-    guards.enforce(&files);
-    emit_review(&files, opts, &bytes);
+    let review = sealed_review_or_exit(&bytes, guards);
+    emit_review(&review, opts);
 }
 
-/// Emit the selected review output for already-parsed `files`; `input` is the
-/// exact patch bytes that are sealed into machine-readable documents. Shared by
-/// `--stdin-patch` and the structured Git selections.
-fn emit_review(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], input: &[u8]) {
+/// The one parse → guard → seal path ([`deep_diff_forge_patch::SealedReview`], anchor C-05), with
+/// the CLI's exits: 4 for a parse failure, 7 for a refused contract.
+fn sealed_review_or_exit(bytes: &[u8], guards: InputGuards) -> deep_diff_forge_patch::SealedReview {
+    use deep_diff_forge_patch::ReviewError;
+    match deep_diff_forge_patch::SealedReview::new(bytes, guards.0, env!("CARGO_PKG_VERSION")) {
+        Ok(review) => review,
+        Err(ReviewError::Parse(error)) => {
+            eprintln!("error: patch parse failed: {error}");
+            std::process::exit(exit::INVALID_INPUT);
+        }
+        Err(refused @ ReviewError::Refused(_)) => {
+            eprintln!("{refused}");
+            std::process::exit(EXIT_REFUSED);
+        }
+    }
+}
+
+/// Emit the selected review output for `review`, whose seal covers the exact patch bytes its
+/// files were parsed from and goes into machine-readable documents. Shared by `--stdin-patch`
+/// and the structured Git selections.
+fn emit_review(review: &deep_diff_forge_patch::SealedReview, opts: &[String]) {
+    let (files, seal) = (review.files(), review.seal());
     if opts.iter().any(|a| a == "--cluster") {
-        run_cluster(files, opts, input);
+        run_cluster(files, opts, seal);
     } else if opts.iter().any(|a| a == "--rank") {
         let ranked = deep_diff_forge_graph::rank(files);
         if opts.iter().any(|a| a == "--json") {
-            print_rank_json(&ranked, &seal_of(input));
+            print_rank_json(&ranked, seal);
         } else {
             print_rank_human(&ranked);
         }
     } else if opts.iter().any(|a| a == "--json") {
-        emit(&deep_diff_forge_patch::to_json_sealed(
-            files,
-            &seal_of(input),
-        ));
+        emit(&review.to_json());
     } else if let Some(name) = flag_value(opts, "--layout") {
         if let Some(layout) = deep_diff_forge_projection::layout_from_str(&name) {
             let options = deep_diff_forge_projection::ProjectionOptions {
@@ -728,11 +742,11 @@ fn structural_cmd(opts: &[String]) {
 
 fn print_structural_human(diff: &deep_diff_forge_syntax::StructuralDiff) {
     use deep_diff_forge_syntax::ChangeKind;
-    if let Some(reason) = &diff.unavailable {
+    if let Some(reason) = diff.unavailable() {
         emitln!("structural: unavailable ({reason:?}); use patch review");
         return;
     }
-    if diff.reformat_only {
+    if diff.reformat_only() {
         emitln!("structural: no token changes (formatting only)");
     }
     for change in &diff.changes {
@@ -758,7 +772,7 @@ fn print_structural_human(diff: &deep_diff_forge_syntax::StructuralDiff) {
         diff.added,
         diff.removed,
         diff.moved,
-        if diff.degraded {
+        if diff.degraded() {
             " (degraded: input too large for token LCS)"
         } else {
             ""
@@ -803,9 +817,9 @@ fn print_structural_json(diff: &deep_diff_forge_syntax::StructuralDiff) {
     emitln!(
         "{{\n  \"schema\": \"deep-diff-forge.structural.v0\",\n  \"language\": {},\n  \"reformat_only\": {},\n  \"degraded\": {},\n  \"unavailable\": {},\n  \"summary\": {{\"unchanged\": {}, \"added\": {}, \"removed\": {}, \"moved\": {}}},\n  \"changes\": [{}]\n}}",
         json_escape(lang),
-        diff.reformat_only,
-        diff.degraded,
-        diff.unavailable.as_ref().map_or_else(
+        diff.reformat_only(),
+        diff.degraded(),
+        diff.unavailable().map_or_else(
             || "null".into(),
             |reason| json_escape(&format!("{reason:?}"))
         ),
@@ -1027,8 +1041,8 @@ fn deploy_release(json: bool) {
 
 /// Emit a machine- or human-readable deployment status snapshot.
 ///
-/// Gates are reported `not-run`: this is a status snapshot, not a gate run.
-/// Execute the gates with `just gate-feature`.
+/// Gates are reported `not-run`: this is a static snapshot, not a gate run, and the JSON says so
+/// with `"gates_run": false` (anchor E-06). Execute the gates with `just ci`.
 fn deploy_status(json: bool) {
     use deep_diff_forge_core::{DeploymentStatus, GateState};
     const GATES: [&str; 7] = [
@@ -1054,7 +1068,7 @@ fn deploy_status(json: bool) {
             );
         }
         emitln!(
-            "{{\n  \"schema\": \"deep-diff-forge.deployment-status.v0\",\n  \"repo\": \"{}\",\n  \"maturity\": \"{}\",\n  \"maturity_name\": \"{}\",\n  \"gates\": [{}],\n  \"external_observers\": {{\"zellij\": \"observed\", \"habitat\": \"optional\"}}\n}}",
+            "{{\n  \"schema\": \"deep-diff-forge.deployment-status.v0\",\n  \"repo\": \"{}\",\n  \"maturity\": \"{}\",\n  \"maturity_name\": \"{}\",\n  \"gates_run\": false,\n  \"gates\": [{}],\n  \"external_observers\": {{\"zellij\": \"observed\", \"habitat\": \"optional\"}}\n}}",
             status.repo,
             status.maturity.as_str(),
             status.maturity.name(),
@@ -1070,7 +1084,7 @@ fn deploy_status(json: bool) {
         );
         let names: Vec<&str> = status.gates.iter().map(|g| g.name.as_str()).collect();
         emitln!(
-            "gates:    {} (run via: just gate-feature)",
+            "gates:    {} (not run by this command; run them with: just ci)",
             names.join(", ")
         );
     }
@@ -1106,13 +1120,13 @@ fn parse_parallelism(opts: &[String]) -> deep_diff_forge_core::Parallelism {
 
 /// Run the patch+risk cluster with bounded parallelism and a deterministic join.
 /// `input` is the raw patch text, sealed into the `--json` document.
-fn run_cluster(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], input: &[u8]) {
+fn run_cluster(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], seal: &InputSeal) {
     use deep_diff_forge_cluster::{join_label, parallelism_label, run_risk_cluster};
     use deep_diff_forge_core::JoinPolicy;
     let parallelism = parse_parallelism(opts);
     let run = run_risk_cluster(files, parallelism, JoinPolicy::RankedReviewOrder);
     if opts.iter().any(|a| a == "--json") {
-        print_cluster_json(&run, &seal_of(input));
+        print_cluster_json(&run, seal);
     } else {
         print_rank_human(&run.ranked);
         emitln!(
@@ -1294,14 +1308,11 @@ MACHINE CONTRACT:
   rank_patch, explain_exit_code, exit_code_registry). rpc speaks the daemon's
   JSON-RPC protocol over stdio without a daemon.
 
-FUTURE PRIMARY MODES:
+NOT YET IMPLEMENTED (each is refused today):
   deep-diff-forge <old> <new>
-  deep-diff-forge --git
-  deep-diff-forge review
   deep-diff-forge chain
   deep-diff-forge cluster
   deep-diff-forge loom
-  deep-diff-forge daemon start
 ",
         version = env!("CARGO_PKG_VERSION")
     );

@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_zero() {
+    fn protocol_version_is_one() {
         assert_eq!(PROTOCOL_VERSION, 1);
     }
 
