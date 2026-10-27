@@ -157,7 +157,10 @@ impl ReviewApp {
     /// Takes its content by value as a stable, ergonomic constructor (`new(vec)`
     /// / `new(Vec::new())`); ranking borrows it, so it is dropped on return.
     #[must_use]
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public constructor takes ownership by contract; ranking only borrows"
+    )]
     pub fn new(content: Vec<ReviewFile>) -> Self {
         Self::from_review(&content)
     }

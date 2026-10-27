@@ -10,8 +10,10 @@ meet this standard before they can be marked deployable.
 
 ## Non-Negotiables
 
-- Every production module must have at least 50 meaningful tests before release
-  eligibility.
+- Every change to production code must leave no surviving mutant in the code it
+  touches (diff-scoped `cargo mutants --in-diff`, 0 missed and 0 timeouts), and a
+  fix comes with a test shown to fail on the old code. Mutation, not a test count,
+  is the coverage oracle (anchor B-09).
 - Every crate must include integration tests when it exposes behavior across a
   crate, CLI, filesystem, socket, corpus, or process boundary.
 - Tests must align with documented behavior and code invariants.
@@ -46,15 +48,18 @@ A test is not meaningful when it only:
 - accepts any output that contains a vague substring
 - changes every time the implementation is refactored without behavior change
 
-## The 50-Test Minimum
+## Coverage Oracle: Mutation, Not Counts
 
-The minimum applies per production module or crate. A module may exceed 50
-tests; it may not ship below 50 unless it is explicitly marked bootstrap,
-experimental, or unused by release artifacts.
+There is no per-crate test count. A count floor (formerly 50 per crate) rewarded
+volume over strength and was never enforced: the project's antipattern catalogue
+lists "test count literals as oracle". Instead, every diff's production code is
+mutated (`cargo mutants --no-config --in-diff`) and each surviving mutant is closed
+by a test that fails on it, or the code is shown to be unreachable. A crate with few
+tests and no survivors is covered; a crate with many tests and survivors is not.
 
-Recommended distribution:
+The test classes a module usually needs, as a checklist rather than a quota:
 
-| Test class | Minimum | Purpose |
+| Test class | Typical | Purpose |
 | --- | ---: | --- |
 | Unit invariants | 10 | IDs, ranges, parser fragments, pure strategy rules. |
 | Fixture tests | 10 | Real patch, syntax, projection, graph, or annotation examples. |
@@ -64,8 +69,8 @@ Recommended distribution:
 | Regression tests | 5 | Bugs, exemplar lessons, corpus failures, release incidents. |
 | Resource tests | 4 | Memory, time, file size, cache, parallelism, socket ownership. |
 
-These numbers are floors, not quotas. A module should add the tests demanded by
-its risk profile even if it already exceeds 50.
+The numbers are typical, not required. A module adds the tests its risk profile
+and its surviving mutants demand.
 
 ## Module Test Targets
 
@@ -177,8 +182,7 @@ The deployment framework must enforce this standard progressively:
 
 ```text
 L0: smoke and contract tests accepted while codebase is bootstrap-only
-L1: patch crate must meet 50-test minimum before patch release
-L2+: every production crate or module must meet 50-test minimum before release
+L1+: every diff to a production crate leaves 0 missed mutants in its scope
 ```
 
 Until the product-native deployment gate exists, `just gate-feature` is the
@@ -186,7 +190,6 @@ local enforcement path. Future enforcement should move into:
 
 ```text
 deep-diff-forge deploy gate --mode feature
-deep-diff-forge deploy test-audit --json
 ```
 
 ### Status (2026-10-26)
@@ -208,8 +211,8 @@ Done, for the review-council stack:
 - **CI runs the real thing.** `main` CI runs the real-Podman planted-breach
   suite on a GitHub-hosted runner and is green at run 40274253094.
 
-Remaining: the `deploy gate` and `deploy test-audit` commands above are still
-future work, and the 50-test minimum is not yet audited per module by a tool.
+Remaining: the `deploy gate` command above is still future work. The 50-test
+minimum is retired in favour of diff-scoped mutation (anchor B-09, 2026-10-27).
 Evidence: [`EVIDENCE.md`](../EVIDENCE.md#review-council-and-ci-2026-10-26).
 
 ## Deployment Link

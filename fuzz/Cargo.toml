@@ -20,6 +20,11 @@ serde_json = "1"
 [lints.rust]
 unsafe_code = "forbid"
 
+# As in the workspace (anchor B-03): `#[expect(.., reason = "..")]`, never `#[allow]`.
+[lints.clippy]
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+
 [[bin]]
 name = "patch_parser"
 path = "fuzz_targets/patch_parser.rs"

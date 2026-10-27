@@ -8,6 +8,10 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Weekly (anchor B-11): a new RustSec advisory or a yanked dependency fails here even when
+  # nothing is merged that week. Monday 04:23 UTC, off the hour to avoid the scheduler's peak.
+  schedule:
+    - cron: "23 4 * * 1"
 
 # Least privilege: CI only needs to read the repository.
 permissions:
@@ -54,7 +58,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           toolchain: 1.88.0
-      - run: cargo check --workspace --all-targets --locked
+      - name: check on Rust 1.88
+        run: cargo check --workspace --all-targets --locked
 
   gate:
     name: deploy gate-feature
@@ -214,7 +219,7 @@ jobs:
           DDF_COUNCIL_SANDBOX_IT: "1"
           DDF_COUNCIL_PODMAN: podman
           DDF_COUNCIL_GATE_IMAGE: localhost/ddf-council-gate:ci
-        run: cargo test --locked -p deep-diff-forge-cli --test council_sandbox -- --nocapture
+        run: cargo test --locked -p deep-diff-forge-cli --test council_sandbox -- --ignored --nocapture
       # A failed probe run leaves its run directory behind; show why each job failed.
       - name: sandbox diagnostics on failure
         if: failure()
@@ -225,6 +230,35 @@ jobs:
             [ -f "$f" ] && { echo "== $f"; tail -n 40 "$f"; }
           done
           true
+
+  diff-mutation:
+    # Anchor B-01: every pull request's changed Rust lines are mutated against its merge base, and
+    # one missed mutant or timeout fails. Sharded four ways so a large change still fits.
+    name: diff mutation (shard ${{ matrix.shard }}/4)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.1
+      - name: install cargo-mutants
+        run: cargo install cargo-mutants --version 27.1.0 --locked
+      - name: mutate the pull request's changed lines
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          SHARD: ${{ matrix.shard }}
+          DDF_MUTATION_OUT: ${{ runner.temp }}/ddf-diff-mutation
+          CARGO_TARGET_DIR: ${{ runner.temp }}/ddf-diff-mutation-target
+        run: scripts/diff_mutation.sh "origin/$BASE_REF" "$SHARD/4"
 
   supply-chain:
     name: supply chain audit

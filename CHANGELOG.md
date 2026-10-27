@@ -8,6 +8,45 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **Antipattern rows record what enforces them** (anchor B-10). A catalogue
+  row may carry a DDF-owned `ddf_enforcement` claim beside its verbatim import
+  labels; the policy checker accepts it only when every piece of evidence
+  resolves against parsed configuration (a workspace lint at `deny`, a path
+  in `clippy.toml`'s `disallowed-methods`), and its report lists the enforced
+  rows. AP-17 (unreviewed lint suppression, B-03) and AP-06 (policy coupled to
+  clock or host, B-04, with its scope stated) are the first two.
+- **Every pull request is mutation-tested on its changed lines** (anchor
+  B-01). A new four-shard `diff mutation` job runs `scripts/diff_mutation.sh`,
+  which mutates the Rust lines the pull request changes since its merge base
+  (`cargo mutants --in-diff`) and fails on any missed mutant or timeout. A
+  change with no Rust lines under `crates/` passes and says so. Before, CI
+  mutated two functions of the review crate, and "0 missed on every diff" was
+  held by habit.
+- **The local CI replica and pre-push hook are versioned** (anchor B-07).
+  `scripts/ci_local.sh` replicates every step of the CI gate jobs and fails
+  closed; each step is labelled with the CI step it replicates, and
+  `tests/ci_replica.rs` fails when a CI step has no replica step or a replica
+  step names no CI step. `just ci` runs it (before, `just ci` was the feature
+  gate alone, without docs, deny, audit, SBOM, MSRV, soak, probes, the SDK test
+  or the fuzz compile). The gitleaks pre-push hook is `scripts/hooks/pre-push`;
+  `just install-hooks` installs it and `just doctor` reports whether it is
+  installed.
+- **CI runs weekly** (anchor B-11). A `schedule:` trigger (Monday 04:23 UTC)
+  runs the full workflow, so a new RustSec advisory or a yanked dependency
+  fails within a week even when nothing is merged.
+- **The crate graph is a committed table** (anchor B-05).
+  `docs/crate-edges.txt` lists every edge between workspace crates (normal,
+  dev and target-specific kept apart), and `tests/crate_edges.rs` compares it
+  with `cargo metadata`: a new dependency between workspace crates fails until
+  the table is changed in a reviewed diff, and a row no `Cargo.toml` declares
+  fails as stale.
+- **Effects go through named doors** (anchor B-04). A new `clippy.toml`
+  disallows `Command::new`, `env::var`/`var_os`, `Instant::now`,
+  `SystemTime::now` and `thread::sleep`. The 21 functions that legitimately
+  spawn, read the environment or read a clock each carry
+  `#[expect(clippy::disallowed_methods, reason = "<door>")]` naming the door,
+  and the 20 integration-test files that drive real processes opt in once at
+  the top. A new effect anywhere else no longer passes clippy.
 - **MCP `review_patch` returns a bounded summary for large reviews** (anchor
   A-07; Luke's decision). The full document is returned while it is at most
   256 KiB; a larger one comes back as `deep-diff-forge.review-summary.v0` (the
@@ -139,6 +178,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **The test-count floor is retired** (anchor B-09). The 50-tests-per-crate
+  rule was never enforced, and `just test-audit` always exited 0 (and read 0
+  without `rg`); the project's own antipattern catalogue lists count literals
+  as a false oracle. The Testing Gold Standard and the deployment docs now
+  name diff-scoped mutation (0 missed in the changed code) as the coverage
+  oracle, and the `test-audit` recipe is removed.
 - README exit-code table gains code 7 and the recommended gate command now
   reads `--require-files --require-hunks`. The workspace has 1,192 passing tests
   (1 ignored), measured 2026-10-26 on the stage D tree; the 991 baseline is
@@ -178,6 +223,25 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **An unmeasured test no longer shows as passed** (anchor B-08). The
+  real-Podman sandbox test and the two real-tuicr tests printed `UNMEASURED`
+  and returned, so `cargo test` reported them `ok`. They are now `#[ignore]`d
+  with the command that runs them, and an explicit `--ignored` run without
+  their environment fails; CI runs the sandbox test with `--ignored`.
+- **Lint suppressions carry a reason and cannot go stale** (anchor B-03). The
+  nine workspace `#[allow]` sites (and two in the fuzz targets) are now
+  `#[expect(.., reason = "..")]`, and clippy's `allow_attributes` and
+  `allow_attributes_without_reason` are denied in the workspace and fuzz
+  manifests: a bare `#[allow]` no longer builds, and an expectation whose lint
+  stops firing fails as unfulfilled.
+- **Code-literal scans cover every source file** (anchor B-02). The exit-code
+  scan read a hard-coded list of five files and stopped at the first
+  `#[cfg(test)]`, which hid the production code after a mid-file test item
+  (`core/src/lib.rs` from line 128, `daemon/src/serve.rs` from 181). It now
+  walks every `crates/*/src` file, skips each test item on its own, and also
+  catches bare `exit(N)`, `ExitCode::from(N)` and `code: N`. A new scan refuses
+  JSON-RPC error-code literals outside their named constants; the MCP server's
+  six `-32600` and the SDK's daemon codes `4` and `7` now use the constants.
 - **One status vocabulary** (anchor D-01). The JSON, JSONL and projection label
   tables are replaced by `FileStatus::label`, and the human summary no longer
   prints `{:?}` (it printed `binarychanged` and `typechanged` where every other

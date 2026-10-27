@@ -42,6 +42,10 @@ pub(crate) struct Sandbox {
 }
 impl Sandbox {
     /// The operator selects the runtime command and gate image; neither comes from a candidate or model.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the gate-sandbox configuration door: image and runtime come from the environment"
+    )]
     pub(crate) fn from_env() -> Result<Self> {
         let image = std::env::var("DDF_COUNCIL_GATE_IMAGE").map_err(|_| {
             ReviewFailure("gate sandbox unavailable: DDF_COUNCIL_GATE_IMAGE is not set".into())
@@ -57,12 +61,20 @@ impl Sandbox {
         )?;
         Ok(Self { runtime, image })
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the gate-sandbox door: spawns the container runtime"
+    )]
     fn command(&self) -> Command {
         let mut command = Command::new(&self.runtime[0]);
         command.args(&self.runtime[1..]);
         command
     }
     /// Run one runtime control command under [`CONTROL_DEADLINE`]; `None` means it did not finish.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the gate-sandbox door: polls and times the container"
+    )]
     fn control(&self, args: &[&str]) -> Result<Option<(ExitStatus, Vec<u8>)>> {
         let mut child = self
             .command()

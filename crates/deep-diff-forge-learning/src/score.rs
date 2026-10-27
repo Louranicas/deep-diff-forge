@@ -121,7 +121,10 @@ pub fn score_one(strategy: Strategy, receipts: &[StrategyReceipt]) -> StrategySc
     if samples == 0 {
         return StrategyScore::empty(strategy);
     }
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "sample counts stay far below 2^52, so the f64 rate is exact"
+    )]
     let n = samples as f64;
 
     let decided = mine.iter().filter(|r| r.outcome.is_decided()).count();
@@ -141,13 +144,19 @@ pub fn score_one(strategy: Strategy, receipts: &[StrategyReceipt]) -> StrategySc
         .map(|r| r.elapsed_ms)
         .fold(0u64, u64::saturating_add);
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "sample counts stay far below 2^52, so the f64 rate is exact"
+    )]
     let acceptance_rate = if decided == 0 {
         0.0
     } else {
         accepted as f64 / decided as f64
     };
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "sample counts stay far below 2^52, so the f64 rate is exact"
+    )]
     StrategyScore {
         strategy,
         samples,

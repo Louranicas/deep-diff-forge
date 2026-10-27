@@ -134,6 +134,10 @@ pub(crate) fn git_bytes(repository: &Path, args: &[&str], cap: u64) -> Result<Ve
 }
 /// The hardened Git command for `repository` (anchor A-02): the shared set from
 /// `deep_diff_forge_core::git`, applied identically by Git acquisition.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the council-storage git door, hardened by core::git"
+)]
 fn git_command(repository: &Path) -> Command {
     let mut command = Command::new("git");
     command

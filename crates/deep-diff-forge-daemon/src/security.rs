@@ -65,6 +65,10 @@ pub fn runtime_base_from(xdg_runtime_dir: Option<OsString>) -> Option<PathBuf> {
 /// The runtime base directory from the live environment, or `None` if
 /// `$XDG_RUNTIME_DIR` is unset/empty (no insecure fallback).
 #[must_use]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the runtime-directory door: XDG_RUNTIME_DIR locates the socket"
+)]
 pub fn runtime_base() -> Option<PathBuf> {
     runtime_base_from(std::env::var_os("XDG_RUNTIME_DIR"))
 }
@@ -282,6 +286,10 @@ mod tests {
     // the current environment, whether `XDG_RUNTIME_DIR` is set or not. Reads
     // the environment only; nothing in this crate mutates it.
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test: compares the resolver with the live environment"
+    )]
     fn live_resolvers_match_the_environment() {
         let expected = runtime_base_from(std::env::var_os("XDG_RUNTIME_DIR"));
         assert_eq!(runtime_base(), expected);

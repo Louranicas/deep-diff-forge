@@ -5,6 +5,11 @@
 //! the decision-journal controls for `council import-tuicr` (dispositions, conflicts, tombstones,
 //! stale revisions, tamper and truncation). The real-tuicr tests run only with `DDF_TUICR_IT=1`,
 //! against an isolated XDG data/config store.
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use deep_diff_forge_review::Profile;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
@@ -733,15 +738,12 @@ impl Isolated {
 }
 
 #[test]
+#[ignore = "real tuicr: run with --ignored, DDF_TUICR_IT=1 and tuicr on PATH"]
 fn real_tuicr_round_trip_in_an_isolated_store() {
-    if std::env::var_os("DDF_TUICR_IT").is_none() {
-        // Written to the stderr handle, not `eprintln!`, so the harness does not capture it.
-        let _ = writeln!(
-            std::io::stderr(),
-            "UNMEASURED: real tuicr round trip skipped; set DDF_TUICR_IT=1 with tuicr on PATH"
-        );
-        return;
-    }
+    assert!(
+        std::env::var_os("DDF_TUICR_IT").is_some(),
+        "the real tuicr test needs DDF_TUICR_IT=1 and tuicr on PATH"
+    );
     let it = Isolated::new();
     let version = Command::new(&it.tuicr).arg("--version").output().unwrap();
     println!(
@@ -1490,14 +1492,12 @@ fn interrupted_exports_held_locks_and_unsafe_sessions_refuse_import() {
 }
 
 #[test]
+#[ignore = "real tuicr: run with --ignored, DDF_TUICR_IT=1 and tuicr on PATH"]
 fn real_tuicr_human_comment_is_imported_as_a_disposition() {
-    if std::env::var_os("DDF_TUICR_IT").is_none() {
-        let _ = writeln!(
-            std::io::stderr(),
-            "UNMEASURED: real tuicr import skipped; set DDF_TUICR_IT=1 with tuicr on PATH"
-        );
-        return;
-    }
+    assert!(
+        std::env::var_os("DDF_TUICR_IT").is_some(),
+        "the real tuicr test needs DDF_TUICR_IT=1 and tuicr on PATH"
+    );
     let it = Isolated::new();
     let stored = it.stored_session();
     json(&it.export(&stored, &["--execute"]));

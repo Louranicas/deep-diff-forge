@@ -1,4 +1,9 @@
 //! Slice C: `deep-diff-forge rpc` over real stdio, as the SDKs use it.
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 

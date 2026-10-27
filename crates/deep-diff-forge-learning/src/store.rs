@@ -65,6 +65,10 @@ pub fn resolve_learning_dir(
 /// # Errors
 /// Returns [`LearningError::NoStateDir`] if neither `$XDG_STATE_HOME` nor
 /// `$HOME` is set.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the learning-store door: XDG_STATE_HOME and HOME locate the store"
+)]
 pub fn learning_dir() -> Result<PathBuf, LearningError> {
     resolve_learning_dir(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))
 }

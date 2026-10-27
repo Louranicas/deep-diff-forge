@@ -4,7 +4,10 @@
 // Design/status: docs/ROADMAP.md#status-2026-10-26 and docs/API_AND_IPC.md.
 use libfuzzer_sys::fuzz_target;
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "the fuzz target drives only the stdio loop of the CLI module"
+)]
 #[path = "../../crates/deep-diff-forge-cli/src/rpc.rs"]
 mod rpc;
 #[path = "stdio_invariants.rs"]

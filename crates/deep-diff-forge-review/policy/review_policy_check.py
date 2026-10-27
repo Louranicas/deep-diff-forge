@@ -29,7 +29,35 @@ def unique_object(items):
     return result
 
 
-def inspect(workspace, members, catalogue):
+def enforcement_errors(row, workspace, clippy):
+    """DDF's own enforcement claim on an imported row (anchor B-10), kept beside the verbatim import
+    labels. Each piece of evidence must resolve against parsed configuration (AP-26), never text."""
+    claim = row.get("ddf_enforcement")
+    if claim is None:
+        return []
+    ident = row.get("id")
+    if claim.get("state") != "ENFORCED" or not claim.get("task") or not claim.get("scope") or not claim.get("by"):
+        return [f"{ident}: ddf_enforcement needs state ENFORCED, task, scope and evidence"]
+    errors = []
+    lints = workspace.get("workspace", {}).get("lints", {})
+    methods = {entry.get("path") if isinstance(entry, dict) else entry for entry in (clippy or {}).get("disallowed-methods", [])}
+    for evidence in claim["by"]:
+        kind = evidence.get("kind")
+        if kind == "workspace-lint":
+            group, _, name = evidence.get("lint", "").partition(".")
+            value = lints.get(group, {}).get(name)
+            level = value.get("level") if isinstance(value, dict) else value
+            if not name or level not in ("deny", "forbid"):
+                errors.append(f"{ident}: workspace lint {evidence.get('lint')} is not deny")
+        elif kind == "clippy-disallowed-method":
+            if evidence.get("path") not in methods:
+                errors.append(f"{ident}: clippy.toml does not disallow {evidence.get('path')}")
+        else:
+            errors.append(f"{ident}: unknown enforcement evidence kind {kind!r}")
+    return errors
+
+
+def inspect(workspace, members, catalogue, clippy=None):
     errors = []
     if not members:
         errors.append("empty member inventory cannot qualify")
@@ -48,6 +76,7 @@ def inspect(workspace, members, catalogue):
     for row in catalogue:
         if row.get("status") != "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED" or not row.get("authoritative_source") or not row.get("basis"):
             errors.append("imported AP row lost its original evidence/qualification labels")
+        errors.extend(enforcement_errors(row, workspace, clippy))
     return errors
 
 
@@ -64,14 +93,16 @@ def main():
                 raise ValueError("workspace member escapes repository")
             members.append((str(path.relative_to(ROOT)), tomllib.loads(manifest.read_text())))
     catalogue = json.loads((ROOT / "crates/deep-diff-forge-review/policy/antipatterns.json").read_text(), object_pairs_hook=unique_object)
-    errors = inspect(workspace, members, catalogue)
+    clippy_toml = ROOT / "clippy.toml"
+    clippy = tomllib.loads(clippy_toml.read_text()) if clippy_toml.exists() else None
+    errors = inspect(workspace, members, catalogue, clippy)
     provenance = json.loads((ROOT / "review-policy/provenance.json").read_text(), object_pairs_hook=unique_object)
     for entry in provenance["files"]:
         if "destination" in entry:
             digest = hashlib.sha256((ROOT / entry["destination"]).read_bytes()).hexdigest()
             if digest != entry["sha256"]:
                 errors.append("pstack reference drift: " + entry["destination"])
-    report = {"schema": "deep-diff-forge.antipattern-contracts.v1", "state": "failed" if errors else "passed", "workspace_members_checked": len(members), "advisory_catalogue_entries": len(catalogue), "semantic_detectors_qualified": 0, "errors": errors}
+    report = {"schema": "deep-diff-forge.antipattern-contracts.v1", "state": "failed" if errors else "passed", "workspace_members_checked": len(members), "advisory_catalogue_entries": len(catalogue), "semantic_detectors_qualified": 0, "ddf_enforced": sorted(row["id"] for row in catalogue if "ddf_enforcement" in row), "errors": errors}
     print(json.dumps(report, sort_keys=True))
     return 1 if errors else 0
 
@@ -103,6 +134,22 @@ class NegativeControls(unittest.TestCase):
         planted[0]["status"] = "ENFORCED"
         self.assertTrue(inspect(self.workspace, self.members, planted))
         self.assertTrue(inspect(self.workspace, self.members, self.catalogue * 2))
+
+    def test_enforcement_claims_must_resolve(self):
+        workspace = copy.deepcopy(self.workspace)
+        workspace["workspace"]["lints"]["clippy"]["allow_attributes"] = "deny"
+        clippy = {"disallowed-methods": [{"path": "std::time::Instant::now", "reason": "door"}]}
+        claim = {"state": "ENFORCED", "task": "B-03", "scope": "s", "by": [
+            {"kind": "workspace-lint", "lint": "clippy.allow_attributes"},
+            {"kind": "clippy-disallowed-method", "path": "std::time::Instant::now"}]}
+        row = dict(self.catalogue[0], ddf_enforcement=claim)
+        self.assertEqual(inspect(workspace, self.members, [row], clippy), [])
+        self.assertTrue(inspect(self.workspace, self.members, [row], clippy), "lint not deny")
+        self.assertTrue(inspect(workspace, self.members, [row], {"disallowed-methods": []}), "method not disallowed")
+        self.assertTrue(inspect(workspace, self.members, [row], None), "no clippy.toml")
+        for broken in [dict(claim, state="PARTIAL"), dict(claim, by=[]), dict(claim, task=""),
+                       dict(claim, by=[{"kind": "comment-says-so"}])]:
+            self.assertTrue(inspect(workspace, self.members, [dict(row, ddf_enforcement=broken)], clippy), broken)
 
     def test_duplicate_json_keys_refuse(self):
         with self.assertRaises(ValueError):

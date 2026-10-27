@@ -816,10 +816,10 @@ Minimum test bar by crate:
 | `loom` | plan parser, boundary decisions, gate receipts. |
 | `daemon` | socket lifecycle, version negotiation, session subscription. |
 
-Each production crate or module must reach at least 50 meaningful tests before
-release eligibility. The 50-test minimum is not a quota for shallow assertions:
-tests must include integration coverage where public boundaries exist, and must
-follow [Testing Gold Standard](TESTING_GOLD_STANDARD.md).
+Each production crate or module is covered when diff-scoped mutation leaves no
+surviving mutant in its changed code; there is no test-count floor. Tests must
+include integration coverage where public boundaries exist, and must follow
+[Testing Gold Standard](TESTING_GOLD_STANDARD.md#coverage-oracle-mutation-not-counts).
 
 ## Feature Flags
 

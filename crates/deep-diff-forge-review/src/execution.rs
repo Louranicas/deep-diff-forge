@@ -55,6 +55,10 @@ struct GateLaunch<'a> {
     fuzz: bool,
 }
 /// Run one admitted job; the caller holds the controller lock from [`admit`].
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the council execution door: launches a gate command and times it"
+)]
 fn run(
     directory: &Path,
     manifest: &Manifest,
@@ -209,6 +213,10 @@ fn limit_transcripts(jobdir: &Path, stdout: &Path, stderr: &Path) -> Result<bool
     }
     Ok(true)
 }
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the council execution door: polls the child until it exits or times out"
+)]
 fn supervise(
     command: &mut Command,
     stdout: &Path,

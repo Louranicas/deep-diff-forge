@@ -157,7 +157,6 @@ Assimilated patterns:
 | `just clippy` | Gate 3 lint. |
 | `just pedantic` | V4 pedantic clippy gate. |
 | `just test` | Gate 4 tests. |
-| `just test-audit` | Informational count against the 50-test production standard. |
 | `just contracts` | Gate 6 bootstrap contract probes. |
 | `just gate-docs` | Docs-only gate for planning changes. |
 | `just gate-bootstrap` | Current L0 deployment gate. |
@@ -293,8 +292,8 @@ Acceptance:
 - Unit tests pass.
 - Integration tests pass.
 - Contract tests verify stdout, stderr, and exit codes.
-- Every production module or crate has at least 50 meaningful tests before it
-  is release-eligible.
+- Diff-scoped mutation leaves no surviving mutant in the changed production
+  code (there is no test-count floor; see the Testing Gold Standard).
 - Test suites include integration tests for public command, API, filesystem,
   socket, pipeline, or process boundaries when those boundaries exist.
 - Tests follow [Testing Gold Standard](TESTING_GOLD_STANDARD.md), including

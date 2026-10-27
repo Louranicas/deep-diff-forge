@@ -190,6 +190,10 @@ pub fn wrap(
 
 /// `envelope -- <command…>`: run the command as a child of this binary and wrap the result. Returns
 /// the envelope text and the exit code to leave with (the child's; 1 if it ended on a signal).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the envelope door: runs the wrapped deep-diff-forge command as a child"
+)]
 pub fn envelope(args: &[String]) -> Result<(String, i32), String> {
     let command = match args.split_first() {
         Some((dash, rest)) if dash == "--" && !rest.is_empty() => rest,

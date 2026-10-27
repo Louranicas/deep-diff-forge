@@ -1,6 +1,11 @@
 //! CLI contract tests for `--stdin-patch`, exercising the real compiled binary
 //! across the process boundary (stdin, stdout, stderr, exit codes).
 
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 

@@ -2,6 +2,11 @@
 //! `diff.compute` and the facade's `review` give the same document, and errors keep their codes.
 //! Unix only, as `Client` is.
 #![cfg(unix)]
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use deep_diff_forge_sdk::{Client, Error, Guards, review};
 use serde_json::{Value, json};
 use std::os::unix::fs::DirBuilderExt as _;

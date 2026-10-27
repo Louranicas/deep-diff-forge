@@ -1,4 +1,9 @@
 //! Source-pair adapter integration, including fail-closed path and byte validation.
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use std::{
     fs,
     path::{Path, PathBuf},

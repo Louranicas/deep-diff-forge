@@ -1,6 +1,11 @@
 //! End-to-end tests for the `highlight` and `structural` subcommands, including
 //! the terminal-injection guarantee at the CLI boundary.
 
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use std::io::Write as _;
 use std::process::Command;
 

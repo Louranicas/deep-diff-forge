@@ -69,18 +69,6 @@ pedantic:
 test:
     cargo test --workspace --locked
 
-# Report current test count by crate. This is informational until production modules exist.
-[group("quality")]
-test-audit:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for crate in crates/*; do
-      [ -d "${crate}" ] || continue
-      name="$(basename "${crate}")"
-      count="$( (rg -n '#\[(tokio::)?test\]|rstest|proptest!' "${crate}" 2>/dev/null || true) | wc -l | tr -d ' ')"
-      printf '%s tests=%s minimum=50 status=%s\n' "${name}" "${count}" "$([ "${count}" -ge 50 ] && echo pass || echo bootstrap-gap)"
-    done
-
 # Run all bootstrap contract probes.
 [group("contracts")]
 contracts:
@@ -108,9 +96,10 @@ gate-feature: fmt check clippy pedantic test contracts
 docs:
     RUSTDOCFLAGS="-D warnings -D rustdoc::broken_intra_doc_links" cargo doc --workspace --no-deps
 
-# CI-equivalent local gate. This should remain stricter than gate-bootstrap.
+# Local replica of every CI gate job, step for step (anchor B-07; checked by tests/ci_replica.rs).
 [group("gates")]
-ci: gate-feature
+ci:
+    scripts/ci_local.sh
 
 # Release gate: the feature gate plus the docs.rs-equivalent doc build.
 [group("gates")]
@@ -183,7 +172,27 @@ habitat-observe:
 
 # Local doctor: repo status, contract probes, and optional external observation.
 [group("diagnostics")]
-doctor: status contracts zellij-observe habitat-observe
+doctor: status hooks-status contracts zellij-observe habitat-observe
+
+# Install the versioned pre-push hook (gitleaks over the pushed commits) for every worktree.
+[group("diagnostics")]
+install-hooks:
+    install -m 0755 scripts/hooks/pre-push "$(git rev-parse --git-common-dir)/hooks/pre-push"
+    @printf 'pre_push_hook=installed\n'
+
+# Report whether the installed pre-push hook is the versioned one.
+[group("diagnostics")]
+hooks-status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    hook="$(git rev-parse --git-common-dir)/hooks/pre-push"
+    if [ ! -e "${hook}" ]; then
+      echo "pre_push_hook=missing (run: just install-hooks)"
+    elif cmp -s "${hook}" scripts/hooks/pre-push; then
+      echo "pre_push_hook=installed"
+    else
+      echo "pre_push_hook=differs from scripts/hooks/pre-push (run: just install-hooks)"
+    fi
 
 # Write a bootstrap deployment receipt under reports/deployments/.
 [group("receipts")]

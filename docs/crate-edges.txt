@@ -1,0 +1,51 @@
+# Internal crate edges of the workspace (anchor B-05), checked by
+# crates/deep-diff-forge-cli/tests/crate_edges.rs against `cargo metadata`.
+# One line per edge: <kind> <from> -> <to> [<target cfg>], crate names without the
+# `deep-diff-forge-` prefix. Kind is normal, dev or build, kept apart: a dev edge does not
+# license a normal one. A new edge is a reviewed change to this file, not a side effect of
+# a Cargo.toml edit; the documented crate graphs (anchor E-01) are drawn from it.
+
+dev agent -> patch
+dev cluster -> patch
+dev graph -> patch
+dev projection -> patch
+normal agent -> core
+normal cli -> cluster
+normal cli -> core
+normal cli -> daemon
+normal cli -> graph
+normal cli -> learning
+normal cli -> patch
+normal cli -> pipeline
+normal cli -> projection
+normal cli -> review
+normal cli -> syntax
+normal cli -> tui
+normal cluster -> core
+normal cluster -> graph
+normal daemon -> core
+normal daemon -> graph
+normal daemon -> patch
+normal graph -> core
+normal patch -> core
+normal pipeline -> core
+normal pipeline -> graph
+normal pipeline -> patch
+normal pipeline -> projection
+normal pipeline -> syntax
+normal projection -> core
+normal review -> core
+normal sdk -> core
+normal sdk -> daemon cfg(unix)
+normal sdk -> graph
+normal sdk -> patch
+normal syntax -> core
+normal tui -> agent
+normal tui -> cluster
+normal tui -> core
+normal tui -> daemon
+normal tui -> graph
+normal tui -> learning
+normal tui -> patch
+normal tui -> projection
+normal tui -> syntax

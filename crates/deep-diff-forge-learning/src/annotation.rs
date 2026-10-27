@@ -20,7 +20,10 @@ use crate::util::clamp_f64;
 /// (accepted / rejected / contradicted / overridden); they map one-to-one to
 /// the specification, so the `struct_excessive_bools` lint is allowed here
 /// deliberately rather than splintering the contract into enums.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one bool per specified annotation outcome; see the doc comment"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnnotationObservation {
     /// How many evidence spans the annotation cited (0 = ungrounded claim).
@@ -144,9 +147,15 @@ pub fn fit_trust(observations: &[AnnotationObservation]) -> AnnotationTrust {
     let clean_wins = observations.iter().filter(|o| o.is_clean_win()).count();
     let contradictions = observations.iter().filter(|o| o.contradicted).count();
 
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "observation counts stay far below 2^52, so the f64 rate is exact"
+    )]
     let win_rate = clean_wins as f64 / n as f64;
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "observation counts stay far below 2^52, so the f64 rate is exact"
+    )]
     let harm_rate = contradictions as f64 / n as f64;
     // A contradiction costs double a missing win — being confidently wrong is
     // worse than being silent.

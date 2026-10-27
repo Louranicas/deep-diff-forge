@@ -87,7 +87,38 @@
     "proposed_negative_test": "Exercise every recovery branch with synthetic value inputs",
     "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
     "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
-    "basis": "Index summary; source row must be checked before rule implementation"
+    "basis": "Index summary; source row must be checked before rule implementation",
+    "ddf_enforcement": {
+      "state": "ENFORCED",
+      "task": "B-04",
+      "scope": "a clock, environment, process or sleep call outside a named door (#[expect(clippy::disallowed_methods, reason)]) fails clippy; whether a door's policy is pure is still review",
+      "by": [
+        {
+          "kind": "clippy-disallowed-method",
+          "path": "std::time::Instant::now"
+        },
+        {
+          "kind": "clippy-disallowed-method",
+          "path": "std::time::SystemTime::now"
+        },
+        {
+          "kind": "clippy-disallowed-method",
+          "path": "std::env::var"
+        },
+        {
+          "kind": "clippy-disallowed-method",
+          "path": "std::env::var_os"
+        },
+        {
+          "kind": "clippy-disallowed-method",
+          "path": "std::process::Command::new"
+        },
+        {
+          "kind": "clippy-disallowed-method",
+          "path": "std::thread::sleep"
+        }
+      ]
+    }
   },
   {
     "id": "AP-07",
@@ -250,7 +281,22 @@
     "proposed_negative_test": "Add #[allow] and require gate refusal",
     "status": "SOURCE_REGISTER_PRESENT__HEE5_ENFORCEMENT_UNVERIFIED",
     "authoritative_source": "https://github.com/Louranicas/herdr-engineering-engine-v4/blob/3293599f21156a3bdd131b3dab8828424f05c513/docs/ANTIPATTERNS.md",
-    "basis": "Index summary; source row must be checked before rule implementation"
+    "basis": "Index summary; source row must be checked before rule implementation",
+    "ddf_enforcement": {
+      "state": "ENFORCED",
+      "task": "B-03",
+      "scope": "a lint is silenced only by #[expect(.., reason)]: a bare #[allow], or one without a reason, fails clippy, and an expectation that stops firing fails as unfulfilled",
+      "by": [
+        {
+          "kind": "workspace-lint",
+          "lint": "clippy.allow_attributes"
+        },
+        {
+          "kind": "workspace-lint",
+          "lint": "clippy.allow_attributes_without_reason"
+        }
+      ]
+    }
   },
   {
     "id": "AP-18",

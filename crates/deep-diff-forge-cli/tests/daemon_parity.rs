@@ -2,6 +2,11 @@
 //! the same bytes: the same review document as a JSON value (seal included; key order is not part
 //! of the contract), the same refusal text, and the same parse-failure text, with the registry's
 //! codes on both surfaces.
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use deep_diff_forge_core::exit;
 use deep_diff_forge_daemon::{
     Engine, INPUT_CONTRACT_REFUSED, PATCH_PARSE_FAILED, dispatch, parse_request,

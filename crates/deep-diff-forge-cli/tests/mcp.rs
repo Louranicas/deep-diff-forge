@@ -1,5 +1,10 @@
 //! Slice D: `deep-diff-forge mcp` over real stdio — framing, both protocol eras, and parity of
 //! `review_patch` with `deep-diff-forge --stdin-patch --json`.
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use serde_json::{Value, json};
 use std::io::{Read as _, Write as _};
 use std::process::{Command, Stdio};

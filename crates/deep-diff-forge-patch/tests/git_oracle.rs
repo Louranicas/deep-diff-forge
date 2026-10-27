@@ -2,6 +2,11 @@
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_oracle
 //! Independent oracle: Git must apply our rendered patch to the exact base bytes.
+#![expect(
+    clippy::disallowed_methods,
+    reason = "integration test: drives real processes, the environment and wall-clock time"
+)]
+
 use deep_diff_forge_patch::{parse, render_unified};
 use std::{fs, path::Path, process::Command};
 fn git(root: &Path, args: &[&str]) -> Vec<u8> {
