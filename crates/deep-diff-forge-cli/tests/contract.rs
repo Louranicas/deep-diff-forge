@@ -348,7 +348,7 @@ fn every_documented_option_is_admitted() {
         ("--self-test", &["--self-test"]),
     ];
     let (_, help, _) = run(&["--help"], "");
-    let current = help.split("FUTURE PRIMARY MODES").next().unwrap();
+    let (current, _) = help.split_once("NOT YET IMPLEMENTED").unwrap();
     let mut documented: Vec<&str> = current
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
         .filter(|word| word.starts_with("--") && word.len() > 2)
@@ -366,4 +366,33 @@ fn every_documented_option_is_admitted() {
         assert_ne!(code, 2, "{option} via {args:?} was refused: {stderr}");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Anchor E-02: help listed `--git`, `review` and `daemon start` as future modes after they
+/// shipped. Each mode still listed as not implemented must be refused, so implementing one fails
+/// here until it moves to USAGE.
+#[test]
+fn modes_listed_as_not_implemented_are_refused() {
+    let (_, help, _) = run(&["--help"], "");
+    let (_, planned) = help.split_once("NOT YET IMPLEMENTED").unwrap();
+    let planned: Vec<Vec<&str>> = planned
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("deep-diff-forge "))
+        .map(|mode| {
+            mode.split_whitespace()
+                .map(|word| if word.starts_with('<') { "x" } else { word })
+                .collect()
+        })
+        .collect();
+    assert!(
+        planned.contains(&vec!["chain"]),
+        "help section not parsed: {planned:?}"
+    );
+    for args in planned {
+        let (code, _, stderr) = run(&args, "");
+        assert_eq!(
+            code, 2,
+            "{args:?} is listed as not implemented but ran: {stderr}"
+        );
+    }
 }

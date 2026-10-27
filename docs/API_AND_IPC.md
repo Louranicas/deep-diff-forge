@@ -237,7 +237,7 @@ Cache entries should store:
 ## Protocol Versioning
 
 ```text
-engine.protocol = 0
+engine.protocol = 1
 engine.model = 0
 engine.projection = 0
 engine.agent_annotations = 0

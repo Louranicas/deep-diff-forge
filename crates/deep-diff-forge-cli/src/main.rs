@@ -1294,14 +1294,11 @@ MACHINE CONTRACT:
   rank_patch, explain_exit_code, exit_code_registry). rpc speaks the daemon's
   JSON-RPC protocol over stdio without a daemon.
 
-FUTURE PRIMARY MODES:
+NOT YET IMPLEMENTED (each is refused today):
   deep-diff-forge <old> <new>
-  deep-diff-forge --git
-  deep-diff-forge review
   deep-diff-forge chain
   deep-diff-forge cluster
   deep-diff-forge loom
-  deep-diff-forge daemon start
 ",
         version = env!("CARGO_PKG_VERSION")
     );

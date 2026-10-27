@@ -52,7 +52,7 @@ Several P0/P1 gaps are now closed by the L1–L3 deployment waves:
   contracts + `deploy status` + cargo-deny).
 - **P0 fixture gate / real tests** — RESOLVED: `fixtures/patch/` + 213
   workspace tests; patch/projection/pipeline crates each exceed the 50-test bar.
-- **P1 supply-chain policy** — PARTIAL: `deny.toml` + MSRV `1.85` landed;
+- **P1 supply-chain policy** — PARTIAL: `deny.toml` + MSRV `1.85` landed (MSRV is `1.88` since; corrected 2026-10-27);
   `cargo audit`/`cargo vet` deferred to the dependency-introduction (L4+) wave.
 
 The remaining gaps below stay open pending the heavy-dependency waves
@@ -83,8 +83,8 @@ Still open:
 - **Packaging gap (§7)** and crates.io: publication is on hold until the
   codebase is production-ready.
 - **Machine consumer gap** — the CLI contract, daemon parity, SDK and MCP
-  slices A–D ([roadmap](ROADMAP.md#status-2026-10-26)) are planned, not
-  implemented.
+  slices A–D ([roadmap](ROADMAP.md#status-2026-10-26)) were planned when this was
+  written; all four are implemented and merged (corrected 2026-10-27).
 - **Network and mirror gap** — GitLab `main` has diverged from GitHub `main`
   and must be reconciled before it is pushed.
 - **CI platform drift** — Node 20 actions are deprecated, and `ubuntu-latest`

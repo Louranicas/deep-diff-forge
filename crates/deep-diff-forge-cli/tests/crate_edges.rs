@@ -98,3 +98,49 @@ fn edges_keep_kind_and_target_apart() {
         2
     );
 }
+
+/// Anchor E-02: release.yml's crates.io loop publishes every workspace crate, each after the
+/// crates it depends on (normal edges). Before, it omitted `sdk` while announcing "all 12".
+#[test]
+fn the_release_loop_publishes_every_crate_after_its_dependencies() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let workflow =
+        std::fs::read_to_string(format!("{root}/.github/workflows/release.yml")).unwrap();
+    let order: Vec<&str> = workflow
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("for crate in "))
+        .and_then(|rest| rest.strip_suffix("; do"))
+        .unwrap()
+        .split_whitespace()
+        .collect();
+    let table = std::fs::read_to_string(format!("{root}/docs/crate-edges.txt")).unwrap();
+    let edges: Vec<(String, String)> = committed(&table)
+        .into_iter()
+        .filter_map(|edge| {
+            let rest = edge.strip_prefix("normal ")?;
+            let (from, to) = rest.split_once(" -> ")?;
+            Some((from.to_owned(), to.split_whitespace().next()?.to_owned()))
+        })
+        .collect();
+    let crates: BTreeSet<&str> = edges
+        .iter()
+        .flat_map(|(from, to)| [from.as_str(), to.as_str()])
+        .collect();
+    let listed: BTreeSet<&str> = order.iter().copied().collect();
+    assert_eq!(
+        listed, crates,
+        "the publish loop must name every workspace crate once"
+    );
+    assert_eq!(
+        listed.len(),
+        order.len(),
+        "a crate is listed twice: {order:?}"
+    );
+    let position = |name: &str| order.iter().position(|c| *c == name).unwrap();
+    for (from, to) in &edges {
+        assert!(
+            position(to) < position(from),
+            "{from} is published before its dependency {to}: {order:?}"
+        );
+    }
+}

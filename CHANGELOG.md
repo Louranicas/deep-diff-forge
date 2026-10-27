@@ -234,6 +234,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **Contradicted facts corrected** (anchor E-02). `--help` no longer lists
+  shipped commands (`review`, `daemon start`, the `--git-*` family) as future
+  modes; its "not yet implemented" list is checked to be refused. The
+  crates.io publish loop in `release.yml` now includes `sdk`, and a test keeps
+  it naming every workspace crate after its dependencies. The API doc states
+  protocol 1, the release doc describes per-archive SHA-256 files and
+  attestations (no signed `checksums.txt`), and the feature matrix marks the
+  options that do not exist.
 - **An unmeasured test no longer shows as passed** (anchor B-08). The
   real-Podman sandbox test and the two real-tuicr tests printed `UNMEASURED`
   and returned, so `cargo test` reported them `ok`. They are now `#[ignore]`d

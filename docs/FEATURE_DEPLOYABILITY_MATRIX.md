@@ -2,16 +2,19 @@
 
 Every baseline and pioneer feature must have a command path, model path, test path, and release gate.
 
+This is a target matrix: a surface marked *(not implemented)* was checked against the binary on
+2026-10-27 (anchor E-02) and is refused today. `deep-diff-forge --help` lists what exists.
+
 ## Baseline Features
 
 | Feature | CLI/Bash surface | Model/API surface | Test gate | Deployable when |
 | --- | --- | --- | --- | --- |
-| Review-first interactive UI | `deep-diff-forge review --git` | `ReviewDocument`, projections | TUI smoke + snapshot | Keyboard and mouse review works without daemon. |
-| Multi-file review stream + sidebar | `review --git`, `--json` | file list, status, ranked stream | multi-file fixture | Changed files can be navigated and exported. |
-| Inline agent / AI annotations | `annotation add`, JSONL API | `AgentAnnotation` | grounded/ungrounded fixtures | Annotations anchor to file/hunk/span and never mutate patch truth. |
-| Responsive auto split/stack layout | `--layout auto|split|stack|inline` | projection config | terminal width snapshots | Same diff renders correctly at narrow and wide widths. |
-| Mouse support inside viewer | `review --mouse` | TUI event model | terminal integration smoke | Scroll/select/collapse work in supported terminals. |
-| Runtime view toggles | `--toggle <name>=<value>`, TUI keys | session toggles | projection toggle tests | Toggles rerender without recomputing patch truth. |
+| Review-first interactive UI | `deep-diff-forge review` (`--git` *(not implemented)*; acquire with `--git-working-tree` etc.) | `ReviewDocument`, projections | TUI smoke + snapshot | Keyboard and mouse review works without daemon. |
+| Multi-file review stream + sidebar | `review`, `--json` | file list, status, ranked stream | multi-file fixture | Changed files can be navigated and exported. |
+| Inline agent / AI annotations | `annotation add` *(not implemented)*, JSONL API | `AgentAnnotation` | grounded/ungrounded fixtures | Annotations anchor to file/hunk/span and never mutate patch truth. |
+| Responsive auto split/stack layout | `--layout inline|side-by-side|split` (`auto`, `stack` *(not implemented)*) | projection config | terminal width snapshots | Same diff renders correctly at narrow and wide widths. |
+| Mouse support inside viewer | `review --mouse` *(not implemented)* | TUI event model | terminal integration smoke | Scroll/select/collapse work in supported terminals. |
+| Runtime view toggles | `--toggle <name>=<value>` *(not implemented)*, TUI keys | session toggles | projection toggle tests | Toggles rerender without recomputing patch truth. |
 | Syntax highlighting | `--syntax on|off` | token spans | language fixtures | Supported files highlight and unsupported files degrade. |
 | Structural diffing | `--semantic on|off` | `SemanticTwin` | syntax fixtures | Semantic spans synchronize to patch hunks. |
 | Pager-compatible mode | default pipe/TTY behavior | inline projection | Git external diff tests | Works with Git diff/difftool and plain shell pipes. |
