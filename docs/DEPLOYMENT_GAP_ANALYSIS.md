@@ -86,12 +86,34 @@ Still open:
   slices A–D ([roadmap](ROADMAP.md#status-2026-10-26)) were planned when this was
   written; all four are implemented and merged (corrected 2026-10-27).
 - **Network and mirror gap** — GitLab `main` has diverged from GitHub `main`
-  and must be reconciled before it is pushed.
+  and must be reconciled before it is pushed. (Corrected 2026-10-27: it was
+  reconciled by merge, PR #18, merge commit `85a0e5d`; GitLab fast-forwarded
+  `e689f9c..85a0e5d`. GitLab `main` is now pushed only as a fast-forward of
+  GitHub `main` after a PR merges.)
 - **CI platform drift** — Node 20 actions are deprecated, and `ubuntu-latest`
   moves to Ubuntu 26; the rootless-Podman CI step is measured on Ubuntu 24.04
   only. (Corrected 2026-10-27: CI now runs on `ubuntu-26.04`, measured with
   rootless Podman 5.7.0; the Linux release binary is still built on 24.04 for
   glibc reach.)
+
+## Resolution Status (2026-10-28)
+
+- **50-tests bar retired** — the P0 "50 meaningful tests per production module"
+  bar in the Executive Gaps table below is superseded by anchor task B-09:
+  diff-scoped mutation testing, with 0 missed mutants on every PR. CI enforces
+  it through the four required `diff mutation (shard k/4)` checks (the
+  `diff mutation (shard ${{ matrix.shard }}/4)` job in
+  `.github/workflows/ci.yml`). The table is kept as history.
+- **Release history** (measured 2026-10-28 with `gh run list --workflow
+  release.yml`) — 4 runs, all in 2026-06. Each failed only at the crates.io
+  publish step; the supply-chain gate and all three builds (x86_64 Linux,
+  x86_64 and aarch64 macOS) passed. crates.io has v0.2.0 of
+  `deep-diff-forge-core`, `-cli` and `-tui`; `-sdk` and `-review` were never
+  published. crates.io stays on hold by owner decision until the codebase is
+  production-hardened.
+- **Still open** — the `deploy doctor` and `deploy receipt` commands,
+  per-target publication states, and a release run since the Node 24, SDK and
+  Ubuntu 26 changes.
 
 ## Executive Gaps
 

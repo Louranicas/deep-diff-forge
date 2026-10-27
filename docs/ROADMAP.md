@@ -142,13 +142,19 @@ Remaining, in order:
      future one must be opt-in.
 
    A comes first, then B and D together, then C. All four are implemented.
-2. **GitLab `main` divergence:** reconcile it before any GitLab push of `main`.
+2. **GitLab `main` divergence:** done 2026-10-27. It was reconciled by merge
+   (PR #18, merge commit `85a0e5d`); GitLab fast-forwarded `e689f9c..85a0e5d`.
+   The 2026-06-23 logs are under `docs/history/2026-06-23-review-cockpit/`.
+   The rule now: GitLab `main` is pushed only as a fast-forward of GitHub
+   `main`, after a PR merges.
 3. **Ubuntu 26:** done 2026-10-27. CI moved to `ubuntu-26.04` after a measured
    trial: rootless Podman 5.7.0 needed the same AppArmor user-namespace step as
    24.04, and all 12 sandbox probes were refused. The Linux release binary is
    still built on `ubuntu-24.04` for glibc compatibility.
 4. **crates.io:** on hold until the codebase is production-ready and the
    repository documentation is current.
+
+Open work after the anchor list: see the vault note [Strategy/Remaining Work 2026-10-28](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FRemaining%20Work%202026-10-28).
 
 ## Deployment Link
 

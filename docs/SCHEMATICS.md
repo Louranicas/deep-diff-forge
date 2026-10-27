@@ -4,6 +4,16 @@
 
 This document is the target implementation map for Deep-Diff-Forge. It turns the product vision into concrete boundaries, APIs, processes, and data flows.
 
+## System maps (2026-10-28)
+
+Derived from the code at `cba2ee7`, in the vault:
+
+- [End-to-End Stack Map](obsidian://open?vault=deep-diff-forge.vault&file=Diagrams%2FEnd-to-End%20Stack%20Map%202026-10-28)
+- [Feature Map](obsidian://open?vault=deep-diff-forge.vault&file=Diagrams%2FFeature%20Map%202026-10-28)
+- [Capacity Map](obsidian://open?vault=deep-diff-forge.vault&file=Diagrams%2FCapacity%20Map%202026-10-28)
+- [API Map](obsidian://open?vault=deep-diff-forge.vault&file=Diagrams%2FAPI%20Map%202026-10-28)
+- [Socket Map](obsidian://open?vault=deep-diff-forge.vault&file=Diagrams%2FSocket%20Map%202026-10-28)
+
 ## Current crates and edges
 
 Generated from `docs/crate-edges.txt` (checked against `cargo metadata` by
