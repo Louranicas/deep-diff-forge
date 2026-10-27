@@ -160,14 +160,17 @@ fn starts_numeric(rest: &str) -> bool {
         .starts_with(|c: char| c.is_ascii_digit())
 }
 
-/// The numeric exit codes a source line hands over directly: `process::exit(N)`, a council
-/// `Ok((…, N))`, or a `=> N,` match arm in an exit-code function.
+/// The numeric codes a source line hands over directly: `exit(N)` (qualified or not),
+/// `ExitCode::from(N)`, a council `Ok((…, N))`, a `code: N` pattern or field, or a `=> N,` match
+/// arm in an exit-code function.
 fn numeric_exit(line: &str, exit_arms: bool) -> bool {
     let code = line.trim();
     if code.starts_with("//") {
         return false;
     }
-    let call = code.split("process::exit(").skip(1).any(starts_numeric);
+    let call = ["exit(", "ExitCode::from(", "code: "]
+        .iter()
+        .any(|form| code.split(form).skip(1).any(starts_numeric));
     let pair = code.contains("Ok((")
         && code.rsplit(", ").next().is_some_and(|tail| {
             starts_numeric(tail)
@@ -184,11 +187,133 @@ fn numeric_exit(line: &str, exit_arms: bool) -> bool {
     call || pair || arm
 }
 
+/// True when the line holds a JSON-RPC reserved error code literal (`-32000` to `-32768`).
+fn json_rpc_literal(line: &str) -> bool {
+    let code = line.trim();
+    !code.starts_with("//")
+        && code.split("-32").skip(1).any(|rest| {
+            rest.len() >= 3
+                && rest.as_bytes()[..3].iter().all(u8::is_ascii_digit)
+                && !rest.as_bytes().get(3).is_some_and(u8::is_ascii_digit)
+        })
+}
+
+/// Every `.rs` file under `crates/*/src`, by path relative to `crates/`: a new file is scanned
+/// without being listed (anchor B-02).
+fn source_files() -> Vec<(String, String)> {
+    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let mut dirs: Vec<_> = std::fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path().join("src"))
+        .filter(|dir| dir.is_dir())
+        .collect();
+    let mut files = Vec::new();
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let name = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                files.push((name, std::fs::read_to_string(&path).unwrap()));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// The non-test lines of a source file, numbered from 1. Each `#[cfg(test)]` item is skipped to
+/// its closing brace (or `;`) wherever it sits; cutting at the first one hid the production code
+/// after a mid-file test item.
+fn production_lines(text: &str) -> Vec<(usize, &str)> {
+    let mut kept = Vec::new();
+    let mut lines = text.lines().enumerate();
+    while let Some((index, line)) = lines.next() {
+        if line.trim() != "#[cfg(test)]" {
+            kept.push((index + 1, line));
+            continue;
+        }
+        let (mut opens, mut closes) = (0, 0);
+        for (_, inner) in lines.by_ref() {
+            opens += inner.matches('{').count();
+            closes += inner.matches('}').count();
+            if (opens > 0 && opens == closes) || (opens == 0 && inner.trim_end().ends_with(';')) {
+                break;
+            }
+        }
+    }
+    kept
+}
+
+/// Files whose exit-code functions are `match` tables, so a numeric `=> N` arm is a code.
+const EXIT_ARM_FILES: &[&str] = &["deep-diff-forge-cli/src/git_input.rs"];
+
+/// Where a JSON-RPC error code may be written as a number: its named constant, in the daemon's
+/// protocol module or (for MCP's own codes) the MCP server.
+const JSON_RPC_CODE_HOMES: &[&str] = &[
+    "deep-diff-forge-daemon/src/protocol.rs",
+    "deep-diff-forge-cli/src/mcp.rs",
+];
+
+/// Every production line in every `crates/*/src` file, with its file and line number.
+fn production_sites() -> Vec<(String, usize, String)> {
+    source_files()
+        .into_iter()
+        .flat_map(|(file, text)| {
+            production_lines(&text)
+                .into_iter()
+                .map(|(number, line)| (file.clone(), number, line.to_owned()))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn the_scans_see_every_file_and_the_code_after_a_mid_file_test_item() {
+    let files = source_files();
+    let named = |file: &str| {
+        let text = &files.iter().find(|(name, _)| name == file).unwrap().1;
+        production_lines(text)
+            .into_iter()
+            .map(|(_, line)| line.to_owned())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(
+        files
+            .iter()
+            .any(|(name, _)| name == "deep-diff-forge-sdk/src/lib.rs")
+    );
+    assert!(
+        files
+            .iter()
+            .any(|(name, _)| name == "deep-diff-forge-cli/src/mcp.rs")
+    );
+    let serve = named("deep-diff-forge-daemon/src/serve.rs");
+    assert!(serve.contains("fn recover(") && !serve.contains("fn panic_on_test_method"));
+    let core = named("deep-diff-forge-core/src/lib.rs");
+    assert!(core.contains("pub struct PatchTwin") && !core.contains("mod file_status_tests"));
+    let lines =
+        production_lines("a\n#[cfg(test)]\nuse x;\nb\n#[cfg(test)]\nmod t {\n    {}\n}\nc\n");
+    assert_eq!(lines, [(1, "a"), (4, "b"), (9, "c")]);
+}
+
 /// Every exit site uses the registry's constants (`deep_diff_forge_core::exit`): a numeric literal
 /// would be a code the registry does not own (council sa1).
 #[test]
 fn exit_sites_use_registry_constants() {
     assert!(numeric_exit("        std::process::exit(4);", false));
+    assert!(numeric_exit("        exit(4);", false));
+    assert!(numeric_exit("    ExitCode::from(4)", false));
+    assert!(numeric_exit(
+        "        Self::Rpc { code: 4, .. } => 4,",
+        false
+    ));
     assert!(numeric_exit("    Ok((HELP.into(), 0)),", false));
     assert!(numeric_exit(
         "        GitAcquireError::Spawn { .. } => 3,",
@@ -198,24 +323,33 @@ fn exit_sites_use_registry_constants() {
         "        std::process::exit(exit::IO);",
         false
     ));
-    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
-    let files = [
-        ("deep-diff-forge-cli/src/main.rs", false),
-        ("deep-diff-forge-cli/src/git_input.rs", true),
-        ("deep-diff-forge-cli/src/analysis.rs", false),
-        ("deep-diff-forge-cli/src/contract.rs", false),
-        ("deep-diff-forge-review/src/cli.rs", false),
-    ];
-    for (file, exit_arms) in files {
-        let text = std::fs::read_to_string(format!("{root}/{file}")).unwrap();
-        let body = text.split("#[cfg(test)]").next().unwrap();
-        for (number, line) in body.lines().enumerate() {
-            assert!(
-                !numeric_exit(line, exit_arms),
-                "{file}:{}: {line}",
-                number + 1
-            );
-        }
+    assert!(!numeric_exit("    ExitCode::from(exit::IO)", false));
+    for (file, number, line) in production_sites() {
+        let exit_arms = EXIT_ARM_FILES.contains(&file.as_str());
+        assert!(!numeric_exit(&line, exit_arms), "{file}:{number}: {line}");
+    }
+}
+
+/// JSON-RPC error codes are named: a literal is allowed only as the constant's own definition in
+/// its home module (anchor B-02; before, the MCP server wrote `-32600` six times).
+#[test]
+fn json_rpc_codes_are_named_constants() {
+    assert!(json_rpc_literal("        error(id, -32600, \"bad\", None)"));
+    assert!(json_rpc_literal("pub const PARSE_ERROR: i64 = -32700;"));
+    assert!(!json_rpc_literal(
+        "        error(id, INVALID_REQUEST, \"bad\", None)"
+    ));
+    assert!(!json_rpc_literal("    let n = -321;"));
+    assert!(!json_rpc_literal("    let n = -32_1000;"));
+    assert!(!json_rpc_literal("    let n = -320000;"));
+    for (file, number, line) in production_sites() {
+        let item = line.trim_start();
+        let definition = JSON_RPC_CODE_HOMES.contains(&file.as_str())
+            && (item.starts_with("const ") || item.starts_with("pub const "));
+        assert!(
+            !json_rpc_literal(&line) || definition,
+            "{file}:{number}: {line}"
+        );
     }
 }
 

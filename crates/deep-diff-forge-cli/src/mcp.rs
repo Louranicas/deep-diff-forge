@@ -11,7 +11,7 @@
 
 use deep_diff_forge_core::exit::{EXIT_CODES, lookup};
 use deep_diff_forge_daemon::{
-    Engine, INPUT_CONTRACT_REFUSED, INVALID_PARAMS, METHOD_NOT_FOUND, PARSE_ERROR,
+    Engine, INPUT_CONTRACT_REFUSED, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR,
     PATCH_PARSE_FAILED, Request, RpcError, dispatch,
 };
 use serde_json::{Map, Value, json};
@@ -70,7 +70,7 @@ impl Server {
         let Some(object) = message.as_object_mut() else {
             return Some(error(
                 &Value::Null,
-                -32600,
+                INVALID_REQUEST,
                 "a message must be a JSON object",
                 None,
             ));
@@ -86,10 +86,16 @@ impl Server {
         // Only a JSON-RPC 2.0 envelope is acted on, before any state can change (council sdc1).
         if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
             return valid_id
-                .map(|id| error(id, -32600, "jsonrpc must be \"2.0\"", None))
+                .map(|id| error(id, INVALID_REQUEST, "jsonrpc must be \"2.0\"", None))
                 .or_else(|| {
-                    id.is_some()
-                        .then(|| error(&Value::Null, -32600, "jsonrpc must be \"2.0\"", None))
+                    id.is_some().then(|| {
+                        error(
+                            &Value::Null,
+                            INVALID_REQUEST,
+                            "jsonrpc must be \"2.0\"",
+                            None,
+                        )
+                    })
                 });
         }
         let Some(id) = valid_id.cloned() else {
@@ -98,14 +104,19 @@ impl Server {
             return (id.is_some() && method.is_some()).then(|| {
                 error(
                     &Value::Null,
-                    -32600,
+                    INVALID_REQUEST,
                     "id must be a string or an integer",
                     None,
                 )
             });
         };
         let Some(method) = method else {
-            return Some(error(&id, -32600, "a request needs a method", None));
+            return Some(error(
+                &id,
+                INVALID_REQUEST,
+                "a request needs a method",
+                None,
+            ));
         };
         // Moved, not cloned: the patch inside is the largest thing a request carries (council sdc1).
         let params = object.remove("params").unwrap_or_else(|| json!({}));
@@ -554,7 +565,7 @@ pub(crate) fn serve_with(
             },
             Err(()) => Some(error(
                 &Value::Null,
-                -32600,
+                INVALID_REQUEST,
                 &format!("message longer than {cap} bytes"),
                 None,
             )),
