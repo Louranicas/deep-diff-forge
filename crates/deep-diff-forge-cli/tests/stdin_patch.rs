@@ -246,6 +246,7 @@ fn non_utf8_content_is_reviewed_with_its_file_marked_and_bytes_sealed() {
     // The guards still apply to the decoded patch.
     let (code, _, _) = run_bytes(&["--stdin-patch", "--json", "--require-hunks"], MIXED);
     assert_eq!(code, 0);
+}
 
 /// Anchor D-01: every surface names a status with `FileStatus::label`. The human summary used
 /// `{:?}` lowercased, printing `binarychanged` where JSON, JSONL and the projections print
