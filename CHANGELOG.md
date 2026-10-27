@@ -8,6 +8,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **Every pull request is mutation-tested on its changed lines** (anchor
+  B-01). A new four-shard `diff mutation` job runs `scripts/diff_mutation.sh`,
+  which mutates the Rust lines the pull request changes since its merge base
+  (`cargo mutants --in-diff`) and fails on any missed mutant or timeout. A
+  change with no Rust lines under `crates/` passes and says so. Before, CI
+  mutated two functions of the review crate, and "0 missed on every diff" was
+  held by habit.
 - **The local CI replica and pre-push hook are versioned** (anchor B-07).
   `scripts/ci_local.sh` replicates every step of the CI gate jobs and fails
   closed; each step is labelled with the CI step it replicates, and
