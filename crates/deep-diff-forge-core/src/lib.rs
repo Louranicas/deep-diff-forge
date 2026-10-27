@@ -3,6 +3,7 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-core--lib
 mod deploy;
 pub mod exit;
+pub mod git;
 mod release;
 mod seal;
 mod util;

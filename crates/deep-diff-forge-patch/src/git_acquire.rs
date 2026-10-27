@@ -176,30 +176,9 @@ impl GitAcquisition {
     }
 }
 
-const ENV_REMOVED: &[&str] = &[
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_COMMON_DIR",
-    "GIT_NAMESPACE",
-    "GIT_PREFIX",
-    "GIT_EXTERNAL_DIFF",
-    "GIT_DIFF_OPTS",
-];
-
-const GLOBAL_ARGS: &[&str] = &[
-    "--no-optional-locks",
-    "-c",
-    "core.quotePath=false",
-    "-c",
-    "core.hooksPath=/dev/null",
-    "-c",
-    "diff.external=",
-    "-c",
-    "core.fsmonitor=false",
-];
+/// Acquisition's own option on top of [`deep_diff_forge_core::git::ARGS`]: paths unquoted, so the
+/// raw records keep their exact bytes.
+const GLOBAL_ARGS: &[&str] = &["-c", "core.quotePath=false"];
 
 const DIFF_ARGS: &[&str] = &[
     "diff",
@@ -237,14 +216,16 @@ impl Runner<'_> {
     ) -> Result<Vec<u8>, GitAcquireError> {
         let mut cmd = Command::new(&self.options.git_program);
         cmd.current_dir(&self.cwd)
+            .args(deep_diff_forge_core::git::ARGS)
             .args(GLOBAL_ARGS)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        for name in ENV_REMOVED {
+        for name in deep_diff_forge_core::git::ENV_REMOVED {
             cmd.env_remove(name);
         }
+        cmd.envs(deep_diff_forge_core::git::ENV_SET.iter().copied());
         cmd.envs(self.options.env.iter().map(|(k, v)| (k, v)));
         let spawn_err = |e: std::io::Error| GitAcquireError::Spawn {
             command,

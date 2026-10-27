@@ -127,9 +127,23 @@ fn capture(id: String, path: &Path, remaining: &mut usize) -> Result<Artifact> {
 }
 /// Run Git with repository-local behaviour that could change what it reports, or run code, turned
 /// off: replacement refs and grafts (which can substitute a base blob), lazy fetches from promisor
-/// remotes and every transport (which can run helpers on the host), hooks and fsmonitor.
+/// remotes and every transport (which can run helpers on the host), hooks and fsmonitor, and any
+/// inherited variable that would point it at another repository (`deep_diff_forge_core::git`).
 pub(crate) fn git_bytes(repository: &Path, args: &[&str], cap: u64) -> Result<Vec<u8>> {
     git_input(repository, args, &[], cap)
+}
+/// The hardened Git command for `repository` (anchor A-02): the shared set from
+/// `deep_diff_forge_core::git`, applied identically by Git acquisition.
+fn git_command(repository: &Path) -> Command {
+    let mut command = Command::new("git");
+    command
+        .args(deep_diff_forge_core::git::ARGS)
+        .envs(deep_diff_forge_core::git::ENV_SET.iter().copied())
+        .current_dir(repository);
+    for name in deep_diff_forge_core::git::ENV_REMOVED {
+        command.env_remove(name);
+    }
+    command
 }
 /// [`git_bytes`] with `input` on Git's standard input, written from its own thread so that a large
 /// input and a large output cannot block each other.
@@ -139,22 +153,8 @@ pub(crate) fn git_input(
     input: &[u8],
     cap: u64,
 ) -> Result<Vec<u8>> {
-    let mut child = Command::new("git")
-        .args([
-            "--no-optional-locks",
-            "--no-replace-objects",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "protocol.allow=never",
-        ])
-        .env("GIT_NO_REPLACE_OBJECTS", "1")
-        .env("GIT_GRAFT_FILE", "/dev/null")
-        .env("GIT_NO_LAZY_FETCH", "1")
+    let mut child = git_command(repository)
         .args(args)
-        .current_dir(repository)
         .stdin(if input.is_empty() {
             Stdio::null()
         } else {
@@ -800,4 +800,32 @@ pub(crate) fn executions(directory: &Path, manifest: &Manifest) -> Result<Vec<Ex
         };
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Anchor A-02: council storage strips every inherited variable that would point Git at
+    /// another repository. Before, an inherited `GIT_DIR` made `rev-parse HEAD` name another
+    /// repository while `--show-toplevel` still passed the top-level check.
+    #[test]
+    fn git_runs_with_the_shared_hardening_and_no_inherited_locations() {
+        let command = git_command(Path::new("/"));
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_owned())
+            .collect();
+        for name in deep_diff_forge_core::git::ENV_REMOVED {
+            assert!(removed.iter().any(|r| r == *name), "{name} is not removed");
+        }
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, deep_diff_forge_core::git::ARGS);
+        assert!(
+            command
+                .get_envs()
+                .any(|(name, value)| name == "GIT_NO_LAZY_FETCH" && value == Some("1".as_ref()))
+        );
+    }
 }
