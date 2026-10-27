@@ -2,6 +2,14 @@
 
 Deep-Diff-Forge is organized around a layered core.
 
+## Platform scope (decision D-05, 2026-10-27)
+
+Deep-Diff-Forge targets Linux and macOS. Windows is not a goal: the daemon uses Unix-domain
+sockets and refuses to compile elsewhere (`deep-diff-forge-daemon/src/lib.rs`, `compile_error!`),
+and the CLI and TUI depend on it unconditionally. The crates are not split to make a Windows build
+possible; library crates that happen to build on Windows (`patch`, `learning`) are not tested or
+released there.
+
 ## Layers
 
 1. **Input Layer**

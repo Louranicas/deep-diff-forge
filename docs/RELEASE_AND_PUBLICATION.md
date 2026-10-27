@@ -65,7 +65,6 @@ dist/
   deep-diff-forge-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
   deep-diff-forge-vX.Y.Z-x86_64-apple-darwin.tar.gz
   deep-diff-forge-vX.Y.Z-aarch64-apple-darwin.tar.gz
-  deep-diff-forge-vX.Y.Z-x86_64-pc-windows-msvc.zip
   checksums.txt
   checksums.txt.sig
 ```
