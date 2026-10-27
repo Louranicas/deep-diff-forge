@@ -266,6 +266,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **`learn` is tested end to end** (anchor A-08, from Parking). Recording a
+  receipt, reading the count back, the default `status` subcommand, and the
+  refusals (a path in place of the redacted id, a self-contradicting receipt,
+  an unknown subcommand, `record` without `--stdin`) now run against the
+  binary in an isolated `XDG_STATE_HOME`. Before, replacing `learn_cmd` with a
+  no-op survived mutation.
 - **A self-contradicting learning receipt is refused** (anchor C-11). A
   receipt whose outcome is `revisited` but whose `revisited` flag is false is
   refused on append and on load, so scoring cannot count the revisit in one
