@@ -8,6 +8,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **CI runs weekly** (anchor B-11). A `schedule:` trigger (Monday 04:23 UTC)
+  runs the full workflow, so a new RustSec advisory or a yanked dependency
+  fails within a week even when nothing is merged.
 - **The crate graph is a committed table** (anchor B-05).
   `docs/crate-edges.txt` lists every edge between workspace crates (normal,
   dev and target-specific kept apart), and `tests/crate_edges.rs` compares it

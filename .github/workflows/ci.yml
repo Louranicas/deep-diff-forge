@@ -8,6 +8,10 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Weekly (anchor B-11): a new RustSec advisory or a yanked dependency fails here even when
+  # nothing is merged that week. Monday 04:23 UTC, off the hour to avoid the scheduler's peak.
+  schedule:
+    - cron: "23 4 * * 1"
 
 # Least privilege: CI only needs to read the repository.
 permissions:
