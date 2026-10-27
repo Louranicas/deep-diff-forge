@@ -391,7 +391,10 @@ mod schema_tests {
     /// accept. Before, each list was a third copy kept equal by hand.
     #[test]
     fn report_schema_enums_are_the_rust_enums() {
-        use crate::{Disposition as D, Gate as G, Round as R, Severity as S, Verdict as V};
+        use crate::{
+            BuilderFamily as B, Disposition as D, Gate as G, Round as R, Severity as S,
+            Verdict as V,
+        };
         const fn exhaustive(disposition: D, gate: G, round: R, severity: S, verdict: V) {
             match disposition {
                 D::Concur | D::Rebut | D::NeedsTest => {}
@@ -452,5 +455,11 @@ mod schema_tests {
         for disposition in [D::Concur, D::Rebut, D::NeedsTest] {
             assert_eq!(names(&[disposition]), [disposition.label()]);
         }
+        // The builder family's label is compared with provider families and shown to reviewers.
+        for family in [B::Openai, B::Anthropic, B::Human, B::Other] {
+            assert_eq!(names(&[family]), [family.label()]);
+        }
+        assert_eq!(B::Openai.label(), crate::Provider::Codex.family());
+        assert_eq!(B::Anthropic.label(), crate::Provider::ClaudeCode.family());
     }
 }

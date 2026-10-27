@@ -95,6 +95,11 @@ fn complete(m: &Manifest) -> (Vec<Report>, Vec<Execution>) {
     }
     (reports, executions)
 }
+/// Whether the assessment holds for a reason containing `text` (a state alone can hold for
+/// another reason, so a control asserts the reason it targets).
+fn holds_for(a: &Assessment, text: &str) -> bool {
+    a.reasons.iter().any(|reason| reason.contains(text))
+}
 fn evaluation(m: &SealedManifest, reports: &[Report], executions: &[Execution]) -> Assessment {
     assess(m, reports, executions, &m.source_tree).unwrap()
 }
@@ -247,10 +252,9 @@ fn challenge_requires_exact_other_findings_and_keeps_test_requests_open() {
     let (mut reports, mut executions) = complete(&m);
     let id = reports[0].reviewer_id.clone();
     reports[0].findings.push(finding(&id, Severity::Medium));
-    assert_eq!(
-        evaluation(&m, &reports, &executions).state,
-        AssessmentState::Hold
-    );
+    let a = evaluation(&m, &reports, &executions);
+    assert_eq!(a.state, AssessmentState::Hold);
+    assert!(holds_for(&a, "does not address exactly"), "{:?}", a.reasons);
     reports[3]
         .responses
         .push(deep_diff_forge_review::Challenge {
@@ -258,14 +262,25 @@ fn challenge_requires_exact_other_findings_and_keeps_test_requests_open() {
             disposition: Disposition::NeedsTest,
             rationale: "Need the hostile-input test".into(),
         });
-    assert_eq!(
-        evaluation(&m, &reports, &executions).state,
-        AssessmentState::Hold
+    let a = evaluation(&m, &reports, &executions);
+    assert_eq!(a.state, AssessmentState::Hold);
+    assert!(
+        holds_for(&a, "requests unresolved verification"),
+        "{:?}",
+        a.reasons
+    );
+    assert!(
+        !holds_for(&a, "does not address exactly"),
+        "{:?}",
+        a.reasons
     );
     reports[3].responses[0].disposition = Disposition::Concur;
-    assert_eq!(
-        evaluation(&m, &reports, &executions).state,
-        AssessmentState::Hold
+    let a = evaluation(&m, &reports, &executions);
+    assert_eq!(a.state, AssessmentState::Hold);
+    assert!(
+        !holds_for(&a, "requests unresolved verification"),
+        "{:?}",
+        a.reasons
     );
     executions.push(execution(&m, "gate-fuzz".into()));
     assert_eq!(
@@ -382,4 +397,23 @@ fn receipt_identity_both_source_sides_and_nonzero_exit_refuse() {
     let mut bad = executions;
     bad[0].exit_code = Some(1);
     assert_eq!(evaluation(&m, &reports, &bad).state, AssessmentState::Hold);
+}
+
+/// A builder outside every reviewer family has independent lineage: the reviewers' mixed families
+/// never count as self-review. (The opposite case cannot be built: `validate_request` already
+/// requires provider diversity.)
+#[test]
+fn a_human_builder_reviewed_by_both_families_has_independent_lineage() {
+    let mut raw = unsealed();
+    raw.request.builder_family = deep_diff_forge_review::BuilderFamily::Human;
+    let m = seal(raw);
+    let (reports, executions) = complete(&m);
+    let a = evaluation(&m, &reports, &executions);
+    assert!(!holds_for(&a, "lineage"), "{:?}", a.reasons);
+    assert_eq!(
+        a.state,
+        AssessmentState::ReadyForHumanReview,
+        "{:?}",
+        a.reasons
+    );
 }
