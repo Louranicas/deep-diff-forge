@@ -823,6 +823,43 @@ mod tests {
         assert_eq!(std::fs::read(&sock).unwrap(), b"important");
     }
 
+    /// The socket this server bound is removed on shutdown (legitimate nearby case).
+    #[test]
+    fn cleanup_removes_the_socket_it_bound() {
+        let sock = temp_socket("cleanup-own");
+        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+        std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let metadata = std::fs::symlink_metadata(&sock).unwrap();
+        cleanup_owned_socket(&sock, (metadata.dev(), metadata.ino()));
+        assert!(std::fs::symlink_metadata(&sock).is_err());
+        drop(listener);
+    }
+
+    /// A socket swapped in at the same path after bind is someone else's: shutdown leaves it.
+    /// Before this test the identity comparison had no test (Remaining Work 2.6).
+    #[test]
+    fn cleanup_never_removes_a_socket_swapped_in_after_bind() {
+        let sock = temp_socket("cleanup-swapped");
+        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+        std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+        let ours = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let metadata = std::fs::symlink_metadata(&sock).unwrap();
+        let identity = (metadata.dev(), metadata.ino());
+        std::fs::remove_file(&sock).unwrap();
+        let theirs = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let swapped = std::fs::symlink_metadata(&sock).unwrap();
+        assert_ne!((swapped.dev(), swapped.ino()), identity);
+        cleanup_owned_socket(&sock, identity);
+        assert!(
+            std::fs::symlink_metadata(&sock)
+                .unwrap()
+                .file_type()
+                .is_socket()
+        );
+        drop((ours, theirs));
+    }
+
     #[test]
     fn connection_slots_are_hard_bounded_and_released() {
         let active = Arc::new(AtomicUsize::new(0));
