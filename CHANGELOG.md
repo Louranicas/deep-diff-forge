@@ -178,6 +178,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **GitHub and GitLab `main` share one history again** (Luke's decision,
+  2026-10-27). GitLab `main` carried three commits from 2026-06-23 (review
+  cockpit hardening) that GitHub never received; their code had already
+  reached GitHub by another path. A merge joins the histories (the code is
+  unchanged), so GitLab `main` fast-forwards with no force push. The two
+  collaboration logs they added live under `docs/history/2026-06-23-review-cockpit/`.
 - **One parse → guard → seal path** (anchor C-05; library API).
   `deep_diff_forge_patch::SealedReview::new` decodes, parses, applies the input
   contracts and seals the same bytes; the CLI's `--stdin-patch`, the daemon's
