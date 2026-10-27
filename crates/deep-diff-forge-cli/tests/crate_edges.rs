@@ -144,3 +144,64 @@ fn the_release_loop_publishes_every_crate_after_its_dependencies() {
         );
     }
 }
+
+/// The block between the markers in docs/SCHEMATICS.md, as `table` renders it: one line per crate
+/// with its normal dependencies, then its dev-only ones.
+fn rendered(table: &BTreeSet<String>) -> String {
+    use std::collections::BTreeMap;
+    use std::fmt::Write as _;
+    let mut deps: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for edge in table {
+        let mut words = edge.split_whitespace();
+        let (Some(kind), Some(from), Some("->"), Some(to)) =
+            (words.next(), words.next(), words.next(), words.next())
+        else {
+            panic!("malformed edge: {edge}");
+        };
+        deps.entry(to).or_default();
+        let mut shown = to.to_owned();
+        if let Some(target) = words.next() {
+            shown = format!("{shown} ({target})");
+        }
+        if kind != "normal" {
+            shown = format!("{shown} [{kind}]");
+        }
+        deps.entry(from).or_default().push(shown);
+    }
+    let mut out = String::new();
+    for (name, mut parts) in deps {
+        // Normal dependencies first, then dev-only ones, each alphabetical.
+        parts.sort_by_key(|part| (part.ends_with(']'), part.clone()));
+        let parts = if parts.is_empty() {
+            "(no workspace dependencies)".to_owned()
+        } else {
+            parts.join(", ")
+        };
+        let _ = writeln!(out, "- `{name}` → {parts}");
+    }
+    out
+}
+
+/// Anchor E-01: the schematics' current-crates block is generated from the checked table, so the
+/// documented graph cannot drift from Cargo.toml again (the sweep found 2 crates and 20+ edges
+/// missing from the hand-drawn graphs).
+#[test]
+fn the_schematics_show_the_current_crate_graph() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let table =
+        committed(&std::fs::read_to_string(format!("{root}/docs/crate-edges.txt")).unwrap());
+    let doc = std::fs::read_to_string(format!("{root}/docs/SCHEMATICS.md")).unwrap();
+    let (begin, end) = ("<!-- crate-edges:begin -->\n", "<!-- crate-edges:end -->");
+    let (head, rest) = doc.split_once(begin).unwrap();
+    let (block, tail) = rest.split_once(end).unwrap();
+    let expected = rendered(&table);
+    if std::env::var_os("DDF_BLESS_SCHEMATICS").is_some() {
+        let blessed = format!("{head}{begin}{expected}{end}{tail}");
+        std::fs::write(format!("{root}/docs/SCHEMATICS.md"), blessed).unwrap();
+        return;
+    }
+    assert_eq!(
+        block, expected,
+        "docs/SCHEMATICS.md is stale; regenerate with DDF_BLESS_SCHEMATICS=1 cargo test -p deep-diff-forge-cli --test crate_edges"
+    );
+}

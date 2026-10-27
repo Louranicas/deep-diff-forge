@@ -178,6 +178,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **The design docs say they are target design** (anchor E-01).
+  `SCHEMATICS.md`, `ARCHITECTURE.md` and `MODULE_STRUCTURE_PLAN.md` open with
+  a target-design banner, and `SCHEMATICS.md` carries a generated "current
+  crates and edges" block rendered from `docs/crate-edges.txt`; a test fails
+  when the block is stale (`DDF_BLESS_SCHEMATICS=1` regenerates it).
 - **`deploy status` says it ran nothing** (anchor E-06). Its gates are a
   static `not-run` list; the JSON now carries `"gates_run": false` so a caller
   cannot read `not-run` as a verdict, and the human output points at `just ci`.
