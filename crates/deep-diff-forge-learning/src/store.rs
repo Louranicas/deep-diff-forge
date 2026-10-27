@@ -178,6 +178,13 @@ fn validate_receipt_for_storage(receipt: &StrategyReceipt) -> Result<(), Learnin
             "parser_version must be a bounded identifier token",
         ));
     }
+    // Anchor C-11: a receipt whose outcome is "revisited" but whose revisit flag says it was not
+    // contradicts itself; scoring would count the revisit in one rate and not the other.
+    if receipt.outcome == crate::ReviewOutcome::Revisited && !receipt.revisited {
+        return Err(invalid_data(
+            "outcome revisited contradicts revisited = false",
+        ));
+    }
     Ok(())
 }
 
@@ -630,6 +637,33 @@ mod tests {
             let error = load_receipts(&dir).unwrap_err().to_string();
             assert!(error.contains("receipt store line 2: "), "{error}");
         }
+    }
+
+    /// Anchor C-11: a self-contradicting receipt is refused on append and on load.
+    #[test]
+    fn a_revisited_outcome_without_the_revisit_flag_is_refused() {
+        let dir = temp_dir();
+        let _guard = Scratch(dir.clone());
+        let contradictory =
+            StrategyReceipt::new(crate::redacted_id("x"), "rust", "v1", Strategy::Patch)
+                .with_outcome(ReviewOutcome::Revisited, false);
+        let error = append_receipt(&dir, &contradictory)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("contradicts"), "{error}");
+        let consistent = contradictory
+            .clone()
+            .with_outcome(ReviewOutcome::Revisited, true);
+        append_receipt(&dir, &consistent).unwrap();
+        let mut store = fs::read(receipts_path(&dir)).unwrap();
+        store.extend_from_slice(contradictory.to_json().unwrap().as_bytes());
+        store.push(b'\n');
+        write_private(&receipts_path(&dir), &store);
+        let error = load_receipts(&dir).unwrap_err().to_string();
+        assert!(
+            error.contains("receipt store line 2: ") && error.contains("contradicts"),
+            "{error}"
+        );
     }
 
     #[test]

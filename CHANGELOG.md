@@ -266,6 +266,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **A self-contradicting learning receipt is refused** (anchor C-11). A
+  receipt whose outcome is `revisited` but whose `revisited` flag is false is
+  refused on append and on load, so scoring cannot count the revisit in one
+  rate and not the other.
 - **Contradicted facts corrected** (anchor E-02). `--help` no longer lists
   shipped commands (`review`, `daemon start`, the `--git-*` family) as future
   modes; its "not yet implemented" list is checked to be refused. The
