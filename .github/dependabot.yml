@@ -9,6 +9,15 @@ updates:
       default-days: 7
     open-pull-requests-limit: 10
 
+  # The fuzz harness has its own lockfile (fuzz/Cargo.lock), outside the workspace (anchor B-06).
+  - package-ecosystem: cargo
+    directory: "/fuzz"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+
   # Keep third-party GitHub Actions current. Workflows pin immutable commit SHAs;
   # Dependabot proposes reviewed SHA updates without introducing floating tags.
   - package-ecosystem: github-actions
