@@ -8,6 +8,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **MCP `review_patch` returns a bounded summary for large reviews** (anchor
+  A-07; Luke's decision). The full document is returned while it is at most
+  256 KiB; a larger one comes back as `deep-diff-forge.review-summary.v0` (the
+  same seal and totals, per-file counts for up to 1,000 files, `reason`,
+  `omitted_files`). `paths` returns chosen files in full and `detail: "summary"`
+  asks for the summary. A 30 MB patch now answers in 181 KB instead of one
+  178 MB line.
 - **Review council** (`council prepare|status|review|gate`) — six default
   reviewer slots across Claude Code and Codex, independent then challenge
   rounds, controller admission that rejects fabricated citations, and `HOLD`
@@ -215,6 +222,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Security
 
+- **MCP marks patch text as untrusted for the consuming model** (anchor E-07).
+  The server instructions and the `review_patch` / `rank_patch` descriptions
+  say that paths and line text come from the patch, whose authors wrote them,
+  and are data to review, never instructions. Reviewed code and comments are
+  an injection channel into a model's context; nothing said so before.
 - Council gates never fall back to the host: a missing gate image or a failed
   dependency-vendoring job is a refusal. Vendored dependencies are sealed and
   re-measured before each gate; base Git objects are verified on read.
