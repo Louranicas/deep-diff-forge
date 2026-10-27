@@ -216,7 +216,7 @@ mod tests {
     fn trusted_syntax_receipts() -> Vec<StrategyReceipt> {
         (0..30)
             .map(|_| {
-                StrategyReceipt::new("h", "rust", "v", Strategy::Syntax)
+                StrategyReceipt::new(crate::redacted_id("h"), "rust", "v", Strategy::Syntax)
                     .with_outcome(ReviewOutcome::Accepted, false)
                     .with_elapsed_ms(10)
             })
@@ -355,7 +355,7 @@ mod tests {
     fn thin_receipts_yield_cold_planner() {
         let few: Vec<_> = (0..3)
             .map(|_| {
-                StrategyReceipt::new("h", "rust", "v", Strategy::Syntax)
+                StrategyReceipt::new(crate::redacted_id("h"), "rust", "v", Strategy::Syntax)
                     .with_outcome(ReviewOutcome::Accepted, false)
             })
             .collect();

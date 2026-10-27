@@ -163,16 +163,6 @@ fn invalid_data(message: &'static str) -> LearningError {
 }
 
 fn validate_receipt_for_storage(receipt: &StrategyReceipt) -> Result<(), LearningError> {
-    let hash_valid = (16..=64).contains(&receipt.file_hash.len())
-        && receipt
-            .file_hash
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-    if !hash_valid {
-        return Err(invalid_data(
-            "file_hash must be a 16-64 character lowercase hexadecimal redacted id",
-        ));
-    }
     let token_valid = |value: &str, maximum: usize| {
         !value.is_empty()
             && value.len() <= maximum
@@ -331,13 +321,14 @@ pub fn load_receipts(dir: &Path) -> Result<Vec<StrategyReceipt>, LearningError> 
                 "receipt store exceeds the record-count budget",
             ));
         }
-        let receipt = StrategyReceipt::from_json(trimmed)?;
-        validate_receipt_for_storage(&receipt).map_err(|error| {
-            LearningError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("receipt store line {number}: {error}"),
-            ))
-        })?;
+        let receipt = StrategyReceipt::from_json(trimmed)
+            .and_then(|receipt| validate_receipt_for_storage(&receipt).map(|()| receipt))
+            .map_err(|error| {
+                LearningError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("receipt store line {number}: {error}"),
+                ))
+            })?;
         receipts.push(receipt);
     }
     Ok(receipts)
@@ -406,7 +397,7 @@ mod tests {
     }
 
     fn receipt(s: Strategy, outcome: ReviewOutcome) -> StrategyReceipt {
-        StrategyReceipt::new("0123456789abcdef", "rust", "v", s)
+        StrategyReceipt::new(crate::redacted_id("x"), "rust", "v", s)
             .with_cache(CacheState::Hit)
             .with_outcome(outcome, false)
     }
@@ -589,13 +580,24 @@ mod tests {
         assert!(count_receipts(&dir).is_err());
     }
 
+    /// Anchor C-07: an unredacted identity cannot be built at all; the JSON form of one is refused
+    /// when it is read, by name. Before, only the store checked, after construction.
     #[test]
-    fn append_rejects_unredacted_file_identity() {
-        let dir = temp_dir();
-        let _guard = Scratch(dir.clone());
-        let receipt = StrategyReceipt::new("secret/source/path.rs", "rust", "v1", Strategy::Patch);
-        assert!(append_receipt(&dir, &receipt).is_err());
-        assert!(!receipts_path(&dir).exists());
+    fn an_unredacted_file_identity_cannot_be_read() {
+        let good = StrategyReceipt::new(crate::redacted_id("x"), "rust", "v1", Strategy::Patch)
+            .to_json()
+            .unwrap();
+        for bad in [
+            "secret/source/path.rs",
+            "0123456789ABCDEF",
+            "0123456789abcde",
+            "",
+        ] {
+            let json = good.replace(&crate::redacted_id("x").to_string(), bad);
+            let error = StrategyReceipt::from_json(&json).unwrap_err().to_string();
+            assert!(error.contains("redacted id"), "{bad}: {error}");
+        }
+        assert!(StrategyReceipt::from_json(&good).is_ok());
     }
 
     /// Anchor A-05: a hand-edited store cannot smuggle a path past the privacy contract; before,
@@ -607,12 +609,22 @@ mod tests {
         append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted)).unwrap();
         assert_eq!(load_receipts(&dir).unwrap().len(), 1);
         let good = fs::read(receipts_path(&dir)).unwrap();
-        for bad in [
-            StrategyReceipt::new("/home/x/secret.rs", "rust", "v1", Strategy::Patch),
-            StrategyReceipt::new("0123456789abcdef", "../../secret", "v1", Strategy::Patch),
-        ] {
+        let unredacted =
+            StrategyReceipt::new(crate::redacted_id("x"), "rust", "v1", Strategy::Patch)
+                .to_json()
+                .unwrap()
+                .replace(&crate::redacted_id("x").to_string(), "/home/x/secret.rs");
+        let path_language = StrategyReceipt::new(
+            crate::redacted_id("x"),
+            "../../secret",
+            "v1",
+            Strategy::Patch,
+        )
+        .to_json()
+        .unwrap();
+        for bad in [unredacted, path_language] {
             let mut store = good.clone();
-            store.extend_from_slice(bad.to_json().unwrap().as_bytes());
+            store.extend_from_slice(bad.as_bytes());
             store.push(b'\n');
             write_private(&receipts_path(&dir), &store);
             let error = load_receipts(&dir).unwrap_err().to_string();
@@ -624,8 +636,12 @@ mod tests {
     fn append_rejects_path_like_metadata_tokens() {
         let dir = temp_dir();
         let _guard = Scratch(dir.clone());
-        let receipt =
-            StrategyReceipt::new("0123456789abcdef", "../../secret", "v1", Strategy::Patch);
+        let receipt = StrategyReceipt::new(
+            crate::redacted_id("x"),
+            "../../secret",
+            "v1",
+            Strategy::Patch,
+        );
         assert!(append_receipt(&dir, &receipt).is_err());
     }
 

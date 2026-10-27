@@ -194,7 +194,8 @@ mod tests {
     use crate::receipt::{CacheState, FallbackReason, ReviewOutcome};
 
     fn r(strategy: Strategy, outcome: ReviewOutcome, revisited: bool) -> StrategyReceipt {
-        StrategyReceipt::new("h", "rust", "v", strategy).with_outcome(outcome, revisited)
+        StrategyReceipt::new(crate::redacted_id("h"), "rust", "v", strategy)
+            .with_outcome(outcome, revisited)
     }
 
     fn many(

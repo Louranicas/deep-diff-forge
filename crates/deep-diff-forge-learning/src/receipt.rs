@@ -147,7 +147,7 @@ impl ReviewOutcome {
 pub struct StrategyReceipt {
     /// Pseudonymous file identity ([`crate::util::redacted_id`]); store access
     /// controls, not this unkeyed hash, provide confidentiality.
-    pub file_hash: String,
+    pub file_hash: crate::util::RedactedId,
     /// Language token, e.g. `"rust"`.
     pub language: String,
     /// Parser/grammar version that produced any semantic data.
@@ -171,19 +171,25 @@ pub struct StrategyReceipt {
 }
 
 impl StrategyReceipt {
-    /// Construct a receipt for `strategy` on a file identified by `file_hash`.
+    /// Construct a receipt for `strategy` on a file identified by `file_hash`. A path cannot be
+    /// passed: `file_hash` is a [`RedactedId`](crate::RedactedId) (anchor C-07).
+    ///
+    /// ```compile_fail
+    /// use deep_diff_forge_learning::{Strategy, StrategyReceipt};
+    /// let _ = StrategyReceipt::new("secret/source/path.rs", "rust", "v1", Strategy::Patch);
+    /// ```
     ///
     /// Defaults are the "nothing-observed-yet" values: no fallback, cold cache,
     /// pending outcome, not revisited. Use the `with_*` setters to refine.
     #[must_use]
     pub fn new(
-        file_hash: impl Into<String>,
+        file_hash: crate::util::RedactedId,
         language: impl Into<String>,
         parser_version: impl Into<String>,
         strategy: Strategy,
     ) -> Self {
         Self {
-            file_hash: file_hash.into(),
+            file_hash,
             language: language.into(),
             parser_version: parser_version.into(),
             strategy,
@@ -273,7 +279,7 @@ mod tests {
 
     fn sample() -> StrategyReceipt {
         StrategyReceipt::new(
-            "deadbeefdeadbeef",
+            crate::RedactedId::try_from("deadbeefdeadbeef".to_owned()).unwrap(),
             "rust",
             "tree-sitter-rust 0.24",
             Strategy::Syntax,
@@ -339,7 +345,7 @@ mod tests {
 
     #[test]
     fn new_receipt_has_neutral_defaults() {
-        let r = StrategyReceipt::new("h", "rust", "v", Strategy::Patch);
+        let r = StrategyReceipt::new(crate::redacted_id("h"), "rust", "v", Strategy::Patch);
         assert_eq!(r.fallback, None);
         assert_eq!(r.elapsed_ms, 0);
         assert_eq!(r.cache, CacheState::Cold);

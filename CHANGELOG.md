@@ -178,6 +178,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **A learning receipt cannot carry a path** (anchor C-07; library API).
+  `StrategyReceipt.file_hash` is a `RedactedId`, which only `redacted_id()`
+  makes and which deserializing checks (16–64 lowercase hex characters), so a
+  path is refused when a receipt is built or read, not only when it is stored.
+  On disk the field is the same bare string. A load error now names its store
+  line for malformed JSON too.
 - **`InputGuards` has no `Default`** (anchor C-04; library API). "No guards"
   is written out as `InputGuards { files: false, hunks: false }`, so
   `..Default::default()` can no longer silently drop a contract a caller asked
