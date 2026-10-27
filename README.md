@@ -689,8 +689,9 @@ is no world-writable `/tmp` fallback: if `$XDG_RUNTIME_DIR` is unset the daemon
 fails closed and you pass an explicit `--socket PATH`. (`doctor` reports the
 resolved socket, or `<unavailable: set XDG_RUNTIME_DIR or pass --socket>`.)
 
-**JSON-RPC methods:** `engine.initialize`, `daemon.health`, `daemon.status`,
-`daemon.shutdown`, `diff.plan`, `session.open`, `session.snapshot`,
+**JSON-RPC methods** (protocol 1; `engine.methods` lists them with their parameters):
+`engine.initialize`, `engine.methods`, `daemon.health`, `daemon.status`,
+`daemon.shutdown`, `diff.plan`, `diff.compute`, `session.open`, `session.snapshot`,
 `session.close`.
 
 ```bash
@@ -699,7 +700,7 @@ deep-diff-forge daemon start --foreground
 
 # Terminal 2
 deep-diff-forge daemon health
-# {"id":1,"jsonrpc":"2.0","result":{"status":"ok","pid":…,"protocol":0,"sessions":0,…}}
+# {"id":1,"jsonrpc":"2.0","result":{"status":"ok","pid":…,"protocol":1,"sessions":0,…}}
 deep-diff-forge daemon stop
 ```
 

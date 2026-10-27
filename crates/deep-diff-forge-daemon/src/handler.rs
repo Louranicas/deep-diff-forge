@@ -1025,6 +1025,28 @@ mod tests {
         assert_eq!(v["methods"].as_array().unwrap().len(), METHODS.len());
     }
 
+    /// The README names every method the daemon implements, in `engine.methods` order, and the
+    /// protocol `daemon.health` reports. Before, it omitted `engine.methods` and `diff.compute`
+    /// and showed protocol 0.
+    #[test]
+    fn the_readme_lists_the_methods_and_protocol() {
+        let readme = include_str!("../../../README.md");
+        let start = readme.find("**JSON-RPC methods**").unwrap();
+        let paragraph = &readme[start..start + readme[start..].find("\n\n").unwrap()];
+        let names: Vec<String> = paragraph
+            .split(':')
+            .nth(1)
+            .unwrap()
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect();
+        let methods: Vec<&str> = METHODS.iter().map(|m| m.name).collect();
+        assert_eq!(names, methods);
+        assert!(readme.contains(&format!("\"protocol\":{PROTOCOL_VERSION},")));
+    }
+
     #[test]
     fn initialize_refuses_a_protocol_it_does_not_speak() {
         let mut e = Engine::new();

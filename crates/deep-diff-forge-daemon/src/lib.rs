@@ -2,10 +2,9 @@
 //!
 //! The daemon accelerates repeated review and multi-client workflows; it is
 //! never required for one-shot CLI correctness. It is built std-first
-//! (`std::os::unix::net`, a single-threaded sequential accept loop) — no async
-//! runtime — with `serde_json` for JSON-RPC 2.0 framing. A thread-per-connection
-//! or async upgrade is deferred until a measured need. The protocol, dispatch,
-//! and socket
+//! (`std::os::unix::net`, one accept loop handing each connection to a worker
+//! thread, at most eight at once) — no async runtime — with `serde_json` for
+//! JSON-RPC 2.0 framing. The protocol, dispatch, and socket
 //! security are unit-tested; the real socket round-trip is exercised in-process
 //! (`UnixStream::pair` and a live [`run_server`] thread), leaving no
 //! meaningful logic untested.

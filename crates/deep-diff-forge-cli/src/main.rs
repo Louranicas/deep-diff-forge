@@ -994,7 +994,8 @@ fn deploy_cmd(opts: &[String]) {
 ///
 /// This is a declared snapshot (like `deploy status`): the actual release acts
 /// are `git tag`, `gh release`, and `cargo publish`. crates.io is reported
-/// `blocked` until a registry token is configured.
+/// `blocked`: publication is on hold by owner decision, and release.yml publishes
+/// only when the repository variable `DDF_CRATES_IO` is `open`.
 fn deploy_release(json: bool) {
     use deep_diff_forge_core::{ReleasePlan, TargetState};
     let plan = ReleasePlan::new(env!("CARGO_PKG_VERSION"))
