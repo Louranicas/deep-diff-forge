@@ -743,7 +743,10 @@ fn structural_cmd(opts: &[String]) {
 fn print_structural_human(diff: &deep_diff_forge_syntax::StructuralDiff) {
     use deep_diff_forge_syntax::ChangeKind;
     if let Some(reason) = diff.unavailable() {
-        emitln!("structural: unavailable ({reason:?}); use patch review");
+        emitln!(
+            "structural: unavailable ({}); use patch review",
+            reason.wire_name()
+        );
         return;
     }
     if diff.reformat_only() {
@@ -819,10 +822,8 @@ fn print_structural_json(diff: &deep_diff_forge_syntax::StructuralDiff) {
         json_escape(lang),
         diff.reformat_only(),
         diff.degraded(),
-        diff.unavailable().map_or_else(
-            || "null".into(),
-            |reason| json_escape(&format!("{reason:?}"))
-        ),
+        diff.unavailable()
+            .map_or_else(|| "null".into(), |reason| json_escape(reason.wire_name())),
         diff.unchanged,
         diff.added,
         diff.removed,
@@ -908,7 +909,7 @@ fn parse_status_str(status: &deep_diff_forge_core::ParseStatus) -> String {
     match status {
         ParseStatus::Parsed => "parsed".to_string(),
         ParseStatus::ParsedWithErrors { errors } => format!("parsed_with_errors:{errors}"),
-        ParseStatus::Fallback { reason } => format!("fallback:{reason:?}"),
+        ParseStatus::Fallback { reason } => format!("fallback:{}", reason.wire_name()),
     }
 }
 
