@@ -191,6 +191,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **An unmeasured test no longer shows as passed** (anchor B-08). The
+  real-Podman sandbox test and the two real-tuicr tests printed `UNMEASURED`
+  and returned, so `cargo test` reported them `ok`. They are now `#[ignore]`d
+  with the command that runs them, and an explicit `--ignored` run without
+  their environment fails; CI runs the sandbox test with `--ignored`.
 - **Lint suppressions carry a reason and cannot go stale** (anchor B-03). The
   nine workspace `#[allow]` sites (and two in the fuzz targets) are now
   `#[expect(.., reason = "..")]`, and clippy's `allow_attributes` and

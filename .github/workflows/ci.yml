@@ -214,7 +214,7 @@ jobs:
           DDF_COUNCIL_SANDBOX_IT: "1"
           DDF_COUNCIL_PODMAN: podman
           DDF_COUNCIL_GATE_IMAGE: localhost/ddf-council-gate:ci
-        run: cargo test --locked -p deep-diff-forge-cli --test council_sandbox -- --nocapture
+        run: cargo test --locked -p deep-diff-forge-cli --test council_sandbox -- --ignored --nocapture
       # A failed probe run leaves its run directory behind; show why each job failed.
       - name: sandbox diagnostics on failure
         if: failure()

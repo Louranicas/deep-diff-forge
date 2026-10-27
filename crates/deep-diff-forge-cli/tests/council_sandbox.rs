@@ -5,8 +5,8 @@
 //! `rust-toolchain.toml`, escape its cgroup bounds and see host sockets/PIDs. Each refusal must carry the
 //! specific errno that only the control produces, and the probes with a plausible false refusal have a
 //! positive control. Further runs plant a symlinked mutation witness, a symlink in the vendoring output
-//! and candidate toolchain configuration. Runs only with `DDF_COUNCIL_SANDBOX_IT=1` plus
-//! `DDF_COUNCIL_PODMAN` / `DDF_COUNCIL_GATE_IMAGE`; otherwise it prints an `UNMEASURED` line and returns.
+//! and candidate toolchain configuration. It is `#[ignore]`d; run it with `--ignored` and
+//! `DDF_COUNCIL_SANDBOX_IT=1` plus `DDF_COUNCIL_PODMAN` / `DDF_COUNCIL_GATE_IMAGE`.
 #![expect(
     clippy::disallowed_methods,
     reason = "integration test: drives real processes, the environment and wall-clock time"
@@ -326,14 +326,16 @@ if 'run' in args and any(re.match(r'--name=.*-sandbox-vendor-',a) for a in args)
 sys.exit(code)
 ";
 
+/// Ignored rather than passing vacuously (anchor B-08): before, without Podman it printed
+/// `UNMEASURED` and returned, so `cargo test` reported it `ok`. CI runs it with `--ignored`.
 #[test]
+#[ignore = "real Podman: run with --ignored, DDF_COUNCIL_SANDBOX_IT=1, DDF_COUNCIL_PODMAN and DDF_COUNCIL_GATE_IMAGE"]
 fn real_sandbox_refuses_planted_breaches() {
-    if std::env::var("DDF_COUNCIL_SANDBOX_IT").as_deref() != Ok("1") {
-        eprintln!(
-            "UNMEASURED: set DDF_COUNCIL_SANDBOX_IT=1 with DDF_COUNCIL_PODMAN and DDF_COUNCIL_GATE_IMAGE to run the real-Podman planted-breach controls; nothing was measured"
-        );
-        return;
-    }
+    assert_eq!(
+        std::env::var("DDF_COUNCIL_SANDBOX_IT").as_deref(),
+        Ok("1"),
+        "the real-Podman planted-breach controls need DDF_COUNCIL_SANDBOX_IT=1"
+    );
     for required in ["DDF_COUNCIL_PODMAN", "DDF_COUNCIL_GATE_IMAGE"] {
         assert!(
             std::env::var(required).is_ok_and(|v| !v.is_empty()),
