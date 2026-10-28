@@ -489,9 +489,9 @@ fn call_tool(mut params: Value, allowed: &[std::path::PathBuf]) -> Result<Value,
     Ok(match name.as_str() {
         "review_patch" => review_tool(arguments),
         "rank_patch" => rank_tool_with(arguments, REVIEW_FULL_CAP),
-        "review_outline" => view_tool("review.outline", arguments, &[]),
-        "review_hunks" => view_tool("review.hunks", arguments, &[]),
-        "review_change" => view_tool("review.change", arguments, allowed),
+        "review_outline" => view_tool("review.outline", &arguments, &[]),
+        "review_hunks" => view_tool("review.hunks", &arguments, &[]),
+        "review_change" => view_tool("review.change", &arguments, allowed),
         "explain_exit_code" => explain(&arguments),
         _ => structured(json!({"codes": EXIT_CODES.iter().map(entry_json).collect::<Vec<_>>()})),
     })
@@ -549,7 +549,7 @@ const MCP_MAX_BYTES: usize = 2 * deep_diff_forge_daemon::views::MAX_MAX_BYTES;
 /// asks for), so the view gets half of `max_bytes` and the whole answer stays within it.
 fn view_tool(
     method: &str,
-    mut arguments: Map<String, Value>,
+    arguments: &Map<String, Value>,
     allowed: &[std::path::PathBuf],
 ) -> Value {
     let max_bytes = match arguments.get("max_bytes") {
@@ -563,8 +563,19 @@ fn view_tool(
             }
         },
     };
-    arguments.insert("max_bytes".into(), json!(max_bytes / 2));
-    daemon_value_in(method, arguments, allowed).map_or_else(|error| error, structured)
+    // The answer carries the document twice, once as escaped text, so start at half the budget
+    // and re-page smaller while the whole tool result is still over it.
+    deep_diff_forge_daemon::views::fit_emitted(
+        max_bytes,
+        2,
+        |value| structured(value.clone()).to_string().len(),
+        |inner| {
+            let mut arguments = arguments.clone();
+            arguments.insert("max_bytes".into(), json!(inner));
+            daemon_value_in(method, arguments, allowed)
+        },
+    )
+    .map_or_else(|error| error, structured)
 }
 
 /// `review_patch`: the daemon's `diff.compute`, limited to `paths` if given, and returned in full
@@ -1250,6 +1261,30 @@ mod tests {
             &rank["outputSchema"],
             "rank summary",
         );
+    }
+
+    /// Bug hunt 2026-10-28, H2-06: escaping can more than double the text copy (a backslash
+    /// becomes two), and the answer still fits `max_bytes` with both copies counted.
+    #[test]
+    fn escape_heavy_answers_still_fit_max_bytes() {
+        use std::fmt::Write as _;
+        let mut patch = String::from("--- a/b.rs\n+++ b/b.rs\n@@ -1,300 +1,300 @@\n");
+        for i in 0..300 {
+            let _ = write!(patch, "-{}{i}\n+{}x{i}\n", "\\".repeat(60), "\\".repeat(60));
+        }
+        for max in [MCP_MIN_BYTES, 8192, 32_768] {
+            let result = call_tool(
+                json!({"name": "review_hunks", "arguments": {"patch": patch, "max_bytes": max}}),
+                &[],
+            )
+            .unwrap();
+            assert_eq!(result["isError"], false, "{result}");
+            assert!(
+                result.to_string().len() <= max,
+                "{max}: {}",
+                result.to_string().len()
+            );
+        }
     }
 
     /// A view answer, both copies counted, fits `max_bytes`; outside its range it is a tool error

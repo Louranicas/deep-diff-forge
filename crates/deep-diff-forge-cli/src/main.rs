@@ -394,10 +394,9 @@ fn sealed_review_or_exit(bytes: &[u8], guards: InputGuards) -> deep_diff_forge_p
 fn emit_review(review: &deep_diff_forge_patch::SealedReview, opts: &[String]) {
     let (files, seal) = (review.files(), review.seal());
     if opts.iter().any(|a| a == "--outline") {
-        emit_view(deep_diff_forge_daemon::views::outline(
-            review,
-            &view_page(opts),
-        ));
+        emit_view(opts, |page| {
+            deep_diff_forge_daemon::views::outline(review, page)
+        });
     } else if opts.iter().any(|a| a == "--hunks") {
         let addresses = flag_values(opts, "--address");
         let paths = flag_values(opts, "--path");
@@ -410,11 +409,9 @@ fn emit_review(review: &deep_diff_forge_patch::SealedReview, opts: &[String]) {
                 std::process::exit(exit::USAGE);
             }
         };
-        emit_view(deep_diff_forge_daemon::views::hunks(
-            review,
-            &selection,
-            &view_page(opts),
-        ));
+        emit_view(opts, |page| {
+            deep_diff_forge_daemon::views::hunks(review, &selection, page)
+        });
     } else if opts.iter().any(|a| a == "--cluster") {
         run_cluster(files, opts, seal);
     } else if opts.iter().any(|a| a == "--rank") {
@@ -1414,14 +1411,20 @@ fn view_page(opts: &[String]) -> deep_diff_forge_daemon::views::Page {
     }
 }
 
-/// Print a view as 2-space JSON; a refused request (budget, cursor, address, path) exits 2.
-fn emit_view(view: Result<serde_json::Value, deep_diff_forge_daemon::views::ViewError>) {
-    match view {
+/// Print a view as the one-line JSON the daemon and MCP return for the same page, so
+/// `--max-bytes` bounds what is printed (pretty printing added up to half again, bug hunt
+/// 2026-10-28, H5-02) and a CLI page is byte-for-byte a daemon page; a refused request
+/// (budget, cursor, address, path) exits 2.
+fn emit_view(
+    opts: &[String],
+    view: impl Fn(
+        &deep_diff_forge_daemon::views::Page,
+    ) -> Result<serde_json::Value, deep_diff_forge_daemon::views::ViewError>,
+) {
+    match view(&view_page(opts)) {
         Ok(value) => emitln!(
             "{}",
-            deep_diff_forge_core::json_line_safe(
-                &serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
-            )
+            deep_diff_forge_core::json_line_safe(&value.to_string())
         ),
         Err(error) => {
             eprintln!("error: {error}");
