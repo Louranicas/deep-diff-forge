@@ -648,7 +648,10 @@ fn long_filter_listings_and_deep_paths_are_read() {
         );
     }
     acquire_git(r, &GitSelection::WorkingTree, &options(false)).unwrap();
-    let deep = (0..6).fold(r.clone(), |p, i| p.join(format!("{}{i}", "d".repeat(200))));
+    // Four 201-byte components stay under macOS's 1024-byte PATH_MAX yet make the three
+    // `rev-parse` answer lines well over a kibibyte together.
+    let deep = (0..4).fold(r.clone(), |p, i| p.join(format!("{}{i}", "d".repeat(200))));
+    assert!(deep.as_os_str().len() > 800, "{}", deep.display());
     std::fs::create_dir_all(&deep).unwrap();
     git_out(&deep, &["init", "-q"]);
     let dirs = deep_diff_forge_patch::repository_dirs(&deep, &options(false)).unwrap();
