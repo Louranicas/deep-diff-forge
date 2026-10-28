@@ -3,7 +3,7 @@
 // Design/status: docs/ROADMAP.md#status-2026-10-26 and README "MCP server".
 //! A dual-era MCP server (specification 2026-07-28, with the 2025-11-25 `initialize` handshake for
 //! legacy clients) whose tools are the daemon's own methods, so an MCP client gets exactly what the
-//! CLI and the daemon give: `review_patch` is `diff.compute`, `rank_patch` is `diff.plan`. Every
+//! CLI and the daemon give: `review_patch` is `diff.compute`, `rank_patch` is `diff.rank`. Every
 //! tool is read-only; nothing it does writes a file, a store or a session.
 //!
 //! Framing is the stdio binding's: one JSON-RPC message per line, nothing else on stdout. A line
@@ -242,9 +242,40 @@ pub const SUMMARY_FILE_LIMIT: usize = 1000;
 
 const READ_ONLY: &str = r#"{"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}"#;
 
-/// The tools, in a fixed order.
+/// The shape every patch-reading tool's `structuredContent` takes: a sealed document named by
+/// `schema`, so an agent can check which bytes an answer is about before it reads it.
+fn sealed_output(schemas: [&str; 2]) -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "schema": {"enum": schemas},
+            "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "tool": {
+                "type": "object",
+                "properties": {"name": {"const": "deep-diff-forge"}, "version": {"type": "string"}},
+                "required": ["name", "version"],
+            },
+        },
+        "required": ["schema", "input_sha256", "tool"],
+    })
+}
+
+/// The tools, in a fixed order. Each declares an `outputSchema`, which its successful results
+/// satisfy (a test checks every tool against it).
 fn tools() -> Value {
     let read_only: Value = serde_json::from_str(READ_ONLY).unwrap_or_default();
+    let exit_entry = json!({
+        "type": "object",
+        "properties": {
+            "family": {"enum": ["engine", "council"]},
+            "code": {"type": "integer"},
+            "name": {"type": "string"},
+            "meaning": {"type": "string"},
+            "action": {"type": "string"},
+            "may_be_transient": {"type": "boolean"},
+        },
+        "required": ["family", "code", "name", "meaning", "action", "may_be_transient"],
+    });
     let patch = json!({"type": "string", "description": "A unified or Git patch (the bytes `deep-diff-forge --stdin-patch` reads)."});
     json!([
         {
@@ -263,13 +294,24 @@ fn tools() -> Value {
                 "required": ["patch"],
                 "additionalProperties": false,
             },
+            "outputSchema": sealed_output(["deep-diff-forge.review.v0", "deep-diff-forge.review-summary.v0"]),
             "annotations": read_only,
         },
         {
             "name": "rank_patch",
             "title": "Rank a patch's files by review risk",
-            "description": format!("Order a patch's files by review risk (the daemon's diff.plan). A ranking over 256 KiB comes back as deep-diff-forge.rank-summary.v0: the highest-ranked files that fit, with omitted_files.{UNTRUSTED}"),
-            "inputSchema": {"type": "object", "properties": {"patch": patch}, "required": ["patch"], "additionalProperties": false},
+            "description": format!("Order a patch's files by review risk: the sealed deep-diff-forge.rank.v0 document `deep-diff-forge --stdin-patch --rank --json` prints (the daemon's diff.rank). A ranking over 256 KiB comes back as deep-diff-forge.rank-summary.v0 with the same seal: the highest-ranked files that fit, with omitted_files. require_files / require_hunks refuse as the CLI flags do.{UNTRUSTED}"),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "patch": patch,
+                    "require_files": {"type": "boolean", "description": "Refuse a patch with 0 files."},
+                    "require_hunks": {"type": "boolean", "description": "Refuse a patch with 0 hunks or 0 changed lines."},
+                },
+                "required": ["patch"],
+                "additionalProperties": false,
+            },
+            "outputSchema": sealed_output(["deep-diff-forge.rank.v0", "deep-diff-forge.rank-summary.v0"]),
             "annotations": read_only,
         },
         {
@@ -285,6 +327,7 @@ fn tools() -> Value {
                 "required": ["code"],
                 "additionalProperties": false,
             },
+            "outputSchema": exit_entry,
             "annotations": read_only,
         },
         {
@@ -292,6 +335,11 @@ fn tools() -> Value {
             "title": "List deep-diff-forge exit codes",
             "description": "Every exit code the CLI documents, by family.",
             "inputSchema": {"type": "object", "additionalProperties": false},
+            "outputSchema": {
+                "type": "object",
+                "properties": {"codes": {"type": "array", "items": exit_entry}},
+                "required": ["codes"],
+            },
             "annotations": read_only,
         },
     ])
@@ -409,19 +457,22 @@ fn review_tool_with(mut arguments: Map<String, Value>, cap: usize) -> Value {
     }
 }
 
-/// `rank_patch`: the daemon's `diff.plan`, returned in full while it fits `cap`. A larger plan comes
-/// back as a bounded `deep-diff-forge.rank-summary.v0` holding the highest-ranked files that fit:
-/// before, a 5,000-file patch produced an 878 KB answer (Remaining Work 2.8).
+/// `rank_patch`: the daemon's `diff.rank`, the sealed `deep-diff-forge.rank.v0` document, returned
+/// in full while it fits `cap`. A larger ranking comes back as a bounded
+/// `deep-diff-forge.rank-summary.v0` with the same seal, holding the highest-ranked files that fit:
+/// before, a 5,000-file patch produced an 878 KB answer (Remaining Work 2.8). Before 0.3.0's
+/// circle fixes it returned `diff.plan`'s bare array, which the MCP tools specification does not
+/// allow as `structuredContent` and which could not say which bytes it ranked.
 fn rank_tool_with(arguments: Map<String, Value>, cap: usize) -> Value {
-    let plan = match daemon_value("diff.plan", arguments) {
-        Ok(plan) => plan,
+    let document = match daemon_value("diff.rank", arguments) {
+        Ok(document) => document,
         Err(error) => return error,
     };
-    let full_bytes = plan.to_string().len();
+    let full_bytes = document.to_string().len();
     if full_bytes <= cap {
-        return structured(plan);
+        return structured(document);
     }
-    let ranked = plan.as_array().map_or(&[][..], Vec::as_slice);
+    let ranked = document["ranked"].as_array().map_or(&[][..], Vec::as_slice);
     // Room for the summary's own fields, so the whole answer stays within the cap.
     let mut budget = cap.saturating_sub(RANK_SUMMARY_OVERHEAD);
     let kept: Vec<Value> = ranked
@@ -438,6 +489,8 @@ fn rank_tool_with(arguments: Map<String, Value>, cap: usize) -> Value {
         .collect();
     structured(json!({
         "schema": "deep-diff-forge.rank-summary.v0",
+        "input_sha256": document["input_sha256"],
+        "tool": document["tool"],
         "reason": format!("the full ranking is {full_bytes} bytes, over the {cap}-byte cap; these are the highest-ranked files that fit"),
         "full_bytes": full_bytes,
         "total_files": ranked.len(),
@@ -722,17 +775,22 @@ mod tests {
         let full = rank_tool_with(arguments(), usize::MAX);
         let plan = full["structuredContent"].clone();
         let size = plan.to_string().len();
-        assert_eq!(plan.as_array().map(Vec::len), Some(200));
+        assert_eq!(plan["schema"], "deep-diff-forge.rank.v0");
+        assert_eq!(plan["ranked"].as_array().map(Vec::len), Some(200));
         assert_eq!(rank_tool_with(arguments(), size)["structuredContent"], plan);
         let cap = size / 4;
         let over = rank_tool_with(arguments(), cap)["structuredContent"].clone();
         assert_eq!(over["schema"], "deep-diff-forge.rank-summary.v0");
         assert_eq!(over["full_bytes"], size);
+        assert_eq!(
+            (&over["input_sha256"], &over["tool"]),
+            (&plan["input_sha256"], &plan["tool"])
+        );
         assert_eq!(over["total_files"], 200);
         let kept = over["files"].as_array().unwrap();
         assert!(!kept.is_empty() && kept.len() < 200);
         assert_eq!(over["omitted_files"], 200 - kept.len());
-        assert_eq!(kept[..], plan.as_array().unwrap()[..kept.len()]);
+        assert_eq!(kept[..], plan["ranked"].as_array().unwrap()[..kept.len()]);
         assert!(
             over.to_string().len() <= cap,
             "{} > {cap}",
@@ -755,7 +813,7 @@ mod tests {
             map
         };
         let plan = rank_tool_with(arguments(), usize::MAX)["structuredContent"].clone();
-        let entries = plan.as_array().unwrap();
+        let entries = plan["ranked"].as_array().unwrap();
         let fit: usize = entries[..100]
             .iter()
             .map(|entry| entry.to_string().len() + 1)
@@ -914,6 +972,82 @@ mod tests {
         );
     }
 
+    /// Every tool declares an `outputSchema`, and its successful results conform: an object (the
+    /// MCP tools specification requires `structuredContent` to be one), with every required
+    /// member, `enum` and `const`, at every level. Before, `rank_patch` answered with an array.
+    #[test]
+    fn every_tool_result_conforms_to_its_output_schema() {
+        fn conforms(value: &Value, schema: &Value, at: &str) {
+            if schema["type"] == "object" {
+                assert!(value.is_object(), "{at}: {value}");
+            }
+            for key in schema["required"].as_array().into_iter().flatten() {
+                let key = key.as_str().unwrap();
+                assert!(value.get(key).is_some(), "{at}: missing {key} in {value}");
+            }
+            if let Some(allowed) = schema["enum"].as_array() {
+                assert!(allowed.contains(value), "{at}: {value} not in {allowed:?}");
+            }
+            if !schema["const"].is_null() {
+                assert_eq!(value, &schema["const"], "{at}");
+            }
+            if let Some(pattern) = schema["pattern"].as_str() {
+                assert_eq!(pattern, "^[0-9a-f]{64}$");
+                let hex = value.as_str().unwrap();
+                assert!(
+                    hex.len() == 64
+                        && hex
+                            .bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                );
+            }
+            if let Some(properties) = schema["properties"].as_object() {
+                for (key, sub) in properties {
+                    if let Some(member) = value.get(key) {
+                        conforms(member, sub, &format!("{at}.{key}"));
+                    }
+                }
+            }
+            if let (Some(items), Some(values)) = (schema.get("items"), value.as_array()) {
+                for item in values {
+                    conforms(item, items, &format!("{at}[]"));
+                }
+            }
+        }
+        let patch = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        let calls = [
+            ("review_patch", json!({"patch": patch})),
+            ("review_patch", json!({"patch": patch, "detail": "summary"})),
+            ("rank_patch", json!({"patch": patch})),
+            ("explain_exit_code", json!({"code": 7})),
+            ("exit_code_registry", json!({})),
+        ];
+        let tools = tools();
+        for (name, arguments) in calls {
+            let spec = tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap();
+            let result = call_tool(json!({"name": name, "arguments": arguments})).unwrap();
+            assert_eq!(result["isError"], false, "{name}: {result}");
+            conforms(&result["structuredContent"], &spec["outputSchema"], name);
+        }
+        let over = rank_tool_with(json!({"patch": patch}).as_object().unwrap().clone(), 1);
+        let rank = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "rank_patch")
+            .unwrap();
+        conforms(
+            &over["structuredContent"],
+            &rank["outputSchema"],
+            "rank summary",
+        );
+    }
+
     #[test]
     fn every_tool_is_read_only_and_listed_in_a_fixed_order() {
         let tools = tools();
@@ -936,6 +1070,7 @@ mod tests {
             assert_eq!(tool["annotations"]["readOnlyHint"], true, "{tool}");
             assert_eq!(tool["annotations"]["destructiveHint"], false, "{tool}");
             assert_eq!(tool["inputSchema"]["type"], "object", "{tool}");
+            assert_eq!(tool["outputSchema"]["type"], "object", "{tool}");
         }
     }
 

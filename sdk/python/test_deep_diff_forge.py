@@ -19,8 +19,9 @@ BIN = os.environ.get("DDF_BIN", str(REPO / "target" / "debug" / "deep-diff-forge
 PATCH = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n"
 
 
-def cli_review(patch):
-    out = subprocess.run([BIN, "--stdin-patch", "--json"], input=patch, capture_output=True, text=True, check=True)
+def cli_review(patch, *mode):
+    out = subprocess.run([BIN, "--stdin-patch", "--json", *mode], input=patch, capture_output=True, text=True,
+                         check=True)
     return json.loads(out.stdout)
 
 
@@ -29,6 +30,15 @@ class Stdio(unittest.TestCase):
         with ddf.StdioClient((BIN, "rpc")) as client:
             self.assertEqual(client.review_patch(PATCH), cli_review(PATCH))
             self.assertIn("diff.compute", [m["name"] for m in client.methods()])
+
+    def test_rank_patch_matches_the_cli(self):
+        with ddf.StdioClient((BIN, "rpc")) as client:
+            ranked = client.rank_patch(PATCH, require_files=True)
+            self.assertEqual(ranked, cli_review(PATCH, "--rank"))
+            self.assertEqual(ranked["schema"], "deep-diff-forge.rank.v0")
+            with self.assertRaises(ddf.RpcError) as refused:
+                client.rank_patch("", require_files=True)
+            self.assertEqual(refused.exception.code, 7)
 
     def test_errors_keep_their_codes(self):
         with ddf.StdioClient((BIN, "rpc")) as client:
@@ -135,6 +145,7 @@ class Socket(unittest.TestCase):
                             raise
                         time.sleep(0.05)
                 self.assertEqual(client.review_patch(PATCH), cli_review(PATCH))
+                self.assertEqual(client.rank_patch(PATCH), cli_review(PATCH, "--rank"))
                 with self.assertRaises(ddf.RpcError) as failed:
                     client.review_patch("--- a/x\n+++ b/x\n+stray\n")
                 self.assertEqual(failed.exception.code, 4)
