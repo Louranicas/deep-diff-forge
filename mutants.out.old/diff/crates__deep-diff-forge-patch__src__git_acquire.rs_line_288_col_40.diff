@@ -1,0 +1,21 @@
+--- crates/deep-diff-forge-patch/src/git_acquire.rs
++++ replace == with != in filter_names
+@@ -280,17 +280,17 @@
+         1024 * 1024,
+     )?;
+     Ok(neutral_filters(&filter_names(&listing)))
+ }
+ 
+ /// The filter names in `git config --null --name-only` output (`filter.<name>.<key>` records).
+ fn filter_names(listing: &[u8]) -> Vec<String> {
+     let mut names: Vec<String> = Vec::new();
+-    for record in listing.split(|&b| b == 0 || b == b'\n') {
++    for record in listing.split(|&b| b != /* ~ changed by cargo-mutants ~ */ 0 || b == b'\n') {
+         let key = String::from_utf8_lossy(record);
+         if let Some(name) = key
+             .strip_prefix("filter.")
+             .and_then(|rest| rest.rsplit_once('.'))
+             .map(|(name, _)| name.to_owned())
+             && !names.contains(&name)
+         {
+             names.push(name);

@@ -1,0 +1,183 @@
+
+*** crates/deep-diff-forge-patch/src/git_acquire.rs:508:5: replace repository_dirs -> Result<RepositoryDirs, GitAcquireError> with Ok(Default::default())
+
+*** mutation diff:
+--- crates/deep-diff-forge-patch/src/git_acquire.rs
++++ replace repository_dirs -> Result<RepositoryDirs, GitAcquireError> with Ok(Default::default())
+@@ -500,56 +500,17 @@
+ /// Resolve [`RepositoryDirs`] for the repository containing `repo`, every path canonical.
+ ///
+ /// # Errors
+ /// Any [`GitAcquireError`] from running Git or resolving its answer.
+ pub fn repository_dirs(
+     repo: &Path,
+     options: &GitAcquireOptions,
+ ) -> Result<RepositoryDirs, GitAcquireError> {
+-    let runner = Runner {
+-        options,
+-        cwd: repo.to_path_buf(),
+-        deadline: deadline_after(options.time_limit),
+-        config_env: Vec::new(),
+-    };
+-    let out = runner.run(
+-        "git rev-parse",
+-        &[
+-            OsStr::new("rev-parse"),
+-            OsStr::new("--show-toplevel"),
+-            OsStr::new("--absolute-git-dir"),
+-            OsStr::new("--git-common-dir"),
+-        ],
+-        &[0],
+-        64 * 1024,
+-    )?;
+-    let text = String::from_utf8(out).map_err(|_| GitAcquireError::InvalidSelection {
+-        detail: "the repository's directories are not UTF-8".to_owned(),
+-    })?;
+-    let lines: Vec<&str> = text.lines().collect();
+-    let [top, git_dir, common] = lines[..] else {
+-        return Err(GitAcquireError::InvalidSelection {
+-            detail: "git rev-parse did not name the repository's directories".to_owned(),
+-        });
+-    };
+-    let canonical = |path: PathBuf| {
+-        std::fs::canonicalize(&path).map_err(|e| GitAcquireError::InvalidSelection {
+-            detail: format!("cannot resolve {}: {e}", path.display()),
+-        })
+-    };
+-    let top = canonical(PathBuf::from(top))?;
+-    // A relative common directory is relative to the directory Git ran in.
+-    let common_dir = canonical(repo.join(common))?;
+-    Ok(RepositoryDirs {
+-        has_alternates: common_dir.join("objects/info/alternates").exists(),
+-        top,
+-        git_dir: canonical(PathBuf::from(git_dir))?,
+-        common_dir,
+-    })
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Acquire `selection` from the repository containing `repo`.
+ ///
+ /// Read-only: no index refresh (`--no-optional-locks`), no `git add -N`, no
+ /// hooks, no external diff drivers.
+ ///
+ /// # Errors
+
+
+*** /var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --workspace
+    Blocking waiting for file lock on package cache
+       Fresh unicode-ident v1.0.24
+       Fresh itoa v1.0.18
+       Fresh memchr v2.8.2
+       Dirty deep-diff-forge-patch v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/crates/deep-diff-forge-patch): the file `crates/deep-diff-forge-patch/src/git_acquire.rs` has changed (1793194908.974513711s, 46s after last build at 1793194862.514808045s)
+   Compiling deep-diff-forge-patch v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/crates/deep-diff-forge-patch)
+       Fresh bitflags v2.13.0
+       Fresh equivalent v1.0.2
+       Fresh unicode-segmentation v1.13.3
+       Fresh find-msvc-tools v0.1.9
+       Fresh linux-raw-sys v0.12.1
+       Fresh shlex v2.0.1
+       Fresh cfg-if v1.0.4
+       Fresh unicode-width v0.2.0
+       Fresh proc-macro2 v1.0.106
+       Fresh zmij v1.0.21
+       Fresh libc v0.2.186
+       Fresh rustix v1.1.4
+       Fresh cc v1.2.65
+       Fresh indexmap v2.14.0
+       Fresh aho-corasick v1.1.4
+       Fresh regex-syntax v0.8.11
+       Fresh streaming-iterator v0.1.9
+       Fresh foldhash v0.2.0
+       Fresh allocator-api2 v0.2.21
+       Fresh quote v1.0.45
+       Fresh serde_core v1.0.228
+       Fresh regex-automata v0.4.14
+       Fresh tree-sitter-language v0.1.7
+       Fresh strsim v0.11.1
+       Fresh ident_case v1.0.1
+       Fresh errno v0.3.14
+       Fresh heck v0.5.0
+       Fresh either v1.16.0
+       Fresh syn v2.0.118
+       Fresh serde_json v1.0.150
+       Fresh regex v1.12.4
+       Fresh syn v3.0.4
+       Fresh rustversion v1.0.22
+       Fresh signal-hook-registry v1.4.8
+       Fresh itertools v0.14.0
+       Fresh hashbrown v0.16.1
+       Fresh hashbrown v0.17.1
+       Fresh convert_case v0.10.0
+       Fresh ryu v1.0.23
+       Fresh log v0.4.33
+       Fresh serde_derive v1.0.228
+       Fresh tree-sitter-rust v0.24.2
+       Fresh darling_core v0.23.0
+       Fresh thiserror-impl v2.0.20
+       Fresh castaway v0.2.4
+       Fresh strum_macros v0.28.0
+       Fresh scopeguard v1.2.0
+       Fresh static_assertions v1.1.0
+       Fresh smallvec v1.15.2
+       Fresh mio v1.2.1
+       Fresh signal-hook v0.3.18
+       Fresh unicode-truncate v2.0.1
+       Fresh derive_more-impl v2.1.1
+       Fresh lru v0.18.4
+       Fresh serde v1.0.228
+       Fresh thiserror v2.0.20
+       Fresh darling_macro v0.23.0
+       Fresh lock_api v0.4.14
+       Fresh compact_str v0.9.1
+       Fresh parking_lot_core v0.9.12
+       Fresh strum v0.28.0
+       Fresh critical-section v1.2.0
+       Fresh cfg_aliases v0.2.2
+       Fresh litrs v1.0.0
+       Fresh indoc v2.0.7
+       Fresh signal-hook-mio v0.2.5
+       Fresh derive_more v2.1.1
+       Fresh line-clipping v0.3.8
+       Fresh tree-sitter v0.25.10
+       Fresh darling v0.23.0
+       Fresh kasuari v0.4.12
+       Fresh parking_lot v0.12.5
+       Fresh document-features v0.2.12
+       Fresh deep-diff-forge-core v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/crates/deep-diff-forge-core)
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name deep_diff_forge_patch --edition=2024 crates/deep-diff-forge-patch/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --cfg 'feature="default"' --cfg 'feature="json"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "json"))' -C metadata=d4fa04362c235c60 -C extra-filename=-4bc6ffc1f49bea65 --out-dir /tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rmeta`
+       Fresh ratatui-core v0.1.2
+       Fresh instability v0.3.12
+       Fresh crossterm v0.29.0
+       Fresh deep-diff-forge-learning v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/crates/deep-diff-forge-learning)
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name deep_diff_forge_patch --edition=2024 crates/deep-diff-forge-patch/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --test --cfg 'feature="default"' --cfg 'feature="json"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "json"))' -C metadata=ab5337948a79fccb -C extra-filename=-18765affac0dbf87 --out-dir /tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rlib`
+       Fresh nix v0.31.3
+       Fresh ratatui-widgets v0.3.2
+       Fresh ratatui-crossterm v0.1.2
+       Fresh deep-diff-forge-syntax v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/crates/deep-diff-forge-syntax)
+       Fresh ratatui v0.30.2
+       Fresh deep-diff-forge-review v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/crates/deep-diff-forge-review)
+error[E0277]: the trait bound `RepositoryDirs: Default` is not satisfied
+   --> crates/deep-diff-forge-patch/src/git_acquire.rs:508:8
+    |
+508 |     Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+    |        ^^^^^^^^^^^^^^^^^^ the trait `Default` is not implemented for `RepositoryDirs`
+    |
+help: consider annotating `RepositoryDirs` with `#[derive(Default)]`
+    |
+489 + #[derive(Default)]
+490 | pub struct RepositoryDirs {
+    |
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `deep-diff-forge-patch` (lib) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name deep_diff_forge_patch --edition=2024 crates/deep-diff-forge-patch/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --cfg 'feature="default"' --cfg 'feature="json"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "json"))' -C metadata=d4fa04362c235c60 -C extra-filename=-4bc6ffc1f49bea65 --out-dir /tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rmeta` (exit status: 1)
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `deep-diff-forge-patch` (lib test) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name deep_diff_forge_patch --edition=2024 crates/deep-diff-forge-patch/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --test --cfg 'feature="default"' --cfg 'feature="json"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "json"))' -C metadata=ab5337948a79fccb -C extra-filename=-18765affac0dbf87 --out-dir /tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-Z4aIhj.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rlib` (exit status: 1)
+
+*** result: Failure(101)
