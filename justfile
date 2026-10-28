@@ -52,17 +52,17 @@ fmt:
 # Compile the full workspace.
 [group("quality")]
 check:
-    cargo check --workspace
+    cargo check --workspace --locked
 
 # Run clippy with warnings denied.
 [group("quality")]
 clippy:
-    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets --locked -- -D warnings
 
 # Run pedantic clippy with warnings denied.
 [group("quality")]
 pedantic:
-    cargo clippy --workspace --all-targets -- -D warnings -W clippy::pedantic
+    cargo clippy --workspace --all-targets --locked -- -D warnings -W clippy::pedantic
 
 # Run workspace tests.
 [group("quality")]
@@ -94,7 +94,7 @@ gate-feature: fmt check clippy pedantic test contracts
 # Build docs the way docs.rs will, failing on a broken intra-doc link.
 [group("quality")]
 docs:
-    RUSTDOCFLAGS="-D warnings -D rustdoc::broken_intra_doc_links" cargo doc --workspace --no-deps
+    RUSTDOCFLAGS="-D warnings -D rustdoc::broken_intra_doc_links" cargo doc --workspace --no-deps --locked
 
 # Local replica of every CI gate job, step for step (anchor B-07; checked by tests/ci_replica.rs).
 [group("gates")]
@@ -137,6 +137,12 @@ release-tag version:
       exit 1
     fi
     just gate-release
+    # The gate must not have changed the tree (a rewritten Cargo.lock, a regenerated file):
+    # the tag names the commit that was gated.
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+      echo "the release gate changed the working tree; commit or discard before tagging" >&2
+      exit 1
+    fi
     git tag -a "v${want}" -m "v${want}"
     git push origin "v${want}"
     git push gitlab "v${want}"
