@@ -109,3 +109,56 @@ fn probe_status_bar_advertises_the_viewed_key_and_progress() {
         "a fresh review should report 0 of 2 reviewed"
     );
 }
+
+/// An unknown `--cmd` name is a usage error that names the commands there are. Before, it fell
+/// through to the first command (`rank`) and exited 0, so a typo looked like an answer.
+#[test]
+fn an_unknown_palette_command_is_refused() {
+    let (code, stdout, stderr) = run(&["review", "--probe", "--cmd", "rnak"], PATCH);
+    assert_eq!(code, 2, "{stderr}");
+    assert_eq!(stdout, "");
+    assert!(stderr.contains("unknown review command rnak;"), "{stderr}");
+    assert!(
+        stderr
+            .contains("rank, outline, cluster, summary, notes, review, daemon, learning, maturity"),
+        "{stderr}"
+    );
+}
+
+/// Every documented command name, and the full `review json` label, opens its own panel.
+#[test]
+fn each_palette_command_opens_its_own_panel() {
+    for (name, title) in [
+        ("rank", "rank"),
+        ("outline", "outline"),
+        ("maturity", "maturity"),
+        ("review json", "review"),
+    ] {
+        let (code, stdout, stderr) = run(
+            &["review", "--probe", "--cols", "120", "--cmd", name],
+            PATCH,
+        );
+        assert_eq!(code, 0, "{name}: {stderr}");
+        assert!(stdout.contains(&format!("╭ {title}")), "{name}:\n{stdout}");
+    }
+}
+
+/// A probe size that is not a number is a usage error; before, it silently became the default.
+#[test]
+fn a_probe_size_that_is_not_a_number_is_refused() {
+    for flag in ["--cols", "--rows"] {
+        let (code, stdout, stderr) = run(&["review", "--probe", flag, "wide"], PATCH);
+        assert_eq!(code, 2, "{flag}: {stderr}");
+        assert_eq!(stdout, "");
+        assert!(
+            stderr.contains(&format!(
+                "{flag} takes a number of terminal cells, not wide"
+            )),
+            "{stderr}"
+        );
+    }
+    let (code, stdout, _) = run(&["review", "--probe", "--cols", "50", "--rows", "9"], PATCH);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.lines().count(), 9);
+    assert!(stdout.lines().all(|l| l.chars().count() <= 50));
+}

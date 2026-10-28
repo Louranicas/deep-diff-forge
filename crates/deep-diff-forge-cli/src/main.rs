@@ -95,13 +95,17 @@ fn main() {
                 std::process::exit(exit::COUNCIL_REFUSED);
             }
         },
-        Some("analyze") => match analysis::run(&args.collect::<Vec<_>>()) {
-            Ok(json) => emit(&json),
-            Err(error) => {
-                eprintln!("error: {error}");
-                std::process::exit(exit::INVALID_INPUT);
+        Some("analyze") => {
+            let rest: Vec<String> = args.collect();
+            analyze_paths_or_exit(&rest);
+            match analysis::run(&rest) {
+                Ok(json) => emit(&json),
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    std::process::exit(exit::INVALID_INPUT);
+                }
             }
-        },
+        }
         Some("semantic") => {
             let rest: Vec<String> = args.collect();
             semantic_cmd(&rest);
@@ -616,6 +620,11 @@ fn review_cmd(opts: &[String]) {
         },
         "deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME]",
     );
+    // An unknown command name or a size that is not a number is refused before stdin is read.
+    // Before, the name fell through to `rank` and the size to its default, both with exit 0.
+    let command = flag_value(opts, "--cmd").map(|name| palette_index_or_exit(&name));
+    let cols = probe_size_or_exit(opts, "--cols", 100).max(40);
+    let rows = probe_size_or_exit(opts, "--rows", 30).max(8);
 
     let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
     let files = parse_or_exit(&input);
@@ -631,22 +640,14 @@ fn review_cmd(opts: &[String]) {
     }
     // `--cmd <name>` runs a palette command and shows its panel; `--palette`
     // opens the palette. Both give headless access to the in-cockpit commands.
-    if let Some(name) = flag_value(opts, "--cmd") {
-        open_palette_command(&mut app, &name);
+    if let Some(index) = command {
+        open_palette_command(&mut app, index);
     } else if opts.iter().any(|a| a == "--palette") {
         app.handle(deep_diff_forge_tui::AppEvent::OpenPalette);
     }
     if opts.iter().any(|a| a == "--probe") {
         // Probe size is configurable so callers can render a roomy frame; the
         // floor keeps the layout from degenerating on absurd inputs.
-        let cols = flag_value(opts, "--cols")
-            .and_then(|s| s.parse::<u16>().ok())
-            .unwrap_or(100)
-            .max(40);
-        let rows = flag_value(opts, "--rows")
-            .and_then(|s| s.parse::<u16>().ok())
-            .unwrap_or(30)
-            .max(8);
         for line in deep_diff_forge_tui::render_to_lines(&app, cols, rows) {
             emitln!("{line}");
         }
@@ -681,18 +682,48 @@ COMMAND NAMES:
     );
 }
 
-/// Open the palette, move to the command whose label matches `name` (by full
-/// label or first word), and run it — leaving the app on that command's panel.
-fn open_palette_command(app: &mut deep_diff_forge_tui::ReviewApp, name: &str) {
-    use deep_diff_forge_tui::{AppEvent, Command};
-    app.handle(AppEvent::OpenPalette);
-    let target = Command::all()
+/// The palette position of the command whose label matches `name` (by full label or first
+/// word), or a usage error naming the commands there are.
+fn palette_index_or_exit(name: &str) -> usize {
+    let commands = deep_diff_forge_tui::Command::all();
+    commands
         .iter()
-        .position(|c| c.label() == name || c.label().split(' ').next() == Some(name));
-    if let Some(index) = target {
-        for _ in 0..index {
-            app.handle(AppEvent::Next);
-        }
+        .position(|c| c.label() == name || c.label().split(' ').next() == Some(name))
+        .unwrap_or_else(|| {
+            let names: Vec<&str> = commands
+                .iter()
+                .filter_map(|c| c.label().split(' ').next())
+                .collect();
+            eprintln!(
+                "error: unknown review command {}; expected one of: {}",
+                display_safe(name),
+                names.join(", ")
+            );
+            std::process::exit(exit::USAGE);
+        })
+}
+
+/// The value of a probe size flag, `default` when it is absent, or a usage error when it is
+/// not a number from 0 to 65535.
+fn probe_size_or_exit(opts: &[String], flag: &str, default: u16) -> u16 {
+    flag_value(opts, flag).map_or(default, |value| {
+        value.parse().unwrap_or_else(|_| {
+            eprintln!(
+                "error: {flag} takes a number of terminal cells, not {}",
+                display_safe(&value)
+            );
+            std::process::exit(exit::USAGE);
+        })
+    })
+}
+
+/// Open the palette, move to the command at `index`, and run it — leaving the app on that
+/// command's panel.
+fn open_palette_command(app: &mut deep_diff_forge_tui::ReviewApp, index: usize) {
+    use deep_diff_forge_tui::AppEvent;
+    app.handle(AppEvent::OpenPalette);
+    for _ in 0..index {
+        app.handle(AppEvent::Next);
     }
     app.handle(AppEvent::Select);
 }
@@ -1114,15 +1145,42 @@ fn run_jsonl_pipeline(input: String) {
     }
 }
 
-/// Parse `--parallel serial|auto|<n>` into a `Parallelism` (default Auto).
+/// Exit 2 unless `analyze` was given exactly its three paths and no options. Before, a missing
+/// path exited 4, which tells a caller to change the input instead of the command line.
+fn analyze_paths_or_exit(rest: &[String]) {
+    const USAGE: &str =
+        "deep-diff-forge analyze <patch-file> <base-directory> <candidate-directory>";
+    let spec = args::Spec {
+        flags: &[],
+        valued: &[],
+        positionals: 3,
+    };
+    let given = args::admit_or_exit(rest, &spec, USAGE).len();
+    if given != 3 {
+        eprintln!("error: analyze takes 3 paths, got {given}");
+        eprintln!("usage: {USAGE}");
+        std::process::exit(exit::USAGE);
+    }
+}
+
+/// Parse `--parallel serial|auto|<n>` into a `Parallelism` (default Auto); anything else is a
+/// usage error. Before, an unreadable count quietly became `auto`, and 0 was reported as
+/// `fixed:0` while one worker ran.
 fn parse_parallelism(opts: &[String]) -> deep_diff_forge_core::Parallelism {
     use deep_diff_forge_core::Parallelism;
     match flag_value(opts, "--parallel").as_deref() {
         Some("serial") => Parallelism::Serial,
         Some("auto") | None => Parallelism::Auto,
-        Some(n) => n
-            .parse::<u16>()
-            .map_or(Parallelism::Auto, Parallelism::Fixed),
+        Some(n) => match n.parse::<u16>() {
+            Ok(workers) if workers > 0 => Parallelism::Fixed(workers),
+            _ => {
+                eprintln!(
+                    "error: --parallel takes serial, auto or a worker count from 1, not {}",
+                    display_safe(n)
+                );
+                std::process::exit(exit::USAGE);
+            }
+        },
     }
 }
 
@@ -1301,10 +1359,11 @@ USAGE:
 
 MATURITY:
   L9 Learning. All engine layers L0-L8 are implemented; the L9 learning loop
-  records local-only strategy receipts (learn status|record) and scores them to
-  trust planner/ranking/annotation defaults — never uploading source, never
-  mutating patch truth. Tagged releases are cut to GitHub (binary + checksums)
-  and both git remotes (deploy release --json reports the per-target posture).
+  records local-only strategy receipts (learn status|record) and scores them,
+  reporting whether a learned default would be trusted; no engine default reads
+  the scores yet. It never uploads source and never mutates patch truth.
+  Tagged releases are cut to GitHub (binary + checksums) and both git remotes
+  (deploy release --json reports the per-target posture).
   crates.io publication is on hold until the codebase is production-ready; a
   configured registry token does not lift the hold.
 
@@ -1460,7 +1519,7 @@ GUARANTEES:
   - chainable commands read stdin only when an explicit stdin flag is present.
   - stdout carries primary records; stderr carries diagnostics and progress.
   - JSON output is one complete document; JSONL output is one event per line.
-  - every streamed record has stable ids and a schema version.
+  - every JSON document names its schema; every JSONL record names its event.
   - pipe failures exit non-zero without truncating a valid final JSON document.
 
 PLANNED MODES:
