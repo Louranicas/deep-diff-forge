@@ -3,8 +3,8 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-daemon--serve
 use crate::handler::{Engine, dispatch};
 use crate::protocol::{
-    INTERNAL_ERROR, INVALID_REQUEST, PARSE_ERROR, RpcError, error_response, parse_request,
-    success_response,
+    INTERNAL_ERROR, INVALID_REQUEST, PARSE_ERROR, RESOURCE_EXHAUSTED, RpcError, error_response,
+    parse_request, success_response,
 };
 use crate::security::{
     SECURE_DIR_MODE, SECURE_SOCKET_MODE, SocketError, default_socket_path, ensure_runtime_dir,
@@ -131,7 +131,8 @@ impl SocketLocation {
 /// service).
 pub const MAX_REQUEST_BYTES: usize = 80 * 1024 * 1024;
 
-/// Maximum bytes accepted from a daemon response by the client helper.
+/// Maximum bytes of one response line, newline excluded: the server never sends more (see
+/// [`bounded_response`]) and the client helper never accepts more.
 const MAX_RESPONSE_BYTES: usize = MAX_REQUEST_BYTES;
 
 /// Maximum number of connection worker threads alive at once.
@@ -166,7 +167,9 @@ pub fn process_line(line: &str, engine: &Mutex<Engine>) -> String {
                 dispatch(&request, &mut guard)
             }));
             match outcome {
-                Ok(Ok(result)) => success_response(&id, result),
+                Ok(Ok(result)) => {
+                    bounded_response(&id, success_response(&id, result), MAX_RESPONSE_BYTES)
+                }
                 Ok(Err(err)) => error_response(&id, &err),
                 Err(_) => {
                     recover(engine);
@@ -217,6 +220,20 @@ pub fn read_capped_line<R: BufRead>(
 ) -> std::io::Result<usize> {
     use std::io::Read as _;
     reader.take(cap as u64 + 1).read_until(b'\n', buf)
+}
+
+/// `response`, or a `RESOURCE_EXHAUSTED` error for `id` when it is longer than `cap`. Before, the
+/// server sent any size and the client refused lines over the cap, so a large `diff.compute`
+/// succeeded on the server and failed at the client with no error a caller could act on.
+fn bounded_response(id: &Value, response: String, cap: usize) -> String {
+    if response.len() <= cap {
+        return response;
+    }
+    let message = format!(
+        "the response is {} bytes, over the {cap}-byte line cap; request less (a smaller patch, or diff.plan)",
+        response.len()
+    );
+    error_response(id, &RpcError::new(RESOURCE_EXHAUSTED, message))
 }
 
 /// Read one bounded line from a socket under an absolute deadline.
@@ -1198,6 +1215,25 @@ mod tests {
     // -------------------------------------------------------------------------
     // Size caps, error-kind guards, and accept-loop error handling
     // -------------------------------------------------------------------------
+
+    /// A response at the cap is sent as it is; one byte over becomes an error for the same id.
+    #[test]
+    fn the_server_never_sends_a_response_over_the_cap() {
+        let id = Value::from(9);
+        let response = success_response(&id, Value::from("x".repeat(100)));
+        let cap = response.len();
+        assert_eq!(bounded_response(&id, response.clone(), cap), response);
+        let refused: Value =
+            serde_json::from_str(&bounded_response(&id, response.clone(), cap - 1)).unwrap();
+        assert_eq!(refused["id"], 9);
+        assert_eq!(refused["error"]["code"], RESOURCE_EXHAUSTED);
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("{cap} bytes"))
+        );
+    }
 
     #[test]
     fn request_and_response_caps_are_80_mib() {
