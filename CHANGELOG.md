@@ -60,6 +60,16 @@ independent false-positive checker before a fix.
 - **The daemon refuses params a method does not take**, so a misspelt guard such as
   `require_file` no longer passes an empty review. MCP enforces its schema enums.
 - `highlight` keeps line breaks without colour too (the earlier fix covered only colour).
+- **View pages hold their budget on every surface.** Each was reproduced before the fix:
+  - A 200 KB `@@` heading made a 1 KiB page 200,616 bytes and repeated on every continuation
+    page. A view now carries at most 256 bytes of a heading, flagged `section_truncated`
+    (`review.v0` keeps it whole).
+  - MCP view answers ran to 1.39× `max_bytes`, because the escaped text copy grows past half.
+    They are now re-paged smaller (`views::fit_emitted`) until the whole result fits.
+  - The CLI printed views indented but budgeted them compact (4,688 bytes for
+    `--max-bytes 4096`). It now prints the daemon's one-line page.
+- **A path or address selects every match.** `paths` returned only the first section of a path
+  that a concatenated patch names twice, and `addresses` the first of two identical hunks.
 
 ### Added (agent batteries)
 
