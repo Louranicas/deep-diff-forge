@@ -16,12 +16,16 @@ fn run(args: &[&str], stdin: &str) -> (i32, String, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn");
-    child
+    // A command that refuses its arguments exits without reading stdin, closing the pipe first;
+    // that is not a failure (the exit code is what is checked). Any other write error is.
+    if let Err(error) = child
         .stdin
         .take()
         .expect("stdin")
         .write_all(stdin.as_bytes())
-        .expect("write");
+    {
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error}");
+    }
     let out = child.wait_with_output().expect("wait");
     (
         out.status.code().unwrap_or(-1),
