@@ -474,6 +474,18 @@ fn call_tool(mut params: Value, allowed: &[std::path::PathBuf]) -> Result<Value,
     {
         return Ok(tool_error(&format!("unknown argument: {extra}")));
     }
+    // An argument the schema limits to an enum takes only those values: `review_change` with
+    // `view: "review"` returned 6.4 MB past its budget (bug hunt 2026-10-28, H2-03).
+    for (key, value) in &arguments {
+        if let Some(allowed) = spec["inputSchema"]["properties"][key.as_str()]["enum"].as_array()
+            && !allowed.contains(value)
+        {
+            return Ok(tool_error(&format!(
+                "{key} must be one of {}",
+                Value::Array(allowed.clone())
+            )));
+        }
+    }
     Ok(match name.as_str() {
         "review_patch" => review_tool(arguments),
         "rank_patch" => rank_tool_with(arguments, REVIEW_FULL_CAP),
@@ -1270,7 +1282,14 @@ mod tests {
                 }
             }
             assert!(pages > 1, "{name} paged");
-            for bad in [json!(MCP_MIN_BYTES - 1), json!(-1), json!("big")] {
+            assert_eq!((MCP_MIN_BYTES, MCP_MAX_BYTES), (2048, 33_554_432));
+            for bad in [
+                json!(2047),
+                json!(33_554_433),
+                json!(1_u64 << 40),
+                json!(-1),
+                json!("big"),
+            ] {
                 let result = call_tool(
                     json!({"name": name, "arguments": {"patch": patch, "max_bytes": bad}}),
                     &[],
@@ -1278,6 +1297,34 @@ mod tests {
                 .unwrap();
                 assert_eq!(result["isError"], true, "{name} {bad}");
             }
+        }
+    }
+
+    /// An argument outside its schema enum is a tool error: `view: "review"` once returned 6.4 MB
+    /// past the budget (bug hunt 2026-10-28, H2-03).
+    #[test]
+    fn enum_arguments_are_checked_against_the_schema() {
+        for (name, arguments) in [
+            (
+                "review_change",
+                json!({"repo": ".", "selection": "staged", "view": "review"}),
+            ),
+            (
+                "review_change",
+                json!({"repo": ".", "selection": "everything"}),
+            ),
+            ("review_patch", json!({"patch": "", "detail": "full"})),
+            ("explain_exit_code", json!({"code": 7, "family": "other"})),
+        ] {
+            let result = call_tool(json!({"name": name, "arguments": arguments}), &[]).unwrap();
+            assert_eq!(result["isError"], true, "{name}: {result}");
+            assert!(
+                result["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("must be one of"),
+                "{result}"
+            );
         }
     }
 

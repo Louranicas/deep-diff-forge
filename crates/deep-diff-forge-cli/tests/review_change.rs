@@ -200,3 +200,111 @@ fn allow_repo_is_checked_where_it_is_given() {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("only to `daemon start`"));
 }
+
+/// A `.git` file inside an allowed root that points at a repository outside it, and a repository
+/// that borrows objects through `objects/info/alternates`, are refused before anything is read
+/// (bug hunt 2026-10-28, H2-02).
+#[test]
+fn git_directories_outside_the_root_are_refused() {
+    let (inside, outside) = (repo("gitfile-in"), repo("gitfile-out"));
+    let link = inside.0.join("sub/escape");
+    std::fs::create_dir_all(&link).unwrap();
+    std::fs::write(
+        link.join(".git"),
+        format!("gitdir: {}\n", outside.0.join(".git").display()),
+    )
+    .unwrap();
+    let mut engine = allowing(&[&inside.0]);
+    let escaped = call(&mut engine, &json!({"repo": link, "selection": "staged"})).unwrap_err();
+    assert!(
+        escaped.message.contains("Git directory"),
+        "{}",
+        escaped.message
+    );
+    let alternates = inside.0.join(".git/objects/info/alternates");
+    std::fs::write(
+        &alternates,
+        format!("{}\n", outside.0.join(".git/objects").display()),
+    )
+    .unwrap();
+    let borrowed = call(
+        &mut engine,
+        &json!({"repo": inside.0, "selection": "staged"}),
+    )
+    .unwrap_err();
+    assert!(
+        borrowed.message.contains("alternates"),
+        "{}",
+        borrowed.message
+    );
+}
+
+/// A param a method does not take is refused, not ignored: a misspelt `require_file` let an empty
+/// review pass (bug hunt 2026-10-28, H5-01).
+#[test]
+fn unknown_params_are_refused() {
+    let line = json!({"method": "diff.compute", "params": {"patch": "", "require_file": true}})
+        .to_string();
+    let err = dispatch(&parse_request(&line).unwrap(), &mut Engine::new()).unwrap_err();
+    assert_eq!(err.code, INVALID_PARAMS);
+    assert!(err.message.contains("require_file"), "{}", err.message);
+    let r = repo("unknown");
+    let mut engine = allowing(&[&r.0]);
+    let typo = call(
+        &mut engine,
+        &json!({"repo": r.0, "selection": "staged", "max_byte": 1}),
+    )
+    .unwrap_err();
+    assert!(typo.message.contains("max_byte"), "{}", typo.message);
+}
+
+/// `mcp --allow-repo` and `rpc --allow-repo` really grant the roots they name: the binary serves a
+/// staged change through MCP `review_change` and JSON-RPC `review.change`.
+#[test]
+fn the_servers_grant_the_roots_they_are_given() {
+    use std::io::Write as _;
+    let r = repo("served");
+    let root = r.0.to_str().unwrap();
+    let serve = |args: &[&str], lines: &[Value]| -> Vec<Value> {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        for line in lines {
+            writeln!(input, "{line}").unwrap();
+        }
+        drop(input);
+        let out = child.wait_with_output().unwrap();
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    };
+    let rpc = serve(
+        &["rpc", "--allow-repo", root],
+        &[
+            json!({"jsonrpc": "2.0", "id": 1, "method": "review.change", "params": {"repo": root, "selection": "staged"}}),
+        ],
+    );
+    assert_eq!(
+        rpc[0]["result"]["files"][0]["path"], "src/lib.rs",
+        "{}",
+        rpc[0]
+    );
+    let mcp = serve(
+        &["mcp", "--allow-repo", root],
+        &[
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "review_change", "arguments": {"repo": root, "selection": "staged"}}}),
+        ],
+    );
+    assert_eq!(mcp[1]["result"]["isError"], false, "{}", mcp[1]);
+    assert_eq!(
+        mcp[1]["result"]["structuredContent"]["files"][0]["path"],
+        "src/lib.rs"
+    );
+}

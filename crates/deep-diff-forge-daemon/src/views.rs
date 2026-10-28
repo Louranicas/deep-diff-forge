@@ -479,7 +479,8 @@ mod tests {
             let mut order = Vec::new();
             let mut cursor = None;
             for _ in 0..10_000 {
-                let answer = hunks(&review, &Selection::All, &page(max_bytes, cursor)).unwrap();
+                let answer =
+                    hunks(&review, &Selection::All, &page(max_bytes, cursor.clone())).unwrap();
                 let bytes = answer.to_string().len();
                 let entries = answer["hunks"].as_array().unwrap();
                 assert!(!entries.is_empty(), "a page always makes progress");
@@ -497,7 +498,12 @@ mod tests {
                         order.push(address);
                     }
                 }
-                cursor = answer["next_cursor"].as_str().map(str::to_owned);
+                let next = answer["next_cursor"].as_str().map(str::to_owned);
+                assert!(
+                    next.is_none() || next != cursor,
+                    "a page always moves the cursor"
+                );
+                cursor = next;
                 if cursor.is_none() {
                     break;
                 }
@@ -522,7 +528,7 @@ mod tests {
             let mut seen = Vec::new();
             let mut cursor = None;
             loop {
-                let answer = outline(&review, &page(max_bytes, cursor)).unwrap();
+                let answer = outline(&review, &page(max_bytes, cursor.clone())).unwrap();
                 assert!(answer.to_string().len() <= max_bytes, "budget {max_bytes}");
                 assert!(!answer.to_string().contains("LINE 1"), "no line text");
                 assert_eq!(answer["summary"]["hunks"], expected.len());
@@ -531,7 +537,12 @@ mod tests {
                         seen.push(hunk["address"].as_str().unwrap().to_owned());
                     }
                 }
-                cursor = answer["next_cursor"].as_str().map(str::to_owned);
+                let next = answer["next_cursor"].as_str().map(str::to_owned);
+                assert!(
+                    next.is_none() || next != cursor,
+                    "a page always moves the cursor"
+                );
+                cursor = next;
                 if cursor.is_none() {
                     break;
                 }
@@ -540,6 +551,25 @@ mod tests {
             assert_eq!(seen.len(), unique.len(), "no repeats, budget {max_bytes}");
             assert_eq!(unique, expected, "budget {max_bytes}");
         }
+    }
+
+    /// The defaults and the counts are exact: a 64 KiB page, and each hunk's and the summary's
+    /// additions and deletions as the lines say.
+    #[test]
+    fn budgets_and_counts_are_exact() {
+        assert_eq!(Page::default().max_bytes, 65_536);
+        assert_eq!((MIN_MAX_BYTES, MAX_MAX_BYTES), (1024, 16_777_216));
+        let review = review("--- a/x\n+++ b/x\n@@ -1,3 +1,5 @@\n a\n-b\n+c\n+d\n+e\n f\n");
+        let answer = outline(&review, &Page::default()).unwrap();
+        let hunk = &answer["files"][0]["hunks"][0];
+        assert_eq!(
+            (&hunk["additions"], &hunk["deletions"]),
+            (&json!(3), &json!(1))
+        );
+        assert_eq!(
+            answer["summary"],
+            json!({"files": 1, "hunks": 1, "additions": 3, "deletions": 1})
+        );
     }
 
     /// The outline puts the riskiest file first, as `rank` does.

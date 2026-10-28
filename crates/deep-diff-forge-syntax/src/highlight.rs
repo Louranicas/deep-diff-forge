@@ -213,7 +213,8 @@ fn flatten(mut raw: Vec<HighlightSpan>) -> Vec<HighlightSpan> {
 /// feeds themselves. A line feed only moves to the next line, so it is safe to print,
 /// and escaping it (as `\x0a`) printed a whole source file on one line. Every other
 /// control character, including a carriage return, is still escaped.
-fn display_safe_lines(text: &str) -> String {
+#[must_use]
+pub fn display_safe_lines(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for (i, line) in text.split('\n').enumerate() {
         if i > 0 {

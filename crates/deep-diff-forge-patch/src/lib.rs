@@ -35,7 +35,10 @@ mod sealed;
 mod json;
 
 pub use decode::{DecodedPatch, decode};
-pub use git_acquire::{GitAcquireOptions, GitAcquisition, GitSelection, acquire as acquire_git};
+pub use git_acquire::{
+    GitAcquireOptions, GitAcquisition, GitSelection, RepositoryDirs, acquire as acquire_git,
+    repository_dirs,
+};
 pub use git_raw::{
     GitAcquireError, GitChange, GitChangeKind, GitChangeOrigin, GitPath, StructuredDiff,
 };

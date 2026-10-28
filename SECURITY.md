@@ -316,9 +316,15 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
   and the views, and the `hazardous_text` risk signal. The patch text itself is never rewritten.
   The flags are objective: no list of "instruction-like" words, so an unflagged line is not
   thereby safe.
+- **A repository's own filters never run.** Git acquisition turns off every content filter
+  (`clean`, `smudge`, `process`) that the repository's local configuration defines, so reviewing a
+  repository someone handed you cannot run their code through `.gitattributes`. Filters from the
+  user's global or system configuration stay on.
 - **Repository reads are opt-in (`review.change`).** The daemon, `rpc` and `mcp`
   read Git only for a repository whose canonical path and Git top level are both
-  under a root the operator named with `--allow-repo`. Without one they read none.
+  under a root the operator named with `--allow-repo`, and so must its Git directory and common
+  directory (a `.git` file cannot point outside); a repository whose object store borrows
+  another's (`objects/info/alternates`) is refused. Without a root they read none.
   The roots are an operator decision: any client of that daemon or MCP server can
   read every change under them, though never write anything.
 - **Two `daemon start`s can race.** Between `remove_stale_socket`'s probe and

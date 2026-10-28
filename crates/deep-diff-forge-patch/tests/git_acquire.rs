@@ -605,6 +605,64 @@ fn a_stalled_git_is_stopped_at_the_time_limit() {
     assert!(acquire_git(&fx.root, &GitSelection::WorkingTree, &in_time).is_ok());
 }
 
+/// The time limit bounds the caller even when Git's own child outlives the kill and keeps the
+/// pipes open: the stub forks a long sleep that inherits stdout (bug hunt 2026-10-28, H1-03).
+#[test]
+fn a_surviving_child_cannot_stretch_the_time_limit() {
+    let fx = fixture("orphan");
+    let stub = fx.root.join("forking-git");
+    std::fs::write(&stub, "#!/bin/sh\nsleep 20 &\nexec sleep 20\n").unwrap();
+    chmod(&stub, 0o755);
+    let opts = GitAcquireOptions {
+        git_program: stub.into_os_string(),
+        time_limit: std::time::Duration::from_millis(300),
+        ..options(false)
+    };
+    let started = std::time::Instant::now();
+    let result = acquire_git(&fx.root, &GitSelection::WorkingTree, &opts);
+    assert!(
+        matches!(result, Err(GitAcquireError::TimedOut { .. })),
+        "{result:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+/// A filter that the repository's own configuration defines never runs: reviewing a repository
+/// someone handed you must not run their code (bug hunt 2026-10-28, H2-01).
+#[test]
+fn a_repository_local_filter_never_runs() {
+    let fx = fixture("filter");
+    let r = &fx.root;
+    let marker = r.join("filter-ran");
+    std::fs::write(r.join(".gitattributes"), "*.txt filter=evil\n").unwrap();
+    git_out(
+        r,
+        &[
+            "config",
+            "filter.evil.clean",
+            &format!("sh -c 'touch {}; cat'", marker.display()),
+        ],
+    );
+    git_out(
+        r,
+        &[
+            "config",
+            "filter.evil.process",
+            &format!("sh -c 'touch {}'", marker.display()),
+        ],
+    );
+    std::fs::write(r.join("tracked.txt"), b"changed in the working tree\n").unwrap();
+    for include_untracked in [false, true] {
+        acquire_git(r, &GitSelection::WorkingTree, &options(include_untracked)).unwrap();
+    }
+    acquire_git(r, &GitSelection::Staged, &options(false)).unwrap();
+    assert!(!marker.exists(), "a repository-local filter ran");
+}
+
 /// Negative control: resolving `HEAD` unconditionally would fail on a fresh
 /// repository; the port compares against the empty tree instead.
 #[test]

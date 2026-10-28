@@ -961,7 +961,9 @@ fn highlight_cmd(opts: &[String]) {
         ));
     } else {
         // No colour requested/available: still sanitise so a hostile file is safe.
-        emit(&display_safe(&source));
+        // Line feeds stay line breaks without colour too (bug hunt 2026-10-28, H4-01: the first
+        // fix covered only the coloured path, so piped output was still one line).
+        emit(&deep_diff_forge_syntax::display_safe_lines(&source));
     }
 }
 
