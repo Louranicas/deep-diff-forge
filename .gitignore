@@ -17,3 +17,7 @@
 # Python bytecode from the policy, SBOM and probe scripts
 __pycache__/
 *.pyc
+
+# cargo-mutants output
+/mutants.out/
+/mutants.out.old/
