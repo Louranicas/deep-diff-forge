@@ -35,18 +35,7 @@ fn rpc_answers_on_stdout_and_ends_at_shutdown() {
 /// A reader that went away is a clean end (exit 0); any other write failure is exit 3.
 #[test]
 fn a_closed_reader_ends_cleanly_and_a_failed_write_is_an_io_failure() {
-    for (stdout, expected) in [
-        (Stdio::piped(), 0),
-        (
-            Stdio::from(
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .open("/dev/full")
-                    .unwrap(),
-            ),
-            3,
-        ),
-    ] {
+    for (stdout, expected) in transport_cases() {
         let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
             .arg("rpc")
             .stdin(Stdio::piped())
@@ -60,6 +49,18 @@ fn a_closed_reader_ends_cleanly_and_a_failed_write_is_an_io_failure() {
         drop(stdin);
         assert_eq!(child.wait().unwrap().code(), Some(expected));
     }
+}
+
+/// A pipe whose reader is gone (exit 0) and, on Linux, `/dev/full`, where every write fails with
+/// ENOSPC (exit 3). macOS has no `/dev/full`, and no portable stand-in: a read-only descriptor
+/// fails with EBADF, which Rust's stdout deliberately reports as success.
+fn transport_cases() -> Vec<(Stdio, i32)> {
+    let mut cases = vec![(Stdio::piped(), 0)];
+    if cfg!(target_os = "linux") {
+        let full = std::fs::OpenOptions::new().write(true).open("/dev/full");
+        cases.push((Stdio::from(full.unwrap()), 3));
+    }
+    cases
 }
 
 #[test]
