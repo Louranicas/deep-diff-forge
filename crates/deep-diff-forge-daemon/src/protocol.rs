@@ -26,6 +26,9 @@ pub const PROTOCOL_UNSUPPORTED: i64 = 2;
 /// Domain error code: a well-formed patch broke a contract the caller required
 /// (`require_files`, `require_hunks`); the same refusal as the CLI's exit 7.
 pub const INPUT_CONTRACT_REFUSED: i64 = 7;
+/// Git failed or was stopped while acquiring a change (`review.change`); the CLI's exit 3 (check the
+/// environment: the repository, Git, its time limit).
+pub const GIT_FAILED: i64 = 3;
 
 /// A parsed JSON-RPC request. Missing optional fields default rather than
 /// failing, so a terse client (`{"method":"daemon.health"}`) is accepted.

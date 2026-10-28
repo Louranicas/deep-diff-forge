@@ -120,3 +120,48 @@ fn parity(method: &str, mode: &[&str]) {
     // Every outcome is exercised, so parity is not vacuous.
     assert!(seen.iter().all(|&n| n > 0), "{seen:?}");
 }
+
+/// The CLI's `--outline` and `--hunks` print what the daemon's `review.outline` and
+/// `review.hunks` return for the same bytes and the same page, cursor pages included.
+#[test]
+fn outline_and_hunks_match_the_daemon_page_for_page() {
+    let patch = FIXTURES[1];
+    let call = |method: &str, params: serde_json::Value| {
+        let mut params = params;
+        params["patch"] = serde_json::json!(patch);
+        let line = serde_json::json!({"method": method, "params": params}).to_string();
+        dispatch(&parse_request(&line).unwrap(), &mut Engine::new()).unwrap()
+    };
+    let cli_view = |flags: &[&str]| {
+        let (code, stdout, stderr) = cli(patch, &[], flags);
+        assert_eq!(code, 0, "{flags:?}: {stderr}");
+        serde_json::from_str::<serde_json::Value>(&stdout).unwrap()
+    };
+    let outline = cli_view(&["--outline", "--max-bytes", "1024"]);
+    assert_eq!(
+        outline,
+        call("review.outline", serde_json::json!({"max_bytes": 1024}))
+    );
+    let cursor = outline["next_cursor"].as_str().unwrap().to_owned();
+    assert_eq!(
+        cli_view(&["--outline", "--max-bytes", "1024", "--cursor", &cursor]),
+        call(
+            "review.outline",
+            serde_json::json!({"max_bytes": 1024, "cursor": cursor})
+        )
+    );
+    let address = outline["files"][0]["hunks"][0]["address"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        cli_view(&["--hunks", "--address", &address]),
+        call("review.hunks", serde_json::json!({"addresses": [address]}))
+    );
+    assert_eq!(
+        cli_view(&["--hunks", "--path", "README.md"]),
+        call("review.hunks", serde_json::json!({"paths": ["README.md"]}))
+    );
+    let (code, stdout, stderr) = cli(patch, &[], &["--hunks", "--address", "0", "--path", "x"]);
+    assert_eq!((code, stdout.as_str()), (exit::USAGE, ""), "{stderr}");
+}

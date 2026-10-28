@@ -18,6 +18,15 @@ pub fn serve(input: &mut impl BufRead, output: &mut impl Write) -> std::io::Resu
     serve_with(input, output, MAX_REQUEST_BYTES)
 }
 
+/// [`serve`] with a configured engine (for example one allowed to read repositories).
+pub fn serve_engine(
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    engine: Engine,
+) -> std::io::Result<()> {
+    serve_capped(input, output, MAX_REQUEST_BYTES, engine)
+}
+
 /// [`serve`] with an explicit request cap. The framing is the socket server's own
 /// (`read_capped_line`): the cap counts the newline, and an oversized request is refused as soon
 /// as `cap + 1` bytes have arrived, then the stream is closed (council sdc1). Crate-visible so
@@ -27,7 +36,16 @@ pub(crate) fn serve_with(
     output: &mut impl Write,
     cap: usize,
 ) -> std::io::Result<()> {
-    let engine = Mutex::new(Engine::new());
+    serve_capped(input, output, cap, Engine::new())
+}
+
+fn serve_capped(
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    cap: usize,
+    engine: Engine,
+) -> std::io::Result<()> {
+    let engine = Mutex::new(engine);
     let mut buf = Vec::new();
     loop {
         buf.clear();

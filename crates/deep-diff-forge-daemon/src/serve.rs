@@ -507,13 +507,22 @@ fn try_acquire_connection(active: &Arc<AtomicUsize>) -> bool {
 ///
 /// Returns an I/O error from binding or accepting connections.
 pub fn run_server(location: &SocketLocation) -> std::io::Result<()> {
+    run_server_with(location, Engine::new())
+}
+
+/// [`run_server`] with a configured engine (for example one allowed to read repositories).
+///
+/// # Errors
+///
+/// Returns an I/O error from binding or accepting connections.
+pub fn run_server_with(location: &SocketLocation, engine: Engine) -> std::io::Result<()> {
     let listener = location.bind()?;
     let socket_path = location.path().to_path_buf();
     let socket_metadata = std::fs::symlink_metadata(&socket_path)?;
     let socket_identity = (socket_metadata.dev(), socket_metadata.ino());
     // Wrap the engine in Arc so each spawned connection thread can hold a
     // reference without lifetime constraints on the accept loop.
-    let engine: Arc<Mutex<Engine>> = Arc::new(Mutex::new(Engine::new()));
+    let engine: Arc<Mutex<Engine>> = Arc::new(Mutex::new(engine));
     let active_connections = Arc::new(AtomicUsize::new(0));
     loop {
         // Break immediately if a previous connection already triggered shutdown.

@@ -94,7 +94,7 @@ fn a_modern_client_discovers_lists_and_reviews_with_cli_parity() {
     assert_eq!(out.len(), 3, "the notification gets no response: {out:?}");
     assert_eq!(out[0]["id"], "d");
     assert_eq!(out[0]["result"]["supportedVersions"], json!(["2026-07-28"]));
-    assert_eq!(out[1]["result"]["tools"].as_array().unwrap().len(), 4);
+    assert_eq!(out[1]["result"]["tools"].as_array().unwrap().len(), 7);
     let result = &out[2]["result"];
     assert_eq!(
         (result["isError"].as_bool(), result["resultType"].as_str()),
