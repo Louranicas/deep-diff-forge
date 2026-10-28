@@ -130,6 +130,9 @@ struct FileBuf {
     rename_to: Option<String>,
     metadata: Vec<String>,
     binary_body: Vec<String>,
+    /// Inside a `GIT binary patch` body: only lines of its grammar are taken (see
+    /// [`is_binary_body_line`]); the first other line ends it.
+    in_binary_body: bool,
     hunks: Vec<PatchHunk>,
     lossy_lines: u32,
 }
@@ -213,11 +216,17 @@ impl Parser {
         if let Some(rest) = line.strip_prefix("diff --git ") {
             return self.start_git_file(rest, line_number);
         }
+        // A binary body holds only its own grammar. Before, every later line went into it, so a
+        // text change after a binary section was hidden from the review yet applied by
+        // `git apply`; the scan of all metadata per line was also quadratic.
         if let Some(file) = self.file.as_mut()
-            && file.metadata.iter().any(|m| m == "GIT binary patch")
+            && file.in_binary_body
         {
-            file.binary_body.push(line.to_string());
-            return Ok(());
+            if is_binary_body_line(line) {
+                file.binary_body.push(line.to_string());
+                return Ok(());
+            }
+            file.in_binary_body = false;
         }
         if let Some(rest) = line.strip_prefix("--- ") {
             return self.on_old_header(rest, line_number);
@@ -358,6 +367,7 @@ impl Parser {
             super::paths::decode_path(path).ok_or(PatchParseError::InvalidPath { line_number })?;
         }
         if META_PREFIXES.iter().any(|p| line.starts_with(p)) {
+            file.in_binary_body |= line == "GIT binary patch";
             file.metadata.push(line.to_string());
             return Ok(true);
         }
@@ -673,6 +683,33 @@ fn header_path(rest: &str) -> String {
     rest.split('\t').next().unwrap_or(rest).to_string()
 }
 
+/// Git's base85 alphabet (`base85.c`).
+const BASE85: &[u8; 85] =
+    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~";
+
+/// One line of a `GIT binary patch` body, as `git apply` reads it: a `literal N` or `delta N`
+/// header, the empty line that ends a hunk, or a data line whose first letter encodes its byte
+/// count (`A`-`Z` 1-26, `a`-`z` 27-52) followed by exactly that many bytes in base85.
+fn is_binary_body_line(line: &str) -> bool {
+    if line.is_empty() {
+        return true;
+    }
+    if let Some(size) = line
+        .strip_prefix("literal ")
+        .or_else(|| line.strip_prefix("delta "))
+    {
+        return !size.is_empty() && size.bytes().all(|b| b.is_ascii_digit());
+    }
+    let bytes = line.as_bytes();
+    let count = match bytes[0] {
+        b @ b'A'..=b'Z' => usize::from(b - b'A') + 1,
+        b @ b'a'..=b'z' => usize::from(b - b'a') + 27,
+        _ => return false,
+    };
+    let data = &bytes[1..];
+    data.len() == count.div_ceil(4) * 5 && data.iter().all(|b| BASE85.contains(b))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -962,6 +999,73 @@ rename to new/name.rs
         let file = one(input);
         assert_eq!(file.status, FileStatus::Renamed);
         assert_eq!(file.path, "new/name.rs");
+    }
+
+    /// A text change after a binary body is never folded into it: before, every later line went
+    /// into the body, so DDF reviewed only the binary file while `git apply` also changed
+    /// `evil.rs`. That patch is now refused, like any binary file with hunks.
+    #[test]
+    fn a_text_change_after_a_binary_body_is_never_hidden_in_it() {
+        let input = "\
+diff --git a/img.bin b/img.bin
+index 88768efdf77ec78c9a995f94881793be6a41752b..f68ed8037341be54a4bad1485a8deb1be7188467 100644
+GIT binary patch
+literal 6
+NcmZQzO3KVL0ssTy0d4>Q
+
+literal 5
+McmZQzOv=my00M6TI{*Lx
+
+--- a/evil.rs
++++ b/evil.rs
+@@ -1 +1 @@
+-x
++y
+";
+        assert!(matches!(
+            parse(input),
+            Err(PatchParseError::UnsupportedFormat { line_number: 14 })
+        ));
+        // Legitimate nearby case: the same binary section followed by a `diff --git` text file.
+        let split = input.replace("--- a/evil.rs", "diff --git a/ok.rs b/ok.rs\n--- a/ok.rs");
+        let split = split.replace("+++ b/evil.rs", "+++ b/ok.rs");
+        let files = parse(&split).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].patch_twin.binary_body.len(), 6);
+        assert_eq!(files[1].patch_twin.hunks.len(), 1);
+    }
+
+    /// The body grammar `git apply` reads, and the lines it does not.
+    #[test]
+    fn the_binary_body_grammar_is_git_s() {
+        for line in [
+            "",
+            "literal 6",
+            "delta 12",
+            "NcmZQzO3KVL0ssTy0d4>Q",
+            "McmZQzOv=my00M6TI{*Lx",
+            "zcmV?d00001zcmV?d00001zcmV?d00001zcmV?d00001zcmV?d00001zcmV?d00001",
+        ] {
+            assert!(is_binary_body_line(line), "{line:?} is body");
+        }
+        for line in [
+            "--- a/evil.rs",
+            "+++ b/evil.rs",
+            "@@ -1 +1 @@",
+            "+y",
+            "-x",
+            " context",
+            "index 0",
+            "literal ",
+            "literal 6x",
+            "delta",
+            "NcmZQzO3KVL0ssTy0d4>",
+            "NcmZQzO3KVL0ssTy0d4>QQ",
+            "NcmZQzO3KVL0ssTy0d4 Q",
+            "1cmZQzO3KVL0ssTy0d4>Q",
+        ] {
+            assert!(!is_binary_body_line(line), "{line:?} is not body");
+        }
     }
 
     #[test]

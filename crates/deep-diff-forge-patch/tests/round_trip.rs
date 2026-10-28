@@ -26,6 +26,11 @@ fn basic_round_trips() {
 }
 
 #[test]
+fn binary_literal_delta_round_trips() {
+    assert_model_stable("binary_literal_delta.patch");
+}
+
+#[test]
 fn new_file_round_trips() {
     assert_model_stable("new_file.patch");
 }
