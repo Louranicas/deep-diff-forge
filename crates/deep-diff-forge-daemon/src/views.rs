@@ -128,7 +128,15 @@ fn line_counts(hunk: &PatchHunk) -> (usize, usize) {
 fn hunk_head(file: &ReviewFile, hunk: &PatchHunk) -> serde_json::Map<String, Value> {
     let (old_lines, new_lines) = hunk.counts();
     let (additions, deletions) = line_counts(hunk);
-    let Value::Object(map) = json!({
+    let mut hazards: Vec<&str> = Vec::new();
+    for line in &hunk.lines {
+        for hazard in deep_diff_forge_core::text_hazards(&line.text) {
+            if !hazards.contains(&hazard) {
+                hazards.push(hazard);
+            }
+        }
+    }
+    let Value::Object(mut map) = json!({
         "address": hunk.address(&file.path),
         "old_start": hunk.old_start,
         "old_lines": old_lines,
@@ -140,6 +148,9 @@ fn hunk_head(file: &ReviewFile, hunk: &PatchHunk) -> serde_json::Map<String, Val
     }) else {
         unreachable!("json! of an object literal is an object")
     };
+    if !hazards.is_empty() {
+        map.insert("hazards".into(), json!(hazards));
+    }
     map
 }
 
@@ -160,6 +171,10 @@ fn line_json(line: &deep_diff_forge_core::PatchLine) -> Value {
     }
     if line.lossy {
         value["lossy"] = json!(true);
+    }
+    let hazards = deep_diff_forge_core::text_hazards(&line.text);
+    if !hazards.is_empty() {
+        value["hazards"] = json!(hazards);
     }
     value
 }
@@ -231,6 +246,7 @@ pub fn outline(review: &SealedReview, page: &Page) -> Result<Value, ViewError> {
         };
         let mut entry = json!({
             "path": file.path,
+            "hazards": deep_diff_forge_core::path_hazards(&file.path),
             "status": file.status.label(),
             "score": score,
             "signals": signals,

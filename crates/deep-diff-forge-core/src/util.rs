@@ -60,6 +60,50 @@ fn is_bidi_or_invisible(c: char) -> bool {
     )
 }
 
+/// Objective hazards in one line of patch text: `bidi_control` (a bidirectional override,
+/// embedding, isolate or mark, which can make rendered code differ from its bytes),
+/// `invisible` (a zero-width character or BOM) and `control` (a C0/C1 control other than tab,
+/// and other than the carriage return of a CRLF line ending). These are facts about the bytes,
+/// not a guess about intent: an empty list never means the text is safe.
+#[must_use]
+pub fn text_hazards(text: &str) -> Vec<&'static str> {
+    let body = text.strip_suffix('\r').unwrap_or(text);
+    let mut found = Vec::new();
+    if body
+        .chars()
+        .any(|c| is_bidi_or_invisible(c) && !is_zero_width(c))
+    {
+        found.push("bidi_control");
+    }
+    if body.chars().any(is_zero_width) {
+        found.push("invisible");
+    }
+    if body.chars().any(is_terminal_unsafe) {
+        found.push("control");
+    }
+    found
+}
+
+/// Objective hazards in a path a patch names: the [`text_hazards`] of the path, plus
+/// `path_traversal` (a `..` component or an absolute path) and `git_internal` (a `.git`
+/// component).
+#[must_use]
+pub fn path_hazards(path: &str) -> Vec<&'static str> {
+    let mut found = text_hazards(path);
+    let mut components = path.split('/');
+    if path.starts_with('/') || components.clone().any(|c| c == "..") {
+        found.push("path_traversal");
+    }
+    if components.any(|c| c.eq_ignore_ascii_case(".git")) {
+        found.push("git_internal");
+    }
+    found
+}
+
+fn is_zero_width(c: char) -> bool {
+    matches!(u32::from(c), 0x200B..=0x200D | 0xFEFF)
+}
+
 /// Make an untrusted string safe to print to a terminal.
 ///
 /// Attacker-controlled content (diff line bodies, file paths, symbol names,
@@ -104,6 +148,27 @@ pub fn display_safe(value: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hazards_are_facts_about_the_bytes() {
+        assert_eq!(text_hazards("let x = 1;"), Vec::<&str>::new());
+        assert_eq!(text_hazards("let x = 1;\r"), Vec::<&str>::new());
+        assert_eq!(text_hazards("let\u{202E} x"), ["bidi_control"]);
+        assert_eq!(text_hazards("a\u{200B}b"), ["invisible"]);
+        assert_eq!(text_hazards("a\u{1b}[2Jb"), ["control"]);
+        assert_eq!(text_hazards("a\rb"), ["control"]);
+        assert_eq!(
+            text_hazards("\u{2066}\u{FEFF}\u{7}"),
+            ["bidi_control", "invisible", "control"]
+        );
+        assert_eq!(text_hazards("\tindented"), Vec::<&str>::new());
+        assert_eq!(path_hazards("src/lib.rs"), Vec::<&str>::new());
+        assert_eq!(path_hazards("../etc/passwd"), ["path_traversal"]);
+        assert_eq!(path_hazards("/etc/passwd"), ["path_traversal"]);
+        assert_eq!(path_hazards("a/.GIT/hooks/pre-commit"), ["git_internal"]);
+        assert_eq!(path_hazards("x\u{202E}y.rs"), ["bidi_control"]);
+        assert_eq!(path_hazards("a..b/c"), Vec::<&str>::new());
+    }
 
     #[test]
     fn wraps_in_quotes() {
