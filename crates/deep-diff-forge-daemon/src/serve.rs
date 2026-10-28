@@ -236,6 +236,17 @@ fn bounded_response(id: &Value, response: String, cap: usize) -> String {
     error_response(id, &RpcError::new(RESOURCE_EXHAUSTED, message))
 }
 
+/// The outcome of arming a read deadline. macOS refuses `SO_RCVTIMEO` with EINVAL once the
+/// peer has disconnected (both directions shut); reads then cannot block, returning what is
+/// buffered and then end of file, so that refusal is not an error. Before, it made the client fail
+/// any response longer than its buffer whenever the daemon closed first (macOS CI).
+fn settle_read_timeout(armed: std::io::Result<()>) -> std::io::Result<()> {
+    match armed {
+        Err(err) if err.raw_os_error() == Some(rustix::io::Errno::INVAL.raw_os_error()) => Ok(()),
+        other => other,
+    }
+}
+
 /// Read one bounded line from a socket under an absolute deadline.
 #[expect(
     clippy::disallowed_methods,
@@ -250,12 +261,14 @@ fn read_capped_line_deadline(
     let deadline = Instant::now() + timeout;
     let maximum = cap.saturating_add(1);
     loop {
+        // Zero is past the deadline too (and a timeout `set_read_timeout` refuses).
         let remaining = deadline
             .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
             .ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::TimedOut, "line read deadline exceeded")
             })?;
-        reader.get_ref().set_read_timeout(Some(remaining))?;
+        settle_read_timeout(reader.get_ref().set_read_timeout(Some(remaining)))?;
 
         let available = match reader.fill_buf() {
             Ok(available) => available,
@@ -1241,28 +1254,66 @@ mod tests {
         assert_eq!(MAX_RESPONSE_BYTES, 80 << 20);
     }
 
+    /// Only the disconnected-peer refusal is settled; every other arming failure is returned.
+    #[test]
+    fn only_a_disconnected_peer_refusal_is_settled() {
+        let errno = |e: rustix::io::Errno| std::io::Error::from_raw_os_error(e.raw_os_error());
+        assert!(settle_read_timeout(Ok(())).is_ok());
+        assert!(settle_read_timeout(Err(errno(rustix::io::Errno::INVAL))).is_ok());
+        let other = settle_read_timeout(Err(errno(rustix::io::Errno::BADF))).unwrap_err();
+        assert_eq!(
+            other.raw_os_error(),
+            Some(rustix::io::Errno::BADF.raw_os_error())
+        );
+        let refused = std::io::Error::new(std::io::ErrorKind::InvalidInput, "zero timeout");
+        assert!(settle_read_timeout(Err(refused)).is_err());
+    }
+
+    /// A peer that sends one line and closes cleanly has sent a complete line, however many
+    /// buffer refills it takes to read: macOS refuses `SO_RCVTIMEO` on a socket whose peer has shut
+    /// down (EINVAL), which made the client fail any response longer than its buffer whenever the
+    /// daemon closed first (CI run 40626071938).
+    #[test]
+    fn a_line_from_a_closed_peer_reads_completely_across_refills() {
+        let (local, peer) = UnixStream::pair().expect("socketpair");
+        let mut sent = vec![b'x'; 100];
+        sent.push(b'\n');
+        (&peer).write_all(&sent).unwrap();
+        drop(peer);
+        let mut reader = BufReader::with_capacity(16, local);
+        let mut line = Vec::new();
+        let read = read_capped_line_deadline(&mut reader, &mut line, 1024, Duration::from_secs(5))
+            .expect("a complete line from a closed peer");
+        assert_eq!((read, line), (sent.len(), sent));
+    }
+
     #[test]
     fn socket_line_read_reports_non_timeout_errors_unchanged() {
         // Closing a Unix stream socket with unread data in its receive queue
-        // resets the peer, and that error must not be disguised as a deadline
-        // timeout. Linux reports ECONNRESET on the read; macOS already refuses
-        // the read timeout on the reset socket with EINVAL (measured on CI).
+        // resets the peer, and that must never be disguised as a deadline
+        // timeout. Linux reports ECONNRESET on the read; macOS ends the read
+        // at end of file (measured on CI, run 40628996633).
         let (local, peer) = UnixStream::pair().expect("socketpair");
         (&local).write_all(b"never read").unwrap();
         drop(peer);
         let mut reader = BufReader::new(local);
         let mut line = Vec::new();
-        let err = read_capped_line_deadline(&mut reader, &mut line, 1024, Duration::from_secs(5))
-            .expect_err("reset peer");
-        assert!(
-            !matches!(
-                err.kind(),
-                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-            ),
-            "{err}"
-        );
+        let read = read_capped_line_deadline(&mut reader, &mut line, 1024, Duration::from_secs(5));
         if cfg!(target_os = "linux") {
-            assert_eq!(err.kind(), std::io::ErrorKind::ConnectionReset);
+            assert_eq!(
+                read.expect_err("reset peer").kind(),
+                std::io::ErrorKind::ConnectionReset
+            );
+        } else if let Err(err) = read {
+            assert!(
+                !matches!(
+                    err.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ),
+                "{err}"
+            );
+        } else {
+            assert_eq!(read.unwrap(), 0);
         }
     }
 
