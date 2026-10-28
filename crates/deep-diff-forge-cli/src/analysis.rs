@@ -95,8 +95,11 @@ fn open_regular(path: &Path, what: &str) -> Result<fs::File, Error> {
 }
 
 fn read_patch(path: &Path) -> Result<String, Error> {
+    read_patch_within(path, deep_diff_forge_patch::DEFAULT_BYTE_BUDGET)
+}
+
+fn read_patch_within(path: &Path, cap: usize) -> Result<String, Error> {
     let file = open_regular(path, "patch file")?;
-    let cap = deep_diff_forge_patch::DEFAULT_BYTE_BUDGET;
     let mut bytes = Vec::new();
     file.take(cap as u64 + 1)
         .read_to_end(&mut bytes)
@@ -158,4 +161,76 @@ fn read_source(
     String::from_utf8(bytes)
         .map(Some)
         .map_err(|_| Error::Invalid(format!("source is not UTF-8: {relative:?}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(label: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("ddf-analysis-unit-{}-{label}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::canonicalize(dir).unwrap()
+    }
+
+    /// A patch of exactly the budget is read; one byte more is refused as invalid input.
+    #[test]
+    fn a_patch_at_the_budget_is_read_and_one_byte_over_is_refused() {
+        let dir = scratch("patch-budget");
+        let path = dir.join("p.patch");
+        fs::write(&path, "x".repeat(10)).unwrap();
+        assert_eq!(read_patch_within(&path, 10).unwrap().len(), 10);
+        assert!(matches!(
+            read_patch_within(&path, 9),
+            Err(Error::Invalid(message)) if message.contains("9-byte input budget")
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Sources draw down one shared budget: exactly what remains is read, one byte more is not.
+    #[test]
+    fn sources_spend_the_shared_budget_exactly() {
+        let dir = scratch("source-budget");
+        fs::write(dir.join("a.rs"), "12345").unwrap();
+        let mut remaining = 5;
+        assert_eq!(
+            read_source(&dir, "a.rs", &mut remaining)
+                .unwrap()
+                .as_deref(),
+            Some("12345")
+        );
+        assert_eq!(remaining, 0);
+        let mut remaining = 4;
+        assert!(matches!(
+            read_source(&dir, "a.rs", &mut remaining),
+            Err(Error::Invalid(message)) if message.contains("aggregate source byte budget")
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A missing source is absent (`None`); any other lookup failure is an I/O error, and a
+    /// directory is refused as not a regular file under its root.
+    #[test]
+    fn missing_sources_are_absent_and_other_failures_are_errors() {
+        let dir = scratch("source-kinds");
+        fs::write(dir.join("file.rs"), "x").unwrap();
+        fs::create_dir(dir.join("sub")).unwrap();
+        let mut remaining = 100;
+        assert!(matches!(
+            read_source(&dir, "missing.rs", &mut remaining),
+            Ok(None)
+        ));
+        assert!(matches!(
+            read_source(&dir, "file.rs/inner.rs", &mut remaining),
+            Err(Error::Io(_))
+        ));
+        assert!(matches!(
+            read_source(&dir, "sub", &mut remaining),
+            Err(Error::Io(message)) if message.contains("under its root")
+        ));
+        assert_eq!(remaining, 100);
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

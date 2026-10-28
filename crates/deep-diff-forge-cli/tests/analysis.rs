@@ -114,7 +114,11 @@ fn analyze_distinguishes_io_failures_from_invalid_content() {
         .unwrap();
     assert_eq!(missing.status.code(), Some(3));
     // A body line outside any hunk is a malformed patch (prose alone parses as zero files).
-    fs::write(root.join("change.patch"), "--- a/x.rs\n+++ b/x.rs\n+stray\n").unwrap();
+    fs::write(
+        root.join("change.patch"),
+        "--- a/x.rs\n+++ b/x.rs\n+stray\n",
+    )
+    .unwrap();
     assert_eq!(run(&root).status.code(), Some(4));
     fs::remove_dir_all(root).unwrap();
 }
@@ -142,5 +146,27 @@ fn analyze_refuses_fifo_inputs_without_blocking() {
         .unwrap();
     assert_eq!(output.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&output.stderr).contains("not a regular file"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Both source roots must be directories: a file in either place is invalid input.
+#[test]
+fn each_source_root_must_be_a_directory() {
+    let root = setup("root-kinds");
+    for (old, new) in [("change.patch", "new"), ("old", "change.patch")] {
+        let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .arg("analyze")
+            .arg(root.join("change.patch"))
+            .arg(root.join(old))
+            .arg(root.join(new))
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(4), "{old} {new}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("must be directories"),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
     fs::remove_dir_all(root).unwrap();
 }

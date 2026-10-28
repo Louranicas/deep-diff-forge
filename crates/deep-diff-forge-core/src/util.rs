@@ -343,5 +343,8 @@ mod tests {
         assert!(out.ends_with("[9 bytes omitted]"), "{out}");
         assert!(!out.contains('\u{1b}'));
         assert!(out.len() < 240, "{out}");
+        // Text that fits is returned whole, with no omission note.
+        assert_eq!(display_safe_bounded("abc", 200), "abc");
+        assert_eq!(display_safe_bounded("abc", 3), "abc");
     }
 }
