@@ -10,7 +10,9 @@ shard="${2:-0/1}"
 out="${DDF_MUTATION_OUT:-${TMPDIR:-/tmp}/ddf-diff-mutation}"
 base="$(git merge-base "$base_ref" HEAD)"
 mkdir -p "$out"
-git diff "$base" HEAD -- crates/ > "$out/pr.diff"
+# Pin the diff format: a local diff.noprefix, diff.mnemonicPrefix, external diff or colour
+# would change the `+++ b/` lines below and pass with no mutants tested.
+git diff --no-ext-diff --no-color --src-prefix=a/ --dst-prefix=b/ "$base" HEAD -- crates/ > "$out/pr.diff"
 if ! grep -q '^+++ b/crates/.*\.rs$' "$out/pr.diff"; then
   echo "diff mutation: no Rust changes under crates/ since ${base}; no mutants to test"
   exit 0

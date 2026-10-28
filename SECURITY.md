@@ -224,8 +224,10 @@ every gate ran as root inside the container. Gates refuse to run unless
 - `release.yml` runs on `v*` tags and on manual `workflow_dispatch`. A tag must
   exactly match the workspace version. Both runs repeat the full `ci.yml`
   quality workflow and a supply-chain gate, build three targets, smoke the
-  binaries the runner can execute, and verify every archive's SHA-256. Only tag
-  refs attest and upload; a dispatched run is a dry run that publishes nothing.
+  binaries the runner can execute, and verify every archive's SHA-256. Only a
+  pushed `v*` tag attests, uploads and (when the owner opens it) publishes to
+  crates.io; a dispatched run, from any ref including a tag, is a dry run that
+  publishes nothing.
   See [`docs/RELEASE_AND_PUBLICATION.md`](docs/RELEASE_AND_PUBLICATION.md).
 - Release archives, checksums, and the generated SPDX SBOM receive GitHub build
   provenance attestations on tag runs. Dependabot monitors both Cargo graphs and
