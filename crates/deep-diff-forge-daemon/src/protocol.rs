@@ -85,8 +85,18 @@ impl RpcError {
 /// compatibility with the CLI's terse local requests, but when present it must
 /// be exactly `"2.0"`.
 pub fn parse_request(line: &str) -> Result<Request, RpcError> {
-    let value: Value =
-        serde_json::from_str(line).map_err(|e| RpcError::new(PARSE_ERROR, e.to_string()))?;
+    let value: Value = serde_json::from_str(line).map_err(|e| {
+        // A line that is the start of a pretty-printed object is the common framing mistake:
+        // the server reads one JSON value per line (expert circle, Codex).
+        let message = if e.is_eof() {
+            format!(
+                "{e}; each request must be one JSON value on one line (compact JSON, such as `jq -c`)"
+            )
+        } else {
+            e.to_string()
+        };
+        RpcError::new(PARSE_ERROR, message)
+    })?;
     let object = value
         .as_object()
         .ok_or_else(|| RpcError::new(INVALID_REQUEST, "request must be a JSON object"))?;
@@ -159,6 +169,20 @@ pub fn error_response(id: &Value, error: &RpcError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A line cut short (the start of a pretty-printed object) says how to frame requests;
+    /// other syntax errors do not.
+    #[test]
+    fn a_partial_object_names_the_one_line_framing() {
+        let cut = parse_request("{").unwrap_err();
+        assert!(
+            cut.message.contains("one JSON value on one line"),
+            "{}",
+            cut.message
+        );
+        let wrong = parse_request("{]").unwrap_err();
+        assert!(!wrong.message.contains("one line"), "{}", wrong.message);
+    }
 
     #[test]
     fn parses_full_request() {

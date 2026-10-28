@@ -32,6 +32,9 @@ macro_rules! emitln {
     ($($arg:tt)*) => { emit(&format!("{}\n", format_args!($($arg)*))) };
 }
 
+// Declared after `emitln!`, which it uses (a `macro_rules!` is visible only below it).
+mod agent;
+
 /// Read all of `reader` into a `String`, but never buffer more than the patch
 /// byte budget. `what` names the source for diagnostics.
 ///
@@ -149,6 +152,7 @@ fn main() {
         Some("explain") => contract_output(contract::explain(&args.collect::<Vec<_>>())),
         Some("envelope") => run_envelope(&args.collect::<Vec<_>>()),
         Some("mcp") => run_mcp(&args.collect::<Vec<_>>()),
+        Some("agent") => agent::run(&args.collect::<Vec<_>>()),
         Some("rpc") => run_rpc(&args.collect::<Vec<_>>()),
         Some("claude-code-contract") => claude_code_contract(),
         Some("chain-contract") => chain_contract(),
@@ -1492,6 +1496,11 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "--git-working-tree",
         "deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [--acquisition-json | <--stdin-patch output flags>]",
         "Review a change Git returns, sealed over the exact bytes.",
+    ),
+    (
+        "agent",
+        "deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... | doctor} [--json]",
+        "Print the MCP setup for Claude Code or Codex (never written), or check that every agent surface agrees.",
     ),
     (
         "mcp",

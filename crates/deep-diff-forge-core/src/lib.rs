@@ -11,7 +11,7 @@ mod util;
 pub use deploy::{DeploymentStatus, GateResult, GateState, MaturityLevel};
 pub use release::{ReleasePlan, ReleaseTarget, TargetState};
 pub use seal::{InputSeal, sha256, sha256_hex};
-pub use util::{display_safe, json_escape};
+pub use util::{display_safe, json_escape, path_hazards, text_hazards};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewDocument {

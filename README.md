@@ -213,11 +213,14 @@ deep-diff-forge explain 4                               # what an exit code mean
 
 ### For agents: look before you read
 
-An agent should learn where to look before it reads anything large. Point your MCP client at
-DDF, allow the repositories it may read, and the agent never pastes a patch:
+An agent should learn where to look before it reads anything large. Register DDF with your
+agent and allow the repositories it may read; the agent never has to paste a patch.
+`agent setup` prints the exact registration for this binary and writes nothing:
 
-```json
-{"mcpServers": {"deep-diff-forge": {"command": "deep-diff-forge", "args": ["mcp", "--allow-repo", "/path/to/repo"]}}}
+```bash
+deep-diff-forge agent setup --client claude --allow-repo ~/code/project   # a `claude mcp add …` line
+deep-diff-forge agent setup --client codex  --allow-repo ~/code/project   # a ~/.codex/config.toml block
+deep-diff-forge agent doctor            # proves MCP, the daemon and the CLI agree on one sealed patch
 ```
 
 1. **`review_change`** with `selection: "staged"` (or `working_tree`, or `range` with `A..B`)
@@ -383,6 +386,7 @@ empty.
 | `deploy status --json` · `deploy release --json` | `deep-diff-forge.deployment-status.v0` · `deep-diff-forge.release.v0` |
 | MCP `review_patch` / `rank_patch` over 256 KiB | `deep-diff-forge.review-summary.v0` · `deep-diff-forge.rank-summary.v0` |
 | `envelope` | `ddf.result.v1` |
+| `agent setup --json` · `agent doctor --json` | `deep-diff-forge.agent-setup.v0` · `deep-diff-forge.agent-doctor.v0` |
 | `daemon`, `rpc` | JSON-RPC 2.0, protocol 1 |
 
 **Input sealing.** `review.v0`, `rank.v0`, `cluster.v0`, `semantic.v0` and
@@ -405,6 +409,13 @@ Output is deterministic: the same bytes give byte-identical stdout on every run.
 - `old_lines` and `new_lines`: the header's counts.
 
 The new fields are additive, so the schema stays `review.v0`.
+
+**Hazards.** A file whose path traverses, names `.git` or hides characters, and a line that
+carries a bidi control, an invisible character or a control character, gets a `hazards` list:
+`path_traversal`, `git_internal`, `bidi_control`, `invisible` or `control`. The carriage return
+of a CRLF line ending does not count. Hazards are facts about the bytes, reported only where
+found. An empty list never means the text is safe. They also raise the file's rank
+(`hazardous_text`).
 
 ```json
 {
@@ -601,7 +612,8 @@ per file (`crates/deep-diff-forge-graph/src/risk.rs`). Higher means review first
 | `many_hunks` | ≥ 5 hunks | +2 |
 | `config_or_lockfile` · `binary_change` | `Cargo.toml`, `*.lock`, `*.yaml`, … · binary | +1 · +1 |
 | `test_only` | under `tests/` or `test/`, `*_test.*`, `*.test.*` | no bonus |
-| `generated_or_vendored` | `vendor/`, `node_modules/`, `target/`, `generated/`, `dist/`, `*.min.js`, `*.pb.rs`, `*.pb.go` | base only: no bonuses, but keeps new · deleted · binary |
+| `hazardous_text` | a changed line holds a bidi control, an invisible or a control character, or the path traverses (`..`, absolute) or names `.git` | +3 |
+| `generated_or_vendored` | `vendor/`, `node_modules/`, `target/`, `generated/`, `dist/`, `*.min.js`, `*.pb.rs`, `*.pb.go` | base only: no bonuses, but keeps new · deleted · binary · hazards |
 
 Whoever writes a patch also chooses its paths, so a path can lower a file's score but never zero it. A new file under `generated/` still ranks above a one-line edit elsewhere.
 

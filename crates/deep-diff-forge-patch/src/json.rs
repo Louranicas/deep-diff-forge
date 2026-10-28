@@ -66,6 +66,21 @@ fn render(files: &[ReviewFile], seal: Option<&InputSeal>) -> String {
                 file.patch_twin.lossy_lines
             );
         }
+        // Objective hazards in the path (traversal, `.git`, bidi, invisible, control); present
+        // only when there are any, so other output is unchanged.
+        let path_hazards = deep_diff_forge_core::path_hazards(&file.path);
+        if !path_hazards.is_empty() {
+            let _ = writeln!(
+                out,
+                "      \"hazards\": {},",
+                string_array(
+                    &path_hazards
+                        .iter()
+                        .map(|h| (*h).to_owned())
+                        .collect::<Vec<_>>()
+                )
+            );
+        }
         out.push_str("      \"hunks\": [");
         render_hunks(&mut out, file, &mut additions, &mut deletions);
         out.push_str("],\n");
@@ -163,6 +178,16 @@ fn render_hunks(out: &mut String, file: &ReviewFile, additions: &mut usize, dele
             // U+FFFD in valid input is not lossy); present only when true.
             if line.lossy {
                 out.push_str(", \"lossy\": true");
+            }
+            // Bidi controls, invisible characters and control characters in the line text, which
+            // can make what a reviewer sees differ from what is applied; present only when found.
+            let hazards = deep_diff_forge_core::text_hazards(&line.text);
+            if !hazards.is_empty() {
+                let _ = write!(
+                    out,
+                    ", \"hazards\": {}",
+                    string_array(&hazards.iter().map(|h| (*h).to_owned()).collect::<Vec<_>>())
+                );
             }
             out.push('}');
             if l + 1 < hunk.lines.len() {
@@ -352,6 +377,26 @@ mod tests {
         assert!(json.contains("\"id\": 0"));
         assert!(json.contains("\"old_start\": 1"));
         assert!(json.contains("\"new_start\": 1"));
+    }
+
+    /// Hazards appear on the line and the file that carry them, and nowhere else.
+    #[test]
+    fn hazards_mark_the_lines_and_paths_that_carry_them() {
+        let input = "--- a/../x\n+++ b/../x\n@@ -1,2 +1,2 @@\n same\n-a\n+b\u{202E}c\n";
+        let json = to_json(&parse(input).unwrap());
+        assert!(
+            json.contains("\"hazards\": [\"path_traversal\"],\n      \"hunks\""),
+            "{json}"
+        );
+        assert_eq!(
+            json.matches("\"hazards\": [\"bidi_control\"]").count(),
+            1,
+            "{json}"
+        );
+        let marked = json.lines().find(|l| l.contains("bidi_control")).unwrap();
+        assert!(marked.contains("\"kind\": \"added\""), "{marked}");
+        let plain = to_json(&parse("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n").unwrap());
+        assert!(!plain.contains("hazards"));
     }
 
     #[test]
