@@ -466,13 +466,13 @@ impl Parser {
                 || (says("deleted file mode ")
                     && file.hunks.iter().flat_map(|h| &h.lines).any(|l| l.kind != PatchLineKind::Removed))
                 // With hunks, the file headers are written from the status, so a new or deleted
-                // file whose status is anything else (binary, renamed) cannot be represented.
+                // file whose status is anything else (binary, or a `/dev/null` on the wrong side)
+                // cannot be represented. Text hunks beside binary markers on any other file are
+                // the `UnsupportedFormat` below.
                 || (!file.hunks.is_empty()
                     && ((says("new file mode ") && file.resolve_status() != FileStatus::Added)
                         || (says("deleted file mode ")
-                            && file.resolve_status() != FileStatus::Deleted)
-                        || says("GIT binary patch")
-                        || says("Binary files ")))
+                            && file.resolve_status() != FileStatus::Deleted)))
                 || (says("new file mode ")
                     && file.old_raw.as_deref().is_some_and(|p| p != "/dev/null"))
                 || (says("deleted file mode ")
@@ -1461,6 +1461,58 @@ diff --git a/x b/x
             2
         );
         assert_eq!(parse(&format!("{head}{head}")).unwrap().len(), 2);
+    }
+
+    /// Each contradiction `flush_file` checks is refused on its own, as `InconsistentHeader`,
+    /// not by a later check that happens to catch the same input.
+    #[test]
+    fn each_contradictory_header_is_refused_on_its_own() {
+        let git = "diff --git a/x b/x\n";
+        for (case, body) in [
+            (
+                "new and deleted",
+                "new file mode 100644\ndeleted file mode 100644\n",
+            ),
+            (
+                "new and renamed",
+                "new file mode 100644\nrename from x\nrename to y\n",
+            ),
+            (
+                "deleted and copied",
+                "deleted file mode 100644\ncopy from x\ncopy to y\n",
+            ),
+            (
+                "new with an old line",
+                "new file mode 100644\n--- /dev/null\n+++ b/x\n@@ -1 +1,2 @@\n+a\n b\n",
+            ),
+            (
+                "deleted with a new line",
+                "deleted file mode 100644\n--- a/x\n+++ /dev/null\n@@ -1,2 +1 @@\n-a\n b\n",
+            ),
+            (
+                "deleted from /dev/null",
+                "deleted file mode 100644\n--- /dev/null\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n",
+            ),
+            (
+                "new and binary with a hunk",
+                "new file mode 100644\nBinary files /dev/null and b/x differ\n--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+a\n",
+            ),
+        ] {
+            let err = parse(&format!("{git}{body}")).unwrap_err();
+            assert!(
+                matches!(err, PatchParseError::InconsistentHeader { .. }),
+                "{case}: {err:?}"
+            );
+        }
+        // Text hunks beside binary markers on an ordinary file are an unsupported format.
+        let err = parse(&format!(
+            "{git}Binary files a/x and b/x differ\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"
+        ))
+        .unwrap_err();
+        assert!(
+            matches!(err, PatchParseError::UnsupportedFormat { .. }),
+            "{err:?}"
+        );
     }
 
     /// Input git refuses as corrupt is refused here too (bug hunt 2026-10-28, H1-04).
