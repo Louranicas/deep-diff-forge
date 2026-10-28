@@ -1240,25 +1240,30 @@ mod tests {
     #[test]
     fn socket_line_read_reports_non_timeout_errors_unchanged() {
         // Closing a Unix stream socket with unread data in its receive queue
-        // resets the peer, and that error must not be disguised as a deadline
-        // timeout. Linux reports ECONNRESET on the read; macOS already refuses
-        // the read timeout on the reset socket with EINVAL (measured on CI).
+        // resets the peer, and that must never be disguised as a deadline
+        // timeout. Linux reports ECONNRESET on the read; macOS ends the read
+        // at end of file (measured on CI, run 40628996633).
         let (local, peer) = UnixStream::pair().expect("socketpair");
         (&local).write_all(b"never read").unwrap();
         drop(peer);
         let mut reader = BufReader::new(local);
         let mut line = Vec::new();
-        let err = read_capped_line_deadline(&mut reader, &mut line, 1024, Duration::from_secs(5))
-            .expect_err("reset peer");
-        assert!(
-            !matches!(
-                err.kind(),
-                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-            ),
-            "{err}"
-        );
+        let read = read_capped_line_deadline(&mut reader, &mut line, 1024, Duration::from_secs(5));
         if cfg!(target_os = "linux") {
-            assert_eq!(err.kind(), std::io::ErrorKind::ConnectionReset);
+            assert_eq!(
+                read.expect_err("reset peer").kind(),
+                std::io::ErrorKind::ConnectionReset
+            );
+        } else if let Err(err) = read {
+            assert!(
+                !matches!(
+                    err.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ),
+                "{err}"
+            );
+        } else {
+            assert_eq!(read.unwrap(), 0);
         }
     }
 
