@@ -96,6 +96,8 @@ fn parse_lines(
 
     let mut parser = Parser::default();
     let mut lossy = lossy.iter().peekable();
+    let unterminated_last =
+        (!input.is_empty() && !input.ends_with('\n')).then(|| input.split_terminator('\n').count());
     for (index, line) in input.split_terminator('\n').enumerate() {
         if index >= DEFAULT_LINE_BUDGET {
             return Err(PatchParseError::LineBudgetExceeded {
@@ -104,6 +106,13 @@ fn parse_lines(
             });
         }
         parser.feed(line, index + 1)?;
+        // Git refuses a patch whose last hunk line has no line feed as corrupt; reading it as
+        // complete would review a line Git will not apply (bug hunt 2026-10-28, H1-04).
+        if unterminated_last == Some(index + 1) && parser.can_mark_eof {
+            return Err(PatchParseError::UnterminatedLine {
+                line_number: index + 1,
+            });
+        }
         if lossy.next_if_eq(&&(index + 1)).is_some() {
             // `can_mark_eof` is set exactly when this line was a hunk body line.
             if parser.can_mark_eof
@@ -135,6 +144,10 @@ struct FileBuf {
     in_binary_body: bool,
     hunks: Vec<PatchHunk>,
     lossy_lines: u32,
+    /// A `---` arrived and its `+++` must be the very next line.
+    awaiting_new_header: bool,
+    /// The file's `---`/`+++` or first hunk arrived: extended headers are no longer admitted.
+    past_headers: bool,
 }
 
 /// Working accumulator for one hunk.
@@ -231,6 +244,12 @@ impl Parser {
             }
             return Err(PatchParseError::UnsupportedFormat { line_number });
         }
+        // A `---` is a header only with its `+++` right after it; git ignores either alone, so
+        // taking one as a header changed the reviewed path or made a phantom file (bug hunt
+        // 2026-10-28, H1-01).
+        if self.file.as_ref().is_some_and(|f| f.awaiting_new_header) && !line.starts_with("+++ ") {
+            return Err(PatchParseError::MisplacedHeader { line_number });
+        }
         if let Some(rest) = line.strip_prefix("--- ") {
             return self.on_old_header(rest, line_number);
         }
@@ -298,19 +317,27 @@ impl Parser {
             self.file = Some(FileBuf::default());
         }
         if let Some(file) = self.file.as_mut() {
+            if file.old_raw.is_some() {
+                return Err(PatchParseError::MisplacedHeader { line_number });
+            }
             file.old_raw = Some(
                 super::paths::decode_path(&header_path(rest))
                     .ok_or(PatchParseError::InvalidPath { line_number })?,
             );
+            file.awaiting_new_header = true;
+            file.past_headers = true;
         }
         Ok(())
     }
 
     fn on_new_header(&mut self, rest: &str, line_number: usize) -> Result<(), PatchParseError> {
-        if self.file.is_none() {
-            self.file = Some(FileBuf::default());
+        // A `+++` belongs right after its `---`: alone, or a second one, git ignores it, and
+        // taking it changed the reviewed path (bug hunt 2026-10-28, H1-01 and H1-04).
+        if !self.file.as_ref().is_some_and(|f| f.awaiting_new_header) {
+            return Err(PatchParseError::MisplacedHeader { line_number });
         }
         if let Some(file) = self.file.as_mut() {
+            file.awaiting_new_header = false;
             file.new_raw = Some(
                 super::paths::decode_path(&header_path(rest))
                     .ok_or(PatchParseError::InvalidPath { line_number })?,
@@ -327,6 +354,10 @@ impl Parser {
             })?;
         if self.file.is_none() {
             self.file = Some(FileBuf::default());
+        }
+        // A hunk ends the file's headers, even when no `---`/`+++` came first (fuzz).
+        if let Some(file) = self.file.as_mut() {
+            file.past_headers = true;
         }
         let id = HunkId(self.next_hunk_id);
         self.next_hunk_id += 1;
@@ -348,6 +379,16 @@ impl Parser {
         let Some(file) = self.file.as_mut() else {
             return Ok(false);
         };
+        // Extended headers come before the file's `---`/`+++` and hunks; after them git ignores
+        // the line, so taking it changed the reviewed status, path or mode (bug hunt
+        // 2026-10-28, H1-01).
+        let extended = META_PREFIXES.iter().any(|p| line.starts_with(p))
+            || ["rename from ", "rename to ", "copy from ", "copy to "]
+                .iter()
+                .any(|p| line.starts_with(p));
+        if extended && file.past_headers {
+            return Err(PatchParseError::MisplacedHeader { line_number });
+        }
         if let Some(path) = line.strip_prefix("rename from ") {
             file.rename_from = Some(
                 super::paths::decode_path(path)
@@ -405,6 +446,42 @@ impl Parser {
 
     fn flush_file(&mut self) -> Result<(), PatchParseError> {
         if let Some(file) = self.file.take() {
+            if file.awaiting_new_header {
+                return Err(PatchParseError::MisplacedHeader {
+                    line_number: self.last_line,
+                });
+            }
+            // `new file` reads from /dev/null and `deleted file` writes to it; git refuses the
+            // contradiction ("expected /dev/null"), and rendering would have rewritten the header.
+            let says = |prefix: &str| file.metadata.iter().any(|m| m.starts_with(prefix));
+            let moved = ["rename from ", "rename to ", "copy from ", "copy to "]
+                .iter()
+                .any(|p| says(p));
+            if (says("new file mode ") && says("deleted file mode "))
+                || ((says("new file mode ") || says("deleted file mode ")) && moved)
+                // A new file has no old lines and a deleted one no new lines; git refuses both
+                // ("new file depends on old contents"), and the model could not render them.
+                || (says("new file mode ")
+                    && file.hunks.iter().flat_map(|h| &h.lines).any(|l| l.kind != PatchLineKind::Added))
+                || (says("deleted file mode ")
+                    && file.hunks.iter().flat_map(|h| &h.lines).any(|l| l.kind != PatchLineKind::Removed))
+                // With hunks, the file headers are written from the status, so a new or deleted
+                // file whose status is anything else (binary, renamed) cannot be represented.
+                || (!file.hunks.is_empty()
+                    && ((says("new file mode ") && file.resolve_status() != FileStatus::Added)
+                        || (says("deleted file mode ")
+                            && file.resolve_status() != FileStatus::Deleted)
+                        || says("GIT binary patch")
+                        || says("Binary files ")))
+                || (says("new file mode ")
+                    && file.old_raw.as_deref().is_some_and(|p| p != "/dev/null"))
+                || (says("deleted file mode ")
+                    && file.new_raw.as_deref().is_some_and(|p| p != "/dev/null"))
+            {
+                return Err(PatchParseError::InconsistentHeader {
+                    line_number: self.last_line,
+                });
+            }
             if !file.hunks.is_empty()
                 && file
                     .metadata
@@ -669,12 +746,21 @@ fn parse_hunk_header(line: &str) -> Option<HunkHeader> {
 
 /// Parse a `start` or `start,count` range; count defaults to 1.
 fn parse_range(range: &str) -> Option<(u32, u32)> {
+    // Digits only: `u32::from_str` also takes a leading `+`, which git refuses (H1-04).
+    let number = |text: &str| {
+        (!text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| text.parse::<u32>().ok())
+            .flatten()
+    };
     let mut nums = range.split(',');
-    let start = nums.next()?.parse::<u32>().ok()?;
+    let start = number(nums.next()?)?;
     let count = match nums.next() {
-        Some(c) => c.parse::<u32>().ok()?,
+        Some(c) => number(c)?,
         None => 1,
     };
+    if nums.next().is_some() {
+        return None;
+    }
     Some((start, count))
 }
 
@@ -1344,6 +1430,77 @@ diff --git a/x b/x
         // The no-newline marker is part of the body.
         let (_, b7, _) = hunk(&format!("{one}\\ No newline at end of file\n"), 0);
         assert_ne!(b7, hunk(one, 0).1);
+    }
+
+    /// A line after a file's hunk that git ignores is refused, not taken as a header: before,
+    /// each of these changed the reviewed status, path or mode, or made a phantom file, while
+    /// `git apply` applied a plain modification of `x` (bug hunt 2026-10-28, H1-01).
+    #[test]
+    fn headers_after_a_hunk_are_refused() {
+        let head = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n";
+        for trailing in [
+            "new file mode 100644\n",
+            "deleted file mode 100644\n",
+            "rename to evil\n",
+            "old mode 100644\nnew mode 100755\n",
+            "+++ b/z\n",
+            "--- /dev/null\n",
+            "index 1111111..2222222 100644\n",
+        ] {
+            let err = parse(&format!("{head}{trailing}")).unwrap_err();
+            assert!(
+                matches!(err, PatchParseError::MisplacedHeader { .. }),
+                "{trailing:?}: {err:?}"
+            );
+        }
+        // A next file's own `---`/`+++` pair, or `diff --git`, still starts a file.
+        assert_eq!(
+            parse(&format!("{head}--- a/y\n+++ b/y\n@@ -1 +1 @@\n-c\n+d\n"))
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(parse(&format!("{head}{head}")).unwrap().len(), 2);
+    }
+
+    /// Input git refuses as corrupt is refused here too (bug hunt 2026-10-28, H1-04).
+    #[test]
+    fn input_git_refuses_is_refused() {
+        let refused = |input: &str| parse(input).unwrap_err();
+        assert!(matches!(
+            refused("--- a/x\n+++ b/x\n@@ -+1,+1 +1 @@\n-a\n+b\n"),
+            PatchParseError::MalformedHunkHeader { .. }
+        ));
+        assert!(matches!(
+            refused("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b"),
+            PatchParseError::UnterminatedLine { line_number: 5 }
+        ));
+        assert!(matches!(
+            refused(
+                "diff --git a/x b/x\nnew file mode 100644\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+b\n"
+            ),
+            PatchParseError::InconsistentHeader { .. }
+        ));
+        assert!(matches!(
+            refused(
+                "diff --git a/x b/x\ndeleted file mode 100644\n--- a/x\n+++ b/x\n@@ -1 +0,0 @@\n-a\n"
+            ),
+            PatchParseError::InconsistentHeader { .. }
+        ));
+        assert!(matches!(
+            refused("--- a/x\n+++ b/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n"),
+            PatchParseError::MisplacedHeader { line_number: 3 }
+        ));
+        assert!(matches!(
+            refused("--- a/x\n@@ -1 +1 @@\n-a\n+b\n"),
+            PatchParseError::MisplacedHeader { line_number: 2 }
+        ));
+        assert_eq!(parse_range("1,2,3"), None);
+        // A final context or EOF-marker line, and preamble without a line feed, are fine.
+        assert!(
+            parse("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n\\ No newline at end of file\n").is_ok()
+        );
+        assert!(parse("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\ntrailing note").is_ok());
     }
 
     #[test]
