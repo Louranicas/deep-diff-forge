@@ -341,6 +341,25 @@ pub(crate) fn validate_review_options_or_exit(opts: &[String]) {
         eprintln!("error: --json and --jsonl are mutually exclusive");
         std::process::exit(exit::USAGE);
     }
+    // One output mode: before, `--outline --hunks` printed the outline and `--rank --cluster`
+    // one of the two, each with exit 0 (bug hunt 2026-10-28, H2-07).
+    let modes: Vec<&str> = ["--outline", "--hunks", "--cluster", "--rank"]
+        .into_iter()
+        .filter(|mode| has(mode))
+        .collect();
+    if modes.len() > 1 {
+        eprintln!(
+            "error: {} are separate modes; choose one",
+            modes.join(" and ")
+        );
+        std::process::exit(exit::USAGE);
+    }
+    if has("--outline")
+        && let Some(flag) = ["--address", "--path"].iter().find(|flag| has(flag))
+    {
+        eprintln!("error: {flag} selects hunks; it requires --hunks, not --outline");
+        std::process::exit(exit::USAGE);
+    }
     let view = has("--outline") || has("--hunks");
     if !view
         && let Some(flag) = ["--address", "--path", "--max-bytes", "--cursor"]

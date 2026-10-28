@@ -68,6 +68,9 @@ independent false-positive checker before a fix.
   the files; only the CLI's stderr said so. The `acquisition` member now lists it under
   `omitted_untracked`.
 - A `GitAcquireOptions::byte_budget` of `usize::MAX` no longer wraps to a zero-byte read.
+- **One output mode at a time.** `--outline --hunks` printed the outline, `--rank --cluster` one of
+  the two, and `--outline --path`/`--address` dropped the selector, all with exit 0. Each is now
+  a usage error (exit 2) before any input is read.
 
 ### Added (agent batteries)
 
