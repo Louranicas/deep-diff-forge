@@ -183,3 +183,17 @@ fn the_notes_panel_wraps_a_long_warning() {
     assert!(flat.contains("may not be what applies."), "{stdout}");
     assert!(stdout.lines().all(|l| l.chars().count() <= 80), "{stdout}");
 }
+
+/// Bug hunt 2026-10-28, H4-03: a patch naming one path twice showed the first section's
+/// content and notes for both. The cockpit refuses it, headless or not, before rendering.
+#[test]
+fn a_patch_naming_a_path_twice_is_refused() {
+    let one = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-a\n+b\n";
+    let other = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -9 +9 @@\n-c\n+d\n";
+    let (code, stdout, stderr) = run(&["review", "--probe"], &format!("{one}{other}"));
+    assert_eq!(code, 4, "{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("\"src/lib.rs\" twice"), "{stderr}");
+    let (code, _, stderr) = run(&["review", "--probe"], one);
+    assert_eq!(code, 0, "{stderr}");
+}
