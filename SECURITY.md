@@ -314,8 +314,8 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
   the bind, a second start can remove the first's fresh socket and bind its own,
   leaving the first running but unreachable.
 - **macOS tests do not run on pull requests.** The `macos` CI job runs weekly,
-  on manual runs and in a dispatched release dry run, not on a pull request or
-  inside a tag-triggered release.
+  on manual runs, in a dispatched release dry run and in a tag release, but not
+  on a pull request.
 - **The TUI has no interactive test harness.** Unit tests cover its state and
   rendering, and the headless `review --probe` frame is tested end to end; the
   live terminal path is not.

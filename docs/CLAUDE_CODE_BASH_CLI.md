@@ -152,8 +152,9 @@ boundary).
 | JSONL progress | `--jsonl --progress` | planned |
 | TOON-like compact | `--compact` | planned |
 
-When several output flags are given, `--cluster` wins, then `--rank`, then
-`--json`, then `--layout` (`emit_review` in `main.rs`).
+When several output flags are given, `--jsonl` wins (`stdin_patch` handles it
+first), then `--cluster`, then `--rank`, then `--json`, then `--layout`
+(`emit_review` in `main.rs`).
 
 ## Claude Code Agent Contract
 

@@ -67,7 +67,7 @@ prints PASS/FAIL per step (exit 0 only if all pass, 2 if `cargo` is missing).
 - [ ] `python3 scripts/security/privacy_probe.py`
 - [ ] Regenerated `sbom.spdx.json` matches the committed dependency graph
 - [ ] A `workflow_dispatch` run of `release.yml` on the release commit passes
-      (the dry run; it also runs the macOS tests, which a tag run does not)
+      (the dry run; it runs the macOS tests too, as the tag run does)
 - [ ] Docs updated
 - [ ] `CHANGELOG.md` updated
 
@@ -87,10 +87,9 @@ just release-tag 0.3.0
 
 `release-tag` refuses a version that differs from `[workspace.package].version`
 or a dirty tree, runs `just gate-release`, creates an annotated tag `vX.Y.Z`,
-and pushes it to the remotes named `github` and `gitlab`. The tag push starts
-`release.yml`. Note: the recipe's comment still says crates.io publishes "IF
-CARGO_REGISTRY_TOKEN is configured"; the workflow condition is
-`DDF_CRATES_IO == 'open'` (see below).
+and pushes it to the remotes named `origin` (GitHub) and `gitlab`. The tag push
+starts `release.yml`. crates.io publishes only when `DDF_CRATES_IO == 'open'`
+(see below).
 
 ## Artifact Layout
 
@@ -122,7 +121,7 @@ Toolchain pinned to 1.99.1 except where noted.
 | --- | --- | --- | --- |
 | `secrets` (secret scan (gitleaks)) | ubuntu-26.04 | every trigger | gitleaks 8.30.1, SHA-256-pinned, over full history. |
 | `msrv` (declared Rust 1.88 compatibility) | ubuntu-26.04 | every trigger | `cargo check --workspace --all-targets --locked` on 1.88.0. |
-| `macos` (macOS tests) | macos-latest | `schedule`, `workflow_dispatch` only | `cargo test --workspace --locked --no-fail-fast`. |
+| `macos` (macOS tests) | macos-latest | `schedule`, `workflow_dispatch`, and `v*` tag refs (a tag release); never a pull request | `cargo test --workspace --locked --no-fail-fast`. |
 | `gate` (deploy gate-feature) | ubuntu-26.04 | every trigger | Review-policy check and selftest, exemption-oracle tests, fmt, check, clippy `-D warnings`, pedantic (workspace, patch without default features, fuzz crate), tests, rustdoc `-D warnings`, contract probes, `deploy status --json`, fuzz-harness compile, 10 s hostile daemon soak, privacy probes, Python SDK against the built binary. |
 | `review-controller-evidence` (review controller mutation and fuzz evidence) | ubuntu-26.04 | every trigger | Scoped cargo-mutants of the review controller; 10 s instrumented fuzz smoke for each of the 7 targets in `fuzz/Cargo.toml` (`nightly-2026-10-25`; fails if a declared target is not run); builds the council gate image and runs the rootless-Podman planted-breach suite (`council_sandbox`, 12 probes). |
 | `diff-mutation` (diff mutation (shard k/4)) | ubuntu-26.04 | `pull_request` only | `scripts/diff_mutation.sh origin/$BASE_REF k/4`: cargo-mutants 27.1.0 on the PR's changed Rust lines under `crates/`; a missed mutant or timeout fails. |
@@ -140,7 +139,7 @@ permission `contents: read`; only `build` elevates.
 
 | Job | Runner | What it does |
 | --- | --- | --- |
-| `quality` | (calls `ci.yml`) | The full CI workflow. On a tag push its event is `push`, so `macos` and `diff-mutation` are skipped; on a dispatch `macos` runs. |
+| `quality` | (calls `ci.yml`) | The full CI workflow. On a tag push its event is `push`, so `diff-mutation` is skipped; `macos` runs on a tag ref and on a dispatch. |
 | `supply-chain` (supply chain gate) | ubuntu-26.04 | cargo-deny and cargo-audit as in CI; on a tag, refuses a tag that is not `v` + the workspace version. |
 | `build` (build &lt;target&gt;) | ubuntu-24.04 (Linux), macos-latest (both macOS) | Needs `quality` and `supply-chain`. `cargo build --release --locked -p deep-diff-forge-cli` for `x86_64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. Smoke on Linux and aarch64 macOS: `--version` must equal the workspace version and `--stdin-patch --json` must produce a review document; the x86_64 macOS binary is cross-built and only its checksum is verified. Packages, writes and re-verifies the `.sha256`. On a tag only: build-provenance attestation for archives, checksums and SBOM, and upload to the GitHub Release. |
 | `publish` (crates.io publish (owner-gated)) | ubuntu-26.04 | Runs only if the ref is a `v*` tag **and** `vars.DDF_CRATES_IO == 'open'`. Publishes the 14 crates in dependency order, skipping crates already live and retrying crates.io's rate limit; exits 0 without publishing if `CARGO_REGISTRY_TOKEN` is unset. |

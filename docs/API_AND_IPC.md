@@ -20,10 +20,12 @@ section says whether it describes what ships today or a planned design.
 
 ## Design Rule
 
-The core API is library-first. Every surface that reviews a patch calls the same
-parse → guard → seal path (`deep_diff_forge_patch::SealedReview::new`), so a
-patch gets the same `review.v0` document from the CLI, the daemon, `rpc`, `mcp`
-and the SDKs. The daemon is optional; no command needs it.
+The core API is library-first. Every surface that emits a `review.v0` document
+calls the same parse → guard → seal path (`deep_diff_forge_patch::SealedReview::new`):
+the CLI's `--json`, the daemon's `diff.compute`, `rpc`, the MCP `review_patch` tool
+and the Rust SDK's `review`. A patch gets the same document from each. `--jsonl`,
+`diff.plan`, `session.open`, `rank_patch` and the cockpit use the same strict parser
+without the seal. The daemon is optional; no command needs it.
 
 ## One Engine, Several Front Doors
 
@@ -249,9 +251,9 @@ message per line (`crates/deep-diff-forge-cli/src/mcp.rs`).
 | `explain_exit_code` | `code`, `family?` (`engine` or `council`) | the exit-code registry |
 | `exit_code_registry` | — | the exit-code registry |
 
-Every tool is annotated `readOnlyHint: true`. A parse failure or a refused
-contract is a tool result with `isError: true`; an unknown tool or a malformed
-call is a JSON-RPC error.
+Every tool is annotated `readOnlyHint: true`. Bad or missing arguments, a parse
+failure or a refused contract is a tool result with `isError: true`, so a model
+can correct its input; an unknown tool or malformed JSON-RPC is a JSON-RPC error.
 
 ## SDKs
 

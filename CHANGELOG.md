@@ -17,7 +17,7 @@ decision. 0.3.0 is minor rather than patch because the library APIs changed inco
 - **The README is rewritten from the code.**
   - Three graphics: a terminal session generated from the binary's real output
     (`scripts/docs/render_terminal_svg.py`), an architecture diagram that adapts to light and
-    dark themes, and a refreshed banner (14 crates, 1,353 tests).
+    dark themes, and a refreshed banner (14 crates, 1,354 tests).
   - A Mermaid crate graph drawn from `docs/crate-edges.txt`.
   - The risk-ranking weights from `risk.rs`.
   - The nine required checks.

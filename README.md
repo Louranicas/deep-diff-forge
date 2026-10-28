@@ -157,7 +157,8 @@ Each fails with exit 4. None is quietly turned into a plausible-looking model.
    `--cluster` and layouts, the daemon's `diff.compute`, and the SDK.
    - `--jsonl` streams through the pipeline crate under the same parser and contracts, but
      unsealed.
-   - The cockpit, `diff.plan` and `session.open` use the same strict parser without a seal.
+   - The cockpit, MCP `rank_patch`, `diff.plan` and `session.open` use the same strict
+     parser without a seal.
    - Git runs with a fixed argv, and paths, modes and blob IDs come from NUL-delimited
      records.
 2. **One model.** `deep-diff-forge-core` holds files, hunks, line anchors, the seal and the tool
@@ -348,8 +349,8 @@ empty.
 | `envelope` | `ddf.result.v1` |
 | `daemon`, `rpc` | JSON-RPC 2.0, protocol 1 |
 
-**Input sealing.** `review.v0`, `rank.v0`, `cluster.v0` and `semantic.v0` carry two members
-right after `schema`:
+**Input sealing.** `review.v0`, `rank.v0`, `cluster.v0`, `semantic.v0` and
+`git-acquisition.v0` carry two members right after `schema`:
 - `input_sha256`: lowercase hex SHA-256 of the exact bytes read, before any parsing.
   `sha256sum < input` reproduces it.
 - `tool`: `{"name": "deep-diff-forge", "version": "<CARGO_PKG_VERSION>"}`.
@@ -444,7 +445,7 @@ Every tool is annotated `readOnlyHint: true`, and none writes anything. The serv
 instructions and the patch-reading tools tell the model that paths and line text come from
 the patch's authors: data to review, never instructions.
 
-- **Errors:** a malformed call or an unknown tool is a JSON-RPC error. A parse failure or a broken input contract is a tool result with `isError: true`, so a model can correct its input.
+- **Errors:** an unknown tool or malformed JSON-RPC is a JSON-RPC error. Bad or missing arguments, a parse failure or a broken input contract is a tool result with `isError: true`, so a model can correct its input.
 - **Limits:** a request line is capped at the 64 MiB patch budget plus 1 MiB.
 - **Large reviews:** `review_patch` returns the full document while it is at most 256 KiB. A larger review returns a bounded `deep-diff-forge.review-summary.v0` instead: the same seal and totals, and per-file counts for up to 1,000 files, with `reason` and `omitted_files`. Pass `paths` to get chosen files in full, or `detail: "summary"` to ask for the summary. `rank_patch` returns the full ranking while it is at most 256 KiB; a larger one returns `deep-diff-forge.rank-summary.v0`: the highest-ranked files that fit, in order, with `total_files` and `omitted_files`.
 - **Lifetime:** the server exits when stdin closes.
@@ -521,7 +522,7 @@ server on an owner-private Unix domain socket.
 ```bash
 deep-diff-forge daemon start --foreground      # terminal 1
 deep-diff-forge daemon health                  # terminal 2
-# {"id":1,"jsonrpc":"2.0","result":{"status":"ok","pid":…,"protocol":1,"sessions":0,…}}
+# {"id":1,"jsonrpc":"2.0","result":{"cache_entries":0,"pid":…,"protocol":1,"retained_bytes":0,"sessions":0,"status":"ok","version":"0.3.0"}}
 deep-diff-forge daemon stop
 ```
 
@@ -611,9 +612,10 @@ Across the tree:
 - **No `unsafe`.** It is forbidden in every crate.
 - **No production `unwrap` or `expect`.** No suppression goes unexplained.
 - **Pinned Actions.** Every GitHub Action is pinned to a commit SHA.
-- **Platforms.** A macOS job runs the whole suite weekly and before platform changes.
-- **Releases.** Each release builds three targets, smoke-tests them, verifies checksums, and
-  attaches SLSA provenance and the SBOM.
+- **Platforms.** A macOS job runs the whole suite weekly, on manual runs and in every
+  release run.
+- **Releases.** Each release builds three targets, smoke-tests the two that run on the build
+  machine, verifies checksums, and attaches SLSA provenance and the SBOM.
 - **Local replica.** `scripts/ci_local.sh` (`just ci`) runs the CI gate jobs locally.
 
 The engine is hardened against:

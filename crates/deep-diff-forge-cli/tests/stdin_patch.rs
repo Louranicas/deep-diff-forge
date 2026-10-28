@@ -296,3 +296,21 @@ fn an_unreadable_or_zero_worker_count_is_refused() {
     assert_eq!(code, 0);
     assert!(stdout.contains("parallelism=fixed:1"), "{stdout}");
 }
+
+/// `chain-contract` states what the JSON and JSONL output really carry: a schema name on every
+/// document and an event name on every JSONL record (a JSONL record has no schema version).
+#[test]
+fn chain_contract_promises_what_jsonl_carries() {
+    let (code, stdout, _) = run(&["chain-contract"], "");
+    assert_eq!(code, 0);
+    assert!(
+        stdout
+            .contains("every JSON document names its schema; every JSONL record names its event."),
+        "{stdout}"
+    );
+    let (_, events, _) = run(&["--stdin-patch", "--jsonl"], PATCH);
+    for line in events.lines() {
+        let event: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert!(event["event"].is_string(), "{line}");
+    }
+}

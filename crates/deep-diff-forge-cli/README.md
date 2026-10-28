@@ -70,8 +70,9 @@ deep-diff-forge --git-range main..HEAD --rank --json --require-files --require-h
 | Rust SDK | crate `deep-diff-forge-sdk` | `review`, `rank`, the exit registry, and a Unix-socket `Client`. |
 | Python SDK | `sdk/python/deep_diff_forge.py` in the repository | Standard library only; `StdioClient` (over `rpc`) and `SocketClient`. |
 
-Every surface uses the same parse, guard and seal path, so one patch gets the
-same `review.v0` document from each.
+Every surface that emits a `review.v0` document (`--json`, the daemon's
+`diff.compute`, `rpc`, MCP `review_patch`, the SDK's `review`) uses the same
+parse, guard and seal path, so one patch gets the same document from each.
 
 Not implemented yet (each is refused with exit 2): `deep-diff-forge <old> <new>`,
 `chain`, `cluster` and `loom`.
