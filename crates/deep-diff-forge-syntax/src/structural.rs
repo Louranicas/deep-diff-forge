@@ -230,7 +230,10 @@ pub fn tokenize_checked(
         if visited > 200_000 {
             return Err(FallbackReason::NodeBudgetExceeded);
         }
-        if node.child_count() == 0 {
+        // A comment is one token holding its exact bytes. In tree-sitter-rust a plain comment's
+        // text is no leaf (only its `//` or `/*` is), so a rewritten comment, such as a changed
+        // `// SAFETY:` justification, used to change no token and was called reformat-only.
+        if node.child_count() == 0 || is_comment(node.kind()) {
             if let Some(text) = source.get(node.start_byte()..node.end_byte())
                 && !text.trim().is_empty()
             {
@@ -248,6 +251,11 @@ pub fn tokenize_checked(
         }
     }
     Ok(tokens)
+}
+
+/// Whether a tree-sitter node kind is a comment, whose whole text is one token.
+fn is_comment(kind: &str) -> bool {
+    matches!(kind, "line_comment" | "block_comment")
 }
 
 fn diff_tokens(language: Language, old: &[Token], new: &[Token]) -> StructuralDiff {
@@ -995,6 +1003,35 @@ mod tests {
         assert_eq!(d.added, 0);
         assert_eq!(d.removed, 0);
         assert!(d.unchanged > 0);
+    }
+
+    /// A rewritten comment is a change, not formatting: every kind of comment counts with its
+    /// exact bytes. Before, a changed `// SAFETY:` justification was reported reformat-only.
+    #[test]
+    fn a_rewritten_comment_is_never_reformat_only() {
+        for (old, new) in [
+            (
+                "// SAFETY: the pointer is valid\nfn a() {}\n",
+                "// SAFETY: trust me\nfn a() {}\n",
+            ),
+            (
+                "/// Returns the sum.\nfn a() {}\n",
+                "/// Returns the product.\nfn a() {}\n",
+            ),
+            ("/* keep */ fn a() {}\n", "/* drop */ fn a() {}\n"),
+            ("fn a() {} // x\n", "fn a() {} //  x\n"),
+        ] {
+            let d = structural_diff(Language::Rust, old, new);
+            assert!(!d.reformat_only(), "{old:?} -> {new:?}");
+            assert_eq!((d.added, d.removed), (1, 1), "{old:?} -> {new:?}");
+        }
+        // Moving an unchanged comment to its own line is still formatting only.
+        let d = structural_diff(
+            Language::Rust,
+            "fn a() {} // note\n",
+            "fn a() {}\n// note\n",
+        );
+        assert!(d.reformat_only());
     }
 
     #[test]

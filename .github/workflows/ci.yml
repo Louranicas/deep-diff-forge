@@ -184,7 +184,7 @@ jobs:
         # real cap, then stdio lines; see fuzz/fuzz_targets/stdio_invariants.rs). The copies keep
         # the committed seeds unchanged.
         run: |
-          targets="patch_parser review_json daemon_protocol agent_annotation stdio_mcp stdio_rpc"
+          targets="patch_parser review_json daemon_protocol agent_annotation stdio_mcp stdio_rpc structural_soundness"
           declared=$(grep -A1 '^\[\[bin\]\]' fuzz/Cargo.toml | sed -n 's/^name = "\(.*\)"/\1/p' | sort)
           missing=$(comm -23 <(echo "$declared") <(printf '%s\n' council_report $targets | sort))
           if [ -n "$missing" ]; then echo "fuzz targets never run in CI: $missing"; exit 1; fi
