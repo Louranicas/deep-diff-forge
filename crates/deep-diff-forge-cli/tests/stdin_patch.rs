@@ -25,7 +25,11 @@ fn run(args: &[&str], stdin: &str) -> (i32, String, String) {
         .expect("stdin handle")
         .write_all(stdin.as_bytes())
     {
-        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "write stdin: {error}");
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "write stdin: {error}"
+        );
     }
     let out = child.wait_with_output().expect("wait for binary");
     (
