@@ -996,15 +996,18 @@ fn deploy_cmd(opts: &[String]) {
 /// Report the release publication posture for the current version.
 ///
 /// This is a declared snapshot (like `deploy status`): the actual release acts
-/// are `git tag`, `gh release`, and `cargo publish`. crates.io is reported
-/// `blocked`: publication is on hold by owner decision, and release.yml publishes
-/// only when the repository variable `DDF_CRATES_IO` is `open`.
+/// are `git tag`, `gh release`, and `cargo publish`. The source is on both remotes,
+/// so `github` and `gitlab` are `published`. `github-release` is `blocked`: a build
+/// cannot know whether its own version was tagged, and a release exists only once the
+/// owner pushes a `v*` tag. crates.io is `blocked`: publication is on hold by owner
+/// decision, and release.yml publishes only when the repository variable
+/// `DDF_CRATES_IO` is `open`.
 fn deploy_release(json: bool) {
     use deep_diff_forge_core::{ReleasePlan, TargetState};
     let plan = ReleasePlan::new(env!("CARGO_PKG_VERSION"))
         .with_target("github", TargetState::Published)
         .with_target("gitlab", TargetState::Published)
-        .with_target("github-release", TargetState::Published)
+        .with_target("github-release", TargetState::Blocked)
         .with_target("crates.io", TargetState::Blocked);
 
     if json {
