@@ -73,6 +73,20 @@ fn a_command_help_repeats_its_usage_line() {
     assert_eq!(council.1, council_help.1);
 }
 
+/// `council help` and `council --help` take nothing after them: extra words are a mistake, not a
+/// request for help.
+#[test]
+fn council_help_takes_no_further_arguments() {
+    for flag in ["help", "--help", "-h"] {
+        let (code, stdout, _) = run(&["council", flag, "prepare"]);
+        assert_ne!(code, 0, "council {flag} prepare");
+        assert!(
+            !stdout.contains("council example"),
+            "council {flag} prepare"
+        );
+    }
+}
+
 /// `--help` only counts as the first argument; elsewhere the command's own rules apply.
 #[test]
 fn help_later_in_the_line_is_not_intercepted() {

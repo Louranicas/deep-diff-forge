@@ -196,10 +196,11 @@ impl std::fmt::Display for Excerpt<'_> {
         if text.len() <= ERROR_EXCERPT_BYTES {
             return write!(f, "{text:?}");
         }
-        let mut end = ERROR_EXCERPT_BYTES;
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
+        // The last char boundary at or before the limit (a char is at most 4 bytes).
+        let end = (ERROR_EXCERPT_BYTES.saturating_sub(3)..=ERROR_EXCERPT_BYTES)
+            .rev()
+            .find(|&i| text.is_char_boundary(i))
+            .unwrap_or(0);
         write!(f, "{:?}… (+{} bytes)", &text[..end], text.len() - end)
     }
 }
