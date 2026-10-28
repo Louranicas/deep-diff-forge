@@ -188,6 +188,7 @@ dependencies = [
  "deep-diff-forge-review",
  "deep-diff-forge-syntax",
  "deep-diff-forge-tui",
+ "nix",
  "serde_json",
 ]
 

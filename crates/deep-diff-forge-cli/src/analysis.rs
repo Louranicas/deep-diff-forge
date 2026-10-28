@@ -5,24 +5,46 @@
 //! See `docs/RECOMMENDATION_INTEGRATION.md#shared-service` for vault/code backlinks.
 use deep_diff_forge_pipeline::review::{SourcePair, analyze_review};
 use std::{
-    fs,
+    fmt, fs,
     io::Read as _,
+    os::unix::fs::OpenOptionsExt as _,
     path::{Component, Path},
 };
 
-pub(crate) fn run(args: &[String]) -> Result<String, String> {
-    if args.len() != 3 {
-        return Err("usage: deep-diff-forge analyze <patch-file> <base-directory> <candidate-directory> (emits analysis.v1 JSON)".into());
+#[derive(Debug)]
+pub(crate) enum Error {
+    Io(String),
+    Invalid(String),
+}
+
+impl Error {
+    pub(crate) fn exit_code(&self) -> i32 {
+        match self {
+            Self::Io(_) => deep_diff_forge_core::exit::IO,
+            Self::Invalid(_) => deep_diff_forge_core::exit::INVALID_INPUT,
+        }
     }
-    let patch = super::read_capped_or_exit(
-        fs::File::open(&args[0]).map_err(|e| e.to_string())?,
-        "patch file",
-    );
-    let files = deep_diff_forge_patch::parse(&patch).map_err(|e| e.to_string())?;
-    let old_root = fs::canonicalize(&args[1]).map_err(|e| e.to_string())?;
-    let new_root = fs::canonicalize(&args[2]).map_err(|e| e.to_string())?;
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(message) | Self::Invalid(message) => formatter.write_str(message),
+        }
+    }
+}
+
+pub(crate) fn run(args: &[String]) -> Result<String, Error> {
+    if args.len() != 3 {
+        return Err(Error::Invalid("usage: deep-diff-forge analyze <patch-file> <base-directory> <candidate-directory> (emits analysis.v1 JSON)".into()));
+    }
+    let patch = read_patch(Path::new(&args[0]))?;
+    let files =
+        deep_diff_forge_patch::parse(&patch).map_err(|error| Error::Invalid(error.to_string()))?;
+    let old_root = fs::canonicalize(&args[1]).map_err(|error| Error::Io(error.to_string()))?;
+    let new_root = fs::canonicalize(&args[2]).map_err(|error| Error::Io(error.to_string()))?;
     if !old_root.is_dir() || !new_root.is_dir() {
-        return Err("source roots must be directories".into());
+        return Err(Error::Invalid("source roots must be directories".into()));
     }
     let mut pairs = Vec::new();
     let mut remaining = deep_diff_forge_patch::DEFAULT_BYTE_BUDGET;
@@ -53,51 +75,87 @@ pub(crate) fn run(args: &[String]) -> Result<String, String> {
     }
     analyze_review(patch, &pairs)
         .map(|b| b.to_json())
-        .map_err(|e| e.to_string())
+        .map_err(|error| Error::Invalid(error.to_string()))
 }
+
+fn open_regular(path: &Path, what: &str) -> Result<fs::File, Error> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|error| Error::Io(error.to_string()))?;
+    if !file
+        .metadata()
+        .map_err(|error| Error::Io(error.to_string()))?
+        .is_file()
+    {
+        return Err(Error::Io(format!("{what} is not a regular file")));
+    }
+    Ok(file)
+}
+
+fn read_patch(path: &Path) -> Result<String, Error> {
+    let file = open_regular(path, "patch file")?;
+    let cap = deep_diff_forge_patch::DEFAULT_BYTE_BUDGET;
+    let mut bytes = Vec::new();
+    file.take(cap as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| Error::Io(error.to_string()))?;
+    if bytes.len() > cap {
+        return Err(Error::Invalid(format!(
+            "patch file exceeds the {cap}-byte input budget"
+        )));
+    }
+    String::from_utf8(bytes).map_err(|_| Error::Io("patch file is not valid UTF-8".into()))
+}
+
 fn read_source(
     root: &Path,
     relative: &str,
     remaining: &mut usize,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, Error> {
     let path = Path::new(relative);
     if path
         .components()
         .any(|c| !matches!(c, Component::Normal(_)))
         || relative.is_empty()
     {
-        return Err(format!("unsafe source path {relative:?}"));
+        return Err(Error::Invalid(format!("unsafe source path {relative:?}")));
     }
     let mut target = root.to_path_buf();
     for component in path.components() {
         target.push(component);
         match fs::symlink_metadata(&target) {
             Ok(meta) if meta.file_type().is_symlink() => {
-                return Err(format!("source symlink rejected: {relative:?}"));
+                return Err(Error::Invalid(format!(
+                    "source symlink rejected: {relative:?}"
+                )));
             }
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.to_string()),
+            Err(error) => return Err(Error::Io(error.to_string())),
         }
     }
-    let canonical = fs::canonicalize(&target).map_err(|e| e.to_string())?;
+    let canonical = fs::canonicalize(&target).map_err(|error| Error::Io(error.to_string()))?;
     if !canonical.starts_with(root) || !canonical.is_file() {
-        return Err(format!(
+        return Err(Error::Io(format!(
             "source is not a regular file under its root: {relative:?}"
-        ));
+        )));
     }
     // Caller-owned local snapshot roots must remain stable during capture. This
     // path check is not a race-free filesystem sandbox against a concurrent writer.
-    let file = fs::File::open(canonical).map_err(|e| e.to_string())?;
+    let file = open_regular(&canonical, "source")?;
     let mut bytes = Vec::new();
     file.take(*remaining as u64 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| Error::Io(error.to_string()))?;
     if bytes.len() > *remaining {
-        return Err("aggregate source byte budget exceeded".into());
+        return Err(Error::Invalid(
+            "aggregate source byte budget exceeded".into(),
+        ));
     }
     *remaining -= bytes.len();
     String::from_utf8(bytes)
         .map(Some)
-        .map_err(|_| format!("source is not UTF-8: {relative:?}"))
+        .map_err(|_| Error::Invalid(format!("source is not UTF-8: {relative:?}")))
 }

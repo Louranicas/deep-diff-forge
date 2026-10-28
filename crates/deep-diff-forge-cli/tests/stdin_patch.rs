@@ -184,6 +184,47 @@ fn unknown_command_exits_two() {
 }
 
 #[test]
+fn incompatible_or_inapplicable_review_options_fail_before_stdin_is_read() {
+    for args in [
+        &["--stdin-patch", "--json", "--jsonl"][..],
+        &["--stdin-patch", "--parallel", "2"][..],
+        &["--stdin-patch", "--cursor", "opaque"][..],
+        &["--stdin-patch", "--max-bytes", "100"][..],
+    ] {
+        let (code, stdout, stderr) = run(args, PATCH);
+        assert_eq!(code, 2, "{args:?}: {stderr}");
+        assert!(stdout.is_empty(), "{args:?}");
+    }
+}
+
+#[test]
+fn layout_and_view_budget_values_are_validated_in_every_mode() {
+    for args in [
+        &["--stdin-patch", "--rank", "--layout", "bogus"][..],
+        &["--stdin-patch", "--json", "--layout", "bogus"][..],
+        &["--stdin-patch", "--outline", "--max-bytes", "bogus"][..],
+        &["--stdin-patch", "--hunks", "--max-bytes", "bogus"][..],
+    ] {
+        let (code, stdout, stderr) = run(args, PATCH);
+        assert_eq!(code, 2, "{args:?}: {stderr}");
+        assert!(stdout.is_empty(), "{args:?}");
+    }
+}
+
+#[test]
+fn unknown_command_diagnostic_is_terminal_safe_and_bounded() {
+    let command = format!("\u{1b}[31m{}", "x".repeat(1000));
+    let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .arg(command)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(!out.stderr.contains(&0x1b));
+    assert!(out.stderr.len() < 400, "{}", out.stderr.len());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("bytes omitted"));
+}
+
+#[test]
 fn diagnostics_go_to_stderr_not_stdout() {
     let bad = "--- a/x\n+++ b/x\n-stray removal with no hunk\n";
     let (_, stdout, stderr) = run(&["--stdin-patch", "--json"], bad);
