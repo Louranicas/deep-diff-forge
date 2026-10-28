@@ -614,7 +614,7 @@ per file (`crates/deep-diff-forge-graph/src/risk.rs`). Higher means review first
 | `many_hunks` | ≥ 5 hunks | +2 |
 | `config_or_lockfile` · `binary_change` | `Cargo.toml`, `*.lock`, `*.yaml`, … · binary | +1 · +1 |
 | `test_only` | under `tests/` or `test/`, `*_test.*`, `*.test.*` | no bonus |
-| `hazardous_text` | a changed line holds a bidi control, an invisible or a control character, or the path traverses (`..`, absolute) or names `.git` | +3 |
+| `hazardous_text` | a changed line holds a bidi control, an invisible or a control character, or the path (or the path a rename or copy leaves) traverses (`..`, absolute) or names `.git` | +3 |
 | `generated_or_vendored` | `vendor/`, `node_modules/`, `target/`, `generated/`, `dist/`, `*.min.js`, `*.pb.rs`, `*.pb.go` | base only: no bonuses, but keeps new · deleted · binary · hazards |
 
 Whoever writes a patch also chooses its paths, so a path can lower a file's score but never zero it. A new file under `generated/` still ranks above a one-line edit elsewhere.

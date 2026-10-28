@@ -60,6 +60,9 @@ independent false-positive checker before a fix.
 - **The daemon refuses params a method does not take**, so a misspelt guard such as
   `require_file` no longer passes an empty review. MCP enforces its schema enums.
 - `highlight` keeps line breaks without colour too (the earlier fix covered only colour).
+- **A rename out of `.git` is hazardous too.** Renaming `.git/hooks/pre-commit` to `src/y.rs`
+  scored no signal while the reverse rename raised `hazardous_text`; the path a rename or copy
+  leaves now counts.
 
 ### Added (agent batteries)
 

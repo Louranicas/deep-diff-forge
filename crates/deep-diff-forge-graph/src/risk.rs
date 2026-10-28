@@ -123,7 +123,18 @@ fn hazard_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
             line.kind != PatchLineKind::Context
                 && !deep_diff_forge_core::text_hazards(&line.text).is_empty()
         });
-    if in_lines || !deep_diff_forge_core::path_hazards(&file.path).is_empty() {
+    // A rename or copy is as hazardous as the path it leaves: moving `.git/hooks/pre-commit` to
+    // `src/y.rs` scored nothing while the reverse rename was flagged (bug hunt 2026-10-28, H4-07).
+    let from_hazardous = file
+        .patch_twin
+        .metadata
+        .iter()
+        .filter_map(|m| {
+            m.strip_prefix("rename from ")
+                .or_else(|| m.strip_prefix("copy from "))
+        })
+        .any(|from| !deep_diff_forge_core::path_hazards(from).is_empty());
+    if in_lines || from_hazardous || !deep_diff_forge_core::path_hazards(&file.path).is_empty() {
         signals.push(RiskSignal::HazardousText);
         3
     } else {
@@ -376,6 +387,29 @@ mod tests {
                 .contains(&RiskSignal::HazardousText)
         );
         assert_eq!(RiskSignal::HazardousText.label(), "hazardous_text");
+    }
+
+    /// Bug hunt 2026-10-28, H4-07: the path a rename or copy leaves counts, so moving a Git hook
+    /// into the tree is flagged like moving one into `.git`.
+    #[test]
+    fn a_hazardous_rename_or_copy_source_is_flagged() {
+        let moved = |verb: &str, from: &str| {
+            file(&format!(
+                "diff --git a/{from} b/src/y.rs\nsimilarity index 100%\n{verb} from {from}\n{verb} to src/y.rs\n"
+            ))
+        };
+        for verb in ["rename", "copy"] {
+            let (_, hook) = score_file(&moved(verb, ".git/hooks/pre-commit"));
+            assert!(
+                hook.contains(&RiskSignal::HazardousText),
+                "{verb}: {hook:?}"
+            );
+            let (_, plain) = score_file(&moved(verb, "src/x.rs"));
+            assert!(
+                !plain.contains(&RiskSignal::HazardousText),
+                "{verb}: {plain:?}"
+            );
+        }
     }
 
     #[test]
