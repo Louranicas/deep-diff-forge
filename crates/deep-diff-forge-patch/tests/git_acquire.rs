@@ -570,6 +570,41 @@ fn output_over_budget_is_refused() {
     ));
 }
 
+/// A Git that never finishes is stopped at the acquisition's time limit, and the caller gets
+/// `TimedOut` instead of hanging (the git-timeout residual risk of 2026-10-28). A Git that
+/// finishes in time is unaffected by the limit.
+#[test]
+fn a_stalled_git_is_stopped_at_the_time_limit() {
+    let fx = fixture("stall");
+    let stub = fx.root.join("stalled-git");
+    std::fs::write(&stub, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    chmod(&stub, 0o755);
+    let opts = GitAcquireOptions {
+        git_program: stub.into_os_string(),
+        time_limit: std::time::Duration::from_millis(300),
+        ..options(false)
+    };
+    let started = std::time::Instant::now();
+    let result = acquire_git(&fx.root, &GitSelection::WorkingTree, &opts);
+    let took = started.elapsed();
+    assert!(
+        matches!(
+            result,
+            Err(GitAcquireError::TimedOut {
+                command: "git rev-parse",
+                limit_ms: 300
+            })
+        ),
+        "{result:?}"
+    );
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    let in_time = GitAcquireOptions {
+        time_limit: std::time::Duration::from_secs(60),
+        ..options(false)
+    };
+    assert!(acquire_git(&fx.root, &GitSelection::WorkingTree, &in_time).is_ok());
+}
+
 /// Negative control: resolving `HEAD` unconditionally would fail on a fresh
 /// repository; the port compares against the empty tree instead.
 #[test]

@@ -188,6 +188,13 @@ pub enum GitAcquireError {
         /// Bounded standard-error text.
         stderr: String,
     },
+    /// Git did not finish within the acquisition's time limit and was killed.
+    TimedOut {
+        /// The Git subcommand that was running.
+        command: &'static str,
+        /// The limit for the whole acquisition, in milliseconds.
+        limit_ms: u128,
+    },
     /// Git's output exceeded the byte budget and was not retained.
     BudgetExceeded {
         /// Configured limit in bytes.
@@ -252,6 +259,10 @@ impl std::fmt::Display for GitAcquireError {
                 Some(code) => write!(f, "`{command}` exited with status {code}: {stderr}"),
                 None => write!(f, "`{command}` was terminated by a signal: {stderr}"),
             },
+            Self::TimedOut { command, limit_ms } => write!(
+                f,
+                "`{command}` did not finish within the {limit_ms} ms Git time limit and was stopped"
+            ),
             Self::BudgetExceeded { limit_bytes } => {
                 write!(f, "Git output exceeds the {limit_bytes}-byte budget")
             }

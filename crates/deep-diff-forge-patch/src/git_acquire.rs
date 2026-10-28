@@ -116,7 +116,14 @@ pub struct GitAcquireOptions {
     pub git_program: OsString,
     /// Extra environment for every Git invocation (e.g. config isolation).
     pub env: Vec<(OsString, OsString)>,
+    /// The most time the whole acquisition may take, every Git call included. A Git process
+    /// still running at the deadline is killed and the acquisition fails with
+    /// [`GitAcquireError::TimedOut`]: a stalled filesystem or a hung hook cannot hang the caller.
+    pub time_limit: std::time::Duration,
 }
+
+/// The default [`GitAcquireOptions::time_limit`].
+pub const DEFAULT_GIT_TIME_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl Default for GitAcquireOptions {
     fn default() -> Self {
@@ -125,6 +132,7 @@ impl Default for GitAcquireOptions {
             byte_budget: crate::DEFAULT_BYTE_BUDGET,
             git_program: OsString::from("git"),
             env: Vec::new(),
+            time_limit: DEFAULT_GIT_TIME_LIMIT,
         }
     }
 }
@@ -203,6 +211,17 @@ const STDERR_CAP: u64 = 8 * 1024;
 struct Runner<'a> {
     options: &'a GitAcquireOptions,
     cwd: PathBuf,
+    /// When the whole acquisition must be done (see [`GitAcquireOptions::time_limit`]).
+    deadline: std::time::Instant,
+}
+
+/// The acquisition's deadline: now plus its time limit.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the git-acquisition clock door: one deadline bounds every Git call of an acquisition"
+)]
+fn deadline_after(limit: std::time::Duration) -> std::time::Instant {
+    std::time::Instant::now() + limit
 }
 
 impl Runner<'_> {
@@ -246,21 +265,53 @@ impl Runner<'_> {
             }
             kept
         });
-        let mut out = Vec::new();
-        let read = child
-            .stdout
-            .take()
-            .map(|pipe| pipe.take(budget as u64 + 1).read_to_end(&mut out));
-        if out.len() > budget {
+        // Read stdout on its own thread, so this one can enforce the deadline: before, a stalled
+        // Git (a hung filesystem or hook) blocked the caller forever on `child.wait()`.
+        let over_budget = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stdout = child.stdout.take();
+        let flag = std::sync::Arc::clone(&over_budget);
+        let stdout_reader = std::thread::spawn(move || {
+            let mut out = Vec::new();
+            let read = stdout.map(|pipe| pipe.take(budget as u64 + 1).read_to_end(&mut out));
+            if out.len() > budget {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            (out, read)
+        });
+        let mut pause = std::time::Duration::from_millis(1);
+        let stopped = |child: &mut std::process::Child| {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = stderr_reader.join();
+        };
+        let status = loop {
+            if over_budget.load(std::sync::atomic::Ordering::SeqCst) {
+                stopped(&mut child);
+                let _ = (stdout_reader.join(), stderr_reader.join());
+                return Err(GitAcquireError::BudgetExceeded {
+                    limit_bytes: budget,
+                });
+            }
+            if let Some(status) = child.try_wait().map_err(spawn_err)? {
+                break status;
+            }
+            if std::time::Instant::now() >= self.deadline {
+                stopped(&mut child);
+                let _ = (stdout_reader.join(), stderr_reader.join());
+                return Err(GitAcquireError::TimedOut {
+                    command,
+                    limit_ms: self.options.time_limit.as_millis(),
+                });
+            }
+            std::thread::sleep(pause);
+            pause = (pause * 2).min(std::time::Duration::from_millis(20));
+        };
+        let (out, read) = stdout_reader.join().unwrap_or_default();
+        let stderr = stderr_reader.join().unwrap_or_default();
+        if out.len() > budget {
             return Err(GitAcquireError::BudgetExceeded {
                 limit_bytes: budget,
             });
         }
-        let status = child.wait().map_err(spawn_err)?;
-        let stderr = stderr_reader.join().unwrap_or_default();
         if let Some(Err(e)) = read {
             return Err(spawn_err(e));
         }
@@ -352,9 +403,11 @@ pub fn acquire(
             detail: "untracked files can only be included in a working-tree selection".to_owned(),
         });
     }
+    let deadline = deadline_after(options.time_limit);
     let probe = Runner {
         options,
         cwd: repo.to_path_buf(),
+        deadline,
     };
     let mut top = probe.run(
         "git rev-parse",
@@ -369,6 +422,7 @@ pub fn acquire(
     let runner = Runner {
         options,
         cwd: root.clone(),
+        deadline,
     };
     let head = || -> Result<String, GitAcquireError> {
         match runner.commit_id("HEAD")? {
