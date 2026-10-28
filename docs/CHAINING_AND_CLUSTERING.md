@@ -4,6 +4,22 @@ Deep-Diff-Forge commands must be useful as Unix filters before they become
 interactive applications. Every non-interactive command is designed to compose
 with Bash, Claude Code, CI, and other command runners.
 
+## Status 2026-10-28 (0.3.0)
+
+Most of this page is a target design. What ships today:
+
+- **Chaining:** single commands that read stdin explicitly (`--stdin-patch`,
+  `learn record --stdin`) and write one JSON document (`--json`) or one event
+  per line (`--jsonl`). Internally `--jsonl` runs a two-stage pipeline
+  (`IngestStage` → `RenderStage::jsonl()`, `crates/deep-diff-forge-pipeline`).
+- **Clustering:** `--cluster [--parallel serial|auto|N]` on `--stdin-patch` and
+  on the Git selections. It runs the patch and risk dimensions over the files
+  with bounded threads, joins in ranked review order, and prints a receipt
+  (`deep-diff-forge.cluster.v0` with `--json`).
+- **Not implemented** (exit 2 today): the `ingest`, `plan`, `rank`, `annotate`,
+  `render`, `chain` and `cluster` subcommands, chain manifests, corpus runs,
+  `--dimensions`, `--budget`, `--receipt` and `--ranked`.
+
 ## Goals
 
 - Make every machine command pipe-safe.
@@ -14,63 +30,72 @@ with Bash, Claude Code, CI, and other command runners.
 
 ## Command Families
 
-| Family | Planned command | Purpose |
-| --- | --- | --- |
-| Ingest | `deep-diff-forge ingest` | Convert Git, patch, file-pair, or dir-pair input into review records. |
-| Plan | `deep-diff-forge plan` | Emit planner decisions and fallback reasons. |
-| Rank | `deep-diff-forge rank` | Order files and hunks by review graph signals. |
-| Annotate | `deep-diff-forge annotate` | Attach human or agent annotations with provenance. |
-| Render | `deep-diff-forge render` | Project records into human, pager, JSON, JSONL, or compact output. |
-| Chain | `deep-diff-forge chain` | Execute a declared local pipeline in one process. |
-| Cluster | `deep-diff-forge cluster` | Execute lanes in parallel across files, shards, or corpus batches. |
+| Family | Command | Status | Today |
+| --- | --- | --- | --- |
+| Ingest | `deep-diff-forge ingest` | planned | `--stdin-patch` or `--git-working-tree` / `--git-staged` / `--git-range` |
+| Plan | `deep-diff-forge plan` | planned | the per-file `strategy` field of `review.v0` |
+| Rank | `deep-diff-forge rank` | planned | `--rank` (`rank.v0`) |
+| Annotate | `deep-diff-forge annotate` | planned | none on the CLI |
+| Render | `deep-diff-forge render` | planned | `--layout inline\|side-by-side`, `review --probe` |
+| Chain | `deep-diff-forge chain` | planned | none |
+| Cluster | `deep-diff-forge cluster` | planned | `--cluster [--parallel N]` |
 
 ## Pipe Contracts
 
 ```text
-stdin   = input records only when --stdin, --stdin-patch, or --from - is set
+stdin   = input only when an explicit stdin flag is set (--stdin-patch, learn record --stdin)
 stdout  = primary output only
-stderr  = diagnostics, progress, timings, and warnings
-status  = stable exit code
-format  = explicit schema version for every JSON or JSONL payload
+stderr  = diagnostics and warnings
+status  = an exit code from the registry (deep-diff-forge schema exit-codes)
+format  = a schema name in every JSON document
 ```
 
 Rules:
 
-- Default human output may use ANSI only when stdout is a TTY.
-- `--json` emits one complete JSON document and should not be mixed with
-  progress events.
-- `--jsonl` emits one event per line and may stream progressively.
-- Large outputs must flush by file, hunk, or event boundary.
-- Pipe failure must not be hidden as success.
+- `--json` emits one complete JSON document and is never mixed with events.
+- `--jsonl` emits one event per line (`{"event":"diff.file",…}`). Today the
+  events carry no `schema` field, and the whole output is written when the run
+  ends.
+- Pipe failure is not hidden as success; a closed stdout (`| head`) ends the
+  command cleanly.
 - Stdin is never consumed by accident; a stdin mode must be explicit.
+- Target: default human output uses ANSI only when stdout is a TTY (today only
+  `highlight` colours); large outputs flush by file, hunk or event boundary.
 
 ## Chain Examples
 
+### Shipped
+
 ```bash
 # Machine-readable workspace review.
-deep-diff-forge --git --json
+deep-diff-forge --git-working-tree --include-untracked --json
 
-# Explicit filter chain.
+# One stage per command, joined by the shell.
+git diff | deep-diff-forge --stdin-patch --jsonl | jq -c 'select(.hunks > 3)'
+
+# CI gate that fails on a broken contract or an empty change.
+set -euo pipefail
+deep-diff-forge chain-contract
+deep-diff-forge --git-range "origin/main..HEAD" --json --require-files --require-hunks > review.json
+deep-diff-forge --git-range "origin/main..HEAD" --rank --json > rank.json
+```
+
+### Planned (not implemented)
+
+```bash
 deep-diff-forge ingest --git --jsonl \
   | deep-diff-forge plan --stdin --jsonl \
   | deep-diff-forge rank --stdin --json \
   | deep-diff-forge render --stdin --plain
 
-# Agent annotation pass with provenance.
 deep-diff-forge ingest --git --jsonl \
   | deep-diff-forge annotate --stdin --agent claude-code --jsonl \
   | deep-diff-forge render --stdin --compact
-
-# CI gate that fails if the contract is broken.
-set -euo pipefail
-deep-diff-forge chain-contract
-deep-diff-forge ingest --git --json > review.json
-deep-diff-forge plan --stdin --json < review.json > plan.json
 ```
 
-## Chain Manifest
+## Chain Manifest (planned, not implemented)
 
-`deep-diff-forge chain` will accept an explicit manifest when pipelines need to
+`deep-diff-forge chain` would accept an explicit manifest when pipelines need to
 be reproducible.
 
 ```toml
@@ -101,7 +126,39 @@ join = "ranked-review-order"
 ## Cluster Model
 
 Cluster execution is a scheduler, not a different engine. It splits work into
-lanes, runs lanes in parallel, and rejoins records by stable IDs.
+lanes, runs lanes in parallel, and rejoins records deterministically.
+
+### Shipped: `--cluster`
+
+Measured from `crates/deep-diff-forge-cluster/src/{cluster.rs,scheduler.rs}`
+(`run_risk_cluster`, `run_lane`, `apply_join`, `resolve_workers`):
+
+```mermaid
+flowchart LR
+    Files["parsed, sealed review files"]
+    Workers["resolve_workers:<br/>serial = 1, auto = CPU count,<br/>N capped at 4 x CPU count,<br/>never more than the file count"]
+    Chunks["contiguous_chunks:<br/>one contiguous chunk per worker"]
+    Lane["scoped thread per chunk:<br/>graph::score_file (patch + risk)"]
+    Concat["concatenate chunks in input order"]
+    Join["apply_join RankedReviewOrder:<br/>score descending, then path"]
+    Out["cluster.v0: receipt + ranked"]
+
+    Files --> Workers --> Chunks --> Lane --> Concat --> Join --> Out
+```
+
+The receipt records `dimensions` (`patch`, `risk`), `parallelism` (`serial`,
+`auto` or `fixed:N`), `workers`, `join_policy` and `file_count`. The output is
+the same for any worker count; a panicking lane aborts the run rather than
+returning a short result. `--parallel` takes `serial`, `auto` or a
+worker count from 1; anything else is a usage error, exit 2 (`parse_parallelism`
+in `main.rs`).
+
+### Target: dimensional lanes (planned)
+
+The core model already names eight dimensions (`ExecutionDimension`: patch,
+semantic, risk, agent, runtime, storage, history, presentation) and three join
+policies (`JoinPolicy`: deterministic input order, ranked review order, as-ready
+with stable ids). Only patch and risk lanes run today.
 
 ```mermaid
 flowchart TB
@@ -129,16 +186,23 @@ flowchart TB
 
 ## Cluster Commands
 
+### Shipped
+
 ```bash
-# Auto parallelism on current machine.
+# Auto parallelism on the current machine.
+git diff | deep-diff-forge --stdin-patch --cluster --json
+
+# Bounded parallelism for CI runners.
+deep-diff-forge --git-range "origin/main..HEAD" --cluster --parallel 4 --json
+```
+
+### Planned (not implemented)
+
+```bash
 deep-diff-forge cluster --git --dimensions patch,semantic,risk --parallel auto --jsonl
-
-# Bound parallelism for CI runners.
 deep-diff-forge cluster --git --parallel 4 --budget balanced --json
-
-# Corpus pass using optional 10TB storage.
 deep-diff-forge cluster \
-  --corpus /mnt/storage-10tb/deep-diff-forge-corpus/manifest.toml \
+  --corpus <corpus-dir>/manifest.toml \
   --dimensions patch,semantic,history \
   --parallel auto \
   --receipt ./receipts/corpus-run.json
@@ -146,38 +210,37 @@ deep-diff-forge cluster \
 
 ## Determinism Rules
 
-| Rule | Requirement |
-| --- | --- |
-| Stable IDs | File, hunk, span, annotation, and lane IDs are content-derived or manifest-derived. |
-| Stable joins | Default join order is deterministic input order. |
-| Explicit ranking | Ranked review order is requested with `--ranked` or through a rank stage. |
-| Bounded memory | Lanes stream by file and never require the whole repo in memory. |
-| Receipt first | Cluster runs emit a receipt with dimensions, budgets, versions, and skipped lanes. |
+| Rule | Requirement | Status |
+| --- | --- | --- |
+| Stable IDs | File, hunk, span, annotation and lane IDs are content-derived or manifest-derived. | partial: files are keyed by path, hunks by a per-file index; spans, annotations and lanes have no CLI ids yet |
+| Stable joins | Default join order is deterministic input order. | the join policy exists; `--cluster` always uses ranked review order |
+| Explicit ranking | Ranked order is requested with a flag or a rank stage. | `--rank` and `--cluster` rank; `--ranked` is planned |
+| Bounded memory | Lanes stream by file and never require the whole repo in memory. | planned; input is read whole up to the 64 MiB patch budget |
+| Receipt first | Cluster runs emit a receipt with dimensions, budgets, versions and skipped lanes. | partial: dimensions, parallelism, workers, join policy and file count; no budgets or skipped lanes |
 
 ## Rust Execution Strategy
 
-The Rust implementation should begin with standard library threads or `rayon`
-for CPU-bound file lanes, then introduce `tokio` only for daemon IPC and
-multi-client subscriptions. CLI one-shot mode should avoid async complexity
-until it has measurable benefit.
+Shipped: the cluster scheduler uses `std::thread::scope`, and the daemon is a
+std `UnixListener` server with one thread per connection. The workspace depends
+on neither `rayon` nor `tokio`. CLI one-shot mode stays synchronous until async
+has a measured benefit.
 
-Core traits should remain small:
+The shipped stage trait (`crates/deep-diff-forge-pipeline/src/lib.rs`) is
+small:
 
 ```rust
 pub trait ChainStage {
-    fn schema(&self) -> &'static str;
-    fn run(&self, input: StageInput, sink: &mut dyn StageSink) -> StageResult;
-}
-
-pub trait ClusterLane {
-    fn dimension(&self) -> ExecutionDimension;
-    fn run_lane(&self, shard: ShardRef, sink: &mut dyn StageSink) -> StageResult;
+    fn name(&self) -> &'static str;
+    fn run(&self, input: PipelineData) -> Result<PipelineData, PipelineError>;
 }
 ```
 
-The first implementation target is local parallelism. Remote distributed
-execution is out of scope until local receipts, replay, and failure semantics
-are boring and testable.
+`PipelineData` is `Patch(String)`, `Review(Vec<ReviewFile>)` or
+`Rendered(String)`. A lane trait is planned; today a lane is a closure passed to
+`run_lane`.
+
+Remote distributed execution is out of scope until local receipts, replay and
+failure semantics are boring and testable.
 
 ## Deployment Link
 

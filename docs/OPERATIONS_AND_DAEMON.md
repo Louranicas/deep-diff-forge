@@ -1,5 +1,30 @@
 # Operations And Daemon Specification
 
+## Status 2026-10-28 (0.3.0)
+
+What exists today, checked against `crates/deep-diff-forge-daemon/src/` and the
+0.3.0 debug binary:
+
+- `deep-diff-forge daemon {path|start [--foreground]|health|status|stop} [--socket PATH]`.
+  `start` always serves in the foreground; a supervisor owns the process.
+  `--foreground` is accepted only with `start` (elsewhere: exit 2).
+- One Unix socket, JSON-RPC 2.0, protocol 1. Methods (`engine.methods`):
+  `engine.initialize`, `engine.methods`, `daemon.health`, `daemon.status`,
+  `daemon.shutdown`, `diff.plan`, `diff.compute`, `session.open`,
+  `session.snapshot`, `session.close`. `deep-diff-forge rpc` speaks the same
+  protocol over stdio without a daemon.
+- At most eight connections, all served by one engine behind one mutex, so
+  requests run one at a time. Line cap 80 MiB each way; a response over it
+  becomes `RESOURCE_EXHAUSTED` (8). 30-second absolute read deadline per line.
+- A second `start` at a live socket is refused (`AddrInUse`, exit 6); a stale
+  socket (connect refused) is replaced; a non-socket file is never deleted.
+- Not implemented: any cache (`cache_entries` is always 0), the `cache`
+  command, subscriptions, a draining state, structured logs and metrics, a
+  shipped systemd unit, TCP and Windows named pipes.
+
+Sections below that describe those are target design and say so. The security
+boundary is authoritative in [`SECURITY.md`](../SECURITY.md#local-daemon).
+
 The daemon is optional. Deep-Diff-Forge must remain useful as a CLI and library without it.
 
 This document includes planned operational surface area. The implemented
@@ -34,7 +59,30 @@ The daemon exists for top-tail latency and coordination:
 | Unix without `$XDG_RUNTIME_DIR` | Fails closed — pass `--socket PATH`; there is no `/tmp` fallback |
 | Windows | Daemon unsupported; no named-pipe implementation |
 
-## Daemon State Machine
+## Daemon Lifecycle (implemented)
+
+```mermaid
+stateDiagram-v2
+    [*] --> Resolve
+    Resolve --> Refused: no --socket and no XDG_RUNTIME_DIR (exit 2)
+    Resolve --> Bind
+    Bind --> Refused: insecure dir, non-socket file, live daemon, bind error (exit 6)
+    Bind --> Serving: socket bound, chmod 0600
+    Serving --> Serving: accept, at most 8 workers, one request at a time
+    Serving --> Stopping: daemon.shutdown
+    Stopping --> [*]: accept loop exits, own socket inode removed, exit 0
+    Refused --> [*]
+```
+
+`run_server` in `serve.rs`: after `daemon.shutdown` the worker opens a wakeup
+connection so the blocked `accept` returns, the loop exits, and
+`cleanup_owned_socket` removes the socket only if its device and inode still
+match the one bound. There is no drain step: the process exits when the loop
+returns.
+
+## Daemon State Machine (target design)
+
+Not implemented: there is no cache and no draining state.
 
 ```mermaid
 stateDiagram-v2
@@ -61,9 +109,13 @@ The implemented daemon refuses startup unless:
   symlink, regular file, or directory; and
 - the newly bound socket can be restricted to mode `0600`.
 
-Socket type and filesystem identity are checked, but liveness of an existing
-same-user socket is not probed before replacement. Operators must serialize
-starts and must not run multiple daemon instances at the same path.
+An existing socket is probed before it is replaced (`remove_stale_socket` in
+`serve.rs`): if a daemon accepts the connection, the start fails with
+`AddrInUse` (exit 6) and the running daemon is untouched; only a socket whose
+connect is refused is removed. Measured 2026-10-28: second start exit 6;
+restart over a socket left by `kill -9` succeeds. Residual: two starts racing
+between the probe and the bind can still orphan one daemon, so start one
+daemon per path from one supervisor.
 
 ## Health RPC
 
@@ -81,7 +133,7 @@ Response:
   "id": 1,
   "result": {
     "status": "ok",
-    "version": "0.2.1",
+    "version": "0.3.0",
     "pid": 12345,
     "sessions": 0,
     "retained_bytes": 0,
@@ -98,7 +150,12 @@ clients that read it keep working; a cache, if one is ever added, reports its re
 
 ## Status RPC
 
-Status reports must include:
+Implemented: `daemon.status` returns `{running, uptime_secs, sessions, version,
+protocol}`, for example
+`{"protocol":1,"running":true,"sessions":0,"uptime_secs":0,"version":"0.3.0"}`
+(measured 2026-10-28).
+
+Target design, not implemented: status reports should also include:
 
 - protocol versions
 - uptime
@@ -111,7 +168,8 @@ Status reports must include:
 
 ## systemd User Unit
 
-Future Linux user service:
+Example only; no unit file ships in the repository. `daemon start` already runs
+in the foreground, so `Type=simple` fits. Untested in this form:
 
 ```ini
 [Unit]
@@ -136,12 +194,22 @@ WantedBy=default.target
 
 ## Operational Commands
 
+Implemented (each takes an optional `--socket PATH`):
+
 ```bash
-deep-diff-forge daemon start
+deep-diff-forge daemon path
+deep-diff-forge daemon start            # serves in the foreground
 deep-diff-forge daemon start --foreground
 deep-diff-forge daemon status
 deep-diff-forge daemon health
-deep-diff-forge daemon stop
+deep-diff-forge daemon stop             # sends daemon.shutdown
+```
+
+`health`, `status` and `stop` exit 6 when no daemon answers.
+
+Target design, not implemented (`cache` is refused today, exit 2):
+
+```bash
 deep-diff-forge cache status
 deep-diff-forge cache prune --older-than 30d
 deep-diff-forge cache prune --max-size 20GiB
@@ -149,16 +217,20 @@ deep-diff-forge cache prune --max-size 20GiB
 
 ## Failure Handling
 
-| Failure | Required behavior |
-| --- | --- |
-| Existing socket | In an owner-private parent, remove only when the path itself is a socket; serialize starts because liveness is not probed. |
-| Cache decode failure | Ignore entry, record fallback, continue. |
-| Parser panic | Catch at worker boundary, mark semantic fallback. |
-| Oversized payload | Reject with structured error. |
-| Client disconnect | Cancel session subscription, keep shared cache. |
-| Out of budget | Preserve patch twin and record semantic fallback. |
+| Failure | Required behavior | Today |
+| --- | --- | --- |
+| Existing socket | In an owner-private parent, replace only a stale socket; never a live one or a non-socket file. | Implemented: live socket refused with `AddrInUse`, non-socket refused, stale socket removed. |
+| Cache decode failure | Ignore entry, record fallback, continue. | No cache exists. |
+| Parser panic | Catch at worker boundary, mark semantic fallback. | A dispatch panic is caught per request and answered `INTERNAL_ERROR`; sessions are reset and the mutex poison cleared. |
+| Oversized payload | Reject with structured error. | Request over 80 MiB: `INVALID_REQUEST`, then the connection closes. Response over 80 MiB: `RESOURCE_EXHAUSTED` (8). |
+| Client disconnect | Cancel session subscription, keep shared cache. | No subscriptions or cache; the worker ends and frees its slot. |
+| Out of budget | Preserve patch twin and record semantic fallback. | Patch input over its byte or line budget is refused (exit 4 on the CLI). |
+| Ninth connection | Apply backpressure. | Accepted and closed at once, with no response. |
 
 ## Observability
+
+Target design, not implemented. Today the daemon writes only connection and
+worker-spawn errors to stderr; there are no log levels and no metrics.
 
 Log levels:
 
@@ -192,7 +264,7 @@ Service row:
 
 Measured 2026-10-27 on a 16-core Fedora Kinoite host (release build of `db65391`); single runs,
 not distributions, so they are sizing guides, not limits. The caps themselves are enforced in code
-and listed in the vault's Capacity Map.
+and listed in the Capacity Map (owner's local vault).
 
 | Request | Input | Peak RSS | Time |
 | --- | --- | --- | --- |
@@ -204,15 +276,19 @@ and listed in the vault's Capacity Map.
 
 Deployment needs that follow:
 
-- **Memory:** plan for about 1.1 GB per concurrent maximum-size `rpc` or MCP request, and about
-  250 MB for the CLI. The daemon admits at most eight workers, so a fully loaded daemon fed
-  maximum-size patches can need several GB; size the host or keep patches well under the cap.
+- **Memory:** plan for about 1.1 GB per maximum-size `rpc` or MCP request, and about 250 MB for
+  the CLI. The daemon admits at most eight connections but runs one request at a time, so its
+  peak is about one maximum-size request plus up to eight buffered request lines of up to 80 MiB
+  and at most 128 MiB of retained sessions (inferred from the caps, not measured); size the host
+  or keep patches well under the cap.
 - **`/tmp` inodes:** parallel council and mutation runs create many small files. The host's `/tmp`
   tmpfs has a 1,048,576-inode limit, which an 8-way stress run reached on 2026-10-26. Point
   `TMPDIR` at a disk-backed directory for heavy parallel work.
 - **Output:** MCP answers stay bounded by `REVIEW_FULL_CAP` (256 KiB per value) for both
-  `review_patch` and `rank_patch`; `rpc` and socket `diff.compute` answers are not capped and grow
-  with the patch (about 2.7× its size).
+  `review_patch` and `rank_patch`. `rpc` and socket `diff.compute` answers grow with the patch
+  (about 2.7× its size, measured 2026-10-27) up to the 80 MiB line cap; a larger answer is
+  replaced by a `RESOURCE_EXHAUSTED` (8) error since 2026-10-28. Use `diff.plan` or a smaller
+  patch.
 
 ## Deployment Link
 

@@ -1,5 +1,19 @@
 # Refactor & Feature Plan (S1008412)
 
+## Status 2026-10-28 (0.3.0)
+
+**Kind:** historical plan, completed in 2026-06 (see "Status — DONE" at the end). It is kept as a record and is not a current task list.
+
+**Still current at 0.3.0** (checked in code):
+
+- P1: the parser refuses truncated and over-filled hunks (`PatchParseError::TruncatedHunk` and `HunkLineCountMismatch` in `crates/deep-diff-forge-patch/src/lib.rs`).
+- P2: `SocketLocation::resolve` is the one entry point for the socket path, with no `/tmp` fallback (`crates/deep-diff-forge-daemon/src/serve.rs`, `SocketError::NoRuntimeDir` in `security.rs`).
+- P3 and P4 shipped as modules of the syntax crate, not as a new crate: `crates/deep-diff-forge-syntax/src/highlight.rs` and `structural.rs`. The CLI commands are `highlight <path>` and `structural <old> <new> [--json]` (schema `deep-diff-forge.structural.v0`).
+
+**Changed since:** the test count (754) is the 2026-06 count. Patch parsing became stricter again on 2026-10-28: a `GIT binary patch` body now admits only Git's binary grammar, and any other line before the next `diff --git` is refused ([`NOTES.md`](../NOTES.md#2026-10-28-macos-controls-fuzz)). `/mnt/storage-10tb/repos` is a path on the operator workstation, not in this repository.
+
+Current docs: [architecture](ARCHITECTURE.md), [operations and daemon](OPERATIONS_AND_DAEMON.md).
+
 Addresses Zen's review feedback + the two ❌ rows in the README feature comparison,
 all in Rust, grounded in exemplar codebases (`difftastic`, `tree-sitter-rust`
 `highlights.scm`) on `/mnt/storage-10tb/repos`.

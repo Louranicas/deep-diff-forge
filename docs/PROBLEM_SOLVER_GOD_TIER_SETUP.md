@@ -1,5 +1,11 @@
 # Problem-Solver God-Tier Setup
 
+## Status 2026-10-28 (0.3.0)
+
+**Kind:** process standard for design work done by agents. It describes how a reviewer or agent should reason. It is not product code, and nothing in the binary implements it. "The local advanced agent roster" is a file on the operator workstation and is not in this repository.
+
+**Current at 0.3.0:** the standard is unchanged. The adversarial review that runs as code is the review council (`deep-diff-forge council …`), documented in [review council](REVIEW_COUNCIL.md). Its personas are configured reviewer roles, separate from Hermes.
+
 This document integrates the problem-solver setup into Deep-Diff-Forge
 deployment. The local workspace names the relevant pattern as ARCHON-7:
 a synthetic problem-solving role for hard software design and engineering.

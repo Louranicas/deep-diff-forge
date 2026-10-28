@@ -1,532 +1,366 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="Deep-Diff-Forge — a next-generation review engine for code changes" width="100%">
+  <img src="assets/banner.svg" alt="Deep-Diff-Forge: patch truth and semantic intent, together" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/Louranicas/deep-diff-forge/actions/workflows/ci.yml"><img src="https://github.com/Louranicas/deep-diff-forge/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/Louranicas/deep-diff-forge/releases"><img src="https://img.shields.io/github/v/release/Louranicas/deep-diff-forge?label=release" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/rust-1.88%2B-orange" alt="Rust 1.88+">
+  <img src="https://img.shields.io/badge/unsafe-forbidden-success" alt="unsafe forbidden">
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue" alt="MIT or Apache-2.0"></a>
+  <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/contributions-welcome-brightgreen" alt="Contributions welcome"></a>
 </p>
 
 # Deep-Diff-Forge
 
-**A next-generation review engine for code changes — patch truth and semantic
-intent, together.**
+**A review engine for code changes. It keeps the patch exactly as Git would apply it, and
+layers understanding on top that can never corrupt it.**
 
-Deep-Diff-Forge is a Rust CLI (and optional daemon) that treats a diff not as a
-blob of `+`/`-` lines but as a *review*: it preserves the exact, apply-able patch
-while layering syntax-aware understanding, syntax highlighting, structural
-(AST-level) diffing, risk ranking, agent annotations, an interactive terminal
-cockpit, and bounded parallel execution on top — every layer a projection over
-one stable model, none of them ever allowed to corrupt the patch.
+AI writes more of the code we merge, so reviewing a change has become harder than writing
+one. Deep-Diff-Forge reads a diff as a review, not a blob of `+` and `-` lines. It ranks files
+by risk, explains each ranking, parses source with tree-sitter, and serves the same answer
+to people, scripts and agents:
 
-> **Development status (2026-10-26).** Source-pair analysis, correctness/trust repairs and a runnable multi-provider [review council](#review-council-and-evidence-gates) are merging into `main` in reviewed stages: stages A ([#3](https://github.com/Louranicas/deep-diff-forge/pull/3)), B ([#4](https://github.com/Louranicas/deep-diff-forge/pull/4)) and C ([#5](https://github.com/Louranicas/deep-diff-forge/pull/5)) are merged, `main` is protected and its CI is green; stage C ([#5](https://github.com/Louranicas/deep-diff-forge/pull/5)) is merged too. Existing L0–L9 labels are historical capability declarations, not proof that every end-to-end integration is complete. Current verification and remaining gates are in [the integration ledger](docs/RECOMMENDATION_INTEGRATION.md) and [review council design](docs/REVIEW_COUNCIL.md). The new public model/API changes require a release/versioning decision. Nothing after 0.2.1 is tagged or published, and **crates.io publication is on hold until the codebase is production-ready** (see [Project status](#project-status)).
+- a terminal cockpit;
+- a CLI with stable JSON;
+- a Unix-socket daemon;
+- an MCP server;
+- Rust and Python SDKs.
+
+Underneath sits one rule. The apply-able patch is truth, and nothing may rewrite it.
 
 <p align="center">
-  <img src="assets/review-cockpit.png" alt="The deep-diff-forge review cockpit: a ranked file sidebar, a side-by-side syntax-highlighted diff, and the top command menu bar" width="100%">
+  <img src="assets/terminal-session.svg" alt="A terminal session: deep-diff-forge ranks the eleven files of a real change by review risk, prints the sealed JSON review with its input SHA-256, refuses empty input with exit code 7, and explains exit code 7" width="100%">
   <br>
-  <sub>The review cockpit in side-by-side layout — a risk-ranked file sidebar, a syntax-highlighted two-column diff, and the menu bar. Launch with <code>git diff | deep-diff-forge review</code>.</sub>
+  <sub>Real output, not a mock-up: <code>scripts/docs/render_terminal_svg.py</code> runs the binary on the crate changes of PR #23 and draws what it prints.</sub>
+</p>
+
+> **Status: 0.3.0 (2026-10-28).**
+> - **Ready** for its declared scope: a local, single-user review tool on Linux and macOS, covering the CLI, daemon, `rpc`, MCP and SDKs. The [verdict and its evidence](#project-status) are below.
+> - **Releases:** 0.3.0 is the development line on `main` and is not tagged yet. The latest published release is [v0.2.0](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.2.0).
+> - **crates.io:** publication is on hold by decision until the codebase is fully production-hardened.
+
+<p align="center">
+  <img src="assets/review-cockpit.png" alt="The review cockpit: a risk-ranked file sidebar, a side-by-side syntax-highlighted diff, and the top menu bar" width="100%">
+  <br>
+  <sub>The review cockpit, side by side: a risk-ranked file tree, a two-column diff with engine notes, and the menu bar. <code>git diff | deep-diff-forge review</code></sub>
 </p>
 
 ---
 
-## Table of contents
+## Contents
 
 - [Why Deep-Diff-Forge](#why-deep-diff-forge)
 - [The first principle](#the-first-principle)
-- [Three pioneer features](#three-pioneer-features)
-- [Feature comparison](#feature-comparison)
-- [Install & build](#install--build)
+- [How it works](#how-it-works)
+- [Install](#install)
 - [Quick start](#quick-start)
-- [Release readiness](#release-readiness)
 - [Command reference](#command-reference)
-- [Output formats & schemas](#output-formats--schemas)
+- [Output formats and schemas](#output-formats-and-schemas)
 - [Exit codes](#exit-codes)
+- [MCP server](#mcp-server)
+- [SDKs](#sdks)
 - [The optional daemon](#the-optional-daemon)
-- [Risk ranking signals](#risk-ranking-signals)
+- [Risk ranking](#risk-ranking)
 - [Architecture](#architecture)
-- [The deployment framework](#the-deployment-framework)
-- [Building, testing, and quality gates](#building-testing-and-quality-gates)
+- [Quality gates](#quality-gates)
 - [Review council and evidence gates](#review-council-and-evidence-gates)
 - [Project status](#project-status)
+- [Contributing](#contributing)
+- [Documentation map](#documentation-map)
 - [License](#license)
 
 ---
 
 ## Why Deep-Diff-Forge
 
-Existing tools each optimize one layer of the review problem:
+Each existing tool optimises one layer of review:
 
-| Tool | Optimizes | Limit |
+| Tool | Optimises | Limit |
 | --- | --- | --- |
-| classic `diff` | patch truth, exit codes, automation | no semantic or review intelligence |
+| `diff` | patch truth, exit codes, automation | no semantic or review intelligence |
 | `delta`, `diff-so-fancy` | readable terminal rendering | line-oriented; pretty is not understanding |
-| `difftastic` | structural (syntax-tree) diffing | output is not apply-able as a patch |
-| `hunk` | review-first terminal UI + agent workflow | interactive Node/TS viewer, not a composable machine-readable engine |
-| `lumen` | interactive viewer ergonomics | viewer, not an engine |
+| `difftastic` | structural (syntax-tree) diffing | its output is not an apply-able patch |
+| `hunk` | review-first terminal UI and agent workflow | an interactive viewer, not a composable engine |
 
-Deep-Diff-Forge wins by making these layers **cooperate** instead of choosing
-one: a conservative, apply-able core with ambitious, clearly-separated
-enrichment on top. It is built for humans reviewing AI-generated changes across
-many files — and for the agents, scripts, and CI that increasingly drive review.
+Deep-Diff-Forge makes these layers cooperate. The core is conservative and apply-able; the
+enrichment on top is ambitious and clearly separate. It is built for people reviewing large,
+often AI-generated changesets, and for the agents, scripts and CI that drive review more and
+more.
 
-It is **Bash-first and Claude-Code-first**: every action has a deterministic
-command, machine-readable output (`--json` / `--jsonl`), stable exit codes, and
-works as a Unix filter with no daemon required. That same deterministic surface
-makes it easy to wrap as a **Claude Agent Skill** or a **Pi extension** so an
-agent drives the review for you — see [`docs/MAKING_SKILLS.md`](docs/MAKING_SKILLS.md).
+It is **Bash-first and agent-first**. Every action:
 
-## The first principle
-
-> **A diff engine must preserve patch truth while exposing semantic intent.**
-
-Patch truth (the exact text that can be applied) is sacred and *separable* from
-every enrichment layer. Semantic analysis, risk ranking, and AI annotations may
-be absent, partial, or wrong — they can never mutate the apply-able patch. This
-single invariant is enforced everywhere: the parser, the projections, the
-ranking, the annotation layer, and the cluster scheduler all read the model;
-none rewrite it. Conversely, an internally-incoherent patch is **rejected, not
-normalized**: a hunk whose body does not match its declared `@@ -a,b +c,d @@` line
-counts, a hunk truncated at EOF or the next file header, or a header missing its
-closing `@@` fails to parse (exit 4) rather than being silently repaired into a
-plausible-looking model.
-
-## Three pioneer features
-
-1. **Semantic Patch Twin** — every change carries two synchronized
-   representations: an apply-able *patch twin* and a syntax *semantic twin*,
-   joined by stable anchors. Switch views without losing line anchors, comments,
-   or applicability.
-
-2. **Review Intelligence Graph** — a deterministic, explainable risk ranking
-   that orders the review stream by likely impact (public-API surface, change
-   size, new/deleted/binary, generated-file suppression, test de-prioritization)
-   rather than raw file order. (`--rank`)
-
-3. **Adaptive Diff Planner** — per-file/per-region strategy selection with
-   explained, budgeted, conservative fallback. (Strategy vocabulary is modeled
-   today; semantic strategy selection grows as the Git-input wave feeds file
-   bytes.)
-
----
-
-## Feature comparison
-
-Deep-Diff-Forge is a review **engine**, not a syntax-highlighting pager — so it
-brings capabilities the rendering-focused tools don't, and (honestly) doesn't yet
-do everything they do. Its closest peer is [`hunk`][hunk], a review-first terminal
-viewer; the table reflects default, out-of-the-box behavior.
+- has a deterministic command;
+- produces machine-readable output (`--json`, `--jsonl`);
+- returns a documented exit code that names the next action;
+- works as a Unix filter, with no daemon required.
 
 | Capability | deep-diff-forge | [`hunk`][hunk] | [`delta`][delta] | [`difftastic`][difft] | [`diff-so-fancy`][dsf] | `diff` |
 | --- | :---: | :---: | :---: | :---: | :---: | :---: |
 | Review-first interactive UI | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Multi-file review stream + sidebar | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Inline agent / AI annotations | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Runtime view toggles (layout / fold / wrap / notes) | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Mouse support in the viewer | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Selectable colour themes | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
-| Deterministic risk ranking | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Machine-readable JSON / JSONL output | ✅ | ❌ <sup>1</sup> | ❌ | ❌ <sup>2</sup> | ❌ | ❌ |
-| Optional shared-cache daemon (UDS) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Local, private learning loop | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Apply-able patch output preserved | ✅ | ❌ <sup>3</sup> | ✅ <sup>4</sup> | ❌ | ✅ <sup>4</sup> | ✅ |
+| Inline agent / engine notes | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Deterministic, explained risk ranking | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Versioned JSON / JSONL output | ✅ | ❌ <sup>1</sup> | ❌ | ❌ <sup>2</sup> | ❌ | ❌ |
+| Input sealing (`input_sha256`) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| MCP server and SDKs | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Optional daemon (Unix socket) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Apply-able patch preserved | ✅ | ❌ <sup>3</sup> | ✅ <sup>4</sup> | ❌ | ✅ <sup>4</sup> | ✅ |
 | Syntax highlighting | ✅ <sup>5</sup> | ✅ | ✅ | ✅ | ❌ | ❌ |
-| Structural / AST-level diffing | ✅ <sup>6</sup> | ❌ | ❌ | ✅ | ❌ | ❌ |
-| Native Git / Jujutsu / Sapling input | ❌ <sup>7</sup> | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Watch / auto-reload on change | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Structural / token-level diffing | ✅ <sup>6</sup> | ❌ | ❌ | ✅ | ❌ | ❌ |
+| Native VCS input | Git <sup>7</sup> | Git · jj · Sapling | ❌ | ❌ | ❌ | ❌ |
+| Watch / auto-reload | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Pager / Unix-filter friendly | ✅ | ✅ <sup>8</sup> | ✅ | ✅ | ✅ | ✅ |
 
-<sup>1</sup> `hunk`'s agent integration is a live in-session skill (`hunk skill
-path` / `--agent-context`), not a stable schema'd JSON/JSONL document a script can
-consume as a filter.
-<sup>2</sup> difftastic has an experimental JSON display; deep-diff-forge ships a
-stable, schema-versioned `--json` plus streaming `--jsonl`.
-<sup>3</sup> `hunk` is an interactive viewer; it renders patches but does not emit
-an apply-able patch to stdout.
-<sup>4</sup> `delta` / `diff-so-fancy` re-render an underlying Git diff that
-remains apply-able; they do not alter patch truth.
-<sup>5</sup> Tree-sitter syntax highlighting (`highlight`), reusing the grammar's
-own queries and **terminal-injection-safe** (attacker source can't smuggle
-escapes). Rust today; more languages as grammars are added.
-<sup>6</sup> Token/leaf-level structural diff (`structural`): **reformat-aware**
-(layout-only changes report zero structural change) with best-effort moved-block
-detection. difftastic's optimal tree-edit-distance graph diff is deeper.
-<sup>7</sup> deep-diff-forge is stdin/pipe-first today (`git diff |
-deep-diff-forge`); native `--git` and `<old> <new>` file inputs are on the roadmap.
-<sup>8</sup> `hunk` is pager-compatible (a Git/jj/Sapling pager) but is itself an
-interactive full-screen UI, not a compose-onward stdout filter.
+<sup>1</sup> `hunk`'s agent integration is a live in-session skill, not a schema'd document a script can consume.
+<sup>2</sup> difftastic has an experimental JSON display; Deep-Diff-Forge ships versioned schemas.
+<sup>3</sup> `hunk` renders patches but does not emit an apply-able patch.
+<sup>4</sup> They re-render a Git diff that stays apply-able.
+<sup>5</sup> Tree-sitter, terminal-injection-safe. Rust today; more grammars are [welcome](CONTRIBUTING.md).
+<sup>6</sup> Token-level and reformat-aware, with best-effort moved-block detection. difftastic's tree-edit-distance diff is deeper.
+<sup>7</sup> `--git-working-tree`, `--git-staged` and `--git-range A..B`. Comparing two files directly (`deep-diff-forge <old> <new>`) is on the roadmap.
+<sup>8</sup> `hunk` works as a pager but is a full-screen UI, not a stdout filter.
 
-> The two interactive review tools here are deep-diff-forge and `hunk`, and they
-> differ in kind. Deep-Diff-Forge is a composable **Rust engine** — machine-readable
-> schemas, an optional UDS daemon, a learning loop, and deterministic risk ranking,
-> shipped as a single static binary — optimized for **agent-collaborative,
-> scriptable** review of a whole changeset. `hunk` is a feature-rich **Node/TS
-> viewer** (OpenTUI) that leads on native VCS integration, watch mode, and
-> responsive auto-layout. Comparisons are best-effort against each tool's default
-> behavior — corrections welcome via PR.
+Comparisons are best effort against each tool's default behaviour. Corrections are welcome.
 
 [hunk]: https://github.com/modem-dev/hunk
 [delta]: https://github.com/dandavison/delta
 [difft]: https://github.com/Wilfred/difftastic
 [dsf]: https://github.com/so-fancy/diff-so-fancy
 
----
+## The first principle
 
-## Install & build
+> **A diff engine must preserve patch truth while exposing semantic intent.**
 
-Requires Rust **1.88+** (edition 2024). The build is pinned to a repo-local
-target directory.
+Patch truth is the exact text that can be applied, and it is separate from every enrichment
+layer. Semantic analysis, risk ranking and agent notes may be absent, partial or wrong, but
+none of them can change the apply-able patch.
+
+The reverse holds too. An internally incoherent patch is **refused, not repaired**:
+
+- a hunk whose body disagrees with its `@@ -a,b +c,d @@` counts;
+- a hunk cut off at end of file;
+- a header missing its closing `@@`;
+- a `GIT binary patch` body followed by anything but base85 lines.
+
+Each fails with exit 4. None is quietly turned into a plausible-looking model.
+
+## How it works
+
+<p align="center">
+  <img src="assets/architecture.svg" alt="Architecture: inputs flow through one parse, guard and seal path into the review model; enrichment layers read the model; seven surfaces serve it; the review council runs alongside" width="100%">
+</p>
+
+1. **One door to a sealed review.** Every review document comes from
+   `deep_diff_forge_patch::SealedReview`, whether the patch was piped in or acquired from Git.
+   It decodes the bytes, parses them within a 64 MiB budget in linear time, applies the input
+   contracts, and seals them with SHA-256. This covers the CLI's `--json`, `--rank`,
+   `--cluster` and layouts, the daemon's `diff.compute`, and the SDK.
+   - `--jsonl` streams through the pipeline crate under the same parser and contracts, but
+     unsealed.
+   - The cockpit, `diff.plan` and `session.open` use the same strict parser without a seal.
+   - Git runs with a fixed argv, and paths, modes and blob IDs come from NUL-delimited
+     records.
+2. **One model.** `deep-diff-forge-core` holds files, hunks, line anchors, the seal and the tool
+   identity. It has no I/O and no parsing.
+3. **Enrichment reads, never writes.** Projection, the risk graph, cluster lanes, tree-sitter
+   syntax, agent notes and the learning loop each read the model.
+4. **Every surface tells the same truth.** For the same bytes, `--stdin-patch --json`, the
+   daemon's `diff.compute`, `rpc`, the MCP `review_patch` tool and the SDK's `review` produce the
+   same document, and parity tests prove it.
+
+## Install
+
+**Prebuilt binaries** (latest release: v0.2.0) for Linux x86_64 and macOS (Apple silicon and
+Intel) are on the [releases page](https://github.com/Louranicas/deep-diff-forge/releases).
+Each archive has a `.sha256` file, and the release carries an SPDX SBOM:
+
+```bash
+curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.2.0/deep-diff-forge-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.2.0/deep-diff-forge-v0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c deep-diff-forge-v0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+```
+
+**From source** (0.3.0, everything in this README). This needs Rust **1.88+** (edition 2024):
 
 ```bash
 git clone https://github.com/Louranicas/deep-diff-forge.git
 cd deep-diff-forge
-
-# Build the release binary (repo-local target/)
-CARGO_TARGET_DIR=target cargo build --release -p deep-diff-forge-cli
-
-# The binary:
-target/release/deep-diff-forge --version
+cargo build --release --locked -p deep-diff-forge-cli
+target/release/deep-diff-forge --version        # deep-diff-forge 0.3.0
+target/release/deep-diff-forge --self-test
 ```
 
-If you have [`just`](https://github.com/casey/just):
-
-```bash
-just gate-feature      # full quality gate: fmt, check, clippy, pedantic, test, contracts
-just contracts         # run the bootstrap contract probes
-just status            # repo identity + metadata
-```
-
-Optional convenience aliases:
+Optional shortcuts:
 
 ```bash
 alias ddf='deep-diff-forge'
-git config --global alias.review '!git diff | deep-diff-forge --stdin-patch --rank'
+git config --global alias.review '!git diff | deep-diff-forge review'
 ```
 
 ## Quick start
 
 ```bash
-# Human-readable review summary of your working tree
-git diff | deep-diff-forge --stdin-patch
-
-# Risk-ranked review: what to look at first
-git diff | deep-diff-forge --stdin-patch --rank
-
-# Side-by-side view
+git diff | deep-diff-forge review                       # the interactive cockpit
+git diff | deep-diff-forge --stdin-patch --rank         # what to look at first, and why
+deep-diff-forge --git-staged --rank                     # the same, without the pipe
+deep-diff-forge --git-range main..HEAD --json           # a sealed review document
 git diff | deep-diff-forge --stdin-patch --layout side-by-side
-
-# Machine-readable review document for an agent / CI
-git diff | deep-diff-forge --stdin-patch --json
-
-# Symbols of a source file (tree-sitter)
-deep-diff-forge semantic src/lib.rs
-
-# Interactive review cockpit
-git diff | deep-diff-forge review
+deep-diff-forge semantic src/lib.rs                     # tree-sitter symbols
+deep-diff-forge structural old.rs new.rs                # reformat-aware diff
+deep-diff-forge explain 4                               # what an exit code means
 ```
 
-## Release readiness
-
-For a public release or first-time agent integration, use the same paths the
-gates exercise:
+For gates and orchestrators, refuse empty or hunkless input so it can't pass as a clean review:
 
 ```bash
-# Build and smoke-check the release binary
-cargo build --release --bin deep-diff-forge
-target/release/deep-diff-forge --self-test
-target/release/deep-diff-forge doctor
-
-# Review a real changeset, or render one headless frame for CI/agents
-git diff HEAD~1 HEAD | target/release/deep-diff-forge review
-git diff HEAD~1 HEAD | target/release/deep-diff-forge review --probe
-
-# Machine-readable review for agents and automation
-git diff HEAD~1 HEAD | target/release/deep-diff-forge --stdin-patch --json
-git diff HEAD~1 HEAD | target/release/deep-diff-forge --stdin-patch --rank --json
-
-# Optional daemon lifecycle; run start in one terminal, health/status/stop in another
-target/release/deep-diff-forge daemon start --foreground
-target/release/deep-diff-forge daemon health
-target/release/deep-diff-forge daemon status
-target/release/deep-diff-forge daemon stop
+git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require-hunks
 ```
-
-Before tagging a release, run the repo gate and capture the daemon/security
-receipts:
-
-```bash
-just gate-release
-cargo audit
-cargo deny check
-python3 scripts/security/daemon_soak.py
-```
-
-The daemon and soak test need normal OS runtime/socket permissions; they are
-expected to fail in restricted sandboxes that block process/socket operations.
-The daemon is optional for correctness: one-shot CLI review, JSON/JSONL output,
-and the TUI all work without it.
-
-Recommended release proof for GitHub:
-
-- tag the verified commit, for example `v0.2.1`;
-- state that `just gate-release` passed;
-- include the TUI test count from the gate output;
-- include the daemon soak receipt and `verdict=PASS`;
-- state that crates.io publication is on hold: it is a deliberate project
-  decision, not only a missing `CARGO_REGISTRY_TOKEN`, until the codebase is
-  production-ready and its documentation is current.
-
-Honest boundary: Deep-Diff-Forge is production-ready as a local, scriptable,
-agent-usable diff review and triage engine. Hosted review services, CI bot
-publishing flows, and deeper multi-agent orchestration are integration layers on
-top of this engine, not requirements for the current release.
 
 ---
 
 ## Command reference
 
-The primary input today is a unified/Git patch on **stdin** (`--stdin-patch`).
-Pipe `git diff`, a `.patch` file, or any unified diff into it.
+`deep-diff-forge --help` is the authoritative list. Every subcommand accepts `--help`.
 
-### `--stdin-patch` — review a patch
+### Review a change
 
 ```bash
-deep-diff-forge --stdin-patch [MODE]
+deep-diff-forge --stdin-patch [MODE] [--require-files] [--require-hunks]
+deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [MODE | --acquisition-json]
 ```
 
-| Mode (flag) | Output |
+| Mode | Output |
 | --- | --- |
-| *(none)* | Human review summary: one line per file with `+adds -dels`, hunk count, status. |
-| `--json` | One complete `deep-diff-forge.review.v0` JSON document (files, hunks, line anchors, metadata, summary). |
-| `--jsonl` | One JSON event per file (`{"event":"diff.file",…}`), newline-delimited — streamed through the real pipeline runner. |
-| `--rank` | Risk-ranked review stream (highest-impact first). Add `--json` for `deep-diff-forge.rank.v0`. |
-| `--cluster [--parallel serial\|auto\|N]` | Same ranking, computed via bounded parallel lanes with a deterministic join + a receipt. Add `--json` for `deep-diff-forge.cluster.v0`. |
-| `--layout inline` | Inline projection with old/new line numbers and markers. |
-| `--layout side-by-side` | Two-column old-vs-new projection with a gutter. |
-| `--require-files` | Guard (combine with any mode): refuse a patch that parses to **0 files** with exit code 7, an empty stdout, and `refused: 0 files in input (--require-files)` on stderr. Default behaviour (0 files → exit 0) is unchanged without it. |
-| `--require-hunks` | Guard (combine with any mode): refuse a patch with **0 hunks or 0 added+removed lines** across all files — a header-only `diff --git a/x b/x`, a rename-only diff, or a context-only hunk — with exit code 7, an empty stdout, and `refused: 0 hunks in input (--require-hunks)` on stderr. `--require-files` alone passes these (one file *is* one file). Default behaviour is unchanged without it. |
+| *(none)* | One line per file: status, path, `+adds -dels`, hunk count. |
+| `--json` | One `deep-diff-forge.review.v0` document: files, hunks, line anchors, summary, seal. |
+| `--jsonl` | One `{"event":"diff.file",…}` event per file, streamed. |
+| `--rank` | Files by review risk, highest first, with their signals. Add `--json` for `deep-diff-forge.rank.v0`. |
+| `--cluster [--parallel serial\|auto\|N]` | The same ranking through bounded parallel lanes with a deterministic join and a receipt. Add `--json` for `deep-diff-forge.cluster.v0`. |
+| `--layout inline` / `--layout side-by-side` | Text projections with old and new line numbers. |
+| `--require-files` | Refuse a patch with 0 files: exit 7, empty stdout, `refused: 0 files in input (--require-files)`. |
+| `--require-hunks` | Refuse a patch with 0 hunks or 0 changed lines (header-only, rename-only, context-only): exit 7, `refused: 0 hunks in input (--require-hunks)`. |
+| `--acquisition-json` | Git input only: the `deep-diff-forge.git-acquisition.v0` identity of what Git returned. |
 
-A gate or orchestrator should **always pass both** guards, so neither an empty
-or mis-piped input nor a hunkless diff can be read as a clean, zero-risk review.
-When both are passed and both would fail, the files guard reports first.
+A gate should **always pass both guards**. When both fail, the files guard reports first.
 
-Examples:
+### The review cockpit
 
 ```bash
-git diff HEAD~3 | deep-diff-forge --stdin-patch
-git diff | deep-diff-forge --stdin-patch --json   > review.json
-git diff | deep-diff-forge --stdin-patch --jsonl  | while read -r ev; do echo "$ev"; done
-git diff | deep-diff-forge --stdin-patch --rank --json
-git diff | deep-diff-forge --stdin-patch --cluster --parallel 4 --json
-# orchestrator / gate: sealed, deterministic, refuses empty or hunkless input
-git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require-hunks
+git diff | deep-diff-forge review                    # interactive (needs a terminal)
+git diff | deep-diff-forge review --side             # start side by side
+git diff | deep-diff-forge review --probe            # one headless frame for CI and agents
+git diff | deep-diff-forge review --probe --cols 120 --rows 40 --cmd rank
 ```
-
-### `semantic <path>` — tree-sitter symbols
-
-Parse a source file and report its top-level symbols (functions, structs, enums,
-traits, impls, modules, consts, …) with line ranges and a parse status.
-
-```bash
-deep-diff-forge semantic crates/deep-diff-forge-core/src/lib.rs
-deep-diff-forge semantic src/lib.rs --json     # deep-diff-forge.semantic.v0
-```
-
-Supported language today: **Rust** (extensible via the tree-sitter registry).
-Unsupported extensions degrade with an explicit `fallback:UnsupportedLanguage`,
-never a guess. Parsing is byte- and node-budgeted; a malformed file reports
-`parsed_with_errors:N` rather than failing.
-
-### `highlight <path>` — syntax highlighting
-
-Print a source file with tree-sitter syntax highlighting, reusing the grammar's
-own `highlights.scm` queries.
-
-```bash
-deep-diff-forge highlight src/lib.rs               # colour when stdout is a TTY
-deep-diff-forge highlight src/lib.rs --color       # force ANSI
-deep-diff-forge highlight src/lib.rs --no-color     # plain (still sanitised)
-```
-
-Colour is automatic on a terminal and off when piped. Either way the output is
-**terminal-injection-safe**: source text is routed through the control-char
-sanitiser, so the only raw escapes are fixed SGR colour codes — a hostile file
-cannot hijack your terminal.
-
-### `structural <old> <new>` — token-level structural diff
-
-Diff two files by their tree-sitter **token streams** instead of raw lines, so
-the result is **reformat-aware**: a change that only reflows whitespace reports
-zero structural change.
-
-```bash
-deep-diff-forge structural old.rs new.rs            # human summary
-deep-diff-forge structural old.rs new.rs --json     # deep-diff-forge.structural.v0
-```
-
-Reports added / removed / unchanged tokens, with best-effort moved-block
-detection. This is a token/leaf-level diff (not difftastic's optimal
-tree-edit-distance), and it never touches patch truth — it only describes source.
-
-### `review [--probe] [--side] [--palette | --cmd NAME]` — interactive review cockpit
-
-```bash
-git diff | deep-diff-forge review            # launch the TUI (needs a terminal)
-git diff | deep-diff-forge review --side     # start in side-by-side layout
-git diff | deep-diff-forge review --probe    # render one frame headlessly (CI/agents, no TTY)
-```
-
-The cockpit is a ranked-file tree sidebar plus a diff pane with inline engine /
-agent notes, a top menu bar, and a status bar of live view state. Keys (press `?`
-in-app for the full card):
 
 | Key | Action |
 | --- | --- |
-| `j` / `k` · `↓` / `↑` | next / previous file (by rank) |
+| `j` / `k` · `↓` / `↑` | next / previous file, in rank order |
 | `g` / `G` · `Home` / `End` | first / last file |
-| `h` / `l` · `←` / `→` | focus the file tree / the diff pane |
-| `Enter` | open the selected file / run the selected palette command |
-| `s` / `Tab` (also `t`) | toggle inline ↔ side-by-side layout |
-| `z` | fold / unfold long runs of unchanged context |
-| `w` | wrap / clip long diff rows |
-| `n` | show / hide inline agent notes |
-| `v` / `Space` | mark the file reviewed (and advance to the next) |
-| `T` | cycle colour theme (dark · midnight · mono) |
-| `:` | open the command palette |
-| `?` | toggle the keybinding help card |
-| `Ctrl-d` / `PageDown` · `Ctrl-u` / `PageUp` | scroll the diff down / up |
-| `q` · `Esc` | quit · dismiss the current overlay |
+| `h` / `l` · `←` / `→` | focus the file tree / the diff |
+| `Enter` | open the file, or run the selected palette command |
+| `s` · `Tab` · `t` | toggle inline and side-by-side |
+| `z` · `w` · `n` | fold context · wrap rows · show notes |
+| `v` · `Space` | mark the file reviewed and move on |
+| `T` | cycle theme (dark · midnight · mono) |
+| `:` · `?` | command palette · key help |
+| `Ctrl-d` / `Ctrl-u` · `PageDown` / `PageUp` | scroll the diff |
+| `q` · `Esc` | quit · close the overlay |
 
-**Mouse** is supported too: the scroll wheel scrolls the diff, a click in the
-sidebar selects that file, a click in the diff focuses it, and a click on a top
-menu name opens it.
+The mouse works too: the wheel scrolls, and clicks select files, focus the diff and open
+menus. The palette (`:` in the app, or `--palette` / `--cmd NAME` headless) runs `rank`,
+`outline`, `cluster`, `summary`, `notes`, `review`, `daemon`, `learning` and `maturity`
+against the loaded review. An unknown name or a non-numeric size is a usage error (exit 2).
 
-**Command palette** — `:` (in-app) runs any engine capability against the loaded
-review and shows the result in a panel; the same commands are reachable headlessly
-via `--palette` or `--cmd NAME`:
+### Source files
 
 ```bash
-git diff | deep-diff-forge review --palette          # open the palette, then render
-git diff | deep-diff-forge review --cmd rank         # run one command headlessly
-git diff | deep-diff-forge review --probe --cols 120 --rows 40   # larger headless frame
+deep-diff-forge semantic <path> [--json]       # top-level symbols with line ranges (semantic.v0)
+deep-diff-forge highlight <path> [--color|--no-color]
+deep-diff-forge structural <old> <new> [--json]   # token-level, reformat-aware (structural.v0)
 ```
 
-Command names: `rank`, `outline`, `cluster`, `summary`, `notes`, `review` (the
-`review.v0` JSON), `daemon`, `learning`, `maturity`.
+Rust is supported today. Other extensions degrade explicitly to `fallback:UnsupportedLanguage`,
+never to a guess. Parsing is byte- and node-budgeted, and a malformed file reports
+`parsed_with_errors:N` instead of failing. Highlighting is **terminal-injection-safe**: source
+text passes through a control-character sanitiser, so the only raw escapes are fixed colour codes.
 
-`--probe` renders a single frame to stdout via a headless backend (size
-configurable with `--cols` / `--rows`) — useful for snapshots, CI, and agents that
-cannot attach a terminal.
-
-### `deploy status` — machine-readable deployment state
+### Machine surfaces
 
 ```bash
-deep-diff-forge deploy status            # human
-deep-diff-forge deploy status --json     # deep-diff-forge.deployment-status.v0
+deep-diff-forge envelope -- <command…>          # any command as one ddf.result.v1 object
+deep-diff-forge schema [result|exit-codes]      # the envelope's JSON Schema, or the registry
+deep-diff-forge explain <code> [--family engine|council] [--json]
+deep-diff-forge mcp                             # read-only MCP server over stdio
+deep-diff-forge rpc                             # the daemon's JSON-RPC over stdio, no daemon
+deep-diff-forge daemon {path|start [--foreground]|health|status|stop} [--socket PATH]
 ```
 
-Reports the declared maturity level, the gate stack, and external-observer
-posture so CI and orchestration can consume deployment state instead of scraping
-prose.
-
-### `deploy release` — release publication posture
+### Learning, analysis, deployment and diagnostics
 
 ```bash
-deep-diff-forge deploy release           # human
-deep-diff-forge deploy release --json    # deep-diff-forge.release.v0
+deep-diff-forge learn status [--json]                 # local receipts, scores, trust verdict
+echo '<receipt>' | deep-diff-forge learn record --stdin
+deep-diff-forge analyze <patch-file> <base-dir> <candidate-dir>   # deep-diff-forge.analysis.v1
+deep-diff-forge deploy status [--json]                # declared maturity and gate stack
+deep-diff-forge deploy release [--json]               # per-target publication posture
+deep-diff-forge doctor                                # runtime, cache, state and socket paths
+deep-diff-forge --self-test
+deep-diff-forge {claude-code-contract|chain-contract|cluster-contract|loom-contract}
 ```
 
-Reports the per-target publication state for the current version — GitHub, GitLab,
-the GitHub release, and crates.io. This is a declared snapshot (the actual release
-acts are `git tag`, `gh release`, and `cargo publish`); `crates.io` is reported
-`blocked` until a registry token is configured, and `pending` lists every
-not-yet-published target. Independently of the token, crates.io publication is
-on hold as a project decision until the codebase is production-ready.
+`learn` is local-only. A receipt holds hashes, counts and timings, never a path or a source
+line. Receipts live under `$XDG_STATE_HOME/deep-diff-forge/learning/`. An invalid receipt
+exits 4.
 
-### `daemon` — optional UDS JSON-RPC service
+`analyze` checks that a patch turns the captured base directory into the candidate before it
+attaches semantics.
+
+`deploy release` is a declared snapshot. The source is published on GitHub and GitLab, the
+GitHub release waits for the owner's tag, and crates.io is on hold.
+
+### Review council
 
 ```bash
-deep-diff-forge daemon path                      # print the socket path
-deep-diff-forge daemon start --foreground        # serve (owner-private UDS)
-deep-diff-forge daemon health                     # query a running daemon
-deep-diff-forge daemon status
-deep-diff-forge daemon stop
-# all accept: --socket <PATH>
+deep-diff-forge council {example|prepare|review|gate|status|import|export-tuicr|import-tuicr}
 ```
 
-See [The optional daemon](#the-optional-daemon).
-
-### `learn` — local-only learning loop (L9)
-
-Deep-Diff-Forge improves through measured review outcomes. The loop records a
-local-only receipt per planner decision (hashes, counts, timings — never a path
-or source line), scores each strategy, and gates whether a learned default may
-be promoted. Nothing is uploaded; nothing mutates patch truth.
-
-```bash
-deep-diff-forge learn status                 # store path, receipt count, scores, trust verdict
-deep-diff-forge learn status --json          # deep-diff-forge.learning.v0
-echo '<receipt-json>' | deep-diff-forge learn record --stdin   # feed one receipt (agents/CI)
-```
-
-Receipts live under `$XDG_STATE_HOME/deep-diff-forge/learning/` (falling back to
-`~/.local/state/...`). A fresh machine with no store reports zero receipts and no
-trusted default — never an error.
-
-### Diagnostics & contracts
-
-```bash
-deep-diff-forge --help
-deep-diff-forge --version
-deep-diff-forge --self-test            # core model smoke check
-deep-diff-forge doctor                 # runtime/cache/state/socket paths
-deep-diff-forge claude-code-contract   # agent-facing output guarantees
-deep-diff-forge chain-contract         # Unix-filter chaining guarantees
-deep-diff-forge cluster-contract       # parallel execution guarantees
-deep-diff-forge loom-contract          # assimilation-pipeline guarantees
-```
+See [Review council and evidence gates](#review-council-and-evidence-gates).
 
 ---
 
-## Output formats & schemas
+## Output formats and schemas
 
-Every machine mode emits a versioned schema string so consumers can rely on
-stable fields. `--json` is one complete document; `--jsonl` is one event per
-line. Primary output goes to **stdout**; diagnostics to **stderr**.
+Every machine document names its schema. `--json` prints one document and `--jsonl` one
+event per line. Results go to **stdout**, diagnostics to **stderr**, and on error stdout is
+empty.
 
 | Command | Schema |
 | --- | --- |
-| `--stdin-patch --json` | `deep-diff-forge.review.v0` |
-| `--stdin-patch --jsonl` | line events: `{"event":"diff.file",…}` |
-| `--stdin-patch --rank --json` | `deep-diff-forge.rank.v0` |
-| `--stdin-patch --cluster --json` | `deep-diff-forge.cluster.v0` |
-| `semantic --json` | `deep-diff-forge.semantic.v0` |
-| `structural --json` | `deep-diff-forge.structural.v0` |
-| `deploy status --json` | `deep-diff-forge.deployment-status.v0` |
-| `deploy release --json` | `deep-diff-forge.release.v0` |
+| `--stdin-patch --json`, `--git-* --json` | `deep-diff-forge.review.v0` |
+| `--stdin-patch --jsonl` | line events `{"event":"diff.file",…}` |
+| `--rank --json` · `--cluster --json` | `deep-diff-forge.rank.v0` · `deep-diff-forge.cluster.v0` |
+| `--git-* --acquisition-json` | `deep-diff-forge.git-acquisition.v0` |
+| `semantic --json` · `structural --json` | `deep-diff-forge.semantic.v0` · `deep-diff-forge.structural.v0` |
+| `analyze` | `deep-diff-forge.analysis.v1` |
 | `learn status --json` | `deep-diff-forge.learning.v0` |
-| `daemon …` | JSON-RPC 2.0 |
+| `deploy status --json` · `deploy release --json` | `deep-diff-forge.deployment-status.v0` · `deep-diff-forge.release.v0` |
+| MCP `review_patch` / `rank_patch` over 256 KiB | `deep-diff-forge.review-summary.v0` · `deep-diff-forge.rank-summary.v0` |
+| `envelope` | `ddf.result.v1` |
+| `daemon`, `rpc` | JSON-RPC 2.0, protocol 1 |
 
-### Input sealing (`input_sha256` + `tool`)
+**Input sealing.** `review.v0`, `rank.v0`, `cluster.v0` and `semantic.v0` carry two members
+right after `schema`:
+- `input_sha256`: lowercase hex SHA-256 of the exact bytes read, before any parsing.
+  `sha256sum < input` reproduces it.
+- `tool`: `{"name": "deep-diff-forge", "version": "<CARGO_PKG_VERSION>"}`.
 
-Every input-derived document — `review.v0`, `rank.v0`, `cluster.v0`, and
-`semantic.v0` — carries two additive top-level members directly after
-`schema`, so an orchestrator can treat the document as a **sealed observation**
-tied to exact bytes and an exact tool build:
-
-| Member | Meaning |
-| --- | --- |
-| `input_sha256` | Lowercase hex SHA-256 over the **exact bytes read** (stdin for `--stdin-patch`, the source file for `semantic`), hashed *before* any parsing or normalisation. `sha256sum < input` reproduces it. |
-| `tool` | `{"name": "deep-diff-forge", "version": "<CARGO_PKG_VERSION>"}` — the emitting build. |
-
-The schema names stay at `.v0`: the members are purely additive, every
-existing field keeps its meaning, and consumers that ignore unknown keys are
-unaffected. `--jsonl` events, the human renderers, and documents that are not
-derived from an input (`learning.v0`, `deployment-status.v0`, `release.v0`)
-carry no seal. Output is deterministic: the same bytes produce byte-identical
-stdout and the same `input_sha256` on every run.
-
-Example — `--rank --json`:
+Output is deterministic: the same bytes give byte-identical stdout on every run.
 
 ```json
 {
   "schema": "deep-diff-forge.rank.v0",
   "input_sha256": "9317219840467a00fbb7bc3ff905b0ae26a999582c12c8d02f49d380b398bbb3",
-  "tool": {"name": "deep-diff-forge", "version": "0.2.1"},
+  "tool": {"name": "deep-diff-forge", "version": "0.3.0"},
   "ranked": [
     {"path": "src/lib.rs", "status": "modified", "score": 7, "signals": ["public_api_surface"]},
     {"path": "tests/it.rs", "status": "modified", "score": 1, "signals": ["test_only"]}
@@ -534,21 +368,9 @@ Example — `--rank --json`:
 }
 ```
 
-Example — `--cluster --json` (note the receipt):
-
-```json
-{
-  "schema": "deep-diff-forge.cluster.v0",
-  "input_sha256": "9317219840467a00fbb7bc3ff905b0ae26a999582c12c8d02f49d380b398bbb3",
-  "tool": {"name": "deep-diff-forge", "version": "0.2.1"},
-  "receipt": {"dimensions": ["patch", "risk"], "parallelism": "fixed:4", "workers": 4, "join_policy": "ranked-review-order", "file_count": 2},
-  "ranked": [ /* … */ ]
-}
-```
-
-JSON strings are RFC-8259 escaped; UTF-8 passes through. File statuses use a
-single canonical snake-case spelling (`added`, `modified`, `deleted`,
-`renamed`, `type_changed`, `binary_changed`, `unknown`) across every surface.
+Strings are RFC 8259-escaped, and valid UTF-8 passes through. A line decoded lossily is marked
+`"lossy": true`. File statuses use one snake-case spelling everywhere: `added`, `modified`,
+`deleted`, `renamed`, `type_changed`, `binary_changed`, `unknown`.
 
 ## Exit codes
 
@@ -570,8 +392,8 @@ The `council` subcommands use their own family ([review council](docs/REVIEW_COU
 | 4 | Malformed input, stale admission, an existing artifact, or a protocol or I/O failure. | `change_input` |
 | 7 | HOLD: failed, missing or inconclusive evidence, or an import conflict. | `review_evidence` |
 
-**Next** is what a caller, person or agent, should do; `schema exit-codes`, `explain --json` and
-the MCP tools report it as `action`, with `may_be_transient`, which is true only for
+**Next** is what a caller, person or agent, should do. `schema exit-codes`, `explain --json`
+and the MCP tools report it as `action`, with `may_be_transient`, which is true only for
 `check_environment`:
 
 - `proceed`: use the result.
@@ -583,17 +405,14 @@ the MCP tools report it as `action`, with `may_be_transient`, which is true only
 - `review_evidence`: read the evidence the council reported and decide; rerunning does not change it.
 - `report_bug`: report the command and its input; do not retry blindly.
 
-Diagnostics never pollute stdout: on error, stdout stays empty and the message
-goes to stderr.
+Both tables come from one registry in the binary, and a test fails if this README drifts from it.
 
 ### Machine contract (`ddf.result.v1`)
-
-Both tables are one registry in the binary, and a test fails if this README drifts from it.
 
 ```bash
 deep-diff-forge envelope -- --stdin-patch --json < change.patch   # one ddf.result.v1 object
 deep-diff-forge schema result        # JSON Schema (2020-12) of the envelope
-deep-diff-forge schema exit-codes    # the registry: family, code, name, meaning
+deep-diff-forge schema exit-codes    # the registry: family, code, name, meaning, action
 deep-diff-forge explain 7 --family council
 ```
 
@@ -608,7 +427,8 @@ The command's own output is unchanged, and `envelope` exits with the command's c
 
 ## MCP server
 
-`deep-diff-forge mcp` serves read-only [Model Context Protocol](https://modelcontextprotocol.io) tools over stdio, one JSON-RPC message per line.
+`deep-diff-forge mcp` serves read-only [Model Context Protocol](https://modelcontextprotocol.io)
+tools over stdio, one JSON-RPC message per line.
 
 - **Modern clients** (specification 2026-07-28) send the protocol version and client capabilities in each request's `_meta`, and may call `server/discover` first.
 - **Legacy clients** (2025-11-25, 2025-06-18, 2025-03-26) use the `initialize` handshake.
@@ -617,12 +437,12 @@ The command's own output is unchanged, and `envelope` exits with the command's c
 | --- | --- |
 | `review_patch` | The `deep-diff-forge.review.v0` document for `patch`: the same JSON value `--stdin-patch --json` prints, up to 256 KiB (see *Large reviews*). `require_files` / `require_hunks` refuse as the CLI flags do; `paths` limits the document to chosen files |
 | `rank_patch` | The patch's files ordered by review risk |
-| `explain_exit_code` | One exit code's family, name and meaning |
+| `explain_exit_code` | One exit code's family, name, meaning and next action |
 | `exit_code_registry` | Every documented exit code |
 
-Every tool is annotated `readOnlyHint: true`, and none writes anything.
-
-The server instructions and the patch-reading tools' descriptions tell the model that paths and line text come from the patch, whose authors wrote them: data to review, never instructions.
+Every tool is annotated `readOnlyHint: true`, and none writes anything. The server
+instructions and the patch-reading tools tell the model that paths and line text come from
+the patch's authors: data to review, never instructions.
 
 - **Errors:** a malformed call or an unknown tool is a JSON-RPC error. A parse failure or a broken input contract is a tool result with `isError: true`, so a model can correct its input.
 - **Limits:** a request line is capped at the 64 MiB patch budget plus 1 MiB.
@@ -635,7 +455,8 @@ The server instructions and the patch-reading tools' descriptions tell the model
 
 ## SDKs
 
-**Rust:** the `deep-diff-forge-sdk` crate is a stable facade over the same crates the CLI and the daemon use.
+**Rust:** the `deep-diff-forge-sdk` crate is a stable facade over the same crates the CLI and
+daemon use.
 
 ```rust
 use deep_diff_forge_sdk::{review, rank, Guards};
@@ -644,14 +465,15 @@ let document = review.to_json();   // byte for byte what `--stdin-patch --json` 
 let ranked = rank(&review);
 ```
 
-`Client::at(socket).call(method, &params)` calls a running daemon. It is Unix-only and validates every answer's version, id and error shape.
+`Client::at(socket).call(method, &params)` calls a running daemon. It is Unix-only, and it
+checks every answer's version, id and error shape.
 
-- **Exit codes:** errors map to the CLI's exit codes (`Error::exit_code`). A daemon's error 4 or 7 means what CLI exit 4 or 7 means.
-- **Ownership:** the SDK owns `Guards`, `Review` (opaque) and `Error` (`#[non_exhaustive]`). `ReviewFile`, `InputSeal` and `RankedFile` are the review document's model types and change only with its schema version.
+- **Exit codes:** errors map to the CLI's exit codes (`Error::exit_code`).
+- **Ownership:** the SDK owns `Guards`, `Review` (opaque) and `Error` (`#[non_exhaustive]`). `ReviewFile`, `InputSeal` and `RankedFile` are model types and change only with the schema version.
 - **Stability:** `tests/api.rs` pins every public signature, so changing one is a deliberate breaking change.
-- **Platforms:** review, rank and exit do not depend on the daemon (inferred from the `cfg(unix)` dependency split; there is no non-Unix CI).
 
-**Python:** `sdk/python/deep_diff_forge.py` uses the standard library only. It speaks the daemon protocol over either of two transports, with the same calls:
+**Python:** `sdk/python/deep_diff_forge.py` uses only the standard library. It speaks the
+daemon protocol over two transports with the same calls:
 
 - `deep-diff-forge rpc` over a pipe (`StdioClient`), which needs no daemon;
 - a running daemon's socket (`SocketClient`).
@@ -662,34 +484,34 @@ with StdioClient() as client:
     document = client.review_patch(patch, require_files=True, require_hunks=True)
 ```
 
-`deep-diff-forge rpc` answers each stdin line with the socket server's own request handler, under the socket's framing (an 80 MiB cap that counts the newline, with an oversized request refused at once), and stops at `daemon.shutdown`.
-
-The Python client checks every answer's version and id, errors included. `StdioClient` bounds each answer's size and time and kills a child that exceeds either. CI runs the Python tests against the built binary, over both transports.
+`deep-diff-forge rpc` answers each stdin line with the socket server's own handler and framing:
+an 80 MiB cap that counts the newline, with an oversized request refused at once. It stops at
+`daemon.shutdown`. The Python client checks every answer's version and id, bounds each answer's
+size and time, and kills a child that exceeds either. CI runs the Python tests against the
+built binary over both transports.
 
 ## The optional daemon
 
-The daemon accelerates repeated review and multi-client workflows. It is
-**never required** for one-shot CLI correctness — every command works without
-it. It is **std-first** (no async runtime): a `UnixListener` JSON-RPC 2.0 server
-over an owner-private Unix domain socket.
+The daemon speeds up repeated review and multi-client workflows. It is **never required**:
+every command works without it. It is **std-first**, with no async runtime: a JSON-RPC 2.0
+server on an owner-private Unix domain socket.
 
-**Security:** the engine-owned runtime directory is created/tightened to `0700`,
-must be owned by the effective user, and the socket is `0600`. An explicit `--socket`
-path is bound **fail-closed**: an absent parent directory is created `0700`, but a
-pre-existing parent is validated and **never re-permissioned** (a group/world-
-accessible parent is refused rather than silently tightened to `0700`), and the
-socket path is replaced **only if it is already a socket** — the daemon never
-deletes a regular file, directory, or symlink it finds there. Review sessions are
-bounded by both an **LRU count cap and a 128 MiB aggregate payload cap**. The
-server admits at most eight concurrent connections, but one engine serves them, so
-requests run one at a time. Each request line has an absolute read deadline, each
-response write a per-write timeout, and both lines are capped at 80 MiB: a response
-over the cap is replaced by a `RESOURCE_EXHAUSTED` (8) error for the same request id.
+**Security boundary:**
+- **Ownership.** The runtime directory is `0700` and must be owned by the effective user. The
+  socket is `0600`.
+- **Explicit `--socket` paths fail closed.** A missing parent is created `0700`. An existing
+  parent is validated and never re-permissioned. A path is replaced only if it is already a
+  socket that nothing answers on. A live daemon is never displaced, and a regular file,
+  directory or symlink is never deleted.
+- **Bounded sessions.** Sessions are capped by an LRU count and 128 MiB of total payload.
+- **Bounded connections.** At most eight connections are admitted. One engine serves them,
+  so requests run one at a time.
+- **Bounded I/O.** Each request line has an absolute read deadline, each response write a
+  per-write timeout, and both are capped at 80 MiB. A response over the cap becomes a
+  `RESOURCE_EXHAUSTED` (8) error for the same id.
 
-**Default socket:** `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock`. There
-is no world-writable `/tmp` fallback: if `$XDG_RUNTIME_DIR` is unset the daemon
-fails closed and you pass an explicit `--socket PATH`. (`doctor` reports the
-resolved socket, or `<unavailable: set XDG_RUNTIME_DIR or pass --socket>`.)
+**Default socket:** `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock`. There is no
+`/tmp` fallback. Without `$XDG_RUNTIME_DIR` the daemon fails closed until you pass `--socket PATH`.
 
 **JSON-RPC methods** (protocol 1; `engine.methods` lists them with their parameters):
 `engine.initialize`, `engine.methods`, `daemon.health`, `daemon.status`,
@@ -697,211 +519,214 @@ resolved socket, or `<unavailable: set XDG_RUNTIME_DIR or pass --socket>`.)
 `session.close`.
 
 ```bash
-# Terminal 1
-deep-diff-forge daemon start --foreground
-
-# Terminal 2
-deep-diff-forge daemon health
+deep-diff-forge daemon start --foreground      # terminal 1
+deep-diff-forge daemon health                  # terminal 2
 # {"id":1,"jsonrpc":"2.0","result":{"status":"ok","pid":…,"protocol":1,"sessions":0,…}}
 deep-diff-forge daemon stop
 ```
 
-## Risk ranking signals
+## Risk ranking
 
-`--rank` / `--cluster` compute a deterministic, explainable score per file.
-Higher = review first. Signals:
+`--rank`, `--cluster`, the cockpit and `rank_patch` share one deterministic, additive score
+per file (`crates/deep-diff-forge-graph/src/risk.rs`). Higher means review first.
 
-| Signal | Effect |
-| --- | --- |
-| `public_api_surface` | `lib.rs` / `mod.rs` / `…/api/…` — strong boost |
-| `large_change` | ≥ 80 changed lines |
-| `many_hunks` | ≥ 5 hunks |
-| `new_file` / `deleted_file` | added / removed file |
-| `binary_change` | binary file (no reviewable text) |
-| `config_or_lockfile` | `Cargo.toml`, `*.lock`, `*.yaml`, … |
-| `test_only` | de-prioritized below equivalent source |
-| `generated_or_vendored` | `vendor/`, `node_modules/`, `target/`, `*.min.js`, … — suppressed to 0 |
+| Signal | When | Score |
+| --- | --- | ---: |
+| *(base)* | any reviewable change | +1 |
+| *(primary source)* | not a test, config or lockfile | +1 |
+| `public_api_surface` | `lib.rs`, `mod.rs`, or an `/api/` path | +5 |
+| `large_change` | ≥ 80 changed lines | +3 |
+| `deleted_file` · `new_file` | removed · added | +3 · +2 |
+| `many_hunks` | ≥ 5 hunks | +2 |
+| `config_or_lockfile` · `binary_change` | `Cargo.toml`, `*.lock`, `*.yaml`, … · binary | +1 · +1 |
+| `test_only` | under `tests/` or `test/`, `*_test.*`, `*.test.*` | no bonus |
+| `generated_or_vendored` | `vendor/`, `node_modules/`, `target/`, `generated/`, `dist/`, `*.min.js`, `*.pb.rs`, `*.pb.go` | **0**, suppressed |
 
-Ranking is reproducible (a path tie-break makes the order stable) and, under
-`--cluster`, **identical for any worker count** — parallelism never changes the
-result.
+Ties break on path, so the order is reproducible. Under `--cluster` the result is
+**identical for any worker count**: parallelism never changes the answer.
 
 ---
 
 ## Architecture
 
-Narrow crates with acyclic, inward dependency flow. `core` is
-pure vocabulary (no I/O, no parsing); every feature crate depends on `core`,
-never the reverse. Patch truth is upstream of everything.
+There are 14 narrow crates with one-way dependencies. `core` is pure vocabulary, with no I/O
+and no parsing. Every crate except `learning` depends on `core`, and patch truth is upstream
+of everything.
+
+```mermaid
+flowchart LR
+  subgraph surfaces[" "]
+    cli[cli]
+    tui[tui]
+    sdk[sdk]
+  end
+  cli --> tui & pipeline & cluster & daemon & review & learning & syntax & projection & graph & patch
+  tui --> agent & cluster & daemon & learning & syntax & projection & graph & patch
+  sdk --> graph & patch
+  sdk -. "cfg(unix)" .-> daemon
+  pipeline --> syntax & projection & graph & patch
+  cluster --> graph
+  daemon --> graph & patch
+  core((core))
+  patch --> core
+```
+
+<sub>Drawn from <a href="docs/crate-edges.txt"><code>docs/crate-edges.txt</code></a>, which a test checks against <code>cargo metadata</code>. Edges into <code>core</code> are left out except one: every crate but <code>learning</code> has one. Dev-only edges are omitted.</sub>
 
 | Crate | Role |
 | --- | --- |
-| `deep-diff-forge-core` | Stable model: IDs, patch/semantic twins, planner & graph vocabulary, deployment types, `json_escape`. |
-| `deep-diff-forge-patch` | Unified/Git patch parser, apply-able renderer, `review.v0` JSON. |
-| `deep-diff-forge-projection` | Renderer-neutral inline & side-by-side projections. |
-| `deep-diff-forge-pipeline` | Composable Unix-filter stages (`ChainStage`, ingest/render), JSONL. |
-| `deep-diff-forge-syntax` | Tree-sitter language detection, budgeted parse, symbol extraction, syntax highlighting, and token-level structural diff. |
-| `deep-diff-forge-graph` | Review Intelligence Graph — deterministic risk ranking. |
-| `deep-diff-forge-agent` | Annotation provenance, grounding classification, sanitization, anchor validation. |
-| `deep-diff-forge-tui` | Review-first terminal UI (ratatui), tested headlessly. |
-| `deep-diff-forge-cluster` | Bounded parallel dimensional execution + deterministic joins + receipts. |
-| `deep-diff-forge-learning` | L9 local-only learning loop: strategy receipts, scoring, gated promotion. |
-| `deep-diff-forge-daemon` | Optional UDS JSON-RPC service (std-first). |
-| `deep-diff-forge-review` | Captured Claude Code/Codex review rosters, expert challenge rounds and explicit quality-gate orchestration. |
-| `deep-diff-forge-cli` | Thin command entry point over the above. |
+| `deep-diff-forge-core` | The stable model: IDs, patch and semantic twins, planner and graph vocabulary, the exit-code registry, release and deployment types. |
+| `deep-diff-forge-patch` | Strict unified/Git patch parser, `SealedReview`, Git acquisition, apply-able renderer, `review.v0` JSON. |
+| `deep-diff-forge-projection` | Renderer-neutral inline and side-by-side projections. |
+| `deep-diff-forge-pipeline` | Composable Unix-filter stages and JSONL. |
+| `deep-diff-forge-syntax` | Tree-sitter detection, budgeted parsing, symbols, highlighting, token-level structural diff. |
+| `deep-diff-forge-graph` | The review intelligence graph: deterministic risk ranking. |
+| `deep-diff-forge-agent` | Annotation provenance, grounding, sanitisation, anchor validation. |
+| `deep-diff-forge-cluster` | Bounded parallel lanes, deterministic joins, receipts. |
+| `deep-diff-forge-learning` | Local-only learning loop: receipts, scoring, gated promotion. |
+| `deep-diff-forge-daemon` | The optional Unix-socket JSON-RPC service and its shared request handler. |
+| `deep-diff-forge-tui` | The review cockpit (ratatui), tested headlessly. |
+| `deep-diff-forge-review` | The review council: captured rosters, challenge rounds, sandboxed evidence gates. |
+| `deep-diff-forge-sdk` | The stable Rust facade and daemon client. |
+| `deep-diff-forge-cli` | The `deep-diff-forge` binary, plus the MCP, `rpc` and `envelope` surfaces. |
 
-### Maturity ladder
+Deeper: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/SCHEMATICS.md`](docs/SCHEMATICS.md).
 
-The codebase advances through declared maturity levels; each is gated and sealed.
+## Quality gates
 
-```
-L0 Bootstrap → L1 Patch → L2 Projection → L3 Pipeline → L4 Semantic
-   → L5 Review → L6 Cluster → L7 Daemon → L8 Release → [L9 Learning]
-```
+Deep-Diff-Forge reviews untrusted code, so it is built to make bad code hard to write. `main`
+changes only through a pull request, on a branch that is up to date, after **nine required
+checks**. Nobody can bypass them.
 
-The ladder records the original engine’s declared feature stages. It is not a readiness assertion for this evolving branch. Council/analysis inputs, tested paths, unsupported cases and pending UI/daemon migrations are documented separately. Run the current checks instead of reusing historical publish or test-count claims.
+| Required check | What it proves |
+| --- | --- |
+| `deploy gate-feature` | fmt, check, clippy `-D warnings`, pedantic, all tests, docs, contract probes, fuzz-harness compile, hostile-daemon soak, learning-privacy probes, Python SDK against the built binary |
+| `diff mutation` × 4 shards | `cargo-mutants` on the lines the PR changes; one surviving mutant fails it |
+| `review controller mutation and fuzz evidence` | scoped mutation of the council's admission code; a fuzz smoke for every target; 12 planted-breach probes against the rootless Podman sandbox |
+| `supply chain audit` | `cargo-deny` (bans, licences, sources, advisories), strict `cargo-audit`, and the committed SPDX SBOM regenerated and compared |
+| `declared Rust 1.88 compatibility` | the MSRV still builds |
+| `secret scan (gitleaks)` | a pinned, checksum-verified gitleaks |
 
-## The deployment framework
+Across the tree:
+- **No `unsafe`.** It is forbidden in every crate.
+- **No production `unwrap` or `expect`.** No suppression goes unexplained.
+- **Pinned Actions.** Every GitHub Action is pinned to a commit SHA.
+- **Platforms.** A macOS job runs the whole suite weekly and before platform changes.
+- **Releases.** Each release builds three targets, smoke-tests them, verifies checksums, and
+  attaches SLSA provenance and the SBOM.
+- **Local replica.** `scripts/ci_local.sh` (`just ci`) runs the CI gate jobs locally.
 
-Deep-Diff-Forge is developed against an explicit, receipt-backed deployment
-framework — the codebase is the source of truth, and docs are binding only until
-code implements them, after which code wins or the gate fails.
+The engine is hardened against:
+- terminal-escape injection;
+- Trojan-Source bidi text;
+- memory exhaustion;
+- hidden-content patches;
+- attacks on the daemon's transport and filesystem.
 
-- **[`docs/DEPLOYMENT_FRAMEWORK.md`](docs/DEPLOYMENT_FRAMEWORK.md)** — the
-  governing document: source-of-truth order, deployment modes, the 11-gate
-  stack, receipts, maturity ladder, and a bidirectional map to every other doc.
-- **[`docs/DEPLOYMENT_GAP_ANALYSIS.md`](docs/DEPLOYMENT_GAP_ANALYSIS.md)** —
-  codebase + non-anthropocentric gap passes.
-- **[`docs/MODULE_STRUCTURE_PLAN.md`](docs/MODULE_STRUCTURE_PLAN.md)** — the
-  crate/module/dependency plan.
-- **[`docs/TESTING_GOLD_STANDARD.md`](docs/TESTING_GOLD_STANDARD.md)** — the
-  50-meaningful-tests rule and anti-test-fitting discipline.
-- **[`docs/AGENTIC_RUST_CODER_V4.md`](docs/AGENTIC_RUST_CODER_V4.md)** — the
-  evidence-labelled implementation standard.
-- **[`docs/MAKING_SKILLS.md`](docs/MAKING_SKILLS.md)** — build a Claude Agent
-  Skill or Pi extension that drives the engine for agent-collaborative review.
-- See the framework's documentation map for the full set (architecture, specs,
-  API/IPC, chaining/clustering, loom, performance, release, operations, …).
-
-## Building, testing, and quality gates
-
-The mandatory gate (zero tolerance at every stage):
-
-```bash
-just gate-feature
-# = cargo fmt --check
-#   cargo check --workspace
-#   cargo clippy --workspace --all-targets -- -D warnings
-#   cargo clippy --workspace --all-targets -- -D warnings -W clippy::pedantic
-#   cargo test --workspace --locked
-#   bootstrap contract probes
-```
-
-Standards enforced across the tree include **zero `unsafe`** (compiler-forbidden workspace-wide via
-`[workspace.lints]`), no production `unwrap`/`expect`, pedantic clippy clean with
-no unexplained suppressions, and a `cargo-deny` ([`deny.toml`](deny.toml)) +
-strict `cargo-audit` supply-chain gate (advisories, licenses, bans, sources) with
-every GitHub Action pinned to a commit SHA. CI mirrors the gate in
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) and adds a fuzz-harness
-compile gate, a hostile-daemon soak, a learning-privacy probe, and an SPDX SBOM
-gate; the release workflow attaches SLSA build-provenance attestations and the
-SBOM (`sbom.spdx.json`).
-
-The engine is designed to be run on **untrusted input** (an attacker controls the
-whole diff); it has been adversarially hardened against terminal-escape injection,
-Trojan-Source / bidi Unicode, memory-exhaustion DoS, and the daemon's
-transport/filesystem surface, and a cargo-fuzz harness ([`fuzz/`](fuzz/)) covers
-the patch parser, review JSON, daemon protocol, and agent annotations. See
-[`SECURITY.md`](SECURITY.md) for the threat model and disclosure policy.
-
-Durable engineering lessons are recorded in [`NOTES.md`](NOTES.md).
+Seven fuzz targets cover the parser, review JSON, daemon protocol, agent annotations, council
+reports, and the MCP and `rpc` stdio servers. See [`SECURITY.md`](SECURITY.md) for the threat
+model.
 
 ## Review council and evidence gates
 
-The full design, CLI usage, threat model and per-round history live in
-[`docs/REVIEW_COUNCIL.md`](docs/REVIEW_COUNCIL.md); this section is a map, not a
-copy. Evidence for each council run is in [`EVIDENCE.md`](EVIDENCE.md#review-council-and-ci-2026-10-26).
+[`docs/REVIEW_COUNCIL.md`](docs/REVIEW_COUNCIL.md) holds the full design, threat model and
+per-round history. This section is a map, not a copy.
 
-- **The council.** `deep-diff-forge council prepare|status|review|gate` runs six
-  default reviewer slots (correctness, security, architecture, falsifier,
-  performance and subtractor), split between Claude Code and Codex, over a
-  sealed snapshot in an independent round and then a challenge round. The controller
-  admits a report only if its citations resolve to real bytes in the snapshot
-  (a fabricated citation is rejected), and missing evidence is `HOLD` with exit
-  7, never an empty pass. Nothing is approved automatically.
-- **Eight evidence gates** — format, check, clippy, pedantic, tests,
-  antipatterns, fuzz and mutation — run only inside a
-  [rootless Podman sandbox](docs/REVIEW_COUNCIL.md#gate-sandbox): the
-  operator-admitted image by ID, `--network=none` (dependency vendoring is the
-  only networked job), read-only root and source, all capabilities dropped,
-  `no-new-privileges`, `--userns=keep-id`, and `--user=<uid>:<gid>` read from
-  `/proc/self`, so the operator's own uid runs the job (before stage A it only
-  worked for uid 1000). The real-Podman planted-breach suite (12 probes) runs
-  in CI on GitHub-hosted runners.
-- **Diff-scoped mutation gate.** cargo-mutants 27.1.0 runs `--in-diff` against a
-  scope diff built from the sealed base and candidate blobs (each Git object is
-  verified on read), with a 300 s per-mutant timeout, 4 jobs and `--no-config`, so a candidate's
-  own `mutants.toml` cannot shrink the scope.
-- **Exemption oracle.** Before any mutation job,
-  [`exemption_oracle.py`](crates/deep-diff-forge-review/policy/exemption_oracle.py)
-  compares cargo-mutants' stock listing with a strict build that honours only
-  `#[cfg(test)]` and a build that excludes nothing. Code hidden by anything
-  other than `#[cfg(test)]` is refused with no builds; `#[cfg(test)]` code must
-  leave every workspace member's non-test MIR unchanged in the gate and release
-  configurations, with a positive control and a reproducibility check in each.
-  See [r18](docs/REVIEW_COUNCIL.md#cfg-test-only-r18) for the current rule and
-  [r12](docs/REVIEW_COUNCIL.md#exemption-oracle-r12) onward for how it got there.
-- **tuicr export and decision journal.** `council export-tuicr` files admitted
-  findings into a local tuicr session as draft notes (dry run by default);
-  `council import-tuicr` appends human dispositions to an append-only
-  `decisions.jsonl` in the run. See [tuicr export](docs/REVIEW_COUNCIL.md#tuicr-export)
-  and [decision journal](docs/REVIEW_COUNCIL.md#decision-journal).
-- **Git acquisition.** Instead of piping a patch, the CLI can acquire one itself:
-  `--git-working-tree [--include-untracked]`, `--git-staged` or
-  `--git-range A..B`, with `--repo PATH` and `--acquisition-json` for the
-  `deep-diff-forge.git-acquisition.v0` identity document. Git runs with a fixed
-  argv, and paths, modes and blob IDs come from NUL-delimited raw records
-  ([integration ledger](docs/RECOMMENDATION_INTEGRATION.md)).
+- **The council.** `deep-diff-forge council prepare|review|gate|status` runs six reviewer
+  slots over a sealed snapshot, split between Claude Code and Codex. The slots are correctness,
+  security, architecture, falsifier, performance and subtractor. They review once
+  independently, then in a challenge round. A report is admitted only if its citations resolve
+  to real bytes in the snapshot. Missing evidence is `HOLD` with exit 7, never an empty pass.
+  Nothing is approved automatically.
+- **Eight evidence gates** run only inside a [rootless Podman sandbox](docs/REVIEW_COUNCIL.md#gate-sandbox):
+  format, check, clippy, pedantic, tests, antipatterns, fuzz and mutation. The sandbox:
+  - uses the operator-admitted image, by ID;
+  - runs with `--network=none` (only dependency vendoring is networked);
+  - mounts the root and the source read-only;
+  - drops all capabilities and sets `no-new-privileges` and `--userns=keep-id`;
+  - runs as `--user=<uid>:<gid>` from the operator's effective IDs (`geteuid`/`getegid`), so a
+    gate never runs as root.
+
+  Twelve planted-breach probes run in CI.
+- **Diff-scoped mutation.** cargo-mutants runs `--in-diff` against a scope built from the
+  sealed base and candidate blobs, with `--no-config`, so a candidate cannot shrink its own
+  scope.
+- **Exemption oracle.** [`exemption_oracle.py`](crates/deep-diff-forge-review/policy/exemption_oracle.py)
+  refuses code hidden from mutation by anything other than `#[cfg(test)]`, and checks that
+  `#[cfg(test)]` code leaves non-test MIR unchanged ([r18](docs/REVIEW_COUNCIL.md#cfg-test-only-r18)).
+- **tuicr and the decision journal.** `council export-tuicr` files admitted findings into a
+  local [tuicr](docs/REVIEW_COUNCIL.md#tuicr-export) session. `council import-tuicr` appends
+  human dispositions to an append-only [`decisions.jsonl`](docs/REVIEW_COUNCIL.md#decision-journal).
 
 ---
 
 ## Project status
 
-This is an actively-built engine whose L0–L9 labels are historical capability
-declarations (see the development status above). Everything documented above is
-implemented and gated by tests; per-feature end-to-end proof is tracked in the
-[integration ledger](docs/RECOMMENDATION_INTEGRATION.md). Honest current limitations:
+**0.3.0 is production-ready for its declared scope.** That scope is a local, single-user
+review tool on Linux and macOS: CLI, Unix-socket daemon, `rpc`, MCP and SDKs, released as
+GitHub binaries. The evidence is measured at commit `2f03f40`:
 
-- Full **patch↔symbol join** (mapping a hunk to its enclosing semantic symbol in
-  a diff) awaits a Git-input layer that supplies file bytes; `semantic <file>`
-  proves the engine on whole files today, and `enclosing_symbol` is the ready
-  building block.
-- The daemon intentionally admits at most eight concurrent local clients; excess
-  connections are closed without allocating another worker stack. One engine serves
-  them all, so a long request delays the others.
-- **L9 Learning**: the learning loop records and scores receipts and gates
-  promotion; wiring the engine's hot path to *emit* receipts automatically (vs.
-  the explicit `learn record`) lands as live signal accrues.
-- **Release**: the staged merges extend the 0.2.1 base and are not newly publish-qualified. **crates.io publication is on hold until the codebase is production-ready**; registry credentials alone are insufficient, and quality, supply-chain, API versioning and release checks must pass first.
-- **Remaining before a release (2026-10-26):** the CLI contract, daemon parity, SDK and MCP slices A–D ([roadmap](docs/ROADMAP.md#status-2026-10-26)); reconciling the diverged GitLab `main`; and a measured move from the `ubuntu-24.04` runner pin to Ubuntu 26 (Node 20 actions are already replaced by their Node 24 releases). As of 2026-10-27 all three are done: slices A–D are merged, GitHub and GitLab `main` share one history, and CI runs on `ubuntu-26.04`.
-- Semantic parsing now has cooperative progress-callback cancellation; node limits remain post-parse, and this is not an OS hard-time isolation boundary.
-- **Local integration (operator workstation only, not a DDF feature):** Herdr's Poteto Weave index (`/mnt/storage-10tb/hee4-evidence/prototypes/turso-tool-context/assimilation-20261005/`) indexes DDF context, and HEE's DDF adapter consumes review observations; HEE retains verdict authority.
+- **Release dry runs.** Two dry runs of the release workflow passed on `main`: every quality
+  gate including macOS, three builds, a smoke test of each runnable binary, and checksum
+  verification.
+- **Fuzzing.** Each fuzz target runs on every PR. After the last parser change, a local run of
+  300 s per target crashed 0 times (`patch_parser` 5.46 M runs, `review_json` 4.16 M).
+- **Fidelity and soak.**
+  - A sweep rebuilt 13,811 real files exactly from the review JSON.
+  - A one-hour daemon soak held flat memory.
+- **Audit fixes, 2026-10-28.** An independent audit and the first macOS runs found ten issues,
+  and all are fixed. The most serious was a text change hidden after a `GIT binary patch` body,
+  which the review missed and `git apply` applied. Each fix has a test that fails on the old
+  code. See [CHANGELOG.md](CHANGELOG.md) and [EVIDENCE.md](EVIDENCE.md).
+
+**Not claimed:** crates.io publication (on hold), and multi-user or shared-host daemon
+deployment.
+
+**Known limits.** Contributions are welcome on any of these; see [CONTRIBUTING.md](CONTRIBUTING.md#open-problems-worth-owning):
+
+- One engine serves all daemon connections, so a long request delays the others.
+- The daemon socket relies on `0700` and `0600` permissions; it does not check peer credentials.
+- Git subprocesses have a capped output but no time limit.
+- macOS tests run weekly and on demand, not on every PR.
+- Two `daemon start`s can still race between the stale-socket probe and the bind.
+- The cockpit is tested by headless frames; there is no key-sequence harness yet.
+- Syntax features speak Rust; comparing two files directly (`<old> <new>`) and the `chain`,
+  `cluster` and `loom` subcommands are planned and refused today.
+
+The L0–L9 maturity labels in `deploy status` are historical capability declarations, not a
+readiness claim. [`docs/ROADMAP.md`](docs/ROADMAP.md) has what comes next.
+
+## Contributing
+
+**Everyone is welcome.** Deep-Diff-Forge is an open invitation, with no prior involvement
+needed, and no contribution is too small. Fix a typo, report a bug with a patch that reproduces
+it, add a tree-sitter language, close one of the [known limits](#project-status), or review
+someone else's pull request.
+
+1. Read [CONTRIBUTING.md](CONTRIBUTING.md). It covers setup in three commands, the quality bar
+   and the open problems.
+2. Pick an issue labelled [`good first issue`](https://github.com/Louranicas/deep-diff-forge/labels/good%20first%20issue)
+   or [`help wanted`](https://github.com/Louranicas/deep-diff-forge/labels/help%20wanted), or
+   [open your own](https://github.com/Louranicas/deep-diff-forge/issues/new/choose).
+3. Send a pull request. CI tells you everything a reviewer would check mechanically, so the
+   human review can focus on ideas.
+
+Everyone participates under the [Code of Conduct](CODE_OF_CONDUCT.md). Security issues go
+through a [private advisory](SECURITY.md), not a public issue.
+
+## Documentation map
+
+| If you want to… | Read |
+| --- | --- |
+| Use the engine from scripts, CI or an agent | [`BASH_API_CONTRACTS`](docs/BASH_API_CONTRACTS.md) · [`CLAUDE_CODE_BASH_CLI`](docs/CLAUDE_CODE_BASH_CLI.md) · [`API_AND_IPC`](docs/API_AND_IPC.md) · [`MAKING_SKILLS`](docs/MAKING_SKILLS.md) |
+| Run the daemon or ship a release | [`OPERATIONS_AND_DAEMON`](docs/OPERATIONS_AND_DAEMON.md) · [`RELEASE_AND_PUBLICATION`](docs/RELEASE_AND_PUBLICATION.md) · [`END_TO_END_DEPLOYMENT`](docs/END_TO_END_DEPLOYMENT.md) |
+| Understand the design | [`ARCHITECTURE`](docs/ARCHITECTURE.md) · [`SCHEMATICS`](docs/SCHEMATICS.md) · [`VISION`](docs/VISION.md) · [`PIONEER_FEATURE_SPECS`](docs/PIONEER_FEATURE_SPECS.md) · [`ROADMAP`](docs/ROADMAP.md) |
+| Hold the quality bar | [`TESTING_GOLD_STANDARD`](docs/TESTING_GOLD_STANDARD.md) · [`DEPLOYMENT_FRAMEWORK`](docs/DEPLOYMENT_FRAMEWORK.md) · [`REVIEW_COUNCIL`](docs/REVIEW_COUNCIL.md) · [`SECURITY`](SECURITY.md) |
+| See the record | [`CHANGELOG`](CHANGELOG.md) · [`EVIDENCE`](EVIDENCE.md) · [`NOTES`](NOTES.md) · [`DEPLOYMENT_GAP_ANALYSIS`](docs/DEPLOYMENT_GAP_ANALYSIS.md) · [`RECOMMENDATION_INTEGRATION`](docs/RECOMMENDATION_INTEGRATION.md) |
 
 ## License
 
-Licensed under either of **MIT** or **Apache-2.0** at your option.
+Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option.
+Unless you state otherwise, contributions are dual-licensed the same way.
 
----
-
-- **GitHub:** https://github.com/Louranicas/deep-diff-forge
-- **Deployment framework:** [`docs/DEPLOYMENT_FRAMEWORK.md`](docs/DEPLOYMENT_FRAMEWORK.md)
-
-
-## Review integration route
-
-[Implementation status and delivery gates](docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes) ↔ [Module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2FREADME). This route records planned and evaluation-dependent work without claiming it is implemented.
-
-
-## Review roster and expert council
-
-[Architecture, exact CLI usage and refusal semantics](docs/REVIEW_COUNCIL.md) ↔ [Vault council hub](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FReview%20Council). The council integrates pinned pstack principles and the advisory HEE antipattern inventory with measured, revision-bound checks.
+<sub>Maintainer navigation (owner's local Obsidian vault): [module notes](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2FREADME) · [council hub](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FReview%20Council).</sub>

@@ -1,5 +1,18 @@
 # Storage And 10TB Corpus Policy
 
+## Status 2026-10-28 (0.3.0)
+
+**Kind:** policy for the operator workstation's optional storage disk. The safety rules ("Corpus Ingestion Rules", "Destructive Boundary") are current. The paths, the config keys and the large cache are not built.
+
+**At 0.3.0** (checked in code and with the binary):
+
+- The engine reads no `[storage]` configuration. `large_cache_dir` and `large_corpus_dir` appear in no crate. The engine writes nothing to this disk, and it has no corpus mirror or benchmark archive.
+- The engine writes no cache. `deep-diff-forge doctor` prints `cache_dir`, `state_dir` and the daemon socket path. The only persistent store is the local-only learning store under the state directory (`learn record`).
+- Test fixtures live in the repository under `fixtures/` (`fixtures/patch/`, `fixtures/council/`).
+- On the current operator workstation the `STORAGE-10TB` disk is mounted at `/var/mnt/storage`, not `/mnt/storage-10tb` (measured with `findmnt`). Every absolute path in this document is an operator-workstation path and is not in the repository.
+
+Current docs: [operations and daemon](OPERATIONS_AND_DAEMON.md), [learning loop](LEARNING_LOOP.md).
+
 The local 10TB drive is mounted as:
 
 ```text

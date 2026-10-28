@@ -23,13 +23,24 @@ This guide covers two targets:
 > bundled as **packages** (npm/git). This guide documents the real
 > `ExtensionAPI`; "piece" is not a Pi concept.
 
-### Which should you build — Skill, extension, or slash command?
+> **Status 2026-10-28 (0.3.0).** Every Deep-Diff-Forge command, schema and exit
+> code on this page was checked against the 0.3.0 binary. Corrected: `echo garbage`
+> exits 0 with an empty `ranked` array, not 4 (only a malformed patch exits 4);
+> the daemon keeps no cache, so it gives the same answers but not a "warm cache";
+> exit 7 (refused input contract) and 101 (panic) were missing from the exit-code
+> list. Added: the structured Git selections and the built-in MCP server. The
+> Claude Skills and Pi `ExtensionAPI` details describe other products and were
+> not re-verified in this refresh (unmeasured); check them against the
+> [sources](#7-sources).
+
+### Which should you build — Skill, extension, MCP server, or slash command?
 
 | You want… | Build | Why |
 | --- | --- | --- |
 | Claude (Code / claude.ai / API) to *autonomously* review when asked | **Claude Agent Skill** | triggers on the `description`; progressive-disclosure-cheap; no glue code |
 | The **Pi** agent to expose review as a callable tool / `/command` | **Pi extension** | first-class `registerTool` the LLM can call mid-turn |
 | A fixed, always-identical review command in Claude Code | a **slash command** (`.claude/commands/*.md`) | simpler than a skill when there is no "when to use" judgment |
+| Any MCP client to call review as a tool, with no glue code | the built-in **MCP server** (`deep-diff-forge mcp`) | ships in the binary: read-only `review_patch`, `rank_patch`, `explain_exit_code`, `exit_code_registry` |
 | The same capability in *both* agents | a Skill **and** an extension over **one** `scripts/review.sh` | one substrate script, two thin wrappers — behavior can't drift |
 
 Keep the real work in a small script both wrappers call; the skill/extension is
@@ -62,18 +73,26 @@ codes**, never scrape human prose. The agent-facing guarantees are emitted by
 
 | Goal | Command | Output (schema) |
 | --- | --- | --- |
-| Risk-ranked review stream | `git diff \| deep-diff-forge --stdin-patch --rank --json` | `deep-diff-forge.rank.v0` |
+| Risk-ranked review | `git diff \| deep-diff-forge --stdin-patch --rank --json` | `deep-diff-forge.rank.v0` |
+| Same, read from Git directly (untracked files included) | `deep-diff-forge --git-working-tree --include-untracked --rank --json` | `deep-diff-forge.rank.v0` |
+| A gate that refuses an empty or hunkless change | `… --rank --json --require-files --require-hunks` | exit 7 on refusal |
 | Full review document | `… --stdin-patch --json` | `deep-diff-forge.review.v0` |
 | Streamed per-file events | `… --stdin-patch --jsonl` | `{"event":"diff.file",…}` lines |
 | Parallel ranking + receipt | `… --stdin-patch --cluster --json` | `deep-diff-forge.cluster.v0` |
 | Symbols of a file | `deep-diff-forge semantic <path> --json` | `deep-diff-forge.semantic.v0` |
 | Reformat-aware structural diff | `deep-diff-forge structural <old> <new> --json` | `deep-diff-forge.structural.v0` |
 | Headless review frame | `git diff \| deep-diff-forge review --probe` | rendered TUI frame (text) |
-| Record a learning receipt | `echo '<receipt>' \| deep-diff-forge learn record --stdin` | confirmation |
+| Record a learning receipt | `echo '<receipt>' \| deep-diff-forge learn record --stdin` | `recorded: …` line (exit 4 for an invalid receipt) |
+| Any command as one JSON object | `deep-diff-forge envelope -- <command…>` | `ddf.result.v1` |
+| Tools for an MCP client | `deep-diff-forge mcp` | MCP over stdio |
 
-**Exit codes** (branch on these): `0` success · `2` usage/argument · `3` input
-read failure · `4` patch parse failure · `6` daemon / interactive-terminal
-failure. Diagnostics go to **stderr**; primary records to **stdout**.
+**Exit codes** (branch on these): `0` success · `2` usage/argument · `3` I/O or
+encoding failure · `4` invalid input (a patch that does not parse, input over the
+64 MiB budget, an invalid receipt, a refused Git acquisition) · `6` daemon /
+interactive-terminal failure · `7` input contract refused (`--require-files`,
+`--require-hunks`) · `101` panic. `deep-diff-forge schema exit-codes` prints the
+registry, with an `action` per code. Diagnostics go to **stderr**; primary
+records to **stdout**.
 
 A typical "powerful review" loop is therefore:
 
@@ -313,7 +332,9 @@ Powerful skills aren't bigger — they exploit the engine's guarantees:
 - **Read JSON, not prose.** `--rank --json` gives stable `path`/`score`/`signals`
   fields; branch on those, never on rendered text that may reflow.
 - **Branch on exit codes.** Exit `4` means *malformed patch* — refuse rather than
-  hallucinate a review. Exit `0` with empty `ranked` means *nothing to review*.
+  hallucinate a review. Exit `0` with empty `ranked` means *nothing to review*,
+  which includes input that is not a patch at all; pass `--require-files
+  --require-hunks` to turn that into exit `7`.
 - **Spend the priority signal.** Review the top of the `ranked` list first;
   deep-dive only the high-`score` files with `semantic` / `structural`.
 - **Stay headless.** `review --probe` renders one frame with no TTY — perfect for
@@ -322,10 +343,14 @@ Powerful skills aren't bigger — they exploit the engine's guarantees:
   shouldn't either. Annotations and verdicts are *layers on top*.
 - **Close the loop.** Feed outcomes back with `learn record --stdin` so the L9
   learning store can score review strategies over time.
-- **Scale out.** For large or repeated reviews, `--cluster [--parallel N]` ranks
-  via bounded parallel lanes with a deterministic join (identical results for any
-  worker count), and the optional UDS daemon ([`API_AND_IPC.md`](API_AND_IPC.md))
-  keeps a warm cache across calls — same answers, lower latency.
+- **Scale out.** For large reviews, `--cluster [--parallel N]` ranks via bounded
+  parallel lanes with a deterministic join (identical results for any worker
+  count). The optional UDS daemon and `deep-diff-forge rpc`
+  ([`API_AND_IPC.md`](API_AND_IPC.md)) give the same answers over JSON-RPC; the
+  daemon keeps review sessions in memory but has no response cache.
+- **Or skip the wrapper.** `deep-diff-forge mcp` already exposes the review as
+  read-only MCP tools, and the Python SDK (`sdk/python/deep_diff_forge.py`)
+  wraps `rpc` for scripts.
 
 ---
 
@@ -334,7 +359,9 @@ Powerful skills aren't bigger — they exploit the engine's guarantees:
 ```bash
 # the substrate is deterministic — assert on it directly
 git diff HEAD~1 HEAD | deep-diff-forge --stdin-patch --rank --json | jq '.ranked[0]'
-echo "garbage" | deep-diff-forge --stdin-patch --rank --json; echo "exit=$?"   # expect 4
+printf -- '--- a/x\n+++ b/x\n@@ -1,5 +1,1 @@\n-a\n' \
+  | deep-diff-forge --stdin-patch --rank --json; echo "exit=$?"               # truncated hunk: expect 4
+echo "garbage" | deep-diff-forge --stdin-patch --rank --json --require-files; echo "exit=$?"   # expect 7
 
 # headless render (skills/CI, no TTY)
 git diff | deep-diff-forge review --probe --cols 120 --rows 40
@@ -353,6 +380,7 @@ For a Claude Skill, the cheapest check is to install it under
 | --- | --- | --- |
 | Skill never triggers | `description` too vague / missing the "when" | name the artifacts (diff/patch/PR) **and** verbs (review) in `description` |
 | Engine returns `exit 4` | malformed / truncated patch | the patch is the problem — report it, don't synthesize a review |
+| Engine returns `exit 0` with nothing ranked | empty diff, or input that is not a patch | pass `--require-files --require-hunks` so the gate exits `7` instead |
 | `review` returns `exit 6` | no TTY attached | use `review --probe` for headless / CI / agent contexts |
 | Pi tool throws | engine exited non-zero and `execFileSync` raised | catch `err.status` / `err.stderr` and return a structured result (see §3.2) |
 | `SKILL.md` body too large | exceeds the Level-2 budget | move bulky reference material to a Level-3 file (`REFERENCE.md`) loaded on demand |

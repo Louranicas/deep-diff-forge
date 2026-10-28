@@ -2,6 +2,34 @@
 
 Deep-Diff-Forge improves through measured review outcomes, not vague preference.
 
+## Status 2026-10-28 (0.3.0)
+
+The sections after this one mix the built loop with target design. What exists, from
+`crates/deep-diff-forge-learning` and `crates/deep-diff-forge-cli/src/main.rs`:
+
+- **Receipts in, by hand only.** `deep-diff-forge learn record --stdin` reads one JSON
+  `StrategyReceipt` and appends it. No review command emits receipts by itself; an agent or
+  script must feed them.
+- **Scores out.** `deep-diff-forge learn status [--json]` prints per-strategy scores and the
+  trusted default, if any (schema `deep-diff-forge.learning.v0`). The TUI's `learning` palette
+  command reads the same report.
+- **Library only.** The planner, ranking and annotation learners and `evaluate_promotion` exist
+  as library functions. Nothing in the CLI, daemon or ranking calls them, so learned values do
+  not change any default today.
+- **Validation before storage** (`store::validate_receipt_for_storage`): `language` must be a
+  token of 1 to 64 bytes and `parser_version` of 1 to 128 bytes, each from `A-Z a-z 0-9 . _ - +
+  @`; an `outcome` of `revisited` with `revisited: false` is refused. `file_hash` must be 16 to
+  64 lowercase hex characters (`RedactedId`), so a receipt cannot carry a path.
+- **Exit codes.** A receipt that fails to parse or fails validation exits 4 (`invalid_input`):
+  it would fail again on retry. A store that cannot be resolved, read or written exits 3 (`io`).
+  Measured with the 0.3.0 binary: a `parser_version` containing a space exits 4 with
+  `invalid receipt: parser_version must be a bounded identifier token`.
+- **Store.** One file, `$XDG_STATE_HOME/deep-diff-forge/learning/receipts/strategy.jsonl`
+  (else `$HOME/.local/state/deep-diff-forge/learning/...`). The `learning/` and `receipts/`
+  directories are made `0700` and must be owned by the effective user and not be symlinks; the
+  file is a regular, non-symlink file (measured: `0600`). Limits: 64 MiB store, 1 MiB per
+  record, 100,000 records loaded. A missing store reads as "no data yet".
+
 ## Purpose
 
 The learning loop tunes:
@@ -44,6 +72,13 @@ flowchart TB
 ```
 
 ## Learning Units
+
+Target inputs and outputs. The built observation types are narrower: `PlannerObservation` has
+`file_bytes`, `language`, `diff_lines`, `generated_or_vendor`, `previous_fallback` and
+`semantic_usefulness`, and recommends a strategy, a budget profile (`lean`, `standard`,
+`generous`), a node fallback threshold and a cache priority. `RankingWeights` fits `revisited`,
+`public_api_touch` and `wide_fanout`. `AnnotationTrust` gives a tier (`untrusted`,
+`provisional`, `trusted`), a source quality and a display prominence.
 
 ### Planner Learning
 
@@ -100,21 +135,20 @@ Output:
 
 ## Scoring Model
 
-Every strategy decision gets a receipt:
+Every strategy decision gets a receipt. The built form is one JSON object per line
+(`StrategyReceipt`; enum values are snake_case):
 
-```text
-file: src/example.rs
-strategy: Syntax
-fallback: none
-elapsed_ms: 12
-bytes: 18420
-nodes: 2840
-cache: hit
-review_outcome: accepted
-user_revisited: false
+```json
+{"file_hash":"deadbeefdeadbeef","language":"rust","parser_version":"tree-sitter-rust-0.24","strategy":"syntax","fallback":null,"elapsed_ms":12,"bytes":18420,"nodes":2840,"cache":"hit","outcome":"accepted","revisited":false}
 ```
 
-A strategy earns trust when it is:
+`strategy` is `patch`, `syntax` or `hybrid`; `fallback` is null or `byte_budget`, `node_budget`,
+`parse_errors`, `time_budget`, `unsupported`; `cache` is `hit`, `miss`, `cold` or `bypass`;
+`outcome` is `accepted`, `rejected`, `skipped`, `revisited` or `pending`.
+
+A strategy earns trust when it is (built thresholds, `score::TrustPolicy::default`: at least 20
+samples, acceptance at least 0.70, helpful at least 0.50, fallback at most 0.30, revisit at most
+0.25, mean time at most 250 ms):
 
 - fast enough
 - stable across reruns
@@ -124,7 +158,9 @@ A strategy earns trust when it is:
 
 ## Promotion Rules
 
-No learned default is promoted unless:
+No learned default is promoted unless (built as `promote::evaluate_promotion`, library only;
+defaults: benchmark regression at most 5%, fallback-rate rise at most 0.01, at least 50
+supporting receipts):
 
 - corpus regression is unchanged or intentionally updated
 - benchmark regression is within budget
@@ -134,17 +170,19 @@ No learned default is promoted unless:
 
 ## Storage
 
-Local learning data:
+Local learning data, as built:
 
 ```text
 $XDG_STATE_HOME/deep-diff-forge/learning/
   receipts/
-  planner/
-  ranking/
-  annotations/
+    strategy.jsonl
 ```
 
-Repository learning fixtures:
+The `planner/`, `ranking/` and `annotations/` directories of the original design are not
+created; nothing persists learner output.
+
+Repository learning fixtures (target; at 0.3.0 the repository has `fixtures/patch/` and
+`fixtures/council/` only, and no `benchmarks/` or `reports/`):
 
 ```text
 fixtures/
@@ -155,13 +193,14 @@ benchmarks/
 reports/
 ```
 
-The 10TB disk can store large historical corpora and benchmark archives, but repo-local fixtures must remain small enough for normal clone and CI.
+The operator workstation's 10TB disk can store large historical corpora and benchmark archives, but repo-local fixtures must remain small enough for normal clone and CI.
 
 ## Privacy And Safety
 
 - Do not upload source snippets by default.
 - Prefer hashes, counts, timings, and local-only receipts.
-- Redact paths outside the repo unless user opts in.
+- Receipts carry no paths at all: `file_hash` is a pseudonymous FNV-1a token, which is not
+  one-way, so confidentiality rests on the owner-only store.
 - Agent annotations are untrusted until grounded.
 - Learned behavior must be explainable through receipts.
 

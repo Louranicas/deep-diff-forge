@@ -1,5 +1,18 @@
 # Deep-Diff-Forge Loom
 
+## Status 2026-10-28 (0.3.0)
+
+**Kind:** target design. The loom is **not implemented**.
+
+**What exists at 0.3.0** (measured with the binary):
+
+- `deep-diff-forge loom-contract` prints the loom's v0 guarantees and its planned phases. It is a statement of intent and runs nothing.
+- `deep-diff-forge loom …` is refused: `unknown command: loom`, exit 2. None of the "Planned Commands" below exist.
+- None of the crates in "Rust Crate Plan" exist: there is no `deep-diff-forge-loom`, `deep-diff-forge-fixtures` or `deep-diff-forge-planner`. `deep-diff-forge-pipeline` and `deep-diff-forge-cluster` exist, but nothing in them runs loom plans. The `deep-diff-forge.loom.v0` record is not emitted by any code.
+- The `/mnt/storage-10tb/...` paths are examples from the operator workstation.
+
+Current docs: [roadmap](ROADMAP.md), [feature deployability matrix](FEATURE_DEPLOYABILITY_MATRIX.md), [architecture](ARCHITECTURE.md).
+
 The Deep-Diff-Forge Loom is a Rust-native assimilation system. Its job is to
 turn exemplar repos, design decisions, corpus evidence, and new feature ideas
 into controlled implementation work.

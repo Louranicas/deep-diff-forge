@@ -16,6 +16,45 @@ The result should not be one large engine crate. It should be a set of Rust
 crates that can be tested, benchmarked, fuzzed, and released with stable
 contracts.
 
+## What exists today (0.3.0)
+
+The rest of this document is the original plan. What the code has, from `Cargo.toml`,
+[`docs/crate-edges.txt`](crate-edges.txt) and the crates' `src/` trees:
+
+- **14 crates:** `core`, `patch`, `projection`, `pipeline`, `syntax`, `graph`, `agent`, `tui`,
+  `cluster`, `learning`, `daemon`, `review`, `sdk`, `cli`. The as-built graph is drawn in
+  [ARCHITECTURE.md](ARCHITECTURE.md#crates-as-built-030). `learning`, `review` and `sdk` are
+  not in this plan; `git`, `planner`, `loom` and `fixtures` are in the plan and do not exist.
+- **Module trees are flatter than planned.** For example `patch/src` has `decode.rs`,
+  `git_acquire.rs`, `git_raw.rs`, `guards.rs`, `json.rs`, `parser.rs`, `paths.rs`, `render.rs`
+  and `sealed.rs`; the daemon has `handler.rs`, `protocol.rs`, `security.rs` and `serve.rs`.
+  The trees in [Crate Charters](#crate-charters) are targets.
+- **Dependencies differ from the target graph.** Built: `graph`, `agent` and `projection`
+  depend on `core` only (the plan adds `patch`, `syntax` or `graph`; `patch` is a dev-only edge
+  for three of them); `cluster` depends on `core` and `graph` (plan: `pipeline`, `planner`);
+  `daemon` on `core`, `graph` and `patch` (plan: `pipeline`, `cluster`); `pipeline` on `core`,
+  `graph`, `patch`, `projection` and `syntax`. `cli` depends on `daemon` at build time; one-shot
+  commands do not need a running daemon.
+- **No feature flags** except `deep-diff-forge-patch`'s default `json` feature. There is no
+  `gix`, `tokio` or `rayon` dependency: Git input runs the `git` program, the daemon uses
+  `std::os::unix::net` with worker threads, and `cluster` uses `std::thread::scope`.
+- **Unix only for the daemon** (decision D-05): it refuses to compile elsewhere, so the
+  named-pipe transport below will not be built.
+- **No `benches/` directory.** Fuzz targets are in `fuzz/fuzz_targets/`: `patch_parser`,
+  `review_json`, `daemon_protocol`, `agent_annotation`, `council_report`, `stdio_mcp`,
+  `stdio_rpc`.
+
+| Milestone | State at 0.3.0 |
+| --- | --- |
+| 1. Patch spine | Done. |
+| 2. Projection spine | Inline and side-by-side done; stacked and compact not built. |
+| 3. Pipeline spine | Ingest and render stages done; plan/rank/annotate stages and chain manifests not built. |
+| 4. Git and planner | Git selections done inside `patch` (no `git` crate); planner, file-pair, directory-pair and external-diff input not built. |
+| 5. Syntax and graph | Rust-only syntax, token-level structural diff and file-level ranking done; graph explanations beyond signal names not built. |
+| 6. Agent and TUI | Done in part: TUI with sidebar, mouse, toggles and engine notes; no external annotation input. |
+| 7. Cluster and loom | Cluster done for patch and risk lanes; loom not built. |
+| 8. Daemon and release | UDS daemon with sessions and release automation done; shared cache and subscriptions not built. |
+
 ## Design Rules
 
 1. **Core is vocabulary, not behavior.**
@@ -48,6 +87,8 @@ contracts.
    receipts with versions, inputs, budgets, and results.
 
 ## Workspace Layout
+
+Target layout; see [What exists today](#what-exists-today-030) for the real tree.
 
 ```text
 deep-diff-forge/
@@ -89,6 +130,10 @@ deep-diff-forge/
 ```
 
 ## Dependency Graph
+
+Target graph, not the built one. The built graph is in
+[ARCHITECTURE.md](ARCHITECTURE.md#crates-as-built-030), drawn from
+[`docs/crate-edges.txt`](crate-edges.txt).
 
 ```mermaid
 flowchart TB
@@ -620,7 +665,8 @@ src/
 
 Responsibilities:
 
-- Serve JSON-RPC over user-private Unix sockets or Windows named pipes.
+- Serve JSON-RPC over user-private Unix sockets. (Windows named pipes: superseded by decision
+  D-05, Linux and macOS only.)
 - Maintain review sessions and cache handles.
 - Provide progress subscriptions.
 - Enforce socket ownership and payload limits.
@@ -825,7 +871,8 @@ include integration coverage where public boundaries exist, and must follow
 
 ## Feature Flags
 
-Feature flags should trim heavy surfaces without changing core models.
+Feature flags should trim heavy surfaces without changing core models. Target only: at 0.3.0 the
+one feature is `deep-diff-forge-patch`'s default `json`.
 
 ```toml
 [features]
@@ -903,7 +950,7 @@ Rules:
 ### Milestone 8: Daemon And Release
 
 - Add `deep-diff-forge-daemon`.
-- Implement user-private UDS/named-pipe lifecycle.
+- Implement user-private UDS lifecycle (named pipes superseded by decision D-05).
 - Add shared cache and session subscriptions.
 - Add release packaging and deployment receipts.
 

@@ -4,9 +4,40 @@ Deep-Diff-Forge treats tests as executable design evidence. A module is not
 deployment-ready because it has many tests; it is deployment-ready when its
 tests prove real behavior, failure modes, invariants, and integration contracts.
 
-This standard is intentionally stricter than the current bootstrap repo state.
-The current implementation has only smoke behavior. Production modules must
-meet this standard before they can be marked deployable.
+This standard is intentionally strict. Production modules must meet it before
+they can be marked deployable.
+
+## Status 2026-10-28 (0.3.0)
+
+The sentence "the current implementation has only smoke behavior" (bootstrap
+era) no longer holds. How the standard is enforced today:
+
+- **Every pull request** runs the CI jobs in `.github/workflows/ci.yml`:
+  `cargo test --workspace --locked`, fmt, clippy and pedantic with
+  `-D warnings`, rustdoc `-D warnings`, contract probes, a 10 s hostile daemon
+  soak, privacy probes and the Python SDK against the built binary
+  (`deploy gate-feature`); the declared-MSRV check on Rust 1.88.0; and
+  supply-chain checks.
+- **Diff-scoped mutation** is a required check: `diff-mutation`, four shards,
+  runs [`scripts/diff_mutation.sh`](../scripts/diff_mutation.sh), which mutates
+  only the Rust lines under `crates/` changed since the merge base
+  (`cargo mutants --no-config --in-diff`, 300 s timeout) and fails on any missed
+  mutant or timeout. `--no-config` ignores a candidate's own mutants config.
+- **Fuzz smoke:** each of the seven targets in `fuzz/Cargo.toml`
+  (`patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
+  `council_report`, `stdio_mcp`, `stdio_rpc`; `stdio_invariants.rs` is a shared
+  module) runs for 10 s per pull request; CI fails if a declared target is not
+  in the run list. Crash inputs become fixtures under
+  `fixtures/patch/regressions/`.
+- **Sandbox refusal controls:** the rootless-Podman planted-breach suite
+  (`crates/deep-diff-forge-cli/tests/council_sandbox.rs`, 12 probes) runs on
+  every pull request.
+- **Locally:** `just ci` ([`scripts/ci_local.sh`](../scripts/ci_local.sh))
+  replays the `secrets`, `msrv`, `gate` and `supply-chain` jobs step for step.
+- **Gaps:** macOS tests run weekly and on manual runs, not on pull requests.
+  The TUI's interactive terminal path has no test harness; unit tests cover its
+  state, tree and rendering, and the headless `review --probe` frame is tested
+  end to end. `deploy gate` (below) is not implemented.
 
 ## Non-Negotiables
 
@@ -80,15 +111,18 @@ and its surviving mutants demand.
 | `deep-diff-forge-patch` | Unified patch parsing, Git headers, binary markers, no-newline metadata, render round trips. |
 | `deep-diff-forge-projection` | Inline, side-by-side, stacked, JSON, JSONL, width, windowing, stable row IDs. |
 | `deep-diff-forge-pipeline` | stdin opt-in, stdout/stderr split, JSONL streaming, manifest stage order, pipe failures. |
-| `deep-diff-forge-git` | worktree status, index/tree pairs, external diff invocation, attributes, ignored files. |
+| Git acquisition (in `deep-diff-forge-patch`, `git_acquire.rs`; there is no `-git` crate) | worktree status, index/tree pairs, external diff invocation, attributes, ignored files. |
 | `deep-diff-forge-syntax` | language detection, parser budgets, tree lowering, moved nodes, renames, reformat-only spans. |
-| `deep-diff-forge-planner` | strategy selection, generated suppression, binary fallback, budget profiles, explanations. |
+| Planner (in `deep-diff-forge-learning` and the patch strategy code; there is no `-planner` crate) | strategy selection, generated suppression, binary fallback, budget profiles, explanations. |
 | `deep-diff-forge-graph` | graph node/edge creation, ranking determinism, risk reasons, ownership/test links. |
 | `deep-diff-forge-agent` | grounded vs ungrounded annotations, evidence links, sanitization, approval records. |
 | `deep-diff-forge-tui` | layout state, keyboard/mouse commands, sidebar navigation, toggles, viewport stability. |
 | `deep-diff-forge-cluster` | deterministic sharding, lane failures, join policies, replay manifests, resource receipts. |
-| `deep-diff-forge-loom` | intake, boundary map, fixture synthesis, gate receipts, license/provenance fields. |
-| `deep-diff-forge-daemon` | socket path validation, ownership, payload caps, session lifecycle, health RPC. |
+| `deep-diff-forge-loom` (not implemented; `loom` is refused) | intake, boundary map, fixture synthesis, gate receipts, license/provenance fields. |
+| `deep-diff-forge-learning` | receipt validation, privacy (no source, patch text or paths), store bounds and permissions, promotion/demotion. |
+| `deep-diff-forge-review` | council admission, receipt qualification, sandbox argv, tuicr import/export, sealed evidence. |
+| `deep-diff-forge-sdk` | client framing, error mapping, parity with the daemon and `rpc`. |
+| `deep-diff-forge-daemon` | socket path validation, ownership, stale versus live socket, payload caps, read deadline, connection cap, session lifecycle, health RPC. |
 | `deep-diff-forge-cli` | argument parsing, exit codes, stdout/stderr, contract commands, no-TTY behavior. |
 
 ## Integration Tests
@@ -106,7 +140,7 @@ Required integration surfaces by maturity:
 | L4 Semantic | syntax fallback preserved with patch truth. |
 | L5 Review | TUI state smoke and annotation grounding. |
 | L6 Cluster | parallel lane replay and deterministic joins. |
-| L7 Daemon | UDS/named-pipe lifecycle and health RPC. |
+| L7 Daemon | Unix-socket lifecycle and health RPC (no named-pipe implementation). |
 | L8 Release | package artifact smoke and checksum verification. |
 | L9 Learning | receipt replay and promotion/demotion simulation. |
 
@@ -186,7 +220,8 @@ L1+: every diff to a production crate leaves 0 missed mutants in its scope
 ```
 
 Until the product-native deployment gate exists, `just gate-feature` is the
-local enforcement path. Future enforcement should move into:
+quick local path and `just ci` the full local replica of the CI gate jobs.
+Future enforcement should move into (not implemented):
 
 ```text
 deep-diff-forge deploy gate --mode feature
@@ -204,7 +239,7 @@ Done, for the review-council stack:
 - **Exclusions are controlled.** Only `#[cfg(test)]` may hide code from
   mutation; the exemption oracle refuses anything else and proves the hidden
   code leaves non-test MIR unchanged, with positive controls
-  ([review council](REVIEW_COUNCIL.md#cfg-test-only-r18)).
+  ([review council](REVIEW_COUNCIL.md#r18-council-r17-follow-ups--only-cfgtest-every-member-and-a-diff-builder-bug)).
 - **Tests that fail against the old code.** Fixes in r12–r18 came with tests
   shown to fail before the fix, such as the `mutation_scope` property tests
   that now assert hunk ordering.

@@ -4,6 +4,38 @@ Deep-Diff-Forge is a Rust codebase. The architecture should make that choice
 matter: predictable binaries, strong data contracts, bounded memory, explicit
 errors, and reliable concurrency.
 
+> **Target design, not a description of the code**, except this first section. Crates and
+> dependencies named below may not exist.
+
+## What exists today (0.3.0)
+
+- **Toolchain:** edition 2024, MSRV 1.88 (a CI job runs `cargo check --workspace --all-targets
+  --locked` on 1.88.0); the other CI jobs pin 1.99.1 (`.github/workflows/ci.yml`).
+- **Unsafe:** `unsafe_code = "forbid"` for every crate through `[workspace.lints.rust]` in
+  `Cargo.toml`; it cannot be overridden locally. Clippy `unwrap_in_result`,
+  `panic_in_result_fn`, `allow_attributes` and `allow_attributes_without_reason` are denied.
+- **Crates:** 14, listed with their edges in
+  [ARCHITECTURE.md](ARCHITECTURE.md#crates-as-built-030). `git`, `planner` and `loom` from the
+  table below do not exist; `learning`, `review` and `sdk` exist and are not in it.
+- **External dependencies actually used** (from each crate's `Cargo.toml`): `serde` and
+  `serde_json` (daemon, learning, review, cli, sdk), `rustix` (daemon, learning), `nix` (review),
+  `tree-sitter` and `tree-sitter-rust` (syntax, pinned exactly), `ratatui` and `crossterm` (tui),
+  `unicode-width` and `unicode-segmentation` (projection). `core`, `patch`, `graph`, `cluster`,
+  `pipeline` and `agent` have no external dependencies.
+- **Not used:** `clap` (arguments are parsed by `crates/deep-diff-forge-cli/src/args.rs`),
+  `gix` (Git input runs the `git` program), `rayon` (`cluster` uses `std::thread::scope`),
+  `tokio` (the daemon uses `std::os::unix::net` and threads), `blake3` (seals use a pure-Rust
+  SHA-256 in `crates/deep-diff-forge-core/src/seal.rs`).
+- **Errors:** each crate has its own error type (for example `PatchParseError`, `ReviewError`,
+  `LearningError`, `RpcError`); there is no shared `EngineError`. The CLI maps them to the
+  exit-code registry (`deep-diff-forge schema exit-codes`).
+- **Testing:** unit, fixture, contract, integration and fuzz levels exist; the corpus level does
+  not. Fuzz targets: `patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
+  `council_report`, `stdio_mcp`, `stdio_rpc` (`fuzz/Cargo.toml`). CI runs diff-scoped
+  cargo-mutants on each pull request's changed lines.
+- **First milestone below:** steps 1 to 5 are done; step 6 (loom fixture) is not, since loom
+  does not exist.
+
 ## Rust Principles
 
 - Prefer small crates with narrow ownership.
@@ -37,6 +69,9 @@ The detailed module tree, dependency graph, crate charters, and contextual code
 flows live in `docs/MODULE_STRUCTURE_PLAN.md`.
 
 ## Dependency Posture
+
+Target table, written before the code; see [What exists today](#what-exists-today-030) for the
+dependencies the workspace actually uses.
 
 | Area | Likely dependency | Reason |
 | --- | --- | --- |
@@ -79,7 +114,7 @@ truth whenever possible.
 | Unit | IDs, ranges, parser fragments, planner decisions. |
 | Fixture | Unified patches, semantic examples, render snapshots. |
 | Contract | CLI exit codes, JSON schemas, JSONL events, stdout/stderr split. |
-| Corpus | Optional 10TB corpus runs with receipts. |
+| Corpus | Optional corpus runs on the operator workstation's 10TB disk, with receipts. |
 | Fuzz | Patch parser, syntax lowering, JSONL codecs. |
 | Integration | Git workspace, TUI smoke, daemon socket lifecycle. |
 

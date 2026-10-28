@@ -1,5 +1,24 @@
 # Vision
 
+> **Target design, not a description of the code.** This is where the project is aiming. For what
+> 0.3.0 does, see the next section and [ARCHITECTURE.md](ARCHITECTURE.md#crates-as-built-030).
+
+## What exists today (0.3.0)
+
+Against the four product modes below:
+
+- **Pager mode:** not built. `deep-diff-forge <old> <new>` is refused, there is no
+  `GIT_EXTERNAL_DIFF` mode, and Git is the only VCS read (`--git-working-tree`, `--git-staged`,
+  `--git-range`). Patches on stdin are reviewed with `--stdin-patch`.
+- **Interactive terminal mode:** built as `deep-diff-forge review` (patch on stdin): ranked file
+  sidebar, inline or side-by-side diff, folding, wrapping, themes, mouse scroll and click,
+  command palette.
+- **Desktop/web embeddable mode:** no desktop or web renderer. Programs embed the engine through
+  the Rust `deep-diff-forge-sdk` crate or the stdlib Python client in `sdk/python`.
+- **Agent mode:** read-only. Agents get the review document and ranking over `mcp`
+  (`review_patch`, `rank_patch`, `explain_exit_code`, `exit_code_registry`), `rpc`, or the
+  daemon. They cannot yet attach claims; the TUI's notes are the engine's own findings.
+
 Deep-Diff-Forge should become the leading diff engine by merging four currently separate worlds:
 
 1. **Patch fidelity**
@@ -60,4 +79,4 @@ Deep-Diff-Forge wins by making these layers cooperate instead of choosing one.
 
 ## Review integration route
 
-[Implementation status and delivery gates](RECOMMENDATION_INTEGRATION.md#remaining-module-routes) ↔ [Module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--VISION). This route records planned and evaluation-dependent work without claiming it is implemented.
+[Implementation status and delivery gates](RECOMMENDATION_INTEGRATION.md#remaining-module-routes) ↔ [Module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--VISION) (owner's local vault). This route records planned and evaluation-dependent work without claiming it is implemented.

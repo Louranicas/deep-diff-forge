@@ -4,6 +4,28 @@ Deep-Diff-Forge treats a diff as a set of synchronized dimensions. A dimension
 is an independently computable view of the same change, joined through stable
 anchors. This gives the engine parallelism without sacrificing review trust.
 
+> **Target design, not a description of the code.** Lanes other than patch and risk, lane
+> states, budget profiles and the dimension receipt below are not built. The next section is
+> what 0.3.0 has.
+
+## What exists today (0.3.0)
+
+- **Vocabulary in `deep-diff-forge-core`:** `ExecutionDimension` (all eight dimensions in the
+  table below), `Parallelism` (`serial`, `auto`, `fixed:N`), `JoinPolicy` (the three policies
+  below) and `StreamContract`. There is no lane-state enum and no budget-profile type in core.
+- **One runner:** `deep-diff-forge-cluster::run_risk_cluster` splits files into contiguous
+  shards, scores each with `graph::score_file` on `std::thread::scope` lanes, and joins.
+  Its receipt names the `patch` and `risk` dimensions only.
+- **CLI:** `--stdin-patch --cluster [--parallel serial|auto|N] [--json]` (or a Git selection)
+  always joins by `ranked-review-order`: score descending, then path. The JSON document is
+  `deep-diff-forge.cluster.v0` with the input seal, `receipt` (`dimensions`, `parallelism`,
+  `workers`, `join_policy`, `file_count`) and `ranked` (measured with the 0.3.0 binary).
+- **Join policies:** `deterministic-input-order` and `as-ready-with-stable-ids` both keep input
+  order today (`apply_join`); nothing runs as-ready.
+- **Not built:** the semantic, agent, runtime, storage, history and presentation lanes; lane
+  states; the `deep-diff-forge.dimension-receipt.v0` schema; daemon lane caching and
+  subscriptions; the `cluster` subcommand (refused).
+
 ## Dimensions
 
 | Dimension | Purpose | Primary output |
@@ -95,7 +117,8 @@ flowchart LR
 
 ## Dimensional Receipts
 
-Every clustered or deep run should emit a receipt.
+Target. Every clustered or deep run should emit a receipt. (Built today: the `receipt` object in
+`deep-diff-forge.cluster.v0`, described above.)
 
 ```json
 {

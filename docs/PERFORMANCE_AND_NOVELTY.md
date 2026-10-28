@@ -2,6 +2,36 @@
 
 This document records the top-tail design choices that make Deep-Diff-Forge more than a composite of existing tools.
 
+> **Target design, not a description of the code.** The planner, the shared AST cache daemon,
+> progressive rendering and region strategies below are not built. The next section is what
+> 0.3.0 has.
+
+## What exists today (0.3.0)
+
+Budgets in the code (constants, read from source):
+
+| Budget | Where | Value |
+| --- | --- | --- |
+| Patch bytes | `deep-diff-forge-patch` `DEFAULT_BYTE_BUDGET` | 64 MiB, else `BudgetExceeded` (exit 4) |
+| Patch lines | `deep-diff-forge-patch` `DEFAULT_LINE_BUDGET` | 1,000,000 physical lines |
+| Syntax source bytes | `deep-diff-forge-syntax` `DEFAULT_BYTE_BUDGET` | 2 MiB, else fallback |
+| Syntax nodes | `deep-diff-forge-syntax` `DEFAULT_NODE_BUDGET` | 200,000, checked after parsing |
+| Syntax time | `deep-diff-forge-syntax` `backstop_for` | 1 s plus 5 ms per KiB, cooperative cancel |
+| Daemon request line | `deep-diff-forge-daemon` `MAX_REQUEST_BYTES` | 80 MiB; a larger response is refused with `RESOURCE_EXHAUSTED` (8) |
+| Daemon sessions | `deep-diff-forge-daemon` `MAX_SESSIONS`, `MAX_RETAINED_SESSION_BYTES` | 64 sessions, 128 MiB retained |
+| MCP response | `deep-diff-forge-cli` `REVIEW_FULL_CAP` | 256 KiB, then a summary document |
+
+Measured (2026-10-28, PR #21 to #23 work): metadata parsing of a 1M-line patch went from 139 s
+to 0.20 s after a quadratic step was removed. The syntax crate's notes record ordinary Rust at
+about 0.29 ms per KiB in a release build, and a 455 KiB hostile input cut at about 3 s instead
+of running 125 s (`crates/deep-diff-forge-syntax/src/lib.rs`).
+
+Not built: the adaptive planner (the parser sets `Binary` or `Line` only), region strategies,
+word diff, progressive rendering, any AST or line-index cache, arena allocation. Generated and
+vendored files are detected and scored to zero in ranking (`graph`), not summarised. Parallel
+work exists only as `--cluster [--parallel N]`, which scores files on `std::thread::scope`
+lanes and returns the same order for any worker count.
+
 ## Performance Target
 
 Deep-Diff-Forge should feel immediate on ordinary changes and remain controlled on pathological changes.
@@ -118,7 +148,8 @@ Agent annotations carry provenance and evidence. The display distinguishes:
 
 ### 5. Shared AST Cache Daemon
 
-The optional daemon caches syntax and line metadata across clients. This is the reason Unix sockets are included. It turns repeated review, IDE integration, and agent workflows into cache hits rather than repeated parses.
+Not built: the 0.3.0 daemon holds review sessions only and reports `cache_entries: 0`. The
+target: the optional daemon caches syntax and line metadata across clients. This is the reason Unix sockets are included. It turns repeated review, IDE integration, and agent workflows into cache hits rather than repeated parses.
 
 ## Implementation Techniques
 
@@ -158,4 +189,4 @@ Minimum fixture classes:
 
 ## Review integration route
 
-[Implementation status and delivery gates](RECOMMENDATION_INTEGRATION.md#remaining-module-routes) ↔ [Module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--PERFORMANCE_AND_NOVELTY). This route records planned and evaluation-dependent work without claiming it is implemented.
+[Implementation status and delivery gates](RECOMMENDATION_INTEGRATION.md#remaining-module-routes) ↔ [Module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--PERFORMANCE_AND_NOVELTY) (owner's local vault). This route records planned and evaluation-dependent work without claiming it is implemented.

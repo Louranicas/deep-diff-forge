@@ -6,6 +6,53 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-28
+
+The workspace version is 0.3.0; the `v0.3.0` tag, which publishes the release, is the owner's
+decision. 0.3.0 is minor rather than patch because the library APIs changed incompatibly since
+0.2.1 (see *Changed*). 0.2.1 was never tagged, so this release follows v0.2.0.
+
+### Added (documentation and community)
+
+- **The README is rewritten from the code.**
+  - Three graphics: a terminal session generated from the binary's real output
+    (`scripts/docs/render_terminal_svg.py`), an architecture diagram that adapts to light and
+    dark themes, and a refreshed banner (14 crates, 1,353 tests).
+  - A Mermaid crate graph drawn from `docs/crate-edges.txt`.
+  - The risk-ranking weights from `risk.rs`.
+  - The nine required checks.
+  - The production-readiness verdict and its known limits.
+  - A documentation map.
+- **An open call for contributors:** `CONTRIBUTING.md` (setup, the quality bar, open problems
+  worth owning), `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), issue forms for bugs and
+  features, and a pull request template.
+- **Every document under `docs/`, plus `SECURITY.md`, `EVIDENCE.md` and `NOTES.md`,**
+  is checked against the code at 0.3.0:
+  - target designs say what exists today;
+  - ledgers and history carry a dated status block, and no past entry is rewritten;
+  - surfaces that are refused today are labelled.
+
+### Fixed (found while checking the docs against the code)
+
+- **`review --cmd` refuses an unknown command name** (exit 2, naming the commands there are).
+  Before, a typo fell through to `rank` and exited 0. A `--cols` or `--rows` value that is not a
+  number is refused too; before, it silently became the default.
+- **`--parallel` refuses anything but `serial`, `auto` or a count from 1** (exit 2). Before, an
+  unreadable count ran as `auto`, and `0` was reported as `fixed:0` while one worker ran.
+- **`analyze` with the wrong number of paths, or an option, exits 2** (fix the command line).
+  Before, a missing path exited 4 (change the input).
+- **`deploy release` no longer claims a GitHub release for an untagged version.**
+  `github-release` is `blocked` until the owner tags, so `pending` lists it with crates.io. It
+  used to report `published` for 0.2.1, which was never tagged.
+- **A tag release runs the macOS tests.** `release.yml` calls `ci.yml` with the tag push's
+  event, which the macOS job did not accept, so a tagged release would have shipped macOS
+  binaries tested only by an earlier dry run.
+- **`just release-tag` pushes the tag to `origin`.** It used to push to a remote named
+  `github` that no checkout has. Its comment now describes the crates.io hold, not a token.
+- `--help` no longer says learned scores set engine defaults; nothing reads them yet.
+  `chain-contract` no longer promises a schema version on every JSONL record; each record names
+  its event.
+
 ### Added
 
 - **Every exit code names what to do next.** The registry gives each code an
@@ -695,4 +742,5 @@ zero `unsafe`, supply-chain-gated.
 - **crates.io publication** is pending a registry token (the release workflow
   publishes automatically when `CARGO_REGISTRY_TOKEN` is configured).
 
+[0.2.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.1.0

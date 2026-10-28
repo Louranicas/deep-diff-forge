@@ -1,8 +1,27 @@
 # Review roster, adversarial council and verification controller
 
+## Status 2026-10-28 (0.3.0)
+
+**Kind:** current reference for the review council, plus per-round history. The rounds r4–r22 below are dated records and are kept as written.
+
+**Current at 0.3.0** (checked against the code and the binary):
+
+- The council is a CLI subcommand of the main binary: `deep-diff-forge council <example|prepare|review|gate|status|import|export-tuicr|import-tuicr>` (`deep-diff-forge --help`). Its exit codes are their own family: 0 completed, 4 refused, 7 hold (`deep-diff-forge schema exit-codes`).
+- The eight gates are `format`, `check`, `clippy`, `pedantic`, `tests`, `antipatterns`, `fuzz` and `mutation` (`crates/deep-diff-forge-review/src/model.rs`).
+- Gates run only in the rootless Podman sandbox described in [Gate sandbox](#gate-sandbox). CI builds the gate image and runs the 12-probe planted-breach suite on `ubuntu-26.04` (`.github/workflows/ci.yml`).
+
+**What changed since the rounds below:**
+
+- **Gate uid:gid.** Gate containers run as the controller's effective uid and gid, taken from the kernel with `geteuid`/`getegid` (`operator()` in `crates/deep-diff-forge-review/src/sandbox.rs`). Before PR #21 (`7a2f5ae`), the controller read `/proc/self` and fell back to `0:0`. On a host without `/proc`, such as macOS, every gate container therefore ran as root. The first macOS test run found it (CI run 40618280385). The test now takes the expected `--user` from POSIX `id`, which is independent of the code under test (`crates/deep-diff-forge-cli/tests/council.rs`). The [Podman invocation](#podman-invocation) table is updated to match.
+- **Releases and evidence.** Release dry runs and fuzz numbers for 2026-10-28 are in [`EVIDENCE.md`](../EVIDENCE.md#release-dry-runs-and-fuzzing-2026-10-28).
+- **Paths in examples.** `ddf-integration-20261025` and `ddf-council-20261025` are helpers on the operator workstation. Anyone else runs `deep-diff-forge council …` from a build of `deep-diff-forge-cli`.
+- **Links.** Every `obsidian://` link in this document opens the owner's local vault. These links do not resolve on GitHub.
+
+Related current docs: [release and publication](RELEASE_AND_PUBLICATION.md), [operations and daemon](OPERATIONS_AND_DAEMON.md), [testing standard](TESTING_GOLD_STANDARD.md).
+
 This is the local implementation of the requested Claude Code/Codex review roster and expert circle. It connects the existing analysis.v1 artifact to captured review context, independent provider rounds, explicit counter-review and measured quality gates. It makes unsupported, missing, failed and stale results visible. The final state is **ready_for_human_review**, never automatic approval.
 
-[Vault hub](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FReview%20Council) · [Implementation ledger](RECOMMENDATION_INTEGRATION.md) · [Quality workflow](../.github/workflows/ci.yml) · [HDD reference provenance](../review-policy/provenance.json)
+[Vault hub](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FReview%20Council) (owner's local vault) · [Implementation ledger](RECOMMENDATION_INTEGRATION.md) · [Quality workflow](../.github/workflows/ci.yml) · [HDD reference provenance](../review-policy/provenance.json)
 
 ## Scope and maturity
 
@@ -729,7 +748,7 @@ Every gate job runs `$DDF_COUNCIL_PODMAN run` (the default runtime is `podman`) 
 | `--read-only` | The image root filesystem cannot be modified, so toolchains cannot be altered between or during jobs. Podman's default `--read-only-tmpfs` still mounts tmpfs on `/tmp`, `/var/tmp`, `/run` and `/dev/shm`; those are per-container and discarded |
 | `--cap-drop=all`, `--security-opt=no-new-privileges` | No capabilities, and no privilege gain through setuid binaries |
 | `--userns=keep-id` | Podman "creates a user namespace where the current user's UID:GID are mapped to the same values in the container", so `/work` files stay owned by the operator and nothing runs as container root |
-| `--user=<uid>:<gid>` | The controller's own uid and gid, read from `/proc/self`. Without it the job runs as the image's `USER 1000`, which cannot read the controller's private source copy when the operator's uid differs (measured on a GitHub runner, uid 1001: "could not find `Cargo.toml` in `/src`"). Added on stage A (`e075e00`) |
+| `--user=<uid>:<gid>` | The controller's effective uid and gid, from `geteuid`/`getegid` (`operator()` in `sandbox.rs`; until PR #21 it was read from `/proc/self`, with a `0:0` fallback that ran gates as root on hosts without `/proc`). Without it the job runs as the image's `USER 1000`, which cannot read the controller's private source copy when the operator's uid differs (measured on a GitHub runner, uid 1001: "could not find `Cargo.toml` in `/src`"). Added on stage A (`e075e00`) |
 | `--init` | An init "forwards signals and reaps processes", so test and fuzz children are reaped and signalled |
 | `--pids-limit=8192`, `--memory=32g`, `--memory-swap=32g`, `--cpus=<host CPUs − 1>` | Bound fork and memory amplification, with no swap, and leave one CPU to the supervising controller. This is not a disk quota |
 | `--log-driver=none` | Measured on this host on 2026-10-25, with the Podman client's stdout/stderr redirected to files. `passthrough` produced an empty transcript at exit 0, while `none`, `k8s-file` and the default all delivered both streams. `none` was chosen so candidate output is not also duplicated into container logs |
