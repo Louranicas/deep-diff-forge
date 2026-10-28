@@ -60,6 +60,11 @@ independent false-positive checker before a fix.
 - **The daemon refuses params a method does not take**, so a misspelt guard such as
   `require_file` no longer passes an empty review. MCP enforces its schema enums.
 - `highlight` keeps line breaks without colour too (the earlier fix covered only colour).
+- **An edit inside a multi-line comment is analyzed.** `analyze` attributed a changed token to a
+  hunk by its first line only, so with `diff -U0` a rewritten `SAFETY:` line inside a block
+  comment produced no semantic span while coverage still said `analyzed`. A token now belongs to
+  the first hunk holding any of its lines, and a changed token no hunk holds makes coverage
+  `partial_lcs`.
 
 ### Added (agent batteries)
 

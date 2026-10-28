@@ -193,7 +193,7 @@ fn enrich_file(file: &mut ReviewFile, pair: &SourcePair, span_id: &mut u64) -> F
     let old_ranges = line_ranges(old);
     let new_ranges = line_ranges(new);
     let diff = structural_diff(detect_language(&file.path), old, new);
-    let coverage = if let Some(reason) = diff.unavailable() {
+    let mut coverage = if let Some(reason) = diff.unavailable() {
         file.planner.fallback = Some(reason.clone());
         Coverage::Unavailable(reason.clone())
     } else if diff.degraded() {
@@ -214,18 +214,27 @@ fn enrich_file(file: &mut ReviewFile, pair: &SourcePair, span_id: &mut u64) -> F
             }
         }
     }
+    let mut unattributed = false;
     for change in &diff.changes {
         if change.kind == ChangeKind::Unchanged {
             continue;
         }
-        let hunk = change
-            .old_line
-            .and_then(|n| old_hunks.get(&n))
-            .or_else(|| change.new_line.and_then(|n| new_hunks.get(&n)));
+        // A token can span lines (a block comment, a raw string): it belongs to the first hunk
+        // holding any of its lines. Looking up only its first line dropped an edit inside a
+        // multi-line comment and still claimed full coverage (bug hunt 2026-10-28, H4-02).
+        let extra = u32::try_from(change.text.matches('\n').count()).unwrap_or(u32::MAX);
+        let in_hunk = |start: Option<u32>, hunks: &BTreeMap<u32, deep_diff_forge_core::HunkId>| {
+            start.and_then(|s| (s..=s.saturating_add(extra)).find_map(|n| hunks.get(&n).copied()))
+        };
+        let hunk =
+            in_hunk(change.old_line, &old_hunks).or_else(|| in_hunk(change.new_line, &new_hunks));
+        if hunk.is_none() {
+            unattributed = true;
+        }
         if let Some(hunk_id) = hunk {
             spans.push(SemanticSpan {
                 id: SemanticSpanId(*span_id),
-                hunk_id: *hunk_id,
+                hunk_id,
                 kind: match change.kind {
                     ChangeKind::Added => SemanticChangeKind::AddedNode,
                     ChangeKind::Removed => SemanticChangeKind::RemovedNode,
@@ -241,6 +250,10 @@ fn enrich_file(file: &mut ReviewFile, pair: &SourcePair, span_id: &mut u64) -> F
             });
             *span_id += 1;
         }
+    }
+    // A changed token no hunk holds is a change the spans cannot show: coverage is partial.
+    if unattributed && coverage == Coverage::Analyzed {
+        coverage = Coverage::PartialLcs;
     }
     file.semantic_twin = Some(SemanticTwin {
         language: diff.language.name().into(),
@@ -529,6 +542,30 @@ mod tests {
             analyze_review(PATCH.into(), &[pair()]).unwrap().id()
         );
         assert!(bundle.to_json().contains("\"behavior_verified\":false"));
+    }
+    /// Bug hunt 2026-10-28, H4-02: an edit inside a multi-line comment is attributed to the hunk
+    /// that holds any of the comment's lines; a changed token no hunk holds makes coverage
+    /// partial instead of "analyzed".
+    #[test]
+    fn multi_line_tokens_are_attributed_by_every_line() {
+        let old = "fn a() {\n    /* line1\n    SAFETY: ok\n    line3 */\n}\n";
+        let new = "fn a() {\n    /* line1\n    SAFETY: trust me\n    line3 */\n}\n";
+        let patch = "--- a/x.rs\n+++ b/x.rs\n@@ -3 +3 @@\n-    SAFETY: ok\n+    SAFETY: trust me\n";
+        let source = SourcePair {
+            path: "x.rs".into(),
+            old: Some(old.into()),
+            new: Some(new.into()),
+        };
+        let bundle = analyze_review(patch.into(), std::slice::from_ref(&source)).unwrap();
+        let twin = bundle.files()[0].semantic_twin.as_ref().unwrap();
+        assert_eq!(twin.spans.len(), 2, "{:?}", twin.spans);
+        assert_eq!(bundle.analyses()[0].coverage, Coverage::Analyzed);
+        // A hunk elsewhere in the file holds none of the comment's lines.
+        let elsewhere = "--- a/x.rs\n+++ b/x.rs\n@@ -5 +5 @@\n-}\n+}\n";
+        let mut file = deep_diff_forge_patch::parse(elsewhere).unwrap().remove(0);
+        let analysis = enrich_file(&mut file, &source, &mut 0);
+        assert_eq!(analysis.coverage, Coverage::PartialLcs);
+        assert_eq!(file.semantic_twin.unwrap().spans.len(), 0);
     }
     #[test]
     fn mismatched_duplicate_extra_or_absent_sides_fail() {
