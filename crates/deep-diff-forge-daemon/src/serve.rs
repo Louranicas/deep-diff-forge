@@ -1377,6 +1377,27 @@ mod tests {
         assert!(std::fs::symlink_metadata(&sock).is_err());
     }
 
+    /// Only "nothing listens" makes a socket stale: any other connect failure is returned and the
+    /// socket kept. A mode-000 socket refuses the connect with EACCES (root bypasses modes).
+    #[test]
+    fn a_socket_that_cannot_be_probed_is_kept() {
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+        let (parent, _) = explicit_temp("stale-unprobed", 0o700);
+        let sock = parent.join("d.sock");
+        drop(UnixListener::bind(&sock).unwrap());
+        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let err = remove_stale_socket(&sock).expect_err("the probe was refused, not answered");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(
+            std::fs::symlink_metadata(&sock)
+                .unwrap()
+                .file_type()
+                .is_socket()
+        );
+    }
+
     #[test]
     fn remove_stale_socket_propagates_non_missing_errors() {
         // lstat through a regular file fails with ENOTDIR. Only ENOENT means
