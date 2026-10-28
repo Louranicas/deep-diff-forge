@@ -125,6 +125,33 @@ fn daemon_call(method: &str, params: &Value) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// MCP answered `initialize` at the protocol version, lists `review_outline`, and every tool
+/// declares an object `outputSchema`.
+fn handshake_ok(init: Option<&Value>, names: &[&str], schemas: bool) -> bool {
+    init.is_some_and(|v| v["result"]["protocolVersion"] == "2025-11-25")
+        && names.contains(&"review_outline")
+        && schemas
+}
+
+/// The CLI's `review.v0` is of the probe, and the daemon and MCP return the same document.
+fn review_parity_ok(expected: &str, cli: &Value, daemon: &Value, via_mcp: &Value) -> bool {
+    cli["input_sha256"] == expected && cli == daemon && daemon == via_mcp
+}
+
+/// The daemon's `rank.v0` is of the probe, and MCP returns the same document.
+fn rank_parity_ok(expected: &str, rank: &Value, rank_mcp: &Value) -> bool {
+    rank["schema"] == "deep-diff-forge.rank.v0"
+        && rank["input_sha256"] == expected
+        && rank == rank_mcp
+}
+
+/// The outline is of the probe, and the hunk fetched by its address is that hunk, within budget.
+fn views_ok(expected: &str, outline: &Value, address: &Value, hunks: &Value) -> bool {
+    outline["input_sha256"] == expected
+        && hunks["hunks"][0]["address"] == *address
+        && hunks.to_string().len() <= 1024
+}
+
 fn checks() -> Vec<Check> {
     let mut checks = Vec::new();
     let mut server = mcp::Server::default();
@@ -141,9 +168,7 @@ fn checks() -> Vec<Check> {
         .is_some_and(|t| t.iter().all(|t| t["outputSchema"]["type"] == "object"));
     checks.push(Check {
         name: "mcp_handshake",
-        ok: init.is_some_and(|v| v["result"]["protocolVersion"] == "2025-11-25")
-            && names.contains(&"review_outline")
-            && schemas,
+        ok: handshake_ok(init.as_ref(), &names, schemas),
         detail: format!("{} tools: {}", names.len(), names.join(", ")),
     });
 
@@ -163,7 +188,7 @@ fn checks() -> Vec<Check> {
     let via_mcp = mcp_call(&mut server, 3, "review_patch", &json!({"patch": PROBE}));
     checks.push(Check {
         name: "review_parity",
-        ok: cli["input_sha256"] == expected.as_str() && cli == daemon && daemon == via_mcp,
+        ok: review_parity_ok(&expected, &cli, &daemon, &via_mcp),
         detail: format!("CLI, daemon and MCP review.v0 for {}", &expected[..16]),
     });
 
@@ -171,9 +196,7 @@ fn checks() -> Vec<Check> {
     let rank_mcp = mcp_call(&mut server, 4, "rank_patch", &json!({"patch": PROBE}));
     checks.push(Check {
         name: "rank_parity",
-        ok: rank["schema"] == "deep-diff-forge.rank.v0"
-            && rank["input_sha256"] == expected.as_str()
-            && rank == rank_mcp,
+        ok: rank_parity_ok(&expected, &rank, &rank_mcp),
         detail: "daemon diff.rank equals MCP rank_patch".into(),
     });
 
@@ -187,9 +210,7 @@ fn checks() -> Vec<Check> {
     );
     checks.push(Check {
         name: "views",
-        ok: outline["input_sha256"] == expected.as_str()
-            && hunks["hunks"][0]["address"] == address
-            && hunks.to_string().len() <= 1024,
+        ok: views_ok(&expected, &outline, &address, &hunks),
         detail: "outline then one hunk by address, within budget".into(),
     });
     checks
@@ -241,6 +262,42 @@ mod tests {
         for check in checks() {
             assert!(check.ok, "{}: {}", check.name, check.detail);
         }
+    }
+
+    /// Each condition of each check fails it on its own.
+    #[test]
+    fn every_check_condition_can_fail_its_check() {
+        let init = json!({"result": {"protocolVersion": "2025-11-25"}});
+        let old = json!({"result": {"protocolVersion": "2024-11-05"}});
+        assert!(handshake_ok(Some(&init), &["review_outline"], true));
+        assert!(!handshake_ok(Some(&old), &["review_outline"], true));
+        assert!(!handshake_ok(None, &["review_outline"], true));
+        assert!(!handshake_ok(Some(&init), &["review_patch"], true));
+        assert!(!handshake_ok(Some(&init), &["review_outline"], false));
+
+        let doc = json!({"input_sha256": "e"});
+        let other = json!({"input_sha256": "e", "extra": 1});
+        assert!(review_parity_ok("e", &doc, &doc, &doc));
+        assert!(!review_parity_ok("f", &doc, &doc, &doc));
+        assert!(!review_parity_ok("e", &doc, &other, &other));
+        assert!(!review_parity_ok("e", &doc, &doc, &other));
+
+        let rank = json!({"schema": "deep-diff-forge.rank.v0", "input_sha256": "e"});
+        let wrong = json!({"schema": "deep-diff-forge.review.v0", "input_sha256": "e"});
+        let moved = json!({"schema": "deep-diff-forge.rank.v0", "input_sha256": "e", "x": 1});
+        assert!(rank_parity_ok("e", &rank, &rank));
+        assert!(!rank_parity_ok("e", &wrong, &wrong));
+        assert!(!rank_parity_ok("f", &rank, &rank));
+        assert!(!rank_parity_ok("e", &rank, &moved));
+
+        let outline = json!({"input_sha256": "e"});
+        let address = json!("a1");
+        let hunks = json!({"hunks": [{"address": "a1"}]});
+        let big = json!({"hunks": [{"address": "a1", "pad": "x".repeat(1100)}]});
+        assert!(views_ok("e", &outline, &address, &hunks));
+        assert!(!views_ok("f", &outline, &address, &hunks));
+        assert!(!views_ok("e", &outline, &json!("a2"), &hunks));
+        assert!(!views_ok("e", &outline, &address, &big));
     }
 
     #[test]

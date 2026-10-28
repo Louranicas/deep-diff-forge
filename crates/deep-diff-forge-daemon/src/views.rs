@@ -459,6 +459,26 @@ mod tests {
         Page { max_bytes, cursor }
     }
 
+    /// A hunk head lists each hazard its lines carry once; each line lists its own; a clean
+    /// hunk or line carries no `hazards` key at all.
+    #[test]
+    fn hazards_appear_once_per_hunk_and_on_each_line_that_carries_them() {
+        let r = review(
+            "--- a/x.rs\n+++ b/x.rs\n@@ -1,2 +1,2 @@\n-a\u{202E}\n+b\u{202E}\n ok\n@@ -10 +10 @@\n-c\n+d\n",
+        );
+        let file = &r.files()[0];
+        let hunks = &file.patch_twin.hunks;
+        assert_eq!(
+            hunk_head(file, &hunks[0])["hazards"],
+            json!(["bidi_control"])
+        );
+        assert!(!hunk_head(file, &hunks[1]).contains_key("hazards"));
+        let lines: Vec<Value> = hunks[0].lines.iter().map(line_json).collect();
+        assert_eq!(lines[0]["hazards"], json!(["bidi_control"]));
+        assert_eq!(lines[1]["hazards"], json!(["bidi_control"]));
+        assert!(lines[2].get("hazards").is_none());
+    }
+
     fn all_lines(review: &SealedReview) -> std::collections::HashMap<String, Vec<Value>> {
         review
             .files()
