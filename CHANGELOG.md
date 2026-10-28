@@ -60,6 +60,13 @@ independent false-positive checker before a fix.
 - **The daemon refuses params a method does not take**, so a misspelt guard such as
   `require_file` no longer passes an empty review. MCP enforces its schema enums.
 - `highlight` keeps line breaks without colour too (the earlier fix covered only colour).
+- **`highlight` is bounded by nesting depth.** Its query cost grows with depth, not size: a
+  60,000-deep brace nest took 58 s (debug) and 20 s (release) to highlight, while the same node
+  count laid out flat took 0.14 s. Past 4,096 levels or the 200,000-node budget `semantic` uses,
+  `highlight` prints plain text; the deep nest now returns in 0.16 s.
+- **A comment's line ending is formatting.** A line comment's token held its line feed, so CRLF
+  conversion or a trailing space made `structural` and `analyze` report a rewritten comment. Each
+  comment line's trailing whitespace is dropped from its token; a changed word still counts.
 
 ### Added (agent batteries)
 
