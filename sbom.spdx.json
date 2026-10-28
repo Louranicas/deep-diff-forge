@@ -1,13 +1,13 @@
 {
   "SPDXID": "SPDXRef-DOCUMENT",
   "creationInfo": {
-    "created": "2026-10-26T11:42:01Z",
+    "created": "2026-10-28T09:51:42Z",
     "creators": [
       "Tool: deep-diff-forge scripts/security/generate_spdx_sbom.py"
     ]
   },
   "dataLicense": "CC0-1.0",
-  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/6b59ee640d49df5766d4b9097b54b448",
+  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/787cb6276f469dc9a054232806607e52",
   "name": "deep-diff-forge-cargo-lock-sbom",
   "packages": [
     {
@@ -465,7 +465,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "c859bc1ac2dfc738a634260c60e081fb257fdff2291f3d5c317e79cbbbadc660"
+          "checksumValue": "1f016002ef92a70f478e07f0be36986f3e599467bef9b6d244b84d8e7c7dd299"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -3153,6 +3153,11 @@
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-tui-24c8b8b45611de10",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-0d82bf6251133a99"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-nix-0b222db49a8b7665",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-0d82bf6251133a99"
     },

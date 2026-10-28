@@ -152,8 +152,10 @@ boundary).
 | JSONL progress | `--jsonl --progress` | planned |
 | TOON-like compact | `--compact` | planned |
 
-When several output flags are given, `--jsonl` wins (`stdin_patch` handles it
-first), then `--cluster`, then `--rank`, then `--json`, then `--layout`
+Output flags that cannot be combined are refused with exit 2 before any input is read:
+`--json` with `--jsonl`, the view options (`--address`, `--path`, `--max-bytes`, `--cursor`)
+without `--outline` or `--hunks`, and `--parallel` without `--cluster`. Among the rest,
+`--outline` and `--hunks` win, then `--cluster`, then `--rank`, then `--json`, then `--layout`
 (`emit_review` in `main.rs`).
 
 ## Claude Code Agent Contract

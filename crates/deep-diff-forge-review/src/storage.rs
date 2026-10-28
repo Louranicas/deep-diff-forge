@@ -533,7 +533,14 @@ pub fn prepare(mut request: Request, directory: &Path) -> Result<Manifest> {
     let repository = fs::canonicalize(&request.repository)?;
     require(repository.is_dir(), "repository must be a directory")?;
     request.repository = repository.display().to_string();
-    let parent = fs::canonicalize(directory.parent().unwrap_or(Path::new(".")))?;
+    // `Path::parent` returns the empty path for a bare relative name; canonicalize that name's
+    // actual parent (`.`), rather than turning a valid documented invocation into ENOENT.
+    let parent = fs::canonicalize(
+        directory
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new(".")),
+    )?;
     require(
         !parent.starts_with(&repository),
         "run artifacts must be outside the reviewed repository",

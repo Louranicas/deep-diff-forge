@@ -14,6 +14,12 @@ use std::path::Path;
 /// # Errors
 /// Refuses unknown flags, invalid JSON, stale artifacts and execution without --execute.
 pub fn dispatch(args: &[String]) -> Result<(String, i32)> {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
+    {
+        return Ok((HELP.into(), exit::COUNCIL_COMPLETED));
+    }
     let command = args.first().map_or("help", String::as_str);
     match command {
         "example" if args.len() == 1 => output(&example(), true),
@@ -84,6 +90,15 @@ fn import(directory: &Path, path: &Path) -> Result<(String, i32)> {
     let manifest = load_manifest(directory)?;
     let report: Report = storage::read_json(path, storage::REPORT_CAP)?;
     validate_report(&manifest, &report)?;
+    let qualification = storage::job_dir(
+        directory,
+        &format!("review-{}-{}", report.reviewer_id, report.round.label()),
+    )?
+    .join("qualification.json");
+    require(
+        !qualification.exists(),
+        "reviewer slot already has a controller qualification; manual import refused",
+    )?;
     require(
         source_fingerprint(Path::new(&manifest.request.repository))? == manifest.source_tree,
         "source changed; import would be stale",

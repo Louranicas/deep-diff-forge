@@ -145,6 +145,36 @@ pub fn display_safe(value: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// Make untrusted text terminal-safe while bounding the rendered prefix.
+///
+/// `max_bytes` counts rendered UTF-8 bytes, so escaping a control character cannot amplify a
+/// diagnostic past the bound. When text is omitted, the suffix reports the exact number of source
+/// bytes not shown; callers can distinguish a short message from a deliberately huge one.
+#[must_use]
+pub fn display_safe_bounded(value: &str, max_bytes: usize) -> String {
+    let mut out = String::with_capacity(max_bytes.saturating_add(32));
+    let mut consumed = 0usize;
+    for c in value.chars() {
+        let mut rendered = String::new();
+        if is_terminal_unsafe(c) {
+            let _ = write!(rendered, "\\x{:02x}", u32::from(c));
+        } else if is_bidi_or_invisible(c) {
+            let _ = write!(rendered, "\\u{{{:04x}}}", u32::from(c));
+        } else {
+            rendered.push(c);
+        }
+        if out.len().saturating_add(rendered.len()) > max_bytes {
+            break;
+        }
+        out.push_str(&rendered);
+        consumed += c.len_utf8();
+    }
+    if consumed < value.len() {
+        let _ = write!(out, "... [{} bytes omitted]", value.len() - consumed);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,5 +333,18 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn bounded_display_is_safe_and_reports_exact_omitted_source_bytes() {
+        let input = format!("{}{}", "a".repeat(205), "\u{1b}[2J");
+        let out = display_safe_bounded(&input, 200);
+        assert!(out.starts_with(&"a".repeat(200)));
+        assert!(out.ends_with("[9 bytes omitted]"), "{out}");
+        assert!(!out.contains('\u{1b}'));
+        assert!(out.len() < 240, "{out}");
+        // Text that fits is returned whole, with no omission note.
+        assert_eq!(display_safe_bounded("abc", 200), "abc");
+        assert_eq!(display_safe_bounded("abc", 3), "abc");
     }
 }
