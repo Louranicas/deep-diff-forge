@@ -60,6 +60,10 @@ independent false-positive checker before a fix.
 - **The daemon refuses params a method does not take**, so a misspelt guard such as
   `require_file` no longer passes an empty review. MCP enforces its schema enums.
 - `highlight` keeps line breaks without colour too (the earlier fix covered only colour).
+- **`git format-patch` output is read.** Its bare `---` before the diffstat and its `-- `
+  signature were refused as body lines outside a hunk, so `git format-patch -1 --stdout |
+  deep-diff-forge --stdin-patch` exited 4. Git ignores both outside a hunk; so does DDF now,
+  for those exact lines only.
 
 ### Added (agent batteries)
 

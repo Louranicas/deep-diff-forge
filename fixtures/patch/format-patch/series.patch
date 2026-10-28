@@ -1,0 +1,42 @@
+From 5ca21b09606075774a464ce35c65b2fe8c3ff590 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Thu, 29 Oct 2026 05:47:50 +1100
+Subject: [PATCH 1/2] add f
+
+---
+ f.txt | 2 ++
+ 1 file changed, 2 insertions(+)
+ create mode 100644 f.txt
+
+diff --git a/f.txt b/f.txt
+new file mode 100644
+index 0000000..422c2b7
+--- /dev/null
++++ b/f.txt
+@@ -0,0 +1,2 @@
++a
++b
+-- 
+2.56.0
+
+
+From 5675a7be2791845fa485423980c9206c64685c59 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Thu, 29 Oct 2026 05:47:50 +1100
+Subject: [PATCH 2/2] change f
+
+---
+ f.txt | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/f.txt b/f.txt
+index 422c2b7..55dce13 100644
+--- a/f.txt
++++ b/f.txt
+@@ -1,2 +1,2 @@
+ a
+-b
++B
+-- 
+2.56.0
+
