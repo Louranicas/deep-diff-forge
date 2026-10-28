@@ -9,7 +9,9 @@ use std::fmt::Write as _;
 /// `0x20` become `\u00xx` escapes. As terminal-injection defence-in-depth, the
 /// `DEL` (`0x7f`) and C1 control block (`0x80..=0x9f` — which includes the 8-bit
 /// CSI `0x9b` and OSC `0x9d` introducers) are escaped too, so the JSON output is
-/// safe to print to a terminal even though RFC 8259 does not require it.
+/// safe to print to a terminal even though RFC 8259 does not require it. `U+2028` and
+/// `U+2029` are escaped as well: line-aware readers (JavaScript before ES2019, Python's
+/// `splitlines`) treat them as line breaks and would split one JSON record in two.
 #[must_use]
 pub fn json_escape(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
@@ -23,7 +25,7 @@ pub fn json_escape(value: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\u{08}' => out.push_str("\\b"),
             '\u{0c}' => out.push_str("\\f"),
-            c if u32::from(c) < 0x20 || matches!(u32::from(c), 0x7f..=0x9f) => {
+            c if u32::from(c) < 0x20 || matches!(u32::from(c), 0x7f..=0x9f | 0x2028 | 0x2029) => {
                 let _ = write!(out, "\\u{:04x}", u32::from(c));
             }
             c => out.push(c),
@@ -31,6 +33,22 @@ pub fn json_escape(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// Make serialized JSON text safe for line-delimited transport: each raw `U+2028` or `U+2029`
+/// becomes the escape `\u2028`/`\u2029`. In valid JSON these characters can occur only inside
+/// strings, where the escape means the same character, so the document is unchanged; only a
+/// line-aware reader's view of it is. Use it where a serializer that does not escape them
+/// (`serde_json`) writes a line or document out; [`json_escape`] already escapes them.
+#[must_use]
+pub fn json_line_safe(json: &str) -> Cow<'_, str> {
+    if !json.contains(['\u{2028}', '\u{2029}']) {
+        return Cow::Borrowed(json);
+    }
+    Cow::Owned(
+        json.replace('\u{2028}', "\\u2028")
+            .replace('\u{2029}', "\\u2029"),
+    )
 }
 
 /// Whether `c` must be escaped before being written to a terminal: any control
@@ -43,53 +61,87 @@ fn is_terminal_unsafe(c: char) -> bool {
 
 /// Whether `c` is a bidirectional or invisible formatting character that can make
 /// rendered text differ from its logical byte content — the "Trojan Source" class
-/// (CVE-2021-42574): bidi overrides/embeddings (`LRE`..`RLO`), bidi isolates
-/// (`LRI`..`PDI`), directional marks (`LRM`/`RLM`/`ALM`), and zero-width
-/// characters (`ZWSP`/`ZWNJ`/`ZWJ`/`BOM`). A diff/review tool must surface these
-/// rather than let attacker source reorder or hide code from the reviewer.
+/// (CVE-2021-42574) — or a Unicode line or paragraph separator, which some editors and
+/// languages treat as a line break the reviewer cannot see. A diff/review tool must surface
+/// these rather than let attacker source reorder, hide or split code from the reviewer.
 #[must_use]
 fn is_bidi_or_invisible(c: char) -> bool {
+    is_bidi(c) || is_invisible(c) || is_line_separator(c)
+}
+
+/// Bidi overrides and embeddings (`LRE`..`RLO`), isolates (`LRI`..`PDI`) and directional
+/// marks (`LRM`/`RLM`/`ALM`).
+fn is_bidi(c: char) -> bool {
     matches!(
         u32::from(c),
         0x202A..=0x202E   // LRE RLE PDF LRO RLO
         | 0x2066..=0x2069 // LRI RLI FSI PDI
         | 0x200E | 0x200F // LRM RLM
         | 0x061C          // ALM
-        | 0x200B..=0x200D // ZWSP ZWNJ ZWJ
-        | 0xFEFF          // ZWNBSP / BOM
     )
+}
+
+/// Characters that render as nothing (or as blank space indistinguishable from none) yet
+/// change the bytes: zero-width and joiner characters, invisible operators, fillers,
+/// variation selectors and tag characters (the payload channels of invisible-text attacks).
+fn is_invisible(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0x200B..=0x200D       // ZWSP ZWNJ ZWJ
+        | 0xFEFF              // ZWNBSP / BOM
+        | 0x2060..=0x2064     // WJ, invisible function application, times, separator, plus
+        | 0x00AD              // soft hyphen
+        | 0x034F              // combining grapheme joiner
+        | 0x180E              // Mongolian vowel separator
+        | 0x115F | 0x1160     // Hangul choseong and jungseong fillers
+        | 0x3164 | 0xFFA0     // Hangul filler, halfwidth Hangul filler
+        | 0xFE00..=0xFE0F     // variation selectors 1-16
+        | 0xE0000..=0xE007F   // tag characters
+        | 0xE0100..=0xE01EF   // variation selectors 17-256
+    )
+}
+
+/// U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR.
+fn is_line_separator(c: char) -> bool {
+    matches!(c, '\u{2028}' | '\u{2029}')
 }
 
 /// Objective hazards in one line of patch text: `bidi_control` (a bidirectional override,
 /// embedding, isolate or mark, which can make rendered code differ from its bytes),
-/// `invisible` (a zero-width character or BOM) and `control` (a C0/C1 control other than tab,
-/// and other than the carriage return of a CRLF line ending). These are facts about the bytes,
-/// not a guess about intent: an empty list never means the text is safe.
+/// `invisible` (a zero-width, joiner, filler, invisible-operator, variation-selector or tag
+/// character, or a soft hyphen) and `control` (a C0/C1 control other than tab, a Unicode line
+/// or paragraph separator, and never the carriage return of a CRLF line ending). These are
+/// facts about the bytes, not a guess about intent: an empty list never means the text is
+/// safe.
 #[must_use]
 pub fn text_hazards(text: &str) -> Vec<&'static str> {
-    let body = text.strip_suffix('\r').unwrap_or(text);
+    char_hazards(text.strip_suffix('\r').unwrap_or(text))
+}
+
+fn char_hazards(text: &str) -> Vec<&'static str> {
     let mut found = Vec::new();
-    if body
-        .chars()
-        .any(|c| is_bidi_or_invisible(c) && !is_zero_width(c))
-    {
+    if text.chars().any(is_bidi) {
         found.push("bidi_control");
     }
-    if body.chars().any(is_zero_width) {
+    if text.chars().any(is_invisible) {
         found.push("invisible");
     }
-    if body.chars().any(is_terminal_unsafe) {
+    if text
+        .chars()
+        .any(|c| is_terminal_unsafe(c) || is_line_separator(c))
+    {
         found.push("control");
     }
     found
 }
 
-/// Objective hazards in a path a patch names: the [`text_hazards`] of the path, plus
-/// `path_traversal` (a `..` component or an absolute path) and `git_internal` (a `.git`
-/// component).
+/// Objective hazards in a path a patch names: the character hazards of the whole path (a
+/// trailing carriage return included: unlike a CRLF body line, a path never legitimately ends
+/// in one), plus `path_traversal` (a `..` component or an absolute path) and `git_internal`
+/// (a `.git` component).
 #[must_use]
 pub fn path_hazards(path: &str) -> Vec<&'static str> {
-    let mut found = text_hazards(path);
+    let mut found = char_hazards(path);
     let mut components = path.split('/');
     if path.starts_with('/') || components.clone().any(|c| c == "..") {
         found.push("path_traversal");
@@ -98,10 +150,6 @@ pub fn path_hazards(path: &str) -> Vec<&'static str> {
         found.push("git_internal");
     }
     found
-}
-
-fn is_zero_width(c: char) -> bool {
-    matches!(u32::from(c), 0x200B..=0x200D | 0xFEFF)
 }
 
 /// Make an untrusted string safe to print to a terminal.
@@ -136,7 +184,7 @@ pub fn display_safe(value: &str) -> Cow<'_, str> {
             // All terminal-unsafe chars are <= 0x9f, so two hex digits suffice.
             let _ = write!(out, "\\x{:02x}", u32::from(c));
         } else if is_bidi_or_invisible(c) {
-            // Bidi/invisible chars are > 0xff; show them as a visible \u{XXXX}.
+            // Bidi, invisible and separator chars show as a visible \u{XXXX}.
             let _ = write!(out, "\\u{{{:04x}}}", u32::from(c));
         } else {
             out.push(c);
@@ -198,6 +246,79 @@ mod tests {
         assert_eq!(path_hazards("a/.GIT/hooks/pre-commit"), ["git_internal"]);
         assert_eq!(path_hazards("x\u{202E}y.rs"), ["bidi_control"]);
         assert_eq!(path_hazards("a..b/c"), Vec::<&str>::new());
+    }
+
+    /// Bug hunt 2026-10-28, H1-05 and H1-06: every invisible-payload class is flagged, a line
+    /// or paragraph separator is a control, and only a body line may end in a CR.
+    #[test]
+    fn invisible_payload_classes_and_separators_are_hazards() {
+        for c in [
+            '\u{2060}',
+            '\u{2062}',
+            '\u{2064}',
+            '\u{00AD}',
+            '\u{034F}',
+            '\u{180E}',
+            '\u{115F}',
+            '\u{1160}',
+            '\u{3164}',
+            '\u{FFA0}',
+            '\u{FE00}',
+            '\u{FE0F}',
+            '\u{E0000}',
+            '\u{E0041}',
+            '\u{E007F}',
+            '\u{E0100}',
+            '\u{E01EF}',
+        ] {
+            assert_eq!(
+                text_hazards(&format!("a{c}b")),
+                ["invisible"],
+                "{:x}",
+                u32::from(c)
+            );
+            assert_eq!(
+                display_safe(&format!("a{c}b")),
+                format!("a\\u{{{:04x}}}b", u32::from(c))
+            );
+        }
+        for c in ['\u{2028}', '\u{2029}'] {
+            assert_eq!(text_hazards(&format!("a{c}b")), ["control"]);
+            assert_eq!(
+                display_safe(&format!("a{c}b")),
+                format!("a\\u{{{:04x}}}b", u32::from(c))
+            );
+        }
+        // Neighbours of each range stay clean.
+        for c in [
+            '\u{205F}',
+            '\u{2065}',
+            '\u{FE10}',
+            '\u{E0080}',
+            '\u{E01F0}',
+            '\u{2027}',
+            '\u{202F}',
+        ] {
+            assert_eq!(
+                text_hazards(&format!("a{c}b")),
+                Vec::<&str>::new(),
+                "{:x}",
+                u32::from(c)
+            );
+        }
+        assert_eq!(text_hazards("x\r"), Vec::<&str>::new());
+        assert_eq!(path_hazards("x\r"), ["control"]);
+        assert_eq!(path_hazards("src/\u{2060}lib.rs"), ["invisible"]);
+    }
+
+    /// Bug hunt 2026-10-28, H4-06: the line and paragraph separators never reach a line-aware
+    /// reader raw, whether the JSON was hand-built or came from serde.
+    #[test]
+    fn line_separators_never_leave_raw() {
+        assert_eq!(json_escape("a\u{2028}b\u{2029}c"), "\"a\\u2028b\\u2029c\"");
+        let raw = "{\"p\":\"a\u{2028}b\u{2029}\"}";
+        assert_eq!(json_line_safe(raw), "{\"p\":\"a\\u2028b\\u2029\"}");
+        assert!(matches!(json_line_safe("{\"p\":1}"), Cow::Borrowed(_)));
     }
 
     #[test]
