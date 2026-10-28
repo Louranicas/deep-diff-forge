@@ -82,6 +82,30 @@ fn daemon_health_without_daemon_exits_6() {
     assert!(stderr.contains("no daemon"));
 }
 
+/// The subcommand is the positional, wherever `--socket PATH` stands: before, `daemon --socket
+/// PATH health` took PATH as the subcommand and failed with a usage error.
+#[test]
+fn daemon_subcommand_follows_or_precedes_the_socket_option() {
+    let sock = temp_socket("order");
+    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    let path = sock.to_str().unwrap();
+    let (code, stdout, stderr) = run(&["daemon", "--socket", path, "path"]);
+    assert_eq!((code, stdout.trim()), (0, path), "{stderr}");
+    let (code, _, stderr) = run(&["daemon", "--socket", path, "health"]);
+    assert_eq!(code, 6, "no daemon, not a usage error: {stderr}");
+}
+
+/// `start` always serves in the foreground; the flag that says so is refused anywhere else.
+#[test]
+fn foreground_belongs_to_start_alone() {
+    for sub in ["path", "health", "status", "stop"] {
+        let (code, stdout, stderr) =
+            run(&["daemon", sub, "--foreground", "--socket", "/tmp/x.sock"]);
+        assert_eq!((code, stdout.as_str()), (2, ""), "{sub}: {stderr}");
+        assert!(stderr.contains("--foreground applies only to"), "{stderr}");
+    }
+}
+
 #[test]
 fn daemon_unknown_subcommand_exits_2() {
     let (code, _, stderr) = run(&["daemon", "frobnicate"]);

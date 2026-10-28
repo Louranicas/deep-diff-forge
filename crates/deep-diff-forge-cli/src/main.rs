@@ -377,7 +377,7 @@ const CURRENT_MATURITY: deep_diff_forge_core::MaturityLevel =
 /// UDS JSON-RPC review daemon.
 fn daemon_cmd(opts: &[String]) {
     use deep_diff_forge_daemon::SocketLocation;
-    args::admit_or_exit(
+    let positionals = args::admit_or_exit(
         opts,
         &args::Spec {
             flags: &["--foreground"],
@@ -386,11 +386,17 @@ fn daemon_cmd(opts: &[String]) {
         },
         "deep-diff-forge daemon {path|start [--foreground]|health|status|stop} [--socket PATH]",
     );
-    let sub = opts
-        .iter()
-        .find(|a| !a.starts_with("--"))
-        .map(String::as_str);
+    let sub = positionals.first().copied();
     // Validate the subcommand first, so an unknown one reports usage whatever the environment.
+    // `start` always serves in the foreground (a supervisor such as systemd owns the process);
+    // `--foreground` says so and belongs to `start` alone.
+    if sub != Some("start") && opts.iter().any(|a| a == "--foreground") {
+        eprintln!("error: --foreground applies only to `daemon start`");
+        eprintln!(
+            "usage: deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]"
+        );
+        std::process::exit(exit::USAGE);
+    }
     if !matches!(sub, Some("path" | "start" | "health" | "status" | "stop")) {
         eprintln!(
             "usage: deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]"
@@ -447,7 +453,7 @@ fn daemon_client(location: &deep_diff_forge_daemon::SocketLocation, line: &str) 
 /// The learning loop is local-only and fail-soft: a fresh machine with no store
 /// reports zero receipts and no trusted default, never an error.
 fn learn_cmd(opts: &[String]) {
-    args::admit_or_exit(
+    let positionals = args::admit_or_exit(
         opts,
         &args::Spec {
             flags: &["--json", "--stdin"],
@@ -457,11 +463,7 @@ fn learn_cmd(opts: &[String]) {
         "deep-diff-forge learn {status|record --stdin} [--json]",
     );
     let json = opts.iter().any(|a| a == "--json");
-    match opts
-        .iter()
-        .find(|a| !a.starts_with("--"))
-        .map(String::as_str)
-    {
+    match positionals.first().copied() {
         None | Some("status") => learn_status(json),
         Some("record") => learn_record(opts),
         _ => {
@@ -711,7 +713,7 @@ fn read_source_file_or_exit(path: &str) -> String {
 /// `structural <old> <new> [--json]`: token-level (AST-leaf) structural diff —
 /// reformat-aware, never touching patch truth.
 fn structural_cmd(opts: &[String]) {
-    args::admit_or_exit(
+    let paths = args::admit_or_exit(
         opts,
         &args::Spec {
             flags: &["--json"],
@@ -720,7 +722,6 @@ fn structural_cmd(opts: &[String]) {
         },
         "deep-diff-forge structural <old> <new> [--json]",
     );
-    let paths: Vec<&String> = opts.iter().filter(|a| !a.starts_with("--")).collect();
     let (Some(old_path), Some(new_path)) = (paths.first(), paths.get(1)) else {
         eprintln!("usage: deep-diff-forge structural <old> <new> [--json]");
         std::process::exit(exit::USAGE);
@@ -847,7 +848,7 @@ fn print_structural_json(diff: &deep_diff_forge_syntax::StructuralDiff) {
 /// inject escapes — only fixed SGR colour codes are emitted.
 fn highlight_cmd(opts: &[String]) {
     use std::io::IsTerminal as _;
-    args::admit_or_exit(
+    let positionals = args::admit_or_exit(
         opts,
         &args::Spec {
             flags: &["--color", "--no-color"],
@@ -856,7 +857,7 @@ fn highlight_cmd(opts: &[String]) {
         },
         "deep-diff-forge highlight <path> [--color|--no-color]",
     );
-    let Some(path) = opts.iter().find(|a| !a.starts_with("--")) else {
+    let Some(path) = positionals.first().copied() else {
         eprintln!("usage: deep-diff-forge highlight <path> [--color|--no-color]");
         std::process::exit(exit::USAGE);
     };
@@ -883,7 +884,7 @@ fn highlight_cmd(opts: &[String]) {
 
 /// `semantic <path> [--json]`: parse a source file and report its symbols.
 fn semantic_cmd(opts: &[String]) {
-    args::admit_or_exit(
+    let positionals = args::admit_or_exit(
         opts,
         &args::Spec {
             flags: &["--json"],
@@ -892,7 +893,7 @@ fn semantic_cmd(opts: &[String]) {
         },
         "deep-diff-forge semantic <path> [--json]",
     );
-    let Some(path) = opts.iter().find(|a| !a.starts_with("--")) else {
+    let Some(path) = positionals.first().copied() else {
         eprintln!("usage: deep-diff-forge semantic <path> [--json]");
         std::process::exit(exit::USAGE);
     };
@@ -972,7 +973,7 @@ fn print_semantic_json(
 
 /// Dispatch `deploy` subcommands.
 fn deploy_cmd(opts: &[String]) {
-    args::admit_or_exit(
+    let positionals = args::admit_or_exit(
         opts,
         &args::Spec {
             flags: &["--json"],
@@ -982,11 +983,7 @@ fn deploy_cmd(opts: &[String]) {
         "deep-diff-forge deploy {status|release} [--json]",
     );
     let json = opts.iter().any(|a| a == "--json");
-    match opts
-        .iter()
-        .find(|a| !a.starts_with("--"))
-        .map(String::as_str)
-    {
+    match positionals.first().copied() {
         Some("status") => deploy_status(json),
         Some("release") => deploy_release(json),
         _ => {
