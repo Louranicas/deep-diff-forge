@@ -42,7 +42,7 @@ The rest of this document is the original plan. What the code has, from `Cargo.t
   named-pipe transport below will not be built.
 - **No `benches/` directory.** Fuzz targets are in `fuzz/fuzz_targets/`: `patch_parser`,
   `review_json`, `daemon_protocol`, `agent_annotation`, `council_report`, `stdio_mcp`,
-  `stdio_rpc`.
+  `stdio_rpc`, `structural_soundness`.
 
 | Milestone | State at 0.3.0 |
 | --- | --- |

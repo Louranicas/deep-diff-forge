@@ -23,9 +23,11 @@ section says whether it describes what ships today or a planned design.
 The core API is library-first. Every surface that emits a `review.v0` document
 calls the same parse → guard → seal path (`deep_diff_forge_patch::SealedReview::new`):
 the CLI's `--json`, the daemon's `diff.compute`, `rpc`, the MCP `review_patch` tool
-and the Rust SDK's `review`. A patch gets the same document from each. `--jsonl`,
-`diff.plan`, `session.open`, `rank_patch` and the cockpit use the same strict parser
-without the seal. The daemon is optional; no command needs it.
+and the Rust SDK's `review`. A patch gets the same document from each. Ranking is
+sealed the same way: the CLI's `--rank --json`, the daemon's `diff.rank` and the MCP
+`rank_patch` tool return one `deep-diff-forge.rank.v0` document. `--jsonl`,
+`diff.plan`, `session.open` and the cockpit use the same strict parser without the
+seal. The daemon is optional; no command needs it.
 
 ## One Engine, Several Front Doors
 
@@ -52,7 +54,8 @@ flowchart LR
     PYK --> SRV --> PL
     PL --> D
     MCP --> D
-    D -- "diff.compute" --> SEAL
+    D -- "diff.compute, diff.rank" --> SEAL
+    SEAL -- "diff.rank" --> RANK
     D -- "diff.plan, session.*" --> RANK
     CLI --> SEAL
     CLI -- "--rank, --cluster" --> RANK
@@ -60,8 +63,10 @@ flowchart LR
     SDKR --> RANK
 ```
 
-- `review_patch` (MCP) calls `diff.compute`; `rank_patch` calls `diff.plan`
-  (`mcp.rs`, `daemon_value`).
+- `review_patch` (MCP) calls `diff.compute`; `rank_patch` calls `diff.rank`
+  (`mcp.rs`, `daemon_value`). Before the 2026-10-28 circle fixes, `rank_patch` called
+  `diff.plan` and returned its bare array, which the MCP tools specification does not
+  allow as `structuredContent` and which carried no seal.
 - `diff.plan` and `session.open` parse with `deep_diff_forge_patch::parse` and
   rank with `deep_diff_forge_graph::rank`; they take no input guards.
 - `--cluster` scores files through `deep-diff-forge-cluster` (`run_risk_cluster`,
@@ -171,6 +176,7 @@ version is refused with domain error 2.
 | `daemon.shutdown` | — | `{stopping}` | 0 |
 | `diff.plan` | `patch: string` | `[ranked file]` | 0 |
 | `diff.compute` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.review.v0` document `--stdin-patch --json` prints for the same patch | 1 |
+| `diff.rank` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints for the same patch | 1 |
 | `session.open` | `patch: string` | `{session, files}` | 0 |
 | `session.snapshot` | `session: string` | `[ranked file]` | 0 |
 | `session.close` | `session: string` | `{closed}` | 0 |
@@ -247,7 +253,7 @@ message per line (`crates/deep-diff-forge-cli/src/mcp.rs`).
 | Tool | Arguments | Backed by |
 | --- | --- | --- |
 | `review_patch` | `patch`, `detail?` (`auto` or `summary`), `paths?`, `require_files?`, `require_hunks?` | `diff.compute`; a review over 256 KiB returns `deep-diff-forge.review-summary.v0` |
-| `rank_patch` | `patch` | `diff.plan`; a ranking over 256 KiB returns `deep-diff-forge.rank-summary.v0` |
+| `rank_patch` | `patch`, `require_files?`, `require_hunks?` | `diff.rank`: the sealed `rank.v0` document; a ranking over 256 KiB returns `deep-diff-forge.rank-summary.v0` with the same seal |
 | `explain_exit_code` | `code`, `family?` (`engine` or `council`) | the exit-code registry |
 | `exit_code_registry` | — | the exit-code registry |
 

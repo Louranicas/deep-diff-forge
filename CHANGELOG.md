@@ -6,6 +6,44 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Fixed (expert circle, 2026-10-28)
+
+A seven-seat expert circle reviewed DDF as pioneer coding agents would use it: Claude Code, Codex,
+Zen (pi) and four specialist personas. It found these defects, each reproduced with the 0.3.0
+binary and each fixed with a test that fails on the old code.
+
+- **A rewritten comment is never "formatting only".** In tree-sitter-rust a plain comment's text
+  is no leaf token, so `structural` and `analyze` reported `// SAFETY: the pointer is valid` →
+  `// SAFETY: trust me` as `reformat_only: true` with no change. A comment is now one token,
+  compared byte for byte. A new fuzz target, `structural_soundness`, checks that
+  `reformat_only` is claimed only when the sources differ in whitespace alone (1,077,956 runs,
+  0 crashes, measured locally).
+- **A path can lower a file's risk but never zero it.** `generated/`, `vendor/`, `dist/` and
+  similar paths used to score 0, so a new `src/generated/x.rs` that spawns a process ranked below
+  a one-line README edit. The patch author chooses the path. Such files now keep the base weight
+  and their new, deleted or binary signal, without the source, size or API bonuses.
+- **`highlight` prints line breaks.** It escaped each line feed as the text `\x0a`, so a file
+  printed on one line. Every other control character is still escaped.
+- **Parse errors quote at most 120 bytes of the offending line** and count the rest. A 2 MB
+  line made a 2,000,074-byte error, in a terminal or an agent's context.
+- **Every command answers `--help`** (exit 0) from one table that `--help` also prints. Before,
+  only `review` did; the others exited 2, and `council --help` exited 4.
+
+### Added
+
+- **`diff.rank`**, a daemon method on the socket, `rpc` and MCP: the sealed
+  `deep-diff-forge.rank.v0` document that `--stdin-patch --rank --json` prints, with the same
+  input guards. A parity test holds it equal to the CLI on every fixture. The Python SDK gains
+  `rank_patch`.
+- **MCP tools declare an `outputSchema`,** and a test checks every tool's results against it.
+
+### Changed
+
+- **MCP `rank_patch` returns the sealed `rank.v0` object** (through `diff.rank`), and its
+  summary keeps the seal. It used to return `diff.plan`'s bare array, which the MCP tools
+  specification does not allow as `structuredContent`, and which could not say which bytes it
+  ranked. `rank_patch` also takes `require_files` and `require_hunks`.
+
 ## [0.3.0] - 2026-10-28
 
 The workspace version is 0.3.0; the `v0.3.0` tag, which publishes the release, is the owner's
