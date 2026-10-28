@@ -46,6 +46,13 @@ independent false-positive checker before a fix.
 - **The daemon refuses params a method does not take**, so a misspelt guard such as
   `require_file` no longer passes an empty review. MCP enforces its schema enums.
 - `highlight` keeps line breaks without colour too (the earlier fix covered only colour).
+- **Hazards cover the invisible-payload classes.** Word joiners and invisible operators
+  (`U+2060–2064`), the soft hyphen, the combining grapheme joiner, the Mongolian vowel separator,
+  the Hangul fillers, variation selectors (`U+FE00–FE0F`, `U+E0100–E01EF`) and tag characters
+  (`U+E0000–E007F`) were neither flagged nor escaped. They are now `invisible` and shown as
+  `\u{XXXX}` on a terminal. The line and paragraph separators `U+2028`/`U+2029` are `control`.
+  A path that ends in a carriage return (a CRLF-converted header) is `control` too; only a body
+  line's CRLF is exempt.
 
 ### Added (agent batteries)
 

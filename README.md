@@ -412,8 +412,11 @@ The new fields are additive, so the schema stays `review.v0`.
 
 **Hazards.** A file whose path traverses, names `.git` or hides characters, and a line that
 carries a bidi control, an invisible character or a control character, gets a `hazards` list:
-`path_traversal`, `git_internal`, `bidi_control`, `invisible` or `control`. The carriage return
-of a CRLF line ending does not count. Hazards are facts about the bytes, reported only where
+`path_traversal`, `git_internal`, `bidi_control`, `invisible` or `control`. `invisible` covers
+zero-width and joiner characters, invisible operators, fillers, the soft hyphen, variation
+selectors and tag characters; `control` covers C0/C1 controls other than tab and the Unicode
+line and paragraph separators. The carriage return of a CRLF body line does not count; one at
+the end of a path does. Hazards are facts about the bytes, reported only where
 found. An empty list never means the text is safe. They also raise the file's rank
 (`hazardous_text`).
 
