@@ -29,6 +29,25 @@ binary and each fixed with a test that fails on the old code.
 - **Every command answers `--help`** (exit 0) from one table that `--help` also prints. Before,
   only `review` did; the others exited 2, and `council --help` exited 4.
 
+### Added (agent batteries)
+
+- **`agent setup --client claude|codex [--allow-repo PATH]...`** prints the registration of this
+  binary's MCP server: a `claude mcp add --scope user …` line and a `.mcp.json` block, or a
+  `~/.codex/config.toml` table. It never writes a file. `--json` gives
+  `deep-diff-forge.agent-setup.v0`.
+- **`agent doctor [--json]`** checks in-process that the MCP handshake and the seven tools'
+  output schemas are in place, and that one patch gets the same sealed document from the CLI
+  path, the daemon and MCP, the same ranking from `diff.rank` and `rank_patch`, and a bounded
+  outline-then-hunk answer. It exits 101 if any check fails. A test runs it on every build.
+- **Hazards** (expert circle, Sana Rahimi, narrowed by Zen to objective facts). The facts are:
+  `bidi_control`, `invisible` and `control` on lines (a CRLF's carriage return excepted), and
+  `path_traversal` and `git_internal` on paths.
+  - They are reported in `review.v0` (only where found), in the views and in the outline.
+  - A new risk signal, `hazardous_text` (+3), lifts such a file, even under a generated path.
+  - The cockpit explains the signal.
+- **`rpc` and the daemon name the framing** when a request line is cut short (the start of a
+  pretty-printed object): one JSON value per line.
+
 ### Added (agent-first core)
 
 The expert circle's Tier 1: an agent learns where to look before it reads anything large, and
