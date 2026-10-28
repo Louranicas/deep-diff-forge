@@ -45,6 +45,26 @@ fn highlight_no_color_is_plain() {
     assert!(String::from_utf8_lossy(&out).contains("fn main()"));
 }
 
+/// Piped (the default) and `--no-color` output keep line breaks and still escape other controls:
+/// the first fix only covered the coloured path (bug hunt 2026-10-28, H4-01).
+#[test]
+fn highlight_keeps_line_breaks_without_color() {
+    let path = std::env::temp_dir().join(format!("ddf-hl-lines-{}.rs", std::process::id()));
+    std::fs::write(&path, "fn a() {}\n// \u{1b}[2J\nfn b() {}\n").unwrap();
+    for args in [
+        &["highlight", path.to_str().unwrap()][..],
+        &["highlight", path.to_str().unwrap(), "--no-color"][..],
+    ] {
+        let (code, out) = run(args);
+        let out = String::from_utf8(out).unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(out.lines().count(), 3, "{out:?}");
+        assert!(!out.contains("\\x0a") && !out.contains('\u{1b}'), "{out:?}");
+        assert!(out.contains("\\x1b[2J"), "{out:?}");
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn highlight_neutralizes_escape_in_source_even_with_color() {
     // A string literal carrying a raw ESC must not leak it: only our SGR codes
