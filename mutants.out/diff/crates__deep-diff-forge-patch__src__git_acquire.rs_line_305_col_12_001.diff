@@ -1,0 +1,21 @@
+--- crates/deep-diff-forge-patch/src/git_acquire.rs
++++ replace * with / in next_pause
+@@ -297,17 +297,17 @@
+         }
+     }
+     names
+ }
+ 
+ /// The next poll interval while waiting for Git: doubling from 1 ms, at most 20 ms, so a quick
+ /// command costs little latency and a slow one little CPU.
+ fn next_pause(pause: std::time::Duration) -> std::time::Duration {
+-    (pause * 2).min(std::time::Duration::from_millis(20))
++    (pause / /* ~ changed by cargo-mutants ~ */ 2).min(std::time::Duration::from_millis(20))
+ }
+ 
+ /// The acquisition's deadline: now plus its time limit.
+ #[expect(
+     clippy::disallowed_methods,
+     reason = "the git-acquisition clock door: one deadline bounds every Git call of an acquisition"
+ )]
+ fn deadline_after(limit: std::time::Duration) -> std::time::Instant {

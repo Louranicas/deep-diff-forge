@@ -1,0 +1,37 @@
+--- crates/deep-diff-forge-daemon/src/views.rs
++++ replace line_json -> Value with Default::default()
+@@ -140,33 +140,17 @@
+     }) else {
+         unreachable!("json! of an object literal is an object")
+     };
+     map
+ }
+ 
+ /// One line as `review.v0` writes it.
+ fn line_json(line: &deep_diff_forge_core::PatchLine) -> Value {
+-    let mut value = json!({
+-        "kind": match line.kind {
+-            PatchLineKind::Context => "context",
+-            PatchLineKind::Added => "added",
+-            PatchLineKind::Removed => "removed",
+-        },
+-        "old_line": line.old_line,
+-        "new_line": line.new_line,
+-        "text": line.text,
+-    });
+-    if line.no_newline {
+-        value["no_newline"] = json!(true);
+-    }
+-    if line.lossy {
+-        value["lossy"] = json!(true);
+-    }
+-    value
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn size(value: &Value) -> usize {
+     value.to_string().len()
+ }
+ 
+ /// A cursor: the seal's first 16 hex digits, the selection's digest, then the item and the
+ /// position inside it where the next page starts.

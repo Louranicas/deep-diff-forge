@@ -1,0 +1,21 @@
+--- crates/deep-diff-forge-daemon/src/views.rs
++++ replace == with != in hunks
+@@ -325,17 +325,17 @@
+             used += cost;
+             taken += 1;
+             if let Some(lines) = entry["lines"].as_array_mut() {
+                 lines.push(value);
+             }
+         }
+         let end = offset + taken;
+         if end < hunk.lines.len() {
+-            if taken == 0 {
++            if taken != /* ~ changed by cargo-mutants ~ */ 0 {
+                 next = Some(cursor(seal, &key, position, offset));
+                 break;
+             }
+             entry["complete"] = json!(false);
+             out.push(entry);
+             next = Some(cursor(seal, &key, position, end));
+             break;
+         }

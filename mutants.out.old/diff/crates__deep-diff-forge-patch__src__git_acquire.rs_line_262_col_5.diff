@@ -1,0 +1,41 @@
+--- crates/deep-diff-forge-patch/src/git_acquire.rs
++++ replace local_filters_off -> Result<Vec<(OsString, OsString)>, GitAcquireError> with Ok(vec![])
+@@ -254,37 +254,17 @@
+ 
+ /// [`neutral_filters`] for every filter the repository's local configuration (with its includes)
+ /// defines.
+ fn local_filters_off(
+     options: &GitAcquireOptions,
+     root: &Path,
+     deadline: std::time::Instant,
+ ) -> Result<Vec<(OsString, OsString)>, GitAcquireError> {
+-    let listing = Runner {
+-        options,
+-        cwd: root.to_path_buf(),
+-        deadline,
+-        config_env: Vec::new(),
+-    }
+-    .run(
+-        "git config",
+-        &[
+-            OsStr::new("config"),
+-            OsStr::new("--local"),
+-            OsStr::new("--includes"),
+-            OsStr::new("--null"),
+-            OsStr::new("--name-only"),
+-            OsStr::new("--get-regexp"),
+-            OsStr::new("^filter\\."),
+-        ],
+-        &[0, 1],
+-        1024 * 1024,
+-    )?;
+-    Ok(neutral_filters(&filter_names(&listing)))
++    Ok(vec![]) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The filter names in `git config --null --name-only` output (`filter.<name>.<key>` records).
+ fn filter_names(listing: &[u8]) -> Vec<String> {
+     let mut names: Vec<String> = Vec::new();
+     for record in listing.split(|&b| b == 0 || b == b'\n') {
+         let key = String::from_utf8_lossy(record);
+         if let Some(name) = key

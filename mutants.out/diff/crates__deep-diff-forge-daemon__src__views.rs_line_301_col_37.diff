@@ -1,0 +1,21 @@
+--- crates/deep-diff-forge-daemon/src/views.rs
++++ replace - with + in hunks
+@@ -293,17 +293,17 @@
+     review: &SealedReview,
+     selection: &Selection,
+     page: &Page,
+ ) -> Result<Value, ViewError> {
+     let (files, seal) = (review.files(), review.seal());
+     let (units, key) = select(files, selection)?;
+     let (start_unit, start_line) = resume(page, seal, &key)?;
+     let (input_sha256, tool) = seal_members(seal);
+-    let mut budget = page.max_bytes - ENVELOPE_BYTES;
++    let mut budget = page.max_bytes + /* ~ changed by cargo-mutants ~ */ ENVELOPE_BYTES;
+     let mut out = Vec::new();
+     let mut next = None;
+     for (position, &(f, h)) in units.iter().enumerate().skip(start_unit) {
+         let (file, hunk) = (&files[f], &files[f].patch_twin.hunks[h]);
+         let offset = if position == start_unit {
+             start_line
+         } else {
+             0

@@ -1,0 +1,42 @@
+--- crates/deep-diff-forge-daemon/src/views.rs
++++ replace resume -> Result<(usize, usize), ViewError> with Ok((0, 0))
+@@ -174,38 +174,17 @@
+     format!(
+         "{}.{}.{item}.{inner}",
+         &seal.input_sha256[..16],
+         &deep_diff_forge_core::sha256_hex(selection.as_bytes())[..8]
+     )
+ }
+ 
+ fn resume(page: &Page, seal: &InputSeal, selection: &str) -> Result<(usize, usize), ViewError> {
+-    if !(MIN_MAX_BYTES..=MAX_MAX_BYTES).contains(&page.max_bytes) {
+-        return Err(ViewError::Budget(page.max_bytes));
+-    }
+-    let Some(text) = page.cursor.as_deref() else {
+-        return Ok((0, 0));
+-    };
+-    let parts: Vec<&str> = text.split('.').collect();
+-    let [patch, picked, item, inner] = parts[..] else {
+-        return Err(ViewError::Cursor(
+-            "expected four dot-separated fields".into(),
+-        ));
+-    };
+-    if patch != &seal.input_sha256[..16] {
+-        return Err(ViewError::Cursor("it belongs to another patch".into()));
+-    }
+-    if picked != &deep_diff_forge_core::sha256_hex(selection.as_bytes())[..8] {
+-        return Err(ViewError::Cursor("it belongs to another selection".into()));
+-    }
+-    match (item.parse(), inner.parse()) {
+-        (Ok(item), Ok(inner)) => Ok((item, inner)),
+-        _ => Err(ViewError::Cursor("its positions are not numbers".into())),
+-    }
++    Ok((0, 0)) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// `deep-diff-forge.review-outline.v0`: every file in review-risk order, each with its score,
+ /// signals, counts and hunks (address, ranges, heading, counts), and no line text.
+ ///
+ /// # Errors
+ /// [`ViewError::Budget`] or [`ViewError::Cursor`] for a bad page request.
+ pub fn outline(review: &SealedReview, page: &Page) -> Result<Value, ViewError> {
