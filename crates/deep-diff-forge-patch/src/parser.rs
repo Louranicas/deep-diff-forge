@@ -1275,6 +1275,31 @@ diff --git a/x b/x
         assert!(matches!(err, PatchParseError::BodyLineOutsideHunk { .. }));
     }
 
+    /// An error quotes at most `ERROR_EXCERPT_BYTES` of the offending line, escaped, and counts
+    /// the rest. Before, a 2 MB line became a 2,000,074-byte message in an agent's context.
+    #[test]
+    fn an_error_quotes_a_bounded_excerpt_of_the_offending_line() {
+        let long = format!(
+            "diff --git a/x b/x\n--- a/x\n+++ b/x\n+{}\n",
+            "é".repeat(1_000_000)
+        );
+        let message = parse(&long).unwrap_err().to_string();
+        assert!(message.len() < 250, "{} bytes", message.len());
+        assert!(message.ends_with(" bytes)"), "{message}");
+        assert!(
+            message.contains(&format!("(+{} bytes)", 2_000_001 - 119)),
+            "{message}"
+        );
+        let short = parse("diff --git a/x b/x\n--- a/x\n+++ b/x\n+stray \u{1b}[2J\n")
+            .unwrap_err()
+            .to_string();
+        assert!(short.ends_with(r#": "+stray \u{1b}[2J""#), "{short}");
+        let header = parse(&format!("--- a/x\n+++ b/x\n@@ {}\n", "x".repeat(500)))
+            .unwrap_err()
+            .to_string();
+        assert!(header.contains("(+383 bytes)"), "{header}");
+    }
+
     #[test]
     fn byte_budget_is_enforced() {
         let options = ParseOptions { byte_budget: 8 };
