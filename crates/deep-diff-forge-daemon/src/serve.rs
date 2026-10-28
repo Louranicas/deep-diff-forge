@@ -219,6 +219,17 @@ pub fn read_capped_line<R: BufRead>(
     reader.take(cap as u64 + 1).read_until(b'\n', buf)
 }
 
+/// The outcome of arming a read deadline. macOS refuses `SO_RCVTIMEO` with EINVAL once the
+/// peer has disconnected (both directions shut); reads then cannot block, returning what is
+/// buffered and then end of file, so that refusal is not an error. Before, it made the client fail
+/// any response longer than its buffer whenever the daemon closed first (macOS CI).
+fn settle_read_timeout(armed: std::io::Result<()>) -> std::io::Result<()> {
+    match armed {
+        Err(err) if err.raw_os_error() == Some(rustix::io::Errno::INVAL.raw_os_error()) => Ok(()),
+        other => other,
+    }
+}
+
 /// Read one bounded line from a socket under an absolute deadline.
 #[expect(
     clippy::disallowed_methods,
@@ -233,12 +244,14 @@ fn read_capped_line_deadline(
     let deadline = Instant::now() + timeout;
     let maximum = cap.saturating_add(1);
     loop {
+        // Zero is past the deadline too (and a timeout `set_read_timeout` refuses).
         let remaining = deadline
             .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
             .ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::TimedOut, "line read deadline exceeded")
             })?;
-        reader.get_ref().set_read_timeout(Some(remaining))?;
+        settle_read_timeout(reader.get_ref().set_read_timeout(Some(remaining)))?;
 
         let available = match reader.fill_buf() {
             Ok(available) => available,
@@ -1191,8 +1204,23 @@ mod tests {
         assert_eq!(MAX_RESPONSE_BYTES, 80 << 20);
     }
 
+    /// Only the disconnected-peer refusal is settled; every other arming failure is returned.
+    #[test]
+    fn only_a_disconnected_peer_refusal_is_settled() {
+        let errno = |e: rustix::io::Errno| std::io::Error::from_raw_os_error(e.raw_os_error());
+        assert!(settle_read_timeout(Ok(())).is_ok());
+        assert!(settle_read_timeout(Err(errno(rustix::io::Errno::INVAL))).is_ok());
+        let other = settle_read_timeout(Err(errno(rustix::io::Errno::BADF))).unwrap_err();
+        assert_eq!(
+            other.raw_os_error(),
+            Some(rustix::io::Errno::BADF.raw_os_error())
+        );
+        let refused = std::io::Error::new(std::io::ErrorKind::InvalidInput, "zero timeout");
+        assert!(settle_read_timeout(Err(refused)).is_err());
+    }
+
     /// A peer that sends one line and closes cleanly has sent a complete line, however many
-    /// buffer refills it takes to read: macOS refuses SO_RCVTIMEO on a socket whose peer has shut
+    /// buffer refills it takes to read: macOS refuses `SO_RCVTIMEO` on a socket whose peer has shut
     /// down (EINVAL), which made the client fail any response longer than its buffer whenever the
     /// daemon closed first (CI run 40626071938).
     #[test]
