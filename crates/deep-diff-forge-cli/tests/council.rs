@@ -2386,3 +2386,80 @@ fn a_manual_import_is_stored_unverified_and_a_foreign_report_is_refused() {
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(&stored).unwrap()).unwrap();
     assert_eq!(saved, report);
 }
+
+#[test]
+fn prepare_accepts_a_bare_relative_run_directory_against_dot() {
+    let f = Fixture::new();
+    let output = f
+        .command(&["prepare", "request.json", "bare-run"], "normal")
+        .current_dir(&f.root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(f.root.join("bare-run/manifest.json").is_file());
+}
+
+#[test]
+fn manual_import_refuses_a_slot_with_an_existing_qualification() {
+    let f = Fixture::new();
+    f.prepare();
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.run.join("manifest.json")).unwrap()).unwrap();
+    let reviewer = manifest["request"]["reviewers"][0]["id"].as_str().unwrap();
+    let report = serde_json::json!({
+        "run_id": manifest["run_id"],
+        "reviewer_id": reviewer,
+        "round": "independent",
+        "verdict": "no_blockers",
+        "summary": "Manual review of the captured scope",
+        "findings": [],
+        "responses": [],
+    });
+    let report_path = f.root.join("manual-qualified.json");
+    fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+    let job = f.run.join(format!("jobs/review-{reviewer}-independent"));
+    fs::create_dir_all(&job).unwrap();
+    fs::write(job.join("qualification.json"), b"{}\n").unwrap();
+    let output = f.call(
+        &[
+            "import",
+            f.run.to_str().unwrap(),
+            report_path.to_str().unwrap(),
+        ],
+        "normal",
+    );
+    assert_eq!(output.status.code(), Some(4));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("already has a controller qualification")
+    );
+    assert!(
+        !f.run
+            .join(format!("reports/{reviewer}-independent.json"))
+            .exists()
+    );
+}
+
+#[test]
+fn council_errors_are_terminal_safe_and_bounded() {
+    let f = Fixture::new();
+    let mut request: serde_json::Value =
+        serde_json::from_slice(&fs::read(&f.request).unwrap()).unwrap();
+    request["profile"] = format!("\u{1b}[31m{}", "x".repeat(1000)).into();
+    fs::write(&f.request, serde_json::to_vec(&request).unwrap()).unwrap();
+    let output = f.call(
+        &[
+            "prepare",
+            f.request.to_str().unwrap(),
+            f.run.to_str().unwrap(),
+        ],
+        "normal",
+    );
+    assert_eq!(output.status.code(), Some(4));
+    assert!(!output.stderr.contains(&0x1b));
+    assert!(output.stderr.len() < 400, "{}", output.stderr.len());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("bytes omitted"));
+}

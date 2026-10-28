@@ -8,7 +8,7 @@ mod git_input;
 mod mcp;
 mod rpc;
 use deep_diff_forge_core::exit;
-use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe};
+use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe, display_safe_bounded};
 
 /// Write `s` to stdout, treating a reader that closed the pipe (`… | head`) as
 /// a clean exit. Rust ignores SIGPIPE, so a bare `print!`/`println!` panics with
@@ -31,6 +31,9 @@ macro_rules! emitln {
     () => { emit("\n") };
     ($($arg:tt)*) => { emit(&format!("{}\n", format_args!($($arg)*))) };
 }
+
+// Declared after `emitln!`, which it uses (a `macro_rules!` is visible only below it).
+mod agent;
 
 /// Read all of `reader` into a `String`, but never buffer more than the patch
 /// byte budget. `what` names the source for diagnostics.
@@ -71,25 +74,22 @@ fn read_capped_bytes_or_exit(reader: impl std::io::Read, what: &str) -> Vec<u8> 
 }
 
 fn main() {
-    let mut args = std::env::args().skip(1).peekable();
-    let command = args.next();
-    if command
-        .as_deref()
-        .is_some_and(|c| command_help(c, args.peek()))
-    {
+    let args = argv_or_exit();
+    let command = args.first().map(String::as_str);
+    let rest = args.get(1..).unwrap_or_default();
+    if command.is_some_and(|command| command_help(command, rest)) {
         return;
     }
-    refuse_arguments_to_bare_commands(command.as_deref(), args.peek());
-    match command.as_deref() {
+    refuse_arguments_to_bare_commands(command, rest.first());
+    match command {
         None | Some("--help" | "-h" | "help") => print_help(),
         Some("--version" | "-V" | "version") => print_version(),
         Some("--self-test" | "self-test") => self_test(),
         Some("doctor") => doctor(),
         Some("deploy") => {
-            let rest: Vec<String> = args.collect();
-            deploy_cmd(&rest);
+            deploy_cmd(rest);
         }
-        Some("council") => match deep_diff_forge_review::cli::dispatch(&args.collect::<Vec<_>>()) {
+        Some("council") => match deep_diff_forge_review::cli::dispatch(rest) {
             Ok((output, code)) => {
                 emit(&output);
                 if code != 0 {
@@ -97,69 +97,63 @@ fn main() {
                 }
             }
             Err(error) => {
-                eprintln!("error: {error}");
+                eprintln!("error: {}", display_safe_bounded(&error.to_string(), 200));
                 std::process::exit(exit::COUNCIL_REFUSED);
             }
         },
         Some("analyze") => {
-            let rest: Vec<String> = args.collect();
-            analyze_paths_or_exit(&rest);
-            match analysis::run(&rest) {
+            analyze_paths_or_exit(rest);
+            match analysis::run(rest) {
                 Ok(json) => emit(&json),
                 Err(error) => {
                     eprintln!("error: {error}");
-                    std::process::exit(exit::INVALID_INPUT);
+                    std::process::exit(error.exit_code());
                 }
             }
         }
-        Some("semantic") => {
-            let rest: Vec<String> = args.collect();
-            semantic_cmd(&rest);
-        }
-        Some("highlight") => {
-            let rest: Vec<String> = args.collect();
-            highlight_cmd(&rest);
-        }
-        Some("structural") => {
-            let rest: Vec<String> = args.collect();
-            structural_cmd(&rest);
-        }
-        Some("review") => {
-            let rest: Vec<String> = args.collect();
-            review_cmd(&rest);
-        }
-        Some("daemon") => {
-            let rest: Vec<String> = args.collect();
-            daemon_cmd(&rest);
-        }
-        Some("learn") => {
-            let rest: Vec<String> = args.collect();
-            learn_cmd(&rest);
-        }
-        Some("--stdin-patch") => {
-            let rest: Vec<String> = args.collect();
-            stdin_patch(&rest);
-        }
+        Some("semantic") => semantic_cmd(rest),
+        Some("highlight") => highlight_cmd(rest),
+        Some("structural") => structural_cmd(rest),
+        Some("review") => review_cmd(rest),
+        Some("daemon") => daemon_cmd(rest),
+        Some("learn") => learn_cmd(rest),
+        Some("--stdin-patch") => stdin_patch(rest),
         Some(selector @ ("--git-working-tree" | "--git-staged" | "--git-range")) => {
-            let selector = selector.to_owned();
-            let rest: Vec<String> = args.collect();
-            git_input::run(&selector, &rest);
+            git_input::run(selector, rest);
         }
-        Some("schema") => schema_cmd(&args.collect::<Vec<_>>()),
-        Some("explain") => contract_output(contract::explain(&args.collect::<Vec<_>>())),
-        Some("envelope") => run_envelope(&args.collect::<Vec<_>>()),
-        Some("mcp") => run_mcp(&args.collect::<Vec<_>>()),
-        Some("rpc") => run_rpc(&args.collect::<Vec<_>>()),
+        Some("schema") => schema_cmd(rest),
+        Some("explain") => contract_output(contract::explain(rest)),
+        Some("envelope") => run_envelope(rest),
+        Some("mcp") => run_mcp(rest),
+        Some("agent") => agent::run(rest),
+        Some("rpc") => run_rpc(rest),
         Some("claude-code-contract") => claude_code_contract(),
         Some("chain-contract") => chain_contract(),
         Some("cluster-contract") => cluster_contract(),
         Some("loom-contract") => loom_contract(),
         Some(command) => {
-            eprintln!("unknown command: {command}");
+            eprintln!("unknown command: {}", display_safe_bounded(command, 200));
             eprintln!("run `deep-diff-forge --help` for supported bootstrap commands");
             std::process::exit(exit::USAGE);
         }
     }
+}
+
+/// Decode process arguments without `std::env::args`' non-UTF-8 panic. Paths remain UTF-8 at the
+/// current CLI contract; an undecodable argument is therefore an input-read failure, not a bug.
+fn argv_or_exit() -> Vec<String> {
+    std::env::args_os()
+        .skip(1)
+        .map(|argument| {
+            argument.into_string().unwrap_or_else(|argument| {
+                eprintln!(
+                    "error: argument is not valid UTF-8: {}",
+                    display_safe_bounded(&argument.to_string_lossy(), 200)
+                );
+                std::process::exit(exit::IO);
+            })
+        })
+        .collect()
 }
 
 /// The commands that take no arguments: an extra one is refused, not ignored (anchor A-01).
@@ -311,6 +305,7 @@ fn seal_of(input: &[u8]) -> InputSeal {
 fn stdin_patch(opts: &[String]) {
     git_input::reject_with_stdin(opts);
     args::admit_or_exit(opts, &STDIN_PATCH, STDIN_PATCH_USAGE);
+    validate_review_options_or_exit(opts);
     let bytes = read_capped_bytes_or_exit(std::io::stdin().lock(), "stdin");
     let decoded = deep_diff_forge_patch::decode(&bytes);
     let guards = InputGuards::from_opts(opts);
@@ -335,6 +330,45 @@ fn stdin_patch(opts: &[String]) {
 
     let review = sealed_review_or_exit(&bytes, guards);
     emit_review(&review, opts);
+}
+
+/// Validate cross-option contracts before acquiring or reading a patch. A recognized option that
+/// cannot affect the selected mode is more dangerous than an unknown one: automation otherwise
+/// proceeds under a control it only believes was applied.
+pub(crate) fn validate_review_options_or_exit(opts: &[String]) {
+    let has = |name: &str| opts.iter().any(|arg| arg == name);
+    if has("--json") && has("--jsonl") {
+        eprintln!("error: --json and --jsonl are mutually exclusive");
+        std::process::exit(exit::USAGE);
+    }
+    let view = has("--outline") || has("--hunks");
+    if !view
+        && let Some(flag) = ["--address", "--path", "--max-bytes", "--cursor"]
+            .iter()
+            .find(|flag| has(flag))
+    {
+        eprintln!("error: {flag} requires --outline or --hunks");
+        std::process::exit(exit::USAGE);
+    }
+    if has("--parallel") && !has("--cluster") {
+        eprintln!("error: --parallel requires --cluster");
+        std::process::exit(exit::USAGE);
+    }
+    if let Some(layout) = flag_value(opts, "--layout")
+        && deep_diff_forge_projection::layout_from_str(&layout).is_none()
+    {
+        eprintln!(
+            "error: unknown layout: {} (expected inline|side-by-side)",
+            display_safe_bounded(&layout, 200)
+        );
+        std::process::exit(exit::USAGE);
+    }
+    if has("--max-bytes") {
+        let _ = view_page(opts);
+    }
+    if has("--parallel") {
+        let _ = parse_parallelism(opts);
+    }
 }
 
 /// The one parse → guard → seal path ([`deep_diff_forge_patch::SealedReview`], anchor C-05), with
@@ -779,13 +813,25 @@ fn open_palette_command(app: &mut deep_diff_forge_tui::ReviewApp, index: usize) 
 /// Open and read a source file under the byte cap, exiting on failure. The
 /// shared helper behind the file-reading subcommands.
 fn read_source_file_or_exit(path: &str) -> String {
-    let file = match std::fs::File::open(path) {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NONBLOCK)
+        .open(path)
+    {
         Ok(f) => f,
         Err(err) => {
             eprintln!("error: could not read {}: {err}", display_safe(path));
             std::process::exit(exit::IO);
         }
     };
+    if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+        eprintln!(
+            "error: source is not a regular file: {}",
+            display_safe_bounded(path, 200)
+        );
+        std::process::exit(exit::IO);
+    }
     read_capped_or_exit(file, "source file")
 }
 
@@ -1494,6 +1540,11 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "Review a change Git returns, sealed over the exact bytes.",
     ),
     (
+        "agent",
+        "deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... | doctor} [--json]",
+        "Print the MCP setup for Claude Code or Codex (never written), or check that every agent surface agrees.",
+    ),
+    (
         "mcp",
         "deep-diff-forge mcp [--allow-repo PATH]...",
         "Serve the read-only MCP tools over stdio; --allow-repo lets review_change read those repositories.",
@@ -1540,10 +1591,10 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// `<command> --help` (or `-h`) as the first argument: print that command's usage and what it
+/// `<command> --help` (or `-h`) anywhere: print that command's usage and what it
 /// does, and exit 0. `review` prints its own longer help; `council --help` is `council help`.
-fn command_help(command: &str, first: Option<&String>) -> bool {
-    let asked = first.is_some_and(|a| matches!(a.as_str(), "--help" | "-h"));
+fn command_help(command: &str, args: &[String]) -> bool {
+    let asked = args.iter().any(|a| matches!(a.as_str(), "--help" | "-h"));
     let name = match command {
         "--git-staged" | "--git-range" => "--git-working-tree",
         other => other,

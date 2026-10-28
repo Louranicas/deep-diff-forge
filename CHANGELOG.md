@@ -31,6 +31,20 @@ binary and each fixed with a test that fails on the old code.
 
 ### Security (bug hunt, 2026-10-28)
 
+- **Patch truth: lines Git ignores are refused, not read as headers** (H1-01, high). After a
+  file's hunk, `new file mode`, `deleted file mode`, `rename to`, mode lines, a lone `+++` or a
+  lone `--- /dev/null` changed the reviewed status or path, or made a phantom file, while `git
+  apply` applied a plain modification. Mode lines even changed the rendered patch (644 became
+  755). Extended headers are now admitted only before a file's `---`/`+++` or first hunk, a `+++`
+  only right after its `---`, and a `---` only with its `+++`.
+- **Input Git refuses as corrupt is refused** (H1-04): a signed hunk range (`@@ -+1`), a final
+  hunk line without a line feed, `new file`/`deleted file` contradicting `/dev/null`, a new and
+  deleted file, a new or deleted file that is also renamed or copied, or a new file with old lines.
+  New errors: `MisplacedHeader`, `InconsistentHeader`, `UnterminatedLine` (all exit 4).
+  Fuzzing found six such contradictions in the first rounds; each is a regression fixture, and
+  the final rounds ran 5,778,549 (`patch_parser`) and 2,261,936 (`review_json`) inputs with no
+  crash.
+
 A team of five Sonnet bug hunters covered the whole stack: patch and core, daemon/rpc/MCP/SDKs,
 CLI and council, analysis and TUI, CI/scripts/supply chain. Each finding was re-checked by an
 independent false-positive checker before a fix.
@@ -46,6 +60,25 @@ independent false-positive checker before a fix.
 - **The daemon refuses params a method does not take**, so a misspelt guard such as
   `require_file` no longer passes an empty review. MCP enforces its schema enums.
 - `highlight` keeps line breaks without colour too (the earlier fix covered only colour).
+
+### Added (agent batteries)
+
+- **`agent setup --client claude|codex [--allow-repo PATH]...`** prints the registration of this
+  binary's MCP server: a `claude mcp add --scope user …` line and a `.mcp.json` block, or a
+  `~/.codex/config.toml` table. It never writes a file. `--json` gives
+  `deep-diff-forge.agent-setup.v0`.
+- **`agent doctor [--json]`** checks in-process that the MCP handshake and the seven tools'
+  output schemas are in place, and that one patch gets the same sealed document from the CLI
+  path, the daemon and MCP, the same ranking from `diff.rank` and `rank_patch`, and a bounded
+  outline-then-hunk answer. It exits 101 if any check fails. A test runs it on every build.
+- **Hazards** (expert circle, Sana Rahimi, narrowed by Zen to objective facts). The facts are:
+  `bidi_control`, `invisible` and `control` on lines (a CRLF's carriage return excepted), and
+  `path_traversal` and `git_internal` on paths.
+  - They are reported in `review.v0` (only where found), in the views and in the outline.
+  - A new risk signal, `hazardous_text` (+3), lifts such a file, even under a generated path.
+  - The cockpit explains the signal.
+- **`rpc` and the daemon name the framing** when a request line is cut short (the start of a
+  pretty-printed object): one JSON value per line.
 
 ### Added (agent-first core)
 

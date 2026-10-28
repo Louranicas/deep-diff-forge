@@ -313,6 +313,11 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
   30 s for `review.change`. A Git still running at the deadline is killed, and the
   acquisition fails with `TimedOut` (CLI exit 3). Before, `child.wait()` waited
   forever on a stalled filesystem or hook.
+- **Hidden text is flagged, not filtered.** Lines and paths carrying bidi controls, invisible
+  or control characters, and paths that traverse or name `.git`, get `hazards` in `review.v0`
+  and the views, and the `hazardous_text` risk signal. The patch text itself is never rewritten.
+  The flags are objective: no list of "instruction-like" words, so an unflagged line is not
+  thereby safe.
 - **A repository's own filters never run.** Git acquisition turns off every content filter
   (`clean`, `smudge`, `process`) that the repository's local configuration defines, so reviewing a
   repository someone handed you cannot run their code through `.gitattributes`. Filters from the

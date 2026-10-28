@@ -24,6 +24,10 @@ pub enum RiskSignal {
     TestOnly,
     /// Generated or vendored path: no bonuses, but never below the base weight.
     GeneratedOrVendored,
+    /// The path or a changed line holds bidi controls, invisible or control characters, or the
+    /// path traverses (`..`, absolute) or names `.git`: what a reviewer sees may differ from
+    /// what is applied (Trojan Source, CVE-2021-42574).
+    HazardousText,
 }
 
 impl RiskSignal {
@@ -40,6 +44,7 @@ impl RiskSignal {
             Self::ConfigOrLockfile => "config_or_lockfile",
             Self::TestOnly => "test_only",
             Self::GeneratedOrVendored => "generated_or_vendored",
+            Self::HazardousText => "hazardous_text",
         }
     }
 }
@@ -66,6 +71,7 @@ pub fn score_file(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     if is_generated_or_vendored(path) {
         signals.push(RiskSignal::GeneratedOrVendored);
         score += status_weight(file, &mut signals);
+        score += hazard_weight(file, &mut signals);
         return (score, signals);
     }
 
@@ -89,6 +95,7 @@ pub fn score_file(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     }
 
     score += status_weight(file, &mut signals);
+    score += hazard_weight(file, &mut signals);
 
     let (adds, dels) = change_counts(file);
     let hunks = file.patch_twin.hunks.len();
@@ -102,6 +109,26 @@ pub fn score_file(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     }
 
     (score, signals)
+}
+
+/// +3 when the path or a changed (added or removed) line carries an objective hazard, recording
+/// the signal. Context lines are not counted: they are not part of the change.
+fn hazard_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
+    let in_lines = file
+        .patch_twin
+        .hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .any(|line| {
+            line.kind != PatchLineKind::Context
+                && !deep_diff_forge_core::text_hazards(&line.text).is_empty()
+        });
+    if in_lines || !deep_diff_forge_core::path_hazards(&file.path).is_empty() {
+        signals.push(RiskSignal::HazardousText);
+        3
+    } else {
+        0
+    }
 }
 
 /// The weight of a file's status (added, deleted, binary), recording its signal.
@@ -323,6 +350,32 @@ mod tests {
         let source = score_file(&modify("src/util.rs", 1)).0;
         let test = score_file(&modify("tests/util_it.rs", 1)).0;
         assert!(source > test);
+    }
+
+    /// A changed line or a path with bidi controls, invisible or control characters, or a path
+    /// that traverses, adds `hazardous_text` (+3), even under a generated path; an unchanged
+    /// context line does not.
+    #[test]
+    fn hazardous_text_raises_the_score() {
+        let trojan =
+            file("--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-a\n+if ok \u{202E}{ grant() }\n");
+        let plain = file("--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-a\n+if ok { grant() }\n");
+        let (t, ts) = score_file(&trojan);
+        let (p, _) = score_file(&plain);
+        assert_eq!((t, ts.contains(&RiskSignal::HazardousText)), (p + 3, true));
+        let context = file("--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +1,2 @@\n x\u{200B}\n-a\n+b\n");
+        assert!(!score_file(&context).1.contains(&RiskSignal::HazardousText));
+        let generated = file(
+            "--- a/gen/generated/x.rs\n+++ b/gen/generated/x.rs\n@@ -1 +1 @@\n-a\n+b\u{1b}[2J\n",
+        );
+        assert_eq!(score_file(&generated).0, 4);
+        let traversal = file("--- a/../x\n+++ b/../x\n@@ -1 +1 @@\n-a\n+b\n");
+        assert!(
+            score_file(&traversal)
+                .1
+                .contains(&RiskSignal::HazardousText)
+        );
+        assert_eq!(RiskSignal::HazardousText.label(), "hazardous_text");
     }
 
     #[test]

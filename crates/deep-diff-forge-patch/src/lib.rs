@@ -81,6 +81,15 @@ pub enum PatchParseError {
     UnsupportedFormat { line_number: usize },
     /// A quoted Git path was malformed or was not UTF-8.
     InvalidPath { line_number: usize },
+    /// A file header out of place: an extended header after the file's `---`, `+++` or first
+    /// hunk, a `+++` that does not follow a `---` at once, or a `---` with no `+++` after it.
+    /// Git ignores such lines, so taking them as headers changed what the review showed.
+    MisplacedHeader { line_number: usize },
+    /// The headers contradict each other: `new file mode` with an old path that is not
+    /// `/dev/null`, or `deleted file mode` with a new path that is not.
+    InconsistentHeader { line_number: usize },
+    /// The patch ends inside a hunk line that has no line feed, which Git refuses as corrupt.
+    UnterminatedLine { line_number: usize },
     /// The input exceeded the configured byte budget and was not parsed.
     BudgetExceeded {
         /// Configured limit in bytes.
@@ -143,6 +152,18 @@ impl std::fmt::Display for PatchParseError {
             Self::InvalidPath { line_number } => {
                 write!(f, "invalid or non-UTF-8 Git path at line {line_number}")
             }
+            Self::MisplacedHeader { line_number } => write!(
+                f,
+                "file header out of place at line {line_number} (after the file's headers or first hunk, or a --- without +++)"
+            ),
+            Self::InconsistentHeader { line_number } => write!(
+                f,
+                "contradictory file headers ending at line {line_number} (new or deleted file without /dev/null)"
+            ),
+            Self::UnterminatedLine { line_number } => write!(
+                f,
+                "the patch ends inside hunk line {line_number}, which has no line feed"
+            ),
             Self::BudgetExceeded {
                 limit_bytes,
                 actual_bytes,

@@ -143,7 +143,12 @@ fn signal_phrase(signal: RiskSignal) -> &'static str {
         RiskSignal::ManyHunks => "Many hunks — scattered edits.",
         RiskSignal::ConfigOrLockfile => "Config/lockfile change.",
         RiskSignal::TestOnly => "Test-only change (lower priority).",
-        RiskSignal::GeneratedOrVendored => "Generated/vendored — usually skip.",
+        RiskSignal::GeneratedOrVendored => {
+            "Generated/vendored path — lower priority, but its author chose the path."
+        }
+        RiskSignal::HazardousText => {
+            "Hidden or control characters, or a traversing path — what you see may not be what applies."
+        }
     }
 }
 
