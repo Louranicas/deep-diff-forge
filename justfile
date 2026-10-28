@@ -115,10 +115,13 @@ publish-dry-run:
     cargo publish --dry-run -p deep-diff-forge-learning --allow-dirty
 
 # Cut a release: validate the tag matches the workspace version + a clean tree,
-# run the release gate, then tag and push BOTH remotes. Pushing the tag fires
-# release.yml (cross-platform binaries + GitHub Release, and crates.io publish
-# IF CARGO_REGISTRY_TOKEN is configured — an irreversible, yank-only act).
-# Usage: just release-tag 0.2.0
+# run the release gate, then tag and push BOTH remotes (`origin` is GitHub). Pushing
+# the tag fires release.yml: cross-platform binaries, checksums, provenance and the
+# GitHub Release. crates.io publishes only when the repository variable
+# DDF_CRATES_IO is `open` (on hold by owner decision; irreversible, yank-only).
+# Run a `workflow_dispatch` dry run on the commit first: it is the only run that
+# tests the macOS binaries before they ship.
+# Usage: just release-tag 0.3.0
 [group("release")]
 release-tag version:
     #!/usr/bin/env bash
@@ -135,7 +138,7 @@ release-tag version:
     fi
     just gate-release
     git tag -a "v${want}" -m "v${want}"
-    git push github "v${want}"
+    git push origin "v${want}"
     git push gitlab "v${want}"
     printf 'tagged + pushed v%s to both remotes; release.yml is now running.\n' "${want}"
 

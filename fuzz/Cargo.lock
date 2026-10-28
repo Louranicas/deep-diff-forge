@@ -40,18 +40,18 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "deep-diff-forge-agent"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "deep-diff-forge-core",
 ]
 
 [[package]]
 name = "deep-diff-forge-core"
-version = "0.2.1"
+version = "0.3.0"
 
 [[package]]
 name = "deep-diff-forge-daemon"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-graph",
@@ -76,21 +76,21 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-graph"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "deep-diff-forge-core",
 ]
 
 [[package]]
 name = "deep-diff-forge-patch"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "deep-diff-forge-core",
 ]
 
 [[package]]
 name = "deep-diff-forge-review"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "deep-diff-forge-core",
  "nix",

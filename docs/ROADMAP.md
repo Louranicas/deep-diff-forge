@@ -1,5 +1,54 @@
 # Roadmap
 
+## Status 2026-10-28 (0.3.0)
+
+This section is current. The phase lists below are the original plan and are kept unchanged;
+the [2026-10-26 status](#status-2026-10-26) is kept as a dated record. Status is read from the
+code at `2f03f40` plus this release's version bump, and from `deep-diff-forge --help`.
+
+| Phase | State | What exists / what remains |
+| --- | --- | --- |
+| 0. Vocabulary and contracts | Done | Core model, exit-code registry, `--self-test`, `doctor`, `claude-code-contract`, `chain-contract`, `cluster-contract`, `loom-contract`. |
+| 1. Patch baseline | Mostly done | Parser, renderer, side-by-side and inline projections, `--stdin-patch` with `--json`, `--jsonl`, `--rank`, `--cluster`, `--layout`. Remaining: `--plain` and `--exit-code` do not exist (refused as unknown options); the pipeline has ingest and render stages only. |
+| 2. Pager and terminal review | Partial | Done: stdin patch, Git selections (`--git-working-tree`, `--git-staged`, `--git-range`), Rust syntax highlighting, keyboard and mouse TUI. Remaining: file-pair and directory-pair diff (`deep-diff-forge <old> <new>` is refused), Git external-diff mode, automatic width-based layout and a stacked layout. |
+| 3. Structural diff | Partial | Done: tree-sitter with the Rust grammar only, byte and node budgets and a cooperative time budget, token-level structural diff with reformat-only and best-effort moved-block detection (`structural <old> <new>`). Remaining: more languages, structural spans tied to hunks. |
+| 4. Review intelligence graph | Partial | Done: deterministic file-level risk ranking with generated/vendored suppression. Remaining: hunk-level ranking, symbols, tests, owners, commands in the graph. |
+| 5. Agent collaboration | Partial | Done: grounding and source classification, sanitising, anchor validation (library); the TUI shows the engine's own grounded notes. Remaining: any path for external agent annotations into the CLI, daemon or TUI; agent review requests. |
+| 6. App surfaces | Partial | Done: TUI. Remaining: a TUI test harness beyond the headless `review --probe` frame; desktop, web, IDE and forge adapters. |
+| 7. Daemon | Partial | Done: Unix-socket JSON-RPC 2.0, protocol 1, sessions, `engine.methods`, 0700 directory and 0600 socket. Remaining: AST and line-index cache, subscriptions, a peer-credential check on the socket. |
+| 8. Cluster and loom | Cluster partial, loom not built | Done: `deep-diff-forge-cluster` with contiguous shards, join policies and a receipt, run by `--cluster`. Remaining: semantic and other dimensions; the `cluster` subcommand; all of loom. |
+| 9. Deployment spine | Done | CI (`ci.yml`, 9 required checks), `release.yml` (3 targets, sha256, SLSA attestation on tags), `deploy status|release`, hostile daemon soak smoke, GitHub releases v0.1.0 and v0.2.0, GitLab `main` fast-forwarded from GitHub `main` after each merge. |
+| 10. Learning loop | Partial | Done: local-only strategy receipts (`learn record --stdin`), scoring and trust (`learn status`), planner, ranking and annotation learners and promotion rules (library only). Remaining: nothing emits receipts automatically; no corpus manifest, benchmark receipts, or wiring of learned weights into ranking. See [LEARNING_LOOP.md](LEARNING_LOOP.md). |
+
+Release and publication:
+
+- **0.3.0 is not tagged.** Whether to tag `v0.3.0` (or any `v*` tag) is the owner's decision.
+  Published GitHub releases are v0.1.0 and v0.2.0; v0.2.1 was never tagged.
+- **crates.io is on hold** by owner decision until the codebase is production-hardened.
+  `release.yml` publishes only when the repository variable `DDF_CRATES_IO` is `open`; a
+  configured token does not lift the hold.
+
+Production readiness (2026-10-28 verdict): ready for its declared scope, a local single-user
+review tool (CLI, daemon, `rpc`, `mcp`, SDKs) on Linux and macOS, released as GitHub binaries.
+Not claimed: crates.io, a multi-user or shared-host daemon.
+
+Residual risks (open):
+
+1. One engine mutex serializes daemon requests; up to 8 connections share it.
+2. No peer-credential check on the socket; access control is the 0700 directory and 0600 socket.
+3. Git subprocesses have no time limit (`crates/deep-diff-forge-patch/src/git_acquire.rs`, `child.wait()`).
+4. macOS tests run on schedule and dispatch only, not on pull requests.
+5. Two `daemon start`s can race in the window between probing and binding.
+6. No TUI test harness beyond the headless probe.
+7. The council trial is not designed yet.
+
+Fixed on 2026-10-28 (PRs #21 to #23): a text change hidden after a `GIT binary patch` body (now a
+strict base85 grammar, else exit 4); gate containers run as the caller's uid and gid instead of
+`--user=0:0`; quadratic metadata parsing (1M lines: 139 s to 0.20 s, measured); macOS
+`SO_RCVTIMEO` `EINVAL`; a second `daemon start` orphaning the first (now `AddrInUse` when a live
+daemon answers); responses over the 80 MiB line cap; an invalid learning receipt exiting 3 (now
+4); `daemon --socket PATH health` misparsing; `--foreground` accepted outside `daemon start`.
+
 ## Phase 0: Vocabulary and Contracts
 
 - Define patch truth model.
@@ -154,7 +203,7 @@ Remaining, in order:
 4. **crates.io:** on hold until the codebase is production-ready and the
    repository documentation is current.
 
-Open work after the anchor list: see the vault note [Strategy/Remaining Work 2026-10-28](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FRemaining%20Work%202026-10-28).
+Open work after the anchor list: see the vault note [Strategy/Remaining Work 2026-10-28](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FRemaining%20Work%202026-10-28) (owner's local vault).
 
 ## Deployment Link
 
@@ -163,4 +212,4 @@ Open work after the anchor list: see the vault note [Strategy/Remaining Work 202
 
 ## Review integration route
 
-[Implementation status and delivery gates](RECOMMENDATION_INTEGRATION.md#remaining-module-routes) ↔ [Module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--ROADMAP). This route records planned and evaluation-dependent work without claiming it is implemented.
+[Implementation status and delivery gates](RECOMMENDATION_INTEGRATION.md#remaining-module-routes) ↔ [Module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--ROADMAP) (owner's local vault). This route records planned and evaluation-dependent work without claiming it is implemented.

@@ -64,10 +64,12 @@ jobs:
         run: cargo check --workspace --all-targets --locked
 
   # macOS binaries ship from release.yml, so their tests run before a release: weekly, on a
-  # manual run, and inside a dispatched release dry run. Not on pull requests (macOS minutes).
+  # manual run, inside a dispatched release dry run, and inside a tag release (release.yml calls
+  # this workflow with the tag push's event, so before, a tagged release skipped them). Not on
+  # pull requests (macOS minutes).
   macos:
     name: macOS tests
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
     timeout-minutes: 60
     steps:

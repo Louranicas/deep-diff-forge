@@ -276,3 +276,41 @@ fn every_surface_names_a_status_with_the_one_label() {
     assert!(jsonl.contains("\"status\":\"binary_changed\""), "{jsonl}");
     assert!(inline.contains("binary_changed"), "{inline}");
 }
+
+/// `--parallel` takes `serial`, `auto` or a worker count from 1; anything else is a usage error.
+/// Before, an unreadable count quietly ran as `auto`, and 0 was reported as `fixed:0`.
+#[test]
+fn an_unreadable_or_zero_worker_count_is_refused() {
+    for bad in ["banana", "0", "-1", "65536"] {
+        let (code, stdout, stderr) = run(&["--stdin-patch", "--cluster", "--parallel", bad], PATCH);
+        assert_eq!(code, 2, "{bad}: {stderr}");
+        assert_eq!(stdout, "", "{bad}");
+        assert!(
+            stderr.contains(&format!(
+                "--parallel takes serial, auto or a worker count from 1, not {bad}"
+            )),
+            "{stderr}"
+        );
+    }
+    let (code, stdout, _) = run(&["--stdin-patch", "--cluster", "--parallel", "1"], PATCH);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("parallelism=fixed:1"), "{stdout}");
+}
+
+/// `chain-contract` states what the JSON and JSONL output really carry: a schema name on every
+/// document and an event name on every JSONL record (a JSONL record has no schema version).
+#[test]
+fn chain_contract_promises_what_jsonl_carries() {
+    let (code, stdout, _) = run(&["chain-contract"], "");
+    assert_eq!(code, 0);
+    assert!(
+        stdout
+            .contains("every JSON document names its schema; every JSONL record names its event."),
+        "{stdout}"
+    );
+    let (_, events, _) = run(&["--stdin-patch", "--jsonl"], PATCH);
+    for line in events.lines() {
+        let event: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert!(event["event"].is_string(), "{line}");
+    }
+}

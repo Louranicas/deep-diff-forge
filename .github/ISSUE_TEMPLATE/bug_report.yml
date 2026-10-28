@@ -1,0 +1,51 @@
+name: Bug report
+description: Something Deep-Diff-Forge does that it shouldn't, or doesn't do that it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. **Security issues go to a [private advisory](https://github.com/Louranicas/deep-diff-forge/security/advisories/new), not here.**
+        Never paste secrets or private source code; a minimal patch that reproduces the problem is ideal.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The exact command and its input. `deep-diff-forge envelope -- <command…>` captures the exit code, stdout and stderr in one JSON object.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `deep-diff-forge --version`, or the commit you built.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - CLI
+        - TUI cockpit (review)
+        - Daemon / rpc
+        - MCP server
+        - Rust SDK
+        - Python SDK
+        - Review council
+        - Docs
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: e.g. Fedora 44 x86_64, macOS 16 arm64

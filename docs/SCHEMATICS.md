@@ -4,9 +4,25 @@
 
 This document is the target implementation map for Deep-Diff-Forge. It turns the product vision into concrete boundaries, APIs, processes, and data flows.
 
+## What exists today (0.3.0)
+
+- **Crates:** the 14 in [Current crates and edges](#current-crates-and-edges) below. The as-built
+  crate graph and data flow are drawn in [ARCHITECTURE.md](ARCHITECTURE.md#crates-as-built-030).
+  `git`, `planner` and `loom` crates do not exist.
+- **Process modes that exist:** CLI one-shot; `review` (interactive TUI, patch on stdin); the
+  optional Unix-socket daemon (`daemon start|health|status|stop`); `rpc` and `mcp` (stdio, no
+  daemon); and library use through `deep-diff-forge-sdk`. `--cluster` on `--stdin-patch` or a
+  Git selection runs the cluster crate's lanes.
+- **Refused today:** the `chain`, `cluster` and `loom` subcommands and `deep-diff-forge <old>
+  <new>` (`deep-diff-forge --help`, "NOT YET IMPLEMENTED").
+- **No shared cache:** the daemon holds sessions only; `daemon.health` reports
+  `cache_entries: 0` (`crates/deep-diff-forge-daemon/src/handler.rs`, decision D-03).
+
+The diagrams below the generated block are target design unless a section says otherwise.
+
 ## System maps (2026-10-28)
 
-Derived from the code at `cba2ee7`, in the vault:
+Derived from the code at `cba2ee7`, in the owner's local vault (the `obsidian://` links do not open for other readers):
 
 - [End-to-End Stack Map](obsidian://open?vault=deep-diff-forge.vault&file=Diagrams%2FEnd-to-End%20Stack%20Map%202026-10-28)
 - [Feature Map](obsidian://open?vault=deep-diff-forge.vault&file=Diagrams%2FFeature%20Map%202026-10-28)
@@ -107,17 +123,20 @@ flowchart TB
 
 ## Process Modes
 
-| Mode | Process model | Use case | Default |
+| Mode | Process model | Use case | Status at 0.3.0 |
 | --- | --- | --- | --- |
-| Library mode | Caller links `deep-diff-forge-core` and optional crates directly. | Desktop apps, IDEs, tests, embedded tools. | Yes |
-| CLI one-shot | `deep-diff-forge` runs once and exits. | Pager, CI, shell workflows. | Yes |
-| Chain runner | `deep-diff-forge chain` runs declared stages. | Bash, Claude Code, reproducible pipelines. | Yes after pipeline crate lands |
-| Cluster runner | `deep-diff-forge cluster` runs dimensional lanes in parallel. | Large repos, corpora, bounded local parallelism. | Yes after cluster crate lands |
-| Interactive TUI | `deep-diff-forge review` owns terminal event loop. | Review stream, mouse navigation, runtime toggles. | Yes after TUI crate lands |
-| Loom runner | `deep-diff-forge loom` creates plans, fixtures, gates, and receipts. | Assimilating exemplar lessons and new capabilities. | Yes after loom crate lands |
-| Local daemon | `deep-diff-forge daemon` exposes IPC and shared cache. | Multi-client sessions, persistent AST cache, agent coordination. | No, opt-in |
+| Library mode | Caller links `deep-diff-forge-sdk` (or the engine crates) directly. | Desktop apps, IDEs, tests, embedded tools. | Built: `deep-diff-forge-sdk`. |
+| CLI one-shot | `deep-diff-forge` runs once and exits. | Pager, CI, shell workflows. | Built. |
+| Chain runner | `deep-diff-forge chain` runs declared stages. | Bash, Claude Code, reproducible pipelines. | Not built; refused. The pipeline crate runs ingest and render for `--jsonl`. |
+| Cluster runner | `deep-diff-forge cluster` runs dimensional lanes in parallel. | Large repos, corpora, bounded local parallelism. | Not built as a subcommand; refused. `--cluster [--parallel N]` runs patch and risk lanes. |
+| Interactive TUI | `deep-diff-forge review` owns terminal event loop. | Review stream, mouse navigation, runtime toggles. | Built (`review`, `review --probe` for a headless frame). |
+| Loom runner | `deep-diff-forge loom` creates plans, fixtures, gates, and receipts. | Assimilating exemplar lessons and new capabilities. | Not built; refused. Only `loom-contract` prints the contract. |
+| Local daemon | `deep-diff-forge daemon` exposes JSON-RPC over a Unix socket. | Repeated review sessions from several local clients. | Built, opt-in. Sessions only, no shared cache. |
+| Stdio JSON-RPC / MCP | `deep-diff-forge rpc`, `deep-diff-forge mcp`. | Agents and scripts without a daemon. | Built. |
 
-The daemon is not required for correctness. It is a performance and coordination accelerator.
+The daemon is not required for correctness. Its listener accepts at most 8 connections, but one
+engine serves them, so requests run one at a time (`crates/deep-diff-forge-daemon/src/serve.rs`,
+`MAX_CONNECTIONS`).
 
 ## Core Data Pipeline
 
@@ -163,6 +182,11 @@ The patch twin is allowed to exist without the semantic twin. The semantic twin 
 
 ## Crate Schematic
 
+Target layout. At 0.3.0, `deep-diff-forge-git` and `deep-diff-forge-planner` and
+`deep-diff-forge-loom` do not exist; `deep-diff-forge-review`, `deep-diff-forge-learning` and
+`deep-diff-forge-sdk` exist and are not listed here. Side-by-side rows are built in
+`deep-diff-forge-projection`, not `deep-diff-forge-patch`.
+
 ```text
 deep-diff-forge/
   crates/
@@ -184,7 +208,10 @@ deep-diff-forge/
 
 ## API Surface Map
 
-Public APIs are split by stability.
+Public APIs are split by stability. Target table; rows naming `deep-diff-forge-loom` or
+`deep-diff-forge-planner` describe crates that do not exist. The stable Rust interface today is
+`deep-diff-forge-sdk`; the daemon's implemented methods are listed by `engine.methods`
+([API_AND_IPC.md](API_AND_IPC.md)).
 
 | Stability | Location | Audience |
 | --- | --- | --- |

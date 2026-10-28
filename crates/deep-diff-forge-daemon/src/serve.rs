@@ -99,11 +99,14 @@ impl SocketLocation {
     ///
     /// The binding policy depends on provenance:
     /// * **Engine-default** — creates + chmods the daemon-owned runtime dir,
-    ///   removes any stale file, binds, sets the socket to `0600`.
-    /// * **Explicit** — the parent directory must already exist and pass
-    ///   [`validate_private_dir`] (owner-private, non-symlink); it is never
-    ///   created or chmod'd. Any pre-existing path is removed only if it is a
-    ///   socket; a regular file or directory causes an error (fail closed).
+    ///   removes a stale socket, binds, sets the socket to `0600`.
+    /// * **Explicit** — an absent parent is created `0700`; an existing parent
+    ///   must pass [`validate_private_dir`] (owner-private, non-symlink) and is
+    ///   never chmod'd.
+    ///
+    /// Either way a pre-existing path is removed only if it is a socket nothing
+    /// answers on: a live daemon's socket is `AddrInUse`, and a regular file,
+    /// directory or symlink is an error (fail closed).
     ///
     /// # Errors
     ///
@@ -384,9 +387,11 @@ pub fn bind_secure(socket_path: &Path) -> std::io::Result<UnixListener> {
 ///      parent fails closed instead of being silently tightened to `0700` — this
 ///      is the core of the hardening (a `--socket` override must not mutate a
 ///      directory the caller already owns).
-/// 2. If the socket path already exists it is removed **only if it is a socket**
-///    (`symlink_metadata + file_type().is_socket()`). A regular file, directory,
-///    or symlink at the path causes an error; we never delete non-socket files.
+/// 2. If the socket path already exists it is removed **only if it is a socket
+///    nothing answers on** (`symlink_metadata + file_type().is_socket()`, then a
+///    refused connect). A live daemon's socket is `AddrInUse`; a regular file,
+///    directory, or symlink at the path causes an error; we never delete
+///    non-socket files.
 /// 3. Binds via [`UnixListener::bind`] and sets the socket to `0600`.
 ///
 /// This is the binding path for `--socket` overrides. The engine-managed

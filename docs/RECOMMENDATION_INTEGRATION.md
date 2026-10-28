@@ -1,5 +1,18 @@
 # Recommendation integration — 2026-10-25
 
+## Status 2026-10-28 (0.3.0)
+
+**Kind:** append-only ledger of the 60 tuicr findings DDF-R00–R59, dated 2026-10-25 against base `1b39d66` (0.2.1). The entries below are not rewritten. Their status labels (19 Implemented, 10 Partial foundation, 20 Planned, 6 Evaluation required, 4 Preserved, 1 partially implemented) are as of 2026-10-25.
+
+**What changed:**
+
+- The sentence "This branch is local; it has not been merged, pushed, released or published" is no longer true. `codex/assimilate-review-20261025` is an ancestor of `main` at `2f03f40` (measured: `git merge-base --is-ancestor`). It reached `main` through later merges. It was not released on its own; the published GitHub releases are `v0.1.0` and `v0.2.0`, and 0.3.0 is untagged.
+- Still true at 0.3.0: the daemon and TUI do not use the analysis service. The daemon's `engine.methods` lists no analysis method (`daemon.*`, `diff.compute`, `diff.plan`, `session.*`, `engine.*` only; measured with the binary). `analyze <patch> <base-dir> <cand-dir>` is a CLI command only.
+- Findings implemented after 2026-10-25 are recorded in [`CHANGELOG.md`](../CHANGELOG.md) and [`EVIDENCE.md`](../EVIDENCE.md), not here.
+- **Links.** Every `obsidian://` link in this ledger opens the owner's local vault and does not resolve on GitHub. "Local verification evidence" is a directory on the operator workstation.
+
+Current docs: [architecture](ARCHITECTURE.md), [API and IPC](API_AND_IPC.md), [review council](REVIEW_COUNCIL.md), [roadmap](ROADMAP.md).
+
 This document is the executable integration ledger for the 60 commit-pinned tuicr findings, DDF-R00–R59. It assesses assimilation and records the implemented first increment. **The architecture can absorb the recommendations through its crate boundaries, but it is not yet an end-to-end advanced synthetic engineering platform.** Broader capabilities remain explicitly planned or experimental. No competitive-superiority claim has been established.
 
 Base: `1b39d66bcb6caf5c30680f18a28fe06d2b35bbbd` (0.2.1). Local implementation branch: `codex/assimilate-review-20261025`. Original source/review checkouts remain unchanged. This branch is local; it has not been merged, pushed, released or published.

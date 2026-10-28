@@ -62,7 +62,7 @@ fn release_json_declares_schema_and_version() {
     let (code, stdout, _) = run(&["deploy", "release", "--json"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("\"schema\": \"deep-diff-forge.release.v0\""));
-    assert!(stdout.contains("\"version\": \"0.2.1\""));
+    assert!(stdout.contains("\"version\": \"0.3.0\""));
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn release_json_reports_crates_io_blocked() {
     assert_eq!(code, 0);
     assert!(stdout.contains("crates.io"));
     assert!(stdout.contains("\"state\": \"blocked\""));
-    assert!(stdout.contains("\"pending\": [\"crates.io\"]"));
+    assert!(stdout.contains("\"pending\": [\"github-release\", \"crates.io\"]"));
     assert!(stdout.contains("\"fully_published\": false"));
 }
 
@@ -82,7 +82,7 @@ fn release_human_lists_targets_and_pending() {
     assert!(stdout.contains("github"));
     assert!(stdout.contains("gitlab"));
     assert!(stdout.contains("crates.io"));
-    assert!(stdout.contains("pending: crates.io"));
+    assert!(stdout.contains("pending: github-release, crates.io"));
 }
 
 #[test]

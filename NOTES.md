@@ -2,6 +2,10 @@
 
 Durable lessons for future Deep-Diff-Forge sessions. This is not a diary.
 
+## Status 2026-10-28 (0.3.0)
+
+**Kind:** append-only log of durable lessons. Earlier entries are kept as written; a later entry corrects an earlier one. The newest entry is [2026-10-28 (macOS, controls, fuzz)](#2026-10-28-macos-controls-fuzz), at the end. Older entries name the code as it was then. For the current behaviour, see [operations and daemon](docs/OPERATIONS_AND_DAEMON.md), [testing standard](docs/TESTING_GOLD_STANDARD.md) and [evidence](EVIDENCE.md).
+
 ## 2026-06-22 (refactor: parser strictness, socket type, highlight, structural)
 
 - Lesson: a unified-diff parser must enforce each hunk's declared `@@ -a,b +c,d @@`
@@ -213,4 +217,66 @@ Durable lessons for future Deep-Diff-Forge sessions. This is not a diary.
   Human from the wire. Real trust authority = grounding (evidence), unforgeable
   by relabelling.
 - Evidence: `agent/src/lib.rs::source_of` + escalation regression tests.
+- Status: permanent.
+
+## 2026-10-28 (macOS, controls, fuzz)
+
+- Lesson: macOS refuses `setsockopt(SO_RCVTIMEO)` with `EINVAL` on a Unix socket
+  whose peer has disconnected (both directions shut). Linux accepts it. Code
+  that re-arms a read deadline before every buffer refill therefore fails on
+  macOS whenever the peer closes first and the response is longer than the
+  buffer. Reads on such a socket cannot block (buffered bytes, then EOF), so
+  that one `EINVAL` is treated as armed and every other error is returned
+  unchanged. A deadline with no time left is `TimedOut`, not the `InvalidInput`
+  that `set_read_timeout(Some(ZERO))` returns. Decide platform errors with a
+  small pure function, so Linux mutation testing can still kill its mutants.
+- Evidence: `settle_read_timeout` and `read_capped_line_deadline` in
+  `crates/deep-diff-forge-daemon/src/serve.rs` (`26654c8`). Release dry run
+  40626071938 failed `client_rejects_response_over_cap`; the planted control
+  `a_line_from_a_closed_peer_reads_completely_across_refills` failed on macOS
+  with `Os { code: 22 }` on the old code (CI run 40628593978).
+  `only_a_disconnected_peer_refusal_is_settled` pins the decision.
+- Status: permanent.
+
+- Lesson: macOS has no `/proc`, and neither does a container without it mounted.
+  Code that reads `/proc/self` for identity needs a source that cannot fail,
+  not a fallback. The gate controller read its uid:gid from `/proc/self` and
+  fell back to `0:0`, so on macOS every gate container ran as root. Use
+  `geteuid`/`getegid`. A test that checks identity needs an oracle independent
+  of the code under test: POSIX `id`, not a second read of `/proc`. Other Linux
+  assumptions found the same way: `/dev/full` (absent on macOS), the exact
+  `ECONNRESET` on a reset socket (macOS reports EOF), and `accept()` failing
+  with `EMFILE` before any connection is pending.
+- Evidence: `operator()` in `crates/deep-diff-forge-review/src/sandbox.rs`
+  (`7a2f5ae`), found by the first macOS test run (CI run 40618280385);
+  `crates/deep-diff-forge-cli/tests/council.rs` takes `--user` from `id`;
+  `97e2d6f` for the other cases. The macOS job runs with `--no-fail-fast`, so one
+  failing test binary does not hide the rest.
+- Status: permanent. The macOS job runs on the weekly schedule and on manual
+  runs (including release dry runs), not on pull requests.
+
+- Lesson: a control must fail on the old code, or it proves nothing. Run every
+  new regression test against the code before the fix, or plant the old
+  behaviour back, and record that it failed. A test that asserts only
+  `code != 0` passed for the wrong exit code (3 instead of 4). Diff mutation
+  finds controls that are too weak, for example a guard replaced with `true`.
+- Evidence: the 2026-10-28 fix commits each name the control and how it failed
+  before (`21f5c93`, `726fa15`, `39f1fec`, `1337888`, `679f7eb`, `7a2f5ae`).
+  `980a2c8` added the control that killed a missed mutant in
+  `remove_stale_socket`.
+- Status: permanent.
+
+- Lesson: a grammar fix needs a fuzz run of the round-trip invariant, not only
+  the attack case. The first binary-body fix ended the body at the first line
+  outside the base85 grammar. CI's 10 s `patch_parser` fuzz smoke found that
+  this was unstable: a metadata line after the body is rendered before the
+  body, so render → parse → render lost the body. Git's format allows only body
+  lines between `GIT binary patch` and the next `diff --git`, so any other line
+  there is now refused (`UnsupportedFormat`, exit 4). CI kept no crash
+  artifact, so the regression input is a minimal reconstruction.
+- Evidence: CI run 40634223913; `332f8fd`;
+  `fixtures/patch/regressions/binary-metadata-after-body.patch`;
+  `a_metadata_line_after_a_binary_body_is_refused`. Then 300 s local campaigns:
+  `patch_parser` 5,457,367 runs and `review_json` 4,159,390 runs, 0 crashes
+  (see [`EVIDENCE.md`](EVIDENCE.md#release-dry-runs-and-fuzzing-2026-10-28)).
 - Status: permanent.

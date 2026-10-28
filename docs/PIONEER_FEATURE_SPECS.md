@@ -2,6 +2,18 @@
 
 This document converts the three above-baseline features into implementation-ready specs.
 
+> **Target design, not a description of the code.** None of the commands in the `CLI` blocks
+> below exist at 0.3.0; each is refused as an unknown command (exit 2). The next section lists
+> what does exist.
+
+## What exists today (0.3.0)
+
+| Feature | Built | Commands that exist |
+| --- | --- | --- |
+| Semantic patch twin | `core::ReviewFile` carries a `PatchTwin` and an optional `SemanticTwin`. The parser never fills the semantic twin; only `analyze` does, after checking the patch against base and candidate directories (`crates/deep-diff-forge-pipeline/src/review.rs`). Rust is the only grammar. | `semantic <path> [--json]`, `structural <old> <new> [--json]`, `analyze <patch> <base-dir> <candidate-dir>` |
+| Review intelligence graph | File-level ranking only: a deterministic additive score from patch facts, with signals `public_api_surface`, `new_file`, `deleted_file`, `binary_change`, `large_change`, `many_hunks`, `config_or_lockfile`, `test_only`, `generated_or_vendored` (`crates/deep-diff-forge-graph/src/risk.rs`). No hunk, symbol, test or owner nodes. | `--stdin-patch --rank [--json]`, the same on a Git selection, daemon `diff.plan`, MCP `rank_patch` |
+| Adaptive diff planner | Not built. The parser sets `DiffStrategy::Binary` for binary files and `DiffStrategy::Line` for everything else (`crates/deep-diff-forge-patch/src/parser.rs`). No budget profiles. | none |
+
 ## 1. Semantic Patch Twin
 
 ### Purpose
@@ -23,6 +35,8 @@ Preserve apply-able patch truth while adding syntax-level understanding.
 - `AnchorMap`: file, hunk, line, byte, and syntax-node links
 
 ### CLI
+
+Target commands, not built.
 
 ```bash
 deep-diff-forge --git --semantic --json
@@ -76,6 +90,8 @@ Rank review work by likely impact, not file order.
 
 ### CLI
 
+Target commands, not built.
+
 ```bash
 deep-diff-forge rank --git
 deep-diff-forge rank --git --json
@@ -120,6 +136,8 @@ Choose the cheapest truthful diff strategy per file and region.
 
 ### CLI
 
+Target commands, not built.
+
 ```bash
 deep-diff-forge plan --git
 deep-diff-forge plan --git --json
@@ -163,4 +181,4 @@ Every fallback records:
 
 ## Review integration route
 
-[Implementation status and delivery gates](RECOMMENDATION_INTEGRATION.md#remaining-module-routes) ↔ [Module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--PIONEER_FEATURE_SPECS). This route records planned and evaluation-dependent work without claiming it is implemented.
+[Implementation status and delivery gates](RECOMMENDATION_INTEGRATION.md#remaining-module-routes) ↔ [Module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--PIONEER_FEATURE_SPECS) (owner's local vault). This route records planned and evaluation-dependent work without claiming it is implemented.

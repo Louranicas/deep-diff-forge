@@ -6,6 +6,20 @@ an exceptional one. This policy documents the maintained security boundary,
 the controls enforced by the repository, and the limits operators must account
 for.
 
+## Status 2026-10-28 (0.3.0)
+
+- `main` carries the **0.3.0** development line. It is not tagged; cutting a
+  `v*` tag is the owner's decision. The published releases are `v0.1.0` and
+  `v0.2.0`. `0.2.1` was never tagged or published.
+- The controls below describe the code on `main`. The `v0.2.0` binaries were
+  built on 2026-06-24 and predate the SOL-1 hardening (2026-09-04), the review
+  council work and the 2026-10-28 fixes listed under
+  [Fixed on 2026-10-28](#fixed-on-2026-10-28).
+- Declared scope: a local, single-user review tool (CLI, daemon, `rpc`, `mcp`,
+  SDKs) on Linux and macOS, shipped as GitHub release binaries. Not claimed:
+  crates.io packages, or a daemon shared between users on one host.
+- Known limits are listed under [Residual risks](#residual-risks-and-non-goals).
+
 ## Reporting a vulnerability
 
 Do not open a public issue for an unfixed vulnerability or include sensitive
@@ -29,11 +43,14 @@ release when the fix is ready; these targets are not a service-level agreement.
 ## Supported versions
 
 Before 1.0, only the newest released minor line receives security fixes.
+Fixes land on `main` first and reach users in the next tagged release.
 
-| Version | Supported |
-| --- | --- |
-| Latest `0.x` minor | Yes |
-| Older minor lines and unreleased snapshots | No |
+| Version | State | Security fixes |
+| --- | --- | --- |
+| `0.3.0` (`main`) | Current development line, untagged | Land here first. |
+| `v0.2.0` (2026-06-24) | Latest published release | Newest released minor line. It does not contain the fixes made since 2026-06-24. |
+| `v0.1.0` (2026-06-22) | Published, superseded | No. |
+| `0.2.1` | Never tagged or published | Not applicable. |
 
 Use a tagged release for production automation. Reports against `main` are
 welcome, but `main` can contain unreleased behavior.
@@ -77,8 +94,19 @@ selection.
 
 - Stdin, source files, daemon lines, responses, learning records, and patch
   structure are bounded before unbounded allocation or retention.
-- Patch parsing rejects more than one million physical lines, preventing tiny
-  lines from amplifying into an unbounded object graph.
+- Patch parsing rejects more than one million physical lines and more than
+  64 MiB of input (`DEFAULT_LINE_BUDGET`, `DEFAULT_BYTE_BUDGET` in
+  `crates/deep-diff-forge-patch/src/lib.rs`), preventing tiny lines from
+  amplifying into an unbounded object graph.
+- After a `GIT binary patch` header, the parser admits only lines of git's
+  binary-body grammar until the next `diff --git`: `literal N`, `delta N`, the
+  empty line that ends a hunk, or a data line whose length letter matches its
+  base85 payload. Any other line is refused as `UnsupportedFormat` (exit 4).
+  Before 2026-10-28 every later line went into the binary body, so a text change
+  placed after a binary section was hidden from the review while `git apply`
+  still applied it (`is_binary_body_line` and the regression test
+  `a_text_change_after_a_binary_body_is_never_hidden_in_it` in
+  `crates/deep-diff-forge-patch/src/parser.rs`).
 - Human-facing terminal output passes through `core::display_safe`, which
   exposes ANSI/CSI/OSC controls, C0/C1 controls, carriage returns, DEL, bidi
   overrides/isolates, directional marks, zero-width characters, and BOM rather
@@ -91,21 +119,84 @@ selection.
 
 ### Local daemon
 
+The trust boundary is the OS account. Code: `crates/deep-diff-forge-daemon/src/`
+(`serve.rs`, `security.rs`, `handler.rs`).
+
+```mermaid
+flowchart LR
+    subgraph account[Same OS account: trusted]
+        CLI[deep-diff-forge CLI / SDK client]
+    end
+    subgraph boundary[Filesystem checks]
+        Dir["runtime dir: owned by euid, mode 0700, not a symlink"]
+        Sock["socket: mode 0600"]
+    end
+    subgraph daemon[deep-diff-forge daemon start]
+        Accept["accept loop: at most 8 connection workers"]
+        Read["read one line: 80 MiB cap, 30 s absolute deadline"]
+        Engine["one Engine behind one Mutex: requests run one at a time"]
+        Cap["response over 80 MiB becomes RESOURCE_EXHAUSTED (8)"]
+    end
+    CLI --> Dir --> Sock --> Accept --> Read --> Engine --> Cap
+```
+
 - The daemon is Unix-only and listens on a filesystem Unix-domain socket.
-- Its managed runtime directory is owned by the effective user with mode
-  `0700`; its socket is mode `0600`. There is no `/tmp` fallback when
-  `$XDG_RUNTIME_DIR` is unavailable.
-- Explicit socket paths require an owner-private parent. Symlinks, wrong-owner
-  directories, permissive directories, inode swaps, and non-socket occupants
-  fail closed. Shutdown removes only the socket inode created by that server.
+- Its managed runtime directory (`$XDG_RUNTIME_DIR/deep-diff-forge/`) is owned
+  by the effective user with mode `0700`; its socket is mode `0600`
+  (`SECURE_DIR_MODE`, `SECURE_SOCKET_MODE` in `security.rs`). There is no `/tmp`
+  fallback when `$XDG_RUNTIME_DIR` is unset: the CLI exits 2.
+- Explicit `--socket PATH` locations require an owner-private parent. A missing
+  parent is created at `0700`; an existing parent is validated and never
+  chmodded, so a `0755` parent is refused. Symlinks, wrong-owner directories,
+  permissive directories and inode swaps fail closed. Shutdown removes only the
+  socket inode that server created (`cleanup_owned_socket`).
+- Before binding, `remove_stale_socket` (`serve.rs`) handles whatever is at the
+  socket path. A non-socket file is never deleted; the start fails. A socket
+  that accepts a connection belongs to a live daemon; the start fails with
+  `AddrInUse` (exit 6) and the running daemon keeps its socket. Only a socket
+  whose connect is refused (`ConnectionRefused`, a leftover from a daemon that
+  is gone) is removed. Before 2026-10-28 a second `daemon start` deleted a live
+  daemon's socket and orphaned it. Measured 2026-10-28 with the 0.3.0 debug
+  build: second start exit 6; restart over a socket left by `kill -9` succeeds;
+  regular file at the path refused, exit 6.
 - JSON-RPC envelopes are shape-checked, including protocol version, method,
   identifier, and parameter types.
-- Requests and responses are capped at 80 MiB and use 30-second absolute read
-  and write deadlines. Slow byte-drip traffic cannot renew the deadline.
-- Concurrent workers are capped at eight. Sessions are LRU-bounded to 64 and
-  their aggregate retained nested payload is capped at 128 MiB.
-- A dispatch panic is contained to its request worker rather than unwinding the
-  listener.
+- Request and response lines are capped at 80 MiB (`MAX_REQUEST_BYTES`,
+  `MAX_RESPONSE_BYTES`). An oversized request gets one `INVALID_REQUEST` error
+  and the connection closes. A response over the cap is replaced by a
+  `RESOURCE_EXHAUSTED` (8) error naming its size (`bounded_response`); before
+  2026-10-28 the server sent it and the client failed. `deep-diff-forge rpc`
+  uses the same `process_line` and caps over stdio.
+- Each line read has a 30-second absolute deadline (`READ_TIMEOUT`), applied as
+  the remaining time before every read, so slow byte-drip traffic cannot renew
+  it. Writes have a 30-second timeout (`WRITE_TIMEOUT`).
+- At most eight connections are served at once (`MAX_CONNECTIONS`). A further
+  connection is accepted and closed at once, with no response. All workers share
+  one engine behind one mutex, so requests run one at a time.
+- Sessions are LRU-bounded to 64 (`MAX_SESSIONS`) and their aggregate retained
+  payload is capped at 128 MiB (`MAX_RETAINED_SESSION_BYTES`, `handler.rs`).
+- A dispatch panic is caught per request. The engine resets its sessions and
+  clears the mutex poison, so later requests are served as before.
+
+### Review council gate sandbox
+
+Council quality gates run candidate code only inside a rootless Podman
+container (`crates/deep-diff-forge-review/src/sandbox.rs`; design and threat
+model: [`docs/REVIEW_COUNCIL.md`](docs/REVIEW_COUNCIL.md#gate-sandbox)). The
+container is started with `--rm --pull=never --read-only --cap-drop=all
+--security-opt=no-new-privileges --userns=keep-id --init --pids-limit=8192
+--memory=32g --memory-swap=32g --log-driver=none`, all host CPUs but one,
+`--network=none` unless the job is dependency vendoring, and a conmon
+`--timeout` of the job's deadline plus 60 seconds. The candidate source, the
+vendored dependencies and the Cargo home are mounted read-only; only the job's
+scratch directory is writable. The controller removes the container by name and
+proves it gone before reading anything it wrote.
+
+The container runs as the controller's own `uid:gid`, taken from
+`geteuid()`/`getegid()` (`operator()` in `sandbox.rs`). Before 2026-10-28 it was
+read from `/proc/self` and fell back to `0:0`, so on a host without `/proc`
+every gate ran as root inside the container. Gates refuse to run unless
+`DDF_COUNCIL_GATE_IMAGE` names a local image.
 
 ### Local learning store
 
@@ -130,14 +221,23 @@ selection.
   The TUI disables unused default features.
 - GitHub Actions are pinned to full commit SHAs, use least-privilege job
   permissions, do not persist checkout credentials, and have bounded run times.
-- Releases run only for `v*` tags whose value exactly matches the workspace
-  version. Audit and policy gates run again before publishing.
+- `release.yml` runs on `v*` tags and on manual `workflow_dispatch`. A tag must
+  exactly match the workspace version. Both runs repeat the full `ci.yml`
+  quality workflow and a supply-chain gate, build three targets, smoke the
+  binaries the runner can execute, and verify every archive's SHA-256. Only tag
+  refs attest and upload; a dispatched run is a dry run that publishes nothing.
+  See [`docs/RELEASE_AND_PUBLICATION.md`](docs/RELEASE_AND_PUBLICATION.md).
 - Release archives, checksums, and the generated SPDX SBOM receive GitHub build
-  provenance attestations. Dependabot monitors both Cargo graphs and Actions.
-- crates.io publication currently uses a repository secret. Moving to crates.io
-  trusted publishing remains an account-level hardening step outside this
-  repository. As of 2026-10-26, crates.io publication is on hold until the
-  codebase is production-ready; no version after 0.2.1 is published.
+  provenance attestations on tag runs. Dependabot monitors both Cargo graphs and
+  Actions.
+- crates.io publication is on hold by owner decision until the codebase is
+  production-hardened. The `publish` job runs only on a tag and only when the
+  repository variable `DDF_CRATES_IO` is `open`; a configured
+  `CARGO_REGISTRY_TOKEN` alone does not lift the hold. It would publish with
+  that repository secret; crates.io trusted publishing remains an account-level
+  hardening step outside this repository. No crates.io release is recorded in
+  [`EVIDENCE.md`](EVIDENCE.md) (not re-checked against crates.io in this
+  refresh).
 - CI and release toolchains are pinned (stable 1.99.1, `nightly-2026-10-25`),
   so a toolchain release cannot change a gate's result. The committed SBOM is
   reproducible: its namespace is content-addressed and `created` comes from the
@@ -149,8 +249,9 @@ selection.
    when processing mutually untrusted users' content.
 2. Keep `$XDG_RUNTIME_DIR` owned by that account and inaccessible to group and
    others. For `--socket PATH`, pre-create an owner-private parent directory.
-3. Serialize daemon starts; do not run multiple instances at the same socket
-   path because an existing same-user socket is not probed for liveness.
+3. Start one daemon per socket path, from one supervisor. A start now refuses a
+   live socket (exit 6), but two starts racing in the window between the
+   liveness probe and the bind can still orphan one daemon (see residual risks).
 4. Do not publish, proxy, or bind-mount the daemon socket into a less-trusted
    environment.
 5. Treat exported JSON and annotations as untrusted when another tool renders
@@ -168,7 +269,13 @@ independent authenticity proof.
 ## Reproducing the security gates
 
 The authoritative gate is [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
-The principal local checks are:
+`just ci` runs [`scripts/ci_local.sh`](scripts/ci_local.sh), a step-for-step
+replica of its `secrets`, `msrv`, `gate` and `supply-chain` jobs (checked by
+`crates/deep-diff-forge-cli/tests/ci_replica.rs`; it needs gitleaks, Rust
+1.88.0, cargo-deny and cargo-audit installed). It does not replay the review
+controller evidence job (rootless Podman) or the diff-mutation job; run
+`scripts/diff_mutation.sh origin/main` for the latter. The principal local
+checks are:
 
 ```bash
 cargo fmt --all --check
@@ -190,6 +297,30 @@ The release workflow repeats the supply-chain gate, regenerates the release
 SBOM, and attests it before irreversible publication.
 
 ## Residual risks and non-goals
+
+Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
+
+- **One engine serializes daemon requests.** Every connection shares one
+  `Mutex<Engine>`, so one slow request delays all other clients. Eight
+  connections can be open; only one request runs.
+- **No peer-credential check on the socket.** Access control is the `0700`
+  directory and `0600` socket alone; the daemon does not read the peer's uid
+  (`SO_PEERCRED`/`getpeereid`).
+- **Git subprocesses have no time limit.** Git acquisition bounds stdout and
+  stderr bytes but waits for the child without a deadline
+  (`child.wait()` in `crates/deep-diff-forge-patch/src/git_acquire.rs`), so a
+  hung `git` (for example on a stalled network filesystem) hangs the command.
+- **Two `daemon start`s can race.** Between `remove_stale_socket`'s probe and
+  the bind, a second start can remove the first's fresh socket and bind its own,
+  leaving the first running but unreachable.
+- **macOS tests do not run on pull requests.** The `macos` CI job runs weekly,
+  on manual runs, in a dispatched release dry run and in a tag release, but not
+  on a pull request.
+- **The TUI has no interactive test harness.** Unit tests cover its state and
+  rendering, and the headless `review --probe` frame is tested end to end; the
+  live terminal path is not.
+- **The review council trial is undesigned.** The council is used on this
+  repository; no controlled trial of its review quality exists.
 
 - Resource caps limit individual operations and retained state; they are not a
   CPU or process sandbox. A permitted local client can temporarily occupy all
@@ -228,7 +359,26 @@ The current posture follows these review cycles:
   [`docs/REVIEW_COUNCIL.md`](docs/REVIEW_COUNCIL.md#gate-sandbox). Evidence:
   [`EVIDENCE.md`](EVIDENCE.md#review-council-and-ci-2026-10-26).
 
-Open security-relevant work (2026-10-26): council r18 triage; an MCP server
+### Fixed on 2026-10-28
+
+PRs #21 to #23, on `main` and not in any published release:
+
+- text change hidden after a `GIT binary patch` body (strict base85 grammar, else
+  exit 4);
+- gate containers ran as `0:0` on hosts without `/proc` (now `geteuid`/`getegid`);
+- quadratic patch-metadata parsing (1M lines: 139 s before, 0.20 s after,
+  measured);
+- a second `daemon start` orphaned the first (now refused with `AddrInUse`);
+- the server sent responses over the 80 MiB cap (now `RESOURCE_EXHAUSTED`);
+- macOS `SO_RCVTIMEO` EINVAL after a peer disconnect.
+
+Status of the 2026-10-26 open items, as of 2026-10-28: the MCP server ships
+read-only (tools `review_patch`, `rank_patch`, `explain_exit_code`,
+`exit_code_registry`; no write tool); CI is pinned to `ubuntu-26.04` and the
+rootless-Podman step was re-measured there on 2026-10-27; the pinned actions
+are Node 24 builds.
+
+Open security-relevant work (2026-10-26, kept as written): council r18 triage; an MCP server
 (slice D) must stay read-only by default with each write tool opt-in; the
 `ubuntu-latest` move to Ubuntu 26 needs the rootless-Podman CI step
 re-measured; and Node 20 actions are deprecated.

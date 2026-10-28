@@ -14,6 +14,27 @@ The framework is designed for:
 - Habitat/factory service collaboration without hard runtime coupling.
 - Receipt-backed release and learning loops.
 
+## Status 2026-10-28 (0.3.0)
+
+- Workspace version 0.3.0 on `main`, untagged. 14 crates under `crates/`
+  (core, patch, projection, pipeline, syntax, graph, agent, tui, cluster,
+  learning, daemon, review, sdk, cli); edition 2024, MSRV 1.88, toolchain
+  1.99.1. Internal edges: [`crate-edges.txt`](crate-edges.txt).
+- Published GitHub releases: `v0.1.0`, `v0.2.0`. crates.io is on hold by owner
+  decision; `release.yml` publishes only when the repository variable
+  `DDF_CRATES_IO` is `open`, never because a token exists.
+- `deploy status` reports maturity L9 (Learning). Its gate list is declared, not
+  run; the gates themselves run in CI and in `just ci`.
+- The gates that exist are `.github/workflows/ci.yml` (seven jobs, nine checks on
+  a pull request), `.github/workflows/release.yml`, the `justfile` recipes listed
+  below, [`scripts/ci_local.sh`](../scripts/ci_local.sh) and
+  [`scripts/diff_mutation.sh`](../scripts/diff_mutation.sh). See
+  [Release And Publication](RELEASE_AND_PUBLICATION.md#github-actions).
+- Not implemented, though described below as design: `deploy gate`, the
+  `ingest`, `chain`, `cluster` and `loom` commands, the cache, the `DDF_*`
+  configuration variables, release receipts under `reports/releases/`, and the
+  `fixtures/{syntax,projection,graph,agent,loom}` groups.
+
 ## Source Of Truth Order
 
 When signals conflict, resolve in this order:
@@ -40,6 +61,7 @@ document should link back to this framework through a deployment link section.
 | [API And IPC](API_AND_IPC.md) | API locations, JSON-RPC, socket locations, protocol versioning. |
 | [Architecture](ARCHITECTURE.md) | Layering, crate plan, core principles. |
 | [Bash API Contracts](BASH_API_CONTRACTS.md) | Strict shell behavior, JSON/JSONL shapes, exit-code use. |
+| [Changelog](../CHANGELOG.md) | Released and unreleased changes. |
 | [Chaining And Clustering](CHAINING_AND_CLUSTERING.md) | Unix filter chaining and local parallel execution. |
 | [Claude Code Bash CLI](CLAUDE_CODE_BASH_CLI.md) | Claude Code and CLI-first contracts. |
 | [Deployment Gap Analysis](DEPLOYMENT_GAP_ANALYSIS.md) | Current framework gaps and non-anthropocentric recommendations. |
@@ -51,18 +73,25 @@ document should link back to this framework through a deployment link section.
 | [Feature Deployability Matrix](FEATURE_DEPLOYABILITY_MATRIX.md) | Feature-level gates and deployability criteria. |
 | [Hermes Agent Persona](HERMES_AGENT_PERSONA.md) | ARCHON-7 recursive heptadic architecture diagnosis role. |
 | [Learning Loop](LEARNING_LOOP.md) | Post-run feedback and promotion rules. |
+| [Making Skills](MAKING_SKILLS.md) | Wrapping the engine as an agent skill or extension. |
 | [Module Structure Plan](MODULE_STRUCTURE_PLAN.md) | Rust workspace, crate, module, dependency, and code-flow plan. |
+| [Notes](../NOTES.md) | Durable implementation lessons (read at session start). |
 | [Operations And Daemon](OPERATIONS_AND_DAEMON.md) | Optional daemon, health, UDS, service behavior. |
 | [Performance And Novelty](PERFORMANCE_AND_NOVELTY.md) | Performance posture and top-tail feature choices. |
 | [Pioneer Feature Specs](PIONEER_FEATURE_SPECS.md) | Semantic twin, review graph, adaptive planner specs. |
 | [Problem-Solver God-Tier Setup](PROBLEM_SOLVER_GOD_TIER_SETUP.md) | High-cost design decision role, verdict shape, and V4 handoff. |
-| [Release And Publication](RELEASE_AND_PUBLICATION.md) | Versioning, artifact publication, mirror policy. |
+| [Recommendation Integration](RECOMMENDATION_INTEGRATION.md) | Ledger of the DDF-R00 to R59 review findings and quality gates. |
+| [Refactor Plan S1008412](REFACTOR_PLAN_S1008412.md) | Historical refactor and feature plan. |
+| [Release And Publication](RELEASE_AND_PUBLICATION.md) | Versioning, CI and release workflows, artifact publication, mirror policy. |
+| [Review Council](REVIEW_COUNCIL.md) | Review roster, adversarial council, gate sandbox, per-round history. |
 | [Roadmap](ROADMAP.md) | Implementation phase order. |
 | [Rust Implementation Strategy](RUST_IMPLEMENTATION_STRATEGY.md) | Rust crate strategy, dependencies, errors, tests. |
 | [Schematics](SCHEMATICS.md) | Diagrams and system topology. |
+| [Security Policy](../SECURITY.md) | Vulnerability reporting, supported versions, enforced controls, residual risks. |
 | [Storage And 10TB Corpus](STORAGE_AND_10TB_CORPUS.md) | Optional large corpus and archive policy. |
 | [Testing Gold Standard](TESTING_GOLD_STANDARD.md) | Minimum meaningful tests, integration coverage, and anti-test-fitting rules. |
 | [Vision](VISION.md) | Product direction and non-negotiables. |
+| [History: review cockpit 2026-06-23](history/2026-06-23-review-cockpit/README.md) | Archived collaboration record. |
 
 ## Deployment Architecture
 
@@ -105,15 +134,13 @@ flowchart TB
 | Production release | Public remotes | tag/assets/crates | no-mistakes gate, final ack | publication receipt |
 
 The codebase is at L9 (learning): every engine layer L0-L8 is implemented plus
-the L9 local-only learning loop, and `v0.1.0` was tagged/released to GitHub
-(binary + checksums via `release.yml`) and both git remotes. `v0.2.1` is the
-SOL-1 security-hardening, crates.io-publishable cut (`cargo publish --dry-run`
-clean across the workspace), with a `deploy release` posture report and a
-`deny.toml` supply-chain policy. The
-single remaining publication target is **crates.io**, which the release workflow
-publishes automatically once a `CARGO_REGISTRY_TOKEN`
-is configured — the one credential-gated step. L9 Learning (runtime-telemetry
-driven) follows.
+the L9 local-only learning loop. `v0.1.0` and `v0.2.0` were tagged and released
+to GitHub (binary + checksums via `release.yml`) and both git remotes. `0.2.1`
+was never tagged; `main` is now 0.3.0, untagged. crates.io is on hold by owner
+decision: the `publish` job runs only when the repository variable
+`DDF_CRATES_IO` is `open`, and a configured `CARGO_REGISTRY_TOKEN` does not lift
+the hold (corrected 2026-10-28; the earlier text said a token alone would
+publish).
 
 Current gaps and recommendations are tracked in
 [Deployment Gap Analysis](DEPLOYMENT_GAP_ANALYSIS.md).
@@ -149,23 +176,45 @@ Assimilated patterns:
 - Factory/habitat justfiles: read-only observation and receipt-first gates.
 - Small crate justfiles: repo-local `CARGO_TARGET_DIR=target`.
 
+Every recipe in the `justfile` (checked 2026-10-28):
+
 | Recipe | Deployment role |
 | --- | --- |
+| `just review [ref]` | Build release, pipe `git diff [ref]` into the interactive cockpit (needs a TTY). |
+| `just review-side [ref]` | The same, side-by-side. |
+| `just review-probe [ref]` | Headless: render one 120x40 frame to stdout. |
 | `just status` | Gate 0 identity and metadata check. |
-| `just fmt` | Gate 1 formatting. |
-| `just check` | Gate 2 compile. |
-| `just clippy` | Gate 3 lint. |
+| `just fmt` | Gate 1 formatting (`cargo fmt --all --check`). |
+| `just check` | Gate 2 compile (`cargo check --workspace`). |
+| `just clippy` | Gate 3 lint (`-D warnings`). |
 | `just pedantic` | V4 pedantic clippy gate. |
-| `just test` | Gate 4 tests. |
+| `just test` | Gate 4 tests (`cargo test --workspace --locked`). |
+| `just docs` | rustdoc with `-D warnings -D rustdoc::broken_intra_doc_links`, as docs.rs builds. |
 | `just contracts` | Gate 6 bootstrap contract probes. |
-| `just gate-docs` | Docs-only gate for planning changes. |
-| `just gate-bootstrap` | Current L0 deployment gate. |
-| `just gate-feature` | Stricter feature gate for Rust implementation changes. |
-| `just ci` | Local CI equivalent. |
+| `just gate-docs` | `fmt` + `check`. |
+| `just gate-bootstrap` | `fmt` + `check` + `contracts`. |
+| `just gate-feature` | `fmt` + `check` + `clippy` + `pedantic` + `test` + `contracts`. |
+| `just gate-release` | `gate-feature` + `docs`. |
+| `just ci` | Runs `scripts/ci_local.sh`: step-for-step replica of the `secrets`, `msrv`, `gate` and `supply-chain` CI jobs (checked by `crates/deep-diff-forge-cli/tests/ci_replica.rs`). Not the Podman evidence job or diff mutation. |
+| `just publish-dry-run` | `cargo publish --dry-run` for the core and learning crates. |
+| `just release-tag <version>` | Check version and clean tree, run `gate-release`, tag `v<version>`, push the tag to the `github` and `gitlab` remotes. |
 | `just zellij-observe` | Optional Zellij session observation. |
 | `just habitat-observe` | Optional habitat/factory status and wiring observation. |
-| `just doctor` | Combined status, contracts, and optional external observation. |
-| `just receipt-bootstrap` | Writes a bootstrap deployment receipt under `reports/`. |
+| `just doctor` | `status` + `hooks-status` + `contracts` + optional external observation. |
+| `just install-hooks` | Install the versioned gitleaks pre-push hook. |
+| `just hooks-status` | Report whether the installed pre-push hook is the versioned one. |
+| `just receipt-bootstrap` | Writes a bootstrap deployment receipt under `reports/deployments/`. |
+| `just security-sbom` | Regenerate `sbom.spdx.json`. |
+| `just security-mutation [list\|run]` | `scripts/security/mutation_gate.sh`: list or run security-critical mutants. |
+| `just security-privacy` | Learning-store privacy probe. |
+| `just security-soak` | Hostile-client daemon soak (`DDF_SOAK_SECONDS`, default 60). |
+| `just security-s9-local` | `gate-release` + SBOM + mutation inventory + privacy probe + soak; self-attested. |
+
+The pull-request mutation gate is not a recipe:
+`scripts/diff_mutation.sh <base-ref> [k/n]` mutates only the Rust lines under
+`crates/` changed since the merge base (`cargo mutants --no-config --in-diff`)
+and exits non-zero on any missed mutant or timeout; a change with no such lines
+passes and says so.
 
 Generated receipts are intentionally ignored by Git through `/reports/`.
 
@@ -301,7 +350,8 @@ Acceptance:
 
 ### Gate 5: Fixture
 
-Fixture groups:
+Fixture groups (only `fixtures/patch`, with `fixtures/patch/regressions/`, and
+`fixtures/council` exist today; the rest are the target layout):
 
 - `fixtures/patch`
 - `fixtures/syntax`
@@ -330,10 +380,17 @@ CARGO_TARGET_DIR=target cargo run -p deep-diff-forge-cli -- cluster-contract
 CARGO_TARGET_DIR=target cargo run -p deep-diff-forge-cli -- loom-contract
 ```
 
-Future contract probes:
+Implemented machine probe:
 
 ```bash
 deep-diff-forge --stdin-patch --json < fixtures/patch/basic.patch
+```
+
+Future contract probes (not implemented; `ingest`, `chain`, `cluster` and
+`loom` are refused today as unknown commands, exit 2; the `*-contract` probes
+above describe their target contracts):
+
+```bash
 deep-diff-forge ingest --git --jsonl
 deep-diff-forge chain --manifest .deep-diff-forge/chain.toml
 deep-diff-forge cluster --git --dimensions patch,semantic,risk --parallel auto --json
@@ -375,16 +432,21 @@ target/release/deep-diff-forge --self-test
 Daemon, when included:
 
 ```bash
-target/release/deep-diff-forge daemon start --foreground
-target/release/deep-diff-forge daemon health --json
+target/release/deep-diff-forge daemon start --foreground &
+target/release/deep-diff-forge daemon health
 target/release/deep-diff-forge daemon stop
 ```
+
+`daemon health` prints JSON already and takes no `--json` flag (it is refused,
+exit 2).
 
 Acceptance:
 
 - CLI runs without daemon.
-- Daemon binds only user-private UDS/named-pipe locations.
-- Health returns protocol versions, pid, session count, and cache status.
+- Daemon binds only user-private Unix socket locations (there is no
+  named-pipe implementation).
+- Health returns `status`, `version`, `pid`, `sessions`, `retained_bytes`,
+  `cache_entries` (always 0: there is no cache) and `protocol`.
 
 ### Gate 9: Release
 
@@ -641,27 +703,40 @@ flowchart LR
 | --- | --- | --- |
 | `crates/` | Rust implementation | source of behavior |
 | `fixtures/` | test and regression owners | small reproducible evidence |
-| `benches/` | performance owners | latency and memory evidence |
+| `benches/` | performance owners | latency and memory evidence (directory does not exist yet) |
 | `fuzz/` | parser/codec owners | resilience evidence |
 | `docs/` | architecture owners | source-of-truth contracts until code lands |
 | `reports/` | deployment runner | receipts and publication evidence |
-| `/mnt/storage-10tb/deep-diff-forge-*` | corpus runner | optional large corpus artifacts |
-| `$XDG_RUNTIME_DIR/deep-diff-forge/` | daemon | socket and runtime locks |
-| `$XDG_CACHE_HOME/deep-diff-forge/` | daemon/cache | content-addressed cache |
-| `$XDG_STATE_HOME/deep-diff-forge/` | runtime | sessions, logs, learning receipts |
+| `/mnt/storage-10tb/deep-diff-forge-*` (operator workstation) | corpus runner | optional large corpus artifacts |
+| `$XDG_RUNTIME_DIR/deep-diff-forge/` | daemon | socket (mode `0700` dir, `0600` socket) |
+| `$XDG_CACHE_HOME/deep-diff-forge/` | daemon/cache | target: content-addressed cache; `doctor` reports the path, nothing writes it yet |
+| `$XDG_STATE_HOME/deep-diff-forge/` | runtime | learning receipts under `learning/` (falls back to `$HOME/.local/state`) |
 
 ## Environment Variables
 
+Read by the code or scripts today:
+
 | Variable | Purpose |
 | --- | --- |
-| `CARGO_TARGET_DIR=target` | Keep build output repo-local. |
+| `CARGO_TARGET_DIR=target` | Keep build output repo-local (exported by the `justfile`). |
+| `XDG_RUNTIME_DIR` | Daemon socket base; unset and no `--socket` means the daemon refuses (exit 2). |
+| `XDG_STATE_HOME` | Learning store base. |
+| `DDF_COUNCIL_GATE_IMAGE` | Local image the council gate sandbox runs; gates refuse without it. |
+| `DDF_COUNCIL_PODMAN` | Podman command for the gate sandbox. |
+| `DDF_SOAK_SECONDS` | Duration of `scripts/security/daemon_soak.py` (default 60; CI uses 10). |
+| `DDF_MUTATION_OUT` | Output directory of `scripts/diff_mutation.sh`. |
+
+Target design, not read by any code today:
+
+| Variable | Purpose |
+| --- | --- |
 | `DDF_CONFIG` | Future explicit config file override. |
 | `DDF_CACHE_DIR` | Future cache override. |
 | `DDF_STATE_DIR` | Future state override. |
-| `DDF_SOCKET` | Future daemon socket override. |
+| `DDF_SOCKET` | Future daemon socket override (use `--socket PATH`). |
 | `DDF_RECEIPT_DIR` | Deployment receipt output directory. |
 | `DDF_CORPUS_DIR` | Optional large corpus root. |
-| `NO_COLOR` | Disable ANSI color for shell/CI compatibility. |
+| `NO_COLOR` | Disable ANSI color (today `highlight` takes `--color`/`--no-color`). |
 
 No environment variable may be required for correctness when a command-line
 flag can express the same requirement.
@@ -750,13 +825,17 @@ Rollback receipts must include:
 | L8 | Release | Signed assets, crates, CI, no-mistakes gate. |
 | L9 | Learning | Corpus-driven promotion and SLO-backed defaults. |
 
-The current repository is L8 — all engine layers shipped and `v0.1.0` released:
-`deep-diff-forge-{patch,projection,pipeline,syntax,graph,agent,tui,cluster,daemon}`
-+ `cli`, with `--stdin-patch [--json | --jsonl | --rank | --cluster | --layout …]`,
-`semantic <path>`, `review [--probe]`, `daemon {…}`, `deploy {status|release}`,
-patch fixtures, dual licenses, `CHANGELOG.md`, CI + release workflows, and a
-`deny.toml` policy. Remaining: crates.io publication (token-gated) and L9
-Learning (needs runtime telemetry).
+The current repository is L9 (2026-10-28, 0.3.0): the 14 crates
+`deep-diff-forge-{core,patch,projection,pipeline,syntax,graph,agent,tui,cluster,learning,daemon,review,sdk,cli}`,
+with `--stdin-patch [--json | --jsonl | --rank | --cluster | --layout …]`, Git
+acquisition (`--git-working-tree`, `--git-staged`, `--git-range`), `semantic`,
+`structural`, `highlight`, `analyze`, `review [--probe]`, `daemon {…}`, `rpc`,
+`mcp`, `envelope`, `schema`, `explain`, `learn`, `council`,
+`deploy {status|release}`, the Rust and Python SDKs, CI and release workflows,
+and a `deny.toml` policy. L8's "signed assets" are SHA-256 files plus GitHub
+build-provenance attestations, not signatures. Remaining: crates.io
+publication (owner hold) and the items listed in the status section. The text
+before 2026-10-28 said L8 with crates.io token-gated.
 
 ## Framework Maintenance
 

@@ -1,0 +1,27 @@
+name: Feature request
+description: A problem Deep-Diff-Forge could solve, or solve better.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and where does Deep-Diff-Forge get in the way? Problems before solutions.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: A possible solution
+      description: Optional. Commands, flags or output you would like to see.
+  - type: textarea
+    id: truth
+    attributes:
+      label: Patch truth
+      description: Optional. Would this touch the apply-able patch, or only enrich it? Enrichment never rewrites the patch.
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contributing
+      options:
+        - label: I'd like to work on this myself.

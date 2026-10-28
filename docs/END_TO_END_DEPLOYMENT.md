@@ -2,6 +2,31 @@
 
 This document defines the deployment spine for Deep-Diff-Forge from local development through public release, daemon rollout, and post-release learning.
 
+## Status 2026-10-28 (0.3.0)
+
+The gate sequence below is the design. What runs today:
+
+- Gates 0 to 4 and 6 run on every pull request in `.github/workflows/ci.yml`,
+  and locally in one command: `just ci` ([`scripts/ci_local.sh`](../scripts/ci_local.sh))
+  replicates the `secrets`, `msrv`, `gate` and `supply-chain` jobs step for
+  step. Pedantic clippy is already mandatory there. Diff-scoped mutation
+  ([`scripts/diff_mutation.sh`](../scripts/diff_mutation.sh)) and the
+  rootless-Podman planted-breach suite also gate every pull request.
+- Gates 5 to 7 run in `.github/workflows/release.yml` on a `v*` tag, or as a
+  dry run on `workflow_dispatch` that publishes nothing. Details:
+  [Release And Publication](RELEASE_AND_PUBLICATION.md#github-actions).
+- Gate 4's snapshot directories (`fixtures/expected/...`) do not exist. The
+  fixtures today are `fixtures/patch/*.patch` (with `fixtures/patch/regressions/`)
+  and `fixtures/council/`; fuzz seeds live in `fuzz/seeds/`.
+- Gate 8 has no tooling; nothing writes `reports/releases/`.
+- Version 0.3.0 is untagged. Published releases: `v0.1.0`, `v0.2.0`. crates.io
+  is on hold (`DDF_CRATES_IO`).
+- The local remote-tracking refs (last fetch, 2026-10-28) show GitLab `main` at
+  `2f03f40`, the same commit as GitHub `main`; the 2026-10-26 instruction not to
+  push GitLab `main` below is superseded.
+- Release artifacts are not signed. Integrity is a SHA-256 file per archive plus
+  GitHub build-provenance attestations.
+
 ## Deployment Philosophy
 
 Deep-Diff-Forge deploys through gates, not hope.
@@ -31,7 +56,7 @@ The deployment model borrows three corpus patterns:
 | Local review | Real user workflow | CLI/TUI | XDG cache/state | Check + TUI smoke |
 | Daemon dev | IPC and cache validation | UDS | XDG runtime/cache/state | Check + IPC smoke |
 | CI | Repeatable validation | CLI only | Ephemeral | Full gate |
-| Release | Signed artifacts | CLI/daemon | Packaged defaults | Full gate + receipts |
+| Release | Checksummed, attested artifacts | CLI/daemon | Packaged defaults | Full gate + receipts |
 | Habitat deployment | Long-running service citizen | UDS only by default | XDG state/cache | Full gate + health |
 
 ## Phase Gates
@@ -75,12 +100,10 @@ CARGO_TARGET_DIR=target cargo metadata --no-deps >/dev/null
 CARGO_TARGET_DIR=target cargo check --workspace
 ```
 
-Future expansion:
-
-```bash
-CARGO_TARGET_DIR=target cargo build --workspace --locked
-CARGO_TARGET_DIR=target cargo build --workspace --release --locked
-```
+CI adds `--locked` (`cargo check --workspace --locked`) and checks the declared
+MSRV with Rust 1.88.0 (`cargo check --workspace --all-targets --locked`).
+Release builds (`cargo build --release --locked -p deep-diff-forge-cli --target <triple>`)
+run in `release.yml`.
 
 ### Gate 2: Static Quality
 
@@ -89,7 +112,8 @@ cargo fmt --all --check
 CARGO_TARGET_DIR=target cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Pedantic mode becomes mandatory once public API docs stabilize:
+Pedantic mode is mandatory in CI (`deploy gate-feature` job, with `--locked`;
+also for the patch crate without default features and for the fuzz crate):
 
 ```bash
 CARGO_TARGET_DIR=target cargo clippy --workspace --all-targets -- -D warnings -W clippy::pedantic
@@ -131,7 +155,7 @@ Required fixture classes:
 - grounded agent annotation
 - ungrounded agent annotation
 
-Output snapshots:
+Output snapshots (target layout; these directories do not exist yet):
 
 ```text
 fixtures/expected/inline/
@@ -149,15 +173,18 @@ cargo package --workspace --allow-dirty
 CARGO_TARGET_DIR=target cargo build -p deep-diff-forge-cli --release --locked
 ```
 
-Later release forms:
+`just publish-dry-run` runs `cargo publish --dry-run` for the core and learning
+crates only (the others need their upstream crates on crates.io first).
 
-- GitHub Release assets
-- GitLab Release assets
-- crates.io publish
-- cargo-binstall metadata
-- Linux tarball
-- macOS tarball
-- optional DEB/RPM after daemon/systemd assets exist
+Release forms, with their state on 2026-10-28:
+
+- GitHub Release assets: built by `release.yml` on a tag
+- GitLab Release assets: not produced
+- crates.io publish: on hold (`DDF_CRATES_IO`)
+- cargo-binstall metadata: not configured
+- Linux tarball (`x86_64-unknown-linux-gnu`): built by `release.yml`
+- macOS tarballs (`x86_64-apple-darwin`, `aarch64-apple-darwin`): built by `release.yml`
+- optional DEB/RPM after daemon/systemd assets exist: not produced
 
 ### Gate 6: Runtime Smoke
 
@@ -171,8 +198,11 @@ target/release/deep-diff-forge --self-test
 
 Daemon:
 
+`daemon start` blocks in the foreground, so a smoke runs it in the background.
+The path below is the default one, so the other commands need no `--socket`:
+
 ```bash
-deep-diff-forge daemon start --foreground --socket "$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock"
+deep-diff-forge daemon start --foreground --socket "$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock" &
 deep-diff-forge daemon status
 deep-diff-forge daemon stop
 ```
@@ -182,8 +212,17 @@ The daemon smoke must assert:
 - socket parent mode is `0700`
 - socket mode is `0600` where supported
 - owner is current UID
-- stale sockets are detected and handled
+- stale sockets are detected and handled: a live socket is refused
+  (`AddrInUse`, exit 6), a socket whose connect is refused is replaced, a
+  non-socket file is never deleted
 - JSON-RPC `engine.initialize` and `daemon.health` pass
+
+The unit tests in `crates/deep-diff-forge-daemon/src/serve.rs` and
+`security.rs`, the CLI tests in `crates/deep-diff-forge-cli/tests/daemon.rs`,
+and the hostile soak (`scripts/security/daemon_soak.py`, 10 s in CI) cover
+these. Each was also checked by hand on 2026-10-28 with the 0.3.0 debug build
+(`engine.initialize` over `deep-diff-forge rpc`, the rest against a live
+daemon).
 
 ### Gate 7: Publish
 
@@ -196,21 +235,15 @@ Publishing order:
 5. Create release assets.
 6. Publish crates only after release artifacts pass smoke.
 
-GitHub:
+`main` changes only through a merged pull request, and GitLab `main` is fast-forwarded to
+GitHub's. The tag is the owner's act, and one recipe validates and pushes it to both remotes:
 
 ```bash
-git push github main
-git push github vX.Y.Z
+just release-tag X.Y.Z   # version check, clean tree, gate-release, then push vX.Y.Z to origin and gitlab
 ```
 
-GitLab:
-
-```bash
-git push gitlab main
-git push gitlab vX.Y.Z
-```
-
-Current status (2026-10-26):
+Current status (2026-10-26, kept as written; see the 2026-10-28 status at the
+top for what changed):
 
 - **Do not push GitLab `main`.** It has diverged from GitHub `main` and must be
   reconciled first; branch pushes are unaffected.
@@ -242,7 +275,7 @@ After release, record:
 - user toggles used most often
 - ungrounded agent annotation rate
 
-Receipts live under:
+Receipts live under (target; nothing writes this directory yet):
 
 ```text
 reports/releases/YYYY-MM-DD-vX.Y.Z/
@@ -259,7 +292,9 @@ Rollback is deliberately boring:
 
 ## Deployment Receipts
 
-Every serious deployment produces a receipt:
+Every serious deployment produces a receipt. Today only `just receipt-bootstrap`
+writes one, with `manifest.txt`, `status.txt`, `gate-bootstrap.txt`,
+`zellij.txt`, `habitat.txt` and `summary.json`; the fuller layout is the target:
 
 ```text
 reports/deployments/<timestamp>/

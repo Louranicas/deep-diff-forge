@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Louranicas/deep-diff-forge/security/advisories/new
+    about: Privately, through a GitHub security advisory. Please don't open a public issue.
+  - name: Contributing guide
+    url: https://github.com/Louranicas/deep-diff-forge/blob/main/CONTRIBUTING.md
+    about: How to set up, the quality bar, and open problems worth owning.

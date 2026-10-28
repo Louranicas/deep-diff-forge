@@ -1,5 +1,18 @@
 # Distinguished Agentic Rust Coder V4
 
+## Status 2026-10-28 (0.3.0)
+
+**Kind:** process standard for implementation, review and reporting. It is current.
+
+**What changed since it was written:** the gate a change must pass is now wider than the four commands in "V4 Rust Gate".
+
+- `just gate-feature` runs `fmt check clippy pedantic test contracts` (`justfile`). `just ci` (`scripts/ci_local.sh`) replays every CI gate job locally.
+- CI (`.github/workflows/ci.yml`) also runs: `cargo check` on Rust 1.88 (the MSRV), docs with `-D warnings`, the fuzz harness compile and 10 s fuzz smokes, the hostile daemon soak, privacy probes, the Python SDK against the binary, the rootless-Podman planted-breach suite, cargo-deny, cargo-audit, the SBOM gate, and diff-scoped mutation testing. Diff mutation runs on pull requests in 4 shards and requires 0 missed mutants on the changed lines.
+- Unsafe code is forbidden workspace-wide (`unsafe_code = "forbid"` in `Cargo.toml`), so the `cargo miri test` rule applies only if that changes.
+- A regression test must fail on the code before the fix. Record how it failed ([`NOTES.md`](../NOTES.md#2026-10-28-macos-controls-fuzz)).
+
+Current docs: [testing standard](TESTING_GOLD_STANDARD.md), [release and publication](RELEASE_AND_PUBLICATION.md).
+
 This document integrates the Distinguished Agentic Rust Coder V4 operating
 standard into Deep-Diff-Forge deployment. It governs Rust implementation,
 review, deployment claims, and final reporting.

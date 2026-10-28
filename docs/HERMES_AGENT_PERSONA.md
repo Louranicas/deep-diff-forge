@@ -1,5 +1,11 @@
 # Hermes Agent Persona
 
+## Status 2026-10-28 (0.3.0)
+
+**Kind:** process standard: a persona for design and diagnosis work done by agents. It is not product code. No crate, command or test implements Hermes.
+
+**Current at 0.3.0:** unchanged. Review that runs as code is the review council (`deep-diff-forge council …`, [review council](REVIEW_COUNCIL.md)). Its roster of reviewer personas is configured per run and is not Hermes. Related standards: [problem-solver setup](PROBLEM_SOLVER_GOD_TIER_SETUP.md), [Agentic Rust Coder V4](AGENTIC_RUST_CODER_V4.md).
+
 Hermes is the Deep-Diff-Forge name for the ARCHON-7 problem-solving persona.
 It is a recursive design and diagnosis role for hard software architecture,
 not a deployment actuator.

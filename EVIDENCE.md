@@ -1,5 +1,19 @@
 # Deployment Evidence — L0 → L9 (… + Daemon + Release + Learning)
 
+## Status 2026-10-28 (0.3.0)
+
+**Kind:** append-only evidence log. Each section is dated or session-tagged and records what was measured then. Sections are not rewritten. Later sections correct earlier ones.
+
+**Current at 0.3.0:**
+
+- The newest evidence is [Release dry runs and fuzzing (2026-10-28)](#release-dry-runs-and-fuzzing-2026-10-28), at the end of this file.
+- Published GitHub releases are `v0.1.0` and `v0.2.0` only. `v0.2.1` was never tagged. The workspace version is `0.3.0` and untagged; tagging is the owner's decision.
+- crates.io is on hold by owner decision until the codebase is production-hardened. This replaces the older "token-gated" wording in the L8 and L9 sections. A configured token alone publishes nothing: the publish job in `.github/workflows/release.yml` runs only on a `v*` tag **and** when the repository variable `DDF_CRATES_IO` is `open`. `deep-diff-forge deploy release` reports `crates.io blocked` (measured with the binary).
+- The 2026-10-26 section ends with "Nothing is tagged or published". That refers to the council stack only. The `v0.1.0` and `v0.2.0` GitHub releases already existed.
+- Test counts in older sections (568, 765, 794) are counts at that time and are not current.
+
+Current docs: [release and publication](docs/RELEASE_AND_PUBLICATION.md), [review council](docs/REVIEW_COUNCIL.md), [deployment gap analysis](docs/DEPLOYMENT_GAP_ANALYSIS.md), [changelog](CHANGELOG.md).
+
 ## Live feature & capacity verification (S1008452)
 
 `claim | warrant | evidence` — the release binary exercised end-to-end (real
@@ -576,3 +590,55 @@ protected by ruleset 25868121: pull requests only, every required check, an
 up-to-date branch, no force push, and no bypass.
 Nothing is tagged or published; crates.io publication is on hold until the
 codebase is production-ready.
+
+## Release dry runs and fuzzing (2026-10-28)
+
+Measured by the operator unless labelled otherwise. Code changes: PRs #21–#23
+(see [`CHANGELOG.md`](CHANGELOG.md)).
+
+### Release dry runs
+
+A `workflow_dispatch` run of `.github/workflows/release.yml` on a branch is a
+dry run. It runs the gates, the three builds, a binary smoke test and checksum
+verification. It publishes, releases and attests nothing; those steps run only
+on `v*` tags (`release.yml`, header comment and job conditions).
+
+| Run | Commit | Result | Jobs that ran |
+| --- | --- | --- | --- |
+| 40634103910 | `24e3d53` (PR #22 merge) | green `[measured]` | macOS tests; builds for `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`; smoke on Linux and arm64 macOS; sha256 checksums |
+| 40643652548 | `2f03f40` (PR #23 merge) | green `[measured]` | the same set |
+
+- Publish, upload and attestation steps were **skipped by design**: they require
+  a tag ref. They are not evidence of a working publish path.
+- `x86_64-apple-darwin` is built but not smoked, because `macos-latest` is arm64
+  (`smoke: false` in the build matrix).
+- Earlier dry runs on the same day failed on macOS and led to fixes. Run
+  40626071938 failed `client_rejects_response_over_cap`, fixed in `26654c8`.
+  Run 40618280385, the first macOS test run, found the `/proc/self` gate-uid
+  fallback, fixed in `7a2f5ae`. See [`NOTES.md`](NOTES.md).
+
+### Fuzzing
+
+Local campaigns at `332f8fd`, seeded with every fixture and regression input
+`[measured, operator workstation]`:
+
+| Target | Duration | Runs | Crashes |
+| --- | --- | --- | --- |
+| `patch_parser` | 300 s | 5,457,367 (about 5.46 M) | 0 |
+| `review_json` | 300 s | 4,159,390 (about 4.16 M) | 0 |
+
+CI runs 10 s per target, which is a smoke test, not a campaign. The CI fuzz
+smoke for `patch_parser` (run 40634223913) found the first binary-body grammar
+fix unstable under render → parse → render. That finding led to `332f8fd` and
+the regression `fixtures/patch/regressions/binary-metadata-after-body.patch`.
+The other five targets (`daemon_protocol`, `agent_annotation`,
+`council_report`, `stdio_mcp`, `stdio_rpc`) had no long campaign on this date
+`[unmeasured]`.
+
+### Metadata parsing
+
+The parser used to scan all metadata lines for `GIT binary patch` on every line,
+which made parsing quadratic. With an `in_binary_body` flag (`679f7eb`), 1 M
+`index 0` metadata lines (8 MB, inside every budget) parse in **0.20 s instead
+of 139 s**. 100 k lines take 0.02 s and 200 k lines 0.04 s
+`[measured, release build, operator workstation]`.

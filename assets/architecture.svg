@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="700" viewBox="0 0 1280 700" role="img" aria-labelledby="title desc">
+<title id="title">How Deep-Diff-Forge turns a change into a review</title>
+<desc id="desc">Inputs (a piped patch, a Git selection, or source files) pass through one parse, guard and seal path in the patch crate, producing the review model. Enrichment layers (projection, risk graph, cluster, syntax, agent notes, learning) read that model and never write it. Seven surfaces serve the result: the CLI, the TUI cockpit, the Unix-socket daemon, rpc over stdio, the MCP server, the envelope, and the Rust and Python SDKs. The review council runs separately over a sealed snapshot with sandboxed evidence gates.</desc>
+<style>
+  :root { --bg:#ffffff; --panel:#f6f8fa; --line:#d0d7de; --ink:#1f2328; --soft:#57606a; --faint:#8c959f; --accent:#bc4c00; --accent-bg:#fff1e5; --ok:#1a7f37; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#13161a; --panel:#1b2026; --line:#30363d; --ink:#e6edf3; --soft:#adbac7; --faint:#6e7681; --accent:#e3a872; --accent-bg:#2a1f17; --ok:#3fb950; }
+  }
+  .bg { fill: var(--bg); }
+  .panel { fill: var(--panel); stroke: var(--line); stroke-width: 1; }
+  .truth { fill: var(--accent-bg); stroke: var(--accent); stroke-width: 1.5; }
+  .head { font: 600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 2.4px; fill: var(--faint); }
+  .name { font: 600 15px ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--ink); }
+  .crate { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--accent); }
+  .note { font: 13px ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--soft); }
+  .tiny { font: 12px ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--faint); }
+  .flow { stroke: var(--soft); stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+  .read { stroke: var(--faint); stroke-width: 1.2; stroke-dasharray: 4 4; fill: none; }
+  .accent { fill: var(--accent); }
+  .ok { fill: var(--ok); }
+</style>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M0 0 L10 5 L0 10 z" fill="#8c959f"/>
+  </marker>
+</defs>
+<rect class="bg" width="1280" height="700" rx="14"/>
+
+<!-- column heads -->
+<text class="head" x="40" y="48">INPUT</text>
+<text class="head" x="300" y="48">PATCH TRUTH</text>
+<text class="head" x="620" y="48">ENRICHMENT · NEVER WRITES THE PATCH</text>
+<text class="head" x="960" y="48">SURFACES</text>
+
+<!-- inputs -->
+<rect class="panel" x="40" y="68" width="220" height="92" rx="10"/>
+<text class="name" x="58" y="96">A piped patch</text>
+<text class="note" x="58" y="118">git diff | deep-diff-forge</text>
+<text class="tiny" x="58" y="140">--stdin-patch</text>
+
+<rect class="panel" x="40" y="176" width="220" height="112" rx="10"/>
+<text class="name" x="58" y="204">A Git selection</text>
+<text class="note" x="58" y="226">--git-working-tree</text>
+<text class="note" x="58" y="246">--git-staged · --git-range A..B</text>
+<text class="tiny" x="58" y="268">fixed argv · NUL-delimited records</text>
+
+<rect class="panel" x="40" y="304" width="220" height="92" rx="10"/>
+<text class="name" x="58" y="332">Source files</text>
+<text class="note" x="58" y="354">semantic · highlight</text>
+<text class="tiny" x="58" y="376">structural · read by the syntax layer</text>
+
+<!-- patch truth -->
+<rect class="truth" x="300" y="68" width="280" height="220" rx="12"/>
+<text class="name" x="320" y="98">Parse → guard → seal</text>
+<text class="crate" x="320" y="118">patch · SealedReview</text>
+<circle class="accent" cx="326" cy="146" r="3"/>
+<text class="note" x="338" y="150">incoherent hunks are refused</text>
+<circle class="accent" cx="326" cy="172" r="3"/>
+<text class="note" x="338" y="176">0 files or 0 hunks → exit 7</text>
+<circle class="accent" cx="326" cy="198" r="3"/>
+<text class="note" x="338" y="202">input_sha256 of the exact bytes</text>
+<circle class="accent" cx="326" cy="224" r="3"/>
+<text class="note" x="338" y="228">64 MiB budget, linear parse</text>
+<text class="tiny" x="320" y="266">the apply-able patch is never rewritten</text>
+
+<rect class="panel" x="300" y="304" width="280" height="92" rx="10"/>
+<text class="name" x="320" y="332">The review model</text>
+<text class="crate" x="320" y="352">core</text>
+<text class="tiny" x="320" y="376">files · hunks · line anchors · seal · tool</text>
+
+<path class="flow" d="M260 114 H296"/>
+<path class="flow" d="M260 232 C280 232 280 200 296 200"/>
+<path class="flow" d="M440 288 V300"/>
+
+<!-- enrichment -->
+<g>
+  <rect class="panel" x="620" y="68" width="300" height="46" rx="9"/>
+  <text class="name" x="638" y="96">Projection</text><text class="tiny" x="760" y="96">inline · side-by-side</text>
+  <rect class="panel" x="620" y="122" width="300" height="46" rx="9"/>
+  <text class="name" x="638" y="150">Risk graph</text><text class="tiny" x="760" y="150">deterministic, explained rank</text>
+  <rect class="panel" x="620" y="176" width="300" height="46" rx="9"/>
+  <text class="name" x="638" y="204">Cluster</text><text class="tiny" x="760" y="204">parallel lanes, same answer</text>
+  <rect class="panel" x="620" y="230" width="300" height="46" rx="9"/>
+  <text class="name" x="638" y="258">Syntax</text><text class="tiny" x="760" y="258">tree-sitter, budgeted</text>
+  <rect class="panel" x="620" y="284" width="300" height="46" rx="9"/>
+  <text class="name" x="638" y="312">Agent notes</text><text class="tiny" x="760" y="312">grounded, sanitised</text>
+  <rect class="panel" x="620" y="338" width="300" height="46" rx="9"/>
+  <text class="name" x="638" y="366">Learning</text><text class="tiny" x="760" y="366">local receipts only</text>
+</g>
+<path class="read" d="M580 350 H600 V91 H620 M600 145 H620 M600 199 H620 M600 253 H620 M600 307 H620 M600 361 H620"/>
+
+<!-- surfaces -->
+<g>
+  <rect class="panel" x="960" y="68" width="280" height="46" rx="9"/>
+  <text class="name" x="978" y="96">CLI</text><text class="tiny" x="1040" y="96">human · --json · --jsonl</text>
+  <rect class="panel" x="960" y="122" width="280" height="46" rx="9"/>
+  <text class="name" x="978" y="150">TUI cockpit</text><text class="tiny" x="1080" y="150">review · --probe</text>
+  <rect class="panel" x="960" y="176" width="280" height="46" rx="9"/>
+  <text class="name" x="978" y="204">Daemon</text><text class="tiny" x="1056" y="204">Unix socket JSON-RPC</text>
+  <rect class="panel" x="960" y="230" width="280" height="46" rx="9"/>
+  <text class="name" x="978" y="258">rpc</text><text class="tiny" x="1040" y="258">the same JSON-RPC, stdio</text>
+  <rect class="panel" x="960" y="284" width="280" height="46" rx="9"/>
+  <text class="name" x="978" y="312">MCP server</text><text class="tiny" x="1076" y="312">stdio, read-only tools</text>
+  <rect class="panel" x="960" y="338" width="280" height="46" rx="9"/>
+  <text class="name" x="978" y="366">SDKs</text><text class="tiny" x="1040" y="366">Rust crate · Python stdlib</text>
+</g>
+<path class="flow" d="M920 226 H956"/>
+<text class="tiny" x="960" y="408">every exit code has a name and a next action</text>
+<text class="tiny" x="960" y="426">envelope: any command as one ddf.result.v1</text>
+
+<!-- parity band -->
+<rect class="panel" x="300" y="440" width="940" height="64" rx="10"/>
+<circle class="ok" cx="322" cy="472" r="5"/>
+<text class="note" x="338" y="468">Same bytes in, same document out: --stdin-patch --json, the daemon's diff.compute, rpc, MCP review_patch</text>
+<text class="note" x="338" y="488">and the SDK's review share one sealed path and are tested for byte parity.</text>
+
+<!-- council -->
+<text class="head" x="40" y="548">REVIEW COUNCIL · deep-diff-forge-review</text>
+<rect class="panel" x="40" y="562" width="1200" height="100" rx="10"/>
+<text class="name" x="62" y="594">prepare</text>
+<text class="tiny" x="62" y="614">sealed snapshot</text>
+<path class="flow" d="M150 598 H196"/>
+<text class="name" x="206" y="594">review</text>
+<text class="tiny" x="206" y="614">six reviewer slots, two rounds</text>
+<path class="flow" d="M400 598 H446"/>
+<text class="name" x="456" y="594">gate</text>
+<text class="tiny" x="456" y="614">8 evidence gates in rootless Podman, no network</text>
+<path class="flow" d="M770 598 H816"/>
+<text class="name" x="826" y="594">status</text>
+<text class="tiny" x="826" y="614">cited bytes only · missing evidence is HOLD, exit 7</text>
+<text class="tiny" x="62" y="644">Nothing is approved automatically: the council prepares evidence for a human decision.</text>
+</svg>
