@@ -43,6 +43,19 @@ pub fn engine_annotations(files: &[ReviewFile], ranked: &[RankedFile]) -> Vec<Ag
     out
 }
 
+/// The first path that `files` names more than once, if any. Notes, ranking and the cockpit's
+/// content are keyed by path, so a review that names a path twice (two patches concatenated)
+/// would show one section's content and notes for both; callers refuse it instead (bug hunt
+/// 2026-10-28, H4-03).
+#[must_use]
+pub fn duplicate_path(files: &[ReviewFile]) -> Option<&str> {
+    let mut seen = std::collections::HashSet::new();
+    files
+        .iter()
+        .map(|f| f.path.as_str())
+        .find(|path| !seen.insert(*path))
+}
+
 /// File-anchored annotations for `path` (notes that apply to the whole file).
 #[must_use]
 pub fn file_annotations<'a>(
@@ -180,6 +193,19 @@ mod tests {
         let files = parse(src).unwrap();
         let ranked = rank(&files);
         engine_annotations(&files, &ranked)
+    }
+
+    #[test]
+    fn duplicate_paths_are_found() {
+        assert_eq!(
+            duplicate_path(&parse(&format!("{LIB}{PLAIN}")).unwrap()),
+            None
+        );
+        assert_eq!(
+            duplicate_path(&parse(&format!("{PLAIN}{LIB}{LIB}")).unwrap()),
+            Some("src/lib.rs")
+        );
+        assert_eq!(duplicate_path(&[]), None);
     }
 
     #[test]

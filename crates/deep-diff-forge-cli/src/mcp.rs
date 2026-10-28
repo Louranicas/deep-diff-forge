@@ -861,7 +861,11 @@ fn serve_server(
             )),
         };
         if let Some(response) = response {
-            writeln!(output, "{response}")?;
+            writeln!(
+                output,
+                "{}",
+                deep_diff_forge_core::json_line_safe(&response.to_string())
+            )?;
             output.flush()?;
         }
     }

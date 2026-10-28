@@ -44,8 +44,8 @@ def run(cmd: list[str], *, timeout: int = 30, input_text: str | None = None) -> 
 
 
 def ensure_binary() -> None:
-    if BIN.exists():
-        return
+    # Build every time: cargo is a no-op when the binary is current, and a stale binary would
+    # soak old code.
     proc = run(["cargo", "build", "-p", "deep-diff-forge-cli"], timeout=240)
     if proc.returncode != 0:
         sys.stderr.write(proc.stdout)

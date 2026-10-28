@@ -48,12 +48,12 @@ step "cargo-deny (bans, licenses, sources, advisories)" cargo deny --locked chec
 step "cargo-deny fuzz harness" cargo deny --manifest-path fuzz/Cargo.toml --locked check
 step "cargo audit (strict advisory gate)" cargo audit --deny warnings
 step "cargo audit fuzz lockfile" cargo audit --deny warnings --file fuzz/Cargo.lock
-step "SPDX SBOM gate (regenerate + verify against committed baseline)" bash -c 'python3 scripts/security/generate_spdx_sbom.py >/dev/null && python3 - <<PY
+step "SPDX SBOM gate (regenerate + verify against committed baseline)" bash -c 'keep=$(mktemp) && cp sbom.spdx.json "$keep" && python3 scripts/security/generate_spdx_sbom.py >/dev/null && python3 - <<PY
 import re,subprocess,sys
 s=lambda t: re.sub(r"\"created\":\s*\"[^\"]*\"","\"created\": \"<x>\"",t)
 regen=open("sbom.spdx.json").read(); committed=subprocess.check_output(["git","show","HEAD:sbom.spdx.json"],text=True)
 sys.exit(0 if s(regen)==s(committed) else 1)
 PY
-rc=$?; git checkout -q -- sbom.spdx.json; exit $rc'
+rc=$?; mv "$keep" sbom.spdx.json; exit $rc'
 echo "steps failed: $failed"
 [ "$failed" -eq 0 ]

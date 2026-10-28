@@ -175,6 +175,8 @@ impl ReviewApp {
     ///
     /// Ranking determines both the tree order and the selection order; content
     /// is reordered to match so index `i` names the same file in every vector.
+    /// Paths must be unique: content and notes are matched by path, so refuse a
+    /// review for which [`crate::duplicate_path`] finds one.
     #[must_use]
     pub fn from_review_with_annotations(
         files: &[ReviewFile],
