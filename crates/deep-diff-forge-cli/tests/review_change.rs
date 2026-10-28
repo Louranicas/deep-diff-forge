@@ -308,3 +308,26 @@ fn the_servers_grant_the_roots_they_are_given() {
         "src/lib.rs"
     );
 }
+
+/// Bug hunt 2026-10-28, H5-03: an untracked nested repository is not captured, and the sealed
+/// answer's `acquisition` names it, so an agent knows the review is not the whole change.
+#[test]
+fn an_omitted_nested_repository_is_named_in_the_acquisition() {
+    let r = repo("nested");
+    std::fs::create_dir_all(r.0.join("vendor/inner")).unwrap();
+    git(&r.0.join("vendor/inner"), &["init", "-q"]);
+    std::fs::write(r.0.join("vendor/inner/y.txt"), "y\n").unwrap();
+    std::fs::write(r.0.join("new.txt"), "n\n").unwrap();
+    let mut engine = allowing(&[&r.0]);
+    let answer = call(
+        &mut engine,
+        &json!({"repo": r.0, "selection": "working_tree", "include_untracked": true}),
+    )
+    .unwrap();
+    assert_eq!(
+        answer["acquisition"]["omitted_untracked"],
+        json!(["vendor/inner/"])
+    );
+    let staged = call(&mut engine, &json!({"repo": r.0, "selection": "staged"})).unwrap();
+    assert_eq!(staged["acquisition"]["omitted_untracked"], json!([]));
+}

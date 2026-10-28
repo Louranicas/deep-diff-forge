@@ -640,6 +640,14 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
         "base": acquisition.base(),
         "target": acquisition.target(),
         "include_untracked": options.include_untracked,
+        // An untracked directory Git would not list (a nested repository) is not in the files;
+        // only the CLI's stderr said so, and a sealed review looked complete (bug hunt
+        // 2026-10-28, H5-03).
+        "omitted_untracked": acquisition
+            .omitted_untracked()
+            .iter()
+            .map(deep_diff_forge_patch::GitPath::display_lossy)
+            .collect::<Vec<_>>(),
     });
     Ok(answer)
 }
