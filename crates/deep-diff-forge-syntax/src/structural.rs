@@ -238,7 +238,11 @@ pub fn tokenize_checked(
                 && !text.trim().is_empty()
             {
                 tokens.push(Token {
-                    text: text.to_string(),
+                    text: if is_comment(node.kind()) {
+                        comment_token(text)
+                    } else {
+                        text.to_string()
+                    },
                     line: u32::try_from(node.start_position().row + 1).unwrap_or(u32::MAX),
                 });
             }
@@ -251,6 +255,17 @@ pub fn tokenize_checked(
         }
     }
     Ok(tokens)
+}
+
+/// A comment's token: its text with each line's trailing whitespace, CR included, removed.
+/// A line comment's node ends with its line feed, so CRLF conversion or a trailing space
+/// would otherwise read as a rewritten comment (bug hunt 2026-10-28, H4-05); any change to
+/// the words still changes the token.
+fn comment_token(text: &str) -> String {
+    text.lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Whether a tree-sitter node kind is a comment, whose whole text is one token.
@@ -690,6 +705,27 @@ mod tests {
             }),
             (true, false, true, None)
         );
+    }
+
+    /// A comment whose only change is its line ending or trailing spaces is reformat-only; a
+    /// changed word is not.
+    #[test]
+    fn comment_line_endings_and_trailing_spaces_are_formatting() {
+        let base = "// hi\nfn a() {} /* x\n y */\n/// doc\nfn b() {}\n";
+        for variant in [
+            base.replace('\n', "\r\n"),
+            base.replace("// hi\n", "// hi  \n"),
+            base.replace("/* x\n", "/* x \t\n"),
+        ] {
+            assert!(
+                structural_diff(Language::Rust, base, &variant).reformat_only(),
+                "{variant:?}"
+            );
+        }
+        let reworded = base.replace("// hi", "// bye");
+        assert!(!structural_diff(Language::Rust, base, &reworded).reformat_only());
+        assert_eq!(comment_token("// a \r\n"), "// a");
+        assert_eq!(comment_token("/* a  \r\n b */"), "/* a\n b */");
     }
 
     #[test]
