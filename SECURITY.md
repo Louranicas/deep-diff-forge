@@ -311,9 +311,15 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
   30 s for `review.change`. A Git still running at the deadline is killed, and the
   acquisition fails with `TimedOut` (CLI exit 3). Before, `child.wait()` waited
   forever on a stalled filesystem or hook.
+- **A repository's own filters never run.** Git acquisition turns off every content filter
+  (`clean`, `smudge`, `process`) that the repository's local configuration defines, so reviewing a
+  repository someone handed you cannot run their code through `.gitattributes`. Filters from the
+  user's global or system configuration stay on.
 - **Repository reads are opt-in (`review.change`).** The daemon, `rpc` and `mcp`
   read Git only for a repository whose canonical path and Git top level are both
-  under a root the operator named with `--allow-repo`. Without one they read none.
+  under a root the operator named with `--allow-repo`, and so must its Git directory and common
+  directory (a `.git` file cannot point outside); a repository whose object store borrows
+  another's (`objects/info/alternates`) is refused. Without a root they read none.
   The roots are an operator decision: any client of that daemon or MCP server can
   read every change under them, though never write anything.
 - **Two `daemon start`s can race.** Between `remove_stale_socket`'s probe and

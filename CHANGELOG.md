@@ -29,6 +29,24 @@ binary and each fixed with a test that fails on the old code.
 - **Every command answers `--help`** (exit 0) from one table that `--help` also prints. Before,
   only `review` did; the others exited 2, and `council --help` exited 4.
 
+### Security (bug hunt, 2026-10-28)
+
+A team of five Sonnet bug hunters covered the whole stack: patch and core, daemon/rpc/MCP/SDKs,
+CLI and council, analysis and TUI, CI/scripts/supply chain. Each finding was re-checked by an
+independent false-positive checker before a fix.
+- **Repository filters never run.** A clean or process filter defined in a repository's own
+  configuration and named in its `.gitattributes` ran during working-tree acquisition
+  (`--git-working-tree`, `review.change`), so reviewing a repository someone handed you ran their
+  code. Every filter the local configuration defines is turned off for each Git call; the user's
+  global filters, such as Git LFS, stay on.
+- **`review.change` refuses foreign Git directories.** A `.git` file inside an allowed root could
+  point at a repository outside it. The top level, the Git directory and the common directory must
+  all be under an allowed root, and an object store with alternates is refused.
+- **The Git time limit holds** even when a child Git started keeps its pipes open.
+- **The daemon refuses params a method does not take**, so a misspelt guard such as
+  `require_file` no longer passes an empty review. MCP enforces its schema enums.
+- `highlight` keeps line breaks without colour too (the earlier fix covered only colour).
+
 ### Added (agent-first core)
 
 The expert circle's Tier 1: an agent learns where to look before it reads anything large, and
