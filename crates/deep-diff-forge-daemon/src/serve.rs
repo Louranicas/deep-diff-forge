@@ -1194,8 +1194,9 @@ mod tests {
     #[test]
     fn socket_line_read_reports_non_timeout_errors_unchanged() {
         // Closing a Unix stream socket with unread data in its receive queue
-        // resets the peer: the next read fails with ECONNRESET, which must not
-        // be disguised as a deadline timeout.
+        // resets the peer, and that error must not be disguised as a deadline
+        // timeout. Linux reports ECONNRESET on the read; macOS already refuses
+        // the read timeout on the reset socket with EINVAL (measured on CI).
         let (local, peer) = UnixStream::pair().expect("socketpair");
         (&local).write_all(b"never read").unwrap();
         drop(peer);
@@ -1203,7 +1204,16 @@ mod tests {
         let mut line = Vec::new();
         let err = read_capped_line_deadline(&mut reader, &mut line, 1024, Duration::from_secs(5))
             .expect_err("reset peer");
-        assert_eq!(err.kind(), std::io::ErrorKind::ConnectionReset);
+        assert!(
+            !matches!(
+                err.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ),
+            "{err}"
+        );
+        if cfg!(target_os = "linux") {
+            assert_eq!(err.kind(), std::io::ErrorKind::ConnectionReset);
+        }
     }
 
     // Serve one connection, send `request` (no trailing newline is added), and
@@ -1339,7 +1349,8 @@ mod tests {
         };
         // Leave room for exactly one more descriptor (the listener). Linux
         // reserves the accepted fd before waiting, so every accept() then fails
-        // with EMFILE immediately — a persistent, non-EINTR accept error.
+        // with EMFILE immediately — a persistent, non-EINTR accept error. macOS
+        // fails only once a connection is pending, which the parent supplies.
         let next_fd = std::fs::File::open("/dev/null").unwrap().as_raw_fd();
         let limit = getrlimit(Resource::Nofile);
         setrlimit(
@@ -1377,9 +1388,15 @@ mod tests {
             .spawn()
             .expect("spawn child test");
         let deadline = Instant::now() + Duration::from_secs(20);
+        let mut pending = None;
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {
                 break Some(status);
+            }
+            // One pending connection, so accept() has something to fail on where
+            // it blocks until a client arrives (macOS). Kept open until the end.
+            if pending.is_none() && sock.exists() {
+                pending = UnixStream::connect(&sock).ok();
             }
             if Instant::now() >= deadline {
                 let _ = child.kill();

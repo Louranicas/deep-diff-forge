@@ -252,12 +252,11 @@ pub(crate) struct Spec<'a> {
     pub(crate) mutation: bool,
     pub(crate) fuzz: bool,
 }
-/// The controller's own `uid:gid` (`/proc/self` belongs to the process that reads it), which every
-/// gate container runs as.
+/// The controller's own effective `uid:gid`, which every gate container runs as. Taken from the
+/// kernel, which cannot fail: before, it was read from `/proc/self` and fell back to `0:0`, so on a
+/// host without `/proc` (macOS, a container without it mounted) every gate ran as root.
 fn operator() -> String {
-    use std::os::unix::fs::MetadataExt as _;
-    std::fs::metadata("/proc/self")
-        .map_or_else(|_| "0:0".into(), |m| format!("{}:{}", m.uid(), m.gid()))
+    format!("{}:{}", nix::unistd::geteuid(), nix::unistd::getegid())
 }
 /// All host CPUs but one, so a gate cannot starve the controller that supervises it.
 fn cpus() -> usize {
