@@ -17,12 +17,16 @@ fn run(args: &[&str], stdin: &str) -> (i32, String, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn binary");
-    child
+    // A command line refused before stdin is read exits without reading it, so the write
+    // can race the exit and get EPIPE; that is the behaviour under test, not a failure.
+    if let Err(error) = child
         .stdin
         .take()
         .expect("stdin handle")
         .write_all(stdin.as_bytes())
-        .expect("write stdin");
+    {
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "write stdin: {error}");
+    }
     let out = child.wait_with_output().expect("wait for binary");
     (
         out.status.code().unwrap_or(-1),
