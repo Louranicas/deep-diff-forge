@@ -47,6 +47,11 @@ fn setup_prints_each_clients_registration_for_this_binary() {
         codex.contains(&format!("args = [\"mcp\", \"--allow-repo\", \"{root}\"]")),
         "{codex}"
     );
+    // Only a registration with no repository root says that review_change will read none.
+    let (_, _, with_root) = run(&["agent", "setup", "--client", "claude", "--allow-repo", root]);
+    assert!(!with_root.contains("no --allow-repo"), "{with_root}");
+    let (_, _, without) = run(&["agent", "setup", "--client", "claude"]);
+    assert!(without.contains("no --allow-repo"), "{without}");
     let (code, json, _) = run(&["agent", "setup", "--client", "codex", "--json"]);
     assert_eq!(code, 0);
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
