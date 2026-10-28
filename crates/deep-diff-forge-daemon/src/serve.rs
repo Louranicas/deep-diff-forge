@@ -402,10 +402,24 @@ pub fn bind_explicit(socket_path: &Path) -> std::io::Result<UnixListener> {
     Ok(listener)
 }
 
-/// Remove a stale socket without ever following or deleting another file type.
+/// Remove a stale socket without ever following or deleting another file type, and never a live
+/// one: before, a second `daemon start` deleted the socket of a running daemon and bound its own,
+/// leaving the first running but unreachable, so `daemon stop` could no longer stop it.
 fn remove_stale_socket(socket_path: &Path) -> std::io::Result<()> {
     match std::fs::symlink_metadata(socket_path) {
-        Ok(metadata) if metadata.file_type().is_socket() => std::fs::remove_file(socket_path),
+        Ok(metadata) if metadata.file_type().is_socket() => {
+            match UnixStream::connect(socket_path) {
+                Ok(_) => Err(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    "a daemon is already listening on this socket; refusing to replace it",
+                )),
+                // Nothing listens: the socket is left over from a daemon that is gone.
+                Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused => {
+                    std::fs::remove_file(socket_path)
+                }
+                Err(err) => Err(err),
+            }
+        }
         Ok(_) => Err(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
             "socket path is occupied by a non-socket file; refusing to delete it",
@@ -1305,6 +1319,26 @@ mod tests {
         let err = request(&location, r#"{"method":"daemon.health"}"#).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         daemon.join().unwrap();
+    }
+
+    /// A socket a daemon still listens on is never removed; one nothing listens on is.
+    #[test]
+    fn only_a_socket_nothing_listens_on_is_removed() {
+        let (parent, _) = explicit_temp("stale-live", 0o700);
+        let sock = parent.join("d.sock");
+        let live = UnixListener::bind(&sock).unwrap();
+        let err = remove_stale_socket(&sock).expect_err("a live daemon owns it");
+        assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+        assert!(
+            std::fs::symlink_metadata(&sock)
+                .unwrap()
+                .file_type()
+                .is_socket()
+        );
+        // Legitimate nearby case: the daemon is gone and its socket file is left behind.
+        drop(live);
+        remove_stale_socket(&sock).expect("a stale socket is removed");
+        assert!(std::fs::symlink_metadata(&sock).is_err());
     }
 
     #[test]
