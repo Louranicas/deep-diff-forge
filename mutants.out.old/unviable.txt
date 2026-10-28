@@ -1,7 +1,0 @@
-crates/deep-diff-forge-daemon/src/views.rs:201:9: delete match arm (Ok(item), Ok(inner)) in resume
-crates/deep-diff-forge-patch/src/git_acquire.rs:294:13: replace && with || in filter_names
-crates/deep-diff-forge-patch/src/git_acquire.rs:305:12: replace * with + in next_pause
-crates/deep-diff-forge-patch/src/git_acquire.rs:314:5: replace deadline_after -> std::time::Instant with Default::default()
-crates/deep-diff-forge-patch/src/git_acquire.rs:314:31: replace + with * in deadline_after
-crates/deep-diff-forge-patch/src/git_acquire.rs:508:5: replace repository_dirs -> Result<RepositoryDirs, GitAcquireError> with Ok(Default::default())
-crates/deep-diff-forge-patch/src/git_acquire.rs:562:5: replace acquire -> Result<GitAcquisition, GitAcquireError> with Ok(Default::default())
