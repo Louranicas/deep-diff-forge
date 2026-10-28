@@ -221,7 +221,7 @@ git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require
 
 ## Command reference
 
-`deep-diff-forge --help` is the authoritative list. Every subcommand accepts `--help`.
+`deep-diff-forge --help` is the authoritative list. `review --help` and `council help` print their own usage; the other subcommands do not take `--help` yet ([an open problem](CONTRIBUTING.md#open-problems-worth-owning)).
 
 ### Review a change
 
