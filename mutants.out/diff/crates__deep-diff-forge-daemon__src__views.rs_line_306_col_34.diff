@@ -1,0 +1,21 @@
+--- crates/deep-diff-forge-daemon/src/views.rs
++++ replace == with != in hunks
+@@ -298,17 +298,17 @@
+     let (units, key) = select(files, selection)?;
+     let (start_unit, start_line) = resume(page, seal, &key)?;
+     let (input_sha256, tool) = seal_members(seal);
+     let mut budget = page.max_bytes - ENVELOPE_BYTES;
+     let mut out = Vec::new();
+     let mut next = None;
+     for (position, &(f, h)) in units.iter().enumerate().skip(start_unit) {
+         let (file, hunk) = (&files[f], &files[f].patch_twin.hunks[h]);
+-        let offset = if position == start_unit {
++        let offset = if position != /* ~ changed by cargo-mutants ~ */ start_unit {
+             start_line
+         } else {
+             0
+         };
+         let mut entry = Value::Object(hunk_head(file, hunk));
+         entry["path"] = json!(file.path);
+         entry["line_offset"] = json!(offset);
+         entry["complete"] = json!(true);

@@ -1,0 +1,21 @@
+--- crates/deep-diff-forge-daemon/src/views.rs
++++ replace += with *= in outline
+@@ -248,17 +248,17 @@
+             if used + cost > budget && !first_on_page {
+                 if h > first {
+                     entry["complete"] = json!(false);
+                     entries.push(entry);
+                 }
+                 next = Some(cursor(seal, "outline", position, h));
+                 break 'files;
+             }
+-            used += cost;
++            used *= /* ~ changed by cargo-mutants ~ */ cost;
+             if let Some(list) = entry["hunks"].as_array_mut() {
+                 list.push(head);
+             }
+         }
+         if used > budget && !entries.is_empty() {
+             next = Some(cursor(seal, "outline", position, first));
+             break;
+         }

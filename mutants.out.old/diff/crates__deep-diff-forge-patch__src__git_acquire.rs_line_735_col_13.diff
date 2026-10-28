@@ -1,0 +1,21 @@
+--- crates/deep-diff-forge-patch/src/git_acquire.rs
++++ delete field git_program from struct GitAcquireOptions expression in runner_tests::printing
+@@ -727,17 +727,17 @@
+         let stub = dir.join("git");
+         std::fs::write(
+             &stub,
+             format!("#!/bin/sh\nhead -c {bytes} /dev/zero | tr '\\0' x\n"),
+         )
+         .unwrap();
+         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+         let options = GitAcquireOptions {
+-            git_program: stub.into_os_string(),
++             /* ~ changed by cargo-mutants ~ */
+             time_limit: std::time::Duration::from_secs(30),
+             ..GitAcquireOptions::default()
+         };
+         (dir, options)
+     }
+ 
+     /// Output of exactly the budget is accepted; one byte more is refused.
+     #[test]

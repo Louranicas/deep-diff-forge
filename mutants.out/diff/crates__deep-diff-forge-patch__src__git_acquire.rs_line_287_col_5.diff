@@ -1,0 +1,33 @@
+--- crates/deep-diff-forge-patch/src/git_acquire.rs
++++ replace filter_names -> Vec<String> with vec![]
+@@ -279,29 +279,17 @@
+         &[0, 1],
+         1024 * 1024,
+     )?;
+     Ok(neutral_filters(&filter_names(&listing)))
+ }
+ 
+ /// The filter names in `git config --null --name-only` output (`filter.<name>.<key>` records).
+ fn filter_names(listing: &[u8]) -> Vec<String> {
+-    let mut names: Vec<String> = Vec::new();
+-    for record in listing.split(|&b| b == 0 || b == b'\n') {
+-        let key = String::from_utf8_lossy(record);
+-        if let Some(name) = key
+-            .strip_prefix("filter.")
+-            .and_then(|rest| rest.rsplit_once('.'))
+-            .map(|(name, _)| name.to_owned())
+-            && !names.contains(&name)
+-        {
+-            names.push(name);
+-        }
+-    }
+-    names
++    vec![] /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// The next poll interval while waiting for Git: doubling from 1 ms, at most 20 ms, so a quick
+ /// command costs little latency and a slow one little CPU.
+ fn next_pause(pause: std::time::Duration) -> std::time::Duration {
+     (pause * 2).min(std::time::Duration::from_millis(20))
+ }
+ 

@@ -1,0 +1,21 @@
+--- crates/deep-diff-forge-daemon/src/views.rs
++++ delete ! in resume
+@@ -174,17 +174,17 @@
+     format!(
+         "{}.{}.{item}.{inner}",
+         &seal.input_sha256[..16],
+         &deep_diff_forge_core::sha256_hex(selection.as_bytes())[..8]
+     )
+ }
+ 
+ fn resume(page: &Page, seal: &InputSeal, selection: &str) -> Result<(usize, usize), ViewError> {
+-    if !(MIN_MAX_BYTES..=MAX_MAX_BYTES).contains(&page.max_bytes) {
++    if  /* ~ changed by cargo-mutants ~ */(MIN_MAX_BYTES..=MAX_MAX_BYTES).contains(&page.max_bytes) {
+         return Err(ViewError::Budget(page.max_bytes));
+     }
+     let Some(text) = page.cursor.as_deref() else {
+         return Ok((0, 0));
+     };
+     let parts: Vec<&str> = text.split('.').collect();
+     let [patch, picked, item, inner] = parts[..] else {
+         return Err(ViewError::Cursor(

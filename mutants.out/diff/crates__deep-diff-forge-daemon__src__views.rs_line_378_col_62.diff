@@ -1,0 +1,21 @@
+--- crates/deep-diff-forge-daemon/src/views.rs
++++ replace == with != in select
+@@ -370,17 +370,17 @@
+         }
+         Selection::Addresses(addresses) => {
+             let mut units = Vec::with_capacity(addresses.len());
+             for address in addresses {
+                 let found = files.iter().enumerate().find_map(|(f, file)| {
+                     file.patch_twin
+                         .hunks
+                         .iter()
+-                        .position(|h| &h.address(&file.path) == address)
++                        .position(|h| &h.address(&file.path) != /* ~ changed by cargo-mutants ~ */ address)
+                         .map(|h| (f, h))
+                 });
+                 units.push(found.ok_or_else(|| ViewError::UnknownAddress(address.clone()))?);
+             }
+             Ok((units, format!("a:{}", addresses.join("\n"))))
+         }
+         Selection::Paths(paths) => {
+             let mut units = Vec::new();

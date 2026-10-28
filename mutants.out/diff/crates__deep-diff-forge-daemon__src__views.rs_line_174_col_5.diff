@@ -1,0 +1,25 @@
+--- crates/deep-diff-forge-daemon/src/views.rs
++++ replace cursor -> String with String::new()
+@@ -166,21 +166,17 @@
+ 
+ fn size(value: &Value) -> usize {
+     value.to_string().len()
+ }
+ 
+ /// A cursor: the seal's first 16 hex digits, the selection's digest, then the item and the
+ /// position inside it where the next page starts.
+ fn cursor(seal: &InputSeal, selection: &str, item: usize, inner: usize) -> String {
+-    format!(
+-        "{}.{}.{item}.{inner}",
+-        &seal.input_sha256[..16],
+-        &deep_diff_forge_core::sha256_hex(selection.as_bytes())[..8]
+-    )
++    String::new() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn resume(page: &Page, seal: &InputSeal, selection: &str) -> Result<(usize, usize), ViewError> {
+     if !(MIN_MAX_BYTES..=MAX_MAX_BYTES).contains(&page.max_bytes) {
+         return Err(ViewError::Budget(page.max_bytes));
+     }
+     let Some(text) = page.cursor.as_deref() else {
+         return Ok((0, 0));
