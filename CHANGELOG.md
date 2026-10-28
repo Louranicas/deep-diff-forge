@@ -60,6 +60,13 @@ independent false-positive checker before a fix.
 - **The daemon refuses params a method does not take**, so a misspelt guard such as
   `require_file` no longer passes an empty review. MCP enforces its schema enums.
 - `highlight` keeps line breaks without colour too (the earlier fix covered only colour).
+- **Headless probes show what a terminal shows.** `review --probe` printed a space after each
+  wide character (`界 界`), so its lines measured wider than the terminal they describe; the
+  cell a wide character covers is skipped now.
+- **The command panel wraps.** At 80 columns the notes panel cut the hazard warning after "what
+  you see", losing "may not be what applies."; each panel line wraps at the panel width.
+- A semantic note counts each change kind (`3 node added, 1 node removed`) instead of naming
+  every span after the first one's kind.
 - **A submodule change is captured whatever configuration says.** `diff.ignoreSubmodules = all`,
   from any configuration level, or a `.gitmodules` `ignore = all` dropped a staged submodule
   change from `--git-*` and `review.change` with exit 0, so a gate saw no files. Every
