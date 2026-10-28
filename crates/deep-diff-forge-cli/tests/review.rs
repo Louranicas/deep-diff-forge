@@ -166,3 +166,34 @@ fn a_probe_size_that_is_not_a_number_is_refused() {
     assert_eq!(stdout.lines().count(), 9);
     assert!(stdout.lines().all(|l| l.chars().count() <= 50));
 }
+
+/// Bug hunt 2026-10-28, H4-08: at 80 columns the notes panel cut the hazard warning after "what
+/// you see", losing "may not be what applies.". Panel lines wrap at its width now.
+#[test]
+fn the_notes_panel_wraps_a_long_warning() {
+    let patch = "--- a/../x.rs\n+++ b/../x.rs\n@@ -1 +1 @@\n-a\n+b\n";
+    let (code, stdout, stderr) = run(
+        &[
+            "review", "--probe", "--cols", "80", "--rows", "25", "--cmd", "notes",
+        ],
+        patch,
+    );
+    assert_eq!(code, 0, "{stderr}");
+    let flat = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains("may not be what applies."), "{stdout}");
+    assert!(stdout.lines().all(|l| l.chars().count() <= 80), "{stdout}");
+}
+
+/// Bug hunt 2026-10-28, H4-03: a patch naming one path twice showed the first section's
+/// content and notes for both. The cockpit refuses it, headless or not, before rendering.
+#[test]
+fn a_patch_naming_a_path_twice_is_refused() {
+    let one = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-a\n+b\n";
+    let other = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -9 +9 @@\n-c\n+d\n";
+    let (code, stdout, stderr) = run(&["review", "--probe"], &format!("{one}{other}"));
+    assert_eq!(code, 4, "{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("\"src/lib.rs\" twice"), "{stderr}");
+    let (code, _, stderr) = run(&["review", "--probe"], one);
+    assert_eq!(code, 0, "{stderr}");
+}

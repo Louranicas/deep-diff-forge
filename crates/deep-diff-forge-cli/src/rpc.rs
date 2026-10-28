@@ -5,6 +5,7 @@
 //! `deep_diff_forge_daemon::process_line` the socket server uses, under the same request cap and
 //! the same framing rules, so an SDK can speak one protocol over a socket or a pipe.
 
+use deep_diff_forge_core::json_line_safe;
 use deep_diff_forge_daemon::{
     Engine, INVALID_REQUEST, MAX_REQUEST_BYTES, PARSE_ERROR, RpcError, error_response,
     process_line, read_capped_line,
@@ -54,7 +55,11 @@ fn serve_capped(
         }
         if buf.len() > cap {
             let error = RpcError::new(INVALID_REQUEST, "request exceeds maximum size");
-            writeln!(output, "{}", error_response(&Value::Null, &error))?;
+            writeln!(
+                output,
+                "{}",
+                json_line_safe(&error_response(&Value::Null, &error))
+            )?;
             output.flush()?;
             return Ok(());
         }
@@ -66,7 +71,7 @@ fn serve_capped(
                 &RpcError::new(PARSE_ERROR, "request is not valid UTF-8"),
             ),
         };
-        writeln!(output, "{response}")?;
+        writeln!(output, "{}", json_line_safe(&response))?;
         output.flush()?;
         if !engine.lock().is_ok_and(|engine| engine.is_running()) {
             return Ok(());
