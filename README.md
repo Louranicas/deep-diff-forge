@@ -681,8 +681,10 @@ accessible parent is refused rather than silently tightened to `0700`), and the
 socket path is replaced **only if it is already a socket** — the daemon never
 deletes a regular file, directory, or symlink it finds there. Review sessions are
 bounded by both an **LRU count cap and a 128 MiB aggregate payload cap**. The
-server admits at most eight concurrent workers, applies absolute request/response
-deadlines, and caps both request and response lines.
+server admits at most eight concurrent connections, but one engine serves them, so
+requests run one at a time. Each request line has an absolute read deadline, each
+response write a per-write timeout, and both lines are capped at 80 MiB: a response
+over the cap is replaced by a `RESOURCE_EXHAUSTED` (8) error for the same request id.
 
 **Default socket:** `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock`. There
 is no world-writable `/tmp` fallback: if `$XDG_RUNTIME_DIR` is unset the daemon
@@ -875,7 +877,8 @@ implemented and gated by tests; per-feature end-to-end proof is tracked in the
   proves the engine on whole files today, and `enclosing_symbol` is the ready
   building block.
 - The daemon intentionally admits at most eight concurrent local clients; excess
-  connections are closed without allocating another worker stack.
+  connections are closed without allocating another worker stack. One engine serves
+  them all, so a long request delays the others.
 - **L9 Learning**: the learning loop records and scores receipts and gates
   promotion; wiring the engine's hot path to *emit* receipts automatically (vs.
   the explicit `learn record`) lands as live signal accrues.

@@ -99,3 +99,30 @@ fn rendered_basic_is_apply_able_shaped() {
     assert!(rendered.contains("+++ b/src/lib.rs"));
     assert!(rendered.contains("@@ -1,4 +1,4 @@"));
 }
+
+/// Real `git diff --binary` output (a delta, a 3,000-byte literal, an empty literal, then a text
+/// file): every file survives, and each binary body is kept whole up to the next `diff --git`.
+#[test]
+fn binary_literal_and_delta_fixture_keeps_every_file_and_body() {
+    let src = load("binary_literal_delta.patch");
+    let files = parse(&src).unwrap();
+    let shape: Vec<(&str, FileStatus, usize)> = files
+        .iter()
+        .map(|f| (f.path.as_str(), f.status, f.patch_twin.hunks.len()))
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            ("big.bin", FileStatus::BinaryChanged, 0),
+            ("new.bin", FileStatus::BinaryChanged, 0),
+            ("t.rs", FileStatus::Modified, 1),
+        ]
+    );
+    let sections: Vec<&str> = src.split("diff --git ").skip(1).collect();
+    for (file, section) in files.iter().zip(&sections) {
+        let body = section
+            .split_once("GIT binary patch\n")
+            .map_or(0, |(_, body)| body.lines().count());
+        assert_eq!(file.patch_twin.binary_body.len(), body, "{}", file.path);
+    }
+}

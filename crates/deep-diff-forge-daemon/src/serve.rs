@@ -3,8 +3,8 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-daemon--serve
 use crate::handler::{Engine, dispatch};
 use crate::protocol::{
-    INTERNAL_ERROR, INVALID_REQUEST, PARSE_ERROR, RpcError, error_response, parse_request,
-    success_response,
+    INTERNAL_ERROR, INVALID_REQUEST, PARSE_ERROR, RESOURCE_EXHAUSTED, RpcError, error_response,
+    parse_request, success_response,
 };
 use crate::security::{
     SECURE_DIR_MODE, SECURE_SOCKET_MODE, SocketError, default_socket_path, ensure_runtime_dir,
@@ -131,7 +131,8 @@ impl SocketLocation {
 /// service).
 pub const MAX_REQUEST_BYTES: usize = 80 * 1024 * 1024;
 
-/// Maximum bytes accepted from a daemon response by the client helper.
+/// Maximum bytes of one response line, newline excluded: the server never sends more (see
+/// [`bounded_response`]) and the client helper never accepts more.
 const MAX_RESPONSE_BYTES: usize = MAX_REQUEST_BYTES;
 
 /// Maximum number of connection worker threads alive at once.
@@ -166,7 +167,9 @@ pub fn process_line(line: &str, engine: &Mutex<Engine>) -> String {
                 dispatch(&request, &mut guard)
             }));
             match outcome {
-                Ok(Ok(result)) => success_response(&id, result),
+                Ok(Ok(result)) => {
+                    bounded_response(&id, success_response(&id, result), MAX_RESPONSE_BYTES)
+                }
                 Ok(Err(err)) => error_response(&id, &err),
                 Err(_) => {
                     recover(engine);
@@ -217,6 +220,20 @@ pub fn read_capped_line<R: BufRead>(
 ) -> std::io::Result<usize> {
     use std::io::Read as _;
     reader.take(cap as u64 + 1).read_until(b'\n', buf)
+}
+
+/// `response`, or a `RESOURCE_EXHAUSTED` error for `id` when it is longer than `cap`. Before, the
+/// server sent any size and the client refused lines over the cap, so a large `diff.compute`
+/// succeeded on the server and failed at the client with no error a caller could act on.
+fn bounded_response(id: &Value, response: String, cap: usize) -> String {
+    if response.len() <= cap {
+        return response;
+    }
+    let message = format!(
+        "the response is {} bytes, over the {cap}-byte line cap; request less (a smaller patch, or diff.plan)",
+        response.len()
+    );
+    error_response(id, &RpcError::new(RESOURCE_EXHAUSTED, message))
 }
 
 /// The outcome of arming a read deadline. macOS refuses `SO_RCVTIMEO` with EINVAL once the
@@ -415,10 +432,24 @@ pub fn bind_explicit(socket_path: &Path) -> std::io::Result<UnixListener> {
     Ok(listener)
 }
 
-/// Remove a stale socket without ever following or deleting another file type.
+/// Remove a stale socket without ever following or deleting another file type, and never a live
+/// one: before, a second `daemon start` deleted the socket of a running daemon and bound its own,
+/// leaving the first running but unreachable, so `daemon stop` could no longer stop it.
 fn remove_stale_socket(socket_path: &Path) -> std::io::Result<()> {
     match std::fs::symlink_metadata(socket_path) {
-        Ok(metadata) if metadata.file_type().is_socket() => std::fs::remove_file(socket_path),
+        Ok(metadata) if metadata.file_type().is_socket() => {
+            match UnixStream::connect(socket_path) {
+                Ok(_) => Err(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    "a daemon is already listening on this socket; refusing to replace it",
+                )),
+                // Nothing listens: the socket is left over from a daemon that is gone.
+                Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused => {
+                    std::fs::remove_file(socket_path)
+                }
+                Err(err) => Err(err),
+            }
+        }
         Ok(_) => Err(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
             "socket path is occupied by a non-socket file; refusing to delete it",
@@ -1198,6 +1229,25 @@ mod tests {
     // Size caps, error-kind guards, and accept-loop error handling
     // -------------------------------------------------------------------------
 
+    /// A response at the cap is sent as it is; one byte over becomes an error for the same id.
+    #[test]
+    fn the_server_never_sends_a_response_over_the_cap() {
+        let id = Value::from(9);
+        let response = success_response(&id, Value::from("x".repeat(100)));
+        let cap = response.len();
+        assert_eq!(bounded_response(&id, response.clone(), cap), response);
+        let refused: Value =
+            serde_json::from_str(&bounded_response(&id, response.clone(), cap - 1)).unwrap();
+        assert_eq!(refused["id"], 9);
+        assert_eq!(refused["error"]["code"], RESOURCE_EXHAUSTED);
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("{cap} bytes"))
+        );
+    }
+
     #[test]
     fn request_and_response_caps_are_80_mib() {
         assert_eq!(MAX_REQUEST_BYTES, 80 << 20);
@@ -1356,6 +1406,47 @@ mod tests {
         let err = request(&location, r#"{"method":"daemon.health"}"#).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         daemon.join().unwrap();
+    }
+
+    /// A socket a daemon still listens on is never removed; one nothing listens on is.
+    #[test]
+    fn only_a_socket_nothing_listens_on_is_removed() {
+        let (parent, _) = explicit_temp("stale-live", 0o700);
+        let sock = parent.join("d.sock");
+        let live = UnixListener::bind(&sock).unwrap();
+        let err = remove_stale_socket(&sock).expect_err("a live daemon owns it");
+        assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+        assert!(
+            std::fs::symlink_metadata(&sock)
+                .unwrap()
+                .file_type()
+                .is_socket()
+        );
+        // Legitimate nearby case: the daemon is gone and its socket file is left behind.
+        drop(live);
+        remove_stale_socket(&sock).expect("a stale socket is removed");
+        assert!(std::fs::symlink_metadata(&sock).is_err());
+    }
+
+    /// Only "nothing listens" makes a socket stale: any other connect failure is returned and the
+    /// socket kept. A mode-000 socket refuses the connect with EACCES (root bypasses modes).
+    #[test]
+    fn a_socket_that_cannot_be_probed_is_kept() {
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+        let (parent, _) = explicit_temp("stale-unprobed", 0o700);
+        let sock = parent.join("d.sock");
+        drop(UnixListener::bind(&sock).unwrap());
+        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let err = remove_stale_socket(&sock).expect_err("the probe was refused, not answered");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(
+            std::fs::symlink_metadata(&sock)
+                .unwrap()
+                .file_type()
+                .is_socket()
+        );
     }
 
     #[test]

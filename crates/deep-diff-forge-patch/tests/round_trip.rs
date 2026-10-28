@@ -26,6 +26,11 @@ fn basic_round_trips() {
 }
 
 #[test]
+fn binary_literal_delta_round_trips() {
+    assert_model_stable("binary_literal_delta.patch");
+}
+
+#[test]
 fn new_file_round_trips() {
     assert_model_stable("new_file.patch");
 }
@@ -58,6 +63,13 @@ fn double_render_is_idempotent() {
     let once = render_unified(&first);
     let twice = render_unified(&parse(&once).unwrap());
     assert_eq!(once, twice);
+}
+
+/// The fuzz find on the first binary-grammar fix: a metadata line after a binary body was kept as
+/// metadata, which renders before the body, so the second parse lost the body. It is now refused.
+#[test]
+fn a_metadata_line_after_a_binary_body_is_refused() {
+    assert!(parse(&load("regressions/binary-metadata-after-body.patch")).is_err());
 }
 
 #[test]

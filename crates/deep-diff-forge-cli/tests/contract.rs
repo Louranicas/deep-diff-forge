@@ -480,7 +480,14 @@ fn every_documented_option_is_admitted() {
         ("--socket", &["daemon", "path", "--socket", socket]),
         (
             "--foreground",
-            &["daemon", "path", "--foreground", "--socket", socket],
+            // `start` alone takes it; an unbindable socket ends the start at once (exit 6).
+            &[
+                "daemon",
+                "start",
+                "--foreground",
+                "--socket",
+                "/dev/null/d.sock",
+            ],
         ),
         ("--stdin", &["learn", "record", "--stdin"]),
         ("--family", &["explain", "7", "--family", "engine"]),

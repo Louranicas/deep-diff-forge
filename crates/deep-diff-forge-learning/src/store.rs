@@ -171,17 +171,19 @@ fn validate_receipt_for_storage(receipt: &StrategyReceipt) -> Result<(), Learnin
             })
     };
     if !token_valid(&receipt.language, 64) {
-        return Err(invalid_data("language must be a bounded identifier token"));
+        return Err(LearningError::InvalidReceipt(
+            "language must be a bounded identifier token",
+        ));
     }
     if !token_valid(&receipt.parser_version, 128) {
-        return Err(invalid_data(
+        return Err(LearningError::InvalidReceipt(
             "parser_version must be a bounded identifier token",
         ));
     }
     // Anchor C-11: a receipt whose outcome is "revisited" but whose revisit flag says it was not
     // contradicts itself; scoring would count the revisit in one rate and not the other.
     if receipt.outcome == crate::ReviewOutcome::Revisited && !receipt.revisited {
-        return Err(invalid_data(
+        return Err(LearningError::InvalidReceipt(
             "outcome revisited contradicts revisited = false",
         ));
     }
