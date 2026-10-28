@@ -60,6 +60,17 @@ independent false-positive checker before a fix.
 - **The daemon refuses params a method does not take**, so a misspelt guard such as
   `require_file` no longer passes an empty review. MCP enforces its schema enums.
 - `highlight` keeps line breaks without colour too (the earlier fix covered only colour).
+- **A submodule change is captured whatever configuration says.** `diff.ignoreSubmodules = all`,
+  from any configuration level, or a `.gitmodules` `ignore = all` dropped a staged submodule
+  change from `--git-*` and `review.change` with exit 0, so a gate saw no files. Every
+  acquisition now passes `--ignore-submodules=none`.
+- **`review.change` names what it did not capture.** An untracked nested repository is not in
+  the files; only the CLI's stderr said so. The `acquisition` member now lists it under
+  `omitted_untracked`.
+- A `GitAcquireOptions::byte_budget` of `usize::MAX` no longer wraps to a zero-byte read.
+- **One output mode at a time.** `--outline --hunks` printed the outline, `--rank --cluster` one of
+  the two, and `--outline --path`/`--address` dropped the selector, all with exit 0. Each is now
+  a usage error (exit 2) before any input is read.
 - **`git format-patch` output is read.** Its bare `---` before the diffstat and its `-- `
   signature were refused as body lines outside a hunk, so `git format-patch -1 --stdout |
   deep-diff-forge --stdin-patch` exited 4. Git ignores both outside a hunk; so does DDF now,

@@ -203,6 +203,10 @@ const DIFF_ARGS: &[&str] = &[
     "--dst-prefix=b/",
     "--no-relative",
     "--submodule=short",
+    // diff.ignoreSubmodules or a .gitmodules `ignore = all` would drop a submodule's change from
+    // the capture with exit 0, so a gate saw 0 files (bug hunt 2026-10-28, H1-02); the option
+    // overrides both.
+    "--ignore-submodules=none",
 ];
 
 /// Upper bound on retained Git standard-error text.
@@ -363,7 +367,10 @@ impl Runner<'_> {
         let flag = std::sync::Arc::clone(&over_budget);
         let stdout_reader = std::thread::spawn(move || {
             let mut out = Vec::new();
-            let read = stdout.map(|pipe| pipe.take(budget as u64 + 1).read_to_end(&mut out));
+            // `byte_budget` is a public field: at usize::MAX a plain `+ 1` wrapped to a zero-byte
+            // read, so a change was captured as none (bug hunt 2026-10-28, H1-10).
+            let limit = (budget as u64).saturating_add(1);
+            let read = stdout.map(|pipe| pipe.take(limit).read_to_end(&mut out));
             if out.len() > budget {
                 flag.store(true, std::sync::atomic::Ordering::SeqCst);
             }
@@ -771,6 +778,11 @@ mod runner_tests {
             }
         }
         assert_eq!(kept.unwrap().len(), 100);
+        assert_eq!(
+            runner.run("stub", &[], &[0], usize::MAX).unwrap().len(),
+            100,
+            "the largest budget reads everything"
+        );
         assert!(matches!(
             runner.run("stub", &[], &[0], 99),
             Err(GitAcquireError::BudgetExceeded { limit_bytes: 99 })
