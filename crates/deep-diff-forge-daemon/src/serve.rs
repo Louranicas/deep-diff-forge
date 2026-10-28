@@ -1191,6 +1191,24 @@ mod tests {
         assert_eq!(MAX_RESPONSE_BYTES, 80 << 20);
     }
 
+    /// A peer that sends one line and closes cleanly has sent a complete line, however many
+    /// buffer refills it takes to read: macOS refuses SO_RCVTIMEO on a socket whose peer has shut
+    /// down (EINVAL), which made the client fail any response longer than its buffer whenever the
+    /// daemon closed first (CI run 40626071938).
+    #[test]
+    fn a_line_from_a_closed_peer_reads_completely_across_refills() {
+        let (local, peer) = UnixStream::pair().expect("socketpair");
+        let mut sent = vec![b'x'; 100];
+        sent.push(b'\n');
+        (&peer).write_all(&sent).unwrap();
+        drop(peer);
+        let mut reader = BufReader::with_capacity(16, local);
+        let mut line = Vec::new();
+        let read = read_capped_line_deadline(&mut reader, &mut line, 1024, Duration::from_secs(5))
+            .expect("a complete line from a closed peer");
+        assert_eq!((read, line), (sent.len(), sent));
+    }
+
     #[test]
     fn socket_line_read_reports_non_timeout_errors_unchanged() {
         // Closing a Unix stream socket with unread data in its receive queue
