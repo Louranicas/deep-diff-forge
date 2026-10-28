@@ -680,6 +680,14 @@ fn review_cmd(opts: &[String]) {
 
     let input = read_capped_or_exit(std::io::stdin().lock(), "stdin");
     let files = parse_or_exit(&input);
+    if let Some(path) = deep_diff_forge_tui::duplicate_path(&files) {
+        eprintln!(
+            "error: the patch names \"{}\" twice; the cockpit matches content and notes by path and \
+             would show one section for both. Review each patch on its own.",
+            deep_diff_forge_core::display_safe(path)
+        );
+        std::process::exit(exit::INVALID_INPUT);
+    }
     // Surface the engine's own findings (risk signals, semantic changes) as
     // grounded, anchored inline notes so the review explains *why* a file
     // matters in-place.

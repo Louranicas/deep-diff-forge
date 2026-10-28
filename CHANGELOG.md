@@ -67,6 +67,10 @@ independent false-positive checker before a fix.
 - **A comment's line ending is formatting.** A line comment's token held its line feed, so CRLF
   conversion or a trailing space made `structural` and `analyze` report a rewritten comment. Each
   comment line's trailing whitespace is dropped from its token; a changed word still counts.
+- **The cockpit refuses a patch that names a path twice.** `review` matched content and notes
+  by path, so two concatenated patches touching one file showed the first section's content and
+  notes for both, and the second section was never shown. It now exits 4 and names the path;
+  `deep_diff_forge_tui::duplicate_path` finds it for library callers.
 
 ### Added (agent batteries)
 
