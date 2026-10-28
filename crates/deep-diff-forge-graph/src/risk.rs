@@ -22,7 +22,7 @@ pub enum RiskSignal {
     ConfigOrLockfile,
     /// Test-only change (lowers priority).
     TestOnly,
-    /// Generated or vendored file (strongly suppressed).
+    /// Generated or vendored path: no bonuses, but never below the base weight.
     GeneratedOrVendored,
 }
 
@@ -51,22 +51,28 @@ pub const MANY_HUNKS: usize = 5;
 
 /// Compute the risk score and contributing signals for one file.
 ///
-/// Scores are deterministic and additive; generated/vendored files are
-/// suppressed to zero, and test-only files are de-prioritized.
+/// Scores are deterministic and additive; test-only files are de-prioritized.
+///
+/// A generated or vendored path earns no bonus for being source, public API, large or
+/// many-hunked, but it keeps the base weight and its new/deleted/binary signals. The path
+/// is chosen by whoever wrote the patch, so it may lower a file's priority but never hide
+/// it: before, a new `src/generated/x.rs` that spawned a process scored 0 and ranked below
+/// a one-line README edit.
 #[must_use]
 pub fn score_file(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     let path = &file.path;
-    if is_generated_or_vendored(path) {
-        return (0, vec![RiskSignal::GeneratedOrVendored]);
-    }
-
     let mut signals = Vec::new();
     let mut score: u32 = 1; // base weight for any reviewable change
+    if is_generated_or_vendored(path) {
+        signals.push(RiskSignal::GeneratedOrVendored);
+        score += status_weight(file, &mut signals);
+        return (score, signals);
+    }
 
     let test = is_test(path);
     let config = is_config_or_lockfile(path);
-    // Primary-source bonus: ranks reviewable source above tests/config, while
-    // generated/vendored files (handled above) stay hard-suppressed to zero.
+    // Primary-source bonus: ranks reviewable source above tests, config and
+    // generated/vendored files (handled above, without bonuses).
     if !test && !config {
         score += 1;
     }
@@ -82,21 +88,7 @@ pub fn score_file(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
         score += 1;
     }
 
-    match file.status {
-        FileStatus::Added => {
-            signals.push(RiskSignal::NewFile);
-            score += 2;
-        }
-        FileStatus::Deleted => {
-            signals.push(RiskSignal::DeletedFile);
-            score += 3;
-        }
-        FileStatus::BinaryChanged => {
-            signals.push(RiskSignal::BinaryChange);
-            score += 1;
-        }
-        _ => {}
-    }
+    score += status_weight(file, &mut signals);
 
     let (adds, dels) = change_counts(file);
     let hunks = file.patch_twin.hunks.len();
@@ -110,6 +102,18 @@ pub fn score_file(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     }
 
     (score, signals)
+}
+
+/// The weight of a file's status (added, deleted, binary), recording its signal.
+fn status_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
+    let (signal, weight) = match file.status {
+        FileStatus::Added => (RiskSignal::NewFile, 2),
+        FileStatus::Deleted => (RiskSignal::DeletedFile, 3),
+        FileStatus::BinaryChanged => (RiskSignal::BinaryChange, 1),
+        _ => return 0,
+    };
+    signals.push(signal);
+    weight
 }
 
 /// Count added and removed lines across a file's hunks.
@@ -212,22 +216,49 @@ mod tests {
     }
 
     #[test]
-    fn generated_file_is_suppressed_to_zero() {
-        let (score, signals) = score_file(&modify("src/generated/schema.rs", 50));
-        assert_eq!(score, 0);
+    fn generated_file_keeps_only_the_base_weight() {
+        let (score, signals) = score_file(&modify("src/generated/schema.rs", 500));
+        assert_eq!(score, 1);
         assert_eq!(signals, vec![RiskSignal::GeneratedOrVendored]);
     }
 
     #[test]
     fn vendored_path_is_suppressed() {
         let (score, _) = score_file(&modify("third_party/vendor/x.rs", 50));
-        assert_eq!(score, 0);
+        assert_eq!(score, 1);
+    }
+
+    /// The patch author picks the path, so a generated or vendored path may lower a file but
+    /// never hide it: a new or deleted file there keeps its status signal and outranks a
+    /// one-line edit elsewhere.
+    #[test]
+    fn a_generated_path_never_hides_a_new_or_deleted_file() {
+        let mut added = modify("src/generated/x.rs", 1);
+        added.status = FileStatus::Added;
+        assert_eq!(
+            score_file(&added),
+            (
+                3,
+                vec![RiskSignal::GeneratedOrVendored, RiskSignal::NewFile]
+            )
+        );
+        let mut deleted = modify("vendor/y.rs", 1);
+        deleted.status = FileStatus::Deleted;
+        assert_eq!(
+            score_file(&deleted),
+            (
+                4,
+                vec![RiskSignal::GeneratedOrVendored, RiskSignal::DeletedFile]
+            )
+        );
+        let readme = score_file(&modify("README.md", 1)).0;
+        assert!(score_file(&added).0 > readme);
     }
 
     #[test]
     fn target_dir_is_suppressed() {
         let (score, _) = score_file(&modify("target/debug/build.rs", 10));
-        assert_eq!(score, 0);
+        assert_eq!(score, 1);
     }
 
     #[test]
@@ -295,10 +326,11 @@ mod tests {
     }
 
     #[test]
-    fn generated_ranks_below_test() {
-        let generated = score_file(&modify("src/generated/g.rs", 1)).0;
+    fn generated_never_outranks_test_or_source() {
+        let generated = score_file(&modify("src/generated/g.rs", 500)).0;
         let test = score_file(&modify("tests/it.rs", 1)).0;
-        assert!(generated < test);
+        let source = score_file(&modify("src/util.rs", 1)).0;
+        assert!(generated <= test && generated < source);
     }
 
     #[test]
@@ -324,13 +356,13 @@ mod tests {
     #[test]
     fn node_modules_is_suppressed() {
         let (score, _) = score_file(&modify("web/node_modules/dep/index.rs", 5));
-        assert_eq!(score, 0);
+        assert_eq!(score, 1);
     }
 
     #[test]
     fn dist_path_is_suppressed() {
         let (score, _) = score_file(&modify("build/dist/bundle.rs", 5));
-        assert_eq!(score, 0);
+        assert_eq!(score, 1);
     }
 
     #[test]
@@ -415,7 +447,7 @@ mod tests {
     #[test]
     fn min_js_is_generated() {
         let (score, _) = score_file(&modify("web/app.min.js", 5));
-        assert_eq!(score, 0);
+        assert_eq!(score, 1);
     }
 
     #[test]
