@@ -436,7 +436,7 @@ fn daemon_cmd(opts: &[String]) {
     if sub != Some("start") && opts.iter().any(|a| a == "--foreground") {
         eprintln!("error: --foreground applies only to `daemon start`");
         eprintln!(
-            "usage: deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]"
+            "usage: deep-diff-forge daemon {{path|start [--foreground] [--allow-repo PATH]...|health|status|stop}} [--socket PATH]"
         );
         std::process::exit(exit::USAGE);
     }
@@ -446,7 +446,7 @@ fn daemon_cmd(opts: &[String]) {
     }
     if !matches!(sub, Some("path" | "start" | "health" | "status" | "stop")) {
         eprintln!(
-            "usage: deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]"
+            "usage: deep-diff-forge daemon {{path|start [--foreground] [--allow-repo PATH]...|health|status|stop}} [--socket PATH]"
         );
         std::process::exit(exit::USAGE);
     }
@@ -480,7 +480,7 @@ fn daemon_cmd(opts: &[String]) {
         Some("stop") => daemon_client(&location, r#"{"id":1,"method":"daemon.shutdown"}"#),
         _ => {
             eprintln!(
-                "usage: deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]"
+                "usage: deep-diff-forge daemon {{path|start [--foreground] [--allow-repo PATH]...|health|status|stop}} [--socket PATH]"
             );
             std::process::exit(exit::USAGE);
         }
@@ -1473,8 +1473,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "daemon",
-        "deep-diff-forge daemon {path|start [--foreground]|health|status|stop} [--socket PATH]",
-        "Run or query the optional Unix-socket JSON-RPC daemon.",
+        "deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]...|health|status|stop} [--socket PATH]",
+        "Run or query the optional Unix-socket JSON-RPC daemon; --allow-repo lets review.change read those repositories.",
     ),
     (
         "learn",
@@ -1483,7 +1483,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "--stdin-patch",
-        "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side] [--require-files] [--require-hunks]",
+        "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks]",
         "Review a unified or Git patch read from stdin.",
     ),
     (
@@ -1493,13 +1493,13 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "mcp",
-        "deep-diff-forge mcp",
-        "Serve the read-only MCP tools over stdio.",
+        "deep-diff-forge mcp [--allow-repo PATH]...",
+        "Serve the read-only MCP tools over stdio; --allow-repo lets review_change read those repositories.",
     ),
     (
         "rpc",
-        "deep-diff-forge rpc",
-        "Speak the daemon's JSON-RPC over stdio, with no daemon.",
+        "deep-diff-forge rpc [--allow-repo PATH]...",
+        "Speak the daemon's JSON-RPC over stdio, with no daemon; --allow-repo lets review.change read those repositories.",
     ),
     (
         "envelope",

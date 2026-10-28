@@ -176,3 +176,27 @@ fn bad_requests_and_contracts_are_refused() {
         "{range:?}"
     );
 }
+
+/// `--allow-repo` names roots that must exist, and only on the servers that read Git.
+#[test]
+fn allow_repo_is_checked_where_it_is_given() {
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap()
+    };
+    for server in ["mcp", "rpc"] {
+        let out = run(&[server, "--allow-repo", "/nonexistent/ddf-root"]);
+        assert_eq!(out.status.code(), Some(2), "{server}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("--allow-repo /nonexistent/ddf-root")
+        );
+        let out = run(&[server, "--allow-repo"]);
+        assert_eq!(out.status.code(), Some(2), "{server} without a value");
+    }
+    let out = run(&["daemon", "status", "--allow-repo", "/tmp"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("only to `daemon start`"));
+}
