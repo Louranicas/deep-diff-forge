@@ -1669,12 +1669,13 @@ fn mutation_jobs_own_a_build_cache_and_cannot_contaminate_normal_tests() {
     assert!(argv.iter().any(|a| a == "--no-config"));
     // The job runs as the operator, not as the image's USER (a uid-1001 runner could not read
     // the private source copy otherwise).
-    let me = fs::metadata("/proc/self").unwrap();
-    let user = format!(
-        "--user={}:{}",
-        std::os::unix::fs::MetadataExt::uid(&me),
-        std::os::unix::fs::MetadataExt::gid(&me)
-    );
+    // `id` is POSIX; `/proc/self` exists only on Linux.
+    let id = |flag| {
+        let out = Command::new("id").arg(flag).output().unwrap();
+        assert!(out.status.success(), "id {flag}");
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    };
+    let user = format!("--user={}:{}", id("-u"), id("-g"));
     assert!(argv.contains(&user), "{argv:?}");
     assert!(
         argv.iter()
