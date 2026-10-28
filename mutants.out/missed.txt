@@ -1,2 +1,0 @@
-crates/deep-diff-forge-daemon/src/views.rs:247:57: replace == with != in outline
-crates/deep-diff-forge-daemon/src/views.rs:261:29: delete ! in outline
