@@ -201,6 +201,23 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **Patch parsing is linear in metadata lines.** Every non-body line rescanned
+  all of the file's metadata, so 1M `index` lines (8 MB) took 139 s and held the
+  daemon's engine past every client deadline; it now takes 0.20 s.
+- **A refused learning receipt exits 4** (change the input), not 3 (a
+  retryable I/O failure), as the README documents.
+- **A second `daemon start` never replaces a live daemon's socket.** It
+  exits 6 instead of orphaning the running daemon.
+- **`daemon --socket PATH health` works.** Commands take their positionals
+  from argument admission, so an option's value is never read as the
+  subcommand. `--foreground` belongs to `daemon start` alone (which always
+  serves in the foreground) and is refused elsewhere.
+- **The daemon never sends a response over its 80 MiB line cap**; it answers
+  `RESOURCE_EXHAUSTED` (8) for the same id instead of a line the client
+  refuses. The README now says one engine serves the eight connections.
+- **The daemon client reads a complete response on macOS** when the daemon
+  closes first, and gates never fall back to running as root where `/proc` is
+  missing (found by the first macOS test runs).
 - **No trust policy trusts a strategy with no receipts**, even with
   `min_samples: 0`.
 - **The Python `SocketClient` raises `TransportError`** for a missing socket, a
@@ -430,6 +447,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Security
 
+- **No text change can hide behind a binary patch body.** After
+  `GIT binary patch`, every later line was taken as binary data, so a crafted
+  patch was reviewed as one binary file while `git apply` also changed a text
+  file. The body now takes only the lines of git's binary grammar; such a patch
+  is refused (exit 4).
 - **Ids become paths only as checked segments** (anchor C-09). Every reviewer,
   job, session and fuzz-target id joined into a council run directory now goes
   through one check (`segment`, `job_dir`, `report_path`) at the join, so a
