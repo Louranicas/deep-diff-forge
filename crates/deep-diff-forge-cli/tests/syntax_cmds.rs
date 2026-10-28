@@ -125,3 +125,25 @@ fn structural_unsupported_language_errors_not_reformat_only() {
     assert_eq!(code, 2);
     assert!(!String::from_utf8_lossy(&out).contains("formatting only"));
 }
+
+#[cfg(unix)]
+#[test]
+fn source_commands_refuse_a_fifo_without_blocking() {
+    let fifo = std::env::temp_dir().join(format!("ddf-source-fifo-{}", std::process::id()));
+    let _ = std::fs::remove_file(&fifo);
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .arg("semantic")
+        .arg(&fifo)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not a regular file"));
+    std::fs::remove_file(fifo).unwrap();
+}

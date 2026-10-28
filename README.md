@@ -140,7 +140,9 @@ The reverse holds too. An internally incoherent patch is **refused, not repaired
 - a hunk whose body disagrees with its `@@ -a,b +c,d @@` counts;
 - a hunk cut off at end of file;
 - a header missing its closing `@@`;
-- a `GIT binary patch` body followed by anything but base85 lines.
+- a `GIT binary patch` body followed by anything but base85 lines;
+- a file header after the file's first hunk, a `---` without its `+++`, or headers that
+  contradict each other (a new file with old lines, a deleted file that is also renamed).
 
 Each fails with exit 4. None is quietly turned into a plausible-looking model.
 

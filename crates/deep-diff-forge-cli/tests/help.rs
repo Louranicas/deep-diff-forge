@@ -73,24 +73,45 @@ fn a_command_help_repeats_its_usage_line() {
     assert_eq!(council.1, council_help.1);
 }
 
-/// `council help` and `council --help` take nothing after them: extra words are a mistake, not a
-/// request for help.
+/// Council help is also position-independent and never interprets another token as a run path.
 #[test]
-fn council_help_takes_no_further_arguments() {
-    for flag in ["help", "--help", "-h"] {
-        let (code, stdout, _) = run(&["council", flag, "prepare"]);
-        assert_ne!(code, 0, "council {flag} prepare");
-        assert!(
-            !stdout.contains("council example"),
-            "council {flag} prepare"
-        );
+fn council_help_anywhere_does_not_read_a_run_path() {
+    for args in [
+        &["council", "--help", "prepare"][..],
+        &["council", "status", "missing", "-h"][..],
+    ] {
+        let (code, stdout, stderr) = run(args);
+        assert_eq!(code, 0, "{args:?}: {stderr}");
+        assert!(stdout.contains("council example"), "{args:?}: {stdout}");
     }
 }
 
-/// `--help` only counts as the first argument; elsewhere the command's own rules apply.
+/// Help is intercepted before command validation or input reads, wherever it appears.
 #[test]
-fn help_later_in_the_line_is_not_intercepted() {
-    let (code, stdout, _) = run(&["explain", "7", "--help"]);
-    assert_eq!(code, 2);
-    assert_eq!(stdout, "");
+fn help_later_in_the_line_prints_command_help() {
+    for args in [
+        &["explain", "7", "--help"][..],
+        &["--stdin-patch", "--json", "-h"][..],
+        &["daemon", "start", "--help"][..],
+        &["council", "status", "missing", "--help"][..],
+    ] {
+        let (code, stdout, stderr) = run(args);
+        assert_eq!(code, 0, "{args:?}: {stderr}");
+        assert!(!stdout.is_empty(), "{args:?}");
+        assert!(stderr.is_empty(), "{args:?}: {stderr}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_argument_is_an_io_error_not_a_panic() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+    let output = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .arg(OsString::from_vec(b"bad\xff".to_vec()))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("panicked"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not valid UTF-8"));
 }
