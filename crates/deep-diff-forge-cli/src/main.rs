@@ -557,7 +557,7 @@ fn learn_status(json: bool) {
 /// append it to the local store. The agent/automation entry point for feeding
 /// the loop; rejects malformed input rather than silently dropping it.
 fn learn_record(opts: &[String]) {
-    use deep_diff_forge_learning::{StrategyReceipt, record_receipt};
+    use deep_diff_forge_learning::{LearningError as E, StrategyReceipt, record_receipt};
     if !opts.iter().any(|a| a == "--stdin") {
         eprintln!("usage: deep-diff-forge learn record --stdin   (reads one JSON receipt)");
         std::process::exit(exit::USAGE);
@@ -572,7 +572,13 @@ fn learn_record(opts: &[String]) {
     };
     if let Err(err) = record_receipt(&receipt) {
         eprintln!("error: could not record receipt: {err}");
-        std::process::exit(exit::IO);
+        // A refused receipt is the input's fault and repeats on retry; only the store is I/O.
+        // Exhaustive, so a new error kind has to choose its exit code.
+        let code = match err {
+            E::InvalidReceipt(_) => exit::INVALID_INPUT,
+            E::NoStateDir | E::Io(_) | E::Serialize(_) | E::Deserialize(_) => exit::IO,
+        };
+        std::process::exit(code);
     }
     emitln!(
         "recorded: {} receipt for {} ({})",

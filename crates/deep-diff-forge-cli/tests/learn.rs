@@ -53,14 +53,19 @@ fn learn_records_receipts_and_reports_them() {
     assert_eq!(total(&out), 1, "status is the default subcommand");
 
     // A path where the redacted id belongs is refused when read (C-07), and a self-contradicting
-    // receipt is refused by the store (C-11); neither is recorded.
+    // receipt or a path-shaped language is refused by the store (C-11); none is recorded, and each
+    // is an invalid input (exit 4), never the retryable I/O exit 3.
     let path = RECEIPT.replace("0123456789abcdef", "src/secret.rs");
     let (code, _, err) = learn(&state, &["record", "--stdin"], &path);
     assert_eq!(code, 4, "{err}");
     let contradictory = RECEIPT.replace(r#""outcome":"accepted""#, r#""outcome":"revisited""#);
     let (code, _, err) = learn(&state, &["record", "--stdin"], &contradictory);
-    assert_ne!(code, 0, "{err}");
+    assert_eq!(code, 4, "{err}");
     assert!(err.contains("contradicts"), "{err}");
+    let language = RECEIPT.replace(r#""language":"rust""#, r#""language":"src/secret.rs""#);
+    let (code, _, err) = learn(&state, &["record", "--stdin"], &language);
+    assert_eq!(code, 4, "{err}");
+    assert!(err.contains("invalid receipt: language"), "{err}");
     let (_, out, _) = learn(&state, &["status", "--json"], "");
     assert_eq!(total(&out), 1);
 

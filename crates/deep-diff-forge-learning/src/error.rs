@@ -18,6 +18,9 @@ pub enum LearningError {
     Serialize(String),
     /// A stored line could not be parsed back into a record.
     Deserialize(String),
+    /// A receipt was refused before storage: it can never be recorded as given, so a caller must
+    /// change it rather than retry (CLI exit 4, not the I/O exit 3).
+    InvalidReceipt(&'static str),
 }
 
 impl fmt::Display for LearningError {
@@ -32,6 +35,7 @@ impl fmt::Display for LearningError {
             Self::Io(e) => write!(f, "io error: {e}"),
             Self::Serialize(e) => write!(f, "serialize error: {e}"),
             Self::Deserialize(e) => write!(f, "deserialize error: {e}"),
+            Self::InvalidReceipt(why) => write!(f, "invalid receipt: {why}"),
         }
     }
 }
