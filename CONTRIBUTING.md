@@ -34,9 +34,6 @@ Each of these is real, scoped, and listed as a known limit in the
   can still collide.
 - **More languages.** Syntax features (`semantic`, `highlight`, `structural`) speak Rust today.
   The registry in `crates/deep-diff-forge-syntax` is built to take more grammars.
-- **`--help` on every subcommand.** Only `review --help` and `council help` print usage today;
-  the others exit 2 (and `council --help` exits 4). A table test over every command would keep it
-  that way.
 - **File-pair input.** `deep-diff-forge <old> <new>` is refused today; see
   [`docs/ROADMAP.md`](docs/ROADMAP.md).
 

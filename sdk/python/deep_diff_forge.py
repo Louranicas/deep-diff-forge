@@ -77,6 +77,10 @@ class _Client:
         """The ``deep-diff-forge.review.v0`` document for ``patch``."""
         return self.call("diff.compute", patch=patch, require_files=require_files, require_hunks=require_hunks)
 
+    def rank_patch(self, patch, require_files=False, require_hunks=False):
+        """The sealed ``deep-diff-forge.rank.v0`` document for ``patch``: its files by review risk."""
+        return self.call("diff.rank", patch=patch, require_files=require_files, require_hunks=require_hunks)
+
     def methods(self):
         """Every daemon method with its params, result and protocol version."""
         return self.call("engine.methods")["methods"]

@@ -209,35 +209,49 @@ fn flatten(mut raw: Vec<HighlightSpan>) -> Vec<HighlightSpan> {
     out
 }
 
+/// [`deep_diff_forge_core::display_safe`] for each line of `text`, keeping the line
+/// feeds themselves. A line feed only moves to the next line, so it is safe to print,
+/// and escaping it (as `\x0a`) printed a whole source file on one line. Every other
+/// control character, including a carriage return, is still escaped.
+fn display_safe_lines(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&deep_diff_forge_core::display_safe(line));
+    }
+    out
+}
+
 /// Render `source` to an ANSI-coloured string using `spans`.
 ///
-/// Every byte of `source` is passed through [`deep_diff_forge_core::display_safe`]
-/// (so embedded control sequences are neutralised); the only raw escapes emitted
-/// are the fixed SGR codes wrapping each span. `spans` must be the non-overlapping,
-/// sorted output of [`highlight`].
+/// Every line of `source` is passed through [`deep_diff_forge_core::display_safe`]
+/// (so embedded control sequences are neutralised); the only raw bytes it adds are
+/// the line feeds between lines and the fixed SGR codes wrapping each span. `spans`
+/// must be the non-overlapping, sorted output of [`highlight`].
 #[must_use]
 pub fn to_ansi(source: &str, spans: &[HighlightSpan]) -> String {
-    use deep_diff_forge_core::display_safe;
     let mut out = String::with_capacity(source.len() + spans.len() * 12);
     let mut cursor = 0usize;
     for span in spans {
         if span.start > cursor
             && let Some(text) = source.get(cursor..span.start)
         {
-            out.push_str(&display_safe(text));
+            out.push_str(&display_safe_lines(text));
         }
         if let Some(text) = source.get(span.start..span.end) {
             let _ = write!(
                 out,
                 "\u{1b}[{}m{}\u{1b}[0m",
                 span.class.ansi_sgr(),
-                display_safe(text)
+                display_safe_lines(text)
             );
         }
         cursor = span.end.max(cursor);
     }
     if let Some(rest) = source.get(cursor..) {
-        out.push_str(&display_safe(rest));
+        out.push_str(&display_safe_lines(rest));
     }
     out
 }
@@ -250,7 +264,7 @@ pub fn to_ansi(source: &str, spans: &[HighlightSpan]) -> String {
 pub fn highlight_to_ansi(language: Language, source: &str) -> String {
     let spans = highlight(language, source);
     if spans.is_empty() {
-        return deep_diff_forge_core::display_safe(source).into_owned();
+        return display_safe_lines(source);
     }
     to_ansi(source, &spans)
 }
@@ -344,6 +358,23 @@ mod tests {
         for (i, _) in out.match_indices('\u{1b}') {
             let tail = &out[i + 1..];
             assert!(tail.starts_with('['), "raw ESC must introduce an SGR code");
+        }
+    }
+
+    /// Line feeds print as line breaks, coloured or not; every other control character is
+    /// still escaped. Before, each line feed printed as the text `\x0a`, so a file came out
+    /// on one line.
+    #[test]
+    fn line_feeds_stay_line_breaks_and_other_controls_are_escaped() {
+        let source = "fn a() {}\n// \r\u{7}\nfn b() {}\n";
+        for out in [
+            highlight_to_ansi(Language::Rust, source),
+            highlight_to_ansi(Language::Unsupported, source),
+        ] {
+            assert_eq!(out.matches('\n').count(), 3, "{out:?}");
+            assert!(!out.contains("\\x0a"), "{out:?}");
+            assert!(out.contains("\\x0d\\x07"), "{out:?}");
+            assert!(!out.contains('\r') && !out.contains('\u{7}'), "{out:?}");
         }
     }
 

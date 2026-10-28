@@ -31,7 +31,7 @@ errors, and reliable concurrency.
   exit-code registry (`deep-diff-forge schema exit-codes`).
 - **Testing:** unit, fixture, contract, integration and fuzz levels exist; the corpus level does
   not. Fuzz targets: `patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
-  `council_report`, `stdio_mcp`, `stdio_rpc` (`fuzz/Cargo.toml`). CI runs diff-scoped
+  `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness` (`fuzz/Cargo.toml`). CI runs diff-scoped
   cargo-mutants on each pull request's changed lines.
 - **First milestone below:** steps 1 to 5 are done; step 6 (loom fixture) is not, since loom
   does not exist.

@@ -154,15 +154,16 @@ impl std::fmt::Display for PatchParseError {
                 f,
                 "patch contains at least {actual_lines} lines, exceeding the {limit_lines}-line budget"
             ),
-            Self::MalformedHunkHeader { line_number, text } => {
-                write!(f, "malformed hunk header at line {line_number}: {text:?}")
-            }
-            Self::BodyLineOutsideHunk { line_number, text } => {
-                write!(
-                    f,
-                    "diff body line outside any hunk at line {line_number}: {text:?}"
-                )
-            }
+            Self::MalformedHunkHeader { line_number, text } => write!(
+                f,
+                "malformed hunk header at line {line_number}: {}",
+                Excerpt(text)
+            ),
+            Self::BodyLineOutsideHunk { line_number, text } => write!(
+                f,
+                "diff body line outside any hunk at line {line_number}: {}",
+                Excerpt(text)
+            ),
             Self::TruncatedHunk {
                 line_number,
                 remaining_old,
@@ -173,9 +174,34 @@ impl std::fmt::Display for PatchParseError {
             ),
             Self::HunkLineCountMismatch { line_number, text } => write!(
                 f,
-                "hunk body line at line {line_number} exceeds the count declared by its header: {text:?}"
+                "hunk body line at line {line_number} exceeds the count declared by its header: {}",
+                Excerpt(text)
             ),
         }
+    }
+}
+
+/// Bytes of an offending line a parse error quotes; the rest is counted, not echoed.
+pub const ERROR_EXCERPT_BYTES: usize = 120;
+
+/// An offending input line as a parse error quotes it: escaped, and cut after
+/// [`ERROR_EXCERPT_BYTES`] with the number of bytes left out. The line was written by whoever
+/// wrote the patch, and the message reaches terminals and agents' contexts: before, a 2 MB line
+/// made a 2,000,074-byte error.
+struct Excerpt<'a>(&'a str);
+
+impl std::fmt::Display for Excerpt<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = self.0;
+        if text.len() <= ERROR_EXCERPT_BYTES {
+            return write!(f, "{text:?}");
+        }
+        // The last char boundary at or before the limit (a char is at most 4 bytes).
+        let end = (ERROR_EXCERPT_BYTES.saturating_sub(3)..=ERROR_EXCERPT_BYTES)
+            .rev()
+            .find(|&i| text.is_char_boundary(i))
+            .unwrap_or(0);
+        write!(f, "{:?}… (+{} bytes)", &text[..end], text.len() - end)
     }
 }
 

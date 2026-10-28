@@ -323,6 +323,12 @@ pub const METHODS: &[MethodSpec] = &[
         "the deep-diff-forge.review.v0 document `deep-diff-forge --stdin-patch --json` prints for the same patch",
         1,
     ),
+    method(
+        "diff.rank",
+        "patch: string, require_files?: boolean, require_hunks?: boolean",
+        "the deep-diff-forge.rank.v0 document `deep-diff-forge --stdin-patch --rank --json` prints for the same patch",
+        1,
+    ),
     method("session.open", "patch: string", "{session, files}", 0),
     method("session.snapshot", "session: string", "[ranked file]", 0),
     method("session.close", "session: string", "{closed}", 0),
@@ -403,7 +409,8 @@ pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcErro
             let files = parse_patch_param(request)?;
             Ok(ranked_json(&rank(&files)))
         }
-        "diff.compute" => compute(request),
+        "diff.compute" => review_document(&sealed(request)?),
+        "diff.rank" => Ok(rank_document(&sealed(request)?)),
         "session.open" => {
             let files = parse_patch_param(request)?;
             let count = files.len();
@@ -428,28 +435,28 @@ pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcErro
     }
 }
 
-/// `diff.compute`: the review document the CLI's `--stdin-patch --json` prints for the same
-/// patch, sealed over the same bytes, under the same input contracts (`InputGuards`).
-fn compute(request: &Request) -> Result<Value, RpcError> {
+/// The patch param sealed under the request's input contracts (`InputGuards`): the one parse →
+/// guard → seal path (anchor C-05) the CLI's `--stdin-patch` uses, so `diff.compute` and
+/// `diff.rank` answer for exactly the bytes they were sent.
+fn sealed(request: &Request) -> Result<deep_diff_forge_patch::SealedReview, RpcError> {
     let patch = str_param(&request.params, "patch")?;
     let guards = deep_diff_forge_patch::InputGuards {
         files: bool_param(&request.params, "require_files")?,
         hunks: bool_param(&request.params, "require_hunks")?,
     };
-    // The one parse → guard → seal path (anchor C-05), as the CLI's `--stdin-patch --json`.
-    let review = deep_diff_forge_patch::SealedReview::new(
-        patch.as_bytes(),
-        guards,
-        env!("CARGO_PKG_VERSION"),
-    )
-    .map_err(|error| match error {
-        deep_diff_forge_patch::ReviewError::Parse(e) => {
-            RpcError::new(PATCH_PARSE_FAILED, e.to_string())
-        }
-        refused @ deep_diff_forge_patch::ReviewError::Refused(_) => {
-            RpcError::new(INPUT_CONTRACT_REFUSED, refused.to_string())
-        }
-    })?;
+    deep_diff_forge_patch::SealedReview::new(patch.as_bytes(), guards, env!("CARGO_PKG_VERSION"))
+        .map_err(|error| match error {
+            deep_diff_forge_patch::ReviewError::Parse(e) => {
+                RpcError::new(PATCH_PARSE_FAILED, e.to_string())
+            }
+            refused @ deep_diff_forge_patch::ReviewError::Refused(_) => {
+                RpcError::new(INPUT_CONTRACT_REFUSED, refused.to_string())
+            }
+        })
+}
+
+/// `diff.compute`: the review document the CLI's `--stdin-patch --json` prints for the same patch.
+fn review_document(review: &deep_diff_forge_patch::SealedReview) -> Result<Value, RpcError> {
     serde_json::from_str(&review.to_json()).map_err(|e| {
         RpcError::new(
             crate::protocol::INTERNAL_ERROR,
@@ -481,6 +488,19 @@ fn str_param(params: &Value, key: &str) -> Result<String, RpcError> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| RpcError::invalid_params(format!("missing string param '{key}'")))
+}
+
+/// `diff.rank`: the `deep-diff-forge.rank.v0` document the CLI's `--stdin-patch --rank --json`
+/// prints for the same patch, sealed like it. `diff.plan` returns only the bare ranking, which
+/// cannot say which bytes it ranked; MCP's `rank_patch` answered with that unsealed array.
+fn rank_document(review: &deep_diff_forge_patch::SealedReview) -> Value {
+    let seal = review.seal();
+    json!({
+        "schema": "deep-diff-forge.rank.v0",
+        "input_sha256": seal.input_sha256,
+        "tool": {"name": deep_diff_forge_core::InputSeal::TOOL_NAME, "version": seal.tool_version},
+        "ranked": ranked_json(&rank(review.files())),
+    })
 }
 
 fn ranked_json(ranked: &[RankedFile]) -> Value {

@@ -242,7 +242,7 @@ deep-diff-forge --git-working-tree --include-untracked --rank --json > "$out/ran
 | --- | --- |
 | stdout is a TTY or a pipe | Review output is the same plain text either way. Only `highlight` adds colour, when stdout is a terminal or `--color` is passed. |
 | Large diff | Read whole up to 64 MiB, then output; above the budget, exit 4. |
-| Generated or vendored file | Scored 0 with the `generated_or_vendored` signal (`risk.rs`); hiding it behind a summary is planned. |
+| Generated or vendored file | Base weight 1 with the `generated_or_vendored` signal and no bonuses, but it keeps its new, deleted or binary signal: the patch author picks the path, so a path may lower a file but never hide it (`risk.rs`). Hiding it behind a summary is planned. |
 | Semantic analysis fails | Patch truth plus a counted semantic fallback. |
 | Daemon unavailable | The CLI never uses the daemon; `daemon health/status/stop` exit 6. |
 

@@ -71,10 +71,12 @@ diff --git a/src/generated/g.rs b/src/generated/g.rs
     }
 
     #[test]
-    fn generated_file_ranks_last() {
+    fn generated_file_ranks_with_tests_below_source() {
         let r = ranked(MULTI);
-        assert_eq!(r.last().unwrap().path, "src/generated/g.rs");
-        assert_eq!(r.last().unwrap().score, 0);
+        let generated = r.iter().find(|f| f.path == "src/generated/g.rs").unwrap();
+        let test = r.iter().find(|f| f.path == "tests/it.rs").unwrap();
+        assert_eq!((generated.score, test.score), (1, 1));
+        assert!(r[0].score > generated.score);
     }
 
     #[test]

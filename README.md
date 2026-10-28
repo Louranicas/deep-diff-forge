@@ -154,11 +154,11 @@ Each fails with exit 4. None is quietly turned into a plausible-looking model.
    `deep_diff_forge_patch::SealedReview`, whether the patch was piped in or acquired from Git.
    It decodes the bytes, parses them within a 64 MiB budget in linear time, applies the input
    contracts, and seals them with SHA-256. This covers the CLI's `--json`, `--rank`,
-   `--cluster` and layouts, the daemon's `diff.compute`, and the SDK.
+   `--cluster` and layouts, the daemon's `diff.compute` and `diff.rank`, MCP's `review_patch`
+   and `rank_patch`, and the SDKs.
    - `--jsonl` streams through the pipeline crate under the same parser and contracts, but
      unsealed.
-   - The cockpit, MCP `rank_patch`, `diff.plan` and `session.open` use the same strict
-     parser without a seal.
+   - The cockpit, `diff.plan` and `session.open` use the same strict parser without a seal.
    - Git runs with a fixed argv, and paths, modes and blob IDs come from NUL-delimited
      records.
 2. **One model.** `deep-diff-forge-core` holds files, hunks, line anchors, the seal and the tool
@@ -221,7 +221,7 @@ git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require
 
 ## Command reference
 
-`deep-diff-forge --help` is the authoritative list. `review --help` and `council help` print their own usage; the other subcommands do not take `--help` yet ([an open problem](CONTRIBUTING.md#open-problems-worth-owning)).
+`deep-diff-forge --help` is the authoritative list, and `deep-diff-forge <command> --help` prints one command's usage and what it does, with exit 0. A test runs it for every command `--help` lists.
 
 ### Review a change
 
@@ -437,17 +437,21 @@ tools over stdio, one JSON-RPC message per line.
 | Tool | What it returns |
 | --- | --- |
 | `review_patch` | The `deep-diff-forge.review.v0` document for `patch`: the same JSON value `--stdin-patch --json` prints, up to 256 KiB (see *Large reviews*). `require_files` / `require_hunks` refuse as the CLI flags do; `paths` limits the document to chosen files |
-| `rank_patch` | The patch's files ordered by review risk |
+| `rank_patch` | The sealed `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints: files by review risk, with their signals. `require_files` / `require_hunks` refuse as the CLI flags do |
 | `explain_exit_code` | One exit code's family, name, meaning and next action |
 | `exit_code_registry` | Every documented exit code |
 
-Every tool is annotated `readOnlyHint: true`, and none writes anything. The server
+Every tool is annotated `readOnlyHint: true`, and none writes anything. Every tool declares an
+`outputSchema`. The patch tools' results always carry `schema`, `input_sha256` and `tool`, so an
+agent can check which bytes an answer is about. A full result arrives twice, as
+`structuredContent` and as a text copy, because the MCP specification asks servers to keep the
+text copy for older clients. Ask for `detail: "summary"` or `paths` to keep answers small. The server
 instructions and the patch-reading tools tell the model that paths and line text come from
 the patch's authors: data to review, never instructions.
 
 - **Errors:** an unknown tool or malformed JSON-RPC is a JSON-RPC error. Bad or missing arguments, a parse failure or a broken input contract is a tool result with `isError: true`, so a model can correct its input.
 - **Limits:** a request line is capped at the 64 MiB patch budget plus 1 MiB.
-- **Large reviews:** `review_patch` returns the full document while it is at most 256 KiB. A larger review returns a bounded `deep-diff-forge.review-summary.v0` instead: the same seal and totals, and per-file counts for up to 1,000 files, with `reason` and `omitted_files`. Pass `paths` to get chosen files in full, or `detail: "summary"` to ask for the summary. `rank_patch` returns the full ranking while it is at most 256 KiB; a larger one returns `deep-diff-forge.rank-summary.v0`: the highest-ranked files that fit, in order, with `total_files` and `omitted_files`.
+- **Large reviews:** `review_patch` returns the full document while it is at most 256 KiB. A larger review returns a bounded `deep-diff-forge.review-summary.v0` instead: the same seal and totals, and per-file counts for up to 1,000 files, with `reason` and `omitted_files`. Pass `paths` to get chosen files in full, or `detail: "summary"` to ask for the summary. `rank_patch` returns the full ranking while it is at most 256 KiB; a larger one returns `deep-diff-forge.rank-summary.v0`: the same seal, and the highest-ranked files that fit, in order, with `total_files` and `omitted_files`.
 - **Lifetime:** the server exits when stdin closes.
 
 ```json
@@ -516,7 +520,7 @@ server on an owner-private Unix domain socket.
 
 **JSON-RPC methods** (protocol 1; `engine.methods` lists them with their parameters):
 `engine.initialize`, `engine.methods`, `daemon.health`, `daemon.status`,
-`daemon.shutdown`, `diff.plan`, `diff.compute`, `session.open`, `session.snapshot`,
+`daemon.shutdown`, `diff.plan`, `diff.compute`, `diff.rank`, `session.open`, `session.snapshot`,
 `session.close`.
 
 ```bash
@@ -541,7 +545,9 @@ per file (`crates/deep-diff-forge-graph/src/risk.rs`). Higher means review first
 | `many_hunks` | ≥ 5 hunks | +2 |
 | `config_or_lockfile` · `binary_change` | `Cargo.toml`, `*.lock`, `*.yaml`, … · binary | +1 · +1 |
 | `test_only` | under `tests/` or `test/`, `*_test.*`, `*.test.*` | no bonus |
-| `generated_or_vendored` | `vendor/`, `node_modules/`, `target/`, `generated/`, `dist/`, `*.min.js`, `*.pb.rs`, `*.pb.go` | **0**, suppressed |
+| `generated_or_vendored` | `vendor/`, `node_modules/`, `target/`, `generated/`, `dist/`, `*.min.js`, `*.pb.rs`, `*.pb.go` | base only: no bonuses, but keeps new · deleted · binary |
+
+Whoever writes a patch also chooses its paths, so a path can lower a file's score but never zero it. A new file under `generated/` still ranks above a one-line edit elsewhere.
 
 Ties break on path, so the order is reproducible. Under `--cluster` the result is
 **identical for any worker count**: parallelism never changes the answer.
@@ -625,8 +631,9 @@ The engine is hardened against:
 - hidden-content patches;
 - attacks on the daemon's transport and filesystem.
 
-Seven fuzz targets cover the parser, review JSON, daemon protocol, agent annotations, council
-reports, and the MCP and `rpc` stdio servers. See [`SECURITY.md`](SECURITY.md) for the threat
+Eight fuzz targets cover the parser, review JSON, daemon protocol, agent annotations, council
+reports, the MCP and `rpc` stdio servers, and the soundness of the structural diff's
+"formatting only" verdict. See [`SECURITY.md`](SECURITY.md) for the threat
 model.
 
 ## Review council and evidence gates

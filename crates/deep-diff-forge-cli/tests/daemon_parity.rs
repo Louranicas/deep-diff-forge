@@ -1,7 +1,7 @@
 //! Slice B: the daemon's `diff.compute` answers as `deep-diff-forge --stdin-patch --json` does for
-//! the same bytes: the same review document as a JSON value (seal included; key order is not part
-//! of the contract), the same refusal text, and the same parse-failure text, with the registry's
-//! codes on both surfaces.
+//! the same bytes, and `diff.rank` as `--stdin-patch --rank --json` does: the same document as a
+//! JSON value (seal included; key order is not part of the contract), the same refusal text, and
+//! the same parse-failure text, with the registry's codes on both surfaces.
 #![expect(
     clippy::disallowed_methods,
     reason = "integration test: drives real processes, the environment and wall-clock time"
@@ -23,9 +23,10 @@ const FIXTURES: &[&str] = &[
     "--- a/x\n+++ b/x\n+stray\n",
 ];
 
-fn cli(patch: &str, flags: &[&str]) -> (i32, String, String) {
+fn cli(patch: &str, mode: &[&str], flags: &[&str]) -> (i32, String, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
         .args(["--stdin-patch", "--json"])
+        .args(mode)
         .args(flags)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -47,12 +48,13 @@ fn cli(patch: &str, flags: &[&str]) -> (i32, String, String) {
 }
 
 fn daemon(
+    method: &str,
     patch: &str,
     files: bool,
     hunks: bool,
 ) -> Result<serde_json::Value, deep_diff_forge_daemon::RpcError> {
     let line = serde_json::json!({
-        "method": "diff.compute",
+        "method": method,
         "params": {"patch": patch, "require_files": files, "require_hunks": hunks},
     })
     .to_string();
@@ -61,6 +63,17 @@ fn daemon(
 
 #[test]
 fn diff_compute_matches_the_cli_document_refusals_and_failures() {
+    parity("diff.compute", &[]);
+}
+
+/// `diff.rank` is the CLI's sealed `rank.v0` document; `diff.plan`'s bare array could not say
+/// which bytes it ranked, and MCP's `rank_patch` returned it.
+#[test]
+fn diff_rank_matches_the_cli_rank_document_refusals_and_failures() {
+    parity("diff.rank", &["--rank"]);
+}
+
+fn parity(method: &str, mode: &[&str]) {
     let guards: [(&[&str], bool, bool); 4] = [
         (&[], false, false),
         (&["--require-files"], true, false),
@@ -70,8 +83,8 @@ fn diff_compute_matches_the_cli_document_refusals_and_failures() {
     let mut seen = [0; 3];
     for patch in FIXTURES {
         for (flags, files, hunks) in guards {
-            let (code, stdout, stderr) = cli(patch, flags);
-            let rpc = daemon(patch, files, hunks);
+            let (code, stdout, stderr) = cli(patch, mode, flags);
+            let rpc = daemon(method, patch, files, hunks);
             match code {
                 exit::SUCCESS => {
                     let document: serde_json::Value = serde_json::from_str(&stdout).unwrap();

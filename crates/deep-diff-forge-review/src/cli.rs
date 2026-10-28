@@ -46,7 +46,7 @@ pub fn dispatch(args: &[String]) -> Result<(String, i32)> {
         "import" if args.len() == 3 => import(Path::new(&args[1]), Path::new(&args[2])),
         "export-tuicr" => export_tuicr(&args[1..]),
         "import-tuicr" => import_tuicr(&args[1..]),
-        "help" if args.len() <= 1 => Ok((HELP.into(), exit::COUNCIL_COMPLETED)),
+        "help" | "--help" | "-h" if args.len() <= 1 => Ok((HELP.into(), exit::COUNCIL_COMPLETED)),
         _ => Err(ReviewFailure(
             "invalid council command or missing explicit --execute; use council help".into(),
         )),
