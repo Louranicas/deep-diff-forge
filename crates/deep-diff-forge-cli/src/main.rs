@@ -73,6 +73,12 @@ fn read_capped_bytes_or_exit(reader: impl std::io::Read, what: &str) -> Vec<u8> 
 fn main() {
     let mut args = std::env::args().skip(1).peekable();
     let command = args.next();
+    if command
+        .as_deref()
+        .is_some_and(|c| command_help(c, args.peek()))
+    {
+        return;
+    }
     refuse_arguments_to_bare_commands(command.as_deref(), args.peek());
     match command.as_deref() {
         None | Some("--help" | "-h" | "help") => print_help(),
@@ -1326,37 +1332,160 @@ fn print_patch_summary(files: &[deep_diff_forge_core::ReviewFile]) {
     emitln!("{} file(s) changed", files.len());
 }
 
+/// Every command: the name `<name> --help` answers for, its usage line, and what it does. The one
+/// source of `--help`'s USAGE section and of each command's own `--help`, so the two cannot drift.
+/// Before, `--help` worked only on `review` and `council help`; the other commands exited 2 on it.
+const COMMANDS: &[(&str, &str, &str)] = &[
+    ("--help", "deep-diff-forge --help", "Print every command."),
+    (
+        "--version",
+        "deep-diff-forge --version",
+        "Print the version.",
+    ),
+    (
+        "--self-test",
+        "deep-diff-forge --self-test",
+        "Check the core model.",
+    ),
+    (
+        "doctor",
+        "deep-diff-forge doctor",
+        "Print the runtime, cache, state and socket paths.",
+    ),
+    (
+        "deploy",
+        "deep-diff-forge deploy {status|release} [--json]",
+        "Report the declared deployment state, or the per-target release posture.",
+    ),
+    (
+        "semantic",
+        "deep-diff-forge semantic <path> [--json]",
+        "List a source file's top-level symbols with tree-sitter (Rust today).",
+    ),
+    (
+        "highlight",
+        "deep-diff-forge highlight <path> [--color|--no-color]",
+        "Print a source file with terminal-safe syntax highlighting.",
+    ),
+    (
+        "council",
+        "deep-diff-forge council <example|prepare|review|gate|status|import|export-tuicr|import-tuicr>",
+        "Run the review council; `council help` has the full usage.",
+    ),
+    (
+        "analyze",
+        "deep-diff-forge analyze <patch-file> <base-directory> <candidate-directory>",
+        "Check that a patch turns the base into the candidate, then emit deep-diff-forge.analysis.v1.",
+    ),
+    (
+        "structural",
+        "deep-diff-forge structural <old> <new> [--json]",
+        "Diff two source files by tokens; formatting-only changes report zero change.",
+    ),
+    (
+        "review",
+        "deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME]",
+        "Open the review cockpit on a patch from stdin.",
+    ),
+    (
+        "daemon",
+        "deep-diff-forge daemon {path|start [--foreground]|health|status|stop} [--socket PATH]",
+        "Run or query the optional Unix-socket JSON-RPC daemon.",
+    ),
+    (
+        "learn",
+        "deep-diff-forge learn {status|record --stdin} [--json]",
+        "Report or feed the local-only learning loop.",
+    ),
+    (
+        "--stdin-patch",
+        "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side] [--require-files] [--require-hunks]",
+        "Review a unified or Git patch read from stdin.",
+    ),
+    (
+        "--git-working-tree",
+        "deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [--acquisition-json | <--stdin-patch output flags>]",
+        "Review a change Git returns, sealed over the exact bytes.",
+    ),
+    (
+        "mcp",
+        "deep-diff-forge mcp",
+        "Serve the read-only MCP tools over stdio.",
+    ),
+    (
+        "rpc",
+        "deep-diff-forge rpc",
+        "Speak the daemon's JSON-RPC over stdio, with no daemon.",
+    ),
+    (
+        "envelope",
+        "deep-diff-forge envelope -- <command> [args…]",
+        "Run a command and print its result as one ddf.result.v1 object.",
+    ),
+    (
+        "schema",
+        "deep-diff-forge schema [result|exit-codes]",
+        "Print the envelope's JSON Schema, or the exit-code registry.",
+    ),
+    (
+        "explain",
+        "deep-diff-forge explain <code> [--family engine|council] [--json]",
+        "Name one exit code and the action it asks for.",
+    ),
+    (
+        "claude-code-contract",
+        "deep-diff-forge claude-code-contract",
+        "Print the agent-facing output guarantees.",
+    ),
+    (
+        "chain-contract",
+        "deep-diff-forge chain-contract",
+        "Print the Unix-filter chaining guarantees.",
+    ),
+    (
+        "cluster-contract",
+        "deep-diff-forge cluster-contract",
+        "Print the parallel execution guarantees.",
+    ),
+    (
+        "loom-contract",
+        "deep-diff-forge loom-contract",
+        "Print the assimilation-pipeline guarantees.",
+    ),
+];
+
+/// `<command> --help` (or `-h`) as the first argument: print that command's usage and what it
+/// does, and exit 0. `review` prints its own longer help; `council --help` is `council help`.
+fn command_help(command: &str, first: Option<&String>) -> bool {
+    let asked = first.is_some_and(|a| matches!(a.as_str(), "--help" | "-h"));
+    let name = match command {
+        "--git-staged" | "--git-range" => "--git-working-tree",
+        other => other,
+    };
+    let Some((_, line, what)) = COMMANDS
+        .iter()
+        .find(|(n, _, _)| *n == name && !matches!(*n, "review" | "council" | "--help"))
+    else {
+        return false;
+    };
+    if asked {
+        emitln!("{what}\n\nUSAGE:\n  {line}\n\nEvery command: deep-diff-forge --help");
+    }
+    asked
+}
+
 fn print_help() {
+    use std::fmt::Write as _;
+    let mut usage = String::new();
+    for (_, line, _) in COMMANDS {
+        let _ = writeln!(usage, "  {line}");
+    }
     emitln!(
         "\
 deep-diff-forge {version}
 
 USAGE:
-  deep-diff-forge --help
-  deep-diff-forge --version
-  deep-diff-forge --self-test
-  deep-diff-forge doctor
-  deep-diff-forge deploy {{status|release}} [--json]
-  deep-diff-forge semantic <path> [--json]
-  deep-diff-forge highlight <path> [--color|--no-color]
-  deep-diff-forge council <example|prepare|review|gate|status|import|export-tuicr|import-tuicr>
-  deep-diff-forge analyze <patch-file> <base-directory> <candidate-directory>
-  deep-diff-forge structural <old> <new> [--json]
-  deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME]
-  deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]
-  deep-diff-forge learn {{status|record --stdin}} [--json]
-  deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side] [--require-files] [--require-hunks]
-  deep-diff-forge {{--git-working-tree [--include-untracked] | --git-staged | --git-range A..B}} [--repo PATH] [--acquisition-json | <--stdin-patch output flags>]
-  deep-diff-forge mcp
-  deep-diff-forge rpc
-  deep-diff-forge envelope -- <command> [args…]
-  deep-diff-forge schema [result|exit-codes]
-  deep-diff-forge explain <code> [--family engine|council] [--json]
-  deep-diff-forge claude-code-contract
-  deep-diff-forge chain-contract
-  deep-diff-forge cluster-contract
-  deep-diff-forge loom-contract
-
+{usage}
 MATURITY:
   L9 Learning. All engine layers L0-L8 are implemented; the L9 learning loop
   records local-only strategy receipts (learn status|record) and scores them,
