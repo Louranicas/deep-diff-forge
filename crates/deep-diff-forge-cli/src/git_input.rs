@@ -13,7 +13,7 @@
 //! mismatched, over budget or failed to parse, 7 = `--require-files` /
 //! `--require-hunks` refusal.
 
-use crate::{InputGuards, emit, emit_review, flag_value, seal_of};
+use crate::{InputGuards, emit, emit_review, flag_value, seal_of, validate_review_options_or_exit};
 use deep_diff_forge_core::exit;
 use deep_diff_forge_core::{display_safe, json_escape};
 use deep_diff_forge_patch::{
@@ -110,6 +110,7 @@ pub(crate) fn run(selector: &str, opts: &[String]) {
     if let Err(reason) = crate::args::admit(opts, &spec) {
         usage(&display_safe(&reason));
     }
+    validate_review_options_or_exit(opts);
     let include_untracked = opts.iter().any(|a| a == "--include-untracked");
     if include_untracked && selection != GitSelection::WorkingTree {
         usage("--include-untracked is only valid with --git-working-tree");
