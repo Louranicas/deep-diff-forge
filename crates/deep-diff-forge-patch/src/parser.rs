@@ -140,6 +140,7 @@ struct FileBuf {
 /// Working accumulator for one hunk.
 struct HunkBuf {
     id: HunkId,
+    section: Option<String>,
     old_start: u32,
     new_start: u32,
     old_line: u32,
@@ -331,6 +332,7 @@ impl Parser {
         self.next_hunk_id += 1;
         self.hunk = Some(HunkBuf {
             id,
+            section: header.section,
             old_start: header.old_start,
             new_start: header.new_start,
             old_line: header.old_start,
@@ -393,6 +395,7 @@ impl Parser {
                     id: hunk.id,
                     old_start: Some(hunk.old_start),
                     new_start: Some(hunk.new_start),
+                    section: hunk.section,
                     lines: hunk.lines,
                 });
             }
@@ -624,6 +627,7 @@ struct HunkHeader {
     old_count: u32,
     new_start: u32,
     new_count: u32,
+    section: Option<String>,
 }
 
 /// Parse `@@ -a,b +c,d @@ [optional section heading]`.
@@ -649,14 +653,17 @@ fn parse_hunk_header(line: &str) -> Option<HunkHeader> {
         Some("@@") => {}
         _ => return None,
     }
-    // Any further tokens are optional section-heading text — accepted and ignored.
+    // Any further text is the optional section heading, kept for display only.
     let (old_start, old_count) = parse_range(old)?;
     let (new_start, new_count) = parse_range(new_range)?;
+    let heading = new.split_once("@@").map_or("", |(_, rest)| rest);
+    let heading = heading.strip_prefix(' ').unwrap_or(heading);
     Some(HunkHeader {
         old_start,
         old_count,
         new_start,
         new_count,
+        section: (!heading.is_empty()).then(|| heading.to_owned()),
     })
 }
 
@@ -1298,6 +1305,45 @@ diff --git a/x b/x
             .unwrap_err()
             .to_string();
         assert!(header.contains("(+383 bytes)"), "{header}");
+    }
+
+    /// A hunk's address names it within one review; its body digest follows the change.
+    /// (Expert circle, 2026-10-28: content addresses must not move when other files change, and
+    /// must not survive a change to the hunk itself.)
+    #[test]
+    fn hunk_addresses_and_body_digests() {
+        let one = "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@ fn f()\n a\n-b\n+c\n";
+        let other = "--- a/y\n+++ b/y\n@@ -1 +1 @@\n-p\n+q\n";
+        let hunk = |patch: &str, file: usize| {
+            let files = parse(patch).unwrap();
+            let h = files[file].patch_twin.hunks[0].clone();
+            (h.address(&files[file].path), h.body_sha256(), h)
+        };
+        let (address, body, h) = hunk(one, 0);
+        assert_eq!(h.section.as_deref(), Some("fn f()"));
+        assert_eq!(h.counts(), (2, 2));
+        assert_eq!(address.len(), 64);
+        // Another file before it changes neither.
+        let (a2, b2, _) = hunk(&format!("{other}{one}"), 1);
+        assert_eq!((a2, b2), (address.clone(), body.clone()));
+        // The same body at another position keeps its digest but not its address.
+        let (a3, b3, _) = hunk(&one.replace("@@ -1,2 +1,2 @@", "@@ -9,2 +9,2 @@"), 0);
+        assert_eq!(b3, body);
+        assert_ne!(a3, address);
+        // One byte of the body changes both.
+        let (a4, b4, _) = hunk(&one.replace("+c", "+d"), 0);
+        assert_ne!((a4, b4), (address.clone(), body.clone()));
+        // Another path changes the address only.
+        let (a5, b5, _) = hunk(&one.replace("/x", "/z"), 0);
+        assert_eq!(b5, body);
+        assert_ne!(a5, address);
+        // The heading is display only: it changes neither, and is never rendered.
+        let (a6, b6, h6) = hunk(&one.replace(" fn f()", ""), 0);
+        assert_eq!((a6, b6, h6.section), (address, body, None));
+        assert!(!crate::render_unified(&parse(one).unwrap()).contains("fn f()"));
+        // The no-newline marker is part of the body.
+        let (_, b7, _) = hunk(&format!("{one}\\ No newline at end of file\n"), 0);
+        assert_ne!(b7, hunk(one, 0).1);
     }
 
     #[test]

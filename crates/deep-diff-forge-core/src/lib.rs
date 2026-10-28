@@ -203,7 +203,80 @@ pub struct PatchHunk {
     pub id: HunkId,
     pub old_start: Option<u32>,
     pub new_start: Option<u32>,
+    /// The section heading Git writes after the closing `@@` (often the enclosing function), or
+    /// `None` when the header has none. Display only: it never changes what the hunk applies.
+    pub section: Option<String>,
     pub lines: Vec<PatchLine>,
+}
+
+impl PatchHunk {
+    /// Lines on the old side (context and removed) and on the new side (context and added).
+    #[must_use]
+    pub fn counts(&self) -> (u32, u32) {
+        let mut old = 0u32;
+        let mut new = 0u32;
+        for line in &self.lines {
+            match line.kind {
+                PatchLineKind::Context => {
+                    old += 1;
+                    new += 1;
+                }
+                PatchLineKind::Removed => old += 1,
+                PatchLineKind::Added => new += 1,
+            }
+        }
+        (old, new)
+    }
+
+    /// SHA-256 of the hunk's body: each line as its prefix (` `, `-`, `+`), text and LF, with
+    /// `\ No newline at end of file` after a line that lacks one. It depends on the body alone,
+    /// so the same change keeps it when other files or hunks move; use it to match a hunk across
+    /// revisions, never as proof that two reviews saw the same patch.
+    #[must_use]
+    pub fn body_sha256(&self) -> String {
+        crate::sha256_hex(self.body_bytes().as_bytes())
+    }
+
+    /// The hunk's address within one review: SHA-256 over `ddf-hunk-v1`, the file path, the
+    /// header's ranges and the body, NUL-separated. It names exactly one hunk of one sealed
+    /// patch: any change to the path, the position or a byte of the body changes it, and a
+    /// different patch never shares it except by containing the same hunk at the same place.
+    #[must_use]
+    pub fn address(&self, path: &str) -> String {
+        let (old_count, new_count) = self.counts();
+        let header = format!(
+            "{},{}\0{},{}",
+            self.old_start.unwrap_or(0),
+            old_count,
+            self.new_start.unwrap_or(0),
+            new_count
+        );
+        let mut bytes = String::with_capacity(path.len() + header.len() + 32);
+        bytes.push_str("ddf-hunk-v1\0");
+        bytes.push_str(path);
+        bytes.push('\0');
+        bytes.push_str(&header);
+        bytes.push('\0');
+        bytes.push_str(&self.body_bytes());
+        crate::sha256_hex(bytes.as_bytes())
+    }
+
+    fn body_bytes(&self) -> String {
+        let mut body = String::new();
+        for line in &self.lines {
+            body.push(match line.kind {
+                PatchLineKind::Context => ' ',
+                PatchLineKind::Removed => '-',
+                PatchLineKind::Added => '+',
+            });
+            body.push_str(&line.text);
+            body.push('\n');
+            if line.no_newline {
+                body.push_str("\\ No newline at end of file\n");
+            }
+        }
+        body
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
