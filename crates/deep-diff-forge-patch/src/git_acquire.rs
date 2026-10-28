@@ -721,6 +721,14 @@ mod runner_tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "door: a stub Git that hit ETXTBSY is retried after a short pause"
+    )]
+    fn pause_for_busy_stub() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
     /// A stand-in Git that ignores its arguments and prints exactly `bytes` bytes.
     fn printing(name: &str, bytes: usize) -> (PathBuf, GitAcquireOptions) {
         let dir = std::env::temp_dir().join(format!("ddf-runner-{name}-{}", std::process::id()));
@@ -750,7 +758,19 @@ mod runner_tests {
             deadline: deadline_after(options.time_limit),
             config_env: Vec::new(),
         };
-        assert_eq!(runner.run("stub", &[], &[0], 100).unwrap().len(), 100);
+        // A sibling test that forks while the stub is still open for writing can make the
+        // first exec fail with ETXTBSY; retry that harness race (see tests/git_acquire.rs).
+        let mut kept = runner.run("stub", &[], &[0], 100);
+        for _ in 0..100 {
+            match &kept {
+                Err(GitAcquireError::Spawn { detail, .. }) if detail.contains("os error 26") => {
+                    pause_for_busy_stub();
+                    kept = runner.run("stub", &[], &[0], 100);
+                }
+                _ => break,
+            }
+        }
+        assert_eq!(kept.unwrap().len(), 100);
         assert!(matches!(
             runner.run("stub", &[], &[0], 99),
             Err(GitAcquireError::BudgetExceeded { limit_bytes: 99 })

@@ -89,6 +89,34 @@ fn chmod(path: &Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "door: a stub Git that hit ETXTBSY is retried after a short pause"
+)]
+fn pause_for_busy_stub() {
+    std::thread::sleep(std::time::Duration::from_millis(10));
+}
+
+/// `acquire_git` with a freshly written stub Git. A sibling test thread that forks while the
+/// stub is still open for writing holds a writable descriptor until its own `exec`, so running
+/// the stub can briefly fail with ETXTBSY; that is a test-harness race, not Git behaviour, so
+/// the spawn is retried.
+fn acquire_stub(
+    root: &Path,
+    selection: &GitSelection,
+    options: &GitAcquireOptions,
+) -> Result<GitAcquisition, GitAcquireError> {
+    for _ in 0..100 {
+        match acquire_git(root, selection, options) {
+            Err(GitAcquireError::Spawn { detail, .. }) if detail.contains("os error 26") => {
+                pause_for_busy_stub();
+            }
+            other => return other,
+        }
+    }
+    acquire_git(root, selection, options)
+}
+
 /// Base commit plus a dirty working tree covering every required case.
 fn fixture(name: &str) -> Fixture {
     let root = std::env::temp_dir().join(format!("ddf-git-acq-{name}-{}", std::process::id()));
@@ -585,7 +613,7 @@ fn a_stalled_git_is_stopped_at_the_time_limit() {
         ..options(false)
     };
     let started = std::time::Instant::now();
-    let result = acquire_git(&fx.root, &GitSelection::WorkingTree, &opts);
+    let result = acquire_stub(&fx.root, &GitSelection::WorkingTree, &opts);
     let took = started.elapsed();
     assert!(
         matches!(
@@ -619,7 +647,7 @@ fn a_surviving_child_cannot_stretch_the_time_limit() {
         ..options(false)
     };
     let started = std::time::Instant::now();
-    let result = acquire_git(&fx.root, &GitSelection::WorkingTree, &opts);
+    let result = acquire_stub(&fx.root, &GitSelection::WorkingTree, &opts);
     assert!(
         matches!(result, Err(GitAcquireError::TimedOut { .. })),
         "{result:?}"
