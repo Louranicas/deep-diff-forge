@@ -130,8 +130,8 @@ struct FileBuf {
     rename_to: Option<String>,
     metadata: Vec<String>,
     binary_body: Vec<String>,
-    /// Inside a `GIT binary patch` body: only lines of its grammar are taken (see
-    /// [`is_binary_body_line`]); the first other line ends it.
+    /// After `GIT binary patch`: only lines of the body grammar are admitted (see
+    /// [`is_binary_body_line`]) until the next `diff --git`; any other line is refused.
     in_binary_body: bool,
     hunks: Vec<PatchHunk>,
     lossy_lines: u32,
@@ -216,9 +216,11 @@ impl Parser {
         if let Some(rest) = line.strip_prefix("diff --git ") {
             return self.start_git_file(rest, line_number);
         }
-        // A binary body holds only its own grammar. Before, every later line went into it, so a
-        // text change after a binary section was hidden from the review yet applied by
-        // `git apply`; the scan of all metadata per line was also quadratic.
+        // After `GIT binary patch`, git's format allows only body lines until the next
+        // `diff --git`; anything else is refused. Before, every later line went into the body, so
+        // a text change after a binary section was hidden from the review yet applied by
+        // `git apply` (and the per-line scan of all metadata was quadratic). Ending the body at
+        // the first other line instead let a later metadata line reorder on rendering (fuzz).
         if let Some(file) = self.file.as_mut()
             && file.in_binary_body
         {
@@ -226,7 +228,7 @@ impl Parser {
                 file.binary_body.push(line.to_string());
                 return Ok(());
             }
-            file.in_binary_body = false;
+            return Err(PatchParseError::UnsupportedFormat { line_number });
         }
         if let Some(rest) = line.strip_prefix("--- ") {
             return self.on_old_header(rest, line_number);
@@ -1003,7 +1005,7 @@ rename to new/name.rs
 
     /// A text change after a binary body is never folded into it: before, every later line went
     /// into the body, so DDF reviewed only the binary file while `git apply` also changed
-    /// `evil.rs`. That patch is now refused, like any binary file with hunks.
+    /// `evil.rs`. That patch is now refused at the first line outside the body grammar.
     #[test]
     fn a_text_change_after_a_binary_body_is_never_hidden_in_it() {
         let input = "\
@@ -1024,7 +1026,7 @@ McmZQzOv=my00M6TI{*Lx
 ";
         assert!(matches!(
             parse(input),
-            Err(PatchParseError::UnsupportedFormat { line_number: 14 })
+            Err(PatchParseError::UnsupportedFormat { line_number: 10 })
         ));
         // Legitimate nearby case: the same binary section followed by a `diff --git` text file.
         let split = input.replace("--- a/evil.rs", "diff --git a/ok.rs b/ok.rs\n--- a/ok.rs");

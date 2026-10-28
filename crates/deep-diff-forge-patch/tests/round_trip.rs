@@ -65,6 +65,13 @@ fn double_render_is_idempotent() {
     assert_eq!(once, twice);
 }
 
+/// The fuzz find on the first binary-grammar fix: a metadata line after a binary body was kept as
+/// metadata, which renders before the body, so the second parse lost the body. It is now refused.
+#[test]
+fn a_metadata_line_after_a_binary_body_is_refused() {
+    assert!(parse(&load("regressions/binary-metadata-after-body.patch")).is_err());
+}
+
 #[test]
 fn discovered_fuzz_inputs_fail_explicitly_or_render_stably() {
     let directory = format!(
