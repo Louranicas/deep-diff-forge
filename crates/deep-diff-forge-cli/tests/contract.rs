@@ -440,8 +440,25 @@ fn every_documented_option_is_admitted() {
     let repo = env!("CARGO_MANIFEST_DIR");
     let socket = dir.join("s.sock");
     let socket = socket.to_str().unwrap();
+    let (address, cursor) = view_handles();
     let rows: &[(&str, &[&str])] = &[
         ("--json", &["--stdin-patch", "--json"]),
+        ("--outline", &["--stdin-patch", "--outline"]),
+        ("--hunks", &["--stdin-patch", "--hunks"]),
+        (
+            "--address",
+            &["--stdin-patch", "--hunks", "--address", &address],
+        ),
+        ("--path", &["--stdin-patch", "--hunks", "--path", "x"]),
+        (
+            "--max-bytes",
+            &["--stdin-patch", "--outline", "--max-bytes", "4096"],
+        ),
+        (
+            "--cursor",
+            &["--stdin-patch", "--outline", "--cursor", &cursor],
+        ),
+        ("--allow-repo", &["rpc", "--allow-repo", repo]),
         ("--jsonl", &["--stdin-patch", "--jsonl"]),
         ("--rank", &["--stdin-patch", "--rank"]),
         ("--cluster", &["--stdin-patch", "--cluster"]),
@@ -503,6 +520,12 @@ fn every_documented_option_is_admitted() {
         ("--version", &["--version"]),
         ("--self-test", &["--self-test"]),
     ];
+    admits_every_documented_option(rows);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `rows` names exactly the options `--help` documents, and each invocation is admitted.
+fn admits_every_documented_option(rows: &[(&str, &[&str])]) {
     let (_, help, _) = run(&["--help"], "");
     let (current, _) = help.split_once("NOT YET IMPLEMENTED").unwrap();
     let mut documented: Vec<&str> = current
@@ -521,7 +544,24 @@ fn every_documented_option_is_admitted() {
         let (code, _, stderr) = run(args, PATCH);
         assert_ne!(code, 2, "{option} via {args:?} was refused: {stderr}");
     }
-    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// PATCH's one hunk address, and a first-page outline cursor for it: the seal's first 16 hex
+/// digits, the selection's digest, then the item and line to resume at.
+fn view_handles() -> (String, String) {
+    let (_, outline, _) = run(&["--stdin-patch", "--outline"], PATCH);
+    let outline: serde_json::Value = serde_json::from_str(&outline).unwrap();
+    let address = outline["files"][0]["hunks"][0]["address"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let seal = deep_diff_forge_core::sha256_hex(PATCH.as_bytes());
+    let cursor = format!(
+        "{}.{}.0.0",
+        &seal[..16],
+        &deep_diff_forge_core::sha256_hex(b"outline")[..8]
+    );
+    (address, cursor)
 }
 
 /// Anchor E-02: help listed `--git`, `review` and `daemon start` as future modes after they
