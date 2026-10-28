@@ -211,6 +211,33 @@ deep-diff-forge structural old.rs new.rs                # reformat-aware diff
 deep-diff-forge explain 4                               # what an exit code means
 ```
 
+### For agents: look before you read
+
+An agent should learn where to look before it reads anything large. Point your MCP client at
+DDF, allow the repositories it may read, and the agent never pastes a patch:
+
+```json
+{"mcpServers": {"deep-diff-forge": {"command": "deep-diff-forge", "args": ["mcp", "--allow-repo", "/path/to/repo"]}}}
+```
+
+1. **`review_change`** with `selection: "staged"` (or `working_tree`, or `range` with `A..B`)
+   returns the **outline**: every file in review-risk order with its score, signals and hunks.
+   Each hunk carries its address, line ranges, `@@` heading and counts, and no line text yet.
+2. **`review_change`** with `view: "hunks"` and the `addresses` it cares about returns those
+   hunks verbatim.
+3. Every answer is sealed (`input_sha256`) and fits `max_bytes`, 32 KiB by default, both copies
+   counted. A `next_cursor` continues, and it belongs to that patch and that selection only.
+
+Without `--allow-repo`, `review_outline` and `review_hunks` do the same for a patch the agent
+passes. The same views exist on the CLI (`--outline`, `--hunks`), on the daemon's socket and
+over `rpc` (`review.outline`, `review.hunks`, `review.change`).
+
+```bash
+deep-diff-forge --git-staged --outline                         # where to look
+deep-diff-forge --git-staged --hunks --address 44a87108…        # read one hunk
+git diff | deep-diff-forge --stdin-patch --hunks --path src/lib.rs --max-bytes 8192
+```
+
 For gates and orchestrators, refuse empty or hunkless input so it can't pass as a clean review:
 
 ```bash
@@ -228,6 +255,8 @@ git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require
 ```bash
 deep-diff-forge --stdin-patch [MODE] [--require-files] [--require-hunks]
 deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [MODE | --acquisition-json]
+# MODE: --json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side
+#       | --outline | --hunks [--address A]... [--path P]...   (both: [--max-bytes N] [--cursor C])
 ```
 
 | Mode | Output |
@@ -240,7 +269,13 @@ deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git
 | `--layout inline` / `--layout side-by-side` | Text projections with old and new line numbers. |
 | `--require-files` | Refuse a patch with 0 files: exit 7, empty stdout, `refused: 0 files in input (--require-files)`. |
 | `--require-hunks` | Refuse a patch with 0 hunks or 0 changed lines (header-only, rename-only, context-only): exit 7, `refused: 0 hunks in input (--require-hunks)`. |
+| `--outline` | `deep-diff-forge.review-outline.v0`: files in review-risk order, each hunk's address, ranges, `@@` heading and counts, no line text. |
+| `--hunks [--address A]... [--path P]...` | `deep-diff-forge.review-hunks.v0`: the chosen hunks verbatim (all, by address or by path). A long hunk continues at a line (`complete: false`). |
+| `--max-bytes N` · `--cursor C` | For `--outline` / `--hunks`: the most bytes the answer may take (1 KiB–16 MiB, default 64 KiB), and the `next_cursor` of the previous page. |
 | `--acquisition-json` | Git input only: the `deep-diff-forge.git-acquisition.v0` identity of what Git returned. |
+
+Git selections run Git with a fixed argv and stop it after 120 s (`TimedOut`, exit 3), so a
+stalled filesystem or hook cannot hang the caller.
 
 A gate should **always pass both guards**. When both fail, the files guard reports first.
 
@@ -341,6 +376,7 @@ empty.
 | `--stdin-patch --jsonl` | line events `{"event":"diff.file",…}` |
 | `--rank --json` · `--cluster --json` | `deep-diff-forge.rank.v0` · `deep-diff-forge.cluster.v0` |
 | `--git-* --acquisition-json` | `deep-diff-forge.git-acquisition.v0` |
+| `--outline` · `--hunks`, `review.outline` · `review.hunks` · `review.change`, MCP `review_outline` · `review_hunks` · `review_change` | `deep-diff-forge.review-outline.v0` · `deep-diff-forge.review-hunks.v0` |
 | `semantic --json` · `structural --json` | `deep-diff-forge.semantic.v0` · `deep-diff-forge.structural.v0` |
 | `analyze` | `deep-diff-forge.analysis.v1` |
 | `learn status --json` | `deep-diff-forge.learning.v0` |
@@ -355,7 +391,20 @@ empty.
   `sha256sum < input` reproduces it.
 - `tool`: `{"name": "deep-diff-forge", "version": "<CARGO_PKG_VERSION>"}`.
 
+The outline and hunk views carry the seal as well.
+
 Output is deterministic: the same bytes give byte-identical stdout on every run.
+
+**Hunk addresses.** Every hunk in `review.v0` and in the views carries these fields:
+- `address`: SHA-256 over `ddf-hunk-v1`, the file path, the header's ranges and the body. It names
+  exactly that hunk in that patch: changing the path, the position or one byte of the body
+  changes it.
+- `body_sha256`: the body alone. It survives a move, so use it to recognise the same change
+  across revisions, never as proof that two reviews saw the same patch.
+- `section`: the `@@` heading Git wrote. It is display-only and never re-rendered into the patch.
+- `old_lines` and `new_lines`: the header's counts.
+
+The new fields are additive, so the schema stays `review.v0`.
 
 ```json
 {
@@ -438,6 +487,9 @@ tools over stdio, one JSON-RPC message per line.
 | --- | --- |
 | `review_patch` | The `deep-diff-forge.review.v0` document for `patch`: the same JSON value `--stdin-patch --json` prints, up to 256 KiB (see *Large reviews*). `require_files` / `require_hunks` refuse as the CLI flags do; `paths` limits the document to chosen files |
 | `rank_patch` | The sealed `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints: files by review risk, with their signals. `require_files` / `require_hunks` refuse as the CLI flags do |
+| `review_outline` | **Start here.** `deep-diff-forge.review-outline.v0` for `patch`: files in review-risk order with their hunks' addresses, ranges, `@@` headings and counts, no line text. Fits `max_bytes`; `cursor` continues |
+| `review_hunks` | `deep-diff-forge.review-hunks.v0`: chosen hunks verbatim, by `addresses` or `paths` (or all). Fits `max_bytes`; `cursor` continues |
+| `review_change` | The outline or hunks of a change read straight from Git (`selection`: `staged`, `working_tree`, `range`), with an `acquisition` member. Only for repositories the server was started with `--allow-repo`; Git is stopped after 30 s |
 | `explain_exit_code` | One exit code's family, name, meaning and next action |
 | `exit_code_registry` | Every documented exit code |
 
@@ -514,14 +566,18 @@ server on an owner-private Unix domain socket.
 - **Bounded I/O.** Each request line has an absolute read deadline, each response write a
   per-write timeout, and both are capped at 80 MiB. A response over the cap becomes a
   `RESOURCE_EXHAUSTED` (8) error for the same id.
+- **No repository unless allowed.** `review.change` reads Git only in a repository whose
+  canonical path and Git top level are both at or under a root named with
+  `daemon start --allow-repo PATH` (also `rpc` and `mcp`). Without one it reads nothing.
+  Symlinks are resolved first, and Git is stopped after 30 s. A Git failure is error 3.
 
 **Default socket:** `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock`. There is no
 `/tmp` fallback. Without `$XDG_RUNTIME_DIR` the daemon fails closed until you pass `--socket PATH`.
 
 **JSON-RPC methods** (protocol 1; `engine.methods` lists them with their parameters):
 `engine.initialize`, `engine.methods`, `daemon.health`, `daemon.status`,
-`daemon.shutdown`, `diff.plan`, `diff.compute`, `diff.rank`, `session.open`, `session.snapshot`,
-`session.close`.
+`daemon.shutdown`, `diff.plan`, `diff.compute`, `diff.rank`, `review.outline`, `review.hunks`,
+`review.change`, `session.open`, `session.snapshot`, `session.close`.
 
 ```bash
 deep-diff-forge daemon start --foreground      # terminal 1
@@ -695,7 +751,6 @@ deployment.
 
 - One engine serves all daemon connections, so a long request delays the others.
 - The daemon socket relies on `0700` and `0600` permissions; it does not check peer credentials.
-- Git subprocesses have a capped output but no time limit.
 - macOS tests run weekly and on demand, not on every PR.
 - Two `daemon start`s can still race between the stale-socket probe and the bind.
 - The cockpit is tested by headless frames; there is no key-sequence harness yet.

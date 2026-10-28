@@ -89,6 +89,34 @@ fn chmod(path: &Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "door: a stub Git that hit ETXTBSY is retried after a short pause"
+)]
+fn pause_for_busy_stub() {
+    std::thread::sleep(std::time::Duration::from_millis(10));
+}
+
+/// `acquire_git` with a freshly written stub Git. A sibling test thread that forks while the
+/// stub is still open for writing holds a writable descriptor until its own `exec`, so running
+/// the stub can briefly fail with ETXTBSY; that is a test-harness race, not Git behaviour, so
+/// the spawn is retried.
+fn acquire_stub(
+    root: &Path,
+    selection: &GitSelection,
+    options: &GitAcquireOptions,
+) -> Result<GitAcquisition, GitAcquireError> {
+    for _ in 0..100 {
+        match acquire_git(root, selection, options) {
+            Err(GitAcquireError::Spawn { detail, .. }) if detail.contains("os error 26") => {
+                pause_for_busy_stub();
+            }
+            other => return other,
+        }
+    }
+    acquire_git(root, selection, options)
+}
+
 /// Base commit plus a dirty working tree covering every required case.
 fn fixture(name: &str) -> Fixture {
     let root = std::env::temp_dir().join(format!("ddf-git-acq-{name}-{}", std::process::id()));
@@ -568,6 +596,127 @@ fn output_over_budget_is_refused() {
         acquire_git(&fx.root, &GitSelection::WorkingTree, &opts),
         Err(GitAcquireError::BudgetExceeded { limit_bytes: 64 })
     ));
+}
+
+/// A Git that never finishes is stopped at the acquisition's time limit, and the caller gets
+/// `TimedOut` instead of hanging (the git-timeout residual risk of 2026-10-28). A Git that
+/// finishes in time is unaffected by the limit.
+#[test]
+fn a_stalled_git_is_stopped_at_the_time_limit() {
+    let fx = fixture("stall");
+    let stub = fx.root.join("stalled-git");
+    std::fs::write(&stub, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    chmod(&stub, 0o755);
+    let opts = GitAcquireOptions {
+        git_program: stub.into_os_string(),
+        time_limit: std::time::Duration::from_millis(300),
+        ..options(false)
+    };
+    let started = std::time::Instant::now();
+    let result = acquire_stub(&fx.root, &GitSelection::WorkingTree, &opts);
+    let took = started.elapsed();
+    assert!(
+        matches!(
+            result,
+            Err(GitAcquireError::TimedOut {
+                command: "git rev-parse",
+                limit_ms: 300
+            })
+        ),
+        "{result:?}"
+    );
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    let in_time = GitAcquireOptions {
+        time_limit: std::time::Duration::from_secs(60),
+        ..options(false)
+    };
+    assert!(acquire_git(&fx.root, &GitSelection::WorkingTree, &in_time).is_ok());
+}
+
+/// The time limit bounds the caller even when Git's own child outlives the kill and keeps the
+/// pipes open: the stub forks a long sleep that inherits stdout (bug hunt 2026-10-28, H1-03).
+#[test]
+fn a_surviving_child_cannot_stretch_the_time_limit() {
+    let fx = fixture("orphan");
+    let stub = fx.root.join("forking-git");
+    std::fs::write(&stub, "#!/bin/sh\nsleep 20 &\nexec sleep 20\n").unwrap();
+    chmod(&stub, 0o755);
+    let opts = GitAcquireOptions {
+        git_program: stub.into_os_string(),
+        time_limit: std::time::Duration::from_millis(300),
+        ..options(false)
+    };
+    let started = std::time::Instant::now();
+    let result = acquire_stub(&fx.root, &GitSelection::WorkingTree, &opts);
+    assert!(
+        matches!(result, Err(GitAcquireError::TimedOut { .. })),
+        "{result:?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+/// Many local filters (a long `git config` listing) and a deep repository path (long
+/// `rev-parse` answers) are read in full: the listing and path budgets hold real repositories.
+#[test]
+fn long_filter_listings_and_deep_paths_are_read() {
+    let fx = fixture("many-filters");
+    let r = &fx.root;
+    for i in 0..80 {
+        git_out(
+            r,
+            &[
+                "config",
+                &format!("filter.local-filter-with-a-long-name-{i:03}.clean"),
+                "cat",
+            ],
+        );
+    }
+    acquire_git(r, &GitSelection::WorkingTree, &options(false)).unwrap();
+    // Four 201-byte components stay under macOS's 1024-byte PATH_MAX yet make the three
+    // `rev-parse` answer lines well over a kibibyte together.
+    let deep = (0..4).fold(r.clone(), |p, i| p.join(format!("{}{i}", "d".repeat(200))));
+    assert!(deep.as_os_str().len() > 800, "{}", deep.display());
+    std::fs::create_dir_all(&deep).unwrap();
+    git_out(&deep, &["init", "-q"]);
+    let dirs = deep_diff_forge_patch::repository_dirs(&deep, &options(false)).unwrap();
+    assert_eq!(dirs.top, std::fs::canonicalize(&deep).unwrap());
+    assert!(dirs.git_dir.ends_with(".git") && !dirs.has_alternates);
+}
+
+/// A filter that the repository's own configuration defines never runs: reviewing a repository
+/// someone handed you must not run their code (bug hunt 2026-10-28, H2-01).
+#[test]
+fn a_repository_local_filter_never_runs() {
+    let fx = fixture("filter");
+    let r = &fx.root;
+    let marker = r.join("filter-ran");
+    std::fs::write(r.join(".gitattributes"), "*.txt filter=evil\n").unwrap();
+    git_out(
+        r,
+        &[
+            "config",
+            "filter.evil.clean",
+            &format!("sh -c 'touch {}; cat'", marker.display()),
+        ],
+    );
+    git_out(
+        r,
+        &[
+            "config",
+            "filter.evil.process",
+            &format!("sh -c 'touch {}'", marker.display()),
+        ],
+    );
+    std::fs::write(r.join("tracked.txt"), b"changed in the working tree\n").unwrap();
+    for include_untracked in [false, true] {
+        acquire_git(r, &GitSelection::WorkingTree, &options(include_untracked)).unwrap();
+    }
+    acquire_git(r, &GitSelection::Staged, &options(false)).unwrap();
+    assert!(!marker.exists(), "a repository-local filter ran");
 }
 
 /// Negative control: resolving `HEAD` unconditionally would fail on a fresh

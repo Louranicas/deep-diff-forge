@@ -117,6 +117,28 @@ fn render_hunks(out: &mut String, file: &ReviewFile, additions: &mut usize, dele
         let _ = writeln!(out, "          \"id\": {},", hunk.id.0);
         let _ = writeln!(out, "          \"old_start\": {},", opt_num(hunk.old_start));
         let _ = writeln!(out, "          \"new_start\": {},", opt_num(hunk.new_start));
+        // Additive (review.v0): the header's line counts, its section heading, the hunk's
+        // address within this review and the digest of its body (`PatchHunk::address`).
+        let (old_lines, new_lines) = hunk.counts();
+        let _ = writeln!(out, "          \"old_lines\": {old_lines},");
+        let _ = writeln!(out, "          \"new_lines\": {new_lines},");
+        let _ = writeln!(
+            out,
+            "          \"section\": {},",
+            hunk.section
+                .as_deref()
+                .map_or_else(|| "null".to_owned(), quote)
+        );
+        let _ = writeln!(
+            out,
+            "          \"address\": {},",
+            quote(&hunk.address(&file.path))
+        );
+        let _ = writeln!(
+            out,
+            "          \"body_sha256\": {},",
+            quote(&hunk.body_sha256())
+        );
         out.push_str("          \"lines\": [");
         for (l, line) in hunk.lines.iter().enumerate() {
             match line.kind {

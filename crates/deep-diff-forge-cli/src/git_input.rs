@@ -45,6 +45,7 @@ fn exit_code(err: &GitAcquireError) -> i32 {
         GitAcquireError::InvalidSelection { .. } => exit::USAGE,
         GitAcquireError::Spawn { .. }
         | GitAcquireError::CommandFailed { .. }
+        | GitAcquireError::TimedOut { .. }
         | GitAcquireError::NonUtf8Path { .. } => exit::IO,
         _ => exit::INVALID_INPUT,
     }
@@ -59,13 +60,15 @@ fn fail(err: &GitAcquireError) -> ! {
 }
 
 /// The structured Git selections' own options plus the shared review output and guard options.
-const GIT_FLAGS: [&str; 8] = [
+const GIT_FLAGS: [&str; 10] = [
     "--include-untracked",
     "--acquisition-json",
     "--json",
     "--jsonl",
     "--rank",
     "--cluster",
+    "--outline",
+    "--hunks",
     "--require-files",
     "--require-hunks",
 ];
@@ -93,7 +96,15 @@ pub(crate) fn run(selector: &str, opts: &[String]) {
     }
     let spec = crate::args::Spec {
         flags: &GIT_FLAGS,
-        valued: &["--repo", "--layout", "--parallel"],
+        valued: &[
+            "--repo",
+            "--layout",
+            "--parallel",
+            "--address",
+            "--path",
+            "--max-bytes",
+            "--cursor",
+        ],
         positionals: 0,
     };
     if let Err(reason) = crate::args::admit(opts, &spec) {

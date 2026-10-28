@@ -65,7 +65,9 @@ mod language;
 mod structural;
 
 pub use analyze::{SemanticAnalysis, SyntaxOptions, analyze, analyze_language, enclosing_symbol};
-pub use highlight::{HighlightClass, HighlightSpan, highlight, highlight_to_ansi, to_ansi};
+pub use highlight::{
+    HighlightClass, HighlightSpan, display_safe_lines, highlight, highlight_to_ansi, to_ansi,
+};
 pub use language::{Language, detect_language};
 pub use structural::{
     ChangeKind, StructuralDiff, StructuralState, Token, TokenChange, structural_diff, tokenize,

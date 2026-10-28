@@ -28,8 +28,6 @@ Each of these is real, scoped, and listed as a known limit in the
   drives key sequences would catch interaction bugs.
 - **Peer credentials on the daemon socket.** Check `SO_PEERCRED` on Linux and `getpeereid` on
   macOS, in addition to the `0700` directory and `0600` socket.
-- **A time limit on Git subprocesses.** Git acquisition caps its output but waits for `git`
-  without a deadline (`crates/deep-diff-forge-patch/src/git_acquire.rs`).
 - **A lock file for `daemon start`.** Two starts racing between the stale-socket probe and the bind
   can still collide.
 - **More languages.** Syntax features (`semantic`, `highlight`, `structural`) speak Rust today.

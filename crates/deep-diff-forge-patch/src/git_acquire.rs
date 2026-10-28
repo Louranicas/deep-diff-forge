@@ -116,7 +116,14 @@ pub struct GitAcquireOptions {
     pub git_program: OsString,
     /// Extra environment for every Git invocation (e.g. config isolation).
     pub env: Vec<(OsString, OsString)>,
+    /// The most time the whole acquisition may take, every Git call included. A Git process
+    /// still running at the deadline is killed and the acquisition fails with
+    /// [`GitAcquireError::TimedOut`]: a stalled filesystem or a hung hook cannot hang the caller.
+    pub time_limit: std::time::Duration,
 }
+
+/// The default [`GitAcquireOptions::time_limit`].
+pub const DEFAULT_GIT_TIME_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl Default for GitAcquireOptions {
     fn default() -> Self {
@@ -125,6 +132,7 @@ impl Default for GitAcquireOptions {
             byte_budget: crate::DEFAULT_BYTE_BUDGET,
             git_program: OsString::from("git"),
             env: Vec::new(),
+            time_limit: DEFAULT_GIT_TIME_LIMIT,
         }
     }
 }
@@ -203,6 +211,107 @@ const STDERR_CAP: u64 = 8 * 1024;
 struct Runner<'a> {
     options: &'a GitAcquireOptions,
     cwd: PathBuf,
+    /// When the whole acquisition must be done (see [`GitAcquireOptions::time_limit`]).
+    deadline: std::time::Instant,
+    /// Configuration passed to every call through `GIT_CONFIG_COUNT`/`KEY`/`VALUE`, which Git
+    /// reads at command-line precedence (see [`neutral_filters`]).
+    config_env: Vec<(OsString, OsString)>,
+}
+
+/// The configuration that turns off every content filter the repository's own configuration
+/// defines (`filter.<name>.clean`, `smudge`, `process`), as `GIT_CONFIG_*` variables. A filter
+/// is a program Git runs on file content: one set in `.git/config` and named in `.gitattributes`
+/// ran during working-tree acquisition, so reviewing a repository someone handed you ran their
+/// code (bug hunt 2026-10-28, H2-01). Filters from the user's global or system configuration,
+/// such as Git LFS, are the user's own and stay on.
+fn neutral_filters(names: &[String]) -> Vec<(OsString, OsString)> {
+    let mut env = Vec::new();
+    let mut count = 0usize;
+    for name in names {
+        for (key, value) in [
+            ("clean", ""),
+            ("smudge", ""),
+            ("process", ""),
+            ("required", "false"),
+        ] {
+            env.push((
+                OsString::from(format!("GIT_CONFIG_KEY_{count}")),
+                OsString::from(format!("filter.{name}.{key}")),
+            ));
+            env.push((
+                OsString::from(format!("GIT_CONFIG_VALUE_{count}")),
+                OsString::from(value),
+            ));
+            count += 1;
+        }
+    }
+    env.push((
+        OsString::from("GIT_CONFIG_COUNT"),
+        OsString::from(count.to_string()),
+    ));
+    env
+}
+
+/// [`neutral_filters`] for every filter the repository's local configuration (with its includes)
+/// defines.
+fn local_filters_off(
+    options: &GitAcquireOptions,
+    root: &Path,
+    deadline: std::time::Instant,
+) -> Result<Vec<(OsString, OsString)>, GitAcquireError> {
+    let listing = Runner {
+        options,
+        cwd: root.to_path_buf(),
+        deadline,
+        config_env: Vec::new(),
+    }
+    .run(
+        "git config",
+        &[
+            OsStr::new("config"),
+            OsStr::new("--local"),
+            OsStr::new("--includes"),
+            OsStr::new("--null"),
+            OsStr::new("--name-only"),
+            OsStr::new("--get-regexp"),
+            OsStr::new("^filter\\."),
+        ],
+        &[0, 1],
+        1024 * 1024,
+    )?;
+    Ok(neutral_filters(&filter_names(&listing)))
+}
+
+/// The filter names in `git config --null --name-only` output (`filter.<name>.<key>` records).
+fn filter_names(listing: &[u8]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for record in listing.split(|&b| b == 0 || b == b'\n') {
+        let key = String::from_utf8_lossy(record);
+        if let Some(name) = key
+            .strip_prefix("filter.")
+            .and_then(|rest| rest.rsplit_once('.'))
+            .map(|(name, _)| name.to_owned())
+            && !names.contains(&name)
+        {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// The next poll interval while waiting for Git: doubling from 1 ms, at most 20 ms, so a quick
+/// command costs little latency and a slow one little CPU.
+fn next_pause(pause: std::time::Duration) -> std::time::Duration {
+    (pause * 2).min(std::time::Duration::from_millis(20))
+}
+
+/// The acquisition's deadline: now plus its time limit.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the git-acquisition clock door: one deadline bounds every Git call of an acquisition"
+)]
+fn deadline_after(limit: std::time::Duration) -> std::time::Instant {
+    std::time::Instant::now() + limit
 }
 
 impl Runner<'_> {
@@ -231,6 +340,7 @@ impl Runner<'_> {
         }
         cmd.envs(deep_diff_forge_core::git::ENV_SET.iter().copied());
         cmd.envs(self.options.env.iter().map(|(k, v)| (k, v)));
+        cmd.envs(self.config_env.iter().map(|(k, v)| (k, v)));
         let spawn_err = |e: std::io::Error| GitAcquireError::Spawn {
             command,
             detail: e.to_string(),
@@ -246,21 +356,56 @@ impl Runner<'_> {
             }
             kept
         });
-        let mut out = Vec::new();
-        let read = child
-            .stdout
-            .take()
-            .map(|pipe| pipe.take(budget as u64 + 1).read_to_end(&mut out));
-        if out.len() > budget {
+        // Read stdout on its own thread, so this one can enforce the deadline: before, a stalled
+        // Git (a hung filesystem or hook) blocked the caller forever on `child.wait()`.
+        let over_budget = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stdout = child.stdout.take();
+        let flag = std::sync::Arc::clone(&over_budget);
+        let stdout_reader = std::thread::spawn(move || {
+            let mut out = Vec::new();
+            let read = stdout.map(|pipe| pipe.take(budget as u64 + 1).read_to_end(&mut out));
+            if out.len() > budget {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            (out, read)
+        });
+        let mut pause = std::time::Duration::from_millis(1);
+        let stopped = |child: &mut std::process::Child| {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = stderr_reader.join();
+        };
+        let status = loop {
+            if over_budget.load(std::sync::atomic::Ordering::SeqCst) {
+                stopped(&mut child);
+                drop((stdout_reader, stderr_reader));
+                return Err(GitAcquireError::BudgetExceeded {
+                    limit_bytes: budget,
+                });
+            }
+            if let Some(status) = child.try_wait().map_err(spawn_err)? {
+                break status;
+            }
+            if std::time::Instant::now() >= self.deadline {
+                stopped(&mut child);
+                // The readers are detached, not joined: a child Git started (a filter, say)
+                // can outlive the kill and hold the pipes open, and joining waited for it, so
+                // the deadline did not bound the caller (bug hunt 2026-10-28, H1-03).
+                drop((stdout_reader, stderr_reader));
+                return Err(GitAcquireError::TimedOut {
+                    command,
+                    limit_ms: self.options.time_limit.as_millis(),
+                });
+            }
+            std::thread::sleep(pause);
+            pause = next_pause(pause);
+        };
+        let (out, read) = stdout_reader.join().unwrap_or_default();
+        let stderr = stderr_reader.join().unwrap_or_default();
+        if out.len() > budget {
             return Err(GitAcquireError::BudgetExceeded {
                 limit_bytes: budget,
             });
         }
-        let status = child.wait().map_err(spawn_err)?;
-        let stderr = stderr_reader.join().unwrap_or_default();
         if let Some(Err(e)) = read {
             return Err(spawn_err(e));
         }
@@ -335,6 +480,73 @@ fn utf8_path_from_bytes(bytes: Vec<u8>) -> PathBuf {
     )
 }
 
+/// Where a repository keeps its data: its top level, its Git directory and its common directory
+/// (they differ for a linked worktree, or a `.git` file pointing elsewhere), and whether its object
+/// store borrows from another (`objects/info/alternates`). A caller that may read only some
+/// directories checks all three, not only the top level: a `.git` file inside an allowed root
+/// can point at a repository outside it (bug hunt 2026-10-28, H2-02).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryDirs {
+    /// The working tree's top level.
+    pub top: PathBuf,
+    /// The Git directory (`git rev-parse --absolute-git-dir`).
+    pub git_dir: PathBuf,
+    /// The common directory shared by linked worktrees (`git rev-parse --git-common-dir`).
+    pub common_dir: PathBuf,
+    /// The object store lists alternates.
+    pub has_alternates: bool,
+}
+
+/// Resolve [`RepositoryDirs`] for the repository containing `repo`, every path canonical.
+///
+/// # Errors
+/// Any [`GitAcquireError`] from running Git or resolving its answer.
+pub fn repository_dirs(
+    repo: &Path,
+    options: &GitAcquireOptions,
+) -> Result<RepositoryDirs, GitAcquireError> {
+    let runner = Runner {
+        options,
+        cwd: repo.to_path_buf(),
+        deadline: deadline_after(options.time_limit),
+        config_env: Vec::new(),
+    };
+    let out = runner.run(
+        "git rev-parse",
+        &[
+            OsStr::new("rev-parse"),
+            OsStr::new("--show-toplevel"),
+            OsStr::new("--absolute-git-dir"),
+            OsStr::new("--git-common-dir"),
+        ],
+        &[0],
+        64 * 1024,
+    )?;
+    let text = String::from_utf8(out).map_err(|_| GitAcquireError::InvalidSelection {
+        detail: "the repository's directories are not UTF-8".to_owned(),
+    })?;
+    let lines: Vec<&str> = text.lines().collect();
+    let [top, git_dir, common] = lines[..] else {
+        return Err(GitAcquireError::InvalidSelection {
+            detail: "git rev-parse did not name the repository's directories".to_owned(),
+        });
+    };
+    let canonical = |path: PathBuf| {
+        std::fs::canonicalize(&path).map_err(|e| GitAcquireError::InvalidSelection {
+            detail: format!("cannot resolve {}: {e}", path.display()),
+        })
+    };
+    let top = canonical(PathBuf::from(top))?;
+    // A relative common directory is relative to the directory Git ran in.
+    let common_dir = canonical(repo.join(common))?;
+    Ok(RepositoryDirs {
+        has_alternates: common_dir.join("objects/info/alternates").exists(),
+        top,
+        git_dir: canonical(PathBuf::from(git_dir))?,
+        common_dir,
+    })
+}
+
 /// Acquire `selection` from the repository containing `repo`.
 ///
 /// Read-only: no index refresh (`--no-optional-locks`), no `git add -N`, no
@@ -352,9 +564,12 @@ pub fn acquire(
             detail: "untracked files can only be included in a working-tree selection".to_owned(),
         });
     }
+    let deadline = deadline_after(options.time_limit);
     let probe = Runner {
         options,
         cwd: repo.to_path_buf(),
+        deadline,
+        config_env: Vec::new(),
     };
     let mut top = probe.run(
         "git rev-parse",
@@ -369,6 +584,8 @@ pub fn acquire(
     let runner = Runner {
         options,
         cwd: root.clone(),
+        deadline,
+        config_env: local_filters_off(options, &root, deadline)?,
     };
     let head = || -> Result<String, GitAcquireError> {
         match runner.commit_id("HEAD")? {
@@ -495,5 +712,78 @@ mod tests {
             utf8_path_from_bytes(b"src/a\xffb.rs".to_vec()),
             PathBuf::from("src/a\u{fffd}b.rs")
         );
+    }
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod runner_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "door: a stub Git that hit ETXTBSY is retried after a short pause"
+    )]
+    fn pause_for_busy_stub() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    /// A stand-in Git that ignores its arguments and prints exactly `bytes` bytes.
+    fn printing(name: &str, bytes: usize) -> (PathBuf, GitAcquireOptions) {
+        let dir = std::env::temp_dir().join(format!("ddf-runner-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = dir.join("git");
+        std::fs::write(
+            &stub,
+            format!("#!/bin/sh\nhead -c {bytes} /dev/zero | tr '\\0' x\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let options = GitAcquireOptions {
+            git_program: stub.into_os_string(),
+            time_limit: std::time::Duration::from_secs(30),
+            ..GitAcquireOptions::default()
+        };
+        (dir, options)
+    }
+
+    /// Output of exactly the budget is accepted; one byte more is refused.
+    #[test]
+    fn output_at_the_budget_is_kept_and_one_byte_over_is_refused() {
+        let (dir, options) = printing("budget", 100);
+        let runner = Runner {
+            options: &options,
+            cwd: dir.clone(),
+            deadline: deadline_after(options.time_limit),
+            config_env: Vec::new(),
+        };
+        // A sibling test that forks while the stub is still open for writing can make the
+        // first exec fail with ETXTBSY; retry that harness race (see tests/git_acquire.rs).
+        let mut kept = runner.run("stub", &[], &[0], 100);
+        for _ in 0..100 {
+            match &kept {
+                Err(GitAcquireError::Spawn { detail, .. }) if detail.contains("os error 26") => {
+                    pause_for_busy_stub();
+                    kept = runner.run("stub", &[], &[0], 100);
+                }
+                _ => break,
+            }
+        }
+        assert_eq!(kept.unwrap().len(), 100);
+        assert!(matches!(
+            runner.run("stub", &[], &[0], 99),
+            Err(GitAcquireError::BudgetExceeded { limit_bytes: 99 })
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn polling_backs_off_from_one_millisecond_to_twenty() {
+        let ms = std::time::Duration::from_millis;
+        assert_eq!(next_pause(ms(1)), ms(2));
+        assert_eq!(next_pause(ms(8)), ms(16));
+        assert_eq!(next_pause(ms(16)), ms(20));
+        assert_eq!(next_pause(ms(20)), ms(20));
     }
 }

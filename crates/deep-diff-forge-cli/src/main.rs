@@ -198,20 +198,31 @@ fn schema_cmd(opts: &[String]) {
 }
 
 /// The output and guard options shared by `--stdin-patch` and the structured Git selections.
-const REVIEW_FLAGS: [&str; 6] = [
+const REVIEW_FLAGS: [&str; 8] = [
     "--json",
     "--jsonl",
     "--rank",
     "--cluster",
+    "--outline",
+    "--hunks",
     "--require-files",
     "--require-hunks",
 ];
+/// The valued options shared by `--stdin-patch` and the structured Git selections.
+const REVIEW_VALUED: [&str; 6] = [
+    "--layout",
+    "--parallel",
+    "--address",
+    "--path",
+    "--max-bytes",
+    "--cursor",
+];
 const STDIN_PATCH: args::Spec = args::Spec {
     flags: &REVIEW_FLAGS,
-    valued: &["--layout", "--parallel"],
+    valued: &REVIEW_VALUED,
     positionals: 0,
 };
-const STDIN_PATCH_USAGE: &str = "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side] [--require-files] [--require-hunks]";
+const STDIN_PATCH_USAGE: &str = "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks]";
 const SCHEMA: args::Spec = args::Spec {
     flags: &[],
     valued: &[],
@@ -348,7 +359,29 @@ fn sealed_review_or_exit(bytes: &[u8], guards: InputGuards) -> deep_diff_forge_p
 /// and the structured Git selections.
 fn emit_review(review: &deep_diff_forge_patch::SealedReview, opts: &[String]) {
     let (files, seal) = (review.files(), review.seal());
-    if opts.iter().any(|a| a == "--cluster") {
+    if opts.iter().any(|a| a == "--outline") {
+        emit_view(deep_diff_forge_daemon::views::outline(
+            review,
+            &view_page(opts),
+        ));
+    } else if opts.iter().any(|a| a == "--hunks") {
+        let addresses = flag_values(opts, "--address");
+        let paths = flag_values(opts, "--path");
+        let selection = match (addresses.is_empty(), paths.is_empty()) {
+            (true, true) => deep_diff_forge_daemon::views::Selection::All,
+            (false, true) => deep_diff_forge_daemon::views::Selection::Addresses(addresses),
+            (true, false) => deep_diff_forge_daemon::views::Selection::Paths(paths),
+            (false, false) => {
+                eprintln!("error: --hunks takes --address or --path, not both");
+                std::process::exit(exit::USAGE);
+            }
+        };
+        emit_view(deep_diff_forge_daemon::views::hunks(
+            review,
+            &selection,
+            &view_page(opts),
+        ));
+    } else if opts.iter().any(|a| a == "--cluster") {
         run_cluster(files, opts, seal);
     } else if opts.iter().any(|a| a == "--rank") {
         let ranked = deep_diff_forge_graph::rank(files);
@@ -391,10 +424,10 @@ fn daemon_cmd(opts: &[String]) {
         opts,
         &args::Spec {
             flags: &["--foreground"],
-            valued: &["--socket"],
+            valued: &["--socket", "--allow-repo"],
             positionals: 1,
         },
-        "deep-diff-forge daemon {path|start [--foreground]|health|status|stop} [--socket PATH]",
+        "deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]...|health|status|stop} [--socket PATH]",
     );
     let sub = positionals.first().copied();
     // Validate the subcommand first, so an unknown one reports usage whatever the environment.
@@ -403,13 +436,17 @@ fn daemon_cmd(opts: &[String]) {
     if sub != Some("start") && opts.iter().any(|a| a == "--foreground") {
         eprintln!("error: --foreground applies only to `daemon start`");
         eprintln!(
-            "usage: deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]"
+            "usage: deep-diff-forge daemon {{path|start [--foreground] [--allow-repo PATH]...|health|status|stop}} [--socket PATH]"
         );
+        std::process::exit(exit::USAGE);
+    }
+    if sub != Some("start") && opts.iter().any(|a| a == "--allow-repo") {
+        eprintln!("error: --allow-repo applies only to `daemon start`");
         std::process::exit(exit::USAGE);
     }
     if !matches!(sub, Some("path" | "start" | "health" | "status" | "stop")) {
         eprintln!(
-            "usage: deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]"
+            "usage: deep-diff-forge daemon {{path|start [--foreground] [--allow-repo PATH]...|health|status|stop}} [--socket PATH]"
         );
         std::process::exit(exit::USAGE);
     }
@@ -428,7 +465,12 @@ fn daemon_cmd(opts: &[String]) {
     match sub {
         Some("path") => emitln!("{}", location.path().display()),
         Some("start") => {
-            if let Err(err) = deep_diff_forge_daemon::run_server(&location) {
+            let roots: Vec<std::path::PathBuf> = flag_values(opts, "--allow-repo")
+                .into_iter()
+                .map(std::path::PathBuf::from)
+                .collect();
+            let engine = engine_allowing_or_exit(&roots);
+            if let Err(err) = deep_diff_forge_daemon::run_server_with(&location, engine) {
                 eprintln!("error: daemon failed: {err}");
                 std::process::exit(exit::DAEMON_OR_TERMINAL);
             }
@@ -438,7 +480,7 @@ fn daemon_cmd(opts: &[String]) {
         Some("stop") => daemon_client(&location, r#"{"id":1,"method":"daemon.shutdown"}"#),
         _ => {
             eprintln!(
-                "usage: deep-diff-forge daemon {{path|start [--foreground]|health|status|stop}} [--socket PATH]"
+                "usage: deep-diff-forge daemon {{path|start [--foreground] [--allow-repo PATH]...|health|status|stop}} [--socket PATH]"
             );
             std::process::exit(exit::USAGE);
         }
@@ -915,7 +957,9 @@ fn highlight_cmd(opts: &[String]) {
         ));
     } else {
         // No colour requested/available: still sanitise so a hostile file is safe.
-        emit(&display_safe(&source));
+        // Line feeds stay line breaks without colour too (bug hunt 2026-10-28, H4-01: the first
+        // fix covered only the coloured path, so piped output was still one line).
+        emit(&deep_diff_forge_syntax::display_safe_lines(&source));
     }
 }
 
@@ -1296,6 +1340,48 @@ fn print_rank_json(ranked: &[deep_diff_forge_graph::RankedFile], seal: &InputSea
     );
 }
 
+/// `--max-bytes` and `--cursor` for `--outline` / `--hunks` (the daemon's view budget and page).
+fn view_page(opts: &[String]) -> deep_diff_forge_daemon::views::Page {
+    let max_bytes = flag_value(opts, "--max-bytes").map_or(
+        deep_diff_forge_daemon::views::DEFAULT_MAX_BYTES,
+        |value| {
+            value.parse().unwrap_or_else(|_| {
+                eprintln!(
+                    "error: --max-bytes takes a number of bytes, not {}",
+                    display_safe(&value)
+                );
+                std::process::exit(exit::USAGE);
+            })
+        },
+    );
+    deep_diff_forge_daemon::views::Page {
+        max_bytes,
+        cursor: flag_value(opts, "--cursor"),
+    }
+}
+
+/// Print a view as 2-space JSON; a refused request (budget, cursor, address, path) exits 2.
+fn emit_view(view: Result<serde_json::Value, deep_diff_forge_daemon::views::ViewError>) {
+    match view {
+        Ok(value) => emitln!(
+            "{}",
+            serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
+        ),
+        Err(error) => {
+            eprintln!("error: {error}");
+            std::process::exit(exit::USAGE);
+        }
+    }
+}
+
+/// Every value following `name` in `opts`, in order (for repeatable options).
+fn flag_values(opts: &[String], name: &str) -> Vec<String> {
+    opts.windows(2)
+        .filter(|pair| pair[0] == name)
+        .map(|pair| pair[1].clone())
+        .collect()
+}
+
 /// Return the value following `name` in `opts`, if present.
 fn flag_value(opts: &[String], name: &str) -> Option<String> {
     opts.iter()
@@ -1389,8 +1475,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "daemon",
-        "deep-diff-forge daemon {path|start [--foreground]|health|status|stop} [--socket PATH]",
-        "Run or query the optional Unix-socket JSON-RPC daemon.",
+        "deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]...|health|status|stop} [--socket PATH]",
+        "Run or query the optional Unix-socket JSON-RPC daemon; --allow-repo lets review.change read those repositories.",
     ),
     (
         "learn",
@@ -1399,7 +1485,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "--stdin-patch",
-        "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side] [--require-files] [--require-hunks]",
+        "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks]",
         "Review a unified or Git patch read from stdin.",
     ),
     (
@@ -1409,13 +1495,13 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "mcp",
-        "deep-diff-forge mcp",
-        "Serve the read-only MCP tools over stdio.",
+        "deep-diff-forge mcp [--allow-repo PATH]...",
+        "Serve the read-only MCP tools over stdio; --allow-repo lets review_change read those repositories.",
     ),
     (
         "rpc",
-        "deep-diff-forge rpc",
-        "Speak the daemon's JSON-RPC over stdio, with no daemon.",
+        "deep-diff-forge rpc [--allow-repo PATH]...",
+        "Speak the daemon's JSON-RPC over stdio, with no daemon; --allow-repo lets review.change read those repositories.",
     ),
     (
         "envelope",
@@ -1500,9 +1586,9 @@ MACHINE CONTRACT:
   envelope -- <command…> wraps any command's result in one ddf.result.v1 JSON
   object (exit code, registry outcome, stdout, stderr) and exits with its code.
   schema prints the envelope's JSON Schema or the exit-code registry; explain
-  names one exit code. mcp serves read-only MCP tools over stdio (review_patch,
-  rank_patch, explain_exit_code, exit_code_registry). rpc speaks the daemon's
-  JSON-RPC protocol over stdio without a daemon.
+  names one exit code. mcp serves read-only MCP tools over stdio (review_outline,
+  review_hunks, review_patch, rank_patch, explain_exit_code, exit_code_registry).
+  rpc speaks the daemon's JSON-RPC protocol over stdio without a daemon.
 
 NOT YET IMPLEMENTED (each is refused today):
   deep-diff-forge <old> <new>
@@ -1535,13 +1621,47 @@ fn run_envelope(args: &[String]) {
     }
 }
 
+/// The repository roots named by `--allow-repo`, the only options `rpc` and `mcp` take; each
+/// must exist. Nothing is allowed unless the operator names it.
+fn allowed_repos_or_exit(args: &[String], usage: &str) -> Vec<std::path::PathBuf> {
+    args::admit_or_exit(
+        args,
+        &args::Spec {
+            flags: &[],
+            valued: &["--allow-repo"],
+            positionals: 0,
+        },
+        usage,
+    );
+    flag_values(args, "--allow-repo")
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .collect()
+}
+
+/// An engine allowed to read `roots`, or exit 2 naming the root that does not resolve.
+fn engine_allowing_or_exit(roots: &[std::path::PathBuf]) -> deep_diff_forge_daemon::Engine {
+    deep_diff_forge_daemon::Engine::new()
+        .allowing_repos(roots)
+        .unwrap_or_else(|(root, e)| {
+            eprintln!(
+                "error: --allow-repo {}: {e}",
+                display_safe(&root.to_string_lossy())
+            );
+            std::process::exit(exit::USAGE);
+        })
+}
+
 /// `rpc`: the daemon's JSON-RPC over stdio, in-process.
 fn run_rpc(args: &[String]) {
-    if !args.is_empty() {
-        eprintln!("error: rpc takes no arguments (it serves the daemon protocol over stdio)");
-        std::process::exit(exit::USAGE);
-    }
-    match rpc::serve(&mut std::io::stdin().lock(), &mut std::io::stdout().lock()) {
+    let roots = allowed_repos_or_exit(args, "deep-diff-forge rpc [--allow-repo PATH]...");
+    let (mut input, mut output) = (std::io::stdin().lock(), std::io::stdout().lock());
+    let served = if roots.is_empty() {
+        rpc::serve(&mut input, &mut output)
+    } else {
+        rpc::serve_engine(&mut input, &mut output, engine_allowing_or_exit(&roots))
+    };
+    match served {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => {}
         Err(err) => {
@@ -1553,11 +1673,27 @@ fn run_rpc(args: &[String]) {
 
 /// `mcp`: serve the read-only MCP tools over stdio until stdin closes.
 fn run_mcp(args: &[String]) {
-    if !args.is_empty() {
-        eprintln!("error: mcp takes no arguments (it serves MCP over stdio)");
-        std::process::exit(exit::USAGE);
-    }
-    match mcp::serve(&mut std::io::stdin().lock(), &mut std::io::stdout().lock()) {
+    let roots = allowed_repos_or_exit(args, "deep-diff-forge mcp [--allow-repo PATH]...");
+    // Resolve every root now, so a typo fails at start rather than at the first call.
+    let canonical: Vec<std::path::PathBuf> = roots
+        .iter()
+        .map(|root| {
+            std::fs::canonicalize(root).unwrap_or_else(|e| {
+                eprintln!(
+                    "error: --allow-repo {}: {e}",
+                    display_safe(&root.to_string_lossy())
+                );
+                std::process::exit(exit::USAGE);
+            })
+        })
+        .collect();
+    let (mut input, mut output) = (std::io::stdin().lock(), std::io::stdout().lock());
+    let served = if canonical.is_empty() {
+        mcp::serve(&mut input, &mut output)
+    } else {
+        mcp::serve_allowing(&mut input, &mut output, canonical)
+    };
+    match served {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => {}
         Err(err) => {

@@ -36,7 +36,7 @@ Residual risks (open):
 
 1. One engine mutex serializes daemon requests; up to 8 connections share it.
 2. No peer-credential check on the socket; access control is the 0700 directory and 0600 socket.
-3. Git subprocesses have no time limit (`crates/deep-diff-forge-patch/src/git_acquire.rs`, `child.wait()`).
+3. ~~Git subprocesses have no time limit~~: closed. One deadline bounds every Git call of an acquisition, 120 s for the CLI and 30 s for `review.change` (`GitAcquireOptions::time_limit`).
 4. macOS tests run on schedule and dispatch only, not on pull requests.
 5. Two `daemon start`s can race in the window between probing and binding.
 6. No TUI test harness beyond the headless probe.

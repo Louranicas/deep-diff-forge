@@ -60,7 +60,12 @@ pub struct Engine {
     running: bool,
     pid: u32,
     started: Instant,
+    /// Repository roots `review.change` may read (canonical paths). Empty: it reads none.
+    allowed_repos: Vec<std::path::PathBuf>,
 }
+
+/// The Git time limit for one `review.change`: a stalled Git cannot hold the engine longer.
+pub const REVIEW_CHANGE_GIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl Default for Engine {
     fn default() -> Self {
@@ -85,7 +90,25 @@ impl Engine {
             running: true,
             pid: std::process::id(),
             started: Instant::now(),
+            allowed_repos: Vec::new(),
         }
+    }
+
+    /// Let `review.change` read repositories at or under these roots, which the operator names
+    /// (`--allow-repo`). Each root is resolved to its canonical path now; one that does not
+    /// exist is an error, so a typo cannot silently allow nothing or something else.
+    ///
+    /// # Errors
+    /// The root and the I/O error when a root cannot be resolved.
+    pub fn allowing_repos(
+        mut self,
+        roots: &[std::path::PathBuf],
+    ) -> Result<Self, (std::path::PathBuf, std::io::Error)> {
+        for root in roots {
+            let canonical = std::fs::canonicalize(root).map_err(|e| (root.clone(), e))?;
+            self.allowed_repos.push(canonical);
+        }
+        Ok(self)
     }
 
     /// Drop every session after a contained panic (anchor A-03). Whatever dispatch was doing may have
@@ -275,6 +298,17 @@ pub struct MethodSpec {
     pub since: u32,
 }
 
+impl MethodSpec {
+    /// The names in [`MethodSpec::params`] (`name: type` or `name?: type`, comma-separated).
+    pub fn param_names(&self) -> impl Iterator<Item = &'static str> {
+        self.params
+            .split(", ")
+            .filter_map(|param| param.split(':').next())
+            .map(|name| name.trim().trim_end_matches('?'))
+            .filter(|name| !name.is_empty())
+    }
+}
+
 const fn method(
     name: &'static str,
     params: &'static str,
@@ -329,6 +363,24 @@ pub const METHODS: &[MethodSpec] = &[
         "the deep-diff-forge.rank.v0 document `deep-diff-forge --stdin-patch --rank --json` prints for the same patch",
         1,
     ),
+    method(
+        "review.outline",
+        "patch: string, require_files?: boolean, require_hunks?: boolean, max_bytes?: integer, cursor?: string",
+        "deep-diff-forge.review-outline.v0: files in review-risk order with their hunks' addresses, headings and counts, no line text; next_cursor continues",
+        1,
+    ),
+    method(
+        "review.hunks",
+        "patch: string, require_files?: boolean, require_hunks?: boolean, addresses?: [string], paths?: [string], max_bytes?: integer, cursor?: string",
+        "deep-diff-forge.review-hunks.v0: the chosen hunks verbatim (all, by address or by path), within max_bytes; next_cursor continues",
+        1,
+    ),
+    method(
+        "review.change",
+        "repo: string, selection: \"staged\"|\"working_tree\"|\"range\", range?: \"A..B\", include_untracked?: boolean, view?: \"outline\"|\"hunks\"|\"review\"|\"rank\", require_files?: boolean, require_hunks?: boolean, addresses?: [string], paths?: [string], max_bytes?: integer, cursor?: string",
+        "the chosen view of the change Git returns for the selection, sealed over Git's exact bytes, with an acquisition member; only for a repository at or under a root the operator allowed (--allow-repo), and Git is stopped after 30 s",
+        1,
+    ),
     method("session.open", "patch: string", "{session, files}", 0),
     method("session.snapshot", "session: string", "[ranked file]", 0),
     method("session.close", "session: string", "{closed}", 0),
@@ -349,6 +401,7 @@ pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcErro
     let Some(spec) = METHODS.iter().find(|m| m.name == request.method) else {
         return Err(RpcError::method_not_found(&request.method));
     };
+    refuse_unknown_params(spec, &request.params)?;
     match spec.name {
         "engine.initialize" => {
             // Versions are additive, so any version up to ours is served, and the answer lists the
@@ -411,6 +464,16 @@ pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcErro
         }
         "diff.compute" => review_document(&sealed(request)?),
         "diff.rank" => Ok(rank_document(&sealed(request)?)),
+        "review.change" => review_change(&request.params, &engine.allowed_repos),
+        "review.outline" => {
+            let page = page_param(&request.params)?;
+            crate::views::outline(&sealed(request)?, &page).map_err(|e| view_error(&e))
+        }
+        "review.hunks" => {
+            let selection = selection_param(&request.params)?;
+            let page = page_param(&request.params)?;
+            crate::views::hunks(&sealed(request)?, &selection, &page).map_err(|e| view_error(&e))
+        }
         "session.open" => {
             let files = parse_patch_param(request)?;
             let count = files.len();
@@ -482,6 +545,218 @@ fn parse_patch_param(request: &Request) -> Result<Vec<ReviewFile>, RpcError> {
         .map_err(|e| RpcError::new(PATCH_PARSE_FAILED, e.to_string()))
 }
 
+/// `review.change`: acquire a change from Git in an allowed repository, seal it, and answer with
+/// the chosen view. Git runs with the acquisition crate's fixed argv and a 30 s limit; nothing
+/// is written. A repository outside every allowed root is refused before Git runs.
+fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value, RpcError> {
+    use deep_diff_forge_patch::{GitSelection, acquire_git};
+    let repo = std::path::PathBuf::from(str_param(params, "repo")?);
+    if allowed.is_empty() {
+        return Err(RpcError::invalid_params(
+            "this server reads no repositories; start it with --allow-repo <path>",
+        ));
+    }
+    let canonical = std::fs::canonicalize(&repo).map_err(|e| {
+        RpcError::invalid_params(format!(
+            "cannot resolve repo {}: {e}",
+            deep_diff_forge_core::display_safe(&repo.to_string_lossy())
+        ))
+    })?;
+    if !allowed.iter().any(|root| canonical.starts_with(root)) {
+        return Err(RpcError::invalid_params(format!(
+            "repo {} is outside the roots this server may read (--allow-repo)",
+            deep_diff_forge_core::display_safe(&canonical.to_string_lossy())
+        )));
+    }
+    let options = change_options(bool_param(params, "include_untracked")?);
+    refuse_foreign_git_dirs(&canonical, allowed, &options)?;
+    let selection = match str_param(params, "selection")?.as_str() {
+        "staged" => GitSelection::Staged,
+        "working_tree" => GitSelection::WorkingTree,
+        "range" => GitSelection::parse_range(&str_param(params, "range")?)
+            .map_err(|e| RpcError::invalid_params(e.to_string()))?,
+        other => {
+            return Err(RpcError::invalid_params(format!(
+                "selection must be staged, working_tree or range, not {}",
+                deep_diff_forge_core::display_safe(other)
+            )));
+        }
+    };
+    let git = |e: deep_diff_forge_patch::GitAcquireError| match e {
+        deep_diff_forge_patch::GitAcquireError::InvalidSelection { .. } => {
+            RpcError::invalid_params(e.to_string())
+        }
+        deep_diff_forge_patch::GitAcquireError::Parse(_) => {
+            RpcError::new(PATCH_PARSE_FAILED, e.to_string())
+        }
+        other => RpcError::new(crate::protocol::GIT_FAILED, other.to_string()),
+    };
+    let acquisition = acquire_git(&canonical, &selection, &options).map_err(git)?;
+    // The repository is Git's top level, which can lie above the path asked for: a subdirectory
+    // of a larger repository would otherwise expose the whole outer repository's change.
+    let top =
+        std::fs::canonicalize(acquisition.root()).unwrap_or_else(|_| acquisition.root().into());
+    if !allowed.iter().any(|root| top.starts_with(root)) {
+        return Err(RpcError::invalid_params(format!(
+            "the repository's top level {} is outside the roots this server may read (--allow-repo)",
+            deep_diff_forge_core::display_safe(&top.to_string_lossy())
+        )));
+    }
+    let captured = acquisition.diff().capture().map_err(git)?;
+    let review = acquisition
+        .diff()
+        .sealed_review(&captured, env!("CARGO_PKG_VERSION"))
+        .map_err(git)?;
+    let guards = deep_diff_forge_patch::InputGuards {
+        files: bool_param(params, "require_files")?,
+        hunks: bool_param(params, "require_hunks")?,
+    };
+    if let Some(refusal) = guards.refusal(review.files()) {
+        let refused = deep_diff_forge_patch::ReviewError::Refused(refusal);
+        return Err(RpcError::new(INPUT_CONTRACT_REFUSED, refused.to_string()));
+    }
+    let mut answer = match params
+        .get("view")
+        .and_then(Value::as_str)
+        .unwrap_or("outline")
+    {
+        "outline" => {
+            crate::views::outline(&review, &page_param(params)?).map_err(|e| view_error(&e))?
+        }
+        "hunks" => crate::views::hunks(&review, &selection_param(params)?, &page_param(params)?)
+            .map_err(|e| view_error(&e))?,
+        "review" => review_document(&review)?,
+        "rank" => rank_document(&review),
+        other => {
+            return Err(RpcError::invalid_params(format!(
+                "view must be outline, hunks, review or rank, not {}",
+                deep_diff_forge_core::display_safe(other)
+            )));
+        }
+    };
+    answer["acquisition"] = json!({
+        "repo": top.to_string_lossy(),
+        "selection": params.get("selection"),
+        "base": acquisition.base(),
+        "target": acquisition.target(),
+        "include_untracked": options.include_untracked,
+    });
+    Ok(answer)
+}
+
+/// A param the method does not take is refused, not ignored: a misspelt `require_file` passed an
+/// empty review before (bug hunt 2026-10-28, H5-01). The names come from the method's own
+/// published params, so `engine.methods` and this check cannot drift apart.
+fn refuse_unknown_params(spec: &MethodSpec, params: &Value) -> Result<(), RpcError> {
+    if let Some(params) = params.as_object()
+        && let Some(unknown) = params
+            .keys()
+            .find(|key| !spec.param_names().any(|p| p == *key))
+    {
+        return Err(RpcError::invalid_params(format!(
+            "{} takes no param '{}'",
+            spec.name,
+            deep_diff_forge_core::display_safe(unknown)
+        )));
+    }
+    Ok(())
+}
+
+/// Every directory Git will read must be inside an allowed root, and the object store must not
+/// borrow another's: a `.git` file can point a worktree inside the root at a repository outside
+/// it (bug hunt 2026-10-28, H2-02).
+fn refuse_foreign_git_dirs(
+    repo: &std::path::Path,
+    allowed: &[std::path::PathBuf],
+    options: &deep_diff_forge_patch::GitAcquireOptions,
+) -> Result<(), RpcError> {
+    let dirs = deep_diff_forge_patch::repository_dirs(repo, options)
+        .map_err(|e| RpcError::new(crate::protocol::GIT_FAILED, e.to_string()))?;
+    for (what, dir) in [
+        ("top level", &dirs.top),
+        ("Git directory", &dirs.git_dir),
+        ("common Git directory", &dirs.common_dir),
+    ] {
+        if !allowed.iter().any(|root| dir.starts_with(root)) {
+            return Err(RpcError::invalid_params(format!(
+                "the repository's {what} {} is outside the roots this server may read (--allow-repo)",
+                deep_diff_forge_core::display_safe(&dir.to_string_lossy())
+            )));
+        }
+    }
+    if dirs.has_alternates {
+        return Err(RpcError::invalid_params(
+            "the repository borrows objects from another (objects/info/alternates), which this server does not read",
+        ));
+    }
+    Ok(())
+}
+
+/// The acquisition options of `review.change`: the shorter Git time limit, and untracked files
+/// only when asked for.
+fn change_options(include_untracked: bool) -> deep_diff_forge_patch::GitAcquireOptions {
+    deep_diff_forge_patch::GitAcquireOptions {
+        include_untracked,
+        time_limit: REVIEW_CHANGE_GIT_LIMIT,
+        ..deep_diff_forge_patch::GitAcquireOptions::default()
+    }
+}
+
+/// A refused view is a mistake in the request (budget, cursor, address or path).
+fn view_error(error: &crate::views::ViewError) -> RpcError {
+    RpcError::invalid_params(error.to_string())
+}
+
+/// `max_bytes` and `cursor` for a view; absent means the default budget and the first page.
+fn page_param(params: &Value) -> Result<crate::views::Page, RpcError> {
+    let max_bytes = match params.get("max_bytes") {
+        None => crate::views::DEFAULT_MAX_BYTES,
+        Some(value) => value
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| {
+                RpcError::invalid_params("param 'max_bytes' must be a non-negative integer")
+            })?,
+    };
+    let cursor = match params.get("cursor") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(cursor)) => Some(cursor.clone()),
+        Some(_) => return Err(RpcError::invalid_params("param 'cursor' must be a string")),
+    };
+    Ok(crate::views::Page { max_bytes, cursor })
+}
+
+/// `addresses` or `paths` (not both) for `review.hunks`; neither means every hunk.
+fn selection_param(params: &Value) -> Result<crate::views::Selection, RpcError> {
+    let list = |key: &str| -> Result<Option<Vec<String>>, RpcError> {
+        match params.get(key) {
+            None => Ok(None),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|item| {
+                    item.as_str().map(str::to_owned).ok_or_else(|| {
+                        RpcError::invalid_params(format!(
+                            "param '{key}' must be an array of strings"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Some),
+            Some(_) => Err(RpcError::invalid_params(format!(
+                "param '{key}' must be an array of strings"
+            ))),
+        }
+    };
+    match (list("addresses")?, list("paths")?) {
+        (Some(_), Some(_)) => Err(RpcError::invalid_params(
+            "pass addresses or paths, not both",
+        )),
+        (Some(addresses), None) => Ok(crate::views::Selection::Addresses(addresses)),
+        (None, Some(paths)) => Ok(crate::views::Selection::Paths(paths)),
+        (None, None) => Ok(crate::views::Selection::All),
+    }
+}
+
 fn str_param(params: &Value, key: &str) -> Result<String, RpcError> {
     params
         .get(key)
@@ -527,6 +802,18 @@ mod tests {
     fn call(line: &str, engine: &mut Engine) -> Result<Value, RpcError> {
         let req = parse_request(line)?;
         dispatch(&req, engine)
+    }
+
+    /// `review.change` stops Git after 30 s and reads untracked files only when asked.
+    #[test]
+    fn review_change_options_bound_git() {
+        assert_eq!(REVIEW_CHANGE_GIT_LIMIT, std::time::Duration::from_secs(30));
+        let on = change_options(true);
+        assert_eq!(
+            (on.include_untracked, on.time_limit),
+            (true, REVIEW_CHANGE_GIT_LIMIT)
+        );
+        assert!(!change_options(false).include_untracked);
     }
 
     #[test]

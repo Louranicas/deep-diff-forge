@@ -32,12 +32,13 @@ mod handler;
 mod protocol;
 mod security;
 mod serve;
+pub mod views;
 
 pub use handler::{Engine, METHODS, MethodSpec, dispatch};
 pub use protocol::{
-    INPUT_CONTRACT_REFUSED, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
-    PARSE_ERROR, PATCH_PARSE_FAILED, PROTOCOL_UNSUPPORTED, PROTOCOL_VERSION, Request, RpcError,
-    SESSION_NOT_FOUND, error_response, parse_request, success_response,
+    GIT_FAILED, INPUT_CONTRACT_REFUSED, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST,
+    METHOD_NOT_FOUND, PARSE_ERROR, PATCH_PARSE_FAILED, PROTOCOL_UNSUPPORTED, PROTOCOL_VERSION,
+    Request, RpcError, SESSION_NOT_FOUND, error_response, parse_request, success_response,
 };
 pub use security::{
     SECURE_DIR_MODE, SECURE_SOCKET_MODE, SocketError, default_socket_path, ensure_runtime_dir,
@@ -45,7 +46,7 @@ pub use security::{
 };
 pub use serve::{
     MAX_REQUEST_BYTES, SocketLocation, bind_secure, handle_connection, process_line,
-    read_capped_line, request, run_server,
+    read_capped_line, request, run_server, run_server_with,
 };
 
 #[cfg(test)]
