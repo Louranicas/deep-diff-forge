@@ -460,6 +460,7 @@ mod tests {
         let expected = all_lines(&review);
         for max_bytes in [MIN_MAX_BYTES, 2048, 8192, DEFAULT_MAX_BYTES] {
             let mut got = std::collections::HashMap::<String, Vec<Value>>::default();
+            let mut completed = 0;
             let mut order = Vec::new();
             let mut cursor = None;
             for _ in 0..10_000 {
@@ -468,6 +469,12 @@ mod tests {
                 let bytes = answer.to_string().len();
                 let entries = answer["hunks"].as_array().unwrap();
                 assert!(!entries.is_empty(), "a page always makes progress");
+                completed += entries.iter().filter(|e| e["complete"] == true).count();
+                assert_eq!(
+                    answer["remaining_hunks"],
+                    json!(expected.len() - completed),
+                    "budget {max_bytes}"
+                );
                 let one_long_line = entries.len() == 1
                     && entries[0]["lines"][0]["text"]
                         .as_str()
@@ -499,6 +506,98 @@ mod tests {
                 expected.len(),
                 "each hunk once, budget {max_bytes}"
             );
+        }
+    }
+
+    /// The first page holds exactly what a greedy fill of `max_bytes - ENVELOPE_BYTES` allows,
+    /// counting each item's serialized size plus its comma: the reference model below, built from
+    /// the items' own JSON, must agree with the pager at every budget. A one-byte error in the
+    /// pager's accounting moves a page boundary at some budget.
+    #[test]
+    fn pages_fill_exactly_to_the_budget() {
+        let review = review(&patch());
+        let all = hunks(&review, &Selection::All, &page(MAX_MAX_BYTES, None)).unwrap();
+        let outline_all = outline(&review, &page(MAX_MAX_BYTES, None)).unwrap();
+        for max_bytes in (MIN_MAX_BYTES..6000).step_by(23) {
+            // hunks: (address, lines, complete) of the first page.
+            let mut budget = max_bytes - ENVELOPE_BYTES;
+            let mut expected = Vec::new();
+            for entry in all["hunks"].as_array().unwrap() {
+                let mut base = entry.clone();
+                base["lines"] = json!([]);
+                let mut used = size(&base) + 1;
+                let lines = entry["lines"].as_array().unwrap();
+                let mut taken = 0;
+                for line in lines {
+                    let cost = size(line) + 1;
+                    if used + cost > budget && !(expected.is_empty() && taken == 0) {
+                        break;
+                    }
+                    used += cost;
+                    taken += 1;
+                }
+                if taken < lines.len() {
+                    if taken > 0 {
+                        expected.push((entry["address"].clone(), taken, false));
+                    }
+                    break;
+                }
+                budget = budget.saturating_sub(used);
+                expected.push((entry["address"].clone(), taken, true));
+            }
+            let got: Vec<_> =
+                hunks(&review, &Selection::All, &page(max_bytes, None)).unwrap()["hunks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|e| {
+                        (
+                            e["address"].clone(),
+                            e["lines"].as_array().unwrap().len(),
+                            e["complete"] == true,
+                        )
+                    })
+                    .collect();
+            assert_eq!(got, expected, "hunks at {max_bytes}");
+
+            // outline: (path, hunks, complete) of the first page.
+            let mut budget = max_bytes - ENVELOPE_BYTES;
+            let mut expected = Vec::new();
+            'files: for file in outline_all["files"].as_array().unwrap() {
+                let mut base = file.clone();
+                base["hunks"] = json!([]);
+                let mut used = size(&base) + 1;
+                let mut count = 0;
+                for (h, head) in file["hunks"].as_array().unwrap().iter().enumerate() {
+                    let cost = size(head) + 1;
+                    if used + cost > budget && !(expected.is_empty() && h == 0) {
+                        if h > 0 {
+                            expected.push((file["path"].clone(), count, false));
+                        }
+                        break 'files;
+                    }
+                    used += cost;
+                    count += 1;
+                }
+                if used > budget && !expected.is_empty() {
+                    break;
+                }
+                budget = budget.saturating_sub(used);
+                expected.push((file["path"].clone(), count, true));
+            }
+            let got: Vec<_> = outline(&review, &page(max_bytes, None)).unwrap()["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| {
+                    (
+                        f["path"].clone(),
+                        f["hunks"].as_array().unwrap().len(),
+                        f["complete"] == true,
+                    )
+                })
+                .collect();
+            assert_eq!(got, expected, "outline at {max_bytes}");
         }
     }
 
@@ -556,6 +655,26 @@ mod tests {
         );
     }
 
+    /// A hunk too big for even the smallest page is still listed, alone, so paging always moves
+    /// on: here an 800-byte `@@` heading.
+    #[test]
+    fn an_oversized_hunk_still_makes_progress() {
+        let heading = "h".repeat(800);
+        let review = review(&format!(
+            "--- a/a\n+++ b/a\n@@ -1 +1 @@ {heading}\n-a\n+b\n--- a/b\n+++ b/b\n@@ -1 +1 @@\n-c\n+d\n"
+        ));
+        let first = outline(&review, &page(MIN_MAX_BYTES, None)).unwrap();
+        let files = first["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1, "{first}");
+        assert_eq!(files[0]["hunks"].as_array().unwrap().len(), 1);
+        assert_eq!(files[0]["complete"], true);
+        let cursor = first["next_cursor"].as_str().map(str::to_owned);
+        assert!(cursor.is_some());
+        let second = outline(&review, &page(MIN_MAX_BYTES, cursor)).unwrap();
+        assert_eq!(second["files"].as_array().unwrap().len(), 1);
+        assert!(second["next_cursor"].is_null());
+    }
+
     /// The outline puts the riskiest file first, as `rank` does.
     #[test]
     fn outline_is_in_review_risk_order() {
@@ -598,6 +717,19 @@ mod tests {
             .collect();
         assert_eq!(got, [a.as_str(), b.as_str()]);
         assert_eq!(answer["hunks"][0]["lines"], json!(expected[&a]));
+        assert_eq!(
+            (&answer["selected_hunks"], &answer["remaining_hunks"]),
+            (&json!(2), &json!(0))
+        );
+        let first = hunks(&review, &Selection::All, &page(MIN_MAX_BYTES, None)).unwrap();
+        let done = first["hunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|h| h["complete"] == true)
+            .count();
+        assert_eq!(first["selected_hunks"], json!(17));
+        assert_eq!(first["remaining_hunks"], json!(17 - done));
         let by_path = hunks(
             &review,
             &Selection::Paths(vec!["src/f2.rs".into()]),

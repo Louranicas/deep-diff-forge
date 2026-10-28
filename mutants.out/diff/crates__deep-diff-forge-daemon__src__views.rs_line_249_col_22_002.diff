@@ -1,0 +1,21 @@
+--- crates/deep-diff-forge-daemon/src/views.rs
++++ replace > with >= in outline
+@@ -241,17 +241,17 @@
+         });
+         let mut used = size(&entry) + 1;
+         for (h, hunk) in file.patch_twin.hunks.iter().enumerate().skip(first) {
+             let head = Value::Object(hunk_head(file, hunk));
+             let cost = size(&head) + 1;
+             // A page always makes progress: its first hunk is listed even when it is over.
+             let first_on_page = entries.is_empty() && h == first;
+             if used + cost > budget && !first_on_page {
+-                if h > first {
++                if h >= /* ~ changed by cargo-mutants ~ */ first {
+                     entry["complete"] = json!(false);
+                     entries.push(entry);
+                 }
+                 next = Some(cursor(seal, "outline", position, h));
+                 break 'files;
+             }
+             used += cost;
+             if let Some(list) = entry["hunks"].as_array_mut() {

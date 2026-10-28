@@ -631,6 +631,31 @@ fn a_surviving_child_cannot_stretch_the_time_limit() {
     );
 }
 
+/// Many local filters (a long `git config` listing) and a deep repository path (long
+/// `rev-parse` answers) are read in full: the listing and path budgets hold real repositories.
+#[test]
+fn long_filter_listings_and_deep_paths_are_read() {
+    let fx = fixture("many-filters");
+    let r = &fx.root;
+    for i in 0..80 {
+        git_out(
+            r,
+            &[
+                "config",
+                &format!("filter.local-filter-with-a-long-name-{i:03}.clean"),
+                "cat",
+            ],
+        );
+    }
+    acquire_git(r, &GitSelection::WorkingTree, &options(false)).unwrap();
+    let deep = (0..6).fold(r.clone(), |p, i| p.join(format!("{}{i}", "d".repeat(200))));
+    std::fs::create_dir_all(&deep).unwrap();
+    git_out(&deep, &["init", "-q"]);
+    let dirs = deep_diff_forge_patch::repository_dirs(&deep, &options(false)).unwrap();
+    assert_eq!(dirs.top, std::fs::canonicalize(&deep).unwrap());
+    assert!(dirs.git_dir.ends_with(".git") && !dirs.has_alternates);
+}
+
 /// A filter that the repository's own configuration defines never runs: reviewing a repository
 /// someone handed you must not run their code (bug hunt 2026-10-28, H2-01).
 #[test]

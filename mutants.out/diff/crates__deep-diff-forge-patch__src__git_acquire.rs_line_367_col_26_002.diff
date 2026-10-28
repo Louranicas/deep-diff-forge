@@ -1,0 +1,21 @@
+--- crates/deep-diff-forge-patch/src/git_acquire.rs
++++ replace > with >= in Runner<'_>::run
+@@ -359,17 +359,17 @@
+         // Read stdout on its own thread, so this one can enforce the deadline: before, a stalled
+         // Git (a hung filesystem or hook) blocked the caller forever on `child.wait()`.
+         let over_budget = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+         let stdout = child.stdout.take();
+         let flag = std::sync::Arc::clone(&over_budget);
+         let stdout_reader = std::thread::spawn(move || {
+             let mut out = Vec::new();
+             let read = stdout.map(|pipe| pipe.take(budget as u64 + 1).read_to_end(&mut out));
+-            if out.len() > budget {
++            if out.len() >= /* ~ changed by cargo-mutants ~ */ budget {
+                 flag.store(true, std::sync::atomic::Ordering::SeqCst);
+             }
+             (out, read)
+         });
+         let mut pause = std::time::Duration::from_millis(1);
+         let stopped = |child: &mut std::process::Child| {
+             let _ = child.kill();
+             let _ = child.wait();

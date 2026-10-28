@@ -1,0 +1,21 @@
+--- crates/deep-diff-forge-daemon/src/views.rs
++++ replace += with -= in hunks
+@@ -318,17 +318,17 @@
+         for line in hunk.lines.iter().skip(offset) {
+             let value = line_json(line);
+             let cost = size(&value) + 1;
+             // A page always makes progress: its first line is taken even when it alone is over.
+             if used + cost > budget && !(out.is_empty() && taken == 0) {
+                 break;
+             }
+             used += cost;
+-            taken += 1;
++            taken -= /* ~ changed by cargo-mutants ~ */ 1;
+             if let Some(lines) = entry["lines"].as_array_mut() {
+                 lines.push(value);
+             }
+         }
+         let end = offset + taken;
+         if end < hunk.lines.len() {
+             if taken == 0 {
+                 next = Some(cursor(seal, &key, position, offset));

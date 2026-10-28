@@ -1,0 +1,21 @@
+--- crates/deep-diff-forge-patch/src/git_acquire.rs
++++ replace * with / in local_filters_off
+@@ -272,17 +272,17 @@
+             OsStr::new("--local"),
+             OsStr::new("--includes"),
+             OsStr::new("--null"),
+             OsStr::new("--name-only"),
+             OsStr::new("--get-regexp"),
+             OsStr::new("^filter\\."),
+         ],
+         &[0, 1],
+-        1024 * 1024,
++        1024 / /* ~ changed by cargo-mutants ~ */ 1024,
+     )?;
+     Ok(neutral_filters(&filter_names(&listing)))
+ }
+ 
+ /// The filter names in `git config --null --name-only` output (`filter.<name>.<key>` records).
+ fn filter_names(listing: &[u8]) -> Vec<String> {
+     let mut names: Vec<String> = Vec::new();
+     for record in listing.split(|&b| b == 0 || b == b'\n') {

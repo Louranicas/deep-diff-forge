@@ -299,6 +299,12 @@ fn filter_names(listing: &[u8]) -> Vec<String> {
     names
 }
 
+/// The next poll interval while waiting for Git: doubling from 1 ms, at most 20 ms, so a quick
+/// command costs little latency and a slow one little CPU.
+fn next_pause(pause: std::time::Duration) -> std::time::Duration {
+    (pause * 2).min(std::time::Duration::from_millis(20))
+}
+
 /// The acquisition's deadline: now plus its time limit.
 #[expect(
     clippy::disallowed_methods,
@@ -391,7 +397,7 @@ impl Runner<'_> {
                 });
             }
             std::thread::sleep(pause);
-            pause = (pause * 2).min(std::time::Duration::from_millis(20));
+            pause = next_pause(pause);
         };
         let (out, read) = stdout_reader.join().unwrap_or_default();
         let stderr = stderr_reader.join().unwrap_or_default();
@@ -706,5 +712,58 @@ mod tests {
             utf8_path_from_bytes(b"src/a\xffb.rs".to_vec()),
             PathBuf::from("src/a\u{fffd}b.rs")
         );
+    }
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod runner_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    /// A stand-in Git that ignores its arguments and prints exactly `bytes` bytes.
+    fn printing(name: &str, bytes: usize) -> (PathBuf, GitAcquireOptions) {
+        let dir = std::env::temp_dir().join(format!("ddf-runner-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stub = dir.join("git");
+        std::fs::write(
+            &stub,
+            format!("#!/bin/sh\nhead -c {bytes} /dev/zero | tr '\\0' x\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let options = GitAcquireOptions {
+            git_program: stub.into_os_string(),
+            time_limit: std::time::Duration::from_secs(30),
+            ..GitAcquireOptions::default()
+        };
+        (dir, options)
+    }
+
+    /// Output of exactly the budget is accepted; one byte more is refused.
+    #[test]
+    fn output_at_the_budget_is_kept_and_one_byte_over_is_refused() {
+        let (dir, options) = printing("budget", 100);
+        let runner = Runner {
+            options: &options,
+            cwd: dir.clone(),
+            deadline: deadline_after(options.time_limit),
+            config_env: Vec::new(),
+        };
+        assert_eq!(runner.run("stub", &[], &[0], 100).unwrap().len(), 100);
+        assert!(matches!(
+            runner.run("stub", &[], &[0], 99),
+            Err(GitAcquireError::BudgetExceeded { limit_bytes: 99 })
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn polling_backs_off_from_one_millisecond_to_twenty() {
+        let ms = std::time::Duration::from_millis;
+        assert_eq!(next_pause(ms(1)), ms(2));
+        assert_eq!(next_pause(ms(8)), ms(16));
+        assert_eq!(next_pause(ms(16)), ms(20));
+        assert_eq!(next_pause(ms(20)), ms(20));
     }
 }

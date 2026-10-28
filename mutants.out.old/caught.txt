@@ -1,0 +1,133 @@
+crates/deep-diff-forge-daemon/src/views.rs:22:44: replace * with /
+crates/deep-diff-forge-daemon/src/views.rs:18:41: replace * with /
+crates/deep-diff-forge-daemon/src/views.rs:22:44: replace * with +
+crates/deep-diff-forge-daemon/src/views.rs:22:37: replace * with +
+crates/deep-diff-forge-daemon/src/views.rs:22:37: replace * with /
+crates/deep-diff-forge-daemon/src/views.rs:95:5: replace risk_order -> Vec<(usize, u32, Vec<&'static str>)> with vec![]
+crates/deep-diff-forge-daemon/src/views.rs:95:5: replace risk_order -> Vec<(usize, u32, Vec<&'static str>)> with vec![(0, 0, vec![])]
+crates/deep-diff-forge-daemon/src/views.rs:95:5: replace risk_order -> Vec<(usize, u32, Vec<&'static str>)> with vec![(0, 0, vec![""])]
+crates/deep-diff-forge-daemon/src/views.rs:95:5: replace risk_order -> Vec<(usize, u32, Vec<&'static str>)> with vec![(0, 0, vec!["xyzzy"])]
+crates/deep-diff-forge-daemon/src/views.rs:95:5: replace risk_order -> Vec<(usize, u32, Vec<&'static str>)> with vec![(0, 1, vec![])]
+crates/deep-diff-forge-daemon/src/views.rs:95:5: replace risk_order -> Vec<(usize, u32, Vec<&'static str>)> with vec![(0, 1, vec![""])]
+crates/deep-diff-forge-daemon/src/views.rs:95:5: replace risk_order -> Vec<(usize, u32, Vec<&'static str>)> with vec![(0, 1, vec!["xyzzy"])]
+crates/deep-diff-forge-daemon/src/views.rs:95:5: replace risk_order -> Vec<(usize, u32, Vec<&'static str>)> with vec![(1, 0, vec![])]
+crates/deep-diff-forge-daemon/src/views.rs:95:5: replace risk_order -> Vec<(usize, u32, Vec<&'static str>)> with vec![(1, 0, vec![""])]
+crates/deep-diff-forge-daemon/src/views.rs:95:5: replace risk_order -> Vec<(usize, u32, Vec<&'static str>)> with vec![(1, 0, vec!["xyzzy"])]
+crates/deep-diff-forge-daemon/src/views.rs:95:5: replace risk_order -> Vec<(usize, u32, Vec<&'static str>)> with vec![(1, 1, vec![])]
+crates/deep-diff-forge-daemon/src/views.rs:95:5: replace risk_order -> Vec<(usize, u32, Vec<&'static str>)> with vec![(1, 1, vec![""])]
+crates/deep-diff-forge-daemon/src/views.rs:95:5: replace risk_order -> Vec<(usize, u32, Vec<&'static str>)> with vec![(1, 1, vec!["xyzzy"])]
+crates/deep-diff-forge-daemon/src/views.rs:111:5: replace seal_members -> (Value, Value) with (Default::default(), Default::default())
+crates/deep-diff-forge-daemon/src/views.rs:18:41: replace * with +
+crates/deep-diff-forge-daemon/src/views.rs:71:9: replace <impl std::fmt::Display for ViewError>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/deep-diff-forge-daemon/src/views.rs:118:5: replace line_counts -> (usize, usize) with (0, 0)
+crates/deep-diff-forge-daemon/src/views.rs:118:5: replace line_counts -> (usize, usize) with (0, 1)
+crates/deep-diff-forge-daemon/src/views.rs:121:40: replace + with - in line_counts
+crates/deep-diff-forge-daemon/src/views.rs:122:45: replace + with - in line_counts
+crates/deep-diff-forge-daemon/src/views.rs:118:5: replace line_counts -> (usize, usize) with (1, 0)
+crates/deep-diff-forge-daemon/src/views.rs:129:5: replace hunk_head -> serde_json::Map<String, Value> with Default::default()
+crates/deep-diff-forge-daemon/src/views.rs:118:5: replace line_counts -> (usize, usize) with (1, 1)
+crates/deep-diff-forge-daemon/src/views.rs:168:5: replace size -> usize with 0
+crates/deep-diff-forge-daemon/src/views.rs:168:5: replace size -> usize with 1
+crates/deep-diff-forge-daemon/src/views.rs:174:5: replace cursor -> String with String::new()
+crates/deep-diff-forge-daemon/src/views.rs:174:5: replace cursor -> String with "xyzzy".into()
+crates/deep-diff-forge-daemon/src/views.rs:182:5: replace resume -> Result<(usize, usize), ViewError> with Ok((0, 0))
+crates/deep-diff-forge-daemon/src/views.rs:182:5: replace resume -> Result<(usize, usize), ViewError> with Ok((0, 1))
+crates/deep-diff-forge-daemon/src/views.rs:182:5: replace resume -> Result<(usize, usize), ViewError> with Ok((1, 0))
+crates/deep-diff-forge-daemon/src/views.rs:182:5: replace resume -> Result<(usize, usize), ViewError> with Ok((1, 1))
+crates/deep-diff-forge-daemon/src/views.rs:182:8: delete ! in resume
+crates/deep-diff-forge-daemon/src/views.rs:194:14: replace != with == in resume
+crates/deep-diff-forge-daemon/src/views.rs:197:15: replace != with == in resume
+crates/deep-diff-forge-daemon/src/views.rs:212:5: replace outline -> Result<Value, ViewError> with Ok(Default::default())
+crates/deep-diff-forge-daemon/src/views.rs:121:40: replace + with * in line_counts
+crates/deep-diff-forge-daemon/src/views.rs:221:43: replace + with - in outline
+crates/deep-diff-forge-daemon/src/views.rs:221:50: replace + with - in outline
+crates/deep-diff-forge-daemon/src/views.rs:122:45: replace + with * in line_counts
+crates/deep-diff-forge-daemon/src/views.rs:222:37: replace - with + in outline
+crates/deep-diff-forge-daemon/src/views.rs:148:5: replace line_json -> Value with Default::default()
+crates/deep-diff-forge-daemon/src/views.rs:221:43: replace + with * in outline
+crates/deep-diff-forge-daemon/src/views.rs:221:50: replace + with * in outline
+crates/deep-diff-forge-daemon/src/views.rs:222:37: replace - with / in outline
+crates/deep-diff-forge-daemon/src/views.rs:227:33: replace == with != in outline
+crates/deep-diff-forge-daemon/src/views.rs:247:52: replace && with || in outline
+crates/deep-diff-forge-daemon/src/views.rs:248:37: replace && with || in outline
+crates/deep-diff-forge-daemon/src/views.rs:248:21: replace + with - in outline
+crates/deep-diff-forge-daemon/src/views.rs:248:28: replace > with < in outline
+crates/deep-diff-forge-daemon/src/views.rs:248:21: replace + with * in outline
+crates/deep-diff-forge-daemon/src/views.rs:249:22: replace > with == in outline
+crates/deep-diff-forge-daemon/src/views.rs:256:18: replace += with -= in outline
+crates/deep-diff-forge-daemon/src/views.rs:249:22: replace > with < in outline
+crates/deep-diff-forge-daemon/src/views.rs:249:22: replace > with >= in outline
+crates/deep-diff-forge-daemon/src/views.rs:256:18: replace += with *= in outline
+crates/deep-diff-forge-daemon/src/views.rs:261:26: replace && with || in outline
+crates/deep-diff-forge-daemon/src/views.rs:261:17: replace > with < in outline
+crates/deep-diff-forge-daemon/src/views.rs:301:37: replace - with + in hunks
+crates/deep-diff-forge-daemon/src/views.rs:297:5: replace hunks -> Result<Value, ViewError> with Ok(Default::default())
+crates/deep-diff-forge-daemon/src/views.rs:301:37: replace - with / in hunks
+crates/deep-diff-forge-daemon/src/views.rs:306:34: replace == with != in hunks
+crates/deep-diff-forge-daemon/src/views.rs:322:28: replace > with == in hunks
+crates/deep-diff-forge-daemon/src/views.rs:322:28: replace > with < in hunks
+crates/deep-diff-forge-daemon/src/views.rs:322:37: replace && with || in hunks
+crates/deep-diff-forge-daemon/src/views.rs:322:40: delete ! in hunks
+crates/deep-diff-forge-daemon/src/views.rs:322:57: replace && with || in hunks
+crates/deep-diff-forge-daemon/src/views.rs:322:21: replace + with - in hunks
+crates/deep-diff-forge-daemon/src/views.rs:325:18: replace += with -= in hunks
+crates/deep-diff-forge-daemon/src/views.rs:326:19: replace += with -= in hunks
+crates/deep-diff-forge-daemon/src/views.rs:326:19: replace += with *= in hunks
+crates/deep-diff-forge-daemon/src/views.rs:331:26: replace + with - in hunks
+crates/deep-diff-forge-daemon/src/views.rs:331:26: replace + with * in hunks
+crates/deep-diff-forge-daemon/src/views.rs:332:16: replace < with == in hunks
+crates/deep-diff-forge-daemon/src/views.rs:332:16: replace < with > in hunks
+crates/deep-diff-forge-daemon/src/views.rs:332:16: replace < with <= in hunks
+crates/deep-diff-forge-daemon/src/views.rs:333:22: replace == with != in hunks
+crates/deep-diff-forge-daemon/src/views.rs:322:66: replace == with != in hunks
+crates/deep-diff-forge-daemon/src/views.rs:325:18: replace += with *= in hunks
+crates/deep-diff-forge-daemon/src/views.rs:345:56: replace == with != in hunks
+crates/deep-diff-forge-daemon/src/views.rs:346:33: replace - with / in hunks
+crates/deep-diff-forge-daemon/src/views.rs:363:5: replace select -> Result<(Vec<(usize, usize)>, String), ViewError> with Ok((vec![], String::new()))
+crates/deep-diff-forge-daemon/src/views.rs:363:5: replace select -> Result<(Vec<(usize, usize)>, String), ViewError> with Ok((vec![], "xyzzy".into()))
+crates/deep-diff-forge-daemon/src/views.rs:363:5: replace select -> Result<(Vec<(usize, usize)>, String), ViewError> with Ok((vec![(0, 0)], String::new()))
+crates/deep-diff-forge-daemon/src/views.rs:363:5: replace select -> Result<(Vec<(usize, usize)>, String), ViewError> with Ok((vec![(0, 0)], "xyzzy".into()))
+crates/deep-diff-forge-daemon/src/views.rs:363:5: replace select -> Result<(Vec<(usize, usize)>, String), ViewError> with Ok((vec![(0, 1)], String::new()))
+crates/deep-diff-forge-daemon/src/views.rs:363:5: replace select -> Result<(Vec<(usize, usize)>, String), ViewError> with Ok((vec![(0, 1)], "xyzzy".into()))
+crates/deep-diff-forge-daemon/src/views.rs:363:5: replace select -> Result<(Vec<(usize, usize)>, String), ViewError> with Ok((vec![(1, 0)], String::new()))
+crates/deep-diff-forge-daemon/src/views.rs:363:5: replace select -> Result<(Vec<(usize, usize)>, String), ViewError> with Ok((vec![(1, 0)], "xyzzy".into()))
+crates/deep-diff-forge-daemon/src/views.rs:363:5: replace select -> Result<(Vec<(usize, usize)>, String), ViewError> with Ok((vec![(1, 1)], String::new()))
+crates/deep-diff-forge-daemon/src/views.rs:346:63: replace - with + in hunks
+crates/deep-diff-forge-daemon/src/views.rs:363:5: replace select -> Result<(Vec<(usize, usize)>, String), ViewError> with Ok((vec![(1, 1)], "xyzzy".into()))
+crates/deep-diff-forge-daemon/src/views.rs:378:62: replace == with != in select
+crates/deep-diff-forge-daemon/src/views.rs:390:49: replace == with != in select
+crates/deep-diff-forge-daemon/src/views.rs:346:63: replace - with / in hunks
+crates/deep-diff-forge-patch/src/git_acquire.rs:228:5: replace neutral_filters -> Vec<(OsString, OsString)> with vec![]
+crates/deep-diff-forge-patch/src/git_acquire.rs:245:19: replace += with -= in neutral_filters
+crates/deep-diff-forge-patch/src/git_acquire.rs:228:5: replace neutral_filters -> Vec<(OsString, OsString)> with vec![(Default::default(), Default::default())]
+crates/deep-diff-forge-patch/src/git_acquire.rs:245:19: replace += with *= in neutral_filters
+crates/deep-diff-forge-patch/src/git_acquire.rs:262:5: replace local_filters_off -> Result<Vec<(OsString, OsString)>, GitAcquireError> with Ok(vec![])
+crates/deep-diff-forge-patch/src/git_acquire.rs:280:14: replace * with + in local_filters_off
+crates/deep-diff-forge-patch/src/git_acquire.rs:262:5: replace local_filters_off -> Result<Vec<(OsString, OsString)>, GitAcquireError> with Ok(vec![(Default::default(), Default::default())])
+crates/deep-diff-forge-patch/src/git_acquire.rs:280:14: replace * with / in local_filters_off
+crates/deep-diff-forge-patch/src/git_acquire.rs:287:5: replace filter_names -> Vec<String> with vec![]
+crates/deep-diff-forge-patch/src/git_acquire.rs:287:5: replace filter_names -> Vec<String> with vec![String::new()]
+crates/deep-diff-forge-patch/src/git_acquire.rs:287:5: replace filter_names -> Vec<String> with vec!["xyzzy".into()]
+crates/deep-diff-forge-patch/src/git_acquire.rs:288:45: replace || with && in filter_names
+crates/deep-diff-forge-patch/src/git_acquire.rs:288:40: replace == with != in filter_names
+crates/deep-diff-forge-patch/src/git_acquire.rs:288:50: replace == with != in filter_names
+crates/deep-diff-forge-patch/src/git_acquire.rs:294:16: delete ! in filter_names
+crates/deep-diff-forge-patch/src/git_acquire.rs:330:9: replace Runner<'_>::run -> Result<Vec<u8>, GitAcquireError> with Ok(vec![])
+crates/deep-diff-forge-patch/src/git_acquire.rs:305:5: replace next_pause -> std::time::Duration with Default::default()
+crates/deep-diff-forge-patch/src/git_acquire.rs:314:31: replace + with - in deadline_after
+crates/deep-diff-forge-patch/src/git_acquire.rs:305:12: replace * with / in next_pause
+crates/deep-diff-forge-patch/src/git_acquire.rs:330:9: replace Runner<'_>::run -> Result<Vec<u8>, GitAcquireError> with Ok(vec![0])
+crates/deep-diff-forge-patch/src/git_acquire.rs:330:9: replace Runner<'_>::run -> Result<Vec<u8>, GitAcquireError> with Ok(vec![1])
+crates/deep-diff-forge-patch/src/git_acquire.rs:366:66: replace + with - in Runner<'_>::run
+crates/deep-diff-forge-patch/src/git_acquire.rs:366:66: replace + with * in Runner<'_>::run
+crates/deep-diff-forge-patch/src/git_acquire.rs:367:26: replace > with < in Runner<'_>::run
+crates/deep-diff-forge-patch/src/git_acquire.rs:367:26: replace > with == in Runner<'_>::run
+crates/deep-diff-forge-patch/src/git_acquire.rs:388:42: replace >= with < in Runner<'_>::run
+crates/deep-diff-forge-patch/src/git_acquire.rs:404:22: replace > with < in Runner<'_>::run
+crates/deep-diff-forge-patch/src/git_acquire.rs:367:26: replace > with >= in Runner<'_>::run
+crates/deep-diff-forge-patch/src/git_acquire.rs:404:22: replace > with == in Runner<'_>::run
+crates/deep-diff-forge-patch/src/git_acquire.rs:523:12: replace * with / in repository_dirs
+crates/deep-diff-forge-patch/src/git_acquire.rs:404:22: replace > with >= in Runner<'_>::run
+crates/deep-diff-forge-patch/src/git_acquire.rs:523:12: replace * with + in repository_dirs
+crates/deep-diff-forge-patch/src/git_acquire.rs:725:9: replace runner_tests::printing -> (PathBuf, GitAcquireOptions) with (Default::default(), Default::default())
+crates/deep-diff-forge-patch/src/git_acquire.rs:735:13: delete field git_program from struct GitAcquireOptions expression in runner_tests::printing

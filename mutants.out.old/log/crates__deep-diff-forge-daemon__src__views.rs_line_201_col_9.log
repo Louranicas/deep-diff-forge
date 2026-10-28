@@ -1,0 +1,152 @@
+
+*** crates/deep-diff-forge-daemon/src/views.rs:201:9: delete match arm (Ok(item), Ok(inner)) in resume
+
+*** mutation diff:
+--- crates/deep-diff-forge-daemon/src/views.rs
++++ delete match arm (Ok(item), Ok(inner)) in resume
+@@ -193,17 +193,17 @@
+     };
+     if patch != &seal.input_sha256[..16] {
+         return Err(ViewError::Cursor("it belongs to another patch".into()));
+     }
+     if picked != &deep_diff_forge_core::sha256_hex(selection.as_bytes())[..8] {
+         return Err(ViewError::Cursor("it belongs to another selection".into()));
+     }
+     match (item.parse(), inner.parse()) {
+-        (Ok(item), Ok(inner)) => Ok((item, inner)),
++         /* ~ changed by cargo-mutants ~ */
+         _ => Err(ViewError::Cursor("its positions are not numbers".into())),
+     }
+ }
+ 
+ /// `deep-diff-forge.review-outline.v0`: every file in review-risk order, each with its score,
+ /// signals, counts and hunks (address, ranges, heading, counts), and no line text.
+ ///
+ /// # Errors
+
+
+*** /var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --workspace
+       Fresh unicode-ident v1.0.24
+       Fresh itoa v1.0.18
+       Fresh memchr v2.8.2
+       Fresh bitflags v2.13.0
+       Fresh equivalent v1.0.2
+       Fresh unicode-segmentation v1.13.3
+       Fresh linux-raw-sys v0.12.1
+       Fresh proc-macro2 v1.0.106
+       Fresh shlex v2.0.1
+       Fresh find-msvc-tools v0.1.9
+       Fresh unicode-width v0.2.0
+       Fresh cfg-if v1.0.4
+       Fresh aho-corasick v1.1.4
+       Fresh quote v1.0.45
+       Fresh zmij v1.0.21
+       Fresh libc v0.2.186
+       Fresh cc v1.2.65
+       Fresh rustix v1.1.4
+       Fresh indexmap v2.14.0
+       Fresh regex-syntax v0.8.11
+       Fresh streaming-iterator v0.1.9
+       Fresh foldhash v0.2.0
+       Fresh allocator-api2 v0.2.21
+       Fresh ident_case v1.0.1
+       Fresh syn v2.0.118
+       Fresh serde_core v1.0.228
+       Fresh tree-sitter-language v0.1.7
+       Fresh regex-automata v0.4.14
+       Fresh syn v3.0.4
+       Fresh strsim v0.11.1
+       Fresh errno v0.3.14
+       Fresh either v1.16.0
+       Fresh heck v0.5.0
+       Fresh hashbrown v0.17.1
+       Fresh serde_derive v1.0.228
+       Fresh serde_json v1.0.150
+       Fresh regex v1.12.4
+       Fresh thiserror-impl v2.0.20
+       Fresh rustversion v1.0.22
+       Fresh darling_core v0.23.0
+       Fresh signal-hook-registry v1.4.8
+       Fresh itertools v0.14.0
+       Fresh strum_macros v0.28.0
+       Fresh hashbrown v0.16.1
+       Fresh convert_case v0.10.0
+       Fresh scopeguard v1.2.0
+       Fresh static_assertions v1.1.0
+       Fresh serde v1.0.228
+       Fresh tree-sitter-rust v0.24.2
+       Fresh darling_macro v0.23.0
+       Fresh castaway v0.2.4
+       Fresh thiserror v2.0.20
+       Fresh smallvec v1.15.2
+       Fresh ryu v1.0.23
+       Fresh log v0.4.33
+       Fresh lock_api v0.4.14
+       Fresh unicode-truncate v2.0.1
+       Fresh derive_more-impl v2.1.1
+       Fresh strum v0.28.0
+       Fresh signal-hook v0.3.18
+       Fresh lru v0.18.4
+       Fresh indoc v2.0.7
+       Dirty deep-diff-forge-daemon v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/crates/deep-diff-forge-daemon): the file `crates/deep-diff-forge-daemon/src/views.rs` has changed (1793193056.085227600s, 1s after last build at 1793193055.090233873s)
+   Compiling deep-diff-forge-daemon v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/crates/deep-diff-forge-daemon)
+       Fresh darling v0.23.0
+       Fresh compact_str v0.9.1
+       Fresh parking_lot_core v0.9.12
+       Fresh kasuari v0.4.12
+       Fresh mio v1.2.1
+       Fresh critical-section v1.2.0
+       Fresh cfg_aliases v0.2.2
+       Fresh litrs v1.0.0
+       Fresh derive_more v2.1.1
+       Fresh line-clipping v0.3.8
+       Fresh tree-sitter v0.25.10
+       Fresh signal-hook-mio v0.2.5
+       Fresh parking_lot v0.12.5
+       Fresh instability v0.3.12
+       Fresh document-features v0.2.12
+       Fresh ratatui-core v0.1.2
+       Fresh deep-diff-forge-learning v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/crates/deep-diff-forge-learning)
+       Fresh deep-diff-forge-projection v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/crates/deep-diff-forge-projection)
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name deep_diff_forge_daemon --edition=2024 crates/deep-diff-forge-daemon/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=680a8f212a10626d -C extra-filename=-2e09355889d3f605 --out-dir /tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rlib --extern deep_diff_forge_graph=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libdeep_diff_forge_graph-8f94cb5905716444.rlib --extern deep_diff_forge_patch=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libdeep_diff_forge_patch-4bc6ffc1f49bea65.rlib --extern rustix=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/librustix-dfe879dc17226df5.rlib --extern serde=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libserde-6f57658361ee00b8.rlib --extern serde_json=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libserde_json-e0feffacfff059e5.rlib`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name deep_diff_forge_daemon --edition=2024 crates/deep-diff-forge-daemon/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=e1be5d3fa0d81201 -C extra-filename=-8303fda008c52aaf --out-dir /tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rmeta --extern deep_diff_forge_graph=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libdeep_diff_forge_graph-8f94cb5905716444.rmeta --extern deep_diff_forge_patch=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libdeep_diff_forge_patch-4bc6ffc1f49bea65.rmeta --extern rustix=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/librustix-dfe879dc17226df5.rmeta --extern serde=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libserde-6f57658361ee00b8.rmeta --extern serde_json=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libserde_json-e0feffacfff059e5.rmeta`
+       Fresh crossterm v0.29.0
+       Fresh ratatui-widgets v0.3.2
+       Fresh deep-diff-forge-graph v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/crates/deep-diff-forge-graph)
+       Fresh deep-diff-forge-cluster v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/crates/deep-diff-forge-cluster)
+       Fresh deep-diff-forge-agent v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/crates/deep-diff-forge-agent)
+       Fresh ratatui-crossterm v0.1.2
+       Fresh nix v0.31.3
+       Fresh deep-diff-forge-syntax v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/crates/deep-diff-forge-syntax)
+       Fresh deep-diff-forge-patch v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/crates/deep-diff-forge-patch)
+       Fresh deep-diff-forge-core v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/crates/deep-diff-forge-core)
+       Fresh ratatui v0.30.2
+       Fresh deep-diff-forge-pipeline v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/crates/deep-diff-forge-pipeline)
+       Fresh deep-diff-forge-review v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/crates/deep-diff-forge-review)
+error[E0284]: type annotations needed
+   --> crates/deep-diff-forge-daemon/src/views.rs:200:17
+    |
+200 |     match (item.parse(), inner.parse()) {
+    |                 ^^^^^ cannot infer type of the type parameter `F` declared on the method `parse`
+    |
+    = note: cannot satisfy `<_ as FromStr>::Err == _`
+    = note: the type must also implement `FromStr`
+note: required by a bound in `core::str::<impl str>::parse`
+   --> /rustc/58cf8f9c35b355199727627d07ae34a4e2846d67/library/core/src/str/mod.rs:2782:4
+help: consider specifying a concrete type for the type parameter `F`
+    |
+200 |     match (item.parse::</* Type */>(), inner.parse()) {
+    |                      ++++++++++++++
+
+For more information about this error, try `rustc --explain E0284`.
+error: could not compile `deep-diff-forge-daemon` (lib) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name deep_diff_forge_daemon --edition=2024 crates/deep-diff-forge-daemon/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=e1be5d3fa0d81201 -C extra-filename=-8303fda008c52aaf --out-dir /tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rmeta --extern deep_diff_forge_graph=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libdeep_diff_forge_graph-8f94cb5905716444.rmeta --extern deep_diff_forge_patch=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libdeep_diff_forge_patch-4bc6ffc1f49bea65.rmeta --extern rustix=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/librustix-dfe879dc17226df5.rmeta --extern serde=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libserde-6f57658361ee00b8.rmeta --extern serde_json=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libserde_json-e0feffacfff059e5.rmeta` (exit status: 1)
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `deep-diff-forge-daemon` (lib test) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name deep_diff_forge_daemon --edition=2024 crates/deep-diff-forge-daemon/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=680a8f212a10626d -C extra-filename=-2e09355889d3f605 --out-dir /tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rlib --extern deep_diff_forge_graph=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libdeep_diff_forge_graph-8f94cb5905716444.rlib --extern deep_diff_forge_patch=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libdeep_diff_forge_patch-4bc6ffc1f49bea65.rlib --extern rustix=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/librustix-dfe879dc17226df5.rlib --extern serde=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libserde-6f57658361ee00b8.rlib --extern serde_json=/tmp/cargo-mutants-ddf-agent-core-5Uuy59.tmp/target/debug/deps/libserde_json-e0feffacfff059e5.rlib` (exit status: 1)
+
+*** result: Failure(101)

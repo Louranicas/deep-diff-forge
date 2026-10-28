@@ -1,0 +1,451 @@
+
+*** baseline
+
+*** /var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=deep-diff-forge-daemon@0.3.0 --package=deep-diff-forge-patch@0.3.0
+   Compiling deep-diff-forge-core v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/crates/deep-diff-forge-core)
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling serde_core v1.0.228
+   Compiling zmij v1.0.21
+   Compiling serde v1.0.228
+   Compiling serde_json v1.0.150
+   Compiling rustix v1.1.4
+   Compiling memchr v2.8.2
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name deep_diff_forge_core --edition=2024 crates/deep-diff-forge-core/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=212b76d8cf55c97a -C extra-filename=-8a265769b2f0889d --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.106/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --cfg 'feature="proc-macro"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "nightly", "proc-macro", "span-locations"))' -C metadata=2dddfe38d5698429 -C extra-filename=-c34a81bbf8479100 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/build/proc-macro2-c34a81bbf8479100 -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --cap-lints allow`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/quote-1.0.45/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --cfg 'feature="proc-macro"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "proc-macro"))' -C metadata=5e62f0ebcdc114f6 -C extra-filename=-29d7638148168d4d --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/build/quote-29d7638148168d4d -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --cap-lints allow`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name unicode_ident --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=5453ea19c9292282 -C extra-filename=-887a7f844df26b4e --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --cap-lints allow`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --cfg 'feature="result"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "default", "rc", "result", "std", "unstable"))' -C metadata=bb24922759ae7f3f -C extra-filename=-677b7573a274ac89 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/build/serde_core-677b7573a274ac89 -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --cap-lints allow`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zmij-1.0.21/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("no-panic"))' -C metadata=31a81f75812cbb36 -C extra-filename=-776859aea9499a21 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/build/zmij-776859aea9499a21 -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --cap-lints allow`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --cfg 'feature="default"' --cfg 'feature="derive"' --cfg 'feature="serde_derive"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "default", "derive", "rc", "serde_derive", "std", "unstable"))' -C metadata=1b10ded62d9db213 -C extra-filename=-90c84d016964744a --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/build/serde-90c84d016964744a -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --cap-lints allow`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.150/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "arbitrary_precision", "default", "float_roundtrip", "indexmap", "preserve_order", "raw_value", "std", "unbounded_depth"))' -C metadata=86f026c9f73f5d9a -C extra-filename=-800216579f1898aa --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/build/serde_json-800216579f1898aa -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --cap-lints allow`
+   Compiling itoa v1.0.18
+   Compiling linux-raw-sys v0.12.1
+   Compiling bitflags v2.13.0
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name build_script_build --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --cfg 'feature="alloc"' --cfg 'feature="default"' --cfg 'feature="process"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("all-apis", "alloc", "core", "default", "event", "fs", "io_uring", "libc", "libc_errno", "linux_4_11", "linux_5_1", "linux_5_11", "linux_latest", "mm", "mount", "net", "param", "pipe", "process", "pty", "rand", "runtime", "rustc-dep-of-std", "rustc-std-workspace-alloc", "shm", "std", "stdio", "system", "termios", "thread", "time", "try_close", "use-explicitly-provided-auxv", "use-libc", "use-libc-auxv"))' -C metadata=91c5ddf76e7fc904 -C extra-filename=-43dfad95f0af07ce --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/build/rustix-43dfad95f0af07ce -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --cap-lints allow`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name memchr --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/memchr-2.8.2/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="alloc"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "core", "default", "libc", "logging", "rustc-dep-of-std", "std", "use_std"))' -C metadata=9996fe155e325c09 -C extra-filename=-c9a241c57b508e28 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --cap-lints allow`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name itoa --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/itoa-1.0.18/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("no-panic"))' -C metadata=577f8d2f300517dd -C extra-filename=-b101c554dc96d6c2 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --cap-lints allow`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name linux_raw_sys --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/linux-raw-sys-0.12.1/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="auxvec"' --cfg 'feature="elf"' --cfg 'feature="errno"' --cfg 'feature="general"' --cfg 'feature="ioctl"' --cfg 'feature="no_std"' --cfg 'feature="prctl"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("auxvec", "bootparam", "btrfs", "core", "default", "elf", "elf_uapi", "errno", "general", "if_arp", "if_ether", "if_packet", "if_tun", "image", "io_uring", "ioctl", "landlock", "loop_device", "mempolicy", "net", "netlink", "no_std", "prctl", "ptrace", "rustc-dep-of-std", "std", "system", "vm_sockets", "xdp"))' -C metadata=700ff4d0d85704f8 -C extra-filename=-40d626c3113e9f5f --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --cap-lints allow`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name bitflags --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.0/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("arbitrary", "bytemuck", "example_generated", "serde", "serde_core", "std"))' -C metadata=6f33922eeb46f08e -C extra-filename=-de1a6bc84e9b487e --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --cap-lints allow`
+     Running `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/build/serde_json-800216579f1898aa/build-script-build`
+     Running `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/build/quote-29d7638148168d4d/build-script-build`
+     Running `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/build/zmij-776859aea9499a21/build-script-build`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name zmij --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/zmij-1.0.21/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("no-panic"))' -C metadata=5fc6f1ecf222f721 -C extra-filename=-9624118c3abf091d --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --cap-lints allow --check-cfg 'cfg(exhaustive)' --check-cfg 'cfg(zmij_no_select_unpredictable)'`
+     Running `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/build/serde_core-677b7573a274ac89/build-script-build`
+     Running `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/build/serde-90c84d016964744a/build-script-build`
+     Running `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/build/proc-macro2-c34a81bbf8479100/build-script-build`
+     Running `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/build/rustix-43dfad95f0af07ce/build-script-build`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name serde_core --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="result"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "default", "rc", "result", "std", "unstable"))' -C metadata=5996f99035e21718 -C extra-filename=-f36d74a6d2f694df --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --cap-lints allow --check-cfg 'cfg(if_docsrs_then_no_serde_core)' --check-cfg 'cfg(no_core_cstr)' --check-cfg 'cfg(no_core_error)' --check-cfg 'cfg(no_core_net)' --check-cfg 'cfg(no_core_num_saturating)' --check-cfg 'cfg(no_diagnostic_namespace)' --check-cfg 'cfg(no_serde_derive)' --check-cfg 'cfg(no_std_atomic)' --check-cfg 'cfg(no_std_atomic64)' --check-cfg 'cfg(no_target_has_atomic)'`
+   Compiling deep-diff-forge-patch v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/crates/deep-diff-forge-patch)
+   Compiling deep-diff-forge-graph v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/crates/deep-diff-forge-graph)
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name deep_diff_forge_patch --edition=2024 crates/deep-diff-forge-patch/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --cfg 'feature="default"' --cfg 'feature="json"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "json"))' -C metadata=d4fa04362c235c60 -C extra-filename=-4bc6ffc1f49bea65 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rmeta`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name deep_diff_forge_graph --edition=2024 crates/deep-diff-forge-graph/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=28506555ae6f8b87 -C extra-filename=-8f94cb5905716444 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rmeta`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name proc_macro2 --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.106/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no --cfg 'feature="proc-macro"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "nightly", "proc-macro", "span-locations"))' -C metadata=995d7fd26350beff -C extra-filename=-740dadd2ca533485 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern unicode_ident=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libunicode_ident-887a7f844df26b4e.rmeta --cap-lints allow --cfg wrap_proc_macro --cfg proc_macro_span_location --cfg proc_macro_span_file --check-cfg 'cfg(fuzzing)' --check-cfg 'cfg(no_is_available)' --check-cfg 'cfg(no_literal_byte_character)' --check-cfg 'cfg(no_literal_c_string)' --check-cfg 'cfg(no_source_text)' --check-cfg 'cfg(proc_macro_span)' --check-cfg 'cfg(proc_macro_span_file)' --check-cfg 'cfg(proc_macro_span_location)' --check-cfg 'cfg(procmacro2_backtrace)' --check-cfg 'cfg(procmacro2_build_probe)' --check-cfg 'cfg(procmacro2_nightly_testing)' --check-cfg 'cfg(procmacro2_semver_exempt)' --check-cfg 'cfg(randomize_layout)' --check-cfg 'cfg(span_locations)' --check-cfg 'cfg(super_unstable)' --check-cfg 'cfg(wrap_proc_macro)'`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name deep_diff_forge_patch --edition=2024 crates/deep-diff-forge-patch/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --test --cfg 'feature="default"' --cfg 'feature="json"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "json"))' -C metadata=ab5337948a79fccb -C extra-filename=-18765affac0dbf87 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rlib`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name rustix --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="alloc"' --cfg 'feature="default"' --cfg 'feature="process"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("all-apis", "alloc", "core", "default", "event", "fs", "io_uring", "libc", "libc_errno", "linux_4_11", "linux_5_1", "linux_5_11", "linux_latest", "mm", "mount", "net", "param", "pipe", "process", "pty", "rand", "runtime", "rustc-dep-of-std", "rustc-std-workspace-alloc", "shm", "std", "stdio", "system", "termios", "thread", "time", "try_close", "use-explicitly-provided-auxv", "use-libc", "use-libc-auxv"))' -C metadata=7ad3c05acf3a8951 -C extra-filename=-f609669536ac6408 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern bitflags=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libbitflags-de1a6bc84e9b487e.rmeta --extern linux_raw_sys=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/liblinux_raw_sys-40d626c3113e9f5f.rmeta --cap-lints allow --cfg static_assertions --cfg lower_upper_exp_for_non_zero --cfg rustc_diagnostics --cfg linux_raw_dep --cfg linux_raw --cfg linux_like --cfg linux_kernel`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name quote --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/quote-1.0.45/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no --cfg 'feature="proc-macro"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "proc-macro"))' -C metadata=e5b4bb27ad7190fc -C extra-filename=-187fa24f32a63d09 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern proc_macro2=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libproc_macro2-740dadd2ca533485.rmeta --cap-lints allow --check-cfg 'cfg(no_diagnostic_namespace)'`
+   Compiling syn v2.0.118
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name syn --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-2.0.118/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no --cfg 'feature="clone-impls"' --cfg 'feature="derive"' --cfg 'feature="parsing"' --cfg 'feature="printing"' --cfg 'feature="proc-macro"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("clone-impls", "default", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "test", "visit", "visit-mut"))' -C metadata=f07cbe519cc3c61d -C extra-filename=-42183ea2f9349535 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern proc_macro2=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libproc_macro2-740dadd2ca533485.rmeta --extern quote=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libquote-187fa24f32a63d09.rmeta --extern unicode_ident=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libunicode_ident-887a7f844df26b4e.rmeta --cap-lints allow`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name fixtures --edition=2024 crates/deep-diff-forge-patch/tests/fixtures.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --test --cfg 'feature="default"' --cfg 'feature="json"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "json"))' -C metadata=917cb76c8e833811 -C extra-filename=-94ca3821bbdbb292 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rlib --extern deep_diff_forge_patch=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_patch-4bc6ffc1f49bea65.rlib`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name lossy_utf8 --edition=2024 crates/deep-diff-forge-patch/tests/lossy_utf8.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --test --cfg 'feature="default"' --cfg 'feature="json"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "json"))' -C metadata=97f83c9ab5a4c2fa -C extra-filename=-16c292436beea1e5 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rlib --extern deep_diff_forge_patch=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_patch-4bc6ffc1f49bea65.rlib`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name round_trip --edition=2024 crates/deep-diff-forge-patch/tests/round_trip.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --test --cfg 'feature="default"' --cfg 'feature="json"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "json"))' -C metadata=696a43dc4bb5aeed -C extra-filename=-7cdf91d40e02a3a4 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rlib --extern deep_diff_forge_patch=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_patch-4bc6ffc1f49bea65.rlib`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name git_oracle --edition=2024 crates/deep-diff-forge-patch/tests/git_oracle.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --test --cfg 'feature="default"' --cfg 'feature="json"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "json"))' -C metadata=857832ab7ba9446c -C extra-filename=-13dbbac4a6247ad3 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rlib --extern deep_diff_forge_patch=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_patch-4bc6ffc1f49bea65.rlib`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name git_acquire --edition=2024 crates/deep-diff-forge-patch/tests/git_acquire.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --test --cfg 'feature="default"' --cfg 'feature="json"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "json"))' -C metadata=45d09ac28ee3c0e5 -C extra-filename=-9949514b4b10da98 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rlib --extern deep_diff_forge_patch=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_patch-4bc6ffc1f49bea65.rlib`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name serde_json --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.150/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="default"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "arbitrary_precision", "default", "float_roundtrip", "indexmap", "preserve_order", "raw_value", "std", "unbounded_depth"))' -C metadata=a8b3e9cbb46a93fb -C extra-filename=-e0feffacfff059e5 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern itoa=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libitoa-b101c554dc96d6c2.rmeta --extern memchr=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libmemchr-c9a241c57b508e28.rmeta --extern serde_core=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libserde_core-f36d74a6d2f694df.rmeta --extern zmij=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libzmij-9624118c3abf091d.rmeta --cap-lints allow --cfg 'fast_arithmetic="64"' --check-cfg 'cfg(fast_arithmetic, values("32", "64"))'`
+   Compiling serde_derive v1.0.228
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name serde_derive --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_derive-1.0.228/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type proc-macro --emit=dep-info,link -C prefer-dynamic -C embed-bitcode=no --cfg 'feature="default"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "deserialize_in_place"))' -C metadata=d8957eaa5fdd46b4 -C extra-filename=-936969d7ada4d8d6 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern proc_macro2=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libproc_macro2-740dadd2ca533485.rlib --extern quote=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libquote-187fa24f32a63d09.rlib --extern syn=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libsyn-42183ea2f9349535.rlib --extern proc_macro --cap-lints allow`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name serde --edition=2021 /var/home/louranicas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="default"' --cfg 'feature="derive"' --cfg 'feature="serde_derive"' --cfg 'feature="std"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("alloc", "default", "derive", "rc", "serde_derive", "std", "unstable"))' -C metadata=f06d56db9ceef034 -C extra-filename=-9dc2499b2720bf75 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern serde_core=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libserde_core-f36d74a6d2f694df.rmeta --extern serde_derive=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libserde_derive-936969d7ada4d8d6.so --cap-lints allow --cfg if_docsrs_then_no_serde_core --check-cfg 'cfg(feature, values("result"))' --check-cfg 'cfg(if_docsrs_then_no_serde_core)' --check-cfg 'cfg(no_core_cstr)' --check-cfg 'cfg(no_core_error)' --check-cfg 'cfg(no_core_net)' --check-cfg 'cfg(no_core_num_saturating)' --check-cfg 'cfg(no_diagnostic_namespace)' --check-cfg 'cfg(no_serde_derive)' --check-cfg 'cfg(no_std_atomic)' --check-cfg 'cfg(no_std_atomic64)' --check-cfg 'cfg(no_target_has_atomic)'`
+   Compiling deep-diff-forge-daemon v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/crates/deep-diff-forge-daemon)
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name deep_diff_forge_daemon --edition=2024 crates/deep-diff-forge-daemon/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=5fafd3f8cfc52896 -C extra-filename=-69ec592cc0e26c80 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rmeta --extern deep_diff_forge_graph=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_graph-8f94cb5905716444.rmeta --extern deep_diff_forge_patch=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_patch-4bc6ffc1f49bea65.rmeta --extern rustix=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/librustix-f609669536ac6408.rmeta --extern serde=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libserde-9dc2499b2720bf75.rmeta --extern serde_json=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libserde_json-e0feffacfff059e5.rmeta`
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name deep_diff_forge_daemon --edition=2024 crates/deep-diff-forge-daemon/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=0b3bd6b00f97f25f -C extra-filename=-aaa3a425702d1ba8 --out-dir /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rlib --extern deep_diff_forge_graph=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_graph-8f94cb5905716444.rlib --extern deep_diff_forge_patch=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_patch-4bc6ffc1f49bea65.rlib --extern rustix=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/librustix-f609669536ac6408.rlib --extern serde=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libserde-9dc2499b2720bf75.rlib --extern serde_json=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libserde_json-e0feffacfff059e5.rlib`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.14s
+  Executable `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/deep_diff_forge_daemon-aaa3a425702d1ba8`
+  Executable `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/deep_diff_forge_patch-18765affac0dbf87`
+  Executable `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/fixtures-94ca3821bbdbb292`
+  Executable `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/git_acquire-9949514b4b10da98`
+  Executable `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/git_oracle-13dbbac4a6247ad3`
+  Executable `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/lossy_utf8-16c292436beea1e5`
+  Executable `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/round_trip-7cdf91d40e02a3a4`
+
+*** result: Success
+
+*** /var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --verbose --package=deep-diff-forge-daemon@0.3.0 --package=deep-diff-forge-patch@0.3.0
+       Fresh deep-diff-forge-core v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/crates/deep-diff-forge-core)
+       Fresh unicode-ident v1.0.24
+       Fresh linux-raw-sys v0.12.1
+       Fresh memchr v2.8.2
+       Fresh itoa v1.0.18
+       Fresh bitflags v2.13.0
+       Fresh deep-diff-forge-graph v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/crates/deep-diff-forge-graph)
+       Fresh proc-macro2 v1.0.106
+       Fresh deep-diff-forge-patch v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/crates/deep-diff-forge-patch)
+       Fresh quote v1.0.45
+       Fresh serde_core v1.0.228
+       Fresh zmij v1.0.21
+       Fresh rustix v1.1.4
+       Fresh syn v2.0.118
+       Fresh serde_json v1.0.150
+       Fresh serde_derive v1.0.228
+       Fresh serde v1.0.228
+       Fresh deep-diff-forge-daemon v0.3.0 (/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/crates/deep-diff-forge-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/deep_diff_forge_daemon-aaa3a425702d1ba8`
+
+running 135 tests
+test handler::tests::closing_unknown_session_is_false_not_error ... ok
+test handler::tests::byte_budget_evicts_as_many_sessions_as_needed ... ok
+test handler::tests::default_retained_budget_is_128_mib ... ok
+test handler::tests::diff_plan_bad_patch_is_parse_failed ... ok
+test handler::tests::default_engine_matches_new ... ok
+test handler::tests::diff_plan_empty_patch_is_empty_array ... ok
+test handler::tests::diff_plan_missing_patch_is_invalid_params ... ok
+test handler::tests::diff_plan_ranks_files ... ok
+test handler::tests::estimate_counts_retained_line_text ... ok
+test handler::tests::health_reports_ok ... ok
+test handler::tests::compute_applies_the_input_contracts_and_reports_typed_errors ... ok
+test handler::tests::health_session_count_tracks_opens ... ok
+test handler::tests::initialize_reports_server ... ok
+test handler::tests::initialize_refuses_a_protocol_it_does_not_speak ... ok
+test handler::tests::new_engine_is_running_with_no_sessions ... ok
+test handler::tests::every_listed_method_is_dispatched_and_nothing_else_is ... ok
+test handler::tests::oversized_session_is_rejected_without_eviction ... ok
+test handler::tests::review_change_options_bound_git ... ok
+test handler::tests::retained_byte_budget_evicts_lru_sessions ... ok
+test handler::tests::session_close_removes_session ... ok
+test handler::tests::session_open_returns_id_and_count ... ok
+test handler::tests::session_ids_increment ... ok
+test handler::tests::session_param_must_be_string ... ok
+test handler::tests::session_snapshot_returns_ranked ... ok
+test handler::tests::snapshot_unknown_session_is_error ... ok
+test handler::tests::shutdown_clears_running ... ok
+test handler::tests::sessions_exactly_filling_the_byte_budget_are_all_retained ... ok
+test handler::tests::status_reports_running_and_sessions ... ok
+test handler::tests::tick_overflow_rebases_densely_and_preserves_lru_order ... ok
+test handler::tests::ticks_increase_monotonically ... ok
+test protocol::tests::empty_method_is_invalid_request ... ok
+test protocol::tests::json_rpc_error_codes_match_wire_standard ... ok
+test protocol::tests::error_response_preserves_null_id ... ok
+test protocol::tests::invalid_json_is_parse_error ... ok
+test handler::tests::the_readme_lists_the_methods_and_protocol ... ok
+test protocol::tests::missing_method_is_invalid_request ... ok
+test protocol::tests::params_object_is_preserved ... ok
+test handler::tests::unknown_method_is_method_not_found ... ok
+test protocol::tests::parses_full_request ... ok
+test protocol::tests::rejects_non_object_request ... ok
+test protocol::tests::method_length_is_capped_at_256_bytes ... ok
+test protocol::tests::protocol_version_is_one ... ok
+test protocol::tests::rejects_scalar_params ... ok
+test protocol::tests::parses_terse_request_with_defaults ... ok
+test protocol::tests::rejects_structured_id ... ok
+test protocol::tests::error_response_shape ... ok
+test protocol::tests::rpc_error_constructors ... ok
+test protocol::tests::rejects_wrong_protocol_version ... ok
+test protocol::tests::string_id_is_preserved ... ok
+test protocol::tests::response_round_trips_through_serde ... ok
+test protocol::tests::success_response_shape ... ok
+test handler::tests::lru_evicts_least_recently_used ... ok
+test security::tests::ensure_runtime_dir_propagates_non_missing_errors_without_creating ... ok
+test security::tests::ensure_runtime_dir_creates_and_secures ... ok
+test security::tests::live_resolvers_match_the_environment ... ok
+test security::tests::missing_dir_is_missing ... ok
+test security::tests::ensure_runtime_dir_rejects_symlink_without_chmodding_target ... ok
+test security::tests::group_writable_dir_is_too_permissive ... ok
+test handler::tests::sessions_are_bounded ... ok
+test handler::tests::snapshot_missing_session_at_cap_is_error ... ok
+test handler::tests::closed_sessions_free_capacity ... ok
+test security::tests::runtime_base_none_without_xdg ... ok
+test security::tests::file_is_not_a_directory ... ok
+test security::tests::runtime_base_uses_xdg_runtime_dir ... ok
+test security::tests::private_dir_0700_validates ... ok
+test security::tests::secure_modes_are_owner_only ... ok
+test handler::tests::lru_evicts_the_true_least_recently_used ... ok
+test security::tests::socket_error_display_is_descriptive ... ok
+test security::tests::symlink_is_rejected ... ok
+test security::tests::socket_path_derives_from_xdg_base ... ok
+test security::tests::world_readable_dir_is_too_permissive ... ok
+test serve::tests::accept_error_child ... ignored, spawned as a child process by run_server_returns_persistent_accept_errors
+test serve::tests::a_line_from_a_closed_peer_reads_completely_across_refills ... ok
+test serve::tests::a_contained_panic_resets_sessions_and_clears_the_poison ... ok
+test serve::tests::bind_secure_refuses_to_delete_regular_file ... ok
+test serve::tests::a_connection_keeps_serving_after_a_contained_panic ... ok
+test serve::tests::cleanup_never_removes_regular_file ... ok
+test serve::tests::bind_secure_sets_owner_only_modes ... ok
+test serve::tests::a_socket_that_cannot_be_probed_is_kept ... ok
+test serve::tests::cleanup_never_removes_a_socket_swapped_in_after_bind ... ok
+test serve::tests::cleanup_removes_the_socket_it_bound ... ok
+test serve::tests::bind_secure_replaces_stale_socket ... ok
+test serve::tests::connection_slots_are_hard_bounded_and_released ... ok
+test serve::tests::explicit_bind_creates_missing_parent_at_0700 ... ok
+test serve::tests::explicit_bind_does_not_chmod_parent ... ok
+test serve::tests::explicit_bind_propagates_non_missing_parent_errors ... ok
+test serve::tests::empty_lines_are_ignored ... ok
+test serve::tests::explicit_bind_refuses_symlink_at_socket_path ... ok
+test serve::tests::explicit_bind_refuses_to_delete_regular_file ... ok
+test serve::tests::explicit_bind_rejects_world_readable_parent ... ok
+test serve::tests::only_a_disconnected_peer_refusal_is_settled ... ok
+test serve::tests::handle_connection_sets_read_timeout ... ok
+test serve::tests::explicit_bind_replaces_stale_socket ... ok
+test serve::tests::oversized_request_gets_error_then_connection_closes ... ok
+test serve::tests::process_line_health_ok ... ok
+test serve::tests::process_line_parse_error_has_null_id ... ok
+test serve::tests::only_a_socket_nothing_listens_on_is_removed ... ok
+test serve::tests::process_line_shutdown_clears_running ... ok
+test serve::tests::handle_connection_round_trip_over_socketpair ... ok
+test serve::tests::process_line_unknown_method_is_error ... ok
+test serve::tests::read_capped_line_bounds_oversized_line ... ok
+test serve::tests::read_capped_line_eof_is_zero ... ok
+test serve::tests::handle_connection_serves_multiple_requests ... ok
+test serve::tests::read_capped_line_reads_one_line ... ok
+test serve::tests::request_and_response_caps_are_80_mib ... ok
+test serve::tests::remove_stale_socket_propagates_non_missing_errors ... ok
+test serve::tests::request_rejects_multiline_input_before_connecting ... ok
+test serve::tests::resolve_prefers_explicit_path ... ok
+test serve::tests::resolve_explicit_uses_explicit_policy ... ok
+test serve::tests::request_to_missing_daemon_errors ... ok
+test serve::tests::resolve_without_xdg_or_explicit_fails_closed ... ok
+test serve::tests::socket_line_read_reports_non_timeout_errors_unchanged ... ok
+test serve::tests::socket_location_at_rejects_world_readable_parent ... ok
+test tests::facade_exposes_default_socket_path ... ok
+test serve::tests::socket_location_at_uses_explicit_policy ... ok
+test tests::facade_dispatch_works ... ok
+test serve::tests::the_server_never_sends_a_response_over_the_cap ... ok
+test tests::facade_process_line_works ... ok
+test handler::tests::session_count_never_exceeds_cap ... ok
+test views::tests::budgets_and_counts_are_exact ... ok
+test handler::tests::default_budget_accepts_multi_mebibyte_session ... ok
+test views::tests::outline_is_in_review_risk_order ... ok
+test views::tests::requests_that_do_not_fit_are_refused ... ok
+test views::tests::hunks_by_address_and_by_path ... ok
+test serve::tests::run_server_returns_persistent_accept_errors ... ok
+test serve::tests::run_server_full_round_trip_then_shutdown ... ok
+test serve::tests::run_server_diff_plan_over_socket ... ok
+test views::tests::outline_pages_cover_every_hunk_once ... ok
+test serve::tests::socket_line_deadline_is_absolute_across_dripped_bytes ... ok
+test views::tests::hunk_pages_are_complete_ordered_and_bounded ... ok
+test serve::tests::client_rejects_response_over_cap ... ok
+test serve::tests::client_accepts_response_exactly_at_cap ... ok
+test serve::tests::request_line_one_byte_over_cap_is_rejected ... ok
+test serve::tests::request_line_exactly_at_cap_is_served ... ok
+test serve::tests::client_request_size_cap_boundary ... ok
+
+test result: ok. 134 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 5.35s
+
+     Running `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/deep_diff_forge_patch-18765affac0dbf87`
+
+running 112 tests
+test decode::tests::valid_utf8_is_borrowed_and_exact ... ok
+test decode::tests::only_invalid_lines_are_decoded_lossily_and_numbered ... ok
+test decode::tests::an_invalid_unterminated_last_line_is_numbered ... ok
+test git_acquire::runner_tests::polling_backs_off_from_one_millisecond_to_twenty ... ok
+test git_acquire::tests::off_unix_paths_keep_utf8_and_decode_other_bytes_lossily ... ok
+test git_raw::tests::abbreviated_raw_ids_are_malformed ... ok
+test git_raw::tests::added_record_without_new_file_mode_is_refused ... ok
+test git_raw::tests::empty_stream_has_no_changes ... ok
+test git_raw::tests::appending_on_error_leaves_diff_unchanged ... ok
+test git_raw::tests::each_acquisition_error_names_its_cause ... ok
+test git_raw::tests::extra_block_is_a_count_mismatch ... ok
+test git_raw::tests::git_quote_matches_quote_path_false ... ok
+test git_raw::tests::index_line_disagreeing_with_raw_blob_is_refused ... ok
+test git_raw::tests::record_without_block_is_a_count_mismatch ... ok
+test git_raw::tests::non_utf8_path_bytes_are_preserved ... ok
+test git_raw::tests::paths_come_from_raw_bytes_not_from_headers ... ok
+test git_raw::tests::swapped_blocks_are_an_identity_mismatch ... ok
+test guards::tests::refusals_come_in_order_and_only_when_requested ... ok
+test json::tests::binary_file_has_empty_hunks_array ... ok
+test json::tests::empty_model_emits_empty_file_list ... ok
+test git_raw::tests::unmerged_status_is_refused ... ok
+test json::tests::hunk_includes_id_and_starts ... ok
+test json::tests::output_contains_status ... ok
+test json::tests::quote_escapes_backslash ... ok
+test json::tests::output_contains_file_path ... ok
+test json::tests::quote_escapes_control_chars_as_unicode ... ok
+test json::tests::quote_escapes_newline_and_tab ... ok
+test json::tests::output_declares_schema ... ok
+test json::tests::line_text_with_quotes_is_escaped_in_output ... ok
+test json::tests::metadata_array_is_present ... ok
+test parser::tests::a_text_change_after_a_binary_body_is_never_hidden_in_it ... ok
+test json::tests::quote_escapes_double_quotes ... ok
+test parser::tests::added_line_has_only_new_line_number ... ok
+test parser::tests::added_line_when_new_count_is_zero_is_rejected ... ok
+test json::tests::quote_passes_through_unicode ... ok
+test parser::tests::binary_file_is_binary_changed ... ok
+test parser::tests::binary_file_uses_line_strategy_exception ... ok
+test parser::tests::body_line_outside_hunk_is_an_error ... ok
+test json::tests::sealed_empty_model_is_still_well_formed ... ok
+test parser::tests::budget_error_reports_sizes ... ok
+test parser::tests::byte_budget_is_enforced ... ok
+test parser::tests::captures_index_metadata ... ok
+test json::tests::summary_counts_additions_and_deletions ... ok
+test parser::tests::consecutive_plain_diffs_split_on_old_header ... ok
+test parser::tests::context_line_advances_both_sides ... ok
+test json::tests::unsealed_output_carries_no_seal_members ... ok
+test parser::tests::context_line_when_one_side_exhausted_is_rejected ... ok
+test parser::tests::context_only_blank_line_is_empty_text ... ok
+test parser::tests::deleted_file_is_deleted ... ok
+test parser::tests::empty_input_yields_no_files ... ok
+test parser::tests::exact_hunk_counts_are_accepted ... ok
+test parser::tests::header_path_drops_trailing_tab_timestamp ... ok
+test parser::tests::hunk_header_accepts_add_from_zero ... ok
+test parser::tests::hunk_header_accepts_basic_with_counts ... ok
+test parser::tests::hunk_header_accepts_default_counts ... ok
+test json::tests::sealed_output_places_seal_directly_after_schema ... ok
+test parser::tests::hunk_header_accepts_section_text ... ok
+test parser::tests::hunk_header_rejects_trailing_garbage_no_closer ... ok
+test parser::tests::hunk_header_rejects_triple_at_closer ... ok
+test parser::tests::hunk_header_requires_closing_at_at ... ok
+test parser::tests::hunk_ids_are_unique_and_sequential ... ok
+test parser::tests::hunk_records_start_lines ... ok
+test parser::tests::hunk_without_explicit_count_defaults_to_one ... ok
+test parser::tests::hunk_addresses_and_body_digests ... ok
+test parser::tests::line_text_strips_leading_marker ... ok
+test parser::tests::malformed_header_reports_line_number ... ok
+test parser::tests::malformed_hunk_header_is_an_error ... ok
+test parser::tests::modified_file_has_one_hunk ... ok
+test parser::tests::multiple_hunks_in_one_file ... ok
+test parser::tests::new_file_is_added ... ok
+test parser::tests::hunk_line_kinds_are_in_order ... ok
+test parser::tests::new_file_records_added_lines ... ok
+test parser::tests::no_newline_marker_is_captured_as_metadata ... ok
+test parser::tests::parse_hunk_header_unit_rejects_missing_closer ... ok
+test parser::tests::parse_hunk_header_unit_accepts_valid_forms ... ok
+test parser::tests::parse_range_defaults_count ... ok
+test parser::tests::parse_with_large_budget_accepts_normal_input ... ok
+test parser::tests::parses_single_modified_file ... ok
+test parser::tests::plain_unified_diff_without_git_header ... ok
+test parser::tests::preamble_lines_before_first_file_are_ignored ... ok
+test parser::tests::pure_mode_change_is_type_changed ... ok
+test parser::tests::removed_line_content_dashes_are_not_a_new_file ... ok
+test parser::tests::removed_line_has_only_old_line_number ... ok
+test parser::tests::removed_line_when_old_count_is_zero_is_rejected ... ok
+test parser::tests::rename_is_renamed_and_uses_new_path ... ok
+test parser::tests::spaced_path_git_header_is_parsed_correctly ... ok
+test parser::tests::spaced_path_multiple_spaces_in_filename ... ok
+test parser::tests::strip_ab_removes_prefixes ... ok
+test parser::tests::the_binary_body_grammar_is_git_s ... ok
+test parser::tests::trailing_body_line_after_a_satisfied_hunk_is_rejected ... ok
+test parser::tests::truncated_hunk_at_eof_is_rejected ... ok
+test parser::tests::truncated_hunk_before_next_file_is_rejected ... ok
+test parser::tests::truncated_hunk_error_displays_remaining ... ok
+test parser::tests::two_files_parse_independently ... ok
+test parser::tests::whitespace_only_input_yields_no_files ... ok
+test render::tests::added_file_renders_dev_null_old_side ... ok
+test render::tests::binary_file_renders_metadata_without_hunks ... ok
+test render::tests::empty_model_renders_empty_string ... ok
+test render::tests::deleted_file_renders_dev_null_new_side ... ok
+test render::tests::multi_hunk_render_has_two_headers ... ok
+test render::tests::no_newline_marker_not_emitted_in_header ... ok
+test render::tests::rename_uses_from_path_on_old_side ... ok
+test render::tests::renders_diff_git_header ... ok
+test render::tests::renders_hunk_header_with_counts ... ok
+test render::tests::renders_line_markers ... ok
+test sealed::tests::parse_failures_and_refusals_are_named ... ok
+test sealed::tests::non_utf8_input_is_reviewed_lossily_and_sealed_exactly ... ok
+test sealed::tests::the_lossily_decoded_line_is_the_one_marked ... ok
+test sealed::tests::the_seal_covers_the_bytes_the_files_came_from ... ok
+test parser::tests::an_error_quotes_a_bounded_excerpt_of_the_offending_line ... ok
+test git_acquire::runner_tests::output_at_the_budget_is_kept_and_one_byte_over_is_refused ... ok
+test parser::tests::structural_line_budget_is_enforced_before_model_amplification ... ok
+
+test result: ok. 112 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/fixtures-94ca3821bbdbb292`
+
+running 10 tests
+test basic_fixture_has_one_hunk_with_an_edit ... ok
+test basic_fixture_is_one_modified_file ... ok
+test delete_file_fixture_is_deleted ... ok
+test binary_fixture_is_binary_changed_with_no_hunks ... ok
+test every_fixture_parses_without_error ... ok
+test no_newline_fixture_captures_marker_in_metadata ... ok
+test new_file_fixture_is_added ... ok
+test rename_fixture_is_renamed_to_new_path ... ok
+test binary_literal_and_delta_fixture_keeps_every_file_and_body ... ok
+test rendered_basic_is_apply_able_shaped ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/git_acquire-9949514b4b10da98`
+
+running 18 tests
+test mismatched_raw_patch_pairing_from_real_git_output_is_refused ... ok
+test non_utf8_content_is_acquired_marked_and_sealed_exactly ... ok
+test unborn_head_compares_against_the_empty_tree ... ok
+test authoritative_patch_keeps_line_endings_verbatim ... ok
+test output_over_budget_is_refused ... ok
+test untracked_files_are_opt_in_and_staged_selection_sees_only_the_index ... ok
+test review_paths_come_from_raw_records_not_display_headers ... ok
+test untracked_capture_does_not_mutate_the_repository ... ok
+test a_partial_clone_is_never_fetched_from ... ok
+test authoritative_patch_applies_in_a_clean_clone ... ok
+test range_selection_is_bound_to_resolved_commits ... ok
+test working_tree_records_carry_exact_paths_and_statuses ... ok
+test a_repository_local_filter_never_runs ... ok
+test repository_config_cannot_reshape_the_acquisition ... ok
+test working_tree_records_carry_exact_blob_ids_and_modes ... ok
+test long_filter_listings_and_deep_paths_are_read ... ok
+test a_surviving_child_cannot_stretch_the_time_limit ... ok
+test a_stalled_git_is_stopped_at_the_time_limit ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/git_oracle-13dbbac4a6247ad3`
+
+running 3 tests
+test malformed_or_orphaned_eof_markers_fail_instead_of_normalizing ... ok
+test unsupported_and_invalid_paths_fail_explicitly ... ok
+test reconstructed_patches_apply_to_exact_base ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/lossy_utf8-16c292436beea1e5`
+
+running 3 tests
+test a_non_utf8_line_marks_only_its_own_file ... ok
+test the_byte_budget_applies_to_the_original_bytes ... ok
+test the_capture_seals_the_exact_bytes_not_the_decoded_text ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running `/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/round_trip-7cdf91d40e02a3a4`
+
+running 10 tests
+test a_metadata_line_after_a_binary_body_is_refused ... ok
+test basic_round_trips ... ok
+test binary_round_trips ... ok
+test delete_file_round_trips ... ok
+test double_render_is_idempotent ... ok
+test new_file_round_trips ... ok
+test rename_round_trips ... ok
+test no_newline_markers_round_trip ... ok
+test discovered_fuzz_inputs_fail_explicitly_or_render_stably ... ok
+test binary_literal_delta_round_trips ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests deep_diff_forge_daemon
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc --edition=2024 --crate-type lib --color auto --crate-name deep_diff_forge_daemon --test crates/deep-diff-forge-daemon/src/lib.rs --test-run-directory /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/crates/deep-diff-forge-daemon '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rlib --extern deep_diff_forge_daemon=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_daemon-69ec592cc0e26c80.rlib --extern deep_diff_forge_graph=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_graph-8f94cb5905716444.rlib --extern deep_diff_forge_patch=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_patch-4bc6ffc1f49bea65.rlib --extern rustix=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/librustix-f609669536ac6408.rlib --extern serde=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libserde-9dc2499b2720bf75.rlib --extern serde_json=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libserde_json-e0feffacfff059e5.rlib -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -C embed-bitcode=no --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' --error-format human`
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests deep_diff_forge_patch
+     Running `/var/home/louranicas/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc --edition=2024 --crate-type lib --color auto --crate-name deep_diff_forge_patch --test crates/deep-diff-forge-patch/src/lib.rs --test-run-directory /tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/crates/deep-diff-forge-patch '--deny=clippy::unwrap_in_result' --forbid=unsafe_code '--deny=clippy::panic_in_result_fn' '--deny=clippy::allow_attributes_without_reason' '--deny=clippy::allow_attributes' --extern deep_diff_forge_core=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_core-8a265769b2f0889d.rlib --extern deep_diff_forge_patch=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps/libdeep_diff_forge_patch-4bc6ffc1f49bea65.rlib -L dependency=/tmp/cargo-mutants-ddf-agent-core-tnDhXD.tmp/target/debug/deps -C embed-bitcode=no --cfg 'feature="default"' --cfg 'feature="json"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "json"))' --error-format human`
+
+running 2 tests
+test crates/deep-diff-forge-patch/src/guards.rs - guards::InputGuards (line 11) ... ok
+test crates/deep-diff-forge-patch/src/sealed.rs - sealed::SealedReview (line 31) ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+test crates/deep-diff-forge-patch/src/sealed.rs - sealed::SealedReview (line 38) - compile fail ... ok
+test crates/deep-diff-forge-patch/src/guards.rs - guards::InputGuards (line 16) - compile fail ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+all doctests ran in 0.12s; merged doctests compilation took 0.09s
+
+*** result: Success

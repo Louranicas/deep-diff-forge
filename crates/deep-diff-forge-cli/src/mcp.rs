@@ -1276,7 +1276,13 @@ mod tests {
                     result.to_string().len()
                 );
                 pages += 1;
-                cursor = result["structuredContent"]["next_cursor"].clone();
+                let next = result["structuredContent"]["next_cursor"].clone();
+                assert!(
+                    next.is_null() || next != cursor,
+                    "{name}: a page always moves the cursor"
+                );
+                assert!(pages < 1000, "{name}: paging must end");
+                cursor = next;
                 if cursor.is_null() {
                     break;
                 }
