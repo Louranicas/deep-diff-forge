@@ -298,6 +298,17 @@ pub struct MethodSpec {
     pub since: u32,
 }
 
+impl MethodSpec {
+    /// The names in [`MethodSpec::params`] (`name: type` or `name?: type`, comma-separated).
+    pub fn param_names(&self) -> impl Iterator<Item = &'static str> {
+        self.params
+            .split(", ")
+            .filter_map(|param| param.split(':').next())
+            .map(|name| name.trim().trim_end_matches('?'))
+            .filter(|name| !name.is_empty())
+    }
+}
+
 const fn method(
     name: &'static str,
     params: &'static str,
@@ -390,6 +401,7 @@ pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcErro
     let Some(spec) = METHODS.iter().find(|m| m.name == request.method) else {
         return Err(RpcError::method_not_found(&request.method));
     };
+    refuse_unknown_params(spec, &request.params)?;
     match spec.name {
         "engine.initialize" => {
             // Versions are additive, so any version up to ours is served, and the answer lists the
@@ -537,7 +549,7 @@ fn parse_patch_param(request: &Request) -> Result<Vec<ReviewFile>, RpcError> {
 /// the chosen view. Git runs with the acquisition crate's fixed argv and a 30 s limit; nothing
 /// is written. A repository outside every allowed root is refused before Git runs.
 fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value, RpcError> {
-    use deep_diff_forge_patch::{GitAcquireOptions, GitSelection, acquire_git};
+    use deep_diff_forge_patch::{GitSelection, acquire_git};
     let repo = std::path::PathBuf::from(str_param(params, "repo")?);
     if allowed.is_empty() {
         return Err(RpcError::invalid_params(
@@ -556,6 +568,8 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
             deep_diff_forge_core::display_safe(&canonical.to_string_lossy())
         )));
     }
+    let options = change_options(bool_param(params, "include_untracked")?);
+    refuse_foreign_git_dirs(&canonical, allowed, &options)?;
     let selection = match str_param(params, "selection")?.as_str() {
         "staged" => GitSelection::Staged,
         "working_tree" => GitSelection::WorkingTree,
@@ -567,11 +581,6 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
                 deep_diff_forge_core::display_safe(other)
             )));
         }
-    };
-    let options = GitAcquireOptions {
-        include_untracked: bool_param(params, "include_untracked")?,
-        time_limit: REVIEW_CHANGE_GIT_LIMIT,
-        ..GitAcquireOptions::default()
     };
     let git = |e: deep_diff_forge_patch::GitAcquireError| match e {
         deep_diff_forge_patch::GitAcquireError::InvalidSelection { .. } => {
@@ -633,6 +642,64 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
         "include_untracked": options.include_untracked,
     });
     Ok(answer)
+}
+
+/// A param the method does not take is refused, not ignored: a misspelt `require_file` passed an
+/// empty review before (bug hunt 2026-10-28, H5-01). The names come from the method's own
+/// published params, so `engine.methods` and this check cannot drift apart.
+fn refuse_unknown_params(spec: &MethodSpec, params: &Value) -> Result<(), RpcError> {
+    if let Some(params) = params.as_object()
+        && let Some(unknown) = params
+            .keys()
+            .find(|key| !spec.param_names().any(|p| p == *key))
+    {
+        return Err(RpcError::invalid_params(format!(
+            "{} takes no param '{}'",
+            spec.name,
+            deep_diff_forge_core::display_safe(unknown)
+        )));
+    }
+    Ok(())
+}
+
+/// Every directory Git will read must be inside an allowed root, and the object store must not
+/// borrow another's: a `.git` file can point a worktree inside the root at a repository outside
+/// it (bug hunt 2026-10-28, H2-02).
+fn refuse_foreign_git_dirs(
+    repo: &std::path::Path,
+    allowed: &[std::path::PathBuf],
+    options: &deep_diff_forge_patch::GitAcquireOptions,
+) -> Result<(), RpcError> {
+    let dirs = deep_diff_forge_patch::repository_dirs(repo, options)
+        .map_err(|e| RpcError::new(crate::protocol::GIT_FAILED, e.to_string()))?;
+    for (what, dir) in [
+        ("top level", &dirs.top),
+        ("Git directory", &dirs.git_dir),
+        ("common Git directory", &dirs.common_dir),
+    ] {
+        if !allowed.iter().any(|root| dir.starts_with(root)) {
+            return Err(RpcError::invalid_params(format!(
+                "the repository's {what} {} is outside the roots this server may read (--allow-repo)",
+                deep_diff_forge_core::display_safe(&dir.to_string_lossy())
+            )));
+        }
+    }
+    if dirs.has_alternates {
+        return Err(RpcError::invalid_params(
+            "the repository borrows objects from another (objects/info/alternates), which this server does not read",
+        ));
+    }
+    Ok(())
+}
+
+/// The acquisition options of `review.change`: the shorter Git time limit, and untracked files
+/// only when asked for.
+fn change_options(include_untracked: bool) -> deep_diff_forge_patch::GitAcquireOptions {
+    deep_diff_forge_patch::GitAcquireOptions {
+        include_untracked,
+        time_limit: REVIEW_CHANGE_GIT_LIMIT,
+        ..deep_diff_forge_patch::GitAcquireOptions::default()
+    }
 }
 
 /// A refused view is a mistake in the request (budget, cursor, address or path).
@@ -735,6 +802,18 @@ mod tests {
     fn call(line: &str, engine: &mut Engine) -> Result<Value, RpcError> {
         let req = parse_request(line)?;
         dispatch(&req, engine)
+    }
+
+    /// `review.change` stops Git after 30 s and reads untracked files only when asked.
+    #[test]
+    fn review_change_options_bound_git() {
+        assert_eq!(REVIEW_CHANGE_GIT_LIMIT, std::time::Duration::from_secs(30));
+        let on = change_options(true);
+        assert_eq!(
+            (on.include_untracked, on.time_limit),
+            (true, REVIEW_CHANGE_GIT_LIMIT)
+        );
+        assert!(!change_options(false).include_untracked);
     }
 
     #[test]
