@@ -9,7 +9,9 @@ use std::fmt::Write as _;
 /// `0x20` become `\u00xx` escapes. As terminal-injection defence-in-depth, the
 /// `DEL` (`0x7f`) and C1 control block (`0x80..=0x9f` — which includes the 8-bit
 /// CSI `0x9b` and OSC `0x9d` introducers) are escaped too, so the JSON output is
-/// safe to print to a terminal even though RFC 8259 does not require it.
+/// safe to print to a terminal even though RFC 8259 does not require it. `U+2028` and
+/// `U+2029` are escaped as well: line-aware readers (JavaScript before ES2019, Python's
+/// `splitlines`) treat them as line breaks and would split one JSON record in two.
 #[must_use]
 pub fn json_escape(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
@@ -23,7 +25,7 @@ pub fn json_escape(value: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\u{08}' => out.push_str("\\b"),
             '\u{0c}' => out.push_str("\\f"),
-            c if u32::from(c) < 0x20 || matches!(u32::from(c), 0x7f..=0x9f) => {
+            c if u32::from(c) < 0x20 || matches!(u32::from(c), 0x7f..=0x9f | 0x2028 | 0x2029) => {
                 let _ = write!(out, "\\u{:04x}", u32::from(c));
             }
             c => out.push(c),
@@ -31,6 +33,22 @@ pub fn json_escape(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// Make serialized JSON text safe for line-delimited transport: each raw `U+2028` or `U+2029`
+/// becomes the escape `\u2028`/`\u2029`. In valid JSON these characters can occur only inside
+/// strings, where the escape means the same character, so the document is unchanged; only a
+/// line-aware reader's view of it is. Use it where a serializer that does not escape them
+/// (`serde_json`) writes a line or document out; [`json_escape`] already escapes them.
+#[must_use]
+pub fn json_line_safe(json: &str) -> Cow<'_, str> {
+    if !json.contains(['\u{2028}', '\u{2029}']) {
+        return Cow::Borrowed(json);
+    }
+    Cow::Owned(
+        json.replace('\u{2028}', "\\u2028")
+            .replace('\u{2029}', "\\u2029"),
+    )
 }
 
 /// Whether `c` must be escaped before being written to a terminal: any control
@@ -261,6 +279,16 @@ mod tests {
         assert_eq!(text_hazards("x\r"), Vec::<&str>::new());
         assert_eq!(path_hazards("x\r"), ["control"]);
         assert_eq!(path_hazards("src/\u{2060}lib.rs"), ["invisible"]);
+    }
+
+    /// Bug hunt 2026-10-28, H4-06: the line and paragraph separators never reach a line-aware
+    /// reader raw, whether the JSON was hand-built or came from serde.
+    #[test]
+    fn line_separators_never_leave_raw() {
+        assert_eq!(json_escape("a\u{2028}b\u{2029}c"), "\"a\\u2028b\\u2029c\"");
+        let raw = "{\"p\":\"a\u{2028}b\u{2029}\"}";
+        assert_eq!(json_line_safe(raw), "{\"p\":\"a\\u2028b\\u2029\"}");
+        assert!(matches!(json_line_safe("{\"p\":1}"), Cow::Borrowed(_)));
     }
 
     #[test]

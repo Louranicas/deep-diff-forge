@@ -53,6 +53,11 @@ independent false-positive checker before a fix.
   `\u{XXXX}` on a terminal. The line and paragraph separators `U+2028`/`U+2029` are `control`.
   A path that ends in a carriage return (a CRLF-converted header) is `control` too; only a body
   line's CRLF is exempt.
+- **No JSON record splits on a Unicode line break.** A path or line holding `U+2028`/`U+2029`
+  left `--json`, `--jsonl`, `rpc`, MCP and the daemon socket raw, so a line-aware reader
+  (Python's `splitlines`, JavaScript before ES2019) saw one record as two. `json_escape` now
+  escapes both, and the serde-built lines pass through the new `core::json_line_safe` before
+  they are written; the parsed values are unchanged.
 
 ### Added (agent batteries)
 

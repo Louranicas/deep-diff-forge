@@ -1369,7 +1369,9 @@ fn emit_view(view: Result<serde_json::Value, deep_diff_forge_daemon::views::View
     match view {
         Ok(value) => emitln!(
             "{}",
-            serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
+            deep_diff_forge_core::json_line_safe(
+                &serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
+            )
         ),
         Err(error) => {
             eprintln!("error: {error}");

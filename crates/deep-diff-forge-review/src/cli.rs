@@ -55,7 +55,8 @@ pub fn dispatch(args: &[String]) -> Result<(String, i32)> {
 const HELP: &str = "council example | prepare <request.json> <new-run-dir> | status <run-dir> | review <run-dir> <reviewer-id> <independent|challenge> --execute | gate <run-dir> <format|check|clippy|pedantic|tests|antipatterns|fuzz|mutation> --execute | import <run-dir> <report.json> | export-tuicr <run-dir> --session <tuicr-session.json> [--allow-review-level] [--execute] | import-tuicr <run-dir> --session <tuicr-session.json> [--execute]\n";
 fn output(value: &impl serde::Serialize, passed: bool) -> Result<(String, i32)> {
     Ok((
-        serde_json::to_string_pretty(value)? + "\n",
+        deep_diff_forge_core::json_line_safe(&serde_json::to_string_pretty(value)?).into_owned()
+            + "\n",
         if passed {
             exit::COUNCIL_COMPLETED
         } else {
