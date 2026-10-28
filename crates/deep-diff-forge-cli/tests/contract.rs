@@ -459,6 +459,7 @@ fn every_documented_option_is_admitted() {
             &["--stdin-patch", "--outline", "--cursor", &cursor],
         ),
         ("--allow-repo", &["rpc", "--allow-repo", repo]),
+        ("--client", &["agent", "setup", "--client", "codex"]),
         ("--jsonl", &["--stdin-patch", "--jsonl"]),
         ("--rank", &["--stdin-patch", "--rank"]),
         ("--cluster", &["--stdin-patch", "--cluster"]),
