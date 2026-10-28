@@ -306,10 +306,16 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
 - **No peer-credential check on the socket.** Access control is the `0700`
   directory and `0600` socket alone; the daemon does not read the peer's uid
   (`SO_PEERCRED`/`getpeereid`).
-- **Git subprocesses have no time limit.** Git acquisition bounds stdout and
-  stderr bytes but waits for the child without a deadline
-  (`child.wait()` in `crates/deep-diff-forge-patch/src/git_acquire.rs`), so a
-  hung `git` (for example on a stalled network filesystem) hangs the command.
+- **Closed (Unreleased): Git subprocesses now have a time limit.** One deadline
+  bounds every Git call of an acquisition: 120 s for the CLI's Git selections and
+  30 s for `review.change`. A Git still running at the deadline is killed, and the
+  acquisition fails with `TimedOut` (CLI exit 3). Before, `child.wait()` waited
+  forever on a stalled filesystem or hook.
+- **Repository reads are opt-in (`review.change`).** The daemon, `rpc` and `mcp`
+  read Git only for a repository whose canonical path and Git top level are both
+  under a root the operator named with `--allow-repo`. Without one they read none.
+  The roots are an operator decision: any client of that daemon or MCP server can
+  read every change under them, though never write anything.
 - **Two `daemon start`s can race.** Between `remove_stale_socket`'s probe and
   the bind, a second start can remove the first's fresh socket and bind its own,
   leaving the first running but unreachable.

@@ -29,6 +29,39 @@ binary and each fixed with a test that fails on the old code.
 - **Every command answers `--help`** (exit 0) from one table that `--help` also prints. Before,
   only `review` did; the others exited 2, and `council --help` exited 4.
 
+### Added (agent-first core)
+
+The expert circle's Tier 1: an agent learns where to look before it reads anything large, and
+never has to paste a patch.
+
+- **Hunk addresses in `review.v0`** (additive): `address` (SHA-256 of `ddf-hunk-v1`, path,
+  ranges and body: exactly this hunk of this patch), `body_sha256` (the body alone: it survives a
+  move), `section` (the `@@` heading, display only, never re-rendered) and `old_lines` /
+  `new_lines`.
+- **Budgeted, sealed views.**
+  - `review.outline` lists files in review-risk order with their hunks' addresses, ranges,
+    headings and counts, and no line text.
+  - `review.hunks` returns chosen hunks verbatim, by address or by path.
+  - Both keep every answer within `max_bytes`, continue a long hunk at a line (never inside one),
+    and page with a cursor bound to the patch and the selection.
+  - They are available on the socket, over `rpc`, as the MCP tools `review_outline` and
+    `review_hunks` (where `max_bytes` counts both copies of the answer), and on the CLI as
+    `--outline` and `--hunks [--address A]... [--path P]... [--max-bytes N] [--cursor C]` for
+    piped patches and Git selections alike.
+  - Parity tests hold the CLI equal to the daemon page for page.
+- **`review.change` and MCP `review_change`: review straight from Git.**
+  - Selections are staged, working tree or range. The answer is the outline or hunks of the
+    change, sealed over Git's exact bytes, with an `acquisition` member.
+  - It reads only repositories whose canonical path and Git top level are under a root the
+    operator allowed with `--allow-repo PATH`, on `mcp`, `rpc` and `daemon start`. Without one it
+    reads nothing.
+  - Tests cover an outside repository, an escaping symlink and a subdirectory of a larger
+    repository.
+- **Git subprocesses have a time limit** (closes a 2026-10-28 residual risk). One deadline bounds
+  every Git call of an acquisition, 120 s for the CLI and 30 s for `review.change`. A Git still
+  running is killed and the acquisition fails with `TimedOut` (exit 3) instead of hanging on a
+  stalled filesystem or hook.
+
 ### Added
 
 - **`diff.rank`**, a daemon method on the socket, `rpc` and MCP: the sealed

@@ -177,6 +177,9 @@ version is refused with domain error 2.
 | `diff.plan` | `patch: string` | `[ranked file]` | 0 |
 | `diff.compute` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.review.v0` document `--stdin-patch --json` prints for the same patch | 1 |
 | `diff.rank` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints for the same patch | 1 |
+| `review.outline` | `patch: string, require_files?, require_hunks?, max_bytes?: integer, cursor?: string` | `deep-diff-forge.review-outline.v0`: files in review-risk order with their hunks' addresses, ranges, `@@` headings and counts, no line text; `next_cursor` continues | 1 |
+| `review.hunks` | `patch: string, require_files?, require_hunks?, addresses?: [string], paths?: [string], max_bytes?, cursor?` | `deep-diff-forge.review-hunks.v0`: the chosen hunks verbatim, continued at a line when one is too long for the page | 1 |
+| `review.change` | `repo: string, selection: staged\|working_tree\|range, range?: A..B, include_untracked?, view?: outline\|hunks\|review\|rank`, plus the view's params | that view of the change Git returns, sealed over Git's bytes, with an `acquisition` member; only under an `--allow-repo` root, Git stopped after 30 s; Git failure is error 3 | 1 |
 | `session.open` | `patch: string` | `{session, files}` | 0 |
 | `session.snapshot` | `session: string` | `[ranked file]` | 0 |
 | `session.close` | `session: string` | `{closed}` | 0 |
@@ -254,6 +257,9 @@ message per line (`crates/deep-diff-forge-cli/src/mcp.rs`).
 | --- | --- | --- |
 | `review_patch` | `patch`, `detail?` (`auto` or `summary`), `paths?`, `require_files?`, `require_hunks?` | `diff.compute`; a review over 256 KiB returns `deep-diff-forge.review-summary.v0` |
 | `rank_patch` | `patch`, `require_files?`, `require_hunks?` | `diff.rank`: the sealed `rank.v0` document; a ranking over 256 KiB returns `deep-diff-forge.rank-summary.v0` with the same seal |
+| `review_outline` | `patch`, `require_files?`, `require_hunks?`, `max_bytes?`, `cursor?` | `review.outline`; `max_bytes` (2 KiB–32 MiB, default 32 KiB) covers the whole answer, both copies, so the view gets half |
+| `review_hunks` | `patch`, `addresses?` or `paths?`, `require_files?`, `require_hunks?`, `max_bytes?`, `cursor?` | `review.hunks`, budgeted the same way |
+| `review_change` | `repo`, `selection`, `range?`, `include_untracked?`, `view?` (`outline` or `hunks`), and that view's arguments | `review.change`, only when the server was started with `mcp --allow-repo PATH`; budgeted the same way |
 | `explain_exit_code` | `code`, `family?` (`engine` or `council`) | the exit-code registry |
 | `exit_code_registry` | — | the exit-code registry |
 
