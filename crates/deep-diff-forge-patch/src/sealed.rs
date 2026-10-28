@@ -142,4 +142,27 @@ mod tests {
         assert_eq!(review.files()[0].patch_twin.lossy_lines, 1);
         assert_eq!(review.seal(), &InputSeal::of(latin, "v"));
     }
+
+    /// The lossy line itself is marked, so a consumer knows which text is not the input's;
+    /// before, only the per-file count said so. A literal U+FFFD in valid input is not lossy, and
+    /// a lossy header line marks no body line.
+    #[test]
+    fn the_lossily_decoded_line_is_the_one_marked() {
+        // Line 5 is Latin-1 (lossy); lines 6 and 7 hold a real U+FFFD (valid UTF-8).
+        let bytes = b"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-caf\xe9\n-\xef\xbf\xbd\n+\xef\xbf\xbd\n+cafe\n";
+        let review = SealedReview::new(bytes, NONE, "v").unwrap();
+        let lines = &review.files()[0].patch_twin.hunks[0].lines;
+        let marked: Vec<bool> = lines.iter().map(|l| l.lossy).collect();
+        assert_eq!(marked, [true, false, false, false]);
+        let header =
+            b"diff --git a/caf\xe9 b/caf\xe9\n--- a/caf\xe9\n+++ b/caf\xe9\n@@ -1 +1 @@\n-a\n+b\n";
+        let review = SealedReview::new(header, NONE, "v").unwrap();
+        assert!(
+            review.files()[0].patch_twin.hunks[0]
+                .lines
+                .iter()
+                .all(|l| !l.lossy)
+        );
+        assert!(review.files()[0].patch_twin.lossy_lines > 0);
+    }
 }

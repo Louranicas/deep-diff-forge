@@ -145,6 +145,115 @@ fn the_release_loop_publishes_every_crate_after_its_dependencies() {
     }
 }
 
+/// The jobs of a workflow as (name, body), read from its fixed two-space layout.
+fn jobs(workflow: &str) -> Vec<(String, String)> {
+    let mut jobs: Vec<(String, String)> = Vec::new();
+    let mut in_jobs = false;
+    for line in workflow.lines() {
+        if line == "jobs:" {
+            in_jobs = true;
+            continue;
+        }
+        if !in_jobs {
+            continue;
+        }
+        if let Some(key) = line
+            .strip_prefix("  ")
+            .and_then(|rest| rest.strip_suffix(':'))
+            .filter(|key| !key.starts_with(' ') && !key.contains(' '))
+        {
+            jobs.push((key.to_owned(), String::new()));
+        } else if let Some((_, body)) = jobs.last_mut() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    jobs
+}
+
+/// The steps of a job body, each as its own text.
+fn steps(body: &str) -> Vec<String> {
+    let mut steps: Vec<String> = Vec::new();
+    for line in body.lines() {
+        if line.starts_with("      - ") {
+            steps.push(String::new());
+        }
+        if let Some(step) = steps.last_mut() {
+            step.push_str(line);
+            step.push('\n');
+        }
+    }
+    steps
+}
+
+/// The crates.io hold (Luke, 2026-10-27) is a condition in release.yml, not the absence of a
+/// token; and a dispatched dry run publishes, releases and attests nothing. Before, the publish
+/// job ran on every tag and skipped only because no `CARGO_REGISTRY_TOKEN` was set.
+#[test]
+fn release_publication_is_owner_gated_and_the_dry_run_publishes_nothing() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let workflow =
+        std::fs::read_to_string(format!("{root}/.github/workflows/release.yml")).unwrap();
+    let jobs = jobs(&workflow);
+    let publishing: Vec<&str> = jobs
+        .iter()
+        .filter(|(_, body)| body.contains("cargo publish"))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(
+        publishing,
+        ["publish"],
+        "only the publish job may run cargo publish"
+    );
+    let publish = &jobs.iter().find(|(name, _)| name == "publish").unwrap().1;
+    let condition = publish
+        .lines()
+        .find_map(|line| line.strip_prefix("    if: "))
+        .unwrap_or_default();
+    assert!(
+        condition.contains("startsWith(github.ref, 'refs/tags/v')")
+            && condition.contains("vars.DDF_CRATES_IO == 'open'"),
+        "the publish job must run only on a tag and only with the owner's DDF_CRATES_IO=open: {condition:?}"
+    );
+    assert!(
+        publish.contains("    needs: build\n"),
+        "publication must wait for the builds"
+    );
+    for (name, body) in &jobs {
+        for step in steps(body) {
+            let outward = ["softprops/action-gh-release", "attest-build-provenance"]
+                .iter()
+                .any(|action| step.contains(action));
+            let tag_only = step
+                .lines()
+                .any(|line| line.trim_start().starts_with("if: ") && line.contains("refs/tags/"));
+            assert!(
+                !outward || tag_only,
+                "job {name}: a step that releases or attests must be limited to tag refs:\n{step}"
+            );
+        }
+    }
+    let build = &jobs.iter().find(|(name, _)| name == "build").unwrap().1;
+    assert!(
+        build.contains("--stdin-patch --json --require-files")
+            && build.contains("-c \"${dist}.tar.gz.sha256\""),
+        "the build job must smoke the binary and verify the shipped checksum"
+    );
+}
+
+#[test]
+fn the_release_job_reader_sees_jobs_steps_and_conditions() {
+    let workflow = "on: x\njobs:\n  a:\n    if: one\n    steps:\n      - name: s1\n        uses: softprops/action-gh-release@x\n      - name: s2\n        if: startsWith(github.ref, 'refs/tags/')\n  b:\n    steps:\n      - run: cargo publish\n";
+    let jobs = jobs(workflow);
+    let names: Vec<&str> = jobs.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["a", "b"]);
+    let steps = steps(&jobs[0].1);
+    assert_eq!(steps.len(), 2);
+    assert!(steps[0].contains("softprops") && !steps[0].contains("if:"));
+    assert!(steps[1].contains("refs/tags/"));
+    assert!(jobs[1].1.contains("cargo publish") && !jobs[0].1.contains("cargo publish"));
+}
+
 /// The block between the markers in docs/SCHEMATICS.md, as `table` renders it: one line per crate
 /// with its normal dependencies, then its dev-only ones.
 fn rendered(table: &BTreeSet<String>) -> String {

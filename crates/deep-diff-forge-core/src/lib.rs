@@ -155,6 +155,36 @@ mod file_status_tests {
         assert_eq!(FileStatus::Added.label(), "added");
         assert_eq!(FileStatus::Unknown.label(), "unknown");
     }
+
+    /// The wire names are a contract: these are the bytes consumers have parsed since v0.2.0, when
+    /// they came from `Debug`. A rename of a variant must not move them.
+    #[test]
+    fn wire_names_are_the_published_names() {
+        use super::{FallbackReason as F, SemanticChangeKind as K};
+        let reasons = [
+            (F::UnsupportedLanguage, "UnsupportedLanguage"),
+            (F::ParseErrorsExceeded, "ParseErrorsExceeded"),
+            (F::ByteBudgetExceeded, "ByteBudgetExceeded"),
+            (F::NodeBudgetExceeded, "NodeBudgetExceeded"),
+            (F::TimeBudgetExceeded, "TimeBudgetExceeded"),
+            (F::BinaryInput, "BinaryInput"),
+            (F::InvalidPatch, "InvalidPatch"),
+        ];
+        for (reason, name) in reasons {
+            assert_eq!(reason.wire_name(), name);
+        }
+        let kinds = [
+            (K::AddedNode, "AddedNode"),
+            (K::RemovedNode, "RemovedNode"),
+            (K::ModifiedNode, "ModifiedNode"),
+            (K::MovedNode, "MovedNode"),
+            (K::ReformattedOnly, "ReformattedOnly"),
+            (K::RenamedSymbol, "RenamedSymbol"),
+        ];
+        for (kind, name) in kinds {
+            assert_eq!(kind.wire_name(), name);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,6 +213,9 @@ pub struct HunkId(pub u64);
 pub struct PatchLine {
     /// This source line has no terminating LF on its corresponding side(s).
     pub no_newline: bool,
+    /// This line was not UTF-8 in the patch and `text` is its lossy decoding (U+FFFD); the input
+    /// seal covers the exact bytes. Counted per file in `PatchTwin::lossy_lines`.
+    pub lossy: bool,
     pub kind: PatchLineKind,
     pub old_line: Option<u32>,
     pub new_line: Option<u32>,
@@ -247,6 +280,21 @@ impl SemanticChangeKind {
             Self::RenamedSymbol => 5,
         }
     }
+
+    /// The name this kind has in every output (review JSON, analysis JSON). Written out, not taken
+    /// from `Debug`, so renaming a variant cannot silently change bytes that consumers parse; a new
+    /// variant fails to compile until it is named here.
+    #[must_use]
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::AddedNode => "AddedNode",
+            Self::RemovedNode => "RemovedNode",
+            Self::ModifiedNode => "ModifiedNode",
+            Self::MovedNode => "MovedNode",
+            Self::ReformattedOnly => "ReformattedOnly",
+            Self::RenamedSymbol => "RenamedSymbol",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +331,24 @@ pub enum FallbackReason {
     TimeBudgetExceeded,
     BinaryInput,
     InvalidPatch,
+}
+
+impl FallbackReason {
+    /// The name this reason has in every output (review and structural JSON, `fallback:` text).
+    /// Written out, not taken from `Debug`, so renaming a variant cannot silently change bytes that
+    /// consumers parse; a new variant fails to compile until it is named here.
+    #[must_use]
+    pub const fn wire_name(&self) -> &'static str {
+        match self {
+            Self::UnsupportedLanguage => "UnsupportedLanguage",
+            Self::ParseErrorsExceeded => "ParseErrorsExceeded",
+            Self::ByteBudgetExceeded => "ByteBudgetExceeded",
+            Self::NodeBudgetExceeded => "NodeBudgetExceeded",
+            Self::TimeBudgetExceeded => "TimeBudgetExceeded",
+            Self::BinaryInput => "BinaryInput",
+            Self::InvalidPatch => "InvalidPatch",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

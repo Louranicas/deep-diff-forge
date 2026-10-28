@@ -743,7 +743,10 @@ fn structural_cmd(opts: &[String]) {
 fn print_structural_human(diff: &deep_diff_forge_syntax::StructuralDiff) {
     use deep_diff_forge_syntax::ChangeKind;
     if let Some(reason) = diff.unavailable() {
-        emitln!("structural: unavailable ({reason:?}); use patch review");
+        emitln!(
+            "structural: unavailable ({}); use patch review",
+            reason.wire_name()
+        );
         return;
     }
     if diff.reformat_only() {
@@ -819,10 +822,8 @@ fn print_structural_json(diff: &deep_diff_forge_syntax::StructuralDiff) {
         json_escape(lang),
         diff.reformat_only(),
         diff.degraded(),
-        diff.unavailable().map_or_else(
-            || "null".into(),
-            |reason| json_escape(&format!("{reason:?}"))
-        ),
+        diff.unavailable()
+            .map_or_else(|| "null".into(), |reason| json_escape(reason.wire_name())),
         diff.unchanged,
         diff.added,
         diff.removed,
@@ -908,7 +909,7 @@ fn parse_status_str(status: &deep_diff_forge_core::ParseStatus) -> String {
     match status {
         ParseStatus::Parsed => "parsed".to_string(),
         ParseStatus::ParsedWithErrors { errors } => format!("parsed_with_errors:{errors}"),
-        ParseStatus::Fallback { reason } => format!("fallback:{reason:?}"),
+        ParseStatus::Fallback { reason } => format!("fallback:{}", reason.wire_name()),
     }
 }
 
@@ -993,7 +994,8 @@ fn deploy_cmd(opts: &[String]) {
 ///
 /// This is a declared snapshot (like `deploy status`): the actual release acts
 /// are `git tag`, `gh release`, and `cargo publish`. crates.io is reported
-/// `blocked` until a registry token is configured.
+/// `blocked`: publication is on hold by owner decision, and release.yml publishes
+/// only when the repository variable `DDF_CRATES_IO` is `open`.
 fn deploy_release(json: bool) {
     use deep_diff_forge_core::{ReleasePlan, TargetState};
     let plan = ReleasePlan::new(env!("CARGO_PKG_VERSION"))

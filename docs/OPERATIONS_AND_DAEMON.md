@@ -188,6 +188,32 @@ Service row:
 | --- | --- | --- | --- | --- |
 | Deep-Diff-Forge | `deep-diff-forge` | UDS | `daemon.health` | Review daemon, AST cache, agent annotations, no TCP by default. |
 
+## Resource Requirements
+
+Measured 2026-10-27 on a 16-core Fedora Kinoite host (release build of `db65391`); single runs,
+not distributions, so they are sizing guides, not limits. The caps themselves are enforced in code
+and listed in the vault's Capacity Map.
+
+| Request | Input | Peak RSS | Time |
+| --- | --- | --- | --- |
+| CLI review JSON | 930k-line, 30 MB patch | 217 MB | 0.63 s |
+| CLI `--rank --json` | same | 120 MB | 0.36 s |
+| `rpc` `diff.compute` | same | 1.07 GB | — |
+| MCP `review_patch` | same | 1.77 GB (before the A-07 output cap) | — |
+| MCP `review_patch` | 64 MiB, the inbound cap | about 1 GB | — |
+
+Deployment needs that follow:
+
+- **Memory:** plan for about 1.1 GB per concurrent maximum-size `rpc` or MCP request, and about
+  250 MB for the CLI. The daemon admits at most eight workers, so a fully loaded daemon fed
+  maximum-size patches can need several GB; size the host or keep patches well under the cap.
+- **`/tmp` inodes:** parallel council and mutation runs create many small files. The host's `/tmp`
+  tmpfs has a 1,048,576-inode limit, which an 8-way stress run reached on 2026-10-26. Point
+  `TMPDIR` at a disk-backed directory for heavy parallel work.
+- **Output:** MCP answers stay bounded by `REVIEW_FULL_CAP` (256 KiB per value) for both
+  `review_patch` and `rank_patch`; `rpc` and socket `diff.compute` answers are not capped and grow
+  with the patch (about 2.7× its size).
+
 ## Deployment Link
 
 - Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)

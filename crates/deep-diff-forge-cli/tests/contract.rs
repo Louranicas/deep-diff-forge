@@ -127,17 +127,21 @@ fn readme_exit_code_tables_match_the_registry() {
     assert_eq!(code, 0);
     let registry: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     for (family, header) in [
-        ("engine", "| Code | Meaning |"),
-        ("council", "| Council code | Meaning |"),
+        ("engine", "| Code | Meaning | Next |"),
+        ("council", "| Council code | Meaning | Next |"),
     ] {
         let table = &section[section.find(header).unwrap_or_else(|| panic!("{header}"))..];
-        let rows: Vec<(i64, String)> = table
+        let rows: Vec<(i64, String, String)> = table
             .lines()
             .skip(2)
             .take_while(|l| l.starts_with("| "))
             .map(|l| {
                 let cells: Vec<&str> = l.trim_matches('|').split(" | ").map(str::trim).collect();
-                (cells[0].parse().unwrap(), cells[1].to_owned())
+                (
+                    cells[0].parse().unwrap(),
+                    cells[1].to_owned(),
+                    cells[2].trim_matches('`').to_owned(),
+                )
             })
             .collect();
         let codes: Vec<&serde_json::Value> = registry["codes"]
@@ -154,6 +158,17 @@ fn readme_exit_code_tables_match_the_registry() {
                 "{family} {}: {}",
                 row.0,
                 row.1
+            );
+            assert_eq!(
+                row.2,
+                entry["action"].as_str().unwrap(),
+                "{family} {}",
+                row.0
+            );
+            assert!(
+                section.contains(&format!("- `{}`: ", row.2)),
+                "the README does not explain the action {}",
+                row.2
             );
         }
     }

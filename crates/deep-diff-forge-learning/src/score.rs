@@ -53,10 +53,11 @@ impl StrategyScore {
 
     /// Whether this strategy has earned the right to be a learned default under
     /// `policy`. A score with too few samples never earns trust — the loop must
-    /// not promote on thin evidence.
+    /// not promote on thin evidence — and no policy, not even `min_samples: 0`,
+    /// makes a strategy with no receipts trusted.
     #[must_use]
     pub fn earns_trust(&self, policy: &TrustPolicy) -> bool {
-        self.samples >= policy.min_samples
+        self.samples >= policy.min_samples.max(1)
             && self.acceptance_rate >= policy.min_acceptance_rate
             && self.helpful_rate >= policy.min_helpful_rate
             && self.fallback_rate <= policy.max_fallback_rate
@@ -205,6 +206,31 @@ mod tests {
         n: usize,
     ) -> Vec<StrategyReceipt> {
         (0..n).map(|_| r(strategy, outcome, revisited)).collect()
+    }
+
+    /// The most lenient policy there is: nothing required, everything tolerated.
+    fn lenient() -> TrustPolicy {
+        TrustPolicy {
+            min_samples: 0,
+            min_acceptance_rate: 0.0,
+            min_helpful_rate: 0.0,
+            max_fallback_rate: 1.0,
+            max_revisit_rate: 1.0,
+            max_mean_elapsed_ms: f64::INFINITY,
+        }
+    }
+
+    /// Zero receipts are zero evidence; before, `min_samples: 0` trusted an empty score.
+    #[test]
+    fn no_policy_trusts_a_strategy_without_receipts() {
+        assert!(!StrategyScore::empty(Strategy::Syntax).earns_trust(&lenient()));
+    }
+
+    /// Legitimate nearby case: one receipt under the same policy is evidence, and trusted.
+    #[test]
+    fn one_receipt_is_evidence_under_a_lenient_policy() {
+        let rs = many(Strategy::Syntax, ReviewOutcome::Accepted, false, 1);
+        assert!(score_one(Strategy::Syntax, &rs).earns_trust(&lenient()));
     }
 
     #[test]

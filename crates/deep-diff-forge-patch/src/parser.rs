@@ -104,10 +104,16 @@ fn parse_lines(
             });
         }
         parser.feed(line, index + 1)?;
-        if lossy.next_if_eq(&&(index + 1)).is_some()
-            && let Some(file) = parser.file.as_mut()
-        {
-            file.lossy_lines = file.lossy_lines.saturating_add(1);
+        if lossy.next_if_eq(&&(index + 1)).is_some() {
+            // `can_mark_eof` is set exactly when this line was a hunk body line.
+            if parser.can_mark_eof
+                && let Some(body) = parser.last_body_line()
+            {
+                body.lossy = true;
+            }
+            if let Some(file) = parser.file.as_mut() {
+                file.lossy_lines = file.lossy_lines.saturating_add(1);
+            }
         }
     }
     parser.finish()
@@ -152,6 +158,16 @@ struct Parser {
 }
 
 impl Parser {
+    /// The most recent hunk body line of the current file: in the open hunk, or in the last
+    /// closed one.
+    fn last_body_line(&mut self) -> Option<&mut PatchLine> {
+        let file = self.file.as_mut()?;
+        self.hunk
+            .as_mut()
+            .and_then(|h| h.lines.last_mut())
+            .or_else(|| file.hunks.last_mut().and_then(|h| h.lines.last_mut()))
+    }
+
     fn feed(&mut self, line: &str, line_number: usize) -> Result<(), PatchParseError> {
         self.last_line = line_number;
         let can_mark_eof = std::mem::take(&mut self.can_mark_eof);
@@ -164,14 +180,9 @@ impl Parser {
             }
             if let Some(file) = self.file.as_mut() {
                 file.metadata.push(line.to_string());
-                let previous = self
-                    .hunk
-                    .as_mut()
-                    .and_then(|h| h.lines.last_mut())
-                    .or_else(|| file.hunks.last_mut().and_then(|h| h.lines.last_mut()));
-                if let Some(previous) = previous {
-                    previous.no_newline = true;
-                }
+            }
+            if let Some(previous) = self.last_body_line() {
+                previous.no_newline = true;
             }
             return Ok(());
         }
@@ -466,6 +477,7 @@ impl HunkBuf {
                 }
                 self.lines.push(PatchLine {
                     no_newline: false,
+                    lossy: false,
                     kind: PatchLineKind::Context,
                     old_line: Some(self.old_line),
                     new_line: Some(self.new_line),
@@ -483,6 +495,7 @@ impl HunkBuf {
                 }
                 self.lines.push(PatchLine {
                     no_newline: false,
+                    lossy: false,
                     kind: PatchLineKind::Added,
                     old_line: None,
                     new_line: Some(self.new_line),
@@ -498,6 +511,7 @@ impl HunkBuf {
                 }
                 self.lines.push(PatchLine {
                     no_newline: false,
+                    lossy: false,
                     kind: PatchLineKind::Removed,
                     old_line: Some(self.old_line),
                     new_line: None,

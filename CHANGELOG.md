@@ -8,6 +8,206 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **Every exit code names what to do next.** The registry gives each code an
+  `action` (`proceed`, `fix_invocation`, `check_environment`, `change_input`,
+  `review_evidence`, `report_bug`) and `may_be_transient`; `schema exit-codes`,
+  `explain --json` and the MCP exit-code tools report both, and the README
+  tables carry a checked Next column. A new code cannot be added without one.
+- **A release dry run.** `release.yml` runs on `workflow_dispatch`: the quality
+  and supply-chain gates and all three builds, with each executable binary
+  smoke-tested and every archive's checksum verified, while releasing and
+  attesting stay limited to tag refs. Tag releases get the same smoke and
+  checksum checks before anything is published.
+- **macOS tests.** A `macos` CI job runs the workspace tests on `macos-latest`
+  weekly and on manual runs, including a dispatched release dry run.
+- **Deployment resource requirements** in `docs/OPERATIONS_AND_DAEMON.md`: the
+  measured memory of maximum-size requests and the `/tmp` inode limit.
+- **The review JSON marks the line that was decoded lossily** (`"lossy": true`
+  on the line), beside the per-file `lossy_lines` count, so a consumer need not
+  guess from U+FFFD. Measured with a JSON-only rebuild sweep over 1,127 real
+  commits: every other text file rebuilds to its exact blob.
+
+### Added (slice C: SDKs)
+
+- **Rust: the `deep-diff-forge-sdk` crate.** `review` (with `InputGuards`)
+  returns a `Review` whose `to_json` is the CLI's review document byte for byte;
+  `rank` orders it by risk; `exit` re-exports the registry; `Client` calls a
+  running daemon. `Error` maps to the CLI exit codes. The public signatures are
+  pinned by a compile-checked test, and a live in-process daemon test proves the
+  client and the facade agree.
+- **`deep-diff-forge rpc`:** the daemon's JSON-RPC over stdio, with no daemon.
+  It uses the socket server's own line handler and request cap, and stops on
+  `daemon.shutdown`.
+- **Python client** (`sdk/python`, standard library only): `StdioClient` and
+  `SocketClient`. Its tests check CLI parity over both transports and run in CI.
+
+### Added (slice D: MCP server)
+
+- `deep-diff-forge mcp`: a read-only, dual-era MCP server over stdio. It
+  implements the 2026-07-28 specification (per-request `_meta`,
+  `server/discover`, `resultType`, `UnsupportedProtocolVersion` -32022) and keeps
+  the `initialize` handshake for 2025-11-25 and earlier clients. Its tools are
+  `review_patch` (the daemon's `diff.compute`, the same JSON value as the CLI's
+  document, tested over real stdio), `rank_patch`, `explain_exit_code` and
+  `exit_code_registry`. All are annotated read-only. Domain refusals are tool
+  errors (`isError`); malformed calls are protocol errors. Request lines are
+  capped and stdout carries only protocol messages.
+
+### Added (slice B: daemon parity, protocol 1)
+
+- **Daemon `diff.compute`** returns the same `deep-diff-forge.review.v0` document
+  as `--stdin-patch --json` for the same bytes, under the same input contracts
+  (`require_files`, `require_hunks`). A parity test proves this across fixtures
+  and guard combinations. The input-contract predicate moved to
+  `deep_diff_forge_patch::InputGuards`, shared by both surfaces.
+- **`engine.methods`** lists every method with its params, result and protocol
+  version. `engine.initialize` reports the method names and refuses a protocol
+  version it does not speak (domain error 2). Domain error 7 is an input-contract
+  refusal, matching CLI exit 7.
+
+### Added (slice A: CLI contract v1)
+
+- `deep-diff-forge envelope -- <command…>` wraps any command's result in one
+  `ddf.result.v1` JSON object: exit code, registry outcome, stdout (parsed when it
+  is one JSON value), stderr, and any truncation. It runs the command as a child
+  of the same binary with stdin passed through, leaves the command's own output
+  unchanged, and exits with its code.
+- `deep-diff-forge schema [result|exit-codes]` prints the envelope's JSON Schema
+  (2020-12) or the exit-code registry. `deep-diff-forge explain <code> [--family
+  engine|council] [--json]` names one code.
+- One exit-code registry, by command family (`engine`, `council`), owned by
+  `deep_diff_forge_core::exit` so the daemon and SDK slices can share it. Every
+  exit site uses its constants, and a source-scan test forbids numeric exit
+  literals. The engine meanings now say what the codes are used for: 3 is any I/O
+  or encoding failure, 4 is any invalid input, and 101 is a panic (council sa1:
+  the old "patch parse" label misnamed receipt and analysis errors). The README
+  documents both tables, and a test fails if they drift from the registry.
+- `envelope` keeps the command's exit code when its own reader closes the pipe;
+  whitespace-only stdout stays text; the schema lists every emitted field as
+  required and enumerates `outcome`.
+- `--help` no longer says crates.io is blocked only by a missing token; it is on
+  hold until the codebase is production-ready.
+
+### Changed
+
+- **The crates.io hold is a condition, not a missing secret.** The publish job
+  runs only when the repository variable `DDF_CRATES_IO` is `open`; before, it
+  ran on every tag and skipped only because no token was configured.
+- **`rank_patch` is bounded like `review_patch`.** Above 256 KiB it returns a
+  `deep-diff-forge.rank-summary.v0` with the highest-ranked files that fit and
+  `omitted_files`.
+- **Fallback reasons and semantic kinds have written-out wire names**
+  (`FallbackReason::wire_name`, `SemanticChangeKind::wire_name`) instead of
+  `Debug`; the bytes are unchanged.
+
+- **CI runs on Ubuntu 26** (Luke's decision, a measured trial, 2026-10-27).
+  Every CI job and the release workflow's supply-chain and publish jobs run on
+  `ubuntu-26.04`. The trial measured rootless Podman 5.7.0 on Ubuntu 26.04.1
+  (kernel 7.0.0): the AppArmor user-namespace restriction starts on, as on
+  24.04; the existing guarded step lifts it; and all 12 planted-breach probes
+  were refused. The Linux release binary is still built on `ubuntu-24.04`, so
+  its glibc requirement keeps it running on older distributions.
+- **GitHub and GitLab `main` share one history again** (Luke's decision,
+  2026-10-27). GitLab `main` carried three commits from 2026-06-23 (review
+  cockpit hardening) that GitHub never received; their code had already
+  reached GitHub by another path. A merge joins the histories (the code is
+  unchanged), so GitLab `main` fast-forwards with no force push. The two
+  collaboration logs they added live under `docs/history/2026-06-23-review-cockpit/`.
+- **One parse → guard → seal path** (anchor C-05; library API).
+  `deep_diff_forge_patch::SealedReview::new` decodes, parses, applies the input
+  contracts and seals the same bytes; the CLI's `--stdin-patch`, the daemon's
+  `diff.compute` and the SDK's `review` all use it, and Git selections seal
+  through `StructuredDiff::sealed_review` from the same capture.
+  `to_json_sealed` is no longer public, so a seal can no longer be paired with
+  files parsed from other bytes. Every output is byte-identical.
+- **The design docs say they are target design** (anchor E-01).
+  `SCHEMATICS.md`, `ARCHITECTURE.md` and `MODULE_STRUCTURE_PLAN.md` open with
+  a target-design banner, and `SCHEMATICS.md` carries a generated "current
+  crates and edges" block rendered from `docs/crate-edges.txt`; a test fails
+  when the block is stale (`DDF_BLESS_SCHEMATICS=1` regenerates it).
+- **`deploy status` says it ran nothing** (anchor E-06). Its gates are a
+  static `not-run` list; the JSON now carries `"gates_run": false` so a caller
+  cannot read `not-run` as a verdict, and the human output points at `just ci`.
+- **Council fields that take a closed set are enums** (anchor C-02; library
+  API). `Request.builder_family` (`BuilderFamily`), a challenge's
+  `disposition` (`Disposition`) and `Assessment.state` (`AssessmentState`)
+  were strings checked after parsing; an invalid value is now refused when it
+  is read. The JSON is unchanged, and a test holds the reviewer-facing
+  report schema's enum lists equal to the Rust enums.
+- **The council grades only a verified manifest** (anchor C-01; library API).
+  `load_manifest` returns a `SealedManifest`, which nothing else can construct,
+  and `assess` takes it, so an in-memory `Manifest` that skipped the seal,
+  request and artifact-digest checks can no longer be assessed. It reads as
+  the `Manifest` it wraps.
+- **`StructuralDiff` has one state, not three flags and an `Option`**
+  (anchor C-06; library API). `state: StructuralState` is `Unavailable(reason)`,
+  `Degraded`, `LineAnchored` or `Minimal { reformat_only }`, so combinations
+  such as "reformat-only and unavailable" can no longer be built. The
+  `reformat_only()`, `degraded()`, `minimal()` and `unavailable()` accessors
+  report what the fields did, and every JSON output is byte-identical.
+- **A learning receipt cannot carry a path** (anchor C-07; library API).
+  `StrategyReceipt.file_hash` is a `RedactedId`, which only `redacted_id()`
+  makes and which deserializing checks (16–64 lowercase hex characters), so a
+  path is refused when a receipt is built or read, not only when it is stored.
+  On disk the field is the same bare string. A load error now names its store
+  line for malformed JSON too.
+- **`InputGuards` has no `Default`** (anchor C-04; library API). "No guards"
+  is written out as `InputGuards { files: false, hunks: false }`, so
+  `..Default::default()` can no longer silently drop a contract a caller asked
+  for; the SDK's `Guards` already worked this way. A `compile_fail` doctest
+  holds it.
+- **The test-count floor is retired** (anchor B-09). The 50-tests-per-crate
+  rule was never enforced, and `just test-audit` always exited 0 (and read 0
+  without `rg`); the project's own antipattern catalogue lists count literals
+  as a false oracle. The Testing Gold Standard and the deployment docs now
+  name diff-scoped mutation (0 missed in the changed code) as the coverage
+  oracle, and the `test-audit` recipe is removed.
+- README exit-code table gains code 7 and the recommended gate command now
+  reads `--require-files --require-hunks`. The workspace has 1,192 passing tests
+  (1 ignored), measured 2026-10-26 on the stage D tree; the 991 baseline is
+  historical.
+- The exemption control evolved through councils r10–r18: a skip-attribute
+  lexer, then oracle spans (r12), differential MIR compilation (r13), the
+  gate's own build (r14), proven test code (r15), five configurations (r16),
+  an allow-list (r17) and `#[cfg(test)]` only (r18). Councils r18–r21 then
+  hardened the evidence:
+  - incremental state is removed before each build, and drift of the
+    unmodified tree is inconclusive (r19–r20);
+  - path dependencies are observed (r19);
+  - a build script's `cfg(test)` is refused from cargo's own report (r19);
+  - each unit's dep-info is held to an allow-list and fails closed (r20–r22);
+  - the controller requires exactly the gate and release configurations and a
+    clean outcome (r19–r20).
+
+  A stop rule bounds further detectors (r21). Each step answered a council
+  finding; `docs/REVIEW_COUNCIL.md` keeps the history.
+- The skip-attribute lexer (about 580 lines) is retired (r13); the oracle is
+  the single control. `code_lines` widening follows nested comments, attribute
+  brackets, plain/byte/raw strings and character literals.
+- The mutation job carries `CARGO_ENCODED_RUSTFLAGS=--emit=link,mir`, the same
+  flag as the oracle's builds, so the two are indistinguishable by flags.
+- CI runs every job on `ubuntu-24.04`, where the rootless-Podman step was
+  measured; `ubuntu-latest` moves to Ubuntu 26, which will be its own measured
+  change. `actions/checkout` (v4 → v7.0.1) and `softprops/action-gh-release`
+  (v2 → v3.0.3) move to their Node 24 releases, pinned by SHA.
+- Structural diff trims the common token prefix and suffix before the LCS and
+  anchors oversize diffs on unchanged lines.
+- CI: every toolchain pinned (stable 1.99.1, `nightly-2026-10-25`); the
+  evidence job's mutation timeout raised to 300 s; the real-Podman sandbox
+  suite runs on GitHub-hosted runners with canary (non-secret) credential
+  files and prints job diagnostics on failure; pedantic clippy covers the
+  no-default-features build and the fuzz crate; gitleaks 8.30.1 (checksum
+  pinned) scans full history. `.gitignore` covers `__pycache__/`.
+
+### Fixed
+
+- **No trust policy trusts a strategy with no receipts**, even with
+  `min_samples: 0`.
+- **The Python `SocketClient` raises `TransportError`** for a missing socket, a
+  refused connection or a timeout, as documented, not a bare `OSError`.
+- **The README's daemon section** lists all ten methods and protocol 1, under a
+  test.
+
 - **Antipattern rows record what enforces them** (anchor B-10). A catalogue
   row may carry a DDF-owned `ddf_enforcement` claim beside its verbatim import
   labels; the policy checker accepts it only when every piece of evidence
@@ -114,170 +314,6 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   2.0 object per output line, exactly one of `result`/`error`, and at most one
   answer per input line. CI runs a 10 s instrumented smoke from
   `fuzz/seeds/`.
-
-### Added (slice C: SDKs)
-
-- **Rust: the `deep-diff-forge-sdk` crate.** `review` (with `InputGuards`)
-  returns a `Review` whose `to_json` is the CLI's review document byte for byte;
-  `rank` orders it by risk; `exit` re-exports the registry; `Client` calls a
-  running daemon. `Error` maps to the CLI exit codes. The public signatures are
-  pinned by a compile-checked test, and a live in-process daemon test proves the
-  client and the facade agree.
-- **`deep-diff-forge rpc`:** the daemon's JSON-RPC over stdio, with no daemon.
-  It uses the socket server's own line handler and request cap, and stops on
-  `daemon.shutdown`.
-- **Python client** (`sdk/python`, standard library only): `StdioClient` and
-  `SocketClient`. Its tests check CLI parity over both transports and run in CI.
-
-### Added (slice D: MCP server)
-
-- `deep-diff-forge mcp`: a read-only, dual-era MCP server over stdio. It
-  implements the 2026-07-28 specification (per-request `_meta`,
-  `server/discover`, `resultType`, `UnsupportedProtocolVersion` -32022) and keeps
-  the `initialize` handshake for 2025-11-25 and earlier clients. Its tools are
-  `review_patch` (the daemon's `diff.compute`, the same JSON value as the CLI's
-  document, tested over real stdio), `rank_patch`, `explain_exit_code` and
-  `exit_code_registry`. All are annotated read-only. Domain refusals are tool
-  errors (`isError`); malformed calls are protocol errors. Request lines are
-  capped and stdout carries only protocol messages.
-
-### Added (slice B: daemon parity, protocol 1)
-
-- **Daemon `diff.compute`** returns the same `deep-diff-forge.review.v0` document
-  as `--stdin-patch --json` for the same bytes, under the same input contracts
-  (`require_files`, `require_hunks`). A parity test proves this across fixtures
-  and guard combinations. The input-contract predicate moved to
-  `deep_diff_forge_patch::InputGuards`, shared by both surfaces.
-- **`engine.methods`** lists every method with its params, result and protocol
-  version. `engine.initialize` reports the method names and refuses a protocol
-  version it does not speak (domain error 2). Domain error 7 is an input-contract
-  refusal, matching CLI exit 7.
-
-### Added (slice A: CLI contract v1)
-
-- `deep-diff-forge envelope -- <command…>` wraps any command's result in one
-  `ddf.result.v1` JSON object: exit code, registry outcome, stdout (parsed when it
-  is one JSON value), stderr, and any truncation. It runs the command as a child
-  of the same binary with stdin passed through, leaves the command's own output
-  unchanged, and exits with its code.
-- `deep-diff-forge schema [result|exit-codes]` prints the envelope's JSON Schema
-  (2020-12) or the exit-code registry. `deep-diff-forge explain <code> [--family
-  engine|council] [--json]` names one code.
-- One exit-code registry, by command family (`engine`, `council`), owned by
-  `deep_diff_forge_core::exit` so the daemon and SDK slices can share it. Every
-  exit site uses its constants, and a source-scan test forbids numeric exit
-  literals. The engine meanings now say what the codes are used for: 3 is any I/O
-  or encoding failure, 4 is any invalid input, and 101 is a panic (council sa1:
-  the old "patch parse" label misnamed receipt and analysis errors). The README
-  documents both tables, and a test fails if they drift from the registry.
-- `envelope` keeps the command's exit code when its own reader closes the pipe;
-  whitespace-only stdout stays text; the schema lists every emitted field as
-  required and enumerates `outcome`.
-- `--help` no longer says crates.io is blocked only by a missing token; it is on
-  hold until the codebase is production-ready.
-
-### Changed
-
-- **CI runs on Ubuntu 26** (Luke's decision, a measured trial, 2026-10-27).
-  Every CI job and the release workflow's supply-chain and publish jobs run on
-  `ubuntu-26.04`. The trial measured rootless Podman 5.7.0 on Ubuntu 26.04.1
-  (kernel 7.0.0): the AppArmor user-namespace restriction starts on, as on
-  24.04; the existing guarded step lifts it; and all 12 planted-breach probes
-  were refused. The Linux release binary is still built on `ubuntu-24.04`, so
-  its glibc requirement keeps it running on older distributions.
-- **GitHub and GitLab `main` share one history again** (Luke's decision,
-  2026-10-27). GitLab `main` carried three commits from 2026-06-23 (review
-  cockpit hardening) that GitHub never received; their code had already
-  reached GitHub by another path. A merge joins the histories (the code is
-  unchanged), so GitLab `main` fast-forwards with no force push. The two
-  collaboration logs they added live under `docs/history/2026-06-23-review-cockpit/`.
-- **One parse → guard → seal path** (anchor C-05; library API).
-  `deep_diff_forge_patch::SealedReview::new` decodes, parses, applies the input
-  contracts and seals the same bytes; the CLI's `--stdin-patch`, the daemon's
-  `diff.compute` and the SDK's `review` all use it, and Git selections seal
-  through `StructuredDiff::sealed_review` from the same capture.
-  `to_json_sealed` is no longer public, so a seal can no longer be paired with
-  files parsed from other bytes. Every output is byte-identical.
-- **The design docs say they are target design** (anchor E-01).
-  `SCHEMATICS.md`, `ARCHITECTURE.md` and `MODULE_STRUCTURE_PLAN.md` open with
-  a target-design banner, and `SCHEMATICS.md` carries a generated "current
-  crates and edges" block rendered from `docs/crate-edges.txt`; a test fails
-  when the block is stale (`DDF_BLESS_SCHEMATICS=1` regenerates it).
-- **`deploy status` says it ran nothing** (anchor E-06). Its gates are a
-  static `not-run` list; the JSON now carries `"gates_run": false` so a caller
-  cannot read `not-run` as a verdict, and the human output points at `just ci`.
-- **Council fields that take a closed set are enums** (anchor C-02; library
-  API). `Request.builder_family` (`BuilderFamily`), a challenge's
-  `disposition` (`Disposition`) and `Assessment.state` (`AssessmentState`)
-  were strings checked after parsing; an invalid value is now refused when it
-  is read. The JSON is unchanged, and a test holds the reviewer-facing
-  report schema's enum lists equal to the Rust enums.
-- **The council grades only a verified manifest** (anchor C-01; library API).
-  `load_manifest` returns a `SealedManifest`, which nothing else can construct,
-  and `assess` takes it, so an in-memory `Manifest` that skipped the seal,
-  request and artifact-digest checks can no longer be assessed. It reads as
-  the `Manifest` it wraps.
-- **`StructuralDiff` has one state, not three flags and an `Option`**
-  (anchor C-06; library API). `state: StructuralState` is `Unavailable(reason)`,
-  `Degraded`, `LineAnchored` or `Minimal { reformat_only }`, so combinations
-  such as "reformat-only and unavailable" can no longer be built. The
-  `reformat_only()`, `degraded()`, `minimal()` and `unavailable()` accessors
-  report what the fields did, and every JSON output is byte-identical.
-- **A learning receipt cannot carry a path** (anchor C-07; library API).
-  `StrategyReceipt.file_hash` is a `RedactedId`, which only `redacted_id()`
-  makes and which deserializing checks (16–64 lowercase hex characters), so a
-  path is refused when a receipt is built or read, not only when it is stored.
-  On disk the field is the same bare string. A load error now names its store
-  line for malformed JSON too.
-- **`InputGuards` has no `Default`** (anchor C-04; library API). "No guards"
-  is written out as `InputGuards { files: false, hunks: false }`, so
-  `..Default::default()` can no longer silently drop a contract a caller asked
-  for; the SDK's `Guards` already worked this way. A `compile_fail` doctest
-  holds it.
-- **The test-count floor is retired** (anchor B-09). The 50-tests-per-crate
-  rule was never enforced, and `just test-audit` always exited 0 (and read 0
-  without `rg`); the project's own antipattern catalogue lists count literals
-  as a false oracle. The Testing Gold Standard and the deployment docs now
-  name diff-scoped mutation (0 missed in the changed code) as the coverage
-  oracle, and the `test-audit` recipe is removed.
-- README exit-code table gains code 7 and the recommended gate command now
-  reads `--require-files --require-hunks`. The workspace has 1,192 passing tests
-  (1 ignored), measured 2026-10-26 on the stage D tree; the 991 baseline is
-  historical.
-- The exemption control evolved through councils r10–r18: a skip-attribute
-  lexer, then oracle spans (r12), differential MIR compilation (r13), the
-  gate's own build (r14), proven test code (r15), five configurations (r16),
-  an allow-list (r17) and `#[cfg(test)]` only (r18). Councils r18–r21 then
-  hardened the evidence:
-  - incremental state is removed before each build, and drift of the
-    unmodified tree is inconclusive (r19–r20);
-  - path dependencies are observed (r19);
-  - a build script's `cfg(test)` is refused from cargo's own report (r19);
-  - each unit's dep-info is held to an allow-list and fails closed (r20–r22);
-  - the controller requires exactly the gate and release configurations and a
-    clean outcome (r19–r20).
-
-  A stop rule bounds further detectors (r21). Each step answered a council
-  finding; `docs/REVIEW_COUNCIL.md` keeps the history.
-- The skip-attribute lexer (about 580 lines) is retired (r13); the oracle is
-  the single control. `code_lines` widening follows nested comments, attribute
-  brackets, plain/byte/raw strings and character literals.
-- The mutation job carries `CARGO_ENCODED_RUSTFLAGS=--emit=link,mir`, the same
-  flag as the oracle's builds, so the two are indistinguishable by flags.
-- CI runs every job on `ubuntu-24.04`, where the rootless-Podman step was
-  measured; `ubuntu-latest` moves to Ubuntu 26, which will be its own measured
-  change. `actions/checkout` (v4 → v7.0.1) and `softprops/action-gh-release`
-  (v2 → v3.0.3) move to their Node 24 releases, pinned by SHA.
-- Structural diff trims the common token prefix and suffix before the LCS and
-  anchors oversize diffs on unchanged lines.
-- CI: every toolchain pinned (stable 1.99.1, `nightly-2026-10-25`); the
-  evidence job's mutation timeout raised to 300 s; the real-Podman sandbox
-  suite runs on GitHub-hosted runners with canary (non-secret) credential
-  files and prints job diagnostics on failure; pedantic clippy covers the
-  no-default-features build and the fuzz crate; gitleaks 8.30.1 (checksum
-  pinned) scans full history. `.gitignore` covers `__pycache__/`.
-
-### Fixed
 
 - **`learn` is tested end to end** (anchor A-08, from Parking). Recording a
   receipt, reading the count back, the default `status` subcommand, and the

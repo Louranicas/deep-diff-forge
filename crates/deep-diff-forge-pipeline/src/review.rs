@@ -6,8 +6,9 @@
 //! the exact vault note, tests and deferred daemon/TUI consumers. Patch truth is
 //! immutable; enrichment lives in a separate model. Syntax is not behavior proof.
 use deep_diff_forge_core::{
-    DiffStrategy, FileStatus, ParseStatus, PatchLineKind, ReviewFile, SemanticChangeKind,
-    SemanticSpan, SemanticSpanId, SemanticTwin, TextRange, json_escape, sha256_hex,
+    DiffStrategy, FallbackReason, FileStatus, ParseStatus, PatchLineKind, ReviewFile,
+    SemanticChangeKind, SemanticSpan, SemanticSpanId, SemanticTwin, TextRange, json_escape,
+    sha256_hex,
 };
 use deep_diff_forge_patch::{CapturedPatch, PatchParseError};
 use deep_diff_forge_syntax::{ChangeKind, StructuralDiff, detect_language, structural_diff};
@@ -31,7 +32,7 @@ pub enum Coverage {
     PartialLcs,
     MissingSource,
     UnsupportedChange,
-    Unavailable(String),
+    Unavailable(FallbackReason),
 }
 impl Coverage {
     fn label(&self) -> &str {
@@ -194,7 +195,7 @@ fn enrich_file(file: &mut ReviewFile, pair: &SourcePair, span_id: &mut u64) -> F
     let diff = structural_diff(detect_language(&file.path), old, new);
     let coverage = if let Some(reason) = diff.unavailable() {
         file.planner.fallback = Some(reason.clone());
-        Coverage::Unavailable(format!("{reason:?}"))
+        Coverage::Unavailable(reason.clone())
     } else if diff.degraded() {
         Coverage::PartialLcs
     } else {
@@ -333,7 +334,7 @@ fn regions_json(spans: &[SemanticSpan]) -> String {
             format!(
                 "{{\"hunk_id\":{},\"kind\":{},\"old_lines\":{},\"new_lines\":{},\"spans\":{count}}}",
                 first.hunk_id.0,
-                json_escape(&format!("{:?}", first.kind)),
+                json_escape(first.kind.wire_name()),
                 lines_json(*old),
                 lines_json(*new)
             )
@@ -445,7 +446,7 @@ impl ReviewBundle {
                 json_escape(analysis.coverage.label())
             );
             if let Coverage::Unavailable(reason) = &analysis.coverage {
-                let _ = write!(record, ",\"reason\":{}", json_escape(reason));
+                let _ = write!(record, ",\"reason\":{}", json_escape(reason.wire_name()));
             }
             if let Some(diff) = &analysis.structural {
                 let _ = write!(
@@ -466,7 +467,7 @@ impl ReviewBundle {
                     regions_json(&twin.spans)
                 );
                 if twin.spans.len() <= SPAN_BUDGET {
-                    let spans = twin.spans.iter().map(|s| format!("{{\"id\":{},\"hunk_id\":{},\"kind\":{},\"old_range\":{},\"new_range\":{}}}", s.id.0, s.hunk_id.0, json_escape(&format!("{:?}", s.kind)), range_json(s.old_range), range_json(s.new_range))).collect::<Vec<_>>().join(",");
+                    let spans = twin.spans.iter().map(|s| format!("{{\"id\":{},\"hunk_id\":{},\"kind\":{},\"old_range\":{},\"new_range\":{}}}", s.id.0, s.hunk_id.0, json_escape(s.kind.wire_name()), range_json(s.old_range), range_json(s.new_range))).collect::<Vec<_>>().join(",");
                     let _ = write!(record, ",\"semantic_spans\":[{spans}]");
                 } else {
                     let _ = write!(

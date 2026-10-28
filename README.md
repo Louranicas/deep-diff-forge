@@ -552,23 +552,36 @@ single canonical snake-case spelling (`added`, `modified`, `deleted`,
 
 ## Exit codes
 
-| Code | Meaning |
-| --- | --- |
-| 0 | Success. |
-| 2 | CLI usage / argument error. |
-| 3 | I/O or encoding failure: reading input (stdin, a file, Git, the learning store), non-UTF-8 input, or writing output. |
-| 4 | Invalid input: a patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, or a refused Git acquisition. |
-| 6 | Daemon / interactive-terminal failure. |
-| 7 | Input contract refused. `--require-files`: the (well-formed) patch describes 0 files — stderr `refused: 0 files in input (--require-files)`. `--require-hunks`: the patch has 0 hunks or 0 added+removed lines (header-only, rename-only, context-only) — stderr `refused: 0 hunks in input (--require-hunks)`. Gates should pass both. |
-| 101 | Internal error (a panic). Report it as a bug. |
+| Code | Meaning | Next |
+| --- | --- | --- |
+| 0 | Success. | `proceed` |
+| 2 | CLI usage / argument error. | `fix_invocation` |
+| 3 | I/O or encoding failure: reading input (stdin, a file, Git, the learning store), non-UTF-8 input, or writing output. | `check_environment` |
+| 4 | Invalid input: a patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, or a refused Git acquisition. | `change_input` |
+| 6 | Daemon / interactive-terminal failure. | `check_environment` |
+| 7 | Input contract refused. `--require-files`: the (well-formed) patch describes 0 files — stderr `refused: 0 files in input (--require-files)`. `--require-hunks`: the patch has 0 hunks or 0 added+removed lines (header-only, rename-only, context-only) — stderr `refused: 0 hunks in input (--require-hunks)`. Gates should pass both. | `change_input` |
+| 101 | Internal error (a panic). Report it as a bug. | `report_bug` |
 
 The `council` subcommands use their own family ([review council](docs/REVIEW_COUNCIL.md)):
 
-| Council code | Meaning |
-| --- | --- |
-| 0 | The requested council operation completed under its contract; `status` exit 0 means ready for human review. |
-| 4 | Malformed input, stale admission, an existing artifact, or a protocol or I/O failure. |
-| 7 | HOLD: failed, missing or inconclusive evidence, or an import conflict. |
+| Council code | Meaning | Next |
+| --- | --- | --- |
+| 0 | The requested council operation completed under its contract; `status` exit 0 means ready for human review. | `proceed` |
+| 4 | Malformed input, stale admission, an existing artifact, or a protocol or I/O failure. | `change_input` |
+| 7 | HOLD: failed, missing or inconclusive evidence, or an import conflict. | `review_evidence` |
+
+**Next** is what a caller, person or agent, should do; `schema exit-codes`, `explain --json` and
+the MCP tools report it as `action`, with `may_be_transient`, which is true only for
+`check_environment`:
+
+- `proceed`: use the result.
+- `fix_invocation`: correct the command line; the same arguments fail the same way.
+- `check_environment`: check what the message names (a file or stream, the terminal, the daemon);
+  the same command can succeed once that is fixed.
+- `change_input`: change the input or the state the message names (a stale admission, an
+  existing artifact), or drop the contract that refused it; the same input is refused again.
+- `review_evidence`: read the evidence the council reported and decide; rerunning does not change it.
+- `report_bug`: report the command and its input; do not retry blindly.
 
 Diagnostics never pollute stdout: on error, stdout stays empty and the message
 goes to stderr.
@@ -613,7 +626,7 @@ The server instructions and the patch-reading tools' descriptions tell the model
 
 - **Errors:** a malformed call or an unknown tool is a JSON-RPC error. A parse failure or a broken input contract is a tool result with `isError: true`, so a model can correct its input.
 - **Limits:** a request line is capped at the 64 MiB patch budget plus 1 MiB.
-- **Large reviews:** `review_patch` returns the full document while it is at most 256 KiB. A larger review returns a bounded `deep-diff-forge.review-summary.v0` instead: the same seal and totals, and per-file counts for up to 1,000 files, with `reason` and `omitted_files`. Pass `paths` to get chosen files in full, or `detail: "summary"` to ask for the summary.
+- **Large reviews:** `review_patch` returns the full document while it is at most 256 KiB. A larger review returns a bounded `deep-diff-forge.review-summary.v0` instead: the same seal and totals, and per-file counts for up to 1,000 files, with `reason` and `omitted_files`. Pass `paths` to get chosen files in full, or `detail: "summary"` to ask for the summary. `rank_patch` returns the full ranking while it is at most 256 KiB; a larger one returns `deep-diff-forge.rank-summary.v0`: the highest-ranked files that fit, in order, with `total_files` and `omitted_files`.
 - **Lifetime:** the server exits when stdin closes.
 
 ```json
@@ -676,8 +689,9 @@ is no world-writable `/tmp` fallback: if `$XDG_RUNTIME_DIR` is unset the daemon
 fails closed and you pass an explicit `--socket PATH`. (`doctor` reports the
 resolved socket, or `<unavailable: set XDG_RUNTIME_DIR or pass --socket>`.)
 
-**JSON-RPC methods:** `engine.initialize`, `daemon.health`, `daemon.status`,
-`daemon.shutdown`, `diff.plan`, `session.open`, `session.snapshot`,
+**JSON-RPC methods** (protocol 1; `engine.methods` lists them with their parameters):
+`engine.initialize`, `engine.methods`, `daemon.health`, `daemon.status`,
+`daemon.shutdown`, `diff.plan`, `diff.compute`, `session.open`, `session.snapshot`,
 `session.close`.
 
 ```bash
@@ -686,7 +700,7 @@ deep-diff-forge daemon start --foreground
 
 # Terminal 2
 deep-diff-forge daemon health
-# {"id":1,"jsonrpc":"2.0","result":{"status":"ok","pid":…,"protocol":0,"sessions":0,…}}
+# {"id":1,"jsonrpc":"2.0","result":{"status":"ok","pid":…,"protocol":1,"sessions":0,…}}
 deep-diff-forge daemon stop
 ```
 
