@@ -22,6 +22,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   symlink is created, changed, removed or made from a file; `executable_bit` (+2) fires when a
   file becomes executable. A generated or vendored path keeps both.
 - The TUI tree marks copies `C` and mode-only changes `X`.
+- **The hostile daemon soak sends oversize and flood traffic** (H5-09). It checks a request of
+  exactly 80 MiB is served and one byte more is refused with the connection closed; that with
+  all 8 connection slots held a ninth is closed unanswered, and the daemon serves again once
+  they leave; and that 32 concurrent clients get only valid answers or closed connections.
 
 ### Fixed (expert circle, 2026-10-28)
 
