@@ -90,19 +90,22 @@ def proc_sample(pid: int) -> dict[str, Any]:
     }
 
 
-def start_daemon(socket_path: pathlib.Path) -> subprocess.Popen[str]:
+def start_daemon(socket_path: pathlib.Path, log_path: pathlib.Path) -> subprocess.Popen[str]:
+    # The daemon writes to a file, not a pipe nobody drains: a full pipe would stall it and
+    # read as a soak failure of the daemon (bug hunt 2026-10-28, H5-09).
+    log = log_path.open("w")
     proc = subprocess.Popen(
         [str(BIN), "daemon", "start", "--socket", str(socket_path)],
         cwd=REPO,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=log,
+        stderr=subprocess.STDOUT,
     )
+    log.close()
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            out, err = proc.communicate(timeout=1)
-            raise RuntimeError(f"daemon exited early code={proc.returncode}\nstdout={out}\nstderr={err}")
+            raise RuntimeError(f"daemon exited early code={proc.returncode}\noutput={log_path.read_text()[-2000:]}")
         if socket_path.exists():
             mode = stat.S_IMODE(socket_path.lstat().st_mode)
             if mode == 0o600:
@@ -134,7 +137,7 @@ def main() -> int:
         temp_path = pathlib.Path(temp)
         os.chmod(temp_path, 0o700)
         socket_path = temp_path / "daemon.sock"
-        proc = start_daemon(socket_path)
+        proc = start_daemon(socket_path, temp_path / "daemon.log")
         receipt["pid"] = proc.pid
         receipt["socket_mode"] = oct(stat.S_IMODE(socket_path.lstat().st_mode))
         deadline = time.monotonic() + args.seconds
@@ -175,13 +178,20 @@ def main() -> int:
                 proc.terminate()
                 raise RuntimeError("daemon did not exit after shutdown") from exc
             receipt["exit_code"] = proc.returncode
+            # A stopped daemon removes the socket it bound.
+            if socket_path.exists():
+                raise RuntimeError("the socket remained after the daemon stopped")
             rss_values = []
             for sample in receipt["samples"]:
                 value = str(sample.get("vm_rss", ""))
                 if value.endswith(" kB"):
                     rss_values.append(int(value[:-3].strip()))
             receipt["max_rss_kib"] = max(rss_values) if rss_values else None
-            if receipt["max_rss_kib"] is not None and receipt["max_rss_kib"] > args.max_rss_kib:
+            # No sample means the memory bound was never measured (no /proc, as on macOS), which
+            # is not a pass (bug hunt 2026-10-28, H5-09).
+            if receipt["max_rss_kib"] is None:
+                raise RuntimeError("no RSS sample: the memory bound was not measured")
+            if receipt["max_rss_kib"] > args.max_rss_kib:
                 raise RuntimeError(f"rss exceeded limit: {receipt['max_rss_kib']} > {args.max_rss_kib}")
             receipt["verdict"] = "PASS"
         except Exception as exc:  # noqa: BLE001 - receipt must capture all soak failures.
