@@ -12,7 +12,7 @@
 - Published GitHub releases: `v0.1.0`, `v0.2.0` and `v0.3.0` (tagged 2026-10-29). The workspace is `0.3.0`. crates.io stays on hold (`DDF_CRATES_IO`).
 - CI runs on `ubuntu-26.04`, with macOS tests on `macos-latest` on the weekly schedule and on manual runs only, not on pull requests. The Linux release binary is built on `ubuntu-24.04` (`.github/workflows/release.yml`).
 
-**Still open, as residual risks rather than deployment gaps:** the daemon serves its connections with one engine, so requests run one at a time. It has no peer-credential check on the socket (0700 directory and 0600 socket only). Git subprocesses have no time limit. Two `daemon start`s can race in the probe-to-bind window.
+**Still open, as residual risks rather than deployment gaps:** the daemon serves its connections with one engine, so requests run one at a time. It has no peer-credential check on the socket (0700 directory and 0600 socket only). (Git subprocesses have had a time limit since 0.3.0: 120 s for the CLI and 30 s for `review.change`.) Two `daemon start`s can race in the probe-to-bind window.
 
 Current docs: [release and publication](RELEASE_AND_PUBLICATION.md), [operations and daemon](OPERATIONS_AND_DAEMON.md), [feature deployability matrix](FEATURE_DEPLOYABILITY_MATRIX.md), [roadmap](ROADMAP.md).
 
