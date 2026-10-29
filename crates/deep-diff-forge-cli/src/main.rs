@@ -541,8 +541,15 @@ fn daemon_client(location: &deep_diff_forge_daemon::SocketLocation, line: &str) 
     match deep_diff_forge_daemon::request(location, line) {
         Ok(response) => emitln!("{response}"),
         Err(err) => {
+            // Something is there, but this user may not use it: a daemon of another user, or a
+            // socket whose mode refuses the connect.
+            let what = if err.kind() == std::io::ErrorKind::PermissionDenied {
+                "cannot use the daemon at"
+            } else {
+                "no daemon at"
+            };
             eprintln!(
-                "error: no daemon at {}: {err}",
+                "error: {what} {}: {err}",
                 display_safe(&location.path().to_string_lossy())
             );
             std::process::exit(exit::DAEMON_OR_TERMINAL);

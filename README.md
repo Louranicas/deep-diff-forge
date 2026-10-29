@@ -577,6 +577,13 @@ server on an owner-private Unix domain socket.
 **Security boundary:**
 - **Ownership.** The runtime directory is `0700` and must be owned by the effective user. The
   socket is `0600`.
+- **Same user only, checked by the kernel.** The daemon reads each client's user ID from the
+  socket (`SO_PEERCRED` on Linux, `getpeereid` on macOS) and drops any client that is not its
+  own user, whatever the socket's mode. The CLI, the Rust SDK and the Python SDK check the
+  daemon the same way before sending anything.
+- **One daemon per socket.** `daemon start` takes an exclusive lock on `<socket>.lock` before it
+  probes for a stale socket and holds it until the daemon exits. A second start, even one racing
+  the first, exits 6 and leaves the running daemon reachable.
 - **Explicit `--socket` paths fail closed.** A missing parent is created `0700`. An existing
   parent is validated and never re-permissioned. A path is replaced only if it is already a
   socket that nothing answers on. A live daemon is never displaced, and a regular file,
@@ -776,9 +783,7 @@ deployment.
 **Known limits.** Contributions are welcome on any of these; see [CONTRIBUTING.md](CONTRIBUTING.md#open-problems-worth-owning):
 
 - One engine serves all daemon connections, so a long request delays the others.
-- The daemon socket relies on `0700` and `0600` permissions; it does not check peer credentials.
 - macOS tests run weekly and on demand, not on every PR.
-- Two `daemon start`s can still race between the stale-socket probe and the bind.
 - The cockpit is tested by headless frames; there is no key-sequence harness yet.
 - Syntax features speak Rust; comparing two files directly (`<old> <new>`) and the `chain`,
   `cluster` and `loom` subcommands are planned and refused today.

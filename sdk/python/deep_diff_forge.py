@@ -16,6 +16,7 @@ import json
 import os
 import selectors
 import socket
+import struct
 import subprocess
 import time
 
@@ -150,6 +151,23 @@ class StdioClient(_Client):
         self.close()
 
 
+def _peer_uid(connection):
+    """The effective user ID of the daemon at the other end, or None where Python cannot read it.
+
+    Linux reads ``SO_PEERCRED`` (pid, uid, gid); macOS reads ``LOCAL_PEERCRED`` (a ``xucred``
+    whose second field is the uid). The daemon checks its clients itself on every platform.
+    """
+    if hasattr(socket, "SO_PEERCRED"):
+        _, uid, _ = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                                             struct.calcsize("3i")))
+        return uid
+    if hasattr(socket, "LOCAL_PEERCRED"):
+        sol_local = getattr(socket, "SOL_LOCAL", 0)
+        raw = connection.getsockopt(sol_local, socket.LOCAL_PEERCRED, 256)
+        return struct.unpack_from("=II", raw)[1]
+    return None
+
+
 class SocketClient(_Client):
     """A running ``deep-diff-forge daemon``; one connection per call, as the daemon expects."""
 
@@ -165,6 +183,10 @@ class SocketClient(_Client):
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
                 connection.settimeout(self._timeout)
                 connection.connect(self._path)
+                # Refuse a daemon of another user before sending it anything, as the Rust client does.
+                uid = _peer_uid(connection)
+                if uid is not None and uid != os.geteuid():
+                    raise TransportError(f"the daemon at {self._path} runs as uid {uid}, not uid {os.geteuid()}")
                 connection.sendall((line + "\n").encode())
                 with connection.makefile("r", encoding="utf-8") as reader:
                     answer = reader.readline(MAX_REQUEST_BYTES + 1)

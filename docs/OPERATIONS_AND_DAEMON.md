@@ -113,9 +113,22 @@ An existing socket is probed before it is replaced (`remove_stale_socket` in
 `serve.rs`): if a daemon accepts the connection, the start fails with
 `AddrInUse` (exit 6) and the running daemon is untouched; only a socket whose
 connect is refused is removed. Measured 2026-10-28: second start exit 6;
-restart over a socket left by `kill -9` succeeds. Residual: two starts racing
-between the probe and the bind can still orphan one daemon, so start one
-daemon per path from one supervisor.
+restart over a socket left by `kill -9` succeeds.
+
+The probe, the removal and the bind run under the start lock: a non-blocking
+exclusive `flock` on `<socket>.lock` beside the socket, held until the daemon
+has exited and removed its socket. A start that finds the lock held exits 6
+(`AddrInUse`, "another daemon is running or starting on this socket"), so two
+racing starts can no longer orphan a daemon. The kernel releases the lock of a
+daemon that crashed, and the lock file is never deleted. Measured 2026-10-30:
+eight starts racing over a stale socket gave one daemon and seven exits 6.
+
+Every accepted connection is checked for its peer's effective uid
+(`SO_PEERCRED` on Linux, `getpeereid` on macOS) and dropped unless it is the
+daemon's own user; the daemon logs `refused a connection: the peer runs as uid
+N, not uid M`. The CLI (`daemon health|status|stop`) and the SDK clients check
+the daemon's uid the same way and refuse a daemon of another user with
+`cannot use the daemon at PATH` (exit 6).
 
 ## Health RPC
 

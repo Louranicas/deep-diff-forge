@@ -162,3 +162,68 @@ fn daemon_full_lifecycle_start_health_stop() {
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(sock.parent().unwrap());
 }
+
+/// A socket this user may not connect to is reported as unusable, not as absent. A mode-000
+/// socket refuses the connect with EACCES (root bypasses modes); a daemon of another user is
+/// refused the same way.
+#[test]
+fn a_daemon_this_user_may_not_use_is_not_reported_absent() {
+    let sock = temp_socket("unusable");
+    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    if std::os::unix::fs::MetadataExt::uid(&std::fs::metadata(sock.parent().unwrap()).unwrap()) == 0
+    {
+        return;
+    }
+    let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    std::fs::set_permissions(&sock, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+    let (code, _, stderr) = run(&["daemon", "health", "--socket", sock.to_str().unwrap()]);
+    assert_eq!(code, 6);
+    assert!(stderr.contains("cannot use the daemon at"), "{stderr}");
+    drop(listener);
+    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+}
+
+/// A second `daemon start` on a running daemon's socket exits 6 and leaves that daemon serving.
+#[test]
+fn a_second_start_is_refused_and_the_first_keeps_serving() {
+    let sock = temp_socket("second-start");
+    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    let path = sock.to_str().unwrap();
+    let mut first = Command::new(bin())
+        .args(["daemon", "start", "--foreground", "--socket", path])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn daemon");
+    let mut ready = false;
+    for _ in 0..200 {
+        if run(&["daemon", "health", "--socket", path]).0 == 0 {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(ready, "the first daemon never answered");
+
+    let (code, _, stderr) = run(&["daemon", "start", "--foreground", "--socket", path]);
+    assert_eq!(code, 6, "{stderr}");
+    assert!(
+        stderr.contains("another daemon is running or starting on this socket"),
+        "{stderr}"
+    );
+    let (code, stdout, _) = run(&["daemon", "health", "--socket", path]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("\"status\":\"ok\""));
+
+    assert_eq!(run(&["daemon", "stop", "--socket", path]).0, 0);
+    for _ in 0..200 {
+        if let Ok(Some(_)) = first.try_wait() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let _ = first.kill();
+    let _ = first.wait();
+    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+}

@@ -26,10 +26,6 @@ Each of these is real, scoped, and listed as a known limit in the
 
 - **A TUI test harness.** The cockpit is tested through `review --probe` frames; a harness that
   drives key sequences would catch interaction bugs.
-- **Peer credentials on the daemon socket.** Check `SO_PEERCRED` on Linux and `getpeereid` on
-  macOS, in addition to the `0700` directory and `0600` socket.
-- **A lock file for `daemon start`.** Two starts racing between the stale-socket probe and the bind
-  can still collide.
 - **More languages.** Syntax features (`semantic`, `highlight`, `structural`) speak Rust today.
   The registry in `crates/deep-diff-forge-syntax` is built to take more grammars.
 - **File-pair input.** `deep-diff-forge <old> <new>` is refused today; see

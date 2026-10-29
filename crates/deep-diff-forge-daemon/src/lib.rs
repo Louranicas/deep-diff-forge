@@ -42,10 +42,11 @@ pub use protocol::{
 };
 pub use security::{
     SECURE_DIR_MODE, SECURE_SOCKET_MODE, SocketError, default_socket_path, ensure_runtime_dir,
-    runtime_base, runtime_base_from, runtime_dir, validate_private_dir,
+    peer_euid, require_peer_user, runtime_base, runtime_base_from, runtime_dir,
+    validate_private_dir,
 };
 pub use serve::{
-    MAX_REQUEST_BYTES, SocketLocation, bind_secure, handle_connection, process_line,
+    BoundListener, MAX_REQUEST_BYTES, SocketLocation, bind_secure, handle_connection, process_line,
     read_capped_line, request, run_server, run_server_with,
 };
 

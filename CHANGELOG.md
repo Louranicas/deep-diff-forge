@@ -6,6 +6,32 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Security
+
+- **The daemon serves its own user only** (closes a 0.3.0 residual risk). Each accepted
+  connection's effective uid is read from the kernel (`SO_PEERCRED` on Linux, `getpeereid` on
+  macOS and the BSDs; other platforms refuse every client), and a client of another user is
+  dropped and logged, whatever the socket's mode. The CLI, the Rust SDK (`SocketLocation::connect`)
+  and the Python SDK (`SocketClient`) check the daemon's uid the same way and refuse a daemon of
+  another user before sending anything; the CLI says `cannot use the daemon at PATH` (exit 6)
+  rather than `no daemon at`.
+
+### Fixed
+
+- **Two `daemon start`s can no longer race** (closes a 0.3.0 residual risk). Before, between the
+  stale-socket probe and the bind, a second start could remove the first's fresh socket and bind
+  its own, leaving the first running but unreachable. A start now takes a non-blocking exclusive
+  `flock` on `<socket>.lock` before the probe and holds it until the daemon exits; a start that
+  finds it held exits 6. The lock is opened without following symlinks and must be a regular file
+  owned by the effective user.
+
+### Changed
+
+- `SocketLocation::bind`, `bind_secure` and `bind_explicit` return a `BoundListener` (the
+  listener and its start lock; `listener()` borrows the socket) instead of a `UnixListener`.
+- `deep-diff-forge-daemon` uses rustix's `fs` and `net` features, and `nix` (`socket`, `user`)
+  outside Linux for `getpeereid`; that adds `memoffset` to the lock file for those targets only.
+
 ## [0.3.0] - 2026-10-29
 
 Tagged `v0.3.0` on 2026-10-29 by owner decision. 0.3.0 is minor rather than patch because the
