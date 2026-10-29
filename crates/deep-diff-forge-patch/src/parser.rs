@@ -262,6 +262,13 @@ impl Parser {
         if self.try_metadata(line, line_number)? {
             return Ok(());
         }
+        // `git format-patch` writes a bare `---` before the diffstat and a `-- ` signature after
+        // the last hunk; git ignores both outside a hunk, so they are mail framing, not body
+        // lines (bug hunt 2026-10-28, H1-07). Only these exact lines: anything else stays a
+        // stray body marker.
+        if line == "---" || line == "-- " {
+            return Ok(());
+        }
         // A stray body marker outside any hunk is malformed; quiet preamble
         // (commit messages, diffstats, blank lines) is ignored.
         if line.starts_with('+') || line.starts_with('-') {
@@ -1513,6 +1520,32 @@ diff --git a/x b/x
             matches!(err, PatchParseError::UnsupportedFormat { .. }),
             "{err:?}"
         );
+    }
+
+    /// `git format-patch` output parses (bug hunt 2026-10-28, H1-07): the bare `---` before the
+    /// diffstat and the `-- ` signature are mail framing git ignores outside a hunk. Only those
+    /// exact lines are exempt, and a `---` still needs its `+++` once a file awaits one.
+    #[test]
+    fn format_patch_mail_framing_is_not_a_body_line() {
+        let series = include_str!("../../../fixtures/patch/format-patch/series.patch");
+        let files = parse(series).unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(files.iter().all(|f| f.path == "f.txt"));
+        assert_eq!(files[1].patch_twin.hunks[0].lines.len(), 3);
+        let one = "Subject: x\n\n---\n f | 1 +\n\ndiff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n-- \n2.56.0\n";
+        assert_eq!(parse(one).unwrap().len(), 1);
+        for stray in ["----\n", "-- x\n", "--\n", "+++\n"] {
+            let err =
+                parse(&format!("--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n{stray}")).unwrap_err();
+            assert!(
+                matches!(err, PatchParseError::BodyLineOutsideHunk { .. }),
+                "{stray:?}: {err:?}"
+            );
+        }
+        assert!(matches!(
+            parse("--- a/f\n---\n").unwrap_err(),
+            PatchParseError::MisplacedHeader { line_number: 2 }
+        ));
     }
 
     /// Input git refuses as corrupt is refused here too (bug hunt 2026-10-28, H1-04).

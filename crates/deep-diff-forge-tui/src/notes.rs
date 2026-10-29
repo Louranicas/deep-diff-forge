@@ -43,6 +43,19 @@ pub fn engine_annotations(files: &[ReviewFile], ranked: &[RankedFile]) -> Vec<Ag
     out
 }
 
+/// The first path that `files` names more than once, if any. Notes, ranking and the cockpit's
+/// content are keyed by path, so a review that names a path twice (two patches concatenated)
+/// would show one section's content and notes for both; callers refuse it instead (bug hunt
+/// 2026-10-28, H4-03).
+#[must_use]
+pub fn duplicate_path(files: &[ReviewFile]) -> Option<&str> {
+    let mut seen = std::collections::HashSet::new();
+    files
+        .iter()
+        .map(|f| f.path.as_str())
+        .find(|path| !seen.insert(*path))
+}
+
 /// File-anchored annotations for `path` (notes that apply to the whole file).
 #[must_use]
 pub fn file_annotations<'a>(
@@ -96,10 +109,24 @@ fn risk_note(file: &ReviewFile, signals: &[RiskSignal]) -> AgentAnnotation {
 fn semantic_note(file: &ReviewFile) -> Option<AgentAnnotation> {
     let twin = file.semantic_twin.as_ref()?;
     let first = twin.spans.first()?;
+    // Count each kind, in order of first appearance: naming every span after the first one's
+    // kind called three added nodes and a removal "4 semantic change(s): node added" (bug hunt
+    // 2026-10-28, H4-10).
+    let mut kinds: Vec<(SemanticChangeKind, usize)> = Vec::new();
+    for span in &twin.spans {
+        match kinds.iter_mut().find(|(kind, _)| *kind == span.kind) {
+            Some((_, count)) => *count += 1,
+            None => kinds.push((span.kind, 1)),
+        }
+    }
+    let breakdown: Vec<String> = kinds
+        .iter()
+        .map(|(kind, count)| format!("{count} {}", semantic_phrase(*kind)))
+        .collect();
     let body = format!(
         "{} semantic change(s): {} (tree-sitter, {}).",
         twin.spans.len(),
-        semantic_phrase(first.kind),
+        breakdown.join(", "),
         twin.language
     );
     Some(AgentAnnotation {
@@ -180,6 +207,19 @@ mod tests {
         let files = parse(src).unwrap();
         let ranked = rank(&files);
         engine_annotations(&files, &ranked)
+    }
+
+    #[test]
+    fn duplicate_paths_are_found() {
+        assert_eq!(
+            duplicate_path(&parse(&format!("{LIB}{PLAIN}")).unwrap()),
+            None
+        );
+        assert_eq!(
+            duplicate_path(&parse(&format!("{PLAIN}{LIB}{LIB}")).unwrap()),
+            Some("src/lib.rs")
+        );
+        assert_eq!(duplicate_path(&[]), None);
     }
 
     #[test]
@@ -287,6 +327,36 @@ mod tests {
         assert_eq!(sem.len(), 1);
         assert!(sem[0].body.contains("node modified"));
         assert!(sem[0].body.contains("semantic change"));
+    }
+
+    /// Mixed kinds are each counted, not all named after the first (bug hunt H4-10).
+    #[test]
+    fn a_semantic_note_counts_each_kind() {
+        let mut files = parse(LIB).unwrap();
+        let hunk_id = files[0].patch_twin.hunks[0].id;
+        let span = |id, kind| SemanticSpan {
+            id: SemanticSpanId(id),
+            hunk_id,
+            kind,
+            old_range: None,
+            new_range: None,
+        };
+        files[0].semantic_twin = Some(SemanticTwin {
+            language: "rust".to_string(),
+            parse_status: ParseStatus::Parsed,
+            spans: vec![
+                span(1, SemanticChangeKind::AddedNode),
+                span(2, SemanticChangeKind::RemovedNode),
+                span(3, SemanticChangeKind::AddedNode),
+                span(4, SemanticChangeKind::AddedNode),
+            ],
+        });
+        let a = engine_annotations(&files, &rank(&files));
+        let sem = a.iter().find(|x| x.id.starts_with("ddf/sys/sem:")).unwrap();
+        assert_eq!(
+            sem.body,
+            "4 semantic change(s): 3 node added, 1 node removed (tree-sitter, rust)."
+        );
     }
 
     #[test]

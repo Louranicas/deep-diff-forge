@@ -63,6 +63,64 @@ independent false-positive checker before a fix.
 - The daemon soak no longer passes its memory bound with no RSS sample (no `/proc`), checks that
   a stopped daemon removed its socket, and logs the daemon to a file instead of a pipe nobody
   drained.
+- **A rename out of `.git` is hazardous too.** Renaming `.git/hooks/pre-commit` to `src/y.rs`
+  scored no signal while the reverse rename raised `hazardous_text`; the path a rename or copy
+  leaves now counts.
+- **Headless probes show what a terminal shows.** `review --probe` printed a space after each
+  wide character (`界 界`), so its lines measured wider than the terminal they describe; the
+  cell a wide character covers is skipped now.
+- **The command panel wraps.** At 80 columns the notes panel cut the hazard warning after "what
+  you see", losing "may not be what applies."; each panel line wraps at the panel width.
+- A semantic note counts each change kind (`3 node added, 1 node removed`) instead of naming
+  every span after the first one's kind.
+- **A submodule change is captured whatever configuration says.** `diff.ignoreSubmodules = all`,
+  from any configuration level, or a `.gitmodules` `ignore = all` dropped a staged submodule
+  change from `--git-*` and `review.change` with exit 0, so a gate saw no files. Every
+  acquisition now passes `--ignore-submodules=none`.
+- **`review.change` names what it did not capture.** An untracked nested repository is not in
+  the files; only the CLI's stderr said so. The `acquisition` member now lists it under
+  `omitted_untracked`.
+- A `GitAcquireOptions::byte_budget` of `usize::MAX` no longer wraps to a zero-byte read.
+- **One output mode at a time.** `--outline --hunks` printed the outline, `--rank --cluster` one of
+  the two, and `--outline --path`/`--address` dropped the selector, all with exit 0. Each is now
+  a usage error (exit 2) before any input is read.
+- **`git format-patch` output is read.** Its bare `---` before the diffstat and its `-- `
+  signature were refused as body lines outside a hunk, so `git format-patch -1 --stdout |
+  deep-diff-forge --stdin-patch` exited 4. Git ignores both outside a hunk; so does DDF now,
+  for those exact lines only.
+- **View pages hold their budget on every surface.** Each was reproduced before the fix:
+  - A 200 KB `@@` heading made a 1 KiB page 200,616 bytes and repeated on every continuation
+    page. A view now carries at most 256 bytes of a heading, flagged `section_truncated`
+    (`review.v0` keeps it whole).
+  - MCP view answers ran to 1.39× `max_bytes`, because the escaped text copy grows past half.
+    They are now re-paged smaller (`views::fit_emitted`) until the whole result fits.
+  - The CLI printed views indented but budgeted them compact (4,688 bytes for
+    `--max-bytes 4096`). It now prints the daemon's one-line page.
+- **A path or address selects every match.** `paths` returned only the first section of a path
+  that a concatenated patch names twice, and `addresses` the first of two identical hunks.
+- **`highlight` is bounded by nesting depth.** Its query cost grows with depth, not size: a
+  60,000-deep brace nest took 58 s (debug) and 20 s (release) to highlight, while the same node
+  count laid out flat took 0.14 s. Past 4,096 levels or the 200,000-node budget `semantic` uses,
+  `highlight` prints plain text; the deep nest now returns in 0.16 s.
+- **A comment's line ending is formatting.** A line comment's token held its line feed, so CRLF
+  conversion or a trailing space made `structural` and `analyze` report a rewritten comment. Each
+  comment line's trailing whitespace is dropped from its token; a changed word still counts.
+- **The cockpit refuses a patch that names a path twice.** `review` matched content and notes
+  by path, so two concatenated patches touching one file showed the first section's content and
+  notes for both, and the second section was never shown. It now exits 4 and names the path;
+  `deep_diff_forge_tui::duplicate_path` finds it for library callers.
+- **Hazards cover the invisible-payload classes.** Word joiners and invisible operators
+  (`U+2060–2064`), the soft hyphen, the combining grapheme joiner, the Mongolian vowel separator,
+  the Hangul fillers, variation selectors (`U+FE00–FE0F`, `U+E0100–E01EF`) and tag characters
+  (`U+E0000–E007F`) were neither flagged nor escaped. They are now `invisible` and shown as
+  `\u{XXXX}` on a terminal. The line and paragraph separators `U+2028`/`U+2029` are `control`.
+  A path that ends in a carriage return (a CRLF-converted header) is `control` too; only a body
+  line's CRLF is exempt.
+- **No JSON record splits on a Unicode line break.** A path or line holding `U+2028`/`U+2029`
+  left `--json`, `--jsonl`, `rpc`, MCP and the daemon socket raw, so a line-aware reader
+  (Python's `splitlines`, JavaScript before ES2019) saw one record as two. `json_escape` now
+  escapes both, and the serde-built lines pass through the new `core::json_line_safe` before
+  they are written; the parsed values are unchanged.
 
 ### Added (agent batteries)
 

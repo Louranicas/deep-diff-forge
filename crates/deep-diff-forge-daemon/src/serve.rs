@@ -10,6 +10,7 @@ use crate::security::{
     SECURE_DIR_MODE, SECURE_SOCKET_MODE, SocketError, default_socket_path, ensure_runtime_dir,
     validate_private_dir,
 };
+use deep_diff_forge_core::json_line_safe;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write as _};
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
@@ -326,7 +327,7 @@ pub fn handle_connection(stream: UnixStream, engine: &Mutex<Engine>) -> std::io:
                 &Value::Null,
                 &RpcError::new(INVALID_REQUEST, "request exceeds maximum size"),
             );
-            writeln!(writer, "{resp}")?;
+            writeln!(writer, "{}", json_line_safe(&resp))?;
             writer.flush()?;
             break; // stream position is unreliable past the cap; close the connection.
         }
@@ -335,7 +336,7 @@ pub fn handle_connection(stream: UnixStream, engine: &Mutex<Engine>) -> std::io:
                 &Value::Null,
                 &RpcError::new(PARSE_ERROR, "request is not valid UTF-8"),
             );
-            writeln!(writer, "{resp}")?;
+            writeln!(writer, "{}", json_line_safe(&resp))?;
             writer.flush()?;
             continue;
         };
@@ -344,7 +345,7 @@ pub fn handle_connection(stream: UnixStream, engine: &Mutex<Engine>) -> std::io:
             continue;
         }
         let response = process_line(line, engine);
-        writeln!(writer, "{response}")?;
+        writeln!(writer, "{}", json_line_safe(&response))?;
         writer.flush()?;
         let still_running = engine.lock().is_ok_and(|g| g.is_running());
         if !still_running {
@@ -776,6 +777,31 @@ mod tests {
         handle.join().unwrap().unwrap();
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert_eq!(lines[1]["result"]["status"], "ok");
+    }
+
+    /// Bug hunt 2026-10-28, H4-06: a response carrying U+2028/U+2029 leaves the socket as one
+    /// line, with the characters escaped, so a line-aware client never splits it.
+    #[test]
+    fn a_response_with_line_separators_is_one_line() {
+        let (client, server) = UnixStream::pair().expect("socketpair");
+        let handle = thread::spawn(move || {
+            let e = engine();
+            handle_connection(server, &e)
+        });
+        let patch = "--- a/x\u{2028}y\n+++ b/x\u{2028}y\n@@ -1 +1 @@\n-a\n+b\u{2029}c\n";
+        let request =
+            serde_json::json!({"id": 1, "method": "diff.compute", "params": {"patch": patch}});
+        let mut writer = client.try_clone().unwrap();
+        writeln!(writer, "{request}").unwrap();
+        writer.flush().unwrap();
+        writer.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut BufReader::new(client), &mut text).unwrap();
+        handle.join().unwrap().unwrap();
+        assert!(!text.contains(['\u{2028}', '\u{2029}']), "{text}");
+        assert_eq!(text.lines().count(), 1, "{text}");
+        let response: Value = serde_json::from_str(text.trim_end()).unwrap();
+        assert_eq!(response["result"]["files"][0]["path"], "x\u{2028}y");
     }
 
     #[test]

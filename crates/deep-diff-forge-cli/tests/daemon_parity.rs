@@ -165,3 +165,25 @@ fn outline_and_hunks_match_the_daemon_page_for_page() {
     let (code, stdout, stderr) = cli(patch, &[], &["--hunks", "--address", "0", "--path", "x"]);
     assert_eq!((code, stdout.as_str()), (exit::USAGE, ""), "{stderr}");
 }
+
+/// Bug hunt 2026-10-28, H5-02: the CLI printed views pretty but budgeted them compact, so
+/// `--max-bytes 4096` printed 4,688 bytes. A view prints as the daemon's one-line page, within
+/// `--max-bytes` plus its line feed.
+#[test]
+fn printed_views_stay_within_max_bytes() {
+    use std::fmt::Write as _;
+    let mut patch = String::from("--- a/b.rs\n+++ b/b.rs\n@@ -1,300 +1,300 @@\n");
+    for i in 0..300 {
+        let _ = write!(patch, "-{}{i}\n+{}x{i}\n", "\\".repeat(60), "\\".repeat(60));
+    }
+    for flags in [
+        ["--hunks", "--max-bytes", "4096"],
+        ["--outline", "--max-bytes", "1024"],
+    ] {
+        let (code, stdout, stderr) = cli(&patch, &[], &flags);
+        assert_eq!(code, 0, "{flags:?}: {stderr}");
+        let budget: usize = flags[2].parse().unwrap();
+        assert!(stdout.len() <= budget + 1, "{flags:?}: {}", stdout.len());
+        assert_eq!(stdout.lines().count(), 1, "{flags:?}");
+    }
+}

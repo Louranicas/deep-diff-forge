@@ -24,6 +24,45 @@ pub const MAX_MAX_BYTES: usize = 16 * 1024 * 1024;
 /// Bytes kept back for a page's envelope (schema, seal, cursor, counts).
 const ENVELOPE_BYTES: usize = 512;
 
+/// The most bytes of a hunk's `@@` heading a view carries. A heading is free text after the
+/// ranges, so without a cap one 200 KB heading made every page of its hunk 200 KB (bug hunt
+/// 2026-10-28, H2-04); `review.v0` keeps the whole heading.
+const SECTION_VIEW_BYTES: usize = 256;
+
+/// Run `view` with an inner budget of `max_bytes / copies` bytes (the answer is emitted
+/// `copies` times over), and again with a smaller one while the
+/// answer as the caller emits it (`emitted`) is over `max_bytes`. A caller that wraps or
+/// re-encodes an answer (MCP's escaped text copy, the CLI's pretty print) keeps the bound on
+/// what it writes (bug hunt 2026-10-28, H2-06 and H5-02). Each retry shrinks the inner budget
+/// in proportion to the overshoot and by at least a quarter, at most [`FIT_ATTEMPTS`] times
+/// (a `review.change` retry re-reads Git); at [`MIN_MAX_BYTES`], or after the last attempt,
+/// the answer is returned as it is, the case of a single line larger than the page.
+///
+/// # Errors
+/// Whatever `view` returns.
+pub fn fit_emitted<E>(
+    max_bytes: usize,
+    copies: usize,
+    emitted: impl Fn(&Value) -> usize,
+    mut view: impl FnMut(usize) -> Result<Value, E>,
+) -> Result<Value, E> {
+    let start = max_bytes / copies.max(1);
+    let mut inner = start.clamp(MIN_MAX_BYTES, max_bytes.max(MIN_MAX_BYTES));
+    for attempt in 1.. {
+        let answer = view(inner)?;
+        let size = emitted(&answer);
+        if size <= max_bytes || inner == MIN_MAX_BYTES || attempt == FIT_ATTEMPTS {
+            return Ok(answer);
+        }
+        let proportional = inner.saturating_mul(max_bytes) / size;
+        inner = proportional.min(inner - inner / 4).max(MIN_MAX_BYTES);
+    }
+    unreachable!("the attempts range is unbounded and every path returns by FIT_ATTEMPTS")
+}
+
+/// How many times [`fit_emitted`] runs a view at most.
+pub const FIT_ATTEMPTS: usize = 8;
+
 /// Which hunks [`hunks`] returns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Selection {
@@ -136,13 +175,23 @@ fn hunk_head(file: &ReviewFile, hunk: &PatchHunk) -> serde_json::Map<String, Val
             }
         }
     }
+    let (section, section_truncated) = match hunk.section.as_deref() {
+        Some(text) if text.len() > SECTION_VIEW_BYTES => {
+            let end = (0..=SECTION_VIEW_BYTES)
+                .rev()
+                .find(|&i| text.is_char_boundary(i))
+                .unwrap_or(0);
+            (Some(&text[..end]), true)
+        }
+        other => (other, false),
+    };
     let Value::Object(mut map) = json!({
         "address": hunk.address(&file.path),
         "old_start": hunk.old_start,
         "old_lines": old_lines,
         "new_start": hunk.new_start,
         "new_lines": new_lines,
-        "section": hunk.section,
+        "section": section,
         "additions": additions,
         "deletions": deletions,
     }) else {
@@ -150,6 +199,9 @@ fn hunk_head(file: &ReviewFile, hunk: &PatchHunk) -> serde_json::Map<String, Val
     };
     if !hazards.is_empty() {
         map.insert("hazards".into(), json!(hazards));
+    }
+    if section_truncated {
+        map.insert("section_truncated".into(), json!(true));
     }
     map
 }
@@ -386,26 +438,36 @@ fn select(
         }
         Selection::Addresses(addresses) => {
             let mut units = Vec::with_capacity(addresses.len());
+            // Every hunk with the address: two identical sections of one path share it.
             for address in addresses {
-                let found = files.iter().enumerate().find_map(|(f, file)| {
-                    file.patch_twin
-                        .hunks
-                        .iter()
-                        .position(|h| &h.address(&file.path) == address)
-                        .map(|h| (f, h))
-                });
-                units.push(found.ok_or_else(|| ViewError::UnknownAddress(address.clone()))?);
+                let before = units.len();
+                for (f, file) in files.iter().enumerate() {
+                    units.extend(
+                        (0..file.patch_twin.hunks.len())
+                            .filter(|&h| &file.patch_twin.hunks[h].address(&file.path) == address)
+                            .map(|h| (f, h)),
+                    );
+                }
+                if units.len() == before {
+                    return Err(ViewError::UnknownAddress(address.clone()));
+                }
             }
             Ok((units, format!("a:{}", addresses.join("\n"))))
         }
         Selection::Paths(paths) => {
             let mut units = Vec::new();
+            // Every section with the path: a concatenated patch can name one file twice.
             for path in paths {
-                let f = files
+                if !files.iter().any(|file| &file.path == path) {
+                    return Err(ViewError::UnknownPath(path.clone()));
+                }
+                for (f, file) in files
                     .iter()
-                    .position(|file| &file.path == path)
-                    .ok_or_else(|| ViewError::UnknownPath(path.clone()))?;
-                units.extend((0..files[f].patch_twin.hunks.len()).map(|h| (f, h)));
+                    .enumerate()
+                    .filter(|(_, file)| &file.path == path)
+                {
+                    units.extend((0..file.patch_twin.hunks.len()).map(|h| (f, h)));
+                }
             }
             Ok((units, format!("p:{}", paths.join("\n"))))
         }
@@ -732,6 +794,97 @@ mod tests {
     }
 
     /// Hunks by address come back in the order asked, verbatim; by path, every hunk of the file.
+    /// Bug hunt 2026-10-28, H2-04: a view carries at most `SECTION_VIEW_BYTES` of a heading, cut at
+    /// a character boundary and flagged, so one huge heading cannot blow every page's budget.
+    #[test]
+    fn a_long_heading_is_capped_in_views() {
+        let pairs = (0..25).fold(String::new(), |mut p, i| {
+            use std::fmt::Write as _;
+            let _ = write!(p, "-o{i}\n+n{i}\n");
+            p
+        });
+        let long = format!(
+            "{}é{}",
+            "S".repeat(SECTION_VIEW_BYTES - 1),
+            "S".repeat(200_000)
+        );
+        let r = review(&format!(
+            "--- a/x.rs\n+++ b/x.rs\n@@ -1,25 +1,25 @@ {long}\n{pairs}"
+        ));
+        let head = hunk_head(&r.files()[0], &r.files()[0].patch_twin.hunks[0]);
+        assert_eq!(head["section"], "S".repeat(SECTION_VIEW_BYTES - 1));
+        assert_eq!(head["section_truncated"], true);
+        for view in [
+            outline(&r, &page(MIN_MAX_BYTES, None)).unwrap(),
+            hunks(&r, &Selection::All, &page(MIN_MAX_BYTES, None)).unwrap(),
+        ] {
+            assert!(size(&view) <= MIN_MAX_BYTES, "{}", size(&view));
+        }
+        let exact = "S".repeat(SECTION_VIEW_BYTES);
+        let r = review(&format!(
+            "--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@ {exact}\n-a\n+b\n"
+        ));
+        let head = hunk_head(&r.files()[0], &r.files()[0].patch_twin.hunks[0]);
+        assert_eq!(head["section"], exact);
+        assert!(!head.contains_key("section_truncated"));
+    }
+
+    /// Bug hunt 2026-10-28, H2-05: a path names every section of it, and an address every hunk
+    /// that has it, so neither half of a concatenated patch is unreachable.
+    #[test]
+    fn a_path_or_address_selects_every_match() {
+        let one = "--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        let other = "--- a/x.rs\n+++ b/x.rs\n@@ -9 +9 @@\n-c\n+d\n";
+        let r = review(&format!("{one}{other}"));
+        let by_path = hunks(&r, &Selection::Paths(vec!["x.rs".into()]), &Page::default()).unwrap();
+        assert_eq!(by_path["selected_hunks"], 2);
+        let r = review(&format!("{one}{one}"));
+        let address = r.files()[0].patch_twin.hunks[0].address("x.rs");
+        let by_address = hunks(&r, &Selection::Addresses(vec![address]), &Page::default()).unwrap();
+        assert_eq!(by_address["selected_hunks"], 2);
+        assert!(matches!(
+            hunks(&r, &Selection::Paths(vec!["y.rs".into()]), &Page::default()),
+            Err(ViewError::UnknownPath(_))
+        ));
+    }
+
+    /// The fit loop returns the first answer that fits, shrinks in proportion while over, and
+    /// stops at the minimum budget or the last attempt; an error passes straight through.
+    #[test]
+    fn fit_emitted_shrinks_until_the_emitted_answer_fits() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let doubled = |inner: usize| -> Result<Value, ()> {
+            calls.borrow_mut().push(inner);
+            Ok(json!(inner))
+        };
+        let twice = |v: &Value| usize::try_from(v.as_u64().unwrap()).unwrap() * 2;
+        let fitted = fit_emitted(10_000, 1, twice, doubled).unwrap();
+        assert!(twice(&fitted) <= 10_000, "{fitted}");
+        assert_eq!(calls.borrow()[0], 10_000);
+        assert_eq!(calls.borrow().len(), 2, "{:?}", calls.borrow());
+        // Exactly at the budget is a fit.
+        calls.borrow_mut().clear();
+        assert_eq!(fit_emitted(4000, 2, twice, doubled).unwrap(), 2000);
+        assert_eq!(*calls.borrow(), [2000]);
+        // Never below the minimum: an answer that cannot fit is returned at MIN_MAX_BYTES.
+        let huge = |_: &Value| usize::MAX;
+        calls.borrow_mut().clear();
+        assert_eq!(fit_emitted(4096, 1, huge, doubled).unwrap(), MIN_MAX_BYTES);
+        assert_eq!(*calls.borrow(), [4096, MIN_MAX_BYTES]);
+        // At most FIT_ATTEMPTS views, even when each shrink is the minimum quarter.
+        let over = |_: &Value| MAX_MAX_BYTES;
+        calls.borrow_mut().clear();
+        let _ = fit_emitted(MAX_MAX_BYTES - 1, 1, over, doubled);
+        assert_eq!(calls.borrow().len(), FIT_ATTEMPTS);
+        // A small overshoot still shrinks by a quarter each time, not by a byte.
+        let seen = calls.borrow().clone();
+        for pair in seen.windows(2) {
+            assert_eq!(pair[1], pair[0] - pair[0] / 4, "{seen:?}");
+        }
+        let failing = |_: usize| -> Result<Value, &str> { Err("refused") };
+        assert_eq!(fit_emitted(4096, 1, twice, failing), Err("refused"));
+    }
+
     #[test]
     fn hunks_by_address_and_by_path() {
         let review = review(&patch());

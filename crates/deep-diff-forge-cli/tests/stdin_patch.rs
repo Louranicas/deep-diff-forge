@@ -198,6 +198,11 @@ fn incompatible_or_inapplicable_review_options_fail_before_stdin_is_read() {
         &["--stdin-patch", "--parallel", "2"][..],
         &["--stdin-patch", "--cursor", "opaque"][..],
         &["--stdin-patch", "--max-bytes", "100"][..],
+        // Bug hunt 2026-10-28, H2-07: two modes, or a hunk selector on the outline.
+        &["--stdin-patch", "--outline", "--hunks"][..],
+        &["--stdin-patch", "--rank", "--cluster"][..],
+        &["--stdin-patch", "--outline", "--path", "x"][..],
+        &["--stdin-patch", "--outline", "--address", "abc"][..],
     ] {
         let (code, stdout, stderr) = run(args, PATCH);
         assert_eq!(code, 2, "{args:?}: {stderr}");
