@@ -62,7 +62,9 @@ fn status_marker(status: FileStatus) -> char {
         FileStatus::Modified => 'M',
         FileStatus::Deleted => 'D',
         FileStatus::Renamed => 'R',
+        FileStatus::Copied => 'C',
         FileStatus::TypeChanged => 'T',
+        FileStatus::ModeChanged => 'X',
         FileStatus::BinaryChanged => 'B',
         FileStatus::Unknown => '?',
     }
@@ -72,7 +74,11 @@ fn status_style(status: FileStatus, palette: &Palette, base: Style) -> Style {
     let color = match status {
         FileStatus::Added => palette.added,
         FileStatus::Deleted => palette.removed,
-        FileStatus::Modified | FileStatus::Renamed | FileStatus::TypeChanged => palette.accent,
+        FileStatus::Modified
+        | FileStatus::Renamed
+        | FileStatus::Copied
+        | FileStatus::TypeChanged
+        | FileStatus::ModeChanged => palette.accent,
         FileStatus::BinaryChanged | FileStatus::Unknown => palette.dim,
     };
     base.fg(color)
@@ -340,11 +346,35 @@ mod tests {
     }
 
     #[test]
+    fn each_status_has_its_colour() {
+        let p = ThemeKind::Dark.palette();
+        let base = Style::default();
+        let colour = |status| status_style(status, &p, base).fg;
+        assert_eq!(colour(FileStatus::Added), Some(p.added));
+        assert_eq!(colour(FileStatus::Deleted), Some(p.removed));
+        for moved in [
+            FileStatus::Modified,
+            FileStatus::Renamed,
+            FileStatus::Copied,
+            FileStatus::TypeChanged,
+            FileStatus::ModeChanged,
+        ] {
+            assert_eq!(colour(moved), Some(p.accent), "{moved:?}");
+        }
+        assert_eq!(colour(FileStatus::BinaryChanged), Some(p.dim));
+        assert_eq!(colour(FileStatus::Unknown), Some(p.dim));
+    }
+
+    #[test]
     fn status_markers_are_stable() {
         assert_eq!(status_marker(FileStatus::Added), 'A');
         assert_eq!(status_marker(FileStatus::Modified), 'M');
         assert_eq!(status_marker(FileStatus::Deleted), 'D');
         assert_eq!(status_marker(FileStatus::Renamed), 'R');
+        assert_eq!(status_marker(FileStatus::Copied), 'C');
+        assert_eq!(status_marker(FileStatus::TypeChanged), 'T');
+        assert_eq!(status_marker(FileStatus::ModeChanged), 'X');
+        assert_eq!(status_marker(FileStatus::BinaryChanged), 'B');
         assert_eq!(status_marker(FileStatus::Unknown), '?');
     }
 

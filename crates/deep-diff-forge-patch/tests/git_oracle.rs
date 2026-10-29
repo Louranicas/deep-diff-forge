@@ -86,3 +86,90 @@ fn malformed_or_orphaned_eof_markers_fail_instead_of_normalizing() {
     );
     assert!(parse("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n\\ No newline at end of file\n\\ No newline at end of file\n").is_err());
 }
+
+/// Run `git apply --check` on `patch` in `root`; true when Git accepts it.
+fn git_accepts(root: &Path, patch: &str) -> bool {
+    fs::write(root.join("probe.patch"), patch).unwrap();
+    Command::new("git")
+        .current_dir(root)
+        .args(["apply", "--check", "probe.patch"])
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+/// Bug hunt 2026-10-28, H1-09 and H4-07: DDF refuses exactly the rename and copy targets and
+/// the modes Git refuses, and labels what Git writes for a copy, a mode change and a type
+/// change as Git means them.
+#[test]
+fn unsafe_moves_and_modes_are_refused_as_git_refuses_them() {
+    use deep_diff_forge_core::FileStatus;
+    let root = std::env::temp_dir().join(format!("ddf-git-oracle-moves-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    git(&root, &["init", "-q"]);
+    fs::write(root.join("x"), "x\n").unwrap();
+    git(&root, &["add", "x"]);
+    for target in [
+        "../evil",
+        "/tmp/evil",
+        "a/../y",
+        "a/./y",
+        ".git/hooks/y",
+        "a/.GIT/y",
+    ] {
+        for verb in ["rename", "copy"] {
+            let patch = format!(
+                "diff --git a/x b/{target}\nsimilarity index 100%\n{verb} from x\n{verb} to {target}\n"
+            );
+            assert!(!git_accepts(&root, &patch), "git took {verb} to {target}");
+            assert!(parse(&patch).is_err(), "ddf took {verb} to {target}");
+        }
+    }
+    let rename = "diff --git a/x b/y\nsimilarity index 100%\nrename from x\nrename to y\n";
+    assert!(git_accepts(&root, rename));
+    assert_eq!(parse(rename).unwrap()[0].status, FileStatus::Renamed);
+    for mode in ["10064x", "1006448"] {
+        let patch = format!("diff --git a/x b/x\nold mode 100644\nnew mode {mode}\n");
+        assert!(!git_accepts(&root, &patch), "git took mode {mode}");
+        assert!(parse(&patch).is_err(), "ddf took mode {mode}");
+    }
+
+    // What Git itself writes.
+    let diff = |args: &[&str]| -> String {
+        let mut all = vec![
+            "diff",
+            "--cached",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+        ];
+        all.extend_from_slice(args);
+        String::from_utf8(git(&root, &all)).unwrap()
+    };
+    git(
+        &root,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "base",
+        ],
+    );
+    fs::copy(root.join("x"), root.join("copy")).unwrap();
+    git(&root, &["add", "copy"]);
+    let copied = parse(&diff(&["-C", "--find-copies-harder"])).unwrap();
+    assert_eq!(
+        (copied[0].status, copied[0].path.as_str()),
+        (FileStatus::Copied, "copy")
+    );
+    git(&root, &["rm", "-q", "--cached", "copy"]);
+    git(&root, &["update-index", "--chmod=+x", "x"]);
+    let mode = parse(&diff(&["--", "x"])).unwrap();
+    assert_eq!(mode[0].status, FileStatus::ModeChanged);
+    fs::remove_dir_all(root).unwrap();
+}
