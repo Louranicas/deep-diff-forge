@@ -220,7 +220,11 @@ The daemon smoke must assert:
 The unit tests in `crates/deep-diff-forge-daemon/src/serve.rs` and
 `security.rs`, the CLI tests in `crates/deep-diff-forge-cli/tests/daemon.rs`,
 and the hostile soak (`scripts/security/daemon_soak.py`, 10 s in CI) cover
-these. Each was also checked by hand on 2026-10-28 with the 0.3.0 debug build
+these. Before its timed loop the soak sends a request of exactly 80 MiB (served) and one byte
+more (refused), holds all 8 connection slots and checks a ninth is closed unanswered and that
+the daemon serves again once they leave, then runs 32 concurrent clients and checks every
+answer is a valid response (measured 2026-10-29: 504 served, 296 closed at the limit, RSS
+7,532 KiB). Each was also checked by hand on 2026-10-28 with the 0.3.0 debug build
 (`engine.initialize` over `deep-diff-forge rpc`, the rest against a live
 daemon).
 
