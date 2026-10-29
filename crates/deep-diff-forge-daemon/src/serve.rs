@@ -600,7 +600,15 @@ pub fn run_server(location: &SocketLocation) -> std::io::Result<()> {
 ///
 /// Returns an I/O error from binding or accepting connections.
 pub fn run_server_with(location: &SocketLocation, engine: Engine) -> std::io::Result<()> {
-    let bound = location.bind()?;
+    serve_bound(location, location.bind()?, engine)
+}
+
+/// The accept loop of [`run_server_with`] over a listener already bound at `location`.
+fn serve_bound(
+    location: &SocketLocation,
+    bound: BoundListener,
+    engine: Engine,
+) -> std::io::Result<()> {
     let listener = bound.listener();
     let socket_path = location.path().to_path_buf();
     let me = rustix::process::geteuid().as_raw();
@@ -1712,21 +1720,25 @@ mod tests {
         let Some(sock) = std::env::var_os(ACCEPT_ERROR_CHILD_ENV) else {
             return;
         };
-        // Leave room for exactly two more descriptors (the start lock and the listener). Linux
+        // Bind first, then leave no spare descriptor, so no platform's count of the descriptors
+        // binding takes (the start lock, the listener, anything else) matters. Linux
         // reserves the accepted fd before waiting, so every accept() then fails
         // with EMFILE immediately — a persistent, non-EINTR accept error. macOS
         // fails only once a connection is pending, which the parent supplies.
+        let location = SocketLocation::at(PathBuf::from(sock));
+        let bound = location.bind().expect("bind before the limit");
+        let engine = Engine::new();
         let next_fd = std::fs::File::open("/dev/null").unwrap().as_raw_fd();
         let limit = getrlimit(Resource::Nofile);
         setrlimit(
             Resource::Nofile,
             Rlimit {
-                current: Some(u64::try_from(next_fd).unwrap() + 2),
+                current: Some(u64::try_from(next_fd).unwrap()),
                 maximum: limit.maximum,
             },
         )
         .unwrap();
-        let err = run_server(&SocketLocation::at(PathBuf::from(sock)))
+        let err = serve_bound(&location, bound, engine)
             .expect_err("a persistent accept error must stop the server");
         assert_eq!(err.raw_os_error(), Some(24), "EMFILE: {err}");
     }
