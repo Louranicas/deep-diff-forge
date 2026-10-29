@@ -5,9 +5,10 @@
 """Hostile-client soak for the Deep-Diff-Forge UDS daemon.
 
 The soak uses an explicit socket path under a freshly-created 0700 temp dir,
-then exercises healthy JSON-RPC clients, malformed JSON, empty lines, and short
-slowloris-style connects. It records resource samples and proves the daemon can
-still stop cleanly after adversarial traffic.
+then exercises healthy JSON-RPC clients, malformed JSON, empty lines, short
+slowloris-style connects, a request at and over the 80 MiB cap, a flood past the
+connection limit and concurrent clients. It records resource samples and proves
+the daemon can still stop cleanly after adversarial traffic.
 """
 
 from __future__ import annotations
@@ -22,12 +23,17 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Any
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 REPORT_DIR = REPO / "reports" / "security"
 PI_REPORT_DIR = REPO / ".pi" / "reports"
+# The daemon's limits (crates/deep-diff-forge-daemon/src/serve.rs).
+MAX_REQUEST_BYTES = 80 * 1024 * 1024
+MAX_CONNECTIONS = 8
+HEALTH = b'{"jsonrpc":"2.0","id":7,"method":"daemon.health"}'
 BIN = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", str(REPO / "target"))) / "debug" / "deep-diff-forge"
 
 
@@ -66,6 +72,112 @@ def raw_request(socket_path: pathlib.Path, payload: bytes, *, read: bool = True,
         if read:
             return sock.recv(4096)
         return b""
+
+
+def read_line(sock: socket.socket) -> bytes:
+    """Read until a newline or end of stream."""
+    data = b""
+    while not data.endswith(b"\n"):
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def padded_health(total: int, *, newline: bool) -> bytes:
+    """A health request padded with spaces to exactly `total` bytes."""
+    body = HEALTH.ljust(total - int(newline), b" ")
+    return body + b"\n" if newline else body
+
+
+def send_whole(socket_path: pathlib.Path, payload: bytes, *, timeout: float = 30.0) -> bytes:
+    """Send `payload`, close the write side and read one response line."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout)
+        sock.connect(str(socket_path))
+        sock.sendall(payload)
+        sock.shutdown(socket.SHUT_WR)
+        return read_line(sock)
+
+
+def answer_or_closed(socket_path: pathlib.Path, payload: bytes) -> bytes:
+    """One response line, or b"" when the daemon closed the connection unanswered (an empty
+    read, or a reset or broken pipe if it closed before reading what was sent)."""
+    try:
+        return send_whole(socket_path, payload, timeout=10)
+    except (ConnectionResetError, BrokenPipeError):
+        return b""
+
+
+def oversize_probe(socket_path: pathlib.Path) -> dict[str, Any]:
+    """A request of exactly the cap is served; one byte more is refused and the connection closed."""
+    at_cap = json.loads(send_whole(socket_path, padded_health(MAX_REQUEST_BYTES, newline=True)))
+    if at_cap.get("result", {}).get("status") != "ok":
+        raise RuntimeError(f"a request at the {MAX_REQUEST_BYTES}-byte cap was not served: {str(at_cap)[:300]}")
+    over = json.loads(send_whole(socket_path, padded_health(MAX_REQUEST_BYTES + 1, newline=False)))
+    message = over.get("error", {}).get("message", "")
+    if "exceeds maximum size" not in message:
+        raise RuntimeError(f"an over-cap request was not refused: {str(over)[:300]}")
+    return {"kind": "oversize", "at_cap": "served", "over_cap": message}
+
+
+def flood_probe(socket_path: pathlib.Path) -> dict[str, Any]:
+    """Past the connection limit a connection is closed unanswered; slots free when holders leave."""
+    holders = []
+    try:
+        for _ in range(MAX_CONNECTIONS):
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            sock.connect(str(socket_path))
+            holders.append(sock)
+        # Each holder proves its worker is running, so all slots are taken.
+        for sock in holders:
+            sock.sendall(HEALTH + b"\n")
+            if b'"ok"' not in read_line(sock):
+                raise RuntimeError("a connection under the limit was not served")
+        extra = answer_or_closed(socket_path, HEALTH + b"\n")
+        if extra:
+            raise RuntimeError(f"connection {MAX_CONNECTIONS + 1} was served past the limit: {extra[:200]!r}")
+    finally:
+        for sock in holders:
+            sock.close()
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if b'"ok"' in answer_or_closed(socket_path, HEALTH + b"\n"):
+            return {"kind": "flood", "held": MAX_CONNECTIONS, "extra": "closed unanswered", "recovered": True}
+        time.sleep(0.05)
+    raise RuntimeError("the daemon did not serve again after the flood ended")
+
+
+def concurrent_probe(socket_path: pathlib.Path, *, clients: int = 4 * MAX_CONNECTIONS, rounds: int = 25) -> dict[str, Any]:
+    """Many clients at once: every answer is a valid response, and connections past the limit
+    are closed unanswered, never answered wrongly."""
+    counts = {"served": 0, "closed": 0}
+    bad: list[str] = []
+    lock = threading.Lock()
+
+    def client() -> None:
+        for _ in range(rounds):
+            answer = answer_or_closed(socket_path, HEALTH + b"\n")
+            with lock:
+                if not answer:
+                    counts["closed"] += 1
+                elif json.loads(answer).get("result", {}).get("status") == "ok":
+                    counts["served"] += 1
+                else:
+                    bad.append(answer[:200].decode(errors="replace"))
+
+    threads = [threading.Thread(target=client) for _ in range(clients)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    if bad:
+        raise RuntimeError(f"{len(bad)} concurrent answers were wrong, first: {bad[0]}")
+    if counts["served"] == 0:
+        raise RuntimeError("no concurrent request was served")
+    return {"kind": "concurrent", "clients": clients, "rounds": rounds, **counts}
 
 
 def proc_sample(pid: int) -> dict[str, Any]:
@@ -143,6 +255,10 @@ def main() -> int:
         deadline = time.monotonic() + args.seconds
         iteration = 0
         try:
+            # Hostile volume first, so the timed loop below proves the daemon recovered.
+            for probe in (oversize_probe, flood_probe, concurrent_probe):
+                receipt["checks"].append(probe(socket_path))
+                receipt["samples"].append({"iteration": 0, "after": probe.__name__, **proc_sample(proc.pid)})
             while time.monotonic() < deadline:
                 iteration += 1
                 health = cli(socket_path, "health")

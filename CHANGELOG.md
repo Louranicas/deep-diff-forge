@@ -6,6 +6,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Changed (owner decisions on the bug hunt, 2026-10-29)
+
+- **The hostile daemon soak sends oversize and flood traffic** (H5-09). It checks a request of
+  exactly 80 MiB is served and one byte more is refused with the connection closed; that with
+  all 8 connection slots held a ninth is closed unanswered, and the daemon serves again once
+  they leave; and that 32 concurrent clients get only valid answers or closed connections.
+
 ### Fixed (expert circle, 2026-10-28)
 
 A seven-seat expert circle reviewed DDF as pioneer coding agents would use it: Claude Code, Codex,
