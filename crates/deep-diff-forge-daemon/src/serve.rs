@@ -1239,8 +1239,10 @@ mod tests {
         );
     }
 
-    /// A start lock that is not a regular file (here a FIFO) is refused.
+    /// A start lock that is not a regular file (here a FIFO) is refused. rustix has no FIFO call on
+    /// Apple targets, so this runs elsewhere (Linux CI, where the mutation gate runs too).
     #[test]
+    #[cfg(not(target_vendor = "apple"))]
     fn a_start_lock_that_is_not_a_regular_file_is_refused() {
         let (parent, sock) = explicit_temp("lock-fifo", 0o700);
         rustix::fs::mknodat(
