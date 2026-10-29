@@ -131,9 +131,11 @@ Still open:
   configured token alone publishes nothing. A `workflow_dispatch` run is a dry
   run: gates, builds, a binary smoke test and checksum verification, with
   nothing released or attested.
-- **Still open** — the `deploy doctor` and `deploy receipt` commands,
-  per-target publication states, and a release run since the Node 24, SDK and
-  Ubuntu 26 changes.
+- **Still open** — the `deploy doctor` and `deploy receipt` commands, and
+  per-target publication states. (The release run since the Node 24, SDK and
+  Ubuntu 26 changes is closed: see the status at the top. On 2026-10-29 the
+  `v0.3.0` release-prep dry run 40855042953 at `478db26` passed too: every
+  quality gate including macOS, all three builds, crates.io skipped as held.)
 
 ## Executive Gaps
 

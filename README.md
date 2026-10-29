@@ -753,16 +753,18 @@ per-round history. This section is a map, not a copy.
 
 **0.3.0 is production-ready for its declared scope.** That scope is a local, single-user
 review tool on Linux and macOS: CLI, Unix-socket daemon, `rpc`, MCP and SDKs, released as
-GitHub binaries. The evidence is measured at commit `2f03f40`:
+GitHub binaries. The evidence was measured on 2026-10-29 for `v0.3.0` (details in
+[EVIDENCE.md](EVIDENCE.md#v030-release-readiness-2026-10-29)):
 
-- **Release dry runs.** Two dry runs of the release workflow passed on `main`: every quality
-  gate including macOS, three builds, a smoke test of each runnable binary, and checksum
-  verification.
+- **Release dry run.** The release workflow passed at `478db26`: every quality gate including
+  macOS, three builds, a smoke test of each runnable binary, and checksum verification.
 - **Fuzzing.** Each fuzz target runs on every PR. After the last parser change, a local run of
-  300 s per target crashed 0 times (`patch_parser` 5.46 M runs, `review_json` 4.16 M).
+  300 s for each of the 8 targets crashed 0 times (`patch_parser` 6.47 M runs, `review_json`
+  4.97 M) at `8f957aa`.
 - **Fidelity and soak.**
   - A sweep rebuilt 13,811 real files exactly from the review JSON.
-  - A one-hour daemon soak held flat memory.
+  - A one-hour daemon soak held flat memory, and the CI soak now also sends requests at and
+    over the 80 MiB cap, a flood past the 8-connection limit and 32 concurrent clients.
 - **Audit fixes, 2026-10-28.** An independent audit and the first macOS runs found ten issues,
   and all are fixed. The most serious was a text change hidden after a `GIT binary patch` body,
   which the review missed and `git apply` applied. Each fix has a test that fails on the old

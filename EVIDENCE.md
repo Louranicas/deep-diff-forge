@@ -6,8 +6,8 @@
 
 **Current at 0.3.0:**
 
-- The newest evidence is [Release dry runs and fuzzing (2026-10-28)](#release-dry-runs-and-fuzzing-2026-10-28), at the end of this file.
-- Published GitHub releases are `v0.1.0` and `v0.2.0` only. `v0.2.1` was never tagged. The workspace version is `0.3.0` and untagged; tagging is the owner's decision.
+- The newest evidence is [v0.3.0 release readiness (2026-10-29)](#v030-release-readiness-2026-10-29), at the end of this file. It supersedes the 2026-10-28 fuzz numbers, which predate the last parser change.
+- Published GitHub releases are `v0.1.0`, `v0.2.0` and, from 2026-10-29 by owner decision, `v0.3.0`. `v0.2.1` was never tagged.
 - crates.io is on hold by owner decision until the codebase is production-hardened. This replaces the older "token-gated" wording in the L8 and L9 sections. A configured token alone publishes nothing: the publish job in `.github/workflows/release.yml` runs only on a `v*` tag **and** when the repository variable `DDF_CRATES_IO` is `open`. `deep-diff-forge deploy release` reports `crates.io blocked` (measured with the binary).
 - The 2026-10-26 section ends with "Nothing is tagged or published". That refers to the council stack only. The `v0.1.0` and `v0.2.0` GitHub releases already existed.
 - Test counts in older sections (568, 765, 794) are counts at that time and are not current.
@@ -642,3 +642,25 @@ which made parsing quadratic. With an `in_binary_body` flag (`679f7eb`), 1 M
 `index 0` metadata lines (8 MB, inside every budget) parse in **0.20 s instead
 of 139 s**. 100 k lines take 0.02 s and 200 k lines 0.04 s
 `[measured, release build, operator workstation]`.
+
+## v0.3.0 release readiness (2026-10-29)
+
+Measured on 2026-10-29 for the owner's `v0.3.0` tag decision.
+
+- **Fuzzing, all 8 targets, 300 s each, at `main` `8f957aa`.** This is after the last parser change (PR #41). Settings match CI: `cargo +nightly-2026-10-25 fuzz run`, seeded from `fuzz/seeds/`, `-max_len=65536` (`council_report` 4096). Every target exited 0 with no crash artifact.
+
+  | Target | Runs |
+  | --- | ---: |
+  | `patch_parser` | 6,471,335 |
+  | `review_json` | 4,972,954 |
+  | `daemon_protocol` | 5,692,847 |
+  | `agent_annotation` | 72,808,741 |
+  | `council_report` | 51,881,182 |
+  | `stdio_mcp` | 1,062,028 |
+  | `stdio_rpc` | 1,844,151 |
+  | `structural_soundness` | 1,449,217 |
+
+- **Release dry run.** `release.yml` (`workflow_dispatch`) run 40855042953 at `478db26` passed. That covers the supply-chain gate, every quality job including macOS tests, and the builds for `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin` and `x86_64-apple-darwin`. The `crates.io publish (owner-gated)` job was skipped, because `DDF_CRATES_IO` is unset.
+- **Tests and gates.** 1,451 tests (passed plus ignored). Pedantic clippy is clean. `scripts/ci_local.sh` reports steps failed: 0. All nine required checks are green on PRs #40, #41 and #42, including diff mutation with no missed mutant.
+- **Daemon soak (PR #40).** It sends a request at the 80 MiB cap, which is served, and one byte over, which is refused. With all 8 connection slots held, a ninth connection is closed unanswered, and the daemon serves again afterwards. With 32 concurrent clients: 504 served, 296 closed at the limit, max RSS 7,532 KiB.
+- **Unchanged limits.** These are listed in the README's *Project status*: one engine serializes daemon requests, the socket is not checked for peer credentials, macOS tests run weekly and on demand, two `daemon start` commands can race, there is no cockpit key-sequence harness, and syntax features cover Rust only.
