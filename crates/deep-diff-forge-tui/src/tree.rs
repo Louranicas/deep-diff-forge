@@ -346,6 +346,26 @@ mod tests {
     }
 
     #[test]
+    fn each_status_has_its_colour() {
+        let p = ThemeKind::Dark.palette();
+        let base = Style::default();
+        let colour = |status| status_style(status, &p, base).fg;
+        assert_eq!(colour(FileStatus::Added), Some(p.added));
+        assert_eq!(colour(FileStatus::Deleted), Some(p.removed));
+        for moved in [
+            FileStatus::Modified,
+            FileStatus::Renamed,
+            FileStatus::Copied,
+            FileStatus::TypeChanged,
+            FileStatus::ModeChanged,
+        ] {
+            assert_eq!(colour(moved), Some(p.accent), "{moved:?}");
+        }
+        assert_eq!(colour(FileStatus::BinaryChanged), Some(p.dim));
+        assert_eq!(colour(FileStatus::Unknown), Some(p.dim));
+    }
+
+    #[test]
     fn status_markers_are_stable() {
         assert_eq!(status_marker(FileStatus::Added), 'A');
         assert_eq!(status_marker(FileStatus::Modified), 'M');

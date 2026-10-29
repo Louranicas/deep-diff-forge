@@ -1296,7 +1296,10 @@ new mode 100755
     #[test]
     fn a_mode_that_is_not_octal_is_refused() {
         for header in ["old mode", "new mode", "new file mode", "deleted file mode"] {
-            for bad in ["", "10064x", "1006448", "-100644", "100644 ", "\u{663}"] {
+            // "1006444" is seven octal digits and "+10064" a sign `from_str_radix` would take.
+            for bad in [
+                "", "10064x", "1006448", "1006444", "+10064", "-100644", "100644 ", "\u{663}",
+            ] {
                 let input = format!("diff --git a/l b/l\n{header} {bad}\n");
                 assert_eq!(
                     parse(&input),
@@ -1324,6 +1327,11 @@ copy to y
         assert_eq!(file.path, "y");
         let edited = "diff --git a/x b/y\nsimilarity index 90%\ncopy from x\ncopy to y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n";
         assert_eq!(one(edited).status, FileStatus::Copied);
+        // Either copy header alone marks the copy.
+        for half in ["copy from x", "copy to y"] {
+            let input = format!("diff --git a/x b/y\n{half}\n");
+            assert_eq!(one(&input).status, FileStatus::Copied, "{half}");
+        }
     }
 
     /// Bug hunt 2026-10-28, H1-09: Git refuses a rename or copy that writes outside the tree or
