@@ -6,6 +6,23 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Changed (owner decisions on the bug hunt, 2026-10-29)
+
+- **A rename or copy that Git refuses is refused** (H1-09). `rename to ../../evil`, an absolute
+  path, or a `.`, `..` or `.git` component in a rename or copy path now fails with exit 4
+  (`InvalidPath`), as `git apply` fails with "invalid path". DDF used to show such a patch with a
+  `path_traversal` hazard. A plain `---`/`+++` path keeps its hazard, since a non-Git diff may
+  legitimately name `../`.
+- **Copies are `copied`** (H1-09). A `copy from`/`copy to` file reported `modified`.
+- **A mode-only change is `mode_changed`** (H4-07). Flipping the executable bit reported
+  `type_changed`, which now means only that the object type changed (a file, a symlink or a
+  submodule became another). A mode header that is not one to six octal digits is refused
+  (`InvalidMode`), as `git apply` refuses it.
+- **Symlinks and new executables are risk signals** (H4-07). `symlink_change` (+3) fires when a
+  symlink is created, changed, removed or made from a file; `executable_bit` (+2) fires when a
+  file becomes executable. A generated or vendored path keeps both.
+- The TUI tree marks copies `C` and mode-only changes `X`.
+
 ### Fixed (expert circle, 2026-10-28)
 
 A seven-seat expert circle reviewed DDF as pioneer coding agents would use it: Claude Code, Codex,

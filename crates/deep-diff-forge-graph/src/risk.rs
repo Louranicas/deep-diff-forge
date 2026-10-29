@@ -28,6 +28,11 @@ pub enum RiskSignal {
     /// path traverses (`..`, absolute) or names `.git`: what a reviewer sees may differ from
     /// what is applied (Trojan Source, CVE-2021-42574).
     HazardousText,
+    /// A symlink is created, changed, removed or made from a file: its target can point
+    /// anywhere, and a later write through it lands there.
+    SymlinkChange,
+    /// A file becomes executable (a new `100755` file, or a mode change that adds an `x` bit).
+    ExecutableBit,
 }
 
 impl RiskSignal {
@@ -45,6 +50,8 @@ impl RiskSignal {
             Self::TestOnly => "test_only",
             Self::GeneratedOrVendored => "generated_or_vendored",
             Self::HazardousText => "hazardous_text",
+            Self::SymlinkChange => "symlink_change",
+            Self::ExecutableBit => "executable_bit",
         }
     }
 }
@@ -72,6 +79,7 @@ pub fn score_file(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
         signals.push(RiskSignal::GeneratedOrVendored);
         score += status_weight(file, &mut signals);
         score += hazard_weight(file, &mut signals);
+        score += mode_weight(file, &mut signals);
         return (score, signals);
     }
 
@@ -96,6 +104,7 @@ pub fn score_file(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
 
     score += status_weight(file, &mut signals);
     score += hazard_weight(file, &mut signals);
+    score += mode_weight(file, &mut signals);
 
     let (adds, dels) = change_counts(file);
     let hunks = file.patch_twin.hunks.len();
@@ -140,6 +149,39 @@ fn hazard_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
     } else {
         0
     }
+}
+
+/// +3 for a symlink and +2 for a file made executable, recording each signal (bug hunt
+/// 2026-10-28, H4-07). Modes come from the extended headers, which the parser has checked are
+/// octal.
+fn mode_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
+    const SYMLINK: u32 = 0o120_000;
+    const REGULAR: u32 = 0o100_000;
+    let modes = |prefixes: &[&str]| -> Vec<u32> {
+        file.patch_twin
+            .metadata
+            .iter()
+            .filter_map(|m| prefixes.iter().find_map(|p| m.strip_prefix(p)))
+            .filter_map(|mode| u32::from_str_radix(mode, 8).ok())
+            .collect()
+    };
+    let old = modes(&["old mode ", "deleted file mode "]);
+    let new = modes(&["new mode ", "new file mode "]);
+    let executable = |mode: &u32| mode & 0o170_000 == REGULAR && mode & 0o111 != 0;
+    let mut weight = 0;
+    if old
+        .iter()
+        .chain(&new)
+        .any(|mode| mode & 0o170_000 == SYMLINK)
+    {
+        signals.push(RiskSignal::SymlinkChange);
+        weight += 3;
+    }
+    if new.iter().any(executable) && !old.iter().any(executable) {
+        signals.push(RiskSignal::ExecutableBit);
+        weight += 2;
+    }
+    weight
 }
 
 /// The weight of a file's status (added, deleted, binary), recording its signal.
@@ -389,26 +431,28 @@ mod tests {
         assert_eq!(RiskSignal::HazardousText.label(), "hazardous_text");
     }
 
-    /// Bug hunt 2026-10-28, H4-07: the path a rename or copy leaves counts, so moving a Git hook
-    /// into the tree is flagged like moving one into `.git`.
+    /// Bug hunt 2026-10-28, H4-07: the path a rename or copy leaves counts, so moving a file
+    /// whose name hides a bidi control into a plain name is flagged like the reverse. (A source
+    /// that traverses or names `.git` is refused by the parser since H1-09.)
     #[test]
     fn a_hazardous_rename_or_copy_source_is_flagged() {
         let moved = |verb: &str, from: &str| {
-            file(&format!(
+            format!(
                 "diff --git a/{from} b/src/y.rs\nsimilarity index 100%\n{verb} from {from}\n{verb} to src/y.rs\n"
-            ))
+            )
         };
         for verb in ["rename", "copy"] {
-            let (_, hook) = score_file(&moved(verb, ".git/hooks/pre-commit"));
+            let (_, hidden) = score_file(&file(&moved(verb, "src/x\u{202E}sr.rs")));
             assert!(
-                hook.contains(&RiskSignal::HazardousText),
-                "{verb}: {hook:?}"
+                hidden.contains(&RiskSignal::HazardousText),
+                "{verb}: {hidden:?}"
             );
-            let (_, plain) = score_file(&moved(verb, "src/x.rs"));
+            let (_, plain) = score_file(&file(&moved(verb, "src/x.rs")));
             assert!(
                 !plain.contains(&RiskSignal::HazardousText),
                 "{verb}: {plain:?}"
             );
+            assert!(parse(&moved(verb, ".git/hooks/pre-commit")).is_err());
         }
     }
 
@@ -535,6 +579,63 @@ mod tests {
     fn min_js_is_generated() {
         let (score, _) = score_file(&modify("web/app.min.js", 5));
         assert_eq!(score, 1);
+    }
+
+    /// Bug hunt 2026-10-28, H4-07: a symlink or a newly executable file is a risk signal, with
+    /// its own weight; neither scored anything before.
+    #[test]
+    fn symlinks_and_new_executables_are_risk_signals() {
+        use RiskSignal::{DeletedFile, ExecutableBit, GeneratedOrVendored, NewFile, SymlinkChange};
+        let scored = |input: &str| score_file(&file(input));
+        let header = |path: &str, modes: &str| format!("diff --git a/{path} b/{path}\n{modes}");
+        let new_file = |path: &str, mode: &str| {
+            header(
+                path,
+                &format!("new file mode {mode}\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+t\n"),
+            )
+        };
+        assert_eq!(
+            scored(&new_file("link", "120000")),
+            (7, vec![NewFile, SymlinkChange])
+        );
+        assert_eq!(
+            scored(&header(
+                "link",
+                "deleted file mode 120000\n--- a/link\n+++ /dev/null\n@@ -1 +0,0 @@\n-t\n"
+            )),
+            (8, vec![DeletedFile, SymlinkChange])
+        );
+        assert_eq!(
+            scored(&new_file("run.sh", "100755")),
+            (6, vec![NewFile, ExecutableBit])
+        );
+        assert_eq!(scored(&new_file("run.sh", "100644")), (4, vec![NewFile]));
+        assert_eq!(scored(&new_file("sub", "160000")), (4, vec![NewFile]));
+        for x in ["100100", "100010", "100001"] {
+            assert_eq!(
+                scored(&new_file("run.sh", x)).1,
+                vec![NewFile, ExecutableBit],
+                "{x}"
+            );
+        }
+        let mode = |old: &str, new: &str| {
+            scored(&header("f", &format!("old mode {old}\nnew mode {new}\n")))
+        };
+        assert_eq!(mode("100644", "100755"), (4, vec![ExecutableBit]));
+        assert_eq!(mode("100755", "100644"), (2, vec![]));
+        assert_eq!(mode("100755", "100775"), (2, vec![]));
+        assert_eq!(
+            mode("120000", "100755"),
+            (7, vec![SymlinkChange, ExecutableBit])
+        );
+        assert_eq!(mode("100644", "120000"), (5, vec![SymlinkChange]));
+        // A generated path never hides a new executable.
+        assert_eq!(
+            scored(&new_file("vendor/run.sh", "100755")),
+            (5, vec![GeneratedOrVendored, NewFile, ExecutableBit])
+        );
+        assert_eq!(SymlinkChange.label(), "symlink_change");
+        assert_eq!(ExecutableBit.label(), "executable_bit");
     }
 
     #[test]

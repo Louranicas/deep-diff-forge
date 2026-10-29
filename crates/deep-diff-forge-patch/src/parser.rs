@@ -22,6 +22,39 @@ const META_PREFIXES: &[&str] = &[
     "Binary files ",
 ];
 
+/// The extended headers that carry a file mode.
+const MODE_PREFIXES: &[&str] = &[
+    "old mode ",
+    "new mode ",
+    "new file mode ",
+    "deleted file mode ",
+];
+
+/// A Git file mode: one to six octal digits, as Git writes them. `git apply` refuses a mode
+/// that is not octal ("invalid mode"); the oddities it tolerates (a sign, a trailing space)
+/// are refused too, since no Git writes them.
+pub(crate) fn parse_mode(mode: &str) -> Option<u32> {
+    (!mode.is_empty() && mode.len() <= 6 && mode.bytes().all(|b| (b'0'..=b'7').contains(&b)))
+        .then(|| u32::from_str_radix(mode, 8).ok())
+        .flatten()
+}
+
+/// The object type bits of a mode: a regular file, a symlink or a submodule.
+const fn object_type(mode: u32) -> u32 {
+    mode & 0o170_000
+}
+
+/// A path `git apply` refuses to write ("invalid path"): absolute, empty, or with a `.`, `..`
+/// or `.git` component. A rename or copy names one only to escape the tree or to reach
+/// `.git/hooks` (bug hunt 2026-10-28, H1-09).
+fn git_refuses_path(path: &str) -> bool {
+    path.is_empty()
+        || path.starts_with('/')
+        || path
+            .split('/')
+            .any(|c| c == "." || c == ".." || c.eq_ignore_ascii_case(".git"))
+}
+
 /// Options controlling patch parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParseOptions {
@@ -396,19 +429,18 @@ impl Parser {
         if extended && file.past_headers {
             return Err(PatchParseError::MisplacedHeader { line_number });
         }
+        let moved_path = |path: &str| {
+            super::paths::decode_path(path)
+                .filter(|p| !git_refuses_path(p))
+                .ok_or(PatchParseError::InvalidPath { line_number })
+        };
         if let Some(path) = line.strip_prefix("rename from ") {
-            file.rename_from = Some(
-                super::paths::decode_path(path)
-                    .ok_or(PatchParseError::InvalidPath { line_number })?,
-            );
+            file.rename_from = Some(moved_path(path)?);
             file.metadata.push(line.to_string());
             return Ok(true);
         }
         if let Some(path) = line.strip_prefix("rename to ") {
-            file.rename_to = Some(
-                super::paths::decode_path(path)
-                    .ok_or(PatchParseError::InvalidPath { line_number })?,
-            );
+            file.rename_to = Some(moved_path(path)?);
             file.metadata.push(line.to_string());
             return Ok(true);
         }
@@ -416,7 +448,14 @@ impl Parser {
             .strip_prefix("copy from ")
             .or_else(|| line.strip_prefix("copy to "))
         {
-            super::paths::decode_path(path).ok_or(PatchParseError::InvalidPath { line_number })?;
+            moved_path(path)?;
+        }
+        if MODE_PREFIXES
+            .iter()
+            .filter_map(|p| line.strip_prefix(p))
+            .any(|mode| parse_mode(mode).is_none())
+        {
+            return Err(PatchParseError::InvalidMode { line_number });
         }
         if META_PREFIXES.iter().any(|p| line.starts_with(p)) {
             file.in_binary_body |= line == "GIT binary patch";
@@ -659,18 +698,34 @@ impl FileBuf {
         let binary = has("Binary files ") || has("GIT binary patch");
         let new_file = has("new file mode ") || old_devnull;
         let deleted = has("deleted file mode ") || new_devnull;
+        let mode = |prefix: &str| {
+            self.metadata
+                .iter()
+                .find_map(|m| m.strip_prefix(prefix))
+                .and_then(parse_mode)
+        };
         let mode_change = has("old mode ") || has("new mode ");
+        let same_type = matches!(
+            (mode("old mode "), mode("new mode ")),
+            (Some(old), Some(new)) if object_type(old) == object_type(new)
+        );
 
         if binary {
             FileStatus::BinaryChanged
         } else if self.rename_from.is_some() || self.rename_to.is_some() {
             FileStatus::Renamed
+        } else if has("copy from ") || has("copy to ") {
+            FileStatus::Copied
         } else if new_file {
             FileStatus::Added
         } else if deleted {
             FileStatus::Deleted
         } else if mode_change && self.hunks.is_empty() {
-            FileStatus::TypeChanged
+            if same_type {
+                FileStatus::ModeChanged
+            } else {
+                FileStatus::TypeChanged
+            }
         } else if self.hunks.is_empty()
             && self.metadata.is_empty()
             && self.old_raw.is_none()
@@ -1193,14 +1248,114 @@ Binary files a/logo.png and b/logo.png differ
     }
 
     #[test]
-    fn pure_mode_change_is_type_changed() {
+    fn pure_mode_change_is_mode_changed() {
         let input = "\
 diff --git a/run.sh b/run.sh
 old mode 100644
 new mode 100755
 ";
         let file = one(input);
-        assert_eq!(file.status, FileStatus::TypeChanged);
+        assert_eq!(file.status, FileStatus::ModeChanged);
+    }
+
+    /// Bug hunt 2026-10-28, H4-07: only a change of object type (a file, a symlink, a
+    /// submodule) is `type_changed`; flipping the executable bit was labelled one too.
+    #[test]
+    fn a_mode_header_that_changes_the_object_type_is_type_changed() {
+        for (old, new) in [
+            ("100644", "120000"),
+            ("120000", "100755"),
+            ("160000", "100644"),
+        ] {
+            let input = format!("diff --git a/l b/l\nold mode {old}\nnew mode {new}\n");
+            assert_eq!(
+                one(&input).status,
+                FileStatus::TypeChanged,
+                "{old} -> {new}"
+            );
+        }
+        for (old, new) in [("100755", "100644"), ("100644", "100664")] {
+            let input = format!("diff --git a/l b/l\nold mode {old}\nnew mode {new}\n");
+            assert_eq!(
+                one(&input).status,
+                FileStatus::ModeChanged,
+                "{old} -> {new}"
+            );
+        }
+        // Half a mode pair cannot show the type was kept.
+        assert_eq!(
+            one("diff --git a/l b/l\nnew mode 100755\n").status,
+            FileStatus::TypeChanged
+        );
+        // A mode change beside content stays a modification.
+        let input = "diff --git a/l b/l\nold mode 100644\nnew mode 100755\n--- a/l\n+++ b/l\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(one(input).status, FileStatus::Modified);
+    }
+
+    /// `git apply` refuses a mode that is not octal ("invalid mode"); DDF took any text.
+    #[test]
+    fn a_mode_that_is_not_octal_is_refused() {
+        for header in ["old mode", "new mode", "new file mode", "deleted file mode"] {
+            for bad in ["", "10064x", "1006448", "-100644", "100644 ", "\u{663}"] {
+                let input = format!("diff --git a/l b/l\n{header} {bad}\n");
+                assert_eq!(
+                    parse(&input),
+                    Err(PatchParseError::InvalidMode { line_number: 2 }),
+                    "{header} {bad:?}"
+                );
+            }
+        }
+        assert_eq!(parse_mode("0"), Some(0));
+        assert_eq!(parse_mode("777777"), Some(0o777_777));
+        assert_eq!(object_type(0o120_755), 0o120_000);
+    }
+
+    /// Bug hunt 2026-10-28, H1-09: a copy is `copied`, not `modified`, and keeps its new path.
+    #[test]
+    fn a_copy_is_copied() {
+        let input = "\
+diff --git a/x b/y
+similarity index 100%
+copy from x
+copy to y
+";
+        let file = one(input);
+        assert_eq!(file.status, FileStatus::Copied);
+        assert_eq!(file.path, "y");
+        let edited = "diff --git a/x b/y\nsimilarity index 90%\ncopy from x\ncopy to y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(one(edited).status, FileStatus::Copied);
+    }
+
+    /// Bug hunt 2026-10-28, H1-09: Git refuses a rename or copy that writes outside the tree or
+    /// into `.git` ("invalid path"); DDF showed it with a `path_traversal` hazard.
+    #[test]
+    fn a_rename_or_copy_git_refuses_is_refused() {
+        for bad in [
+            "../evil",
+            "/etc/evil",
+            "a/../b",
+            "a/./b",
+            ".",
+            ".git/hooks/x",
+            "a/.GIT/x",
+            "",
+        ] {
+            for (from, to) in [("x", bad), (bad, "y")] {
+                for verb in ["rename", "copy"] {
+                    let input = format!("diff --git a/x b/y\n{verb} from {from}\n{verb} to {to}\n");
+                    let line_number = if from == bad { 2 } else { 3 };
+                    assert_eq!(
+                        parse(&input),
+                        Err(PatchParseError::InvalidPath { line_number }),
+                        "{verb} {from} -> {to}"
+                    );
+                }
+            }
+        }
+        assert!(git_refuses_path(".Git"));
+        for fine in ["a..b/c", "a/.gitignore", ".github/x", "a//b", "x.git/y"] {
+            assert!(!git_refuses_path(fine), "{fine}");
+        }
     }
 
     #[test]

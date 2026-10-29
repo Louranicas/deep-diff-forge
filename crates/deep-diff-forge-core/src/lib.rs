@@ -105,7 +105,12 @@ pub enum FileStatus {
     Modified,
     Deleted,
     Renamed,
+    /// `copy from`/`copy to`: a new path made from an existing one, which stays.
+    Copied,
+    /// The object type changed (a regular file, a symlink or a submodule became another).
     TypeChanged,
+    /// Only the mode changed (the executable bit), with no content change.
+    ModeChanged,
     BinaryChanged,
     Unknown,
 }
@@ -120,7 +125,9 @@ impl FileStatus {
             Self::Modified => "modified",
             Self::Deleted => "deleted",
             Self::Renamed => "renamed",
+            Self::Copied => "copied",
             Self::TypeChanged => "type_changed",
+            Self::ModeChanged => "mode_changed",
             Self::BinaryChanged => "binary_changed",
             Self::Unknown => "unknown",
         }
@@ -153,6 +160,10 @@ mod file_status_tests {
     fn labels_are_snake_case() {
         assert_eq!(FileStatus::BinaryChanged.label(), "binary_changed");
         assert_eq!(FileStatus::TypeChanged.label(), "type_changed");
+        assert_eq!(FileStatus::ModeChanged.label(), "mode_changed");
+        assert_eq!(FileStatus::Copied.label(), "copied");
+        assert_eq!(FileStatus::Renamed.label(), "renamed");
+        assert_eq!(FileStatus::Deleted.label(), "deleted");
         assert_eq!(FileStatus::Modified.label(), "modified");
         assert_eq!(FileStatus::Added.label(), "added");
         assert_eq!(FileStatus::Unknown.label(), "unknown");

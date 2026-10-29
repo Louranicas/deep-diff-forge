@@ -176,6 +176,8 @@ fn signal_phrase(signal: RiskSignal) -> &'static str {
         RiskSignal::HazardousText => {
             "Hidden or control characters, or a traversing path — what you see may not be what applies."
         }
+        RiskSignal::SymlinkChange => "Symlink — check where it points.",
+        RiskSignal::ExecutableBit => "Becomes executable — check what runs it.",
     }
 }
 
@@ -377,10 +379,20 @@ mod tests {
             RiskSignal::ConfigOrLockfile,
             RiskSignal::TestOnly,
             RiskSignal::GeneratedOrVendored,
+            RiskSignal::HazardousText,
+            RiskSignal::SymlinkChange,
+            RiskSignal::ExecutableBit,
         ];
         for s in signals {
             assert_ne!(signal_phrase(s).len(), 0);
         }
+        let distinct: std::collections::BTreeSet<_> =
+            signals.iter().map(|s| signal_phrase(*s)).collect();
+        assert_eq!(
+            distinct.len(),
+            signals.len(),
+            "each signal has its own phrase"
+        );
     }
 
     #[test]

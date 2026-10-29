@@ -143,6 +143,9 @@ The reverse holds too. An internally incoherent patch is **refused, not repaired
 - a `GIT binary patch` body followed by anything but base85 lines;
 - a file header after the file's first hunk, a `---` without its `+++`, or headers that
   contradict each other (a new file with old lines, a deleted file that is also renamed).
+- a rename or copy that names a path `git apply` refuses: absolute, or with a `.`, `..` or
+  `.git` component;
+- a mode header that is not octal.
 
 Each fails with exit 4. None is quietly turned into a plausible-looking model.
 
@@ -436,7 +439,9 @@ found. An empty list never means the text is safe. They also raise the file's ra
 
 Strings are RFC 8259-escaped, and valid UTF-8 passes through. A line decoded lossily is marked
 `"lossy": true`. File statuses use one snake-case spelling everywhere: `added`, `modified`,
-`deleted`, `renamed`, `type_changed`, `binary_changed`, `unknown`.
+`deleted`, `renamed`, `copied`, `type_changed` (a file, a symlink or a submodule became
+another), `mode_changed` (only the mode changed, such as the executable bit), `binary_changed`,
+`unknown`.
 
 ## Exit codes
 
@@ -618,7 +623,9 @@ per file (`crates/deep-diff-forge-graph/src/risk.rs`). Higher means review first
 | `config_or_lockfile` · `binary_change` | `Cargo.toml`, `*.lock`, `*.yaml`, … · binary | +1 · +1 |
 | `test_only` | under `tests/` or `test/`, `*_test.*`, `*.test.*` | no bonus |
 | `hazardous_text` | a changed line holds a bidi control, an invisible or a control character, or the path (or the path a rename or copy leaves) traverses (`..`, absolute) or names `.git` | +3 |
-| `generated_or_vendored` | `vendor/`, `node_modules/`, `target/`, `generated/`, `dist/`, `*.min.js`, `*.pb.rs`, `*.pb.go` | base only: no bonuses, but keeps new · deleted · binary · hazards |
+| `symlink_change` | a symlink is created, changed, removed, or made from a file | +3 |
+| `executable_bit` | a file becomes executable: a new `100755` file, or a mode change that adds an `x` bit | +2 |
+| `generated_or_vendored` | `vendor/`, `node_modules/`, `target/`, `generated/`, `dist/`, `*.min.js`, `*.pb.rs`, `*.pb.go` | base only: no bonuses, but keeps new · deleted · binary · hazards · symlink · executable |
 
 Whoever writes a patch also chooses its paths, so a path can lower a file's score but never zero it. A new file under `generated/` still ranks above a one-line edit elsewhere.
 

@@ -79,8 +79,12 @@ pub enum PatchParseError {
     InvalidEofMarker { line_number: usize },
     /// Combined multi-parent or mixed text/binary sections need a different model.
     UnsupportedFormat { line_number: usize },
-    /// A quoted Git path was malformed or was not UTF-8.
+    /// A quoted Git path was malformed or was not UTF-8, or a rename or copy names a path
+    /// `git apply` refuses: absolute, or with a `.`, `..` or `.git` component.
     InvalidPath { line_number: usize },
+    /// A mode header (`old mode`, `new mode`, `new file mode`, `deleted file mode`) is not one
+    /// to six octal digits; `git apply` refuses it as an invalid mode.
+    InvalidMode { line_number: usize },
     /// A file header out of place: an extended header after the file's `---`, `+++` or first
     /// hunk, a `+++` that does not follow a `---` at once, or a `---` with no `+++` after it.
     /// Git ignores such lines, so taking them as headers changed what the review showed.
@@ -150,7 +154,13 @@ impl std::fmt::Display for PatchParseError {
                 write!(f, "unsupported patch format at line {line_number}")
             }
             Self::InvalidPath { line_number } => {
-                write!(f, "invalid or non-UTF-8 Git path at line {line_number}")
+                write!(
+                    f,
+                    "invalid, non-UTF-8 or unsafe Git path at line {line_number}"
+                )
+            }
+            Self::InvalidMode { line_number } => {
+                write!(f, "invalid file mode at line {line_number}")
             }
             Self::MisplacedHeader { line_number } => write!(
                 f,
