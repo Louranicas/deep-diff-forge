@@ -309,7 +309,7 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
 - **No peer-credential check on the socket.** Access control is the `0700`
   directory and `0600` socket alone; the daemon does not read the peer's uid
   (`SO_PEERCRED`/`getpeereid`).
-- **Closed (Unreleased): Git subprocesses now have a time limit.** One deadline
+- **Closed in 0.3.0: Git subprocesses have a time limit.** One deadline
   bounds every Git call of an acquisition: 120 s for the CLI's Git selections and
   30 s for `review.change`. A Git still running at the deadline is killed, and the
   acquisition fails with `TimedOut` (CLI exit 3). Before, `child.wait()` waited
