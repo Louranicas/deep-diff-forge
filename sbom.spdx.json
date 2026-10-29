@@ -1,13 +1,13 @@
 {
   "SPDXID": "SPDXRef-DOCUMENT",
   "creationInfo": {
-    "created": "2026-10-28T09:51:42Z",
+    "created": "2026-10-29T19:43:37Z",
     "creators": [
       "Tool: deep-diff-forge scripts/security/generate_spdx_sbom.py"
     ]
   },
   "dataLicense": "CC0-1.0",
-  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/787cb6276f469dc9a054232806607e52",
+  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/ee61533d6d337e5ba03892a50adce7e3",
   "name": "deep-diff-forge-cargo-lock-sbom",
   "packages": [
     {
@@ -519,7 +519,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "32661aa22de7cf6ffc246a5c933c794143837c702ef1b31177dce96ffedd388c"
+          "checksumValue": "05991027d28cd10b3b52277b07aedaedd4dfd333cee9413333c5811ffad1a02a"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -1365,6 +1365,30 @@
       "name": "memchr",
       "primaryPackagePurpose": "LIBRARY",
       "versionInfo": "2.8.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-memoffset-95c40c0d37f17d53",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "772e523da630871e710cc229f36282205713bba853d4d3f78e5a5d099bb3a814"
+        }
+      ],
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/memoffset@0.9.1",
+          "referenceType": "purl"
+        }
+      ],
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "name": "memoffset",
+      "primaryPackagePurpose": "LIBRARY",
+      "versionInfo": "0.9.1"
     },
     {
       "SPDXID": "SPDXRef-Package-mio-3a6edb0f098ada1b",
@@ -3197,6 +3221,11 @@
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-c4540b4018bbb7f0"
     },
     {
+      "relatedSpdxElement": "SPDXRef-Package-nix-0b222db49a8b7665",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-c4540b4018bbb7f0"
+    },
+    {
       "relatedSpdxElement": "SPDXRef-Package-rustix-64b8c0008dc96bcb",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-c4540b4018bbb7f0"
@@ -3552,6 +3581,11 @@
       "spdxElementId": "SPDXRef-Package-lru-aa3885b698a42a41"
     },
     {
+      "relatedSpdxElement": "SPDXRef-Package-autocfg-a8f325257dbe2e15",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-memoffset-95c40c0d37f17d53"
+    },
+    {
       "relatedSpdxElement": "SPDXRef-Package-libc-06536456656c676c",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-mio-3a6edb0f098ada1b"
@@ -3588,6 +3622,11 @@
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-libc-06536456656c676c",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-nix-0b222db49a8b7665"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-memoffset-95c40c0d37f17d53",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-nix-0b222db49a8b7665"
     },
