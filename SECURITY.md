@@ -252,9 +252,10 @@ every gate ran as root inside the container. Gates refuse to run unless
    when processing mutually untrusted users' content.
 2. Keep `$XDG_RUNTIME_DIR` owned by that account and inaccessible to group and
    others. For `--socket PATH`, pre-create an owner-private parent directory.
-3. Start one daemon per socket path, from one supervisor. A start now refuses a
-   live socket (exit 6), but two starts racing in the window between the
-   liveness probe and the bind can still orphan one daemon (see residual risks).
+3. Start one daemon per socket path, from one supervisor. A second start exits 6
+   and leaves the running daemon reachable, even when the two starts race: the
+   start lock (`<socket>.lock`) is held from before the stale-socket probe until
+   the daemon exits.
 4. Do not publish, proxy, or bind-mount the daemon socket into a less-trusted
    environment.
 5. Treat exported JSON and annotations as untrusted when another tool renders
@@ -306,9 +307,13 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
 - **One engine serializes daemon requests.** Every connection shares one
   `Mutex<Engine>`, so one slow request delays all other clients. Eight
   connections can be open; only one request runs.
-- **No peer-credential check on the socket.** Access control is the `0700`
-  directory and `0600` socket alone; the daemon does not read the peer's uid
-  (`SO_PEERCRED`/`getpeereid`).
+- **Closed (Unreleased): the socket checks peer credentials.** The daemon reads
+  each client's effective uid from the kernel (`SO_PEERCRED` on Linux,
+  `getpeereid` on macOS and the BSDs; other platforms refuse every client) and
+  drops a client that is not its own user, so a socket whose mode was loosened is
+  still single-user. The CLI and both SDKs check the daemon's uid the same way
+  before sending a request. Measured with a client and a daemon of a different
+  uid (a user-namespace subordinate uid) in both directions (EVIDENCE.md).
 - **Closed in 0.3.0: Git subprocesses have a time limit.** One deadline
   bounds every Git call of an acquisition: 120 s for the CLI's Git selections and
   30 s for `review.change`. A Git still running at the deadline is killed, and the
@@ -330,9 +335,13 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
   another's (`objects/info/alternates`) is refused. Without a root they read none.
   The roots are an operator decision: any client of that daemon or MCP server can
   read every change under them, though never write anything.
-- **Two `daemon start`s can race.** Between `remove_stale_socket`'s probe and
-  the bind, a second start can remove the first's fresh socket and bind its own,
-  leaving the first running but unreachable.
+- **Closed (Unreleased): two `daemon start`s cannot race.** Before, between
+  `remove_stale_socket`'s probe and the bind, a second start could remove the
+  first's fresh socket and bind its own, leaving the first running but
+  unreachable. Each start now takes a non-blocking exclusive `flock` on
+  `<socket>.lock` (opened without following symlinks, a regular file owned by
+  the effective user) before the probe and holds it until the daemon has exited
+  and removed its socket. A start that finds the lock held exits 6.
 - **macOS tests do not run on pull requests.** The `macos` CI job runs weekly,
   on manual runs, in a dispatched release dry run and in a tag release, but not
   on a pull request.

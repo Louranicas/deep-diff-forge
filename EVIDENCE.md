@@ -664,3 +664,12 @@ Measured on 2026-10-29 for the owner's `v0.3.0` tag decision.
 - **Tests and gates.** 1,451 tests (passed plus ignored). Pedantic clippy is clean. `scripts/ci_local.sh` reports steps failed: 0. All nine required checks are green on PRs #40, #41 and #42, including diff mutation with no missed mutant.
 - **Daemon soak (PR #40).** It sends a request at the 80 MiB cap, which is served, and one byte over, which is refused. With all 8 connection slots held, a ninth connection is closed unanswered, and the daemon serves again afterwards. With 32 concurrent clients: 504 served, 296 closed at the limit, max RSS 7,532 KiB.
 - **Unchanged limits.** These are listed in the README's *Project status*: one engine serializes daemon requests, the socket is not checked for peer credentials, macOS tests run weekly and on demand, two `daemon start` commands can race, there is no cockpit key-sequence harness, and syntax features cover Rust only.
+
+## Daemon peer credentials and start lock (2026-10-30)
+
+Measured on 2026-10-30 on Fedora 44 (Linux 7.2), with the debug build of this change.
+
+- **Racing starts.** Eight `daemon start --foreground --socket PATH` processes were started at once over a stale socket (bound and closed). One daemon served `daemon health`; the other seven exited 6 with `another daemon is running or starting on this socket; refusing to replace it`. `daemon stop` removed the socket; `d.sock.lock` (mode `0600`) stayed, as designed.
+- **A client of another user.** The daemon ran as uid 1000 with its directory loosened to `0711` and its socket to `0666`, so another user could reach it. A client run as uid 1 inside `podman unshare` (subordinate uid 524288 outside) connected and was reset without an answer. The daemon logged `refused a connection: the peer runs as uid 524288, not uid 1000`. `daemon health` as uid 1000 was still answered.
+- **A daemon of another user.** The daemon ran as uid 1 inside `podman unshare`, with the same loosened modes. `deep-diff-forge daemon health` as uid 1000 exited 6 with `the peer runs as uid 524288, not uid 1000`, and the Python `SocketClient` raised `TransportError` with the same uids before sending anything. That daemon also refused both clients from its side.
+- **Not measured here:** macOS (`getpeereid`), which the dispatched macOS CI job covers through the unit tests.

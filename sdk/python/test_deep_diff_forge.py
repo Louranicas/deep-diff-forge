@@ -5,6 +5,7 @@ Run: DDF_BIN=target/debug/deep-diff-forge python3 -I sdk/python/test_deep_diff_f
 import json
 import os
 import pathlib
+import socket
 import subprocess
 import sys
 import tempfile
@@ -154,6 +155,35 @@ class Socket(unittest.TestCase):
             finally:
                 if daemon.poll() is None:
                     daemon.kill()
+
+    def test_a_daemon_of_another_user_is_refused_before_anything_is_sent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "d.sock"
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+                listener.bind(str(path))
+                listener.listen(2)
+                me = os.geteuid()
+                with _connected(path) as probe:
+                    self.assertEqual(ddf._peer_uid(probe), me)
+                listener.accept()[0].close()
+                original = ddf.os.geteuid
+                ddf.os.geteuid = lambda: me + 1
+                try:
+                    with self.assertRaises(ddf.TransportError) as caught:
+                        ddf.SocketClient(path, timeout=1).call("daemon.health")
+                finally:
+                    ddf.os.geteuid = original
+                self.assertIn(f"runs as uid {me}, not uid {me + 1}", str(caught.exception))
+                accepted, _ = listener.accept()
+                with accepted:
+                    accepted.settimeout(1)
+                    self.assertEqual(accepted.recv(1), b"", "nothing was sent to that daemon")
+
+
+def _connected(path):
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.connect(str(path))
+    return connection
 
 
 if __name__ == "__main__":

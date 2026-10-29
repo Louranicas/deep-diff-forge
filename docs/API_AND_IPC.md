@@ -331,8 +331,11 @@ first but does not have to.
   only when it is verifiably a socket and nothing answers on it; a live daemon's
   socket is refused with `AddrInUse`.
 - Keep the socket local to one OS user; do not forward or bind-mount it across a
-  trust boundary. There is no peer-credential check: the `0700`/`0600` modes are
-  the access control.
+  trust boundary. Both ends check the other's effective uid from the kernel
+  (`SO_PEERCRED` on Linux, `getpeereid` on macOS): the daemon drops a client of
+  another user, and the clients refuse a daemon of another user before sending.
+- One daemon per socket: `daemon start` holds an exclusive lock on
+  `<socket>.lock` from before the stale-socket probe until it exits.
 - Treat request fields and agent annotations as untrusted input.
 - Limits (`serve.rs`, `handler.rs`): 80 MiB request and response lines, a
   30-second absolute read deadline per line, a 30-second write timeout, eight

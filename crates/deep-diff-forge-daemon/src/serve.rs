@@ -8,7 +8,7 @@ use crate::protocol::{
 };
 use crate::security::{
     SECURE_DIR_MODE, SECURE_SOCKET_MODE, SocketError, default_socket_path, ensure_runtime_dir,
-    validate_private_dir,
+    require_peer_user, validate_private_dir,
 };
 use deep_diff_forge_core::json_line_safe;
 use serde_json::Value;
@@ -107,24 +107,54 @@ impl SocketLocation {
     ///
     /// Either way a pre-existing path is removed only if it is a socket nothing
     /// answers on: a live daemon's socket is `AddrInUse`, and a regular file,
-    /// directory or symlink is an error (fail closed).
+    /// directory or symlink is an error (fail closed). The probe, the removal and
+    /// the bind run under the location's start lock (see [`BoundListener`]).
     ///
     /// # Errors
     ///
-    /// Returns an I/O error if the directory cannot be secured or the bind fails.
-    pub fn bind(&self) -> std::io::Result<UnixListener> {
+    /// Returns an I/O error if the directory cannot be secured, another daemon
+    /// holds the start lock (`AddrInUse`), or the bind fails.
+    pub fn bind(&self) -> std::io::Result<BoundListener> {
         match self.provenance {
             Provenance::EngineDefault => bind_secure(&self.path),
             Provenance::Explicit => bind_explicit(&self.path),
         }
     }
 
-    /// Connect to a daemon listening at this location.
+    /// Connect to a daemon listening at this location, and refuse it unless it
+    /// runs as this process's effective user.
     ///
     /// # Errors
-    /// Returns an I/O error if no daemon is listening.
+    /// Returns an I/O error if no daemon is listening, or `PermissionDenied` if
+    /// the daemon that answered runs as another user.
     pub fn connect(&self) -> std::io::Result<UnixStream> {
-        UnixStream::connect(&self.path)
+        let stream = UnixStream::connect(&self.path)?;
+        require_peer_user(&stream, rustix::process::geteuid().as_raw())?;
+        Ok(stream)
+    }
+}
+
+/// A bound daemon listener together with its start lock.
+///
+/// The lock is an exclusive `flock` on `<socket>.lock` beside the socket, taken
+/// before the stale-socket probe and held until this value is dropped, after the
+/// shutdown cleanup. So no second `daemon start` can probe, remove or bind at the
+/// path while this daemon lives: before, two starts could interleave between the
+/// probe and the bind, and the second removed the first's fresh socket and bound
+/// its own, leaving the first running but unreachable. A crashed daemon's lock is
+/// released by the kernel; the lock file itself is never removed, since removing
+/// it would let two starts lock two different files.
+#[derive(Debug)]
+pub struct BoundListener {
+    listener: UnixListener,
+    _start_lock: std::fs::File,
+}
+
+impl BoundListener {
+    /// The listening socket.
+    #[must_use]
+    pub const fn listener(&self) -> &UnixListener {
+        &self.listener
     }
 }
 
@@ -361,17 +391,11 @@ pub fn handle_connection(stream: UnixStream, engine: &Mutex<Engine>) -> std::io:
 /// # Errors
 ///
 /// Returns an I/O error if the directory cannot be secured or the bind fails.
-pub fn bind_secure(socket_path: &Path) -> std::io::Result<UnixListener> {
+pub fn bind_secure(socket_path: &Path) -> std::io::Result<BoundListener> {
     if let Some(parent) = socket_path.parent() {
         ensure_runtime_dir(parent)?;
     }
-    remove_stale_socket(socket_path)?;
-    let listener = UnixListener::bind(socket_path)?;
-    std::fs::set_permissions(
-        socket_path,
-        std::fs::Permissions::from_mode(SECURE_SOCKET_MODE),
-    )?;
-    Ok(listener)
+    bind_locked(socket_path)
 }
 
 /// Bind a listener at an *explicit* (caller-supplied) socket path with a
@@ -395,6 +419,8 @@ pub fn bind_secure(socket_path: &Path) -> std::io::Result<UnixListener> {
 ///    non-socket files.
 /// 3. Binds via [`UnixListener::bind`] and sets the socket to `0600`.
 ///
+/// Steps 2 and 3 run under the start lock (see [`BoundListener`]).
+///
 /// This is the binding path for `--socket` overrides. The engine-managed
 /// runtime dir uses [`bind_secure`] instead.
 ///
@@ -402,7 +428,7 @@ pub fn bind_secure(socket_path: &Path) -> std::io::Result<UnixListener> {
 ///
 /// Returns an I/O error if the parent cannot be created/secured, is a pre-existing
 /// insecure directory, the path holds a non-socket file, or the bind itself fails.
-pub fn bind_explicit(socket_path: &Path) -> std::io::Result<UnixListener> {
+pub fn bind_explicit(socket_path: &Path) -> std::io::Result<BoundListener> {
     // 1. Secure the parent. Create it (owner-private) if absent; otherwise
     //    validate it WITHOUT chmodding — never mutate a directory the caller owns.
     let parent = socket_path.parent().ok_or_else(|| {
@@ -425,17 +451,74 @@ pub fn bind_explicit(socket_path: &Path) -> std::io::Result<UnixListener> {
     validate_private_dir(parent)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?;
 
-    // 2. If the path exists, remove it only when it is verifiably a socket.
-    //    Use symlink_metadata (lstat) to avoid following a symlink at the path.
-    remove_stale_socket(socket_path)?;
+    // 2 and 3. Under the start lock: remove a stale socket, bind, chmod 0600.
+    bind_locked(socket_path)
+}
 
-    // 3. Bind and set owner-only permissions on the socket.
+/// In a secured directory: take the start lock, remove a stale socket, bind, and
+/// set the socket to `0600`.
+fn bind_locked(socket_path: &Path) -> std::io::Result<BoundListener> {
+    let start_lock = take_start_lock(socket_path)?;
+    // Use symlink_metadata (lstat) to avoid following a symlink at the path.
+    remove_stale_socket(socket_path)?;
     let listener = UnixListener::bind(socket_path)?;
     std::fs::set_permissions(
         socket_path,
         std::fs::Permissions::from_mode(SECURE_SOCKET_MODE),
     )?;
-    Ok(listener)
+    Ok(BoundListener {
+        listener,
+        _start_lock: start_lock,
+    })
+}
+
+/// The start lock's path: `<socket file name>.lock` in the socket's directory.
+fn start_lock_path(socket_path: &Path) -> std::io::Result<PathBuf> {
+    let mut name = socket_path
+        .file_name()
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "socket path has no file name",
+            )
+        })?
+        .to_os_string();
+    name.push(".lock");
+    Ok(socket_path.with_file_name(name))
+}
+
+/// Open (creating `0600` if absent) and exclusively lock the start lock, without
+/// waiting. The open never follows a symlink, and the file must be a regular file
+/// owned by the effective user. A lock another process holds is `AddrInUse`: a
+/// daemon runs at this socket, or another start is binding it.
+fn take_start_lock(socket_path: &Path) -> std::io::Result<std::fs::File> {
+    use rustix::fs::{FlockOperation, Mode, OFlags};
+    let lock_path = start_lock_path(socket_path)?;
+    // `union` rather than `|`: the flags share no bits, so `|` and `^` are the same value and a
+    // `|`-to-`^` mutant could never be caught.
+    let lock = std::fs::File::from(rustix::fs::open(
+        &lock_path,
+        OFlags::RDWR
+            .union(OFlags::CREATE)
+            .union(OFlags::NOFOLLOW)
+            .union(OFlags::CLOEXEC),
+        Mode::RUSR.union(Mode::WUSR),
+    )?);
+    let metadata = lock.metadata()?;
+    if !metadata.is_file() || metadata.uid() != rustix::process::geteuid().as_raw() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the start lock is not a regular file owned by the effective user",
+        ));
+    }
+    match rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(lock),
+        Err(rustix::io::Errno::WOULDBLOCK) => Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "another daemon is running or starting on this socket; refusing to replace it",
+        )),
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// Remove a stale socket without ever following or deleting another file type, and never a live
@@ -517,8 +600,18 @@ pub fn run_server(location: &SocketLocation) -> std::io::Result<()> {
 ///
 /// Returns an I/O error from binding or accepting connections.
 pub fn run_server_with(location: &SocketLocation, engine: Engine) -> std::io::Result<()> {
-    let listener = location.bind()?;
+    serve_bound(location, location.bind()?, engine)
+}
+
+/// The accept loop of [`run_server_with`] over a listener already bound at `location`.
+fn serve_bound(
+    location: &SocketLocation,
+    bound: BoundListener,
+    engine: Engine,
+) -> std::io::Result<()> {
+    let listener = bound.listener();
     let socket_path = location.path().to_path_buf();
+    let me = rustix::process::geteuid().as_raw();
     let socket_metadata = std::fs::symlink_metadata(&socket_path)?;
     let socket_identity = (socket_metadata.dev(), socket_metadata.ino());
     // Wrap the engine in Arc so each spawned connection thread can hold a
@@ -532,6 +625,12 @@ pub fn run_server_with(location: &SocketLocation, engine: Engine) -> std::io::Re
         }
         match listener.accept() {
             Ok((stream, _)) => {
+                // Only this daemon's own user is served, whatever the socket's mode.
+                if let Err(err) = require_peer_user(&stream, me) {
+                    eprintln!("deep-diff-forge daemon: refused a connection: {err}");
+                    drop(stream);
+                    continue;
+                }
                 if !try_acquire_connection(&active_connections) {
                     // Dropping the accepted stream applies backpressure without
                     // allocating another stack or worker thread.
@@ -568,6 +667,8 @@ pub fn run_server_with(location: &SocketLocation, engine: Engine) -> std::io::Re
         }
     }
     cleanup_owned_socket(location.path(), socket_identity);
+    // The start lock is released only now, after the cleanup.
+    drop(bound);
     Ok(())
 }
 
@@ -871,6 +972,14 @@ mod tests {
             .mode();
         assert_eq!(sock_mode & 0o777, SECURE_SOCKET_MODE);
         assert_eq!(dir_mode & 0o777, crate::security::SECURE_DIR_MODE);
+        let lock = std::fs::symlink_metadata(sock.with_file_name("deep-diff-forge.sock.lock"))
+            .expect("the start lock sits beside the socket");
+        assert!(lock.is_file());
+        assert_eq!(
+            lock.permissions().mode() & 0o077,
+            0,
+            "owner-only start lock"
+        );
         drop(listener);
     }
 
@@ -1086,6 +1195,88 @@ mod tests {
             .expect("chmod parent");
         let sock = parent.join("test.sock");
         (parent, sock)
+    }
+
+    /// The probe-to-bind race: while another start holds the lock (it has probed and not yet
+    /// bound), a second start must neither remove the socket at the path nor bind its own. Before,
+    /// it found the socket stale, removed it and bound, so the first start's daemon became
+    /// unreachable.
+    #[test]
+    fn a_start_in_progress_keeps_the_socket_it_is_replacing() {
+        let (_, sock) = explicit_temp("start-race", 0o700);
+        drop(UnixListener::bind(&sock).unwrap());
+        let before = std::fs::symlink_metadata(&sock).unwrap();
+        let other_start = take_start_lock(&sock).expect("the other start's lock");
+        let err = bind_explicit(&sock).expect_err("the start lock is held");
+        assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+        let after = std::fs::symlink_metadata(&sock).expect("the socket is still there");
+        assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+        // Legitimate nearby case: once that start is gone, the stale socket is replaced.
+        drop(other_start);
+        drop(bind_explicit(&sock).expect("the lock is free"));
+    }
+
+    /// A second start while a daemon runs is refused, and the running daemon keeps its socket
+    /// and still answers.
+    #[test]
+    fn a_second_start_leaves_the_running_daemon_reachable() {
+        let (_, sock) = explicit_temp("second-start", 0o700);
+        let first = bind_explicit(&sock).expect("first start");
+        let identity = std::fs::symlink_metadata(&sock).unwrap();
+        let err = bind_secure(&sock).expect_err("the first daemon holds the lock");
+        assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+        let after = std::fs::symlink_metadata(&sock).unwrap();
+        assert_eq!((after.dev(), after.ino()), (identity.dev(), identity.ino()));
+        let _client = UnixStream::connect(&sock).expect("the first daemon still answers");
+        assert!(first.listener().accept().is_ok());
+    }
+
+    /// The start lock is opened without following a symlink, so a planted link cannot make the
+    /// daemon create or lock a file elsewhere.
+    #[test]
+    fn the_start_lock_never_follows_a_symlink() {
+        let (parent, sock) = explicit_temp("lock-symlink", 0o700);
+        let target = parent.join("elsewhere");
+        std::fs::write(&target, b"keep").unwrap();
+        std::os::unix::fs::symlink(&target, parent.join("test.sock.lock")).unwrap();
+        bind_explicit(&sock).expect_err("a symlinked start lock is refused");
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+        assert!(
+            std::fs::symlink_metadata(&sock).is_err(),
+            "nothing was bound"
+        );
+    }
+
+    /// A start lock that is not a regular file (here a FIFO) is refused. rustix has no FIFO call on
+    /// Apple targets, so this runs elsewhere (Linux CI, where the mutation gate runs too).
+    #[test]
+    #[cfg(not(target_vendor = "apple"))]
+    fn a_start_lock_that_is_not_a_regular_file_is_refused() {
+        let (parent, sock) = explicit_temp("lock-fifo", 0o700);
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            parent.join("test.sock.lock"),
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+            0,
+        )
+        .unwrap();
+        let err = bind_explicit(&sock).expect_err("a FIFO is no start lock");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(
+            std::fs::symlink_metadata(&sock).is_err(),
+            "nothing was bound"
+        );
+    }
+
+    #[test]
+    fn the_start_lock_sits_beside_the_socket() {
+        assert_eq!(
+            start_lock_path(Path::new("/run/user/1/ddf/d.sock")).unwrap(),
+            Path::new("/run/user/1/ddf/d.sock.lock")
+        );
+        let err = start_lock_path(Path::new("/")).expect_err("no file name");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     // F2-T1: bind_explicit does NOT chmod an owner-private parent dir.
@@ -1529,21 +1720,25 @@ mod tests {
         let Some(sock) = std::env::var_os(ACCEPT_ERROR_CHILD_ENV) else {
             return;
         };
-        // Leave room for exactly one more descriptor (the listener). Linux
+        // Bind first, then leave no spare descriptor, so no platform's count of the descriptors
+        // binding takes (the start lock, the listener, anything else) matters. Linux
         // reserves the accepted fd before waiting, so every accept() then fails
         // with EMFILE immediately — a persistent, non-EINTR accept error. macOS
         // fails only once a connection is pending, which the parent supplies.
+        let location = SocketLocation::at(PathBuf::from(sock));
+        let bound = location.bind().expect("bind before the limit");
+        let engine = Engine::new();
         let next_fd = std::fs::File::open("/dev/null").unwrap().as_raw_fd();
         let limit = getrlimit(Resource::Nofile);
         setrlimit(
             Resource::Nofile,
             Rlimit {
-                current: Some(u64::try_from(next_fd).unwrap() + 1),
+                current: Some(u64::try_from(next_fd).unwrap()),
                 maximum: limit.maximum,
             },
         )
         .unwrap();
-        let err = run_server(&SocketLocation::at(PathBuf::from(sock)))
+        let err = serve_bound(&location, bound, engine)
             .expect_err("a persistent accept error must stop the server");
         assert_eq!(err.raw_os_error(), Some(24), "EMFILE: {err}");
     }

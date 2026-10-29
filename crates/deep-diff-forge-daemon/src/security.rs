@@ -4,6 +4,7 @@
 use std::ffi::OsString;
 use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 /// Required mode for the daemon's runtime directory (owner-only).
@@ -176,6 +177,68 @@ pub fn ensure_runtime_dir(dir: &Path) -> std::io::Result<()> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))
 }
 
+/// The effective user ID of the process at the other end of a connected Unix socket, as the kernel
+/// recorded it when the connection was made (`SO_PEERCRED` on Linux, `getpeereid` on macOS and the
+/// BSDs). Other platforms fail closed with `Unsupported`.
+///
+/// # Errors
+///
+/// Returns the OS error when the credentials cannot be read, or `Unsupported` on a platform with
+/// no peer-credential call.
+pub fn peer_euid(stream: &UnixStream) -> std::io::Result<u32> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        Ok(rustix::net::sockopt::socket_peercred(stream)?.uid.as_raw())
+    }
+    #[cfg(any(
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    {
+        Ok(nix::unistd::getpeereid(stream)?.0.as_raw())
+    }
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    )))]
+    {
+        let _ = stream;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "this platform cannot read a Unix socket peer's credentials",
+        ))
+    }
+}
+
+/// Refuse a connection whose peer is not `expected` (the caller passes its own effective user ID).
+/// The daemon checks every client it accepts, and the client checks the daemon it reached, so
+/// neither relies on the `0700` directory and `0600` socket alone: a socket another user made
+/// reachable, or a `--socket` path naming another user's daemon, is refused at connect.
+///
+/// # Errors
+///
+/// Returns `PermissionDenied` naming both user IDs when they differ, or the error of
+/// [`peer_euid`].
+pub fn require_peer_user(stream: &UnixStream, expected: u32) -> std::io::Result<()> {
+    let peer = peer_euid(stream)?;
+    if peer == expected {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("the peer runs as uid {peer}, not uid {expected}"),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +249,28 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create temp dir");
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).expect("chmod");
         dir
+    }
+
+    #[test]
+    fn a_peer_is_the_user_that_connected() {
+        let me = rustix::process::geteuid().as_raw();
+        let (ours, theirs) = UnixStream::pair().expect("socket pair");
+        assert_eq!(peer_euid(&ours).expect("peer credentials"), me);
+        assert_eq!(peer_euid(&theirs).expect("peer credentials"), me);
+        require_peer_user(&ours, me).expect("the same user is admitted");
+    }
+
+    #[test]
+    fn a_peer_of_another_user_is_refused() {
+        let me = rustix::process::geteuid().as_raw();
+        let (ours, _theirs) = UnixStream::pair().expect("socket pair");
+        let other = me.wrapping_add(1);
+        let err = require_peer_user(&ours, other).expect_err("another user is refused");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            err.to_string(),
+            format!("the peer runs as uid {me}, not uid {other}")
+        );
     }
 
     #[test]
