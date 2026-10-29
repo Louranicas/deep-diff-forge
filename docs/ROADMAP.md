@@ -22,8 +22,8 @@ code at `2f03f40` plus this release's version bump, and from `deep-diff-forge --
 
 Release and publication:
 
-- **0.3.0 is not tagged.** Whether to tag `v0.3.0` (or any `v*` tag) is the owner's decision.
-  Published GitHub releases are v0.1.0 and v0.2.0; v0.2.1 was never tagged.
+- **0.3.0 is tagged** (`v0.3.0`, 2026-10-29, owner decision). Any later `v*` tag is the owner's
+  decision. Published GitHub releases are v0.1.0, v0.2.0 and v0.3.0; v0.2.1 was never tagged.
 - **crates.io is on hold** by owner decision until the codebase is production-hardened.
   `release.yml` publishes only when the repository variable `DDF_CRATES_IO` is `open`; a
   configured token does not lift the hold.

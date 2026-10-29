@@ -6,6 +6,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-29
+
+Tagged `v0.3.0` on 2026-10-29 by owner decision. 0.3.0 is minor rather than patch because the
+library APIs changed incompatibly since 0.2.1 (see *Changed*). 0.2.1 was never tagged, so this
+release follows v0.2.0. The workspace reached 0.3.0 on 2026-10-28; the expert-circle, bug-hunt
+and owner-decision entries below landed before the tag. crates.io publication stays on hold.
+
 ### Changed (owner decisions on the bug hunt, 2026-10-29)
 
 - **A rename or copy that Git refuses is refused** (H1-09). `rename to ../../evil`, an absolute
@@ -214,12 +221,6 @@ never has to paste a patch.
   summary keeps the seal. It used to return `diff.plan`'s bare array, which the MCP tools
   specification does not allow as `structuredContent`, and which could not say which bytes it
   ranked. `rank_patch` also takes `require_files` and `require_hunks`.
-
-## [0.3.0] - 2026-10-28
-
-The workspace version is 0.3.0; the `v0.3.0` tag, which publishes the release, is the owner's
-decision. 0.3.0 is minor rather than patch because the library APIs changed incompatibly since
-0.2.1 (see *Changed*). 0.2.1 was never tagged, so this release follows v0.2.0.
 
 ### Added (documentation and community)
 
@@ -909,6 +910,8 @@ A supply-chain & fuzz hardening pass then raised the release/CI posture:
   `--json`/`--jsonl` stability tests. Corrected the daemon's `lib.rs` doc from
   "thread-per-connection" to the true single-threaded sequential accept loop.
 
+[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.2.0
 
 ## [0.1.0] - 2026-06-22

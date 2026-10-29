@@ -16,7 +16,7 @@ The framework is designed for:
 
 ## Status 2026-10-28 (0.3.0)
 
-- Workspace version 0.3.0 on `main`, untagged. 14 crates under `crates/`
+- Workspace version 0.3.0 on `main`, tagged `v0.3.0` on 2026-10-29. 14 crates under `crates/`
   (core, patch, projection, pipeline, syntax, graph, agent, tui, cluster,
   learning, daemon, review, sdk, cli); edition 2024, MSRV 1.88, toolchain
   1.99.1. Internal edges: [`crate-edges.txt`](crate-edges.txt).
@@ -136,7 +136,7 @@ flowchart TB
 The codebase is at L9 (learning): every engine layer L0-L8 is implemented plus
 the L9 local-only learning loop. `v0.1.0` and `v0.2.0` were tagged and released
 to GitHub (binary + checksums via `release.yml`) and both git remotes. `0.2.1`
-was never tagged; `main` is now 0.3.0, untagged. crates.io is on hold by owner
+was never tagged; `main` is 0.3.0, tagged `v0.3.0` on 2026-10-29. crates.io is on hold by owner
 decision: the `publish` job runs only when the repository variable
 `DDF_CRATES_IO` is `open`, and a configured `CARGO_REGISTRY_TOKEN` does not lift
 the hold (corrected 2026-10-28; the earlier text said a token alone would

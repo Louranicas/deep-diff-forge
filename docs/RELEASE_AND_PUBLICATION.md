@@ -2,12 +2,12 @@
 
 This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
-## Status 2026-10-28 (0.3.0)
+## Status 2026-10-29 (0.3.0)
 
-- The workspace version on `main` is **0.3.0**. It is not tagged; pushing a
-  `v*` tag is the owner's decision.
-- Published GitHub releases: `v0.1.0` (2026-06-22) and `v0.2.0` (2026-06-24).
-  `0.2.1` was never tagged.
+- The workspace version on `main` is **0.3.0**, tagged `v0.3.0` on 2026-10-29
+  by owner decision. Pushing any later `v*` tag is the owner's decision too.
+- Published GitHub releases: `v0.1.0` (2026-06-22), `v0.2.0` (2026-06-24) and
+  `v0.3.0` (2026-10-29). `0.2.1` was never tagged.
 - crates.io is on hold by owner decision until the codebase is
   production-hardened. `release.yml` publishes only when the repository
   variable `DDF_CRATES_IO` is `open`.
@@ -22,7 +22,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 | Channel | Purpose | Today |
 | --- | --- | --- |
 | `main` | Current development branch. | 0.3.0, reached only through pull requests (branch ruleset). |
-| GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`. |
+| GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`, `v0.3.0`. |
 | GitLab mirror | Secondary remote and redundancy. | Pushed to match GitHub. |
 | crates.io | Rust library and CLI distribution. | On hold (`DDF_CRATES_IO`). |
 | cargo-binstall | Fast binary installation. | Not configured (no binstall metadata in any `Cargo.toml`). |

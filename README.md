@@ -35,9 +35,9 @@ Underneath sits one rule. The apply-able patch is truth, and nothing may rewrite
   <sub>Real output, not a mock-up: <code>scripts/docs/render_terminal_svg.py</code> runs the binary on the crate changes of PR #23 and draws what it prints.</sub>
 </p>
 
-> **Status: 0.3.0 (2026-10-28).**
+> **Status: 0.3.0 (2026-10-29).**
 > - **Ready** for its declared scope: a local, single-user review tool on Linux and macOS, covering the CLI, daemon, `rpc`, MCP and SDKs. The [verdict and its evidence](#project-status) are below.
-> - **Releases:** 0.3.0 is the development line on `main` and is not tagged yet. The latest published release is [v0.2.0](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.2.0).
+> - **Releases:** the latest release is [v0.3.0](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.3.0), with Linux and macOS binaries, an SPDX SBOM and build provenance.
 > - **crates.io:** publication is on hold by decision until the codebase is fully production-hardened.
 
 <p align="center">
@@ -176,14 +176,14 @@ Each fails with exit 4. None is quietly turned into a plausible-looking model.
 
 ## Install
 
-**Prebuilt binaries** (latest release: v0.2.0) for Linux x86_64 and macOS (Apple silicon and
+**Prebuilt binaries** (latest release: v0.3.0) for Linux x86_64 and macOS (Apple silicon and
 Intel) are on the [releases page](https://github.com/Louranicas/deep-diff-forge/releases).
 Each archive has a `.sha256` file, and the release carries an SPDX SBOM:
 
 ```bash
-curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.2.0/deep-diff-forge-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
-curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.2.0/deep-diff-forge-v0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
-sha256sum -c deep-diff-forge-v0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.3.0/deep-diff-forge-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.3.0/deep-diff-forge-v0.3.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c deep-diff-forge-v0.3.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
 **From source** (0.3.0, everything in this README). This needs Rust **1.88+** (edition 2024):
@@ -753,16 +753,18 @@ per-round history. This section is a map, not a copy.
 
 **0.3.0 is production-ready for its declared scope.** That scope is a local, single-user
 review tool on Linux and macOS: CLI, Unix-socket daemon, `rpc`, MCP and SDKs, released as
-GitHub binaries. The evidence is measured at commit `2f03f40`:
+GitHub binaries. The evidence was measured on 2026-10-29 for `v0.3.0` (details in
+[EVIDENCE.md](EVIDENCE.md#v030-release-readiness-2026-10-29)):
 
-- **Release dry runs.** Two dry runs of the release workflow passed on `main`: every quality
-  gate including macOS, three builds, a smoke test of each runnable binary, and checksum
-  verification.
+- **Release dry run.** The release workflow passed at `478db26`: every quality gate including
+  macOS, three builds, a smoke test of each runnable binary, and checksum verification.
 - **Fuzzing.** Each fuzz target runs on every PR. After the last parser change, a local run of
-  300 s per target crashed 0 times (`patch_parser` 5.46 M runs, `review_json` 4.16 M).
+  300 s for each of the 8 targets crashed 0 times (`patch_parser` 6.47 M runs, `review_json`
+  4.97 M) at `8f957aa`.
 - **Fidelity and soak.**
   - A sweep rebuilt 13,811 real files exactly from the review JSON.
-  - A one-hour daemon soak held flat memory.
+  - A one-hour daemon soak held flat memory, and the CI soak now also sends requests at and
+    over the 80 MiB cap, a flood past the 8-connection limit and 32 concurrent clients.
 - **Audit fixes, 2026-10-28.** An independent audit and the first macOS runs found ten issues,
   and all are fixed. The most serious was a text change hidden after a `GIT binary patch` body,
   which the review missed and `git apply` applied. Each fix has a test that fails on the old
