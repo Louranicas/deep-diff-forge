@@ -35,9 +35,9 @@ Underneath sits one rule. The apply-able patch is truth, and nothing may rewrite
   <sub>Real output, not a mock-up: <code>scripts/docs/render_terminal_svg.py</code> runs the binary on the crate changes of PR #23 and draws what it prints.</sub>
 </p>
 
-> **Status: 0.3.0 (2026-10-28).**
+> **Status: 0.3.0 (2026-10-29).**
 > - **Ready** for its declared scope: a local, single-user review tool on Linux and macOS, covering the CLI, daemon, `rpc`, MCP and SDKs. The [verdict and its evidence](#project-status) are below.
-> - **Releases:** 0.3.0 is the development line on `main` and is not tagged yet. The latest published release is [v0.2.0](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.2.0).
+> - **Releases:** the latest release is [v0.3.0](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.3.0), with Linux and macOS binaries, an SPDX SBOM and build provenance.
 > - **crates.io:** publication is on hold by decision until the codebase is fully production-hardened.
 
 <p align="center">
@@ -176,14 +176,14 @@ Each fails with exit 4. None is quietly turned into a plausible-looking model.
 
 ## Install
 
-**Prebuilt binaries** (latest release: v0.2.0) for Linux x86_64 and macOS (Apple silicon and
+**Prebuilt binaries** (latest release: v0.3.0) for Linux x86_64 and macOS (Apple silicon and
 Intel) are on the [releases page](https://github.com/Louranicas/deep-diff-forge/releases).
 Each archive has a `.sha256` file, and the release carries an SPDX SBOM:
 
 ```bash
-curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.2.0/deep-diff-forge-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
-curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.2.0/deep-diff-forge-v0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
-sha256sum -c deep-diff-forge-v0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.3.0/deep-diff-forge-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.3.0/deep-diff-forge-v0.3.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c deep-diff-forge-v0.3.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
 **From source** (0.3.0, everything in this README). This needs Rust **1.88+** (edition 2024):

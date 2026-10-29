@@ -9,7 +9,7 @@
 - 14 crates in `crates/`, maturity L9 (`deep-diff-forge deploy status`). All engine layers L0–L8 are implemented. The `deep-diff-forge <old> <new>`, `chain`, `cluster` and `loom` subcommands are still refused (`deep-diff-forge --help`, "NOT YET IMPLEMENTED").
 - `deploy doctor` and `deploy receipt` (Executive Gaps, P0) do not exist. `deploy` takes only `status` and `release`. A top-level `doctor` command prints runtime paths.
 - The open item "a release run since the Node 24, SDK and Ubuntu 26 changes" in the 2026-10-28 section below is now closed. Release dry runs 40634103910 (`24e3d53`) and 40643652548 (`2f03f40`) were green. Publish and attestation were skipped by design ([evidence](../EVIDENCE.md#release-dry-runs-and-fuzzing-2026-10-28)).
-- Published GitHub releases: `v0.1.0` and `v0.2.0`. The workspace is `0.3.0`, untagged. crates.io stays on hold (`DDF_CRATES_IO`).
+- Published GitHub releases: `v0.1.0`, `v0.2.0` and `v0.3.0` (tagged 2026-10-29). The workspace is `0.3.0`. crates.io stays on hold (`DDF_CRATES_IO`).
 - CI runs on `ubuntu-26.04`, with macOS tests on `macos-latest` on the weekly schedule and on manual runs only, not on pull requests. The Linux release binary is built on `ubuntu-24.04` (`.github/workflows/release.yml`).
 
 **Still open, as residual risks rather than deployment gaps:** the daemon serves its connections with one engine, so requests run one at a time. It has no peer-credential check on the socket (0700 directory and 0600 socket only). Git subprocesses have no time limit. Two `daemon start`s can race in the probe-to-bind window.

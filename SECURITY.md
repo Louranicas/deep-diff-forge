@@ -8,9 +8,9 @@ for.
 
 ## Status 2026-10-28 (0.3.0)
 
-- `main` carries the **0.3.0** development line. It is not tagged; cutting a
-  `v*` tag is the owner's decision. The published releases are `v0.1.0` and
-  `v0.2.0`. `0.2.1` was never tagged or published.
+- `main` carries **0.3.0**, tagged `v0.3.0` on 2026-10-29; cutting any later
+  `v*` tag is the owner's decision. The published releases are `v0.1.0`,
+  `v0.2.0` and `v0.3.0`. `0.2.1` was never tagged or published.
 - The controls below describe the code on `main`. The `v0.2.0` binaries were
   built on 2026-06-24 and predate the SOL-1 hardening (2026-09-04), the review
   council work and the 2026-10-28 fixes listed under
@@ -47,8 +47,9 @@ Fixes land on `main` first and reach users in the next tagged release.
 
 | Version | State | Security fixes |
 | --- | --- | --- |
-| `0.3.0` (`main`) | Current development line, untagged | Land here first. |
-| `v0.2.0` (2026-06-24) | Latest published release | Newest released minor line. It does not contain the fixes made since 2026-06-24. |
+| `main` | Development line after `v0.3.0` | Land here first. |
+| `v0.3.0` (2026-10-29) | Latest published release | Yes: the next release carries them. |
+| `v0.2.0` (2026-06-24) | Published, superseded | No. It does not contain the fixes made since 2026-06-24. |
 | `v0.1.0` (2026-06-22) | Published, superseded | No. |
 | `0.2.1` | Never tagged or published | Not applicable. |
 
