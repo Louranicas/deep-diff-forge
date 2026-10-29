@@ -494,10 +494,15 @@ fn start_lock_path(socket_path: &Path) -> std::io::Result<PathBuf> {
 fn take_start_lock(socket_path: &Path) -> std::io::Result<std::fs::File> {
     use rustix::fs::{FlockOperation, Mode, OFlags};
     let lock_path = start_lock_path(socket_path)?;
+    // `union` rather than `|`: the flags share no bits, so `|` and `^` are the same value and a
+    // `|`-to-`^` mutant could never be caught.
     let lock = std::fs::File::from(rustix::fs::open(
         &lock_path,
-        OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::RUSR | Mode::WUSR,
+        OFlags::RDWR
+            .union(OFlags::CREATE)
+            .union(OFlags::NOFOLLOW)
+            .union(OFlags::CLOEXEC),
+        Mode::RUSR.union(Mode::WUSR),
     )?);
     let metadata = lock.metadata()?;
     if !metadata.is_file() || metadata.uid() != rustix::process::geteuid().as_raw() {
