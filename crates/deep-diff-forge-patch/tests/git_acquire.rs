@@ -827,3 +827,44 @@ fn a_partial_clone_is_never_fetched_from() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Bug hunt 2026-10-28, H1-02: `diff.ignoreSubmodules = all`, from any configuration level, or a
+/// `.gitmodules` `ignore = all` dropped a staged submodule change from the capture with exit 0,
+/// so a gate saw no files. The change is captured whatever either says.
+#[test]
+fn a_submodule_change_is_captured_whatever_config_ignores() {
+    let fx = fixture("submodule");
+    let r = &fx.root;
+    let gitlink = |sha: &str| {
+        git_out(
+            r,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{sha},sub"),
+            ],
+        );
+    };
+    gitlink(&"1".repeat(40));
+    git_out(r, &["commit", "-qm", "gitlink"]);
+    gitlink(&"2".repeat(40));
+    let staged = || {
+        acquire_git(r, &GitSelection::Staged, &options(false))
+            .unwrap()
+            .diff()
+            .changes()
+            .iter()
+            .any(|c| c.review_path().is_some_and(|p| p.as_bytes() == b"sub"))
+    };
+    assert!(staged(), "default configuration");
+    git_out(r, &["config", "diff.ignoreSubmodules", "all"]);
+    assert!(staged(), "diff.ignoreSubmodules = all");
+    git_out(r, &["config", "--unset", "diff.ignoreSubmodules"]);
+    std::fs::write(
+        r.join(".gitmodules"),
+        "[submodule \"sub\"]\n\tpath = sub\n\turl = x\n\tignore = all\n",
+    )
+    .unwrap();
+    assert!(staged(), ".gitmodules ignore = all");
+}

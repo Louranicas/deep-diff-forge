@@ -156,6 +156,16 @@ fn highlight_rust(source: &str) -> Vec<HighlightSpan> {
     let Some(tree) = crate::parse_bounded(&mut parser, source) else {
         return Vec::new();
     };
+    // The highlight query's cost grows with nesting depth, not size: 240,010 nodes laid out flat
+    // highlight in 0.14 s, nested 60,000 deep in 20 s (release build, bug hunt H4-04). Bound
+    // both, as `semantic` bounds nodes, and fall back to plain text past either.
+    if exceeds_bounds(
+        &tree,
+        crate::analyze::DEFAULT_NODE_BUDGET,
+        MAX_HIGHLIGHT_DEPTH,
+    ) {
+        return Vec::new();
+    }
     RUST_QUERY.with(|cell| {
         let mut slot = cell.borrow_mut();
         // Compile the highlight query at most once per thread, then reuse it.
@@ -189,6 +199,29 @@ fn highlight_rust(source: &str) -> Vec<HighlightSpan> {
         }
         flatten(raw)
     })
+}
+
+/// The deepest syntax tree `highlight` queries. Real code nests a few dozen levels; 8,000
+/// levels highlight in about 25 ms, and the cost climbs steeply past that.
+const MAX_HIGHLIGHT_DEPTH: usize = 4096;
+
+/// Whether `tree` has more than `node_budget` nodes or nests more than `depth_limit` levels.
+fn exceeds_bounds(tree: &tree_sitter::Tree, node_budget: usize, depth_limit: usize) -> bool {
+    tree.root_node().descendant_count() > node_budget || deeper_than(tree, depth_limit)
+}
+
+/// Whether any node of `tree` lies more than `limit` levels below the root. An explicit stack
+/// visits each node once and stops at the first one past the limit.
+fn deeper_than(tree: &tree_sitter::Tree, limit: usize) -> bool {
+    let mut stack = vec![(tree.root_node(), 0usize)];
+    while let Some((node, depth)) = stack.pop() {
+        if depth > limit {
+            return true;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor).map(|child| (child, depth + 1)));
+    }
+    false
 }
 
 /// Resolve overlapping captures into non-overlapping, sorted spans.
@@ -419,6 +452,45 @@ mod tests {
             }
         );
         assert_eq!(flat[1].start, 5);
+    }
+
+    fn parse(source: &str) -> tree_sitter::Tree {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+        parser.parse(source, None).unwrap()
+    }
+
+    /// `source_file > function_item > block > "{"` is three levels below the root.
+    #[test]
+    fn depth_is_measured_exactly() {
+        let tree = parse("fn f(){}");
+        assert!(!deeper_than(&tree, 3));
+        assert!(deeper_than(&tree, 2));
+        assert!(!deeper_than(&parse(""), 0));
+        // The node budget is a strict bound too.
+        let nodes = tree.root_node().descendant_count();
+        assert!(!exceeds_bounds(&tree, nodes, 3));
+        assert!(exceeds_bounds(&tree, nodes - 1, 3));
+        assert!(exceeds_bounds(&tree, nodes, 2));
+    }
+
+    /// Bug hunt 2026-10-28, H4-04: a 60,000-deep nest took 20 s (release) to highlight. Past
+    /// the depth or node bound it is plain text; ordinary nesting is still highlighted.
+    #[test]
+    fn deep_or_huge_trees_fall_back_to_plain_text() {
+        let nest = |n: usize| format!("fn f(){{{}{}}}", "{".repeat(n), "}".repeat(n));
+        assert_ne!(highlight(Language::Rust, &nest(1000)).len(), 0);
+        assert_eq!(
+            highlight(Language::Rust, &nest(MAX_HIGHLIGHT_DEPTH)).len(),
+            0
+        );
+        assert_eq!(highlight(Language::Rust, &nest(60_000)).len(), 0);
+        let flat = format!("fn f(){{{}}}", "{}".repeat(60_000));
+        assert_eq!(highlight(Language::Rust, &flat).len(), 0);
+        let flat_small = format!("fn f(){{{}}}", "{}".repeat(1_000));
+        assert_ne!(highlight(Language::Rust, &flat_small).len(), 0);
     }
 
     #[test]

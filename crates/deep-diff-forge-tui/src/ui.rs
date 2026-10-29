@@ -237,10 +237,20 @@ fn render_panel(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: Rec
             " ↑/↓ scroll · Esc back · q quit ",
             Style::default().fg(palette.dim),
         )));
+    // Each output line wraps at the panel's inner width: a note longer than the panel used to
+    // be cut off, losing the end of a security warning (bug hunt 2026-10-28, H4-08). Escaping
+    // comes first, so a wrapped row never outgrows the panel.
+    let inner_width = usize::from(popup.width.saturating_sub(2));
     let lines: Vec<Line<'static>> = out
         .lines
         .iter()
-        .map(|l| Line::from(safe_span(l, Style::default().fg(palette.fg))))
+        .flat_map(|l| {
+            deep_diff_forge_projection::wrap_cells(
+                &deep_diff_forge_core::display_safe(l),
+                inner_width,
+            )
+        })
+        .map(|row| Line::from(safe_span(&row, Style::default().fg(palette.fg))))
         .collect();
     let total = lines.len();
     let inner_height = usize::from(popup.height.saturating_sub(2));
@@ -308,8 +318,16 @@ pub fn render_to_lines(app: &ReviewApp, width: u16, height: u16) -> Vec<String> 
     let mut lines = Vec::with_capacity(height as usize);
     for y in 0..height {
         let mut line = String::new();
-        for x in 0..width {
-            line.push_str(buffer[(x, y)].symbol());
+        let mut x = 0;
+        while x < width {
+            let symbol = buffer[(x, y)].symbol();
+            line.push_str(symbol);
+            // A wide character fills its cell and resets the next to a space; a terminal shows
+            // the character once, so the covered cell is skipped (bug hunt 2026-10-28, H4-09).
+            let covered = u16::try_from(deep_diff_forge_projection::cell_width(symbol))
+                .unwrap_or(1)
+                .max(1);
+            x = x.saturating_add(covered);
         }
         lines.push(line.trim_end().to_string());
     }
@@ -422,6 +440,26 @@ mod tests {
         let a = ReviewApp::from_review(&files);
         let out = render_to_lines(&a, 120, 24).join("\n");
         assert!(!out.contains('\u{1b}'));
+    }
+
+    /// Bug hunt 2026-10-28, H4-09: a probe printed a space after each wide character ("界 界"),
+    /// so its lines were wider than the terminal they describe.
+    #[test]
+    fn wide_characters_probe_as_a_terminal_shows_them() {
+        let wide = "界".repeat(40);
+        let files = parse(&format!(
+            "--- a/w.txt\n+++ b/w.txt\n@@ -1 +1 @@\n-a\n+{wide}\n"
+        ))
+        .unwrap();
+        let out = render_to_lines(&ReviewApp::from_review(&files), 63, 20);
+        assert!(out.iter().any(|l| l.contains("界界")), "{out:#?}");
+        assert!(!out.iter().any(|l| l.contains("界 界")), "{out:#?}");
+        for line in &out {
+            assert!(
+                deep_diff_forge_projection::cell_width(line) <= 63,
+                "{line:?}"
+            );
+        }
     }
 
     #[test]
