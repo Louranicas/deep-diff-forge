@@ -7,7 +7,7 @@ tests prove real behavior, failure modes, invariants, and integration contracts.
 This standard is intentionally strict. Production modules must meet it before
 they can be marked deployable.
 
-## Status 2026-10-30 (0.4.0 and later)
+## Status 2026-10-31 (0.5.0 and later)
 
 The sentence "the current implementation has only smoke behavior" (bootstrap
 era) no longer holds. How the standard is enforced today:
@@ -42,7 +42,7 @@ era) no longer holds. How the standard is enforced today:
   `known_miss` label. Planted controls prove a wrong label fails with exit 7, a
   changed file with exit 4, and the `ci-privilege` and `generated-spawn` ranking
   cases each fail when their signal is removed.
-- **Bench on pull requests** (`bench` job, informational): base and head on one
+- **Bench on pull requests** (`bench` job, required since 2026-10-31): base and head on one
   runner, alternating three times; `scripts/bench_compare.py` fails a workload over 25%
   and over 0.2 ms slower, and never compares timings taken on different inputs. A local
   `bench --quick` run found a quadratic cost in address-anchored findings (3,560 ms to

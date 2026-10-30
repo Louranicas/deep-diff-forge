@@ -1,6 +1,6 @@
 # Roadmap
 
-## Status 2026-10-30 (0.4.0 and later)
+## Status 2026-10-31 (0.5.0 and later)
 
 This section is current. The phase lists below are the original plan and are kept unchanged;
 the [2026-10-26 status](#status-2026-10-26) is kept as a dated record. Status is read from the
@@ -18,13 +18,13 @@ code on `main` after #54 (`b1b178b`), with the 2026-10-30 additions dated in eac
 | 6. App surfaces | Partial | Done: TUI. Remaining: a TUI test harness beyond the headless `review --probe` frame; desktop, web, IDE and forge adapters. |
 | 7. Daemon | Partial | Done: Unix-socket JSON-RPC 2.0, protocol 2 (`daemon.metrics` and `findings.verify`; a client that asks for 0 or 1 gets that version's methods), sessions, `engine.methods`, 0700 directory and 0600 socket. Done since 0.3.0: a peer-credential check on both ends of the socket, a start lock, requests in parallel, and (2026-10-30) `daemon.metrics`, doctor warnings from it, and `--log-format json`. Remaining: AST and line-index cache, subscriptions. |
 | 8. Cluster and loom | Cluster partial, loom not built | Done: `deep-diff-forge-cluster` with contiguous shards, join policies and a receipt, run by `--cluster`. Remaining: semantic and other dimensions; the `cluster` subcommand; all of loom. |
-| 9. Deployment spine | Done | CI (`ci.yml`, 10 required checks; weekly `campaign.yml`), `release.yml` (3 targets, sha256, SLSA attestation on tags), `deploy status\|release\|doctor`, hostile daemon soak smoke, since 2026-10-30 an informational `bench (base vs head, informational)` job on pull requests and a full bench receipt in the weekly campaign, GitHub releases v0.1.0 to v0.4.0, GitLab `main` fast-forwarded from GitHub `main` after each merge. |
+| 9. Deployment spine | Done | CI (`ci.yml`, 11 required checks; weekly `campaign.yml`), `release.yml` (3 targets, sha256, SLSA attestation on tags), `deploy status\|release\|doctor`, hostile daemon soak smoke, since 2026-10-30 an informational `bench (base vs head, informational)` job on pull requests and a full bench receipt in the weekly campaign, GitHub releases v0.1.0 to v0.4.0, GitLab `main` fast-forwarded from GitHub `main` after each merge. |
 | 10. Learning loop | Partial | Done: local-only strategy receipts (`learn record --stdin`), scoring and trust (`learn status`), planner, ranking and annotation learners and promotion rules (library only); and since 2026-10-30, a corpus with a manifest (`fixtures/eval/MANIFEST.json`), evaluation receipts (`eval`, `deep-diff-forge.eval.v0`) and benchmark receipts (`bench`, `deep-diff-forge.bench.v0`). Remaining: nothing emits receipts automatically; `learn record` does not take `bench.v0` or `eval.v0`; no wiring of learned weights into ranking. See [LEARNING_LOOP.md](LEARNING_LOOP.md). |
 
 Release and publication:
 
-- **0.4.0 is tagged** (`v0.4.0`, 2026-10-30, owner decision). Any later `v*` tag is the owner's
-  decision. Published GitHub releases are v0.1.0, v0.2.0, v0.3.0 and v0.4.0; v0.2.1 was never tagged.
+- **0.5.0 is tagged** (`v0.5.0`, 2026-10-31, owner decision). Any later `v*` tag is the owner's
+  decision. Published GitHub releases are v0.1.0, v0.2.0, v0.3.0, v0.4.0 and v0.5.0; v0.2.1 was never tagged.
 - **crates.io is on hold** by owner decision until the codebase is production-hardened.
   `release.yml` publishes only when the repository variable `DDF_CRATES_IO` is `open`; a
   configured token does not lift the hold.

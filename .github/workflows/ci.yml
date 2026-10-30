@@ -280,10 +280,10 @@ jobs:
 
   # Plan 2026-10-30 (M2): the pull request's head against its merge base, built and run on one
   # runner, alternating three times; each workload's best median per side is compared
-  # (scripts/bench_compare.py: over 25% and over 0.2 ms slower fails). Informational: it is not a
-  # required check until its false-failure rate on these runners is measured.
+  # (scripts/bench_compare.py: over 25% and over 0.2 ms slower fails). Required since 2026-10-31
+  # (owner decision; until then informational, with 0 false failures in its real comparisons).
   bench:
-    name: bench (base vs head, informational)
+    name: bench (base vs head)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-26.04
     timeout-minutes: 60

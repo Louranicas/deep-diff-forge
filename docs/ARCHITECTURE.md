@@ -3,7 +3,7 @@
 > **Two parts.** The first two sections, [Crates as built](#crates-as-built-030) and
 > [Data flow as built](#data-flow-as-built-030), describe the code at 0.3.0, with later changes
 > on `main` marked by date (the cli and daemon edges to `agent`, `RankedFile::scored` and daemon
-> protocol 2 arrived on 2026-10-30, after v0.4.0). Everything from
+> protocol 2 arrived on 2026-10-30 and shipped in 0.5.0). Everything from
 > [Layers](#layers) down is **target design, not a description of the code** (anchor E-01,
 > 2026-10-27): crates, commands and caches named there may not exist. The crate list that a test
 > holds equal to `cargo metadata` is generated in
@@ -100,7 +100,7 @@ below only as target design.
 | `cluster` | Bounded `std::thread::scope` lanes over contiguous shards, with a join policy and a receipt. |
 | `agent` | Annotation grounding, sources, sanitising and anchor validation; an in-memory store. |
 | `learning` | Local-only strategy receipts, scoring and promotion rules. |
-| `daemon` | Unix-socket JSON-RPC 2.0 server and client (protocol 1 at 0.3.0 and 0.4.0; protocol 2 on `main` since 2026-10-30, adding `daemon.metrics` and `findings.verify`). Refuses to build on non-Unix targets. |
+| `daemon` | Unix-socket JSON-RPC 2.0 server and client (protocol 1 at 0.3.0 and 0.4.0; protocol 2 since 0.5.0, adding `daemon.metrics` and `findings.verify`). Refuses to build on non-Unix targets. |
 | `review` | Review roster, adversarial council, gates and tuicr interop ([REVIEW_COUNCIL.md](REVIEW_COUNCIL.md)). |
 | `tui` | `review` terminal UI (ratatui, crossterm). |
 | `sdk` | Rust facade: `review`, `rank`, `exit`, and a Unix-only daemon `Client`. |
