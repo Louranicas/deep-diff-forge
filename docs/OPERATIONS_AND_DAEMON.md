@@ -132,7 +132,7 @@ the daemon's uid the same way and refuse a daemon of another user with
 
 ## Concurrency
 
-Changed after 0.3.0 (Unreleased). Before, every connection shared one `Mutex<Engine>`, so one slow
+Changed in 0.4.0. Before, every connection shared one `Mutex<Engine>`, so one slow
 request delayed every other client.
 
 - **Requests run in parallel.** Each of the eight connection workers serves its own requests
@@ -251,7 +251,7 @@ deep-diff-forge daemon stop             # sends daemon.shutdown
 
 ## Deploy Doctor
 
-Unreleased (2026-10-30). `deep-diff-forge deploy doctor [--json] [--socket PATH]` checks that this
+Added in 0.4.0 (2026-10-30). `deep-diff-forge deploy doctor [--json] [--socket PATH]` checks that this
 machine can run the daemon and Git inputs, and changes nothing. The daemon checks
 (`deep_diff_forge_daemon::inspect`) apply the daemon's own start rules, so a failure here is a
 `daemon start` or client that would fail too; it never takes the start lock, which would make a

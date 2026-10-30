@@ -62,7 +62,7 @@ fn release_json_declares_schema_and_version() {
     let (code, stdout, _) = run(&["deploy", "release", "--json"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("\"schema\": \"deep-diff-forge.release.v0\""));
-    assert!(stdout.contains("\"version\": \"0.3.0\""));
+    assert!(stdout.contains(&format!("\"version\": \"{}\"", env!("CARGO_PKG_VERSION"))));
 }
 
 #[test]

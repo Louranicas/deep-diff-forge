@@ -2,12 +2,12 @@
 
 This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
-## Status 2026-10-29 (0.3.0)
+## Status 2026-10-30 (0.4.0)
 
-- The workspace version on `main` is **0.3.0**, tagged `v0.3.0` on 2026-10-29
+- The workspace version on `main` is **0.4.0**, tagged `v0.4.0` on 2026-10-30
   by owner decision. Pushing any later `v*` tag is the owner's decision too.
 - Published GitHub releases: `v0.1.0` (2026-06-22), `v0.2.0` (2026-06-24) and
-  `v0.3.0` (2026-10-29). `0.2.1` was never tagged.
+  `v0.3.0` (2026-10-29) and `v0.4.0` (2026-10-30). `0.2.1` was never tagged.
 - crates.io is on hold by owner decision until the codebase is
   production-hardened. `release.yml` publishes only when the repository
   variable `DDF_CRATES_IO` is `open`.
@@ -21,8 +21,8 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
 | Channel | Purpose | Today |
 | --- | --- | --- |
-| `main` | Current development branch. | 0.3.0, reached only through pull requests (branch ruleset). |
-| GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`, `v0.3.0`. |
+| `main` | Current development branch. | 0.4.0, reached only through pull requests (branch ruleset). |
+| GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`. |
 | GitLab mirror | Secondary remote and redundancy. | Pushed to match GitHub. |
 | crates.io | Rust library and CLI distribution. | On hold (`DDF_CRATES_IO`). |
 | cargo-binstall | Fast binary installation. | Not configured (no binstall metadata in any `Cargo.toml`). |
@@ -33,7 +33,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 Semantic versioning. The plan below is the original 2026-06 sequence, kept as
 written; the releases did not follow it (`v0.2.0` already held 12 crates,
 including the TUI, daemon and learning crates; the review and SDK crates came
-later; 0.3.0 is the current development line):
+later; 0.4.0 is the current development line):
 
 ```text
 0.1.0: model and CLI bootstrap
@@ -77,12 +77,12 @@ checklist; neither has tooling yet.
 ## Tag And Push
 
 `main` reaches GitHub only through a merged pull request: the branch ruleset
-requires a PR, nine passing checks (the PR-time jobs of `ci.yml`), an
+requires a PR, ten passing checks (the PR-time jobs of `ci.yml`), an
 up-to-date branch, and allows no bypass. The tag is cut from that commit with
 the `justfile` recipe:
 
 ```bash
-just release-tag 0.3.0
+just release-tag 0.4.0
 ```
 
 `release-tag` refuses a version that differs from `[workspace.package].version`
@@ -127,10 +127,9 @@ Toolchain pinned to 1.99.1 except where noted.
 | `diff-mutation` (diff mutation (shard k/4)) | ubuntu-26.04 | `pull_request` only | `scripts/diff_mutation.sh origin/$BASE_REF k/4`: cargo-mutants 27.1.0 on the PR's changed Rust lines under `crates/`; a missed mutant or timeout fails. |
 | `supply-chain` (supply chain audit) | ubuntu-26.04 | every trigger | cargo-deny (root and fuzz), `cargo audit --deny warnings` (root and fuzz lockfiles), SPDX SBOM regenerated and compared with the committed one. |
 
-On a pull request nine checks run (`secrets`, `msrv`, `gate`,
+On a pull request ten checks run (`secrets`, `msrv`, `macos`, `gate`,
 `review-controller-evidence`, four `diff-mutation` shards, `supply-chain`);
-these match the ruleset's nine required checks (inferred: the ruleset lives in GitHub settings, not in the repository). `macos` never runs on a pull
-request.
+they are ruleset 25868121's ten required checks (measured 2026-10-30 with `gh api`; the ruleset lives in GitHub settings, not in the repository).
 
 ### `release.yml`
 
