@@ -11,6 +11,7 @@ categories.workspace = true
 description = "Optional UDS JSON-RPC review daemon for Deep-Diff-Forge (std-first, no async runtime)."
 
 [dependencies]
+deep-diff-forge-agent.workspace = true
 deep-diff-forge-core.workspace = true
 deep-diff-forge-patch.workspace = true
 deep-diff-forge-graph.workspace = true

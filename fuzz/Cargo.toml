@@ -81,3 +81,10 @@ path = "fuzz_targets/structural_soundness.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "findings_verify"
+path = "fuzz_targets/findings_verify.rs"
+test = false
+doc = false
+bench = false

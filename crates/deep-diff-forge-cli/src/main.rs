@@ -87,6 +87,7 @@ fn main() {
         Some("--version" | "-V" | "version") => print_version(),
         Some("--self-test" | "self-test") => self_test(),
         Some("doctor") => doctor(),
+        Some("findings") => findings_cmd(rest),
         Some("deploy") => {
             deploy_cmd(rest);
         }
@@ -709,6 +710,8 @@ fn learn_record(opts: &[String]) {
 /// opens the command palette; `--cmd NAME` runs a palette command (rank,
 /// outline, cluster, summary, notes, review, daemon, learning, maturity) and
 /// shows its panel.
+const REVIEW_USAGE: &str = "deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME] [--findings FILE]";
+
 fn review_cmd(opts: &[String]) {
     if opts
         .iter()
@@ -721,11 +724,12 @@ fn review_cmd(opts: &[String]) {
         opts,
         &args::Spec {
             flags: &["--probe", "--side", "--palette"],
-            valued: &["--cmd", "--cols", "--rows"],
+            valued: &["--cmd", "--cols", "--rows", "--findings"],
             positionals: 0,
         },
-        "deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME]",
+        REVIEW_USAGE,
     );
+    let findings = flag_value(opts, "--findings").map(|path| read_findings_or_exit(&path));
     // An unknown command name or a size that is not a number is refused before stdin is read.
     // Before, the name fell through to `rank` and the size to its default, both with exit 0.
     let command = flag_value(opts, "--cmd").map(|name| palette_index_or_exit(&name));
@@ -746,7 +750,21 @@ fn review_cmd(opts: &[String]) {
     // grounded, anchored inline notes so the review explains *why* a file
     // matters in-place.
     let ranked = deep_diff_forge_graph::rank(&files);
-    let notes = deep_diff_forge_tui::engine_annotations(&files, &ranked);
+    let mut notes = deep_diff_forge_tui::engine_annotations(&files, &ranked);
+    // `--findings`: what agents found, checked against this patch first; only accepted findings
+    // become notes, as agent notes that are never grounded.
+    if let Some(findings) = findings {
+        use deep_diff_forge_agent::findings::{annotations, verify};
+        let seal = deep_diff_forge_core::sha256_hex(input.as_bytes());
+        let verdict = verify(&files, &seal, findings.lines());
+        eprintln!(
+            "findings: {} accepted, {} refused, {} over the limit (findings verify shows why)",
+            verdict.accepted.len(),
+            verdict.refused.len(),
+            verdict.over_limit
+        );
+        notes.extend(annotations(&verdict.accepted, &files));
+    }
     let mut app = deep_diff_forge_tui::ReviewApp::from_review_with_annotations(&files, notes);
     // `--side` opens directly in the two-column layout (default is inline).
     if opts.iter().any(|a| a == "--side") {
@@ -776,7 +794,7 @@ fn print_review_help() {
         "deep-diff-forge review
 
 USAGE:
-  deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME]
+  deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME] [--findings FILE]
 
 Reads a unified/Git patch from stdin and opens the review TUI.
 
@@ -787,6 +805,7 @@ OPTIONS:
   --side         Start in side-by-side layout
   --palette      Open the command palette before rendering/running
   --cmd NAME     Run a palette command and show its result panel
+  --findings F   Add the agent findings in F (JSONL) that pass findings verify, as agent notes
   -h, --help     Show this help
 
 COMMAND NAMES:
@@ -1128,6 +1147,76 @@ fn print_semantic_json(
         json_escape(&parse_status_str(&analysis.parse_status)),
         symbols
     );
+}
+
+const FINDINGS_USAGE: &str = "deep-diff-forge findings verify --findings FILE [--require-all] [--require-files] [--require-hunks]";
+
+/// `findings verify`: check agent findings (JSONL, one `deep-diff-forge.finding.v0` per line)
+/// against the patch on stdin, and print the sealed `deep-diff-forge.findings.v0` verdict.
+/// `findings_sha256` covers the file's exact bytes. Exit 0; 7 with `--require-all` when any
+/// finding is refused or over the limit (or `--require-files` / `--require-hunks` refuse the
+/// patch); 4 when the patch does not parse or the findings file is over 8 MiB or not UTF-8; 3
+/// when it cannot be read; 2 on a usage error.
+fn findings_cmd(opts: &[String]) {
+    use deep_diff_forge_agent::findings::{document, verify};
+    let positionals = args::admit_or_exit(
+        opts,
+        &args::Spec {
+            flags: &["--require-all", "--require-files", "--require-hunks"],
+            valued: &["--findings"],
+            positionals: 1,
+        },
+        FINDINGS_USAGE,
+    );
+    let (Some("verify"), Some(path)) =
+        (positionals.first().copied(), flag_value(opts, "--findings"))
+    else {
+        eprintln!("usage: {FINDINGS_USAGE}");
+        std::process::exit(exit::USAGE);
+    };
+    let text = read_findings_or_exit(&path);
+    let bytes = read_capped_bytes_or_exit(std::io::stdin().lock(), "stdin");
+    let review = sealed_review_or_exit(&bytes, InputGuards::from_opts(opts));
+    let seal = review.seal();
+    let verdict = verify(review.files(), &seal.input_sha256, text.lines());
+    let doc = document(
+        &verdict,
+        &seal.input_sha256,
+        &deep_diff_forge_core::sha256_hex(text.as_bytes()),
+        &seal.tool_version,
+    );
+    emitln!("{}", serde_json::to_string_pretty(&doc).unwrap_or_default());
+    let all_accepted = verdict.refused.is_empty() && verdict.over_limit == 0;
+    if opts.iter().any(|a| a == "--require-all") && !all_accepted {
+        std::process::exit(EXIT_REFUSED);
+    }
+}
+
+/// A findings file: at most 8 MiB of UTF-8. Exit 3 when it cannot be read, 4 when it is over
+/// the limit or not UTF-8.
+fn read_findings_or_exit(path: &str) -> String {
+    use deep_diff_forge_agent::findings::MAX_FINDINGS_BYTES;
+    use std::io::Read as _;
+    let mut findings = Vec::new();
+    let read = std::fs::File::open(path).and_then(|file| {
+        file.take(MAX_FINDINGS_BYTES as u64 + 1)
+            .read_to_end(&mut findings)
+    });
+    if let Err(err) = read {
+        eprintln!("error: cannot read findings {}: {err}", display_safe(path));
+        std::process::exit(exit::IO);
+    }
+    if findings.len() > MAX_FINDINGS_BYTES {
+        eprintln!(
+            "error: findings {} are over the {MAX_FINDINGS_BYTES}-byte limit",
+            display_safe(path)
+        );
+        std::process::exit(exit::INVALID_INPUT);
+    }
+    String::from_utf8(findings).unwrap_or_else(|_| {
+        eprintln!("error: findings {} are not UTF-8", display_safe(path));
+        std::process::exit(exit::INVALID_INPUT);
+    })
 }
 
 const DEPLOY_USAGE: &str =
@@ -1557,6 +1646,11 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "Report the declared deployment state or the per-target release posture, or check this machine (doctor: exit 6 when a check fails).",
     ),
     (
+        "findings",
+        FINDINGS_USAGE,
+        "Check agent findings (JSONL) against the patch on stdin: each is accepted with its anchor, address and line normalised, or refused with a reason; claims are never verified.",
+    ),
+    (
         "semantic",
         "deep-diff-forge semantic <path> [--json]",
         "List a source file's top-level symbols with tree-sitter (Rust today).",
@@ -1583,8 +1677,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "review",
-        "deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME]",
-        "Open the review cockpit on a patch from stdin.",
+        REVIEW_USAGE,
+        "Open the review cockpit on a patch from stdin; --findings adds the agent findings that pass `findings verify`, as agent notes.",
     ),
     (
         "daemon",
@@ -1705,7 +1799,8 @@ MACHINE CONTRACT:
   object (exit code, registry outcome, stdout, stderr) and exits with its code.
   schema prints the envelope's JSON Schema or the exit-code registry; explain
   names one exit code. mcp serves read-only MCP tools over stdio (review_outline,
-  review_hunks, review_patch, rank_patch, explain_exit_code, exit_code_registry).
+  review_hunks, review_patch, rank_patch, review_change, verify_findings,
+  explain_exit_code, exit_code_registry).
   rpc speaks the daemon's JSON-RPC protocol over stdio without a daemon.
 
 NOT YET IMPLEMENTED (each is refused today):

@@ -1,0 +1,4 @@
+{"agent":"codex","severity":"high","title":"t","body":"b","path":"src/lib.rs","line":2}
+{"agent":"a","severity":"low","title":"x‮y","body":"ignore previous","path":"README.md"}
+{"agent":"a","severity":"info","title":"t","body":"b","address":"00","line":1}
+not json

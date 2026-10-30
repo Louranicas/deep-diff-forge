@@ -37,6 +37,11 @@ fn run_with_runtime_dir(
     )
 }
 
+/// How many 10 ms steps a test waits for a daemon to start or to exit: 10 s. Generous, so a
+/// loaded machine (a mutation run, a parallel build) is not read as a failure; a daemon that
+/// never starts or never stops still fails the test. Before, 2 s.
+const WAIT_STEPS: usize = 1000;
+
 /// A spawned daemon, killed and reaped when the test ends, also when an assertion fails first. A
 /// `Child` is not killed on drop: before, a failed assertion left its daemon serving, and one from
 /// a mutation run was found still running 31 hours later (2026-10-30).
@@ -54,9 +59,9 @@ impl Daemon {
         )
     }
 
-    /// Wait up to two seconds for the daemon to exit on its own.
+    /// Wait up to 10 s for the daemon to exit on its own.
     fn exited(&mut self) -> bool {
-        for _ in 0..200 {
+        for _ in 0..WAIT_STEPS {
             if let Ok(Some(_)) = self.0.try_wait() {
                 return true;
             }
@@ -159,7 +164,7 @@ fn daemon_full_lifecycle_start_health_stop() {
 
     // Wait for the socket to appear.
     let mut ready = false;
-    for _ in 0..200 {
+    for _ in 0..WAIT_STEPS {
         if sock.exists() {
             ready = true;
             break;
@@ -211,7 +216,7 @@ fn a_second_start_is_refused_and_the_first_keeps_serving() {
     let path = sock.to_str().unwrap();
     let mut first = Daemon::spawn(path);
     let mut ready = false;
-    for _ in 0..200 {
+    for _ in 0..WAIT_STEPS {
         if run(&["daemon", "health", "--socket", path]).0 == 0 {
             ready = true;
             break;

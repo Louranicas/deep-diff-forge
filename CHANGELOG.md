@@ -6,6 +6,41 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Added
+
+- **Verified agent findings.** `deep-diff-forge findings verify --findings FILE [--require-all]`
+  checks agent findings (JSONL, `deep-diff-forge.finding.v0`) against the patch on stdin.
+  - It checks the hunk address or path and line, freshness (`review` against `input_sha256`),
+    size, and duplicates. It prints the sealed `deep-diff-forge.findings.v0` verdict, with
+    `claim_verified: false` always.
+  - Accepted findings are normalised from the review (the line's own kind and text) and sanitised.
+  - Refused ones carry one reason: `malformed`, `stale_review`, `unknown_path`,
+    `unknown_address`, `line_outside_hunk`, `duplicate` or `too_long`.
+  - The same verdict comes from the daemon's `findings.verify`, `rpc`, the MCP tool
+    `verify_findings` and the Python SDK's `verify_findings`.
+  - `review --findings FILE` shows the accepted findings in the cockpit as agent notes, never
+    grounded, and a finding cannot pass for the engine's own notes.
+- A `findings_verify` fuzz target: every non-blank line gets exactly one verdict, every accepted
+  anchor resolves, and no sanitised text keeps an unsafe character.
+
+### Changed
+
+- **Daemon protocol 2.** `findings.verify` is `since: 2`; clients that ask for protocol 0 or 1
+  get the method lists they had.
+- `deep-diff-forge-daemon` and `deep-diff-forge-cli` depend on `deep-diff-forge-agent`
+  (`docs/crate-edges.txt`).
+- CLI daemon tests wait up to 10 s, not 2 s, for a daemon to start or exit, so a loaded machine
+  is not read as a failure. Two local gate runs had failed once each and did not reproduce in
+  15 later full runs; a 2 s wait under a parallel build is the likely cause (inferred, not
+  reproduced).
+
+### Security
+
+- `sanitize_body` (agent annotations, and now findings) drops bidi, invisible and
+  line-separator characters as well as control characters. Before, Unicode category Cf
+  characters such as U+202E were kept, so an agent's note could reorder or hide text for the
+  next reader. `deep_diff_forge_core::is_unsafe_in_untrusted_text` is the one predicate.
+
 ## [0.4.0] - 2026-10-30
 
 ### Added

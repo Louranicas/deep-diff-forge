@@ -41,6 +41,27 @@ class Stdio(unittest.TestCase):
                 client.rank_patch("", require_files=True)
             self.assertEqual(refused.exception.code, 7)
 
+    def test_verify_findings_matches_the_cli(self):
+        findings = [
+            {"agent": "codex", "severity": "high", "title": "t", "body": "b", "path": "x", "line": 1},
+            {"agent": "codex", "severity": "low", "title": "u", "body": "c", "path": "nope"},
+        ]
+        with ddf.StdioClient((BIN, "rpc")) as client:
+            verdict = client.verify_findings(PATCH, findings)
+        self.assertEqual(verdict["schema"], "deep-diff-forge.findings.v0")
+        self.assertEqual(verdict["counts"], {"accepted": 1, "refused": 1, "over_limit": 0})
+        self.assertEqual(verdict["refused"][0]["reason"], "unknown_path")
+        self.assertIs(verdict["claim_verified"], False)
+        # The CLI over the same findings as the daemon's JSONL (one compact object per line, keys
+        # sorted, UTF-8 unescaped) gives the same document, findings_sha256 included.
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "f.jsonl"
+            path.write_text("".join(json.dumps(f, separators=(",", ":"), sort_keys=True, ensure_ascii=False) + "\n"
+                                    for f in findings), encoding="utf-8")
+            out = subprocess.run([BIN, "findings", "verify", "--findings", str(path)], input=PATCH,
+                                 capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(out.stdout), verdict)
+
     def test_errors_keep_their_codes(self):
         with ddf.StdioClient((BIN, "rpc")) as client:
             with self.assertRaises(ddf.RpcError) as refused:

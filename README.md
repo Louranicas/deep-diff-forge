@@ -393,7 +393,8 @@ empty.
 | MCP `review_patch` / `rank_patch` over 256 KiB | `deep-diff-forge.review-summary.v0` · `deep-diff-forge.rank-summary.v0` |
 | `envelope` | `ddf.result.v1` |
 | `agent setup --json` · `agent doctor --json` | `deep-diff-forge.agent-setup.v0` · `deep-diff-forge.agent-doctor.v0` |
-| `daemon`, `rpc` | JSON-RPC 2.0, protocol 1 |
+| `findings verify`, `findings.verify`, MCP `verify_findings` | `deep-diff-forge.findings.v0` (input: one `deep-diff-forge.finding.v0` object per finding) |
+| `daemon`, `rpc` | JSON-RPC 2.0, protocol 2 |
 
 **Input sealing.** `review.v0`, `rank.v0`, `cluster.v0`, `semantic.v0` and
 `git-acquisition.v0` carry two members right after `schema`:
@@ -513,6 +514,7 @@ tools over stdio, one JSON-RPC message per line.
 | `review_hunks` | `deep-diff-forge.review-hunks.v0`: chosen hunks verbatim, by `addresses` or `paths` (or all). Fits `max_bytes`; `cursor` continues |
 | `review_change` | The outline or hunks of a change read straight from Git (`selection`: `staged`, `working_tree`, `range`), with an `acquisition` member that lists any `omitted_untracked` directories (a nested repository is not captured). Only for repositories the server was started with `--allow-repo`; Git is stopped after 30 s |
 | `explain_exit_code` | One exit code's family, name, meaning and next action |
+| `verify_findings` | `deep-diff-forge.findings.v0`: each agent finding in `findings` checked against `patch` (address, line, path, freshness, size, duplicates) and accepted with its anchor normalised, or refused with a reason; `claim_verified` is always `false` |
 | `exit_code_registry` | Every documented exit code |
 
 Every tool is annotated `readOnlyHint: true`, and none writes anything. Every tool declares an
@@ -605,17 +607,52 @@ server on an owner-private Unix domain socket.
 **Default socket:** `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock`. There is no
 `/tmp` fallback. Without `$XDG_RUNTIME_DIR` the daemon fails closed until you pass `--socket PATH`.
 
-**JSON-RPC methods** (protocol 1; `engine.methods` lists them with their parameters):
+**JSON-RPC methods** (protocol 2; `engine.methods` lists them with their parameters and the protocol that added them):
 `engine.initialize`, `engine.methods`, `daemon.health`, `daemon.status`,
 `daemon.shutdown`, `diff.plan`, `diff.compute`, `diff.rank`, `review.outline`, `review.hunks`,
-`review.change`, `session.open`, `session.snapshot`, `session.close`.
+`review.change`, `session.open`, `session.snapshot`, `session.close`, `findings.verify`.
 
 ```bash
 deep-diff-forge daemon start --foreground      # terminal 1
 deep-diff-forge daemon health                  # terminal 2
-# {"id":1,"jsonrpc":"2.0","result":{"cache_entries":0,"pid":…,"protocol":1,"retained_bytes":0,"sessions":0,"status":"ok","version":"0.4.0"}}
+# {"id":1,"jsonrpc":"2.0","result":{"cache_entries":0,"pid":…,"protocol":2,"retained_bytes":0,"sessions":0,"status":"ok","version":"0.4.0"}}
 deep-diff-forge daemon stop
 ```
+
+## Verified agent findings
+
+Agents report findings, and DDF checks each one against patch truth before anyone reads it. A
+finding is one JSON object per line (`deep-diff-forge.finding.v0`):
+
+```json
+{"agent": "codex", "severity": "high", "title": "spawns curl", "body": "…", "address": "<hunk address>", "line": 2}
+```
+
+```bash
+deep-diff-forge findings verify --findings found.jsonl < change.patch     # the sealed verdict
+deep-diff-forge findings verify --findings found.jsonl --require-all < change.patch   # exit 7 if any is refused
+deep-diff-forge review --findings found.jsonl < change.patch              # the accepted ones as notes
+```
+
+- **Anchors.** A finding is anchored by a hunk `address` (from the outline or `rank.v0`
+  evidence), or by a `path` with an optional `line` and `side` (`new` or `old`). A path and a
+  line resolve to the hunk that holds the line, so a finding survives an agent that never saw
+  addresses.
+- **Accepted findings** come back normalised from the review: the path, the address, and the
+  line's own kind and text. The title and body are sanitised: no control, bidi or invisible
+  characters.
+- **Refused findings** carry one reason: `malformed`, `stale_review` (the finding's `review` is
+  not this patch's `input_sha256`), `unknown_path`, `unknown_address`, `line_outside_hunk`,
+  `duplicate` (same agent, title and anchor) or `too_long`.
+- **Limits.** At most 10,000 findings and 8 MiB per call; the rest are counted as `over_limit`.
+- **Claims are not checked.** DDF checks *where* a finding points, never *what* it says.
+  `claim_verified` is always `false`, every accepted finding says `source: "agent"`, and
+  findings never enter `review.v0`. In the cockpit they are agent notes, never grounded, and an
+  agent cannot pass for the engine whatever it calls itself.
+- **The same verdict everywhere.** The daemon's `findings.verify` (protocol 2), `rpc`, MCP
+  `verify_findings` and the Python SDK's `verify_findings` take the findings as an array and give
+  the same document as the CLI. `findings_sha256` covers the CLI's file bytes, or for an array
+  its JSONL (one compact object per line, keys sorted).
 
 ## Risk ranking
 

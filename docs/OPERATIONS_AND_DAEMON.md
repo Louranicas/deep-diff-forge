@@ -8,10 +8,11 @@ What exists today, checked against `crates/deep-diff-forge-daemon/src/` and the
 - `deep-diff-forge daemon {path|start [--foreground]|health|status|stop} [--socket PATH]`.
   `start` always serves in the foreground; a supervisor owns the process.
   `--foreground` is accepted only with `start` (elsewhere: exit 2).
-- One Unix socket, JSON-RPC 2.0, protocol 1. Methods (`engine.methods`):
-  `engine.initialize`, `engine.methods`, `daemon.health`, `daemon.status`,
-  `daemon.shutdown`, `diff.plan`, `diff.compute`, `session.open`,
-  `session.snapshot`, `session.close`. `deep-diff-forge rpc` speaks the same
+- One Unix socket, JSON-RPC 2.0, protocol 2 (0 and 1 still negotiate). Methods
+  (`engine.methods`): `engine.initialize`, `engine.methods`, `daemon.health`,
+  `daemon.status`, `daemon.shutdown`, `diff.plan`, `diff.compute`, `diff.rank`,
+  `review.outline`, `review.hunks`, `review.change`, `session.open`,
+  `session.snapshot`, `session.close` and, since protocol 2, `findings.verify`. `deep-diff-forge rpc` speaks the same
   protocol over stdio without a daemon.
 - At most eight connections, their requests run in parallel under a 128 MiB
   cap on the request bytes in flight ([concurrency](#concurrency)). Line cap 80 MiB each way; a response over it
@@ -180,7 +181,7 @@ Response:
     "sessions": 0,
     "retained_bytes": 0,
     "cache_entries": 0,
-    "protocol": 1
+    "protocol": 2
   }
 }
 ```
@@ -195,7 +196,7 @@ clients that read it keep working; a cache, if one is ever added, reports its re
 Implemented: `daemon.status` returns `{running, uptime_secs, sessions, version,
 protocol}`, for example
 `{"protocol":1,"running":true,"sessions":0,"uptime_secs":0,"version":"0.3.0"}`
-(measured 2026-10-28).
+(measured 2026-10-28, protocol 1 then; protocol 2 since 2026-10-30).
 
 Target design, not implemented: status reports should also include:
 

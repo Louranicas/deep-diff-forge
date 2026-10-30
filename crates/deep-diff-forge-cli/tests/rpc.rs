@@ -28,7 +28,10 @@ fn rpc_answers_on_stdout_and_ends_at_shutdown() {
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     assert_eq!(lines.len(), 2, "nothing after shutdown: {lines:?}");
-    assert_eq!(lines[0]["result"]["protocol"], 1);
+    assert_eq!(
+        lines[0]["result"]["protocol"],
+        deep_diff_forge_daemon::PROTOCOL_VERSION
+    );
     assert_eq!(lines[1]["result"]["stopping"], true);
 }
 

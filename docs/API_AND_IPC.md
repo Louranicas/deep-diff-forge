@@ -7,7 +7,7 @@ section says whether it describes what ships today or a planned design.
 ## Status 2026-10-28 (0.3.0)
 
 - **Ships today:** the CLI, the optional Unix-socket daemon (JSON-RPC 2.0,
-  protocol 1), `rpc` (the same protocol over stdio, no daemon), `mcp` (a
+  protocol 2), `rpc` (the same protocol over stdio, no daemon), `mcp` (a
   read-only MCP stdio server), `envelope` / `schema` / `explain`, the Rust SDK
   crate `deep-diff-forge-sdk` and the Python SDK `sdk/python/deep_diff_forge.py`.
 - **Not implemented** (refused with exit 2 today): `deep-diff-forge <old> <new>`,
@@ -160,13 +160,13 @@ deep-diff-forge loom plan | loom gate | loom receipt
 | `git difftool` | planned | Old/new file paths and labels. Not implemented. |
 | Pager | planned | No pager or ANSI mode for `--stdin-patch`; it prints plain text. |
 
-## JSON-RPC Methods (shipped, protocol 1)
+## JSON-RPC Methods (shipped, protocol 2)
 
 The daemon and `rpc` speak newline-delimited JSON-RPC 2.0. `engine.methods` is
 the authoritative list. `METHODS` in `handler.rs` is the only route into the
 dispatcher, and a test keeps the two in step. Protocol versions are additive: a
 client may pass `{"protocol": N}` to `engine.initialize` for any integer N from 0
-to 1, and the answer lists that version's methods. A newer or non-integer
+to 2, and the answer lists that version's methods. A newer or non-integer
 version is refused with domain error 2.
 
 | Method | Params | Result | Since |
@@ -185,6 +185,7 @@ version is refused with domain error 2.
 | `session.open` | `patch: string` | `{session, files}` | 0 |
 | `session.snapshot` | `session: string` | `[ranked file]` | 0 |
 | `session.close` | `session: string` | `{closed}` | 0 |
+| `findings.verify` | `patch: string, findings: [object], require_files?, require_hunks?` | `deep-diff-forge.findings.v0`: each finding accepted (anchor, address and line checked against the sealed review, body sanitised) or refused with a reason; `claim_verified` is always `false` | 2 |
 
 `cache_entries` is always 0: there is no response cache (`handler.rs`, decision
 D-03).
@@ -263,6 +264,7 @@ message per line (`crates/deep-diff-forge-cli/src/mcp.rs`).
 | `review_hunks` | `patch`, `addresses?` or `paths?`, `require_files?`, `require_hunks?`, `max_bytes?`, `cursor?` | `review.hunks`, budgeted the same way |
 | `review_change` | `repo`, `selection`, `range?`, `include_untracked?`, `view?` (`outline` or `hunks`), and that view's arguments | `review.change`, only when the server was started with `mcp --allow-repo PATH`; budgeted the same way |
 | `explain_exit_code` | `code`, `family?` (`engine` or `council`) | the exit-code registry |
+| `verify_findings` | `patch`, `findings` (array of finding objects), `require_files?`, `require_hunks?` | `findings.verify` |
 | `exit_code_registry` | — | the exit-code registry |
 
 Every tool is annotated `readOnlyHint: true`. Bad or missing arguments, a parse
@@ -386,3 +388,35 @@ annotations.
 ## Deployment Link
 
 - Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)
+
+## Verified findings (`deep-diff-forge.findings.v0`, 2026-10-30)
+
+- **Input.** One `deep-diff-forge.finding.v0` object per finding.
+  - Required: `agent`, `severity` (`info`, `low`, `medium`, `high`, `critical`), `title` (at most
+    200 characters) and `body` (at most 4,096).
+  - An anchor: `address`, or `path` with an optional `line` (an integer from 1) and `side` (`new`,
+    the default, or `old`).
+  - Optional: `review` (the `input_sha256` the agent reviewed), `id`, `model`, `evidence` (at most
+    16 strings of 500 characters), and `schema` (if present, it must name the finding schema).
+  - Any other field is `malformed`. The CLI reads JSONL; blank lines are skipped and not counted.
+    The daemon, `rpc` and MCP take an array.
+- **Output.**
+  - `schema`, `input_sha256` (the patch), `findings_sha256` and `tool`.
+  - `claim_verified: false`.
+  - `counts {accepted, refused, over_limit}`.
+  - `accepted[]`: `index`, `source: "agent"`, `agent`, `severity`, `title`, `body` (sanitised),
+    `path`, `anchor` (`address`, `line` or `file`), `address` (or `null` for a file-level
+    finding), `evidence`, an optional `line {side, number, kind, text}` (the review's own kind and
+    text, escaped and cut to 200 bytes), and optional `model` and `id`.
+  - `refused[]`: `index`, `reason`, and an `excerpt` of the input, escaped and cut to 120 bytes.
+- **Refusal reasons:** `malformed`, `stale_review`, `unknown_path`, `unknown_address`,
+  `line_outside_hunk`, `duplicate` and `too_long`.
+- **Limits.** 10,000 findings per call (the rest are `over_limit`) and 8 MiB:
+  - the CLI exits 4 on an oversized file;
+  - the daemon answers `RESOURCE_EXHAUSTED` (8) when the array's JSONL is over 8 MiB.
+- **CLI exits:** 0; 7 with `--require-all` when any finding is refused or over the limit (or
+  `--require-files` / `--require-hunks` refuse the patch); 4 for a patch that does not parse, or
+  a findings file over 8 MiB or not UTF-8; 3 when the file cannot be read; 2 on a usage error.
+- **Implementation.** `deep-diff-forge-agent::findings` is the one verifier: the CLI, the daemon
+  (so `rpc` and MCP), the cockpit and the `findings_verify` fuzz target all call it.
+

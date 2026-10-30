@@ -434,51 +434,86 @@ fn unknown_options_are_refused_not_ignored() {
 #[test]
 fn every_documented_option_is_admitted() {
     let dir = std::env::temp_dir().join(format!("ddf-a01-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let source = dir.join("a.rs");
-    std::fs::write(&source, "fn a() {}\n").unwrap();
-    let source = source.to_str().unwrap();
-    let repo = env!("CARGO_MANIFEST_DIR");
+    let (source, findings) = (
+        scratch(&dir, "a.rs", "fn a() {}\n"),
+        scratch(&dir, "f.jsonl", ""),
+    );
     let socket = dir.join("s.sock");
-    let socket = socket.to_str().unwrap();
     let (address, cursor) = view_handles();
-    let rows: &[(&str, &[&str])] = &[
-        ("--json", &["--stdin-patch", "--json"]),
-        ("--outline", &["--stdin-patch", "--outline"]),
-        ("--hunks", &["--stdin-patch", "--hunks"]),
+    let mut rows = patch_option_rows(&address, &cursor, &findings);
+    rows.extend(command_option_rows(&source, socket.to_str().unwrap()));
+    admits_every_documented_option(&rows);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One admitted invocation for each option of the patch-reading commands.
+fn patch_option_rows<'a>(
+    address: &'a str,
+    cursor: &'a str,
+    findings: &'a str,
+) -> Vec<(&'static str, Vec<&'a str>)> {
+    let repo = env!("CARGO_MANIFEST_DIR");
+    vec![
+        ("--json", vec!["--stdin-patch", "--json"]),
+        ("--outline", vec!["--stdin-patch", "--outline"]),
+        ("--hunks", vec!["--stdin-patch", "--hunks"]),
         (
             "--address",
-            &["--stdin-patch", "--hunks", "--address", &address],
+            vec!["--stdin-patch", "--hunks", "--address", address],
         ),
-        ("--path", &["--stdin-patch", "--hunks", "--path", "x"]),
+        ("--path", vec!["--stdin-patch", "--hunks", "--path", "x"]),
         (
             "--max-bytes",
-            &["--stdin-patch", "--outline", "--max-bytes", "4096"],
+            vec!["--stdin-patch", "--outline", "--max-bytes", "4096"],
         ),
         (
             "--cursor",
-            &["--stdin-patch", "--outline", "--cursor", &cursor],
+            vec!["--stdin-patch", "--outline", "--cursor", cursor],
         ),
-        ("--allow-repo", &["rpc", "--allow-repo", repo]),
-        ("--client", &["agent", "setup", "--client", "codex"]),
-        ("--jsonl", &["--stdin-patch", "--jsonl"]),
-        ("--rank", &["--stdin-patch", "--rank"]),
-        ("--cluster", &["--stdin-patch", "--cluster"]),
+        ("--allow-repo", vec!["rpc", "--allow-repo", repo]),
+        ("--client", vec!["agent", "setup", "--client", "codex"]),
+        ("--jsonl", vec!["--stdin-patch", "--jsonl"]),
+        ("--rank", vec!["--stdin-patch", "--rank"]),
+        ("--cluster", vec!["--stdin-patch", "--cluster"]),
         (
             "--parallel",
-            &["--stdin-patch", "--cluster", "--parallel", "2"],
+            vec!["--stdin-patch", "--cluster", "--parallel", "2"],
         ),
-        ("--layout", &["--stdin-patch", "--layout", "side-by-side"]),
-        ("--require-files", &["--stdin-patch", "--require-files"]),
-        ("--require-hunks", &["--stdin-patch", "--require-hunks"]),
-        ("--stdin-patch", &["--stdin-patch"]),
+        (
+            "--layout",
+            vec!["--stdin-patch", "--layout", "side-by-side"],
+        ),
+        ("--require-files", vec!["--stdin-patch", "--require-files"]),
+        (
+            "--findings",
+            vec!["findings", "verify", "--findings", findings],
+        ),
+        (
+            "--require-all",
+            vec![
+                "findings",
+                "verify",
+                "--findings",
+                findings,
+                "--require-all",
+            ],
+        ),
+        ("--require-hunks", vec!["--stdin-patch", "--require-hunks"]),
+        ("--stdin-patch", vec!["--stdin-patch"]),
+    ]
+}
+
+/// One admitted invocation for each option of the other commands.
+fn command_option_rows<'a>(source: &'a str, socket: &'a str) -> Vec<(&'static str, Vec<&'a str>)> {
+    let repo = env!("CARGO_MANIFEST_DIR");
+    vec![
         (
             "--git-working-tree",
-            &["--git-working-tree", "--repo", repo, "--acquisition-json"],
+            vec!["--git-working-tree", "--repo", repo, "--acquisition-json"],
         ),
         (
             "--include-untracked",
-            &[
+            vec![
                 "--git-working-tree",
                 "--include-untracked",
                 "--repo",
@@ -486,21 +521,24 @@ fn every_documented_option_is_admitted() {
                 "--rank",
             ],
         ),
-        ("--git-staged", &["--git-staged", "--repo", repo, "--rank"]),
+        (
+            "--git-staged",
+            vec!["--git-staged", "--repo", repo, "--rank"],
+        ),
         (
             "--git-range",
-            &["--git-range", "HEAD..HEAD", "--repo", repo, "--rank"],
+            vec!["--git-range", "HEAD..HEAD", "--repo", repo, "--rank"],
         ),
-        ("--repo", &["--git-staged", "--repo", repo]),
+        ("--repo", vec!["--git-staged", "--repo", repo]),
         (
             "--acquisition-json",
-            &["--git-staged", "--repo", repo, "--acquisition-json"],
+            vec!["--git-staged", "--repo", repo, "--acquisition-json"],
         ),
-        ("--socket", &["daemon", "path", "--socket", socket]),
+        ("--socket", vec!["daemon", "path", "--socket", socket]),
         (
             "--foreground",
             // `start` alone takes it; an unbindable socket ends the start at once (exit 6).
-            &[
+            vec![
                 "daemon",
                 "start",
                 "--foreground",
@@ -508,26 +546,32 @@ fn every_documented_option_is_admitted() {
                 "/dev/null/d.sock",
             ],
         ),
-        ("--stdin", &["learn", "record", "--stdin"]),
-        ("--family", &["explain", "7", "--family", "engine"]),
-        ("--color", &["highlight", source, "--color"]),
-        ("--no-color", &["highlight", source, "--no-color"]),
-        ("--probe", &["review", "--probe"]),
-        ("--side", &["review", "--probe", "--side"]),
-        ("--palette", &["review", "--probe", "--palette"]),
-        ("--cmd", &["review", "--probe", "--cmd", "rank"]),
-        ("--cols", &["review", "--probe", "--cols", "80"]),
-        ("--rows", &["review", "--probe", "--rows", "20"]),
-        ("--help", &["--help"]),
-        ("--version", &["--version"]),
-        ("--self-test", &["--self-test"]),
-    ];
-    admits_every_documented_option(rows);
-    let _ = std::fs::remove_dir_all(&dir);
+        ("--stdin", vec!["learn", "record", "--stdin"]),
+        ("--family", vec!["explain", "7", "--family", "engine"]),
+        ("--color", vec!["highlight", source, "--color"]),
+        ("--no-color", vec!["highlight", source, "--no-color"]),
+        ("--probe", vec!["review", "--probe"]),
+        ("--side", vec!["review", "--probe", "--side"]),
+        ("--palette", vec!["review", "--probe", "--palette"]),
+        ("--cmd", vec!["review", "--probe", "--cmd", "rank"]),
+        ("--cols", vec!["review", "--probe", "--cols", "80"]),
+        ("--rows", vec!["review", "--probe", "--rows", "20"]),
+        ("--help", vec!["--help"]),
+        ("--version", vec!["--version"]),
+        ("--self-test", vec!["--self-test"]),
+    ]
+}
+
+/// A file `name` holding `text` in `dir` (created as needed), by path.
+fn scratch(dir: &std::path::Path, name: &str, text: &str) -> String {
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join(name);
+    std::fs::write(&path, text).unwrap();
+    path.to_str().unwrap().to_owned()
 }
 
 /// `rows` names exactly the options `--help` documents, and each invocation is admitted.
-fn admits_every_documented_option(rows: &[(&str, &[&str])]) {
+fn admits_every_documented_option(rows: &[(&str, Vec<&str>)]) {
     let (_, help, _) = run(&["--help"], "");
     let (current, _) = help.split_once("NOT YET IMPLEMENTED").unwrap();
     let mut documented: Vec<&str> = current

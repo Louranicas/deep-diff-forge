@@ -69,6 +69,14 @@ fn is_bidi_or_invisible(c: char) -> bool {
     is_bidi(c) || is_invisible(c) || is_line_separator(c)
 }
 
+/// Whether `c` should never reach a reader from untrusted text: a control character other than
+/// a tab or a line feed, or a bidi, invisible or line-separator character ([`text_hazards`]
+/// reports the same classes). Untrusted bodies (agent annotations and findings) drop these.
+#[must_use]
+pub fn is_unsafe_in_untrusted_text(c: char) -> bool {
+    (c.is_control() && c != '\n' && c != '\t') || is_bidi_or_invisible(c)
+}
+
 /// Bidi overrides and embeddings (`LRE`..`RLO`), isolates (`LRI`..`PDI`) and directional
 /// marks (`LRM`/`RLM`/`ALM`).
 fn is_bidi(c: char) -> bool {
@@ -226,6 +234,30 @@ pub fn display_safe_bounded(value: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn untrusted_text_keeps_newlines_tabs_and_ordinary_text_only() {
+        for c in ['\n', '\t', 'a', ' ', 'é', '→', '中'] {
+            assert!(!is_unsafe_in_untrusted_text(c), "{c:?}");
+        }
+        for c in [
+            '\u{0}',
+            '\u{7}',
+            '\r',
+            '\u{1b}',
+            '\u{7f}',
+            '\u{85}',
+            '\u{202E}',
+            '\u{2066}',
+            '\u{200B}',
+            '\u{FEFF}',
+            '\u{2028}',
+            '\u{2029}',
+            '\u{E0041}',
+        ] {
+            assert!(is_unsafe_in_untrusted_text(c), "{c:?}");
+        }
+    }
 
     #[test]
     fn hazards_are_facts_about_the_bytes() {
