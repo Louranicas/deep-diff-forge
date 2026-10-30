@@ -228,6 +228,14 @@ answer is a valid response (measured 2026-10-29: 504 served, 296 closed at the l
 (`engine.initialize` over `deep-diff-forge rpc`, the rest against a live
 daemon).
 
+Each iteration of the timed loop also runs four concurrent clients doing real review work
+(`session.open`, `session.snapshot`, `session.close`, `diff.rank` on a fixture patch). A run of a
+minute or more compares the median RSS and open-fd count of ten samples after a warm-up with the
+last ten, and fails on RSS growth over 32 MiB (`--max-rss-growth-kib`) or fd growth over 4. A
+shorter run records the growth as unmeasured, and `--require-growth-check` makes it fail. The
+weekly campaign (`campaign.yml`) runs it for 600 s that way (measured 2026-10-30 against `main`
+`a863ebd`: 594 iterations, RSS growth 0 KiB, fd growth 0, peak RSS 7,744 KiB).
+
 ### Gate 7: Publish
 
 Publishing order:

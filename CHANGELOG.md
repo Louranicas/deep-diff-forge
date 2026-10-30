@@ -27,6 +27,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **macOS tests run on every pull request** and `macOS tests` is a required check. Before, the
+  job ran only weekly, on manual runs and on release, and two macOS breaks in PR #44 were caught
+  only by a manual run.
+- **A weekly campaign** (`.github/workflows/campaign.yml`, Mondays 05:41 UTC and on demand):
+  a 10-minute hostile daemon soak with real review work and leak checks, and an hour of fuzzing
+  for every fuzz target, each target its own job; a crash keeps its input as an artifact.
+- The daemon soak runs real review work from four concurrent clients in every iteration and
+  checks RSS growth (over 32 MiB fails) and open-fd growth (over 4 fails) across a run of a
+  minute or more; `--require-growth-check` fails a run too short to measure them.
+  `scripts/security/test_daemon_soak.py` covers the checks, in CI and `just ci`.
+- `scripts/fuzz_target.sh` is the one place that knows each fuzz target's seeds and input cap;
+  CI's 10 s smoke and the campaign both use it, and it lists the targets from `fuzz/Cargo.toml`.
 - `SocketLocation::bind`, `bind_secure` and `bind_explicit` return a `BoundListener` (the
   listener and its start lock; `listener()` borrows the socket) instead of a `UnixListener`.
 - `deep-diff-forge-daemon` uses rustix's `fs` and `net` features, and `nix` (`socket`, `user`)
