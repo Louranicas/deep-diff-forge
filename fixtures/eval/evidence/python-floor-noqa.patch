@@ -1,0 +1,8 @@
+diff --git a/tool.py b/tool.py
+--- a/tool.py
++++ b/tool.py
+@@ -1,1 +1,4 @@
+ import os
++half = total // 2
++value = eval(expr)  # noqa: S307
++text = "eval(this) is only a string"

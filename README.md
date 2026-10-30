@@ -395,6 +395,7 @@ empty.
 | `agent setup --json` · `agent doctor --json` | `deep-diff-forge.agent-setup.v0` · `deep-diff-forge.agent-doctor.v0` |
 | `findings verify`, `findings.verify`, MCP `verify_findings` | `deep-diff-forge.findings.v0` (input: one `deep-diff-forge.finding.v0` object per finding) |
 | `daemon metrics`, `daemon.metrics` | `deep-diff-forge.daemon-metrics.v0` |
+| `bench --json` · `eval --json` | `deep-diff-forge.bench.v0` · `deep-diff-forge.eval.v0` (corpus: `deep-diff-forge.eval-manifest.v0`) |
 | `daemon`, `rpc` | JSON-RPC 2.0, protocol 2 |
 
 **Input sealing.** `review.v0`, `rank.v0`, `cluster.v0`, `semantic.v0` and
@@ -655,6 +656,44 @@ deep-diff-forge review --findings found.jsonl < change.patch              # the 
   `verify_findings` and the Python SDK's `verify_findings` take the findings as an array and give
   the same document as the CLI. `findings_sha256` covers the CLI's file bytes, or for an array
   its JSONL (one compact object per line, keys sorted).
+
+## Benchmarks and evaluation
+
+```bash
+deep-diff-forge bench --quick                 # time the hot paths on generated inputs
+deep-diff-forge bench --json > after.json     # a deep-diff-forge.bench.v0 receipt
+scripts/bench_compare.py --base before*.json --head after*.json   # same machine only
+deep-diff-forge eval                          # score the labelled corpus in fixtures/eval
+```
+
+- **`bench`** runs seven workloads on inputs generated from fixed parameters, so every run
+  measures the same bytes:
+  - `parse_seal`, `rank_with_evidence` and `outline_page` on a 200-file patch;
+  - `findings_verify` and `findings_by_address`;
+  - `structural_rust`;
+  - `daemon_parallel` (four clients through the daemon's own request path).
+
+  Each workload warms up once, then runs 15 repetitions (5 with `--quick`). The receipt names
+  the build profile and the host, and each workload's input SHA-256, minimum, median, p95 and
+  throughput.
+- **`scripts/bench_compare.py`** compares receipts from one machine. It takes the best median of
+  each side's runs, and fails a workload that is over 25% *and* over 0.2 ms slower. A workload
+  whose input SHA-256 changed is reported as not compared, never as ok or slow. It refuses
+  receipts whose profile, CPU count, OS or architecture differ (two machines that agree on all
+  four are not told apart), and exits 2 on a malformed receipt.
+- **On every pull request,** an informational `bench` job builds the merge base and the head on
+  one runner and alternates them three times. The weekly campaign keeps a full run's receipt.
+- **`eval`** scores the engine against `fixtures/eval/MANIFEST.json`, where every case has its
+  file's SHA-256, its origin and its labels:
+  - ranking pairs (`must_outrank`);
+  - code evidence (expected items; any other item is a false positive; `known_miss` items are
+    documented limits);
+  - each finding's expected verdict.
+
+  It prints `deep-diff-forge.eval.v0` and exits 7 when a case fails, or 4 when a file no longer
+  matches its recorded hash. `crates/deep-diff-forge-cli/tests/eval.rs` holds the floors:
+  ranking 100%, evidence precision 100%, recall 100%, and findings 100%: every miss fails, and an
+  accepted limit becomes a `known_miss` label in the manifest.
 
 ## Risk ranking
 
