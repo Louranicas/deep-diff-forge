@@ -586,16 +586,11 @@ fn imports_module(code: &str, raw: &str, modules: &[&str]) -> bool {
         let receiver_ok = at == 0
             || !is_boundary_blocker(c[at - 1])
             || (keyword == "require" && before.ends_with("module."));
-        let statement = before.rsplit(';').next().unwrap_or(before).trim_start();
-        if !receiver_ok
-            || before.trim_end().ends_with("typeof")
-            || statement.starts_with("import type ")
-            || statement.starts_with("export type ")
-        {
-            return None;
-        }
         let after = at + keyword.len();
-        if c.get(after).is_some_and(|b| is_ident(*b)) {
+        if !receiver_ok
+            || c.get(after).is_some_and(|b| is_ident(*b))
+            || before.trim_end().ends_with("typeof")
+        {
             return None;
         }
         // Whitespace and any number of `(` may sit between the keyword and the specifier.
@@ -612,9 +607,27 @@ fn imports_module(code: &str, raw: &str, modules: &[&str]) -> bool {
         let name = &name[..name.find(char::from(quote))?];
         Some(name.strip_prefix("node:").unwrap_or(name))
     };
-    ["require", "import", "from"].iter().any(|keyword| {
-        code.match_indices(keyword)
-            .any(|(at, _)| specifier_at(at, keyword).is_some_and(|m| modules.contains(&m)))
+    // Every keyword hit in line order, so one forward walk knows which statement each is in
+    // and the type-only test runs once per statement: the line stays linear.
+    let mut hits: Vec<(usize, &str)> = ["require", "import", "from"]
+        .iter()
+        .flat_map(|keyword| code.match_indices(keyword).map(|(at, _)| (at, *keyword)))
+        .collect();
+    hits.sort_unstable();
+    // `start` is where the current statement begins; only the bytes since the last hit are
+    // searched for a later `;`.
+    let (mut seen, mut start, mut type_only) = (0, 0, None);
+    hits.into_iter().any(|(at, keyword)| {
+        if let Some(semi) = code[seen..at].rfind(';') {
+            start = seen + semi + 1;
+            type_only = None;
+        }
+        seen = at;
+        let skip = *type_only.get_or_insert_with(|| {
+            let head = code[start..].trim_start();
+            head.starts_with("import type ") || head.starts_with("export type ")
+        });
+        !skip && specifier_at(at, keyword).is_some_and(|m| modules.contains(&m))
     })
 }
 
@@ -1122,6 +1135,81 @@ mod tests {
         ] {
             assert_eq!(signals(&added("a.sh", &[line])), [], "{line}");
         }
+    }
+
+    /// The final PR 5 review's regressions against main (workflow `wf_bbb5e9f1-254`): common
+    /// code the branch misread, and lines that made the import rule quadratic.
+    #[test]
+    fn common_typescript_continuations_and_raw_strings_keep_their_evidence() {
+        for (path, line, signal) in [
+            (
+                "n.ts",
+                "const pct = (stats.get(key)! / total) * 100; const res = await fetch(`/api/stats/${key}`);",
+                S::NetworkFetch,
+            ),
+            (
+                "n.ts",
+                r#"const ms = timings[name]! / 1000; void fetch("/log", { method: "POST" });"#,
+                S::NetworkFetch,
+            ),
+            (
+                "n.ts",
+                "const pct = done! / total; const out = execSync(`du -sh ${dir}/`);",
+                S::ProcessSpawn,
+            ),
+            (
+                "a.js",
+                r"const run = cmd => /^'/.test(cmd) ? null : execSync(cmd, { shell: '/bin/sh' });",
+                S::ProcessSpawn,
+            ),
+            (
+                "src/a.rs",
+                r#"let root = Path::new(r"C:\"); let out = Command::new("cmd").output()?;"#,
+                S::ProcessSpawn,
+            ),
+            (
+                "src/a.rs",
+                r##"let s = r#"a "quoted" \"#; unsafe { f() }"##,
+                S::UnsafeAdded,
+            ),
+            (
+                "src/a.rs",
+                r#"let b = br"\"; unsafe { f() }"#,
+                S::UnsafeAdded,
+            ),
+        ] {
+            assert_eq!(signals(&added(path, &[line])), [signal], "{path}: {line}");
+        }
+        // A line that continues an expression with `/` divides; one after `=` opens a regex.
+        let divided = added(
+            "m3.js",
+            &[
+                "const elapsed = (Date.now() - start)",
+                "  / 1000; fetch(`/api/timing/${elapsed}`);",
+            ],
+        );
+        assert_eq!(signals(&divided), [S::NetworkFetch]);
+        let regex = added("m3.js", &["const re =", "  /fetch(/; const x = 1;"]);
+        assert_eq!(signals(&regex), []);
+        // A raw string's text is still text, and an ordinary string still escapes.
+        assert_eq!(signals(&added("src/a.rs", &[r#"let s = r"unsafe";"#])), []);
+        assert_eq!(signals(&added("src/a.rs", &[r#"let s = "\"unsafe";"#])), []);
+    }
+
+    #[test]
+    fn the_import_rule_is_linear_on_long_lines() {
+        for unit in [
+            "Array.from(x),",
+            "from ",
+            "require ",
+            "import ",
+            "require(require(",
+        ] {
+            let line = unit.repeat(200_000);
+            assert_eq!(signals(&added("a.js", &[&line])), [], "{unit}");
+        }
+        let spaced = format!(";{}from 'child_process'", " ".repeat(200_000));
+        assert_eq!(signals(&added("a.js", &[&spaced])), [S::ProcessSpawn]);
     }
 
     #[test]

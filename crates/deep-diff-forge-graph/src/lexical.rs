@@ -13,10 +13,11 @@
 //!   order ([`ScanState`]); a hunk that starts inside one is read as code.
 //! - An interpolation is scanned as code with its own strings, escapes and comments, and ends
 //!   at its matching closer on the same line. Shell `case` patterns, ANSI-C `$'…'` strings,
-//!   word-start `#` comments, JS regex literals, Python format specs and nested triple quotes
-//!   are known.
+//!   word-start `#` comments, JS regex literals (also on a line that continues an
+//!   expression), TypeScript non-null assertions, Python format specs, nested triple quotes and
+//!   Rust raw strings are known.
 //! - A string still open at the end of a line (outside Rust) is read as code from its quote.
-//! - A construct the scanner does not know (a raw string, a heredoc) is read as code. A
+//! - A construct the scanner does not know (a heredoc) is read as code. A
 //!   triple-quoted f-string's interpolations are blanked with the rest of it, a continuation
 //!   line of a multi-line string is read as code, and non-ASCII spellings of a token
 //!   (Python's NFKC `ｅval`) are not matched.
@@ -105,6 +106,9 @@ pub struct ScanState {
     in_block_comment: bool,
     /// The quote character of an open Python triple-quoted string.
     in_triple: Option<u8>,
+    /// In JS, the last code byte of the previous line, so a line that starts with `/` after
+    /// `(a - b)` is a division and after `=` a regex.
+    js_last: Option<u8>,
 }
 
 /// One level of what is open on a line, innermost last on [`code_view`]'s stack. An empty stack
@@ -113,13 +117,15 @@ pub struct ScanState {
 enum Frame {
     /// A string opened at byte `start` by `quote` (three of them when `triple`): its contents
     /// are blanked. An f- or t-string (`fstring`) runs `{…}`; a shell ANSI-C string (`$'…'`,
-    /// `ansi`) honours backslashes.
+    /// `ansi`) honours backslashes; a Rust raw string (`raw`, its count of `#`) does not, and
+    /// closes only at a quote followed by that many `#`.
     Str {
         quote: u8,
         start: usize,
         triple: bool,
         fstring: bool,
         ansi: bool,
+        raw: Option<usize>,
         escaped: bool,
     },
     /// Code inside an interpolation, until `close` brings `depth` back to zero. `open` nests
@@ -283,15 +289,35 @@ fn ends_with_operand_keyword(before: &[u8]) -> bool {
 /// grammar: the last code byte before it is an operator or an opening bracket (or there is
 /// none), or the last word is one after which an expression starts. `a++ /` and `a-- /` are
 /// divisions.
-fn starts_regex(out: &[u8]) -> bool {
-    let before = out.trim_ascii_end();
+fn starts_regex(out: &[u8], previous_line: Option<u8>) -> bool {
+    let carried;
+    let mut before = out.trim_ascii_end();
+    if before.is_empty()
+        && let Some(last) = previous_line
+    {
+        carried = [last];
+        before = &carried;
+    }
     match before {
-        [] => true,
         [.., b'+', b'+'] | [.., b'-', b'-'] => false,
+        // Nothing before it, or an arrow, whose body can start with a regex.
+        [] | [.., b'=', b'>'] => true,
+        // A TypeScript non-null assertion (`x! /`, `f()! /`) ends an operand.
+        [.., operand, b'!'] if is_ident(*operand) || matches!(operand, b')' | b']') => false,
         // Not `<` or `>`: `</p>` and `<p>/` are JSX tags far more often than `a < /re/`.
         [.., last] if b"(,=:[!&|?{};+-*%~^".contains(last) => true,
         _ => ends_with_operand_keyword(before),
     }
+}
+
+/// The number of `#` of a Rust raw string whose opening quote follows `before` (`r"`, `r#"`,
+/// `br##"`), or `None` when the quote opens an ordinary string.
+fn rust_raw_hashes(before: &[u8]) -> Option<usize> {
+    let hashes = before.iter().rev().take_while(|b| **b == b'#').count();
+    let prefix = &before[..before.len() - hashes];
+    let rest = prefix.strip_suffix(b"r")?;
+    let rest = rest.strip_suffix(b"b").unwrap_or(rest);
+    rest.last().is_none_or(|b| !is_ident(*b)).then_some(hashes)
 }
 
 /// The length of a JS regex literal at `rest` (which starts with its `/`), up to and including
@@ -339,7 +365,7 @@ pub fn code_view(language: Language, line: &str, state: &mut ScanState) -> Strin
             break;
         }
     }
-    scan.finish()
+    scan.finish(state)
 }
 
 /// One line's scan in progress: the view so far, what is open, and how many of the next bytes
@@ -428,6 +454,7 @@ impl Scan<'_> {
             triple,
             fstring,
             ansi,
+            raw,
             escaped,
         } = frame
         else {
@@ -441,13 +468,20 @@ impl Scan<'_> {
             triple,
             fstring,
             ansi,
+            raw,
             escaped,
         };
+        let hashes = raw.unwrap_or(0);
+        let closes = byte == quote
+            && (!triple || rest.starts_with(&[quote; 3]))
+            && rest
+                .get(1..=hashes)
+                .is_some_and(|tail| tail.iter().all(|b| *b == b'#'));
         if escaped {
             self.stack[top] = with_escape(false);
-        } else if byte == quote && (!triple || rest.starts_with(&[quote; 3])) {
+        } else if closes {
             self.stack.pop();
-            self.copy = if triple { 2 } else { 0 };
+            self.copy = if triple { 2 } else { hashes };
             self.out.push(byte);
             return;
         } else if fstring && rest.starts_with(b"{{") {
@@ -460,6 +494,7 @@ impl Scan<'_> {
             self.out.push(byte);
             return;
         } else if byte == b'\\'
+            && raw.is_none()
             && !(self.language == Language::Shell && quote == b'\'' && !ansi)
             && !(fstring && rest.get(1) == Some(&b'{'))
         {
@@ -498,7 +533,7 @@ impl Scan<'_> {
         if language == Language::JavaScript
             && byte == b'/'
             && !self.no_regex
-            && starts_regex(&self.out)
+            && starts_regex(&self.out, state.js_last)
         {
             if let Some(len) = regex_len(rest) {
                 // A regex literal's text is data: its quotes and brackets open nothing.
@@ -523,6 +558,7 @@ impl Scan<'_> {
                     triple: true,
                     fstring: false,
                     ansi: false,
+                    raw: None,
                     escaped: false,
                 });
             } else {
@@ -556,6 +592,9 @@ impl Scan<'_> {
                 triple: false,
                 fstring: language == Language::Python && is_interpolating_prefix(&bytes[..i]),
                 ansi: language == Language::Shell && byte == b'\'' && i > 0 && bytes[i - 1] == b'$',
+                raw: (language == Language::Rust && byte == b'"')
+                    .then(|| rust_raw_hashes(&bytes[..i]))
+                    .flatten(),
                 escaped: false,
             });
             self.out.push(byte);
@@ -621,7 +660,12 @@ impl Scan<'_> {
     }
 
     /// The view, with a string still open at the end of the line read as code from its quote.
-    fn finish(mut self) -> String {
+    fn finish(mut self, state: &mut ScanState) -> String {
+        if self.language == Language::JavaScript
+            && let Some(&last) = self.out.trim_ascii_end().last()
+        {
+            state.js_last = Some(last);
+        }
         let open_string = self.stack.iter().find_map(|f| match f {
             Frame::Str { start, .. } => Some(*start),
             _ => None,
@@ -890,7 +934,7 @@ mod tests {
             ("<", false),
             ("x.return", false),
         ] {
-            assert_eq!(starts_regex(before.as_bytes()), yes, "{before:?}");
+            assert_eq!(starts_regex(before.as_bytes(), None), yes, "{before:?}");
         }
         assert_eq!(regex_len(b"/a/g"), Some(3));
         assert_eq!(regex_len(br"/\//x"), Some(4));

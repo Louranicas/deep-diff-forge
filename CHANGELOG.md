@@ -122,9 +122,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     `Can't`) opens nothing;
   - nested Python triple quotes are known;
   - shell `case` is known after any command start (`if`, `while`, `!`, `time`, a pattern's
-    `)`), `esac` only as a whole word that is not a pattern alternative; a JS regex starts after
-    any operator or `return`/`typeof`-like keyword, and one failed regex probe ends probing so a
-    hostile line stays linear.
+    `)`), `esac` only as a whole word that is not a pattern alternative;
+  - a JS regex starts after an operator other than `<` and `>` (which open JSX tags), after `=>`
+    and after a `return`/`typeof`-like keyword, not after `a++`, a property or a TypeScript
+    non-null assertion (`x! / y`); a line that starts with `/` reads the previous line's last
+    code byte; one failed regex probe ends probing, so a hostile line stays linear;
+  - Rust raw strings (`r"…"`, `br#"…"#`) do not escape, so `r"C:\"` no longer hides the rest
+    of its line.
 
   Not covered: triple-quoted f-strings, interpolations that span lines, continuation lines of
   multi-line strings (read as code), non-ASCII spellings of a token, JSX text, and a regex right
