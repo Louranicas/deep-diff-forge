@@ -197,3 +197,27 @@ fn a_patch_naming_a_path_twice_is_refused() {
     let (code, _, stderr) = run(&["review", "--probe"], one);
     assert_eq!(code, 0, "{stderr}");
 }
+
+/// `--side` opens the two-column layout: the frame differs from the inline one, and shows the old
+/// and the new line side by side on one row.
+#[test]
+fn side_opens_the_two_column_layout() {
+    let patch =
+        "--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-let old_value = 1;\n+let new_value = 2;\n";
+    let args = ["review", "--probe", "--cols", "160", "--rows", "20"];
+    let (code, inline, _) = run(&args, patch);
+    assert_eq!(code, 0);
+    let (code, side, _) = run(&[&args[..], &["--side"]].concat(), patch);
+    assert_eq!(code, 0);
+    assert_ne!(inline, side);
+    assert!(
+        side.lines()
+            .any(|l| l.contains("old_value") && l.contains("new_value")),
+        "{side}"
+    );
+    assert!(
+        !inline
+            .lines()
+            .any(|l| l.contains("old_value") && l.contains("new_value"))
+    );
+}
