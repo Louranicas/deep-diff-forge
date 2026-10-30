@@ -1,0 +1,19 @@
+diff --git a/install.sh b/install.sh
+--- a/install.sh
++++ b/install.sh
+@@ -1,1 +1,2 @@
+ set -eu
++V="$(curl -fsSL https://e.example/v)"
+diff --git a/web/build.js b/web/build.js
+--- a/web/build.js
++++ b/web/build.js
+@@ -1,1 +1,2 @@
+ const c = "ls";
++const o = `${require("child_process").execSync(c)}`;
+diff --git a/tool.py b/tool.py
+--- a/tool.py
++++ b/tool.py
+@@ -1,1 +1,3 @@
+ x = input()
++print(f"{eval(x)}")
++print("{eval(x)}")

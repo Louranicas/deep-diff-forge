@@ -18,7 +18,7 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     now, and the weekly campaign keeps a full receipt.
 - **`deep-diff-forge eval [--corpus DIR] [--json]`** scores ranking pairs, evidence precision
   and recall, and findings verdicts against `fixtures/eval/MANIFEST.json`, a hashed and labelled
-  corpus of 10 cases with documented known misses. It prints `deep-diff-forge.eval.v0`.
+  corpus of 11 cases with documented known misses. It prints `deep-diff-forge.eval.v0`.
   `cli/tests/eval.rs` holds the floors.
 
 - **Daemon metrics.** `deep-diff-forge daemon metrics` (the daemon's `daemon.metrics`, protocol

@@ -115,12 +115,12 @@ fn the_summary_names_each_metric_and_each_failure() {
     let (code, text) = run(&corpus());
     assert_eq!(code, Some(0), "{text}");
     assert!(
-        text.starts_with("deep-diff-forge eval: 10 cases\n"),
+        text.starts_with("deep-diff-forge eval: 11 cases\n"),
         "{text}"
     );
     for line in [
         "  ranking_pairs        6/6",
-        "  evidence_recall      4/4",
+        "  evidence_recall      7/7",
         "  known misses         1",
     ] {
         assert!(text.lines().any(|l| l == line), "{line:?} in\n{text}");
