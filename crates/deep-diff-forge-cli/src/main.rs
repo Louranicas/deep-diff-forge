@@ -34,6 +34,7 @@ macro_rules! emitln {
 
 // Declared after `emitln!`, which it uses (a `macro_rules!` is visible only below it).
 mod agent;
+mod doctor;
 
 /// Read all of `reader` into a `String`, but never buffer more than the patch
 /// byte budget. `what` names the source for diagnostics.
@@ -1129,26 +1130,53 @@ fn print_semantic_json(
     );
 }
 
+const DEPLOY_USAGE: &str =
+    "deep-diff-forge deploy {status|release|doctor} [--json] [--socket PATH]";
+
 /// Dispatch `deploy` subcommands.
 fn deploy_cmd(opts: &[String]) {
     let positionals = args::admit_or_exit(
         opts,
         &args::Spec {
             flags: &["--json"],
-            valued: &[],
+            valued: &["--socket"],
             positionals: 1,
         },
-        "deep-diff-forge deploy {status|release} [--json]",
+        DEPLOY_USAGE,
     );
     let json = opts.iter().any(|a| a == "--json");
-    match positionals.first().copied() {
+    let socket = flag_value(opts, "--socket");
+    let sub = positionals.first().copied();
+    if socket.is_some() && sub != Some("doctor") {
+        eprintln!("error: --socket is accepted only with deploy doctor");
+        eprintln!("usage: {DEPLOY_USAGE}");
+        std::process::exit(exit::USAGE);
+    }
+    match sub {
         Some("status") => deploy_status(json),
         Some("release") => deploy_release(json),
+        Some("doctor") => deploy_doctor(json, socket.as_deref().map(std::path::Path::new)),
         _ => {
-            eprintln!("usage: deep-diff-forge deploy {{status|release}} [--json]");
+            eprintln!("usage: {DEPLOY_USAGE}");
             std::process::exit(exit::USAGE);
         }
     }
+}
+
+/// `deploy doctor`: check the daemon location and Git, then exit 6 if a check failed.
+fn deploy_doctor(json: bool, socket: Option<&std::path::Path>) {
+    let findings = doctor::gather(socket);
+    let checks = doctor::checks(&findings);
+    if json {
+        emitln!(
+            "{}",
+            serde_json::to_string_pretty(&doctor::document(findings.version, &checks))
+                .unwrap_or_default()
+        );
+    } else {
+        emit(&doctor::text(&checks));
+    }
+    std::process::exit(doctor::exit_code(&checks));
 }
 
 /// Report the release publication posture for the current version.
@@ -1525,8 +1553,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "deploy",
-        "deep-diff-forge deploy {status|release} [--json]",
-        "Report the declared deployment state, or the per-target release posture.",
+        DEPLOY_USAGE,
+        "Report the declared deployment state or the per-target release posture, or check this machine (doctor: exit 6 when a check fails).",
     ),
     (
         "semantic",

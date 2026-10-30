@@ -347,6 +347,7 @@ echo '<receipt>' | deep-diff-forge learn record --stdin
 deep-diff-forge analyze <patch-file> <base-dir> <candidate-dir>   # deep-diff-forge.analysis.v1
 deep-diff-forge deploy status [--json]                # declared maturity and gate stack
 deep-diff-forge deploy release [--json]               # per-target publication posture
+deep-diff-forge deploy doctor [--json] [--socket PATH] # can this machine run the daemon and Git? exit 6 if not
 deep-diff-forge doctor                                # runtime, cache, state and socket paths
 deep-diff-forge --self-test
 deep-diff-forge {claude-code-contract|chain-contract|cluster-contract|loom-contract}
@@ -388,7 +389,7 @@ empty.
 | `semantic --json` · `structural --json` | `deep-diff-forge.semantic.v0` · `deep-diff-forge.structural.v0` |
 | `analyze` | `deep-diff-forge.analysis.v1` |
 | `learn status --json` | `deep-diff-forge.learning.v0` |
-| `deploy status --json` · `deploy release --json` | `deep-diff-forge.deployment-status.v0` · `deep-diff-forge.release.v0` |
+| `deploy status --json` · `deploy release --json` · `deploy doctor --json` | `deep-diff-forge.deployment-status.v0` · `deep-diff-forge.release.v0` · `deep-diff-forge.deploy-doctor.v0` |
 | MCP `review_patch` / `rank_patch` over 256 KiB | `deep-diff-forge.review-summary.v0` · `deep-diff-forge.rank-summary.v0` |
 | `envelope` | `ddf.result.v1` |
 | `agent setup --json` · `agent doctor --json` | `deep-diff-forge.agent-setup.v0` · `deep-diff-forge.agent-doctor.v0` |

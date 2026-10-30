@@ -108,7 +108,7 @@ deep-diff-forge --help
 deep-diff-forge --version
 deep-diff-forge --self-test
 deep-diff-forge doctor
-deep-diff-forge deploy {status|release} [--json]
+deep-diff-forge deploy {status|release|doctor} [--json] [--socket PATH]
 deep-diff-forge semantic <path> [--json]
 deep-diff-forge highlight <path> [--color|--no-color]
 deep-diff-forge council <example|prepare|review|gate|status|import|export-tuicr|import-tuicr>

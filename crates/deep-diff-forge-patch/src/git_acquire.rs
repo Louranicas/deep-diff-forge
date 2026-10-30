@@ -504,6 +504,23 @@ pub struct RepositoryDirs {
     pub has_alternates: bool,
 }
 
+/// The version line Git reports (`git version 2.51.0`), run the way an acquisition runs Git: the
+/// same program, environment and time limit, from `cwd` (no repository is needed). Health checks
+/// use it to tell whether Git inputs can work at all.
+///
+/// # Errors
+/// Any [`GitAcquireError`] from running Git: not found, timed out, or a failing exit.
+pub fn git_version(cwd: &Path, options: &GitAcquireOptions) -> Result<String, GitAcquireError> {
+    let runner = Runner {
+        options,
+        cwd: cwd.to_path_buf(),
+        deadline: deadline_after(options.time_limit),
+        config_env: Vec::new(),
+    };
+    let out = runner.run("git version", &[OsStr::new("version")], &[0], 4096)?;
+    Ok(String::from_utf8_lossy(&out).trim().to_owned())
+}
+
 /// Resolve [`RepositoryDirs`] for the repository containing `repo`, every path canonical.
 ///
 /// # Errors
