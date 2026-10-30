@@ -251,6 +251,60 @@ mod tests {
     use deep_diff_forge_agent::{AnnotationSource, GroundingLevel, grounding_of, source_of};
     use deep_diff_forge_core::{ParseStatus, SemanticSpan, SemanticSpanId, SemanticTwin};
     use deep_diff_forge_graph::rank;
+
+    /// Each code-evidence item becomes one system note on its own hunk, naming the side and line.
+    #[test]
+    fn evidence_becomes_one_note_per_item_on_its_hunk() {
+        let files = deep_diff_forge_patch::parse(
+            "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1,1 +1,2 @@\n fn a() {}\n+unsafe { std::process::Command::new(\"x\"); }\n",
+        )
+        .unwrap();
+        let ranked = rank(&files);
+        let notes = engine_annotations(&files, &ranked);
+        let evidence: Vec<&AgentAnnotation> = notes
+            .iter()
+            .filter(|n| n.id.starts_with("ddf/sys/evidence:"))
+            .collect();
+        assert_eq!(evidence.len(), 2);
+        let hunk = files[0].patch_twin.hunks[0].id;
+        for note in &evidence {
+            assert_eq!(
+                note.anchor,
+                AnnotationAnchor::Hunk {
+                    path: "src/x.rs".into(),
+                    hunk_id: hunk
+                }
+            );
+            assert_eq!(source_of(note), AnnotationSource::System);
+            assert!(
+                note.provenance
+                    .evidence
+                    .contains(&"basis:lexical".to_owned())
+            );
+        }
+        assert_eq!(evidence[0].body, "`unsafe` added. (new line 2)");
+        assert_eq!(evidence[1].body, "Starts a process. (new line 2)");
+    }
+
+    #[test]
+    fn every_evidence_signal_has_its_own_phrase() {
+        use deep_diff_forge_graph::EvidenceSignal;
+        let phrases: Vec<&str> = EvidenceSignal::ALL.into_iter().map(code_phrase).collect();
+        assert_eq!(
+            phrases,
+            [
+                "`unsafe` added.",
+                "Starts a process.",
+                "Makes a network call or download.",
+                "Builds and runs code from data.",
+                "CI workflow gains a privilege.",
+                "Runs at build or install time.",
+                "Looks like a credential.",
+                "A lint, type or coverage check is switched off.",
+                "A test is removed.",
+            ]
+        );
+    }
     use deep_diff_forge_patch::parse;
 
     // lib.rs is a public-API surface, so it earns a risk signal.
