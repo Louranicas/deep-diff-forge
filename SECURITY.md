@@ -390,7 +390,7 @@ The current posture follows these review cycles:
 
 ### Fixed on 2026-10-28
 
-PRs #21 to #23, on `main` and not in any published release:
+PRs #21 to #23, released in `v0.3.0` (2026-10-29):
 
 - text change hidden after a `GIT binary patch` body (strict base85 grammar, else
   exit 4);
