@@ -5,7 +5,7 @@
 What exists today, checked against `crates/deep-diff-forge-daemon/src/` and the
 0.3.0 debug binary:
 
-- `deep-diff-forge daemon {path|start [--foreground]|health|status|stop} [--socket PATH]`.
+- `deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics|stop} [--socket PATH]`.
   `start` always serves in the foreground; a supervisor owns the process.
   `--foreground` is accepted only with `start` (elsewhere: exit 2).
 - One Unix socket, JSON-RPC 2.0, protocol 2 (0 and 1 still negotiate). Methods
@@ -293,8 +293,37 @@ deep-diff-forge cache prune --max-size 20GiB
 
 ## Observability
 
-Target design, not implemented. Today the daemon writes only connection and
-worker-spawn errors to stderr; there are no log levels and no metrics.
+Implemented (2026-10-30):
+
+- **`daemon.metrics`** (protocol 2; `deep-diff-forge daemon metrics`) returns
+  `deep-diff-forge.daemon-metrics.v0`, counted since the daemon started (`metrics.rs`).
+  - **Per method that was called:** `requests`, `errors` by RPC code (`parse_error`,
+    `invalid_params`, `resource_exhausted`, …, `other`) and `latency_us`. The latency is a
+    histogram of 24 log₂ buckets (bucket *i* holds requests that took under 2^*i* µs), plus
+    `p50_at_most`, `p95_at_most` and `p99_at_most`: the upper bounds of the buckets holding those
+    quantiles. These are bounds, not measurements, and `null` means over 2^22 µs. A request for a
+    method the daemon does not have, or an unparsable line, counts under `(unknown)`.
+  - **`admission`:** `admitted`, `waited` (admitted after blocking), `wait_us`, `busy` (refused
+    after the 30 s admission wait), `peak_in_flight_bytes` and `peak_running`.
+  - **`connections`:** `accepted`, `refused_at_limit`, `refused_peer` (another user), and `errors`
+    (a read deadline, a reset, or a client gone before its answer).
+  - **`engine`:** `panics` (contained), `session_resets`, `sessions_opened`, `sessions_closed`,
+    `sessions_evicted` and `peak_retained_bytes`.
+  - **Recording cost.** Every counter is an `AtomicU64` written with relaxed adds, so recording
+    takes no lock on the parallel request path. Counters live as long as the process; history is
+    the weekly campaign's receipts.
+- **`deploy doctor`** reads `daemon.metrics` from a live daemon and warns (exit 0) on contained
+  panics, busy refusals or session-table resets, with their counts. A daemon without
+  `daemon.metrics` (protocol 1) is reported without them.
+- **`daemon start --log-format json`** writes each log line as one JSON object (`ts_ms`, `level`,
+  `event`, `message`). The events are `connection_refused`, `connection_error` and
+  `worker_spawn_failed`. The default (`text`) is the line the daemon always wrote:
+  `deep-diff-forge daemon: <message>`. Both come from `log.rs`, so they cannot drift.
+
+Not implemented: log levels beyond `warn`, `info` events (session open and close), and a
+metrics endpoint other than `daemon.metrics` (no TCP, no Prometheus; the plan rules both out).
+
+Original target design, kept as written:
 
 Log levels:
 

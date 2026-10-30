@@ -25,6 +25,9 @@ pub enum SocketState {
         pid: Option<u64>,
         /// Its version, as it reports it.
         version: Option<String>,
+        /// What went wrong since it started, from `daemon.metrics`; `None` for a daemon that
+        /// does not report metrics (protocol 1).
+        trouble: Option<Trouble>,
     },
     /// A socket nothing answers on, left by a daemon that is gone; the next start replaces it.
     Stale,
@@ -35,6 +38,34 @@ pub enum SocketState {
     NotASocket,
     /// The path or the daemon could not be read.
     Unreachable(String),
+}
+
+/// The counts of things that should not happen to a healthy daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Trouble {
+    /// Panics inside requests, contained.
+    pub panics: u64,
+    /// Requests refused because their turn did not come within the admission wait.
+    pub busy: u64,
+    /// Times the session table was emptied after a panic held it.
+    pub session_resets: u64,
+}
+
+impl Trouble {
+    fn from_metrics(metrics: &Value) -> Option<Self> {
+        let count = |section: &str, key: &str| metrics.get(section)?.get(key)?.as_u64();
+        Some(Self {
+            panics: count("engine", "panics")?,
+            busy: count("admission", "busy")?,
+            session_resets: count("engine", "session_resets")?,
+        })
+    }
+
+    /// Whether any of the counts is above zero.
+    #[must_use]
+    pub const fn any(self) -> bool {
+        self.panics > 0 || self.busy > 0 || self.session_resets > 0
+    }
 }
 
 /// The start lock beside the socket (`<socket>.lock`).
@@ -113,6 +144,13 @@ fn socket_state(location: &SocketLocation) -> SocketState {
                         .get("version")
                         .and_then(Value::as_str)
                         .map(str::to_owned),
+                    trouble: request(
+                        location,
+                        r#"{"jsonrpc":"2.0","id":2,"method":"daemon.metrics"}"#,
+                    )
+                    .ok()
+                    .and_then(|line| serde_json::from_str::<Value>(&line).ok())
+                    .and_then(|reply| reply.get("result").and_then(Trouble::from_metrics)),
                 },
                 None => SocketState::Unreachable(format!(
                     "the daemon answered daemon.health without a result: {line}"
@@ -210,10 +248,45 @@ mod tests {
             SocketState::Live {
                 pid: Some(u64::from(std::process::id())),
                 version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+                trouble: Some(Trouble::default()),
             }
         );
         request(&location, r#"{"id":2,"method":"daemon.shutdown"}"#).unwrap();
         server.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn trouble_is_read_from_the_metrics_document() {
+        let metrics = serde_json::json!({
+            "engine": {"panics": 2, "session_resets": 1},
+            "admission": {"busy": 0},
+        });
+        let trouble = Trouble::from_metrics(&metrics).unwrap();
+        assert_eq!(
+            trouble,
+            Trouble {
+                panics: 2,
+                busy: 0,
+                session_resets: 1
+            }
+        );
+        assert!(trouble.any());
+        for (section, key) in [
+            ("engine", "panics"),
+            ("admission", "busy"),
+            ("engine", "session_resets"),
+        ] {
+            let one = |n: u64| {
+                let mut m = serde_json::json!({"engine": {"panics": 0, "session_resets": 0}, "admission": {"busy": 0}});
+                m[section][key] = serde_json::json!(n);
+                Trouble::from_metrics(&m).unwrap().any()
+            };
+            assert!(!one(0) && one(1), "{section}.{key}");
+        }
+        assert_eq!(
+            Trouble::from_metrics(&serde_json::json!({"engine": {}})),
+            None
+        );
     }
 
     #[test]

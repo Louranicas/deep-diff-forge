@@ -10,7 +10,9 @@
 //! `daemon start` or a daemon client would also fail on.
 
 use deep_diff_forge_core::exit;
-use deep_diff_forge_daemon::{DirState, Inspection, LockState, SocketLocation, SocketState};
+use deep_diff_forge_daemon::{
+    DirState, Inspection, LockState, SocketLocation, SocketState, Trouble,
+};
 use serde_json::{Value, json};
 
 /// How long `deploy doctor` lets Git take to report its version.
@@ -118,12 +120,18 @@ fn daemon_check(socket: &SocketState, version: &str) -> Check {
         SocketState::Live {
             pid,
             version: running,
+            trouble,
         } => {
             let pid = pid.map_or_else(|| "unknown".to_owned(), |pid| pid.to_string());
             match running.as_deref() {
-                Some(running) if running == version => {
-                    check("daemon", State::Ok, format!("running, pid {pid}"))
-                }
+                Some(running) if running == version => match trouble {
+                    Some(t) if t.any() => check(
+                        "daemon",
+                        State::Warn,
+                        format!("running, pid {pid}; since it started: {}", trouble_text(*t)),
+                    ),
+                    _ => check("daemon", State::Ok, format!("running, pid {pid}")),
+                },
                 running => check(
                     "daemon",
                     State::Warn,
@@ -151,6 +159,27 @@ fn daemon_check(socket: &SocketState, version: &str) -> Check {
         ),
         SocketState::Unreachable(why) => check("daemon", State::Fail, why.clone()),
     }
+}
+
+/// The nonzero counts of `trouble`, for a reader: `2 contained panics, 1 busy refusal`.
+fn trouble_text(trouble: Trouble) -> String {
+    let parts: Vec<String> = [
+        (trouble.panics, "contained panic", "contained panics"),
+        (trouble.busy, "busy refusal", "busy refusals"),
+        (
+            trouble.session_resets,
+            "session table reset",
+            "session table resets",
+        ),
+    ]
+    .into_iter()
+    .filter(|(n, _, _)| *n > 0)
+    .map(|(n, one, many)| format!("{n} {}", if n == 1 { one } else { many }))
+    .collect();
+    format!(
+        "{} (deep-diff-forge daemon metrics shows more)",
+        parts.join(", ")
+    )
 }
 
 fn lock_check(lock: LockState) -> Check {
@@ -284,6 +313,7 @@ mod tests {
             SocketState::Live {
                 pid: Some(42),
                 version: Some("9.9.9".into()),
+                trouble: Some(Trouble::default()),
             },
             LockState::Usable,
         );
@@ -297,6 +327,7 @@ mod tests {
             SocketState::Live {
                 pid: None,
                 version: Some("0.3.0".into()),
+                trouble: None,
             },
             LockState::Usable,
         );
@@ -307,6 +338,64 @@ mod tests {
             "running, pid unknown, version 0.3.0, but this binary is 9.9.9: restart it"
         );
         assert_eq!(exit_code(&checks(&older)), exit::SUCCESS);
+    }
+
+    #[test]
+    fn a_daemon_with_trouble_warns_with_the_counts() {
+        let live = |trouble| {
+            at(
+                DirState::Private,
+                SocketState::Live {
+                    pid: Some(7),
+                    version: Some("9.9.9".into()),
+                    trouble,
+                },
+                LockState::Usable,
+            )
+        };
+        let warned = &checks(&live(Some(Trouble {
+            panics: 2,
+            busy: 1,
+            session_resets: 0,
+        })))[3];
+        assert_eq!(warned.state, State::Warn);
+        assert_eq!(
+            warned.detail,
+            "running, pid 7; since it started: 2 contained panics, 1 busy refusal (deep-diff-forge daemon metrics shows more)"
+        );
+        let one_reset = &checks(&live(Some(Trouble {
+            panics: 0,
+            busy: 0,
+            session_resets: 1,
+        })))[3];
+        assert!(
+            one_reset.detail.contains("1 session table reset ("),
+            "{}",
+            one_reset.detail
+        );
+        let resets = &checks(&live(Some(Trouble {
+            panics: 1,
+            busy: 3,
+            session_resets: 2,
+        })))[3];
+        assert!(
+            resets
+                .detail
+                .contains("1 contained panic, 3 busy refusals, 2 session table resets"),
+            "{}",
+            resets.detail
+        );
+        // No metrics (an older daemon) or clean metrics: ok.
+        assert_eq!(checks(&live(None))[3].state, State::Ok);
+        assert_eq!(checks(&live(Some(Trouble::default())))[3].state, State::Ok);
+        assert_eq!(
+            exit_code(&checks(&live(Some(Trouble {
+                panics: 9,
+                busy: 9,
+                session_resets: 9
+            })))),
+            exit::SUCCESS
+        );
     }
 
     #[test]

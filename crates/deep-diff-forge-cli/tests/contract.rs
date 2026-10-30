@@ -546,6 +546,17 @@ fn command_option_rows<'a>(source: &'a str, socket: &'a str) -> Vec<(&'static st
                 "/dev/null/d.sock",
             ],
         ),
+        (
+            "--log-format",
+            vec![
+                "daemon",
+                "start",
+                "--log-format",
+                "json",
+                "--socket",
+                "/dev/null/d.sock",
+            ],
+        ),
         ("--stdin", vec!["learn", "record", "--stdin"]),
         ("--family", vec!["explain", "7", "--family", "engine"]),
         ("--color", vec!["highlight", source, "--color"]),

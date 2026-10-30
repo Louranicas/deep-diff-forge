@@ -738,6 +738,23 @@ test log. It is recorded here as an unexplained, unreproduced failure.
   `deep-diff-forge --version` prints `deep-diff-forge 0.4.0`; `gh attestation verify` passes
   with one SLSA v1 provenance signed by `release.yml@refs/tags/v0.4.0`.
 
+## Daemon metrics overhead (2026-10-30)
+
+Plan item N5: recording metrics on the parallel request path must cost under 1%. Measured on a
+16-CPU host with release builds. "Without" is branch `claude/verified-findings-20261030` (no
+metrics); "with" is `claude/daemon-metrics-20261030`. The workload is six clients sending four
+`diff.rank` requests each for a 2,752,920-byte patch, as in [Daemon requests in parallel](#daemon-requests-in-parallel-2026-10-30).
+Two alternating runs each:
+
+| | Without metrics | With metrics |
+| --- | ---: | ---: |
+| Requests per second | 62.79, 62.53 | 62.91, 62.85 |
+| One request alone | 0.052 s | 0.052 s |
+| `daemon.health` under load | 0.2 ms | 0.3 ms |
+
+The throughput difference (+0.4%) is within run-to-run noise: no overhead is measurable at this
+resolution.
+
 ## Findings verification by address (2026-10-30)
 
 A benchmark of the findings verifier (`deep-diff-forge bench --quick`, release build, 16-CPU host)
