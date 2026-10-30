@@ -577,7 +577,8 @@ fn hunk_matches(
 /// `module.require`), `import(…)`, `import …` or `from …`. The keyword and the opening quote must
 /// be code in `code` (the line's code view), so a comment or a string that mentions an import
 /// does not count; the specifier is read from `raw` at the same offset. A type-only statement
-/// (`import type`, `export type`) and `typeof import(…)` load nothing and do not count; an
+/// (`import type`, `export type`) and `typeof import(…)` load nothing and do not count
+/// (`typeof require(…)` still calls `require`); an
 /// `import(…)` type annotation does (it errs toward evidence).
 fn imports_module(code: &str, raw: &str, modules: &[&str]) -> bool {
     let c = code.as_bytes();
@@ -589,7 +590,7 @@ fn imports_module(code: &str, raw: &str, modules: &[&str]) -> bool {
         let after = at + keyword.len();
         if !receiver_ok
             || c.get(after).is_some_and(|b| is_ident(*b))
-            || before.trim_end().ends_with("typeof")
+            || (keyword == "import" && before.trim_end().ends_with("typeof"))
         {
             return None;
         }
@@ -1210,6 +1211,27 @@ mod tests {
         }
         let spaced = format!(";{}from 'child_process'", " ".repeat(200_000));
         assert_eq!(signals(&added("a.js", &[&spaced])), [S::ProcessSpawn]);
+    }
+
+    /// The import rule's receiver, boundary, `typeof` and statement decisions, each pinned.
+    #[test]
+    fn import_rule_decisions_are_exact() {
+        for (line, spawn) in [
+            (r#"const cp = foo.require("child_process");"#, false),
+            (r#"const cp = requirex("child_process");"#, false),
+            (r#"const t = typeof require("child_process");"#, true),
+            (
+                r#"x = Array.from(y); import type {A} from "child_process";"#,
+                false,
+            ),
+            (
+                r#"x = Array.from(y); import {A} from "child_process";"#,
+                true,
+            ),
+        ] {
+            let expected: &[EvidenceSignal] = if spawn { &[S::ProcessSpawn] } else { &[] };
+            assert_eq!(signals(&added("a.ts", &[line])), expected, "{line}");
+        }
     }
 
     #[test]

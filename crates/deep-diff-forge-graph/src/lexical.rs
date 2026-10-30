@@ -641,8 +641,9 @@ impl Scan<'_> {
             match byte {
                 b'(' | b'[' => *brackets += 1,
                 b')' | b']' => *brackets = brackets.saturating_sub(1),
-                // A top-level `:` (not `:=`) starts the format spec.
-                b':' if *depth == 1 && *brackets == 0 && bytes.get(i + 1) != Some(&b'=') => {
+                // A top-level `:` starts the format spec (a walrus needs parentheses here, so
+                // `{x:=10}` is the spec `=10`).
+                b':' if *depth == 1 && *brackets == 0 => {
                     *spec = true;
                 }
                 _ => {}
@@ -956,6 +957,78 @@ mod tests {
         assert_eq!(view(Language::JavaScript, &regexes).len(), regexes.len());
         let spaces = format!("V=\"$({}curl x)\"", " ".repeat(200_000));
         assert!(view(Language::Shell, &spaces).ends_with("curl x)\""));
+    }
+
+    /// Exact views for each decision the diff-mutation run found untested (2026-10-31): regex
+    /// starts and lengths, Python format specs and brackets, escapes in f-strings and raw
+    /// strings, shell `case` positions and pattern parens, and word-start `#`.
+    #[test]
+    fn every_scanner_decision_is_pinned() {
+        for (language, line, expected) in [
+            (
+                Language::JavaScript,
+                "if (!/'/.test(a)) eval(y) //'",
+                "if (!/ /.test(a)) eval(y) ",
+            ),
+            (Language::JavaScript, "x = /abc/;", "x = /   /;"),
+            (
+                Language::JavaScript,
+                "x = a! / b; y = /c/",
+                "x = a! / b; y = / /",
+            ),
+            (Language::Python, "x = a / b / c", "x = a / b / c"),
+            (Language::Python, r#"f"{x:>10}" eval"#, r#"f"{x:   }" eval"#),
+            (Language::Python, r#"f"{x:=10}" eval"#, r#"f"{x:   }" eval"#),
+            (Language::Python, r#"f"{d[a:b]} c""#, r#"f"{d[a:b]}  ""#),
+            (Language::Python, r#"f"{d[a]:>5} c""#, r#"f"{d[a]:  }  ""#),
+            (Language::Python, r#"f"{f(a:b)} c""#, r#"f"{f(a:b)}  ""#),
+            (
+                Language::Python,
+                r#"f"{g(a)[b]:x} c""#,
+                r#"f"{g(a)[b]: }  ""#,
+            ),
+            (
+                Language::Python,
+                r#"f"{ {'a':1}['a'] } c""#,
+                r#"f"{ {' ':1}[' '] }  ""#,
+            ),
+            (Language::Python, r#"f"a\"b" eval(x)"#, r#"f"    " eval(x)"#),
+            (
+                Language::Python,
+                r#"x = r"\"" + eval(y)"#,
+                r#"x = r"  " + eval(y)"#,
+            ),
+            (Language::Shell, "'a' curl", "' ' curl"),
+            (
+                Language::Shell,
+                r#"V="$(echo $(date) case) and curl""#,
+                r#"V="$(echo $(date) case)         ""#,
+            ),
+            (
+                Language::Shell,
+                r#"V="$(echo $(date) esac) and curl""#,
+                r#"V="$(echo $(date) esac)         ""#,
+            ),
+            (
+                Language::Shell,
+                r#"V="$(a in (b) c) d""#,
+                r#"V="$(a in (b) c)  ""#,
+            ),
+            (
+                Language::Shell,
+                r#"V="$(case x in (b) c;; esac) d""#,
+                r#"V="$(case x in (b) c;; esac)  ""#,
+            ),
+            (Language::Shell, "echo a;#curl", "echo a;"),
+            (Language::Shell, "echo a(#curl", "echo a("),
+            (
+                Language::Rust,
+                r#"let s = r"a\"; unsafe"#,
+                r#"let s = r"  "; unsafe"#,
+            ),
+        ] {
+            assert_eq!(view(language, line), expected, "{language:?}: {line}");
+        }
     }
 
     #[test]
