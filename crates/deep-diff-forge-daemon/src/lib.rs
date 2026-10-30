@@ -30,6 +30,7 @@ compile_error!(
 
 mod admission;
 mod handler;
+mod inspect;
 mod protocol;
 mod security;
 mod serve;
@@ -37,6 +38,7 @@ pub mod views;
 
 pub use admission::{ADMISSION_WAIT, Admission, Busy, MAX_IN_FLIGHT_BYTES, Permit};
 pub use handler::{Engine, METHODS, MethodSpec, Work, dispatch, request_weight};
+pub use inspect::{DirState, Inspection, LockState, SocketState, inspect};
 pub use protocol::{
     GIT_FAILED, INPUT_CONTRACT_REFUSED, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST,
     METHOD_NOT_FOUND, PARSE_ERROR, PATCH_PARSE_FAILED, PROTOCOL_UNSUPPORTED, PROTOCOL_VERSION,

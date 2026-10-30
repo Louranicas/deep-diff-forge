@@ -831,7 +831,7 @@ with `--stdin-patch [--json | --jsonl | --rank | --cluster | --layout …]`, Git
 acquisition (`--git-working-tree`, `--git-staged`, `--git-range`), `semantic`,
 `structural`, `highlight`, `analyze`, `review [--probe]`, `daemon {…}`, `rpc`,
 `mcp`, `envelope`, `schema`, `explain`, `learn`, `council`,
-`deploy {status|release}`, the Rust and Python SDKs, CI and release workflows,
+`deploy {status|release|doctor}`, the Rust and Python SDKs, CI and release workflows,
 and a `deny.toml` policy. L8's "signed assets" are SHA-256 files plus GitHub
 build-provenance attestations, not signatures. Remaining: crates.io
 publication (owner hold) and the items listed in the status section. The text

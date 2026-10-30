@@ -1,4 +1,4 @@
-//! CLI contract tests for `deploy status`.
+//! CLI contract tests for `deploy status`, `deploy release` and `deploy doctor`.
 
 #![expect(
     clippy::disallowed_methods,
@@ -97,4 +97,108 @@ fn deploy_unknown_subcommand_exits_two() {
     let (code, _, stderr) = run(&["deploy", "frobnicate"]);
     assert_eq!(code, 2);
     assert!(stderr.contains("usage"));
+}
+
+/// A private directory under the system temp dir, removed when the test ends.
+struct Dir(std::path::PathBuf);
+
+impl Dir {
+    fn new(name: &str) -> Self {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = std::env::temp_dir().join(format!("ddf-doctor-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        Self(path)
+    }
+
+    fn socket(&self) -> String {
+        self.0.join("d.sock").to_str().unwrap().to_owned()
+    }
+}
+
+impl Drop for Dir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The state `deploy doctor --json` reports for one check.
+fn doctor_state(socket: &str, name: &str) -> (i32, String) {
+    let (code, stdout, stderr) = run(&["deploy", "doctor", "--json", "--socket", socket]);
+    let doc: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|_| panic!("{stderr}"));
+    assert_eq!(doc["schema"], "deep-diff-forge.deploy-doctor.v0");
+    assert_eq!(doc["healthy"], code == 0);
+    let state = doc["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == name)
+        .unwrap_or_else(|| panic!("no {name} check: {stdout}"))["state"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    (code, state)
+}
+
+#[test]
+fn deploy_doctor_sees_a_running_daemon() {
+    let dir = Dir::new("live");
+    let socket = dir.socket();
+    let mut daemon = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(["daemon", "start", "--foreground", "--socket", &socket])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn daemon");
+    let mut ready = false;
+    for _ in 0..200 {
+        if run(&["daemon", "health", "--socket", &socket]).0 == 0 {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let found = ready.then(|| run(&["deploy", "doctor", "--socket", &socket]));
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    let (code, stdout, _) = found.expect("the daemon never answered");
+    assert_eq!(code, 0, "{stdout}");
+    assert!(stdout.contains("ok   daemon     running, pid "), "{stdout}");
+    assert!(
+        stdout.contains("ok   start_lock a regular file owned by this user"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn deploy_doctor_fails_with_exit_6_on_what_a_start_refuses() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let shared = Dir::new("shared");
+    std::fs::set_permissions(&shared.0, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(
+        doctor_state(&shared.socket(), "socket_dir"),
+        (6, "fail".into())
+    );
+
+    let occupied = Dir::new("occupied");
+    std::fs::write(occupied.socket(), b"not a socket").unwrap();
+    assert_eq!(
+        doctor_state(&occupied.socket(), "daemon"),
+        (6, "fail".into())
+    );
+
+    let stale = Dir::new("stale");
+    drop(std::os::unix::net::UnixListener::bind(stale.socket()).unwrap());
+    assert_eq!(doctor_state(&stale.socket(), "daemon"), (0, "warn".into()));
+}
+
+#[test]
+fn only_deploy_doctor_takes_a_socket() {
+    for sub in ["status", "release"] {
+        let (code, _, stderr) = run(&["deploy", sub, "--socket", "/x/d.sock"]);
+        assert_eq!(code, 2, "{sub}");
+        assert!(stderr.contains("--socket is accepted only with deploy doctor"));
+    }
 }

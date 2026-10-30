@@ -6,6 +6,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Added
+
+- **`deploy doctor [--json] [--socket PATH]`** checks that this machine can run the daemon and
+  Git inputs, and changes nothing: the socket directory, the socket (absent, live, stale, of
+  another user, or not a socket), the start lock, and `git version` (run the way an acquisition
+  runs Git, within 10 s). The daemon checks apply the daemon's own start rules and never take the
+  start lock. Exit 6 when a check fails; `--json` prints `deep-diff-forge.deploy-doctor.v0`.
+- `deep_diff_forge_daemon::inspect` (with `Inspection`, `SocketState`, `LockState`, `DirState`)
+  and `SocketLocation::start_lock_path`: a read-only view of a daemon location.
+- `deep_diff_forge_patch::git_version`: Git's version line, bounded like an acquisition.
+
 ### Security
 
 - **The daemon serves its own user only** (closes a 0.3.0 residual risk). Each accepted
