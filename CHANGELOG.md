@@ -106,10 +106,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   blanked everything between quotes, so `V="$(curl …)"` in shell,
   `` `${require("child_process").execSync(c)}` `` in JS and `f"{eval(x)}"` in Python carried no
   evidence. Code inside `$(…)` and backticks (shell double quotes), `${…}` (JS template literals)
-  and `{…}` (one-line Python f-strings, not `{{`) is now code up to its matching closer on the
-  line, with nesting counted. Single-quoted shell and plain or bytes Python strings still run
-  nothing and stay blank. Not covered: triple-quoted f-strings, and an interpolation that spans
-  lines.
+  and `{…}` (one-line Python f-strings, not `{{`; `\{` still runs) is now scanned as code up to
+  its matching closer on the line. Inside it, strings are strings again, a backslash escapes, JS
+  comments are comments and a shell `case` pattern's `)` is not a closer, so neither a quoted
+  closer hides the code after it nor a quoted token (`$(printf 'curl failed')`) is read as code.
+  Single-quoted shell and plain or bytes Python strings still run nothing and stay blank. Not
+  covered: triple-quoted f-strings, and an interpolation that spans lines.
+- A JS file that imports `child_process` (`require(…)`, `from …`, `import(…)`, with or without
+  `node:`) is `process_spawn` evidence. Before, the module name was only ever seen inside a
+  string, which the code view blanks, so the rule could not fire.
 - `sanitize_body` (agent annotations, and now findings) drops bidi, invisible and
   line-separator characters as well as control characters. Before, Unicode category Cf
   characters such as U+202E were kept, so an agent's note could reorder or hide text for the

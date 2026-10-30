@@ -223,6 +223,28 @@ const RULES: &[Rule] = &[
         Scope::Languages(JS),
         Match::Tokens(&["child_process", "execSync(", "spawnSync(", "execFileSync("]),
     ),
+    // The module is always named in a string, which the code view blanks, so its imports are
+    // read from the raw line.
+    rule(
+        S::ProcessSpawn,
+        Side::New,
+        View::Raw,
+        Scope::Languages(JS),
+        Match::Tokens(&[
+            "require(\"child_process\")",
+            "require('child_process')",
+            "require(\"node:child_process\")",
+            "require('node:child_process')",
+            "from \"child_process\"",
+            "from 'child_process'",
+            "from \"node:child_process\"",
+            "from 'node:child_process'",
+            "import(\"child_process\")",
+            "import('child_process')",
+            "import(\"node:child_process\")",
+            "import('node:child_process')",
+        ]),
+    ),
     rule(
         S::ProcessSpawn,
         Side::New,
@@ -806,6 +828,80 @@ mod tests {
         let found = file_evidence(&two);
         assert_eq!(found.len(), 2);
         assert_ne!(found[0].hunk, found[1].hunk);
+    }
+
+    /// The PR 5 review's inputs (workflow `wf_b39e1c70-545`): an interpolation is scanned as
+    /// code with its own strings, escapes and comments, so a closer in a nested string, after a
+    /// backslash, in a comment or ending a `case` pattern neither hides the code after it nor
+    /// exposes the outer string's text.
+    #[test]
+    fn an_interpolation_is_scanned_as_code_with_its_own_strings() {
+        let hidden_before: [(&str, &str, EvidenceSignal); 12] = [
+            ("a.sh", r#"V="$(echo ')' ; curl x)""#, S::NetworkFetch),
+            ("a.sh", r#"V="$(echo \) ; curl x)""#, S::NetworkFetch),
+            (
+                "a.sh",
+                r#"V="$(case a in a) curl x;; esac)""#,
+                S::NetworkFetch,
+            ),
+            (
+                "a.sh",
+                r#"X="$(tr -d ')' < f | curl https://e.example/x)""#,
+                S::NetworkFetch,
+            ),
+            ("a.sh", r#"V="$(echo "$(curl x)")""#, S::NetworkFetch),
+            (
+                "a.js",
+                r#"const o = `${ "}" + require("child_process").execSync(c) }`;"#,
+                S::ProcessSpawn,
+            ),
+            ("a.js", "const o = `${ /* } */ eval(x) }`;", S::DynamicEval),
+            ("a.js", "const o = `${ `${ eval(x) }` }`;", S::DynamicEval),
+            ("a.py", r#"print(f"{'}' + eval(x)}")"#, S::DynamicEval),
+            ("a.py", r#"print(Rf"{d['}'] or eval(x)}")"#, S::DynamicEval),
+            ("a.py", r#"print(f"\{eval(x)}")"#, S::DynamicEval),
+            ("a.py", r#"print(rf"\{eval(x)}")"#, S::DynamicEval),
+        ];
+        for (path, line, signal) in hidden_before {
+            assert_eq!(signals(&added(path, &[line])), [signal], "{path}: {line}");
+        }
+        let literal_only: [(&str, &str); 9] = [
+            ("a.sh", r#"die "$(printf 'curl failed for %s' "$url")""#),
+            ("a.sh", r#"echo "$(gettext 'Install curl or wget first')""#),
+            (
+                "a.sh",
+                r#"echo "$(printf "%d) %s" "$i" "$name") - needs curl""#,
+            ),
+            ("a.js", r#"const m = `${t("Never use eval(x) here")}`;"#),
+            ("a.js", r#"const m = `${x ? "fetch(url) failed" : ""}`;"#),
+            ("a.js", r#"const s = `${a ? "{" : ""} eval(x)`;"#),
+            ("a.py", r#"msg = f"{'eval(' if strict else ''}""#),
+            ("a.py", r#"log(f"{cfg["subprocess."]}")"#),
+            ("a.py", r#"print(f"{s.replace("}", "")} then eval(x) it")"#),
+        ];
+        for (path, line) in literal_only {
+            assert_eq!(signals(&added(path, &[line])), [], "{path}: {line}");
+        }
+    }
+
+    #[test]
+    fn child_process_imports_are_spawn_evidence() {
+        for line in [
+            r#"const cp = require("child_process");"#,
+            "import { execFile } from 'node:child_process';",
+            r#"const { spawn } = await import("child_process");"#,
+        ] {
+            assert_eq!(
+                signals(&added("a.js", &[line])),
+                [S::ProcessSpawn],
+                "{line}"
+            );
+        }
+        // Naming another module, or the name alone in a message, is not.
+        assert_eq!(
+            signals(&added("a.js", &[r#"log("child process done")"#])),
+            []
+        );
     }
 
     #[test]
