@@ -955,10 +955,24 @@ mod tests {
     /// whitespace before a shell word is trimmed only at `case` and `esac`.
     #[test]
     fn hostile_lines_scan_in_linear_time() {
-        let regexes = "x = [/".repeat(100_000);
-        assert_eq!(view(Language::JavaScript, &regexes).len(), regexes.len());
-        let spaces = format!("V=\"$({}curl x)\"", " ".repeat(200_000));
-        assert!(view(Language::Shell, &spaces).ends_with("curl x)\""));
+        within_deadline(|| {
+            let regexes = "x = [/".repeat(100_000);
+            assert_eq!(view(Language::JavaScript, &regexes).len(), regexes.len());
+            let spaces = format!("V=\"$({}curl x)\"", " ".repeat(200_000));
+            assert!(view(Language::Shell, &spaces).ends_with("curl x)\""));
+        });
+    }
+
+    /// Run `work` on its own thread and fail if it takes more than ten seconds: a linear scan
+    /// of these lines takes milliseconds, so a quadratic regression fails here instead of
+    /// hanging the suite (and a diff-mutation run reports it as caught, not as a timeout).
+    fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+        let (done, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(work());
+        });
+        wait.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("a long line was scanned within ten seconds")
     }
 
     /// Exact views for each decision the diff-mutation run found untested (2026-10-31): regex

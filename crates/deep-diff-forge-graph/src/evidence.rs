@@ -1199,18 +1199,32 @@ mod tests {
 
     #[test]
     fn the_import_rule_is_linear_on_long_lines() {
-        for unit in [
-            "Array.from(x),",
-            "from ",
-            "require ",
-            "import ",
-            "require(require(",
-        ] {
-            let line = unit.repeat(200_000);
-            assert_eq!(signals(&added("a.js", &[&line])), [], "{unit}");
-        }
-        let spaced = format!(";{}from 'child_process'", " ".repeat(200_000));
-        assert_eq!(signals(&added("a.js", &[&spaced])), [S::ProcessSpawn]);
+        within_deadline(|| {
+            for unit in [
+                "Array.from(x),",
+                "from ",
+                "require ",
+                "import ",
+                "require(require(",
+            ] {
+                let line = unit.repeat(200_000);
+                assert_eq!(signals(&added("a.js", &[&line])), [], "{unit}");
+            }
+            let spaced = format!(";{}from 'child_process'", " ".repeat(200_000));
+            assert_eq!(signals(&added("a.js", &[&spaced])), [S::ProcessSpawn]);
+        });
+    }
+
+    /// Run `work` on its own thread and fail if it takes more than ten seconds: a linear scan
+    /// of these lines takes milliseconds, so a quadratic regression fails here instead of
+    /// hanging the suite (and a diff-mutation run reports it as caught, not as a timeout).
+    fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+        let (done, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(work());
+        });
+        wait.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("a long line was scanned within ten seconds")
     }
 
     /// The import rule's receiver, boundary, `typeof` and statement decisions, each pinned.
