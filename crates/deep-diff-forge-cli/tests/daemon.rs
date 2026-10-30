@@ -345,7 +345,10 @@ fn json_logs_are_one_object_per_line() {
     }
     assert!(ready, "the daemon never answered");
     // A large answer to a request whose client is already gone: the write fails. Retried, since
-    // a fast daemon can answer before the client has closed.
+    // a fast daemon can answer before the client has closed. Each attempt waits up to 3 s for
+    // the log line before the next is sent, so a slow daemon is not buried in more work; one
+    // that drops the connection (at its connection limit) fails this client's own write, and
+    // that attempt is skipped, not a failure (seen on macOS).
     let body = (0..20_000).fold(String::new(), |mut body, i| {
         use std::fmt::Write as _;
         let _ = writeln!(body, "+line {i}");
@@ -357,19 +360,26 @@ fn json_logs_are_one_object_per_line() {
     })
     .to_string();
     let mut text = String::new();
-    for _ in 0..50 {
+    'attempts: for _ in 0..10 {
         let mut client = std::os::unix::net::UnixStream::connect(path).unwrap();
-        client.write_all(request.as_bytes()).unwrap();
-        client.write_all(b"\n").unwrap();
+        let sent = client
+            .write_all(request.as_bytes())
+            .and_then(|()| client.write_all(b"\n"));
         drop(client);
-        std::thread::sleep(Duration::from_millis(100));
-        text.clear();
-        std::fs::File::open(&log)
-            .unwrap()
-            .read_to_string(&mut text)
-            .unwrap();
-        if text.contains("connection_error") {
-            break;
+        if let Err(err) = sent {
+            use std::io::ErrorKind::{BrokenPipe, ConnectionReset};
+            assert!(matches!(err.kind(), BrokenPipe | ConnectionReset), "{err}");
+        }
+        for _ in 0..60 {
+            std::thread::sleep(Duration::from_millis(50));
+            text.clear();
+            std::fs::File::open(&log)
+                .unwrap()
+                .read_to_string(&mut text)
+                .unwrap();
+            if text.contains("connection_error") {
+                break 'attempts;
+            }
         }
     }
     let line = text
