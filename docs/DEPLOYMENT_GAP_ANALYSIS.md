@@ -4,15 +4,15 @@
 
 **Kind:** historical analysis with dated resolution updates. "Current State" and the numbered gap sections are the original L0 analysis. They are kept as history and do not describe 0.3.0. The dated "Resolution Status" sections below record what closed and when.
 
-**Current at 0.3.0:**
+**Current at 0.4.0:**
 
 - 14 crates in `crates/`, maturity L9 (`deep-diff-forge deploy status`). All engine layers L0–L8 are implemented. The `deep-diff-forge <old> <new>`, `chain`, `cluster` and `loom` subcommands are still refused (`deep-diff-forge --help`, "NOT YET IMPLEMENTED").
-- `deploy doctor` exists (Unreleased, 2026-10-30): it checks the daemon location (socket directory, socket, start lock) with the daemon's own start rules, and Git, and exits 6 when a check fails ([operations](OPERATIONS_AND_DAEMON.md#deploy-doctor)). `deploy receipt` (Executive Gaps, P0) does not exist. A top-level `doctor` command prints runtime paths.
+- `deploy doctor` exists (0.4.0, 2026-10-30): it checks the daemon location (socket directory, socket, start lock) with the daemon's own start rules, and Git, and exits 6 when a check fails ([operations](OPERATIONS_AND_DAEMON.md#deploy-doctor)). `deploy receipt` (Executive Gaps, P0) does not exist. A top-level `doctor` command prints runtime paths.
 - The open item "a release run since the Node 24, SDK and Ubuntu 26 changes" in the 2026-10-28 section below is now closed. Release dry runs 40634103910 (`24e3d53`) and 40643652548 (`2f03f40`) were green. Publish and attestation were skipped by design ([evidence](../EVIDENCE.md#release-dry-runs-and-fuzzing-2026-10-28)).
-- Published GitHub releases: `v0.1.0`, `v0.2.0` and `v0.3.0` (tagged 2026-10-29). The workspace is `0.3.0`. crates.io stays on hold (`DDF_CRATES_IO`).
+- Published GitHub releases: `v0.1.0`, `v0.2.0`, `v0.3.0` and `v0.4.0` (tagged 2026-10-30). The workspace is `0.4.0`. crates.io stays on hold (`DDF_CRATES_IO`).
 - CI runs on `ubuntu-26.04`, with macOS tests on `macos-latest` on every event, each pull request included (required check `macOS tests`). A weekly campaign (`campaign.yml`) runs a 10-minute daemon soak with leak checks and an hour of fuzzing per target. The Linux release binary is built on `ubuntu-24.04` (`.github/workflows/release.yml`).
 
-**Residual risks:** none of the 0.3.0 daemon risks remain open. (Closed in 0.3.0: Git subprocesses have a time limit, 120 s for the CLI and 30 s for `review.change`. Closed after 0.3.0, unreleased: the socket checks peer credentials on both ends, a start lock stops two `daemon start`s racing, and requests run in parallel under a 128 MiB in-flight cap instead of one at a time.)
+**Residual risks:** none of the 0.3.0 daemon risks remain open. (Closed in 0.3.0: Git subprocesses have a time limit, 120 s for the CLI and 30 s for `review.change`. Closed in 0.4.0: the socket checks peer credentials on both ends, a start lock stops two `daemon start`s racing, and requests run in parallel under a 128 MiB in-flight cap instead of one at a time.)
 
 Current docs: [production readiness](PRODUCTION_READINESS.md) (scored assessment, 2026-10-30), [release and publication](RELEASE_AND_PUBLICATION.md), [operations and daemon](OPERATIONS_AND_DAEMON.md), [feature deployability matrix](FEATURE_DEPLOYABILITY_MATRIX.md), [roadmap](ROADMAP.md).
 

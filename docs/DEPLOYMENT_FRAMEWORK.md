@@ -16,17 +16,17 @@ The framework is designed for:
 
 ## Status 2026-10-28 (0.3.0)
 
-- Workspace version 0.3.0 on `main`, tagged `v0.3.0` on 2026-10-29. 14 crates under `crates/`
+- Workspace version 0.4.0 on `main`, tagged `v0.4.0` on 2026-10-30. 14 crates under `crates/`
   (core, patch, projection, pipeline, syntax, graph, agent, tui, cluster,
   learning, daemon, review, sdk, cli); edition 2024, MSRV 1.88, toolchain
   1.99.1. Internal edges: [`crate-edges.txt`](crate-edges.txt).
-- Published GitHub releases: `v0.1.0`, `v0.2.0` and `v0.3.0`. crates.io is on hold by owner
+- Published GitHub releases: `v0.1.0`, `v0.2.0`, `v0.3.0` and `v0.4.0`. crates.io is on hold by owner
   decision; `release.yml` publishes only when the repository variable
   `DDF_CRATES_IO` is `open`, never because a token exists.
 - `deploy status` reports maturity L9 (Learning). Its gate list is declared, not
   run; the gates themselves run in CI and in `just ci`.
-- The gates that exist are `.github/workflows/ci.yml` (seven jobs, nine checks on
-  a pull request), `.github/workflows/release.yml`, the `justfile` recipes listed
+- The gates that exist are `.github/workflows/ci.yml` (seven jobs, ten checks on
+  a pull request; `campaign.yml` weekly), `.github/workflows/release.yml`, the `justfile` recipes listed
   below, [`scripts/ci_local.sh`](../scripts/ci_local.sh) and
   [`scripts/diff_mutation.sh`](../scripts/diff_mutation.sh). See
   [Release And Publication](RELEASE_AND_PUBLICATION.md#github-actions).
@@ -136,7 +136,7 @@ flowchart TB
 The codebase is at L9 (learning): every engine layer L0-L8 is implemented plus
 the L9 local-only learning loop. `v0.1.0` and `v0.2.0` were tagged and released
 to GitHub (binary + checksums via `release.yml`) and both git remotes. `0.2.1`
-was never tagged; `main` is 0.3.0, tagged `v0.3.0` on 2026-10-29. crates.io is on hold by owner
+was never tagged; `main` is 0.4.0, tagged `v0.4.0` on 2026-10-30. crates.io is on hold by owner
 decision: the `publish` job runs only when the repository variable
 `DDF_CRATES_IO` is `open`, and a configured `CARGO_REGISTRY_TOKEN` does not lift
 the hold (corrected 2026-10-28; the earlier text said a token alone would

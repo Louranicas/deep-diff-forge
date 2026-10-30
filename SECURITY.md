@@ -8,9 +8,9 @@ for.
 
 ## Status 2026-10-28 (0.3.0)
 
-- `main` carries **0.3.0**, tagged `v0.3.0` on 2026-10-29; cutting any later
+- `main` carries **0.4.0**, tagged `v0.4.0` on 2026-10-30; cutting any later
   `v*` tag is the owner's decision. The published releases are `v0.1.0`,
-  `v0.2.0` and `v0.3.0`. `0.2.1` was never tagged or published.
+  `v0.2.0`, `v0.3.0` and `v0.4.0`. `0.2.1` was never tagged or published.
 - The controls below describe the code on `main`. The `v0.2.0` binaries were
   built on 2026-06-24 and predate the SOL-1 hardening (2026-09-04), the review
   council work and the 2026-10-28 fixes listed under
@@ -47,8 +47,9 @@ Fixes land on `main` first and reach users in the next tagged release.
 
 | Version | State | Security fixes |
 | --- | --- | --- |
-| `main` | Development line after `v0.3.0` | Land here first. |
-| `v0.3.0` (2026-10-29) | Latest published release | Yes: the next release carries them. |
+| `main` | Development line after `v0.4.0` | Land here first. |
+| `v0.4.0` (2026-10-30) | Latest published release | Yes: the next release carries them. |
+| `v0.3.0` (2026-10-29) | Published, superseded | No. It lacks the 0.4.0 daemon fixes (peer credentials, start lock). |
 | `v0.2.0` (2026-06-24) | Published, superseded | No. It does not contain the fixes made since 2026-06-24. |
 | `v0.1.0` (2026-06-22) | Published, superseded | No. |
 | `0.2.1` | Never tagged or published | Not applicable. |
@@ -310,11 +311,11 @@ SBOM, and attests it before irreversible publication.
 
 Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
 
-- **Closed (Unreleased): one engine serialized daemon requests.** Every
+- **Closed in 0.4.0: one engine serialized daemon requests.** Every
   connection shared one `Mutex<Engine>`, so one slow request delayed all other
   clients. Requests now run in parallel under the 128 MiB in-flight cap above
   (EVIDENCE.md).
-- **Closed (Unreleased): the socket checks peer credentials.** The daemon reads
+- **Closed in 0.4.0: the socket checks peer credentials.** The daemon reads
   each client's effective uid from the kernel (`SO_PEERCRED` on Linux,
   `getpeereid` on macOS and the BSDs; other platforms refuse every client) and
   drops a client that is not its own user, so a socket whose mode was loosened is
@@ -342,14 +343,14 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
   another's (`objects/info/alternates`) is refused. Without a root they read none.
   The roots are an operator decision: any client of that daemon or MCP server can
   read every change under them, though never write anything.
-- **Closed (Unreleased): two `daemon start`s cannot race.** Before, between
+- **Closed in 0.4.0: two `daemon start`s cannot race.** Before, between
   `remove_stale_socket`'s probe and the bind, a second start could remove the
   first's fresh socket and bind its own, leaving the first running but
   unreachable. Each start now takes a non-blocking exclusive `flock` on
   `<socket>.lock` (opened without following symlinks, a regular file owned by
   the effective user) before the probe and holds it until the daemon has exited
   and removed its socket. A start that finds the lock held exits 6.
-- **Closed (Unreleased): macOS tests did not run on pull requests.** The `macos`
+- **Closed in 0.4.0: macOS tests did not run on pull requests.** The `macos`
   CI job now runs on every event, each pull request included, and `macOS tests`
   is a required check.
 - **The TUI has no interactive test harness.** Unit tests cover its state and

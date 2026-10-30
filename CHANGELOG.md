@@ -6,6 +6,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-30
+
 ### Added
 
 - **`deploy doctor [--json] [--socket PATH]`** checks that this machine can run the daemon and
@@ -978,7 +980,8 @@ A supply-chain & fuzz hardening pass then raised the release/CI posture:
   `--json`/`--jsonl` stability tests. Corrected the daemon's `lib.rs` doc from
   "thread-per-connection" to the true single-threaded sequential accept loop.
 
-[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.2.0
 

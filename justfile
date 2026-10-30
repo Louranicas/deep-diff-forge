@@ -121,7 +121,7 @@ publish-dry-run:
 # DDF_CRATES_IO is `open` (on hold by owner decision; irreversible, yank-only).
 # Run a `workflow_dispatch` dry run on the commit first: it is the only run that
 # tests the macOS binaries before they ship.
-# Usage: just release-tag 0.3.0
+# Usage: just release-tag 0.4.0
 [group("release")]
 release-tag version:
     #!/usr/bin/env bash

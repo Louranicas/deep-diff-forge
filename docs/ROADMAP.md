@@ -17,13 +17,13 @@ code at `2f03f40` plus this release's version bump, and from `deep-diff-forge --
 | 6. App surfaces | Partial | Done: TUI. Remaining: a TUI test harness beyond the headless `review --probe` frame; desktop, web, IDE and forge adapters. |
 | 7. Daemon | Partial | Done: Unix-socket JSON-RPC 2.0, protocol 1, sessions, `engine.methods`, 0700 directory and 0600 socket. Done since 0.3.0: a peer-credential check on both ends of the socket, and a start lock. Remaining: AST and line-index cache, subscriptions. |
 | 8. Cluster and loom | Cluster partial, loom not built | Done: `deep-diff-forge-cluster` with contiguous shards, join policies and a receipt, run by `--cluster`. Remaining: semantic and other dimensions; the `cluster` subcommand; all of loom. |
-| 9. Deployment spine | Done | CI (`ci.yml`, 9 required checks), `release.yml` (3 targets, sha256, SLSA attestation on tags), `deploy status|release|doctor`, hostile daemon soak smoke, GitHub releases v0.1.0 and v0.2.0, GitLab `main` fast-forwarded from GitHub `main` after each merge. |
+| 9. Deployment spine | Done | CI (`ci.yml`, 10 required checks; weekly `campaign.yml`), `release.yml` (3 targets, sha256, SLSA attestation on tags), `deploy status|release|doctor`, hostile daemon soak smoke, GitHub releases v0.1.0 and v0.2.0, GitLab `main` fast-forwarded from GitHub `main` after each merge. |
 | 10. Learning loop | Partial | Done: local-only strategy receipts (`learn record --stdin`), scoring and trust (`learn status`), planner, ranking and annotation learners and promotion rules (library only). Remaining: nothing emits receipts automatically; no corpus manifest, benchmark receipts, or wiring of learned weights into ranking. See [LEARNING_LOOP.md](LEARNING_LOOP.md). |
 
 Release and publication:
 
-- **0.3.0 is tagged** (`v0.3.0`, 2026-10-29, owner decision). Any later `v*` tag is the owner's
-  decision. Published GitHub releases are v0.1.0, v0.2.0 and v0.3.0; v0.2.1 was never tagged.
+- **0.4.0 is tagged** (`v0.4.0`, 2026-10-30, owner decision). Any later `v*` tag is the owner's
+  decision. Published GitHub releases are v0.1.0, v0.2.0, v0.3.0 and v0.4.0; v0.2.1 was never tagged.
 - **crates.io is on hold** by owner decision until the codebase is production-hardened.
   `release.yml` publishes only when the repository variable `DDF_CRATES_IO` is `open`; a
   configured token does not lift the hold.

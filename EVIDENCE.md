@@ -703,3 +703,24 @@ Measured on 2026-10-30, on a 16-CPU Fedora host, release builds. "Before" is `ma
   `daemon.health` (before, it would have waited on the mutex); a panic holding the session table
   empties it and no id is reused; a panic holding nothing keeps every session.
 
+## v0.4.0 release readiness (2026-10-30)
+
+Measured on 2026-10-30 for the owner's `v0.4.0` tag (Luke's instruction of 2026-10-30: "Tag
+0.4.0 after a release dry run"). It ships what the production-readiness assessment
+([docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md), 83/100) said would raise the score.
+
+| Change | PR | Evidence |
+| --- | --- | --- |
+| Peer-credential check on both ends; a start lock stops two `daemon start`s racing | #44 | [Daemon peer credentials and start lock](#daemon-peer-credentials-and-start-lock-2026-10-30) |
+| macOS on every pull request (required check 10 of ruleset 25868121); weekly `campaign.yml` (600 s leak-checked soak, an hour of fuzzing per target); soak leak checks | #46 | Campaign run 40989103096 (dispatched on `main` `50abb6e`, fuzz 120 s per target): soak and all 8 fuzz jobs green |
+| `deploy doctor` | #47 | CI 10/10 at `217ed0f`; 6 missed mutants found by CI, fixed, verified locally |
+| Daemon requests in parallel under a 128 MiB in-flight budget | #48 | [Daemon requests in parallel](#daemon-requests-in-parallel-2026-10-30); CI 10/10 at `bc7f4cf`, macOS included |
+
+Repository settings changed the same day: Dependabot alerts and security updates on, secret
+push protection on; 72 branches already merged into `main` deleted from both remotes (restore
+list kept outside the repository).
+
+One local gate run of PR #48, after `main` was merged in, reported a failed test. Seven later
+full runs did not reproduce it, and its output was not kept; the gate script now keeps the
+test log. It is recorded here as an unexplained, unreproduced failure.
+
