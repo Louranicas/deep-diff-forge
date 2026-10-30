@@ -44,12 +44,9 @@ fn run(args: &[&str], stdin: &str) -> (i32, String, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(stdin.as_bytes())
-        .unwrap();
+    // A command refused before it reads stdin (usage, an unreadable findings file) exits first,
+    // so the write can meet a closed pipe; the exit code is what is tested.
+    let _ = child.stdin.take().unwrap().write_all(stdin.as_bytes());
     let out = child.wait_with_output().unwrap();
     (
         out.status.code().unwrap_or(-1),
