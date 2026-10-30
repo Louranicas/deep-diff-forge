@@ -20,8 +20,12 @@
 //!   triple-quoted f-string's interpolations are blanked with the rest of it, a continuation
 //!   line of a multi-line string is read as code, and non-ASCII spellings of a token
 //!   (Python's NFKC `ｅval`) are not matched.
+//! - JSX text, a regex right after `if (…)`, a `case` inside a shell `$(…)` that a construct
+//!   above it confuses, and message text in a shell `${x:-…}` are read approximately.
 //!
-//! Evidence built on it says `basis: lexical`.
+//! It is a reviewer's lens, not an adversarial boundary: an author who wants to hide a call
+//! from a line scanner can (assembling it at run time always works), and no evidence means no
+//! token was found, never that a change is safe. Evidence built on it says `basis: lexical`.
 
 /// A language family the scanner knows, chosen from the path (and a shebang for files with no
 /// extension).
@@ -189,59 +193,126 @@ fn is_interpolating_prefix(before: &[u8]) -> bool {
         && (start == 0 || !is_ident(before[start - 1]))
 }
 
-/// Whether `word` starts at byte `i` of `bytes` as a whole word.
-fn word_at(bytes: &[u8], i: usize, word: &[u8]) -> bool {
+/// Whether the shell word `word` starts at byte `i` of `bytes`: a whole shell word, so `$case`,
+/// `--ignore-case`, `esac=1` and `esac-tool` are not it.
+fn shell_word_at(bytes: &[u8], i: usize, word: &[u8]) -> bool {
+    let breaks_before = |b: u8| b.is_ascii_whitespace() || b";&|({`!)".contains(&b);
+    let breaks_after = |b: &u8| b.is_ascii_whitespace() || b";&|)".contains(b);
     bytes[i..].starts_with(word)
-        && (i == 0 || !is_ident(bytes[i - 1]))
-        && bytes.get(i + word.len()).is_none_or(|b| !is_ident(*b))
+        && (i == 0 || breaks_before(bytes[i - 1]))
+        && bytes.get(i + word.len()).is_none_or(breaks_after)
 }
 
-/// Whether a shell word at byte `i` is in command position: first on the line or in its
-/// substitution, or after `;`, `|`, `&`, `(`, `{`, a backtick, `then`, `do` or `else`. Only
-/// there does `case` start a statement (`echo case` and `--ignore-case` do not).
-fn in_command_position(bytes: &[u8], i: usize) -> bool {
+/// Whether `before` (trimmed) ends with the whole word `word`.
+fn ends_with_word(before: &[u8], word: &[u8]) -> bool {
+    before.ends_with(word)
+        && before
+            .len()
+            .checked_sub(word.len() + 1)
+            .is_none_or(|k| !is_ident(before[k]))
+}
+
+/// Whether a shell word at byte `i` is in command position, where `case` starts a statement:
+/// first on the line or in its substitution, after `;`, `|`, `&`, `(`, a group's `{` (not the
+/// `{` of `${`), a backtick or `!`, after a reserved word that starts a command list, or, while
+/// a `case` is open (`in_case`), after a pattern's `)`.
+fn in_command_position(bytes: &[u8], i: usize, in_case: bool) -> bool {
     let before = bytes[..i].trim_ascii_end();
-    let after_word = |word: &[u8]| {
-        before.ends_with(word)
-            && before
-                .len()
-                .checked_sub(word.len() + 1)
-                .is_none_or(|k| !is_ident(before[k]))
-    };
-    matches!(
-        before.last(),
-        None | Some(b';' | b'|' | b'&' | b'(' | b'{' | b'`')
-    ) || after_word(b"then")
-        || after_word(b"do")
-        || after_word(b"else")
+    match before.last() {
+        None | Some(b';' | b'|' | b'&' | b'(' | b'`' | b'!') => true,
+        Some(b'{') => before.len() < 2 || before[before.len() - 2] != b'$',
+        Some(b')') => in_case,
+        Some(_) => [
+            &b"then"[..],
+            b"do",
+            b"else",
+            b"if",
+            b"elif",
+            b"while",
+            b"until",
+            b"time",
+        ]
+        .iter()
+        .any(|word| ends_with_word(before, word)),
+    }
 }
 
-/// Whether a JS `/` here starts a regex literal rather than a division: the last code byte
-/// before it is an operator or an opening bracket (or there is none), as in the language's
-/// grammar.
+/// Whether a shell `(` at byte `i` opens a case pattern (`case x in (a) …`) rather than a
+/// subshell: it follows the `in` of a case or the `;;` or `;&` that ends an arm.
+fn opens_case_pattern(bytes: &[u8], i: usize) -> bool {
+    let before = bytes[..i].trim_ascii_end();
+    before.ends_with(b";;") || before.ends_with(b";&") || ends_with_word(before, b"in")
+}
+
+/// JS words after which an expression starts, so a `/` there opens a regex and a quote right
+/// after one opens a string (`return"x"`, `typeof'y'`).
+const JS_OPERAND_KEYWORDS: [&[u8]; 14] = [
+    b"return",
+    b"typeof",
+    b"void",
+    b"delete",
+    b"in",
+    b"of",
+    b"instanceof",
+    b"new",
+    b"throw",
+    b"case",
+    b"do",
+    b"else",
+    b"yield",
+    b"await",
+];
+
+/// The identifier that ends `before`, if any.
+fn trailing_word(before: &[u8]) -> &[u8] {
+    let start = before
+        .iter()
+        .rposition(|b| !is_ident(*b))
+        .map_or(0, |p| p + 1);
+    &before[start..]
+}
+
+/// Whether `before` ends with a [`JS_OPERAND_KEYWORDS`] word that is not a property name
+/// (`x.return`).
+fn ends_with_operand_keyword(before: &[u8]) -> bool {
+    let word = trailing_word(before);
+    JS_OPERAND_KEYWORDS.contains(&word) && !before[..before.len() - word.len()].ends_with(b".")
+}
+
+/// Whether a JS `/` here starts a regex literal rather than a division, as in the language's
+/// grammar: the last code byte before it is an operator or an opening bracket (or there is
+/// none), or the last word is one after which an expression starts. `a++ /` and `a-- /` are
+/// divisions.
 fn starts_regex(out: &[u8]) -> bool {
-    out.iter()
-        .rev()
-        .find(|b| !b.is_ascii_whitespace())
-        .is_none_or(|b| b"(,=:[!&|?{};".contains(b))
+    let before = out.trim_ascii_end();
+    match before {
+        [] => true,
+        [.., b'+', b'+'] | [.., b'-', b'-'] => false,
+        // Not `<` or `>`: `</p>` and `<p>/` are JSX tags far more often than `a < /re/`.
+        [.., last] if b"(,=:[!&|?{};+-*%~^".contains(last) => true,
+        _ => ends_with_operand_keyword(before),
+    }
 }
 
 /// The length of a JS regex literal at `rest` (which starts with its `/`), up to and including
 /// its closing `/`, or `None` when the line holds no closer.
 fn regex_len(rest: &[u8]) -> Option<usize> {
     let mut class = false;
-    let mut j = 1;
-    while j < rest.len() {
-        match rest[j] {
-            b'\\' => j += 1,
+    let mut escaped = false;
+    rest.iter().enumerate().skip(1).find_map(|(j, &b)| {
+        if escaped {
+            escaped = false;
+            return None;
+        }
+        match b {
+            b'\\' => escaped = true,
             b'[' => class = true,
             b']' => class = false,
             b'/' if !class => return Some(j + 1),
             _ => {}
         }
-        j += 1;
-    }
-    None
+        None
+    })
 }
 
 /// The code bytes of `line`: comments and string contents replaced by spaces, the quotes kept,
@@ -261,6 +332,7 @@ pub fn code_view(language: Language, line: &str, state: &mut ScanState) -> Strin
         stack: Vec::new(),
         blank: 0,
         copy: 0,
+        no_regex: false,
     };
     for i in 0..bytes.len() {
         if !scan.step(i, state) {
@@ -280,6 +352,9 @@ struct Scan<'a> {
     stack: Vec<Frame>,
     blank: usize,
     copy: usize,
+    /// A regex probe found no closer: the rest of the line has none either way, so later `/`
+    /// are read as division (code) without probing again, which keeps a line linear.
+    no_regex: bool,
 }
 
 impl Scan<'_> {
@@ -422,14 +497,17 @@ impl Scan<'_> {
         }
         if language == Language::JavaScript
             && byte == b'/'
+            && !self.no_regex
             && starts_regex(&self.out)
-            && let Some(len) = regex_len(rest)
         {
-            // A regex literal's text is data: its quotes and brackets open nothing.
-            self.blank = len - 2;
-            self.copy = 1;
-            self.out.push(byte);
-            return true;
+            if let Some(len) = regex_len(rest) {
+                // A regex literal's text is data: its quotes and brackets open nothing.
+                self.blank = len - 2;
+                self.copy = 1;
+                self.out.push(byte);
+                return true;
+            }
+            self.no_regex = true;
         }
         if !nested && byte == b'#' && is_comment_start(language, bytes, i) {
             return false;
@@ -466,8 +544,11 @@ impl Scan<'_> {
         }
         // In JS a quote right after a word byte opens nothing: no string can start there, and
         // JSX text (`<p>Can't</p>`) puts apostrophes there.
-        let after_word =
-            language == Language::JavaScript && i > 0 && is_ident(bytes[i - 1]) && byte != b'`';
+        let after_word = language == Language::JavaScript
+            && i > 0
+            && is_ident(bytes[i - 1])
+            && byte != b'`'
+            && !ends_with_operand_keyword(&bytes[..i]);
         if language.opens_string(byte) && !after_word {
             self.stack.push(Frame::Str {
                 quote: byte,
@@ -501,13 +582,22 @@ impl Scan<'_> {
         else {
             return;
         };
-        if language == Language::Shell && in_command_position(bytes, i) {
-            if word_at(bytes, i, b"case") {
+        if language == Language::Shell {
+            // `esac` after `|` is a pattern alternative, not the end of the case.
+            let ends_case = || !bytes[..i].trim_ascii_end().ends_with(b"|");
+            if shell_word_at(bytes, i, b"case") && in_command_position(bytes, i, *cases > 0) {
                 *cases += 1;
-            } else if word_at(bytes, i, b"esac") {
+            } else if shell_word_at(bytes, i, b"esac")
+                && in_command_position(bytes, i, *cases > 0)
+                && ends_case()
+            {
                 *cases = cases.saturating_sub(1);
             }
         }
+        let pattern_paren = language == Language::Shell
+            && byte == b'('
+            && *cases > 0
+            && opens_case_pattern(bytes, i);
         if language == Language::Python {
             match byte {
                 b'(' | b'[' => *brackets += 1,
@@ -519,7 +609,7 @@ impl Scan<'_> {
                 _ => {}
             }
         }
-        if *open == Some(byte) {
+        if *open == Some(byte) && !pattern_paren {
             *depth += 1;
         } else if byte == *close && !(byte == b')' && *cases > 0) {
             // A `)` while a `case` is open ends a pattern, not the substitution.
@@ -555,7 +645,7 @@ fn is_comment_start(language: Language, bytes: &[u8], i: usize) -> bool {
     let word_start = i == 0 || bytes[i - 1].is_ascii_whitespace();
     match language {
         Language::Python => true,
-        Language::Shell => word_start || b";&|()".contains(&bytes[i - 1]),
+        Language::Shell => word_start || b";&|(".contains(&bytes[i - 1]),
         Language::Yaml => word_start,
         Language::Rust | Language::JavaScript | Language::Go => false,
     }
@@ -709,6 +799,119 @@ mod tests {
         assert_eq!(view(Language::JavaScript, "`${}eval(x)`"), "`${}       `");
         // An interpolation left open at the end of the line ends with it.
         assert_eq!(view(Language::Shell, r#""$(curl"#), r#""$(curl"#);
+    }
+
+    #[test]
+    fn shell_words_and_command_positions_are_exact() {
+        let at = |line: &str, word: &str| line.find(word).unwrap();
+        for (line, yes) in [
+            ("case x", true),
+            ("a;case x", true),
+            ("(case", true),
+            ("echo case", true),
+            ("$case", false),
+            ("--ignore-case", false),
+            ("case=1", false),
+            ("case-tool", false),
+            ("x case;", true),
+            ("x case)", true),
+        ] {
+            assert_eq!(
+                shell_word_at(line.as_bytes(), at(line, "case"), b"case"),
+                yes,
+                "{line}"
+            );
+        }
+        for (line, in_case, yes) in [
+            ("case", false, true),
+            ("a; case", false, true),
+            ("a | case", false, true),
+            ("a && case", false, true),
+            ("( case", false, true),
+            ("{ case", false, true),
+            ("${case", false, false),
+            ("` case", false, true),
+            ("! case", false, true),
+            ("if case", false, true),
+            ("elif case", false, true),
+            ("while case", false, true),
+            ("until case", false, true),
+            ("time case", false, true),
+            ("then case", false, true),
+            ("do case", false, true),
+            ("else case", false, true),
+            ("a) case", true, true),
+            ("a) case", false, false),
+            ("echo case", false, false),
+            ("undo case", false, false),
+        ] {
+            let i = line.rfind("case").unwrap();
+            assert_eq!(
+                in_command_position(line.as_bytes(), i, in_case),
+                yes,
+                "{line}"
+            );
+        }
+        for (line, yes) in [
+            ("case x in (", true),
+            ("a;; (", true),
+            ("a;& (", true),
+            ("echo (", false),
+            ("begin (", false),
+        ] {
+            assert_eq!(
+                opens_case_pattern(line.as_bytes(), line.len() - 1),
+                yes,
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn js_regex_starts_and_lengths_are_exact() {
+        for (before, yes) in [
+            ("", true),
+            ("x = ", true),
+            ("f(", true),
+            ("a + ", true),
+            ("a - ", true),
+            ("a * ", true),
+            ("a ~ ", true),
+            ("[", true),
+            ("return ", true),
+            ("typeof", true),
+            ("await ", true),
+            ("a", false),
+            ("a ", false),
+            (")", false),
+            ("]", false),
+            ("a++ ", false),
+            ("a-- ", false),
+            ("<", false),
+            ("x.return", false),
+        ] {
+            assert_eq!(starts_regex(before.as_bytes()), yes, "{before:?}");
+        }
+        assert_eq!(regex_len(b"/a/g"), Some(3));
+        assert_eq!(regex_len(br"/\//x"), Some(4));
+        assert_eq!(regex_len(b"/[/]/"), Some(5));
+        assert_eq!(regex_len(b"/[a]/"), Some(5));
+        assert_eq!(regex_len(b"/a"), None);
+        assert_eq!(regex_len(br"/\/"), None);
+        assert_eq!(trailing_word(b"x = return"), b"return");
+        assert_eq!(trailing_word(b"a("), b"");
+        assert!(ends_with_word(b"x in", b"in") && !ends_with_word(b"bin", b"in"));
+        assert!(ends_with_word(b"in", b"in"));
+    }
+
+    /// A line that defeats every probe stays linear: one failed regex probe ends probing, and
+    /// whitespace before a shell word is trimmed only at `case` and `esac`.
+    #[test]
+    fn hostile_lines_scan_in_linear_time() {
+        let regexes = "x = [/".repeat(100_000);
+        assert_eq!(view(Language::JavaScript, &regexes).len(), regexes.len());
+        let spaces = format!("V=\"$({}curl x)\"", " ".repeat(200_000));
+        assert!(view(Language::Shell, &spaces).ends_with("curl x)\""));
     }
 
     #[test]
