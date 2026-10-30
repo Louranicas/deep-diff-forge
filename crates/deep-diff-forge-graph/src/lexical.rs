@@ -412,6 +412,10 @@ mod tests {
             view(Language::Python, r#"buf"{eval(x)}""#),
             r#"buf"         ""#
         );
+        // The opener's bytes are copied, not counted: an empty `$()` closes at once, and the
+        // string resumes (blank) right after it.
+        assert_eq!(view(Language::Shell, r#""$()curl" x"#), r#""$()    " x"#);
+        assert_eq!(view(Language::JavaScript, "`${}eval(x)`"), "`${}       `");
         // An interpolation left open at the end of the line ends with it.
         assert_eq!(view(Language::Shell, r#""$(curl"#), r#""$(curl"#);
     }
