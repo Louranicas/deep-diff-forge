@@ -93,6 +93,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   signals and evidence always come from one assessment (`assess_file`). `RiskSignal` gains
   `Code(EvidenceSignal)`. `sort_ranked` is the one ranking order, and the cluster crate uses it.
 
+### Fixed
+
+- Code evidence is linear in the number of matching lines. Each new item was checked against
+  every item already found, so one file of 160k lines that each add `unsafe` took 4.8 s (and
+  the 64 MiB patch budget allowed far more); it takes 0.15 s. A changed line now yields each
+  signal once by construction, however many rules or tokens match it.
+
 ### Security
 
 - `sanitize_body` (agent annotations, and now findings) drops bidi, invisible and

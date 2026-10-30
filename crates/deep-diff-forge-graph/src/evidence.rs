@@ -470,20 +470,20 @@ pub fn file_evidence(file: &ReviewFile) -> Vec<Evidence> {
     }
     for hunk in &file.patch_twin.hunks {
         let mut address = None;
+        // `hunk_matches` yields each (side, signal, line) once and items from different hunks
+        // differ in `hunk`, so there is nothing to deduplicate: a scan of `out` per item made a
+        // patch of 160k matching lines take 4.8 s.
         for (side, signal, line) in hunk_matches(hunk, kind.language, &rules) {
             let address = address
                 .get_or_insert_with(|| hunk.address(&file.path))
                 .clone();
-            let item = Evidence {
+            out.push(Evidence {
                 signal,
                 hunk: hunk.id,
                 address,
                 side,
                 line,
-            };
-            if !out.contains(&item) {
-                out.push(item);
-            }
+            });
         }
     }
     out
@@ -503,8 +503,10 @@ pub fn hunk_signals(file: &ReviewFile, hunk: &PatchHunk) -> Vec<EvidenceSignal> 
         .collect()
 }
 
-/// `(side, signal, line)` for every rule that matches a changed line of `hunk`. Block comments
-/// and triple strings are followed through the hunk on each side (state starts fresh per hunk).
+/// `(side, signal, line)` for every signal some rule finds on a changed line of `hunk`: once per
+/// signal and line however many rules or tokens match, in [`EvidenceSignal::ALL`] order. Block
+/// comments and triple strings are followed through the hunk on each side (state starts fresh
+/// per hunk).
 fn hunk_matches(
     hunk: &PatchHunk,
     language: Option<Language>,
@@ -534,19 +536,25 @@ fn hunk_matches(
             ),
         };
         let Some(number) = number else { continue };
-        for rule in rules.iter().filter(|r| r.side == side) {
+        let hits = |rule: &Rule| {
             let text = match rule.view {
                 View::Raw => line.text.as_str(),
                 // A rule that reads code needs a language; `Scope::Any` code rules have none.
                 View::Code => view.as_deref().unwrap_or(line.text.as_str()),
             };
-            let hit = match rule.matches {
+            match rule.matches {
                 Match::Tokens(tokens) => tokens.iter().any(|t| token_in(text, t)),
                 Match::AnyCode => !text.trim().is_empty(),
                 Match::Secret => looks_like_secret(text),
-            };
-            if hit {
-                found.push((side, rule.signal, number));
+            }
+        };
+        for signal in EvidenceSignal::ALL {
+            if rules
+                .iter()
+                .filter(|r| r.signal == signal && r.side == side)
+                .any(|r| hits(r))
+            {
+                found.push((side, signal, number));
             }
         }
     }
@@ -753,6 +761,25 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn one_line_matching_several_rules_of_a_signal_is_one_item() {
+        // `Command::new` and `.spawn()` are both process_spawn tokens; `unsafe` twice is one.
+        let file = added(
+            "src/lib.rs",
+            &["unsafe { unsafe { std::process::Command::new(\"x\").spawn() } }"],
+        );
+        assert_eq!(signals(&file), [S::UnsafeAdded, S::ProcessSpawn]);
+        // The same token in two hunks is two items: one per hunk.
+        let two = parse(
+            "--- a/src/l.rs\n+++ b/src/l.rs\n@@ -1,0 +1,1 @@\n+unsafe {}\n@@ -9,0 +10,1 @@\n+unsafe {}\n",
+        )
+        .unwrap()
+        .remove(0);
+        let found = file_evidence(&two);
+        assert_eq!(found.len(), 2);
+        assert_ne!(found[0].hunk, found[1].hunk);
     }
 
     #[test]
