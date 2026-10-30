@@ -6,15 +6,23 @@
 //! test-only de-prioritization). Ranking never mutates patch truth and is
 //! reproducible: the same review always yields the same order.
 //!
-//! Today the signals are computed from patch facts alone; richer signals
-//! (control-flow edits, dependency fan-out, symbol-level risk) arrive once the
-//! semantic and Git-input waves feed this layer.
+//! Signals come from patch facts (path, status, size, modes, hazards) and from code evidence:
+//! what the changed lines do, found lexically and pointed at by hunk address and line
+//! ([`evidence`]). Ranking reads only the patch, so it works for every input.
 
+pub mod evidence;
+pub mod lexical;
 mod rank;
 mod risk;
 
-pub use rank::{RankedFile, rank};
-pub use risk::{LARGE_CHANGE_LINES, MANY_HUNKS, RiskSignal, change_counts, score_file};
+pub use evidence::{
+    EVIDENCE_BASIS, Evidence, EvidenceSignal, MAX_EVIDENCE_PER_FILE, Side, file_evidence,
+    hunk_signals,
+};
+pub use rank::{RankedFile, rank, sort_ranked};
+pub use risk::{
+    Assessment, LARGE_CHANGE_LINES, MANY_HUNKS, RiskSignal, assess_file, change_counts, score_file,
+};
 
 #[cfg(test)]
 mod tests {

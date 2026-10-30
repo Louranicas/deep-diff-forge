@@ -13,6 +13,7 @@ deep-diff-forge-review = { path = "../crates/deep-diff-forge-review", version = 
 deep-diff-forge-agent = { path = "../crates/deep-diff-forge-agent", version = "0.4.0" }
 deep-diff-forge-core = { path = "../crates/deep-diff-forge-core", version = "0.4.0" }
 deep-diff-forge-daemon = { path = "../crates/deep-diff-forge-daemon", version = "0.4.0" }
+deep-diff-forge-graph = { path = "../crates/deep-diff-forge-graph", version = "0.4.0" }
 deep-diff-forge-patch = { path = "../crates/deep-diff-forge-patch", version = "0.4.0", features = ["json"] }
 deep-diff-forge-syntax = { path = "../crates/deep-diff-forge-syntax", version = "0.4.0" }
 libfuzzer-sys = "0.4"
@@ -85,6 +86,13 @@ bench = false
 [[bin]]
 name = "findings_verify"
 path = "fuzz_targets/findings_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evidence_scan"
+path = "fuzz_targets/evidence_scan.rs"
 test = false
 doc = false
 bench = false

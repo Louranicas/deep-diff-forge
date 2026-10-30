@@ -1,6 +1,7 @@
 // DDF review route: DDF-R12, DDF-R13. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-graph--src--risk
+use crate::evidence::{Evidence, EvidenceSignal, file_evidence};
 use deep_diff_forge_core::{FileStatus, PatchLineKind, ReviewFile};
 
 /// A deterministic, explainable reason a file is ranked where it is.
@@ -33,6 +34,8 @@ pub enum RiskSignal {
     SymlinkChange,
     /// A file becomes executable (a new `100755` file, or a mode change that adds an `x` bit).
     ExecutableBit,
+    /// What a changed line does, found in the code itself ([`crate::evidence`]).
+    Code(EvidenceSignal),
 }
 
 impl RiskSignal {
@@ -52,6 +55,7 @@ impl RiskSignal {
             Self::HazardousText => "hazardous_text",
             Self::SymlinkChange => "symlink_change",
             Self::ExecutableBit => "executable_bit",
+            Self::Code(signal) => signal.label(),
         }
     }
 }
@@ -72,6 +76,49 @@ pub const MANY_HUNKS: usize = 5;
 /// a one-line README edit.
 #[must_use]
 pub fn score_file(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
+    let assessment = assess_file(file);
+    (assessment.score, assessment.signals)
+}
+
+/// A file's score, its signals, and the code evidence behind its [`RiskSignal::Code`] signals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Assessment {
+    pub score: u32,
+    pub signals: Vec<RiskSignal>,
+    /// Every evidence item, uncapped, in hunk, line and rule order.
+    pub evidence: Vec<Evidence>,
+}
+
+/// Score a file from its path, status, size, hazards, modes and code evidence.
+///
+/// Code evidence adds each signal's weight once per file. A path cannot hide code: evidence
+/// keeps its weight on a generated or vendored path, and on a test path it counts half
+/// (rounded up), except a removed test, which counts in full.
+#[must_use]
+pub fn assess_file(file: &ReviewFile) -> Assessment {
+    let (path_score, mut signals) = score_path_and_shape(file);
+    let evidence = file_evidence(file);
+    let test = is_test(&file.path);
+    let mut score = path_score;
+    for signal in EvidenceSignal::ALL {
+        if evidence.iter().any(|e| e.signal == signal) {
+            signals.push(RiskSignal::Code(signal));
+            score += if test && signal != EvidenceSignal::TestRemoved {
+                signal.weight().div_ceil(2)
+            } else {
+                signal.weight()
+            };
+        }
+    }
+    Assessment {
+        score,
+        signals,
+        evidence,
+    }
+}
+
+/// The score and signals from everything but code evidence.
+fn score_path_and_shape(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     let path = &file.path;
     let mut signals = Vec::new();
     let mut score: u32 = 1; // base weight for any reviewable change
@@ -245,10 +292,98 @@ fn is_config_or_lockfile(path: &str) -> bool {
     )
 }
 
-fn is_generated_or_vendored(path: &str) -> bool {
+pub(crate) fn is_generated_or_vendored(path: &str) -> bool {
     const DIRS: [&str; 5] = ["vendor", "node_modules", "target", "generated", "dist"];
     const SUFFIXES: [&str; 3] = [".min.js", ".pb.rs", ".pb.go"];
     path.split('/').any(|c| DIRS.contains(&c)) || SUFFIXES.iter().any(|s| path.ends_with(s))
+}
+
+#[cfg(test)]
+mod evidence_score_tests {
+    use super::*;
+    use deep_diff_forge_patch::parse;
+
+    fn file(path: &str, removed: &[&str], added: &[&str]) -> ReviewFile {
+        use std::fmt::Write as _;
+        let mut text = format!(
+            "--- a/{path}\n+++ b/{path}\n@@ -1,{} +1,{} @@\n x\n",
+            removed.len() + 1,
+            added.len() + 1
+        );
+        for line in removed {
+            let _ = writeln!(text, "-{line}");
+        }
+        for line in added {
+            let _ = writeln!(text, "+{line}");
+        }
+        parse(&text).unwrap().remove(0)
+    }
+
+    fn score(path: &str, removed: &[&str], added: &[&str]) -> u32 {
+        assess_file(&file(path, removed, added)).score
+    }
+
+    #[test]
+    fn each_signal_adds_its_weight_once() {
+        let plain = score("src/x.rs", &[], &["let a = 1;"]);
+        assert_eq!(score("src/x.rs", &[], &["unsafe { a() }"]), plain + 4);
+        assert_eq!(
+            score("src/x.rs", &[], &["unsafe { a() }", "unsafe { b() }"]),
+            plain + 4
+        );
+        assert_eq!(
+            score(
+                "src/x.rs",
+                &[],
+                &["unsafe { std::process::Command::new(x) }"]
+            ),
+            plain + 8
+        );
+        assert_eq!(score("src/x.rs", &["#[test]"], &["let a = 1;"]), plain + 3);
+        assert_eq!(score("src/x.rs", &[], &["#[allow(x)]"]), plain + 2);
+    }
+
+    #[test]
+    fn a_test_path_halves_evidence_rounding_up_but_not_a_removed_test() {
+        let plain = score("tests/it.rs", &[], &["let a = 1;"]);
+        // 4 halves to 2; 3 (network) halves to 2, rounding up; a removed test keeps its 3.
+        assert_eq!(score("tests/it.rs", &[], &["unsafe { a() }"]), plain + 2);
+        assert_eq!(
+            score(
+                "tests/it.rs",
+                &[],
+                &["let s = std::net::TcpStream::connect(a);"]
+            ),
+            plain + 2
+        );
+        assert_eq!(
+            score("tests/it.rs", &["#[test]"], &["let a = 1;"]),
+            plain + 3
+        );
+    }
+
+    #[test]
+    fn evidence_signals_follow_the_path_signals_in_table_order() {
+        let found = assess_file(&file(
+            "src/lib.rs",
+            &["#[test]"],
+            &["unsafe { std::process::Command::new(x) }"],
+        ));
+        assert_eq!(
+            found.signals,
+            [
+                RiskSignal::PublicApiSurface,
+                RiskSignal::Code(EvidenceSignal::UnsafeAdded),
+                RiskSignal::Code(EvidenceSignal::ProcessSpawn),
+                RiskSignal::Code(EvidenceSignal::TestRemoved),
+            ]
+        );
+        assert_eq!(found.evidence.len(), 3);
+        assert_eq!(
+            score_file(&file("src/lib.rs", &[], &["unsafe {}"])).0,
+            assess_file(&file("src/lib.rs", &[], &["unsafe {}"])).score
+        );
+    }
 }
 
 #[cfg(test)]

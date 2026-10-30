@@ -221,6 +221,7 @@ pub fn verify<'a>(
 ) -> Verdict {
     let mut verdict = Verdict::default();
     let mut seen: Vec<DuplicateKey> = Vec::new();
+    let index_of = Addresses::new(files);
     let mut index = 0usize;
     for raw in findings {
         if raw.trim().is_empty() {
@@ -235,7 +236,7 @@ pub fn verify<'a>(
             reason,
             excerpt: display_safe_bounded(raw, EXCERPT_BYTES),
         };
-        match check(files, input_sha256, raw, index) {
+        match check(files, &index_of, input_sha256, raw, index) {
             Err(reason) => verdict.refused.push(refuse(reason)),
             Ok(found) => {
                 let key = DuplicateKey::of(&found);
@@ -290,6 +291,7 @@ fn required(object: &Map<String, Value>, key: &str) -> Result<String, Refusal> {
 
 fn check(
     files: &[ReviewFile],
+    addresses: &Addresses<'_>,
     input_sha256: &str,
     raw: &str,
     index: usize,
@@ -353,7 +355,7 @@ fn check(
     {
         return Err(Refusal::TooLong);
     }
-    let (file, anchor, hunk) = resolve(files, path, address, line, side)?;
+    let (file, anchor, hunk) = resolve(files, addresses, path, address, line, side)?;
     let accepted_line = match (line, hunk) {
         (Some(number), Some(hunk)) => {
             Some(line_in(hunk, side, number).ok_or(Refusal::LineOutsideHunk)?)
@@ -378,23 +380,51 @@ fn check(
     })
 }
 
+/// Every hunk's address, computed once per call, the first time a finding names an address.
+/// Before, each address-anchored finding hashed every hunk of the review again: 2,000 findings
+/// against 400 hunks took 3.6 s (measured, `deep-diff-forge bench`), and the cost grew with
+/// findings times hunks.
+struct Addresses<'f> {
+    files: &'f [ReviewFile],
+    by_address: std::cell::OnceCell<std::collections::HashMap<String, (usize, usize)>>,
+}
+
+impl<'f> Addresses<'f> {
+    const fn new(files: &'f [ReviewFile]) -> Self {
+        Self {
+            files,
+            by_address: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The file and hunk with `address`. With duplicate addresses (the same hunk twice), the
+    /// first in review order, as a scan would find.
+    fn find(&self, address: &str) -> Option<(&'f ReviewFile, &'f PatchHunk)> {
+        let map = self.by_address.get_or_init(|| {
+            let mut map = std::collections::HashMap::new();
+            for (f, file) in self.files.iter().enumerate() {
+                for (h, hunk) in file.patch_twin.hunks.iter().enumerate() {
+                    map.entry(hunk.address(&file.path)).or_insert((f, h));
+                }
+            }
+            map
+        });
+        map.get(address)
+            .map(|&(f, h)| (&self.files[f], &self.files[f].patch_twin.hunks[h]))
+    }
+}
+
 /// The file, the anchor kind and the hunk a finding points at.
 fn resolve<'f>(
     files: &'f [ReviewFile],
+    addresses: &Addresses<'f>,
     path: Option<&str>,
     address: Option<&str>,
     line: Option<u32>,
     side: LineSide,
 ) -> Result<(&'f ReviewFile, AnchorKind, Option<&'f PatchHunk>), Refusal> {
     if let Some(address) = address {
-        let found = files.iter().find_map(|file| {
-            file.patch_twin
-                .hunks
-                .iter()
-                .find(|h| h.address(&file.path) == address)
-                .map(|h| (file, h))
-        });
-        return match found {
+        return match addresses.find(address) {
             Some((file, hunk)) if path.is_none_or(|p| p == file.path) => {
                 Ok((file, AnchorKind::Address, Some(hunk)))
             }
@@ -911,6 +941,27 @@ mod tests {
             .map(|a| a["anchor"].as_str().unwrap())
             .collect();
         assert_eq!(anchors, ["address", "line", "file"]);
+    }
+
+    /// Addresses are hashed once per call, whatever the number of findings that name them: the
+    /// first finding fills the table, and every later one is a lookup.
+    #[test]
+    fn addresses_are_computed_once_per_call() {
+        let files = files();
+        let addresses = Addresses::new(&files);
+        assert!(
+            addresses.by_address.get().is_none(),
+            "nothing is hashed until an address is asked for"
+        );
+        let (file, hunk) = addresses.find(&address()).unwrap();
+        assert_eq!(
+            (file.path.as_str(), hunk.id),
+            ("src/lib.rs", files[0].patch_twin.hunks[0].id)
+        );
+        assert_eq!(addresses.by_address.get().unwrap().len(), 2);
+        assert!(addresses.find("0").is_none());
+        let readme = files[1].patch_twin.hunks[0].address("README.md");
+        assert_eq!(addresses.find(&readme).unwrap().0.path, "README.md");
     }
 
     #[test]

@@ -1049,12 +1049,32 @@ fn ranked_json(ranked: &[RankedFile]) -> Value {
         ranked
             .iter()
             .map(|rf| {
-                json!({
+                let mut entry = json!({
                     "path": rf.path,
                     "status": rf.status.label(),
                     "score": rf.score,
                     "signals": rf.signals.iter().map(|s| s.label()).collect::<Vec<_>>(),
-                })
+                });
+                // Present only when found, as `hazards` is: most files carry none.
+                if !rf.evidence.is_empty() {
+                    entry["evidence"] = rf
+                        .evidence
+                        .iter()
+                        .map(|e| {
+                            json!({
+                                "signal": e.signal.label(),
+                                "address": e.address,
+                                "side": e.side.label(),
+                                "line": e.line,
+                                "basis": deep_diff_forge_graph::EVIDENCE_BASIS,
+                            })
+                        })
+                        .collect();
+                }
+                if rf.evidence_truncated {
+                    entry["evidence_truncated"] = json!(true);
+                }
+                entry
             })
             .collect(),
     )
