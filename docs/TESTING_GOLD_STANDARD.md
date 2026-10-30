@@ -34,8 +34,12 @@ era) no longer holds. How the standard is enforced today:
   every pull request.
 - **Locally:** `just ci` ([`scripts/ci_local.sh`](../scripts/ci_local.sh))
   replays the `secrets`, `msrv`, `gate` and `supply-chain` jobs step for step.
-- **Gaps:** macOS tests run weekly and on manual runs, not on pull requests.
-  The TUI's interactive terminal path has no test harness; unit tests cover its
+- **Weekly campaign** (`.github/workflows/campaign.yml`): a 10-minute hostile
+  daemon soak with real review work that fails on RSS growth over 32 MiB or
+  open-fd growth over 4 between early and late samples, and an hour of fuzzing
+  for every target in `fuzz/Cargo.toml` (`scripts/fuzz_target.sh`, the same
+  script as CI's 10 s smoke). A crash keeps its input as an artifact.
+- **Gaps:** The TUI's interactive terminal path has no test harness; unit tests cover its
   state, tree and rendering, and the headless `review --probe` frame is tested
   end to end. `deploy gate` (below) is not implemented.
 
