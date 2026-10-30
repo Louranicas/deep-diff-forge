@@ -673,3 +673,33 @@ Measured on 2026-10-30 on Fedora 44 (Linux 7.2), with the debug build of this ch
 - **A client of another user.** The daemon ran as uid 1000 with its directory loosened to `0711` and its socket to `0666`, so another user could reach it. A client run as uid 1 inside `podman unshare` (subordinate uid 524288 outside) connected and was reset without an answer. The daemon logged `refused a connection: the peer runs as uid 524288, not uid 1000`. `daemon health` as uid 1000 was still answered.
 - **A daemon of another user.** The daemon ran as uid 1 inside `podman unshare`, with the same loosened modes. `deep-diff-forge daemon health` as uid 1000 exited 6 with `the peer runs as uid 524288, not uid 1000`, and the Python `SocketClient` raised `TransportError` with the same uids before sending anything. That daemon also refused both clients from its side.
 - **Not measured here:** macOS (`getpeereid`), which the dispatched macOS CI job covers through the unit tests.
+
+## Daemon requests in parallel (2026-10-30)
+
+Measured on 2026-10-30, on a 16-CPU Fedora host, release builds. "Before" is `main` `a863ebd`
+(one `Mutex<Engine>`); "after" is branch `claude/daemon-parallel-20261030`.
+
+- **Throughput and latency.** Six concurrent clients each sent four `diff.rank` requests for
+  `git diff v0.2.0 v0.3.0` (2,752,920 bytes) to one daemon; `daemon.health` was sent while they
+  ran. Two runs each, same results within 1%:
+
+  | | Before | After |
+  | --- | ---: | ---: |
+  | 24 requests, wall time | 1.03 s | 0.42 s |
+  | Requests per second | 23.4 | 56.8 |
+  | One request alone | 0.053 s | 0.053 s |
+  | `daemon.health` while they ran | 205 ms | 0.2 ms |
+
+  The gain is 2.4×, not 6×: each request also moves 2.75 MB of JSON each way through a Python
+  client, which this measures too.
+- **10-minute soak with leak checks** (`daemon_soak.py --seconds 600 --require-growth-check`,
+  four concurrent clients doing session and rank work every iteration): before, 594 iterations,
+  RSS growth 0 KiB, fd growth 0, peak RSS 7,744 KiB; after, 594 iterations, RSS growth 68 KiB,
+  fd growth 0, peak RSS 7,876 KiB. Both PASS (limits: 32 MiB, 4 fds).
+- **Tests.** `admission.rs` (6): light requests run together, a request exactly filling the
+  budget starts, one over the budget runs alone, one that does not fit waits until room is
+  freed, a waiting heavy request is not overtaken by a later light one, and a panicking request
+  returns its weight. `serve.rs`: a running request (`test.hold`) does not block
+  `daemon.health` (before, it would have waited on the mutex); a panic holding the session table
+  empties it and no id is reused; a panic holding nothing keeps every session.
+

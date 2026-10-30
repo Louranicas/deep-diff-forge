@@ -525,10 +525,8 @@ fn daemon_value_in(
         method: method.into(),
         params: Value::Object(arguments),
     };
-    let mut engine = engine;
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        dispatch(&request, &mut engine)
-    }));
+    let outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(&request, &engine)));
     match outcome {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(RpcError { code, message })) => Err(tool_error(&match code {

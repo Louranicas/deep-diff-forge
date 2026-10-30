@@ -1777,7 +1777,7 @@ fn run_rpc(args: &[String]) {
     let served = if roots.is_empty() {
         rpc::serve(&mut input, &mut output)
     } else {
-        rpc::serve_engine(&mut input, &mut output, engine_allowing_or_exit(&roots))
+        rpc::serve_engine(&mut input, &mut output, &engine_allowing_or_exit(&roots))
     };
     match served {
         Ok(()) => {}

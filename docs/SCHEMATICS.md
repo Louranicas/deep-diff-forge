@@ -134,9 +134,10 @@ flowchart TB
 | Local daemon | `deep-diff-forge daemon` exposes JSON-RPC over a Unix socket. | Repeated review sessions from several local clients. | Built, opt-in. Sessions only, no shared cache. |
 | Stdio JSON-RPC / MCP | `deep-diff-forge rpc`, `deep-diff-forge mcp`. | Agents and scripts without a daemon. | Built. |
 
-The daemon is not required for correctness. Its listener accepts at most 8 connections, but one
-engine serves them, so requests run one at a time (`crates/deep-diff-forge-daemon/src/serve.rs`,
-`MAX_CONNECTIONS`).
+The daemon is not required for correctness. Its listener accepts at most 8 connections, and their
+requests run in parallel under a 128 MiB cap on the request bytes in flight
+(`crates/deep-diff-forge-daemon/src/serve.rs` `MAX_CONNECTIONS`,
+`crates/deep-diff-forge-daemon/src/admission.rs` `MAX_IN_FLIGHT_BYTES`).
 
 ## Core Data Pipeline
 

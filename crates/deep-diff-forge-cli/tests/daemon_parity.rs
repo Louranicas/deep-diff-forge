@@ -58,7 +58,7 @@ fn daemon(
         "params": {"patch": patch, "require_files": files, "require_hunks": hunks},
     })
     .to_string();
-    dispatch(&parse_request(&line)?, &mut Engine::new())
+    dispatch(&parse_request(&line)?, &Engine::new())
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn outline_and_hunks_match_the_daemon_page_for_page() {
         let mut params = params;
         params["patch"] = serde_json::json!(patch);
         let line = serde_json::json!({"method": method, "params": params}).to_string();
-        dispatch(&parse_request(&line).unwrap(), &mut Engine::new()).unwrap()
+        dispatch(&parse_request(&line).unwrap(), &Engine::new()).unwrap()
     };
     let cli_view = |flags: &[&str]| {
         let (code, stdout, stderr) = cli(patch, &[], flags);

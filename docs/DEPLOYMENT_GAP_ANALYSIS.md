@@ -12,7 +12,7 @@
 - Published GitHub releases: `v0.1.0`, `v0.2.0` and `v0.3.0` (tagged 2026-10-29). The workspace is `0.3.0`. crates.io stays on hold (`DDF_CRATES_IO`).
 - CI runs on `ubuntu-26.04`, with macOS tests on `macos-latest` on every event, each pull request included (required check `macOS tests`). A weekly campaign (`campaign.yml`) runs a 10-minute daemon soak with leak checks and an hour of fuzzing per target. The Linux release binary is built on `ubuntu-24.04` (`.github/workflows/release.yml`).
 
-**Still open, as residual risks rather than deployment gaps:** the daemon serves its connections with one engine, so requests run one at a time. (Closed since 0.3.0: Git subprocesses have a time limit, 120 s for the CLI and 30 s for `review.change`. Closed after 0.3.0, unreleased: the socket checks peer credentials on both ends, and a start lock stops two `daemon start`s racing.)
+**Residual risks:** none of the 0.3.0 daemon risks remain open. (Closed in 0.3.0: Git subprocesses have a time limit, 120 s for the CLI and 30 s for `review.change`. Closed after 0.3.0, unreleased: the socket checks peer credentials on both ends, a start lock stops two `daemon start`s racing, and requests run in parallel under a 128 MiB in-flight cap instead of one at a time.)
 
 Current docs: [production readiness](PRODUCTION_READINESS.md) (scored assessment, 2026-10-30), [release and publication](RELEASE_AND_PUBLICATION.md), [operations and daemon](OPERATIONS_AND_DAEMON.md), [feature deployability matrix](FEATURE_DEPLOYABILITY_MATRIX.md), [roadmap](ROADMAP.md).
 

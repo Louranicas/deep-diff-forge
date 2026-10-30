@@ -28,6 +28,7 @@ compile_error!(
      deep-diff-forge targets Linux and macOS"
 );
 
+mod admission;
 mod handler;
 mod inspect;
 mod protocol;
@@ -35,7 +36,8 @@ mod security;
 mod serve;
 pub mod views;
 
-pub use handler::{Engine, METHODS, MethodSpec, dispatch};
+pub use admission::{ADMISSION_WAIT, Admission, Busy, MAX_IN_FLIGHT_BYTES, Permit};
+pub use handler::{Engine, METHODS, MethodSpec, Work, dispatch, request_weight};
 pub use inspect::{DirState, Inspection, LockState, SocketState, inspect};
 pub use protocol::{
     GIT_FAILED, INPUT_CONTRACT_REFUSED, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST,
@@ -71,16 +73,16 @@ mod tests {
 
     #[test]
     fn facade_process_line_works() {
-        let engine = std::sync::Mutex::new(Engine::new());
+        let engine = Engine::new();
         let resp = process_line(r#"{"id":1,"method":"daemon.health"}"#, &engine);
         assert!(resp.contains("\"status\":\"ok\""));
     }
 
     #[test]
     fn facade_dispatch_works() {
-        let mut engine = Engine::new();
+        let engine = Engine::new();
         let req = parse_request(r#"{"method":"engine.initialize"}"#).unwrap();
-        let result = dispatch(&req, &mut engine).unwrap();
+        let result = dispatch(&req, &engine).unwrap();
         assert_eq!(result["server"], "deep-diff-forge");
     }
 }

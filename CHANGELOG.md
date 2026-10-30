@@ -29,6 +29,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **The daemon runs requests in parallel** (closes a 0.3.0 residual risk). Before, every
+  connection shared one `Mutex<Engine>`, so one slow request delayed every other client. Only
+  the session table is locked now, and only for bookkeeping; parsing, ranking and Git run
+  outside it. Admission caps the request bytes in flight at 128 MiB, first come, first served
+  (`review.change` weighs the 64 MiB patch budget; a request heavier than the cap runs alone).
+  Measured: six clients ranking a 2.75 MB patch, 23.4 to 56.8 requests per second;
+  `daemon.health` under that load, 205 ms to 0.2 ms. A panic while the session table is held
+  empties it; any other panic leaves every session in place. A request whose turn does not
+  come within 30 s is answered `RESOURCE_EXHAUSTED` ("the daemon is busy") and gives up its
+  place in the queue.
+- CLI daemon tests kill their daemon when an assertion fails first (`Child` is not killed on
+  drop); a mutation run had left one serving for 31 hours.
+
 - **Two `daemon start`s can no longer race** (closes a 0.3.0 residual risk). Before, between the
   stale-socket probe and the bind, a second start could remove the first's fresh socket and bind
   its own, leaving the first running but unreachable. A start now takes a non-blocking exclusive
@@ -37,6 +50,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   owned by the effective user.
 
 ### Changed
+
+- **Breaking (daemon crate):** `dispatch`, `process_line` and `handle_connection` take
+  `&Engine` instead of `&mut Engine` or `&Mutex<Engine>`; `Engine` is `Send + Sync` (checked at
+  compile time). `MethodSpec` gains `work: Work`. New: `Admission`, `Permit`,
+  `MAX_IN_FLIGHT_BYTES`, `ADMISSION_WAIT`, `Busy`, `Work`, `request_weight`,
+  `Engine::admission`.
 
 - **macOS tests run on every pull request** and `macOS tests` is a required check. Before, the
   job ran only weekly, on manual runs and on release, and two macOS breaks in PR #44 were caught

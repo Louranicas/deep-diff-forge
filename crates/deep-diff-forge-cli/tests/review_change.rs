@@ -58,7 +58,7 @@ fn repo(name: &str) -> Dir {
     dir
 }
 
-fn call(engine: &mut Engine, params: &Value) -> Result<Value, deep_diff_forge_daemon::RpcError> {
+fn call(engine: &Engine, params: &Value) -> Result<Value, deep_diff_forge_daemon::RpcError> {
     let line = json!({"method": "review.change", "params": params}).to_string();
     dispatch(&parse_request(&line)?, engine)
 }
@@ -71,11 +71,7 @@ fn allowing(roots: &[&Path]) -> Engine {
 #[test]
 fn nothing_is_read_unless_the_operator_allows_it() {
     let r = repo("off");
-    let err = call(
-        &mut Engine::new(),
-        &json!({"repo": r.0, "selection": "staged"}),
-    )
-    .unwrap_err();
+    let err = call(&Engine::new(), &json!({"repo": r.0, "selection": "staged"})).unwrap_err();
     assert_eq!(err.code, INVALID_PARAMS);
     assert!(err.message.contains("--allow-repo"), "{}", err.message);
 }
@@ -85,16 +81,16 @@ fn nothing_is_read_unless_the_operator_allows_it() {
 #[test]
 fn only_repositories_inside_an_allowed_root_are_read() {
     let (a, b) = (repo("a"), repo("b"));
-    let mut engine = allowing(&[&a.0]);
-    let outside = call(&mut engine, &json!({"repo": b.0, "selection": "staged"})).unwrap_err();
+    let engine = allowing(&[&a.0]);
+    let outside = call(&engine, &json!({"repo": b.0, "selection": "staged"})).unwrap_err();
     assert!(outside.message.contains("outside"), "{}", outside.message);
     let link = a.0.join("sub/escape");
     std::os::unix::fs::symlink(&b.0, &link).unwrap();
-    let escaped = call(&mut engine, &json!({"repo": link, "selection": "staged"})).unwrap_err();
+    let escaped = call(&engine, &json!({"repo": link, "selection": "staged"})).unwrap_err();
     assert!(escaped.message.contains("outside"), "{}", escaped.message);
-    let mut narrow = allowing(&[&a.0.join("sub")]);
+    let narrow = allowing(&[&a.0.join("sub")]);
     let above = call(
-        &mut narrow,
+        &narrow,
         &json!({"repo": a.0.join("sub"), "selection": "staged"}),
     )
     .unwrap_err();
@@ -106,8 +102,8 @@ fn only_repositories_inside_an_allowed_root_are_read() {
 #[test]
 fn a_staged_change_matches_the_cli() {
     let r = repo("staged");
-    let mut engine = allowing(&[&r.0]);
-    let mut answer = call(&mut engine, &json!({"repo": r.0, "selection": "staged"})).unwrap();
+    let engine = allowing(&[&r.0]);
+    let mut answer = call(&engine, &json!({"repo": r.0, "selection": "staged"})).unwrap();
     let acquisition = answer
         .as_object_mut()
         .unwrap()
@@ -129,7 +125,7 @@ fn a_staged_change_matches_the_cli() {
     assert_eq!(answer, cli);
     assert_eq!(answer["files"][0]["path"], "src/lib.rs");
     let hunks = call(
-        &mut engine,
+        &engine,
         &json!({"repo": r.0, "selection": "staged", "view": "hunks", "paths": ["src/lib.rs"]}),
     )
     .unwrap();
@@ -140,22 +136,18 @@ fn a_staged_change_matches_the_cli() {
 #[test]
 fn bad_requests_and_contracts_are_refused() {
     let r = repo("bad");
-    let mut engine = allowing(&[&r.0]);
-    let selection = call(
-        &mut engine,
-        &json!({"repo": r.0, "selection": "everything"}),
-    )
-    .unwrap_err();
+    let engine = allowing(&[&r.0]);
+    let selection = call(&engine, &json!({"repo": r.0, "selection": "everything"})).unwrap_err();
     assert_eq!(selection.code, INVALID_PARAMS);
     let view = call(
-        &mut engine,
+        &engine,
         &json!({"repo": r.0, "selection": "staged", "view": "pdf"}),
     )
     .unwrap_err();
     assert_eq!(view.code, INVALID_PARAMS);
     git(&r.0, &["commit", "-qm", "staged"]);
     let empty = call(
-        &mut engine,
+        &engine,
         &json!({"repo": r.0, "selection": "staged", "require_files": true}),
     )
     .unwrap_err();
@@ -167,7 +159,7 @@ fn bad_requests_and_contracts_are_refused() {
         )
     );
     let range = call(
-        &mut engine,
+        &engine,
         &json!({"repo": r.0, "selection": "range", "range": "nope..HEAD"}),
     )
     .unwrap_err();
@@ -214,8 +206,8 @@ fn git_directories_outside_the_root_are_refused() {
         format!("gitdir: {}\n", outside.0.join(".git").display()),
     )
     .unwrap();
-    let mut engine = allowing(&[&inside.0]);
-    let escaped = call(&mut engine, &json!({"repo": link, "selection": "staged"})).unwrap_err();
+    let engine = allowing(&[&inside.0]);
+    let escaped = call(&engine, &json!({"repo": link, "selection": "staged"})).unwrap_err();
     assert!(
         escaped.message.contains("Git directory"),
         "{}",
@@ -227,11 +219,7 @@ fn git_directories_outside_the_root_are_refused() {
         format!("{}\n", outside.0.join(".git/objects").display()),
     )
     .unwrap();
-    let borrowed = call(
-        &mut engine,
-        &json!({"repo": inside.0, "selection": "staged"}),
-    )
-    .unwrap_err();
+    let borrowed = call(&engine, &json!({"repo": inside.0, "selection": "staged"})).unwrap_err();
     assert!(
         borrowed.message.contains("alternates"),
         "{}",
@@ -245,13 +233,13 @@ fn git_directories_outside_the_root_are_refused() {
 fn unknown_params_are_refused() {
     let line = json!({"method": "diff.compute", "params": {"patch": "", "require_file": true}})
         .to_string();
-    let err = dispatch(&parse_request(&line).unwrap(), &mut Engine::new()).unwrap_err();
+    let err = dispatch(&parse_request(&line).unwrap(), &Engine::new()).unwrap_err();
     assert_eq!(err.code, INVALID_PARAMS);
     assert!(err.message.contains("require_file"), "{}", err.message);
     let r = repo("unknown");
-    let mut engine = allowing(&[&r.0]);
+    let engine = allowing(&[&r.0]);
     let typo = call(
-        &mut engine,
+        &engine,
         &json!({"repo": r.0, "selection": "staged", "max_byte": 1}),
     )
     .unwrap_err();
@@ -318,9 +306,9 @@ fn an_omitted_nested_repository_is_named_in_the_acquisition() {
     git(&r.0.join("vendor/inner"), &["init", "-q"]);
     std::fs::write(r.0.join("vendor/inner/y.txt"), "y\n").unwrap();
     std::fs::write(r.0.join("new.txt"), "n\n").unwrap();
-    let mut engine = allowing(&[&r.0]);
+    let engine = allowing(&[&r.0]);
     let answer = call(
-        &mut engine,
+        &engine,
         &json!({"repo": r.0, "selection": "working_tree", "include_untracked": true}),
     )
     .unwrap();
@@ -328,6 +316,6 @@ fn an_omitted_nested_repository_is_named_in_the_acquisition() {
         answer["acquisition"]["omitted_untracked"],
         json!(["vendor/inner/"])
     );
-    let staged = call(&mut engine, &json!({"repo": r.0, "selection": "staged"})).unwrap();
+    let staged = call(&engine, &json!({"repo": r.0, "selection": "staged"})).unwrap();
     assert_eq!(staged["acquisition"]["omitted_untracked"], json!([]));
 }
