@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 deep-diff-forge-review.workspace = true
+deep-diff-forge-agent.workspace = true
 deep-diff-forge-core.workspace = true
 deep-diff-forge-patch.workspace = true
 deep-diff-forge-projection.workspace = true

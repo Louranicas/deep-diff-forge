@@ -527,6 +527,13 @@ pub const METHODS: &[MethodSpec] = &[
         0,
         Work::Request,
     ),
+    method(
+        "findings.verify",
+        "patch: string, findings: [object], require_files?: boolean, require_hunks?: boolean",
+        "deep-diff-forge.findings.v0: each finding accepted (anchor, address and line checked against the sealed review, body sanitised) or refused with a reason; claim_verified is always false",
+        2,
+        Work::Request,
+    ),
 ];
 
 /// Dispatch a parsed request against the engine, returning the result value or
@@ -632,6 +639,7 @@ pub fn dispatch(request: &Request, engine: &Engine) -> Result<Value, RpcError> {
             let closed = engine.sessions().close_session(&id);
             Ok(json!({"closed": closed}))
         }
+        "findings.verify" => findings_verify(request),
         other => Err(RpcError::method_not_found(other)),
     }
 }
@@ -686,6 +694,47 @@ fn review_document(review: &deep_diff_forge_patch::SealedReview) -> Result<Value
 }
 
 /// An optional boolean param: absent is `false`; any other type is invalid.
+/// `findings.verify`: check agent findings (`findings`, one object per finding) against the
+/// sealed patch. The findings are hashed as the JSONL they make: one compact object per line,
+/// keys sorted, UTF-8 unescaped, each line ending in a newline. The CLI hashes a file's exact
+/// bytes, so a file in that form gives the same `findings_sha256`.
+fn findings_verify(request: &Request) -> Result<Value, RpcError> {
+    use deep_diff_forge_agent::findings::{MAX_FINDINGS_BYTES, document, verify};
+    let review = sealed(request)?;
+    let Some(Value::Array(items)) = request.params.get("findings") else {
+        return Err(RpcError::invalid_params(
+            "findings must be an array of finding objects",
+        ));
+    };
+    let lines: Vec<String> = items.iter().map(Value::to_string).collect();
+    let bytes = lines.iter().map(|l| l.len() + 1).sum::<usize>();
+    if bytes > MAX_FINDINGS_BYTES {
+        return Err(RpcError::new(
+            RESOURCE_EXHAUSTED,
+            format!(
+                "findings are {bytes} bytes as JSONL, over the {MAX_FINDINGS_BYTES}-byte limit"
+            ),
+        ));
+    }
+    let mut jsonl = String::with_capacity(bytes);
+    for line in &lines {
+        jsonl.push_str(line);
+        jsonl.push('\n');
+    }
+    let seal = review.seal();
+    let verdict = verify(
+        review.files(),
+        &seal.input_sha256,
+        lines.iter().map(String::as_str),
+    );
+    Ok(document(
+        &verdict,
+        &seal.input_sha256,
+        &deep_diff_forge_core::sha256_hex(jsonl.as_bytes()),
+        &seal.tool_version,
+    ))
+}
+
 fn bool_param(params: &Value, key: &str) -> Result<bool, RpcError> {
     match params.get(key) {
         None => Ok(false),
@@ -1594,6 +1643,50 @@ mod tests {
         assert!(readme.contains(&format!("\"protocol\":{PROTOCOL_VERSION},")));
     }
 
+    /// `findings.verify` takes an array, hashes it as compact sorted-key JSONL, and refuses one
+    /// whose JSONL is over the limit with `RESOURCE_EXHAUSTED`.
+    #[test]
+    fn findings_verify_checks_its_input_and_hashes_the_jsonl() {
+        use deep_diff_forge_agent::findings::MAX_FINDINGS_BYTES;
+        let e = Engine::new();
+        let patch = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+b\n";
+        let finding =
+            json!({"agent": "a", "severity": "low", "title": "t", "body": "b", "path": "x"});
+        let request = |findings: Value| {
+            let line = json!({"method": "findings.verify", "params": {"patch": patch, "findings": findings}});
+            call(&line.to_string(), &e)
+        };
+        let v = request(json!([finding])).unwrap();
+        assert_eq!(
+            v["counts"],
+            json!({"accepted": 1, "refused": 0, "over_limit": 0})
+        );
+        let jsonl = format!("{finding}\n");
+        assert_eq!(
+            v["findings_sha256"],
+            deep_diff_forge_core::sha256_hex(jsonl.as_bytes())
+        );
+        assert_eq!(
+            v["input_sha256"],
+            deep_diff_forge_core::sha256_hex(patch.as_bytes())
+        );
+        assert_eq!(
+            request(json!("x")).unwrap_err().code,
+            crate::protocol::INVALID_PARAMS
+        );
+        // One object whose line, with its newline, is exactly the limit is read; one byte more is
+        // refused.
+        let at_limit = |extra: usize| {
+            let mut f = finding.clone();
+            f["body"] = json!("");
+            let base = f.to_string().len() + 1;
+            f["body"] = json!("b".repeat(MAX_FINDINGS_BYTES - base + extra));
+            request(json!([f]))
+        };
+        assert!(at_limit(0).is_ok());
+        assert_eq!(at_limit(1).unwrap_err().code, RESOURCE_EXHAUSTED);
+    }
+
     #[test]
     fn initialize_refuses_a_protocol_it_does_not_speak() {
         let e = Engine::new();
@@ -1623,7 +1716,31 @@ mod tests {
                 && !names.contains(&"engine.methods"),
             "{names:?}"
         );
-        for other in ["2", "\"1\"", "1.5", "null", "-1"] {
+        // Protocol 1 does not list what protocol 2 added; protocol 2 does.
+        let v1 = call(
+            r#"{"method":"engine.initialize","params":{"protocol":1}}"#,
+            &e,
+        )
+        .unwrap();
+        assert!(
+            !v1["methods"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("findings.verify"))
+        );
+        let v2 = call(
+            r#"{"method":"engine.initialize","params":{"protocol":2}}"#,
+            &e,
+        )
+        .unwrap();
+        assert_eq!(v2["protocol"], 2);
+        assert!(
+            v2["methods"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("findings.verify"))
+        );
+        for other in ["3", "\"1\"", "1.5", "null", "-1"] {
             let line =
                 format!(r#"{{"method":"engine.initialize","params":{{"protocol":{other}}}}}"#);
             assert_eq!(

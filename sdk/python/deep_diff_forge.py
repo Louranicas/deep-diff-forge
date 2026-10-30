@@ -82,6 +82,12 @@ class _Client:
         """The sealed ``deep-diff-forge.rank.v0`` document for ``patch``: its files by review risk."""
         return self.call("diff.rank", patch=patch, require_files=require_files, require_hunks=require_hunks)
 
+    def verify_findings(self, patch, findings, require_files=False, require_hunks=False):
+        """The sealed ``deep-diff-forge.findings.v0`` verdict on ``findings`` (finding objects) for
+        ``patch``: each accepted with its anchor normalised, or refused with a reason. Protocol 2."""
+        return self.call("findings.verify", patch=patch, findings=list(findings), require_files=require_files,
+                         require_hunks=require_hunks)
+
     def methods(self):
         """Every daemon method with its params, result and protocol version."""
         return self.call("engine.methods")["methods"]

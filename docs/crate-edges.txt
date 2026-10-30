@@ -10,6 +10,7 @@ dev cluster -> patch
 dev graph -> patch
 dev projection -> patch
 normal agent -> core
+normal cli -> agent
 normal cli -> cluster
 normal cli -> core
 normal cli -> daemon
@@ -23,6 +24,7 @@ normal cli -> syntax
 normal cli -> tui
 normal cluster -> core
 normal cluster -> graph
+normal daemon -> agent
 normal daemon -> core
 normal daemon -> graph
 normal daemon -> patch

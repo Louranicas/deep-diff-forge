@@ -12,7 +12,8 @@ pub use deploy::{DeploymentStatus, GateResult, GateState, MaturityLevel};
 pub use release::{ReleasePlan, ReleaseTarget, TargetState};
 pub use seal::{InputSeal, sha256, sha256_hex};
 pub use util::{
-    display_safe, display_safe_bounded, json_escape, json_line_safe, path_hazards, text_hazards,
+    display_safe, display_safe_bounded, is_unsafe_in_untrusted_text, json_escape, json_line_safe,
+    path_hazards, text_hazards,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

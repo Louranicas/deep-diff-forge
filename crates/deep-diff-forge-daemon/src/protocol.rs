@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 /// Engine protocol version advertised by `engine.initialize`/`daemon.health`. Versions are
 /// additive: version 1 adds `engine.methods`, `diff.compute` and negotiation, and every version-0
 /// method is unchanged, so a client that names any version up to this one is served.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// JSON-RPC standard error code: invalid JSON was received.
 pub const PARSE_ERROR: i64 = -32700;
@@ -300,8 +300,8 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_one() {
-        assert_eq!(PROTOCOL_VERSION, 1);
+    fn protocol_version_is_two() {
+        assert_eq!(PROTOCOL_VERSION, 2);
     }
 
     #[test]

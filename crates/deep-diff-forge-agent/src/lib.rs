@@ -11,6 +11,7 @@
 
 mod anchor;
 pub mod evidence;
+pub mod findings;
 mod store;
 
 pub use anchor::{anchor_path, validate_anchor};
@@ -108,13 +109,15 @@ pub fn source_of(annotation: &AgentAnnotation) -> AnnotationSource {
     }
 }
 
-/// Sanitize an untrusted annotation body: drop control characters (keeping
-/// newlines and tabs), trim surrounding whitespace, and cap the length.
+/// Sanitize an untrusted annotation body: drop control characters (keeping newlines and
+/// tabs) and bidi, invisible and line-separator characters, trim surrounding whitespace, and
+/// cap the length. Before 2026-10-30 bidi and invisible characters (Unicode category Cf) were
+/// kept, so an agent's note could reorder or hide text for the next reader.
 #[must_use]
 pub fn sanitize_body(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
-        .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
+        .filter(|c| !deep_diff_forge_core::is_unsafe_in_untrusted_text(*c))
         .take(MAX_BODY_LEN)
         .collect();
     cleaned.trim().to_string()
@@ -217,6 +220,13 @@ mod tests {
     #[test]
     fn sanitize_keeps_newlines_and_tabs() {
         assert_eq!(sanitize_body("a\nb\tc"), "a\nb\tc");
+    }
+
+    #[test]
+    fn sanitize_drops_bidi_invisible_and_separator_characters() {
+        assert_eq!(sanitize_body("ok\u{202E}evil\u{2066}x"), "okevilx");
+        assert_eq!(sanitize_body("a\u{200B}b\u{FEFF}c\u{E0041}d"), "abcd");
+        assert_eq!(sanitize_body("a\u{2028}b\u{2029}c\rd"), "abcd");
     }
 
     #[test]

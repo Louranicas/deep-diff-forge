@@ -171,12 +171,14 @@ version = "0.4.0"
 dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-patch",
+ "serde_json",
 ]
 
 [[package]]
 name = "deep-diff-forge-cli"
 version = "0.4.0"
 dependencies = [
+ "deep-diff-forge-agent",
  "deep-diff-forge-cluster",
  "deep-diff-forge-core",
  "deep-diff-forge-daemon",
@@ -209,6 +211,7 @@ version = "0.4.0"
 name = "deep-diff-forge-daemon"
 version = "0.4.0"
 dependencies = [
+ "deep-diff-forge-agent",
  "deep-diff-forge-core",
  "deep-diff-forge-graph",
  "deep-diff-forge-patch",

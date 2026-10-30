@@ -99,6 +99,10 @@ fn deploy_unknown_subcommand_exits_two() {
     assert!(stderr.contains("usage"));
 }
 
+/// How many 10 ms steps a test waits for a daemon to answer: 10 s, so a loaded machine is not read
+/// as a failure.
+const WAIT_STEPS: usize = 1000;
+
 /// A private directory under the system temp dir, removed when the test ends.
 struct Dir(std::path::PathBuf);
 
@@ -153,7 +157,7 @@ fn deploy_doctor_sees_a_running_daemon() {
         .spawn()
         .expect("spawn daemon");
     let mut ready = false;
-    for _ in 0..200 {
+    for _ in 0..WAIT_STEPS {
         if run(&["daemon", "health", "--socket", &socket]).0 == 0 {
             ready = true;
             break;

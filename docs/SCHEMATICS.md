@@ -37,10 +37,10 @@ Generated from `docs/crate-edges.txt` (checked against `cargo metadata` by
 
 <!-- crate-edges:begin -->
 - `agent` → core, patch [dev]
-- `cli` → cluster, core, daemon, graph, learning, patch, pipeline, projection, review, syntax, tui
+- `cli` → agent, cluster, core, daemon, graph, learning, patch, pipeline, projection, review, syntax, tui
 - `cluster` → core, graph, patch [dev]
 - `core` → (no workspace dependencies)
-- `daemon` → core, graph, patch
+- `daemon` → agent, core, graph, patch
 - `graph` → core, patch [dev]
 - `learning` → (no workspace dependencies)
 - `patch` → core

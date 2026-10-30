@@ -84,6 +84,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "findings_verify"
+path = "fuzz_targets/findings_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "evidence_scan"
 path = "fuzz_targets/evidence_scan.rs"
 test = false

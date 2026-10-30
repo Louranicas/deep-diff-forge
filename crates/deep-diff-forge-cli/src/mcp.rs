@@ -279,6 +279,7 @@ fn sealed_output(schemas: &[&str]) -> Value {
 fn tools() -> Value {
     let mut tools = document_tools();
     tools.extend(view_tools());
+    tools.push(findings_tool());
     tools.extend(exit_tools());
     Value::Array(tools)
 }
@@ -325,6 +326,30 @@ fn document_tools() -> Vec<Value> {
             "annotations": read_only,
         }),
     ]
+}
+
+/// `verify_findings`: the daemon's `findings.verify`. Read-only: it checks findings and returns
+/// the verdict; nothing is stored.
+fn findings_tool() -> Value {
+    let read_only: Value = serde_json::from_str(READ_ONLY).unwrap_or_default();
+    json!({
+        "name": "verify_findings",
+        "title": "Verify agent findings against a patch",
+        "description": format!("Check findings (each a deep-diff-forge.finding.v0 object: agent, severity, title, body, and an anchor: address, or path with an optional line and side) against the patch. Each is accepted with its anchor, hunk address and line normalised from the review, or refused with one reason: malformed, stale_review, unknown_path, unknown_address, line_outside_hunk, duplicate or too_long. Only where a finding points is checked; claim_verified is always false. Returns the sealed deep-diff-forge.findings.v0 document (the daemon's findings.verify).{UNTRUSTED}"),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "patch": {"type": "string", "description": "The patch the findings are about (the bytes `deep-diff-forge --stdin-patch` reads)."},
+                "findings": {"type": "array", "items": {"type": "object"}, "maxItems": deep_diff_forge_agent::findings::MAX_FINDINGS, "description": "The findings, one deep-diff-forge.finding.v0 object each."},
+                "require_files": {"type": "boolean", "description": "Refuse a patch with 0 files."},
+                "require_hunks": {"type": "boolean", "description": "Refuse a patch with 0 hunks or 0 changed lines."},
+            },
+            "required": ["patch", "findings"],
+            "additionalProperties": false,
+        },
+        "outputSchema": sealed_output(&[deep_diff_forge_agent::findings::FINDINGS_SCHEMA]),
+        "annotations": read_only,
+    })
 }
 
 /// The budgeted views: `review_outline`, `review_hunks` and `review_change`.
@@ -492,6 +517,9 @@ fn call_tool(mut params: Value, allowed: &[std::path::PathBuf]) -> Result<Value,
         "review_outline" => view_tool("review.outline", &arguments, &[]),
         "review_hunks" => view_tool("review.hunks", &arguments, &[]),
         "review_change" => view_tool("review.change", &arguments, allowed),
+        "verify_findings" => {
+            daemon_value("findings.verify", arguments).map_or_else(|error| error, structured)
+        }
         "explain_exit_code" => explain(&arguments),
         _ => structured(json!({"codes": EXIT_CODES.iter().map(entry_json).collect::<Vec<_>>()})),
     })
@@ -1167,7 +1195,7 @@ mod tests {
         let v = server
             .handle_line(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#)
             .unwrap();
-        assert_eq!(v["result"]["tools"].as_array().unwrap().len(), 7);
+        assert_eq!(v["result"]["tools"].as_array().unwrap().len(), 8);
         assert!(
             v["result"].get("resultType").is_none(),
             "legacy results keep the legacy shape"
@@ -1413,6 +1441,7 @@ mod tests {
                 "review_outline",
                 "review_hunks",
                 "review_change",
+                "verify_findings",
                 "explain_exit_code",
                 "exit_code_registry"
             ]
@@ -1423,6 +1452,38 @@ mod tests {
             assert_eq!(tool["inputSchema"]["type"], "object", "{tool}");
             assert_eq!(tool["outputSchema"]["type"], "object", "{tool}");
         }
+    }
+
+    /// `verify_findings` returns the daemon's `findings.verify` document as its structured content,
+    /// and refuses what the daemon refuses as a tool error.
+    #[test]
+    fn verify_findings_is_the_daemon_method() {
+        let patch = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+b\n";
+        let findings = json!([
+            {"agent": "codex", "severity": "high", "title": "t", "body": "b", "path": "x", "line": 1},
+            {"agent": "codex", "severity": "low", "title": "u", "body": "c", "path": "nope"},
+        ]);
+        let arguments = json!({"patch": patch, "findings": findings});
+        let answer = call_tool(
+            json!({"name": "verify_findings", "arguments": arguments}),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(answer["isError"], false);
+        let daemon =
+            daemon_value("findings.verify", arguments.as_object().unwrap().clone()).unwrap();
+        assert_eq!(answer["structuredContent"], daemon);
+        assert_eq!(
+            answer["structuredContent"]["schema"],
+            "deep-diff-forge.findings.v0"
+        );
+        assert_eq!(answer["structuredContent"]["counts"]["refused"], 1);
+        let bad = call_tool(
+            json!({"name": "verify_findings", "arguments": {"patch": patch, "findings": "x"}}),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(bad["isError"], true, "{bad}");
     }
 
     #[test]
