@@ -315,7 +315,8 @@ fn the_scans_see_every_file_and_the_code_after_a_mid_file_test_item() {
             .any(|(name, _)| name == "deep-diff-forge-cli/src/mcp.rs")
     );
     let serve = named("deep-diff-forge-daemon/src/serve.rs");
-    assert!(serve.contains("fn recover(") && !serve.contains("fn panic_on_test_method"));
+    // `handle_connection` follows the test-only `test_hooks` module; `release` is inside it.
+    assert!(serve.contains("pub fn handle_connection(") && !serve.contains("fn release("));
     let core = named("deep-diff-forge-core/src/lib.rs");
     assert!(core.contains("pub struct PatchTwin") && !core.contains("mod file_status_tests"));
     let lines =

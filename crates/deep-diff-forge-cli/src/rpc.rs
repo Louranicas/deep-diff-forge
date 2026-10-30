@@ -12,7 +12,6 @@ use deep_diff_forge_daemon::{
 };
 use serde_json::Value;
 use std::io::{BufRead, Write};
-use std::sync::Mutex;
 
 /// Answer stdin until it closes or a `daemon.shutdown` request is answered.
 pub fn serve(input: &mut impl BufRead, output: &mut impl Write) -> std::io::Result<()> {
@@ -23,7 +22,7 @@ pub fn serve(input: &mut impl BufRead, output: &mut impl Write) -> std::io::Resu
 pub fn serve_engine(
     input: &mut impl BufRead,
     output: &mut impl Write,
-    engine: Engine,
+    engine: &Engine,
 ) -> std::io::Result<()> {
     serve_capped(input, output, MAX_REQUEST_BYTES, engine)
 }
@@ -37,16 +36,15 @@ pub(crate) fn serve_with(
     output: &mut impl Write,
     cap: usize,
 ) -> std::io::Result<()> {
-    serve_capped(input, output, cap, Engine::new())
+    serve_capped(input, output, cap, &Engine::new())
 }
 
 fn serve_capped(
     input: &mut impl BufRead,
     output: &mut impl Write,
     cap: usize,
-    engine: Engine,
+    engine: &Engine,
 ) -> std::io::Result<()> {
-    let engine = Mutex::new(engine);
     let mut buf = Vec::new();
     loop {
         buf.clear();
@@ -65,7 +63,7 @@ fn serve_capped(
         }
         let response = match std::str::from_utf8(&buf) {
             Ok(text) if text.trim().is_empty() => continue,
-            Ok(text) => process_line(text.trim(), &engine),
+            Ok(text) => process_line(text.trim(), engine),
             Err(_) => error_response(
                 &Value::Null,
                 &RpcError::new(PARSE_ERROR, "request is not valid UTF-8"),
@@ -73,7 +71,7 @@ fn serve_capped(
         };
         writeln!(output, "{}", json_line_safe(&response))?;
         output.flush()?;
-        if !engine.lock().is_ok_and(|engine| engine.is_running()) {
+        if !engine.is_running() {
             return Ok(());
         }
     }

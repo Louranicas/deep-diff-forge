@@ -589,8 +589,10 @@ server on an owner-private Unix domain socket.
   socket that nothing answers on. A live daemon is never displaced, and a regular file,
   directory or symlink is never deleted.
 - **Bounded sessions.** Sessions are capped by an LRU count and 128 MiB of total payload.
-- **Bounded connections.** At most eight connections are admitted. One engine serves them,
-  so requests run one at a time.
+- **Bounded connections and work.** At most eight connections are admitted, and their
+  requests run in parallel. The request bytes in flight are capped at 128 MiB, first come,
+  first served, so a heavy request waits rather than multiplying peak memory, and a waiting
+  request is never overtaken.
 - **Bounded I/O.** Each request line has an absolute read deadline, each response write a
   per-write timeout, and both are capped at 80 MiB. A response over the cap becomes a
   `RESOURCE_EXHAUSTED` (8) error for the same id.
@@ -782,7 +784,6 @@ deployment.
 
 **Known limits.** Contributions are welcome on any of these; see [CONTRIBUTING.md](CONTRIBUTING.md#open-problems-worth-owning):
 
-- One engine serves all daemon connections, so a long request delays the others.
 - macOS tests run weekly and on demand, not on every PR.
 - The cockpit is tested by headless frames; there is no key-sequence harness yet.
 - Syntax features speak Rust; comparing two files directly (`<old> <new>`) and the `chain`,

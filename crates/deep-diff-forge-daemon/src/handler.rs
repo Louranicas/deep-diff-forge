@@ -1,6 +1,7 @@
 // DDF review route: DDF-R26, DDF-R27, DDF-R29. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-daemon--src--handler
+use crate::admission::Admission;
 use crate::protocol::{
     INPUT_CONTRACT_REFUSED, PATCH_PARSE_FAILED, PROTOCOL_UNSUPPORTED, PROTOCOL_VERSION,
     RESOURCE_EXHAUSTED, Request, RpcError, SESSION_NOT_FOUND,
@@ -9,6 +10,8 @@ use deep_diff_forge_core::{PatchHunk, PatchLine, ReviewFile, SemanticSpan};
 use deep_diff_forge_graph::{RankedFile, rank};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 /// Maximum number of concurrent review sessions retained in memory.
@@ -32,7 +35,8 @@ const MAX_RETAINED_SESSION_BYTES: usize = 128 * 1024 * 1024;
 
 /// Per-session state stored inside the engine.
 struct SessionEntry {
-    files: Vec<ReviewFile>,
+    /// Shared, so a snapshot ranks it after the session lock is released.
+    files: Arc<Vec<ReviewFile>>,
     /// Estimated heap allocation held by `files` and its nested collections.
     retained_bytes: usize,
     /// Monotonically increasing access tick; updated on open and on snapshot.
@@ -41,30 +45,182 @@ struct SessionEntry {
     last_tick: u64,
 }
 
-/// Daemon engine: review sessions, counters, and lifecycle state.
-///
-/// Shared across connection threads behind a `Mutex` by the server; the methods
-/// here are the pure, testable core (no socket I/O).
+/// A parsed patch ready to be retained as a session, with its retained size already estimated.
+/// The estimate walks the whole model, so it is made here, before the session lock is taken.
+struct SessionPayload {
+    files: Arc<Vec<ReviewFile>>,
+    retained_bytes: usize,
+}
+
+impl SessionPayload {
+    fn new(files: Vec<ReviewFile>) -> Self {
+        let retained_bytes = estimated_session_bytes(&files);
+        Self {
+            files: Arc::new(files),
+            retained_bytes,
+        }
+    }
+}
+
+/// The session table: the daemon's only mutable review state. One lock in [`Engine`] owns it,
+/// and every method here is bookkeeping, so the lock is never held while a patch is parsed or
+/// ranked or Git runs.
 ///
 /// Session retention is bounded at `MAX_SESSIONS`. When capacity is reached,
 /// opening a new session evicts the least-recently-used (LRU) entry — the one
 /// with the smallest `last_tick` value — before inserting the new one.
-pub struct Engine {
-    sessions: HashMap<String, SessionEntry>,
+struct Sessions {
+    entries: HashMap<String, SessionEntry>,
     next_session: u64,
     /// Monotonically increasing counter incremented on every session open or
     /// snapshot access; used for LRU ordering.
     tick: u64,
     retained_bytes: usize,
     max_retained_bytes: usize,
-    running: bool,
+}
+
+impl Sessions {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            next_session: 1,
+            tick: 0,
+            retained_bytes: 0,
+            max_retained_bytes: MAX_RETAINED_SESSION_BYTES,
+        }
+    }
+
+    /// Drop every session after a panic while the table was held (anchor A-03): the table and its
+    /// byte accounting may be inconsistent, so they start again empty. The session-id counter is
+    /// kept, so no old id is reused.
+    fn reset(&mut self) {
+        self.entries.clear();
+        self.retained_bytes = 0;
+        self.tick = 0;
+    }
+
+    /// Advance the global tick and return the new value.
+    fn next_tick(&mut self) -> u64 {
+        if self.tick == u64::MAX {
+            // Rebase the at-most-64 entries while preserving their order, so a
+            // multi-decade daemon cannot panic or invert LRU ordering.
+            let mut ordered: Vec<(String, u64)> = self
+                .entries
+                .iter()
+                .map(|(id, entry)| (id.clone(), entry.last_tick))
+                .collect();
+            ordered.sort_by_key(|(_, tick)| *tick);
+            for (index, (id, _)) in ordered.into_iter().enumerate() {
+                if let Some(entry) = self.entries.get_mut(&id) {
+                    entry.last_tick = index as u64 + 1;
+                }
+            }
+            self.tick = self.entries.len() as u64;
+        }
+        self.tick += 1;
+        self.tick
+    }
+
+    /// Evict the least-recently-used session, returning whether one existed.
+    fn evict_lru(&mut self) -> bool {
+        // Find the key with the smallest last_tick (LRU).
+        let lru_key = self
+            .entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_tick)
+            .map(|(key, _)| key.clone());
+        if let Some(key) = lru_key
+            && let Some(removed) = self.entries.remove(&key)
+        {
+            self.retained_bytes = self.retained_bytes.saturating_sub(removed.retained_bytes);
+            return true;
+        }
+        false
+    }
+
+    fn open_session(&mut self, payload: SessionPayload) -> Result<String, RpcError> {
+        let SessionPayload {
+            files,
+            retained_bytes,
+        } = payload;
+        if retained_bytes > self.max_retained_bytes {
+            return Err(RpcError::new(
+                RESOURCE_EXHAUSTED,
+                "session exceeds the retained-memory budget",
+            ));
+        }
+        while self.entries.len() >= MAX_SESSIONS
+            || self.retained_bytes.saturating_add(retained_bytes) > self.max_retained_bytes
+        {
+            if !self.evict_lru() {
+                break;
+            }
+        }
+
+        // Wrap safely and skip any still-live id after the theoretical wrap.
+        let id = loop {
+            let candidate = format!("s{}", self.next_session);
+            self.next_session = self.next_session.checked_add(1).unwrap_or(1);
+            if !self.entries.contains_key(&candidate) {
+                break candidate;
+            }
+        };
+        let tick = self.next_tick();
+        self.retained_bytes = self.retained_bytes.saturating_add(retained_bytes);
+        self.entries.insert(
+            id.clone(),
+            SessionEntry {
+                files,
+                retained_bytes,
+                last_tick: tick,
+            },
+        );
+        Ok(id)
+    }
+
+    /// A session's parsed patch, refreshing its LRU tick. The patch is shared, not cloned; the
+    /// caller ranks it after the lock is released.
+    fn snapshot_files(&mut self, id: &str) -> Option<Arc<Vec<ReviewFile>>> {
+        let tick = self.next_tick();
+        let entry = self.entries.get_mut(id)?;
+        entry.last_tick = tick;
+        Some(Arc::clone(&entry.files))
+    }
+
+    fn close_session(&mut self, id: &str) -> bool {
+        if let Some(removed) = self.entries.remove(id) {
+            self.retained_bytes = self.retained_bytes.saturating_sub(removed.retained_bytes);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Daemon engine: the session table, lifecycle state and the request admission gate.
+///
+/// One engine serves every connection thread at once (`&Engine` is all a request needs). Only
+/// the session table is mutable, and its lock is held for bookkeeping alone; parsing, ranking,
+/// rendering and Git run outside it, so requests run in parallel. The work running at once is
+/// bounded by [`Admission`] (the summed request bytes) and by the server's connection limit.
+pub struct Engine {
+    sessions: Mutex<Sessions>,
+    running: AtomicBool,
     pid: u32,
     started: Instant,
     /// Repository roots `review.change` may read (canonical paths). Empty: it reads none.
     allowed_repos: Vec<std::path::PathBuf>,
+    admission: Admission,
 }
 
-/// The Git time limit for one `review.change`: a stalled Git cannot hold the engine longer.
+// Every connection thread shares one engine, so a field that is not thread-safe fails the build
+// here rather than at the server's `Arc`.
+const _: () = {
+    const fn shared_across_threads<T: Send + Sync>() {}
+    shared_across_threads::<Engine>();
+};
+
+/// The Git time limit for one `review.change`: a stalled Git cannot hold its connection longer.
 pub const REVIEW_CHANGE_GIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl Default for Engine {
@@ -82,15 +238,12 @@ impl Engine {
     )]
     pub fn new() -> Self {
         Self {
-            sessions: HashMap::new(),
-            next_session: 1,
-            tick: 0,
-            retained_bytes: 0,
-            max_retained_bytes: MAX_RETAINED_SESSION_BYTES,
-            running: true,
+            sessions: Mutex::new(Sessions::new()),
+            running: AtomicBool::new(true),
             pid: std::process::id(),
             started: Instant::now(),
             allowed_repos: Vec::new(),
+            admission: Admission::default(),
         }
     }
 
@@ -111,122 +264,42 @@ impl Engine {
         Ok(self)
     }
 
-    /// Drop every session after a contained panic (anchor A-03). Whatever dispatch was doing may have
-    /// left the session table and its byte accounting inconsistent, so they start again empty; the
-    /// pid, start time, `running` and the session-id counter are kept, so no old id is reused.
-    pub(crate) fn reset_sessions(&mut self) {
-        self.sessions.clear();
-        self.retained_bytes = 0;
-        self.tick = 0;
+    /// The session table, for bookkeeping only: never hold it across parsing, ranking or Git.
+    /// A panic while it was held may have left it half-updated, so a poisoned table is emptied
+    /// (anchor A-03) and served again; the pid, start time, `running` and the session-id counter
+    /// are kept, so no old id is reused. A panic outside the table leaves every session intact.
+    fn sessions(&self) -> MutexGuard<'_, Sessions> {
+        self.sessions.lock().unwrap_or_else(|poisoned| {
+            let mut table = poisoned.into_inner();
+            table.reset();
+            self.sessions.clear_poison();
+            table
+        })
+    }
+
+    /// The gate on the request bytes in flight, for a server that runs requests in parallel.
+    #[must_use]
+    pub fn admission(&self) -> &Admission {
+        &self.admission
     }
 
     /// Whether the engine is still serving (cleared by `daemon.shutdown`).
     #[must_use]
     pub fn is_running(&self) -> bool {
-        self.running
+        self.running.load(Ordering::Acquire)
     }
 
     /// Number of open sessions (always `<= MAX_SESSIONS`).
     #[must_use]
     pub fn session_count(&self) -> usize {
-        self.sessions.len()
+        self.sessions().entries.len()
     }
 
-    /// Advance the global tick and return the new value.
-    fn next_tick(&mut self) -> u64 {
-        if self.tick == u64::MAX {
-            // Rebase the at-most-64 entries while preserving their order, so a
-            // multi-decade daemon cannot panic or invert LRU ordering.
-            let mut ordered: Vec<(String, u64)> = self
-                .sessions
-                .iter()
-                .map(|(id, entry)| (id.clone(), entry.last_tick))
-                .collect();
-            ordered.sort_by_key(|(_, tick)| *tick);
-            for (index, (id, _)) in ordered.into_iter().enumerate() {
-                if let Some(entry) = self.sessions.get_mut(&id) {
-                    entry.last_tick = index as u64 + 1;
-                }
-            }
-            self.tick = self.sessions.len() as u64;
-        }
-        self.tick += 1;
-        self.tick
-    }
-
-    /// Evict the least-recently-used session, returning whether one existed.
-    fn evict_lru(&mut self) -> bool {
-        // Find the key with the smallest last_tick (LRU).
-        let lru_key = self
-            .sessions
-            .iter()
-            .min_by_key(|(_, entry)| entry.last_tick)
-            .map(|(key, _)| key.clone());
-        if let Some(key) = lru_key
-            && let Some(removed) = self.sessions.remove(&key)
-        {
-            self.retained_bytes = self.retained_bytes.saturating_sub(removed.retained_bytes);
-            return true;
-        }
-        false
-    }
-
-    fn open_session(&mut self, files: Vec<ReviewFile>) -> Result<String, RpcError> {
-        let retained_bytes = estimated_session_bytes(&files);
-        if retained_bytes > self.max_retained_bytes {
-            return Err(RpcError::new(
-                RESOURCE_EXHAUSTED,
-                "session exceeds the retained-memory budget",
-            ));
-        }
-        while self.sessions.len() >= MAX_SESSIONS
-            || self.retained_bytes.saturating_add(retained_bytes) > self.max_retained_bytes
-        {
-            if !self.evict_lru() {
-                break;
-            }
-        }
-
-        // Wrap safely and skip any still-live id after the theoretical wrap.
-        let id = loop {
-            let candidate = format!("s{}", self.next_session);
-            self.next_session = self.next_session.checked_add(1).unwrap_or(1);
-            if !self.sessions.contains_key(&candidate) {
-                break candidate;
-            }
-        };
-        let tick = self.next_tick();
-        self.retained_bytes = self.retained_bytes.saturating_add(retained_bytes);
-        self.sessions.insert(
-            id.clone(),
-            SessionEntry {
-                files,
-                retained_bytes,
-                last_tick: tick,
-            },
-        );
-        Ok(id)
-    }
-
-    /// Rank a session in place, refreshing the LRU tick without cloning its
-    /// potentially large parsed patch model.
-    fn snapshot_ranked(&mut self, id: &str) -> Option<Vec<RankedFile>> {
-        let tick = self.next_tick();
-        if let Some(entry) = self.sessions.get_mut(id) {
-            entry.last_tick = tick;
-            Some(rank(&entry.files))
-        } else {
-            None
-        }
-    }
-
-    fn close_session(&mut self, id: &str) -> bool {
-        if let Some(removed) = self.sessions.remove(id) {
-            self.retained_bytes = self.retained_bytes.saturating_sub(removed.retained_bytes);
-            true
-        } else {
-            false
-        }
+    /// Test-only: panic while the session table is held, to exercise its recovery.
+    #[cfg(test)]
+    pub(crate) fn panic_holding_sessions(&self) {
+        let _table = self.sessions();
+        panic!("test-only panic while holding the session table");
     }
 }
 
@@ -296,6 +369,38 @@ pub struct MethodSpec {
     pub result: &'static str,
     /// The protocol version that introduced it.
     pub since: u32,
+    /// How much of the in-flight budget a request of this method holds while it runs.
+    pub work: Work,
+}
+
+/// What bounds a method's working memory, so admission can weigh a request before it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Work {
+    /// Bounded by its request line: the patch it carries, parsed and rendered.
+    Request,
+    /// Acquires a change from Git, up to the patch byte budget, whatever the line's length.
+    GitAcquisition,
+}
+
+impl Work {
+    /// The bytes of the in-flight budget a request of `line_bytes` holds.
+    #[must_use]
+    pub fn weight(self, line_bytes: usize) -> usize {
+        match self {
+            Self::Request => line_bytes,
+            Self::GitAcquisition => line_bytes.max(deep_diff_forge_patch::DEFAULT_BYTE_BUDGET),
+        }
+    }
+}
+
+/// The admission weight of a request line: its method's [`Work`], or the line's own length for
+/// a method the daemon does not have (refused at once).
+#[must_use]
+pub fn request_weight(request: &Request, line_bytes: usize) -> usize {
+    METHODS
+        .iter()
+        .find(|m| m.name == request.method)
+        .map_or(line_bytes, |m| m.work.weight(line_bytes))
 }
 
 impl MethodSpec {
@@ -314,12 +419,14 @@ const fn method(
     params: &'static str,
     result: &'static str,
     since: u32,
+    work: Work,
 ) -> MethodSpec {
     MethodSpec {
         name,
         params,
         result,
         since,
+        work,
     }
 }
 
@@ -330,60 +437,93 @@ pub const METHODS: &[MethodSpec] = &[
         "protocol?: integer",
         "{server, version, protocol, methods}",
         0,
+        Work::Request,
     ),
     method(
         "engine.methods",
         "",
         "{protocol, methods: [{name, params, result, since}]}",
         1,
+        Work::Request,
     ),
     method(
         "daemon.health",
         "",
         "{status, version, pid, sessions, retained_bytes, cache_entries, protocol}",
         0,
+        Work::Request,
     ),
     method(
         "daemon.status",
         "",
         "{running, uptime_secs, sessions, version, protocol}",
         0,
+        Work::Request,
     ),
-    method("daemon.shutdown", "", "{stopping}", 0),
-    method("diff.plan", "patch: string", "[ranked file]", 0),
+    method("daemon.shutdown", "", "{stopping}", 0, Work::Request),
+    method(
+        "diff.plan",
+        "patch: string",
+        "[ranked file]",
+        0,
+        Work::Request,
+    ),
     method(
         "diff.compute",
         "patch: string, require_files?: boolean, require_hunks?: boolean",
         "the deep-diff-forge.review.v0 document `deep-diff-forge --stdin-patch --json` prints for the same patch",
         1,
+        Work::Request,
     ),
     method(
         "diff.rank",
         "patch: string, require_files?: boolean, require_hunks?: boolean",
         "the deep-diff-forge.rank.v0 document `deep-diff-forge --stdin-patch --rank --json` prints for the same patch",
         1,
+        Work::Request,
     ),
     method(
         "review.outline",
         "patch: string, require_files?: boolean, require_hunks?: boolean, max_bytes?: integer, cursor?: string",
         "deep-diff-forge.review-outline.v0: files in review-risk order with their hunks' addresses, headings and counts, no line text; next_cursor continues",
         1,
+        Work::Request,
     ),
     method(
         "review.hunks",
         "patch: string, require_files?: boolean, require_hunks?: boolean, addresses?: [string], paths?: [string], max_bytes?: integer, cursor?: string",
         "deep-diff-forge.review-hunks.v0: the chosen hunks verbatim (all, by address or by path), within max_bytes; next_cursor continues",
         1,
+        Work::Request,
     ),
     method(
         "review.change",
         "repo: string, selection: \"staged\"|\"working_tree\"|\"range\", range?: \"A..B\", include_untracked?: boolean, view?: \"outline\"|\"hunks\"|\"review\"|\"rank\", require_files?: boolean, require_hunks?: boolean, addresses?: [string], paths?: [string], max_bytes?: integer, cursor?: string",
         "the chosen view of the change Git returns for the selection, sealed over Git's exact bytes, with an acquisition member; only for a repository at or under a root the operator allowed (--allow-repo), and Git is stopped after 30 s",
         1,
+        Work::GitAcquisition,
     ),
-    method("session.open", "patch: string", "{session, files}", 0),
-    method("session.snapshot", "session: string", "[ranked file]", 0),
-    method("session.close", "session: string", "{closed}", 0),
+    method(
+        "session.open",
+        "patch: string",
+        "{session, files}",
+        0,
+        Work::Request,
+    ),
+    method(
+        "session.snapshot",
+        "session: string",
+        "[ranked file]",
+        0,
+        Work::Request,
+    ),
+    method(
+        "session.close",
+        "session: string",
+        "{closed}",
+        0,
+        Work::Request,
+    ),
 ];
 
 /// Dispatch a parsed request against the engine, returning the result value or
@@ -393,7 +533,7 @@ pub const METHODS: &[MethodSpec] = &[
 ///
 /// Returns [`RpcError`] for unknown methods, missing/invalid params, patch
 /// parse failures, or unknown sessions.
-pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcError> {
+pub fn dispatch(request: &Request, engine: &Engine) -> Result<Value, RpcError> {
     let version = env!("CARGO_PKG_VERSION");
     // `METHODS` is the authority: a request is dispatched on its `METHODS` entry, so a name it does
     // not list is never dispatched and an arm added below without an entry is unreachable rather
@@ -437,25 +577,16 @@ pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcErro
                 .map(|m| json!({"name": m.name, "params": m.params, "result": m.result, "since": m.since}))
                 .collect::<Vec<_>>(),
         })),
-        "daemon.health" => Ok(json!({
-            "status": "ok",
-            "version": version,
-            "pid": engine.pid,
-            "sessions": engine.session_count(),
-            "retained_bytes": engine.retained_bytes,
-            // Reserved: there is no response cache, so the count is truly 0 (decision D-03).
-            "cache_entries": 0,
-            "protocol": PROTOCOL_VERSION,
-        })),
+        "daemon.health" => Ok(health(engine, version)),
         "daemon.status" => Ok(json!({
-            "running": engine.running,
+            "running": engine.is_running(),
             "uptime_secs": engine.started.elapsed().as_secs(),
             "sessions": engine.session_count(),
             "version": version,
             "protocol": PROTOCOL_VERSION,
         })),
         "daemon.shutdown" => {
-            engine.running = false;
+            engine.running.store(false, Ordering::Release);
             Ok(json!({"stopping": true}))
         }
         "diff.plan" => {
@@ -477,13 +608,16 @@ pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcErro
         "session.open" => {
             let files = parse_patch_param(request)?;
             let count = files.len();
-            let id = engine.open_session(files)?;
+            let payload = SessionPayload::new(files);
+            let id = engine.sessions().open_session(payload)?;
             Ok(json!({"session": id, "files": count}))
         }
         "session.snapshot" => {
             let id = str_param(&request.params, "session")?;
-            match engine.snapshot_ranked(&id) {
-                Some(ranked) => Ok(ranked_json(&ranked)),
+            // The table is released at the end of this statement; ranking runs outside it.
+            let files = engine.sessions().snapshot_files(&id);
+            match files {
+                Some(files) => Ok(ranked_json(&rank(&files))),
                 None => Err(RpcError::new(
                     SESSION_NOT_FOUND,
                     format!("no such session: {id}"),
@@ -492,10 +626,30 @@ pub fn dispatch(request: &Request, engine: &mut Engine) -> Result<Value, RpcErro
         }
         "session.close" => {
             let id = str_param(&request.params, "session")?;
-            Ok(json!({"closed": engine.close_session(&id)}))
+            let closed = engine.sessions().close_session(&id);
+            Ok(json!({"closed": closed}))
         }
         other => Err(RpcError::method_not_found(other)),
     }
+}
+
+/// `daemon.health`: one read of the session table, so the count and the bytes describe the same
+/// moment.
+fn health(engine: &Engine, version: &str) -> Value {
+    let (sessions, retained_bytes) = {
+        let table = engine.sessions();
+        (table.entries.len(), table.retained_bytes)
+    };
+    json!({
+        "status": "ok",
+        "version": version,
+        "pid": engine.pid,
+        "sessions": sessions,
+        "retained_bytes": retained_bytes,
+        // Reserved: there is no response cache, so the count is truly 0 (decision D-03).
+        "cache_entries": 0,
+        "protocol": PROTOCOL_VERSION,
+    })
 }
 
 /// The patch param sealed under the request's input contracts (`InputGuards`): the one parse →
@@ -807,7 +961,7 @@ mod tests {
     use super::*;
     use crate::protocol::{METHOD_NOT_FOUND, parse_request};
 
-    fn call(line: &str, engine: &mut Engine) -> Result<Value, RpcError> {
+    fn call(line: &str, engine: &Engine) -> Result<Value, RpcError> {
         let req = parse_request(line)?;
         dispatch(&req, engine)
     }
@@ -833,8 +987,8 @@ mod tests {
 
     #[test]
     fn health_reports_ok() {
-        let mut e = Engine::new();
-        let v = call(r#"{"id":1,"method":"daemon.health"}"#, &mut e).unwrap();
+        let e = Engine::new();
+        let v = call(r#"{"id":1,"method":"daemon.health"}"#, &e).unwrap();
         assert_eq!(v["status"], "ok");
         assert_eq!(v["protocol"], PROTOCOL_VERSION);
         assert!(v["pid"].as_u64().unwrap() > 0);
@@ -842,39 +996,39 @@ mod tests {
 
     #[test]
     fn initialize_reports_server() {
-        let mut e = Engine::new();
-        let v = call(r#"{"method":"engine.initialize"}"#, &mut e).unwrap();
+        let e = Engine::new();
+        let v = call(r#"{"method":"engine.initialize"}"#, &e).unwrap();
         assert_eq!(v["server"], "deep-diff-forge");
     }
 
     #[test]
     fn status_reports_running_and_sessions() {
-        let mut e = Engine::new();
-        let v = call(r#"{"method":"daemon.status"}"#, &mut e).unwrap();
+        let e = Engine::new();
+        let v = call(r#"{"method":"daemon.status"}"#, &e).unwrap();
         assert_eq!(v["running"], true);
         assert_eq!(v["sessions"], 0);
     }
 
     #[test]
     fn shutdown_clears_running() {
-        let mut e = Engine::new();
-        let v = call(r#"{"method":"daemon.shutdown"}"#, &mut e).unwrap();
+        let e = Engine::new();
+        let v = call(r#"{"method":"daemon.shutdown"}"#, &e).unwrap();
         assert_eq!(v["stopping"], true);
         assert!(!e.is_running());
     }
 
     #[test]
     fn unknown_method_is_method_not_found() {
-        let mut e = Engine::new();
-        let err = call(r#"{"method":"no.such"}"#, &mut e).unwrap_err();
+        let e = Engine::new();
+        let err = call(r#"{"method":"no.such"}"#, &e).unwrap_err();
         assert_eq!(err.code, METHOD_NOT_FOUND);
     }
 
     #[test]
     fn diff_plan_ranks_files() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         let line = r#"{"method":"diff.plan","params":{"patch":"--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n"}}"#;
-        let v = call(line, &mut e).unwrap();
+        let v = call(line, &e).unwrap();
         assert!(v.is_array());
         assert_eq!(v[0]["path"], "src/lib.rs");
         assert!(
@@ -888,24 +1042,24 @@ mod tests {
 
     #[test]
     fn diff_plan_missing_patch_is_invalid_params() {
-        let mut e = Engine::new();
-        let err = call(r#"{"method":"diff.plan","params":{}}"#, &mut e).unwrap_err();
+        let e = Engine::new();
+        let err = call(r#"{"method":"diff.plan","params":{}}"#, &e).unwrap_err();
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
     }
 
     #[test]
     fn diff_plan_bad_patch_is_parse_failed() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         let line = r#"{"method":"diff.plan","params":{"patch":"--- a/x\n+++ b/x\n+stray\n"}}"#;
-        let err = call(line, &mut e).unwrap_err();
+        let err = call(line, &e).unwrap_err();
         assert_eq!(err.code, PATCH_PARSE_FAILED);
     }
 
     #[test]
     fn session_open_returns_id_and_count() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         let line = r#"{"method":"session.open","params":{"patch":"--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n"}}"#;
-        let v = call(line, &mut e).unwrap();
+        let v = call(line, &e).unwrap();
         assert_eq!(v["session"], "s1");
         assert_eq!(v["files"], 1);
         assert_eq!(e.session_count(), 1);
@@ -913,23 +1067,23 @@ mod tests {
 
     #[test]
     fn session_ids_increment() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         let line = r#"{"method":"session.open","params":{"patch":"--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n"}}"#;
-        let a = call(line, &mut e).unwrap();
-        let b = call(line, &mut e).unwrap();
+        let a = call(line, &e).unwrap();
+        let b = call(line, &e).unwrap();
         assert_eq!(a["session"], "s1");
         assert_eq!(b["session"], "s2");
     }
 
     #[test]
     fn session_snapshot_returns_ranked() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         let open = r#"{"method":"session.open","params":{"patch":"--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n"}}"#;
-        let opened = call(open, &mut e).unwrap();
+        let opened = call(open, &e).unwrap();
         let id = opened["session"].as_str().unwrap();
         let snap = call(
             &format!(r#"{{"method":"session.snapshot","params":{{"session":"{id}"}}}}"#),
-            &mut e,
+            &e,
         )
         .unwrap();
         assert_eq!(snap[0]["path"], "src/lib.rs");
@@ -937,10 +1091,10 @@ mod tests {
 
     #[test]
     fn snapshot_unknown_session_is_error() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         let err = call(
             r#"{"method":"session.snapshot","params":{"session":"nope"}}"#,
-            &mut e,
+            &e,
         )
         .unwrap_err();
         assert_eq!(err.code, SESSION_NOT_FOUND);
@@ -948,15 +1102,15 @@ mod tests {
 
     #[test]
     fn session_close_removes_session() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         let open = r#"{"method":"session.open","params":{"patch":"--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n"}}"#;
-        let id = call(open, &mut e).unwrap()["session"]
+        let id = call(open, &e).unwrap()["session"]
             .as_str()
             .unwrap()
             .to_string();
         let closed = call(
             &format!(r#"{{"method":"session.close","params":{{"session":"{id}"}}}}"#),
-            &mut e,
+            &e,
         )
         .unwrap();
         assert_eq!(closed["closed"], true);
@@ -965,10 +1119,10 @@ mod tests {
 
     #[test]
     fn closing_unknown_session_is_false_not_error() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         let v = call(
             r#"{"method":"session.close","params":{"session":"ghost"}}"#,
-            &mut e,
+            &e,
         )
         .unwrap();
         assert_eq!(v["closed"], false);
@@ -976,10 +1130,10 @@ mod tests {
 
     #[test]
     fn health_session_count_tracks_opens() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         let open = r#"{"method":"session.open","params":{"patch":"--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n"}}"#;
-        call(open, &mut e).unwrap();
-        let v = call(r#"{"method":"daemon.health"}"#, &mut e).unwrap();
+        call(open, &e).unwrap();
+        let v = call(r#"{"method":"daemon.health"}"#, &e).unwrap();
         assert_eq!(v["sessions"], 1);
     }
 
@@ -992,39 +1146,39 @@ mod tests {
 
     #[test]
     fn retained_byte_budget_evicts_lru_sessions() {
-        let mut e = Engine::new();
+        let mut e = Sessions::new();
         let files =
             deep_diff_forge_patch::parse("--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n")
                 .unwrap();
         let one_session = estimated_session_bytes(&files);
         e.max_retained_bytes = one_session;
 
-        let first = e.open_session(files.clone()).unwrap();
-        let second = e.open_session(files).unwrap();
-        assert_eq!(e.session_count(), 1);
-        assert!(e.snapshot_ranked(&first).is_none());
-        assert!(e.snapshot_ranked(&second).is_some());
+        let first = e.open_session(SessionPayload::new(files.clone())).unwrap();
+        let second = e.open_session(SessionPayload::new(files)).unwrap();
+        assert_eq!(e.entries.len(), 1);
+        assert!(e.snapshot_files(&first).is_none());
+        assert!(e.snapshot_files(&second).is_some());
         assert!(e.retained_bytes <= e.max_retained_bytes);
     }
 
     #[test]
     fn oversized_session_is_rejected_without_eviction() {
-        let mut e = Engine::new();
+        let mut e = Sessions::new();
         let files =
             deep_diff_forge_patch::parse("--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n")
                 .unwrap();
         e.max_retained_bytes = estimated_session_bytes(&files).saturating_sub(1);
-        let err = e.open_session(files).unwrap_err();
+        let err = e.open_session(SessionPayload::new(files)).unwrap_err();
         assert_eq!(err.code, RESOURCE_EXHAUSTED);
-        assert_eq!(e.session_count(), 0);
+        assert_eq!(e.entries.len(), 0);
     }
 
     #[test]
     fn session_param_must_be_string() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         let err = call(
             r#"{"method":"session.snapshot","params":{"session":123}}"#,
-            &mut e,
+            &e,
         )
         .unwrap_err();
         assert_eq!(err.code, crate::protocol::INVALID_PARAMS);
@@ -1032,8 +1186,8 @@ mod tests {
 
     #[test]
     fn diff_plan_empty_patch_is_empty_array() {
-        let mut e = Engine::new();
-        let v = call(r#"{"method":"diff.plan","params":{"patch":""}}"#, &mut e).unwrap();
+        let e = Engine::new();
+        let v = call(r#"{"method":"diff.plan","params":{"patch":""}}"#, &e).unwrap();
         assert_eq!(v.as_array().unwrap().len(), 0);
     }
 
@@ -1048,9 +1202,9 @@ mod tests {
     // Open MAX_SESSIONS + 5 sessions; the count must stay exactly at the cap.
     #[test]
     fn sessions_are_bounded() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         for _ in 0..(super::MAX_SESSIONS + 5) {
-            call(OPEN_LINE, &mut e).expect("session.open");
+            call(OPEN_LINE, &e).expect("session.open");
         }
         assert_eq!(
             e.session_count(),
@@ -1066,28 +1220,28 @@ mod tests {
     // must be the one evicted.
     #[test]
     fn lru_evicts_least_recently_used() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         // Fill to MAX_SESSIONS.
         for _ in 0..super::MAX_SESSIONS {
-            call(OPEN_LINE, &mut e).expect("session.open");
+            call(OPEN_LINE, &e).expect("session.open");
         }
         assert_eq!(e.session_count(), super::MAX_SESSIONS);
 
         // Access s1 to refresh its LRU tick — it must NOT be evicted next.
         let snap = call(
             r#"{"method":"session.snapshot","params":{"session":"s1"}}"#,
-            &mut e,
+            &e,
         );
         assert!(snap.is_ok(), "s1 snapshot before eviction must succeed");
 
         // Open one more session — evicts the LRU (not s1).
-        call(OPEN_LINE, &mut e).expect("session.open over cap");
+        call(OPEN_LINE, &e).expect("session.open over cap");
         assert_eq!(e.session_count(), super::MAX_SESSIONS);
 
         // s1 must still be accessible.
         let snap_after = call(
             r#"{"method":"session.snapshot","params":{"session":"s1"}}"#,
-            &mut e,
+            &e,
         );
         assert!(
             snap_after.is_ok(),
@@ -1101,10 +1255,10 @@ mod tests {
     // buggy "evict last-inserted" algorithm would pass F3-T2 but fail this.)
     #[test]
     fn lru_evicts_the_true_least_recently_used() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         let mut ids = Vec::new();
         for _ in 0..super::MAX_SESSIONS {
-            let v = call(OPEN_LINE, &mut e).expect("open");
+            let v = call(OPEN_LINE, &e).expect("open");
             ids.push(v["session"].as_str().unwrap().to_string());
         }
         // The 2nd-opened session is the victim; refresh every OTHER session so the
@@ -1116,16 +1270,16 @@ mod tests {
             }
             call(
                 &format!(r#"{{"method":"session.snapshot","params":{{"session":"{id}"}}}}"#),
-                &mut e,
+                &e,
             )
             .expect("refresh");
         }
         // Open one more — must evict exactly the victim (the true min-tick entry).
-        call(OPEN_LINE, &mut e).expect("open over cap");
+        call(OPEN_LINE, &e).expect("open over cap");
         assert_eq!(e.session_count(), super::MAX_SESSIONS);
         let victim_snap = call(
             &format!(r#"{{"method":"session.snapshot","params":{{"session":"{victim}"}}}}"#),
-            &mut e,
+            &e,
         );
         assert!(
             victim_snap.is_err(),
@@ -1137,7 +1291,7 @@ mod tests {
                 r#"{{"method":"session.snapshot","params":{{"session":"{}"}}}}"#,
                 ids[0]
             ),
-            &mut e,
+            &e,
         );
         assert!(
             survivor.is_ok(),
@@ -1150,9 +1304,9 @@ mod tests {
     // can the count exceed MAX_SESSIONS.
     #[test]
     fn session_count_never_exceeds_cap() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         for _ in 0..(super::MAX_SESSIONS * 3) {
-            call(OPEN_LINE, &mut e).expect("session.open");
+            call(OPEN_LINE, &e).expect("session.open");
             assert!(
                 e.session_count() <= super::MAX_SESSIONS,
                 "session_count() exceeded MAX_SESSIONS after an open"
@@ -1165,11 +1319,11 @@ mod tests {
     // eviction of valid sessions.
     #[test]
     fn closed_sessions_free_capacity() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         let mut ids = Vec::new();
         // Open MAX_SESSIONS sessions.
         for _ in 0..super::MAX_SESSIONS {
-            let v = call(OPEN_LINE, &mut e).expect("open");
+            let v = call(OPEN_LINE, &e).expect("open");
             ids.push(v["session"].as_str().unwrap().to_string());
         }
         assert_eq!(e.session_count(), super::MAX_SESSIONS);
@@ -1177,7 +1331,7 @@ mod tests {
         for id in &ids {
             let v = call(
                 &format!(r#"{{"method":"session.close","params":{{"session":"{id}"}}}}"#),
-                &mut e,
+                &e,
             )
             .expect("close");
             assert_eq!(v["closed"], true);
@@ -1185,7 +1339,7 @@ mod tests {
         assert_eq!(e.session_count(), 0);
         // Now we can open MAX_SESSIONS more without evictions.
         for _ in 0..super::MAX_SESSIONS {
-            call(OPEN_LINE, &mut e).expect("re-open after close");
+            call(OPEN_LINE, &e).expect("re-open after close");
         }
         assert_eq!(e.session_count(), super::MAX_SESSIONS);
     }
@@ -1202,102 +1356,112 @@ mod tests {
     #[test]
     fn default_retained_budget_is_128_mib() {
         assert_eq!(MAX_RETAINED_SESSION_BYTES, 128 << 20);
-        assert_eq!(Engine::new().max_retained_bytes, 128 << 20);
+        assert_eq!(Sessions::new().max_retained_bytes, 128 << 20);
     }
 
     #[test]
     fn default_budget_accepts_multi_mebibyte_session() {
         // Well under 128 MiB, but over any accidentally-additive budget (~1 MiB).
-        let mut e = Engine::new();
-        e.open_session(patch_with_line(4 << 20))
+        let mut e = Sessions::new();
+        e.open_session(SessionPayload::new(patch_with_line(4 << 20)))
             .expect("a 4 MiB session fits the default budget");
-        assert_eq!(e.session_count(), 1);
+        assert_eq!(e.entries.len(), 1);
     }
 
     #[test]
     fn estimate_counts_retained_line_text() {
         let files = patch_with_line(10_000);
         assert!(estimated_session_bytes(&files) >= 10_000);
-        let mut e = Engine::new();
+        let mut e = Sessions::new();
         e.max_retained_bytes = 4096;
-        let err = e.open_session(files).unwrap_err();
+        let err = e.open_session(SessionPayload::new(files)).unwrap_err();
         assert_eq!(err.code, RESOURCE_EXHAUSTED);
     }
 
     #[test]
     fn sessions_exactly_filling_the_byte_budget_are_all_retained() {
-        let mut e = Engine::new();
+        let mut e = Sessions::new();
         // Parse each session separately: a clone may shrink vector capacities.
         e.max_retained_bytes = 2 * estimated_session_bytes(&patch_with_line(1));
-        let first = e.open_session(patch_with_line(1)).unwrap();
-        let second = e.open_session(patch_with_line(1)).unwrap();
+        let first = e
+            .open_session(SessionPayload::new(patch_with_line(1)))
+            .unwrap();
+        let second = e
+            .open_session(SessionPayload::new(patch_with_line(1)))
+            .unwrap();
         assert_eq!(e.retained_bytes, e.max_retained_bytes);
         assert!(
-            e.snapshot_ranked(&first).is_some(),
+            e.snapshot_files(&first).is_some(),
             "at-budget must not evict"
         );
-        assert!(e.snapshot_ranked(&second).is_some());
+        assert!(e.snapshot_files(&second).is_some());
     }
 
     #[test]
     fn byte_budget_evicts_as_many_sessions_as_needed() {
-        let mut e = Engine::new();
+        let mut e = Sessions::new();
         let large = patch_with_line(4096);
         let large_bytes = estimated_session_bytes(&large);
         assert!(large_bytes > estimated_session_bytes(&patch_with_line(1)));
-        e.open_session(patch_with_line(1)).unwrap();
-        e.open_session(patch_with_line(1)).unwrap();
+        e.open_session(SessionPayload::new(patch_with_line(1)))
+            .unwrap();
+        e.open_session(SessionPayload::new(patch_with_line(1)))
+            .unwrap();
         // Room for the large session only once BOTH small sessions are gone.
         e.max_retained_bytes = large_bytes;
-        let kept = e.open_session(large).unwrap();
-        assert_eq!(e.session_count(), 1);
-        assert!(e.snapshot_ranked(&kept).is_some());
+        let kept = e.open_session(SessionPayload::new(large)).unwrap();
+        assert_eq!(e.entries.len(), 1);
+        assert!(e.snapshot_files(&kept).is_some());
         assert_eq!(e.retained_bytes, large_bytes);
     }
 
     #[test]
     fn ticks_increase_monotonically() {
-        let mut e = Engine::new();
+        let mut e = Sessions::new();
         assert_eq!(e.next_tick(), 1);
         assert_eq!(e.next_tick(), 2);
-        e.open_session(patch_with_line(1)).unwrap();
+        e.open_session(SessionPayload::new(patch_with_line(1)))
+            .unwrap();
         assert_eq!(e.next_tick(), 4);
     }
 
     #[test]
     fn tick_overflow_rebases_densely_and_preserves_lru_order() {
-        let mut e = Engine::new();
-        let a = e.open_session(patch_with_line(1)).unwrap();
-        let b = e.open_session(patch_with_line(1)).unwrap();
-        let c = e.open_session(patch_with_line(1)).unwrap();
+        let mut e = Sessions::new();
+        let a = e
+            .open_session(SessionPayload::new(patch_with_line(1)))
+            .unwrap();
+        let b = e
+            .open_session(SessionPayload::new(patch_with_line(1)))
+            .unwrap();
+        let c = e
+            .open_session(SessionPayload::new(patch_with_line(1)))
+            .unwrap();
         // Recency order: b (oldest), c, a (newest).
-        e.sessions.get_mut(&b).unwrap().last_tick = u64::MAX - 30;
-        e.sessions.get_mut(&c).unwrap().last_tick = u64::MAX - 20;
-        e.sessions.get_mut(&a).unwrap().last_tick = u64::MAX - 10;
+        e.entries.get_mut(&b).unwrap().last_tick = u64::MAX - 30;
+        e.entries.get_mut(&c).unwrap().last_tick = u64::MAX - 20;
+        e.entries.get_mut(&a).unwrap().last_tick = u64::MAX - 10;
         e.tick = u64::MAX;
 
         assert_eq!(e.next_tick(), 4);
-        assert_eq!(e.sessions[&b].last_tick, 1);
-        assert_eq!(e.sessions[&c].last_tick, 2);
-        assert_eq!(e.sessions[&a].last_tick, 3);
+        assert_eq!(e.entries[&b].last_tick, 1);
+        assert_eq!(e.entries[&c].last_tick, 2);
+        assert_eq!(e.entries[&a].last_tick, 3);
         assert!(e.evict_lru());
-        assert!(
-            !e.sessions.contains_key(&b),
-            "oldest entry is still the LRU"
-        );
+        assert!(!e.entries.contains_key(&b), "oldest entry is still the LRU");
     }
 
     // F3-T5: snapshot on a non-existent session is still SESSION_NOT_FOUND even
     // when the engine is at cap (eviction must not swallow the error).
     #[test]
     fn snapshot_missing_session_at_cap_is_error() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         for _ in 0..super::MAX_SESSIONS {
-            call(OPEN_LINE, &mut e).expect("open");
+            call(OPEN_LINE, &e).expect("open");
         }
         let err = call(
             r#"{"method":"session.snapshot","params":{"session":"ghost"}}"#,
-            &mut e,
+            &e,
         )
         .unwrap_err();
         assert_eq!(err.code, SESSION_NOT_FOUND);
@@ -1306,7 +1470,7 @@ mod tests {
     #[test]
     fn every_listed_method_is_dispatched_and_nothing_else_is() {
         // An unlisted name is refused before the dispatcher's arms are consulted.
-        let mut probe = Engine::new();
+        let probe = Engine::new();
         for unlisted in ["engine.shutdown", "session.list", "diff.Compute", ""] {
             let request = Request {
                 jsonrpc: "2.0".into(),
@@ -1315,15 +1479,15 @@ mod tests {
                 params: Value::Null,
             };
             assert_eq!(
-                dispatch(&request, &mut probe).unwrap_err().code,
+                dispatch(&request, &probe).unwrap_err().code,
                 crate::protocol::METHOD_NOT_FOUND,
                 "{unlisted}"
             );
         }
         for spec in METHODS {
-            let mut e = Engine::new();
+            let e = Engine::new();
             let line = format!(r#"{{"method":"{}"}}"#, spec.name);
-            if let Err(err) = call(&line, &mut e) {
+            if let Err(err) = call(&line, &e) {
                 assert_ne!(err.code, crate::protocol::METHOD_NOT_FOUND, "{}", spec.name);
             }
             assert!(spec.since <= PROTOCOL_VERSION, "{}", spec.name);
@@ -1333,10 +1497,10 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), names.len());
-        let v = call(r#"{"method":"engine.methods"}"#, &mut Engine::new()).unwrap();
+        let v = call(r#"{"method":"engine.methods"}"#, &Engine::new()).unwrap();
         assert_eq!(v["methods"].as_array().unwrap().len(), METHODS.len());
         assert_eq!(v["methods"][6]["name"], "diff.compute");
-        let v = call(r#"{"method":"engine.initialize"}"#, &mut Engine::new()).unwrap();
+        let v = call(r#"{"method":"engine.initialize"}"#, &Engine::new()).unwrap();
         assert_eq!(v["methods"].as_array().unwrap().len(), METHODS.len());
     }
 
@@ -1364,18 +1528,18 @@ mod tests {
 
     #[test]
     fn initialize_refuses_a_protocol_it_does_not_speak() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         assert_eq!(
             call(
                 r#"{"method":"engine.initialize","params":{"protocol":1}}"#,
-                &mut e
+                &e
             )
             .unwrap()["protocol"],
             1
         );
         let v0 = call(
             r#"{"method":"engine.initialize","params":{"protocol":0}}"#,
-            &mut e,
+            &e,
         )
         .unwrap();
         assert_eq!(v0["protocol"], 0);
@@ -1395,7 +1559,7 @@ mod tests {
             let line =
                 format!(r#"{{"method":"engine.initialize","params":{{"protocol":{other}}}}}"#);
             assert_eq!(
-                call(&line, &mut e).unwrap_err().code,
+                call(&line, &e).unwrap_err().code,
                 PROTOCOL_UNSUPPORTED,
                 "{other}"
             );
@@ -1404,14 +1568,14 @@ mod tests {
 
     #[test]
     fn compute_applies_the_input_contracts_and_reports_typed_errors() {
-        let mut e = Engine::new();
+        let e = Engine::new();
         let ok = r#"{"method":"diff.compute","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+b\n","require_files":true,"require_hunks":true}}"#;
-        let v = call(ok, &mut e).unwrap();
+        let v = call(ok, &e).unwrap();
         assert_eq!(v["schema"], "deep-diff-forge.review.v0");
         assert_eq!(v["files"].as_array().unwrap().len(), 1);
         let empty = call(
             r#"{"method":"diff.compute","params":{"patch":"","require_files":true}}"#,
-            &mut e,
+            &e,
         )
         .unwrap_err();
         assert_eq!(
@@ -1421,7 +1585,7 @@ mod tests {
                 "refused: 0 files in input (--require-files)"
             )
         );
-        let header = call(r#"{"method":"diff.compute","params":{"patch":"diff --git a/x b/x\n","require_hunks":true}}"#, &mut e).unwrap_err();
+        let header = call(r#"{"method":"diff.compute","params":{"patch":"diff --git a/x b/x\n","require_hunks":true}}"#, &e).unwrap_err();
         assert_eq!(
             (header.code, header.message.as_str()),
             (
@@ -1429,21 +1593,21 @@ mod tests {
                 "refused: 0 hunks in input (--require-hunks)"
             )
         );
-        assert!(call(r#"{"method":"diff.compute","params":{"patch":""}}"#, &mut e).is_ok());
+        assert!(call(r#"{"method":"diff.compute","params":{"patch":""}}"#, &e).is_ok());
         let bad = call(
             r#"{"method":"diff.compute","params":{"patch":"","require_files":"yes"}}"#,
-            &mut e,
+            &e,
         )
         .unwrap_err();
         assert_eq!(bad.code, crate::protocol::INVALID_PARAMS);
         let garbage = call(
             r#"{"method":"diff.compute","params":{"patch":"--- a/x\n+++ b/x\n+stray\n"}}"#,
-            &mut e,
+            &e,
         )
         .unwrap_err();
         assert_eq!(garbage.code, PATCH_PARSE_FAILED);
         assert_eq!(
-            call(r#"{"method":"diff.compute","params":{}}"#, &mut e)
+            call(r#"{"method":"diff.compute","params":{}}"#, &e)
                 .unwrap_err()
                 .code,
             crate::protocol::INVALID_PARAMS

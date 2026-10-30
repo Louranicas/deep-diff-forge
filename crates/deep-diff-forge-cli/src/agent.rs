@@ -120,7 +120,7 @@ fn daemon_call(method: &str, params: &Value) -> Value {
     let line = json!({"method": method, "params": params}).to_string();
     deep_diff_forge_daemon::parse_request(&line)
         .and_then(|request| {
-            deep_diff_forge_daemon::dispatch(&request, &mut deep_diff_forge_daemon::Engine::new())
+            deep_diff_forge_daemon::dispatch(&request, &deep_diff_forge_daemon::Engine::new())
         })
         .unwrap_or(Value::Null)
 }

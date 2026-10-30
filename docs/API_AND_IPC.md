@@ -43,7 +43,7 @@ flowchart LR
     PYS["Python StdioClient"]
     PYK["Python SocketClient,<br/>Rust SDK Client"]
     RPC["deep-diff-forge rpc<br/>stdio, its own engine"]
-    SRV["deep-diff-forge daemon start<br/>Unix socket, up to 8 connections,<br/>one engine behind a mutex"]
+    SRV["deep-diff-forge daemon start<br/>Unix socket, up to 8 connections,<br/>requests in parallel"]
     MCP["deep-diff-forge mcp<br/>tools/call, a fresh engine per call"]
     PL["serve::process_line"]
     D["handler::dispatch<br/>METHODS is the only route"]
@@ -71,9 +71,11 @@ flowchart LR
   rank with `deep_diff_forge_graph::rank`; they take no input guards.
 - `--cluster` scores files through `deep-diff-forge-cluster` (`run_risk_cluster`,
   which calls `graph::score_file`).
-- The daemon admits up to eight connections but serves them with one engine
-  behind a mutex, so requests run one at a time (`serve.rs`, `MAX_CONNECTIONS`,
-  `process_line`).
+- The daemon admits up to eight connections and runs their requests in parallel
+  under a 128 MiB cap on the request bytes in flight, first come, first served
+  (`serve.rs` `MAX_CONNECTIONS` and `process_line`; `admission.rs`
+  `MAX_IN_FLIGHT_BYTES`). Only the session table is locked, and only for
+  bookkeeping.
 
 ## Library Crates (shipped)
 

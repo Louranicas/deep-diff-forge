@@ -13,8 +13,8 @@ What exists today, checked against `crates/deep-diff-forge-daemon/src/` and the
   `daemon.shutdown`, `diff.plan`, `diff.compute`, `session.open`,
   `session.snapshot`, `session.close`. `deep-diff-forge rpc` speaks the same
   protocol over stdio without a daemon.
-- At most eight connections, all served by one engine behind one mutex, so
-  requests run one at a time. Line cap 80 MiB each way; a response over it
+- At most eight connections, their requests run in parallel under a 128 MiB
+  cap on the request bytes in flight ([concurrency](#concurrency)). Line cap 80 MiB each way; a response over it
   becomes `RESOURCE_EXHAUSTED` (8). 30-second absolute read deadline per line.
 - A second `start` at a live socket is refused (`AddrInUse`, exit 6); a stale
   socket (connect refused) is replaced; a non-socket file is never deleted.
@@ -129,6 +129,30 @@ daemon's own user; the daemon logs `refused a connection: the peer runs as uid
 N, not uid M`. The CLI (`daemon health|status|stop`) and the SDK clients check
 the daemon's uid the same way and refuse a daemon of another user with
 `cannot use the daemon at PATH` (exit 6).
+
+## Concurrency
+
+Changed after 0.3.0 (Unreleased). Before, every connection shared one `Mutex<Engine>`, so one slow
+request delayed every other client.
+
+- **Requests run in parallel.** Each of the eight connection workers serves its own requests
+  through one shared `Engine` (`&Engine`; a compile-time check fails the build if a field is not
+  `Send + Sync`).
+- **Only the session table is locked, and only for bookkeeping** (`handler.rs` `Sessions`):
+  opening, touching and closing a session. A patch is parsed and its retained size estimated
+  before the lock is taken, and a snapshot is ranked after the lock is released, from a shared
+  copy of the session's parsed patch. `diff.*`, `review.*` and `engine.*` do not lock it at all.
+- **Admission caps the work in flight** (`admission.rs`). Each request is weighed before it
+  runs: by its line length, or by the 64 MiB patch budget for `review.change`, whose Git output
+  can exceed its line (`MethodSpec::work`). The requests running together stay within
+  `MAX_IN_FLIGHT_BYTES` (128 MiB). Admission is first come, first served, so a waiting heavy
+  request is never overtaken by lighter ones, and a request heavier than the cap runs alone
+  rather than being refused. A permit is returned when its request finishes, panics included.
+- **Panics.** A panic while the session table was held empties the table and clears its poison
+  on the next use; the pid, start time and session-id counter are kept, so no id is reused. A
+  panic anywhere else leaves every session in place.
+- `deep-diff-forge rpc` (stdio) and `deep-diff-forge mcp` serve one request at a time by
+  design: they read one stream.
 
 ## Health RPC
 

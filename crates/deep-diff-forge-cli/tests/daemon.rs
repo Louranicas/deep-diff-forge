@@ -37,6 +37,42 @@ fn run_with_runtime_dir(
     )
 }
 
+/// A spawned daemon, killed and reaped when the test ends, also when an assertion fails first. A
+/// `Child` is not killed on drop: before, a failed assertion left its daemon serving, and one from
+/// a mutation run was found still running 31 hours later (2026-10-30).
+struct Daemon(std::process::Child);
+
+impl Daemon {
+    fn spawn(socket: &str) -> Self {
+        Self(
+            Command::new(bin())
+                .args(["daemon", "start", "--foreground", "--socket", socket])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn daemon"),
+        )
+    }
+
+    /// Wait up to two seconds for the daemon to exit on its own.
+    fn exited(&mut self) -> bool {
+        for _ in 0..200 {
+            if let Ok(Some(_)) = self.0.try_wait() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 fn temp_socket(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("ddf-clid-{}-{name}/d.sock", std::process::id()))
 }
@@ -119,18 +155,7 @@ fn daemon_full_lifecycle_start_health_stop() {
     let _ = std::fs::remove_dir_all(sock.parent().unwrap());
 
     // Start the daemon as a child process (run_server blocks until shutdown).
-    let mut child = Command::new(bin())
-        .args([
-            "daemon",
-            "start",
-            "--foreground",
-            "--socket",
-            sock.to_str().unwrap(),
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn daemon");
+    let mut child = Daemon::spawn(sock.to_str().unwrap());
 
     // Wait for the socket to appear.
     let mut ready = false;
@@ -151,15 +176,9 @@ fn daemon_full_lifecycle_start_health_stop() {
     assert_eq!(scode, 0);
     assert!(sout.contains("\"stopping\":true"));
 
-    // The server should exit shortly after shutdown.
-    for _ in 0..200 {
-        if let Ok(Some(_)) = child.try_wait() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
+    // The server exits shortly after shutdown.
+    assert!(child.exited(), "the daemon kept running after daemon stop");
+    drop(child);
     let _ = std::fs::remove_dir_all(sock.parent().unwrap());
 }
 
@@ -190,12 +209,7 @@ fn a_second_start_is_refused_and_the_first_keeps_serving() {
     let sock = temp_socket("second-start");
     let _ = std::fs::remove_dir_all(sock.parent().unwrap());
     let path = sock.to_str().unwrap();
-    let mut first = Command::new(bin())
-        .args(["daemon", "start", "--foreground", "--socket", path])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn daemon");
+    let mut first = Daemon::spawn(path);
     let mut ready = false;
     for _ in 0..200 {
         if run(&["daemon", "health", "--socket", path]).0 == 0 {
@@ -217,13 +231,7 @@ fn a_second_start_is_refused_and_the_first_keeps_serving() {
     assert!(stdout.contains("\"status\":\"ok\""));
 
     assert_eq!(run(&["daemon", "stop", "--socket", path]).0, 0);
-    for _ in 0..200 {
-        if let Ok(Some(_)) = first.try_wait() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let _ = first.kill();
-    let _ = first.wait();
+    assert!(first.exited(), "the daemon kept running after daemon stop");
+    drop(first);
     let _ = std::fs::remove_dir_all(sock.parent().unwrap());
 }

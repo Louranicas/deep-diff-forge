@@ -135,7 +135,7 @@ flowchart LR
     subgraph daemon[deep-diff-forge daemon start]
         Accept["accept loop: at most 8 connection workers"]
         Read["read one line: 80 MiB cap, 30 s absolute deadline"]
-        Engine["one Engine behind one Mutex: requests run one at a time"]
+        Engine["one shared Engine: requests run in parallel, 128 MiB of request bytes in flight, FIFO"]
         Cap["response over 80 MiB becomes RESOURCE_EXHAUSTED (8)"]
     end
     CLI --> Dir --> Sock --> Accept --> Read --> Engine --> Cap
@@ -172,12 +172,17 @@ flowchart LR
   the remaining time before every read, so slow byte-drip traffic cannot renew
   it. Writes have a 30-second timeout (`WRITE_TIMEOUT`).
 - At most eight connections are served at once (`MAX_CONNECTIONS`). A further
-  connection is accepted and closed at once, with no response. All workers share
-  one engine behind one mutex, so requests run one at a time.
+  connection is accepted and closed at once, with no response. Workers share one
+  engine and their requests run in parallel. Only the session table is locked, and
+  only for bookkeeping; parsing, ranking and Git run outside it. The request bytes
+  in flight are capped at 128 MiB (`MAX_IN_FLIGHT_BYTES`, `admission.rs`), first
+  come, first served; a `review.change` weighs the 64 MiB patch budget, and a
+  request heavier than the cap runs alone.
 - Sessions are LRU-bounded to 64 (`MAX_SESSIONS`) and their aggregate retained
   payload is capped at 128 MiB (`MAX_RETAINED_SESSION_BYTES`, `handler.rs`).
-- A dispatch panic is caught per request. The engine resets its sessions and
-  clears the mutex poison, so later requests are served as before.
+- A dispatch panic is caught per request. A panic while the session table was
+  held empties the table and clears its poison on the next use; any other panic
+  leaves every session in place. Later requests are served as before.
 
 ### Review council gate sandbox
 
@@ -304,9 +309,10 @@ SBOM, and attests it before irreversible publication.
 
 Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
 
-- **One engine serializes daemon requests.** Every connection shares one
-  `Mutex<Engine>`, so one slow request delays all other clients. Eight
-  connections can be open; only one request runs.
+- **Closed (Unreleased): one engine serialized daemon requests.** Every
+  connection shared one `Mutex<Engine>`, so one slow request delayed all other
+  clients. Requests now run in parallel under the 128 MiB in-flight cap above
+  (EVIDENCE.md).
 - **Closed (Unreleased): the socket checks peer credentials.** The daemon reads
   each client's effective uid from the kernel (`SO_PEERCRED` on Linux,
   `getpeereid` on macOS and the BSDs; other platforms refuse every client) and

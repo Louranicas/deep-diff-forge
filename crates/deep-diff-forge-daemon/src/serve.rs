@@ -1,7 +1,7 @@
 // DDF integration: R25, R28, R40, R59. Preserve bounded connection admission on Rust 1.88 using compare-exchange; this does not solve the separate global-lock recommendation.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#runtime
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-daemon--serve
-use crate::handler::{Engine, dispatch};
+use crate::handler::{Engine, dispatch, request_weight};
 use crate::protocol::{
     INTERNAL_ERROR, INVALID_REQUEST, PARSE_ERROR, RESOURCE_EXHAUSTED, RpcError, error_response,
     parse_request, success_response,
@@ -16,8 +16,8 @@ use std::io::{BufRead, BufReader, Write as _};
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Tracks whether a `SocketLocation` was produced from the engine-managed
@@ -182,57 +182,74 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Process one request line against the shared engine, returning the response
 /// line. This is the socket-free core of connection handling.
+///
+/// Callers on different threads run in parallel. Each request first waits for admission
+/// ([`Engine::admission`]): the request bytes running at once stay within the in-flight budget,
+/// first come, first served.
 #[must_use]
-pub fn process_line(line: &str, engine: &Mutex<Engine>) -> String {
+pub fn process_line(line: &str, engine: &Engine) -> String {
     match parse_request(line) {
         Err(err) => error_response(&Value::Null, &err),
         Ok(request) => {
             let id = request.id.clone();
+            // Held until the response is built; returned on a panic too.
+            let _permit = engine
+                .admission()
+                .admit(request_weight(&request, line.len()));
             // Isolate a panic inside dispatch: one malformed/abusive request must
             // not unwind and tear down the whole daemon (availability hardening,
-            // mirroring the morph-ir-engine per-connection backstop).
+            // mirroring the morph-ir-engine per-connection backstop). A panic while the
+            // session table was held empties the table on its next use (`Engine::sessions`).
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut guard = match engine.lock() {
-                    Ok(g) => g,
-                    Err(poison) => poison.into_inner(),
-                };
                 #[cfg(test)]
-                panic_on_test_method(&request.method);
-                dispatch(&request, &mut guard)
+                test_hooks::run(&request.method, engine);
+                dispatch(&request, engine)
             }));
             match outcome {
                 Ok(Ok(result)) => {
                     bounded_response(&id, success_response(&id, result), MAX_RESPONSE_BYTES)
                 }
                 Ok(Err(err)) => error_response(&id, &err),
-                Err(_) => {
-                    recover(engine);
-                    error_response(&id, &RpcError::new(INTERNAL_ERROR, "internal error"))
-                }
+                Err(_) => error_response(&id, &RpcError::new(INTERNAL_ERROR, "internal error")),
             }
         }
     }
 }
 
-/// Test-only: `test.panic` panics while the engine is held, to exercise [`recover`].
+/// Test-only methods `process_line` runs before dispatch: `test.panic` panics while holding the
+/// session table, `test.panic_unlocked` panics holding nothing, and `test.hold` blocks until
+/// [`test_hooks::release`] (a request that is still running).
 #[cfg(test)]
-fn panic_on_test_method(method: &str) {
-    assert!(
-        method != "test.panic",
-        "test-only panic while holding the engine"
-    );
-}
+pub(crate) mod test_hooks {
+    use super::Engine;
+    use std::sync::{Condvar, Mutex, OnceLock};
 
-/// After a contained panic: reset the sessions the panic may have left inconsistent and clear the
-/// poison, so every later request is served as before. Before, the lock stayed poisoned, and each
-/// connection loop read that as "not running": every later connection got one answer and was
-/// dropped (anchor A-03).
-fn recover(engine: &Mutex<Engine>) {
-    engine
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .reset_sessions();
-    engine.clear_poison();
+    fn gate() -> &'static (Mutex<bool>, Condvar) {
+        static GATE: OnceLock<(Mutex<bool>, Condvar)> = OnceLock::new();
+        GATE.get_or_init(|| (Mutex::new(false), Condvar::new()))
+    }
+
+    pub(crate) fn run(method: &str, engine: &Engine) {
+        match method {
+            "test.panic" => engine.panic_holding_sessions(),
+            "test.panic_unlocked" => panic!("test-only panic holding nothing"),
+            "test.hold" => {
+                let (released, turn) = gate();
+                let mut done = released.lock().unwrap();
+                while !*done {
+                    done = turn.wait(done).unwrap();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Let every `test.hold` request finish.
+    pub(crate) fn release() {
+        let (released, turn) = gate();
+        *released.lock().unwrap() = true;
+        turn.notify_all();
+    }
 }
 
 /// Read one newline-terminated line into `buf`, reading at most `cap + 1` bytes.
@@ -340,7 +357,7 @@ fn read_capped_line_deadline(
 /// # Errors
 ///
 /// Returns any underlying stream I/O error.
-pub fn handle_connection(stream: UnixStream, engine: &Mutex<Engine>) -> std::io::Result<()> {
+pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result<()> {
     stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
@@ -377,8 +394,7 @@ pub fn handle_connection(stream: UnixStream, engine: &Mutex<Engine>) -> std::io:
         let response = process_line(line, engine);
         writeln!(writer, "{}", json_line_safe(&response))?;
         writer.flush()?;
-        let still_running = engine.lock().is_ok_and(|g| g.is_running());
-        if !still_running {
+        if !engine.is_running() {
             break;
         }
     }
@@ -614,13 +630,12 @@ fn serve_bound(
     let me = rustix::process::geteuid().as_raw();
     let socket_metadata = std::fs::symlink_metadata(&socket_path)?;
     let socket_identity = (socket_metadata.dev(), socket_metadata.ino());
-    // Wrap the engine in Arc so each spawned connection thread can hold a
-    // reference without lifetime constraints on the accept loop.
-    let engine: Arc<Mutex<Engine>> = Arc::new(Mutex::new(engine));
+    // Shared by every connection thread; requests run in parallel (see `process_line`).
+    let engine = Arc::new(engine);
     let active_connections = Arc::new(AtomicUsize::new(0));
     loop {
         // Break immediately if a previous connection already triggered shutdown.
-        if engine.lock().is_ok_and(|g| !g.is_running()) {
+        if !engine.is_running() {
             break;
         }
         match listener.accept() {
@@ -652,7 +667,7 @@ fn serve_bound(
                         // If the connection just triggered a shutdown, unblock the
                         // accept loop (which is blocking on listener.accept()) by
                         // opening a short-lived wakeup connection to ourselves.
-                        if arc.lock().is_ok_and(|g| !g.is_running()) {
+                        if !arc.is_running() {
                             let _ = UnixStream::connect(wakeup);
                         }
                     });
@@ -728,8 +743,8 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    fn engine() -> Mutex<Engine> {
-        Mutex::new(Engine::new())
+    fn engine() -> Engine {
+        Engine::new()
     }
 
     #[test]
@@ -835,27 +850,76 @@ mod tests {
         assert_eq!(v["error"]["code"], crate::protocol::METHOD_NOT_FOUND);
     }
 
-    /// Anchor A-03: a contained panic drops the sessions it may have corrupted and clears the
-    /// poison, so the engine keeps serving.
+    const OPEN_X: &str = r#"{"id":1,"method":"session.open","params":{"patch":"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"}}"#;
+
+    /// Anchor A-03: a panic while the session table was held drops the sessions it may have
+    /// corrupted and clears the poison, so the engine keeps serving.
     #[test]
     fn a_contained_panic_resets_sessions_and_clears_the_poison() {
         let e = engine();
-        let open = r#"{"id":1,"method":"session.open","params":{"patch":"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"}}"#;
-        let opened: Value = serde_json::from_str(&process_line(open, &e)).unwrap();
+        let opened: Value = serde_json::from_str(&process_line(OPEN_X, &e)).unwrap();
         assert!(opened["result"]["session"].is_string(), "{opened}");
-        assert_eq!(e.lock().unwrap().session_count(), 1);
+        assert_eq!(e.session_count(), 1);
         let crashed: Value =
             serde_json::from_str(&process_line(r#"{"id":2,"method":"test.panic"}"#, &e)).unwrap();
         assert_eq!(crashed["error"]["code"], crate::protocol::INTERNAL_ERROR);
         assert_eq!(crashed["id"], 2);
-        assert!(!e.is_poisoned());
-        let guard = e.lock().unwrap();
-        assert_eq!((guard.session_count(), guard.is_running()), (0, true));
-        drop(guard);
+        assert_eq!((e.session_count(), e.is_running()), (0, true));
         let health: Value =
             serde_json::from_str(&process_line(r#"{"id":3,"method":"daemon.health"}"#, &e))
                 .unwrap();
         assert_eq!(health["result"]["status"], "ok");
+        let reopened: Value = serde_json::from_str(&process_line(OPEN_X, &e)).unwrap();
+        assert_ne!(
+            reopened["result"]["session"], opened["result"]["session"],
+            "a session id was reused after the reset"
+        );
+        assert_eq!(e.session_count(), 1);
+    }
+
+    /// A panic that held nothing leaves every other client's session in place: only a panic
+    /// inside the session table can have left it inconsistent.
+    #[test]
+    fn a_panic_outside_the_session_table_keeps_the_sessions() {
+        let e = engine();
+        let _ = process_line(OPEN_X, &e);
+        let crashed: Value = serde_json::from_str(&process_line(
+            r#"{"id":2,"method":"test.panic_unlocked"}"#,
+            &e,
+        ))
+        .unwrap();
+        assert_eq!(crashed["error"]["code"], crate::protocol::INTERNAL_ERROR);
+        assert_eq!(e.session_count(), 1);
+        assert_eq!((e.admission().running(), e.admission().in_flight()), (0, 0));
+    }
+
+    /// Requests run in parallel: while one request is still running, another is answered.
+    /// Before, every request held one engine mutex, so `daemon.health` waited for the first.
+    #[test]
+    fn a_running_request_does_not_block_another() {
+        let e = engine();
+        thread::scope(|scope| {
+            let held = scope.spawn(|| process_line(r#"{"id":1,"method":"test.hold"}"#, &e));
+            while e.admission().running() == 0 {
+                thread::yield_now();
+            }
+            let (answered, rx) = std::sync::mpsc::channel();
+            let e = &e;
+            scope.spawn(move || {
+                let health = process_line(r#"{"id":2,"method":"daemon.health"}"#, e);
+                answered.send(health).unwrap();
+            });
+            let health = rx.recv_timeout(Duration::from_secs(10));
+            test_hooks::release();
+            let health: Value = serde_json::from_str(
+                &health.expect("daemon.health waited for a request that was still running"),
+            )
+            .unwrap();
+            assert_eq!(health["result"]["status"], "ok");
+            let held: Value = serde_json::from_str(&held.join().unwrap()).unwrap();
+            assert_eq!(held["error"]["code"], crate::protocol::METHOD_NOT_FOUND);
+        });
+        assert_eq!(e.admission().running(), 0);
     }
 
     /// The connection that saw the panic keeps being served (before, its loop ended).
@@ -909,7 +973,7 @@ mod tests {
     fn process_line_shutdown_clears_running() {
         let e = engine();
         let _ = process_line(r#"{"method":"daemon.shutdown"}"#, &e);
-        assert!(!e.lock().unwrap().is_running());
+        assert!(!e.is_running());
     }
 
     #[test]
