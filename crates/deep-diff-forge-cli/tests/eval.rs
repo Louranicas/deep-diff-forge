@@ -104,6 +104,43 @@ impl Drop for Copy {
 /// Planted controls: a wrong label fails the gate with exit 7 and names the case; a file that
 /// changed under its recorded hash is refused with exit 4.
 #[test]
+fn the_summary_names_each_metric_and_each_failure() {
+    let run = |dir: &Path| {
+        let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .args(["eval", "--corpus", dir.to_str().unwrap()])
+            .output()
+            .expect("run");
+        (out.status.code(), String::from_utf8(out.stdout).unwrap())
+    };
+    let (code, text) = run(&corpus());
+    assert_eq!(code, Some(0), "{text}");
+    assert!(
+        text.starts_with("deep-diff-forge eval: 10 cases\n"),
+        "{text}"
+    );
+    for line in [
+        "  ranking_pairs        6/6",
+        "  evidence_recall      4/4",
+        "  known misses         1",
+    ] {
+        assert!(text.lines().any(|l| l == line), "{line:?} in\n{text}");
+    }
+    assert!(!text.contains("FAIL"), "{text}");
+
+    let wrong = Copy::new("summary");
+    let mut manifest = wrong.manifest();
+    manifest["cases"][0]["must_outrank"][0] = serde_json::json!(["docs/BIG.md", "src/util.rs"]);
+    wrong.write_manifest(&manifest);
+    let (code, text) = run(&wrong.0);
+    assert_eq!(code, Some(7));
+    assert!(
+        text.lines()
+            .any(|l| l == "  FAIL ranking/circle-probe: docs/BIG.md ranks below src/util.rs"),
+        "{text}"
+    );
+}
+
+#[test]
 fn the_gate_fails_for_the_reason_it_names() {
     let wrong = Copy::new("wrong");
     let mut manifest = wrong.manifest();
@@ -167,6 +204,18 @@ fn the_gate_fails_for_the_reason_it_names() {
             "{receipt:#}"
         );
     }
+
+    // A file cannot outrank itself: a pair naming one path twice is a wrong label, not a pass.
+    let selfish = Copy::new("selfish");
+    let mut manifest = selfish.manifest();
+    manifest["cases"][0]["must_outrank"][0] = serde_json::json!(["src/util.rs", "src/util.rs"]);
+    selfish.write_manifest(&manifest);
+    let (code, receipt, _) = eval(&selfish.0);
+    assert_eq!(code, 7);
+    assert_eq!(
+        receipt["failures"],
+        serde_json::json!(["ranking/circle-probe: src/util.rs ranks below src/util.rs"])
+    );
 
     let missing = Copy::new("missing");
     std::fs::remove_file(missing.0.join("findings/mixed.jsonl")).unwrap();

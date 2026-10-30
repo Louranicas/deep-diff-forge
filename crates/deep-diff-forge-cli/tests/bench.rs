@@ -38,6 +38,13 @@ fn quick_runs_five_repetitions_and_the_default_fifteen() {
         assert_eq!(workloads.len(), 1, "{r:#}");
         assert_eq!(workloads[0]["name"], CHEAP);
         assert_eq!(workloads[0]["repetitions"], repetitions, "{args:?}");
+        // Real timings: this workload takes milliseconds, so no sample is 0 or 1 ns.
+        let (min, median, p95) = (
+            workloads[0]["min_ns"].as_u64().unwrap(),
+            workloads[0]["median_ns"].as_u64().unwrap(),
+            workloads[0]["p95_ns"].as_u64().unwrap(),
+        );
+        assert!(1_000 < min && min <= median && median <= p95, "{r:#}");
     }
 }
 
