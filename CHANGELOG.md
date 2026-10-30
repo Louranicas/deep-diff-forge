@@ -82,6 +82,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Security
 
+- **Quoting code no longer hides it from code evidence** (DDF-EVID-001). The lexical view
+  blanked everything between quotes, so `V="$(curl …)"` in shell,
+  `` `${require("child_process").execSync(c)}` `` in JS and `f"{eval(x)}"` in Python carried no
+  evidence. Code inside `$(…)` and backticks (shell double quotes), `${…}` (JS template literals)
+  and `{…}` (one-line Python f-strings, not `{{`) is now code up to its matching closer on the
+  line, with nesting counted. Single-quoted shell and plain or bytes Python strings still run
+  nothing and stay blank. Not covered: triple-quoted f-strings, and an interpolation that spans
+  lines.
 - `sanitize_body` (agent annotations, and now findings) drops bidi, invisible and
   line-separator characters as well as control characters. Before, Unicode category Cf
   characters such as U+202E were kept, so an agent's note could reorder or hide text for the
