@@ -25,7 +25,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   (`review.change` weighs the 64 MiB patch budget; a request heavier than the cap runs alone).
   Measured: six clients ranking a 2.75 MB patch, 23.4 to 56.8 requests per second;
   `daemon.health` under that load, 205 ms to 0.2 ms. A panic while the session table is held
-  empties it; any other panic leaves every session in place.
+  empties it; any other panic leaves every session in place. A request whose turn does not
+  come within 30 s is answered `RESOURCE_EXHAUSTED` ("the daemon is busy") and gives up its
+  place in the queue.
 - CLI daemon tests kill their daemon when an assertion fails first (`Child` is not killed on
   drop); a mutation run had left one serving for 31 hours.
 
@@ -41,7 +43,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **Breaking (daemon crate):** `dispatch`, `process_line` and `handle_connection` take
   `&Engine` instead of `&mut Engine` or `&Mutex<Engine>`; `Engine` is `Send + Sync` (checked at
   compile time). `MethodSpec` gains `work: Work`. New: `Admission`, `Permit`,
-  `MAX_IN_FLIGHT_BYTES`, `Work`, `request_weight`, `Engine::admission`.
+  `MAX_IN_FLIGHT_BYTES`, `ADMISSION_WAIT`, `Busy`, `Work`, `request_weight`,
+  `Engine::admission`.
 
 - `SocketLocation::bind`, `bind_secure` and `bind_explicit` return a `BoundListener` (the
   listener and its start lock; `listener()` borrows the socket) instead of a `UnixListener`.

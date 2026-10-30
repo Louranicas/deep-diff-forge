@@ -148,6 +148,11 @@ request delayed every other client.
   `MAX_IN_FLIGHT_BYTES` (128 MiB). Admission is first come, first served, so a waiting heavy
   request is never overtaken by lighter ones, and a request heavier than the cap runs alone
   rather than being refused. A permit is returned when its request finishes, panics included.
+- **No request waits forever.** One whose turn has not come within 30 s (`ADMISSION_WAIT`, the
+  client's read deadline) is answered `RESOURCE_EXHAUSTED` (8), "the daemon is busy", and gives
+  up its place, so the requests behind it move on.
+- **The session table's loops are bounded:** at most one eviction per session held, and at most
+  `MAX_SESSIONS + 1` candidate ids, so a fault in either cannot spin.
 - **Panics.** A panic while the session table was held empties the table and clears its poison
   on the next use; the pid, start time and session-id counter are kept, so no id is reused. A
   panic anywhere else leaves every session in place.

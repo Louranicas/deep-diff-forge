@@ -192,10 +192,20 @@ pub fn process_line(line: &str, engine: &Engine) -> String {
         Err(err) => error_response(&Value::Null, &err),
         Ok(request) => {
             let id = request.id.clone();
-            // Held until the response is built; returned on a panic too.
-            let _permit = engine
+            // Held until the response is built; returned on a panic too. A request whose turn
+            // does not come within the admission wait is answered busy, not left waiting.
+            let _permit = match engine
                 .admission()
-                .admit(request_weight(&request, line.len()));
+                .admit(request_weight(&request, line.len()))
+            {
+                Ok(permit) => permit,
+                Err(busy) => {
+                    return error_response(
+                        &id,
+                        &RpcError::new(RESOURCE_EXHAUSTED, busy.to_string()),
+                    );
+                }
+            };
             // Isolate a panic inside dispatch: one malformed/abusive request must
             // not unwind and tear down the whole daemon (availability hardening,
             // mirroring the morph-ir-engine per-connection backstop). A panic while the
@@ -234,11 +244,12 @@ pub(crate) mod test_hooks {
             "test.panic" => engine.panic_holding_sessions(),
             "test.panic_unlocked" => panic!("test-only panic holding nothing"),
             "test.hold" => {
+                // Bounded, so a test that never releases fails instead of hanging.
                 let (released, turn) = gate();
-                let mut done = released.lock().unwrap();
-                while !*done {
-                    done = turn.wait(done).unwrap();
-                }
+                let done = released.lock().unwrap();
+                let _ = turn
+                    .wait_timeout_while(done, std::time::Duration::from_secs(10), |done| !*done)
+                    .unwrap();
             }
             _ => {}
         }
@@ -743,6 +754,19 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    /// Join a server or connection thread, failing the test rather than hanging it when the
+    /// thread never finishes (as under a mutant that never stops serving): after 10 s the join
+    /// is an error, like a thread that panicked.
+    fn joined<T>(handle: thread::JoinHandle<T>) -> thread::Result<T> {
+        for _ in 0..1000 {
+            if handle.is_finished() {
+                return handle.join();
+            }
+            thread::park_timeout(Duration::from_millis(10));
+        }
+        Err(Box::new("the thread did not finish within 10 s"))
+    }
+
     fn engine() -> Engine {
         Engine::new()
     }
@@ -797,7 +821,7 @@ mod tests {
                 .expect_err("drip feed must not extend the absolute deadline");
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
         assert!(started.elapsed() < Duration::from_millis(200));
-        drip.join().unwrap();
+        joined(drip).unwrap();
     }
 
     #[test]
@@ -900,8 +924,13 @@ mod tests {
         let e = engine();
         thread::scope(|scope| {
             let held = scope.spawn(|| process_line(r#"{"id":1,"method":"test.hold"}"#, &e));
-            while e.admission().running() == 0 {
-                thread::yield_now();
+            let mut holding = false;
+            for _ in 0..1000 {
+                holding = e.admission().running() == 1;
+                if holding {
+                    break;
+                }
+                thread::park_timeout(Duration::from_millis(10));
             }
             let (answered, rx) = std::sync::mpsc::channel();
             let e = &e;
@@ -910,7 +939,9 @@ mod tests {
                 answered.send(health).unwrap();
             });
             let health = rx.recv_timeout(Duration::from_secs(10));
+            // Released before any assertion, so a failing assertion cannot leave it waiting.
             test_hooks::release();
+            assert!(holding, "the held request was never admitted");
             let health: Value = serde_json::from_str(
                 &health.expect("daemon.health waited for a request that was still running"),
             )
@@ -939,7 +970,7 @@ mod tests {
             .lines()
             .map(|l| serde_json::from_str(&l.unwrap()).unwrap())
             .collect();
-        handle.join().unwrap().unwrap();
+        joined(handle).unwrap().unwrap();
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert_eq!(lines[1]["result"]["status"], "ok");
     }
@@ -962,7 +993,7 @@ mod tests {
         writer.shutdown(std::net::Shutdown::Write).unwrap();
         let mut text = String::new();
         std::io::Read::read_to_string(&mut BufReader::new(client), &mut text).unwrap();
-        handle.join().unwrap().unwrap();
+        joined(handle).unwrap().unwrap();
         assert!(!text.contains(['\u{2028}', '\u{2029}']), "{text}");
         assert_eq!(text.lines().count(), 1, "{text}");
         let response: Value = serde_json::from_str(text.trim_end()).unwrap();
@@ -991,7 +1022,7 @@ mod tests {
         reader.read_line(&mut line).unwrap();
         drop(writer);
         drop(reader);
-        let _ = handle.join();
+        assert!(joined(handle).is_ok(), "the thread did not finish");
         let v: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(v["result"]["status"], "ok");
         assert_eq!(v["id"], 9);
@@ -1012,7 +1043,7 @@ mod tests {
         reader.read_line(&mut second).unwrap();
         drop(writer);
         drop(reader);
-        let _ = handle.join();
+        assert!(joined(handle).is_ok(), "the thread did not finish");
         assert!(first.contains("\"status\":\"ok\""));
         assert!(second.contains("deep-diff-forge"));
     }
@@ -1172,7 +1203,7 @@ mod tests {
         let stop = request(&client, r#"{"id":2,"method":"daemon.shutdown"}"#).expect("stop");
         assert!(stop.contains("\"stopping\":true"));
 
-        let _ = server.join();
+        assert!(joined(server).is_ok(), "the thread did not finish");
         // Socket is cleaned up on shutdown.
         assert!(!sock.exists());
     }
@@ -1192,7 +1223,7 @@ mod tests {
         assert!(resp.contains("public_api_surface"));
 
         let _ = request(&client, r#"{"method":"daemon.shutdown"}"#);
-        let _ = server.join();
+        assert!(joined(server).is_ok(), "the thread did not finish");
     }
 
     #[test]
@@ -1241,7 +1272,7 @@ mod tests {
         reader.read_line(&mut line).unwrap();
         drop(writer);
         drop(reader);
-        let _ = handle.join();
+        assert!(joined(handle).is_ok(), "the thread did not finish");
         assert!(line.contains("\"status\":\"ok\""));
     }
 
@@ -1625,9 +1656,9 @@ mod tests {
         let mut reader = BufReader::new(client);
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
-        send.join().unwrap();
+        joined(send).unwrap();
         drop(reader);
-        let _ = handle.join();
+        assert!(joined(handle).is_ok(), "the thread did not finish");
         serde_json::from_str(&line).unwrap()
     }
 
@@ -1692,7 +1723,7 @@ mod tests {
         let (location, daemon) = fake_daemon("resp-at-cap", response);
         let got = request(&location, r#"{"method":"daemon.health"}"#).expect("at-cap response");
         assert_eq!(got.len(), MAX_RESPONSE_BYTES - 1);
-        daemon.join().unwrap();
+        joined(daemon).unwrap();
     }
 
     #[test]
@@ -1700,7 +1731,7 @@ mod tests {
         let (location, daemon) = fake_daemon("resp-over-cap", vec![b'x'; MAX_RESPONSE_BYTES + 1]);
         let err = request(&location, r#"{"method":"daemon.health"}"#).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-        daemon.join().unwrap();
+        joined(daemon).unwrap();
     }
 
     /// A socket a daemon still listens on is never removed; one nothing listens on is.

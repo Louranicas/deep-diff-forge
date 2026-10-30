@@ -149,22 +149,25 @@ impl Sessions {
                 "session exceeds the retained-memory budget",
             ));
         }
-        while self.entries.len() >= MAX_SESSIONS
-            || self.retained_bytes.saturating_add(retained_bytes) > self.max_retained_bytes
-        {
-            if !self.evict_lru() {
+        // At most one eviction per session held, so the loop ends even if eviction stops working.
+        for _ in 0..=self.entries.len() {
+            let over = self.entries.len() >= MAX_SESSIONS
+                || self.retained_bytes.saturating_add(retained_bytes) > self.max_retained_bytes;
+            if !over || !self.evict_lru() {
                 break;
             }
         }
 
-        // Wrap safely and skip any still-live id after the theoretical wrap.
-        let id = loop {
-            let candidate = format!("s{}", self.next_session);
-            self.next_session = self.next_session.checked_add(1).unwrap_or(1);
-            if !self.entries.contains_key(&candidate) {
-                break candidate;
-            }
-        };
+        // Wrap safely and skip any still-live id after the theoretical wrap. At most
+        // `MAX_SESSIONS` ids are live, so one of the next `MAX_SESSIONS + 1` candidates is free.
+        let id = (0..=MAX_SESSIONS)
+            .map(|_| {
+                let candidate = format!("s{}", self.next_session);
+                self.next_session = self.next_session.checked_add(1).unwrap_or(1);
+                candidate
+            })
+            .find(|candidate| !self.entries.contains_key(candidate))
+            .ok_or_else(|| RpcError::new(RESOURCE_EXHAUSTED, "no free session id"))?;
         let tick = self.next_tick();
         self.retained_bytes = self.retained_bytes.saturating_add(retained_bytes);
         self.entries.insert(
@@ -976,6 +979,51 @@ mod tests {
             (true, REVIEW_CHANGE_GIT_LIMIT)
         );
         assert!(!change_options(false).include_untracked);
+    }
+
+    /// A request holds its line's bytes of the in-flight budget; a Git acquisition holds at least
+    /// the patch budget, since Git's output can be larger than its request line.
+    #[test]
+    fn each_method_weighs_its_work() {
+        let budget = deep_diff_forge_patch::DEFAULT_BYTE_BUDGET;
+        assert_eq!(Work::Request.weight(123), 123);
+        assert_eq!(Work::GitAcquisition.weight(123), budget);
+        assert_eq!(Work::GitAcquisition.weight(budget + 1), budget + 1);
+        let request = |method: &str| Request {
+            jsonrpc: "2.0".into(),
+            id: Value::Null,
+            method: method.into(),
+            params: Value::Null,
+        };
+        assert_eq!(request_weight(&request("diff.rank"), 77), 77);
+        assert_eq!(request_weight(&request("review.change"), 77), budget);
+        assert_eq!(request_weight(&request("no.such"), 77), 77);
+        let git: Vec<_> = METHODS
+            .iter()
+            .filter(|m| m.work == Work::GitAcquisition)
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(git, ["review.change"], "only review.change runs Git");
+    }
+
+    /// The allowed roots are kept canonical, and a root that does not exist is refused.
+    #[test]
+    fn allowed_repositories_are_canonical_and_must_exist() {
+        let root = std::env::temp_dir().join(format!("ddf-allow-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let engine = Engine::new()
+            .allowing_repos(&[root.join("sub").join("..")])
+            .unwrap();
+        assert_eq!(
+            engine.allowed_repos,
+            [std::fs::canonicalize(&root).unwrap()]
+        );
+        let missing = root.join("missing");
+        let Err((named, _)) = Engine::new().allowing_repos(std::slice::from_ref(&missing)) else {
+            panic!("a missing root was allowed");
+        };
+        assert_eq!(named, missing);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

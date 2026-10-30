@@ -177,7 +177,8 @@ flowchart LR
   only for bookkeeping; parsing, ranking and Git run outside it. The request bytes
   in flight are capped at 128 MiB (`MAX_IN_FLIGHT_BYTES`, `admission.rs`), first
   come, first served; a `review.change` weighs the 64 MiB patch budget, and a
-  request heavier than the cap runs alone.
+  request heavier than the cap runs alone. A request that waits 30 s for its
+  turn is answered `RESOURCE_EXHAUSTED` and gives up its place.
 - Sessions are LRU-bounded to 64 (`MAX_SESSIONS`) and their aggregate retained
   payload is capped at 128 MiB (`MAX_RETAINED_SESSION_BYTES`, `handler.rs`).
 - A dispatch panic is caught per request. A panic while the session table was

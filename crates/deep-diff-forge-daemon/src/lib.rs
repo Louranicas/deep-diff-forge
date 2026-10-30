@@ -35,7 +35,7 @@ mod security;
 mod serve;
 pub mod views;
 
-pub use admission::{Admission, MAX_IN_FLIGHT_BYTES, Permit};
+pub use admission::{ADMISSION_WAIT, Admission, Busy, MAX_IN_FLIGHT_BYTES, Permit};
 pub use handler::{Engine, METHODS, MethodSpec, Work, dispatch, request_weight};
 pub use protocol::{
     GIT_FAILED, INPUT_CONTRACT_REFUSED, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST,
