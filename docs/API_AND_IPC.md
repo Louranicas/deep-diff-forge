@@ -185,6 +185,7 @@ version is refused with domain error 2.
 | `session.open` | `patch: string` | `{session, files}` | 0 |
 | `session.snapshot` | `session: string` | `[ranked file]` | 0 |
 | `session.close` | `session: string` | `{closed}` | 0 |
+| `daemon.metrics` | — | `deep-diff-forge.daemon-metrics.v0`: requests, errors and latency per method; admission, connection and engine counters since start ([operations](OPERATIONS_AND_DAEMON.md#observability)) | 2 |
 | `findings.verify` | `patch: string, findings: [object], require_files?, require_hunks?` | `deep-diff-forge.findings.v0`: each finding accepted (anchor, address and line checked against the sealed review, body sanitised) or refused with a reason; `claim_verified` is always `false` | 2 |
 
 `cache_entries` is always 0: there is no response cache (`handler.rs`, decision

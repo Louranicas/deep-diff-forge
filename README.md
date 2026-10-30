@@ -336,7 +336,7 @@ deep-diff-forge schema [result|exit-codes]      # the envelope's JSON Schema, or
 deep-diff-forge explain <code> [--family engine|council] [--json]
 deep-diff-forge mcp                             # read-only MCP server over stdio
 deep-diff-forge rpc                             # the daemon's JSON-RPC over stdio, no daemon
-deep-diff-forge daemon {path|start [--foreground]|health|status|stop} [--socket PATH]
+deep-diff-forge daemon {path|start [--foreground] [--log-format text|json]|health|status|metrics|stop} [--socket PATH]
 ```
 
 ### Learning, analysis, deployment and diagnostics
@@ -394,6 +394,7 @@ empty.
 | `envelope` | `ddf.result.v1` |
 | `agent setup --json` · `agent doctor --json` | `deep-diff-forge.agent-setup.v0` · `deep-diff-forge.agent-doctor.v0` |
 | `findings verify`, `findings.verify`, MCP `verify_findings` | `deep-diff-forge.findings.v0` (input: one `deep-diff-forge.finding.v0` object per finding) |
+| `daemon metrics`, `daemon.metrics` | `deep-diff-forge.daemon-metrics.v0` |
 | `daemon`, `rpc` | JSON-RPC 2.0, protocol 2 |
 
 **Input sealing.** `review.v0`, `rank.v0`, `cluster.v0`, `semantic.v0` and
@@ -610,7 +611,8 @@ server on an owner-private Unix domain socket.
 **JSON-RPC methods** (protocol 2; `engine.methods` lists them with their parameters and the protocol that added them):
 `engine.initialize`, `engine.methods`, `daemon.health`, `daemon.status`,
 `daemon.shutdown`, `diff.plan`, `diff.compute`, `diff.rank`, `review.outline`, `review.hunks`,
-`review.change`, `session.open`, `session.snapshot`, `session.close`, `findings.verify`.
+`review.change`, `session.open`, `session.snapshot`, `session.close`, `daemon.metrics`,
+`findings.verify`.
 
 ```bash
 deep-diff-forge daemon start --foreground      # terminal 1

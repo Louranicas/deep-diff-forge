@@ -196,40 +196,56 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// first come, first served.
 #[must_use]
 pub fn process_line(line: &str, engine: &Engine) -> String {
-    match parse_request(line) {
-        Err(err) => error_response(&Value::Null, &err),
-        Ok(request) => {
-            let id = request.id.clone();
-            // Held until the response is built; returned on a panic too. A request whose turn
-            // does not come within the admission wait is answered busy, not left waiting.
-            let _permit = match engine
-                .admission()
-                .admit(request_weight(&request, line.len()))
-            {
-                Ok(permit) => permit,
-                Err(busy) => {
-                    return error_response(
-                        &id,
-                        &RpcError::new(RESOURCE_EXHAUSTED, busy.to_string()),
-                    );
-                }
-            };
-            // Isolate a panic inside dispatch: one malformed/abusive request must
-            // not unwind and tear down the whole daemon (availability hardening,
-            // mirroring the morph-ir-engine per-connection backstop). A panic while the
-            // session table was held empties the table on its next use (`Engine::sessions`).
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                #[cfg(test)]
-                test_hooks::run(&request.method, engine);
-                dispatch(&request, engine)
-            }));
-            match outcome {
-                Ok(Ok(result)) => {
-                    bounded_response(&id, success_response(&id, result), MAX_RESPONSE_BYTES)
-                }
-                Ok(Err(err)) => error_response(&id, &err),
-                Err(_) => error_response(&id, &RpcError::new(INTERNAL_ERROR, "internal error")),
-            }
+    let metrics = engine.metrics();
+    let request = match parse_request(line) {
+        Ok(request) => request,
+        Err(err) => {
+            metrics.request(None, std::time::Duration::ZERO, Some(err.code));
+            return error_response(&Value::Null, &err);
+        }
+    };
+    let id = request.id.clone();
+    let method = crate::METHODS.iter().position(|m| m.name == request.method);
+    // Held until the response is built; returned on a panic too. A request whose turn does not
+    // come within the admission wait is answered busy, not left waiting.
+    let permit = match engine
+        .admission()
+        .admit(request_weight(&request, line.len()))
+    {
+        Ok(permit) => permit,
+        Err(busy) => {
+            metrics.busy();
+            metrics.request(method, busy.waited, Some(RESOURCE_EXHAUSTED));
+            return error_response(&id, &RpcError::new(RESOURCE_EXHAUSTED, busy.to_string()));
+        }
+    };
+    let admitted = permit.admitted();
+    metrics.admitted(admitted.waited, admitted.in_flight, admitted.running);
+    let started = crate::metrics::now();
+    // Isolate a panic inside dispatch: one malformed/abusive request must not unwind and tear
+    // down the whole daemon (availability hardening, mirroring the morph-ir-engine
+    // per-connection backstop). A panic while the session table was held empties the table on
+    // its next use (`Engine::sessions`).
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        #[cfg(test)]
+        test_hooks::run(&request.method, engine);
+        dispatch(&request, engine)
+    }));
+    let took = started.elapsed();
+    drop(permit);
+    match outcome {
+        Ok(Ok(result)) => {
+            metrics.request(method, took, None);
+            bounded_response(&id, success_response(&id, result), MAX_RESPONSE_BYTES)
+        }
+        Ok(Err(err)) => {
+            metrics.request(method, took, Some(err.code));
+            error_response(&id, &err)
+        }
+        Err(_) => {
+            metrics.panic();
+            metrics.request(method, took, Some(INTERNAL_ERROR));
+            error_response(&id, &RpcError::new(INTERNAL_ERROR, "internal error"))
         }
     }
 }
@@ -661,16 +677,22 @@ fn serve_bound(
             Ok((stream, _)) => {
                 // Only this daemon's own user is served, whatever the socket's mode.
                 if let Err(err) = require_peer_user(&stream, me) {
-                    eprintln!("deep-diff-forge daemon: refused a connection: {err}");
+                    engine.metrics().refused_peer();
+                    engine.log(
+                        "connection_refused",
+                        &format!("refused a connection: {err}"),
+                    );
                     drop(stream);
                     continue;
                 }
                 if !try_acquire_connection(&active_connections) {
+                    engine.metrics().refused_at_limit();
                     // Dropping the accepted stream applies backpressure without
                     // allocating another stack or worker thread.
                     drop(stream);
                     continue;
                 }
+                engine.metrics().accepted();
                 let arc = Arc::clone(&engine);
                 let wakeup = socket_path.clone();
                 let active = Arc::clone(&active_connections);
@@ -681,7 +703,8 @@ fn serve_bound(
                     .spawn(move || {
                         let _active_guard = ActiveConnection(active);
                         if let Err(err) = handle_connection(stream, &arc) {
-                            eprintln!("deep-diff-forge daemon: connection error: {err}");
+                            arc.metrics().connection_error();
+                            arc.log("connection_error", &format!("connection error: {err}"));
                         }
                         // If the connection just triggered a shutdown, unblock the
                         // accept loop (which is blocking on listener.accept()) by
@@ -693,10 +716,15 @@ fn serve_bound(
                 if let Err(err) = spawned {
                     // The closure never ran, so release the slot explicitly.
                     active_connections.fetch_sub(1, Ordering::AcqRel);
-                    eprintln!("deep-diff-forge daemon: could not spawn connection worker: {err}");
+                    engine.log(
+                        "worker_spawn_failed",
+                        &format!("could not spawn connection worker: {err}"),
+                    );
                 }
             }
-            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {
+                engine.metrics().accept_error();
+            }
             Err(err) => return Err(err),
         }
     }
@@ -923,6 +951,79 @@ mod tests {
         assert_eq!(crashed["error"]["code"], crate::protocol::INTERNAL_ERROR);
         assert_eq!(e.session_count(), 1);
         assert_eq!((e.admission().running(), e.admission().in_flight()), (0, 0));
+    }
+
+    /// Each request reaches `daemon.metrics`: its method's count and latency bucket, its error
+    /// code, a contained panic, admission, and a request for a method the daemon does not have.
+    #[test]
+    fn requests_are_counted_in_daemon_metrics() {
+        let e = engine();
+        let _ = process_line(r#"{"id":1,"method":"daemon.health"}"#, &e);
+        let _ = process_line(r#"{"id":2,"method":"daemon.health"}"#, &e);
+        let _ = process_line(r#"{"id":3,"method":"diff.plan","params":{}}"#, &e);
+        let _ = process_line(r#"{"id":4,"method":"test.panic_unlocked"}"#, &e);
+        let _ = process_line("not json", &e);
+        let reply: Value =
+            serde_json::from_str(&process_line(r#"{"id":5,"method":"daemon.metrics"}"#, &e))
+                .unwrap();
+        let m = &reply["result"];
+        assert_eq!(m["schema"], "deep-diff-forge.daemon-metrics.v0");
+        assert_eq!(m["methods"]["daemon.health"]["requests"], 2);
+        assert!(
+            m["methods"]["daemon.health"]["errors"]
+                .as_object()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            m["methods"]["diff.plan"]["errors"],
+            serde_json::json!({"invalid_params": 1})
+        );
+        assert_eq!(
+            m["methods"]["(unknown)"]["errors"],
+            serde_json::json!({"internal_error": 1, "parse_error": 1})
+        );
+        assert_eq!(m["engine"]["panics"], 1);
+        // Five requests were admitted: four, and daemon.metrics itself (admitted before it answers,
+        // counted as a request after). The unparsable line never reaches admission.
+        assert_eq!(m["admission"]["admitted"], 5);
+        assert!(m["methods"].get("daemon.metrics").is_none());
+        assert_eq!(m["admission"]["peak_running"], 1);
+        let buckets: u64 = m["methods"]["daemon.health"]["latency_us"]["buckets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_u64().unwrap())
+            .sum();
+        assert_eq!(buckets, 2);
+    }
+
+    /// Opening, closing, evicting and resetting sessions are counted.
+    #[test]
+    fn session_events_are_counted() {
+        let e = engine();
+        let open = |id: u32| {
+            format!(
+                r#"{{"id":{id},"method":"session.open","params":{{"patch":"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"}}}}"#
+            )
+        };
+        let opened: Value = serde_json::from_str(&process_line(&open(1), &e)).unwrap();
+        let session = opened["result"]["session"].as_str().unwrap().to_owned();
+        let close =
+            format!(r#"{{"id":2,"method":"session.close","params":{{"session":"{session}"}}}}"#);
+        let _ = process_line(&close, &e);
+        let _ = process_line(&close, &e);
+        let _ = process_line(&open(3), &e);
+        let _ = process_line(r#"{"id":4,"method":"test.panic"}"#, &e);
+        let _ = process_line(r#"{"id":5,"method":"daemon.health"}"#, &e);
+        let m = e.metrics().document(std::time::Duration::ZERO, "0");
+        assert_eq!(m["engine"]["sessions_opened"], 2);
+        assert_eq!(
+            m["engine"]["sessions_closed"], 1,
+            "a second close of the same session is not counted"
+        );
+        assert_eq!(m["engine"]["session_resets"], 1);
+        assert!(m["engine"]["peak_retained_bytes"].as_u64().unwrap() > 0);
     }
 
     /// Requests run in parallel: while one request is still running, another is answered.

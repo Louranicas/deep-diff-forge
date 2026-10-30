@@ -2,6 +2,7 @@
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-daemon--src--handler
 use crate::admission::Admission;
+use crate::metrics::Metrics;
 use crate::protocol::{
     INPUT_CONTRACT_REFUSED, PATCH_PARSE_FAILED, PROTOCOL_UNSUPPORTED, PROTOCOL_VERSION,
     RESOURCE_EXHAUSTED, Request, RpcError, SESSION_NOT_FOUND,
@@ -214,6 +215,8 @@ pub struct Engine {
     /// Repository roots `review.change` may read (canonical paths). Empty: it reads none.
     allowed_repos: Vec<std::path::PathBuf>,
     admission: Admission,
+    metrics: Metrics,
+    log_format: crate::log::LogFormat,
 }
 
 // Every connection thread shares one engine, so a field that is not thread-safe fails the build
@@ -247,6 +250,8 @@ impl Engine {
             started: Instant::now(),
             allowed_repos: Vec::new(),
             admission: Admission::default(),
+            metrics: Metrics::new(),
+            log_format: crate::log::LogFormat::Text,
         }
     }
 
@@ -276,8 +281,33 @@ impl Engine {
             let mut table = poisoned.into_inner();
             table.reset();
             self.sessions.clear_poison();
+            self.metrics.session_reset();
             table
         })
+    }
+
+    /// Write the daemon's log lines in `format` (`daemon start --log-format`).
+    #[must_use]
+    pub fn with_log_format(mut self, format: crate::log::LogFormat) -> Self {
+        self.log_format = format;
+        self
+    }
+
+    /// How the daemon writes its log lines.
+    #[must_use]
+    pub const fn log_format(&self) -> crate::log::LogFormat {
+        self.log_format
+    }
+
+    /// Write one log line for `event`.
+    pub fn log(&self, event: &str, message: &str) {
+        crate::log::write(self.log_format, event, message);
+    }
+
+    /// The counters `daemon.metrics` reports.
+    #[must_use]
+    pub fn metrics(&self) -> &Metrics {
+        &self.metrics
     }
 
     /// The gate on the request bytes in flight, for a server that runs requests in parallel.
@@ -528,6 +558,13 @@ pub const METHODS: &[MethodSpec] = &[
         Work::Request,
     ),
     method(
+        "daemon.metrics",
+        "",
+        "deep-diff-forge.daemon-metrics.v0: requests, errors and latency per method; admission, connection and engine counters since the daemon started",
+        2,
+        Work::Request,
+    ),
+    method(
         "findings.verify",
         "patch: string, findings: [object], require_files?: boolean, require_hunks?: boolean",
         "deep-diff-forge.findings.v0: each finding accepted (anchor, address and line checked against the sealed review, body sanitised) or refused with a reason; claim_verified is always false",
@@ -615,13 +652,7 @@ pub fn dispatch(request: &Request, engine: &Engine) -> Result<Value, RpcError> {
             let page = page_param(&request.params)?;
             crate::views::hunks(&sealed(request)?, &selection, &page).map_err(|e| view_error(&e))
         }
-        "session.open" => {
-            let files = parse_patch_param(request)?;
-            let count = files.len();
-            let payload = SessionPayload::new(files);
-            let id = engine.sessions().open_session(payload)?;
-            Ok(json!({"session": id, "files": count}))
-        }
+        "session.open" => session_open(request, engine),
         "session.snapshot" => {
             let id = str_param(&request.params, "session")?;
             // The table is released at the end of this statement; ranking runs outside it.
@@ -637,11 +668,34 @@ pub fn dispatch(request: &Request, engine: &Engine) -> Result<Value, RpcError> {
         "session.close" => {
             let id = str_param(&request.params, "session")?;
             let closed = engine.sessions().close_session(&id);
+            if closed {
+                engine.metrics.session_closed();
+            }
             Ok(json!({"closed": closed}))
         }
         "findings.verify" => findings_verify(request),
+        "daemon.metrics" => Ok(engine.metrics.document(engine.started.elapsed(), version)),
         other => Err(RpcError::method_not_found(other)),
     }
+}
+
+/// `session.open`: parse the patch outside the session lock, then retain it, counting the
+/// sessions it evicted to make room.
+fn session_open(request: &Request, engine: &Engine) -> Result<Value, RpcError> {
+    let files = parse_patch_param(request)?;
+    let count = files.len();
+    let payload = SessionPayload::new(files);
+    let (id, evicted, retained) = {
+        let mut table = engine.sessions();
+        let before = table.entries.len();
+        let id = table.open_session(payload)?;
+        (id, before + 1 - table.entries.len(), table.retained_bytes)
+    };
+    engine.metrics.session_opened(retained);
+    if evicted > 0 {
+        engine.metrics.sessions_evicted(evicted);
+    }
+    Ok(json!({"session": id, "files": count}))
 }
 
 /// `daemon.health`: one read of the session table, so the count and the bytes describe the same
@@ -1073,6 +1127,16 @@ mod tests {
         };
         assert_eq!(named, missing);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_log_format_is_text_unless_set() {
+        use crate::log::LogFormat;
+        assert_eq!(Engine::new().log_format(), LogFormat::Text);
+        assert_eq!(
+            Engine::new().with_log_format(LogFormat::Json).log_format(),
+            LogFormat::Json
+        );
     }
 
     #[test]

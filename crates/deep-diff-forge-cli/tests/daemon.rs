@@ -240,3 +240,75 @@ fn a_second_start_is_refused_and_the_first_keeps_serving() {
     drop(first);
     let _ = std::fs::remove_dir_all(sock.parent().unwrap());
 }
+
+/// `daemon metrics` reads a live daemon's counters: the requests it served are there, by method.
+#[test]
+fn daemon_metrics_reports_what_the_daemon_served() {
+    let sock = temp_socket("metrics");
+    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    let path = sock.to_str().unwrap();
+    let mut daemon = Daemon::spawn(path);
+    let mut ready = false;
+    for _ in 0..WAIT_STEPS {
+        if run(&["daemon", "health", "--socket", path]).0 == 0 {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(ready, "the daemon never answered");
+    assert_eq!(run(&["daemon", "status", "--socket", path]).0, 0);
+    let (code, stdout, stderr) = run(&["daemon", "metrics", "--socket", path]);
+    assert_eq!(code, 0, "{stderr}");
+    let reply: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let m = &reply["result"];
+    assert_eq!(m["schema"], "deep-diff-forge.daemon-metrics.v0");
+    assert!(m["methods"]["daemon.health"]["requests"].as_u64().unwrap() >= 1);
+    assert_eq!(m["methods"]["daemon.status"]["requests"], 1);
+    assert!(m["connections"]["accepted"].as_u64().unwrap() >= 3);
+    // deploy doctor reads the same metrics: a clean daemon is ok.
+    let (code, stdout, _) = run(&["deploy", "doctor", "--socket", path]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(stdout.contains("ok   daemon     running, pid "), "{stdout}");
+    assert_eq!(run(&["daemon", "stop", "--socket", path]).0, 0);
+    assert!(daemon.exited(), "the daemon kept running after daemon stop");
+    drop(daemon);
+    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+}
+
+#[test]
+fn log_format_belongs_to_start_and_takes_text_or_json() {
+    let (code, _, stderr) = run(&["daemon", "health", "--log-format", "json"]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("--log-format applies only to `daemon start`"),
+        "{stderr}"
+    );
+    let (code, _, stderr) = run(&[
+        "daemon",
+        "start",
+        "--log-format",
+        "xml",
+        "--socket",
+        "/dev/null/d.sock",
+    ]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("--log-format takes text or json"),
+        "{stderr}"
+    );
+    for format in ["text", "json"] {
+        let (code, _, _) = run(&[
+            "daemon",
+            "start",
+            "--log-format",
+            format,
+            "--socket",
+            "/dev/null/d.sock",
+        ]);
+        assert_eq!(
+            code, 6,
+            "{format}: admitted, then the unbindable socket ends the start"
+        );
+    }
+}

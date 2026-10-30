@@ -122,11 +122,14 @@ impl Admission {
 
     /// [`Admission::admit`] waiting at most `wait`.
     fn admit_for(&self, weight: usize, wait: Duration) -> Result<Permit<'_>, Busy> {
-        let deadline = now() + wait;
+        let start = now();
+        let deadline = start + wait;
         let mut queue = self.lock();
         let ticket = queue.next;
         queue.next = queue.next.wrapping_add(1);
+        let mut blocked = false;
         while queue.serving != ticket || !self.fits(&queue, weight) {
+            blocked = true;
             let remaining = deadline.saturating_duration_since(now());
             if remaining.is_zero() {
                 queue.abandoned.insert(ticket);
@@ -146,12 +149,22 @@ impl Admission {
         queue.advance();
         queue.in_flight = queue.in_flight.saturating_add(weight);
         queue.running += 1;
+        let admitted = Admitted {
+            waited: if blocked {
+                now() - start
+            } else {
+                Duration::ZERO
+            },
+            in_flight: queue.in_flight,
+            running: queue.running,
+        };
         drop(queue);
         // The next ticket may fit beside this one.
         self.turn.notify_all();
         Ok(Permit {
             admission: self,
             weight,
+            admitted,
         })
     }
 
@@ -186,6 +199,24 @@ impl Admission {
 pub struct Permit<'a> {
     admission: &'a Admission,
     weight: usize,
+    admitted: Admitted,
+}
+
+/// What admission looked like for one request: how long it waited for its turn (zero when it
+/// did not have to), and the bytes in flight and requests running once it started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Admitted {
+    pub waited: Duration,
+    pub in_flight: usize,
+    pub running: usize,
+}
+
+impl Permit<'_> {
+    /// How this request was admitted.
+    #[must_use]
+    pub const fn admitted(&self) -> Admitted {
+        self.admitted
+    }
 }
 
 impl Drop for Permit<'_> {
@@ -227,6 +258,22 @@ mod tests {
         let gate = gate(100);
         let first = gate.admit(40).unwrap();
         let second = gate.admit(40).unwrap();
+        // Neither waited; each saw the bytes and requests running once it started.
+        assert_eq!(
+            (first.admitted(), second.admitted()),
+            (
+                Admitted {
+                    waited: Duration::ZERO,
+                    in_flight: 40,
+                    running: 1
+                },
+                Admitted {
+                    waited: Duration::ZERO,
+                    in_flight: 80,
+                    running: 2
+                },
+            )
+        );
         assert_eq!((gate.running(), gate.in_flight()), (2, 80));
         drop(first);
         assert_eq!((gate.running(), gate.in_flight()), (1, 40));
@@ -257,14 +304,21 @@ mod tests {
         thread::scope(|scope| {
             scope.spawn(|| {
                 let permit = gate.admit(40);
-                started.send(permit.is_ok()).unwrap();
+                started.send(permit.map(|p| p.admitted()).ok()).unwrap();
             });
             assert!(
                 rx.recv_timeout(SETTLE).is_err(),
                 "70 + 40 started over a 100 budget"
             );
             drop(held);
-            assert_eq!(rx.recv_timeout(WAIT * 2), Ok(true), "it never started");
+            let admitted = rx
+                .recv_timeout(WAIT * 2)
+                .unwrap()
+                .expect("it never started");
+            // It records a real wait: the request it waited for was held for SETTLE, minus the
+            // moments before the waiter took its ticket.
+            assert!(admitted.waited >= SETTLE / 2, "{admitted:?}");
+            assert_eq!((admitted.in_flight, admitted.running), (40, 1));
         });
         assert_eq!((gate.running(), gate.in_flight()), (0, 0));
     }

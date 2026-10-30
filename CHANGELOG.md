@@ -8,6 +8,20 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **Daemon metrics.** `deep-diff-forge daemon metrics` (the daemon's `daemon.metrics`, protocol
+  2) returns `deep-diff-forge.daemon-metrics.v0`:
+  - per method that was called: requests, errors by RPC code, and latency as log₂ microsecond
+    buckets with p50, p95 and p99 upper bounds;
+  - admission: admitted, waited, wait time, busy refusals, and peak in-flight bytes and requests;
+  - connections: accepted, refused at the limit, refused as another user, errors, and accept
+    errors;
+  - engine: contained panics, session-table resets, and sessions opened, closed and evicted.
+
+  Recording takes no lock (relaxed atomics). `deploy doctor` warns, with the counts, when a live
+  daemon reports contained panics, busy refusals or session resets.
+- **`daemon start --log-format json`:** one JSON object per log line (`ts_ms`, `level`, `event`,
+  `message`). The default text line is unchanged.
+
 - **Verified agent findings.** `deep-diff-forge findings verify --findings FILE [--require-all]`
   checks agent findings (JSONL, `deep-diff-forge.finding.v0`) against the patch on stdin.
   - It checks the hunk address or path and line, freshness (`review` against `input_sha256`),

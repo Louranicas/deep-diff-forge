@@ -468,18 +468,20 @@ fn emit_review(review: &deep_diff_forge_patch::SealedReview, opts: &[String]) {
 const CURRENT_MATURITY: deep_diff_forge_core::MaturityLevel =
     deep_diff_forge_core::MaturityLevel::L9;
 
-/// `daemon {path|start|health|status|stop} [--socket PATH]`: drive the optional
+/// `daemon {path|start|health|status|metrics|stop} [--socket PATH]`: drive the optional
 /// UDS JSON-RPC review daemon.
+const DAEMON_USAGE: &str = "deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics|stop} [--socket PATH]";
+
 fn daemon_cmd(opts: &[String]) {
     use deep_diff_forge_daemon::SocketLocation;
     let positionals = args::admit_or_exit(
         opts,
         &args::Spec {
             flags: &["--foreground"],
-            valued: &["--socket", "--allow-repo"],
+            valued: &["--socket", "--allow-repo", "--log-format"],
             positionals: 1,
         },
-        "deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]...|health|status|stop} [--socket PATH]",
+        DAEMON_USAGE,
     );
     let sub = positionals.first().copied();
     // Validate the subcommand first, so an unknown one reports usage whatever the environment.
@@ -487,19 +489,33 @@ fn daemon_cmd(opts: &[String]) {
     // `--foreground` says so and belongs to `start` alone.
     if sub != Some("start") && opts.iter().any(|a| a == "--foreground") {
         eprintln!("error: --foreground applies only to `daemon start`");
-        eprintln!(
-            "usage: deep-diff-forge daemon {{path|start [--foreground] [--allow-repo PATH]...|health|status|stop}} [--socket PATH]"
-        );
+        eprintln!("usage: {DAEMON_USAGE}");
         std::process::exit(exit::USAGE);
     }
     if sub != Some("start") && opts.iter().any(|a| a == "--allow-repo") {
         eprintln!("error: --allow-repo applies only to `daemon start`");
         std::process::exit(exit::USAGE);
     }
-    if !matches!(sub, Some("path" | "start" | "health" | "status" | "stop")) {
-        eprintln!(
-            "usage: deep-diff-forge daemon {{path|start [--foreground] [--allow-repo PATH]...|health|status|stop}} [--socket PATH]"
-        );
+    let log_format = match flag_value(opts, "--log-format").as_deref() {
+        _ if sub != Some("start") && opts.iter().any(|a| a == "--log-format") => {
+            eprintln!("error: --log-format applies only to `daemon start`");
+            std::process::exit(exit::USAGE);
+        }
+        None | Some("text") => deep_diff_forge_daemon::LogFormat::Text,
+        Some("json") => deep_diff_forge_daemon::LogFormat::Json,
+        Some(other) => {
+            eprintln!(
+                "error: --log-format takes text or json, not {}",
+                display_safe(other)
+            );
+            std::process::exit(exit::USAGE);
+        }
+    };
+    if !matches!(
+        sub,
+        Some("path" | "start" | "health" | "status" | "metrics" | "stop")
+    ) {
+        eprintln!("usage: {DAEMON_USAGE}");
         std::process::exit(exit::USAGE);
     }
     // One resolution point: explicit `--socket` override, else $XDG_RUNTIME_DIR,
@@ -521,7 +537,7 @@ fn daemon_cmd(opts: &[String]) {
                 .into_iter()
                 .map(std::path::PathBuf::from)
                 .collect();
-            let engine = engine_allowing_or_exit(&roots);
+            let engine = engine_allowing_or_exit(&roots).with_log_format(log_format);
             if let Err(err) = deep_diff_forge_daemon::run_server_with(&location, engine) {
                 eprintln!("error: daemon failed: {err}");
                 std::process::exit(exit::DAEMON_OR_TERMINAL);
@@ -529,11 +545,10 @@ fn daemon_cmd(opts: &[String]) {
         }
         Some("health") => daemon_client(&location, r#"{"id":1,"method":"daemon.health"}"#),
         Some("status") => daemon_client(&location, r#"{"id":1,"method":"daemon.status"}"#),
+        Some("metrics") => daemon_client(&location, r#"{"id":1,"method":"daemon.metrics"}"#),
         Some("stop") => daemon_client(&location, r#"{"id":1,"method":"daemon.shutdown"}"#),
         _ => {
-            eprintln!(
-                "usage: deep-diff-forge daemon {{path|start [--foreground] [--allow-repo PATH]...|health|status|stop}} [--socket PATH]"
-            );
+            eprintln!("usage: {DAEMON_USAGE}");
             std::process::exit(exit::USAGE);
         }
     }
@@ -1682,7 +1697,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "daemon",
-        "deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]...|health|status|stop} [--socket PATH]",
+        DAEMON_USAGE,
         "Run or query the optional Unix-socket JSON-RPC daemon; --allow-repo lets review.change read those repositories.",
     ),
     (
