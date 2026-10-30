@@ -692,9 +692,7 @@ fn session_open(request: &Request, engine: &Engine) -> Result<Value, RpcError> {
         (id, before + 1 - table.entries.len(), table.retained_bytes)
     };
     engine.metrics.session_opened(retained);
-    if evicted > 0 {
-        engine.metrics.sessions_evicted(evicted);
-    }
+    engine.metrics.sessions_evicted(evicted);
     Ok(json!({"session": id, "files": count}))
 }
 
