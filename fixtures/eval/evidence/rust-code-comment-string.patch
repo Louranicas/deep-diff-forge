@@ -1,0 +1,9 @@
+diff --git a/src/x.rs b/src/x.rs
+--- a/src/x.rs
++++ b/src/x.rs
+@@ -1,1 +1,5 @@
+ fn a() {}
++// unsafe is not used here
++let s = "unsafe { Command::new(x) }";
++unsafe { f() }
++/* Command::new in a comment */

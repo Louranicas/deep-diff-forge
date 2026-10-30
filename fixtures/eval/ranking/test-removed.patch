@@ -1,0 +1,14 @@
+diff --git a/tests/it.rs b/tests/it.rs
+--- a/tests/it.rs
++++ b/tests/it.rs
+@@ -1,4 +1,1 @@
+-#[test]
+-fn refuses_traversal() {
+-}
+ fn helper() {}
+diff --git a/docs/guide.md b/docs/guide.md
+--- a/docs/guide.md
++++ b/docs/guide.md
+@@ -1,1 +1,1 @@
+-old
++new

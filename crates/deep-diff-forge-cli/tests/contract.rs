@@ -558,6 +558,15 @@ fn command_option_rows<'a>(source: &'a str, socket: &'a str) -> Vec<(&'static st
             ],
         ),
         ("--stdin", vec!["learn", "record", "--stdin"]),
+        (
+            "--quick",
+            vec!["bench", "--quick", "--workload", "structural_rust"],
+        ),
+        (
+            "--workload",
+            vec!["bench", "--quick", "--workload", "findings_verify"],
+        ),
+        ("--corpus", vec!["eval", "--corpus", "/nonexistent"]),
         ("--family", vec!["explain", "7", "--family", "engine"]),
         ("--color", vec!["highlight", source, "--color"]),
         ("--no-color", vec!["highlight", source, "--no-color"]),

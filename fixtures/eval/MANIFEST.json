@@ -1,0 +1,160 @@
+{
+  "schema": "deep-diff-forge.eval-manifest.v0",
+  "cases": [
+    {
+      "id": "ranking/circle-probe",
+      "kind": "ranking",
+      "patch": "ranking/circle-probe.patch",
+      "origin": "expert circle probe, 2026-10-28",
+      "must_outrank": [
+        [
+          "src/util.rs",
+          "docs/BIG.md"
+        ],
+        [
+          "src/util.rs",
+          "README.md"
+        ]
+      ],
+      "sha256": "664e9155d428ad025f35815ee53694721ebfc83b28ae10cc685c7b8b82be091c"
+    },
+    {
+      "id": "ranking/trojan-source",
+      "kind": "ranking",
+      "patch": "ranking/trojan-source.patch",
+      "origin": "CVE-2021-42574 (Trojan Source) shape",
+      "must_outrank": [
+        [
+          "src/access.rs",
+          "docs/notes.md"
+        ]
+      ],
+      "sha256": "817d6241c1b697a5615b37e63edbe5b5a4eec1c850afd5c750be98f870d4c86a"
+    },
+    {
+      "id": "ranking/ci-privilege",
+      "kind": "ranking",
+      "patch": "ranking/ci-privilege.patch",
+      "origin": "synthetic; the low side scores between the high side with and without ci_privilege",
+      "must_outrank": [
+        [
+          ".github/workflows/ci.yml",
+          "src/parse.rs"
+        ]
+      ],
+      "sha256": "6d60dab1ce23a177e6f827ca08d86f554643a283d582c0f2c1d9f2db625fdf8a"
+    },
+    {
+      "id": "ranking/test-removed",
+      "kind": "ranking",
+      "patch": "ranking/test-removed.patch",
+      "origin": "synthetic",
+      "must_outrank": [
+        [
+          "tests/it.rs",
+          "docs/guide.md"
+        ]
+      ],
+      "sha256": "d0337f5ab2d63ee8867256e0afd336ac9a1219564e682f33a5307a94a4715b49"
+    },
+    {
+      "id": "ranking/generated-spawn",
+      "kind": "ranking",
+      "patch": "ranking/generated-spawn.patch",
+      "origin": "expert circle defect D2, 2026-10-28; modified, not added, so only process_spawn lifts it over README.md",
+      "must_outrank": [
+        [
+          "src/generated/run.rs",
+          "README.md"
+        ]
+      ],
+      "sha256": "f4090d6942541933b5faad76830c38c2dd44f9522bf3784e293225dc50bf12e9"
+    },
+    {
+      "id": "evidence/rust-code-comment-string",
+      "kind": "evidence",
+      "patch": "evidence/rust-code-comment-string.patch",
+      "origin": "synthetic",
+      "expect": [
+        {
+          "path": "src/x.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 4
+        }
+      ],
+      "sha256": "6d03d4acb02b9336c25a9e52b88940a40ad75a56e37bc22d905e1be069e8695c"
+    },
+    {
+      "id": "evidence/python-floor-noqa",
+      "kind": "evidence",
+      "patch": "evidence/python-floor-noqa.patch",
+      "origin": "synthetic",
+      "expect": [
+        {
+          "path": "tool.py",
+          "signal": "dynamic_eval",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tool.py",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "sha256": "28623e251bd1dde59ffe3c1fb7a2553526f818262e178df4ffe3131ac7abb8cb"
+    },
+    {
+      "id": "evidence/shebang-curl",
+      "kind": "evidence",
+      "patch": "evidence/shebang-curl.patch",
+      "origin": "synthetic",
+      "expect": [
+        {
+          "path": "bin/fetch",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "sha256": "f07da84c223d51c33e904a1eb37ad00d2c90ad2a133ea73d79cb779761d563a7"
+    },
+    {
+      "id": "evidence/known-miss-assembled",
+      "kind": "evidence",
+      "patch": "evidence/known-miss-assembled.patch",
+      "origin": "synthetic: a documented limit (plan N4)",
+      "expect": [],
+      "known_miss": [
+        {
+          "path": "web/app.js",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "sha256": "4146144130022c8742d3593e0cf9af03fc195f5a713fbdd377df990233b8f058"
+    },
+    {
+      "id": "findings/mixed",
+      "kind": "findings",
+      "patch": "findings/mixed.patch",
+      "findings": "findings/mixed.jsonl",
+      "origin": "synthetic",
+      "expect": [
+        "accepted",
+        "stale_review",
+        "unknown_address",
+        "line_outside_hunk",
+        "duplicate",
+        "too_long",
+        "malformed",
+        "unknown_path"
+      ],
+      "sha256": "254748f5a29185656554354cfc293b6768319bc5a10efe45d2cbeb011a0754f5",
+      "findings_sha256": "3d30db0e89cb7bc417535ec8aa490cbdb90906dcc04b5c66cbd2d52449eb2268"
+    }
+  ]
+}

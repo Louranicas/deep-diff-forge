@@ -3,7 +3,9 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--main
 mod analysis;
 mod args;
+mod bench;
 mod contract;
+mod eval;
 mod git_input;
 mod mcp;
 mod rpc;
@@ -88,6 +90,8 @@ fn main() {
         Some("--self-test" | "self-test") => self_test(),
         Some("doctor") => doctor(),
         Some("findings") => findings_cmd(rest),
+        Some("bench") => bench_cmd(rest),
+        Some("eval") => eval_cmd(rest),
         Some("deploy") => {
             deploy_cmd(rest);
         }
@@ -1164,6 +1168,110 @@ fn print_semantic_json(
     );
 }
 
+const BENCH_USAGE: &str = "deep-diff-forge bench [--quick] [--workload NAME]... [--json]";
+
+/// `bench`: time the engine's hot paths on generated inputs (15 repetitions, or 5 with
+/// `--quick`) and print `deep-diff-forge.bench.v0` (`--json`) or a table. Exit 2 for an unknown
+/// workload.
+fn bench_cmd(opts: &[String]) {
+    args::admit_or_exit(
+        opts,
+        &args::Spec {
+            flags: &["--quick", "--json"],
+            valued: &["--workload"],
+            positionals: 0,
+        },
+        BENCH_USAGE,
+    );
+    let repetitions = if opts.iter().any(|a| a == "--quick") {
+        5
+    } else {
+        15
+    };
+    let receipt = match bench::run(&flag_values(opts, "--workload"), repetitions) {
+        Ok(receipt) => receipt,
+        Err(unknown) => {
+            eprintln!(
+                "error: no workload {}; the workloads are {}",
+                display_safe(&unknown),
+                bench::workload_names().join(", ")
+            );
+            std::process::exit(exit::USAGE);
+        }
+    };
+    if opts.iter().any(|a| a == "--json") {
+        emitln!(
+            "{}",
+            serde_json::to_string_pretty(&receipt).unwrap_or_default()
+        );
+        return;
+    }
+    emitln!(
+        "deep-diff-forge bench ({} build, {} repetitions)",
+        receipt["profile"].as_str().unwrap_or("?"),
+        repetitions
+    );
+    for w in receipt["workloads"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice)
+    {
+        emitln!(
+            "  {:<20} median {:>11} ms  p95 {:>11} ms  {:>10} KiB/s",
+            w["name"].as_str().unwrap_or("?"),
+            bench::millis(w["median_ns"].as_u64().unwrap_or(0)),
+            bench::millis(w["p95_ns"].as_u64().unwrap_or(0)),
+            w["kib_per_s"].as_u64().unwrap_or(0)
+        );
+    }
+}
+
+const EVAL_USAGE: &str = "deep-diff-forge eval [--corpus DIR] [--json]";
+
+/// `eval`: score the engine against the labelled corpus in DIR (default `fixtures/eval`) and
+/// print `deep-diff-forge.eval.v0` (`--json`) or a summary. Exit 0 when every case passes, 7 when
+/// one fails, 4 when the corpus is malformed or out of date, 3 when a file cannot be read.
+fn eval_cmd(opts: &[String]) {
+    args::admit_or_exit(
+        opts,
+        &args::Spec {
+            flags: &["--json"],
+            valued: &["--corpus"],
+            positionals: 0,
+        },
+        EVAL_USAGE,
+    );
+    let dir = flag_value(opts, "--corpus").unwrap_or_else(|| "fixtures/eval".to_owned());
+    let receipt = match eval::run(std::path::Path::new(&dir)) {
+        Ok(receipt) => receipt,
+        Err(err) => {
+            eprintln!("error: eval: {}", display_safe(&err.to_string()));
+            std::process::exit(match err {
+                eval::EvalError::Read(_) => exit::IO,
+                eval::EvalError::Corpus(_) => exit::INVALID_INPUT,
+            });
+        }
+    };
+    let failures = receipt["failures"].as_array().map_or(0, Vec::len);
+    if opts.iter().any(|a| a == "--json") {
+        emitln!(
+            "{}",
+            serde_json::to_string_pretty(&receipt).unwrap_or_default()
+        );
+    } else {
+        emitln!("deep-diff-forge eval: {} cases", receipt["cases"]);
+        for (name, m) in receipt["metrics"].as_object().into_iter().flatten() {
+            emitln!("  {name:<20} {}/{}", m["right"], m["total"]);
+        }
+        emitln!("  known misses         {}", receipt["known_misses"]);
+        for failure in receipt["failures"].as_array().into_iter().flatten() {
+            emitln!("  FAIL {}", failure.as_str().unwrap_or(""));
+        }
+    }
+    if failures > 0 {
+        std::process::exit(EXIT_REFUSED);
+    }
+}
+
 const FINDINGS_USAGE: &str = "deep-diff-forge findings verify --findings FILE [--require-all] [--require-files] [--require-hunks]";
 
 /// `findings verify`: check agent findings (JSONL, one `deep-diff-forge.finding.v0` per line)
@@ -1682,6 +1790,16 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "deploy",
         DEPLOY_USAGE,
         "Report the declared deployment state or the per-target release posture, or check this machine (doctor: exit 6 when a check fails).",
+    ),
+    (
+        "bench",
+        BENCH_USAGE,
+        "Time the engine's hot paths on generated inputs; --json prints the deep-diff-forge.bench.v0 receipt that scripts/bench_compare.py compares.",
+    ),
+    (
+        "eval",
+        EVAL_USAGE,
+        "Score ranking, code evidence and findings against the labelled corpus (deep-diff-forge.eval.v0); exit 7 when a case fails.",
     ),
     (
         "findings",
