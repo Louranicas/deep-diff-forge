@@ -1427,12 +1427,35 @@ fn print_rank_json(ranked: &[deep_diff_forge_graph::RankedFile], seal: &InputSea
         let signals: Vec<String> = rf.signals.iter().map(|s| json_escape(s.label())).collect();
         let _ = write!(
             items,
-            "    {{\"path\": {}, \"status\": {}, \"score\": {}, \"signals\": [{}]}}",
+            "    {{\"path\": {}, \"status\": {}, \"score\": {}, \"signals\": [{}]",
             json_escape(&rf.path),
             json_escape(rf.status.label()),
             rf.score,
             signals.join(", ")
         );
+        // Present only when found, as `hazards` is (the daemon's `diff.rank` is the same
+        // document: cli/tests/daemon_parity.rs).
+        if !rf.evidence.is_empty() {
+            let evidence: Vec<String> = rf
+                .evidence
+                .iter()
+                .map(|e| {
+                    format!(
+                        "{{\"signal\": {}, \"address\": {}, \"side\": {}, \"line\": {}, \"basis\": {}}}",
+                        json_escape(e.signal.label()),
+                        json_escape(&e.address),
+                        json_escape(e.side.label()),
+                        e.line,
+                        json_escape(deep_diff_forge_graph::EVIDENCE_BASIS)
+                    )
+                })
+                .collect();
+            let _ = write!(items, ", \"evidence\": [{}]", evidence.join(", "));
+        }
+        if rf.evidence_truncated {
+            items.push_str(", \"evidence_truncated\": true");
+        }
+        items.push('}');
     }
     let body = if items.is_empty() {
         String::new()

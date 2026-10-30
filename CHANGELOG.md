@@ -6,6 +6,33 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Added
+
+- **Code evidence in risk ranking.** Nine lexical signals are read from the changed lines
+  themselves: `unsafe_added`, `process_spawn`, `network_fetch`, `dynamic_eval`, `ci_privilege`,
+  `build_hook`, `secret_like`, `check_suppressed` and `test_removed`. They cover Rust, Python,
+  JS/TS, Go, shell (with `Dockerfile` and `Makefile`) and YAML, and a shebang names the language
+  of a file with no extension.
+  - Comments and strings are blanked, with block comments and triple-quoted strings followed across
+    a hunk's lines.
+  - Each signal adds its weight once per file, and a path cannot hide it: token evidence keeps its
+    weight under `generated/` or `vendor/`.
+  - `rank.v0` lists each file's `evidence` (signal, hunk address, side, line, `basis: lexical`; at
+    most 32). Outline and hunk heads list their labels. The daemon, `rpc`, MCP and the cockpit
+    (one note per item, on its hunk) show the same.
+  - Before, a hunk adding `unsafe { std::process::Command::new("curl") }` to `src/lib.rs` scored
+    the same 7 as any `lib.rs` edit. Now it scores 15, with both signals at line 2.
+- An `evidence_scan` fuzz target checks, for any patch, that every evidence item names its own
+  hunk and a line inside it, and that the outline labels and the rank agree.
+- The plan behind this and the next changes: `docs/PLAN_AGENT_EVIDENCE_AND_OBSERVABILITY.md`.
+
+### Changed
+
+- **Breaking (graph crate):** `RankedFile` is `#[non_exhaustive]` and gains `evidence` and
+  `evidence_truncated`. Build it with `RankedFile::scored(file)`, the one constructor, so score,
+  signals and evidence always come from one assessment (`assess_file`). `RiskSignal` gains
+  `Code(EvidenceSignal)`. `sort_ranked` is the one ranking order, and the cluster crate uses it.
+
 ## [0.4.0] - 2026-10-30
 
 ### Added

@@ -19,7 +19,7 @@ use deep_diff_forge_agent::SYSTEM_AGENT_ID;
 use deep_diff_forge_core::{
     AgentAnnotation, AnnotationAnchor, AnnotationProvenance, HunkId, ReviewFile, SemanticChangeKind,
 };
-use deep_diff_forge_graph::{RankedFile, RiskSignal};
+use deep_diff_forge_graph::{EvidenceSignal, RankedFile, RiskSignal};
 
 /// Build the engine's own inline notes for a ranked review.
 ///
@@ -36,6 +36,7 @@ pub fn engine_annotations(files: &[ReviewFile], ranked: &[RankedFile]) -> Vec<Ag
         if !entry.signals.is_empty() {
             out.push(risk_note(file, &entry.signals));
         }
+        out.extend(evidence_notes(file, entry));
         if let Some(note) = semantic_note(file) {
             out.push(note);
         }
@@ -178,7 +179,59 @@ fn signal_phrase(signal: RiskSignal) -> &'static str {
         }
         RiskSignal::SymlinkChange => "Symlink — check where it points.",
         RiskSignal::ExecutableBit => "Becomes executable — check what runs it.",
+        RiskSignal::Code(signal) => code_phrase(signal),
     }
+}
+
+fn code_phrase(signal: EvidenceSignal) -> &'static str {
+    match signal {
+        EvidenceSignal::UnsafeAdded => "`unsafe` added.",
+        EvidenceSignal::ProcessSpawn => "Starts a process.",
+        EvidenceSignal::NetworkFetch => "Makes a network call or download.",
+        EvidenceSignal::DynamicEval => "Builds and runs code from data.",
+        EvidenceSignal::CiPrivilege => "CI workflow gains a privilege.",
+        EvidenceSignal::BuildHook => "Runs at build or install time.",
+        EvidenceSignal::SecretLike => "Looks like a credential.",
+        EvidenceSignal::CheckSuppressed => "A lint, type or coverage check is switched off.",
+        EvidenceSignal::TestRemoved => "A test is removed.",
+    }
+}
+
+/// One system note per evidence item, on its hunk, naming the line (lexical evidence: the note
+/// says what was found, not that the change is wrong).
+fn evidence_notes(file: &ReviewFile, ranked: &RankedFile) -> Vec<AgentAnnotation> {
+    ranked
+        .evidence
+        .iter()
+        .map(|item| AgentAnnotation {
+            id: format!(
+                "ddf/sys/evidence:{}:{}:{}:{}",
+                file.path,
+                item.address,
+                item.side.label(),
+                item.signal.label()
+            ),
+            anchor: AnnotationAnchor::Hunk {
+                path: file.path.clone(),
+                hunk_id: item.hunk,
+            },
+            body: format!(
+                "{} ({} line {})",
+                code_phrase(item.signal),
+                item.side.label(),
+                item.line
+            ),
+            provenance: AnnotationProvenance {
+                agent: SYSTEM_AGENT_ID.to_string(),
+                model: None,
+                evidence: vec![
+                    item.signal.label().to_string(),
+                    format!("basis:{}", deep_diff_forge_graph::EVIDENCE_BASIS),
+                ],
+            },
+            grounded: true,
+        })
+        .collect()
 }
 
 fn semantic_phrase(kind: SemanticChangeKind) -> &'static str {
@@ -198,6 +251,60 @@ mod tests {
     use deep_diff_forge_agent::{AnnotationSource, GroundingLevel, grounding_of, source_of};
     use deep_diff_forge_core::{ParseStatus, SemanticSpan, SemanticSpanId, SemanticTwin};
     use deep_diff_forge_graph::rank;
+
+    /// Each code-evidence item becomes one system note on its own hunk, naming the side and line.
+    #[test]
+    fn evidence_becomes_one_note_per_item_on_its_hunk() {
+        let files = deep_diff_forge_patch::parse(
+            "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1,1 +1,2 @@\n fn a() {}\n+unsafe { std::process::Command::new(\"x\"); }\n",
+        )
+        .unwrap();
+        let ranked = rank(&files);
+        let notes = engine_annotations(&files, &ranked);
+        let evidence: Vec<&AgentAnnotation> = notes
+            .iter()
+            .filter(|n| n.id.starts_with("ddf/sys/evidence:"))
+            .collect();
+        assert_eq!(evidence.len(), 2);
+        let hunk = files[0].patch_twin.hunks[0].id;
+        for note in &evidence {
+            assert_eq!(
+                note.anchor,
+                AnnotationAnchor::Hunk {
+                    path: "src/x.rs".into(),
+                    hunk_id: hunk
+                }
+            );
+            assert_eq!(source_of(note), AnnotationSource::System);
+            assert!(
+                note.provenance
+                    .evidence
+                    .contains(&"basis:lexical".to_owned())
+            );
+        }
+        assert_eq!(evidence[0].body, "`unsafe` added. (new line 2)");
+        assert_eq!(evidence[1].body, "Starts a process. (new line 2)");
+    }
+
+    #[test]
+    fn every_evidence_signal_has_its_own_phrase() {
+        use deep_diff_forge_graph::EvidenceSignal;
+        let phrases: Vec<&str> = EvidenceSignal::ALL.into_iter().map(code_phrase).collect();
+        assert_eq!(
+            phrases,
+            [
+                "`unsafe` added.",
+                "Starts a process.",
+                "Makes a network call or download.",
+                "Builds and runs code from data.",
+                "CI workflow gains a privilege.",
+                "Runs at build or install time.",
+                "Looks like a credential.",
+                "A lint, type or coverage check is switched off.",
+                "A test is removed.",
+            ]
+        );
+    }
     use deep_diff_forge_patch::parse;
 
     // lib.rs is a public-API surface, so it earns a risk signal.
