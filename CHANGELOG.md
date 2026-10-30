@@ -20,23 +20,52 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     `verify_findings` and the Python SDK's `verify_findings`.
   - `review --findings FILE` shows the accepted findings in the cockpit as agent notes, never
     grounded, and a finding cannot pass for the engine's own notes.
+
 - An address-anchored finding is resolved through a table of hunk addresses built once per
   call. Before (in this change's own first version), each finding hashed every hunk again: 2,000
   findings against 400 hunks took 3,560 ms. Now 33 ms (measured with `deep-diff-forge bench`,
   release build).
+
 - A `findings_verify` fuzz target: every non-blank line gets exactly one verdict, every accepted
   anchor resolves, and no sanitised text keeps an unsafe character.
+
+- **Code evidence in risk ranking.** Nine lexical signals are read from the changed lines
+  themselves: `unsafe_added`, `process_spawn`, `network_fetch`, `dynamic_eval`, `ci_privilege`,
+  `build_hook`, `secret_like`, `check_suppressed` and `test_removed`. They cover Rust, Python,
+  JS/TS, Go, shell (with `Dockerfile` and `Makefile`) and YAML, and a shebang names the language
+  of a file with no extension.
+  - Comments and strings are blanked, with block comments and triple-quoted strings followed across
+    a hunk's lines.
+  - Each signal adds its weight once per file, and a path cannot hide it: token evidence keeps its
+    weight under `generated/` or `vendor/`.
+  - `rank.v0` lists each file's `evidence` (signal, hunk address, side, line, `basis: lexical`; at
+    most 32). Outline and hunk heads list their labels. The daemon, `rpc`, MCP and the cockpit
+    (one note per item, on its hunk) show the same.
+  - Before, a hunk adding `unsafe { std::process::Command::new("curl") }` to `src/lib.rs` scored
+    the same 7 as any `lib.rs` edit. Now it scores 15, with both signals at line 2.
+
+- An `evidence_scan` fuzz target checks, for any patch, that every evidence item names its own
+  hunk and a line inside it, and that the outline labels and the rank agree.
+
+- The plan behind this and the next changes: `docs/PLAN_AGENT_EVIDENCE_AND_OBSERVABILITY.md`.
 
 ### Changed
 
 - **Daemon protocol 2.** `findings.verify` is `since: 2`; clients that ask for protocol 0 or 1
   get the method lists they had.
+
 - `deep-diff-forge-daemon` and `deep-diff-forge-cli` depend on `deep-diff-forge-agent`
   (`docs/crate-edges.txt`).
+
 - CLI daemon tests wait up to 10 s, not 2 s, for a daemon to start or exit, so a loaded machine
   is not read as a failure. Two local gate runs had failed once each and did not reproduce in
   15 later full runs; a 2 s wait under a parallel build is the likely cause (inferred, not
   reproduced).
+
+- **Breaking (graph crate):** `RankedFile` is `#[non_exhaustive]` and gains `evidence` and
+  `evidence_truncated`. Build it with `RankedFile::scored(file)`, the one constructor, so score,
+  signals and evidence always come from one assessment (`assess_file`). `RiskSignal` gains
+  `Code(EvidenceSignal)`. `sort_ranked` is the one ranking order, and the cluster crate uses it.
 
 ### Security
 

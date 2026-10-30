@@ -3,7 +3,7 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-cluster--src--cluster
 use crate::scheduler::{resolve_workers, run_lane};
 use deep_diff_forge_core::{ExecutionDimension, JoinPolicy, Parallelism, ReviewFile};
-use deep_diff_forge_graph::{RankedFile, score_file};
+use deep_diff_forge_graph::{RankedFile, sort_ranked};
 
 /// A structured record of a cluster run (the framework's dimensional receipt).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,15 +37,7 @@ pub fn run_risk_cluster(
     parallelism: Parallelism,
     join: JoinPolicy,
 ) -> ClusterRun {
-    let scored: Vec<RankedFile> = run_lane(files, parallelism, |_, file| {
-        let (score, signals) = score_file(file);
-        RankedFile {
-            path: file.path.clone(),
-            status: file.status,
-            score,
-            signals,
-        }
-    });
+    let scored: Vec<RankedFile> = run_lane(files, parallelism, |_, file| RankedFile::scored(file));
     let ranked = apply_join(scored, join);
     let receipt = ClusterReceipt {
         dimensions: vec![ExecutionDimension::Patch, ExecutionDimension::Risk],
@@ -67,7 +59,7 @@ pub fn apply_join(mut results: Vec<RankedFile>, policy: JoinPolicy) -> Vec<Ranke
     match policy {
         JoinPolicy::DeterministicInputOrder | JoinPolicy::AsReadyWithStableIds => results,
         JoinPolicy::RankedReviewOrder => {
-            results.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.path.cmp(&b.path)));
+            sort_ranked(&mut results);
             results
         }
     }
@@ -322,7 +314,7 @@ mod tests {
             JoinPolicy::DeterministicInputOrder,
         );
         for (file, ranked) in files.iter().zip(run.ranked.iter()) {
-            assert_eq!(ranked.score, score_file(file).0);
+            assert_eq!(ranked.score, deep_diff_forge_graph::score_file(file).0);
         }
     }
 

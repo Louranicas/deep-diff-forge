@@ -178,7 +178,7 @@ version is refused with domain error 2.
 | `daemon.shutdown` | — | `{stopping}` | 0 |
 | `diff.plan` | `patch: string` | `[ranked file]` | 0 |
 | `diff.compute` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.review.v0` document `--stdin-patch --json` prints for the same patch | 1 |
-| `diff.rank` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints for the same patch | 1 |
+| `diff.rank` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints for the same patch (with each file's code `evidence`, below) | 1 |
 | `review.outline` | `patch: string, require_files?, require_hunks?, max_bytes?: integer, cursor?: string` | `deep-diff-forge.review-outline.v0`: files in review-risk order with their hunks' addresses, ranges, `@@` headings and counts, no line text; `next_cursor` continues | 1 |
 | `review.hunks` | `patch: string, require_files?, require_hunks?, addresses?: [string], paths?: [string], max_bytes?, cursor?` | `deep-diff-forge.review-hunks.v0`: the chosen hunks verbatim, continued at a line when one is too long for the page. A path selects every section of that path, an address every hunk with it; a view carries at most 256 bytes of an `@@` heading (`section_truncated: true`) | 1 |
 | `review.change` | `repo: string, selection: staged\|working_tree\|range, range?: A..B, include_untracked?, view?: outline\|hunks\|review\|rank`, plus the view's params | that view of the change Git returns, sealed over Git's bytes, with an `acquisition` member (repo, selection, base, target, `include_untracked`, and `omitted_untracked`: untracked directories such as nested repositories that are not in the files); only under an `--allow-repo` root, Git stopped after 30 s; Git failure is error 3 | 1 |
@@ -419,4 +419,24 @@ annotations.
   a findings file over 8 MiB or not UTF-8; 3 when the file cannot be read; 2 on a usage error.
 - **Implementation.** `deep-diff-forge-agent::findings` is the one verifier: the CLI, the daemon
   (so `rpc` and MCP), the cockpit and the `findings_verify` fuzz target all call it.
+
+## Code evidence in `rank.v0` and the outline (2026-10-30)
+
+Additive members, so the schema names stay `v0`. They are present only when found, as `hazards` is.
+
+- `rank.v0` `ranked[i].evidence`: up to 32 items `{"signal", "address", "side", "line", "basis"}`.
+  - `signal` is one of `unsafe_added`, `process_spawn`, `network_fetch`, `dynamic_eval`,
+    `ci_privilege`, `build_hook`, `secret_like`, `check_suppressed` and `test_removed`.
+  - `address` is the hunk's address: the same value the outline and `review.hunks` use.
+  - `side` is `new` (an added line) or `old` (a removed line), and `line` is that line's number on
+    that side.
+  - `basis` is always `lexical`.
+  - Items are ordered by hunk, then line, then signal. `evidence_truncated: true` follows when more
+    were found; the score counts all of them. Each signal also appears in `signals`.
+- `review-outline.v0` and `review-hunks.v0` hunk heads: `evidence`, the distinct signal labels in
+  that hunk. It comes from the same scan as `rank`, so the two never disagree.
+- The CLI (`--rank --json`, `--outline`), the daemon (`diff.rank`, `review.outline`,
+  `review.hunks`, `session.snapshot`, `diff.plan`), `rpc`, MCP (`rank_patch`, `review_outline`)
+  and the cockpit (one system note per item, on its hunk) read one implementation
+  (`deep-diff-forge-graph::evidence`). The parity tests include a patch with evidence.
 

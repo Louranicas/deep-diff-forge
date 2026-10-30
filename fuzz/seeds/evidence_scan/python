@@ -1,0 +1,6 @@
+import os
+os.system("x")  # noqa
+def test_a():
+"""
+eval(x)
+"""

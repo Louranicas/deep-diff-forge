@@ -23,10 +23,10 @@ era) no longer holds. How the standard is enforced today:
   only the Rust lines under `crates/` changed since the merge base
   (`cargo mutants --no-config --in-diff`, 300 s timeout) and fails on any missed
   mutant or timeout. `--no-config` ignores a candidate's own mutants config.
-- **Fuzz smoke:** each of the eight targets in `fuzz/Cargo.toml`
+- **Fuzz smoke:** every target in `fuzz/Cargo.toml`
   (`patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
-  `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness`; `stdio_invariants.rs` is a shared
-  module) runs for 10 s per pull request; CI fails if a declared target is not
+  `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness`, `evidence_scan`;
+  `stdio_invariants.rs` is a shared module) runs for 10 s per pull request; CI fails if a declared target is not
   in the run list. Crash inputs become fixtures under
   `fixtures/patch/regressions/`.
 - **Sandbox refusal controls:** the rootless-Podman planted-breach suite

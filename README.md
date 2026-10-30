@@ -676,6 +676,23 @@ per file (`crates/deep-diff-forge-graph/src/risk.rs`). Higher means review first
 
 Whoever writes a patch also chooses its paths, so a path can lower a file's score but never zero it. A new file under `generated/` still ranks above a one-line edit elsewhere.
 
+**Code evidence** reads what the changed lines *do*, not what the path says (`crates/deep-diff-forge-graph/src/evidence.rs`). Each signal adds its weight once per file and points at the hunk (by address) and the line, so an agent can check it:
+
+| Signal | Lines | Finds (outside comments and strings) | Score |
+| --- | --- | --- | ---: |
+| `secret_like` | added | a private key header; an `AKIA…`, `ghp_…`, `xoxb-…` or `sk_live_…` token (read in strings and comments too; never copied out) | +5 |
+| `unsafe_added` | added | Rust `unsafe` | +4 |
+| `process_spawn` | added | `Command::new`; `subprocess.`, `os.system(`; `child_process`, `execSync(`; `exec.Command(` | +4 |
+| `dynamic_eval` | added | `eval(`, `exec(`, `compile(` (Python); `eval(`, `new Function(` (JS/TS); shell `eval` | +4 |
+| `ci_privilege` | added, in `.github/workflows/*.yml` or `.gitlab-ci.yml` | `pull_request_target`, `write-all`, `contents: write`, `id-token: write`, `secrets: inherit`, … | +4 |
+| `network_fetch` | added | `reqwest::`, `TcpStream::connect`; `requests.`, `urllib.request`; `fetch(`; `http.Get(`; `curl`, `wget` (shell, Dockerfile, Makefile, CI) | +3 |
+| `build_hook` | added | any code in `build.rs` or `setup.py`; npm `preinstall`/`install`/`postinstall`/`prepare` | +3 |
+| `test_removed` | removed | `#[test]`; `def test…`; `it(`, `test(`, `describe(`; `func Test…` | +3 |
+| `check_suppressed` | added | `#[allow(`; `# noqa`, `# type: ignore`; `eslint-disable`, `@ts-ignore`; `//nolint` (read in comments) | +2 |
+
+Languages come from the extension, or a shebang for a file with none: Rust, Python, JS/TS, Go, shell (with `Dockerfile` and `Makefile`) and YAML. The scan is **lexical** (`"basis": "lexical"`): it blanks comments and strings, following block comments and triple-quoted strings across a hunk's lines, and matches tokens with word boundaries. It finds tokens; it does not prove a change safe, and code assembled at run time hides from it. A path cannot hide code: token evidence keeps its weight under `generated/` or `vendor/` (a test path counts half, except `test_removed`); the path-scoped `build_hook` follows the generated rule like every path signal.
+`rank.v0` lists each file's `evidence` (`signal`, `address`, `side`, `line`, `basis`; at most 32, then `evidence_truncated: true`), and each outline hunk lists its `evidence` labels.
+
 Ties break on path, so the order is reproducible. Under `--cluster` the result is
 **identical for any worker count**: parallelism never changes the answer.
 
