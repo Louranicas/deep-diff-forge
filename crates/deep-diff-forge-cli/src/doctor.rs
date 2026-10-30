@@ -210,14 +210,19 @@ pub(crate) fn gather(explicit: Option<&std::path::Path>) -> Findings {
         })
         .map_err(|err| err.to_string());
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
-    let options = deep_diff_forge_patch::GitAcquireOptions {
-        time_limit: GIT_LIMIT,
-        ..deep_diff_forge_patch::GitAcquireOptions::default()
-    };
     Findings {
         version: env!("CARGO_PKG_VERSION"),
         daemon,
-        git: deep_diff_forge_patch::git_version(&cwd, &options).map_err(|err| err.to_string()),
+        git: deep_diff_forge_patch::git_version(&cwd, &git_options())
+            .map_err(|err| err.to_string()),
+    }
+}
+
+/// Git as an acquisition runs it, but given [`GIT_LIMIT`] to answer.
+fn git_options() -> deep_diff_forge_patch::GitAcquireOptions {
+    deep_diff_forge_patch::GitAcquireOptions {
+        time_limit: GIT_LIMIT,
+        ..deep_diff_forge_patch::GitAcquireOptions::default()
     }
 }
 
@@ -239,6 +244,17 @@ mod tests {
 
     fn states(findings: &Findings) -> Vec<(&'static str, State)> {
         checks(findings).iter().map(|c| (c.name, c.state)).collect()
+    }
+
+    #[test]
+    fn git_gets_ten_seconds_and_otherwise_runs_as_an_acquisition() {
+        let options = git_options();
+        assert_eq!(options.time_limit, std::time::Duration::from_secs(10));
+        let default = deep_diff_forge_patch::GitAcquireOptions::default();
+        assert_eq!(
+            (options.git_program, options.env, options.byte_budget),
+            (default.git_program, default.env, default.byte_budget)
+        );
     }
 
     #[test]

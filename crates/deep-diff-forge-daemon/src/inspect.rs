@@ -271,6 +271,55 @@ mod tests {
         assert_eq!(lock_state(&usable), LockState::Usable);
     }
 
+    /// A path that cannot be read for a reason other than "missing" (here: a component is a
+    /// file) is never reported absent.
+    #[test]
+    fn an_unreadable_path_is_not_absent() {
+        let dir = private_dir("unreadable");
+        let file = dir.0.join("file");
+        std::fs::write(&file, b"").unwrap();
+        let under = file.join("d.sock");
+        assert_eq!(
+            dir_state(&file.join("sub")),
+            DirState::Refused(SocketError::Missing)
+        );
+        assert!(matches!(
+            socket_state(&SocketLocation::at(&under)),
+            SocketState::Unreachable(_)
+        ));
+        assert_eq!(
+            lock_state(&file.join("d.sock.lock")),
+            LockState::Refused("the start lock cannot be read")
+        );
+    }
+
+    /// A socket whose listener closes without answering is unreachable, not another user's.
+    #[test]
+    fn a_daemon_that_closes_unanswered_is_unreachable() {
+        let dir = private_dir("closes");
+        let path = dir.0.join("d.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let closer = std::thread::spawn(move || drop(listener.accept()));
+        let found = socket_state(&SocketLocation::at(&path));
+        // Wake the accept if `socket_state` never connected, so the join cannot hang.
+        let _ = std::os::unix::net::UnixStream::connect(&path);
+        closer.join().unwrap();
+        assert!(matches!(found, SocketState::Unreachable(_)), "{found:?}");
+    }
+
+    /// A start lock owned by another user is refused (checked with a root-owned file; root
+    /// owns everything it would compare against, so the check is skipped as root).
+    #[test]
+    fn a_start_lock_of_another_user_is_refused() {
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+        assert_eq!(
+            lock_state(Path::new("/etc/passwd")),
+            LockState::Refused("the start lock is owned by another user")
+        );
+    }
+
     #[test]
     fn a_shared_directory_is_refused() {
         let dir = private_dir("shared");
