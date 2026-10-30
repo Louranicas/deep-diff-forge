@@ -144,8 +144,9 @@ fn ranking(dir: &Path, case: &Value, scores: &mut Scores) -> Result<(), EvalErro
                 id(case)
             )));
         };
-        scores.ranking_pairs.add(h < l);
-        if h >= l {
+        let right = h < l;
+        scores.ranking_pairs.add(right);
+        if !right {
             scores
                 .failures
                 .push(format!("{}: {high} ranks below {low}", id(case)));

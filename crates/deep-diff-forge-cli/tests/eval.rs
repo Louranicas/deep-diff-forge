@@ -216,6 +216,10 @@ fn the_gate_fails_for_the_reason_it_names() {
         receipt["failures"],
         serde_json::json!(["ranking/circle-probe: src/util.rs ranks below src/util.rs"])
     );
+    assert_eq!(
+        receipt["metrics"]["ranking_pairs"]["right"], 5,
+        "{receipt:#}"
+    );
 
     let missing = Copy::new("missing");
     std::fs::remove_file(missing.0.join("findings/mixed.jsonl")).unwrap();
