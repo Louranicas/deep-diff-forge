@@ -349,6 +349,50 @@ mod tests {
         assert!(!diff.reformat_only() && !diff.degraded());
     }
 
+    /// Every workload's input bytes are pinned: a change to a generator is a change to what the
+    /// benchmark measures, so it must update this list in the same commit, and
+    /// `scripts/bench_compare.py` reports such a workload as not compared.
+    #[test]
+    fn every_workload_input_is_pinned() {
+        let pinned = [
+            (
+                "parse_seal",
+                "22da2a2e81a542149830dee499b67b90897ce7ba5cc0a46d509281a253032358",
+            ),
+            (
+                "rank_with_evidence",
+                "22da2a2e81a542149830dee499b67b90897ce7ba5cc0a46d509281a253032358",
+            ),
+            (
+                "outline_page",
+                "22da2a2e81a542149830dee499b67b90897ce7ba5cc0a46d509281a253032358",
+            ),
+            (
+                "findings_verify",
+                "46e7457eb86a17eda75a5305f0611533ed68d370f43f88b3a20e720c2a5ebac0",
+            ),
+            (
+                "findings_by_address",
+                "7c075fad8da15a2234c565855959d97548f7153e2dff43dd105dd404c06540c6",
+            ),
+            (
+                "structural_rust",
+                "3619701b61b2cbbf72fa3e48d0b1dddc15d8bd515bd3a25b5916235ec10a5433",
+            ),
+            (
+                "daemon_parallel",
+                "074d175495ad4020c5800880b499d55c13d5ef129050b80431d07524a51ec3a4",
+            ),
+        ];
+        let actual: Vec<(&str, String)> = workloads()
+            .iter()
+            .map(|w| (w.name, deep_diff_forge_core::sha256_hex(w.input.as_bytes())))
+            .collect();
+        let expected: Vec<(&str, String)> =
+            pinned.iter().map(|(n, h)| (*n, (*h).to_owned())).collect();
+        assert_eq!(actual, expected);
+    }
+
     #[test]
     fn generated_findings_are_all_accepted() {
         let sealed = review(&generated_patch(5, 2, 20));
