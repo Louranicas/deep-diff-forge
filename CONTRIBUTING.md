@@ -92,13 +92,14 @@ What the gates enforce, and what we ask in review:
 3. Open a pull request and fill in the template. Draft pull requests are welcome for early
    feedback.
 4. `main` is protected. Merging needs a pull request, a branch that is up to date with `main`,
-   and **ten required checks**:
+   and **eleven required checks**:
    - the gate;
    - supply chain;
    - review-controller evidence;
    - secret scan;
    - Rust 1.88 compatibility;
    - macOS tests;
+   - the bench comparison (base vs head);
    - four diff-mutation shards.
 
    Nobody can bypass them, including the maintainer.

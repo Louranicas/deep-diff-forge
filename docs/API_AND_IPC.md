@@ -103,8 +103,8 @@ Planned, not created: a Git workspace crate, a planner crate and a loom crate.
 
 ## CLI Command Surface (shipped)
 
-This is the usage block of `deep-diff-forge --help` on `main` (unreleased, after v0.4.0; `bench`,
-`eval`, `findings verify`, `review --findings` and `daemon metrics` are not in 0.4.0):
+This is the usage block of `deep-diff-forge --help` at 0.5.0 (`bench`,
+`eval`, `findings verify`, `review --findings` and `daemon metrics` arrived in 0.5.0):
 
 ```text
 deep-diff-forge --help

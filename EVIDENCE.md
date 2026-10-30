@@ -1,13 +1,13 @@
 # Deployment Evidence — L0 → L9 (… + Daemon + Release + Learning)
 
-## Status 2026-10-30 (0.4.0)
+## Status 2026-10-31 (0.5.0)
 
 **Kind:** append-only evidence log. Each section is dated or session-tagged and records what was measured then. Sections are not rewritten. Later sections correct earlier ones.
 
-**Current at 0.4.0:**
+**Current at 0.5.0:**
 
-- The newest evidence is at the end of this file: [v0.4.0 release readiness (2026-10-30)](#v040-release-readiness-2026-10-30), then [daemon metrics overhead](#daemon-metrics-overhead-2026-10-30) and [findings verification by address](#findings-verification-by-address-2026-10-30). The fuzz numbers in [v0.3.0 release readiness (2026-10-29)](#v030-release-readiness-2026-10-29) supersede the 2026-10-28 ones, which predate the last parser change.
-- Published GitHub releases are `v0.1.0`, `v0.2.0`, `v0.3.0` (2026-10-29) and `v0.4.0` (2026-10-30), each by owner decision. `v0.2.1` was never tagged.
+- The newest evidence is at the end of this file: [v0.5.0 release readiness (2026-10-31)](#v050-release-readiness-2026-10-31); before it, [v0.4.0 release readiness (2026-10-30)](#v040-release-readiness-2026-10-30), then [daemon metrics overhead](#daemon-metrics-overhead-2026-10-30) and [findings verification by address](#findings-verification-by-address-2026-10-30). The fuzz numbers in [v0.3.0 release readiness (2026-10-29)](#v030-release-readiness-2026-10-29) supersede the 2026-10-28 ones, which predate the last parser change.
+- Published GitHub releases are `v0.1.0`, `v0.2.0`, `v0.3.0` (2026-10-29), `v0.4.0` (2026-10-30) and `v0.5.0` (2026-10-31), each by owner decision. `v0.2.1` was never tagged.
 - crates.io is on hold by owner decision until the codebase is production-hardened. This replaces the older "token-gated" wording in the L8 and L9 sections. A configured token alone publishes nothing: the publish job in `.github/workflows/release.yml` runs only on a `v*` tag **and** when the repository variable `DDF_CRATES_IO` is `open`. `deep-diff-forge deploy release` reports `crates.io blocked` (measured with the binary).
 - The 2026-10-26 section ends with "Nothing is tagged or published". That refers to the council stack only. The `v0.1.0` and `v0.2.0` GitHub releases already existed.
 - Test counts in older sections (568, 765, 794) are counts at that time and are not current.
@@ -772,3 +772,23 @@ The cost had grown with findings times hunks. Through the daemon, one `findings.
 of 10,000 findings against a large patch could hold a worker for minutes. It is now linear in
 findings, with one hash per hunk per call.
 
+
+## v0.5.0 release readiness (2026-10-31)
+
+Measured on 2026-10-31 for the owner's `v0.5.0` tag (Luke's instruction of 2026-10-31: "update
+tag"). 0.5.0, not 0.4.1: the graph crate's API changed (`RankedFile` is `#[non_exhaustive]`, built
+only by `RankedFile::scored`, and `RiskSignal` gains `Code`). It ships the plan in
+[docs/PLAN_AGENT_EVIDENCE_AND_OBSERVABILITY.md](docs/PLAN_AGENT_EVIDENCE_AND_OBSERVABILITY.md).
+
+| Change | PR | Evidence |
+| --- | --- | --- |
+| Code evidence in risk ranking (nine lexical signals; `evidence_scan` fuzz target) | #51 | CI 10/10 |
+| Verified agent findings (`findings verify`, daemon `findings.verify`, MCP, Python SDK; `findings_verify` fuzz target) | #52 | CI 10/10; [findings verification by address](#findings-verification-by-address-2026-10-30) |
+| Daemon metrics (protocol 2) and JSON logs; `deploy doctor` reads the metrics | #53 | CI 10/10; [daemon metrics overhead](#daemon-metrics-overhead-2026-10-30) (no overhead measurable) |
+| `bench` and `eval`, the PR bench comparison and the weekly campaign receipt | #54 | CI 11/11 (the bench job skipped: its merge base had no `bench`); a review workflow found 10 defects, fixed before merge |
+| DDF-EVID-001: code inside string interpolation is scanned as code; the scanner errs toward code; JS `child_process` imports | #55 | CI 11/11, macOS included; the PR's bench comparison, the first real one, found 0 regressions in 7 workloads (largest ratio 1.10x) |
+
+The release PR also makes the `bench` comparison a required check (renamed `bench (base vs
+head)`), so ruleset 25868121 requires eleven checks. Before this, the job had made one real
+comparison with 0 false failures. One run is a small sample (measured), so a false failure on
+a noisy runner remains possible (inferred); a rerun of the job is the first response.

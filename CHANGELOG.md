@@ -6,6 +6,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-31
+
 ### Added
 
 - **`deep-diff-forge bench [--quick] [--workload NAME]... [--json]`** times seven workloads on
@@ -76,6 +78,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - The plan behind this and the next changes: `docs/PLAN_AGENT_EVIDENCE_AND_OBSERVABILITY.md`.
 
 ### Changed
+
+- The pull-request `bench` comparison (`bench (base vs head)`, renamed from
+  `bench (base vs head, informational)`) is a required check: ruleset 25868121 now requires
+  eleven. A head over 25% and over 0.2 ms slower than its merge base on any workload blocks the
+  merge.
 
 - **Daemon protocol 2.** `findings.verify` is `since: 2`; clients that ask for protocol 0 or 1
   get the method lists they had.
@@ -1118,7 +1125,8 @@ A supply-chain & fuzz hardening pass then raised the release/CI posture:
   `--json`/`--jsonl` stability tests. Corrected the daemon's `lib.rs` doc from
   "thread-per-connection" to the true single-threaded sequential accept loop.
 
-[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.2.0

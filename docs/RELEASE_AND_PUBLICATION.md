@@ -2,12 +2,12 @@
 
 This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
-## Status 2026-10-30 (0.4.0)
+## Status 2026-10-31 (0.5.0)
 
-- The workspace version on `main` is **0.4.0**, tagged `v0.4.0` on 2026-10-30
+- The workspace version on `main` is **0.5.0**, tagged `v0.5.0` on 2026-10-31
   by owner decision. Pushing any later `v*` tag is the owner's decision too.
 - Published GitHub releases: `v0.1.0` (2026-06-22), `v0.2.0` (2026-06-24) and
-  `v0.3.0` (2026-10-29) and `v0.4.0` (2026-10-30). `0.2.1` was never tagged.
+  `v0.3.0` (2026-10-29), `v0.4.0` (2026-10-30) and `v0.5.0` (2026-10-31). `0.2.1` was never tagged.
 - crates.io is on hold by owner decision until the codebase is
   production-hardened. `release.yml` publishes only when the repository
   variable `DDF_CRATES_IO` is `open`.
@@ -21,8 +21,8 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
 | Channel | Purpose | Today |
 | --- | --- | --- |
-| `main` | Current development branch. | 0.4.0, reached only through pull requests (branch ruleset). |
-| GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`. |
+| `main` | Current development branch. | 0.5.0, reached only through pull requests (branch ruleset). |
+| GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`. |
 | GitLab mirror | Secondary remote and redundancy. | Pushed to match GitHub. |
 | crates.io | Rust library and CLI distribution. | On hold (`DDF_CRATES_IO`). |
 | cargo-binstall | Fast binary installation. | Not configured (no binstall metadata in any `Cargo.toml`). |
@@ -33,7 +33,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 Semantic versioning. The plan below is the original 2026-06 sequence, kept as
 written; the releases did not follow it (`v0.2.0` already held 12 crates,
 including the TUI, daemon and learning crates; the review and SDK crates came
-later; 0.4.0 is the current development line):
+later; 0.5.0 is the current development line):
 
 ```text
 0.1.0: model and CLI bootstrap
@@ -82,7 +82,7 @@ up-to-date branch, and allows no bypass. The tag is cut from that commit with
 the `justfile` recipe:
 
 ```bash
-just release-tag 0.4.0
+just release-tag 0.5.0
 ```
 
 `release-tag` refuses a version that differs from `[workspace.package].version`
@@ -124,13 +124,13 @@ Toolchain pinned to 1.99.1 except where noted.
 | `macos` (macOS tests) | macos-latest | every trigger (each pull request since 2026-10-30) | `cargo test --workspace --locked --no-fail-fast`. |
 | `gate` (deploy gate-feature) | ubuntu-26.04 | every trigger | Review-policy check and selftest, exemption-oracle tests, fmt, check, clippy `-D warnings`, pedantic (workspace, patch without default features, fuzz crate), tests, rustdoc `-D warnings`, contract probes, `deploy status --json`, fuzz-harness compile, soak leak-check and bench-comparison regression tests (`scripts/security/test_daemon_soak.py`, `scripts/test_bench_compare.py`), 10 s hostile daemon soak, privacy probes, Python SDK against the built binary. |
 | `review-controller-evidence` (review controller mutation and fuzz evidence) | ubuntu-26.04 | every trigger | Scoped cargo-mutants of the review controller; 10 s instrumented fuzz smoke for every target in `fuzz/Cargo.toml` (`scripts/fuzz_target.sh --list`) (`nightly-2026-10-25`; fails if a declared target is not run); builds the council gate image and runs the rootless-Podman planted-breach suite (`council_sandbox`, 12 probes). |
-| `bench` (bench (base vs head, informational)) | ubuntu-26.04 | `pull_request` only | Builds the merge base and the head in release mode, runs `bench --quick --json` alternately three times, and compares the best medians with `scripts/bench_compare.py`. Not a required check. |
+| `bench` (bench (base vs head)) | ubuntu-26.04 | `pull_request` only | Builds the merge base and the head in release mode, runs `bench --quick --json` alternately three times, and compares the best medians with `scripts/bench_compare.py`. Required since 2026-10-31 (owner decision). |
 | `diff-mutation` (diff mutation (shard k/4)) | ubuntu-26.04 | `pull_request` only | `scripts/diff_mutation.sh origin/$BASE_REF k/4`: cargo-mutants 27.1.0 on the PR's changed Rust lines under `crates/`; a missed mutant or timeout fails. |
 | `supply-chain` (supply chain audit) | ubuntu-26.04 | every trigger | cargo-deny (root and fuzz), `cargo audit --deny warnings` (root and fuzz lockfiles), SPDX SBOM regenerated and compared with the committed one. |
 
-On a pull request eleven checks run: the ten required ones (`secrets`, `msrv`, `macos`, `gate`,
-`review-controller-evidence`, four `diff-mutation` shards, `supply-chain`) and the informational
-`bench`; the ten are ruleset 25868121's required checks (measured 2026-10-30 with `gh api`; the ruleset lives in GitHub settings, not in the repository).
+On a pull request eleven checks run (`secrets`, `msrv`, `macos`, `gate`,
+`review-controller-evidence`, four `diff-mutation` shards, `supply-chain`, `bench`); all eleven
+are ruleset 25868121's required checks (`bench` added on 2026-10-31; measured with `gh api`; the ruleset lives in GitHub settings, not in the repository).
 
 ### `release.yml`
 
