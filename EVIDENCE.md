@@ -724,3 +724,17 @@ One local gate run of PR #48, after `main` was merged in, reported a failed test
 full runs did not reproduce it, and its output was not kept; the gate script now keeps the
 test log. It is recorded here as an unexplained, unreproduced failure.
 
+### v0.4.0 dry run, tag and published release (2026-10-30)
+
+- **Dry run** 41000435240 (`workflow_dispatch` on `8223710`): every quality gate including
+  macOS, all three builds (x86_64 Linux, x86_64 and aarch64 macOS), crates.io skipped as held.
+- **Merge.** PR #49 merged as `ff9e079`, whose tree (`79a2c07`) is identical to the dry-run
+  commit's, so the tag names the exact tree the dry run built. `just gate-release` passed on
+  `ff9e079` and left the tree clean.
+- **Tag** `v0.4.0` (annotated, on `ff9e079`) pushed to GitHub and GitLab.
+- **Release run** 41004772365 (`push` of `v0.4.0`): success. The GitHub release `v0.4.0` is
+  published and marked Latest, with three binaries, their `.sha256` files and `sbom.spdx.json`.
+- **Verified after download:** `sha256sum -c` OK for the x86_64 Linux archive;
+  `deep-diff-forge --version` prints `deep-diff-forge 0.4.0`; `gh attestation verify` passes
+  with one SLSA v1 provenance signed by `release.yml@refs/tags/v0.4.0`.
+
