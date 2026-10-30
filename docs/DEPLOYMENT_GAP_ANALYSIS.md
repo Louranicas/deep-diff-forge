@@ -14,7 +14,7 @@
 
 **Still open, as residual risks rather than deployment gaps:** the daemon serves its connections with one engine, so requests run one at a time. (Closed since 0.3.0: Git subprocesses have a time limit, 120 s for the CLI and 30 s for `review.change`. Closed after 0.3.0, unreleased: the socket checks peer credentials on both ends, and a start lock stops two `daemon start`s racing.)
 
-Current docs: [release and publication](RELEASE_AND_PUBLICATION.md), [operations and daemon](OPERATIONS_AND_DAEMON.md), [feature deployability matrix](FEATURE_DEPLOYABILITY_MATRIX.md), [roadmap](ROADMAP.md).
+Current docs: [production readiness](PRODUCTION_READINESS.md) (scored assessment, 2026-10-30), [release and publication](RELEASE_AND_PUBLICATION.md), [operations and daemon](OPERATIONS_AND_DAEMON.md), [feature deployability matrix](FEATURE_DEPLOYABILITY_MATRIX.md), [roadmap](ROADMAP.md).
 
 This analysis reviews the current Deep-Diff-Forge deployment framework against
 the repository as it exists now. It has two passes:
