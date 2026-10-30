@@ -706,8 +706,10 @@ Across the tree:
 - **No `unsafe`.** It is forbidden in every crate.
 - **No production `unwrap` or `expect`.** No suppression goes unexplained.
 - **Pinned Actions.** Every GitHub Action is pinned to a commit SHA.
-- **Platforms.** A macOS job runs the whole suite weekly, on manual runs and in every
-  release run.
+- **Platforms.** A macOS job runs the whole suite on every pull request, every push to `main`,
+  weekly, on manual runs and in every release run.
+- **Campaigns.** Each week `campaign.yml` runs a 10-minute hostile daemon soak with real review
+  work and leak checks (RSS and open-fd growth), and an hour of fuzzing for every fuzz target.
 - **Releases.** Each release builds three targets, smoke-tests the two that run on the build
   machine, verifies checksums, and attaches SLSA provenance and the SBOM.
 - **Local replica.** `scripts/ci_local.sh` (`just ci`) runs the CI gate jobs locally.
@@ -784,7 +786,6 @@ deployment.
 **Known limits.** Contributions are welcome on any of these; see [CONTRIBUTING.md](CONTRIBUTING.md#open-problems-worth-owning):
 
 - One engine serves all daemon connections, so a long request delays the others.
-- macOS tests run weekly and on demand, not on every PR.
 - The cockpit is tested by headless frames; there is no key-sequence harness yet.
 - Syntax features speak Rust; comparing two files directly (`<old> <new>`) and the `chain`,
   `cluster` and `loom` subcommands are planned and refused today.

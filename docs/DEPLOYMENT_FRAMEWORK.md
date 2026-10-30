@@ -723,7 +723,7 @@ Read by the code or scripts today:
 | `XDG_STATE_HOME` | Learning store base. |
 | `DDF_COUNCIL_GATE_IMAGE` | Local image the council gate sandbox runs; gates refuse without it. |
 | `DDF_COUNCIL_PODMAN` | Podman command for the gate sandbox. |
-| `DDF_SOAK_SECONDS` | Duration of `scripts/security/daemon_soak.py` (default 60; CI uses 10). |
+| `DDF_SOAK_SECONDS` | Duration of `scripts/security/daemon_soak.py` (default 60; CI uses 10, the weekly campaign 600 with `--require-growth-check`). |
 | `DDF_MUTATION_OUT` | Output directory of `scripts/diff_mutation.sh`. |
 
 Target design, not read by any code today:

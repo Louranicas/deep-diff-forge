@@ -342,9 +342,9 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
   `<socket>.lock` (opened without following symlinks, a regular file owned by
   the effective user) before the probe and holds it until the daemon has exited
   and removed its socket. A start that finds the lock held exits 6.
-- **macOS tests do not run on pull requests.** The `macos` CI job runs weekly,
-  on manual runs, in a dispatched release dry run and in a tag release, but not
-  on a pull request.
+- **Closed (Unreleased): macOS tests did not run on pull requests.** The `macos`
+  CI job now runs on every event, each pull request included, and `macOS tests`
+  is a required check.
 - **The TUI has no interactive test harness.** Unit tests cover its state and
   rendering, and the headless `review --probe` frame is tested end to end; the
   live terminal path is not.

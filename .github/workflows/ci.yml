@@ -63,13 +63,14 @@ jobs:
       - name: check on Rust 1.88
         run: cargo check --workspace --all-targets --locked
 
-  # macOS binaries ship from release.yml, so their tests run before a release: weekly, on a
-  # manual run, inside a dispatched release dry run, and inside a tag release (release.yml calls
-  # this workflow with the tag push's event, so before, a tagged release skipped them). Not on
-  # pull requests (macOS minutes).
+  # macOS binaries ship from release.yml, so their tests run on every event: each pull request,
+  # each push to main, the weekly run, a manual run and a release (release.yml calls this
+  # workflow). Before 2026-10-30 they ran only weekly, manually and on release, and two macOS
+  # breaks in PR #44 were caught only by a manual run. The job takes about 4 minutes, so it runs
+  # on every pull request rather than behind a path filter, which would miss a break that reaches
+  # the daemon or the socket code through another crate.
   macos:
     name: macOS tests
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -136,6 +137,8 @@ jobs:
         run: cargo run --locked -p deep-diff-forge-cli -- deploy status --json
       - name: fuzz harness compile gate
         run: cargo check --locked --manifest-path fuzz/Cargo.toml --bins
+      - name: daemon soak leak-check regressions
+        run: python3 -I scripts/security/test_daemon_soak.py
       - name: hostile daemon soak smoke
         env:
           DDF_SOAK_SECONDS: 10
@@ -171,31 +174,16 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/ddf-review-mutation-target
         run: cargo mutants --package deep-diff-forge-review --re 'identifier|check_execution' --test-workspace true --timeout 300
-      - name: instrumented council-report fuzz smoke
+      - name: instrumented fuzz smoke for every target
+        # Every target in fuzz/Cargo.toml runs here for 10 s (anchor B-06); before, four only ever
+        # compiled. The list comes from the manifest (scripts/fuzz_target.sh --list), so a new
+        # target cannot be added without running, and a target with no seeds fails. The weekly
+        # campaign (campaign.yml) runs the same script for an hour per target.
         run: |
-          mkdir -p /tmp/ddf-council-corpus
-          cp review-policy/fuzz-seeds/council_report.json /tmp/ddf-council-corpus/seed.json
-          cargo +nightly-2026-10-25 fuzz run council_report /tmp/ddf-council-corpus -- -max_total_time=10 -max_len=4096
-      - name: instrumented fuzz smoke for every other target
-        # Every target in fuzz/Cargo.toml runs here or in the council-report step above (anchor
-        # B-06); before, four only ever compiled. The list is checked against the manifest first,
-        # so a new target cannot be added without running. Seeds: the patch fixtures for the patch
-        # parsers, fuzz/seeds/<target> for the rest (stdio seeds are a cap byte, 255 = the server's
-        # real cap, then stdio lines; see fuzz/fuzz_targets/stdio_invariants.rs). The copies keep
-        # the committed seeds unchanged.
-        run: |
-          targets="patch_parser review_json daemon_protocol agent_annotation stdio_mcp stdio_rpc structural_soundness"
-          declared=$(grep -A1 '^\[\[bin\]\]' fuzz/Cargo.toml | sed -n 's/^name = "\(.*\)"/\1/p' | sort)
-          missing=$(comm -23 <(echo "$declared") <(printf '%s\n' council_report $targets | sort))
-          if [ -n "$missing" ]; then echo "fuzz targets never run in CI: $missing"; exit 1; fi
+          targets=$(scripts/fuzz_target.sh --list)
+          test -n "$targets"
           for target in $targets; do
-            corpus="/tmp/ddf-$target-corpus"
-            mkdir -p "$corpus"
-            case "$target" in
-              patch_parser|review_json) cp fixtures/patch/*.patch "$corpus/" ;;
-              *) cp fuzz/seeds/$target/* "$corpus/" ;;
-            esac
-            cargo +nightly-2026-10-25 fuzz run "$target" "$corpus" -- -max_total_time=10 -max_len=65536
+            scripts/fuzz_target.sh "$target" 10
           done
       # Council quality gates only run inside the rootless Podman gate sandbox
       # (docs/REVIEW_COUNCIL.md#gate-sandbox). The ubuntu runner images ship podman.
