@@ -90,20 +90,21 @@ and checked by `crates/deep-diff-forge-cli/tests/crate_edges.rs`.
 | `deep-diff-forge-pipeline` | `stages.rs`, `jsonl.rs`, `review.rs` | `ChainStage` trait, `IngestStage` / `RenderStage`, JSONL events, `analysis.v1` bundles. |
 | `deep-diff-forge-syntax` | `language.rs`, `analyze.rs`, `highlight.rs`, `structural.rs` | Tree-sitter symbols, highlighting, structural diff. |
 | `deep-diff-forge-graph` | `rank.rs`, `risk.rs` | Risk signals and deterministic ranking. |
-| `deep-diff-forge-agent` | `anchor.rs`, `evidence.rs`, `store.rs` | Agent annotation protocol. |
+| `deep-diff-forge-agent` | `anchor.rs`, `evidence.rs`, `findings.rs`, `store.rs` | Agent annotation protocol and the findings verifier (`findings.v0`). |
 | `deep-diff-forge-cluster` | `cluster.rs`, `scheduler.rs` | Bounded parallel lanes (patch + risk) with a deterministic join. |
 | `deep-diff-forge-learning` | `receipt.rs`, `store.rs`, `score.rs`, `planner.rs`, `ranking.rs`, `annotation.rs`, `promote.rs` | Local-only L9 learning store. |
 | `deep-diff-forge-daemon` | `protocol.rs`, `handler.rs`, `serve.rs`, `security.rs` | JSON-RPC framing, dispatcher, socket server, socket security. |
 | `deep-diff-forge-tui` | `run.rs`, `ui.rs`, `state.rs` and others | Interactive review cockpit. |
 | `deep-diff-forge-review` | `cli.rs`, `execution.rs`, `sandbox.rs`, `tuicr.rs` and others | Review council (`council …` subcommands). |
 | `deep-diff-forge-sdk` | `lib.rs` | Stable Rust facade (see [SDKs](#sdks)). |
-| `deep-diff-forge-cli` | `main.rs`, `args.rs`, `git_input.rs`, `analysis.rs`, `contract.rs`, `mcp.rs`, `rpc.rs` | The `deep-diff-forge` binary. |
+| `deep-diff-forge-cli` | `main.rs`, `args.rs`, `git_input.rs`, `analysis.rs`, `contract.rs`, `mcp.rs`, `rpc.rs`, `bench.rs`, `eval.rs`, `agent.rs`, `doctor.rs` | The `deep-diff-forge` binary, including `bench` (`bench.v0`) and `eval` (`eval.v0`). |
 
 Planned, not created: a Git workspace crate, a planner crate and a loom crate.
 
 ## CLI Command Surface (shipped)
 
-This is the usage block of `deep-diff-forge --help` at 0.3.0:
+This is the usage block of `deep-diff-forge --help` on `main` (unreleased, after v0.4.0; `bench`,
+`eval`, `findings verify`, `review --findings` and `daemon metrics` are not in 0.4.0):
 
 ```text
 deep-diff-forge --help
@@ -111,18 +112,22 @@ deep-diff-forge --version
 deep-diff-forge --self-test
 deep-diff-forge doctor
 deep-diff-forge deploy {status|release|doctor} [--json] [--socket PATH]
+deep-diff-forge bench [--quick] [--workload NAME]... [--json]
+deep-diff-forge eval [--corpus DIR] [--json]
+deep-diff-forge findings verify --findings FILE [--require-all] [--require-files] [--require-hunks]
 deep-diff-forge semantic <path> [--json]
 deep-diff-forge highlight <path> [--color|--no-color]
 deep-diff-forge council <example|prepare|review|gate|status|import|export-tuicr|import-tuicr>
 deep-diff-forge analyze <patch-file> <base-directory> <candidate-directory>
 deep-diff-forge structural <old> <new> [--json]
-deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME]
-deep-diff-forge daemon {path|start [--foreground]|health|status|stop} [--socket PATH]
+deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME] [--findings FILE]
+deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics|stop} [--socket PATH]
 deep-diff-forge learn {status|record --stdin} [--json]
-deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side] [--require-files] [--require-hunks]
+deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks]
 deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [--acquisition-json | <--stdin-patch output flags>]
-deep-diff-forge mcp
-deep-diff-forge rpc
+deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... | doctor} [--json]
+deep-diff-forge mcp [--allow-repo PATH]...
+deep-diff-forge rpc [--allow-repo PATH]...
 deep-diff-forge envelope -- <command> [args…]
 deep-diff-forge schema [result|exit-codes]
 deep-diff-forge explain <code> [--family engine|council] [--json]
@@ -208,9 +213,10 @@ Domain codes:
 | --- | --- | --- |
 | 1 | No such session | — |
 | 2 | Protocol not supported | — |
+| 3 | Git failed (`review.change`) | 3 (`io`) |
 | 4 | Patch parse failed | 4 (`invalid_input`) |
 | 7 | Input contract refused (`refused: …`) | 7 (`input_contract_refused`) |
-| 8 | Resource budget exceeded: a session over the retained-payload budget, or a response over 80 MiB | — |
+| 8 | Resource budget exceeded: a session over the retained-payload budget, no free session id, a response over 80 MiB, findings over 8 MiB, or the daemon busy (no admission within 30 s) | — |
 
 The Rust SDK maps domain errors 4 and 7 to CLI exits 4 and 7, and any other RPC
 or transport error to 6 (`Error::exit_code`).
@@ -285,7 +291,10 @@ pins the public signatures.
 **Python (`sdk/python/deep_diff_forge.py`, standard library only):**
 `StdioClient(command=("deep-diff-forge", "rpc"), timeout=30.0)` and
 `SocketClient(path, timeout=30.0)`, each with `call(method, **params)`,
-`review_patch(patch, require_files=False, require_hunks=False)` and `methods()`.
+`review_patch(patch, require_files=False, require_hunks=False)` (`diff.compute`),
+`rank_patch(patch, require_files=False, require_hunks=False)` (`diff.rank`),
+`verify_findings(patch, findings, require_files=False, require_hunks=False)`
+(`findings.verify`, protocol 2) and `methods()`.
 A JSON-RPC error raises `RpcError` (with the daemon's `code`); a transport
 failure raises `TransportError`.
 
@@ -309,13 +318,13 @@ symlink, and never re-permissions it (`serve.rs`, `bind_explicit`).
 sequenceDiagram
     participant Client
     participant Server as daemon start
-    participant Engine as engine (one mutex)
+    participant Engine as engine (shared, parallel)
 
     Server->>Server: bind: refuse a live socket or a non-socket file, remove a stale socket
     Client->>Server: connect (admitted while fewer than 8 are open)
     loop each request line (at most 80 MiB, 30 s deadline)
         Client->>Server: JSON-RPC request
-        Server->>Engine: lock, dispatch the METHODS entry
+        Server->>Engine: admit within the 128 MiB in-flight budget, dispatch the METHODS entry
         Engine-->>Server: result or RpcError
         Server-->>Client: response (over 80 MiB becomes error 8)
     end
@@ -323,9 +332,9 @@ sequenceDiagram
     Server-->>Client: {"stopping": true}
 ```
 
-There is no daemon lock file and no cache. `daemon start` always runs in the
-foreground; a supervisor owns the process. A client may call `engine.initialize`
-first but does not have to.
+There is no cache. `daemon start` holds an exclusive lock on `<socket>.lock` while it runs
+(see Socket Security Rules) and always runs in the foreground; a supervisor owns the
+process. A client may call `engine.initialize` first but does not have to.
 
 ## Socket Security Rules
 
@@ -379,8 +388,8 @@ reason.
 
 ## Protocol Versioning
 
-Shipped: `engine.protocol = 1` (`protocol.rs`, `PROTOCOL_VERSION`), negotiated
-through `engine.initialize` as described above. Documents carry their own schema
+Shipped: `engine.protocol = 2` (`protocol.rs`, `PROTOCOL_VERSION`; 0 and 1 still negotiate),
+negotiated through `engine.initialize` as described above. Documents carry their own schema
 names (`deep-diff-forge.review.v0`, `ddf.result.v1` and so on).
 
 Planned: separate version numbers for the model, the projection and agent

@@ -1,10 +1,11 @@
 # Roadmap
 
-## Status 2026-10-28 (0.3.0)
+## Status 2026-10-30 (0.4.0 and later)
 
 This section is current. The phase lists below are the original plan and are kept unchanged;
 the [2026-10-26 status](#status-2026-10-26) is kept as a dated record. Status is read from the
-code at `2f03f40` plus this release's version bump, and from `deep-diff-forge --help`.
+code on `main` after #54 (`b1b178b`), with the 2026-10-30 additions dated in each row, and from
+`deep-diff-forge --help`.
 
 | Phase | State | What exists / what remains |
 | --- | --- | --- |
@@ -15,9 +16,9 @@ code at `2f03f40` plus this release's version bump, and from `deep-diff-forge --
 | 4. Review intelligence graph | Partial | Done: deterministic file-level risk ranking with generated/vendored suppression; code evidence (2026-10-30): nine lexical signals from the changed lines (`unsafe`, process spawn, network, `eval`, CI privilege, build hooks, secret-shaped text, check suppression, removed tests), each at a hunk address and line, in rank, outline, MCP, daemon and the cockpit. Remaining: hunk-level ranking, symbols, tests, owners, commands in the graph. |
 | 5. Agent collaboration | Partial | Done: grounding and source classification, sanitising, anchor validation (library); the TUI shows the engine's own grounded notes. Done (2026-10-30): verified agent findings, the path for external agent findings into the CLI (`findings verify`), the daemon (`findings.verify`, protocol 2), `rpc`, MCP (`verify_findings`), the Python SDK and the cockpit (`review --findings`), each checked against patch truth (anchor, line, freshness, size, duplicates) and never grounded. Remaining: a persistent findings store; agent review requests. |
 | 6. App surfaces | Partial | Done: TUI. Remaining: a TUI test harness beyond the headless `review --probe` frame; desktop, web, IDE and forge adapters. |
-| 7. Daemon | Partial | Done: Unix-socket JSON-RPC 2.0, protocol 1, sessions, `engine.methods`, 0700 directory and 0600 socket. Done since 0.3.0: a peer-credential check on both ends of the socket, a start lock, requests in parallel, and (2026-10-30) `daemon.metrics`, doctor warnings from it, and `--log-format json`. Remaining: AST and line-index cache, subscriptions. |
+| 7. Daemon | Partial | Done: Unix-socket JSON-RPC 2.0, protocol 2 (`daemon.metrics` and `findings.verify`; a client that asks for 0 or 1 gets that version's methods), sessions, `engine.methods`, 0700 directory and 0600 socket. Done since 0.3.0: a peer-credential check on both ends of the socket, a start lock, requests in parallel, and (2026-10-30) `daemon.metrics`, doctor warnings from it, and `--log-format json`. Remaining: AST and line-index cache, subscriptions. |
 | 8. Cluster and loom | Cluster partial, loom not built | Done: `deep-diff-forge-cluster` with contiguous shards, join policies and a receipt, run by `--cluster`. Remaining: semantic and other dimensions; the `cluster` subcommand; all of loom. |
-| 9. Deployment spine | Done | CI (`ci.yml`, 10 required checks; weekly `campaign.yml`), `release.yml` (3 targets, sha256, SLSA attestation on tags), `deploy status|release|doctor`, hostile daemon soak smoke, GitHub releases v0.1.0 and v0.2.0, GitLab `main` fast-forwarded from GitHub `main` after each merge. |
+| 9. Deployment spine | Done | CI (`ci.yml`, 10 required checks; weekly `campaign.yml`), `release.yml` (3 targets, sha256, SLSA attestation on tags), `deploy status\|release\|doctor`, hostile daemon soak smoke, since 2026-10-30 an informational `bench (base vs head, informational)` job on pull requests and a full bench receipt in the weekly campaign, GitHub releases v0.1.0 to v0.4.0, GitLab `main` fast-forwarded from GitHub `main` after each merge. |
 | 10. Learning loop | Partial | Done: local-only strategy receipts (`learn record --stdin`), scoring and trust (`learn status`), planner, ranking and annotation learners and promotion rules (library only); and since 2026-10-30, a corpus with a manifest (`fixtures/eval/MANIFEST.json`), evaluation receipts (`eval`, `deep-diff-forge.eval.v0`) and benchmark receipts (`bench`, `deep-diff-forge.bench.v0`). Remaining: nothing emits receipts automatically; `learn record` does not take `bench.v0` or `eval.v0`; no wiring of learned weights into ranking. See [LEARNING_LOOP.md](LEARNING_LOOP.md). |
 
 Release and publication:

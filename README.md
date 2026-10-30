@@ -61,6 +61,8 @@ Underneath sits one rule. The apply-able patch is truth, and nothing may rewrite
 - [MCP server](#mcp-server)
 - [SDKs](#sdks)
 - [The optional daemon](#the-optional-daemon)
+- [Verified agent findings](#verified-agent-findings)
+- [Benchmarks and evaluation](#benchmarks-and-evaluation)
 - [Risk ranking](#risk-ranking)
 - [Architecture](#architecture)
 - [Quality gates](#quality-gates)
@@ -723,7 +725,7 @@ Whoever writes a patch also chooses its paths, so a path can lower a file's scor
 | --- | --- | --- | ---: |
 | `secret_like` | added | a private key header; an `AKIA…`, `ghp_…`, `xoxb-…` or `sk_live_…` token (read in strings and comments too; never copied out) | +5 |
 | `unsafe_added` | added | Rust `unsafe` | +4 |
-| `process_spawn` | added | `Command::new`; `subprocess.`, `os.system(`; `child_process`, `execSync(`; `exec.Command(` | +4 |
+| `process_spawn` | added | `Command::new`; `subprocess.`, `os.system(`; `child_process`, or a `require`, `import` or `from` of `"child_process"` (the quoted name is read; `node:` optional; `import type`, `export type` and `typeof import(…)` do not count), `execSync(`; `exec.Command(` | +4 |
 | `dynamic_eval` | added | `eval(`, `exec(`, `compile(` (Python); `eval(`, `new Function(` (JS/TS); shell `eval` | +4 |
 | `ci_privilege` | added, in `.github/workflows/*.yml` or `.gitlab-ci.yml` | `pull_request_target`, `write-all`, `contents: write`, `id-token: write`, `secrets: inherit`, … | +4 |
 | `network_fetch` | added | `reqwest::`, `TcpStream::connect`; `requests.`, `urllib.request`; `fetch(`; `http.Get(`; `curl`, `wget` (shell, Dockerfile, Makefile, CI) | +3 |
@@ -752,13 +754,13 @@ flowchart LR
     tui[tui]
     sdk[sdk]
   end
-  cli --> tui & pipeline & cluster & daemon & review & learning & syntax & projection & graph & patch
+  cli --> tui & pipeline & cluster & daemon & review & learning & agent & syntax & projection & graph & patch
   tui --> agent & cluster & daemon & learning & syntax & projection & graph & patch
   sdk --> graph & patch
   sdk -. "cfg(unix)" .-> daemon
   pipeline --> syntax & projection & graph & patch
   cluster --> graph
-  daemon --> graph & patch
+  daemon --> agent & graph & patch
   core((core))
   patch --> core
 ```
@@ -819,10 +821,10 @@ The engine is hardened against:
 - hidden-content patches;
 - attacks on the daemon's transport and filesystem.
 
-Eight fuzz targets cover the parser, review JSON, daemon protocol, agent annotations, council
-reports, the MCP and `rpc` stdio servers, and the soundness of the structural diff's
-"formatting only" verdict. See [`SECURITY.md`](SECURITY.md) for the threat
-model.
+Ten fuzz targets cover the parser, review JSON, daemon protocol, agent annotations, council
+reports, the MCP and `rpc` stdio servers, the soundness of the structural diff's
+"formatting only" verdict, agent-findings verification and the code-evidence scanner. See
+[`SECURITY.md`](SECURITY.md) for the threat model.
 
 ## Review council and evidence gates
 

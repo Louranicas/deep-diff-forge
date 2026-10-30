@@ -12,16 +12,17 @@ What exists today, checked against `crates/deep-diff-forge-daemon/src/` and the
   (`engine.methods`): `engine.initialize`, `engine.methods`, `daemon.health`,
   `daemon.status`, `daemon.shutdown`, `diff.plan`, `diff.compute`, `diff.rank`,
   `review.outline`, `review.hunks`, `review.change`, `session.open`,
-  `session.snapshot`, `session.close` and, since protocol 2, `findings.verify`. `deep-diff-forge rpc` speaks the same
-  protocol over stdio without a daemon.
+  `session.snapshot`, `session.close` and, since protocol 2, `daemon.metrics` and
+  `findings.verify`. `deep-diff-forge rpc` speaks the same protocol over stdio without a daemon.
 - At most eight connections, their requests run in parallel under a 128 MiB
   cap on the request bytes in flight ([concurrency](#concurrency)). Line cap 80 MiB each way; a response over it
   becomes `RESOURCE_EXHAUSTED` (8). 30-second absolute read deadline per line.
 - A second `start` at a live socket is refused (`AddrInUse`, exit 6); a stale
   socket (connect refused) is replaced; a non-socket file is never deleted.
 - Not implemented: any cache (`cache_entries` is always 0), the `cache`
-  command, subscriptions, a draining state, structured logs and metrics, a
-  shipped systemd unit, TCP and Windows named pipes.
+  command, subscriptions, a draining state, log levels beyond `warn`, a
+  shipped systemd unit, TCP and Windows named pipes. Metrics (`daemon.metrics`)
+  and JSON log lines (`--log-format json`) ship ([observability](#observability)).
 
 Sections below that describe those are target design and say so. The security
 boundary is authoritative in [`SECURITY.md`](../SECURITY.md#local-daemon).
@@ -69,7 +70,7 @@ stateDiagram-v2
     Resolve --> Bind
     Bind --> Refused: insecure dir, non-socket file, live daemon, bind error (exit 6)
     Bind --> Serving: socket bound, chmod 0600
-    Serving --> Serving: accept, at most 8 workers, one request at a time
+    Serving --> Serving: accept, at most 8 workers, requests in parallel within 128 MiB in flight
     Serving --> Stopping: daemon.shutdown
     Stopping --> [*]: accept loop exits, own socket inode removed, exit 0
     Refused --> [*]
@@ -243,12 +244,14 @@ Implemented (each takes an optional `--socket PATH`):
 deep-diff-forge daemon path
 deep-diff-forge daemon start            # serves in the foreground
 deep-diff-forge daemon start --foreground
+deep-diff-forge daemon start --allow-repo PATH --log-format json
 deep-diff-forge daemon status
 deep-diff-forge daemon health
+deep-diff-forge daemon metrics          # daemon.metrics, protocol 2
 deep-diff-forge daemon stop             # sends daemon.shutdown
 ```
 
-`health`, `status` and `stop` exit 6 when no daemon answers.
+`health`, `status`, `metrics` and `stop` exit 6 when no daemon answers.
 
 ## Deploy Doctor
 
@@ -285,7 +288,7 @@ deep-diff-forge cache prune --max-size 20GiB
 | --- | --- | --- |
 | Existing socket | In an owner-private parent, replace only a stale socket; never a live one or a non-socket file. | Implemented: live socket refused with `AddrInUse`, non-socket refused, stale socket removed. |
 | Cache decode failure | Ignore entry, record fallback, continue. | No cache exists. |
-| Parser panic | Catch at worker boundary, mark semantic fallback. | A dispatch panic is caught per request and answered `INTERNAL_ERROR`; sessions are reset and the mutex poison cleared. |
+| Parser panic | Catch at worker boundary, mark semantic fallback. | A dispatch panic is caught per request, counted in `daemon.metrics` and answered `INTERNAL_ERROR`; only a panic while the session table was held empties the table and clears its poison, otherwise sessions are kept. |
 | Oversized payload | Reject with structured error. | Request over 80 MiB: `INVALID_REQUEST`, then the connection closes. Response over 80 MiB: `RESOURCE_EXHAUSTED` (8). |
 | Client disconnect | Cancel session subscription, keep shared cache. | No subscriptions or cache; the worker ends and frees its slot. |
 | Out of budget | Preserve patch twin and record semantic fallback. | Patch input over its byte or line budget is refused (exit 4 on the CLI). |

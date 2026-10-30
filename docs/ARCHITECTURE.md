@@ -1,7 +1,9 @@
 # Architecture
 
 > **Two parts.** The first two sections, [Crates as built](#crates-as-built-030) and
-> [Data flow as built](#data-flow-as-built-030), describe the code at 0.3.0. Everything from
+> [Data flow as built](#data-flow-as-built-030), describe the code at 0.3.0, with later changes
+> on `main` marked by date (the cli and daemon edges to `agent`, `RankedFile::scored` and daemon
+> protocol 2 arrived on 2026-10-30, after v0.4.0). Everything from
 > [Layers](#layers) down is **target design, not a description of the code** (anchor E-01,
 > 2026-10-27): crates, commands and caches named there may not exist. The crate list that a test
 > holds equal to `cargo metadata` is generated in
@@ -35,6 +37,7 @@ flowchart TB
     patch
     core
 
+    cli --> agent
     cli --> cluster
     cli --> core
     cli --> daemon
@@ -67,6 +70,7 @@ flowchart TB
     pipeline --> syntax
     cluster --> core
     cluster --> graph
+    daemon --> agent
     daemon --> core
     daemon --> graph
     daemon --> patch
@@ -96,7 +100,7 @@ below only as target design.
 | `cluster` | Bounded `std::thread::scope` lanes over contiguous shards, with a join policy and a receipt. |
 | `agent` | Annotation grounding, sources, sanitising and anchor validation; an in-memory store. |
 | `learning` | Local-only strategy receipts, scoring and promotion rules. |
-| `daemon` | Unix-socket JSON-RPC 2.0 server and client (protocol 1). Refuses to build on non-Unix targets. |
+| `daemon` | Unix-socket JSON-RPC 2.0 server and client (protocol 1 at 0.3.0 and 0.4.0; protocol 2 on `main` since 2026-10-30, adding `daemon.metrics` and `findings.verify`). Refuses to build on non-Unix targets. |
 | `review` | Review roster, adversarial council, gates and tuicr interop ([REVIEW_COUNCIL.md](REVIEW_COUNCIL.md)). |
 | `tui` | `review` terminal UI (ratatui, crossterm). |
 | `sdk` | Rust facade: `review`, `rank`, `exit`, and a Unix-only daemon `Client`. |
@@ -163,9 +167,9 @@ Evidence (code at 0.3.0):
 - `review` (TUI) reads stdin, parses, and builds `ReviewApp`; its file tree is ranked by
   `graph`, and its notes are the engine's own findings (`engine_annotations`), not external
   agent input.
-- `--cluster` scores files with `graph::score_file` in `cluster` lanes and joins by
-  `ranked-review-order`; its receipt lists the `patch` and `risk` dimensions (measured:
-  `deep-diff-forge --stdin-patch --cluster --json`).
+- `--cluster` places files with `graph::RankedFile::scored` (score, signals and code evidence)
+  in `cluster` lanes and joins by `ranked-review-order`; its receipt lists the `patch` and
+  `risk` dimensions (measured: `deep-diff-forge --stdin-patch --cluster --json`).
 
 Not built: a planner that chooses strategies, a shared cache (the daemon reports
 `cache_entries: 0`, decision D-03), daemon subscriptions, and the `chain`, `cluster`, `loom` and
