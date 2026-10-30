@@ -21,6 +21,8 @@ const FIXTURES: &[&str] = &[
     "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n same\n",
     "",
     "--- a/x\n+++ b/x\n+stray\n",
+    // Code evidence (unsafe, a process spawn, a removed test) in more than one hunk and file.
+    "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,3 @@ fn main()\n fn main() {\n+    unsafe { std::process::Command::new(\"curl\"); }\n }\n@@ -9,2 +10,1 @@\n-#[test]\n fn t() {}\ndiff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a = 1\n+a = eval(s)  # noqa\n",
 ];
 
 fn cli(patch: &str, mode: &[&str], flags: &[&str]) -> (i32, String, String) {

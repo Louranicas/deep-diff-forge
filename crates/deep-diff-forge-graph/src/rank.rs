@@ -1,8 +1,11 @@
-use crate::risk::{RiskSignal, score_file};
+use crate::evidence::{Evidence, MAX_EVIDENCE_PER_FILE};
+use crate::risk::{RiskSignal, assess_file};
 use deep_diff_forge_core::{FileStatus, ReviewFile};
 
-/// A file placed in the ranked review stream.
+/// A file placed in the ranked review stream. Built only by [`RankedFile::scored`], so its
+/// score, signals and evidence always come from one assessment.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct RankedFile {
     /// File path.
     pub path: String,
@@ -12,31 +15,73 @@ pub struct RankedFile {
     pub score: u32,
     /// Contributing signals.
     pub signals: Vec<RiskSignal>,
+    /// The code evidence behind the [`RiskSignal::Code`] signals, at most
+    /// [`MAX_EVIDENCE_PER_FILE`] items.
+    pub evidence: Vec<Evidence>,
+    /// More evidence was found than `evidence` holds (the score counts all of it).
+    pub evidence_truncated: bool,
+}
+
+impl RankedFile {
+    /// Assess `file` and place it.
+    #[must_use]
+    pub fn scored(file: &ReviewFile) -> Self {
+        let assessment = assess_file(file);
+        let mut evidence = assessment.evidence;
+        let evidence_truncated = evidence.len() > MAX_EVIDENCE_PER_FILE;
+        evidence.truncate(MAX_EVIDENCE_PER_FILE);
+        Self {
+            path: file.path.clone(),
+            status: file.status,
+            score: assessment.score,
+            signals: assessment.signals,
+            evidence,
+            evidence_truncated,
+        }
+    }
 }
 
 /// Rank the review by descending risk score, with a deterministic path
 /// tie-break, so the same review always produces the same order.
 #[must_use]
 pub fn rank(files: &[ReviewFile]) -> Vec<RankedFile> {
-    let mut ranked: Vec<RankedFile> = files
-        .iter()
-        .map(|file| {
-            let (score, signals) = score_file(file);
-            RankedFile {
-                path: file.path.clone(),
-                status: file.status,
-                score,
-                signals,
-            }
-        })
-        .collect();
-    ranked.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.path.cmp(&b.path)));
+    let mut ranked: Vec<RankedFile> = files.iter().map(RankedFile::scored).collect();
+    sort_ranked(&mut ranked);
     ranked
+}
+
+/// The ranking order: descending score, then path.
+pub fn sort_ranked(ranked: &mut [RankedFile]) {
+    ranked.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.path.cmp(&b.path)));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file with `n` added lines that each carry one `unsafe` (one evidence item a line).
+    fn unsafe_lines(n: usize) -> ReviewFile {
+        use std::fmt::Write as _;
+        let mut text = format!("--- a/src/x.rs\n+++ b/src/x.rs\n@@ -0,0 +1,{n} @@\n");
+        for i in 0..n {
+            let _ = writeln!(text, "+unsafe {{ f{i}() }}");
+        }
+        deep_diff_forge_patch::parse(&text).unwrap().remove(0)
+    }
+
+    #[test]
+    fn evidence_is_capped_at_exactly_the_limit() {
+        for (lines, kept, truncated) in [(31, 31, false), (32, 32, false), (33, 32, true)] {
+            let ranked = RankedFile::scored(&unsafe_lines(lines));
+            assert_eq!(
+                (ranked.evidence.len(), ranked.evidence_truncated),
+                (kept, truncated),
+                "{lines}"
+            );
+            // The score counts the signal once, however many lines carry it.
+            assert_eq!(ranked.score, RankedFile::scored(&unsafe_lines(1)).score);
+        }
+    }
     use deep_diff_forge_patch::parse;
 
     const MULTI: &str = "\

@@ -200,6 +200,13 @@ fn hunk_head(file: &ReviewFile, hunk: &PatchHunk) -> serde_json::Map<String, Val
     if !hazards.is_empty() {
         map.insert("hazards".into(), json!(hazards));
     }
+    let evidence: Vec<&str> = deep_diff_forge_graph::hunk_signals(file, hunk)
+        .into_iter()
+        .map(deep_diff_forge_graph::EvidenceSignal::label)
+        .collect();
+    if !evidence.is_empty() {
+        map.insert("evidence".into(), json!(evidence));
+    }
     if section_truncated {
         map.insert("section_truncated".into(), json!(true));
     }
