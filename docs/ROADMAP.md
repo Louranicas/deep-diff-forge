@@ -37,7 +37,7 @@ Residual risks (open):
 1. ~~One engine mutex serializes daemon requests~~: closed. Requests run in parallel under a 128 MiB cap on the request bytes in flight, first come, first served.
 2. ~~No peer-credential check on the socket~~: closed. The daemon drops a client of another user (`SO_PEERCRED`/`getpeereid`), and the CLI and SDKs refuse a daemon of another user.
 3. ~~Git subprocesses have no time limit~~: closed. One deadline bounds every Git call of an acquisition, 120 s for the CLI and 30 s for `review.change` (`GitAcquireOptions::time_limit`).
-4. macOS tests run on schedule and dispatch only, not on pull requests.
+4. ~~macOS tests run on schedule and dispatch only, not on pull requests~~: closed. They run on every pull request and are a required check.
 5. ~~Two `daemon start`s can race in the window between probing and binding~~: closed. A start holds an exclusive lock on `<socket>.lock` from before the probe until the daemon exits.
 6. No TUI test harness beyond the headless probe.
 7. The council trial is not designed yet.

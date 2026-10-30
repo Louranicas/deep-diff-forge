@@ -104,8 +104,8 @@ What the gates enforce, and what we ask in review:
 5. Add an entry under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) when users would notice
    the change.
 
-Changes to sockets or platform code should also pass the macOS job, which runs on schedule and
-on demand rather than on every pull request. Say so in your PR and a maintainer will run it.
+Every pull request also runs the macOS job (`macOS tests`), so socket and platform changes are
+tested on macOS before they merge.
 
 ## Licence
 

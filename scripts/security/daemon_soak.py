@@ -7,8 +7,11 @@
 The soak uses an explicit socket path under a freshly-created 0700 temp dir,
 then exercises healthy JSON-RPC clients, malformed JSON, empty lines, short
 slowloris-style connects, a request at and over the 80 MiB cap, a flood past the
-connection limit and concurrent clients. It records resource samples and proves
-the daemon can still stop cleanly after adversarial traffic.
+connection limit and concurrent clients, then real review work from concurrent
+clients in every iteration of the timed loop. It records resource samples, checks
+RSS and open-fd growth across the loop when the run is long enough to measure it
+(--require-growth-check makes a shorter run fail), and proves the daemon can still
+stop cleanly after adversarial traffic.
 """
 
 from __future__ import annotations
@@ -180,6 +183,94 @@ def concurrent_probe(socket_path: pathlib.Path, *, clients: int = 4 * MAX_CONNEC
     return {"kind": "concurrent", "clients": clients, "rounds": rounds, **counts}
 
 
+WORK_PATCH = (REPO / "fixtures" / "patch" / "basic.patch").read_text()
+# Concurrent clients doing real review work in each iteration of the timed loop. Below
+# MAX_CONNECTIONS, so the health and status calls of the same iteration still find a slot.
+WORK_CLIENTS = 4
+
+
+def rpc(sock: socket.socket, request_id: int, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Send one request on an open connection and return its decoded response."""
+    line = json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+    sock.sendall(line.encode() + b"\n")
+    answer = read_line(sock)
+    if not answer:
+        raise RuntimeError(f"{method}: the daemon closed the connection unanswered")
+    response = json.loads(answer)
+    if "error" in response or response.get("id") != request_id:
+        raise RuntimeError(f"{method}: {str(response)[:300]}")
+    return response["result"]
+
+
+def work_probe(socket_path: pathlib.Path) -> dict[str, Any]:
+    """Real review work from concurrent clients: each opens a session on a fixture patch, ranks
+    it, closes it, and ranks the patch without a session. Every answer must be right."""
+    errors: list[str] = []
+    lock = threading.Lock()
+
+    def client() -> None:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(30)
+                sock.connect(str(socket_path))
+                opened = rpc(sock, 1, "session.open", {"patch": WORK_PATCH})
+                if opened.get("files") != 1 or not isinstance(opened.get("session"), str):
+                    raise RuntimeError(f"session.open: {opened}")
+                ranked = rpc(sock, 2, "session.snapshot", {"session": opened["session"]})
+                if not isinstance(ranked, list) or len(ranked) != 1:
+                    raise RuntimeError(f"session.snapshot: {str(ranked)[:300]}")
+                closed = rpc(sock, 3, "session.close", {"session": opened["session"]})
+                if closed != {"closed": True}:
+                    raise RuntimeError(f"session.close: {closed}")
+                rpc(sock, 4, "diff.rank", {"patch": WORK_PATCH})
+        except (OSError, ValueError, RuntimeError) as exc:
+            with lock:
+                errors.append(str(exc))
+
+    threads = [threading.Thread(target=client) for _ in range(WORK_CLIENTS)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    if errors:
+        raise RuntimeError(f"{len(errors)} of {WORK_CLIENTS} work clients failed, first: {errors[0]}")
+    return {"kind": "work", "clients": WORK_CLIENTS}
+
+
+# Leak checks over the timed loop: the median of the last GROWTH_WINDOW samples against the
+# median of GROWTH_WINDOW samples taken after a warm-up of GROWTH_WINDOW. Both need at least
+# MIN_GROWTH_SAMPLES samples, about a minute of soak; a shorter run records them as unmeasured.
+GROWTH_WINDOW = 10
+MIN_GROWTH_SAMPLES = 6 * GROWTH_WINDOW
+MAX_FD_GROWTH = 4
+
+
+def median(values: list[int]) -> int:
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
+
+
+def kib(sample: dict[str, Any]) -> int | None:
+    value = str(sample.get("vm_rss", ""))
+    return int(value[:-3].strip()) if value.endswith(" kB") else None
+
+
+def growth(samples: list[dict[str, Any]]) -> dict[str, int] | None:
+    """RSS and open-fd growth across the timed loop, or None when there are too few samples."""
+    loop = [s for s in samples if s.get("iteration", 0) > 0 and s.get("alive")]
+    rss = [v for v in (kib(s) for s in loop) if v is not None]
+    fds = [s["fd_count"] for s in loop if isinstance(s.get("fd_count"), int)]
+    if min(len(rss), len(fds)) < MIN_GROWTH_SAMPLES:
+        return None
+    early = slice(GROWTH_WINDOW, 2 * GROWTH_WINDOW)
+    late = slice(-GROWTH_WINDOW, None)
+    return {
+        "samples": min(len(rss), len(fds)),
+        "rss_growth_kib": median(rss[late]) - median(rss[early]),
+        "fd_growth": median(fds[late]) - median(fds[early]),
+    }
+
+
 def proc_sample(pid: int) -> dict[str, Any]:
     proc = pathlib.Path("/proc") / str(pid)
     status: dict[str, str] = {}
@@ -231,6 +322,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seconds", type=int, default=int(os.environ.get("DDF_SOAK_SECONDS", "60")))
     parser.add_argument("--max-rss-kib", type=int, default=int(os.environ.get("DDF_SOAK_MAX_RSS_KIB", "262144")))
+    parser.add_argument(
+        "--max-rss-growth-kib", type=int, default=int(os.environ.get("DDF_SOAK_MAX_RSS_GROWTH_KIB", "32768"))
+    )
+    parser.add_argument(
+        "--require-growth-check",
+        action="store_true",
+        help="fail when the run is too short to measure RSS and fd growth (the long soak)",
+    )
     args = parser.parse_args()
     ensure_binary()
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -281,6 +380,9 @@ def main() -> int:
                     raise RuntimeError(f"malformed request did not return error: {parsed}")
 
                 raw_request(socket_path, b"", read=False)
+                work = work_probe(socket_path)
+                if iteration == 1:
+                    receipt["checks"].append({**work, "iteration": iteration, "repeats": "every iteration"})
                 receipt["samples"].append({"iteration": iteration, **proc_sample(proc.pid)})
                 time.sleep(1)
 
@@ -309,6 +411,19 @@ def main() -> int:
                 raise RuntimeError("no RSS sample: the memory bound was not measured")
             if receipt["max_rss_kib"] > args.max_rss_kib:
                 raise RuntimeError(f"rss exceeded limit: {receipt['max_rss_kib']} > {args.max_rss_kib}")
+            receipt["work_iterations"] = iteration
+            measured = growth(receipt["samples"])
+            receipt["growth"] = measured if measured is not None else "unmeasured: run too short"
+            if measured is None:
+                if args.require_growth_check:
+                    raise RuntimeError(f"too few samples for the growth checks (need {MIN_GROWTH_SAMPLES})")
+            else:
+                if measured["rss_growth_kib"] > args.max_rss_growth_kib:
+                    raise RuntimeError(
+                        f"rss grew {measured['rss_growth_kib']} KiB over the soak (limit {args.max_rss_growth_kib})"
+                    )
+                if measured["fd_growth"] > MAX_FD_GROWTH:
+                    raise RuntimeError(f"open fds grew by {measured['fd_growth']} over the soak (limit {MAX_FD_GROWTH})")
             receipt["verdict"] = "PASS"
         except Exception as exc:  # noqa: BLE001 - receipt must capture all soak failures.
             receipt["error"] = str(exc)

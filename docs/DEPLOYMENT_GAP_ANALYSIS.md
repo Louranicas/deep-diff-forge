@@ -10,7 +10,7 @@
 - `deploy doctor` and `deploy receipt` (Executive Gaps, P0) do not exist. `deploy` takes only `status` and `release`. A top-level `doctor` command prints runtime paths.
 - The open item "a release run since the Node 24, SDK and Ubuntu 26 changes" in the 2026-10-28 section below is now closed. Release dry runs 40634103910 (`24e3d53`) and 40643652548 (`2f03f40`) were green. Publish and attestation were skipped by design ([evidence](../EVIDENCE.md#release-dry-runs-and-fuzzing-2026-10-28)).
 - Published GitHub releases: `v0.1.0`, `v0.2.0` and `v0.3.0` (tagged 2026-10-29). The workspace is `0.3.0`. crates.io stays on hold (`DDF_CRATES_IO`).
-- CI runs on `ubuntu-26.04`, with macOS tests on `macos-latest` on the weekly schedule and on manual runs only, not on pull requests. The Linux release binary is built on `ubuntu-24.04` (`.github/workflows/release.yml`).
+- CI runs on `ubuntu-26.04`, with macOS tests on `macos-latest` on every event, each pull request included (required check `macOS tests`). A weekly campaign (`campaign.yml`) runs a 10-minute daemon soak with leak checks and an hour of fuzzing per target. The Linux release binary is built on `ubuntu-24.04` (`.github/workflows/release.yml`).
 
 **Residual risks:** none of the 0.3.0 daemon risks remain open. (Closed in 0.3.0: Git subprocesses have a time limit, 120 s for the CLI and 30 s for `review.change`. Closed after 0.3.0, unreleased: the socket checks peer credentials on both ends, a start lock stops two `daemon start`s racing, and requests run in parallel under a 128 MiB in-flight cap instead of one at a time.)
 
