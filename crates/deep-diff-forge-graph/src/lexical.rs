@@ -627,7 +627,9 @@ impl Scan<'_> {
             if shell_word_at(bytes, i, b"case") && in_command_position(bytes, i, *cases > 0) {
                 *cases += 1;
             } else if shell_word_at(bytes, i, b"esac")
-                && in_command_position(bytes, i, *cases > 0)
+                // With no case open the decrement below is a no-op, so `esac` may be read as
+                // if one were.
+                && in_command_position(bytes, i, true)
                 && ends_case()
             {
                 *cases = cases.saturating_sub(1);
@@ -1021,6 +1023,15 @@ mod tests {
             ),
             (Language::Shell, "echo a;#curl", "echo a;"),
             (Language::Shell, "echo a(#curl", "echo a("),
+            // Only JS has regex literals.
+            (Language::Shell, "a=/curl/ b", "a=/curl/ b"),
+            (Language::Python, "x = (/curl/)", "x = (/curl/)"),
+            // An empty case arm closes at `esac`, so the substitution ends at its `)`.
+            (
+                Language::Shell,
+                r#"V="$(case a in a) esac) d""#,
+                r#"V="$(case a in a) esac)  ""#,
+            ),
             (
                 Language::Rust,
                 r#"let s = r"a\"; unsafe"#,
