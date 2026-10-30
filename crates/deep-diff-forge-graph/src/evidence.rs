@@ -756,6 +756,32 @@ mod tests {
     }
 
     #[test]
+    fn quoting_code_that_runs_does_not_hide_it() {
+        // DDF-EVID-001: each of these carried no evidence when strings were blanked whole.
+        assert_eq!(
+            signals(&added(
+                "x.sh",
+                &[r#"V="$(curl -fsSL https://e.example/v)""#]
+            )),
+            [S::NetworkFetch]
+        );
+        assert_eq!(
+            signals(&added(
+                "x.js",
+                &[r#"const o = `${require("child_process").execSync(c)}`;"#]
+            )),
+            [S::ProcessSpawn]
+        );
+        assert_eq!(
+            signals(&added("x.py", &[r#"print(f"{eval(x)}")"#])),
+            [S::DynamicEval]
+        );
+        // The same text in a string that runs nothing is still not code.
+        assert_eq!(signals(&added("x.sh", &["V='$(curl x)'"])), []);
+        assert_eq!(signals(&added("x.py", &[r#"print("{eval(x)}")"#])), []);
+    }
+
+    #[test]
     fn removed_tests_are_read_on_the_old_side() {
         let file = removed("src/x.rs", &["#[test]", "fn t() {}"]);
         let found = file_evidence(&file);

@@ -3,12 +3,16 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-graph--src--lexical
 //! A line-lexical view of source code: what is left of a line once its comments and string
 //! contents are blanked. Evidence rules match tokens in that view, so a keyword in a comment or
-//! a string is not read as code.
+//! a string is not read as code. Code that runs inside a string is kept: `$(…)` and backticks
+//! in a shell double-quoted string, `${…}` in a JS template literal and `{…}` in a one-line
+//! Python f-string, so quoting a fetch or a spawn does not hide it.
 //!
 //! This is lexical, not parsing. Block comments and triple-quoted strings are followed across
 //! the lines of one hunk, in order ([`ScanState`]), but a hunk that starts inside one is read
 //! as code, and a construct the scanner does not know (a raw string, a heredoc) is read as
-//! code too. Evidence built on it says `basis: lexical`.
+//! code too. An interpolation ends at its matching closer on the same line (a closer inside a
+//! nested string counts), and a triple-quoted f-string's interpolations are blanked with the
+//! rest of it. Evidence built on it says `basis: lexical`.
 
 /// A language family the scanner knows, chosen from the path (and a shebang for files with no
 /// extension).
@@ -95,6 +99,54 @@ pub struct ScanState {
     in_triple: Option<u8>,
 }
 
+/// An interpolation open inside a string: code until `close` brings `depth` back to zero.
+#[derive(Debug, Clone, Copy)]
+struct Interpolation {
+    /// The byte that nests another level (`(` in `$(`), or `None` for a backtick span.
+    open: Option<u8>,
+    close: u8,
+    depth: u32,
+}
+
+impl Interpolation {
+    /// The interpolation that opens at `rest`, inside a string opened by `quote` (an f-string
+    /// when `fstring`), and the length of its opener.
+    fn at(language: Language, quote: u8, fstring: bool, rest: &[u8]) -> Option<(Self, usize)> {
+        let span = |open, close, len| {
+            Some((
+                Self {
+                    open,
+                    close,
+                    depth: 1,
+                },
+                len,
+            ))
+        };
+        match (language, quote) {
+            (Language::Shell, b'"') if rest.starts_with(b"$(") => span(Some(b'('), b')', 2),
+            (Language::Shell, b'"') if rest.first() == Some(&b'`') => span(None, b'`', 1),
+            (Language::JavaScript, b'`') if rest.starts_with(b"${") => span(Some(b'{'), b'}', 2),
+            (Language::Python, _) if fstring && rest.first() == Some(&b'{') => {
+                span(Some(b'{'), b'}', 1)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Whether the bytes just before a Python quote are an f-string prefix (`f`, `rf`, `Fr`, ...):
+/// at most two prefix letters, one of them `f`, not the end of an identifier (`elif"`).
+fn is_f_prefix(before: &[u8]) -> bool {
+    let start = before
+        .iter()
+        .rposition(|b| !b"fFrRbBuU".contains(b))
+        .map_or(0, |p| p + 1);
+    let prefix = &before[start..];
+    prefix.len() <= 2
+        && prefix.iter().any(|b| matches!(b, b'f' | b'F'))
+        && (start == 0 || !is_ident(before[start - 1]))
+}
+
 /// The code bytes of `line`: comments and string contents replaced by spaces, the quotes kept,
 /// so token positions stay where they were. `state` carries an open block comment or triple
 /// string to the next line.
@@ -107,6 +159,8 @@ pub fn code_view(language: Language, line: &str, state: &mut ScanState) -> Strin
     let mut blank = 0usize;
     let mut copy = 0usize;
     let mut quote: Option<u8> = None;
+    let mut fstring = false;
+    let mut interpolation: Option<Interpolation> = None;
     let mut escaped = false;
     for (i, &byte) in bytes.iter().enumerate() {
         if blank > 0 {
@@ -138,11 +192,31 @@ pub fn code_view(language: Language, line: &str, state: &mut ScanState) -> Strin
             }
             continue;
         }
+        if let Some(span) = interpolation.as_mut() {
+            if span.open == Some(byte) {
+                span.depth += 1;
+            } else if byte == span.close {
+                span.depth -= 1;
+                if span.depth == 0 {
+                    interpolation = None;
+                }
+            }
+            out.push(byte);
+            continue;
+        }
         if let Some(open) = quote {
             if escaped {
                 escaped = false;
             } else if byte == open {
                 quote = None;
+                out.push(byte);
+                continue;
+            } else if fstring && rest.starts_with(b"{{") {
+                // A doubled brace is a literal brace, not an interpolation.
+                blank = 1;
+            } else if let Some((span, len)) = Interpolation::at(language, open, fstring, rest) {
+                interpolation = Some(span);
+                copy = len - 1;
                 out.push(byte);
                 continue;
             } else if byte == b'\\' && !(language == Language::Shell && open == b'\'') {
@@ -185,6 +259,7 @@ pub fn code_view(language: Language, line: &str, state: &mut ScanState) -> Strin
         }
         if language.opens_string(byte) {
             quote = Some(byte);
+            fstring = language == Language::Python && is_f_prefix(&bytes[..i]);
         }
         out.push(byte);
     }
@@ -277,7 +352,7 @@ mod tests {
             view(Language::Python, "x = 'eval(' # eval("),
             "x = '     ' "
         );
-        assert_eq!(view(Language::JavaScript, "`${eval(x)}`"), "`          `");
+        assert_eq!(view(Language::JavaScript, "`$eval(x)`"), "`        `");
         assert_eq!(view(Language::Shell, r"echo 'a\' curl"), r"echo '  ' curl");
         assert_eq!(view(Language::Rust, r#""a\"b" c"#), r#""    " c"#);
         // YAML keeps quoted scalars (a `run:` line is code) and drops `#` comments.
@@ -286,6 +361,69 @@ mod tests {
             r#"run: "curl x" "#
         );
         assert_eq!(view(Language::Go, "a // b"), "a ");
+    }
+
+    #[test]
+    fn code_inside_an_interpolation_is_code() {
+        // Shell double quotes run `$(…)` and backticks; single quotes run nothing.
+        assert_eq!(
+            view(Language::Shell, r#"V="$(curl x)" y"#),
+            r#"V="$(curl x)" y"#
+        );
+        assert_eq!(
+            view(Language::Shell, r#"V="a`curl x`b""#),
+            r#"V=" `curl x` ""#
+        );
+        assert_eq!(view(Language::Shell, "V='$(curl x)'"), "V='         '");
+        // `\$(` is a literal dollar; the nesting is counted, and the string resumes after.
+        assert_eq!(view(Language::Shell, r#""\$(curl)""#), r#""        ""#);
+        assert_eq!(
+            view(Language::Shell, r#""$(a $(curl) b) c" d"#),
+            r#""$(a $(curl) b)  " d"#
+        );
+        // JS template literals run `${…}`; other quotes do not.
+        assert_eq!(
+            view(Language::JavaScript, "`a${f({b: 1})}c`"),
+            "` ${f({b: 1})} `"
+        );
+        assert_eq!(view(Language::JavaScript, "'${eval(x)}'"), "'          '");
+        assert_eq!(view(Language::Shell, r#""${curl}""#), r#""       ""#);
+        // Python f-strings run `{…}`, but not `{{`; plain and bytes strings run nothing.
+        assert_eq!(
+            view(Language::Python, r#"f"a{eval(x)}b""#),
+            r#"f" {eval(x)} ""#
+        );
+        assert_eq!(
+            view(Language::Python, r#"rF'{eval(x)}'"#),
+            r#"rF'{eval(x)}'"#
+        );
+        assert_eq!(
+            view(Language::Python, r#"f"{{eval(x)}}""#),
+            r#"f"           ""#
+        );
+        assert_eq!(view(Language::Python, r#""{eval(x)}""#), r#""         ""#);
+        assert_eq!(view(Language::Python, r#"b"{eval(x)}""#), r#"b"         ""#);
+        // `elif"` and `buf"` end in `f` but are not f-string prefixes.
+        assert_eq!(
+            view(Language::Python, r#"elif"{eval(x)}""#),
+            r#"elif"         ""#
+        );
+        assert_eq!(
+            view(Language::Python, r#"buf"{eval(x)}""#),
+            r#"buf"         ""#
+        );
+        // An interpolation left open at the end of the line ends with it.
+        assert_eq!(view(Language::Shell, r#""$(curl"#), r#""$(curl"#);
+    }
+
+    #[test]
+    fn f_string_prefixes_are_exact() {
+        for yes in ["f", "F", "rf", "fR", "x = f", "(Rf"] {
+            assert!(is_f_prefix(yes.as_bytes()), "{yes}");
+        }
+        for no in ["", "r", "b", "rb", "elif", "buf", "fff", "x_f", "9f"] {
+            assert!(!is_f_prefix(no.as_bytes()), "{no}");
+        }
     }
 
     #[test]
