@@ -121,6 +121,14 @@ impl SocketLocation {
         }
     }
 
+    /// The start lock's path, `<socket file name>.lock` beside the socket.
+    ///
+    /// # Errors
+    /// `InvalidInput` when the socket path has no file name.
+    pub fn start_lock_path(&self) -> std::io::Result<PathBuf> {
+        start_lock_path(&self.path)
+    }
+
     /// Connect to a daemon listening at this location, and refuse it unless it
     /// runs as this process's effective user.
     ///

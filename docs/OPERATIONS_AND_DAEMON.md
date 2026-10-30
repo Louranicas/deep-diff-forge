@@ -220,6 +220,27 @@ deep-diff-forge daemon stop             # sends daemon.shutdown
 
 `health`, `status` and `stop` exit 6 when no daemon answers.
 
+## Deploy Doctor
+
+Unreleased (2026-10-30). `deep-diff-forge deploy doctor [--json] [--socket PATH]` checks that this
+machine can run the daemon and Git inputs, and changes nothing. The daemon checks
+(`deep_diff_forge_daemon::inspect`) apply the daemon's own start rules, so a failure here is a
+`daemon start` or client that would fail too; it never takes the start lock, which would make a
+concurrent start fail.
+
+| Check | ok | warn | fail |
+| --- | --- | --- | --- |
+| `binary` | always; names the version | | |
+| `socket` | the socket path resolved | `$XDG_RUNTIME_DIR` unset and no `--socket` (the next three are skipped) | |
+| `socket_dir` | absent (a start creates it `0700`), or owner-private | | a symlink, not a directory, another owner, or group/other access |
+| `daemon` | not running, or a daemon of this version answered `daemon.health` | a stale socket (the next start replaces it), or a daemon of another version | a daemon this user may not use, a non-socket file at the path, or no usable answer |
+| `start_lock` | absent, or a regular file owned by this user | | a symlink, not a regular file, or another owner |
+| `git` | `git version` answered within 10 s, run the way an acquisition runs Git | Git missing, failing or stalled: the `--git-*` inputs and `review.change` cannot work | |
+
+Exit 0 when no check fails, warnings included; 6 (`DAEMON_OR_TERMINAL`) when one does. `--json`
+prints `deep-diff-forge.deploy-doctor.v0`: `{schema, version, healthy, checks: [{name, state,
+detail}]}`.
+
 Target design, not implemented (`cache` is refused today, exit 2):
 
 ```bash

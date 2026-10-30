@@ -14,7 +14,7 @@
 
 use deep_diff_forge_patch::{
     GitAcquireError, GitAcquireOptions, GitAcquisition, GitChange, GitChangeKind, GitChangeOrigin,
-    GitPath, GitSelection, StructuredDiff, acquire_git,
+    GitPath, GitSelection, StructuredDiff, acquire_git, git_version,
 };
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt as _;
@@ -867,4 +867,47 @@ fn a_submodule_change_is_captured_whatever_config_ignores() {
     )
     .unwrap();
     assert!(staged(), ".gitmodules ignore = all");
+}
+
+/// `git_version` answers with Git's own version line, needs no repository, and is bounded like
+/// an acquisition: a missing program is a spawn error and a stalled one times out.
+#[test]
+fn git_version_reports_the_version_and_is_bounded() {
+    let fx = fixture("version");
+    let line = git_version(&fx.root, &options(false)).unwrap();
+    assert!(line.starts_with("git version "), "{line}");
+    assert!(!line.ends_with('\n'));
+
+    let missing = GitAcquireOptions {
+        git_program: fx.root.join("no-such-git").into_os_string(),
+        ..options(false)
+    };
+    assert!(
+        matches!(
+            git_version(&fx.root, &missing),
+            Err(GitAcquireError::Spawn {
+                command: "git version",
+                ..
+            })
+        ),
+        "a missing Git"
+    );
+
+    let stub = fx.root.join("stalled-git");
+    std::fs::write(&stub, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    chmod(&stub, 0o755);
+    let stalled = GitAcquireOptions {
+        git_program: stub.into_os_string(),
+        time_limit: std::time::Duration::from_millis(300),
+        ..options(false)
+    };
+    let started = std::time::Instant::now();
+    assert!(matches!(
+        git_version(&fx.root, &stalled),
+        Err(GitAcquireError::TimedOut {
+            command: "git version",
+            limit_ms: 300
+        })
+    ));
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
 }
