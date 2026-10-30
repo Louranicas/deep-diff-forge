@@ -3,16 +3,25 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-graph--src--lexical
 //! A line-lexical view of source code: what is left of a line once its comments and string
 //! contents are blanked. Evidence rules match tokens in that view, so a keyword in a comment or
-//! a string is not read as code. Code that runs inside a string is kept: `$(…)` and backticks
-//! in a shell double-quoted string, `${…}` in a JS template literal and `{…}` in a one-line
-//! Python f-string, so quoting a fetch or a spawn does not hide it.
+//! a string is not read as code. Code that runs inside a string is kept: `$(…)`, `${…}` and
+//! backticks in a shell double-quoted string, `${…}` in a JS template literal and `{…}` in a
+//! one-line Python f- or t-string, so quoting a fetch or a spawn does not hide it.
 //!
-//! This is lexical, not parsing. Block comments and triple-quoted strings are followed across
-//! the lines of one hunk, in order ([`ScanState`]), but a hunk that starts inside one is read
-//! as code, and a construct the scanner does not know (a raw string, a heredoc) is read as
-//! code too. An interpolation is scanned as code with its own strings, escapes and comments,
-//! and ends at its matching closer on the same line; a triple-quoted f-string's interpolations
-//! are blanked with the rest of it. Evidence built on it says `basis: lexical`.
+//! This is lexical, not parsing, and where it can misread it errs toward code: an extra
+//! evidence item is a false positive a reviewer sees, a hidden one is a miss nobody does.
+//! - Block comments and triple-quoted strings are followed across the lines of one hunk, in
+//!   order ([`ScanState`]); a hunk that starts inside one is read as code.
+//! - An interpolation is scanned as code with its own strings, escapes and comments, and ends
+//!   at its matching closer on the same line. Shell `case` patterns, ANSI-C `$'…'` strings,
+//!   word-start `#` comments, JS regex literals, Python format specs and nested triple quotes
+//!   are known.
+//! - A string still open at the end of a line (outside Rust) is read as code from its quote.
+//! - A construct the scanner does not know (a raw string, a heredoc) is read as code. A
+//!   triple-quoted f-string's interpolations are blanked with the rest of it, a continuation
+//!   line of a multi-line string is read as code, and non-ASCII spellings of a token
+//!   (Python's NFKC `ｅval`) are not matched.
+//!
+//! Evidence built on it says `basis: lexical`.
 
 /// A language family the scanner knows, chosen from the path (and a shebang for files with no
 /// extension).
@@ -75,11 +84,6 @@ impl Language {
         matches!(self, Self::Rust | Self::JavaScript | Self::Go)
     }
 
-    /// `#` comments; `//` is code (Python floor division, a shell or URL path).
-    const fn hash_comments(self) -> bool {
-        matches!(self, Self::Python | Self::Shell | Self::Yaml)
-    }
-
     /// Whether `byte` opens a one-line string.
     const fn opens_string(self, byte: u8) -> bool {
         match self {
@@ -103,28 +107,37 @@ pub struct ScanState {
 /// is plain code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Frame {
-    /// A string opened by `quote`: its contents are blanked. An f-string (`fstring`) runs `{…}`.
+    /// A string opened at byte `start` by `quote` (three of them when `triple`): its contents
+    /// are blanked. An f- or t-string (`fstring`) runs `{…}`; a shell ANSI-C string (`$'…'`,
+    /// `ansi`) honours backslashes.
     Str {
         quote: u8,
+        start: usize,
+        triple: bool,
         fstring: bool,
+        ansi: bool,
         escaped: bool,
     },
     /// Code inside an interpolation, until `close` brings `depth` back to zero. `open` nests
-    /// another level (`(` in `$(`), `None` for a backtick span; `cases` counts open shell `case`
-    /// statements, whose pattern `)` is not a closer.
+    /// another level (`(` in `$(`), `None` for a backtick span. `cases` counts open shell `case`
+    /// statements, whose pattern `)` is not a closer. In a Python replacement field, `brackets`
+    /// counts open `(` and `[`, and `spec` marks the format spec after a top-level `:`, which is
+    /// literal text.
     Code {
         open: Option<u8>,
         close: u8,
         depth: u32,
         cases: u32,
+        brackets: u32,
+        spec: bool,
     },
     /// A JS block comment inside an interpolation, until `*/`.
     Comment,
 }
 
 impl Frame {
-    /// The interpolation that opens at `rest` inside a string opened by `quote` (an f-string
-    /// when `fstring`), and the length of its opener.
+    /// The interpolation that opens at `rest` inside a string opened by `quote` (an f- or
+    /// t-string when `fstring`), and the length of its opener.
     fn interpolation(
         language: Language,
         quote: u8,
@@ -138,6 +151,8 @@ impl Frame {
                     close,
                     depth: 1,
                     cases: 0,
+                    brackets: 0,
+                    spec: false,
                 },
                 len,
             ))
@@ -145,13 +160,33 @@ impl Frame {
         match (language, quote) {
             (Language::Shell, b'"') if rest.starts_with(b"$(") => code(Some(b'('), b')', 2),
             (Language::Shell, b'"') if rest.first() == Some(&b'`') => code(None, b'`', 1),
-            (Language::JavaScript, b'`') if rest.starts_with(b"${") => code(Some(b'{'), b'}', 2),
+            // A JS template's `${…}`, and a shell parameter expansion, which nests its own
+            // quotes (`"${x:-"'"}"`) and so is scanned the same way.
+            (Language::JavaScript, b'`') | (Language::Shell, b'"') if rest.starts_with(b"${") => {
+                code(Some(b'{'), b'}', 2)
+            }
             (Language::Python, _) if fstring && rest.first() == Some(&b'{') => {
                 code(Some(b'{'), b'}', 1)
             }
             _ => None,
         }
     }
+}
+
+/// Whether the bytes just before a Python quote are an interpolating prefix: at most two
+/// prefix letters, one of them `f` or `t` (a PEP 750 template string runs its `{…}` too), not
+/// the end of an identifier (`elif"`).
+fn is_interpolating_prefix(before: &[u8]) -> bool {
+    let start = before
+        .iter()
+        .rposition(|b| !b"fFtTrRbBuU".contains(b))
+        .map_or(0, |p| p + 1);
+    let prefix = &before[start..];
+    prefix.len() <= 2
+        && prefix
+            .iter()
+            .any(|b| matches!(b, b'f' | b'F' | b't' | b'T'))
+        && (start == 0 || !is_ident(before[start - 1]))
 }
 
 /// Whether `word` starts at byte `i` of `bytes` as a whole word.
@@ -161,197 +196,369 @@ fn word_at(bytes: &[u8], i: usize, word: &[u8]) -> bool {
         && bytes.get(i + word.len()).is_none_or(|b| !is_ident(*b))
 }
 
-/// Whether the bytes just before a Python quote are an f-string prefix (`f`, `rf`, `Fr`, ...):
-/// at most two prefix letters, one of them `f`, not the end of an identifier (`elif"`).
-fn is_f_prefix(before: &[u8]) -> bool {
-    let start = before
-        .iter()
-        .rposition(|b| !b"fFrRbBuU".contains(b))
-        .map_or(0, |p| p + 1);
-    let prefix = &before[start..];
-    prefix.len() <= 2
-        && prefix.iter().any(|b| matches!(b, b'f' | b'F'))
-        && (start == 0 || !is_ident(before[start - 1]))
+/// Whether a shell word at byte `i` is in command position: first on the line or in its
+/// substitution, or after `;`, `|`, `&`, `(`, `{`, a backtick, `then`, `do` or `else`. Only
+/// there does `case` start a statement (`echo case` and `--ignore-case` do not).
+fn in_command_position(bytes: &[u8], i: usize) -> bool {
+    let before = bytes[..i].trim_ascii_end();
+    let after_word = |word: &[u8]| {
+        before.ends_with(word)
+            && before
+                .len()
+                .checked_sub(word.len() + 1)
+                .is_none_or(|k| !is_ident(before[k]))
+    };
+    matches!(
+        before.last(),
+        None | Some(b';' | b'|' | b'&' | b'(' | b'{' | b'`')
+    ) || after_word(b"then")
+        || after_word(b"do")
+        || after_word(b"else")
+}
+
+/// Whether a JS `/` here starts a regex literal rather than a division: the last code byte
+/// before it is an operator or an opening bracket (or there is none), as in the language's
+/// grammar.
+fn starts_regex(out: &[u8]) -> bool {
+    out.iter()
+        .rev()
+        .find(|b| !b.is_ascii_whitespace())
+        .is_none_or(|b| b"(,=:[!&|?{};".contains(b))
+}
+
+/// The length of a JS regex literal at `rest` (which starts with its `/`), up to and including
+/// its closing `/`, or `None` when the line holds no closer.
+fn regex_len(rest: &[u8]) -> Option<usize> {
+    let mut class = false;
+    let mut j = 1;
+    while j < rest.len() {
+        match rest[j] {
+            b'\\' => j += 1,
+            b'[' => class = true,
+            b']' => class = false,
+            b'/' if !class => return Some(j + 1),
+            _ => {}
+        }
+        j += 1;
+    }
+    None
 }
 
 /// The code bytes of `line`: comments and string contents replaced by spaces, the quotes kept,
-/// so token positions stay where they were. Code inside an interpolation is scanned as code, with
-/// its own strings, escapes and comments, so a closer inside a nested string or after a
-/// backslash does not end it. `state` carries an open block comment or triple string to the
-/// next line.
+/// so token positions stay where they were. Code inside an interpolation is scanned as code,
+/// with its own strings, escapes and comments, so a closer inside a nested string or after a
+/// backslash does not end it. When a desync is possible, the scan errs toward code: a string
+/// still open at the end of the line (outside Rust, whose strings span lines) is read as code
+/// from its quote on, so a quote the scanner misread cannot hide what follows it. `state`
+/// carries an open block comment or triple string to the next line.
 #[must_use]
 pub fn code_view(language: Language, line: &str, state: &mut ScanState) -> String {
     let bytes = line.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    // One pass, one byte per step. A decision about a multi-byte token (`/*`, `*/`, `"""`, a
-    // char literal, an opener) sets how many of the next bytes to blank or copy, so no step can
-    // stall.
-    let mut blank = 0usize;
-    let mut copy = 0usize;
-    let mut stack: Vec<Frame> = Vec::new();
-    for (i, &byte) in bytes.iter().enumerate() {
-        if blank > 0 {
-            blank -= 1;
-            out.push(b' ');
-            continue;
+    let mut scan = Scan {
+        language,
+        bytes,
+        out: Vec::with_capacity(bytes.len()),
+        stack: Vec::new(),
+        blank: 0,
+        copy: 0,
+    };
+    for i in 0..bytes.len() {
+        if !scan.step(i, state) {
+            break;
         }
-        if copy > 0 {
-            copy -= 1;
-            out.push(byte);
-            continue;
+    }
+    scan.finish()
+}
+
+/// One line's scan in progress: the view so far, what is open, and how many of the next bytes
+/// a multi-byte decision (`/*`, `*/`, `"""`, a char literal, an opener, a regex) blanks or then
+/// copies. One byte per step, so no step can stall.
+struct Scan<'a> {
+    language: Language,
+    bytes: &'a [u8],
+    out: Vec<u8>,
+    stack: Vec<Frame>,
+    blank: usize,
+    copy: usize,
+}
+
+impl Scan<'_> {
+    /// Scan byte `i`; `false` when the rest of the line is a comment.
+    fn step(&mut self, i: usize, state: &mut ScanState) -> bool {
+        let byte = self.bytes[i];
+        if self.blank > 0 {
+            self.blank -= 1;
+            self.out.push(b' ');
+            return true;
         }
-        let rest = &bytes[i..];
+        if self.copy > 0 {
+            self.copy -= 1;
+            self.out.push(byte);
+            return true;
+        }
+        let rest = &self.bytes[i..];
         if state.in_block_comment {
             if rest.starts_with(b"*/") {
                 state.in_block_comment = false;
-                blank = 1;
+                self.blank = 1;
             }
-            out.push(b' ');
-            continue;
+            self.out.push(b' ');
+            return true;
         }
         if let Some(triple) = state.in_triple {
             if rest.starts_with(&[triple; 3]) {
                 state.in_triple = None;
-                copy = 2;
-                out.push(byte);
+                self.copy = 2;
+                self.out.push(byte);
             } else {
-                out.push(b' ');
+                self.out.push(b' ');
             }
-            continue;
+            return true;
         }
-        match stack.last().copied() {
+        match self.stack.last().copied() {
             Some(Frame::Comment) => {
                 if rest.starts_with(b"*/") {
-                    stack.pop();
-                    blank = 1;
+                    self.stack.pop();
+                    self.blank = 1;
                 }
-                out.push(b' ');
-                continue;
+                self.out.push(b' ');
+                true
             }
-            Some(Frame::Str {
-                quote,
-                fstring,
-                escaped,
-            }) => {
-                let top = stack.len() - 1;
-                if escaped {
-                    stack[top] = Frame::Str {
-                        quote,
-                        fstring,
-                        escaped: false,
-                    };
-                } else if byte == quote {
-                    stack.pop();
-                    out.push(byte);
-                    continue;
-                } else if fstring && rest.starts_with(b"{{") {
-                    // A doubled brace is a literal brace, not an interpolation.
-                    blank = 1;
-                } else if let Some((frame, len)) =
-                    Frame::interpolation(language, quote, fstring, rest)
-                {
-                    stack.push(frame);
-                    copy = len - 1;
-                    out.push(byte);
-                    continue;
-                } else if byte == b'\\'
-                    && !(language == Language::Shell && quote == b'\'')
-                    && !(fstring && rest.get(1) == Some(&b'{'))
-                {
-                    // A backslash escapes the next byte, except in a single-quoted shell string
-                    // and before an f-string's `{`, which Python still runs.
-                    stack[top] = Frame::Str {
-                        quote,
-                        fstring,
-                        escaped: true,
-                    };
+            Some(Frame::Code { spec: true, .. }) => {
+                // A format spec is literal text in which only `{…}` runs.
+                if let Some((frame, _)) = Frame::interpolation(self.language, b'"', true, rest) {
+                    self.stack.push(frame);
+                    self.out.push(byte);
+                } else if byte == b'}' {
+                    self.stack.pop();
+                    self.out.push(byte);
+                } else {
+                    self.out.push(b' ');
                 }
-                out.push(b' ');
-                continue;
+                true
             }
-            Some(Frame::Code { .. }) | None => {}
+            Some(str @ Frame::Str { .. }) => {
+                self.in_string(str, rest);
+                true
+            }
+            Some(Frame::Code { .. }) | None => self.in_code(i, state),
         }
-        let nested = !stack.is_empty();
-        if nested && byte == b'\\' {
-            // An escaped byte inside an interpolation is never its closer.
-            copy = 1;
-            out.push(byte);
-            continue;
+    }
+
+    /// A byte inside the innermost open string, `frame`.
+    fn in_string(&mut self, frame: Frame, rest: &[u8]) {
+        let Frame::Str {
+            quote,
+            start,
+            triple,
+            fstring,
+            ansi,
+            escaped,
+        } = frame
+        else {
+            return;
+        };
+        let byte = rest[0];
+        let top = self.stack.len() - 1;
+        let with_escape = |escaped| Frame::Str {
+            quote,
+            start,
+            triple,
+            fstring,
+            ansi,
+            escaped,
+        };
+        if escaped {
+            self.stack[top] = with_escape(false);
+        } else if byte == quote && (!triple || rest.starts_with(&[quote; 3])) {
+            self.stack.pop();
+            self.copy = if triple { 2 } else { 0 };
+            self.out.push(byte);
+            return;
+        } else if fstring && rest.starts_with(b"{{") {
+            // A doubled brace is a literal brace, not an interpolation.
+            self.blank = 1;
+        } else if let Some((code, len)) = Frame::interpolation(self.language, quote, fstring, rest)
+        {
+            self.stack.push(code);
+            self.copy = len - 1;
+            self.out.push(byte);
+            return;
+        } else if byte == b'\\'
+            && !(self.language == Language::Shell && quote == b'\'' && !ansi)
+            && !(fstring && rest.get(1) == Some(&b'{'))
+        {
+            // A backslash escapes the next byte, except in a plain single-quoted shell string
+            // and before an f-string's `{`, which Python still runs.
+            self.stack[top] = with_escape(true);
+        }
+        self.out.push(b' ');
+    }
+
+    /// A byte of code: at the top of the line or inside an interpolation. `false` when the rest
+    /// of the line is a comment.
+    fn in_code(&mut self, i: usize, state: &mut ScanState) -> bool {
+        let (language, bytes) = (self.language, self.bytes);
+        let (byte, rest) = (bytes[i], &bytes[i..]);
+        let nested = !self.stack.is_empty();
+        if byte == b'\\' && (nested || matches!(language, Language::Shell | Language::JavaScript)) {
+            // An escaped byte is never a closer, a quote or the start of a comment.
+            self.copy = 1;
+            self.out.push(byte);
+            return true;
         }
         if language.c_like() && rest.starts_with(b"//") {
-            break;
+            return false;
         }
         if language.c_like() && rest.starts_with(b"/*") {
             if nested {
-                stack.push(Frame::Comment);
+                self.stack.push(Frame::Comment);
             } else {
                 state.in_block_comment = true;
             }
-            blank = 1;
-            out.push(b' ');
-            continue;
+            self.blank = 1;
+            self.out.push(b' ');
+            return true;
         }
-        if !nested && language.hash_comments() && byte == b'#' {
-            break;
+        if language == Language::JavaScript
+            && byte == b'/'
+            && starts_regex(&self.out)
+            && let Some(len) = regex_len(rest)
+        {
+            // A regex literal's text is data: its quotes and brackets open nothing.
+            self.blank = len - 2;
+            self.copy = 1;
+            self.out.push(byte);
+            return true;
         }
-        if !nested
-            && language == Language::Python
+        if !nested && byte == b'#' && is_comment_start(language, bytes, i) {
+            return false;
+        }
+        if language == Language::Python
             && (byte == b'"' || byte == b'\'')
             && rest.starts_with(&[byte; 3])
         {
-            state.in_triple = Some(byte);
-            copy = 2;
-            out.push(byte);
-            continue;
+            if nested {
+                self.stack.push(Frame::Str {
+                    quote: byte,
+                    start: i,
+                    triple: true,
+                    fstring: false,
+                    ansi: false,
+                    escaped: false,
+                });
+            } else {
+                state.in_triple = Some(byte);
+            }
+            self.copy = 2;
+            self.out.push(byte);
+            return true;
         }
         // A Rust char literal (`'"'`, `'\''`) is not a string start; a lifetime (`'a`) has no
         // closing quote two or three bytes on, so it is left as code.
         if language == Language::Rust && byte == b'\'' {
             let close = if rest.get(1) == Some(&b'\\') { 3 } else { 2 };
             if rest.get(close) == Some(&b'\'') {
-                blank = close;
-                out.push(b' ');
-                continue;
+                self.blank = close;
+                self.out.push(b' ');
+                return true;
             }
         }
-        if language.opens_string(byte) {
-            stack.push(Frame::Str {
+        // In JS a quote right after a word byte opens nothing: no string can start there, and
+        // JSX text (`<p>Can't</p>`) puts apostrophes there.
+        let after_word =
+            language == Language::JavaScript && i > 0 && is_ident(bytes[i - 1]) && byte != b'`';
+        if language.opens_string(byte) && !after_word {
+            self.stack.push(Frame::Str {
                 quote: byte,
-                fstring: language == Language::Python && is_f_prefix(&bytes[..i]),
+                start: i,
+                triple: false,
+                fstring: language == Language::Python && is_interpolating_prefix(&bytes[..i]),
+                ansi: language == Language::Shell && byte == b'\'' && i > 0 && bytes[i - 1] == b'$',
                 escaped: false,
             });
-            out.push(byte);
-            continue;
+            self.out.push(byte);
+            return true;
         }
-        if let Some(Frame::Code {
+        self.track_code(i);
+        self.out.push(byte);
+        true
+    }
+
+    /// The bookkeeping of the interpolation byte `i` is code in: nesting, shell `case`
+    /// statements and a Python replacement field's brackets and format spec.
+    fn track_code(&mut self, i: usize) {
+        let (language, bytes) = (self.language, self.bytes);
+        let byte = bytes[i];
+        let Some(Frame::Code {
             open,
             close,
             depth,
             cases,
-        }) = stack.last_mut()
-        {
-            if language == Language::Shell {
-                if word_at(bytes, i, b"case") {
-                    *cases += 1;
-                } else if word_at(bytes, i, b"esac") {
-                    *cases = cases.saturating_sub(1);
-                }
-            }
-            if *open == Some(byte) {
-                *depth += 1;
-            } else if byte == *close && !(byte == b')' && *cases > 0 && *depth == 1) {
-                // A `)` while a `case` is open ends a pattern, not the substitution.
-                *depth -= 1;
-                if *depth == 0 {
-                    stack.pop();
-                }
+            brackets,
+            spec,
+        }) = self.stack.last_mut()
+        else {
+            return;
+        };
+        if language == Language::Shell && in_command_position(bytes, i) {
+            if word_at(bytes, i, b"case") {
+                *cases += 1;
+            } else if word_at(bytes, i, b"esac") {
+                *cases = cases.saturating_sub(1);
             }
         }
-        out.push(byte);
+        if language == Language::Python {
+            match byte {
+                b'(' | b'[' => *brackets += 1,
+                b')' | b']' => *brackets = brackets.saturating_sub(1),
+                // A top-level `:` (not `:=`) starts the format spec.
+                b':' if *depth == 1 && *brackets == 0 && bytes.get(i + 1) != Some(&b'=') => {
+                    *spec = true;
+                }
+                _ => {}
+            }
+        }
+        if *open == Some(byte) {
+            *depth += 1;
+        } else if byte == *close && !(byte == b')' && *cases > 0) {
+            // A `)` while a `case` is open ends a pattern, not the substitution.
+            *depth -= 1;
+            if *depth == 0 {
+                self.stack.pop();
+            }
+        }
     }
-    // Only ASCII bytes are replaced, by ASCII, and the scan stops only at an ASCII comment
-    // start, so the view is valid UTF-8 wherever the line was.
-    String::from_utf8(out).unwrap_or_default()
+
+    /// The view, with a string still open at the end of the line read as code from its quote.
+    fn finish(mut self) -> String {
+        let open_string = self.stack.iter().find_map(|f| match f {
+            Frame::Str { start, .. } => Some(*start),
+            _ => None,
+        });
+        if let Some(start) = open_string
+            && self.language != Language::Rust
+        {
+            self.out.truncate(start);
+            self.out.extend_from_slice(&self.bytes[start..]);
+        }
+        // Only ASCII bytes are replaced, by ASCII, the scan stops only at an ASCII comment
+        // start, and a restored tail starts at an ASCII quote, so the view is valid UTF-8
+        // wherever the line was.
+        String::from_utf8(self.out).unwrap_or_default()
+    }
+}
+
+/// Whether a `#` at byte `i` starts a comment: always in Python, and in shell and YAML only at
+/// the start of a word (`$#`, `${x#y}` and `a#b` are code).
+fn is_comment_start(language: Language, bytes: &[u8], i: usize) -> bool {
+    let word_start = i == 0 || bytes[i - 1].is_ascii_whitespace();
+    match language {
+        Language::Python => true,
+        Language::Shell => word_start || b";&|()".contains(&bytes[i - 1]),
+        Language::Yaml => word_start,
+        Language::Rust | Language::JavaScript | Language::Go => false,
+    }
 }
 
 /// An identifier byte (ASCII letters, digits, `_`).
@@ -473,7 +680,8 @@ mod tests {
             "` ${f({b: 1})} `"
         );
         assert_eq!(view(Language::JavaScript, "'${eval(x)}'"), "'          '");
-        assert_eq!(view(Language::Shell, r#""${curl}""#), r#""       ""#);
+        // A parameter expansion is scanned like a substitution: its quotes nest.
+        assert_eq!(view(Language::Shell, r#""${curl}""#), r#""${curl}""#);
         // Python f-strings run `{…}`, but not `{{`; plain and bytes strings run nothing.
         assert_eq!(
             view(Language::Python, r#"f"a{eval(x)}b""#),
@@ -504,12 +712,14 @@ mod tests {
     }
 
     #[test]
-    fn f_string_prefixes_are_exact() {
-        for yes in ["f", "F", "rf", "fR", "x = f", "(Rf"] {
-            assert!(is_f_prefix(yes.as_bytes()), "{yes}");
+    fn interpolating_prefixes_are_exact() {
+        for yes in ["f", "F", "rf", "fR", "x = f", "(Rf", "t", "T", "rt", "Tr"] {
+            assert!(is_interpolating_prefix(yes.as_bytes()), "{yes}");
         }
-        for no in ["", "r", "b", "rb", "elif", "buf", "fff", "x_f", "9f"] {
-            assert!(!is_f_prefix(no.as_bytes()), "{no}");
+        for no in [
+            "", "r", "b", "rb", "elif", "buf", "fff", "x_f", "9f", "at", "ftt",
+        ] {
+            assert!(!is_interpolating_prefix(no.as_bytes()), "{no}");
         }
     }
 

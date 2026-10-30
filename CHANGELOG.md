@@ -105,13 +105,25 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **Quoting code no longer hides it from code evidence** (DDF-EVID-001). The lexical view
   blanked everything between quotes, so `V="$(curl …)"` in shell,
   `` `${require("child_process").execSync(c)}` `` in JS and `f"{eval(x)}"` in Python carried no
-  evidence. Code inside `$(…)` and backticks (shell double quotes), `${…}` (JS template literals)
-  and `{…}` (one-line Python f-strings, not `{{`; `\{` still runs) is now scanned as code up to
-  its matching closer on the line. Inside it, strings are strings again, a backslash escapes, JS
-  comments are comments and a shell `case` pattern's `)` is not a closer, so neither a quoted
-  closer hides the code after it nor a quoted token (`$(printf 'curl failed')`) is read as code.
-  Single-quoted shell and plain or bytes Python strings still run nothing and stay blank. Not
-  covered: triple-quoted f-strings, and an interpolation that spans lines.
+  evidence. Code inside `$(…)`, `${…}` and backticks (shell double quotes), `${…}` (JS template
+  literals) and `{…}` (one-line Python f- and t-strings, not `{{`; `\{` still runs) is now
+  scanned as code up to its matching closer on the line. Inside it, strings are strings again, a
+  backslash escapes, JS comments are comments, a shell `case` pattern's `)` is not a closer and
+  a Python format spec is text, so neither a quoted closer hides the code after it nor a quoted
+  token (`$(printf 'curl failed')`) is read as code. Single-quoted shell and plain or bytes
+  Python strings still run nothing and stay blank.
+- **The scanner errs toward code.** Two review rounds (127 agents) found ways a misread quote
+  hid the rest of a line, most of them older than this change. Now:
+  - a string still open at the end of a line (outside Rust) is read as code from its quote;
+  - shell `#` is a comment only at a word start (`$#`, `${x#y}`, `a#b` are code);
+  - a backslash escapes at the top of shell and JS lines;
+  - ANSI-C `$'…'` strings honour escapes;
+  - a JS regex literal's quotes open nothing, and a JS quote right after a word (JSX text,
+    `Can't`) opens nothing;
+  - nested Python triple quotes are known.
+
+  Not covered: triple-quoted f-strings, interpolations that span lines, continuation lines of
+  multi-line strings (read as code), and non-ASCII spellings of a token.
 - A JS file that imports `child_process` (`require(…)`, `from …`, `import(…)`, with or without
   `node:`) is `process_spawn` evidence. Before, the module name was only ever seen inside a
   string, which the code view blanks, so the rule could not fire.

