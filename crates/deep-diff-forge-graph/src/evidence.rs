@@ -4,7 +4,7 @@
 //! Code evidence: what the changed lines of a patch do, found in the patch alone and pointed at
 //! by hunk address and line, so an agent can check each claim instead of trusting it.
 //!
-//! Every rule lives in [`RULES`]: one signal, the side of the change it reads, the view it reads
+//! Every rule lives in one table, `RULES`: one signal, the side of the change it reads, the view it reads
 //! (code with comments and strings blanked, or the raw line), where it applies, and what it
 //! matches. Evidence is lexical ([`EVIDENCE_BASIS`]): it finds tokens, it never proves a change
 //! is safe, and a construct split across lines or built at run time can hide from it.
