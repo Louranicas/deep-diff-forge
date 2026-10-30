@@ -8,6 +8,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **`deep-diff-forge bench [--quick] [--workload NAME]... [--json]`** times seven workloads on
+  generated inputs and prints `deep-diff-forge.bench.v0`. That receipt carries the profile, the
+  host, each input's SHA-256, and the min, median, p95 and KiB/s.
+  - `scripts/bench_compare.py` compares receipts from one machine (best median per side; over
+    25% and over 0.2 ms slower fails). A workload whose input changed is reported as not
+    compared, and a malformed receipt exits 2.
+  - A `bench` job on every pull request runs the merge base against the head, informational for
+    now, and the weekly campaign keeps a full receipt.
+- **`deep-diff-forge eval [--corpus DIR] [--json]`** scores ranking pairs, evidence precision
+  and recall, and findings verdicts against `fixtures/eval/MANIFEST.json`, a hashed and labelled
+  corpus of 10 cases with documented known misses. It prints `deep-diff-forge.eval.v0`.
+  `cli/tests/eval.rs` holds the floors.
+
 - **Daemon metrics.** `deep-diff-forge daemon metrics` (the daemon's `daemon.metrics`, protocol
   2) returns `deep-diff-forge.daemon-metrics.v0`:
   - per method that was called: requests, errors by RPC code, and latency as log₂ microsecond

@@ -1,0 +1,12 @@
+diff --git a/src/access.rs b/src/access.rs
+--- a/src/access.rs
++++ b/src/access.rs
+@@ -1,1 +1,1 @@
+-    if is_admin { grant() }
++    if is_admin ‮{ grant() }⁦ // check
+diff --git a/docs/notes.md b/docs/notes.md
+--- a/docs/notes.md
++++ b/docs/notes.md
+@@ -1,1 +1,2 @@
+ a
++b

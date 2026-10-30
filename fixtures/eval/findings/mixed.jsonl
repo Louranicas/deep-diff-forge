@@ -1,0 +1,8 @@
+{"agent":"codex","severity":"high","title":"a changes","body":"b","address":"f07fb423f4d25c4fad2f2c38ecff281041f8473ca22b3a18c9c2913b6d20b5d5","line":2}
+{"agent":"codex","severity":"low","title":"stale","body":"b","path":"src/lib.rs","review":"0000000000000000000000000000000000000000000000000000000000000000"}
+{"agent":"codex","severity":"low","title":"ghost","body":"b","address":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}
+{"agent":"codex","severity":"low","title":"far","body":"b","path":"src/lib.rs","line":40}
+{"agent":"codex","severity":"high","title":"a changes","body":"b","address":"f07fb423f4d25c4fad2f2c38ecff281041f8473ca22b3a18c9c2913b6d20b5d5","line":2}
+{"agent":"codex","severity":"low","title":"ttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt","body":"b","path":"src/lib.rs"}
+not json
+{"agent":"codex","severity":"low","title":"elsewhere","body":"b","path":"README.md"}

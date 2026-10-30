@@ -41,6 +41,7 @@ done
 step "deploy status" cargo run -q --locked -p deep-diff-forge-cli -- deploy status --json
 step "fuzz harness compile gate" cargo check --locked --manifest-path fuzz/Cargo.toml --bins
 step "daemon soak leak-check regressions" python3 -I scripts/security/test_daemon_soak.py
+step "bench comparison regressions" python3 -I scripts/test_bench_compare.py
 step "hostile daemon soak smoke" env DDF_SOAK_SECONDS=10 python3 scripts/security/daemon_soak.py
 step "privacy probe failure regressions" python3 scripts/security/test_privacy_probe.py
 step "learning privacy probe" python3 scripts/security/privacy_probe.py

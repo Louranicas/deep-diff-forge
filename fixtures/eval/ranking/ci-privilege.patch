@@ -1,0 +1,13 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -1,2 +1,2 @@
+ name: ci
+-on: pull_request
++on: pull_request_target
+diff --git a/src/parse.rs b/src/parse.rs
+new file mode 100644
+--- /dev/null
++++ b/src/parse.rs
+@@ -0,0 +1,1 @@
++pub fn a() -> u8 { 2 }
