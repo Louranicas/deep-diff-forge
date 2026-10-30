@@ -7,17 +7,18 @@ tests prove real behavior, failure modes, invariants, and integration contracts.
 This standard is intentionally strict. Production modules must meet it before
 they can be marked deployable.
 
-## Status 2026-10-28 (0.3.0)
+## Status 2026-10-30 (0.4.0 and later)
 
 The sentence "the current implementation has only smoke behavior" (bootstrap
 era) no longer holds. How the standard is enforced today:
 
 - **Every pull request** runs the CI jobs in `.github/workflows/ci.yml`:
   `cargo test --workspace --locked`, fmt, clippy and pedantic with
-  `-D warnings`, rustdoc `-D warnings`, contract probes, a 10 s hostile daemon
-  soak, privacy probes and the Python SDK against the built binary
-  (`deploy gate-feature`); the declared-MSRV check on Rust 1.88.0; and
-  supply-chain checks.
+  `-D warnings`, rustdoc `-D warnings`, contract probes, the soak and
+  bench-comparison regression tests, a 10 s hostile daemon soak, privacy probes
+  and the Python SDK against the built binary (`deploy gate-feature`); the
+  workspace tests on macOS (`macos`); the declared-MSRV check on Rust 1.88.0;
+  and supply-chain checks.
 - **Diff-scoped mutation** is a required check: `diff-mutation`, four shards,
   runs [`scripts/diff_mutation.sh`](../scripts/diff_mutation.sh), which mutates
   only the Rust lines under `crates/` changed since the merge base
@@ -25,9 +26,10 @@ era) no longer holds. How the standard is enforced today:
   mutant or timeout. `--no-config` ignores a candidate's own mutants config.
 - **Fuzz smoke:** every target in `fuzz/Cargo.toml`
   (`patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
-  `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness`, `evidence_scan`;
-  `stdio_invariants.rs` is a shared module) runs for 10 s per pull request; CI fails if a declared target is not
-  in the run list. Crash inputs become fixtures under
+  `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness`,
+  `findings_verify`, `evidence_scan`; `stdio_invariants.rs` is a shared module)
+  runs for 10 s per pull request; CI fails if a declared target is not in the
+  run list. Crash inputs become fixtures under
   `fixtures/patch/regressions/`.
 - **Sandbox refusal controls:** the rootless-Podman planted-breach suite
   (`crates/deep-diff-forge-cli/tests/council_sandbox.rs`, 12 probes) runs on
@@ -38,7 +40,8 @@ era) no longer holds. How the standard is enforced today:
   `fixtures/eval` must score ranking 100%, evidence precision 100%, evidence
   recall 100% and findings 100%. Any miss fails; an accepted limit is a
   `known_miss` label. Planted controls prove a wrong label fails with exit 7, a
-  changed file with exit 4, and each ranking case fails when its signal is removed.
+  changed file with exit 4, and the `ci-privilege` and `generated-spawn` ranking
+  cases each fail when their signal is removed.
 - **Bench on pull requests** (`bench` job, informational): base and head on one
   runner, alternating three times; `scripts/bench_compare.py` fails a workload over 25%
   and over 0.2 ms slower, and never compares timings taken on different inputs. A local

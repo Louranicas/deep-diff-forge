@@ -18,7 +18,7 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     now, and the weekly campaign keeps a full receipt.
 - **`deep-diff-forge eval [--corpus DIR] [--json]`** scores ranking pairs, evidence precision
   and recall, and findings verdicts against `fixtures/eval/MANIFEST.json`, a hashed and labelled
-  corpus of 10 cases with documented known misses. It prints `deep-diff-forge.eval.v0`.
+  corpus of 11 cases with documented known misses. It prints `deep-diff-forge.eval.v0`.
   `cli/tests/eval.rs` holds the floors.
 
 - **Daemon metrics.** `deep-diff-forge daemon metrics` (the daemon's `daemon.metrics`, protocol
@@ -102,6 +102,43 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Security
 
+- **Quoting code no longer hides it from code evidence** (DDF-EVID-001). The lexical view
+  blanked everything between quotes, so `V="$(curl …)"` in shell,
+  `` `${require("child_process").execSync(c)}` `` in JS and `f"{eval(x)}"` in Python carried no
+  evidence. Code inside `$(…)`, `${…}` and backticks (shell double quotes), `${…}` (JS template
+  literals) and `{…}` (one-line Python f- and t-strings, not `{{`; `\{` still runs) is now
+  scanned as code up to its matching closer on the line. Inside it, strings are strings again, a
+  backslash escapes, JS comments are comments, a shell `case` pattern's `)` is not a closer and
+  a Python format spec is text, so neither a quoted closer hides the code after it nor a quoted
+  token (`$(printf 'curl failed')`) is read as code. Single-quoted shell and plain or bytes
+  Python strings still run nothing and stay blank.
+- **The scanner errs toward code.** Three review rounds (226 agents) found ways a misread quote
+  hid the rest of a line, most of them older than this change. Now:
+  - a string still open at the end of a line (outside Rust) is read as code from its quote;
+  - shell `#` is a comment only at a word start (`$#`, `${x#y}`, `a#b` are code);
+  - a backslash escapes at the top of shell and JS lines;
+  - ANSI-C `$'…'` strings honour escapes;
+  - a JS regex literal's quotes open nothing, and a JS quote right after a word (JSX text,
+    `Can't`) opens nothing;
+  - nested Python triple quotes are known;
+  - shell `case` is known after any command start (`if`, `while`, `!`, `time`, a pattern's
+    `)`), `esac` only as a whole word that is not a pattern alternative;
+  - a JS regex starts after an operator other than `<` and `>` (which open JSX tags), after `=>`
+    and after a `return`/`typeof`-like keyword, not after `a++`, a property or a TypeScript
+    non-null assertion (`x! / y`); a line that starts with `/` reads the previous line's last
+    code byte; one failed regex probe ends probing, so a hostile line stays linear;
+  - Rust raw strings (`r"…"`, `br#"…"#`) do not escape, so `r"C:\"` no longer hides the rest
+    of its line.
+
+  Not covered: triple-quoted f-strings, interpolations that span lines, continuation lines of
+  multi-line strings (read as code), non-ASCII spellings of a token, JSX text, and a regex right
+  after `if (…)`. The scanner is a reviewer's lens, not an adversarial boundary: no evidence
+  means no token was found, never that a change is safe.
+- **A JS `child_process` import is `process_spawn` evidence.** Before, the module name was only
+  ever seen inside a string, which the code view blanks, so the rule could not fire. Imports are
+  read through the code view (`require`, `module.require`, `import(…)`, `import …`, `from …`;
+  any spacing or parentheses, any quote kind, `node:` optional). Comments, strings, regexes, `import type`/`export type` statements and
+  `typeof import(…)` do not count; an `import(…)` type annotation does.
 - `sanitize_body` (agent annotations, and now findings) drops bidi, invisible and
   line-separator characters as well as control characters. Before, Unicode category Cf
   characters such as U+202E were kept, so an agent's note could reorder or hide text for the

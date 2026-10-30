@@ -61,6 +61,8 @@ Underneath sits one rule. The apply-able patch is truth, and nothing may rewrite
 - [MCP server](#mcp-server)
 - [SDKs](#sdks)
 - [The optional daemon](#the-optional-daemon)
+- [Verified agent findings](#verified-agent-findings)
+- [Benchmarks and evaluation](#benchmarks-and-evaluation)
 - [Risk ranking](#risk-ranking)
 - [Architecture](#architecture)
 - [Quality gates](#quality-gates)
@@ -723,7 +725,7 @@ Whoever writes a patch also chooses its paths, so a path can lower a file's scor
 | --- | --- | --- | ---: |
 | `secret_like` | added | a private key header; an `AKIA…`, `ghp_…`, `xoxb-…` or `sk_live_…` token (read in strings and comments too; never copied out) | +5 |
 | `unsafe_added` | added | Rust `unsafe` | +4 |
-| `process_spawn` | added | `Command::new`; `subprocess.`, `os.system(`; `child_process`, `execSync(`; `exec.Command(` | +4 |
+| `process_spawn` | added | `Command::new`; `subprocess.`, `os.system(`; `child_process`, or a `require`, `import` or `from` of `"child_process"` (the quoted name is read; `node:` optional; `import type`, `export type` and `typeof import(…)` do not count), `execSync(`; `exec.Command(` | +4 |
 | `dynamic_eval` | added | `eval(`, `exec(`, `compile(` (Python); `eval(`, `new Function(` (JS/TS); shell `eval` | +4 |
 | `ci_privilege` | added, in `.github/workflows/*.yml` or `.gitlab-ci.yml` | `pull_request_target`, `write-all`, `contents: write`, `id-token: write`, `secrets: inherit`, … | +4 |
 | `network_fetch` | added | `reqwest::`, `TcpStream::connect`; `requests.`, `urllib.request`; `fetch(`; `http.Get(`; `curl`, `wget` (shell, Dockerfile, Makefile, CI) | +3 |
@@ -731,7 +733,7 @@ Whoever writes a patch also chooses its paths, so a path can lower a file's scor
 | `test_removed` | removed | `#[test]`; `def test…`; `it(`, `test(`, `describe(`; `func Test…` | +3 |
 | `check_suppressed` | added | `#[allow(`; `# noqa`, `# type: ignore`; `eslint-disable`, `@ts-ignore`; `//nolint` (read in comments) | +2 |
 
-Languages come from the extension, or a shebang for a file with none: Rust, Python, JS/TS, Go, shell (with `Dockerfile` and `Makefile`) and YAML. The scan is **lexical** (`"basis": "lexical"`): it blanks comments and strings, following block comments and triple-quoted strings across a hunk's lines, and matches tokens with word boundaries. It finds tokens; it does not prove a change safe, and code assembled at run time hides from it. A path cannot hide code: token evidence keeps its weight under `generated/` or `vendor/` (a test path counts half, except `test_removed`); the path-scoped `build_hook` follows the generated rule like every path signal.
+Languages come from the extension, or a shebang for a file with none: Rust, Python, JS/TS, Go, shell (with `Dockerfile` and `Makefile`) and YAML. The scan is **lexical** (`"basis": "lexical"`): it blanks comments and strings, following block comments and triple-quoted strings across a hunk's lines, and matches tokens with word boundaries. Code that runs inside a string stays code, so quoting a fetch or a spawn does not hide it: `$(…)` and backticks in shell double quotes, `${…}` in JS template literals, and `{…}` in one-line Python f-strings, each scanned as code with its own strings, escapes and comments. It finds tokens; it does not prove a change safe, and code assembled at run time hides from it. A path cannot hide code: token evidence keeps its weight under `generated/` or `vendor/` (a test path counts half, except `test_removed`); the path-scoped `build_hook` follows the generated rule like every path signal.
 `rank.v0` lists each file's `evidence` (`signal`, `address`, `side`, `line`, `basis`; at most 32, then `evidence_truncated: true`), and each outline hunk lists its `evidence` labels.
 
 Ties break on path, so the order is reproducible. Under `--cluster` the result is
@@ -752,13 +754,13 @@ flowchart LR
     tui[tui]
     sdk[sdk]
   end
-  cli --> tui & pipeline & cluster & daemon & review & learning & syntax & projection & graph & patch
+  cli --> tui & pipeline & cluster & daemon & review & learning & agent & syntax & projection & graph & patch
   tui --> agent & cluster & daemon & learning & syntax & projection & graph & patch
   sdk --> graph & patch
   sdk -. "cfg(unix)" .-> daemon
   pipeline --> syntax & projection & graph & patch
   cluster --> graph
-  daemon --> graph & patch
+  daemon --> agent & graph & patch
   core((core))
   patch --> core
 ```
@@ -819,10 +821,10 @@ The engine is hardened against:
 - hidden-content patches;
 - attacks on the daemon's transport and filesystem.
 
-Eight fuzz targets cover the parser, review JSON, daemon protocol, agent annotations, council
-reports, the MCP and `rpc` stdio servers, and the soundness of the structural diff's
-"formatting only" verdict. See [`SECURITY.md`](SECURITY.md) for the threat
-model.
+Ten fuzz targets cover the parser, review JSON, daemon protocol, agent annotations, council
+reports, the MCP and `rpc` stdio servers, the soundness of the structural diff's
+"formatting only" verdict, agent-findings verification and the code-evidence scanner. See
+[`SECURITY.md`](SECURITY.md) for the threat model.
 
 ## Review council and evidence gates
 

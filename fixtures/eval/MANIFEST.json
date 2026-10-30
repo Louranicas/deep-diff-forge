@@ -138,6 +138,33 @@
       "sha256": "4146144130022c8742d3593e0cf9af03fc195f5a713fbdd377df990233b8f058"
     },
     {
+      "id": "evidence/interpolation",
+      "kind": "evidence",
+      "patch": "evidence/interpolation.patch",
+      "origin": "DDF-EVID-001, 2026-10-30: code inside shell $(...), a JS template ${...} and a Python f-string {...}; the plain string on tool.py line 3 runs nothing",
+      "expect": [
+        {
+          "path": "install.sh",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "web/build.js",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tool.py",
+          "signal": "dynamic_eval",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "8f49eeb5115798ea1745c26f7637ceea0ee8fba283816d023a1114ea2622b74e"
+    },
+    {
       "id": "findings/mixed",
       "kind": "findings",
       "patch": "findings/mixed.patch",

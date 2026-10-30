@@ -1,13 +1,13 @@
 # Deployment Evidence — L0 → L9 (… + Daemon + Release + Learning)
 
-## Status 2026-10-28 (0.3.0)
+## Status 2026-10-30 (0.4.0)
 
 **Kind:** append-only evidence log. Each section is dated or session-tagged and records what was measured then. Sections are not rewritten. Later sections correct earlier ones.
 
-**Current at 0.3.0:**
+**Current at 0.4.0:**
 
-- The newest evidence is [v0.3.0 release readiness (2026-10-29)](#v030-release-readiness-2026-10-29), at the end of this file. It supersedes the 2026-10-28 fuzz numbers, which predate the last parser change.
-- Published GitHub releases are `v0.1.0`, `v0.2.0` and, from 2026-10-29 by owner decision, `v0.3.0`. `v0.2.1` was never tagged.
+- The newest evidence is at the end of this file: [v0.4.0 release readiness (2026-10-30)](#v040-release-readiness-2026-10-30), then [daemon metrics overhead](#daemon-metrics-overhead-2026-10-30) and [findings verification by address](#findings-verification-by-address-2026-10-30). The fuzz numbers in [v0.3.0 release readiness (2026-10-29)](#v030-release-readiness-2026-10-29) supersede the 2026-10-28 ones, which predate the last parser change.
+- Published GitHub releases are `v0.1.0`, `v0.2.0`, `v0.3.0` (2026-10-29) and `v0.4.0` (2026-10-30), each by owner decision. `v0.2.1` was never tagged.
 - crates.io is on hold by owner decision until the codebase is production-hardened. This replaces the older "token-gated" wording in the L8 and L9 sections. A configured token alone publishes nothing: the publish job in `.github/workflows/release.yml` runs only on a `v*` tag **and** when the repository variable `DDF_CRATES_IO` is `open`. `deep-diff-forge deploy release` reports `crates.io blocked` (measured with the binary).
 - The 2026-10-26 section ends with "Nothing is tagged or published". That refers to the council stack only. The `v0.1.0` and `v0.2.0` GitHub releases already existed.
 - Test counts in older sections (568, 765, 794) are counts at that time and are not current.
