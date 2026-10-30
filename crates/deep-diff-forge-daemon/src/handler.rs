@@ -25,7 +25,7 @@ use std::time::Instant;
 /// 64 concurrent review sessions is generous for interactive use (a typical
 /// editor opens one or two) while keeping the worst-case memory footprint
 /// bounded to `O(MAX_SESSIONS × patch_size)`.
-const MAX_SESSIONS: usize = 64;
+pub(crate) const MAX_SESSIONS: usize = 64;
 
 /// Maximum tracked heap payload retained across all sessions.
 ///

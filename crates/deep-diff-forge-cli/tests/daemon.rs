@@ -312,3 +312,84 @@ fn log_format_belongs_to_start_and_takes_text_or_json() {
         );
     }
 }
+
+/// `--log-format json`: a client that hangs up before reading its answer makes the daemon's write
+/// fail, and the daemon logs that as one `connection_error` JSON object on stderr.
+#[test]
+fn json_logs_are_one_object_per_line() {
+    use std::io::{Read as _, Write as _};
+    let sock = temp_socket("jsonlog");
+    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    std::fs::set_permissions(
+        sock.parent().unwrap(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+    let log = sock.with_file_name("stderr.log");
+    let path = sock.to_str().unwrap();
+    let child = Command::new(bin())
+        .args(["daemon", "start", "--log-format", "json", "--socket", path])
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .expect("spawn daemon");
+    let mut daemon = Daemon(child);
+    let mut ready = false;
+    for _ in 0..WAIT_STEPS {
+        if run(&["daemon", "health", "--socket", path]).0 == 0 {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(ready, "the daemon never answered");
+    // A large answer to a request whose client is already gone: the write fails. Retried, since
+    // a fast daemon can answer before the client has closed.
+    let body = (0..20_000).fold(String::new(), |mut body, i| {
+        use std::fmt::Write as _;
+        let _ = writeln!(body, "+line {i}");
+        body
+    });
+    let request = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "diff.compute",
+        "params": {"patch": format!("--- a/x\n+++ b/x\n@@ -0,0 +1,20000 @@\n{body}")},
+    })
+    .to_string();
+    let mut text = String::new();
+    for _ in 0..50 {
+        let mut client = std::os::unix::net::UnixStream::connect(path).unwrap();
+        client.write_all(request.as_bytes()).unwrap();
+        client.write_all(b"\n").unwrap();
+        drop(client);
+        std::thread::sleep(Duration::from_millis(100));
+        text.clear();
+        std::fs::File::open(&log)
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        if text.contains("connection_error") {
+            break;
+        }
+    }
+    let line = text
+        .lines()
+        .find(|l| l.contains("connection_error"))
+        .unwrap_or_else(|| panic!("no connection_error logged: {text}"));
+    let event: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(
+        (event["event"].as_str(), event["level"].as_str()),
+        (Some("connection_error"), Some("warn"))
+    );
+    assert!(
+        event["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("connection error: ")
+    );
+    assert!(event["ts_ms"].as_u64().is_some());
+    assert_eq!(run(&["daemon", "stop", "--socket", path]).0, 0);
+    assert!(daemon.exited());
+    drop(daemon);
+    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+}

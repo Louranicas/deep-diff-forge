@@ -305,8 +305,8 @@ Implemented (2026-10-30):
     method the daemon does not have, or an unparsable line, counts under `(unknown)`.
   - **`admission`:** `admitted`, `waited` (admitted after blocking), `wait_us`, `busy` (refused
     after the 30 s admission wait), `peak_in_flight_bytes` and `peak_running`.
-  - **`connections`:** `accepted`, `refused_at_limit`, `refused_peer` (another user), `errors`
-    (a read deadline or a reset) and `accept_errors` (retried).
+  - **`connections`:** `accepted`, `refused_at_limit`, `refused_peer` (another user), and `errors`
+    (a read deadline, a reset, or a client gone before its answer).
   - **`engine`:** `panics` (contained), `session_resets`, `sessions_opened`, `sessions_closed`,
     `sessions_evicted` and `peak_retained_bytes`.
   - **Recording cost.** Every counter is an `AtomicU64` written with relaxed adds, so recording

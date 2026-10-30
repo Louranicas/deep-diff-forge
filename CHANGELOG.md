@@ -13,8 +13,7 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   - per method that was called: requests, errors by RPC code, and latency as log₂ microsecond
     buckets with p50, p95 and p99 upper bounds;
   - admission: admitted, waited, wait time, busy refusals, and peak in-flight bytes and requests;
-  - connections: accepted, refused at the limit, refused as another user, errors, and accept
-    errors;
+  - connections: accepted, refused at the limit, refused as another user, and errors;
   - engine: contained panics, session-table resets, and sessions opened, closed and evicted.
 
   Recording takes no lock (relaxed atomics). `deploy doctor` warns, with the counts, when a live

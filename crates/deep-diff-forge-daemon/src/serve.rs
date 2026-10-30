@@ -722,9 +722,7 @@ fn serve_bound(
                     );
                 }
             }
-            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {
-                engine.metrics().accept_error();
-            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
             Err(err) => return Err(err),
         }
     }
@@ -996,6 +994,31 @@ mod tests {
             .map(|b| b.as_u64().unwrap())
             .sum();
         assert_eq!(buckets, 2);
+    }
+
+    /// A session opened at the session limit evicts the least recently used one, and the
+    /// eviction is counted once per session it removed.
+    #[test]
+    fn evictions_are_counted() {
+        let e = engine();
+        let open = |id: usize| {
+            format!(
+                r#"{{"id":{id},"method":"session.open","params":{{"patch":"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"}}}}"#
+            )
+        };
+        for id in 0..crate::handler::MAX_SESSIONS {
+            let _ = process_line(&open(id), &e);
+        }
+        let evicted = |e: &Engine| {
+            e.metrics().document(std::time::Duration::ZERO, "0")["engine"]["sessions_evicted"]
+                .clone()
+        };
+        assert_eq!(evicted(&e), 0, "the limit itself evicts nothing");
+        let _ = process_line(&open(100), &e);
+        assert_eq!(evicted(&e), 1);
+        let _ = process_line(&open(101), &e);
+        assert_eq!(evicted(&e), 2);
+        assert_eq!(e.session_count(), crate::handler::MAX_SESSIONS);
     }
 
     /// Opening, closing, evicting and resetting sessions are counted.

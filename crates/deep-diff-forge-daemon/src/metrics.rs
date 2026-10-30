@@ -60,7 +60,6 @@ pub struct Metrics {
     refused_at_limit: AtomicU64,
     refused_peer: AtomicU64,
     connection_errors: AtomicU64,
-    accept_errors: AtomicU64,
     panics: AtomicU64,
     session_resets: AtomicU64,
     sessions_opened: AtomicU64,
@@ -131,7 +130,6 @@ impl Metrics {
             refused_at_limit: AtomicU64::new(0),
             refused_peer: AtomicU64::new(0),
             connection_errors: AtomicU64::new(0),
-            accept_errors: AtomicU64::new(0),
             panics: AtomicU64::new(0),
             session_resets: AtomicU64::new(0),
             sessions_opened: AtomicU64::new(0),
@@ -202,11 +200,6 @@ impl Metrics {
     /// A connection that ended in an I/O error (a read deadline, a reset).
     pub fn connection_error(&self) {
         add(&self.connection_errors, 1);
-    }
-
-    /// An accept that failed and was retried.
-    pub fn accept_error(&self) {
-        add(&self.accept_errors, 1);
     }
 
     /// A panic inside a request, contained.
@@ -291,7 +284,6 @@ impl Metrics {
                 "refused_at_limit": get(&self.refused_at_limit),
                 "refused_peer": get(&self.refused_peer),
                 "errors": get(&self.connection_errors),
-                "accept_errors": get(&self.accept_errors),
             },
             "engine": {
                 "panics": get(&self.panics),
@@ -382,7 +374,6 @@ mod tests {
         m.refused_at_limit();
         m.refused_peer();
         m.connection_error();
-        m.accept_error();
         m.panic();
         m.session_reset();
         m.session_opened(40);
@@ -415,7 +406,7 @@ mod tests {
         );
         assert_eq!(
             doc["connections"],
-            serde_json::json!({"accepted": 1, "refused_at_limit": 1, "refused_peer": 1, "errors": 1, "accept_errors": 1})
+            serde_json::json!({"accepted": 1, "refused_at_limit": 1, "refused_peer": 1, "errors": 1})
         );
         assert_eq!(
             doc["engine"],
