@@ -20,6 +20,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     `verify_findings` and the Python SDK's `verify_findings`.
   - `review --findings FILE` shows the accepted findings in the cockpit as agent notes, never
     grounded, and a finding cannot pass for the engine's own notes.
+- An address-anchored finding is resolved through a table of hunk addresses built once per
+  call. Before (in this change's own first version), each finding hashed every hunk again: 2,000
+  findings against 400 hunks took 3,560 ms. Now 33 ms (measured with `deep-diff-forge bench`,
+  release build).
 - A `findings_verify` fuzz target: every non-blank line gets exactly one verdict, every accepted
   anchor resolves, and no sanitised text keeps an unsafe character.
 

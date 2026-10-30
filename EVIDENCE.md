@@ -738,3 +738,20 @@ test log. It is recorded here as an unexplained, unreproduced failure.
   `deep-diff-forge --version` prints `deep-diff-forge 0.4.0`; `gh attestation verify` passes
   with one SLSA v1 provenance signed by `release.yml@refs/tags/v0.4.0`.
 
+## Findings verification by address (2026-10-30)
+
+A benchmark of the findings verifier (`deep-diff-forge bench --quick`, release build, 16-CPU host)
+found that each address-anchored finding hashed every hunk of the review again. The workloads:
+
+- `findings_by_address`: 2,000 findings, five per hunk, against a generated 400-hunk patch;
+- `findings_verify`: 400 findings anchored by path and line, against a 200-hunk patch.
+
+| Workload | Before | After (one address table per call) |
+| --- | ---: | ---: |
+| `findings_by_address` | 3,560 ms | 33 ms |
+| `findings_verify` | 9.0 ms | 4.6 ms |
+
+The cost had grown with findings times hunks. Through the daemon, one `findings.verify` request
+of 10,000 findings against a large patch could hold a worker for minutes. It is now linear in
+findings, with one hash per hunk per call.
+
