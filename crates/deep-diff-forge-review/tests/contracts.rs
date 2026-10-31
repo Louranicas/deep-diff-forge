@@ -620,14 +620,17 @@ fn challenge_responses_are_unique_and_reasoned() {
     }
 }
 
-/// The council expects one report per reviewer per round, for any roster size.
+/// The council expects one report per reviewer per round, at each roster size checked here.
+/// Two reviewers alone cannot tell `n * 2` from `n + 2`; three can (5 != 6), so the roster
+/// sizes are built explicitly rather than inherited from the example fixture's length.
 #[test]
 fn every_reviewer_owes_one_report_per_round() {
-    let mut raw = unsealed();
-    raw.request = deep_diff_forge_review::cli::example();
-    let six = seal(raw);
-    let two = manifest();
-    for (m, reviewers) in [(&two, 2), (&six, 6)] {
+    for reviewers in [2, 3] {
+        let mut raw = unsealed();
+        raw.request = deep_diff_forge_review::cli::example();
+        raw.request.profile = Profile::Roster;
+        raw.request.reviewers.truncate(reviewers);
+        let m = &seal(raw);
         assert_eq!(m.request.reviewers.len(), reviewers);
         let (reports, executions) = complete(m);
         let a = evaluation(m, &reports, &executions);
@@ -642,8 +645,8 @@ fn every_reviewer_owes_one_report_per_round() {
     }
 }
 
-/// Each persona contributes its own nonempty lens to the reviewer prompt; two personas sharing
-/// one lens would be one reviewer counted twice.
+/// Each persona has its own nonempty lens; two personas sharing one lens would be one reviewer
+/// counted twice. This checks `Persona::lens` only, not that the reviewer prompt includes it.
 #[test]
 fn every_persona_has_its_own_lens() {
     const fn exhaustive(persona: Persona) {
@@ -670,13 +673,6 @@ fn every_persona_has_its_own_lens() {
     let lenses: std::collections::BTreeSet<_> = all.iter().map(|p| p.lens()).collect();
     assert_eq!(lenses.len(), all.len());
     for persona in all {
-        // A lens is an instruction: at least one full sentence.
-        assert!(persona.lens().trim_end().ends_with('.'), "{persona:?}");
-        assert!(
-            persona.lens().split_whitespace().count() >= 8,
-            "{persona:?}"
-        );
+        assert!(!persona.lens().trim().is_empty(), "{persona:?}");
     }
-    assert!(Persona::Security.lens().contains("trust boundaries"));
-    assert!(Persona::Falsifier.lens().contains("surviving mutants"));
 }

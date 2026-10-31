@@ -875,9 +875,12 @@ with `CARGO_TARGET_DIR` unset.
 
 ## Review crate: policy and model mutation (2026-11-01)
 
-The whole-crate baseline of `deep-diff-forge-review` (crate scope, `main` of 2026-10-31) left
-16 survivors in the council's trust boundary: 14 in `policy.rs` (`validate_request`'s model
-argument checks; `validate_report`'s unknown-reviewer check, blank/over-budget summary, claim
+The whole-crate baseline of `deep-diff-forge-review` (crate scope, cargo-mutants 27.1.0,
+started 2026-10-31T13:49:52Z on a tree byte-identical to `main` `9527f64`, whose review crate
+is unchanged through `7774957`; `env -u CARGO_TARGET_DIR cargo mutants -p deep-diff-forge-review
+-j 6 --timeout-multiplier 3`) listed 727 missed mutants; no Turso event records it, so this
+paragraph is its durable reference. Of those, 16 were in the council's trust boundary: 14 in
+`policy.rs` (`validate_request`'s model argument checks; `validate_report`'s unknown-reviewer check, blank/over-budget summary, claim
 and rationale, finding-id prefix/length/uniqueness, citation and count budgets, duplicate
 responses; `reports_expected`) and 2 in `model.rs` (`Persona::lens` replaced by `""` or
 `"xyzzy"`). Measured: cargo-mutants 27.1.0 on `main` `7774957`, with `CARGO_TARGET_DIR` unset
@@ -896,11 +899,12 @@ and `TMPDIR` on the storage disk (the `/tmp` quota was exhausted by concurrent r
   from outside the roster is refused; summary, claim, falsifier and rationale are refused blank
   and one byte over budget and admitted at it; finding IDs are prefixed, at most 164 bytes and
   unique; 1–16 citations; 128 findings and 1,536 responses are budgeted separately;
-  `reports_expected` is two per reviewer for 2 and 6 reviewers; each persona has its own
-  lens.
+  `reports_expected` is two per reviewer for 2 and 3 reviewers (3 separates `n * 2` from
+  `n + 2`, which 2 cannot); each persona has its own nonempty lens (checked on
+  `Persona::lens`, not on the prompt that embeds it).
 - **Targeted check (load ~40):** the same two files with
   `-j 4 --timeout 300 -- --lib --test contracts` (crate scope, only the review crate's unit
-  and contract tests): 102 mutants, 100 caught, 2 unviable, 0 missed, 0 timeouts in 10 min.
+  and contract tests): 102 mutants, 100 caught, 2 unviable, 0 missed, 0 timeouts in 10 min (re-run after the test fixes: same counts in 2 min at lower load).
   All 16 baseline survivors are caught.
 - **After (workspace scope, same command):** `policy.rs` 12 caught, 74 timeouts, 1 unviable;
   `model.rs` 3 caught, 11 timeouts, 1 unviable; 0 missed. A `--iterate` re-run of the
