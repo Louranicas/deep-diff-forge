@@ -323,6 +323,27 @@ mod evidence_score_tests {
         assess_file(&file(path, removed, added)).score
     }
 
+    /// Each path and shape weight, as an exact sum (whole-crate mutation run 2026-10-31: `+=`
+    /// replaced by `*=` or `-=` survived, since tests compared scores rather than sums). The
+    /// large and many-hunk weights are added to a public-API file's 7, where `+=` and `*=`
+    /// differ; on a plain file's 2, `+= 2` and `*= 2` would agree.
+    #[test]
+    fn path_and_shape_weights_are_exact_sums() {
+        use std::fmt::Write as _;
+        assert_eq!(score("src/x.rs", &[], &["a"]), 2, "base 1, source 1");
+        assert_eq!(score("src/lib.rs", &[], &["a"]), 7, "public API 5");
+        assert_eq!(score("Cargo.toml", &[], &["a"]), 2, "base 1, config 1");
+        let lines: Vec<String> = (0..LARGE_CHANGE_LINES).map(|i| format!("l{i}")).collect();
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        assert_eq!(score("src/lib.rs", &[], &lines), 7 + 3, "large change 3");
+        let mut text = "--- a/src/lib.rs\n+++ b/src/lib.rs\n".to_owned();
+        for hunk in 0..MANY_HUNKS {
+            let _ = write!(text, "@@ -{0},1 +{0},2 @@\n x\n+y\n", hunk * 10 + 1);
+        }
+        let many = parse(&text).unwrap().remove(0);
+        assert_eq!(assess_file(&many).score, 7 + 2, "many hunks 2");
+    }
+
     #[test]
     fn each_signal_adds_its_weight_once() {
         let plain = score("src/x.rs", &[], &["let a = 1;"]);

@@ -45,6 +45,33 @@ mod tests {
         parse("--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n").unwrap()
     }
 
+    /// A span anchor resolves only to a span of its file's semantic twin (whole-crate mutation
+    /// run 2026-10-31: the span id comparison had no test with a twin).
+    #[test]
+    fn span_anchor_resolves_only_an_existing_span() {
+        use deep_diff_forge_core::{
+            ParseStatus, SemanticChangeKind, SemanticSpan, SemanticSpanId, SemanticTwin,
+        };
+        let mut files = review();
+        files[0].semantic_twin = Some(SemanticTwin {
+            language: "rust".into(),
+            parse_status: ParseStatus::Parsed,
+            spans: vec![SemanticSpan {
+                id: SemanticSpanId(7),
+                hunk_id: HunkId(0),
+                kind: SemanticChangeKind::AddedNode,
+                old_range: None,
+                new_range: None,
+            }],
+        });
+        let span = |id| AnnotationAnchor::SemanticSpan {
+            path: "src/x.rs".into(),
+            span_id: SemanticSpanId(id),
+        };
+        assert!(validate_anchor(&span(7), &files));
+        assert!(!validate_anchor(&span(8), &files));
+    }
+
     #[test]
     fn anchor_path_extracts_file() {
         let a = AnnotationAnchor::File {

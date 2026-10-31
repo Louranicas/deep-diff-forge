@@ -135,6 +135,14 @@ mod tests {
     }
 
     #[test]
+    fn a_store_is_empty_until_an_annotation_is_added() {
+        let mut store = AnnotationStore::new();
+        assert!(store.is_empty());
+        assert!(store.add(ann("a", "agent", &[], false)));
+        assert!(!store.is_empty());
+    }
+
+    #[test]
     fn new_store_is_empty() {
         let s = AnnotationStore::new();
         assert_eq!(s.len(), 0);
