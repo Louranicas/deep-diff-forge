@@ -853,3 +853,22 @@ Repository settings, measured with `gh api` on 2026-10-31:
   force push, which this session's permissions do not allow.
 - **Not done:** signed tags. They need the owner's signing key; `v0.1.0` to `v0.5.0` are
   annotated and unsigned.
+
+## Whole-crate mutation of graph and agent (2026-10-31)
+
+The 2026-10-31 readiness reconciliation asked for a whole-crate mutation pass of the crates
+that 0.5.0 grew. Measured: cargo-mutants 27.1.0 on `main` `36bd5f3` (`v0.5.0`),
+`-p deep-diff-forge-graph -p deep-diff-forge-agent --test-workspace true --timeout 300 -j 6`,
+with `CARGO_TARGET_DIR` unset.
+
+- **651 mutants in 71 min:** 593 caught, 18 missed, 0 timeouts, 40 unviable.
+- **Missed.** 12 in `agent`: `ReviewRevision::from_review_id` (5), `ReviewRevision::as_str`
+  (2), `EvidenceRegistry::assess` (`||` to `&&`), `EvidenceRegistry::inspect` (to `vec![]`),
+  the span-id comparison in `validate_anchor`, and `AnnotationStore::is_empty` (2). 6 in
+  `graph`: `+=` replaced by `*=` or `-=` in `score_path_and_shape`. Tests compared scores
+  with each other, not exact sums.
+- **Pinned.** Tests that pin each one were added on `claude/mutation-pins-20261031`. A
+  re-run over those functions (`-F 'from_review_id|as_str|assess|inspect|validate_anchor|is_empty|score_path_and_shape'`)
+  tested 61 mutants: 56 caught, 5 unviable, 0 missed.
+- **Ledger.** Recorded as Turso event 106 (kind `mutation`).
+

@@ -158,6 +158,74 @@ impl EvidenceRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Whole-crate mutation run 2026-10-31: `from_review_id`, `as_str`, the guards of `assess`
+    /// and `inspect` had no test that pinned them.
+    #[test]
+    fn a_review_id_is_exactly_64_lowercase_hex_digits() {
+        let id = "0123456789abcdef".repeat(4);
+        let revision = ReviewRevision::from_review_id(&id).expect("a review id");
+        assert_eq!(revision.as_str(), id);
+        for bad in [
+            id[..63].to_owned(),
+            format!("{id}0"),
+            id.to_uppercase(),
+            format!("{}g", &id[..63]),
+            format!("{}A", &id[..63]),
+            String::new(),
+        ] {
+            assert_eq!(ReviewRevision::from_review_id(&bad), None, "{bad:?}");
+        }
+        assert_eq!(
+            ReviewRevision::from_patch(b"x").as_str().len(),
+            64,
+            "a patch digest is a review id"
+        );
+    }
+
+    #[test]
+    fn an_assessment_needs_the_current_revision_an_evaluator_and_a_rationale() {
+        let revision = ReviewRevision::from_patch(b"r");
+        let mut registry = EvidenceRegistry::default();
+        assert!(registry.capture("e".into(), revision.clone(), b"out"));
+        assert!(
+            !registry.assess("e", &revision, " ", "why", true),
+            "no evaluator"
+        );
+        assert!(
+            !registry.assess("e", &revision, "who", " ", true),
+            "no rationale"
+        );
+        assert!(!registry.assess("missing", &revision, "who", "why", true));
+        assert_eq!(registry.state("e", &revision), EvidenceState::Linked);
+        assert!(registry.assess("e", &revision, "who", "why", false));
+        assert!(matches!(
+            registry.state("e", &revision),
+            EvidenceState::Contradicted { .. }
+        ));
+    }
+
+    #[test]
+    fn inspect_reports_one_state_per_cited_artifact() {
+        let revision = ReviewRevision::from_patch(b"r");
+        let mut registry = EvidenceRegistry::default();
+        assert!(registry.capture("linked".into(), revision.clone(), b"out"));
+        let annotation = AgentAnnotation {
+            id: "a".into(),
+            anchor: deep_diff_forge_core::AnnotationAnchor::File { path: "x".into() },
+            body: "b".into(),
+            provenance: deep_diff_forge_core::AnnotationProvenance {
+                agent: "agent".into(),
+                model: None,
+                evidence: vec!["linked".into(), "missing".into()],
+            },
+            grounded: true,
+        };
+        assert_eq!(
+            registry.inspect(&annotation, &revision),
+            [EvidenceState::Linked, EvidenceState::Missing]
+        );
+    }
+
     #[test]
     fn artifact_linking_support_and_freshness_are_separate() {
         let old = ReviewRevision::from_patch(b"old");
