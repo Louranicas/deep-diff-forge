@@ -1,0 +1,30 @@
+# The Python client as an installable package (standard library only, no dependencies).
+# Install from a checkout:  python3 -m pip install ./sdk/python
+# or from GitHub:          python3 -m pip install "deep-diff-forge @ git+https://github.com/Louranicas/deep-diff-forge@v0.5.0#subdirectory=sdk/python"
+# It drives the `deep-diff-forge` binary (a release archive or `cargo build`); it does not ship it.
+# `version` equals the workspace version and `deep_diff_forge.__version__` (cli/tests/python_sdk.rs).
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deep-diff-forge"
+version = "0.5.0"
+description = "Python client for the Deep-Diff-Forge patch-review engine (daemon socket or `deep-diff-forge rpc`)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT OR Apache-2.0"
+dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Homepage = "https://github.com/Louranicas/deep-diff-forge"
+Documentation = "https://github.com/Louranicas/deep-diff-forge/blob/main/docs/API_AND_IPC.md"
+
+[tool.setuptools]
+py-modules = ["deep_diff_forge"]

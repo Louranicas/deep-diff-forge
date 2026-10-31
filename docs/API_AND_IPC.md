@@ -180,7 +180,7 @@ version is refused with domain error 2.
 | `engine.methods` | — | `{protocol, methods: [{name, params, result, since}]}` | 1 |
 | `daemon.health` | — | `{status, version, pid, sessions, retained_bytes, cache_entries, protocol}` | 0 |
 | `daemon.status` | — | `{running, uptime_secs, sessions, version, protocol}` | 0 |
-| `daemon.shutdown` | — | `{stopping}` | 0 |
+| `daemon.shutdown` | — | `{stopping}`; on the daemon socket, the requests in progress are answered first (up to 30 s) and a request read afterwards is refused with error 8 (`rpc` serves one stdio stream and simply ends) | 0 |
 | `diff.plan` | `patch: string` | `[ranked file]` | 0 |
 | `diff.compute` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.review.v0` document `--stdin-patch --json` prints for the same patch | 1 |
 | `diff.rank` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints for the same patch (with each file's code `evidence`, below) | 1 |
@@ -288,7 +288,8 @@ require_files, require_hunks}`, the `exit` registry re-export, and, on Unix only
 (`Parse`, `Refused`, `Rpc`, `Transport`). `crates/deep-diff-forge-sdk/tests/api.rs`
 pins the public signatures.
 
-**Python (`sdk/python/deep_diff_forge.py`, standard library only):**
+**Python (`sdk/python/deep_diff_forge.py`, standard library only; installable with
+`python3 -m pip install ./sdk/python`, package `deep-diff-forge`, not on PyPI):**
 `StdioClient(command=("deep-diff-forge", "rpc"), timeout=30.0)` and
 `SocketClient(path, timeout=30.0)`, each with `call(method, **params)`,
 `review_patch(patch, require_files=False, require_hunks=False)` (`diff.compute`),

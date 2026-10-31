@@ -229,8 +229,99 @@ impl Drop for Permit<'_> {
     }
 }
 
+/// The requests that were read and not yet answered, across every connection. A stop waits for
+/// them ([`Answering::wait_idle`]), so it does not cut off an answer that is being built or
+/// written. Unlike a [`Permit`], an [`Answer`] is held until the response is flushed.
+#[derive(Debug, Default)]
+pub struct Answering {
+    count: Mutex<usize>,
+    idle: Condvar,
+}
+
+impl Answering {
+    /// Count a request as being answered until the returned guard is dropped.
+    pub fn start(&self) -> Answer<'_> {
+        *self.lock() += 1;
+        Answer { answering: self }
+    }
+
+    /// How many requests are being answered now.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        *self.lock()
+    }
+
+    /// Wait at most `wait` for every request being answered to finish; whether they all did.
+    #[must_use]
+    pub fn wait_idle(&self, wait: Duration) -> bool {
+        let count = self.lock();
+        let (count, _) = self
+            .idle
+            .wait_timeout_while(count, wait, |count| *count > 0)
+            .unwrap_or_else(PoisonError::into_inner);
+        *count == 0
+    }
+
+    /// A counter, consistent after a panic elsewhere poisoned the lock.
+    fn lock(&self) -> MutexGuard<'_, usize> {
+        self.count.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// One request being answered; dropping it (on success, error or unwind) ends the count.
+#[derive(Debug)]
+pub struct Answer<'a> {
+    answering: &'a Answering,
+}
+
+impl Drop for Answer<'_> {
+    fn drop(&mut self) {
+        let mut count = self.answering.lock();
+        *count = count.saturating_sub(1);
+        drop(count);
+        self.answering.idle.notify_all();
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// A stop waits for the answers in progress and no longer; an answer ends its count when it
+    /// is dropped, also by an unwind.
+    #[test]
+    fn answering_counts_until_each_answer_is_dropped() {
+        let answering = Answering::default();
+        assert!(answering.wait_idle(Duration::ZERO), "nothing to wait for");
+        let first = answering.start();
+        let second = answering.start();
+        assert_eq!(answering.count(), 2);
+        assert!(
+            !answering.wait_idle(Duration::from_millis(20)),
+            "two still answering"
+        );
+        drop(first);
+        assert_eq!(answering.count(), 1);
+        std::thread::scope(|scope| {
+            // The waiter would wait 10 s; it must answer within 2 s of the last answer's drop, so
+            // only a wakeup from that drop passes.
+            let (woken, rx) = std::sync::mpsc::channel();
+            let answering = &answering;
+            scope.spawn(move || woken.send(answering.wait_idle(Duration::from_secs(10))));
+            std::thread::park_timeout(Duration::from_millis(50));
+            drop(second);
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(2)),
+                Ok(true),
+                "the waiter is woken by the last answer"
+            );
+        });
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _answer = answering.start();
+            panic!("a request that panics while answering");
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(answering.count(), 0);
+    }
+
     use super::*;
     use std::sync::mpsc;
     use std::thread;

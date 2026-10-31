@@ -68,6 +68,9 @@ prints PASS/FAIL per step (exit 0 only if all pass, 2 if `cargo` is missing).
 - [ ] Regenerated `sbom.spdx.json` matches the committed dependency graph
 - [ ] A `workflow_dispatch` run of `release.yml` on the release commit passes
       (the dry run; it runs the macOS tests too, as the tag run does)
+- [ ] The version moved everywhere it is stated: workspace and fuzz manifests, both lock
+      files, the SBOM, and the Python package (`sdk/python/pyproject.toml` and
+      `deep_diff_forge.__version__`; `cli/tests/python_sdk.rs` fails if they differ)
 - [ ] Docs updated
 - [ ] `CHANGELOG.md` updated
 

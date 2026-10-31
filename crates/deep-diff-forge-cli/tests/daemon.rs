@@ -403,3 +403,88 @@ fn json_logs_are_one_object_per_line() {
     drop(daemon);
     let _ = std::fs::remove_dir_all(sock.parent().unwrap());
 }
+
+/// `daemon stop` returns only once the daemon has exited: with a large request still being
+/// answered, a `daemon start` right after `stop` binds the same socket instead of finding the
+/// old daemon in the way (exit 6), and the request in progress is still answered in full.
+#[test]
+fn stop_returns_after_the_daemon_has_exited() {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    let sock = temp_socket("stopwait");
+    let dir = sock.parent().unwrap().to_path_buf();
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let path = sock.to_str().unwrap().to_owned();
+    let mut first = Daemon::spawn(&path);
+    let ready = (0..WAIT_STEPS).any(|_| {
+        let up = run(&["daemon", "health", "--socket", &path]).0 == 0;
+        if !up {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        up
+    });
+    assert!(ready, "the daemon never answered");
+    let body = (0..200_000).fold(String::new(), |mut body, i| {
+        use std::fmt::Write as _;
+        let _ = writeln!(body, "+line {i}");
+        body
+    });
+    let request = serde_json::json!({
+        "jsonrpc": "2.0", "id": 9, "method": "diff.compute",
+        "params": {"patch": format!("--- a/x\n+++ b/x\n@@ -0,0 +1,200000 @@\n{body}")},
+    })
+    .to_string();
+    let mut client = std::os::unix::net::UnixStream::connect(&sock).unwrap();
+    client.write_all(request.as_bytes()).unwrap();
+    client.write_all(b"\n").unwrap();
+    let reader = std::thread::spawn({
+        let client = client.try_clone().unwrap();
+        move || {
+            let mut answer = String::new();
+            BufReader::new(client)
+                .read_line(&mut answer)
+                .map(|_| answer)
+        }
+    });
+    // The large request is in progress once the daemon has admitted its bytes.
+    let admitted = (0..WAIT_STEPS).any(|_| {
+        let (_, metrics, _) = run(&["daemon", "metrics", "--socket", &path]);
+        let metrics: serde_json::Value = serde_json::from_str(&metrics).unwrap_or_default();
+        let big = metrics["result"]["admission"]["peak_in_flight_bytes"].as_u64() > Some(1 << 20);
+        if !big {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        big
+    });
+    let (stopped, _, stop_err) = run(&["daemon", "stop", "--socket", &path]);
+    let mut second = Daemon::spawn(&path);
+    let second_up = (0..WAIT_STEPS).any(|_| {
+        if let Ok(Some(_)) = second.0.try_wait() {
+            return false;
+        }
+        let up = run(&["daemon", "health", "--socket", &path]).0 == 0;
+        if !up {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        up
+    });
+    let second_alive = second.0.try_wait().is_ok_and(|status| status.is_none());
+    let _ = run(&["daemon", "stop", "--socket", &path]);
+    let answer = reader.join().unwrap().unwrap();
+    assert!(admitted, "the large request was never admitted");
+    assert_eq!(stopped, 0, "{stop_err}");
+    assert!(first.exited(), "the first daemon had not exited");
+    assert!(
+        second_up && second_alive,
+        "a start right after `stop` did not run: the old daemon was still in the way"
+    );
+    let answer: serde_json::Value = serde_json::from_str(&answer).unwrap();
+    assert_eq!(answer["id"], 9);
+    assert!(
+        answer.get("result").is_some(),
+        "the request in progress was not answered"
+    );
+    assert!(second.exited());
+    let _ = std::fs::remove_dir_all(&dir);
+}

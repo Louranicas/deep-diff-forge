@@ -28,6 +28,20 @@ fn now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
+/// The events that record normal operation (`info`); every other event is a refusal, an error or
+/// a limit reached (`warn`).
+pub const INFO_EVENTS: &[&str] = &["shutdown_drained"];
+
+/// The level of `event`'s JSON line.
+#[must_use]
+pub fn level(event: &str) -> &'static str {
+    if INFO_EVENTS.contains(&event) {
+        "info"
+    } else {
+        "warn"
+    }
+}
+
 /// One log line for `event` (a stable snake-case name) and its `message`.
 #[must_use]
 pub fn line(format: LogFormat, event: &str, message: &str) -> String {
@@ -35,7 +49,7 @@ pub fn line(format: LogFormat, event: &str, message: &str) -> String {
         LogFormat::Text => format!("deep-diff-forge daemon: {message}"),
         LogFormat::Json => json!({
             "ts_ms": now_ms(),
-            "level": "warn",
+            "level": level(event),
             "event": event,
             "message": message,
         })
@@ -71,5 +85,21 @@ mod tests {
         assert!(json["ts_ms"].as_u64().unwrap() > 1_700_000_000_000);
         assert!(!line(LogFormat::Json, "e", "m").contains('\n'));
         assert_eq!(LogFormat::default(), LogFormat::Text);
+    }
+
+    #[test]
+    fn a_drained_stop_is_info_and_everything_else_warns() {
+        assert_eq!(level("shutdown_drained"), "info");
+        for event in [
+            "shutdown_drain_timeout",
+            "connection_error",
+            "connection_refused",
+            "worker_spawn_failed",
+        ] {
+            assert_eq!(level(event), "warn", "{event}");
+        }
+        let json: serde_json::Value =
+            serde_json::from_str(&line(LogFormat::Json, "shutdown_drained", "m")).unwrap();
+        assert_eq!(json["level"], "info");
     }
 }

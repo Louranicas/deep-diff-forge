@@ -557,7 +557,10 @@ checks every answer's version, id and error shape.
 - **Ownership:** the SDK owns `Guards`, `Review` (opaque) and `Error` (`#[non_exhaustive]`). `ReviewFile`, `InputSeal` and `RankedFile` are model types and change only with the schema version.
 - **Stability:** `tests/api.rs` pins every public signature, so changing one is a deliberate breaking change.
 
-**Python:** `sdk/python/deep_diff_forge.py` uses only the standard library. It speaks the
+**Python:** `sdk/python/deep_diff_forge.py` uses only the standard library, and installs as the
+package `deep-diff-forge` (`python3 -m pip install ./sdk/python`, or from GitHub with
+`"deep-diff-forge @ git+https://github.com/Louranicas/deep-diff-forge@v0.5.0#subdirectory=sdk/python"`;
+not on PyPI). It drives the `deep-diff-forge` binary, which it does not ship. It speaks the
 daemon protocol over two transports with the same calls:
 
 - `deep-diff-forge rpc` over a pipe (`StdioClient`), which needs no daemon;
@@ -621,8 +624,11 @@ server on an owner-private Unix domain socket.
 deep-diff-forge daemon start --foreground      # terminal 1
 deep-diff-forge daemon health                  # terminal 2
 # {"id":1,"jsonrpc":"2.0","result":{"cache_entries":0,"pid":…,"protocol":2,"retained_bytes":0,"sessions":0,"status":"ok","version":"0.5.0"}}
-deep-diff-forge daemon stop
+deep-diff-forge daemon stop                    # answers what is in progress, returns once it has exited
 ```
+
+To run it as a service, use the systemd user unit or the launchd agent in `contrib/`
+([running as a service](docs/OPERATIONS_AND_DAEMON.md#running-as-a-service)).
 
 ## Verified agent findings
 
