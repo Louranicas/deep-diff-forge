@@ -889,6 +889,20 @@ mod tests {
         );
     }
 
+    /// Run `work` on its own thread and fail if it takes more than two minutes of wall time. A
+    /// linear scan of the lines below takes well under a second in a debug build and a quadratic
+    /// one hours, so the generous bound cannot fail on a busy host (the 10 s bound `graph` dropped
+    /// did), yet a diff-mutation run, whose timeout is 300 s, reports a quadratic mutant as caught
+    /// rather than as a timeout.
+    fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+        let (done, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(work());
+        });
+        wait.recv_timeout(std::time::Duration::from_secs(120))
+            .expect("the lines were scanned within two minutes")
+    }
+
     #[test]
     fn char_literals_and_lifetimes_are_told_apart() {
         for (rest, length) in [
@@ -915,15 +929,16 @@ mod tests {
         }
         // A run of `#` is scanned once per byte, not once per position (council r14), in code and
         // inside a raw string (council r15: the former test never reached that path). Eager
-        // counting would take about 2^39 comparisons here and time out rather than pass.
-        let run = vec![b'#'; 1 << 20];
-        let mut raw = b"let s = r#\"".to_vec();
-        raw.extend_from_slice(&run);
-        raw.extend_from_slice(b"\"#;");
-        assert_eq!(
-            code_lines(&[&run[..], &raw[..], b"/* after */"]),
-            [true, true, false]
-        );
+        // counting would take about 2^39 comparisons here, so it fails the deadline (the
+        // diff-mutation run then reports it as caught, not as a timeout).
+        let scanned = within_deadline(|| {
+            let run = vec![b'#'; 1 << 20];
+            let mut raw = b"let s = r#\"".to_vec();
+            raw.extend_from_slice(&run);
+            raw.extend_from_slice(b"\"#;");
+            code_lines(&[&run[..], &raw[..], b"/* after */"])
+        });
+        assert_eq!(scanned, [true, true, false]);
         // The skip ends exactly at the closing quote, so a comment right after it still opens; a
         // literal alone is code, and one inside an attribute is not.
         let source: [&[u8]; 5] = [
