@@ -760,6 +760,101 @@ fn a_repository_worktree_config_filter_never_runs() {
     assert!(!patch.contains("REVIEWED"), "{patch}");
 }
 
+/// A repository filter whose name is not UTF-8 is turned off too, in `.git/config` and in
+/// `config.worktree`. A subsection name is raw bytes matched exactly, and the name was decoded
+/// lossily, so the override named `filter.\u{fffd}` and the repository's `filter.\xff` still ran.
+#[test]
+fn a_repository_filter_with_a_non_utf8_name_never_runs() {
+    for (name, file) in [
+        ("bytes-filter", ".git/config"),
+        ("bytes-filter-wt", ".git/config.worktree"),
+    ] {
+        let fx = fixture(name);
+        let r = &fx.root;
+        let marker = r.join("filter-ran");
+        std::fs::write(r.join(".gitattributes"), b"*.txt filter=\xff\n").unwrap();
+        git_out(r, &["config", "extensions.worktreeConfig", "true"]);
+        let mut config = std::fs::read(r.join(file)).unwrap_or_default();
+        config.extend_from_slice(b"[filter \"\xff\"]\n\tclean = ");
+        config.extend_from_slice(
+            // Quoted: an unquoted `;` starts a comment in a configuration file.
+            format!("\"sh -c 'touch {}; tr a-z A-Z'\"\n", marker.display()).as_bytes(),
+        );
+        std::fs::write(r.join(file), config).unwrap();
+        std::fs::write(r.join("noeol.txt"), b"a\nc\nreviewed as written\n").unwrap();
+        let acq = acquire_git(r, &GitSelection::WorkingTree, &options(false)).unwrap();
+        assert!(!marker.exists(), "a non-UTF-8 filter in {file} ran");
+        let patch = String::from_utf8_lossy(acq.diff().patch_bytes());
+        assert!(patch.contains("+reviewed as written\n"), "{file}: {patch}");
+        assert!(!patch.contains("REVIEWED"), "{file}: {patch}");
+    }
+}
+
+/// A filter the caller passes through `GIT_CONFIG_COUNT`/`KEY`/`VALUE` (the `command` scope) is
+/// the caller's own and runs, whether or not the repository defines filters DDF turns off.
+/// Before, DDF numbered its own entries from 0 and set the count, which replaced the caller's.
+#[test]
+fn a_caller_git_config_env_filter_still_runs() {
+    for repository_filter in [false, true] {
+        let fx = fixture(if repository_filter {
+            "caller-filter-repo"
+        } else {
+            "caller-filter"
+        });
+        let r = &fx.root;
+        std::fs::write(
+            r.join(".gitattributes"),
+            "noeol.txt filter=user\n*.dat filter=evil\n",
+        )
+        .unwrap();
+        let marker = r.join("filter-ran");
+        if repository_filter {
+            git_out(
+                r,
+                &[
+                    "config",
+                    "filter.evil.clean",
+                    &format!("sh -c 'touch {}; cat'", marker.display()),
+                ],
+            );
+        }
+        std::fs::write(r.join("noeol.txt"), b"a\nc\nreviewed as cleaned\n").unwrap();
+        let mut opts = options(false);
+        opts.env.extend(
+            [
+                ("GIT_CONFIG_COUNT", "1"),
+                ("GIT_CONFIG_KEY_0", "filter.user.clean"),
+                ("GIT_CONFIG_VALUE_0", "tr a-z A-Z"),
+            ]
+            .map(|(k, v)| (OsString::from(k), OsString::from(v))),
+        );
+        let acq = acquire_git(r, &GitSelection::WorkingTree, &opts).unwrap();
+        assert!(!marker.exists(), "a repository-local filter ran");
+        let noeol = String::from_utf8_lossy(acq.diff().change_patch(find(&acq, "noeol.txt")));
+        assert!(noeol.contains("+REVIEWED AS CLEANED"), "{noeol}");
+    }
+}
+
+/// A caller count Git reads but DDF cannot (`strtoul` takes a leading space) is refused rather
+/// than guessed: numbering from 0 would replace the caller's entries.
+#[test]
+fn an_unreadable_caller_git_config_count_is_refused() {
+    let fx = fixture("caller-count");
+    let mut opts = options(false);
+    opts.env.extend(
+        [
+            ("GIT_CONFIG_COUNT", " 1"),
+            ("GIT_CONFIG_KEY_0", "core.abbrev"),
+            ("GIT_CONFIG_VALUE_0", "12"),
+        ]
+        .map(|(k, v)| (OsString::from(k), OsString::from(v))),
+    );
+    assert!(matches!(
+        acquire_git(&fx.root, &GitSelection::WorkingTree, &opts),
+        Err(GitAcquireError::InvalidSelection { detail }) if detail.contains("GIT_CONFIG_COUNT")
+    ));
+}
+
 /// The user's own (global and system) configuration is trusted for content filters and nothing
 /// else. A filter defined there, such as Git LFS, runs: its clean output is what the repository
 /// stores, so it is what the change is. Every other program those scopes name (fsmonitor, an

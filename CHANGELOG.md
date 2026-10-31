@@ -43,6 +43,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   configuration, such as Git LFS, stay on by decision (SECURITY.md); a test with planted global
   and system files proves that nothing else they name (fsmonitor, external diff, textconv, a
   diff driver command, set directly or through `include.path`/`includeIf`) runs.
+- **A repository filter whose name is not UTF-8 is turned off too.** The name was decoded
+  lossily (`\xff` became U+FFFD) before DDF named it to Git, and Git matches a subsection name
+  byte for byte, so the override named another filter and the repository's own ran. Names now
+  reach Git as raw bytes; off Unix, a name that cannot is refused (`InvalidSelection`).
+- **The caller's `GIT_CONFIG_COUNT`/`KEY`/`VALUE` configuration is kept.** DDF numbered its
+  filter overrides from 0 and set the count, which replaced the caller's own entries (all of them
+  when the repository defined no filter). They are now numbered after the caller's count (from
+  `GitAcquireOptions::env`, else inherited); a count Git reads but DDF does not (a leading
+  space) is refused as `InvalidSelection`.
 - **Every release binary is run before it ships.** The x86_64 macOS binary was cross-built and
   only checksummed; the release smoke now runs it under Rosetta 2 (installed if missing) after
   checking it is x86_64. A test fails if any release target is built without being run.

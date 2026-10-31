@@ -35,12 +35,14 @@
 //!
 //! A content filter (`filter.<name>.clean`, `smudge`, `process`) defined in the
 //! repository's own configuration (`local` or `worktree` scope, with their
-//! includes) is turned off: the repository chooses which files a filter gets,
-//! and must not also choose the program. A filter from a protected scope
-//! (`global`, `system`, `command`), such as Git LFS, is the user's own and runs,
-//! so the capture is what the repository would store. No scope can turn on
-//! fsmonitor, hooks, an external diff, textconv or a transport: those are
-//! overridden on the command line, which takes precedence over every file.
+//! includes) is turned off, byte for byte by name: the repository chooses which
+//! files a filter gets, and must not also choose the program. A filter from a
+//! protected scope (`global`, `system`, `command`: `-c` and the caller's
+//! `GIT_CONFIG_COUNT`/`KEY`/`VALUE`, which DDF's own entries are numbered after),
+//! such as Git LFS, is the user's own and runs, so the capture is what the
+//! repository would store. No scope can turn on fsmonitor, hooks, an external
+//! diff, textconv or a transport: those are overridden on the command line,
+//! which takes precedence over every file.
 
 use crate::git_raw::{GitAcquireError, GitChangeKind, GitChangeOrigin, GitPath, StructuredDiff};
 use std::ffi::{OsStr, OsString};
@@ -235,10 +237,14 @@ struct Runner<'a> {
 /// defines (`filter.<name>.clean`, `smudge`, `process`), as `GIT_CONFIG_*` variables. A filter
 /// is a program Git runs on file content: one set in `.git/config` and named in `.gitattributes`
 /// ran during working-tree acquisition, so reviewing a repository someone handed you ran their
-/// code (bug hunt 2026-10-28, H2-01).
-fn neutral_filters(names: &[String]) -> Vec<(OsString, OsString)> {
+/// code (bug hunt 2026-10-28, H2-01). The entries are numbered from `first`, after the caller's
+/// own (see [`caller_config_count`]), so they add to the caller's configuration, not replace it.
+fn neutral_filters(
+    names: &[Vec<u8>],
+    first: usize,
+) -> Result<Vec<(OsString, OsString)>, GitAcquireError> {
     let mut env = Vec::new();
-    let mut count = 0usize;
+    let mut count = first;
     for name in names {
         for (key, value) in [
             ("clean", ""),
@@ -248,7 +254,7 @@ fn neutral_filters(names: &[String]) -> Vec<(OsString, OsString)> {
         ] {
             env.push((
                 OsString::from(format!("GIT_CONFIG_KEY_{count}")),
-                OsString::from(format!("filter.{name}.{key}")),
+                filter_key(name, key)?,
             ));
             env.push((
                 OsString::from(format!("GIT_CONFIG_VALUE_{count}")),
@@ -261,13 +267,69 @@ fn neutral_filters(names: &[String]) -> Vec<(OsString, OsString)> {
         OsString::from("GIT_CONFIG_COUNT"),
         OsString::from(count.to_string()),
     ));
-    env
+    Ok(env)
+}
+
+/// `filter.<name>.<key>` with the name's bytes as Git listed them. A subsection name is raw bytes
+/// matched exactly: a lossy decode turned `\xff` into U+FFFD, so the override named another
+/// filter and the repository's own still ran (review of 2026-10-31).
+#[cfg(unix)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the same signature as the off-Unix form, which can refuse"
+)]
+fn filter_key(name: &[u8], key: &str) -> Result<OsString, GitAcquireError> {
+    use std::os::unix::ffi::OsStringExt as _;
+    Ok(OsString::from_vec(
+        [b"filter.", name, b".", key.as_bytes()].concat(),
+    ))
+}
+
+#[cfg(not(unix))]
+use utf8_filter_key as filter_key;
+
+/// Off Unix an environment value is text, so a filter name that is not UTF-8 cannot be named
+/// exactly, and acquisition is refused rather than leaving that filter on. Unix test builds
+/// compile it too, so its tests run on Unix CI.
+#[cfg(any(not(unix), test))]
+fn utf8_filter_key(name: &[u8], key: &str) -> Result<OsString, GitAcquireError> {
+    let name = std::str::from_utf8(name).map_err(|_| GitAcquireError::InvalidSelection {
+        detail: "a repository filter name is not representable on this platform".to_owned(),
+    })?;
+    Ok(OsString::from(format!("filter.{name}.{key}")))
+}
+
+/// How many `GIT_CONFIG_KEY_<n>` entries the caller already passes: the `GIT_CONFIG_COUNT` in
+/// [`GitAcquireOptions::env`], else the inherited one, else none. DDF's entries are numbered
+/// after them; before, they started at 0 and replaced the caller's. A count Git reads but this
+/// does not (Git's `strtoul` takes leading white space) is refused rather than guessed.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the git-config-count door: DDF's GIT_CONFIG_* entries follow the caller's own"
+)]
+fn caller_config_count(options: &GitAcquireOptions) -> Result<usize, GitAcquireError> {
+    let count = options
+        .env
+        .iter()
+        .rev()
+        .find(|(name, _)| name == "GIT_CONFIG_COUNT")
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var_os("GIT_CONFIG_COUNT"));
+    match count.as_ref().map(|count| count.to_str()) {
+        None | Some(Some("")) => Ok(0),
+        Some(text) => text.and_then(|text| text.parse().ok()).ok_or_else(|| {
+            GitAcquireError::InvalidSelection {
+                detail: format!("GIT_CONFIG_COUNT is not a plain count: {count:?}"),
+            }
+        }),
+    }
 }
 
 /// The scopes Git calls protected (git-config(1), "Protected configuration"): the user's global
-/// file, the system file, and the command line or `GIT_CONFIG_*` environment. Whoever can write
-/// them can already run code as the user without Git, so a filter they define is the user's own
-/// program, and its clean output (a Git LFS pointer, say) is what the repository stores.
+/// file, the system file, and the command line or `GIT_CONFIG_*` environment (kept: see
+/// [`caller_config_count`]). Whoever can write them can already run code as the user without
+/// Git, so a filter they define is the user's own program, and its clean output (a Git LFS
+/// pointer, say) is what the repository stores.
 const PROTECTED_SCOPES: &[&[u8]] = &[b"system", b"global", b"command"];
 
 /// [`neutral_filters`] for every filter defined in any scope that is not protected: the
@@ -280,6 +342,7 @@ fn repository_filters_off(
     root: &Path,
     deadline: std::time::Instant,
 ) -> Result<Vec<(OsString, OsString)>, GitAcquireError> {
+    let first = caller_config_count(options)?;
     let listing = Runner {
         options,
         cwd: root.to_path_buf(),
@@ -300,26 +363,23 @@ fn repository_filters_off(
         &[0, 1],
         1024 * 1024,
     )?;
-    Ok(neutral_filters(&unprotected_filter_names(&listing)))
+    neutral_filters(&unprotected_filter_names(&listing), first)
 }
 
-/// The filter names in `git config --show-scope --null --name-only` output (`<scope>\0<key>\0`
-/// pairs, keys `filter.<name>.<key>`) that any unprotected scope defines.
-fn unprotected_filter_names(listing: &[u8]) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
+/// The filter names, as raw bytes, in `git config --show-scope --null --name-only` output
+/// (`<scope>\0<key>\0` pairs, keys `filter.<name>.<key>`) that any unprotected scope defines.
+fn unprotected_filter_names(listing: &[u8]) -> Vec<Vec<u8>> {
+    let mut names: Vec<Vec<u8>> = Vec::new();
     let mut records = listing.split(|&b| b == 0);
     while let (Some(scope), Some(record)) = (records.next(), records.next()) {
         if PROTECTED_SCOPES.contains(&scope) {
             continue;
         }
-        let key = String::from_utf8_lossy(record);
-        if let Some(name) = key
-            .strip_prefix("filter.")
-            .and_then(|rest| rest.rsplit_once('.'))
-            .map(|(name, _)| name.to_owned())
-            && !names.contains(&name)
+        if let Some(rest) = record.strip_prefix(b"filter.")
+            && let Some(dot) = rest.iter().rposition(|&b| b == b'.')
+            && !names.iter().any(|name| name[..] == rest[..dot])
         {
-            names.push(name);
+            names.push(rest[..dot].to_vec());
         }
     }
     names
@@ -752,9 +812,33 @@ mod tests {
     fn only_filters_from_unprotected_scopes_are_turned_off() {
         let listing = b"system\0filter.sys.clean\0global\0filter.lfs.process\0\
             command\0filter.cmd.smudge\0local\0filter.a.b.clean\0worktree\0filter.wt.smudge\0\
-            local\0filter.a.b.process\0future\0filter.new.clean\0global\0filter.wt.clean\0";
-        assert_eq!(unprotected_filter_names(listing), ["a.b", "wt", "new"]);
-        assert_eq!(unprotected_filter_names(b""), Vec::<String>::new());
+            local\0filter.a.b.process\0future\0filter.new.clean\0global\0filter.wt.clean\0\
+            worktree\0filter.\xff.clean\0local\0core.bare\0";
+        assert_eq!(
+            unprotected_filter_names(listing),
+            [&b"a.b"[..], b"wt", b"new", b"\xff"]
+        );
+        assert_eq!(unprotected_filter_names(b""), Vec::<Vec<u8>>::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn filter_names_reach_git_byte_for_byte_or_not_at_all() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let env = neutral_filters(&[b"\xff".to_vec()], 2).unwrap();
+        assert_eq!(env.len(), 9);
+        assert_eq!(env[0].0, "GIT_CONFIG_KEY_2");
+        assert_eq!(env[0].1.as_bytes(), b"filter.\xff.clean");
+        assert_eq!(env[7], ("GIT_CONFIG_VALUE_5".into(), "false".into()));
+        assert_eq!(env[8], ("GIT_CONFIG_COUNT".into(), "6".into()));
+        assert_eq!(
+            utf8_filter_key(b"lfs", "clean"),
+            Ok(OsString::from("filter.lfs.clean"))
+        );
+        assert!(matches!(
+            utf8_filter_key(b"\xff", "clean"),
+            Err(GitAcquireError::InvalidSelection { .. })
+        ));
     }
 
     #[test]

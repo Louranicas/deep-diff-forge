@@ -348,14 +348,19 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
   scope Git does not call protected: `local` (`.git/config`), `worktree` (`config.worktree`,
   read once `extensions.worktreeConfig` is set) and whatever they include. Before 2026-10-31 only
   `.git/config` was listed, so a filter in `config.worktree` still ran and its output was reviewed
-  in place of the file (`a_repository_worktree_config_filter_never_runs`).
+  in place of the file (`a_repository_worktree_config_filter_never_runs`). A filter is named to
+  Git by its exact bytes: a name that is not UTF-8 was decoded lossily, which named another
+  filter and left the repository's own on (`a_repository_filter_with_a_non_utf8_name_never_runs`);
+  off Unix, where that name cannot be passed exactly, acquisition is refused.
 - **The user's own Git configuration is trusted for filters only (decided 2026-10-31).** Filters
   from Git's protected scopes (global `~/.gitconfig` or `$XDG_CONFIG_HOME/git/config`, system
-  `/etc/gitconfig`, `-c` and `GIT_CONFIG_*`) stay on. Whoever can write those files already runs
-  code as the user without Git (the same-account boundary above, and Git's own model in
-  git-config(1), "Protected configuration"), and a filter there such as Git LFS defines what the
-  repository stores: turning it off would show an LFS file's raw bytes against its committed
-  pointer, a change `git add` would never record. A hostile repository can still choose, through
+  `/etc/gitconfig`, `-c` and the caller's `GIT_CONFIG_COUNT`/`KEY`/`VALUE`, which DDF's own
+  entries are numbered after rather than replacing; `a_caller_git_config_env_filter_still_runs`)
+  stay on. Whoever can write those files already runs code as the user without Git (the
+  same-account boundary above, and Git's own model in git-config(1), "Protected
+  configuration"), and a filter there such as Git LFS defines what the repository stores:
+  turning it off would show an LFS file's raw bytes against its committed pointer, a change
+  `git add` would never record. A hostile repository can still choose, through
   `.gitattributes`, which of the user's filters reads which file, as any `git status` in it
   would. Nothing else in any scope runs: fsmonitor, the hooks path, an external diff, a diff
   driver's `textconv` or `command`, and transports are overridden on the command line or by flag,
