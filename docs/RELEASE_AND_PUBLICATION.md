@@ -100,10 +100,11 @@ Release assets uploaded on a tag run:
 
 ```text
 deep-diff-forge-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
+deep-diff-forge-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz   (from the release after v0.5.0)
 deep-diff-forge-vX.Y.Z-x86_64-apple-darwin.tar.gz
 deep-diff-forge-vX.Y.Z-aarch64-apple-darwin.tar.gz
 *.tar.gz.sha256 (one per archive)
-sbom.spdx.json (from the Linux build)
+sbom.spdx.json (from the x86_64 Linux build)
 ```
 
 Each archive holds one directory with the `deep-diff-forge` binary,
@@ -125,15 +126,17 @@ Toolchain pinned to 1.99.1 except where noted.
 | `secrets` (secret scan (gitleaks)) | ubuntu-26.04 | every trigger | gitleaks 8.30.1, SHA-256-pinned, over full history. |
 | `msrv` (declared Rust 1.88 compatibility) | ubuntu-26.04 | every trigger | `cargo check --workspace --all-targets --locked` on 1.88.0. |
 | `macos` (macOS tests) | macos-latest | every trigger (each pull request since 2026-10-30) | `cargo test --workspace --locked --no-fail-fast`. |
+| `linux-arm64` (Linux arm64 tests) | ubuntu-24.04-arm | every trigger (since 2026-10-31) | `cargo test --workspace --locked --no-fail-fast`, then `scripts/check_glibc_floor.sh` on the debug binary. Not required. |
+| `launchd` (macOS launchd agent) | macos-latest | every trigger (since 2026-10-31) | Builds the CLI and runs `scripts/launchd_smoke.sh`: the `contrib/launchd` agent, pointed at the built binary, is bootstrapped into `gui/<uid>` (or `user/<uid>`), answers `daemon health` with launchd's pid, is restarted after SIGKILL, is not restarted after `daemon stop` (socket gone), and is unloaded by `launchctl bootout`. Not required. |
 | `gate` (deploy gate-feature) | ubuntu-26.04 | every trigger | Review-policy check and selftest, exemption-oracle tests, fmt, check, clippy `-D warnings`, pedantic (workspace, patch without default features, fuzz crate), tests, rustdoc `-D warnings`, contract probes, `deploy status --json`, fuzz-harness compile, soak leak-check and bench-comparison regression tests (`scripts/security/test_daemon_soak.py`, `scripts/test_bench_compare.py`), 10 s hostile daemon soak, privacy probes, Python SDK against the built binary. |
 | `review-controller-evidence` (review controller mutation and fuzz evidence) | ubuntu-26.04 | every trigger | Scoped cargo-mutants of the review controller; 10 s instrumented fuzz smoke for every target in `fuzz/Cargo.toml` (`scripts/fuzz_target.sh --list`) (`nightly-2026-10-25`; fails if a declared target is not run); builds the council gate image and runs the rootless-Podman planted-breach suite (`council_sandbox`, 12 probes). |
 | `bench` (bench (base vs head)) | ubuntu-26.04 | `pull_request` only | Builds the merge base and the head in release mode, runs `bench --quick --json` alternately three times, and compares the best medians with `scripts/bench_compare.py`. Required since 2026-10-31 (owner decision). |
 | `diff-mutation` (diff mutation (shard k/4)) | ubuntu-26.04 | `pull_request` only | `scripts/diff_mutation.sh origin/$BASE_REF k/4`: cargo-mutants 27.1.0 on the PR's changed Rust lines under `crates/`; a missed mutant or timeout fails. |
 | `supply-chain` (supply chain audit) | ubuntu-26.04 | every trigger | cargo-deny (root and fuzz), `cargo audit --deny warnings` (root and fuzz lockfiles), SPDX SBOM regenerated and compared with the committed one. |
 
-On a pull request eleven checks run (`secrets`, `msrv`, `macos`, `gate`,
-`review-controller-evidence`, four `diff-mutation` shards, `supply-chain`, `bench`); all eleven
-are ruleset 25868121's required checks (`bench` added on 2026-10-31; measured with `gh api`; the ruleset lives in GitHub settings, not in the repository).
+On a pull request thirteen checks run (`secrets`, `msrv`, `macos`, `linux-arm64`, `launchd`,
+`gate`, `review-controller-evidence`, four `diff-mutation` shards, `supply-chain`, `bench`); eleven
+of them, all but `linux-arm64` and `launchd`, are ruleset 25868121's required checks (`bench` added on 2026-10-31; measured with `gh api`; the ruleset lives in GitHub settings, not in the repository).
 
 ### `release.yml`
 
@@ -144,11 +147,15 @@ permission `contents: read`; only `build` elevates.
 | --- | --- | --- |
 | `quality` | (calls `ci.yml`) | The full CI workflow. On a tag push its event is `push`, so `diff-mutation` is skipped; `macos` runs. |
 | `supply-chain` (supply chain gate) | ubuntu-26.04 | cargo-deny and cargo-audit as in CI; on a tag, refuses a tag that is not `v` + the workspace version. |
-| `build` (build &lt;target&gt;) | ubuntu-24.04 (Linux), macos-latest (both macOS) | Needs `quality` and `supply-chain`. `cargo build --release --locked -p deep-diff-forge-cli` for `x86_64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. Every binary is run (smoke): `--version` must equal the workspace version and `--stdin-patch --json` must produce a review document; the x86_64 macOS binary is cross-built and run under Rosetta 2 (`run_under: arch -x86_64`, installed if missing), after `file` confirms it is x86_64. Packages, writes and re-verifies the `.sha256`. On a pushed `v*` tag only (never a dispatch, even from a tag): build-provenance attestation for archives, checksums and SBOM, and upload to the GitHub Release. |
+| `build` (build &lt;target&gt;) | ubuntu-24.04 (x86_64 Linux), ubuntu-24.04-arm (arm64 Linux), macos-latest (both macOS) | Needs `quality` and `supply-chain`. `cargo build --release --locked -p deep-diff-forge-cli` for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. Every binary is run (smoke): `--version` must equal the workspace version and `--stdin-patch --json` must produce a review document; a Linux binary must need no `GLIBC_` version newer than the floor (`scripts/check_glibc_floor.sh`, glibc 2.34); the x86_64 macOS binary is cross-built and run under Rosetta 2 (`run_under: arch -x86_64`, installed if missing), after `file` confirms it is x86_64. Packages, writes and re-verifies the `.sha256`. On a pushed `v*` tag only (never a dispatch, even from a tag): build-provenance attestation for archives, checksums and SBOM, and upload to the GitHub Release. |
 | `publish` (crates.io publish (owner-gated)) | ubuntu-26.04 | Runs only on a pushed `v*` tag (never a dispatch) **and** when `vars.DDF_CRATES_IO == 'open'`. Runs in the `release` environment (deployment policy: `v*` tags only). Publishes the 14 crates in dependency order, skipping crates already live and retrying crates.io's rate limit; fails if `CARGO_REGISTRY_TOKEN` is unset, since the owner opened the gate. |
 
-The Linux binary is built on ubuntu-24.04 on purpose: it links against the
-build image's glibc, and a 26.04 build would not run on 24.04-era systems.
+The Linux binaries are built on ubuntu-24.04 (and its arm64 image) on purpose: they link
+against the build image's glibc, and a 26.04 build would not run on 24.04-era systems. Their
+declared floor is glibc 2.34 (measured on the v0.5.0 x86_64 binary; on glibc 2.34 to 2.38 the
+loader prints one stderr warning per run, see
+[supported platforms](../README.md#supported-platforms)). musl is not built: the tree-sitter C
+code needs a musl C toolchain and nothing would test the result.
 
 ```mermaid
 flowchart TD

@@ -84,6 +84,47 @@ jobs:
       - name: test on macOS
         run: cargo test --workspace --locked --no-fail-fast
 
+  # Linux arm64 binaries ship from release.yml (since 2026-10-31, built and run on
+  # ubuntu-24.04-arm, the image the release builds on), so the suite runs there on every event
+  # too. Not a required check (the required set lives in a GitHub ruleset).
+  linux-arm64:
+    name: Linux arm64 tests
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.1
+      - name: test on Linux arm64
+        run: cargo test --workspace --locked --no-fail-fast
+      # The release smoke checks the shipped (release) binary; this is the early warning on the
+      # debug binary the tests built.
+      - name: glibc floor of the arm64 binary
+        run: scripts/check_glibc_floor.sh target/debug/deep-diff-forge
+
+  # The launchd agent in contrib/ loaded by a real launchd: bootstrap, `daemon health`, restart
+  # after a crash, no restart after `daemon stop`, bootout (scripts/launchd_smoke.sh). Its own
+  # job, so the required `macOS tests` check does not depend on it. Not a required check.
+  launchd:
+    name: macOS launchd agent
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.1
+      - name: build the CLI
+        run: cargo build --locked -p deep-diff-forge-cli
+      - name: load the launchd agent and check its lifecycle
+        timeout-minutes: 5
+        run: scripts/launchd_smoke.sh target/debug/deep-diff-forge
+
   gate:
     name: deploy gate-feature
     runs-on: ubuntu-26.04

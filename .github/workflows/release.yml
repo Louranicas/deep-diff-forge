@@ -81,14 +81,18 @@ jobs:
       matrix:
         # Unix-only: the daemon is built on Unix domain sockets, so the CLI does
         # not compile on Windows (the crate emits a clear compile_error there).
-        # Targets are Linux + macOS to match the code's platform contract.
+        # The exact supported targets are these four (README.md#supported-platforms); musl is
+        # not built.
         include:
-          # The Linux binary stays on the older LTS on purpose: a binary links against the
+          # The Linux binaries stay on the older LTS on purpose: a binary links against the
           # glibc of the image that built it, so building on 26.04 would stop it running on
-          # 24.04-era distributions (decision of the Ubuntu 26 move, 2026-10-27).
-          # Every binary is run before it ships: macos-latest is arm64, so the x86_64 macOS
+          # 24.04-era distributions (decision of the Ubuntu 26 move, 2026-10-27). The smoke
+          # holds them to the declared glibc floor (scripts/check_glibc_floor.sh).
+          # Every binary is run before it ships: the arm64 Linux one natively on GitHub's arm64
+          # runner (free for public repositories); macos-latest is arm64, so the x86_64 macOS
           # binary is cross-built and run under Rosetta 2 (`run_under`).
           - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, run_under: "" }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, run_under: "" }
           - { os: macos-latest, target: x86_64-apple-darwin, run_under: "arch -x86_64" }
           - { os: macos-latest, target: aarch64-apple-darwin, run_under: "" }
     steps:
@@ -127,6 +131,9 @@ jobs:
           grep -q '"schema": "deep-diff-forge.review.v0"' smoke.json || {
             echo "::error::${bin} did not produce a review document"; exit 1
           }
+          case "${TARGET}" in
+            *-linux-gnu) scripts/check_glibc_floor.sh "${bin}" ;;
+          esac
       - name: generate SPDX SBOM (single canonical release artifact)
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: python3 scripts/security/generate_spdx_sbom.py

@@ -107,7 +107,8 @@ What the gates enforce, and what we ask in review:
    the change.
 
 Every pull request also runs the macOS job (`macOS tests`), so socket and platform changes are
-tested on macOS before they merge.
+tested on macOS before they merge. Two more platform jobs run on every pull request but are not
+required: `Linux arm64 tests` and `macOS launchd agent`.
 
 ## Licence
 

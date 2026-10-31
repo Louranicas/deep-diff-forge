@@ -36,8 +36,8 @@ Underneath sits one rule. The apply-able patch is truth, and nothing may rewrite
 </p>
 
 > **Status: 0.5.0 (2026-10-31).**
-> - **Ready** for its declared scope: a local, single-user review tool on Linux and macOS, covering the CLI, daemon, `rpc`, MCP and SDKs. The [verdict and its evidence](#project-status) are below.
-> - **Releases:** the latest release is [v0.5.0](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.5.0), with Linux and macOS binaries, an SPDX SBOM and build provenance.
+> - **Ready** for its declared scope: a local, single-user review tool on Linux and macOS ([the exact targets](#supported-platforms)), covering the CLI, daemon, `rpc`, MCP and SDKs. The [verdict and its evidence](#project-status) are below.
+> - **Releases:** the latest release is [v0.5.0](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.5.0), with x86_64 Linux and macOS binaries, an SPDX SBOM and build provenance.
 > - **crates.io:** publication is on hold by decision until the codebase is fully production-hardened.
 
 <p align="center">
@@ -179,7 +179,8 @@ Each fails with exit 4. None is quietly turned into a plausible-looking model.
 ## Install
 
 **Prebuilt binaries** (latest release: v0.5.0) for Linux x86_64 and macOS (Apple silicon and
-Intel) are on the [releases page](https://github.com/Louranicas/deep-diff-forge/releases).
+Intel) are on the [releases page](https://github.com/Louranicas/deep-diff-forge/releases); an
+arm64 Linux binary ships from the next release ([supported platforms](#supported-platforms)).
 Each archive has a `.sha256` file, and the release carries an SPDX SBOM:
 
 ```bash
@@ -197,6 +198,37 @@ cargo build --release --locked -p deep-diff-forge-cli
 target/release/deep-diff-forge --version        # deep-diff-forge 0.5.0
 target/release/deep-diff-forge --self-test
 ```
+
+### Supported platforms
+
+These four release targets are the whole platform scope. Each is built by `release.yml` and its
+binary is run (`--version` and a review) before it ships.
+
+| Target | Built and run on | Needs | Tests on every pull request |
+| --- | --- | --- | --- |
+| `x86_64-unknown-linux-gnu` | `ubuntu-24.04` | glibc 2.34 or newer | the whole suite (`deploy gate-feature`, required) |
+| `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm`, natively | glibc 2.34 or newer | the whole suite (`Linux arm64 tests`, not required) |
+| `aarch64-apple-darwin` | `macos-latest` (arm64) | macOS 11 or newer | the whole suite (`macOS tests`, required); the launchd agent (`macOS launchd agent`, not required) |
+| `x86_64-apple-darwin` | cross-built on `macos-latest`, run under Rosetta 2 | macOS 10.12 or newer | none (the release smoke only) |
+
+- **The glibc floor, glibc 2.34**, is enforced: `scripts/check_glibc_floor.sh` fails the release
+  smoke when a Linux binary requires a newer `GLIBC_` symbol version. Measured 2026-10-31: the
+  v0.5.0 x86_64 binary requires at most `GLIBC_2.34`; it ran a review on AlmaLinux 9 (glibc
+  2.34), Ubuntu 22.04 (2.35) and Debian 12 (2.36), and the loader refused it on Debian 11 (2.31).
+  The arm64 floor is inferred to be the same (one build image, one standard library) and is
+  checked by the same script on its first CI and release runs.
+- **On glibc 2.34 to 2.38 the loader prints one warning line to stderr per run**,
+  ``weak version `GLIBC_2.39' not found``. The output and exit code are unchanged (measured on the
+  three systems above). Rust's standard library references `pidfd_spawnp` and `pidfd_getpid`
+  (glibc 2.39) as optional symbols; glibc 2.39 or newer prints nothing. Building from source on
+  such a system also avoids it.
+- **macOS minimums** are the ones the v0.5.0 binaries declare (`LC_BUILD_VERSION` minos 11.0 for
+  arm64, `LC_VERSION_MIN_MACOSX` 10.12 for x86_64, read 2026-10-31). They are run only on the
+  runner's current macOS, not on those versions.
+- **Not supported:** musl (Alpine and other musl distributions) is neither built nor tested: the
+  syntax layer compiles C (tree-sitter), which needs a musl C toolchain, and nothing would run
+  the result. Windows is not supported (the daemon needs Unix domain sockets; the CLI does not
+  compile there). Other architectures and the BSDs are not built or tested.
 
 Optional shortcuts:
 
@@ -812,12 +844,13 @@ Across the tree:
 - **No `unsafe`.** It is forbidden in every crate.
 - **No production `unwrap` or `expect`.** No suppression goes unexplained.
 - **Pinned Actions.** Every GitHub Action is pinned to a commit SHA.
-- **Platforms.** A macOS job runs the whole suite on every pull request, every push to `main`,
-  weekly, on manual runs and in every release run.
+- **Platforms.** Jobs on macOS and on arm64 Linux run the whole suite on every pull request,
+  every push to `main`, weekly, on manual runs and in every release run, and a macOS job loads
+  the launchd agent into a real launchd ([supported platforms](#supported-platforms)).
 - **Campaigns.** Each week `campaign.yml` runs a 10-minute hostile daemon soak with real review
   work and leak checks (RSS and open-fd growth), and an hour of fuzzing for every fuzz target.
-- **Releases.** Each release builds three targets and runs every one (the x86_64 macOS binary
-  under Rosetta 2), verifies checksums, and attaches SLSA provenance and the SBOM. Release tags
+- **Releases.** Each release builds four targets (three up to v0.5.0) and runs every one (the
+  x86_64 macOS binary under Rosetta 2), holds the Linux ones to the glibc floor, verifies checksums, and attaches SLSA provenance and the SBOM. Release tags
   are immutable (a tag ruleset), and CodeQL analyses the code and workflows.
 - **Local replica.** `scripts/ci_local.sh` (`just ci`) runs the CI gate jobs locally.
 
@@ -869,8 +902,8 @@ per-round history. This section is a map, not a copy.
 ## Project status
 
 **0.5.0 is production-ready for its declared scope.** That scope is a local, single-user
-review tool on Linux and macOS: CLI, Unix-socket daemon, `rpc`, MCP and SDKs, released as
-GitHub binaries. A scored assessment (2026-10-30, [83/100](docs/PRODUCTION_READINESS.md)) named
+review tool on Linux and macOS ([the four targets](#supported-platforms)): CLI, Unix-socket
+daemon, `rpc`, MCP and SDKs, released as GitHub binaries. A scored assessment (2026-10-30, [83/100](docs/PRODUCTION_READINESS.md)) named
 the gaps that 0.4.0 closed: daemon requests run in parallel, the socket checks peer
 credentials, starts cannot race, `deploy doctor` exists, macOS runs on every pull request,
 and a weekly campaign soaks the daemon and fuzzes every target for an hour

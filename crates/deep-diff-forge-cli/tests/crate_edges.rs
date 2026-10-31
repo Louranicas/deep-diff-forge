@@ -258,15 +258,80 @@ fn release_publication_is_owner_gated_and_the_dry_run_publishes_nothing() {
         !smoke.contains("        if:"),
         "the smoke step must run for every target:\n{smoke}"
     );
-    let targets: Vec<&str> = build
+    let rows: Vec<&str> = build
         .lines()
         .filter(|line| line.trim_start().starts_with("- { os:"))
         .collect();
-    assert_eq!(targets.len(), 3, "the release matrix: {targets:?}");
-    for target in targets {
+    assert_eq!(
+        release_targets(&workflow),
+        RELEASE_TARGETS,
+        "the release matrix is the declared platform list: {rows:?}"
+    );
+    for row in rows {
         assert!(
-            target.contains("run_under:") && !target.contains("smoke:"),
-            "each target says how it is run: {target}"
+            row.contains("run_under:") && !row.contains("smoke:"),
+            "each target says how it is run: {row}"
+        );
+    }
+    // Every Linux binary is held to the declared glibc floor before it ships.
+    assert!(
+        smoke.contains("*-linux-gnu) scripts/check_glibc_floor.sh \"${bin}\" ;;"),
+        "the smoke step must check the glibc floor of every Linux target:\n{smoke}"
+    );
+}
+
+/// The supported platforms, exactly: what release.yml builds and runs, and what the docs declare.
+const RELEASE_TARGETS: [&str; 4] = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+];
+
+/// The `target:` of each `- { os: …, target: …, … }` row of a workflow, in order.
+fn release_targets(workflow: &str) -> Vec<&str> {
+    workflow
+        .lines()
+        .filter(|line| line.trim_start().starts_with("- { os:"))
+        .filter_map(|line| line.split("target: ").nth(1)?.split([',', ' ']).next())
+        .collect()
+}
+
+/// The places that declare the platform scope name every release target and the glibc floor
+/// that `scripts/check_glibc_floor.sh` enforces. Before 2026-10-31 they said "Linux and macOS",
+/// shipped no arm64 Linux binary and declared no glibc floor.
+#[test]
+fn the_declared_platforms_are_the_release_targets_and_the_glibc_floor() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let read = |path: &str| std::fs::read_to_string(format!("{root}/{path}")).unwrap();
+    let floor_script = read("scripts/check_glibc_floor.sh");
+    let floor = floor_script
+        .lines()
+        .find_map(|line| line.strip_prefix("FLOOR="))
+        .expect("a FLOOR= line");
+    assert!(
+        !floor.is_empty() && floor.split('.').all(|part| part.parse::<u32>().is_ok()),
+        "FLOOR={floor}"
+    );
+    for doc in [
+        "README.md",
+        "SECURITY.md",
+        "docs/RELEASE_AND_PUBLICATION.md",
+    ] {
+        let text = read(doc);
+        let missing: Vec<&str> = RELEASE_TARGETS
+            .iter()
+            .copied()
+            .filter(|target| !text.contains(target))
+            .collect();
+        assert!(missing.is_empty(), "{doc} does not name {missing:?}");
+        assert!(
+            text.contains(&format!("glibc {floor}")),
+            "{doc} does not declare the glibc floor (glibc {floor})"
+        );
+        assert!(
+            text.contains("musl"),
+            "{doc} does not say where musl stands"
         );
     }
 }
@@ -282,6 +347,8 @@ fn the_release_job_reader_sees_jobs_steps_and_conditions() {
     assert!(steps[0].contains("softprops") && !steps[0].contains("if:"));
     assert!(steps[1].contains("refs/tags/"));
     assert!(jobs[1].1.contains("cargo publish") && !jobs[0].1.contains("cargo publish"));
+    let matrix = "        include:\n          - { os: a, target: x-linux, run_under: \"\" }\n          - { os: b, target: y-darwin }\n            target: z\n";
+    assert_eq!(release_targets(matrix), ["x-linux", "y-darwin"]);
 }
 
 /// The block between the markers in docs/SCHEMATICS.md, as `table` renders it: one line per crate
