@@ -16,7 +16,9 @@ for.
   council work and the 2026-10-28 fixes listed under
   [Fixed on 2026-10-28](#fixed-on-2026-10-28).
 - Declared scope: a local, single-user review tool (CLI, daemon, `rpc`, `mcp`,
-  SDKs) on Linux and macOS, shipped as GitHub release binaries. Not claimed:
+  SDKs) on x86_64 GNU/Linux (glibc, built on Ubuntu 24.04) and macOS (arm64 and
+  x86_64), shipped as GitHub release binaries; every shipped binary is run in the
+  release smoke test, the x86_64 macOS one under Rosetta 2. Not claimed:
   crates.io packages, or a daemon shared between users on one host.
 - Known limits are listed under [Residual risks](#residual-risks-and-non-goals).
 
@@ -228,24 +230,31 @@ every gate ran as root inside the container. Gates refuse to run unless
   advisory waivers.
 - Tree-sitter crates, which execute native build scripts, are pinned exactly.
   The TUI disables unused default features.
-- GitHub Actions are pinned to full commit SHAs, use least-privilege job
+- GitHub Actions are pinned to full commit SHAs (a test,
+  `cli/tests/workflow_pins.rs`, fails on any other `uses:`), use least-privilege job
   permissions, do not persist checkout credentials, and have bounded run times.
 - `release.yml` runs on `v*` tags and on manual `workflow_dispatch`. A tag must
   exactly match the workspace version. Both runs repeat the full `ci.yml`
-  quality workflow and a supply-chain gate, build three targets, smoke the
-  binaries the runner can execute, and verify every archive's SHA-256. Only a
+  quality workflow and a supply-chain gate, build three targets, run every
+  binary (the x86_64 macOS one under Rosetta 2), and verify every archive's
+  SHA-256. A ruleset makes `v*` tags immutable: once pushed, a release tag
+  cannot be moved or deleted. Only a
   pushed `v*` tag attests, uploads and (when the owner opens it) publishes to
   crates.io; a dispatched run, from any ref including a tag, is a dry run that
   publishes nothing.
   See [`docs/RELEASE_AND_PUBLICATION.md`](docs/RELEASE_AND_PUBLICATION.md).
 - Release archives, checksums, and the generated SPDX SBOM receive GitHub build
   provenance attestations on tag runs. Dependabot monitors both Cargo graphs and
-  Actions.
+  Actions. CodeQL (`codeql.yml`, security-extended queries) analyses the Rust code
+  and the workflows on pull requests, on `main` and weekly; it is not yet a
+  required check.
 - crates.io publication is on hold by owner decision until the codebase is
   production-hardened. The `publish` job runs only on a tag and only when the
   repository variable `DDF_CRATES_IO` is `open`; a configured
-  `CARGO_REGISTRY_TOKEN` alone does not lift the hold. It would publish with
-  that repository secret; crates.io trusted publishing remains an account-level
+  `CARGO_REGISTRY_TOKEN` alone does not lift the hold. It runs in the `release`
+  environment, which only `v*` tags can deploy to, and an open gate without a
+  token fails the job instead of passing without publishing. It would publish
+  with that token; crates.io trusted publishing remains an account-level
   hardening step outside this repository. No crates.io release is recorded in
   [`EVIDENCE.md`](EVIDENCE.md) (not re-checked against crates.io in this
   refresh).

@@ -219,6 +219,16 @@ fn release_publication_is_owner_gated_and_the_dry_run_publishes_nothing() {
         publish.contains("    needs: build\n"),
         "publication must wait for the builds"
     );
+    assert!(
+        publish.contains("    environment: release\n"),
+        "the publish job must run in the `release` environment, which holds the token"
+    );
+    // An open gate without a token is a failed release, never a quiet success.
+    assert!(
+        publish.contains("::error::DDF_CRATES_IO is open but CARGO_REGISTRY_TOKEN is not set")
+            && !publish.contains("skipping crates.io publish"),
+        "a missing token must fail the publish job"
+    );
     for (name, body) in &jobs {
         for step in steps(body) {
             let outward = ["softprops/action-gh-release", "attest-build-provenance"]
@@ -239,6 +249,26 @@ fn release_publication_is_owner_gated_and_the_dry_run_publishes_nothing() {
             && build.contains("-c \"${dist}.tar.gz.sha256\""),
         "the build job must smoke the binary and verify the shipped checksum"
     );
+    // Every shipped binary is run: no target may be built and released unexecuted.
+    let smoke = steps(build)
+        .into_iter()
+        .find(|step| step.contains("name: smoke the release binary"))
+        .expect("a smoke step");
+    assert!(
+        !smoke.contains("        if:"),
+        "the smoke step must run for every target:\n{smoke}"
+    );
+    let targets: Vec<&str> = build
+        .lines()
+        .filter(|line| line.trim_start().starts_with("- { os:"))
+        .collect();
+    assert_eq!(targets.len(), 3, "the release matrix: {targets:?}");
+    for target in targets {
+        assert!(
+            target.contains("run_under:") && !target.contains("smoke:"),
+            "each target says how it is run: {target}"
+        );
+    }
 }
 
 #[test]

@@ -813,8 +813,9 @@ Across the tree:
   weekly, on manual runs and in every release run.
 - **Campaigns.** Each week `campaign.yml` runs a 10-minute hostile daemon soak with real review
   work and leak checks (RSS and open-fd growth), and an hour of fuzzing for every fuzz target.
-- **Releases.** Each release builds three targets, smoke-tests the two that run on the build
-  machine, verifies checksums, and attaches SLSA provenance and the SBOM.
+- **Releases.** Each release builds three targets and runs every one (the x86_64 macOS binary
+  under Rosetta 2), verifies checksums, and attaches SLSA provenance and the SBOM. Release tags
+  are immutable (a tag ruleset), and CodeQL analyses the code and workflows.
 - **Local replica.** `scripts/ci_local.sh` (`just ci`) runs the CI gate jobs locally.
 
 The engine is hardened against:
