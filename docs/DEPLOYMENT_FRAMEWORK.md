@@ -386,16 +386,10 @@ Implemented machine probe:
 deep-diff-forge --stdin-patch --json < fixtures/patch/basic.patch
 ```
 
-Future contract probes (not implemented; `ingest`, `chain`, `cluster` and
-`loom` are refused today as unknown commands, exit 2; the `*-contract` probes
-above describe their target contracts):
-
-```bash
-deep-diff-forge ingest --git --jsonl
-deep-diff-forge chain --manifest .deep-diff-forge/chain.toml
-deep-diff-forge cluster --git --dimensions patch,semantic,risk --parallel auto --json
-deep-diff-forge loom gate --plan docs/loom/current.json
-```
+`ingest` is not implemented (exit 2, unknown command). The `chain`, `cluster` and
+`loom` subcommands were withdrawn on 2026-10-31 and are refused with exit 2 and
+their replacement; `chain-contract` and `cluster-contract` list the shipped modes
+that serve instead, and `loom-contract` records the withdrawal.
 
 Acceptance:
 
