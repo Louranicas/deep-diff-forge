@@ -939,7 +939,12 @@ were then re-run with `--iterate --test-workspace true --timeout 300` (workspace
   other `lstat` error `create_dir_all` fails on the same path with the same kind. `daemon`
   `serve.rs:883:25` (`Interrupted` guard to `false`, inferred from the standard library's
   source): `UnixListener::accept` retries `EINTR` itself.
-- **Not done.** `review` (1,247 mutants) was run in crate scope only (below); its behaviour
-  is tested mostly from `cli`, so a useful pass needs workspace scope, several hours here.
+- **`review`, crate scope only.** 1,247 mutants in 12 min: 440 caught, 727 missed, 2 timeouts
+  (`mutation_scope.rs:412`, `code_lines`), 78 unviable. The misses are in `execution.rs` (200),
+  `storage.rs` (147), `journal.rs` (108), `tuicr.rs` (91), `cli.rs` (86), `mutation_scope.rs`
+  (40), `sandbox.rs` (39), `policy.rs` (14) and `model.rs` (2). The crate's behaviour is tested
+  mostly from `cli` (council, sandbox and journal suites), so this count is not its coverage.
+- **Not done.** `review` in workspace scope (its 729 survivors at about 3 min each, several
+  hours here).
   `cli`, `tui`, `learning`, `pipeline`, `projection`, `cluster` and `sdk` were not run. The
   ledger was not written: this pass is recorded here only.

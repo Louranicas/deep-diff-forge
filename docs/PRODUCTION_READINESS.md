@@ -494,5 +494,6 @@ recorded)" is narrowed, **measured** in [EVIDENCE](../EVIDENCE.md#whole-crate-mu
 `graph` and `agent` were run on 2026-10-31, and `core`, `patch`, `daemon` and `syntax` now.
 After 51 new tests, the misses left in those four are equivalent mutants or code compiled
 only off Unix. Still open: one `daemon` loop mutant reported as a timeout, `review` in
-workspace scope, and `cli`, `tui`, `learning`, `pipeline`, `projection`, `cluster` and `sdk`
-(**unmeasured**). The 120 historical misses stay in the ledger as history.
+workspace scope (727 crate-scope misses, unclassified), and `cli`, `tui`, `learning`,
+`pipeline`, `projection`, `cluster` and `sdk` (**unmeasured**). The 120 historical misses stay
+in the ledger as history.
