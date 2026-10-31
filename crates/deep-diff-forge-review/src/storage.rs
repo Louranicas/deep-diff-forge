@@ -549,6 +549,14 @@ pub fn prepare(mut request: Request, directory: &Path) -> Result<Manifest> {
         !directory.exists(),
         "run directory already exists; never overwrite a review",
     )?;
+    // Name the run absolutely from here on. Git runs inside the reviewed repository, so a relative
+    // snapshot path handed to it (the mutation scope's `hash-object --stdin-paths`) would name
+    // `<repository>/<run>/source`, which the candidate can plant, instead of the sealed copy.
+    let directory = &parent.join(
+        directory
+            .file_name()
+            .ok_or_else(|| ReviewFailure("run directory must end in a new name".into()))?,
+    );
     let inventory = inventory(&repository)?;
     let tree_before = fingerprint_tree(&repository, &inventory)?;
     let policy_bytes = POLICY.iter().map(|(_, text)| text.len()).sum::<usize>();

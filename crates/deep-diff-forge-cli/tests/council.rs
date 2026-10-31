@@ -773,6 +773,52 @@ fn prepare_with_mutation_base(f: &Fixture, setup: impl Fn(&Fixture)) -> Output {
     )
 }
 
+/// A relative run directory names the same sealed snapshot as an absolute one. Git hashes the
+/// snapshot from inside the reviewed repository, so a relative snapshot path once resolved there:
+/// with nothing at `<repository>/run/source` prepare failed, and an ignored copy planted there with
+/// the base bytes dropped the changed file from the sealed mutation scope.
+#[test]
+fn a_relative_run_directory_seals_the_snapshot_it_names() {
+    for planted in [false, true] {
+        let f = Fixture::new();
+        f.commit("y.rs", "fn old() {}\n");
+        let head = git(&f, &["rev-parse", "HEAD"]);
+        let mut spec: serde_json::Value =
+            serde_json::from_slice(&fs::read(&f.request).unwrap()).unwrap();
+        spec["mutation_base"] = head.into();
+        fs::write(&f.request, serde_json::to_vec(&spec).unwrap()).unwrap();
+        f.commit(".gitignore", "/run/\n");
+        f.commit("y.rs", "fn changed() {}\n");
+        if planted {
+            let planted = f.repository.join("run/source");
+            fs::create_dir_all(&planted).unwrap();
+            fs::write(planted.join("x.rs"), "fn b() {}\n").unwrap();
+            fs::write(planted.join("y.rs"), "fn old() {}\n").unwrap();
+            fs::write(planted.join(".gitignore"), "/run/\n").unwrap();
+        }
+        assert_eq!(f.root.join("run"), f.run);
+        let result = f
+            .command(&["prepare", f.request.to_str().unwrap(), "run"], "normal")
+            .current_dir(&f.root)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "planted={planted}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(f.run.join("source/y.rs")).unwrap(),
+            "fn changed() {}\n"
+        );
+        let sealed = fs::read_to_string(f.run.join("mutation.diff")).unwrap();
+        assert!(
+            sealed.contains("+++ b/y.rs\n@@ -1,1 +1,1 @@\n-fn old() {}\n+fn changed() {}\n"),
+            "planted={planted}: {sealed}"
+        );
+    }
+}
+
 #[test]
 fn index_flags_attributes_and_untracked_files_cannot_shrink_the_mutation_scope() {
     let f = Fixture::new();

@@ -156,6 +156,24 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   wall-clock deadline only against hangs. Measured: linear code passes under 64 busy loops
   (20 s wall), and the quadratic import rule it guards against (`eee2b4c^`) still fails at 66.7 s
   of CPU time. Shrinking the lines was rejected: at 20,000 units the quadratic rule took 0.4 s.
+- **A relative run directory no longer lets the candidate shrink the sealed mutation scope.**
+  `council prepare <request> run` with a `mutation_base` handed Git the snapshot as relative
+  `run/source/<path>` lines on `hash-object --stdin-paths`, and Git runs inside the reviewed
+  repository, so it hashed `<repository>/run/source/<path>` instead of the sealed copy. With
+  nothing there, prepare failed (exit 4, `Git acquisition command failed`); with an ignored copy
+  planted there holding a changed file's base bytes, the file matched its base blob and was left
+  out of `mutation.diff` and its sealed `mutation_diff_sha256` (measured: a changed `y.rs` dropped,
+  and with every changed file planted, an empty diff). `prepare` now names the run absolutely
+  (its canonical parent joined with its name) before anything is written.
+- **`council import-tuicr --execute` no longer writes a journal its own reader refuses.** Appends
+  checked only that the journal length was unchanged, never the 64 MiB cap `load_journal`
+  enforces, so imports of large comments (measured: three 22 MiB ones) took `decisions.jsonl` to
+  69,208,645 bytes, after which every import of the run, dry runs included, was refused until the
+  append-only journal was edited by hand. The planned events are now encoded and refused before
+  anything is written when they would pass the cap, in a dry run as in an execute (exit 4,
+  `tuicr import refused (journal): ... would pass its 67108864-byte cap; nothing was appended`).
+  A journal already over the cap is reported as a journal refusal, not as `tuicr export refused
+  (run): artifact exceeds acquisition budget`.
 
 ## [0.5.0] - 2026-10-31
 
