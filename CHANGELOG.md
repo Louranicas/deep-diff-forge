@@ -31,8 +31,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   - `scripts/bench_compare.py` compares receipts from one machine (best median per side; over
     25% and over 0.2 ms slower fails). A workload whose input changed is reported as not
     compared, and a malformed receipt exits 2.
-  - A `bench` job on every pull request runs the merge base against the head, informational for
-    now, and the weekly campaign keeps a full receipt.
+  - A `bench` job on every pull request runs the merge base against the head (a required check from
+    0.5.0, see Changed), and the weekly campaign keeps a full receipt.
 - **`deep-diff-forge eval [--corpus DIR] [--json]`** scores ranking pairs, evidence precision
   and recall, and findings verdicts against `fixtures/eval/MANIFEST.json`, a hashed and labelled
   corpus of 11 cases with documented known misses. It prints `deep-diff-forge.eval.v0`.

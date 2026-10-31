@@ -870,7 +870,9 @@ credentials, starts cannot race, `deploy doctor` exists, macOS runs on every pul
 and a weekly campaign soaks the daemon and fuzzes every target for an hour
 ([EVIDENCE.md](EVIDENCE.md#v040-release-readiness-2026-10-30)). 0.5.0 adds code evidence in
 risk ranking, verified agent findings, daemon metrics, and the `bench` and `eval` commands,
-and fixes DDF-EVID-001 ([EVIDENCE.md](EVIDENCE.md#v050-release-readiness-2026-10-31)). The evidence below was
+and fixes DDF-EVID-001 ([EVIDENCE.md](EVIDENCE.md#v050-release-readiness-2026-10-31)). Its
+assessment of 2026-10-31 scored 91 (self) and 81 (an independent rescore by Codex), reconciled
+at [86/100](docs/PRODUCTION_READINESS.md#reconciled-score-86--100), with the open items listed there. The evidence below was
 measured for `v0.3.0` on 2026-10-29 and still holds:
 
 - **Release dry run.** The release workflow passed at `478db26`: every quality gate including
