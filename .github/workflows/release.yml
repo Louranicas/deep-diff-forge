@@ -24,8 +24,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Every ci.yml job runs here and must pass before `build`, except those ci.yml skips on
+  # `release: true` (only `launchd`, until its smoke has a record on hosted runners).
   quality:
     uses: ./.github/workflows/ci.yml
+    with:
+      release: true
 
   # Supply-chain gate: a tag must not publish past a known advisory, a denied
   # license, or a yanked dependency. crates.io publication is irreversible, so

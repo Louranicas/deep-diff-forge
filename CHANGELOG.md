@@ -10,13 +10,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 - **An exact platform matrix.** The supported platforms are four release targets, listed in
   README.md#supported-platforms, SECURITY.md and RELEASE_AND_PUBLICATION.md, and
-  `cli/tests/crate_edges.rs` fails when the release matrix or those docs name another set:
+  `cli/tests/crate_edges.rs` fails when the release matrix or those docs name another set of
+  target triples, when a doc omits the glibc floor, or when a doc mentions musl without stating
+  it as unsupported:
   - **`aarch64-unknown-linux-gnu` is a release target**, built and run natively on GitHub's
     `ubuntu-24.04-arm` runner like the others (smoke, checksum, provenance). A `Linux arm64
-    tests` job runs the whole suite there on every event (not a required check). Both are
-    pending their first CI run.
+    tests` job runs the whole suite there on every event: not a required check on pull requests,
+    but it gates every release build through release.yml's `quality`, as `macOS tests` does.
+    Both are pending their first CI run.
   - **A declared and enforced glibc floor: 2.34.** `scripts/check_glibc_floor.sh` fails the
-    release smoke when a Linux binary needs a newer `GLIBC_` symbol version. Measured: the
+    release smoke when a Linux binary needs a newer `GLIBC_` symbol version; a Linux-only test in
+    `crate_edges.rs` runs it on the built binary (passes) and with a lowered floor (refused). Measured: the
     v0.5.0 x86_64 binary needs at most `GLIBC_2.34`, ran on glibc 2.34, 2.35 and 2.36, and was
     refused by the loader on 2.31. On glibc 2.34 to 2.38 the loader prints one stderr warning
     per run (``weak version `GLIBC_2.39' not found``, from optional symbols in Rust's standard
@@ -28,8 +32,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `scripts/launchd_smoke.sh`: the plist, pointed at the built binary, is bootstrapped into
   `gui/<uid>` (or `user/<uid>`), answers `daemon health` with launchd's pid, is restarted after
   SIGKILL, stays stopped after `daemon stop` with its socket gone, and is unloaded by `launchctl
-  bootout`; every wait is bounded. Not a required check; its first run on a hosted Mac is
-  pending CI (the flow was checked only against a fake `launchctl` on Linux).
+  bootout`; every wait is bounded. Not a required check, and skipped in release runs (release.yml
+  calls ci.yml with the new `release: true` input) so its unproven timed waits cannot block a
+  release build; its first run on a hosted Mac is pending CI (the flow was checked only against a
+  fake `launchctl` on Linux).
 - **The Python client is a package.** `sdk/python/pyproject.toml` (setuptools, no dependencies,
   Python 3.9+) installs `deep_diff_forge` as the package `deep-diff-forge`, from a checkout
   (`python3 -m pip install ./sdk/python`) or from GitHub with `#subdirectory=sdk/python`. It is

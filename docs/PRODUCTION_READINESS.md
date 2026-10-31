@@ -494,16 +494,19 @@ the score stays as reconciled until the next one.
 
 - **Stated** (measured, read): the scope is four targets, named in README.md#supported-platforms,
   `SECURITY.md` and `RELEASE_AND_PUBLICATION.md`; `cli/tests/crate_edges.rs` holds the release
-  matrix and those docs to the same list. musl, Windows, other architectures and the BSDs are
+  matrix and the target triples those docs name to the same list, and checks that each doc
+  names the glibc floor and states musl as unsupported. musl, Windows, other architectures and the BSDs are
   stated as unsupported.
 - **glibc floor 2.34** (measured on the v0.5.0 x86_64 binary: highest required version
   `GLIBC_2.34`; ran on AlmaLinux 9, Ubuntu 22.04 and Debian 12; refused on Debian 11). On glibc
   2.34 to 2.38 the loader prints one stderr warning per run (measured). Enforced by
   `scripts/check_glibc_floor.sh` in the release smoke.
 - **arm64 Linux**: a release target on `ubuntu-24.04-arm` and a `Linux arm64 tests` CI job
-  (inferred until their first runs; pending CI). Its glibc floor is inferred to equal x86_64's.
+  (inferred until their first runs; pending CI). The test job gates every release build through
+  `quality`. Its glibc floor is inferred to equal x86_64's.
 - **x86_64 macOS** runs in the release smoke under Rosetta 2 (since the 2026-10-31 release
   hardening); it has no test job.
 - **launchd**: the `macOS launchd agent` job loads the shipped plist into a hosted Mac's launchd
   and checks health, crash restart, no restart after `daemon stop`, and bootout (pending its
-  first CI run; the flow ran only against a fake `launchctl` on Linux).
+  first CI run; the flow ran only against a fake `launchctl` on Linux). Skipped in release runs
+  until it has a record on hosted runners.

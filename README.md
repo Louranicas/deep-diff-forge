@@ -207,8 +207,8 @@ binary is run (`--version` and a review) before it ships.
 | Target | Built and run on | Needs | Tests on every pull request |
 | --- | --- | --- | --- |
 | `x86_64-unknown-linux-gnu` | `ubuntu-24.04` | glibc 2.34 or newer | the whole suite (`deploy gate-feature`, required) |
-| `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm`, natively | glibc 2.34 or newer | the whole suite (`Linux arm64 tests`, not required) |
-| `aarch64-apple-darwin` | `macos-latest` (arm64) | macOS 11 or newer | the whole suite (`macOS tests`, required); the launchd agent (`macOS launchd agent`, not required) |
+| `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm`, natively | glibc 2.34 or newer | the whole suite (`Linux arm64 tests`, not required; gates releases) |
+| `aarch64-apple-darwin` | `macos-latest` (arm64) | macOS 11 or newer | the whole suite (`macOS tests`, required); the launchd agent (`macOS launchd agent`, not required; skipped in releases) |
 | `x86_64-apple-darwin` | cross-built on `macos-latest`, run under Rosetta 2 | macOS 10.12 or newer | none (the release smoke only) |
 
 - **The glibc floor, glibc 2.34**, is enforced: `scripts/check_glibc_floor.sh` fails the release
@@ -845,8 +845,9 @@ Across the tree:
 - **No production `unwrap` or `expect`.** No suppression goes unexplained.
 - **Pinned Actions.** Every GitHub Action is pinned to a commit SHA.
 - **Platforms.** Jobs on macOS and on arm64 Linux run the whole suite on every pull request,
-  every push to `main`, weekly, on manual runs and in every release run, and a macOS job loads
-  the launchd agent into a real launchd ([supported platforms](#supported-platforms)).
+  every push to `main`, weekly, on manual runs and in every release run (where both gate the
+  build), and outside release runs a macOS job loads the launchd agent into a real launchd
+  ([supported platforms](#supported-platforms)).
 - **Campaigns.** Each week `campaign.yml` runs a 10-minute hostile daemon soak with real review
   work and leak checks (RSS and open-fd growth), and an hour of fuzzing for every fuzz target.
 - **Releases.** Each release builds four targets (three up to v0.5.0) and runs every one (the

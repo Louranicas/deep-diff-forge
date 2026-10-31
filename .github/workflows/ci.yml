@@ -4,7 +4,13 @@
 name: ci
 
 on:
+  # release.yml calls this workflow as its `quality` gate and passes `release: true`.
   workflow_call:
+    inputs:
+      release:
+        description: "true when release.yml calls this as its quality gate"
+        type: boolean
+        default: false
   pull_request:
   push:
     branches: [main]
@@ -86,7 +92,8 @@ jobs:
 
   # Linux arm64 binaries ship from release.yml (since 2026-10-31, built and run on
   # ubuntu-24.04-arm, the image the release builds on), so the suite runs there on every event
-  # too. Not a required check (the required set lives in a GitHub ruleset).
+  # too. Not a required check on pull requests (the required set lives in a GitHub ruleset), but
+  # it gates every release build through release.yml's `quality`.
   linux-arm64:
     name: Linux arm64 tests
     runs-on: ubuntu-24.04-arm
@@ -107,9 +114,13 @@ jobs:
 
   # The launchd agent in contrib/ loaded by a real launchd: bootstrap, `daemon health`, restart
   # after a crash, no restart after `daemon stop`, bootout (scripts/launchd_smoke.sh). Its own
-  # job, so the required `macOS tests` check does not depend on it. Not a required check.
+  # job, so the required `macOS tests` check does not depend on it. Not a required check, and
+  # skipped in release runs: until the smoke has a record on hosted runners, its timed waits
+  # must not block a release build (release.yml passes `release: true`). `linux-arm64` is not
+  # skipped there: it tests a target that ships, as `macos` does.
   launchd:
     name: macOS launchd agent
+    if: ${{ !inputs.release }}
     runs-on: macos-latest
     timeout-minutes: 30
     steps:

@@ -264,7 +264,8 @@ daemon as the CLI does and gives a stop longer than `daemon stop` waits (`STOP_W
   daemon stop`, which drains; `launchctl bootout` sends SIGTERM, which does not, and leaves the
   socket file behind (no SIGTERM handler; the next start replaces a stale socket). Since
   2026-10-31 the `macOS launchd agent` job of `ci.yml` runs `scripts/launchd_smoke.sh` on a
-  hosted Mac: bootstrap into `gui/<uid>` (falling back to `user/<uid>`), `daemon health` with
+  hosted Mac (on every CI event except a release run, which skips it until it has a record):
+  bootstrap into `gui/<uid>` (falling back to `user/<uid>`), `daemon health` with
   launchd's pid, a restart after SIGKILL, no restart after `daemon stop` (socket gone), and
   `launchctl bootout` with no process left. Its first run on a real launchd was pending CI when
   it was added; the flow was exercised only against a fake `launchctl` on Linux (inferred).
