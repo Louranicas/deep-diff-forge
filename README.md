@@ -557,7 +557,10 @@ checks every answer's version, id and error shape.
 - **Ownership:** the SDK owns `Guards`, `Review` (opaque) and `Error` (`#[non_exhaustive]`). `ReviewFile`, `InputSeal` and `RankedFile` are model types and change only with the schema version.
 - **Stability:** `tests/api.rs` pins every public signature, so changing one is a deliberate breaking change.
 
-**Python:** `sdk/python/deep_diff_forge.py` uses only the standard library. It speaks the
+**Python:** `sdk/python/deep_diff_forge.py` uses only the standard library, and installs as the
+package `deep-diff-forge` (`python3 -m pip install ./sdk/python`, or from GitHub with
+`"deep-diff-forge @ git+https://github.com/Louranicas/deep-diff-forge@v0.5.0#subdirectory=sdk/python"`;
+not on PyPI). It drives the `deep-diff-forge` binary, which it does not ship. It speaks the
 daemon protocol over two transports with the same calls:
 
 - `deep-diff-forge rpc` over a pipe (`StdioClient`), which needs no daemon;

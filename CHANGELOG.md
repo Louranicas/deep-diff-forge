@@ -8,6 +8,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **The Python client is a package.** `sdk/python/pyproject.toml` (setuptools, no dependencies,
+  Python 3.9+) installs `deep_diff_forge` as the package `deep-diff-forge`, from a checkout
+  (`python3 -m pip install ./sdk/python`) or from GitHub with `#subdirectory=sdk/python`. It is
+  not on PyPI. `deep_diff_forge.__version__` exists, and `cli/tests/python_sdk.rs` keeps both
+  version strings equal to the workspace version.
 - **The daemon drains on stop.** After `daemon.shutdown` the socket is removed and the listener
   closed (queued connections are refused at once), and the requests in progress, counted from
   their first byte until their response is flushed, are answered before the process exits, for

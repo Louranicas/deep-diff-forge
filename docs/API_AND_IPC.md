@@ -288,7 +288,8 @@ require_files, require_hunks}`, the `exit` registry re-export, and, on Unix only
 (`Parse`, `Refused`, `Rpc`, `Transport`). `crates/deep-diff-forge-sdk/tests/api.rs`
 pins the public signatures.
 
-**Python (`sdk/python/deep_diff_forge.py`, standard library only):**
+**Python (`sdk/python/deep_diff_forge.py`, standard library only; installable with
+`python3 -m pip install ./sdk/python`, package `deep-diff-forge`, not on PyPI):**
 `StdioClient(command=("deep-diff-forge", "rpc"), timeout=30.0)` and
 `SocketClient(path, timeout=30.0)`, each with `call(method, **params)`,
 `review_patch(patch, require_files=False, require_hunks=False)` (`diff.compute`),
