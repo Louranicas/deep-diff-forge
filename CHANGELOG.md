@@ -34,6 +34,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `-`, 0 with it).
 ### Security
 
+- **A filter in a repository's `config.worktree` no longer runs during Git acquisition.**
+  Acquisition turned off only the filters `git config --local` lists, which does not read
+  `$GIT_DIR/config.worktree` (used once `extensions.worktreeConfig` is set), so a filter defined
+  there ran and its output was reviewed in place of the file. Acquisition now lists every scope
+  with `--show-scope` and turns off each filter any unprotected scope defines (local, worktree,
+  their includes, and any scope it does not know). Filters from the user's global and system
+  configuration, such as Git LFS, stay on by decision (SECURITY.md); a test with planted global
+  and system files proves that nothing else they name (fsmonitor, external diff, textconv, a
+  diff driver command, set directly or through `include.path`/`includeIf`) runs.
 - **Every release binary is run before it ships.** The x86_64 macOS binary was cross-built and
   only checksummed; the release smoke now runs it under Rosetta 2 (installed if missing) after
   checking it is x86_64. A test fails if any release target is built without being run.

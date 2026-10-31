@@ -30,8 +30,17 @@
 //! Repository-redirecting variables (`GIT_DIR`, `GIT_WORK_TREE`,
 //! `GIT_INDEX_FILE`, …) and diff-shaping ones (`GIT_EXTERNAL_DIFF`,
 //! `GIT_DIFF_OPTS`) are removed so the named repository is the one read.
-//! Repository-configured clean filters still run when Git reads working-tree
-//! files; that is Git's own trust model for the repository and is not altered.
+//!
+//! # Configuration trust
+//!
+//! A content filter (`filter.<name>.clean`, `smudge`, `process`) defined in the
+//! repository's own configuration (`local` or `worktree` scope, with their
+//! includes) is turned off: the repository chooses which files a filter gets,
+//! and must not also choose the program. A filter from a protected scope
+//! (`global`, `system`, `command`), such as Git LFS, is the user's own and runs,
+//! so the capture is what the repository would store. No scope can turn on
+//! fsmonitor, hooks, an external diff, textconv or a transport: those are
+//! overridden on the command line, which takes precedence over every file.
 
 use crate::git_raw::{GitAcquireError, GitChangeKind, GitChangeOrigin, GitPath, StructuredDiff};
 use std::ffi::{OsStr, OsString};
@@ -226,8 +235,7 @@ struct Runner<'a> {
 /// defines (`filter.<name>.clean`, `smudge`, `process`), as `GIT_CONFIG_*` variables. A filter
 /// is a program Git runs on file content: one set in `.git/config` and named in `.gitattributes`
 /// ran during working-tree acquisition, so reviewing a repository someone handed you ran their
-/// code (bug hunt 2026-10-28, H2-01). Filters from the user's global or system configuration,
-/// such as Git LFS, are the user's own and stay on.
+/// code (bug hunt 2026-10-28, H2-01).
 fn neutral_filters(names: &[String]) -> Vec<(OsString, OsString)> {
     let mut env = Vec::new();
     let mut count = 0usize;
@@ -256,9 +264,18 @@ fn neutral_filters(names: &[String]) -> Vec<(OsString, OsString)> {
     env
 }
 
-/// [`neutral_filters`] for every filter the repository's local configuration (with its includes)
-/// defines.
-fn local_filters_off(
+/// The scopes Git calls protected (git-config(1), "Protected configuration"): the user's global
+/// file, the system file, and the command line or `GIT_CONFIG_*` environment. Whoever can write
+/// them can already run code as the user without Git, so a filter they define is the user's own
+/// program, and its clean output (a Git LFS pointer, say) is what the repository stores.
+const PROTECTED_SCOPES: &[&[u8]] = &[b"system", b"global", b"command"];
+
+/// [`neutral_filters`] for every filter defined in any scope that is not protected: the
+/// repository's `local` configuration, its `worktree` configuration (`config.worktree`, read
+/// once `extensions.worktreeConfig` is set), whatever either includes, and any scope a later Git
+/// adds. Before, only `git config --local` was listed, which does not read `config.worktree`, so
+/// a filter there still ran.
+fn repository_filters_off(
     options: &GitAcquireOptions,
     root: &Path,
     deadline: std::time::Instant,
@@ -273,8 +290,8 @@ fn local_filters_off(
         "git config",
         &[
             OsStr::new("config"),
-            OsStr::new("--local"),
             OsStr::new("--includes"),
+            OsStr::new("--show-scope"),
             OsStr::new("--null"),
             OsStr::new("--name-only"),
             OsStr::new("--get-regexp"),
@@ -283,13 +300,18 @@ fn local_filters_off(
         &[0, 1],
         1024 * 1024,
     )?;
-    Ok(neutral_filters(&filter_names(&listing)))
+    Ok(neutral_filters(&unprotected_filter_names(&listing)))
 }
 
-/// The filter names in `git config --null --name-only` output (`filter.<name>.<key>` records).
-fn filter_names(listing: &[u8]) -> Vec<String> {
+/// The filter names in `git config --show-scope --null --name-only` output (`<scope>\0<key>\0`
+/// pairs, keys `filter.<name>.<key>`) that any unprotected scope defines.
+fn unprotected_filter_names(listing: &[u8]) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
-    for record in listing.split(|&b| b == 0 || b == b'\n') {
+    let mut records = listing.split(|&b| b == 0);
+    while let (Some(scope), Some(record)) = (records.next(), records.next()) {
+        if PROTECTED_SCOPES.contains(&scope) {
+            continue;
+        }
         let key = String::from_utf8_lossy(record);
         if let Some(name) = key
             .strip_prefix("filter.")
@@ -609,7 +631,7 @@ pub fn acquire(
         options,
         cwd: root.clone(),
         deadline,
-        config_env: local_filters_off(options, &root, deadline)?,
+        config_env: repository_filters_off(options, &root, deadline)?,
     };
     let head = || -> Result<String, GitAcquireError> {
         match runner.commit_id("HEAD")? {
@@ -725,6 +747,15 @@ fn capture_untracked(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_filters_from_unprotected_scopes_are_turned_off() {
+        let listing = b"system\0filter.sys.clean\0global\0filter.lfs.process\0\
+            command\0filter.cmd.smudge\0local\0filter.a.b.clean\0worktree\0filter.wt.smudge\0\
+            local\0filter.a.b.process\0future\0filter.new.clean\0global\0filter.wt.clean\0";
+        assert_eq!(unprotected_filter_names(listing), ["a.b", "wt", "new"]);
+        assert_eq!(unprotected_filter_names(b""), Vec::<String>::new());
+    }
 
     #[test]
     fn off_unix_paths_keep_utf8_and_decode_other_bytes_lossily() {

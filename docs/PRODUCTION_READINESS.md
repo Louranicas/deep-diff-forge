@@ -365,7 +365,7 @@ headings moved down a level.
 
 **Gaps**
 
-- **[Unmeasured]** Push protection, alert counts and GitHub security settings exist only as self-reported `gh api` results. No CodeQL/code-scanning workflow exists. Global/system Git filters remain trusted (`git_acquire.rs:225-230`), and third-party native/unsafe code is outside the first-party guarantee.
+- **[Unmeasured]** Push protection, alert counts and GitHub security settings exist only as self-reported `gh api` results. No CodeQL/code-scanning workflow exists. Global/system Git filters remain trusted (`git_acquire.rs:225-230`; kept by decision on 2026-10-31, see SECURITY.md, and repository `config.worktree` filters are now turned off too), and third-party native/unsafe code is outside the first-party guarantee.
 
 ##### 3. Supply chain and release integrity — 12 / 15
 

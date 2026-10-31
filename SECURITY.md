@@ -343,9 +343,27 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
   The flags are objective: no list of "instruction-like" words, so an unflagged line is not
   thereby safe.
 - **A repository's own filters never run.** Git acquisition turns off every content filter
-  (`clean`, `smudge`, `process`) that the repository's local configuration defines, so reviewing a
-  repository someone handed you cannot run their code through `.gitattributes`. Filters from the
-  user's global or system configuration stay on.
+  (`clean`, `smudge`, `process`) that the repository's own configuration defines, so reviewing a
+  repository someone handed you cannot run their code through `.gitattributes`. "Own" is every
+  scope Git does not call protected: `local` (`.git/config`), `worktree` (`config.worktree`,
+  read once `extensions.worktreeConfig` is set) and whatever they include. Before 2026-10-31 only
+  `.git/config` was listed, so a filter in `config.worktree` still ran and its output was reviewed
+  in place of the file (`a_repository_worktree_config_filter_never_runs`).
+- **The user's own Git configuration is trusted for filters only (decided 2026-10-31).** Filters
+  from Git's protected scopes (global `~/.gitconfig` or `$XDG_CONFIG_HOME/git/config`, system
+  `/etc/gitconfig`, `-c` and `GIT_CONFIG_*`) stay on. Whoever can write those files already runs
+  code as the user without Git (the same-account boundary above, and Git's own model in
+  git-config(1), "Protected configuration"), and a filter there such as Git LFS defines what the
+  repository stores: turning it off would show an LFS file's raw bytes against its committed
+  pointer, a change `git add` would never record. A hostile repository can still choose, through
+  `.gitattributes`, which of the user's filters reads which file, as any `git status` in it
+  would. Nothing else in any scope runs: fsmonitor, the hooks path, an external diff, a diff
+  driver's `textconv` or `command`, and transports are overridden on the command line or by flag,
+  which no configuration file outranks. Measured with planted global and system files, set
+  directly and through `include.path` and `includeIf`
+  (`protected_config_keeps_its_filters_and_runs_nothing_else`): only the user's filter ran and the
+  capture was byte for byte the one taken without the planted programs. The review of an LFS file
+  is a review of its pointer, not of the object it names.
 - **Repository reads are opt-in (`review.change`).** The daemon, `rpc` and `mcp`
   read Git only for a repository whose canonical path and Git top level are both
   under a root the operator named with `--allow-repo`, and so must its Git directory and common
