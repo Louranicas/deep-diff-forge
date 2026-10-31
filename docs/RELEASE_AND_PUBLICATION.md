@@ -77,7 +77,7 @@ checklist; neither has tooling yet.
 ## Tag And Push
 
 `main` reaches GitHub only through a merged pull request: the branch ruleset
-requires a PR, ten passing checks (the PR-time jobs of `ci.yml`), an
+requires a PR, eleven passing checks (the PR-time jobs of `ci.yml`), an
 up-to-date branch, and allows no bypass. The tag is cut from that commit with
 the `justfile` recipe:
 

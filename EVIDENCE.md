@@ -792,3 +792,49 @@ The release PR also makes the `bench` comparison a required check (renamed `benc
 head)`), so ruleset 25868121 requires eleven checks. Before this, the job had made one real
 comparison with 0 false failures. One run is a small sample (measured), so a false failure on
 a noisy runner remains possible (inferred); a rerun of the job is the first response.
+
+### v0.5.0 dry runs, tag and published release (2026-10-31)
+
+- **Dry run 1** 41129704309 (`workflow_dispatch` on `e1369a7`): failed. macOS tests:
+  `json_logs_are_one_object_per_line` panicked on a BrokenPipe from its own write. The daemon
+  had dropped a connection over its limit of 8, as designed, while a slow runner was still
+  computing earlier answers. The PR's own macOS run had passed. The test was fixed in
+  `5b75570` (DDF-TEST-002): a failed write skips that attempt, and each attempt waits up to
+  3 s for the log line. Measured locally, 12 copies pinned to one CPU pass 12 of 12.
+- **Dry run 2** 41137004116 (`workflow_dispatch` on `5b75570`): every quality gate including
+  macOS, all three builds; crates.io skipped as held.
+- **Merge.** PR #56 merged as `36bd5f3`, whose tree (`d521c19`) is identical to dry run 2's
+  commit. `just gate-release` passed on `36bd5f3` and left the tree clean.
+- **Tag** `v0.5.0` (annotated, unsigned, on `36bd5f3`) pushed to GitHub and GitLab.
+- **Release run** 41143246901 (`push` of `v0.5.0`): success. The GitHub release `v0.5.0` is
+  published (2026-10-31T00:02:49Z) and is the repository's latest release, with three
+  binaries, their `.sha256` files and `sbom.spdx.json`.
+- **Verified after download:** `sha256sum -c` OK for the x86_64 Linux archive;
+  `deep-diff-forge --version` prints `deep-diff-forge 0.5.0`; `gh attestation verify` passes
+  with one SLSA v1 provenance signed by `release.yml@refs/tags/v0.5.0`.
+- **Ruleset** 25868121 requires eleven checks from 2026-10-31: `bench (base vs head)` was
+  added after the merge (`gh api`; the previous ruleset JSON is kept outside the repository).
+
+### v0.5.0 weekly campaign at its declared durations (2026-10-31)
+
+Campaign run 41143303217 (`workflow_dispatch` of `campaign.yml` on `36bd5f3`, the `v0.5.0`
+commit, default inputs): success. It is the first run at the declared durations; the earlier
+run 40989103096 fuzzed 120 s per target.
+
+- **Daemon soak (long):** 600 s, `--require-growth-check`, verdict PASS.
+- **Bench (full):** every workload, 15 repetitions, release build; the receipt is kept as the
+  run's `bench-receipt` artifact.
+- **Fuzz:** each of the 10 targets in `fuzz/Cargo.toml` for 3,601 s, 0 crashes:
+
+| Target | Runs |
+| --- | ---: |
+| `stdio_rpc` | 6,487,749 |
+| `stdio_mcp` | 6,347,810 |
+| `evidence_scan` | 5,552,269 |
+| `agent_annotation` | 558,141,705 |
+| `findings_verify` | 7,735,397 |
+| `daemon_protocol` | 14,719,136 |
+| `patch_parser` | 21,686,009 |
+| `structural_soundness` | 4,660,599 |
+| `council_report` | 236,879,308 |
+| `review_json` | 14,008,696 |
