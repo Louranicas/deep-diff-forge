@@ -301,10 +301,16 @@ mod tests {
         drop(first);
         assert_eq!(answering.count(), 1);
         std::thread::scope(|scope| {
-            let waiter = scope.spawn(|| answering.wait_idle(Duration::from_secs(10)));
+            // The waiter would wait 10 s; it must answer within 2 s of the last answer's drop, so
+            // only a wakeup from that drop passes.
+            let (woken, rx) = std::sync::mpsc::channel();
+            let answering = &answering;
+            scope.spawn(move || woken.send(answering.wait_idle(Duration::from_secs(10))));
+            std::thread::park_timeout(Duration::from_millis(50));
             drop(second);
-            assert!(
-                waiter.join().unwrap(),
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(2)),
+                Ok(true),
                 "the waiter is woken by the last answer"
             );
         });

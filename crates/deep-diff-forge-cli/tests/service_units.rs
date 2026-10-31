@@ -34,6 +34,12 @@ fn the_systemd_unit_starts_and_stops_like_the_cli() {
         "{start}"
     );
     assert!(stop.ends_with("/deep-diff-forge daemon stop"), "{stop}");
+    // systemd runs ExecStop after a daemon that exited on its own too; its exit 6 then must not
+    // fail the unit (and restart it).
+    assert!(
+        stop.starts_with('-'),
+        "ExecStop must ignore 'no daemon': {stop}"
+    );
     let timeout: u64 = unit_value(&unit, "TimeoutStopSec").parse().unwrap();
     assert!(
         timeout > deep_diff_forge_daemon::STOP_WAIT.as_secs(),
@@ -61,6 +67,12 @@ fn the_launchd_agent_starts_like_the_cli() {
         plist.contains("<key>SuccessfulExit</key>\n    <false/>"),
         "only a failure is restarted"
     );
+    // macOS has no XDG_RUNTIME_DIR, without which `daemon start` refuses (exit 2) and launchd
+    // would restart it every ThrottleInterval.
+    let environment = &plist[plist
+        .find("<key>EnvironmentVariables</key>")
+        .expect("environment")..];
+    assert!(plist_after(environment, "XDG_RUNTIME_DIR").starts_with('/'));
 }
 
 #[test]

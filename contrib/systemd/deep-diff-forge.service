@@ -11,8 +11,10 @@ Documentation=https://github.com/Louranicas/deep-diff-forge/blob/main/docs/OPERA
 Type=simple
 ExecStart=%h/.local/bin/deep-diff-forge daemon start --log-format json
 # `daemon stop` lets the requests in progress finish (up to 30 s) and returns once the daemon
-# has exited, so systemd has nothing left to kill.
-ExecStop=%h/.local/bin/deep-diff-forge daemon stop
+# has exited, so systemd has nothing left to kill. systemd also runs ExecStop after the daemon
+# exited on its own (a `daemon stop` from a shell); then there is no daemon to stop and the
+# command exits 6, which the leading `-` keeps from marking the unit failed and restarting it.
+ExecStop=-%h/.local/bin/deep-diff-forge daemon stop
 TimeoutStopSec=40
 # A stop exits 0; only a failure is restarted.
 Restart=on-failure

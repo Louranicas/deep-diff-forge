@@ -8,19 +8,25 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
-- **The daemon drains on stop.** After `daemon.shutdown` the socket is removed, and the
-  requests in progress are answered before the process exits, for up to 30 s. A request read
+- **The daemon drains on stop.** After `daemon.shutdown` the socket is removed and the listener
+  closed (queued connections are refused at once), and the requests in progress, counted from
+  their first byte until their response is flushed, are answered before the process exits, for
+  up to 30 s. Idle connections are not waited for. A request read
   after the stop is refused with `RESOURCE_EXHAUSTED` (8), "the daemon is shutting down".
   Before, the process exited as soon as the accept loop returned, cutting off answers in
   progress. The log records `shutdown_drained` (level `info`) or `shutdown_drain_timeout`
   (`warn`).
 - **`daemon stop` returns once the daemon has exited**, waiting up to 35 s for its start lock
-  (`SocketLocation::wait_stopped`, `STOP_WAIT`), and exits 6 if it has not. Before, it returned
+  (`SocketLocation::stop_waiter`, opened before the stop so a symlinked socket path finds the
+  real lock; `STOP_WAIT`), and exits 6 if it has not. Before, it returned
   while the daemon was still exiting, so a `daemon start` right after it could find the old
   daemon in the way.
 - **Service units:** `contrib/systemd/deep-diff-forge.service` (systemd user unit) and
-  `contrib/launchd/dev.deep-diff-forge.daemon.plist` (launchd agent). `cli/tests/service_units.rs`
-  keeps them consistent with the CLI.
+  `contrib/launchd/dev.deep-diff-forge.daemon.plist` (launchd agent, which sets
+  `XDG_RUNTIME_DIR`, absent on macOS). `cli/tests/service_units.rs` keeps them consistent with the
+  CLI. The systemd `ExecStop` ignores "no daemon" (`-`): systemd also runs it after a daemon
+  stopped from a shell, and its exit 6 restarted the unit (measured: `NRestarts=1` without the
+  `-`, 0 with it).
 
 ## [0.5.0] - 2026-10-31
 

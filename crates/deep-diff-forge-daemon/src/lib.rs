@@ -53,8 +53,8 @@ pub use security::{
     validate_private_dir,
 };
 pub use serve::{
-    BoundListener, MAX_REQUEST_BYTES, STOP_WAIT, SocketLocation, bind_secure, handle_connection,
-    process_line, read_capped_line, request, run_server, run_server_with,
+    BoundListener, MAX_REQUEST_BYTES, STOP_WAIT, SocketLocation, StopWaiter, bind_secure,
+    handle_connection, process_line, read_capped_line, request, run_server, run_server_with,
 };
 
 #[cfg(test)]

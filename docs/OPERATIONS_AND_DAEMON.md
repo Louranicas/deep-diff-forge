@@ -84,16 +84,18 @@ stateDiagram-v2
 `run_server` in `serve.rs`: after `daemon.shutdown` the worker opens a wakeup
 connection so the blocked `accept` returns, the loop exits, and
 `cleanup_owned_socket` removes the socket only if its device and inode still
-match the one bound, so no new connection can arrive. Then the drain: the server waits, up to
-30 s (a client's own read deadline), for every request that was read and not yet answered. A
-request counts from the moment its line is read until its response is flushed, so an answer
-being written is not cut off. A request read after the stop is refused with
+match the one bound, and the listener is closed, so no new connection can arrive and the ones
+still queued are refused at once. Then the drain: the server waits, up to 30 s (a client's own
+read deadline), for every request in progress. A request counts from its first byte until its
+response is flushed, so neither a request still being sent nor an answer being written is cut
+off. An idle connection is not waited for. A request read after the stop is refused with
 `RESOURCE_EXHAUSTED` (8), "the daemon is shutting down". The log records
 `shutdown_drained` (`info`, when requests were in progress) or `shutdown_drain_timeout` (`warn`).
 The start lock is released last.
 
-`daemon stop` sends `daemon.shutdown`, then waits up to 35 s for the start lock to be free
-(`SocketLocation::wait_stopped`): it returns once the daemon has exited, so a `daemon start`
+`daemon stop` opens the start lock (`SocketLocation::stop_waiter`, resolving a symlinked socket
+path while it still exists), sends `daemon.shutdown`, then waits up to 35 s for the lock to be
+free: it returns once the daemon has exited, so a `daemon start`
 right after it does not find the old daemon in the way. If the daemon has not exited by then,
 `stop` exits 6.
 
@@ -240,7 +242,8 @@ Two per-user units ship in `contrib/`. `cli/tests/service_units.rs` keeps them s
 daemon as the CLI does and gives a stop longer than `daemon stop` waits (`STOP_WAIT`, 35 s).
 
 - **systemd** (`contrib/systemd/deep-diff-forge.service`): `Type=simple`, `ExecStart=… daemon
-  start --log-format json`, `ExecStop=… daemon stop` (which drains and returns after the exit),
+  start --log-format json`, `ExecStop=-… daemon stop` (which drains and returns after the exit;
+  the `-` because systemd also runs it after a daemon stopped from a shell, when it exits 6),
   `TimeoutStopSec=40`, `Restart=on-failure`, and the sandbox options that work in a user manager
   (`NoNewPrivileges`, `LockPersonality`, `MemoryDenyWriteExecute`, `RestrictRealtime`,
   `SystemCallArchitectures=native`). Install:
@@ -254,8 +257,10 @@ daemon as the CLI does and gives a stop longer than `daemon stop` waits (`STOP_W
   Measured 2026-10-31 on Fedora (systemd user manager): start, `daemon health` and `systemctl
   --user stop` with a request in progress (see the lifecycle above).
 - **launchd** (`contrib/launchd/dev.deep-diff-forge.daemon.plist`): `RunAtLoad`, restarted only
-  after a failure (`KeepAlive` → `SuccessfulExit` false), `ExitTimeOut` 40. Replace
-  `/Users/YOU` and `launchctl bootstrap gui/$(id -u) <plist>`. Stop it with `deep-diff-forge
+  after a failure (`KeepAlive` → `SuccessfulExit` false), `ExitTimeOut` 40. macOS sets no
+  `XDG_RUNTIME_DIR`, so the agent sets one (`~/.local/run`, created `0700`), and shells that use
+  the daemon export the same value. Replace `/Users/YOU` and `launchctl bootstrap gui/$(id -u)
+  <plist>`. Stop it with `deep-diff-forge
   daemon stop`, which drains; `launchctl bootout` sends SIGTERM, which does not. Not run on
   macOS yet (unmeasured).
 

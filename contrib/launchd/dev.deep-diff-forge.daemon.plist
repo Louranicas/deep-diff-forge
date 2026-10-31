@@ -2,7 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   A per-user launchd agent for the Deep-Diff-Forge daemon.
+  macOS sets no XDG_RUNTIME_DIR, so the agent sets one (an owner-private directory), and every
+  shell that talks to the daemon must export the same value, or pass the same socket path.
   Install: replace /Users/YOU with your home directory, then
+    mkdir -m 700 -p ~/.local/run
+    echo 'export XDG_RUNTIME_DIR="$HOME/.local/run"' >> ~/.zprofile
     cp contrib/launchd/dev.deep-diff-forge.daemon.plist ~/Library/LaunchAgents/
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.deep-diff-forge.daemon.plist
   Stop with `deep-diff-forge daemon stop`: it lets the requests in progress finish and exits 0,
@@ -22,6 +26,11 @@
     <string>--log-format</string>
     <string>json</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>XDG_RUNTIME_DIR</key>
+    <string>/Users/YOU/.local/run</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
