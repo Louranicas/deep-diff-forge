@@ -156,14 +156,14 @@ jobs:
       # Attestations go to a public transparency log, so only a release tag makes them.
       - name: attest release provenance
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: |
             deep-diff-forge-*.tar.gz
             deep-diff-forge-*.tar.gz.sha256
       - name: attest SBOM provenance
         if: matrix.target == 'x86_64-unknown-linux-gnu' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: sbom.spdx.json
       - name: upload release assets
