@@ -1258,8 +1258,9 @@ fn bench_cmd(opts: &[String]) {
 const EVAL_USAGE: &str = "deep-diff-forge eval [--corpus DIR] [--json]";
 
 /// `eval`: score the engine against the labelled corpus in DIR (default `fixtures/eval`) and
-/// print `deep-diff-forge.eval.v0` (`--json`) or a summary. Exit 0 when every case passes, 7 when
-/// one fails, 4 when the corpus is malformed or out of date, 3 when a file cannot be read.
+/// print `deep-diff-forge.eval.v0` (`--json`) or a summary, which lists each declared miss. Exit 0
+/// when every case passes, 7 when one fails, 4 when the corpus is malformed or out of date, 3
+/// when a file cannot be read.
 fn eval_cmd(opts: &[String]) {
     args::admit_or_exit(
         opts,
@@ -1292,7 +1293,13 @@ fn eval_cmd(opts: &[String]) {
         for (name, m) in receipt["metrics"].as_object().into_iter().flatten() {
             emitln!("  {name:<20} {}/{}", m["right"], m["total"]);
         }
-        emitln!("  known misses         {}", receipt["known_misses"]);
+        emitln!(
+            "  declared             {}",
+            receipt["declared"].as_array().map_or(0, Vec::len)
+        );
+        for declared in receipt["declared"].as_array().into_iter().flatten() {
+            emitln!("  KNOWN {}", declared.as_str().unwrap_or(""));
+        }
         for failure in receipt["failures"].as_array().into_iter().flatten() {
             emitln!("  FAIL {}", failure.as_str().unwrap_or(""));
         }

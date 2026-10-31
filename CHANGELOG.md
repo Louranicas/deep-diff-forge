@@ -75,6 +75,29 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   CLI. The systemd `ExecStop` ignores "no daemon" (`-`): systemd also runs it after a daemon
   stopped from a shell, and its exit 6 restarted the unit (measured: `NRestarts=1` without the
   `-`, 0 with it).
+### Changed
+
+- **The evaluation corpus has 34 cases, and declared misses count.** `fixtures/eval` grew from
+  11 to 34 cases (14 ranking, 17 evidence, 3 findings), each with a classified origin: a CVE,
+  GHSA or RUSTSEC shape (CVE-2021-42574, CVE-2023-49291, CVE-2024-32002, GHSA-pjwm-rvh2-c87w,
+  RUSTSEC-2022-0042), a real-world shape, one of this project's findings, or `synthetic:` with
+  its reason. Three are hard negatives, where a risky-looking file must not outrank.
+  - A declared miss now counts as wrong in its metric; before, the one known miss was left out
+    of recall. A ranking pair can be declared (`known_miss`), and so can an evidence false
+    positive (`known_false_positive`). The receipt lists them in a new `declared` field, and the
+    summary prints each as `KNOWN …` under a `declared` count (it printed `known misses`).
+    `known_misses` keeps its meaning, the evidence `known_miss` items (7); `declared` lists
+    every kind (11). A declared miss the engine gets right fails the run.
+  - The engine was not changed. It gets 11 cases' labels wrong, all declared: ranking 12/15,
+    evidence precision 21/22, recall 21/28, findings 33/33 (measured). `cli/tests/eval.rs`
+    holds those values as its floors, which were 100% over a smaller corpus.
+  - The manifest is refused (exit 4) when a file of the corpus is named by no case, or a case
+    has no origin, the id of another case, or a field its kind does not read, when a ranking
+    pair is not exactly two distinct paths (`[p, p]` can never hold, so as a `known_miss` it
+    could never go stale; before, it was a wrong label, exit 7), and when the corpus holds a
+    symlink (it could lead out of the corpus). A case can name only a file of the corpus
+    directory (exit 3 otherwise).
+
 ### Security
 
 - **A filter in a repository's `config.worktree` no longer runs during Git acquisition.**

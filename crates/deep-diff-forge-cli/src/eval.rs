@@ -5,15 +5,24 @@
 //! (`deep-diff-forge.eval.v0`). The corpus is `fixtures/eval/MANIFEST.json`, which lists every
 //! case with its file's SHA-256, its origin and its labels:
 //!
-//! - **ranking** cases: pairs of paths, the first of which must rank above the second;
-//! - **evidence** cases: the evidence items expected, and `known_miss` items, which are documented
-//!   limits that are reported but not counted against recall. Any other item is a false positive.
+//! - **ranking** cases: pairs of paths, the first of which must rank above the second
+//!   (`must_outrank`), and `known_miss` pairs the engine orders wrongly today;
+//! - **evidence** cases: the evidence items expected, `known_miss` items the engine does not
+//!   find, and `known_false_positive` items it reports but should not. Any other item is a false
+//!   positive.
 //! - **findings** cases: the verdict expected for each finding, in order.
 //!
-//! A case whose file does not match its SHA-256 is refused, so the corpus cannot drift silently.
-//! `cli/tests/eval.rs` holds the floors.
+//! A declared miss is a limit the corpus admits, not a pass: it counts as wrong in its metric
+//! (ranking pairs, recall or precision) and is listed in the receipt's `declared`, but it is not
+//! a failure. It becomes one when the engine gets it right, so the label moves with the engine.
+//!
+//! The corpus cannot drift silently. The manifest is refused when a file does not match its
+//! SHA-256, when a case has no `origin`, a field its kind does not read, or the id of another
+//! case, and when a file of the corpus directory is named by no case. `cli/tests/eval.rs` holds
+//! the floors.
 
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 /// Why the corpus could not be scored.
@@ -53,10 +62,135 @@ fn text<'v>(case: &'v Value, key: &str) -> Result<&'v str, EvalError> {
         .ok_or_else(|| EvalError::Corpus(format!("case {}: {key} is not a string", id(case))))
 }
 
-/// A file a case names, checked against the SHA-256 the manifest records for it.
-fn checked(dir: &Path, case: &Value, file_key: &str, sha_key: &str) -> Result<Vec<u8>, EvalError> {
+/// The corpus directory and every regular file in it but the manifest.
+struct Corpus<'d> {
+    dir: &'d Path,
+    /// Paths relative to `dir`, `/`-separated.
+    files: BTreeSet<String>,
+}
+
+impl<'d> Corpus<'d> {
+    fn walk(dir: &'d Path) -> Result<Self, EvalError> {
+        let mut files = BTreeSet::new();
+        let mut pending = vec![String::new()];
+        while let Some(rel) = pending.pop() {
+            let unreadable = |e: std::io::Error| EvalError::Read(format!("{rel}/: {e}"));
+            for entry in std::fs::read_dir(dir.join(&rel)).map_err(unreadable)? {
+                let entry = entry.map_err(unreadable)?;
+                let Ok(name) = entry.file_name().into_string() else {
+                    return Err(EvalError::Corpus(format!(
+                        "{rel}/: a file name is not UTF-8"
+                    )));
+                };
+                let path = if rel.is_empty() {
+                    name
+                } else {
+                    format!("{rel}/{name}")
+                };
+                // `file_type` does not follow a symlink, but `read` would: a link is refused, so
+                // a case cannot reach a file outside the corpus through one.
+                let kind = entry.file_type().map_err(unreadable)?;
+                if kind.is_dir() {
+                    pending.push(path);
+                } else if kind.is_file() {
+                    files.insert(path);
+                } else {
+                    return Err(EvalError::Corpus(format!(
+                        "{path} is not a regular file: the corpus holds only files and directories"
+                    )));
+                }
+            }
+        }
+        files.remove("MANIFEST.json");
+        Ok(Self { dir, files })
+    }
+}
+
+/// The fields a case of `kind` may have: any other is refused, so a misspelt label (`known_mis`)
+/// cannot be ignored. `None` for an unknown kind.
+fn fields(kind: &str) -> Option<&'static [&'static str]> {
+    match kind {
+        "ranking" => Some(&[
+            "id",
+            "kind",
+            "origin",
+            "patch",
+            "sha256",
+            "must_outrank",
+            "known_miss",
+        ]),
+        "evidence" => Some(&[
+            "id",
+            "kind",
+            "origin",
+            "patch",
+            "sha256",
+            "expect",
+            "known_miss",
+            "known_false_positive",
+        ]),
+        "findings" => Some(&[
+            "id",
+            "kind",
+            "origin",
+            "patch",
+            "sha256",
+            "findings",
+            "findings_sha256",
+            "expect",
+        ]),
+        _ => None,
+    }
+}
+
+/// Check a case's shape before it is scored: a known kind, only that kind's fields, an
+/// `origin`, and an id no earlier case has (recorded in `ids`).
+fn admit<'v>(case: &'v Value, ids: &mut BTreeSet<&'v str>) -> Result<&'v str, EvalError> {
+    let Some(object) = case.as_object() else {
+        return Err(EvalError::Corpus("a case is not an object".into()));
+    };
+    let kind = text(case, "kind")?;
+    let Some(allowed) = fields(kind) else {
+        return Err(EvalError::Corpus(format!(
+            "case {}: unknown kind {kind}",
+            id(case)
+        )));
+    };
+    if let Some(key) = object.keys().find(|k| !allowed.contains(&k.as_str())) {
+        return Err(EvalError::Corpus(format!(
+            "case {}: {kind} cases have no field {key}",
+            id(case)
+        )));
+    }
+    if text(case, "origin")?.trim().is_empty() {
+        return Err(EvalError::Corpus(format!(
+            "case {}: origin is empty",
+            id(case)
+        )));
+    }
+    if !ids.insert(text(case, "id")?) {
+        return Err(EvalError::Corpus(format!(
+            "case {} is listed twice",
+            id(case)
+        )));
+    }
+    Ok(kind)
+}
+
+/// A file a case names, checked against the SHA-256 the manifest records for it. Only a file of
+/// the corpus directory can be named: a path that leaves it, or names the manifest, cannot be
+/// read, and [`Corpus::walk`] refuses a symlink that could lead out of it.
+fn checked(
+    corpus: &Corpus<'_>,
+    case: &Value,
+    file_key: &str,
+    sha_key: &str,
+) -> Result<Vec<u8>, EvalError> {
     let rel = text(case, file_key)?;
-    let bytes = read(dir, rel)?;
+    if !corpus.files.contains(rel) {
+        return Err(EvalError::Read(format!("{rel}: not a file of the corpus")));
+    }
+    let bytes = read(corpus.dir, rel)?;
     let expected = text(case, sha_key)?;
     let actual = deep_diff_forge_core::sha256_hex(&bytes);
     if actual != expected {
@@ -105,7 +239,11 @@ pub struct Scores {
     /// Expected evidence items that were reported, out of all expected items.
     pub evidence_recall: Tally,
     pub findings_verdicts: Tally,
+    /// Evidence `known_miss` items the engine does not find (the `eval.v0` field
+    /// `known_misses`, unchanged in meaning; `declared` lists every kind).
     pub known_misses: u64,
+    /// Declared misses, counted as wrong in their metric but not failures.
+    pub declared: Vec<String>,
     pub failures: Vec<String>,
 }
 
@@ -121,34 +259,64 @@ fn sealed(bytes: &[u8]) -> Result<deep_diff_forge_patch::SealedReview, EvalError
     .map_err(|e| EvalError::Corpus(format!("a case patch does not parse: {e}")))
 }
 
-fn ranking(dir: &Path, case: &Value, scores: &mut Scores) -> Result<(), EvalError> {
-    let review = sealed(&checked(dir, case, "patch", "sha256")?)?;
+/// The `[high, low]` path pairs under `key` (none when it is absent). A pair is exactly two
+/// distinct paths: `[p, p]` can never hold, so declared as a known miss it could never go stale.
+fn pairs<'v>(case: &'v Value, key: &str) -> Result<Vec<(&'v str, &'v str)>, EvalError> {
+    let Some(list) = case.get(key) else {
+        return Ok(Vec::new());
+    };
+    let list = list
+        .as_array()
+        .ok_or_else(|| EvalError::Corpus(format!("case {}: {key} is not a list", id(case))))?;
+    list.iter()
+        .map(|pair| match pair.as_array().map(Vec::as_slice) {
+            Some([Value::String(high), Value::String(low)]) if high != low => Ok((&**high, &**low)),
+            _ => Err(EvalError::Corpus(format!(
+                "case {}: a pair is not two distinct paths",
+                id(case)
+            ))),
+        })
+        .collect()
+}
+
+fn ranking(corpus: &Corpus<'_>, case: &Value, scores: &mut Scores) -> Result<(), EvalError> {
+    let review = sealed(&checked(corpus, case, "patch", "sha256")?)?;
     let order: Vec<String> = deep_diff_forge_graph::rank(review.files())
         .into_iter()
         .map(|r| r.path)
         .collect();
-    let pairs = field(case, "must_outrank")?.as_array().ok_or_else(|| {
-        EvalError::Corpus(format!("case {}: must_outrank is not a list", id(case)))
-    })?;
-    for pair in pairs {
-        let (Some(high), Some(low)) = (pair[0].as_str(), pair[1].as_str()) else {
-            return Err(EvalError::Corpus(format!(
-                "case {}: a pair is not two paths",
-                id(case)
-            )));
-        };
+    // `high` is among the files ranked above `low` (the pair's paths are distinct).
+    let above = |high: &str, low: &str| {
         let at = |p: &str| order.iter().position(|o| o == p);
-        let (Some(h), Some(l)) = (at(high), at(low)) else {
-            return Err(EvalError::Corpus(format!(
+        match (at(high), at(low)) {
+            (Some(_), Some(l)) => Ok(order[..l].iter().any(|o| o == high)),
+            _ => Err(EvalError::Corpus(format!(
                 "case {}: {high} or {low} is not in the patch",
                 id(case)
-            )));
-        };
-        let right = h < l;
+            ))),
+        }
+    };
+    field(case, "must_outrank")?;
+    for (high, low) in pairs(case, "must_outrank")? {
+        let right = above(high, low)?;
         scores.ranking_pairs.add(right);
         if !right {
             scores
                 .failures
+                .push(format!("{}: {high} ranks below {low}", id(case)));
+        }
+    }
+    for (high, low) in pairs(case, "known_miss")? {
+        let right = above(high, low)?;
+        scores.ranking_pairs.add(right);
+        if right {
+            scores.failures.push(format!(
+                "{}: the known miss {high} above {low} now holds: move it to must_outrank",
+                id(case)
+            ));
+        } else {
+            scores
+                .declared
                 .push(format!("{}: {high} ranks below {low}", id(case)));
         }
     }
@@ -183,10 +351,11 @@ fn items(case: &Value, key: &str) -> Result<Vec<(String, String, String, u64)>, 
     }
 }
 
-fn evidence(dir: &Path, case: &Value, scores: &mut Scores) -> Result<(), EvalError> {
-    let review = sealed(&checked(dir, case, "patch", "sha256")?)?;
+fn evidence(corpus: &Corpus<'_>, case: &Value, scores: &mut Scores) -> Result<(), EvalError> {
+    let review = sealed(&checked(corpus, case, "patch", "sha256")?)?;
     let expected = items(case, "expect")?;
     let known = items(case, "known_miss")?;
+    let false_positives = items(case, "known_false_positive")?;
     let reported: Vec<(String, String, String, u64)> = deep_diff_forge_graph::rank(review.files())
         .iter()
         .flat_map(|r| {
@@ -203,7 +372,14 @@ fn evidence(dir: &Path, case: &Value, scores: &mut Scores) -> Result<(), EvalErr
     for got in &reported {
         let right = expected.contains(got);
         scores.evidence_precision.add(right);
-        if !right {
+        if right {
+            continue;
+        }
+        if false_positives.contains(got) {
+            scores
+                .declared
+                .push(format!("{}: reports {got:?}", id(case)));
+        } else {
             scores
                 .failures
                 .push(format!("{}: unexpected evidence {got:?}", id(case)));
@@ -219,21 +395,34 @@ fn evidence(dir: &Path, case: &Value, scores: &mut Scores) -> Result<(), EvalErr
         }
     }
     for miss in &known {
-        if reported.contains(miss) {
+        let found = reported.contains(miss);
+        scores.evidence_recall.add(found);
+        if found {
             scores.failures.push(format!(
                 "{}: a known miss {miss:?} is now found: move it to expect",
                 id(case)
             ));
         } else {
             scores.known_misses += 1;
+            scores
+                .declared
+                .push(format!("{}: misses {miss:?}", id(case)));
+        }
+    }
+    for wrong in &false_positives {
+        if !reported.contains(wrong) || expected.contains(wrong) {
+            scores.failures.push(format!(
+                "{}: a known false positive {wrong:?} is not reported, or is expected: remove it",
+                id(case)
+            ));
         }
     }
     Ok(())
 }
 
-fn findings(dir: &Path, case: &Value, scores: &mut Scores) -> Result<(), EvalError> {
-    let review = sealed(&checked(dir, case, "patch", "sha256")?)?;
-    let raw = checked(dir, case, "findings", "findings_sha256")?;
+fn findings(corpus: &Corpus<'_>, case: &Value, scores: &mut Scores) -> Result<(), EvalError> {
+    let review = sealed(&checked(corpus, case, "patch", "sha256")?)?;
+    let raw = checked(corpus, case, "findings", "findings_sha256")?;
     let raw = String::from_utf8(raw)
         .map_err(|_| EvalError::Corpus(format!("case {}: findings are not UTF-8", id(case))))?;
     let verdict = deep_diff_forge_agent::findings::verify(
@@ -277,7 +466,8 @@ fn findings(dir: &Path, case: &Value, scores: &mut Scores) -> Result<(), EvalErr
 /// Score the corpus in `dir` and return the `deep-diff-forge.eval.v0` receipt.
 ///
 /// # Errors
-/// [`EvalError`] when a file is missing or the corpus is malformed or out of date.
+/// [`EvalError`] when a file is missing or the corpus is malformed, out of date or holds a file
+/// no case names.
 pub fn run(dir: &Path) -> Result<Value, EvalError> {
     let manifest_bytes = read(dir, "MANIFEST.json")?;
     let manifest: Value = serde_json::from_slice(&manifest_bytes)
@@ -290,18 +480,27 @@ pub fn run(dir: &Path) -> Result<Value, EvalError> {
     let cases = manifest["cases"]
         .as_array()
         .ok_or_else(|| EvalError::Corpus("MANIFEST.json has no cases".into()))?;
-    let mut scores = Scores::default();
+    let corpus = Corpus::walk(dir)?;
+    let mut ids = BTreeSet::new();
+    let mut named = BTreeSet::new();
+    let mut kinds = Vec::with_capacity(cases.len());
     for case in cases {
-        match text(case, "kind")? {
-            "ranking" => ranking(dir, case, &mut scores)?,
-            "evidence" => evidence(dir, case, &mut scores)?,
-            "findings" => findings(dir, case, &mut scores)?,
-            other => {
-                return Err(EvalError::Corpus(format!(
-                    "case {}: unknown kind {other}",
-                    id(case)
-                )));
-            }
+        kinds.push(admit(case, &mut ids)?);
+        for key in ["patch", "findings"] {
+            named.extend(case[key].as_str());
+        }
+    }
+    if let Some(orphan) = corpus.files.iter().find(|f| !named.contains(f.as_str())) {
+        return Err(EvalError::Corpus(format!(
+            "{orphan} is in the corpus, but no case names it: add a case or remove the file"
+        )));
+    }
+    let mut scores = Scores::default();
+    for (case, kind) in cases.iter().zip(kinds) {
+        match kind {
+            "ranking" => ranking(&corpus, case, &mut scores)?,
+            "evidence" => evidence(&corpus, case, &mut scores)?,
+            _ => findings(&corpus, case, &mut scores)?,
         }
     }
     Ok(json!({
@@ -316,6 +515,7 @@ pub fn run(dir: &Path) -> Result<Value, EvalError> {
             "findings_verdicts": scores.findings_verdicts.json(),
         },
         "known_misses": scores.known_misses,
+        "declared": scores.declared,
         "failures": scores.failures,
     }))
 }

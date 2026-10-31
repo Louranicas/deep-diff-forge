@@ -5,7 +5,7 @@
       "id": "ranking/circle-probe",
       "kind": "ranking",
       "patch": "ranking/circle-probe.patch",
-      "origin": "expert circle probe, 2026-10-28",
+      "origin": "internal: expert circle probe, 2026-10-28; an unsafe spawn must outrank a one-line README edit and a 120-line docs change",
       "must_outrank": [
         [
           "src/util.rs",
@@ -22,7 +22,7 @@
       "id": "ranking/trojan-source",
       "kind": "ranking",
       "patch": "ranking/trojan-source.patch",
-      "origin": "CVE-2021-42574 (Trojan Source) shape",
+      "origin": "CVE-2021-42574 (Trojan Source) shape: a bidi override reorders an access check",
       "must_outrank": [
         [
           "src/access.rs",
@@ -35,7 +35,7 @@
       "id": "ranking/ci-privilege",
       "kind": "ranking",
       "patch": "ranking/ci-privilege.patch",
-      "origin": "synthetic; the low side scores between the high side with and without ci_privilege",
+      "origin": "synthetic: the low side scores between the high side with and without ci_privilege",
       "must_outrank": [
         [
           ".github/workflows/ci.yml",
@@ -48,7 +48,7 @@
       "id": "ranking/test-removed",
       "kind": "ranking",
       "patch": "ranking/test-removed.patch",
-      "origin": "synthetic",
+      "origin": "synthetic: a removed Rust test must outrank a one-line docs edit",
       "must_outrank": [
         [
           "tests/it.rs",
@@ -61,7 +61,7 @@
       "id": "ranking/generated-spawn",
       "kind": "ranking",
       "patch": "ranking/generated-spawn.patch",
-      "origin": "expert circle defect D2, 2026-10-28; modified, not added, so only process_spawn lifts it over README.md",
+      "origin": "internal: expert circle defect D2, 2026-10-28; modified, not added, so only process_spawn lifts it over README.md",
       "must_outrank": [
         [
           "src/generated/run.rs",
@@ -71,10 +71,130 @@
       "sha256": "f4090d6942541933b5faad76830c38c2dd44f9522bf3784e293225dc50bf12e9"
     },
     {
+      "id": "ranking/auth-check-removed",
+      "kind": "ranking",
+      "patch": "ranking/auth-check-removed.patch",
+      "origin": "real-world: a removed authorization guard (CWE-862, Missing Authorization), the shape of many access-control fixes read in reverse; no signal sees a deleted condition, so a 120-line docs change outranks it",
+      "must_outrank": [],
+      "known_miss": [
+        [
+          "src/handlers/delete.rs",
+          "docs/CHANGES.md"
+        ]
+      ],
+      "sha256": "6e0938497086302b70e64dc2faf2bdc73ce65821669f6a932df40f4e8ee12382"
+    },
+    {
+      "id": "ranking/actions-script-injection",
+      "kind": "ranking",
+      "patch": "ranking/actions-script-injection.patch",
+      "origin": "CVE-2023-49291 (tj-actions/branch-names) shape: an attacker-controlled github.event field expanded into a run: step; ci_privilege reads permissions, not expressions, so a two-line new file outranks it",
+      "must_outrank": [],
+      "known_miss": [
+        [
+          ".github/workflows/triage.yml",
+          "src/greet.rs"
+        ]
+      ],
+      "sha256": "ff78a33688ef9aad5d9e43944bad4f16abcb20317cb2a9307bef8c0ecb092fca"
+    },
+    {
+      "id": "ranking/lockfile-registry-swap",
+      "kind": "ranking",
+      "patch": "ranking/lockfile-registry-swap.patch",
+      "origin": "real-world: lockfile injection (Liran Tal, 'Why npm lockfiles can be a security blindspot for injecting malicious modules', 2019): a resolved URL moved to another registry; a lockfile scores as config, so a one-line new file outranks it",
+      "must_outrank": [],
+      "known_miss": [
+        [
+          "package-lock.json",
+          "src/greet.js"
+        ]
+      ],
+      "sha256": "74c39a6874503b6e22fae9fd3d7d312a0d80c1008e29fbf3d0e579d49d7a11a1"
+    },
+    {
+      "id": "ranking/symlink-into-git",
+      "kind": "ranking",
+      "patch": "ranking/symlink-into-git.patch",
+      "origin": "CVE-2024-32002 shape: a committed symlink that points into .git/hooks",
+      "must_outrank": [
+        [
+          "assets/hook",
+          "src/main.rs"
+        ]
+      ],
+      "sha256": "2653c01ecfa5a27f6d2a83d0ccb629319a9c1f25e7f08253659b4694f2ed7d06"
+    },
+    {
+      "id": "ranking/build-script-download",
+      "kind": "ranking",
+      "patch": "ranking/build-script-download.patch",
+      "origin": "RUSTSEC-2022-0042 (rustdecimal) shape: crate code that downloads and runs a payload, placed here in build.rs; code evidence must beat the public-API bonus of src/lib.rs",
+      "must_outrank": [
+        [
+          "build.rs",
+          "src/lib.rs"
+        ]
+      ],
+      "sha256": "37fad34d2b979477c82368f9dc9e7eabae6ec0be0c86ffb51493a2b754fc8954"
+    },
+    {
+      "id": "ranking/npm-preinstall",
+      "kind": "ranking",
+      "patch": "ranking/npm-preinstall.patch",
+      "origin": "GHSA-pjwm-rvh2-c87w (ua-parser-js 0.7.29 hijack) shape: a preinstall script added to package.json",
+      "must_outrank": [
+        [
+          "package.json",
+          "src/index.js"
+        ]
+      ],
+      "sha256": "d7238316d6fb47b5bd88169b503479174b7e15ce1cd1a560ec7f9bbd3fad4398"
+    },
+    {
+      "id": "ranking/test-spawn-hard-negative",
+      "kind": "ranking",
+      "patch": "ranking/test-spawn-hard-negative.patch",
+      "origin": "synthetic: hard negative; a test helper that spawns the server under test looks risky, but a source file that runs a caller's shell command must rank above it",
+      "must_outrank": [
+        [
+          "src/hooks.rs",
+          "tests/support/server.rs"
+        ]
+      ],
+      "sha256": "04c71cca1a247caff92b6a1c020dbcb88df14d8209a6acbd1e6c9d0305a130cd"
+    },
+    {
+      "id": "ranking/vendored-bulk-hard-negative",
+      "kind": "ranking",
+      "patch": "ranking/vendored-bulk-hard-negative.patch",
+      "origin": "synthetic: hard negative; a 120-line vendored update is large, but carries no evidence and must not outrank a public-API change",
+      "must_outrank": [
+        [
+          "src/lib.rs",
+          "vendor/jquery/jquery.js"
+        ]
+      ],
+      "sha256": "4d4e46458b9aca9edd5dc6727d872583600526dd20b6f328a58c93c625bacedd"
+    },
+    {
+      "id": "ranking/markdown-curl-hard-negative",
+      "kind": "ranking",
+      "patch": "ranking/markdown-curl-hard-negative.patch",
+      "origin": "synthetic: hard negative; curl | sh in a Markdown code block runs nothing, the same download in a shell script does",
+      "must_outrank": [
+        [
+          "scripts/install.sh",
+          "docs/install.md"
+        ]
+      ],
+      "sha256": "e7912b63f4addb747e490a4616018fa8d565b9087dd041a9d1a7d8e364b64fab"
+    },
+    {
       "id": "evidence/rust-code-comment-string",
       "kind": "evidence",
       "patch": "evidence/rust-code-comment-string.patch",
-      "origin": "synthetic",
+      "origin": "synthetic: unsafe and Command::new in a comment, a string and a block comment; only the code line counts",
       "expect": [
         {
           "path": "src/x.rs",
@@ -89,7 +209,7 @@
       "id": "evidence/python-floor-noqa",
       "kind": "evidence",
       "patch": "evidence/python-floor-noqa.patch",
-      "origin": "synthetic",
+      "origin": "synthetic: // is floor division in Python, not a comment, and a noqa comment suppresses a check",
       "expect": [
         {
           "path": "tool.py",
@@ -110,7 +230,7 @@
       "id": "evidence/shebang-curl",
       "kind": "evidence",
       "patch": "evidence/shebang-curl.patch",
-      "origin": "synthetic",
+      "origin": "synthetic: a file with no extension takes its language from the shebang; curl in a comment does not count",
       "expect": [
         {
           "path": "bin/fetch",
@@ -125,7 +245,7 @@
       "id": "evidence/known-miss-assembled",
       "kind": "evidence",
       "patch": "evidence/known-miss-assembled.patch",
-      "origin": "synthetic: a documented limit (plan N4)",
+      "origin": "synthetic: a documented limit (plan N4): a call assembled at run time from strings",
       "expect": [],
       "known_miss": [
         {
@@ -141,7 +261,7 @@
       "id": "evidence/interpolation",
       "kind": "evidence",
       "patch": "evidence/interpolation.patch",
-      "origin": "DDF-EVID-001, 2026-10-30: code inside shell $(...), a JS template ${...} and a Python f-string {...}; the plain string on tool.py line 3 runs nothing",
+      "origin": "internal: DDF-EVID-001, 2026-10-30; code inside shell $(...), a JS template ${...} and a Python f-string {...}; the plain string on tool.py line 3 runs nothing",
       "expect": [
         {
           "path": "install.sh",
@@ -165,11 +285,257 @@
       "sha256": "8f49eeb5115798ea1745c26f7637ceea0ee8fba283816d023a1114ea2622b74e"
     },
     {
+      "id": "evidence/python-import-alias",
+      "kind": "evidence",
+      "patch": "evidence/python-import-alias.patch",
+      "origin": "real-world: the aliased-import idiom (import subprocess as sp); the call through the alias is a declared miss",
+      "expect": [
+        {
+          "path": "tools/run.py",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "tools/run.py",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "sha256": "89e751dbe355365ffac75aa75a8d99a2cef8cf3568d218fe3548af89cc5594ad"
+    },
+    {
+      "id": "evidence/python-nfkc-eval",
+      "kind": "evidence",
+      "patch": "evidence/python-nfkc-eval.patch",
+      "origin": "synthetic: PEP 3131 identifiers are NFKC-normalised, so a fullwidth ｅval is eval; a documented limit of the lexical scanner",
+      "expect": [
+        {
+          "path": "calc.py",
+          "signal": "dynamic_eval",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "calc.py",
+          "signal": "dynamic_eval",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "aa069152d50d6d08929b7b660326a975152032f9ad70bf02fadff78b2dfc5a90"
+    },
+    {
+      "id": "evidence/python-triple-fstring",
+      "kind": "evidence",
+      "patch": "evidence/python-triple-fstring.patch",
+      "origin": "synthetic: a documented limit of the lexical scanner; a triple-quoted f-string's interpolations are blanked with the string",
+      "expect": [],
+      "known_miss": [
+        {
+          "path": "report.py",
+          "signal": "dynamic_eval",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "sha256": "7f34ef3692aec41786e754187506a9e2edc4f221b3359c8ca0515b76c38f3d8a"
+    },
+    {
+      "id": "evidence/bash-dev-tcp",
+      "kind": "evidence",
+      "patch": "evidence/bash-dev-tcp.patch",
+      "origin": "real-world: the bash /dev/tcp reverse shell (MITRE ATT&CK T1059.004); network_fetch knows curl and wget, not /dev/tcp",
+      "expect": [
+        {
+          "path": "scripts/debug.sh",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "scripts/debug.sh",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "20a41d00229de20d582ddd5aab505268200d6a799dd4481d95be71ffaf3e2199"
+    },
+    {
+      "id": "evidence/go-exec-alias",
+      "kind": "evidence",
+      "patch": "evidence/go-exec-alias.patch",
+      "origin": "synthetic: an aliased os/exec import; the call through the alias is a declared miss",
+      "expect": [
+        {
+          "path": "cmd/run.go",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 6
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "cmd/run.go",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 5
+        }
+      ],
+      "sha256": "994a1ab91fb4c896b3c59ec45f2f547b5751cfe4352fae3281591fe035132d0f"
+    },
+    {
+      "id": "evidence/js-receiver-and-negatives",
+      "kind": "evidence",
+      "patch": "evidence/js-receiver-and-negatives.patch",
+      "origin": "synthetic: negatives (a comment, a string, prefetch(, import type) beside window.fetch, which the receiver hides from the fetch( token",
+      "expect": [
+        {
+          "path": "web/client.ts",
+          "signal": "dynamic_eval",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "web/client.ts",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 8
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "web/client.ts",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 6
+        }
+      ],
+      "sha256": "e4df4e158dc1bb41bb72e3c90be9d8d80cfa5388be54bd7d7d28be413b018e4a"
+    },
+    {
+      "id": "evidence/rust-negatives",
+      "kind": "evidence",
+      "patch": "evidence/rust-negatives.patch",
+      "origin": "synthetic: negatives (a doc comment, a raw string, an identifier containing unsafe, #[expect]) beside one #[allow]",
+      "expect": [
+        {
+          "path": "src/cell.rs",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 6
+        }
+      ],
+      "sha256": "ef4ed5a25287e8fc2b8c39ab7ac2e462f9feee16ef30d6366dd51b48c0fc9620"
+    },
+    {
+      "id": "evidence/workflow-privilege",
+      "kind": "evidence",
+      "patch": "evidence/workflow-privilege.patch",
+      "origin": "synthetic: a workflow gains id-token: write; pull_request_target in a comment and contents: read do not count",
+      "expect": [
+        {
+          "path": ".github/workflows/release.yml",
+          "signal": "ci_privilege",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 8
+        }
+      ],
+      "sha256": "040f4aec9ae9fb60a2a41d5a52b91091560a3820325ece1456c42e16f6e37ec1"
+    },
+    {
+      "id": "evidence/secret-shapes",
+      "kind": "evidence",
+      "patch": "evidence/secret-shapes.patch",
+      "origin": "synthetic: a live-key shape (all zeros, not a credential) beside a test key and one a character short",
+      "expect": [
+        {
+          "path": "settings.py",
+          "signal": "secret_like",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "93530c9e3e96c12248f90ca8871fd09ec242d12e0512f3621394dd19a6baad93"
+    },
+    {
+      "id": "evidence/tests-removed-multilang",
+      "kind": "evidence",
+      "patch": "evidence/tests-removed-multilang.patch",
+      "origin": "synthetic: a test removed in Python, JavaScript and Go, each on the old side",
+      "expect": [
+        {
+          "path": "tests/test_auth.py",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "web/auth.test.js",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "auth/auth_test.go",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        }
+      ],
+      "sha256": "aa4bf2daa27d2c5b8eec780850e214de6f05f1d86b418a5e3260afd4739cca37"
+    },
+    {
+      "id": "evidence/dockerfile-curl-pipe",
+      "kind": "evidence",
+      "patch": "evidence/dockerfile-curl-pipe.patch",
+      "origin": "real-world: the curl | sh install step in a Dockerfile; curl in a comment does not count",
+      "expect": [
+        {
+          "path": "Dockerfile",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "sha256": "13f6b18113f9edd849af6030c6c7be90f104f4ed899a0dec27b0eb5476b8a9ce"
+    },
+    {
+      "id": "evidence/shell-heredoc",
+      "kind": "evidence",
+      "patch": "evidence/shell-heredoc.patch",
+      "origin": "synthetic: a documented limit of the lexical scanner; a heredoc is read as code, so curl in text written to a file is a declared false positive",
+      "expect": [],
+      "known_false_positive": [
+        {
+          "path": "scripts/docs.sh",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "sha256": "12aad991e95568580821af934a2b034064898b4f66a78c17e79afb1ceee87c98"
+    },
+    {
       "id": "findings/mixed",
       "kind": "findings",
       "patch": "findings/mixed.patch",
       "findings": "findings/mixed.jsonl",
-      "origin": "synthetic",
+      "origin": "synthetic: one finding for each refusal reason, after one that is accepted",
       "expect": [
         "accepted",
         "stale_review",
@@ -182,6 +548,53 @@
       ],
       "sha256": "254748f5a29185656554354cfc293b6768319bc5a10efe45d2cbeb011a0754f5",
       "findings_sha256": "3d30db0e89cb7bc417535ec8aa490cbdb90906dcc04b5c66cbd2d52449eb2268"
+    },
+    {
+      "id": "findings/sides-and-anchors",
+      "kind": "findings",
+      "patch": "findings/sides-and-anchors.patch",
+      "findings": "findings/sides-and-anchors.jsonl",
+      "origin": "synthetic: address, line and file anchors on both sides across two files, with each way an anchor or field can be wrong",
+      "expect": [
+        "accepted",
+        "accepted",
+        "line_outside_hunk",
+        "unknown_address",
+        "accepted",
+        "malformed",
+        "malformed",
+        "malformed",
+        "malformed",
+        "accepted",
+        "duplicate",
+        "line_outside_hunk",
+        "malformed",
+        "malformed"
+      ],
+      "sha256": "8d71676bd8550ae455118a82c01a474d4ae1c3edd4c6bba9f0d3748139a4edd9",
+      "findings_sha256": "c8598074eda1ef372dfe8c26946ab31dcae7d19e96bb908f7e2415b322ae9825"
+    },
+    {
+      "id": "findings/hostile-text",
+      "kind": "findings",
+      "patch": "findings/hostile-text.patch",
+      "findings": "findings/hostile-text.jsonl",
+      "origin": "CVE-2021-42574 (Trojan Source) shape in agent text: a bidi override in a title and a path, with the length limits counted in characters",
+      "expect": [
+        "accepted",
+        "unknown_path",
+        "accepted",
+        "too_long",
+        "accepted",
+        "malformed",
+        "too_long",
+        "malformed",
+        "stale_review",
+        "accepted",
+        "malformed"
+      ],
+      "sha256": "6d4d75d0a4d0663b9f573094f57e2fd53bea3ae9e9a3edb1450bb14173cd6662",
+      "findings_sha256": "b21611a2708dafab22abba2a68280c22783907ecdb075302271c29e7e236d8d6"
     }
   ]
 }
