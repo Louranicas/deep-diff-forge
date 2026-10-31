@@ -1200,6 +1200,7 @@ mod tests {
     #[test]
     fn the_import_rule_is_linear_on_long_lines() {
         within_deadline(|| {
+            let start = ScanClock::start();
             for unit in [
                 "Array.from(x),",
                 "from ",
@@ -1212,19 +1213,68 @@ mod tests {
             }
             let spaced = format!(";{}from 'child_process'", " ".repeat(200_000));
             assert_eq!(signals(&added("a.js", &[&spaced])), [S::ProcessSpawn]);
+            // Linear scans of these lines took about 2 s in a debug build; the quadratic import
+            // rule of eee2b4c^ took about 66 s.
+            let spent = start.elapsed();
+            assert!(
+                spent < std::time::Duration::from_secs(15),
+                "the long lines took {spent:?} of {}",
+                start.kind
+            );
         });
     }
 
-    /// Run `work` on its own thread and fail if it takes more than ten seconds: a linear scan
-    /// of these lines takes milliseconds, so a quadratic regression fails here instead of
-    /// hanging the suite (and a diff-mutation run reports it as caught, not as a timeout).
+    /// The time a scan spends: the thread's own CPU time where Linux reports it, so a busy host
+    /// does not fail the bound (a starved run measured 1.8 s of CPU in over 10 s of wall time),
+    /// and wall time elsewhere.
+    struct ScanClock {
+        kind: &'static str,
+        cpu_ns: Option<u64>,
+        wall: std::time::Instant,
+    }
+
+    impl ScanClock {
+        fn start() -> Self {
+            let cpu_ns = thread_cpu_ns();
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "test door: the fallback clock where no CPU time is reported"
+            )]
+            let wall = std::time::Instant::now();
+            let kind = if cpu_ns.is_some() {
+                "thread CPU time"
+            } else {
+                "wall time"
+            };
+            Self { kind, cpu_ns, wall }
+        }
+
+        fn elapsed(&self) -> std::time::Duration {
+            match (self.cpu_ns, thread_cpu_ns()) {
+                (Some(then), Some(now)) => std::time::Duration::from_nanos(now - then),
+                _ => self.wall.elapsed(),
+            }
+        }
+    }
+
+    /// The calling thread's CPU time in nanoseconds: the first field of Linux's
+    /// `/proc/thread-self/schedstat`, or `None` where that file does not exist.
+    fn thread_cpu_ns() -> Option<u64> {
+        let stat = std::fs::read_to_string("/proc/thread-self/schedstat").ok()?;
+        stat.split_whitespace().next()?.parse().ok()
+    }
+
+    /// Run `work` on its own thread and fail if it takes more than two minutes of wall time.
+    /// This bound only keeps a hang from stalling the suite, so a diff-mutation run reports a
+    /// looping mutant as caught rather than as a timeout; the scan's cost is bounded by
+    /// [`ScanClock`] inside the work.
     fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
         let (done, wait) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = done.send(work());
         });
-        wait.recv_timeout(std::time::Duration::from_secs(10))
-            .expect("a long line was scanned within ten seconds")
+        wait.recv_timeout(std::time::Duration::from_secs(120))
+            .expect("a long line was scanned within two minutes")
     }
 
     /// The import rule's receiver, boundary, `typeof` and statement decisions, each pinned.

@@ -32,7 +32,7 @@ shipped command that does the job today.
 | 0 | `success` | Success. |
 | 2 | `usage` | CLI usage / argument error (including an unknown command or option). |
 | 3 | `io` | I/O or encoding failure: reading input (stdin, a file, Git, the learning store), non-UTF-8 input, or writing output. |
-| 4 | `invalid_input` | A patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, or a refused Git acquisition. |
+| 4 | `invalid_input` | A patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, or a refused Git acquisition or file pair. |
 | 6 | `daemon_or_terminal` | Daemon / interactive-terminal failure. |
 | 7 | `input_contract_refused` | Input contract refused (see the gate contract below). |
 | 101 | `panic` | Internal error (a panic). |
@@ -56,9 +56,10 @@ deep-diff-forge cluster-contract
 deep-diff-forge loom-contract
 ```
 
-The four `*-contract` commands print guarantees as text. `chain-contract`,
-`cluster-contract` and `loom-contract` describe engines that are mostly planned:
-see [CHAINING_AND_CLUSTERING.md](CHAINING_AND_CLUSTERING.md).
+The four `*-contract` commands print guarantees as text. `chain-contract` and
+`cluster-contract` list the shipped modes that serve each guarantee (a test runs
+every one), and `loom-contract` records that the loom was withdrawn: see
+[CHAINING_AND_CLUSTERING.md](CHAINING_AND_CLUSTERING.md).
 
 ## Gate Contract (`--stdin-patch`)
 
@@ -254,15 +255,12 @@ Each of these exits 2 today:
 
 ```bash
 deep-diff-forge --git --json --budget fast
-deep-diff-forge src/lib.rs src/lib.rs.new --semantic --budget deep --json
 deep-diff-forge plan --git --json
 deep-diff-forge why-first hunk:42 --json
 deep-diff-forge ingest --git --jsonl \
   | deep-diff-forge plan --stdin --jsonl \
   | deep-diff-forge rank --stdin --json \
   | deep-diff-forge render --stdin --plain
-deep-diff-forge cluster --git --dimensions patch,semantic,risk --parallel 4 --json
-deep-diff-forge loom plan --source <repo> --feature "syntax fallback"
 ```
 
 ## Deployment Link

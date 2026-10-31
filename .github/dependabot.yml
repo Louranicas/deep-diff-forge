@@ -1,4 +1,7 @@
 version: 2
+# Each entry groups its updates into one pull request: every Cargo bump moves the committed
+# SBOM (and a workspace bump also moves fuzz/Cargo.lock), so a reviewer regenerates both once
+# per group instead of once per crate.
 updates:
   # Keep Cargo dependencies patched (security updates land promptly).
   - package-ecosystem: cargo
@@ -8,10 +11,26 @@ updates:
     cooldown:
       default-days: 7
     open-pull-requests-limit: 10
+    groups:
+      cargo:
+        patterns: ["*"]
 
   # The fuzz harness has its own lockfile (fuzz/Cargo.lock), outside the workspace (anchor B-06).
   - package-ecosystem: cargo
     directory: "/fuzz"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    groups:
+      fuzz:
+        patterns: ["*"]
+
+  # The Python client (sdk/python/pyproject.toml): no runtime dependencies, only the setuptools
+  # build requirement, which Dependabot keeps current.
+  - package-ecosystem: pip
+    directory: "/sdk/python"
     schedule:
       interval: weekly
     cooldown:
@@ -26,3 +45,6 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]

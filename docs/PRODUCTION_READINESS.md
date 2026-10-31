@@ -365,7 +365,7 @@ headings moved down a level.
 
 **Gaps**
 
-- **[Unmeasured]** Push protection, alert counts and GitHub security settings exist only as self-reported `gh api` results. No CodeQL/code-scanning workflow exists. Global/system Git filters remain trusted (`git_acquire.rs:225-230`), and third-party native/unsafe code is outside the first-party guarantee.
+- **[Unmeasured]** Push protection, alert counts and GitHub security settings exist only as self-reported `gh api` results. No CodeQL/code-scanning workflow exists. Global/system Git filters remain trusted (`PROTECTED_SCOPES` and the module's "Configuration trust" section in `git_acquire.rs`; kept by decision on 2026-10-31, see SECURITY.md, and repository `config.worktree` filters are now turned off too), and third-party native/unsafe code is outside the first-party guarantee.
 
 ##### 3. Supply chain and release integrity — 12 / 15
 
@@ -486,3 +486,33 @@ SDK distribution gap replaces it.
    service unit (systemd, launchd).
 5. **A whole-crate mutation pass** of `graph` and `agent`, recorded in the ledger, and a
    Python SDK package (+1, facets 1 and 6).
+
+## Follow-up 2026-10-31 (unreleased): the refused commands
+
+Codex's facet-6 gap, "`chain`, `cluster`, `loom` and direct `<old> <new>` remain refused despite
+published contracts", is closed by the change that adds this note, after v0.5.0 (measured: `cli/tests/file_pair.rs`,
+`cli/tests/contract.rs`). `<old> <new>` reviews two regular files through `git diff --no-index`
+with the acquisition's hardening; directories are refused. `chain`, `cluster` and `loom` were
+withdrawn, not built: each is refused with exit 2 and names its replacement, `--help` lists them
+under "WITHDRAWN", and the three contracts list only modes a test runs. The score above is not
+changed by this note.
+
+## Follow-up 2026-10-31 (unreleased): the evaluation corpus (not a rescore)
+
+The Codex finding that the gate "is only 11 cases" and "excludes one declared miss from recall"
+is addressed; no score above is changed by it.
+
+- **[Measured]** `fixtures/eval` has 34 cases: 14 ranking (3 hard negatives), 17 evidence and 3
+  findings. Every origin is classified: a CVE, GHSA or RUSTSEC shape with its identifier, a
+  real-world shape, one of this project's findings, or `synthetic:` with its reason.
+- **[Measured]** Declared misses are counted, not excluded. The 11 declared (3 ranking pairs,
+  7 missed evidence items, 1 false positive) count as wrong, so the gate reports ranking 12/15,
+  precision 21/22, recall 21/28 and findings 33/33, and its floors are those values. Before,
+  the one declared miss was left out of recall, which read 7/7.
+- **[Measured]** The manifest cannot drift silently: a file no case names, a symlink, a
+  repeated id, a missing origin, a field the case's kind does not read or a ranking pair that is
+  not two distinct paths is refused (exit 4), and a declared miss the engine now gets right
+  fails (exit 7).
+- **[Inferred]** It is still a corpus written by the rules' author, with cases shaped after real
+  advisories rather than taken from them. It is a regression gate and a list of known limits,
+  not evidence of review quality on real-world code; a held-out corpus remains open.

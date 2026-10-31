@@ -49,8 +49,11 @@ fn parse_within(
     deadline: std::time::Duration,
 ) -> Option<tree_sitter::Tree> {
     let start = std::time::Instant::now();
-    // `checked_sub` is `None` exactly when more than `deadline` has elapsed.
-    let mut cancel = |_: &tree_sitter::ParseState| deadline.checked_sub(start.elapsed()).is_none();
+    // `checked_sub` is `None` exactly when more than `deadline` has elapsed; `Break` cancels.
+    let mut cancel = |_: &tree_sitter::ParseState| match deadline.checked_sub(start.elapsed()) {
+        Some(_) => std::ops::ControlFlow::Continue(()),
+        None => std::ops::ControlFlow::Break(()),
+    };
     let options = tree_sitter::ParseOptions::new().progress_callback(&mut cancel);
     parser.parse_with_options(
         &mut |offset, _| &source.as_bytes()[offset..],

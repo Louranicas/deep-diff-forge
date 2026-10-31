@@ -37,11 +37,15 @@ era) no longer holds. How the standard is enforced today:
 - **Locally:** `just ci` ([`scripts/ci_local.sh`](../scripts/ci_local.sh))
   replays the `secrets`, `msrv`, `gate` and `supply-chain` jobs step for step.
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
-  `fixtures/eval` must score ranking 100%, evidence precision 100%, evidence
-  recall 100% and findings 100%. Any miss fails; an accepted limit is a
-  `known_miss` label. Planted controls prove a wrong label fails with exit 7, a
-  changed file with exit 4, and the `ci-privilege` and `generated-spawn` ranking
-  cases each fail when their signal is removed.
+  `fixtures/eval` (34 cases, measured 2026-10-31) must score at least its floors,
+  which are the measured values: ranking pairs 12/15, evidence precision 21/22,
+  evidence recall 21/28, findings 33/33. Any undeclared miss fails. The 11
+  declared misses (`known_miss`, `known_false_positive`) count as wrong in their
+  metric rather than being excluded, and each fails once the engine gets it
+  right. Planted controls prove a wrong label fails with exit 7, a changed file,
+  an orphan file, a repeated id, a missing origin or a misspelt field with exit 4,
+  a declared miss the engine now gets right with exit 7, and the `ci-privilege`
+  and `generated-spawn` ranking cases each fail when their signal is removed.
 - **Bench on pull requests** (`bench` job, required since 2026-10-31): base and head on one
   runner, alternating three times; `scripts/bench_compare.py` fails a workload over 25%
   and over 0.2 ms slower, and never compares timings taken on different inputs. A local

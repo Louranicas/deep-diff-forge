@@ -6,6 +6,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Dependencies
+
+- **Dependabot's first version updates, applied together** (#63 to #70): serde 1.0.229,
+  serde_json 1.0.154, rustix 1.1.5, unicode-width 0.2.2, tree-sitter 0.26.13,
+  `actions/attest-build-provenance` and `github/codeql-action` 4.39.1 (SHA-pinned). The
+  individual pull requests each failed the SBOM gate (a dependency bump moves the committed
+  SBOM) and the workspace bumps also left `fuzz/Cargo.lock` stale; this change regenerates both,
+  with the fuzz lock moved only as far as the bumps require (its `syn` follows the workspace's
+  3.0.4). tree-sitter 0.26 changed the parse progress callback to return `ControlFlow`: the
+  deadline cancel now returns `Break` where it returned `true`.
+- **Dependabot groups each ecosystem's updates into one pull request** (`cargo`, `fuzz`,
+  `actions`), so the SBOM and fuzz lock are regenerated once per group.
+
 ### Added
 
 - **Daemon metrics for Prometheus, without a listener.** `daemon metrics --format prometheus`
@@ -20,6 +33,36 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   (`deep_diff_forge_daemon::exposition`), and a strict reader in its tests checks the format's
   rules. `contrib/systemd/deep-diff-forge-metrics.{service,timer}` write it every 15 s. Not run
   against a real node_exporter or promtool (neither is installed here).
+- **`deep-diff-forge [--] <old> <new>` reviews two regular files.** `patch::diff_files` runs
+  `git diff --no-index` with the acquisition's hardening, from `/` on the canonical paths, with
+  `core.attributesFile=/dev/null`, `GIT_ATTR_NOSYSTEM=1` and `core.autocrlf=false`; the CLI seals
+  Git's exact bytes and prints every `--stdin-patch` mode (`--json`, `--jsonl`, `--rank`,
+  `--cluster`, `--outline`, `--hunks`, `--layout`, the input guards). Refused, by name: a
+  missing path (exit 3), a path that is itself a symbolic link, a directory or special file
+  (exit 4; a linked parent directory resolves), two sizes over the 64 MiB budget, checked before
+  Git reads them (exit 4). Git's answer must be one of its two shapes for a readable pair (exit 0
+  with no patch, exit 1 with one) with nothing on stderr; otherwise exit 3. Without that check a
+  side removed after DDF's checks (Git: exit 1, empty stdout, `Could not access`) was reviewed as
+  "0 files changed" with exit 0 (review finding, reproduced with real Git and a stub). A first word that is neither a command
+  nor a file stays `unknown command` (exit 2); `--` marks it as a path. Directories are out of
+  scope. Measured while building it: run inside a repository, `git diff --no-index` ran that
+  repository's own clean filter, and the user's `core.autocrlf` changed the compared bytes;
+  `cli/tests/file_pair.rs` fails if either comes back. New errors `GitAcquireError::FileUnreadable`
+  and `FileRefused` (a breaking change for an exhaustive `match` on `GitAcquireError`); the
+  exit-4 registry meaning now names a refused file pair.
+
+### Changed
+
+- **`chain`, `cluster` and `loom` are withdrawn, not planned.** `--help` listed them, with
+  `<old> <new>`, as "NOT YET IMPLEMENTED" and nobody owned them. Each is now refused with exit 2
+  and its replacement, even with a second word that would otherwise be a path pair, and
+  `--help` lists them under "WITHDRAWN". `chain-contract` and `cluster-contract` list only
+  shipped modes (a test runs each one); `cluster-contract` names the two dimensions that run
+  (patch, risk) and no longer claims per-lane budgets; `loom-contract` records the withdrawal.
+
+- **Dependabot watches the Python client.** `.github/dependabot.yml` gains a weekly `pip` entry
+  for `sdk/python` (its only requirement is the setuptools build backend), with the same 7-day
+  cooldown as the Cargo and Actions entries.
 - **The Python client is a package.** `sdk/python/pyproject.toml` (setuptools, no dependencies,
   Python 3.9+) installs `deep_diff_forge` as the package `deep-diff-forge`, from a checkout
   (`python3 -m pip install ./sdk/python`) or from GitHub with `#subdirectory=sdk/python`. It is
@@ -44,8 +87,52 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   CLI. The systemd `ExecStop` ignores "no daemon" (`-`): systemd also runs it after a daemon
   stopped from a shell, and its exit 6 restarted the unit (measured: `NRestarts=1` without the
   `-`, 0 with it).
+### Changed
+
+- **The evaluation corpus has 34 cases, and declared misses count.** `fixtures/eval` grew from
+  11 to 34 cases (14 ranking, 17 evidence, 3 findings), each with a classified origin: a CVE,
+  GHSA or RUSTSEC shape (CVE-2021-42574, CVE-2023-49291, CVE-2024-32002, GHSA-pjwm-rvh2-c87w,
+  RUSTSEC-2022-0042), a real-world shape, one of this project's findings, or `synthetic:` with
+  its reason. Three are hard negatives, where a risky-looking file must not outrank.
+  - A declared miss now counts as wrong in its metric; before, the one known miss was left out
+    of recall. A ranking pair can be declared (`known_miss`), and so can an evidence false
+    positive (`known_false_positive`). The receipt lists them in a new `declared` field, and the
+    summary prints each as `KNOWN …` under a `declared` count (it printed `known misses`).
+    `known_misses` keeps its meaning, the evidence `known_miss` items (7); `declared` lists
+    every kind (11). A declared miss the engine gets right fails the run.
+  - The engine was not changed. It gets 11 cases' labels wrong, all declared: ranking 12/15,
+    evidence precision 21/22, recall 21/28, findings 33/33 (measured). `cli/tests/eval.rs`
+    holds those values as its floors, which were 100% over a smaller corpus.
+  - The manifest is refused (exit 4) when a file of the corpus is named by no case, or a case
+    has no origin, the id of another case, or a field its kind does not read, when a ranking
+    pair is not exactly two distinct paths (`[p, p]` can never hold, so as a `known_miss` it
+    could never go stale; before, it was a wrong label, exit 7), and when the corpus holds a
+    symlink (it could lead out of the corpus). A case can name only a file of the corpus
+    directory (exit 3 otherwise).
+
 ### Security
 
+- **A filter in a repository's `config.worktree` no longer runs during Git acquisition.**
+  Acquisition turned off only the filters `git config --local` lists, which does not read
+  `$GIT_DIR/config.worktree` (used once `extensions.worktreeConfig` is set), so a filter defined
+  there ran and its output was reviewed in place of the file. Acquisition now lists every scope
+  with `--show-scope` and turns off each filter any unprotected scope defines (local, worktree,
+  their includes, and any scope it does not know). Filters from the user's global and system
+  configuration, such as Git LFS, stay on by decision (SECURITY.md); a test with planted global
+  and system files proves that nothing else they name (fsmonitor, external diff, textconv, a
+  diff driver command, set directly or through `include.path`/`includeIf`) runs.
+- **A repository filter whose name is not UTF-8 refuses the acquisition.** The name was
+  decoded lossily (`\xff` became U+FFFD) before DDF named it to Git, and Git matches a subsection
+  name byte for byte, so the override named another filter and the repository's own ran. Passing
+  the raw bytes fixed it on Linux, but the macOS CI job measured the filter still running: macOS
+  Git's `--get-regexp ^filter\.` did not match a key that is not UTF-8, so the filter was never
+  listed. Acquisition now lists every key (`git config --list`) and picks the `filter.` keys
+  itself, and any such name refuses the acquisition on every platform (`InvalidSelection`).
+- **The caller's `GIT_CONFIG_COUNT`/`KEY`/`VALUE` configuration is kept.** DDF numbered its
+  filter overrides from 0 and set the count, which replaced the caller's own entries (all of them
+  when the repository defined no filter). They are now numbered after the caller's count (from
+  `GitAcquireOptions::env`, else inherited); a count Git reads but DDF does not (a leading
+  space) is refused as `InvalidSelection`.
 - **Every release binary is run before it ships.** The x86_64 macOS binary was cross-built and
   only checksummed; the release smoke now runs it under Rosetta 2 (installed if missing) after
   checking it is x86_64. A test fails if any release target is built without being run.
@@ -58,6 +145,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   workflows on pull requests, pushes to `main` and weekly. Not a required check yet.
 - **Pinned actions are enforced.** `cli/tests/workflow_pins.rs` fails when any `uses:` in any
   workflow is not a local path or a full 40-hex commit SHA.
+
+### Fixed
+
+- **The long-line linearity test no longer fails on a busy host.** `graph`'s
+  `the_import_rule_is_linear_on_long_lines` bounded its scans by 10 s of wall time; at load 56
+  to 89 a linear scan using 1.8 s of CPU took over 10 s, failed the suite, and turned diff
+  mutation results into false "caught" verdicts. It now bounds the scans' own thread CPU time
+  (Linux `/proc/thread-self/schedstat`, wall time elsewhere) at 15 s, and keeps a 120 s
+  wall-clock deadline only against hangs. Measured: linear code passes under 64 busy loops
+  (20 s wall), and the quadratic import rule it guards against (`eee2b4c^`) still fails at 66.7 s
+  of CPU time. Shrinking the lines was rejected: at 20,000 units the quadratic rule took 0.4 s.
 
 ## [0.5.0] - 2026-10-31
 

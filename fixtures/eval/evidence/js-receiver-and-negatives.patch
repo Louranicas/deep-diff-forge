@@ -1,0 +1,12 @@
+diff --git a/web/client.ts b/web/client.ts
+--- a/web/client.ts
++++ b/web/client.ts
+@@ -1,1 +1,8 @@
+ const url = "/api";
++// fetch(url) is done by the worker, not here
++const name = "child_process";
++prefetch(url);
++import type { ChildProcess } from "child_process";
++const body = await window.fetch(url);
++const f = new Function("a", "return a");
++const g = fetch(url);
