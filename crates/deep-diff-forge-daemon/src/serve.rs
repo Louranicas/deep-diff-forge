@@ -514,15 +514,17 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
         // for one still being sent, as for one being worked on. An idle connection is not
         // counted: a stop does not wait for clients that send nothing.
         let mut answer = None;
-        let read = read_capped_line_deadline_noting(
+        read_capped_line_deadline_noting(
             &mut reader,
             &mut buf,
             MAX_REQUEST_BYTES,
             READ_TIMEOUT,
             &mut || answer = Some(engine.answering().start()),
         )?;
-        if read == 0 {
-            break; // clean EOF
+        // Nothing read is a clean end of file. The buffer decides, not the count returned, so a
+        // read that consumed nothing cannot spin this loop.
+        if buf.is_empty() {
+            break;
         }
         if buf.len() > MAX_REQUEST_BYTES {
             let resp = error_response(
@@ -1505,6 +1507,30 @@ mod tests {
         assert!(joined(server).is_ok(), "the thread did not finish");
         // Socket is cleaned up on shutdown.
         assert!(!sock.exists());
+    }
+
+    /// A connection answers its request and ends at end of file, both within a deadline, so a
+    /// reader that returned without consuming input (and spun) fails here in seconds rather than
+    /// hanging the suite.
+    #[test]
+    fn a_connection_answers_and_ends_within_a_deadline() {
+        let (client, server) = UnixStream::pair().expect("socketpair");
+        let connection = thread::spawn(move || handle_connection(server, &engine()));
+        let mut writer = client.try_clone().unwrap();
+        writeln!(writer, r#"{{"id":1,"method":"daemon.health"}}"#).unwrap();
+        writer.flush().unwrap();
+        writer.shutdown(std::net::Shutdown::Write).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut response = String::new();
+        let read = BufReader::new(client).read_line(&mut response);
+        assert!(read.is_ok_and(|n| n > 0), "no answer within 5 s");
+        assert!(response.contains("\"status\":\"ok\""), "{response}");
+        assert!(
+            joined(connection).is_ok_and(|served| served.is_ok()),
+            "the connection did not end at end of file"
+        );
     }
 
     /// A request counts from its first byte, so a stop waits for one still being sent; an idle
