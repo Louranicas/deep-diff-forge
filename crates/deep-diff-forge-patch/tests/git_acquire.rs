@@ -732,6 +732,242 @@ fn a_repository_local_filter_never_runs() {
     assert!(!marker.exists(), "a repository-local filter ran");
 }
 
+/// A filter in the repository's worktree configuration (`$GIT_DIR/config.worktree`, read once
+/// `extensions.worktreeConfig` is set) never runs either, and the change is captured from the
+/// file's own bytes. Before, only `git config --local` was listed, which does not read that file,
+/// so the filter ran and its output was reviewed in place of the file.
+#[test]
+fn a_repository_worktree_config_filter_never_runs() {
+    let fx = fixture("worktree-filter");
+    let r = &fx.root;
+    let marker = r.join("filter-ran");
+    std::fs::write(r.join(".gitattributes"), "*.txt filter=evil\n").unwrap();
+    git_out(r, &["config", "extensions.worktreeConfig", "true"]);
+    git_out(
+        r,
+        &[
+            "config",
+            "--worktree",
+            "filter.evil.clean",
+            &format!("sh -c 'touch {}; tr a-z A-Z'", marker.display()),
+        ],
+    );
+    std::fs::write(r.join("noeol.txt"), b"a\nc\nreviewed as written\n").unwrap();
+    let acq = acquire_git(r, &GitSelection::WorkingTree, &options(false)).unwrap();
+    assert!(!marker.exists(), "a repository worktree-config filter ran");
+    let patch = String::from_utf8_lossy(acq.diff().patch_bytes());
+    assert!(patch.contains("+reviewed as written\n"), "{patch}");
+    assert!(!patch.contains("REVIEWED"), "{patch}");
+}
+
+/// A repository filter whose name is not UTF-8, in `.git/config` or `config.worktree`, refuses
+/// the acquisition and never runs. Naming it to Git by its exact bytes switched it off on Linux
+/// but not on macOS (CI, PR #76), so DDF refuses a name it cannot be sure of naming exactly.
+#[test]
+fn a_repository_filter_with_a_non_utf8_name_never_runs() {
+    for (name, file) in [
+        ("bytes-filter", ".git/config"),
+        ("bytes-filter-wt", ".git/config.worktree"),
+    ] {
+        let fx = fixture(name);
+        let r = &fx.root;
+        let marker = r.join("filter-ran");
+        std::fs::write(r.join(".gitattributes"), b"*.txt filter=\xff\n").unwrap();
+        git_out(r, &["config", "extensions.worktreeConfig", "true"]);
+        let mut config = std::fs::read(r.join(file)).unwrap_or_default();
+        config.extend_from_slice(b"[filter \"\xff\"]\n\tclean = ");
+        config.extend_from_slice(
+            // Quoted: an unquoted `;` starts a comment in a configuration file.
+            format!("\"sh -c 'touch {}; tr a-z A-Z'\"\n", marker.display()).as_bytes(),
+        );
+        std::fs::write(r.join(file), config).unwrap();
+        std::fs::write(r.join("noeol.txt"), b"a\nc\nreviewed as written\n").unwrap();
+        let refused = acquire_git(r, &GitSelection::WorkingTree, &options(false));
+        assert!(
+            matches!(refused, Err(GitAcquireError::InvalidSelection { ref detail }) if detail.contains("not UTF-8")),
+            "{file}: {refused:?}"
+        );
+        assert!(!marker.exists(), "a non-UTF-8 filter in {file} ran");
+    }
+}
+
+/// A filter the caller passes through `GIT_CONFIG_COUNT`/`KEY`/`VALUE` (the `command` scope) is
+/// the caller's own and runs, whether or not the repository defines filters DDF turns off.
+/// Before, DDF numbered its own entries from 0 and set the count, which replaced the caller's.
+#[test]
+fn a_caller_git_config_env_filter_still_runs() {
+    for repository_filter in [false, true] {
+        let fx = fixture(if repository_filter {
+            "caller-filter-repo"
+        } else {
+            "caller-filter"
+        });
+        let r = &fx.root;
+        std::fs::write(
+            r.join(".gitattributes"),
+            "noeol.txt filter=user\n*.dat filter=evil\n",
+        )
+        .unwrap();
+        let marker = r.join("filter-ran");
+        if repository_filter {
+            git_out(
+                r,
+                &[
+                    "config",
+                    "filter.evil.clean",
+                    &format!("sh -c 'touch {}; cat'", marker.display()),
+                ],
+            );
+        }
+        std::fs::write(r.join("noeol.txt"), b"a\nc\nreviewed as cleaned\n").unwrap();
+        let mut opts = options(false);
+        opts.env.extend(
+            [
+                ("GIT_CONFIG_COUNT", "1"),
+                ("GIT_CONFIG_KEY_0", "filter.user.clean"),
+                ("GIT_CONFIG_VALUE_0", "tr a-z A-Z"),
+            ]
+            .map(|(k, v)| (OsString::from(k), OsString::from(v))),
+        );
+        let acq = acquire_git(r, &GitSelection::WorkingTree, &opts).unwrap();
+        assert!(!marker.exists(), "a repository-local filter ran");
+        let noeol = String::from_utf8_lossy(acq.diff().change_patch(find(&acq, "noeol.txt")));
+        assert!(noeol.contains("+REVIEWED AS CLEANED"), "{noeol}");
+    }
+}
+
+/// A caller count Git reads but DDF cannot (`strtoul` takes a leading space) is refused rather
+/// than guessed: numbering from 0 would replace the caller's entries.
+#[test]
+fn an_unreadable_caller_git_config_count_is_refused() {
+    let fx = fixture("caller-count");
+    let mut opts = options(false);
+    opts.env.extend(
+        [
+            ("GIT_CONFIG_COUNT", " 1"),
+            ("GIT_CONFIG_KEY_0", "core.abbrev"),
+            ("GIT_CONFIG_VALUE_0", "12"),
+        ]
+        .map(|(k, v)| (OsString::from(k), OsString::from(v))),
+    );
+    assert!(matches!(
+        acquire_git(&fx.root, &GitSelection::WorkingTree, &opts),
+        Err(GitAcquireError::InvalidSelection { detail }) if detail.contains("GIT_CONFIG_COUNT")
+    ));
+}
+
+/// The user's own (global and system) configuration is trusted for content filters and nothing
+/// else. A filter defined there, such as Git LFS, runs: its clean output is what the repository
+/// stores, so it is what the change is. Every other program those scopes name (fsmonitor, an
+/// external diff, a diff driver's textconv or command), set directly or through
+/// `include.path`/`includeIf`, never runs, and the capture is byte for byte the one taken without
+/// them. Each of `-c core.fsmonitor=false`, `--no-textconv` and `--no-ext-diff` with
+/// `-c diff.external=`, removed alone, fails this test.
+#[test]
+fn protected_config_keeps_its_filters_and_runs_nothing_else() {
+    let fx = fixture("protected");
+    let r = &fx.root;
+    std::fs::write(r.join("kept.txt"), b"lower\n").unwrap();
+    git_out(r, &["add", "kept.txt"]);
+    git_out(r, &["commit", "-q", "-m", "kept"]);
+    std::fs::write(r.join("kept.txt"), b"lower changed\n").unwrap();
+    std::fs::write(
+        r.join(".gitattributes"),
+        "*.txt diff=evil\nkept.txt filter=keep\n",
+    )
+    .unwrap();
+    let cfg = r.join(".git/ddf-protected");
+    std::fs::create_dir_all(&cfg).unwrap();
+    let ran = |what: &str| cfg.join(format!("ran-{what}"));
+    let script = |what: &str| {
+        let path = cfg.join(format!("{what}.sh"));
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", ran(what).display()),
+        )
+        .unwrap();
+        chmod(&path, 0o755);
+        path.display().to_string()
+    };
+    let clean = cfg.join("clean.sh");
+    std::fs::write(
+        &clean,
+        format!(
+            "#!/bin/sh\ntouch '{}'\nexec tr a-z A-Z\n",
+            ran("filter").display()
+        ),
+    )
+    .unwrap();
+    chmod(&clean, 0o755);
+    let filter = format!(
+        "[filter \"keep\"]\n\tclean = {}\n\trequired = true\n",
+        clean.display()
+    );
+    let benign = cfg.join("benign.cfg");
+    std::fs::write(&benign, &filter).unwrap();
+    let included = cfg.join("included.cfg");
+    std::fs::write(
+        &included,
+        format!("[diff]\n\texternal = {}\n", script("external")),
+    )
+    .unwrap();
+    let conditional = cfg.join("conditional.cfg");
+    std::fs::write(
+        &conditional,
+        format!("[core]\n\tfsmonitor = {}\n", script("fsmonitor")),
+    )
+    .unwrap();
+    let global = cfg.join("global.cfg");
+    std::fs::write(
+        &global,
+        format!(
+            "{filter}[diff \"evil\"]\n\tcommand = {}\n\
+             [include]\n\tpath = {}\n[includeIf \"gitdir:**/{}/\"]\n\tpath = {}\n",
+            script("driver-command"),
+            included.display(),
+            // `**/` and the directory name: macOS temporary paths are symlinked.
+            r.file_name().unwrap().display(),
+            conditional.display(),
+        ),
+    )
+    .unwrap();
+    let system = cfg.join("system.cfg");
+    std::fs::write(
+        &system,
+        format!("[diff \"evil\"]\n\ttextconv = {}\n", script("textconv")),
+    )
+    .unwrap();
+    let with = |global: &Path, system: Option<&Path>| GitAcquireOptions {
+        env: [
+            ("GIT_CONFIG_GLOBAL", global.as_os_str()),
+            (
+                "GIT_CONFIG_SYSTEM",
+                system.map_or("/dev/null".as_ref(), Path::as_os_str),
+            ),
+            ("GIT_CONFIG_NOSYSTEM", "0".as_ref()),
+        ]
+        .into_iter()
+        .map(|(k, v)| (OsString::from(k), v.to_owned()))
+        .collect(),
+        include_untracked: true,
+        ..GitAcquireOptions::default()
+    };
+    let baseline = acquire_git(r, &GitSelection::WorkingTree, &with(&benign, None)).unwrap();
+    std::fs::remove_file(ran("filter")).expect("the user's own filter runs");
+    let hostile =
+        acquire_git(r, &GitSelection::WorkingTree, &with(&global, Some(&system))).unwrap();
+    let mut programs = std::fs::read_dir(&cfg)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("ran-"))
+        .collect::<Vec<_>>();
+    programs.sort();
+    assert_eq!(programs, ["ran-filter"], "only the user's filter runs");
+    assert_eq!(hostile.diff(), baseline.diff());
+    let kept = String::from_utf8_lossy(hostile.diff().change_patch(find(&hostile, "kept.txt")));
+    assert!(kept.contains("-lower\n+LOWER CHANGED\n"), "{kept}");
+}
+
 /// Negative control: resolving `HEAD` unconditionally would fail on a fresh
 /// repository; the port compares against the empty tree instead.
 #[test]
