@@ -286,9 +286,10 @@ fn neutral_filters(
 /// `filter.<name>.<key>` for a filter name that is UTF-8; any other name refuses the
 /// acquisition. A subsection name is raw bytes matched exactly: a lossy decode turned `\xff` into
 /// U+FFFD, so the override named another filter and the repository's own still ran (review of
-/// 2026-10-31). Passing the exact bytes then fixed it on Linux but not on macOS, where the
-/// repository's `\xff` filter still ran (CI, PR #76), so a name DDF cannot be sure of naming
-/// exactly is refused on every platform rather than left on.
+/// 2026-10-31). Passing the exact bytes fixed that on Linux; on macOS the filter still ran (CI,
+/// PR #76) because the listing never found it (see [`repository_filters_off`]). With the listing
+/// fixed, a name that is not UTF-8 is still refused on every platform rather than trusted to be
+/// matched byte for byte.
 fn filter_key(name: &[u8], key: &str) -> Result<OsString, GitAcquireError> {
     let name = std::str::from_utf8(name).map_err(|_| GitAcquireError::InvalidSelection {
         detail: "a repository filter name is not UTF-8, so it cannot be switched off".to_owned(),
@@ -333,7 +334,9 @@ const PROTECTED_SCOPES: &[&[u8]] = &[b"system", b"global", b"command"];
 /// repository's `local` configuration, its `worktree` configuration (`config.worktree`, read
 /// once `extensions.worktreeConfig` is set), whatever either includes, and any scope a later Git
 /// adds. Before, only `git config --local` was listed, which does not read `config.worktree`, so
-/// a filter there still ran.
+/// a filter there still ran. Every key is listed and the `filter.` ones are picked here, not by
+/// `--get-regexp ^filter\.`: on macOS that regex did not match a key that is not UTF-8, so a
+/// `\xff` filter was never listed and ran (CI, PR #76).
 fn repository_filters_off(
     options: &GitAcquireOptions,
     root: &Path,
@@ -350,21 +353,21 @@ fn repository_filters_off(
         "git config",
         &[
             OsStr::new("config"),
+            OsStr::new("--list"),
             OsStr::new("--includes"),
             OsStr::new("--show-scope"),
             OsStr::new("--null"),
             OsStr::new("--name-only"),
-            OsStr::new("--get-regexp"),
-            OsStr::new("^filter\\."),
         ],
-        &[0, 1],
+        &[0],
         1024 * 1024,
     )?;
     neutral_filters(&unprotected_filter_names(&listing), first)
 }
 
-/// The filter names, as raw bytes, in `git config --show-scope --null --name-only` output
-/// (`<scope>\0<key>\0` pairs, keys `filter.<name>.<key>`) that any unprotected scope defines.
+/// The filter names, as raw bytes, in `git config --list --show-scope --null --name-only` output
+/// (`<scope>\0<key>\0` pairs; filter keys are `filter.<name>.<key>`) that any unprotected scope
+/// defines. Keys outside `filter.` are skipped.
 fn unprotected_filter_names(listing: &[u8]) -> Vec<Vec<u8>> {
     let mut names: Vec<Vec<u8>> = Vec::new();
     let mut records = listing.split(|&b| b == 0);

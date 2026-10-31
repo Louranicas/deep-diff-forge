@@ -761,8 +761,9 @@ fn a_repository_worktree_config_filter_never_runs() {
 }
 
 /// A repository filter whose name is not UTF-8, in `.git/config` or `config.worktree`, refuses
-/// the acquisition and never runs. Naming it to Git by its exact bytes switched it off on Linux
-/// but not on macOS (CI, PR #76), so DDF refuses a name it cannot be sure of naming exactly.
+/// the acquisition and never runs. On macOS it ran even after the refusal was added, because
+/// `git config --get-regexp ^filter\.` did not list a key that is not UTF-8 (CI, PR #76); the
+/// listing now reads every key.
 #[test]
 fn a_repository_filter_with_a_non_utf8_name_never_runs() {
     for (name, file) in [

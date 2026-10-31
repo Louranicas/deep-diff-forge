@@ -89,8 +89,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **A repository filter whose name is not UTF-8 refuses the acquisition.** The name was
   decoded lossily (`\xff` became U+FFFD) before DDF named it to Git, and Git matches a subsection
   name byte for byte, so the override named another filter and the repository's own ran. Passing
-  the raw bytes fixed it on Linux, but the macOS CI job measured the filter still running, so any
-  such name is now refused on every platform (`InvalidSelection`) rather than left on.
+  the raw bytes fixed it on Linux, but the macOS CI job measured the filter still running: macOS
+  Git's `--get-regexp ^filter\.` did not match a key that is not UTF-8, so the filter was never
+  listed. Acquisition now lists every key (`git config --list`) and picks the `filter.` keys
+  itself, and any such name refuses the acquisition on every platform (`InvalidSelection`).
 - **The caller's `GIT_CONFIG_COUNT`/`KEY`/`VALUE` configuration is kept.** DDF numbered its
   filter overrides from 0 and set the count, which replaced the caller's own entries (all of them
   when the repository defined no filter). They are now numbered after the caller's count (from
