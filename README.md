@@ -624,8 +624,11 @@ server on an owner-private Unix domain socket.
 deep-diff-forge daemon start --foreground      # terminal 1
 deep-diff-forge daemon health                  # terminal 2
 # {"id":1,"jsonrpc":"2.0","result":{"cache_entries":0,"pid":…,"protocol":2,"retained_bytes":0,"sessions":0,"status":"ok","version":"0.5.0"}}
-deep-diff-forge daemon stop
+deep-diff-forge daemon stop                    # answers what is in progress, returns once it has exited
 ```
+
+To run it as a service, use the systemd user unit or the launchd agent in `contrib/`
+([running as a service](docs/OPERATIONS_AND_DAEMON.md#running-as-a-service)).
 
 ## Verified agent findings
 
