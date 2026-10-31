@@ -166,6 +166,36 @@ fn identical_files_are_an_empty_review_that_the_input_contracts_refuse() {
     assert!(stderr.contains("refused: 0 files"), "{stderr}");
 }
 
+/// A side that vanishes after DDF's checks makes Git exit 1 with no patch and "Could not
+/// access" on stderr; that is exit 3, never an empty review with exit 0. A stub Git first on
+/// `PATH` stands in for the race, which cannot be timed from outside.
+#[test]
+fn a_file_git_cannot_open_after_the_checks_is_exit_3_not_an_empty_review() {
+    let dir = Dir::new("vanished");
+    let old = dir.file("a.txt", b"a\n");
+    let new = dir.file("b.txt", b"b\n");
+    let bin = dir.0.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let stub = bin.join("git");
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\necho \"error: Could not access 'gone'\" >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let env = [ISOLATE[0], ISOLATE[1], ("PATH", bin.to_str().unwrap())];
+    let (code, stdout, stderr) = (0..100)
+        .map(|_| ddf_in(&std::env::temp_dir(), &env, &[&old, &new, "--json"]))
+        .find(|(_, _, stderr)| !stderr.contains("os error 26"))
+        .unwrap();
+    assert_eq!((code, stdout.as_str()), (3, ""), "{stderr}");
+    assert_eq!(
+        stderr,
+        "error: direct comparison failed: `git diff --no-index` exited with status 1: \
+         error: Could not access 'gone'\n"
+    );
+}
+
 #[test]
 fn unreadable_and_non_regular_paths_are_refused_with_registered_codes() {
     let dir = Dir::new("refusals");

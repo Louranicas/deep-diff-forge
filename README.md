@@ -301,7 +301,8 @@ compared. File headers therefore name the canonical path without its leading `/`
 | Refusal | Exit |
 | --- | --- |
 | A path that does not exist or cannot be inspected (`cannot read the old file: …`) | 3 |
-| A symbolic link, a directory, or a FIFO, socket or device (`old file refused: … is a directory, not a regular file`) | 4 |
+| The path itself is a symbolic link, a directory, or a FIFO, socket or device (`old file refused: … is a directory, not a regular file`); a linked parent directory is resolved, not refused | 4 |
+| Git cannot open a file it was given, as when it is removed after the checks (`` `git diff --no-index` exited with status 1: error: Could not access … ``) | 3 |
 | Two files whose sizes together exceed the 64 MiB input budget, checked before Git reads them | 4 |
 | Fewer than two paths, an unknown option, or conflicting modes | 2 |
 | A first word that is neither a command nor an existing path, without `--` (`unknown command: …`) | 2 |
@@ -309,7 +310,9 @@ compared. File headers therefore name the canonical path without its leading `/`
 Directories are out of scope: a tree comparison brings nested repositories, links and special
 files with it, which `--git-range` and the working-tree selections already handle for a
 repository. The check and Git's read are separate steps, so a concurrent writer can still
-change a file in between; compare files you control.
+change a file in between; compare files you control. Git's answer is checked too: exit 0 must
+come with no patch and exit 1 with one, and anything on Git's stderr is a failure (exit 3), so a
+file that vanishes in between is never reviewed as unchanged.
 
 A gate should **always pass both guards**. When both fail, the files guard reports first.
 

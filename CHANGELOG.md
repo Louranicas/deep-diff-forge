@@ -13,8 +13,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `core.attributesFile=/dev/null`, `GIT_ATTR_NOSYSTEM=1` and `core.autocrlf=false`; the CLI seals
   Git's exact bytes and prints every `--stdin-patch` mode (`--json`, `--jsonl`, `--rank`,
   `--cluster`, `--outline`, `--hunks`, `--layout`, the input guards). Refused, by name: a
-  missing path (exit 3), a symbolic link, directory or special file (exit 4), two sizes over the
-  64 MiB budget, checked before Git reads them (exit 4). A first word that is neither a command
+  missing path (exit 3), a path that is itself a symbolic link, a directory or special file
+  (exit 4; a linked parent directory resolves), two sizes over the 64 MiB budget, checked before
+  Git reads them (exit 4). Git's answer must be one of its two shapes for a readable pair (exit 0
+  with no patch, exit 1 with one) with nothing on stderr; otherwise exit 3. Without that check a
+  side removed after DDF's checks (Git: exit 1, empty stdout, `Could not access`) was reviewed as
+  "0 files changed" with exit 0 (review finding, reproduced with real Git and a stub). A first word that is neither a command
   nor a file stays `unknown command` (exit 2); `--` marks it as a path. Directories are out of
   scope. Measured while building it: run inside a repository, `git diff --no-index` ran that
   repository's own clean filter, and the user's `core.autocrlf` changed the compared bytes;

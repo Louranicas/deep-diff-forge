@@ -140,13 +140,15 @@ deep-diff-forge loom-contract
 
 ### Planned commands (not implemented)
 
-Each of these exits 2 (`unknown command`) today:
+Each of these exits 2 today (measured 2026-11-01 on the branch binary): `--git` and `cache`
+as `unknown command`; `--dir a b` as a usage error from the two-file parser
+(`unexpected argument`), since directories are out of scope for `<old> <new>`. `loom` is
+withdrawn, not planned (see the status above).
 
 ```text
 deep-diff-forge --git                       # today: --git-working-tree | --git-staged | --git-range
 deep-diff-forge --dir <old-dir> <new-dir>
 deep-diff-forge cache status | cache prune
-deep-diff-forge loom plan | loom gate | loom receipt
 ```
 
 ## CLI Compatibility Contracts

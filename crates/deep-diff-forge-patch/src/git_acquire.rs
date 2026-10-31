@@ -331,12 +331,15 @@ fn deadline_after(limit: std::time::Duration) -> std::time::Instant {
     std::time::Instant::now() + limit
 }
 
+/// What an accepted Git run left behind.
+struct GitOutput {
+    code: i32,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
 impl Runner<'_> {
     /// Run Git; accept only the listed exit codes; never buffer past `budget`.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the git-acquisition door: patch acquisition spawns git only here, hardened by core::git"
-    )]
     fn run(
         &self,
         command: &'static str,
@@ -344,6 +347,23 @@ impl Runner<'_> {
         ok_codes: &[i32],
         budget: usize,
     ) -> Result<Vec<u8>, GitAcquireError> {
+        self.output(command, args, ok_codes, budget)
+            .map(|done| done.stdout)
+    }
+
+    /// [`Self::run`], keeping the exit code and the first [`STDERR_CAP`] bytes of stderr for a
+    /// caller that must judge them too.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the git-acquisition door: patch acquisition spawns git only here, hardened by core::git"
+    )]
+    fn output(
+        &self,
+        command: &'static str,
+        args: &[&OsStr],
+        ok_codes: &[i32],
+        budget: usize,
+    ) -> Result<GitOutput, GitAcquireError> {
         let mut cmd = Command::new(&self.options.git_program);
         cmd.current_dir(&self.cwd)
             .args(deep_diff_forge_core::git::ARGS)
@@ -430,7 +450,11 @@ impl Runner<'_> {
             return Err(spawn_err(e));
         }
         match status.code() {
-            Some(code) if ok_codes.contains(&code) => Ok(out),
+            Some(code) if ok_codes.contains(&code) => Ok(GitOutput {
+                code,
+                stdout: out,
+                stderr,
+            }),
             code => Err(GitAcquireError::CommandFailed {
                 command,
                 code,
@@ -707,6 +731,8 @@ const FILE_PAIR_DIFF_ARGS: &[&str] = &[
 
 /// `path`'s canonical form and size, or why it may not be compared: it must exist, and both it
 /// and its canonical form must be a regular file, not a symbolic link, directory or special file.
+/// Only the last component is refused as a link: a linked parent directory resolves, and Git's
+/// headers then name the resolved path.
 fn regular_file(side: &'static str, path: &Path) -> Result<(PathBuf, u64), GitAcquireError> {
     let unreadable = |e: std::io::Error| GitAcquireError::FileUnreadable {
         side,
@@ -730,7 +756,9 @@ fn regular_file(side: &'static str, path: &Path) -> Result<(PathBuf, u64), GitAc
     };
     refuse_kind(&std::fs::symlink_metadata(path).map_err(unreadable)?)?;
     let canonical = std::fs::canonicalize(path).map_err(unreadable)?;
-    // Checked again on the resolved path: the name may have been replaced since the first look.
+    // Checked again on the resolved path, which is what Git reads. Only a swap between the two
+    // looks can make this differ from the first check, so no test reaches it; it narrows the
+    // window and does not close it (see `diff_files`).
     let meta = std::fs::symlink_metadata(&canonical).map_err(unreadable)?;
     refuse_kind(&meta)?;
     Ok((canonical, meta.len()))
@@ -741,8 +769,9 @@ fn regular_file(side: &'static str, path: &Path) -> Result<(PathBuf, u64), GitAc
 /// (`a/home/me/old.rs`), because Git runs from `/` (see the module's "Direct file pairs").
 ///
 /// The files are checked, then read by Git: a concurrent writer can change them in between, so
-/// this is not a sandbox against one. [`GitAcquireOptions::byte_budget`] bounds the two sizes
-/// together and Git's output, and [`GitAcquireOptions::time_limit`] bounds the run.
+/// this is not a sandbox against one. A side Git cannot open by then is an error, never an
+/// empty patch. [`GitAcquireOptions::byte_budget`] bounds the two sizes together and Git's
+/// output, and [`GitAcquireOptions::time_limit`] bounds the run.
 ///
 /// # Errors
 /// [`GitAcquireError::FileUnreadable`] for a side that cannot be inspected,
@@ -784,8 +813,20 @@ pub fn diff_files(
     let mut args: Vec<&OsStr> = FILE_PAIR_GLOBAL_ARGS.iter().map(OsStr::new).collect();
     args.extend(FILE_PAIR_DIFF_ARGS.iter().map(OsStr::new));
     args.extend([old.as_os_str(), new.as_os_str()]);
-    // `--no-index` exits 0 for identical files and 1 when they differ.
-    runner.run("git diff --no-index", &args, &[0, 1], budget)
+    // `--no-index` exits 0, silently, for identical files and 1, with a patch, when they differ.
+    // It also exits 1, with nothing on stdout, for a path it cannot open ("Could not access"):
+    // one removed after the checks above. Anything but those two shapes is a failure, so a
+    // vanished file is never reviewed as unchanged.
+    let command = "git diff --no-index";
+    let done = runner.output(command, &args, &[0, 1], budget)?;
+    if !done.stderr.is_empty() || (done.code == 1) == done.stdout.is_empty() {
+        return Err(GitAcquireError::CommandFailed {
+            command,
+            code: Some(done.code),
+            stderr: String::from_utf8_lossy(&done.stderr).trim().to_owned(),
+        });
+    }
+    Ok(done.stdout)
 }
 
 /// Append each untracked, non-ignored file as an addition produced by
