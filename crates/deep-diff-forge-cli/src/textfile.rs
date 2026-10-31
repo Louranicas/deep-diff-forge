@@ -12,10 +12,11 @@ use std::path::Path;
 /// must read it, and the daemon metrics hold counts, the version and method names, nothing secret.
 pub(crate) const MODE: u32 = 0o644;
 
-fn refuse(path: &Path, why: &str) -> io::Error {
+/// A refusal, worded to follow the path the caller names (`PATH: is a symlink; …`).
+fn refuse(why: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        format!("{} {why}; refusing to replace it", path.display()),
+        format!("{why}; refusing to replace it"),
     )
 }
 
@@ -27,17 +28,15 @@ fn refuse(path: &Path, why: &str) -> io::Error {
 ///
 /// The refusal, or the I/O error that stopped the write; `path` is left as it was.
 pub(crate) fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
-    let name = path
-        .file_name()
-        .ok_or_else(|| refuse(path, "names no file"))?;
+    let name = path.file_name().ok_or_else(|| refuse("names no file"))?;
     // A path that cannot be examined (absent, or under a missing directory) fails below, when the
     // temporary file cannot be created beside it.
     if let Ok(found) = fs::symlink_metadata(path) {
         if found.file_type().is_symlink() {
-            return Err(refuse(path, "is a symlink"));
+            return Err(refuse("is a symlink"));
         }
         if !found.is_file() {
-            return Err(refuse(path, "is not a regular file"));
+            return Err(refuse("is not a regular file"));
         }
     }
     let mut temporary = OsString::from(".");

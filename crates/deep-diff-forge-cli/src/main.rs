@@ -668,7 +668,11 @@ fn daemon_metrics_prometheus(location: &deep_diff_forge_daemon::SocketLocation, 
         return;
     };
     if let Err(err) = textfile::write_atomically(std::path::Path::new(out), text.as_bytes()) {
-        eprintln!("error: cannot write {}: {err}", display_safe(out));
+        eprintln!(
+            "error: cannot write {}: {}",
+            display_safe(out),
+            display_safe(&err.to_string())
+        );
         std::process::exit(exit::IO);
     }
 }
