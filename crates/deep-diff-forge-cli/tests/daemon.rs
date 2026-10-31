@@ -37,6 +37,21 @@ fn run_with_runtime_dir(
     )
 }
 
+/// Run as [`run`] does, under `umask 077` (set by `sh`, which then execs the binary).
+fn run_under_umask_077(args: &[&str]) -> (i32, String, String) {
+    let out = Command::new("sh")
+        .args(["-c", "umask 077 && exec \"$0\" \"$@\"", bin()])
+        .args(args)
+        .env_remove("XDG_RUNTIME_DIR")
+        .output()
+        .expect("run under umask 077");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
 /// How many 10 ms steps a test waits for a daemon to start or to exit: 10 s. Generous, so a
 /// loaded machine (a mutation run, a parallel build) is not read as a failure; a daemon that
 /// never starts or never stops still fails the test. Before, 2 s.
@@ -601,8 +616,10 @@ fn prometheus_metrics_match_the_json_and_write_a_textfile() {
     )));
     assert!(text.starts_with("# HELP ") && text.ends_with('\n') && !text.contains("# EOF"));
 
+    // Under umask 077, as a cron or systemd job may run: the file is still 0644, which only the
+    // explicit set_permissions gives (the inherited 022 alone turns the create mode into 0644).
     let out = dir.join("ddf.prom");
-    let (code, stdout, stderr) = run(&[
+    let (code, stdout, stderr) = run_under_umask_077(&[
         "daemon",
         "metrics",
         "--format",

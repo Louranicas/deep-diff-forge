@@ -424,13 +424,16 @@ What the text holds, and why:
 - **Refuse, don't guess.** A document missing a field, or a daemon that answers an RPC error
   (protocol 1 has no `daemon.metrics`), exits 6 with the reason and writes nothing. Label values
   (method names, the version) are escaped.
-- **The file is replaced whole:** written to `.NAME.PID.tmp` in the same directory (not a
+- **The file is replaced whole:** written to `.NAME.PID.N.tmp` in the same directory (not a
   `.prom` name, so the collector never reads it half written), synced, then renamed over PATH.
   A symlink or a non-regular file at PATH is refused (exit 3) and left alone, and the temporary
-  is created exclusively, so nothing is written through a link planted there. The mode is
-  `0644`, set exactly whatever the umask: node_exporter runs as its own user and must read it,
-  and the metrics hold counts, the version and method names. No daemon (exit 6) leaves the
-  previous file in place, so alert on its age.
+  is created exclusively, so nothing is written through a link planted there. A run killed
+  between create and rename leaves its temporary behind; a later run with the same PID takes
+  the next `N` (up to 8 names, then exit 3), and neither reuses nor removes it. Stale
+  `.*.tmp` files in the directory can be deleted. The mode is `0644`, set exactly whatever the
+  umask (tested under umask 077): node_exporter runs as its own user and must read it, and the
+  metrics hold counts, the version and method names. No daemon (exit 6) leaves the previous
+  file in place, so alert on its age.
 
 Recipe (the units ship in `contrib/systemd/`; `systemd-analyze --user verify` accepts them
 apart from the binary path on the machine that checked them, 2026-10-31; not run against a real
@@ -454,8 +457,13 @@ Example queries:
 ```promql
 histogram_quantile(0.99, sum by (le, method) (rate(ddf_daemon_request_duration_seconds_bucket[5m])))
 increase(ddf_daemon_panics_total[1h]) > 0
-time() - node_textfile_mtime_seconds{file=~".*deep-diff-forge.prom"} > 60   # the file went stale
+time() - node_textfile_mtime_seconds{file=~".*deep-diff-forge.prom"} > 180   # the file went stale
 ```
+
+The staleness threshold must sit well above the write interval plus scrape and evaluation lag:
+at `> 60`, the once-a-minute cron variant would fire on a healthy setup whenever one run starts
+a little later than the one before. 180 s covers both the 15 s timer and cron (inferred from the
+intervals; not run against Prometheus).
 
 ## Habitat Deployment Cut
 

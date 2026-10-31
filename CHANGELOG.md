@@ -13,7 +13,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `_total` counters, seconds and bytes in the names, escaped labels, a latency histogram with
   cumulative `le` buckets and no `_sum`, which the daemon does not keep), and `--out PATH` writes
   it whole for node_exporter's textfile collector: a temporary file in the same directory, then a
-  rename; a symlink or non-regular file at PATH is refused (exit 3); mode `0644`. A daemon with no
+  rename; a symlink or non-regular file at PATH is refused (exit 3); mode `0644`, also under
+  umask 077. A temporary left by a killed run is skipped (the next of 8 names), not reused. A daemon with no
   usable metrics exits 6 and leaves the file as it was. The JSON answer (`--format json`, the
   default) and the RPC are unchanged; both renderings read the same document
   (`deep_diff_forge_daemon::exposition`), and a strict reader in its tests checks the format's
