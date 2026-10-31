@@ -792,3 +792,18 @@ The release PR also makes the `bench` comparison a required check (renamed `benc
 head)`), so ruleset 25868121 requires eleven checks. Before this, the job had made one real
 comparison with 0 false failures. One run is a small sample (measured), so a false failure on
 a noisy runner remains possible (inferred); a rerun of the job is the first response.
+
+## Release integrity settings (2026-10-31)
+
+Repository settings, measured with `gh api` on 2026-10-31:
+
+- **Environment `release`:** deployment policy `custom_branch_policies`, with one policy of
+  type `tag` named `v*`, so only a `v*` tag can run a job that names it. The `publish` job
+  names it. No required reviewers (owner decision pending: an approval step would stop
+  unattended releases).
+- **Ruleset 26252036 "Release tags are immutable":** target `tag`, `refs/tags/v*`, rules
+  `deletion`, `update` and `non_fast_forward`, enforcement active, no bypass actors.
+  Unmeasured: a live refusal. A probe that pushes, moves and deletes a throwaway tag needs a
+  force push, which this session's permissions do not allow.
+- **Not done:** signed tags. They need the owner's signing key; `v0.1.0` to `v0.5.0` are
+  annotated and unsigned.

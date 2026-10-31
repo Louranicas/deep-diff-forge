@@ -6,6 +6,21 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Security
+
+- **Every release binary is run before it ships.** The x86_64 macOS binary was cross-built and
+  only checksummed; the release smoke now runs it under Rosetta 2 (installed if missing) after
+  checking it is x86_64. A test fails if any release target is built without being run.
+- **The crates.io job fails closed.** With the owner's gate open (`DDF_CRATES_IO=open`) and no
+  `CARGO_REGISTRY_TOKEN`, it used to exit 0 without publishing; it now fails. It runs in a
+  `release` environment that only `v*` tags can deploy to.
+- **Release tags are immutable.** A tag ruleset (`refs/tags/v*`: no deletion, no update, no
+  non-fast-forward, no bypass) stops a published tag being moved to other code.
+- **Code scanning.** `codeql.yml` runs CodeQL (security-extended) over the Rust code and the
+  workflows on pull requests, pushes to `main` and weekly. Not a required check yet.
+- **Pinned actions are enforced.** `cli/tests/workflow_pins.rs` fails when any `uses:` in any
+  workflow is not a local path or a full 40-hex commit SHA.
+
 ## [0.5.0] - 2026-10-31
 
 ### Added
