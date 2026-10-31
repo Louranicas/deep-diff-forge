@@ -63,6 +63,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **Pinned actions are enforced.** `cli/tests/workflow_pins.rs` fails when any `uses:` in any
   workflow is not a local path or a full 40-hex commit SHA.
 
+### Fixed
+
+- **The long-line linearity test no longer fails on a busy host.** `graph`'s
+  `the_import_rule_is_linear_on_long_lines` bounded its scans by 10 s of wall time; at load 56
+  to 89 a linear scan using 1.8 s of CPU took over 10 s, failed the suite, and turned diff
+  mutation results into false "caught" verdicts. It now bounds the scans' own thread CPU time
+  (Linux `/proc/thread-self/schedstat`, wall time elsewhere) at 15 s, and keeps a 120 s
+  wall-clock deadline only against hangs. Measured: linear code passes under 64 busy loops
+  (20 s wall), and the quadratic import rule it guards against (`eee2b4c^`) still fails at 66.7 s
+  of CPU time. Shrinking the lines was rejected: at 20,000 units the quadratic rule took 0.4 s.
+
 ## [0.5.0] - 2026-10-31
 
 ### Added
