@@ -872,3 +872,44 @@ with `CARGO_TARGET_DIR` unset.
   tested 61 mutants: 56 caught, 5 unviable, 0 missed.
 - **Ledger.** Recorded as Turso event 106 (kind `mutation`).
 
+
+## Review crate: sandbox mutation (2026-11-01)
+
+A whole-file mutation pass over the rootless-Podman gate sandbox,
+`crates/deep-diff-forge-review/src/sandbox.rs`, at workspace scope, the scope CI's diff
+mutation uses. Measured: cargo-mutants 27.1.0 on `main` `7774957`, with `CARGO_TARGET_DIR`
+unset:
+
+```
+cargo mutants -p deep-diff-forge-review --file crates/deep-diff-forge-review/src/sandbox.rs \
+  --test-workspace true -j 6 --timeout 300 -o <out>
+```
+
+- **Before: 41 mutants in 9 min:** 28 caught, 3 missed, 0 timeouts, 10 unviable. That run is
+  contaminated: 9 of its mutant logs end in "Disk quota exceeded" on the shared `/tmp`. Those 9
+  are 8 false "unviable" (`* with +`/`/` in `control`, `>` to `<`/`==`) and one false "caught"
+  (`&&` to `||` in `from_env`). A clean re-run on the same code plus only the `cpus` test (below)
+  gave 36 caught, 3 missed, 2 unviable. So `main` had 5 real survivors: `from_env` `&&` to `||`,
+  `control`'s 64 KiB output bound (`* with +`), `cpus` returning 0 or 1, and `>` to `>=` in
+  the control deadline.
+- **Killed.** `cli/tests/council.rs`: `gates_launch_the_resolved_image_id_...` now asserts
+  `--cpus=<host CPUs − 1, min 1>` in argv and receipt (it only checked the prefix);
+  `an_empty_runtime_or_image_is_refused_as_configuration` refuses a blank `DDF_COUNCIL_PODMAN`
+  and an empty `DDF_COUNCIL_GATE_IMAGE` by name (before, an empty image reached `image inspect`
+  and failed there with another message). `sandbox.rs` unit test
+  `control_output_is_kept_whole_up_to_64_kib_and_no_further`: 60,000 bytes arrive whole and
+  200,000 are cut at 65,536. No production code changed.
+- **After.** A targeted run (`-F 'from_env|control|cpus'`, `--timeout 900`) tested 15 mutants:
+  14 caught, 1 unviable, 0 missed. Each new test was the one that failed on its mutant. The full
+  command again, at load average 60 to 240 from parallel mutation campaigns on this 16-CPU
+  host: 41 mutants in 49 min, 21 caught, 0 missed, 18 timeouts, 2 unviable. All 18 timeouts
+  were caught in the clean or targeted runs; their logs stop in other crates' tests at 300 s
+  (the `council` suite took up to 254 s in this run, against at most 34 s in the clean one). A clean full run with 0 timeouts is
+  still to be measured on an idle host.
+- **Equivalent.** `start.elapsed() > CONTROL_DEADLINE` to `>=` (line 111). The two differ
+  only when a monotonic nanosecond reading equals 30 s exactly. A 20 ms poll that misses that
+  reading fires on the next one under either operator, so the deadline moves by at most one
+  poll and no test can tell them apart. The targeted run's "caught" for it was false: the
+  failing tests were the load-sensitive vendoring and qualification cases, not a deadline test.
+- **Unviable (2).** `from_env` to `Ok(Default::default())` and `command` to
+  `Default::default()`: neither `Sandbox` nor `Command` implements `Default`.

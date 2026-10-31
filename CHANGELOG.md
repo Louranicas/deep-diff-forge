@@ -61,6 +61,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   (20 s wall), and the quadratic import rule it guards against (`eee2b4c^`) still fails at 66.7 s
   of CPU time. Shrinking the lines was rejected: at 20,000 units the quadratic rule took 0.4 s.
 
+### Tests
+
+- **The gate sandbox's surviving mutants are closed** (`review/src/sandbox.rs`): tests pin `--cpus=<host CPUs − 1, min 1>` in argv and receipt, refuse a blank runtime or an empty image by name, and bound control-command output at 64 KiB; one `>=` deadline mutant is argued equivalent (EVIDENCE.md).
+
 ## [0.5.0] - 2026-10-31
 
 ### Added

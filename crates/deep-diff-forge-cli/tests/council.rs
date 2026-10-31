@@ -1906,6 +1906,38 @@ fn gates_refuse_without_a_sandbox() {
     }
 }
 
+/// Set but empty is not configured: a blank `DDF_COUNCIL_PODMAN` has no command to run and an
+/// empty `DDF_COUNCIL_GATE_IMAGE` names no image. Each alone is refused as configuration, before
+/// the runtime is asked anything, and no job directory is made.
+#[test]
+fn an_empty_runtime_or_image_is_refused_as_configuration() {
+    for (runtime, image) in [(Some(" \t "), "fake-gate"), (None, "")] {
+        let f = Fixture::new();
+        f.prepare();
+        f.install_gate("valid");
+        let mut command = f.command(
+            &["gate", f.run.to_str().unwrap(), "tests", "--execute"],
+            "normal",
+        );
+        command.env("DDF_COUNCIL_GATE_IMAGE", image);
+        if let Some(runtime) = runtime {
+            command.env("DDF_COUNCIL_PODMAN", runtime);
+        }
+        let result = command.output().unwrap();
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert_eq!(
+            result.status.code(),
+            Some(4),
+            "{runtime:?} {image:?}: {stderr}"
+        );
+        assert!(
+            stderr.contains("gate sandbox unavailable: empty runtime or image"),
+            "{runtime:?} {image:?}: {stderr}"
+        );
+        assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
+    }
+}
+
 #[test]
 fn relative_run_paths_resolve_before_provider_working_directory_changes() {
     let f = Fixture::new();
@@ -2237,7 +2269,19 @@ fn gates_launch_the_resolved_image_id_with_read_only_inputs_and_bounded_resource
     ] {
         assert!(argv.contains(&expected), "missing {expected}: {argv:?}");
     }
-    assert!(argv.iter().any(|a| a.starts_with("--cpus=")));
+    // Every host CPU but one, never fewer than one: the gate cannot starve its supervising
+    // controller, and a one- or two-CPU host still runs it (docs/REVIEW_COUNCIL.md, row 9). The
+    // controller inherits this process's affinity, so both see the same parallelism.
+    let host = std::thread::available_parallelism().unwrap().get();
+    let cpus = host.saturating_sub(1).max(1);
+    assert!(
+        argv.contains(&format!("--cpus={cpus}")),
+        "{host} host CPUs: {argv:?}"
+    );
+    assert_eq!(
+        environment["cpus"], cpus,
+        "the receipt names the same bound"
+    );
     // The vendoring job alone has network and a writable Cargo home; it too runs on a read-only source.
     let vendor = f.runtime_argv("sandbox-vendor").concat();
     assert!(vendor.iter().all(|a| a != "--network=none"));
