@@ -900,7 +900,6 @@ deployment.
 
 **Known limits.** Contributions are welcome on any of these; see [CONTRIBUTING.md](CONTRIBUTING.md#open-problems-worth-owning):
 
-- The cockpit is tested by headless frames; there is no key-sequence harness yet.
 - Syntax features speak Rust; comparing two files directly (`<old> <new>`) and the `chain`,
   `cluster` and `loom` subcommands are planned and refused today.
 

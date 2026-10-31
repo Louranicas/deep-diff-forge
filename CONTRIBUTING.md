@@ -24,8 +24,6 @@ reaches `main`.
 Each of these is real, scoped, and listed as a known limit in the
 [production-readiness notes](SECURITY.md):
 
-- **A TUI test harness.** The cockpit is tested through `review --probe` frames; a harness that
-  drives key sequences would catch interaction bugs.
 - **More languages.** Syntax features (`semantic`, `highlight`, `structural`) speak Rust today.
   The registry in `crates/deep-diff-forge-syntax` is built to take more grammars.
 - **File-pair input.** `deep-diff-forge <old> <new>` is refused today; see

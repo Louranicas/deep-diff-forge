@@ -363,9 +363,12 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
 - **Closed in 0.4.0: macOS tests did not run on pull requests.** The `macos`
   CI job now runs on every event, each pull request included, and `macOS tests`
   is a required check.
-- **The TUI has no interactive test harness.** Unit tests cover its state and
-  rendering, and the headless `review --probe` frame is tested end to end; the
-  live terminal path is not.
+- **Closed 2026-10-31: the TUI's live terminal path was untested.** The event loop and terminal
+  restore are driven by scripted input (keys, bursts, resizes, mouse, failing or ending input,
+  a panic) in `crates/deep-diff-forge-tui/src/run.rs`, and `cli/tests/review_tty.rs` runs bare
+  `review` in a pseudo-terminal (Python's `pty`): alternate screen and mouse capture on, the
+  cockpit drawn, `q` exits 0, both restored. Measured on Linux; the macOS CI job runs the
+  same test, not yet observed there.
 - **The review council trial is undesigned.** The council is used on this
   repository; no controlled trial of its review quality exists.
 

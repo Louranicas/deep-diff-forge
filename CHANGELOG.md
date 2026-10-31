@@ -32,6 +32,24 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   CLI. The systemd `ExecStop` ignores "no daemon" (`-`): systemd also runs it after a daemon
   stopped from a shell, and its exit 6 restarted the unit (measured: `NRestarts=1` without the
   `-`, 0 with it).
+- **The live review loop is tested.** `deep-diff-forge-tui`'s `run` takes the terminal through one
+  seam: stdout and crossterm's raw-mode, `read` and `poll` functions, passed in as values, so
+  production has no adapter code of its own. Tests drive that same loop and restore with scripted
+  input against a `TestBackend`: the frame drawn is the headless render, a queued burst is
+  applied before one redraw, nothing queued after `q` is read, a resize redraws at the new size,
+  and an ending or failing input, a failing draw, a panic or a failed restore each return their
+  error (or unwind) with raw mode off and the alternate screen left. `cli/tests/review_tty.rs`
+  runs bare `review` in a pseudo-terminal (Python's `pty`): the alternate screen and mouse
+  capture are entered, the cockpit is drawn, `q` exits 0, and both are restored.
+
+### Fixed
+
+- **A failed alternate-screen entry no longer leaves the terminal in raw mode.** `review` switched
+  raw mode on, then wrote the alternate-screen sequence, and armed its restore guard only after
+  that write; if the write failed (stdout closed) it returned with the terminal still raw. The
+  guard is now armed as soon as raw mode is on. If raw mode cannot be switched on, nothing is
+  written.
+
 ### Security
 
 - **Every release binary is run before it ships.** The x86_64 macOS binary was cross-built and
