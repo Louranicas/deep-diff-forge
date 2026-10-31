@@ -61,6 +61,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   (20 s wall), and the quadratic import rule it guards against (`eee2b4c^`) still fails at 66.7 s
   of CPU time. Shrinking the lines was rejected: at 20,000 units the quadratic rule took 0.4 s.
 
+### Tests
+
+- **`mutation_scope`'s quadratic-scan guard fails instead of hanging.** Its 1 MiB `#` run is
+  scanned under a two-minute deadline, so eager `#` counting is reported as caught, not as a
+  timeout (EVIDENCE.md, "Review crate: mutation_scope mutation").
+
 ## [0.5.0] - 2026-10-31
 
 ### Added

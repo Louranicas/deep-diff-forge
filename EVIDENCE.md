@@ -872,3 +872,35 @@ with `CARGO_TARGET_DIR` unset.
   tested 61 mutants: 56 caught, 5 unviable, 0 missed.
 - **Ledger.** Recorded as Turso event 106 (kind `mutation`).
 
+## Review crate: mutation_scope mutation (2026-11-01)
+
+`crates/deep-diff-forge-review/src/mutation_scope.rs` decides which lines the council's
+diff-scoped mutation gate mutates, so a gap in its tests could weaken the gate without anyone
+noticing. Measured: cargo-mutants 27.1.0 on `main` `7774957`, with `CARGO_TARGET_DIR` unset:
+`cargo mutants -p deep-diff-forge-review --file crates/deep-diff-forge-review/src/mutation_scope.rs --test-workspace true -j 6 --timeout 300`.
+
+- **Before, 271 mutants:** 267 caught, 0 missed, 1 timeout, 3 unviable. One of the caught
+  mutants (`verified` returning `Ok(vec![])`) was lost when `/tmp` ran out of quota, so it was
+  re-run alone with `-F` (caught).
+- **Crate scope compared with workspace scope.** The 2026-10-31 whole-crate run (crate scope)
+  missed 40 mutants in this file: `require_base`, `verified`, `hex`, `base_blobs`, `capture`
+  and `capture_from`. All 40 are caught at workspace scope, by the end-to-end `mutation_base`
+  tests in `cli/tests/council.rs`. CI's diff mutation also runs at workspace scope.
+- **Timeout.** `byte == b'r'` replaced by `!=` in `code_lines` (line 412) makes the scan count
+  `#` runs at every byte. The 1 MiB `#` run in `char_literals_and_lifetimes_are_told_apart` then
+  takes hours, so the run hit the 300 s limit before any test could fail it. The scan now runs on
+  its own thread with a two-minute wall-clock deadline. A wide bound cannot fail on a busy host,
+  while a narrow one can, as `graph`'s 10 s bound did. Failing first: with the mutant applied, the
+  test fails at its deadline instead of hanging.
+- **After, 271 mutants in 46 min:** 268 caught, 0 missed, 0 timeouts, 3 unviable. The line-412
+  mutant is caught.
+- **Equivalents:** none. The 3 unviable mutants turn `<<` into `>>` in `LINE_CELL_BUDGET`,
+  `TOTAL_CELL_BUDGET` and `LINE_CAP`. The tests' `const` assertions on those values stop each one
+  from compiling.
+- **Measurement note.** Four attempts at the after run, and one run limited with `-F`, were
+  stopped and thrown away. Each had `TMPDIR` on `/var/mnt/storage`, moved there to avoid the
+  `/tmp` quota. On that disk, the `council` integration binary had not finished when the 300 s
+  limit ran out, where it had taken 34 s on tmpfs. Mutants whose tests had already failed were
+  therefore reported as timeouts. Build copies and
+  the tests' temporary directories belong on tmpfs. Six build copies took about 14 GiB of the
+  38.5 GiB per-user `/tmp` quota.
