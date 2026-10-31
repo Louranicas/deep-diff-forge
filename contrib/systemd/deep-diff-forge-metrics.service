@@ -1,0 +1,21 @@
+# Write the Deep-Diff-Forge daemon's metrics for node_exporter's textfile collector, once.
+# deep-diff-forge-metrics.timer runs it every 15 s; the daemon unit (deep-diff-forge.service)
+# must be running, or this exits 6 and leaves the last file in place (its mtime shows it is stale).
+# Install: cp contrib/systemd/deep-diff-forge-metrics.{service,timer} ~/.config/systemd/user/
+#          systemctl --user daemon-reload && systemctl --user enable --now deep-diff-forge-metrics.timer
+# The --out directory is node_exporter's --collector.textfile.directory, and this user must be
+# able to write it; the file is written whole (temporary file, then rename) with mode 0644.
+# Docs: docs/OPERATIONS_AND_DAEMON.md#exporting-metrics-to-prometheus
+[Unit]
+Description=Deep-Diff-Forge daemon metrics for node_exporter (this user)
+Documentation=https://github.com/Louranicas/deep-diff-forge/blob/main/docs/OPERATIONS_AND_DAEMON.md
+After=deep-diff-forge.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/deep-diff-forge daemon metrics --format prometheus --out /var/lib/node_exporter/textfile_collector/deep-diff-forge.prom
+NoNewPrivileges=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native

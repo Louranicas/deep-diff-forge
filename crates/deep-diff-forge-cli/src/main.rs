@@ -10,6 +10,7 @@ mod file_pair;
 mod git_input;
 mod mcp;
 mod rpc;
+mod textfile;
 use deep_diff_forge_core::exit;
 use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe, display_safe_bounded};
 
@@ -480,7 +481,7 @@ const CURRENT_MATURITY: deep_diff_forge_core::MaturityLevel =
 
 /// `daemon {path|start|health|status|metrics|stop} [--socket PATH]`: drive the optional
 /// UDS JSON-RPC review daemon.
-const DAEMON_USAGE: &str = "deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics|stop} [--socket PATH]";
+const DAEMON_USAGE: &str = "deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]";
 
 fn daemon_cmd(opts: &[String]) {
     use deep_diff_forge_daemon::SocketLocation;
@@ -488,7 +489,13 @@ fn daemon_cmd(opts: &[String]) {
         opts,
         &args::Spec {
             flags: &["--foreground"],
-            valued: &["--socket", "--allow-repo", "--log-format"],
+            valued: &[
+                "--socket",
+                "--allow-repo",
+                "--log-format",
+                "--format",
+                "--out",
+            ],
             positionals: 1,
         },
         DAEMON_USAGE,
@@ -521,6 +528,7 @@ fn daemon_cmd(opts: &[String]) {
             std::process::exit(exit::USAGE);
         }
     };
+    let metrics_output = metrics_output_or_exit(opts, sub);
     if !matches!(
         sub,
         Some("path" | "start" | "health" | "status" | "metrics" | "stop")
@@ -555,32 +563,13 @@ fn daemon_cmd(opts: &[String]) {
         }
         Some("health") => daemon_client(&location, r#"{"id":1,"method":"daemon.health"}"#),
         Some("status") => daemon_client(&location, r#"{"id":1,"method":"daemon.status"}"#),
-        Some("metrics") => daemon_client(&location, r#"{"id":1,"method":"daemon.metrics"}"#),
-        Some("stop") => {
-            // The start lock is opened before the stop, while the socket path still resolves.
-            let waiter = location.stop_waiter();
-            daemon_client(&location, r#"{"id":1,"method":"daemon.shutdown"}"#);
-            // `stop` returns once the daemon has exited (its drain done, its start lock free),
-            // so a `daemon start` right after it does not find the old daemon in the way.
-            match waiter.and_then(|waiter| waiter.wait(deep_diff_forge_daemon::STOP_WAIT)) {
-                Ok(true) => {}
-                Ok(false) => {
-                    eprintln!(
-                        "error: the daemon at {} did not exit within {} s",
-                        display_safe(&location.path().to_string_lossy()),
-                        deep_diff_forge_daemon::STOP_WAIT.as_secs()
-                    );
-                    std::process::exit(exit::DAEMON_OR_TERMINAL);
-                }
-                Err(err) => {
-                    eprintln!(
-                        "error: cannot tell whether the daemon at {} exited: {err}",
-                        display_safe(&location.path().to_string_lossy())
-                    );
-                    std::process::exit(exit::DAEMON_OR_TERMINAL);
-                }
+        Some("metrics") => match metrics_output {
+            MetricsOutput::Prometheus(out) => daemon_metrics_prometheus(&location, out.as_deref()),
+            MetricsOutput::Json => {
+                daemon_client(&location, r#"{"id":1,"method":"daemon.metrics"}"#);
             }
-        }
+        },
+        Some("stop") => daemon_stop(&location),
         _ => {
             eprintln!("usage: {DAEMON_USAGE}");
             std::process::exit(exit::USAGE);
@@ -588,9 +577,117 @@ fn daemon_cmd(opts: &[String]) {
     }
 }
 
+/// `daemon stop`: ask the daemon to shut down, then wait for it to exit.
+fn daemon_stop(location: &deep_diff_forge_daemon::SocketLocation) {
+    // The start lock is opened before the stop, while the socket path still resolves.
+    let waiter = location.stop_waiter();
+    daemon_client(location, r#"{"id":1,"method":"daemon.shutdown"}"#);
+    // `stop` returns once the daemon has exited (its drain done, its start lock free),
+    // so a `daemon start` right after it does not find the old daemon in the way.
+    match waiter.and_then(|waiter| waiter.wait(deep_diff_forge_daemon::STOP_WAIT)) {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!(
+                "error: the daemon at {} did not exit within {} s",
+                display_safe(&location.path().to_string_lossy()),
+                deep_diff_forge_daemon::STOP_WAIT.as_secs()
+            );
+            std::process::exit(exit::DAEMON_OR_TERMINAL);
+        }
+        Err(err) => {
+            eprintln!(
+                "error: cannot tell whether the daemon at {} exited: {err}",
+                display_safe(&location.path().to_string_lossy())
+            );
+            std::process::exit(exit::DAEMON_OR_TERMINAL);
+        }
+    }
+}
+
+/// What `daemon metrics` prints.
+enum MetricsOutput {
+    /// The `daemon.metrics` answer as the daemon sent it.
+    Json,
+    /// The Prometheus text, on stdout or written to the `--out` path.
+    Prometheus(Option<String>),
+}
+
+/// The `--format` and `--out` of `daemon metrics`; exit 2 on one that does not apply.
+fn metrics_output_or_exit(opts: &[String], sub: Option<&str>) -> MetricsOutput {
+    let prometheus = match flag_value(opts, "--format").as_deref() {
+        _ if sub != Some("metrics") && opts.iter().any(|a| a == "--format") => {
+            eprintln!("error: --format applies only to `daemon metrics`");
+            std::process::exit(exit::USAGE);
+        }
+        None | Some("json") => false,
+        Some("prometheus") => true,
+        Some(other) => {
+            eprintln!(
+                "error: --format takes json or prometheus, not {}",
+                display_safe(other)
+            );
+            std::process::exit(exit::USAGE);
+        }
+    };
+    // `--out` writes the Prometheus text for node_exporter's textfile collector; the JSON answer
+    // stays on stdout.
+    let out = flag_value(opts, "--out");
+    if out.is_some() && !prometheus {
+        eprintln!("error: --out applies only to `daemon metrics --format prometheus`");
+        std::process::exit(exit::USAGE);
+    }
+    if prometheus {
+        MetricsOutput::Prometheus(out)
+    } else {
+        MetricsOutput::Json
+    }
+}
+
 fn daemon_client(location: &deep_diff_forge_daemon::SocketLocation, line: &str) {
+    emitln!("{}", daemon_request_or_exit(location, line));
+}
+
+/// `daemon metrics --format prometheus [--out PATH]`: the daemon's `daemon.metrics` answer in the
+/// Prometheus text format, on stdout or written whole to PATH. A daemon that answers no usable
+/// metrics document exits 6 and leaves PATH as it was, so a stale file shows in its mtime.
+fn daemon_metrics_prometheus(location: &deep_diff_forge_daemon::SocketLocation, out: Option<&str>) {
+    let response = daemon_request_or_exit(location, r#"{"id":1,"method":"daemon.metrics"}"#);
+    let reply: serde_json::Value = serde_json::from_str(&response).unwrap_or_default();
+    let text = match deep_diff_forge_daemon::exposition::prometheus_text(&reply["result"]) {
+        Ok(text) => text,
+        Err(reason) => {
+            let reason = reply["error"]["message"]
+                .as_str()
+                .map_or(reason, |message| {
+                    format!("the daemon refused daemon.metrics: {message}")
+                });
+            eprintln!(
+                "error: no metrics from the daemon at {}: {}",
+                display_safe(&location.path().to_string_lossy()),
+                display_safe(&reason)
+            );
+            std::process::exit(exit::DAEMON_OR_TERMINAL);
+        }
+    };
+    let Some(out) = out else {
+        emit(&text);
+        return;
+    };
+    if let Err(err) = textfile::write_atomically(std::path::Path::new(out), text.as_bytes()) {
+        eprintln!(
+            "error: cannot write {}: {}",
+            display_safe(out),
+            display_safe(&err.to_string())
+        );
+        std::process::exit(exit::IO);
+    }
+}
+
+/// One request to the daemon and its answer line; exit 6 when no daemon this user may use
+/// answers.
+fn daemon_request_or_exit(location: &deep_diff_forge_daemon::SocketLocation, line: &str) -> String {
     match deep_diff_forge_daemon::request(location, line) {
-        Ok(response) => emitln!("{response}"),
+        Ok(response) => response,
         Err(err) => {
             // Something is there, but this user may not use it: a daemon of another user, or a
             // socket whose mode refuses the connect.
@@ -1876,7 +1973,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     (
         "daemon",
         DAEMON_USAGE,
-        "Run or query the optional Unix-socket JSON-RPC daemon; --allow-repo lets review.change read those repositories.",
+        "Run or query the optional Unix-socket JSON-RPC daemon; --allow-repo lets review.change read those repositories; metrics --format prometheus --out PATH writes a node_exporter textfile.",
     ),
     (
         "learn",

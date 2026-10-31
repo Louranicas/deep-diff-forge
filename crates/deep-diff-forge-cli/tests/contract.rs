@@ -557,6 +557,31 @@ fn command_option_rows<'a>(source: &'a str, socket: &'a str) -> Vec<(&'static st
                 "/dev/null/d.sock",
             ],
         ),
+        (
+            "--format",
+            // `metrics` alone takes it; no daemon answers here (exit 6).
+            vec![
+                "daemon",
+                "metrics",
+                "--format",
+                "prometheus",
+                "--socket",
+                socket,
+            ],
+        ),
+        (
+            "--out",
+            vec![
+                "daemon",
+                "metrics",
+                "--format",
+                "prometheus",
+                "--out",
+                "/dev/null/ddf.prom",
+                "--socket",
+                socket,
+            ],
+        ),
         ("--stdin", vec!["learn", "record", "--stdin"]),
         (
             "--quick",

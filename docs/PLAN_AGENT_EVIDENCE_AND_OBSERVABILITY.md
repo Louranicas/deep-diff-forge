@@ -230,7 +230,7 @@ The delivery table above stands. These are added to its PRs:
 
 - **An LLM inside DDF, patch repair, and a patch-writing MCP tool:** the circle's "never" list.
 - **A persistent findings store, and signed receipts:** the circle deferred both. B prints sealed output to stdout, and a store comes later.
-- **A metrics endpoint over TCP, and Prometheus:** the daemon stays on a Unix socket, single user. `daemon.metrics` is the interface.
+- **A metrics endpoint over TCP, and Prometheus:** the daemon stays on a Unix socket, single user. `daemon.metrics` is the interface. (2026-10-31: still no endpoint or scrape listener. `daemon metrics --format prometheus --out PATH` renders that interface's answer as a Prometheus text file for node_exporter's textfile collector; see [exporting metrics](OPERATIONS_AND_DAEMON.md#exporting-metrics-to-prometheus).)
 - **A claim that evidence is complete:** the lexical layer finds tokens. It doesn't prove a change is safe, and every document says so.
 
 ## 1.2 — 2026-10-30, what shipped and where it differs

@@ -365,7 +365,7 @@ deep-diff-forge schema [result|exit-codes]      # the envelope's JSON Schema, or
 deep-diff-forge explain <code> [--family engine|council] [--json]
 deep-diff-forge mcp                             # read-only MCP server over stdio
 deep-diff-forge rpc                             # the daemon's JSON-RPC over stdio, no daemon
-deep-diff-forge daemon {path|start [--foreground] [--log-format text|json]|health|status|metrics|stop} [--socket PATH]
+deep-diff-forge daemon {path|start [--foreground] [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]
 ```
 
 ### Learning, analysis, deployment and diagnostics
@@ -423,7 +423,7 @@ empty.
 | `envelope` | `ddf.result.v1` |
 | `agent setup --json` · `agent doctor --json` | `deep-diff-forge.agent-setup.v0` · `deep-diff-forge.agent-doctor.v0` |
 | `findings verify`, `findings.verify`, MCP `verify_findings` | `deep-diff-forge.findings.v0` (input: one `deep-diff-forge.finding.v0` object per finding) |
-| `daemon metrics`, `daemon.metrics` | `deep-diff-forge.daemon-metrics.v0` |
+| `daemon metrics`, `daemon.metrics` | `deep-diff-forge.daemon-metrics.v0` (`--format prometheus`: Prometheus text 0.0.4) |
 | `bench --json` · `eval --json` | `deep-diff-forge.bench.v0` · `deep-diff-forge.eval.v0` (corpus: `deep-diff-forge.eval-manifest.v0`) |
 | `daemon`, `rpc` | JSON-RPC 2.0, protocol 2 |
 
@@ -655,7 +655,10 @@ deep-diff-forge daemon stop                    # answers what is in progress, re
 ```
 
 To run it as a service, use the systemd user unit or the launchd agent in `contrib/`
-([running as a service](docs/OPERATIONS_AND_DAEMON.md#running-as-a-service)).
+([running as a service](docs/OPERATIONS_AND_DAEMON.md#running-as-a-service)). For Prometheus,
+`deep-diff-forge daemon metrics --format prometheus --out DIR/deep-diff-forge.prom` writes the
+metrics as a file for node_exporter's textfile collector, with no new listener; a user timer that
+runs it ships too ([exporting metrics](docs/OPERATIONS_AND_DAEMON.md#exporting-metrics-to-prometheus)).
 
 ## Verified agent findings
 
