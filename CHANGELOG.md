@@ -8,6 +8,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **Dependabot watches the Python client.** `.github/dependabot.yml` gains a weekly `pip` entry
+  for `sdk/python` (its only requirement is the setuptools build backend), with the same 7-day
+  cooldown as the Cargo and Actions entries.
 - **The Python client is a package.** `sdk/python/pyproject.toml` (setuptools, no dependencies,
   Python 3.9+) installs `deep_diff_forge` as the package `deep-diff-forge`, from a checkout
   (`python3 -m pip install ./sdk/python`) or from GitHub with `#subdirectory=sdk/python`. It is

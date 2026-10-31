@@ -18,6 +18,16 @@ updates:
       default-days: 7
     open-pull-requests-limit: 5
 
+  # The Python client (sdk/python/pyproject.toml): no runtime dependencies, only the setuptools
+  # build requirement, which Dependabot keeps current.
+  - package-ecosystem: pip
+    directory: "/sdk/python"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+
   # Keep third-party GitHub Actions current. Workflows pin immutable commit SHAs;
   # Dependabot proposes reviewed SHA updates without introducing floating tags.
   - package-ecosystem: github-actions
