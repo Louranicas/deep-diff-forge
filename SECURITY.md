@@ -363,12 +363,18 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
 - **Closed in 0.4.0: macOS tests did not run on pull requests.** The `macos`
   CI job now runs on every event, each pull request included, and `macOS tests`
   is a required check.
-- **Closed 2026-10-31: the TUI's live terminal path was untested.** The event loop and terminal
-  restore are driven by scripted input (keys, bursts, resizes, mouse, failing or ending input,
-  a panic) in `crates/deep-diff-forge-tui/src/run.rs`, and `cli/tests/review_tty.rs` runs bare
-  `review` in a pseudo-terminal (Python's `pty`): alternate screen and mouse capture on, the
-  cockpit drawn, `q` exits 0, both restored. Measured on Linux; the macOS CI job runs the
-  same test, not yet observed there.
+- **Closed on Linux 2026-10-31, open on macOS: the TUI's live terminal path was untested.**
+  The event loop and terminal restore are driven by scripted input (keys, bursts, resizes,
+  mouse, failing or ending input, a panic) in `crates/deep-diff-forge-tui/src/run.rs`, and
+  `cli/tests/review_tty.rs` runs bare `review` in a pseudo-terminal (Python's `pty`): alternate
+  screen and mouse capture on, the cockpit drawn, `q` exits 0, both restored. Measured on
+  Linux. On macOS, crossterm's default key reader cannot wait on `/dev/tty` (kqueue refuses
+  it, crossterm-rs/crossterm#500), and `review` reads keys there because its patch is on
+  stdin, so the tui crate turns on crossterm's `use-dev-tty` reader for macOS only. Measured:
+  crossterm 0.29.0 with that feature type-checks for `aarch64-apple-darwin` (the whole
+  workspace cannot be cross-checked here: tree-sitter's C build needs the macOS SDK), and the
+  same reader passes the pty test on Linux with the feature turned on for that run.
+  Interactive `review` on macOS stays open until the `macOS tests` job is seen passing it.
 - **The review council trial is undesigned.** The council is used on this
   repository; no controlled trial of its review quality exists.
 

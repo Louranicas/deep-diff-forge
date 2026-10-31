@@ -900,6 +900,8 @@ deployment.
 
 **Known limits.** Contributions are welcome on any of these; see [CONTRIBUTING.md](CONTRIBUTING.md#open-problems-worth-owning):
 
+- Interactive `review` on macOS is built with a key reader that can wait on `/dev/tty`, but no
+  run on a Mac has been observed yet; the `macOS tests` job's pty test is the check.
 - Syntax features speak Rust; comparing two files directly (`<old> <new>`) and the `chain`,
   `cluster` and `loom` subcommands are planned and refused today.
 

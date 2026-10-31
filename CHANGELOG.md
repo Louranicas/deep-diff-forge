@@ -49,6 +49,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   that write; if the write failed (stdout closed) it returned with the terminal still raw. The
   guard is now armed as soon as raw mode is on. If raw mode cannot be switched on, nothing is
   written.
+- **`review` on macOS reads keys through a reader that can wait on `/dev/tty`.** The patch is
+  on stdin, so crossterm reads keys from `/dev/tty`, and its default reader registers that fd
+  with kqueue, which refuses it on macOS (crossterm-rs/crossterm#500): `review` would fail on
+  its first key read there. The tui crate enables crossterm's `use-dev-tty` feature on macOS
+  only (select(2) through `filedescriptor`; adds `filedescriptor` 0.8.3 and `thiserror` 1 to
+  the macOS build). Inferred from source, not observed on a Mac: the `macOS tests` job runs
+  `cli/tests/review_tty.rs`, which is the check.
 
 ### Security
 

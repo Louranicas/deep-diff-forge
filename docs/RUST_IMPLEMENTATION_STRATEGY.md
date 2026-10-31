@@ -19,8 +19,8 @@ errors, and reliable concurrency.
   table below do not exist; `learning`, `review` and `sdk` exist and are not in it.
 - **External dependencies actually used** (from each crate's `Cargo.toml`): `serde` and
   `serde_json` (daemon, learning, review, cli, sdk), `rustix` (daemon, learning), `nix` (review),
-  `tree-sitter` and `tree-sitter-rust` (syntax, pinned exactly), `ratatui` and `crossterm` (tui),
-  `unicode-width` and `unicode-segmentation` (projection). `core`, `patch`, `graph`, `cluster`,
+  `tree-sitter` and `tree-sitter-rust` (syntax, pinned exactly), `ratatui` and `crossterm` (tui;
+  its `use-dev-tty` feature on macOS, which reads keys through `filedescriptor`), `unicode-width` and `unicode-segmentation` (projection). `core`, `patch`, `graph`, `cluster`,
   `pipeline` and `agent` have no external dependencies.
 - **Not used:** `clap` (arguments are parsed by `crates/deep-diff-forge-cli/src/args.rs`),
   `gix` (Git input runs the `git` program), `rayon` (`cluster` uses `std::thread::scope`),
