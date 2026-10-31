@@ -15,7 +15,7 @@ not a description of the code; the next section says where 0.3.0 stands.
 | Runtime view toggles | Partial | Layout, fold, wrap, notes, theme. No syntax/word/whitespace/moves/generated toggles. |
 | Syntax highlighting | Partial | Tree-sitter for Rust only; `highlight` returns no spans for any other language (`crates/deep-diff-forge-syntax/src/highlight.rs`). No fallback highlighter. |
 | Structural diffing | Partial | `structural <old> <new>`: token-level, reformat-only and best-effort move detection, explicit degraded state; Rust only. |
-| Pager-compatible mode | Not built | `deep-diff-forge <old> <new>` is refused; no `GIT_EXTERNAL_DIFF` or difftool mode. |
+| Pager-compatible mode | Partial | `deep-diff-forge <old> <new>` reviews two regular files (2026-10-31); no directory pairs, no `GIT_EXTERNAL_DIFF` or difftool mode. |
 
 Compatibility at 0.3.0: unified and Git patches are parsed and rendered back
 (`render_unified`); JSON output exists (`--json`, schema `deep-diff-forge.review.v0`); exit codes

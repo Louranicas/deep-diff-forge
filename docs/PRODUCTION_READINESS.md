@@ -486,3 +486,13 @@ SDK distribution gap replaces it.
    service unit (systemd, launchd).
 5. **A whole-crate mutation pass** of `graph` and `agent`, recorded in the ledger, and a
    Python SDK package (+1, facets 1 and 6).
+
+## Follow-up 2026-10-31 (unreleased): the refused commands
+
+Codex's facet-6 gap, "`chain`, `cluster`, `loom` and direct `<old> <new>` remain refused despite
+published contracts", is closed by the change that adds this note, after v0.5.0 (measured: `cli/tests/file_pair.rs`,
+`cli/tests/contract.rs`). `<old> <new>` reviews two regular files through `git diff --no-index`
+with the acquisition's hardening; directories are refused. `chain`, `cluster` and `loom` were
+withdrawn, not built: each is refused with exit 2 and names its replacement, `--help` lists them
+under "WITHDRAWN", and the three contracts list only modes a test runs. The score above is not
+changed by this note.

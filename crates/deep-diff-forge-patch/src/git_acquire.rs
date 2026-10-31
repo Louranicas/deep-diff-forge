@@ -25,6 +25,18 @@
 //! a trailing `/`) cannot be diffed as a file and are reported in
 //! [`GitAcquisition::omitted_untracked`] instead of being silently dropped.
 //!
+//! # Direct file pairs
+//!
+//! [`diff_files`] compares two regular files with `git diff --no-index` and returns
+//! Git's patch bytes unchanged. Git runs from `/` on the canonical paths, so no
+//! repository around the files is discovered and none of its configuration or
+//! attributes apply: a reviewed checkout's own clean filter used to run when Git was
+//! started inside it. `core.attributesFile=/dev/null`, `GIT_ATTR_NOSYSTEM=1` and
+//! `core.autocrlf=false` also turn off the user's and the system's attributes and
+//! end-of-line conversion, so Git diffs the bytes on disk. Symbolic links,
+//! directories and special files are refused before Git runs, and so are inputs
+//! whose sizes together exceed the byte budget.
+//!
 //! # Environment
 //!
 //! Repository-redirecting variables (`GIT_DIR`, `GIT_WORK_TREE`,
@@ -218,7 +230,8 @@ struct Runner<'a> {
     /// When the whole acquisition must be done (see [`GitAcquireOptions::time_limit`]).
     deadline: std::time::Instant,
     /// Configuration passed to every call through `GIT_CONFIG_COUNT`/`KEY`/`VALUE`, which Git
-    /// reads at command-line precedence (see [`neutral_filters`]).
+    /// reads at command-line precedence (see [`neutral_filters`]), or [`diff_files`]'s
+    /// `GIT_ATTR_NOSYSTEM`.
     config_env: Vec<(OsString, OsString)>,
 }
 
@@ -665,6 +678,114 @@ pub fn acquire(
         diff,
         omitted_untracked,
     })
+}
+
+/// Global options for [`diff_files`], ahead of the subcommand: no attributes file, so no filter,
+/// end-of-line conversion or diff driver applies, and no CRLF conversion.
+const FILE_PAIR_GLOBAL_ARGS: &[&str] = &[
+    "-c",
+    "core.attributesFile=/dev/null",
+    "-c",
+    "core.autocrlf=false",
+];
+
+/// The `git diff --no-index` options for [`diff_files`]: [`DIFF_ARGS`] without the raw records,
+/// which name only the old path when the two names differ and so cannot be paired with the block.
+const FILE_PAIR_DIFF_ARGS: &[&str] = &[
+    "diff",
+    "--no-index",
+    "--no-ext-diff",
+    "--no-color",
+    "--patch",
+    "--binary",
+    "--full-index",
+    "--no-textconv",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    "--",
+];
+
+/// `path`'s canonical form and size, or why it may not be compared: it must exist, and both it
+/// and its canonical form must be a regular file, not a symbolic link, directory or special file.
+fn regular_file(side: &'static str, path: &Path) -> Result<(PathBuf, u64), GitAcquireError> {
+    let unreadable = |e: std::io::Error| GitAcquireError::FileUnreadable {
+        side,
+        detail: format!("{}: {e}", path.display()),
+    };
+    let refuse_kind = |meta: &std::fs::Metadata| {
+        let kind = meta.file_type();
+        let what = if kind.is_symlink() {
+            "a symbolic link"
+        } else if kind.is_dir() {
+            "a directory"
+        } else if kind.is_file() {
+            return Ok(());
+        } else {
+            "a special file (FIFO, socket or device)"
+        };
+        Err(GitAcquireError::FileRefused {
+            side,
+            detail: format!("{} is {what}, not a regular file", path.display()),
+        })
+    };
+    refuse_kind(&std::fs::symlink_metadata(path).map_err(unreadable)?)?;
+    let canonical = std::fs::canonicalize(path).map_err(unreadable)?;
+    // Checked again on the resolved path: the name may have been replaced since the first look.
+    let meta = std::fs::symlink_metadata(&canonical).map_err(unreadable)?;
+    refuse_kind(&meta)?;
+    Ok((canonical, meta.len()))
+}
+
+/// Compare two regular files with `git diff --no-index`: the exact patch bytes Git emits, empty
+/// when the files are identical. Headers name the canonical paths without their leading `/`
+/// (`a/home/me/old.rs`), because Git runs from `/` (see the module's "Direct file pairs").
+///
+/// The files are checked, then read by Git: a concurrent writer can change them in between, so
+/// this is not a sandbox against one. [`GitAcquireOptions::byte_budget`] bounds the two sizes
+/// together and Git's output, and [`GitAcquireOptions::time_limit`] bounds the run.
+///
+/// # Errors
+/// [`GitAcquireError::FileUnreadable`] for a side that cannot be inspected,
+/// [`GitAcquireError::FileRefused`] for one that is not a regular file or for sizes over the
+/// budget, [`GitAcquireError::InvalidSelection`] when untracked files are requested, and any
+/// error from running Git.
+pub fn diff_files(
+    old: &Path,
+    new: &Path,
+    options: &GitAcquireOptions,
+) -> Result<Vec<u8>, GitAcquireError> {
+    if options.include_untracked {
+        return Err(GitAcquireError::InvalidSelection {
+            detail: "untracked files can only be included in a working-tree selection".to_owned(),
+        });
+    }
+    let (old, old_len) = regular_file("old", old)?;
+    let (new, new_len) = regular_file("new", new)?;
+    let budget = options.byte_budget;
+    if old_len.saturating_add(new_len) > budget as u64 {
+        return Err(GitAcquireError::FileRefused {
+            side: "old and new",
+            detail: format!("{old_len} + {new_len} bytes exceed the {budget}-byte input budget"),
+        });
+    }
+    let runner = Runner {
+        options,
+        cwd: PathBuf::from("/"),
+        deadline: deadline_after(options.time_limit),
+        config_env: vec![(OsString::from("GIT_ATTR_NOSYSTEM"), OsString::from("1"))],
+    };
+    let from_root = |path: &Path| {
+        path.strip_prefix("/")
+            .unwrap_or(path)
+            .as_os_str()
+            .to_owned()
+    };
+    let (old, new) = (from_root(&old), from_root(&new));
+    let mut args: Vec<&OsStr> = FILE_PAIR_GLOBAL_ARGS.iter().map(OsStr::new).collect();
+    args.extend(FILE_PAIR_DIFF_ARGS.iter().map(OsStr::new));
+    args.extend([old.as_os_str(), new.as_os_str()]);
+    // `--no-index` exits 0 for identical files and 1 when they differ.
+    runner.run("git diff --no-index", &args, &[0, 1], budget)
 }
 
 /// Append each untracked, non-ignored file as an addition produced by
