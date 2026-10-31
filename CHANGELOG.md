@@ -11,6 +11,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **Dependabot watches the Python client.** `.github/dependabot.yml` gains a weekly `pip` entry
   for `sdk/python` (its only requirement is the setuptools build backend), with the same 7-day
   cooldown as the Cargo and Actions entries.
+- **Whole-crate mutation of `core`, `patch`, `daemon` and `syntax`** (EVIDENCE.md, 2026-11-01).
+  51 tests pin the mutants each crate's own tests missed: hunk addresses and digests, Git
+  C-quoted paths, the raw-record and patch-block identity checks, the exact `review.v0`
+  document, rename and truncation refusals in the parser, a socket line that ends at its
+  newline, and the byte, node and cell budgets of the syntax crate at exactly their limit.
+  Missed by the crate's own tests: `core` 22 to 3, `patch` 82 to 3, `syntax` 29 to 3, each
+  remaining one equivalent or compiled only off Unix; `daemon`'s 16 are caught by the
+  workspace's tests, except one equivalent. Tests of edit-script loops, tree walks and
+  quoted-path decoding run under a 10 s deadline, so a loop that stops advancing fails its test
+  instead of hanging the suite. Test code only.
+
 - **The Python client is a package.** `sdk/python/pyproject.toml` (setuptools, no dependencies,
   Python 3.9+) installs `deep_diff_forge` as the package `deep-diff-forge`, from a checkout
   (`python3 -m pip install ./sdk/python`) or from GitHub with `#subdirectory=sdk/python`. It is

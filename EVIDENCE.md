@@ -872,3 +872,74 @@ with `CARGO_TARGET_DIR` unset.
   tested 61 mutants: 56 caught, 5 unviable, 0 missed.
 - **Ledger.** Recorded as Turso event 106 (kind `mutation`).
 
+
+## Whole-crate mutation of core, patch, daemon and syntax (2026-11-01)
+
+The readiness gap "no whole-crate mutation run since council history (120 missed, recorded)"
+names the Turso ledger's totals. Measured from the ledger (`mutation_outcomes`): those misses
+were 94 in `review` (council gate rehearsals r7 to r15, diff-scoped), 25 in `daemon` (campaign
+`mutants/daemon-rerun`) and 2 in `syntax` (campaign `mutants/syntax`), all on older code. This
+pass re-ran the crates that matter most for patch truth and the trust boundary, on the code of
+`main` `9527f64`.
+
+**Method.** cargo-mutants 27.1.0, `-p <crate> -j 6 --timeout-multiplier 3`, `CARGO_TARGET_DIR`
+unset, on an export of `9527f64`: each crate against its own tests (crate scope). The survivors
+were then re-run with `--iterate --test-workspace true --timeout 300` (workspace scope, as the
+`diff-mutation` check runs). After the pins, the same commands ran on this branch.
+
+| Crate | Mutants | Before: caught / missed / timeouts / unviable | After: caught / missed / timeouts / unviable |
+| --- | ---: | --- | --- |
+| `core` | 196 | 166 / 22 / 0 / 8 | 185 / 3 / 0 / 8 |
+| `patch` | 637 | 500 / 82 / 3 / 52 | 581 / 4 / 0 / 52, then 3 missed (below) |
+| `daemon` | 565 | 478 / 16 / 13 / 58 | not re-run whole (below) |
+| `syntax` | 435 | 355 / 29 / 20 / 31 | 397 / 3 / 3 / 32; 0 timeouts at 300 s (below) |
+
+- **Workspace scope, before.** `core`: 22 re-run, 20 caught, 2 missed. `patch`: 85 re-run, 58
+  caught, 25 missed, 2 timeouts. `daemon`: 29 re-run, 27 caught, 1 missed, 1 timeout. Of the
+  catches, 2 (`core`), 40 (`patch`) and 2 (`daemon`) failed only
+  `graph`'s `the_import_rule_is_linear_on_long_lines`, whose 10 s deadline the loaded machine
+  (load average 40 to 68) exceeded; those catches are spurious, and the `patch` workspace
+  verdicts are not evidence. Alone the test took 2.4 s.
+- **Pinned.** 51 tests. `core`: hunk counts, body bytes, `body_sha256` and `address` against
+  `sha256sum` of the documented bytes; `json_escape` keeps a space. `patch`: Git C-quoted path
+  decoding and quoting (every escape, octal, NUL, round trip); raw-record parsing (mode width,
+  similarity score, the score's status, the section separator, bytes before the first block);
+  every block identity check (old and new `index` IDs, abbreviated IDs, header end, copy,
+  rename and mode-change lines); an appended stream's ranges; `GitSelection::label`; a failing
+  Git's stderr cut at exactly 8 KiB; a repository path over 1 KiB (Linux only); a nested
+  repository named in `omitted_untracked`; the exact `review.v0` document for two files; parser
+  refusals (an empty hunk, a truncated side, contradictory rename paths) and statuses.
+  `daemon`: a socket line ends at its newline while the peer stays open. `syntax`: every
+  highlight label, colour and capture family; empty spans; the byte, node and cell budgets at
+  exactly their limit (2 MiB, 200,000 nodes, a 2,000 by 2,000 line table, gaps of 4 M cells);
+  exact-LCS minimality; `union` symbols.
+- **Watchdogs.** Loop mutants (`i += 1` to `*=`, a cursor moved back) hang. The tests that run
+  `decode_quoted_prefix`, `structural_diff`, `mark_moves`, the exhaustive `lcs_ops` and
+  `line_anchored_ops` checks and `analyze` now run under a 10 s deadline. `syntax`'s 20
+  timeouts fell to 3 at the automatic 20 s limit, where the hung threads slow the rest of the
+  suite; `-F 'lcs_ops|mark_moves' --timeout 300` tested 122: 119 caught, 1 missed (equivalent,
+  below), 0 timeouts.
+- **`patch` after.** The 4th miss, `omitted_untracked`, was pinned after the run:
+  `-F omitted_untracked` tested 2, 1 caught, 1 unviable.
+- **`daemon` after.** The added test targets the workspace-scope timeout
+  `read_capped_line_deadline_noting` (`||` to `&&`). `-F read_capped_line_deadline_noting`
+  tested 14: 12 caught, 1 unviable, 1 timeout, also at `--timeout 300`. The new test fails in
+  5 s, but `inspect::tests::a_running_daemon_is_live_and_its_lock_usable` then runs past 300 s.
+  Open.
+- **Equivalent or not compiled here (9).** `core` `seal.rs` `compress`, `^` to `|` at 113:32,
+  120:33 and 120:49: the two terms of SHA-256's Ch share no set bit, and either XOR in Maj can
+  be an OR (checked over all inputs). `patch` `git_raw.rs:64` (2): the
+  `#[cfg(not(unix))]` `to_os_string`, compiled on neither Linux nor macOS. `patch`
+  `parser.rs:568:61`: the `new file mode`/`deleted file mode` clause after a rename is
+  unreachable, since the `InconsistentHeader` check returns first. `syntax`
+  `structural.rs:386:70` and `484:70` (`j + 1` to `j * 1` in backtracking): on a mismatch the
+  cell is the maximum of its two neighbours, so both comparisons choose alike. `syntax`
+  `highlight.rs:272:23` (`>` to `>=`): at equality the gap is empty. `daemon`
+  `serve.rs:630:21` and `security.rs:157:21` (`NotFound` guard to `true`, inferred): for any
+  other `lstat` error `create_dir_all` fails on the same path with the same kind. `daemon`
+  `serve.rs:883:25` (`Interrupted` guard to `false`, inferred from the standard library's
+  source): `UnixListener::accept` retries `EINTR` itself.
+- **Not done.** `review` (1,247 mutants) was run in crate scope only (below); its behaviour
+  is tested mostly from `cli`, so a useful pass needs workspace scope, several hours here.
+  `cli`, `tui`, `learning`, `pipeline`, `projection`, `cluster` and `sdk` were not run. The
+  ledger was not written: this pass is recorded here only.

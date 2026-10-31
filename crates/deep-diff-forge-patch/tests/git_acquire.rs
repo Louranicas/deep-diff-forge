@@ -700,6 +700,44 @@ fn long_filter_listings_and_deep_paths_are_read() {
     assert!(dirs.git_dir.ends_with(".git") && !dirs.has_alternates);
 }
 
+/// On Linux (`PATH_MAX` 4096) a repository path can pass a kibibyte; `acquire_git` reads the
+/// `rev-parse --show-toplevel` answer within its 64 KiB budget, so such a repository is
+/// acquired. macOS caps paths at 1024 bytes, hence Linux only.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_repository_path_over_a_kibibyte_is_acquired() {
+    let fx = fixture("over-kib");
+    let deep = (0..6).fold(fx.root.clone(), |p, i| {
+        p.join(format!("{}{i}", "d".repeat(200)))
+    });
+    assert!(deep.as_os_str().len() > 1206, "{}", deep.display());
+    std::fs::create_dir_all(&deep).unwrap();
+    git_out(&deep, &["init", "-q"]);
+    std::fs::write(deep.join("new.txt"), b"fresh\n").unwrap();
+    let acq = acquire_git(&deep, &GitSelection::WorkingTree, &options(true)).unwrap();
+    assert_eq!(acq.diff().changes().len(), 1);
+    find(&acq, "new.txt");
+}
+
+/// An untracked nested repository cannot be captured as a file; it is named in
+/// `omitted_untracked`, never silently dropped, and an untracked file beside it is captured.
+#[test]
+fn an_untracked_nested_repository_is_named_as_omitted() {
+    let fx = fixture("nested-repo");
+    let inner = fx.root.join("vendor/inner");
+    std::fs::create_dir_all(&inner).unwrap();
+    git_out(&inner, &["init", "-q"]);
+    std::fs::write(inner.join("y.txt"), b"y\n").unwrap();
+    let acq = acquire_git(&fx.root, &GitSelection::WorkingTree, &options(true)).unwrap();
+    let omitted: Vec<&[u8]> = acq
+        .omitted_untracked()
+        .iter()
+        .map(GitPath::as_bytes)
+        .collect();
+    assert_eq!(omitted, [&b"vendor/inner/"[..]]);
+    find(&acq, "nested/u.txt");
+}
+
 /// A filter that the repository's own configuration defines never runs: reviewing a repository
 /// someone handed you must not run their code (bug hunt 2026-10-28, H2-01).
 #[test]

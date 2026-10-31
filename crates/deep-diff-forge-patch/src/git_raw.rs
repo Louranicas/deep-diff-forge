@@ -1097,4 +1097,207 @@ mod tests {
         );
         assert_eq!(diff, before);
     }
+
+    // Pins for the 2026-10-31 whole-crate mutation run: each test names the rule it holds.
+
+    fn detail(err: &GitAcquireError) -> &str {
+        match err {
+            GitAcquireError::IdentityMismatch { detail, .. }
+            | GitAcquireError::MalformedRaw { detail, .. } => detail,
+            other => panic!("{other}"),
+        }
+    }
+
+    fn parse_err(raw: &str, patch: &str) -> GitAcquireError {
+        StructuredDiff::parse(&stream(raw, patch)).unwrap_err()
+    }
+
+    #[test]
+    fn path_projections_keep_or_mark_the_exact_bytes() {
+        let path = GitPath::from_bytes(b"a\xffb".to_vec());
+        assert_eq!(path.display_lossy(), "a\u{fffd}b");
+        assert_eq!(path.to_utf8(), None);
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt as _;
+            assert_eq!(
+                path.to_os_string(),
+                Some(std::ffi::OsString::from_vec(b"a\xffb".to_vec()))
+            );
+        }
+    }
+
+    #[test]
+    fn bytes_before_the_first_block_are_refused() {
+        let err = parse_err(
+            &modified("one"),
+            &format!("junk\n{}", modified_block("one")),
+        );
+        assert_eq!(
+            detail(&err),
+            "patch section does not start with a `diff --git` block"
+        );
+        let err = parse_err("", "junk\n");
+        assert_eq!(
+            detail(&err),
+            "patch section does not start with a `diff --git` block"
+        );
+    }
+
+    #[test]
+    fn records_without_the_section_separator_are_refused() {
+        let err = StructuredDiff::parse(modified("one").as_bytes()).unwrap_err();
+        assert_eq!(
+            detail(&err),
+            "missing NUL separator before the patch section"
+        );
+    }
+
+    #[test]
+    fn an_appended_stream_records_its_ranges_after_the_earlier_bytes() {
+        let first = stream(&modified("one"), &modified_block("one"));
+        let mut diff = StructuredDiff::parse(&first).unwrap();
+        let first_len = diff.patch_bytes().len();
+        let second = modified_block("two");
+        diff.append_stream(
+            &stream(&modified("two"), &second),
+            GitChangeOrigin::Untracked,
+        )
+        .unwrap();
+        assert_eq!(
+            diff.changes()[1].patch_range,
+            first_len..first_len + second.len()
+        );
+        assert_eq!(
+            &diff.patch_bytes()[diff.changes()[1].patch_range.clone()],
+            second.as_bytes()
+        );
+    }
+
+    #[test]
+    fn modes_must_be_six_octal_digits() {
+        let raw = format!(":1006444 100644 {A1} {B2} M\0one\0");
+        assert_eq!(
+            detail(&parse_err(&raw, &modified_block("one"))),
+            "invalid mode"
+        );
+    }
+
+    #[test]
+    fn similarity_scores_are_plain_digits_up_to_100() {
+        for status in ["R101", "R+50"] {
+            let raw = format!(":100644 100644 {A1} {A1} {status}\0old\0new\0");
+            assert_eq!(
+                detail(&parse_err(&raw, "")),
+                "invalid similarity score",
+                "{status}"
+            );
+        }
+    }
+
+    /// Only renames and copies carry a score, except that Git scores a broken-up (`-B`) rewrite
+    /// as `M<dissimilarity>`; a score anywhere else, or a rename without one, is refused.
+    #[test]
+    fn a_score_is_required_exactly_where_git_writes_one() {
+        let wrong = "similarity score present on the wrong status";
+        let raw = format!(":000000 100644 {Z} {B2} A50\0one\0");
+        assert_eq!(detail(&parse_err(&raw, "")), wrong);
+        let raw = format!(":100644 100644 {A1} {A1} R\0old\0new\0");
+        assert_eq!(detail(&parse_err(&raw, "")), wrong);
+        let raw = format!(":100644 100644 {A1} {B2} M50\0one\0");
+        let diff = StructuredDiff::parse(&stream(&raw, &modified_block("one"))).unwrap();
+        assert_eq!(diff.changes()[0].score, Some(50));
+    }
+
+    #[test]
+    fn git_quote_escapes_a_lone_quote_or_backslash() {
+        assert_eq!(git_quote(b"", b"a\"b"), b"\"a\\\"b\"");
+        assert_eq!(git_quote(b"", b"a\\b"), b"\"a\\\\b\"");
+    }
+
+    #[test]
+    fn index_line_disagreeing_with_raw_old_blob_is_refused() {
+        let patch = modified_block("one").replace(A1, "3333333333333333333333333333333333333333");
+        let err = parse_err(&modified("one"), &patch);
+        assert!(detail(&err).starts_with("old object ID"), "{err}");
+    }
+
+    #[test]
+    fn an_abbreviated_index_side_is_refused_as_abbreviated() {
+        let patch = modified_block("one").replace(&format!("{A1}.."), "1111111..");
+        let err = parse_err(&modified("one"), &patch);
+        assert_eq!(detail(&err), "`index` line object IDs are abbreviated");
+    }
+
+    /// The extended header ends at the first line that is not a header line, so text after it
+    /// (hunk or binary payload) is never read as one; here each such line is followed by a
+    /// `deleted file mode` line that would be refused if it were.
+    #[test]
+    fn header_lines_stop_at_the_first_non_header_line() {
+        for stop in [
+            "",
+            "--- a/one",
+            "@@ -1 +1 @@",
+            "Binary files a/one and b/one differ",
+            "GIT binary patch",
+        ] {
+            let patch = format!(
+                "diff --git a/one b/one\nindex {A1}..{B2} 100644\n{stop}\ndeleted file mode 100644\n"
+            );
+            assert!(
+                StructuredDiff::parse(&stream(&modified("one"), &patch)).is_ok(),
+                "{stop:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_copy_pairs_with_its_copy_lines() {
+        let raw = format!(":100644 100644 {A1} {A1} C100\0src\0dst\0");
+        let patch = "diff --git a/src b/dst\nsimilarity index 100%\ncopy from src\ncopy to dst\n";
+        let diff = StructuredDiff::parse(&stream(&raw, patch)).unwrap();
+        assert_eq!(diff.changes()[0].kind, GitChangeKind::Copied);
+    }
+
+    #[test]
+    fn a_rename_needs_both_of_its_lines() {
+        let raw = format!(":100644 100644 {A1} {A1} R100\0old\0new\0");
+        for patch in [
+            "diff --git a/old b/new\nsimilarity index 100%\nrename from old\n",
+            "diff --git a/old b/new\nsimilarity index 100%\nrename to new\n",
+        ] {
+            let err = parse_err(&raw, patch);
+            assert_eq!(
+                detail(&err),
+                "missing matching `rename from`/`rename to` lines",
+                "{patch}"
+            );
+        }
+    }
+
+    #[test]
+    fn rename_or_copy_lines_on_a_modification_are_refused() {
+        for line in ["rename from one", "copy from one"] {
+            let patch = modified_block("one").replacen("\nindex", &format!("\n{line}\nindex"), 1);
+            let err = parse_err(&modified("one"), &patch);
+            assert_eq!(detail(&err), "unexpected rename/copy lines", "{line}");
+        }
+    }
+
+    #[test]
+    fn a_mode_change_needs_both_mode_lines() {
+        let raw = format!(":100644 100755 {A1} {A1} M\0one\0");
+        for patch in [
+            "diff --git a/one b/one\n",
+            "diff --git a/one b/one\nold mode 100644\n",
+            "diff --git a/one b/one\nnew mode 100755\n",
+        ] {
+            let err = parse_err(&raw, patch);
+            assert_eq!(
+                detail(&err),
+                "missing matching `old mode`/`new mode` lines",
+                "{patch}"
+            );
+        }
+    }
 }

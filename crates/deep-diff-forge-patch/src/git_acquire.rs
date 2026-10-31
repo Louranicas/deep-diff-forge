@@ -737,6 +737,14 @@ mod tests {
             PathBuf::from("src/a\u{fffd}b.rs")
         );
     }
+
+    #[test]
+    fn selections_have_stable_labels() {
+        assert_eq!(GitSelection::WorkingTree.label(), "working_tree");
+        assert_eq!(GitSelection::Staged.label(), "staged");
+        let range = GitSelection::parse_range("main..HEAD").unwrap();
+        assert_eq!(range.label(), "range");
+    }
 }
 
 #[cfg(test)]
@@ -755,14 +763,15 @@ mod runner_tests {
 
     /// A stand-in Git that ignores its arguments and prints exactly `bytes` bytes.
     fn printing(name: &str, bytes: usize) -> (PathBuf, GitAcquireOptions) {
+        stub(name, &format!("head -c {bytes} /dev/zero | tr '\\0' x\n"))
+    }
+
+    /// A stand-in Git that runs the shell `script` and ignores its arguments.
+    fn stub(name: &str, script: &str) -> (PathBuf, GitAcquireOptions) {
         let dir = std::env::temp_dir().join(format!("ddf-runner-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let stub = dir.join("git");
-        std::fs::write(
-            &stub,
-            format!("#!/bin/sh\nhead -c {bytes} /dev/zero | tr '\\0' x\n"),
-        )
-        .unwrap();
+        std::fs::write(&stub, format!("#!/bin/sh\n{script}")).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
         let options = GitAcquireOptions {
             git_program: stub.into_os_string(),
@@ -804,6 +813,43 @@ mod runner_tests {
             runner.run("stub", &[], &[0], 99),
             Err(GitAcquireError::BudgetExceeded { limit_bytes: 99 })
         ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A failing Git's standard error reaches the caller, cut at `STDERR_CAP` bytes so a chatty
+    /// Git cannot grow the error without bound.
+    #[test]
+    fn a_failing_git_reports_its_stderr_up_to_the_cap() {
+        let (dir, options) = stub(
+            "stderr",
+            "printf 'fatal: boom' >&2\nhead -c 20000 /dev/zero | tr '\\0' x >&2\nexit 128\n",
+        );
+        let runner = Runner {
+            options: &options,
+            cwd: dir.clone(),
+            deadline: deadline_after(options.time_limit),
+            config_env: Vec::new(),
+        };
+        let mut failed = runner.run("stub", &[], &[0], 100);
+        for _ in 0..100 {
+            match &failed {
+                Err(GitAcquireError::Spawn { detail, .. }) if detail.contains("os error 26") => {
+                    pause_for_busy_stub();
+                    failed = runner.run("stub", &[], &[0], 100);
+                }
+                _ => break,
+            }
+        }
+        let Err(GitAcquireError::CommandFailed {
+            command: "stub",
+            code: Some(128),
+            stderr,
+        }) = failed
+        else {
+            panic!("{failed:?}");
+        };
+        assert!(stderr.starts_with("fatal: boom"), "{stderr:.40}");
+        assert_eq!(stderr.len(), 8 * 1024);
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -371,6 +371,8 @@ mod tests {
     #[test]
     fn escapes_low_control_as_unicode() {
         assert_eq!(json_escape("\u{01}"), "\"\\u0001\"");
+        // The C0 block ends at 0x1f: a space is printable and passes through.
+        assert_eq!(json_escape("\u{1f} "), "\"\\u001f \"");
     }
 
     #[test]

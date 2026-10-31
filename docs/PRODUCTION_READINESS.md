@@ -486,3 +486,13 @@ SDK distribution gap replaces it.
    service unit (systemd, launchd).
 5. **A whole-crate mutation pass** of `graph` and `agent`, recorded in the ledger, and a
    Python SDK package (+1, facets 1 and 6).
+
+## Addendum 2026-11-01 (whole-crate mutation)
+
+Not a rescore. The facet-1 gap "no whole-crate mutation run since council history (120 missed,
+recorded)" is narrowed, **measured** in [EVIDENCE](../EVIDENCE.md#whole-crate-mutation-of-core-patch-daemon-and-syntax-2026-11-01):
+`graph` and `agent` were run on 2026-10-31, and `core`, `patch`, `daemon` and `syntax` now.
+After 51 new tests, the misses left in those four are equivalent mutants or code compiled
+only off Unix. Still open: one `daemon` loop mutant reported as a timeout, `review` in
+workspace scope, and `cli`, `tui`, `learning`, `pipeline`, `projection`, `cluster` and `sdk`
+(**unmeasured**). The 120 historical misses stay in the ledger as history.

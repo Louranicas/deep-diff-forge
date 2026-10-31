@@ -293,6 +293,76 @@ impl PatchHunk {
     }
 }
 
+#[cfg(test)]
+mod hunk_tests {
+    use super::{HunkId, PatchHunk, PatchLine, PatchLineKind};
+
+    fn line(kind: PatchLineKind, text: &str, no_newline: bool) -> PatchLine {
+        PatchLine {
+            no_newline,
+            lossy: false,
+            kind,
+            old_line: None,
+            new_line: None,
+            text: text.to_string(),
+        }
+    }
+
+    /// `@@ -3,2 +4,3 @@`: one context line, one removed, two added, the last without a newline.
+    fn hunk() -> PatchHunk {
+        PatchHunk {
+            id: HunkId(0),
+            old_start: Some(3),
+            new_start: Some(4),
+            section: None,
+            lines: vec![
+                line(PatchLineKind::Context, "a", false),
+                line(PatchLineKind::Removed, "b", false),
+                line(PatchLineKind::Added, "c", false),
+                line(PatchLineKind::Added, "d", true),
+            ],
+        }
+    }
+
+    #[test]
+    fn counts_give_context_to_both_sides_and_each_change_to_its_own() {
+        assert_eq!(hunk().counts(), (2, 3));
+        let only_removed = PatchHunk {
+            lines: vec![
+                line(PatchLineKind::Removed, "x", false),
+                line(PatchLineKind::Removed, "y", false),
+            ],
+            ..hunk()
+        };
+        assert_eq!(only_removed.counts(), (2, 0));
+    }
+
+    // The expected digests are `sha256sum` over the bytes the doc comments define, written out
+    // with `printf`, so they pin the wire form rather than the code that builds it.
+    #[test]
+    fn body_bytes_and_digest_follow_the_documented_form() {
+        let hunk = hunk();
+        assert_eq!(
+            hunk.body_bytes(),
+            " a\n-b\n+c\n+d\n\\ No newline at end of file\n"
+        );
+        assert_eq!(
+            hunk.body_sha256(),
+            "27d7c55254a8fc3cd3f20e1274028609394697033b3b1b857ef8abb5c23aa42d"
+        );
+    }
+
+    #[test]
+    fn address_hashes_tag_path_ranges_and_body() {
+        // printf 'ddf-hunk-v1\0src/x.rs\0003,2\0004,3\0 a\n-b\n+c\n+d\n\\ No newline at end of file\n'
+        assert_eq!(
+            hunk().address("src/x.rs"),
+            "fc17192b5bb10221803e8adbb35c2bb322e0b37c664e1f7855c5584ffd983edf"
+        );
+        assert_ne!(hunk().address("src/y.rs"), hunk().address("src/x.rs"));
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HunkId(pub u64);
 
