@@ -1,0 +1,14 @@
+diff --git a/tests/support/server.rs b/tests/support/server.rs
+--- a/tests/support/server.rs
++++ b/tests/support/server.rs
+@@ -1,2 +1,3 @@ pub fn start()
+ pub fn start() {
++    std::process::Command::new("target/debug/server").spawn().ok();
+ }
+diff --git a/src/hooks.rs b/src/hooks.rs
+--- a/src/hooks.rs
++++ b/src/hooks.rs
+@@ -1,2 +1,3 @@ pub fn run(cmd: &str)
+ pub fn run(cmd: &str) {
++    std::process::Command::new("sh").arg("-c").arg(cmd).spawn().ok();
+ }

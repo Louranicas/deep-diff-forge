@@ -1,0 +1,13 @@
+# Run deep-diff-forge-metrics.service every 15 s, so the textfile is never older than a common
+# Prometheus scrape interval by much. Docs: docs/OPERATIONS_AND_DAEMON.md#exporting-metrics-to-prometheus
+[Unit]
+Description=Deep-Diff-Forge daemon metrics for node_exporter, every 15 s
+
+[Timer]
+Unit=deep-diff-forge-metrics.service
+OnActiveSec=15s
+OnUnitActiveSec=15s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

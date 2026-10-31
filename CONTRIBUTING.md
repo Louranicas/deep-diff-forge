@@ -28,7 +28,8 @@ Each of these is real, scoped, and listed as a known limit in the
   drives key sequences would catch interaction bugs.
 - **More languages.** Syntax features (`semantic`, `highlight`, `structural`) speak Rust today.
   The registry in `crates/deep-diff-forge-syntax` is built to take more grammars.
-- **File-pair input.** `deep-diff-forge <old> <new>` is refused today; see
+- **Directory-pair input.** `deep-diff-forge <old> <new>` compares two regular files; comparing
+  two trees (nested repositories, links and special files inside them) is open; see
   [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Getting set up

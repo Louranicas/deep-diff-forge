@@ -75,6 +75,60 @@ fn the_launchd_agent_starts_like_the_cli() {
     assert!(plist_after(environment, "XDG_RUNTIME_DIR").starts_with('/'));
 }
 
+/// The metrics timer runs the metrics unit, which writes a `.prom` file (the only name the
+/// textfile collector reads) with options this CLI admits: run with them and no daemon, it exits 6
+/// (no daemon), not 2 (usage).
+#[test]
+fn the_metrics_units_write_a_textfile_the_cli_way() {
+    let unit = read("contrib/systemd/deep-diff-forge-metrics.service");
+    assert_eq!(unit_value(&unit, "Type"), "oneshot");
+    assert_eq!(unit_value(&unit, "After"), "deep-diff-forge.service");
+    let start = unit_value(&unit, "ExecStart");
+    let (binary, args) = start.split_once(' ').unwrap();
+    assert!(binary.ends_with("/deep-diff-forge"), "{start}");
+    let args: Vec<&str> = args.split(' ').collect();
+    assert_eq!(
+        args[..5],
+        ["daemon", "metrics", "--format", "prometheus", "--out"]
+    );
+    assert_eq!(args.len(), 6, "{start}");
+    assert!(
+        args[5].starts_with('/')
+            && std::path::Path::new(args[5]).extension() == Some("prom".as_ref()),
+        "{start}"
+    );
+    let timer = read("contrib/systemd/deep-diff-forge-metrics.timer");
+    assert_eq!(
+        unit_value(&timer, "Unit"),
+        "deep-diff-forge-metrics.service"
+    );
+    assert_eq!(unit_value(&timer, "OnUnitActiveSec"), "15s");
+
+    let dir = std::env::temp_dir().join(format!("ddf-units-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("deep-diff-forge.prom");
+    let mut admitted = args[..4].to_vec();
+    let socket = dir.join("d.sock");
+    let (out, socket) = (out.to_str().unwrap(), socket.to_str().unwrap());
+    admitted.extend(["--out", out, "--socket", socket]);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "integration test: runs the CLI with the unit's arguments"
+    )]
+    let ran = std::process::Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(&admitted)
+        .output()
+        .unwrap();
+    assert_eq!(
+        ran.status.code(),
+        Some(6),
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_unit_readers_are_exact() {
     assert_eq!(unit_value("A=1\nB=2\nB=3\n", "B"), "2");

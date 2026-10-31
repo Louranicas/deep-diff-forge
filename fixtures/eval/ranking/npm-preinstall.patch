@@ -1,0 +1,15 @@
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -2,4 +2,5 @@
+   "name": "ua-parser",
+   "version": "0.7.29",
+   "scripts": {
++    "preinstall": "node preinstall.js",
+     "test": "mocha"
+diff --git a/src/index.js b/src/index.js
+--- a/src/index.js
++++ b/src/index.js
+@@ -1,1 +1,1 @@
+-module.exports = { v: 1 };
++module.exports = { v: 2 };

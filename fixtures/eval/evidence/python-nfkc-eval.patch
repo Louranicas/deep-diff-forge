@@ -1,0 +1,7 @@
+diff --git a/calc.py b/calc.py
+--- a/calc.py
++++ b/calc.py
+@@ -1,1 +1,3 @@
+ expr = input()
++result = ｅval(expr)
++check = eval(expr)

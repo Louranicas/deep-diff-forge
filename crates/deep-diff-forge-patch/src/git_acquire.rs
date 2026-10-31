@@ -25,13 +25,36 @@
 //! a trailing `/`) cannot be diffed as a file and are reported in
 //! [`GitAcquisition::omitted_untracked`] instead of being silently dropped.
 //!
+//! # Direct file pairs
+//!
+//! [`diff_files`] compares two regular files with `git diff --no-index` and returns
+//! Git's patch bytes unchanged. Git runs from `/` on the canonical paths, so no
+//! repository around the files is discovered and none of its configuration or
+//! attributes apply: a reviewed checkout's own clean filter used to run when Git was
+//! started inside it. `core.attributesFile=/dev/null`, `GIT_ATTR_NOSYSTEM=1` and
+//! `core.autocrlf=false` also turn off the user's and the system's attributes and
+//! end-of-line conversion, so Git diffs the bytes on disk. Symbolic links,
+//! directories and special files are refused before Git runs, and so are inputs
+//! whose sizes together exceed the byte budget.
+//!
 //! # Environment
 //!
 //! Repository-redirecting variables (`GIT_DIR`, `GIT_WORK_TREE`,
 //! `GIT_INDEX_FILE`, …) and diff-shaping ones (`GIT_EXTERNAL_DIFF`,
 //! `GIT_DIFF_OPTS`) are removed so the named repository is the one read.
-//! Repository-configured clean filters still run when Git reads working-tree
-//! files; that is Git's own trust model for the repository and is not altered.
+//!
+//! # Configuration trust
+//!
+//! A content filter (`filter.<name>.clean`, `smudge`, `process`) defined in the
+//! repository's own configuration (`local` or `worktree` scope, with their
+//! includes) is turned off, byte for byte by name: the repository chooses which
+//! files a filter gets, and must not also choose the program. A filter from a
+//! protected scope (`global`, `system`, `command`: `-c` and the caller's
+//! `GIT_CONFIG_COUNT`/`KEY`/`VALUE`, which DDF's own entries are numbered after),
+//! such as Git LFS, is the user's own and runs, so the capture is what the
+//! repository would store. No scope can turn on fsmonitor, hooks, an external
+//! diff, textconv or a transport: those are overridden on the command line,
+//! which takes precedence over every file.
 
 use crate::git_raw::{GitAcquireError, GitChangeKind, GitChangeOrigin, GitPath, StructuredDiff};
 use std::ffi::{OsStr, OsString};
@@ -218,7 +241,8 @@ struct Runner<'a> {
     /// When the whole acquisition must be done (see [`GitAcquireOptions::time_limit`]).
     deadline: std::time::Instant,
     /// Configuration passed to every call through `GIT_CONFIG_COUNT`/`KEY`/`VALUE`, which Git
-    /// reads at command-line precedence (see [`neutral_filters`]).
+    /// reads at command-line precedence (see [`neutral_filters`]), or [`diff_files`]'s
+    /// `GIT_ATTR_NOSYSTEM`.
     config_env: Vec<(OsString, OsString)>,
 }
 
@@ -226,11 +250,14 @@ struct Runner<'a> {
 /// defines (`filter.<name>.clean`, `smudge`, `process`), as `GIT_CONFIG_*` variables. A filter
 /// is a program Git runs on file content: one set in `.git/config` and named in `.gitattributes`
 /// ran during working-tree acquisition, so reviewing a repository someone handed you ran their
-/// code (bug hunt 2026-10-28, H2-01). Filters from the user's global or system configuration,
-/// such as Git LFS, are the user's own and stay on.
-fn neutral_filters(names: &[String]) -> Vec<(OsString, OsString)> {
+/// code (bug hunt 2026-10-28, H2-01). The entries are numbered from `first`, after the caller's
+/// own (see [`caller_config_count`]), so they add to the caller's configuration, not replace it.
+fn neutral_filters(
+    names: &[Vec<u8>],
+    first: usize,
+) -> Result<Vec<(OsString, OsString)>, GitAcquireError> {
     let mut env = Vec::new();
-    let mut count = 0usize;
+    let mut count = first;
     for name in names {
         for (key, value) in [
             ("clean", ""),
@@ -240,7 +267,7 @@ fn neutral_filters(names: &[String]) -> Vec<(OsString, OsString)> {
         ] {
             env.push((
                 OsString::from(format!("GIT_CONFIG_KEY_{count}")),
-                OsString::from(format!("filter.{name}.{key}")),
+                filter_key(name, key)?,
             ));
             env.push((
                 OsString::from(format!("GIT_CONFIG_VALUE_{count}")),
@@ -253,16 +280,69 @@ fn neutral_filters(names: &[String]) -> Vec<(OsString, OsString)> {
         OsString::from("GIT_CONFIG_COUNT"),
         OsString::from(count.to_string()),
     ));
-    env
+    Ok(env)
 }
 
-/// [`neutral_filters`] for every filter the repository's local configuration (with its includes)
-/// defines.
-fn local_filters_off(
+/// `filter.<name>.<key>` for a filter name that is UTF-8; any other name refuses the
+/// acquisition. A subsection name is raw bytes matched exactly: a lossy decode turned `\xff` into
+/// U+FFFD, so the override named another filter and the repository's own still ran (review of
+/// 2026-10-31). Passing the exact bytes fixed that on Linux; on macOS the filter still ran (CI,
+/// PR #76) because the listing never found it (see [`repository_filters_off`]). With the listing
+/// fixed, a name that is not UTF-8 is still refused on every platform rather than trusted to be
+/// matched byte for byte.
+fn filter_key(name: &[u8], key: &str) -> Result<OsString, GitAcquireError> {
+    let name = std::str::from_utf8(name).map_err(|_| GitAcquireError::InvalidSelection {
+        detail: "a repository filter name is not UTF-8, so it cannot be switched off".to_owned(),
+    })?;
+    Ok(OsString::from(format!("filter.{name}.{key}")))
+}
+
+/// How many `GIT_CONFIG_KEY_<n>` entries the caller already passes: the `GIT_CONFIG_COUNT` in
+/// [`GitAcquireOptions::env`], else the inherited one, else none. DDF's entries are numbered
+/// after them; before, they started at 0 and replaced the caller's. A count Git reads but this
+/// does not (Git's `strtoul` takes leading white space) is refused rather than guessed.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the git-config-count door: DDF's GIT_CONFIG_* entries follow the caller's own"
+)]
+fn caller_config_count(options: &GitAcquireOptions) -> Result<usize, GitAcquireError> {
+    let count = options
+        .env
+        .iter()
+        .rev()
+        .find(|(name, _)| name == "GIT_CONFIG_COUNT")
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var_os("GIT_CONFIG_COUNT"));
+    match count.as_ref().map(|count| count.to_str()) {
+        None | Some(Some("")) => Ok(0),
+        Some(text) => text.and_then(|text| text.parse().ok()).ok_or_else(|| {
+            GitAcquireError::InvalidSelection {
+                detail: format!("GIT_CONFIG_COUNT is not a plain count: {count:?}"),
+            }
+        }),
+    }
+}
+
+/// The scopes Git calls protected (git-config(1), "Protected configuration"): the user's global
+/// file, the system file, and the command line or `GIT_CONFIG_*` environment (kept: see
+/// [`caller_config_count`]). Whoever can write them can already run code as the user without
+/// Git, so a filter they define is the user's own program, and its clean output (a Git LFS
+/// pointer, say) is what the repository stores.
+const PROTECTED_SCOPES: &[&[u8]] = &[b"system", b"global", b"command"];
+
+/// [`neutral_filters`] for every filter defined in any scope that is not protected: the
+/// repository's `local` configuration, its `worktree` configuration (`config.worktree`, read
+/// once `extensions.worktreeConfig` is set), whatever either includes, and any scope a later Git
+/// adds. Before, only `git config --local` was listed, which does not read `config.worktree`, so
+/// a filter there still ran. Every key is listed and the `filter.` ones are picked here, not by
+/// `--get-regexp ^filter\.`: on macOS that regex did not match a key that is not UTF-8, so a
+/// `\xff` filter was never listed and ran (CI, PR #76).
+fn repository_filters_off(
     options: &GitAcquireOptions,
     root: &Path,
     deadline: std::time::Instant,
 ) -> Result<Vec<(OsString, OsString)>, GitAcquireError> {
+    let first = caller_config_count(options)?;
     let listing = Runner {
         options,
         cwd: root.to_path_buf(),
@@ -273,31 +353,33 @@ fn local_filters_off(
         "git config",
         &[
             OsStr::new("config"),
-            OsStr::new("--local"),
+            OsStr::new("--list"),
             OsStr::new("--includes"),
+            OsStr::new("--show-scope"),
             OsStr::new("--null"),
             OsStr::new("--name-only"),
-            OsStr::new("--get-regexp"),
-            OsStr::new("^filter\\."),
         ],
-        &[0, 1],
+        &[0],
         1024 * 1024,
     )?;
-    Ok(neutral_filters(&filter_names(&listing)))
+    neutral_filters(&unprotected_filter_names(&listing), first)
 }
 
-/// The filter names in `git config --null --name-only` output (`filter.<name>.<key>` records).
-fn filter_names(listing: &[u8]) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for record in listing.split(|&b| b == 0 || b == b'\n') {
-        let key = String::from_utf8_lossy(record);
-        if let Some(name) = key
-            .strip_prefix("filter.")
-            .and_then(|rest| rest.rsplit_once('.'))
-            .map(|(name, _)| name.to_owned())
-            && !names.contains(&name)
+/// The filter names, as raw bytes, in `git config --list --show-scope --null --name-only` output
+/// (`<scope>\0<key>\0` pairs; filter keys are `filter.<name>.<key>`) that any unprotected scope
+/// defines. Keys outside `filter.` are skipped.
+fn unprotected_filter_names(listing: &[u8]) -> Vec<Vec<u8>> {
+    let mut names: Vec<Vec<u8>> = Vec::new();
+    let mut records = listing.split(|&b| b == 0);
+    while let (Some(scope), Some(record)) = (records.next(), records.next()) {
+        if PROTECTED_SCOPES.contains(&scope) {
+            continue;
+        }
+        if let Some(rest) = record.strip_prefix(b"filter.")
+            && let Some(dot) = rest.iter().rposition(|&b| b == b'.')
+            && !names.iter().any(|name| name[..] == rest[..dot])
         {
-            names.push(name);
+            names.push(rest[..dot].to_vec());
         }
     }
     names
@@ -318,12 +400,15 @@ fn deadline_after(limit: std::time::Duration) -> std::time::Instant {
     std::time::Instant::now() + limit
 }
 
+/// What an accepted Git run left behind.
+struct GitOutput {
+    code: i32,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
 impl Runner<'_> {
     /// Run Git; accept only the listed exit codes; never buffer past `budget`.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the git-acquisition door: patch acquisition spawns git only here, hardened by core::git"
-    )]
     fn run(
         &self,
         command: &'static str,
@@ -331,6 +416,23 @@ impl Runner<'_> {
         ok_codes: &[i32],
         budget: usize,
     ) -> Result<Vec<u8>, GitAcquireError> {
+        self.output(command, args, ok_codes, budget)
+            .map(|done| done.stdout)
+    }
+
+    /// [`Self::run`], keeping the exit code and the first [`STDERR_CAP`] bytes of stderr for a
+    /// caller that must judge them too.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the git-acquisition door: patch acquisition spawns git only here, hardened by core::git"
+    )]
+    fn output(
+        &self,
+        command: &'static str,
+        args: &[&OsStr],
+        ok_codes: &[i32],
+        budget: usize,
+    ) -> Result<GitOutput, GitAcquireError> {
         let mut cmd = Command::new(&self.options.git_program);
         cmd.current_dir(&self.cwd)
             .args(deep_diff_forge_core::git::ARGS)
@@ -417,7 +519,11 @@ impl Runner<'_> {
             return Err(spawn_err(e));
         }
         match status.code() {
-            Some(code) if ok_codes.contains(&code) => Ok(out),
+            Some(code) if ok_codes.contains(&code) => Ok(GitOutput {
+                code,
+                stdout: out,
+                stderr,
+            }),
             code => Err(GitAcquireError::CommandFailed {
                 command,
                 code,
@@ -609,7 +715,7 @@ pub fn acquire(
         options,
         cwd: root.clone(),
         deadline,
-        config_env: local_filters_off(options, &root, deadline)?,
+        config_env: repository_filters_off(options, &root, deadline)?,
     };
     let head = || -> Result<String, GitAcquireError> {
         match runner.commit_id("HEAD")? {
@@ -665,6 +771,131 @@ pub fn acquire(
         diff,
         omitted_untracked,
     })
+}
+
+/// Global options for [`diff_files`], ahead of the subcommand: no attributes file, so no filter,
+/// end-of-line conversion or diff driver applies, and no CRLF conversion.
+const FILE_PAIR_GLOBAL_ARGS: &[&str] = &[
+    "-c",
+    "core.attributesFile=/dev/null",
+    "-c",
+    "core.autocrlf=false",
+];
+
+/// The `git diff --no-index` options for [`diff_files`]: [`DIFF_ARGS`] without the raw records,
+/// which name only the old path when the two names differ and so cannot be paired with the block.
+const FILE_PAIR_DIFF_ARGS: &[&str] = &[
+    "diff",
+    "--no-index",
+    "--no-ext-diff",
+    "--no-color",
+    "--patch",
+    "--binary",
+    "--full-index",
+    "--no-textconv",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    "--",
+];
+
+/// `path`'s canonical form and size, or why it may not be compared: it must exist, and both it
+/// and its canonical form must be a regular file, not a symbolic link, directory or special file.
+/// Only the last component is refused as a link: a linked parent directory resolves, and Git's
+/// headers then name the resolved path.
+fn regular_file(side: &'static str, path: &Path) -> Result<(PathBuf, u64), GitAcquireError> {
+    let unreadable = |e: std::io::Error| GitAcquireError::FileUnreadable {
+        side,
+        detail: format!("{}: {e}", path.display()),
+    };
+    let refuse_kind = |meta: &std::fs::Metadata| {
+        let kind = meta.file_type();
+        let what = if kind.is_symlink() {
+            "a symbolic link"
+        } else if kind.is_dir() {
+            "a directory"
+        } else if kind.is_file() {
+            return Ok(());
+        } else {
+            "a special file (FIFO, socket or device)"
+        };
+        Err(GitAcquireError::FileRefused {
+            side,
+            detail: format!("{} is {what}, not a regular file", path.display()),
+        })
+    };
+    refuse_kind(&std::fs::symlink_metadata(path).map_err(unreadable)?)?;
+    let canonical = std::fs::canonicalize(path).map_err(unreadable)?;
+    // Checked again on the resolved path, which is what Git reads. Only a swap between the two
+    // looks can make this differ from the first check, so no test reaches it; it narrows the
+    // window and does not close it (see `diff_files`).
+    let meta = std::fs::symlink_metadata(&canonical).map_err(unreadable)?;
+    refuse_kind(&meta)?;
+    Ok((canonical, meta.len()))
+}
+
+/// Compare two regular files with `git diff --no-index`: the exact patch bytes Git emits, empty
+/// when the files are identical. Headers name the canonical paths without their leading `/`
+/// (`a/home/me/old.rs`), because Git runs from `/` (see the module's "Direct file pairs").
+///
+/// The files are checked, then read by Git: a concurrent writer can change them in between, so
+/// this is not a sandbox against one. A side Git cannot open by then is an error, never an
+/// empty patch. [`GitAcquireOptions::byte_budget`] bounds the two sizes together and Git's
+/// output, and [`GitAcquireOptions::time_limit`] bounds the run.
+///
+/// # Errors
+/// [`GitAcquireError::FileUnreadable`] for a side that cannot be inspected,
+/// [`GitAcquireError::FileRefused`] for one that is not a regular file or for sizes over the
+/// budget, [`GitAcquireError::InvalidSelection`] when untracked files are requested, and any
+/// error from running Git.
+pub fn diff_files(
+    old: &Path,
+    new: &Path,
+    options: &GitAcquireOptions,
+) -> Result<Vec<u8>, GitAcquireError> {
+    if options.include_untracked {
+        return Err(GitAcquireError::InvalidSelection {
+            detail: "untracked files can only be included in a working-tree selection".to_owned(),
+        });
+    }
+    let (old, old_len) = regular_file("old", old)?;
+    let (new, new_len) = regular_file("new", new)?;
+    let budget = options.byte_budget;
+    if old_len.saturating_add(new_len) > budget as u64 {
+        return Err(GitAcquireError::FileRefused {
+            side: "old and new",
+            detail: format!("{old_len} + {new_len} bytes exceed the {budget}-byte input budget"),
+        });
+    }
+    let runner = Runner {
+        options,
+        cwd: PathBuf::from("/"),
+        deadline: deadline_after(options.time_limit),
+        config_env: vec![(OsString::from("GIT_ATTR_NOSYSTEM"), OsString::from("1"))],
+    };
+    let from_root = |path: &Path| {
+        path.strip_prefix("/")
+            .unwrap_or(path)
+            .as_os_str()
+            .to_owned()
+    };
+    let (old, new) = (from_root(&old), from_root(&new));
+    let mut args: Vec<&OsStr> = FILE_PAIR_GLOBAL_ARGS.iter().map(OsStr::new).collect();
+    args.extend(FILE_PAIR_DIFF_ARGS.iter().map(OsStr::new));
+    args.extend([old.as_os_str(), new.as_os_str()]);
+    // `--no-index` exits 0, silently, for identical files and 1, with a patch, when they differ.
+    // It also exits 1, with nothing on stdout, for a path it cannot open ("Could not access"):
+    // one removed after the checks above. Anything but those two shapes is a failure, so a
+    // vanished file is never reviewed as unchanged.
+    let command = "git diff --no-index";
+    let done = runner.output(command, &args, &[0, 1], budget)?;
+    if !done.stderr.is_empty() || (done.code == 1) == done.stdout.is_empty() {
+        return Err(GitAcquireError::CommandFailed {
+            command,
+            code: Some(done.code),
+            stderr: String::from_utf8_lossy(&done.stderr).trim().to_owned(),
+        });
+    }
+    Ok(done.stdout)
 }
 
 /// Append each untracked, non-ignored file as an addition produced by
@@ -725,6 +956,35 @@ fn capture_untracked(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_filters_from_unprotected_scopes_are_turned_off() {
+        let listing = b"system\0filter.sys.clean\0global\0filter.lfs.process\0\
+            command\0filter.cmd.smudge\0local\0filter.a.b.clean\0worktree\0filter.wt.smudge\0\
+            local\0filter.a.b.process\0future\0filter.new.clean\0global\0filter.wt.clean\0\
+            worktree\0filter.\xff.clean\0local\0core.bare\0";
+        assert_eq!(
+            unprotected_filter_names(listing),
+            [&b"a.b"[..], b"wt", b"new", b"\xff"]
+        );
+        assert_eq!(unprotected_filter_names(b""), Vec::<Vec<u8>>::new());
+    }
+
+    #[test]
+    fn a_utf8_filter_name_is_named_and_any_other_refuses() {
+        let env = neutral_filters(&[b"lfs".to_vec()], 2).unwrap();
+        assert_eq!(env.len(), 9);
+        assert_eq!(
+            env[0],
+            ("GIT_CONFIG_KEY_2".into(), "filter.lfs.clean".into())
+        );
+        assert_eq!(env[7], ("GIT_CONFIG_VALUE_5".into(), "false".into()));
+        assert_eq!(env[8], ("GIT_CONFIG_COUNT".into(), "6".into()));
+        assert!(matches!(
+            neutral_filters(&[b"lfs".to_vec(), b"\xff".to_vec()], 0),
+            Err(GitAcquireError::InvalidSelection { .. })
+        ));
+    }
 
     #[test]
     fn off_unix_paths_keep_utf8_and_decode_other_bytes_lossily() {

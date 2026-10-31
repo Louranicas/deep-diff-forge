@@ -29,6 +29,7 @@ compile_error!(
 );
 
 mod admission;
+pub mod exposition;
 mod handler;
 mod inspect;
 pub mod log;

@@ -88,7 +88,7 @@ codes**, never scrape human prose. The agent-facing guarantees are emitted by
 
 **Exit codes** (branch on these): `0` success · `2` usage/argument · `3` I/O or
 encoding failure · `4` invalid input (a patch that does not parse, input over the
-64 MiB budget, an invalid receipt, a refused Git acquisition) · `6` daemon /
+64 MiB budget, an invalid receipt, a refused Git acquisition or file pair) · `6` daemon /
 interactive-terminal failure · `7` input contract refused (`--require-files`,
 `--require-hunks`) · `101` panic. `deep-diff-forge schema exit-codes` prints the
 registry, with an `action` per code. Diagnostics go to **stderr**; primary
