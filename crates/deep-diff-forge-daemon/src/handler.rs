@@ -1,7 +1,7 @@
 // DDF review route: DDF-R26, DDF-R27, DDF-R29. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-daemon--src--handler
-use crate::admission::Admission;
+use crate::admission::{Admission, Answering};
 use crate::metrics::Metrics;
 use crate::protocol::{
     INPUT_CONTRACT_REFUSED, PATCH_PARSE_FAILED, PROTOCOL_UNSUPPORTED, PROTOCOL_VERSION,
@@ -215,6 +215,7 @@ pub struct Engine {
     /// Repository roots `review.change` may read (canonical paths). Empty: it reads none.
     allowed_repos: Vec<std::path::PathBuf>,
     admission: Admission,
+    answering: Answering,
     metrics: Metrics,
     log_format: crate::log::LogFormat,
 }
@@ -250,6 +251,7 @@ impl Engine {
             started: Instant::now(),
             allowed_repos: Vec::new(),
             admission: Admission::default(),
+            answering: Answering::default(),
             metrics: Metrics::new(),
             log_format: crate::log::LogFormat::Text,
         }
@@ -314,6 +316,12 @@ impl Engine {
     #[must_use]
     pub fn admission(&self) -> &Admission {
         &self.admission
+    }
+
+    /// The requests read and not yet answered, which a stop waits for.
+    #[must_use]
+    pub fn answering(&self) -> &Answering {
+        &self.answering
     }
 
     /// Whether the engine is still serving (cleared by `daemon.shutdown`).
