@@ -17,8 +17,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   document, rename and truncation refusals in the parser, a socket line that ends at its
   newline, and the byte, node and cell budgets of the syntax crate at exactly their limit.
   Missed by the crate's own tests: `core` 22 to 3, `patch` 82 to 3, `syntax` 29 to 3, each
-  remaining one equivalent or compiled only off Unix; `daemon`'s 16 are caught by the
-  workspace's tests, except one equivalent. Tests of edit-script loops, tree walks and
+  remaining one equivalent or compiled only off Unix. `daemon` (16 missed, 13 timeouts) was
+  re-run in workspace scope only, not whole: the workspace's tests catch all but 3 equivalents
+  (2 of them caught only by `graph`'s timing test on a loaded machine) and one loop mutant that
+  still times out. Tests of edit-script loops, tree walks and
   quoted-path decoding run under a 10 s deadline, so a loop that stops advancing fails its test
   instead of hanging the suite. Test code only.
 

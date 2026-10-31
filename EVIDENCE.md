@@ -926,7 +926,8 @@ were then re-run with `--iterate --test-workspace true --timeout 300` (workspace
   tested 14: 12 caught, 1 unviable, 1 timeout, also at `--timeout 300`. The new test fails in
   5 s, but `inspect::tests::a_running_daemon_is_live_and_its_lock_usable` then runs past 300 s.
   Open.
-- **Equivalent or not compiled here (9).** `core` `seal.rs` `compress`, `^` to `|` at 113:32,
+- **Equivalent or not compiled here (12: 9 in `core`, `patch` and `syntax`, the after-run
+  misses; 3 in `daemon`, workspace scope).** `core` `seal.rs` `compress`, `^` to `|` at 113:32,
   120:33 and 120:49: the two terms of SHA-256's Ch share no set bit, and either XOR in Maj can
   be an OR (checked over all inputs). `patch` `git_raw.rs:64` (2): the
   `#[cfg(not(unix))]` `to_os_string`, compiled on neither Linux nor macOS. `patch`
@@ -938,7 +939,9 @@ were then re-run with `--iterate --test-workspace true --timeout 300` (workspace
   `serve.rs:630:21` and `security.rs:157:21` (`NotFound` guard to `true`, inferred): for any
   other `lstat` error `create_dir_all` fails on the same path with the same kind. `daemon`
   `serve.rs:883:25` (`Interrupted` guard to `false`, inferred from the standard library's
-  source): `UnixListener::accept` retries `EINTR` itself.
+  source): `UnixListener::accept` retries `EINTR` itself. In the workspace-scope run
+  `serve.rs:630:21` was the 1 miss; `security.rs:157:21` and `serve.rs:883:25` are the 2
+  catches that failed only `graph`'s timing test.
 - **`review`, crate scope only.** 1,247 mutants in 12 min: 440 caught, 727 missed, 2 timeouts
   (`mutation_scope.rs:412`, `code_lines`), 78 unviable. The misses are in `execution.rs` (200),
   `storage.rs` (147), `journal.rs` (108), `tuicr.rs` (91), `cli.rs` (86), `mutation_scope.rs`

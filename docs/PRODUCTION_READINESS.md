@@ -492,8 +492,10 @@ SDK distribution gap replaces it.
 Not a rescore. The facet-1 gap "no whole-crate mutation run since council history (120 missed,
 recorded)" is narrowed, **measured** in [EVIDENCE](../EVIDENCE.md#whole-crate-mutation-of-core-patch-daemon-and-syntax-2026-11-01):
 `graph` and `agent` were run on 2026-10-31, and `core`, `patch`, `daemon` and `syntax` now.
-After 51 new tests, the misses left in those four are equivalent mutants or code compiled
-only off Unix. Still open: one `daemon` loop mutant reported as a timeout, `review` in
+After 51 new tests, the misses left in `core`, `patch` and `syntax` are equivalent mutants or
+code compiled only off Unix. `daemon`'s after state is workspace scope only (3 equivalents, 2 of
+them caught only spuriously); its crate-scope misses after the change are **unmeasured**. Still
+open: one `daemon` loop mutant reported as a timeout, `review` in
 workspace scope (727 crate-scope misses, unclassified), and `cli`, `tui`, `learning`,
 `pipeline`, `projection`, `cluster` and `sdk` (**unmeasured**). The 120 historical misses stay
 in the ledger as history.
