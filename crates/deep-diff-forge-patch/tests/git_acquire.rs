@@ -117,6 +117,19 @@ fn acquire_stub(
     acquire_git(root, selection, options)
 }
 
+/// `git_version` with a freshly written stub Git, retried on ETXTBSY as [`acquire_stub`] is.
+fn git_version_stub(root: &Path, options: &GitAcquireOptions) -> Result<String, GitAcquireError> {
+    for _ in 0..100 {
+        match git_version(root, options) {
+            Err(GitAcquireError::Spawn { detail, .. }) if detail.contains("os error 26") => {
+                pause_for_busy_stub();
+            }
+            other => return other,
+        }
+    }
+    git_version(root, options)
+}
+
 /// Base commit plus a dirty working tree covering every required case.
 fn fixture(name: &str) -> Fixture {
     let root = std::env::temp_dir().join(format!("ddf-git-acq-{name}-{}", std::process::id()));
@@ -902,12 +915,16 @@ fn git_version_reports_the_version_and_is_bounded() {
         ..options(false)
     };
     let started = std::time::Instant::now();
-    assert!(matches!(
-        git_version(&fx.root, &stalled),
-        Err(GitAcquireError::TimedOut {
-            command: "git version",
-            limit_ms: 300
-        })
-    ));
+    let result = git_version_stub(&fx.root, &stalled);
+    assert!(
+        matches!(
+            result,
+            Err(GitAcquireError::TimedOut {
+                command: "git version",
+                limit_ms: 300
+            })
+        ),
+        "{result:?}"
+    );
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
 }
