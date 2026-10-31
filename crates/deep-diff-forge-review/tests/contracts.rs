@@ -417,3 +417,266 @@ fn a_human_builder_reviewed_by_both_families_has_independent_lineage() {
         a.reasons
     );
 }
+
+/// The refusal `result` carries names `text`, so a control proves the check it targets refused,
+/// not some earlier one.
+fn refuses<T: std::fmt::Debug>(
+    result: Result<T, deep_diff_forge_review::ReviewFailure>,
+    text: &str,
+) {
+    match result {
+        Err(e) => assert!(e.0.contains(text), "refused for {:?}, wanted {text:?}", e.0),
+        Ok(value) => panic!("admitted {value:?}, wanted a refusal for {text:?}"),
+    }
+}
+
+/// A pinned model is passed to the provider CLI as one argument, so it must be a bounded,
+/// nonempty token that cannot be read as an option or split into several.
+#[test]
+fn a_pinned_model_is_one_bounded_non_option_token() {
+    let valid = unsealed().request;
+    for model in ["gpt-5", "claude-opus-5-5", &"m".repeat(128)] {
+        let mut p = valid.clone();
+        p.reviewers[0].model = Some(model.into());
+        assert!(validate_request(&p).is_ok(), "{model}");
+    }
+    for model in ["", &"m".repeat(129), "-x", "gpt 5", "gpt\t5", "gpt5\n"] {
+        let mut p = valid.clone();
+        p.reviewers[0].model = Some(model.into());
+        refuses(validate_request(&p), "invalid model argument");
+    }
+}
+
+/// A report naming a reviewer outside the roster is refused, whatever the roster's other ids.
+#[test]
+fn a_report_from_outside_the_roster_is_refused() {
+    let m = manifest();
+    for stranger in ["stranger", "correctness"] {
+        refuses(
+            validate_report(&m, &report(&m, stranger, Round::Independent)),
+            "unknown reviewer",
+        );
+    }
+}
+
+/// Summaries, claims, falsifiers and rationales are each refused when blank and when over their
+/// byte budget, and admitted at the budget.
+#[test]
+fn report_text_fields_are_nonblank_and_bounded() {
+    let m = manifest();
+    let id = m.request.reviewers[0].id.clone();
+    let mut base = report(&m, &id, Round::Independent);
+    base.findings.push(finding(&id, Severity::Medium));
+    assert!(validate_report(&m, &base).is_ok());
+
+    for (summary, ok) in [
+        (String::new(), false),
+        (" \n\t".into(), false),
+        ("s".repeat(8192), true),
+        ("s".repeat(8193), false),
+    ] {
+        let mut r = base.clone();
+        r.summary = summary;
+        if ok {
+            assert!(validate_report(&m, &r).is_ok());
+        } else {
+            refuses(validate_report(&m, &r), "invalid summary");
+        }
+    }
+    for (claim, ok) in [
+        (String::new(), false),
+        ("  ".into(), false),
+        ("c".repeat(8192), true),
+        ("c".repeat(8193), false),
+    ] {
+        let mut r = base.clone();
+        r.findings[0].claim = claim;
+        if ok {
+            assert!(validate_report(&m, &r).is_ok());
+        } else {
+            refuses(validate_report(&m, &r), "invalid claim");
+        }
+    }
+    for (falsifier, ok) in [
+        ("  ".to_owned(), false),
+        ("f".repeat(2048), true),
+        ("f".repeat(2049), false),
+    ] {
+        let mut r = base.clone();
+        r.findings[0].falsifier = falsifier;
+        if ok {
+            assert!(validate_report(&m, &r).is_ok());
+        } else {
+            refuses(validate_report(&m, &r), "falsification route");
+        }
+    }
+}
+
+/// Finding IDs carry their author's prefix, are bounded, and are unique within a report.
+#[test]
+fn finding_ids_are_prefixed_bounded_and_unique() {
+    let m = manifest();
+    let id = m.request.reviewers[0].id.clone();
+    let other = m.request.reviewers[1].id.clone();
+    let mut base = report(&m, &id, Round::Independent);
+    base.findings.push(finding(&id, Severity::Medium));
+    let prefix = format!("{id}:");
+    let at_cap = format!("{prefix}{}", "x".repeat(164 - prefix.len()));
+    let mut r = base.clone();
+    r.findings[0].id = at_cap.clone();
+    assert!(validate_report(&m, &r).is_ok());
+    for bad in [format!("{other}:one"), "one".into(), format!("{at_cap}x")] {
+        let mut r = base.clone();
+        r.findings[0].id = bad.clone();
+        refuses(validate_report(&m, &r), "finding identity");
+    }
+    let mut r = base;
+    r.findings.push(r.findings[0].clone());
+    refuses(validate_report(&m, &r), "finding identity");
+}
+
+/// A finding cites between one and sixteen captured ranges.
+#[test]
+fn findings_cite_one_to_sixteen_ranges() {
+    let m = manifest();
+    let id = m.request.reviewers[0].id.clone();
+    let mut r = report(&m, &id, Round::Independent);
+    r.findings.push(finding(&id, Severity::Medium));
+    let citation = r.findings[0].citations[0].clone();
+    r.findings[0].citations = vec![citation.clone(); 16];
+    assert!(validate_report(&m, &r).is_ok());
+    for count in [0, 17] {
+        let mut bad = r.clone();
+        bad.findings[0].citations = vec![citation.clone(); count];
+        refuses(validate_report(&m, &bad), "bounded citations");
+    }
+}
+
+/// Finding and response counts are each budgeted on their own: a report within one budget is
+/// still refused for exceeding the other.
+#[test]
+fn finding_and_response_counts_are_each_budgeted() {
+    let m = manifest();
+    let id = m.request.reviewers[0].id.clone();
+    let template = finding(&id, Severity::Medium);
+    let findings = |n: usize| -> Vec<Finding> {
+        (0..n)
+            .map(|i| Finding {
+                id: format!("{id}:{i}"),
+                ..template.clone()
+            })
+            .collect()
+    };
+    let mut r = report(&m, &id, Round::Independent);
+    r.findings = findings(128);
+    assert!(validate_report(&m, &r).is_ok());
+    r.findings = findings(129);
+    refuses(validate_report(&m, &r), "count budget");
+
+    let responses = |n: usize| -> Vec<deep_diff_forge_review::Challenge> {
+        (0..n)
+            .map(|i| deep_diff_forge_review::Challenge {
+                finding_id: format!("other:{i}"),
+                disposition: Disposition::Rebut,
+                rationale: "Not reachable from the captured entry point".into(),
+            })
+            .collect()
+    };
+    let mut r = report(&m, &id, Round::Challenge);
+    r.responses = responses(1536);
+    assert!(validate_report(&m, &r).is_ok());
+    r.responses = responses(1537);
+    refuses(validate_report(&m, &r), "count budget");
+}
+
+/// A challenge answers each finding once, with a nonblank, bounded rationale.
+#[test]
+fn challenge_responses_are_unique_and_reasoned() {
+    let m = manifest();
+    let id = m.request.reviewers[0].id.clone();
+    let response = deep_diff_forge_review::Challenge {
+        finding_id: "other:one".into(),
+        disposition: Disposition::Concur,
+        rationale: "Reproduced with the stated frame".into(),
+    };
+    let mut r = report(&m, &id, Round::Challenge);
+    r.responses.push(response.clone());
+    assert!(validate_report(&m, &r).is_ok());
+    let mut bad = r.clone();
+    bad.responses.push(response);
+    refuses(validate_report(&m, &bad), "challenge response");
+    for (rationale, ok) in [
+        (" \n".to_owned(), false),
+        ("r".repeat(8192), true),
+        ("r".repeat(8193), false),
+    ] {
+        let mut candidate = r.clone();
+        candidate.responses[0].rationale = rationale;
+        if ok {
+            assert!(validate_report(&m, &candidate).is_ok());
+        } else {
+            refuses(validate_report(&m, &candidate), "challenge response");
+        }
+    }
+}
+
+/// The council expects one report per reviewer per round, for any roster size.
+#[test]
+fn every_reviewer_owes_one_report_per_round() {
+    let mut raw = unsealed();
+    raw.request = deep_diff_forge_review::cli::example();
+    let six = seal(raw);
+    let two = manifest();
+    for (m, reviewers) in [(&two, 2), (&six, 6)] {
+        assert_eq!(m.request.reviewers.len(), reviewers);
+        let (reports, executions) = complete(m);
+        let a = evaluation(m, &reports, &executions);
+        assert_eq!(
+            a.state,
+            AssessmentState::ReadyForHumanReview,
+            "{:?}",
+            a.reasons
+        );
+        assert_eq!(a.reports_expected, reviewers * 2);
+        assert_eq!(a.reports_received, a.reports_expected);
+    }
+}
+
+/// Each persona contributes its own nonempty lens to the reviewer prompt; two personas sharing
+/// one lens would be one reviewer counted twice.
+#[test]
+fn every_persona_has_its_own_lens() {
+    const fn exhaustive(persona: Persona) {
+        match persona {
+            Persona::General
+            | Persona::Correctness
+            | Persona::Security
+            | Persona::Architecture
+            | Persona::Performance
+            | Persona::Falsifier
+            | Persona::Subtractor => {}
+        }
+    }
+    exhaustive(Persona::General);
+    let all = [
+        Persona::General,
+        Persona::Correctness,
+        Persona::Security,
+        Persona::Architecture,
+        Persona::Performance,
+        Persona::Falsifier,
+        Persona::Subtractor,
+    ];
+    let lenses: std::collections::BTreeSet<_> = all.iter().map(|p| p.lens()).collect();
+    assert_eq!(lenses.len(), all.len());
+    for persona in all {
+        // A lens is an instruction: at least one full sentence.
+        assert!(persona.lens().trim_end().ends_with('.'), "{persona:?}");
+        assert!(
+            persona.lens().split_whitespace().count() >= 8,
+            "{persona:?}"
+        );
+    }
+    assert!(Persona::Security.lens().contains("trust boundaries"));
+    assert!(Persona::Falsifier.lens().contains("surviving mutants"));
+}
