@@ -129,6 +129,44 @@ impl SocketLocation {
         start_lock_path(&self.path)
     }
 
+    /// Wait at most `wait` for the daemon at this location to exit: `true` once its start lock
+    /// is free (or was never created), `false` if it is still held when the wait ends. A daemon
+    /// releases the lock last, after its socket cleanup and drain, so a `daemon start` right
+    /// after a `true` cannot find it in the way.
+    ///
+    /// # Errors
+    /// An I/O error opening or locking the start lock, other than its absence.
+    pub fn wait_stopped(&self, wait: Duration) -> std::io::Result<bool> {
+        use rustix::fs::{FlockOperation, Mode, OFlags};
+        let lock = match rustix::fs::open(
+            &self.start_lock_path()?,
+            OFlags::RDONLY
+                .union(OFlags::NOFOLLOW)
+                .union(OFlags::CLOEXEC),
+            Mode::empty(),
+        ) {
+            Ok(fd) => std::fs::File::from(fd),
+            Err(rustix::io::Errno::NOENT) => return Ok(true),
+            Err(err) => return Err(err.into()),
+        };
+        // A blocking shared lock, taken on a helper thread so the wait is bounded without a
+        // clock; it is released as soon as it is taken (the file closes when the thread ends).
+        // On a timeout the helper stays blocked until it gets the lock or this process exits.
+        let (taken, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("ddf-wait-stopped".to_owned())
+            .spawn(move || {
+                let _ = taken.send(rustix::fs::flock(&lock, FlockOperation::LockShared));
+            })?;
+        match rx.recv_timeout(wait) {
+            Ok(locked) => locked.map(|()| true).map_err(Into::into),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(false),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(std::io::Error::other(
+                "the start-lock wait ended without an answer",
+            )),
+        }
+    }
+
     /// Connect to a daemon listening at this location, and refuse it unless it
     /// runs as this process's effective user.
     ///
@@ -179,6 +217,11 @@ const MAX_RESPONSE_BYTES: usize = MAX_REQUEST_BYTES;
 
 /// Maximum number of connection worker threads alive at once.
 const MAX_CONNECTIONS: usize = 8;
+/// How long a stop waits for the answers in progress: a client's own read deadline, after which
+/// nobody is reading them.
+const DRAIN_WAIT: Duration = Duration::from_secs(30);
+/// How long `daemon stop` waits for the daemon to exit: its drain, and a margin for the cleanup.
+pub const STOP_WAIT: Duration = Duration::from_secs(DRAIN_WAIT.as_secs() + 5);
 
 /// Absolute deadline for each request or response line. The remaining duration
 /// is applied before each read, so sending one byte just before a socket timeout
@@ -251,37 +294,44 @@ pub fn process_line(line: &str, engine: &Engine) -> String {
 }
 
 /// Test-only methods `process_line` runs before dispatch: `test.panic` panics while holding the
-/// session table, `test.panic_unlocked` panics holding nothing, and `test.hold` blocks until
-/// [`test_hooks::release`] (a request that is still running).
+/// session table, `test.panic_unlocked` panics holding nothing, and each method in [`HOLDS`]
+/// blocks until [`test_hooks::release`] of that method (a request that is still running). Each
+/// test holds with its own method, so a test that releases cannot let another's request go.
 #[cfg(test)]
 pub(crate) mod test_hooks {
     use super::Engine;
     use std::sync::{Condvar, Mutex, OnceLock};
 
-    fn gate() -> &'static (Mutex<bool>, Condvar) {
-        static GATE: OnceLock<(Mutex<bool>, Condvar)> = OnceLock::new();
-        GATE.get_or_init(|| (Mutex::new(false), Condvar::new()))
+    /// The methods that hold; one gate each.
+    pub(crate) const HOLDS: [&str; 2] = ["test.hold", "test.hold_drain"];
+
+    fn gate(method: &str) -> Option<&'static (Mutex<bool>, Condvar)> {
+        static GATES: OnceLock<[(Mutex<bool>, Condvar); 2]> = OnceLock::new();
+        let at = HOLDS.iter().position(|hold| *hold == method)?;
+        let gates =
+            GATES.get_or_init(|| std::array::from_fn(|_| (Mutex::new(false), Condvar::new())));
+        Some(&gates[at])
     }
 
     pub(crate) fn run(method: &str, engine: &Engine) {
         match method {
             "test.panic" => engine.panic_holding_sessions(),
             "test.panic_unlocked" => panic!("test-only panic holding nothing"),
-            "test.hold" => {
-                // Bounded, so a test that never releases fails instead of hanging.
-                let (released, turn) = gate();
-                let done = released.lock().unwrap();
-                let _ = turn
-                    .wait_timeout_while(done, std::time::Duration::from_secs(10), |done| !*done)
-                    .unwrap();
+            _ => {
+                if let Some((released, turn)) = gate(method) {
+                    // Bounded, so a test that never releases fails instead of hanging.
+                    let done = released.lock().unwrap();
+                    let _ = turn
+                        .wait_timeout_while(done, std::time::Duration::from_secs(10), |done| !*done)
+                        .unwrap();
+                }
             }
-            _ => {}
         }
     }
 
-    /// Let every `test.hold` request finish.
-    pub(crate) fn release() {
-        let (released, turn) = gate();
+    /// Let every request of the hold `method` finish.
+    pub(crate) fn release(method: &str) {
+        let (released, turn) = gate(method).expect("a hold method");
         *released.lock().unwrap() = true;
         turn.notify_all();
     }
@@ -426,9 +476,25 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
         if line.is_empty() {
             continue;
         }
+        // Counted before the running check, so a stop either waits for this answer or this
+        // request sees the stop and is refused: none is cut off after its work began.
+        let answer = engine.answering().start();
+        if !engine.is_running() {
+            let resp = error_response(
+                &Value::Null,
+                &RpcError::new(
+                    RESOURCE_EXHAUSTED,
+                    "the daemon is shutting down; retry once it has restarted",
+                ),
+            );
+            writeln!(writer, "{}", json_line_safe(&resp))?;
+            writer.flush()?;
+            break;
+        }
         let response = process_line(line, engine);
         writeln!(writer, "{}", json_line_safe(&response))?;
         writer.flush()?;
+        drop(answer);
         if !engine.is_running() {
             break;
         }
@@ -654,6 +720,27 @@ pub fn run_server_with(location: &SocketLocation, engine: Engine) -> std::io::Re
     serve_bound(location, location.bind()?, engine)
 }
 
+/// The log line a stop's drain writes: none when nothing was in progress, else whether the
+/// `before` answers in progress all finished, or how many were `left` when the wait ran out.
+fn drain_report(before: usize, drained: bool, left: usize) -> Option<(&'static str, String)> {
+    if drained {
+        (before > 0).then(|| {
+            (
+                "shutdown_drained",
+                format!("{before} request(s) in progress were answered before exit"),
+            )
+        })
+    } else {
+        Some((
+            "shutdown_drain_timeout",
+            format!(
+                "{left} request(s) were still being answered after {} s; exiting",
+                DRAIN_WAIT.as_secs()
+            ),
+        ))
+    }
+}
+
 /// The accept loop of [`run_server_with`] over a listener already bound at `location`.
 fn serve_bound(
     location: &SocketLocation,
@@ -727,7 +814,15 @@ fn serve_bound(
         }
     }
     cleanup_owned_socket(location.path(), socket_identity);
-    // The start lock is released only now, after the cleanup.
+    // No connection can arrive once the socket is gone. The answers already in progress finish
+    // and are written before the process exits (before, a stop cut them off), within the same
+    // 30 s a client waits to read one.
+    let before = engine.answering().count();
+    let drained = engine.answering().wait_idle(DRAIN_WAIT);
+    if let Some((event, message)) = drain_report(before, drained, engine.answering().count()) {
+        engine.log(event, &message);
+    }
+    // The start lock is released only now, after the cleanup and the drain.
     drop(bound);
     Ok(())
 }
@@ -1072,7 +1167,7 @@ mod tests {
             });
             let health = rx.recv_timeout(Duration::from_secs(10));
             // Released before any assertion, so a failing assertion cannot leave it waiting.
-            test_hooks::release();
+            test_hooks::release("test.hold");
             assert!(holding, "the held request was never admitted");
             let health: Value = serde_json::from_str(
                 &health.expect("daemon.health waited for a request that was still running"),
@@ -1337,6 +1432,133 @@ mod tests {
 
         assert!(joined(server).is_ok(), "the thread did not finish");
         // Socket is cleaned up on shutdown.
+        assert!(!sock.exists());
+    }
+
+    /// The stop wait sees a held start lock as running and a free or absent one as stopped.
+    #[test]
+    fn wait_stopped_follows_the_start_lock() {
+        let sock = temp_socket_with_parent("waitstop", 0o700);
+        let location = SocketLocation::at(sock.clone());
+        assert!(
+            location.wait_stopped(Duration::ZERO).unwrap(),
+            "no lock file yet: nothing runs"
+        );
+        let bound = location.bind().unwrap();
+        assert!(
+            !location.wait_stopped(Duration::from_millis(50)).unwrap(),
+            "a held lock is a daemon still running"
+        );
+        thread::scope(|scope| {
+            let waiter = scope.spawn(|| location.wait_stopped(Duration::from_secs(10)));
+            thread::park_timeout(Duration::from_millis(20));
+            drop(bound);
+            assert!(waiter.join().unwrap().unwrap(), "released: stopped");
+        });
+        assert!(
+            location.wait_stopped(Duration::from_secs(10)).unwrap(),
+            "a free lock file: nothing runs"
+        );
+        assert_eq!(STOP_WAIT, Duration::from_secs(35));
+        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    }
+
+    #[test]
+    fn the_drain_report_is_exact() {
+        assert_eq!(drain_report(0, true, 0), None);
+        assert_eq!(
+            drain_report(2, true, 0),
+            Some((
+                "shutdown_drained",
+                "2 request(s) in progress were answered before exit".to_owned()
+            ))
+        );
+        assert_eq!(
+            drain_report(1, true, 0).map(|(event, _)| event),
+            Some("shutdown_drained")
+        );
+        assert_eq!(
+            drain_report(3, false, 1),
+            Some((
+                "shutdown_drain_timeout",
+                "1 request(s) were still being answered after 30 s; exiting".to_owned()
+            ))
+        );
+    }
+
+    /// One request and its response over an open connection.
+    fn exchange(stream: &mut UnixStream, line: &str) -> Value {
+        writeln!(stream, "{line}").unwrap();
+        stream.flush().unwrap();
+        let mut response = String::new();
+        BufReader::new(stream.try_clone().unwrap())
+            .read_line(&mut response)
+            .unwrap();
+        serde_json::from_str(&response).unwrap()
+    }
+
+    /// A stop lets the request in progress finish and be answered before the server returns,
+    /// and a request read after the stop is refused. Before, the server returned at once, so the
+    /// process exit cut the running answer off, and a late request still ran.
+    #[test]
+    fn a_stop_waits_for_the_answer_in_progress() {
+        let sock = temp_socket_with_parent("drain", 0o700);
+        let server_loc = SocketLocation::at(sock.clone());
+        let server = thread::spawn(move || run_server(&server_loc));
+        wait_for_socket(&sock);
+        let client = SocketLocation::at(sock.clone());
+        // Accepted before the stop: its first request is answered, so its worker is running.
+        let mut late = client.connect().unwrap();
+        assert_eq!(
+            exchange(&mut late, r#"{"id":1,"method":"daemon.health"}"#)["result"]["status"],
+            "ok"
+        );
+        let held = thread::spawn({
+            let client = SocketLocation::at(sock.clone());
+            move || request(&client, r#"{"id":2,"method":"test.hold_drain"}"#)
+        });
+        // The held request is running once another request ran beside it.
+        let mut running = false;
+        for _ in 0..1000 {
+            let metrics = request(&client, r#"{"id":3,"method":"daemon.metrics"}"#).unwrap();
+            let metrics: Value = serde_json::from_str(&metrics).unwrap();
+            running = metrics["result"]["admission"]["peak_running"].as_u64() >= Some(2);
+            if running {
+                break;
+            }
+            thread::park_timeout(Duration::from_millis(10));
+        }
+        let stop = request(&client, r#"{"id":4,"method":"daemon.shutdown"}"#).unwrap();
+        let mut waited = true;
+        for _ in 0..30 {
+            waited &= !server.is_finished();
+            thread::park_timeout(Duration::from_millis(10));
+        }
+        let refused = exchange(&mut late, r#"{"id":5,"method":"daemon.health"}"#);
+        // Released before any assertion, so a failing assertion cannot leave it waiting.
+        test_hooks::release("test.hold_drain");
+        assert!(running, "the held request never ran");
+        assert!(stop.contains("\"stopping\":true"), "{stop}");
+        assert!(
+            waited,
+            "the server returned while a request was still being answered"
+        );
+        assert_eq!(refused["error"]["code"], RESOURCE_EXHAUSTED, "{refused}");
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("shutting down")
+        );
+        let held: Value = serde_json::from_str(&held.join().unwrap().unwrap()).unwrap();
+        assert_eq!(
+            held["id"], 2,
+            "the request in progress was answered: {held}"
+        );
+        assert!(
+            joined(server).is_ok(),
+            "the server did not finish after the drain"
+        );
         assert!(!sock.exists());
     }
 

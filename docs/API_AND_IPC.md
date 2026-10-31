@@ -180,7 +180,7 @@ version is refused with domain error 2.
 | `engine.methods` | — | `{protocol, methods: [{name, params, result, since}]}` | 1 |
 | `daemon.health` | — | `{status, version, pid, sessions, retained_bytes, cache_entries, protocol}` | 0 |
 | `daemon.status` | — | `{running, uptime_secs, sessions, version, protocol}` | 0 |
-| `daemon.shutdown` | — | `{stopping}` | 0 |
+| `daemon.shutdown` | — | `{stopping}`; the requests in progress are answered first (up to 30 s), and a request read afterwards is refused with error 8 | 0 |
 | `diff.plan` | `patch: string` | `[ranked file]` | 0 |
 | `diff.compute` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.review.v0` document `--stdin-patch --json` prints for the same patch | 1 |
 | `diff.rank` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints for the same patch (with each file's code `evidence`, below) | 1 |

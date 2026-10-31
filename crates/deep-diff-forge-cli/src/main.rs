@@ -550,7 +550,29 @@ fn daemon_cmd(opts: &[String]) {
         Some("health") => daemon_client(&location, r#"{"id":1,"method":"daemon.health"}"#),
         Some("status") => daemon_client(&location, r#"{"id":1,"method":"daemon.status"}"#),
         Some("metrics") => daemon_client(&location, r#"{"id":1,"method":"daemon.metrics"}"#),
-        Some("stop") => daemon_client(&location, r#"{"id":1,"method":"daemon.shutdown"}"#),
+        Some("stop") => {
+            daemon_client(&location, r#"{"id":1,"method":"daemon.shutdown"}"#);
+            // `stop` returns once the daemon has exited (its drain done, its start lock free),
+            // so a `daemon start` right after it does not find the old daemon in the way.
+            match location.wait_stopped(deep_diff_forge_daemon::STOP_WAIT) {
+                Ok(true) => {}
+                Ok(false) => {
+                    eprintln!(
+                        "error: the daemon at {} did not exit within {} s",
+                        display_safe(&location.path().to_string_lossy()),
+                        deep_diff_forge_daemon::STOP_WAIT.as_secs()
+                    );
+                    std::process::exit(exit::DAEMON_OR_TERMINAL);
+                }
+                Err(err) => {
+                    eprintln!(
+                        "error: cannot tell whether the daemon at {} exited: {err}",
+                        display_safe(&location.path().to_string_lossy())
+                    );
+                    std::process::exit(exit::DAEMON_OR_TERMINAL);
+                }
+            }
+        }
         _ => {
             eprintln!("usage: {DAEMON_USAGE}");
             std::process::exit(exit::USAGE);

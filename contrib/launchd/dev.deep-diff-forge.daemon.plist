@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  A per-user launchd agent for the Deep-Diff-Forge daemon.
+  Install: replace /Users/YOU with your home directory, then
+    cp contrib/launchd/dev.deep-diff-forge.daemon.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.deep-diff-forge.daemon.plist
+  Stop with `deep-diff-forge daemon stop`: it lets the requests in progress finish and exits 0,
+  and launchd restarts the daemon only after a failure. `launchctl bootout` sends SIGTERM, which
+  does not drain.
+  Docs: docs/OPERATIONS_AND_DAEMON.md#running-as-a-service
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.deep-diff-forge.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOU/.local/bin/deep-diff-forge</string>
+    <string>daemon</string>
+    <string>start</string>
+    <string>--log-format</string>
+    <string>json</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>2</integer>
+  <key>ExitTimeOut</key>
+  <integer>40</integer>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/Library/Logs/deep-diff-forge.log</string>
+</dict>
+</plist>
