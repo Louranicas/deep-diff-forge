@@ -1010,3 +1010,46 @@ cargo mutants -p deep-diff-forge-review --file crates/deep-diff-forge-review/src
   failing tests were the load flakes above, not a deadline test.
 - **Unviable (2).** `from_env` to `Ok(Default::default())` and `command` to
   `Default::default()`: neither `Sandbox` nor `Command` implements `Default`.
+
+## Review crate: mutation_scope mutation (2026-11-01)
+
+`crates/deep-diff-forge-review/src/mutation_scope.rs` decides which lines the council's
+diff-scoped mutation gate mutates, so a gap in its tests could weaken the gate without anyone
+noticing. Measured: cargo-mutants 27.1.0 on `main` `7774957`, with `CARGO_TARGET_DIR` unset:
+`cargo mutants -p deep-diff-forge-review --file crates/deep-diff-forge-review/src/mutation_scope.rs --test-workspace true -j 6 --timeout 300`.
+
+- **Before, 271 mutants:** 267 caught, 0 missed, 1 timeout, 3 unviable. One of the caught
+  mutants (`verified` returning `Ok(vec![])`) was lost when `/tmp` ran out of quota, so it was
+  re-run alone with `-F` (caught).
+- **Crate scope compared with workspace scope.** The 2026-10-31 whole-crate run (crate scope)
+  missed 40 mutants in this file: `require_base`, `verified`, `hex`, `base_blobs`, `capture`
+  and `capture_from`. All 40 are caught at workspace scope, by the end-to-end `mutation_base`
+  tests in `cli/tests/council.rs`. CI's diff mutation also runs at workspace scope.
+- **Timeout.** `byte == b'r'` replaced by `!=` in `code_lines` (line 412) makes the scan count
+  `#` runs at every byte. That is a semantic break, and an existing test already caught it:
+  `code_lines_skip_comments_and_attributes_across_lines` failed for this mutant in the before
+  run (its log shows the failure ahead of `*** result: Timeout`). The 1 MiB `#` run in
+  `char_literals_and_lifetimes_are_told_apart` then takes hours, so libtest could not exit and the
+  outcome was reported as a timeout. The scan now runs on its own thread under a 30 s wall-clock
+  deadline. The deadline does not detect this mutant; it only lets the test binary finish, so
+  the existing failure is reported as caught. It would be the only detector for a purely
+  quadratic, behaviour-preserving change, and no mutant in this run was one. The bound is 15x
+  or more above normal (the whole review lib-test binary takes about 1.7 s), so it does not fail
+  on a busy host the way `graph`'s 10 s bound did. Inferred: the caught classification also
+  depends on how long the workspace's earlier test binaries take, because the review lib binary
+  runs after them inside the same 300 s mutant timeout. Measured: this mutant's test phase took
+  184 s under the first after run's 120 s deadline, and 102 s under the 30 s deadline.
+- **After, 271 mutants in 46 min (twice):** 268 caught, 0 missed, 0 timeouts, 3 unviable, both
+  with the 120 s deadline and with the 30 s one. The line-412 mutant is caught: its review
+  lib-test binary reports both tests failed and `finished in 30.00s`.
+- **Equivalents:** none. The 3 unviable mutants turn `<<` into `>>` in `LINE_CELL_BUDGET`,
+  `TOTAL_CELL_BUDGET` and `LINE_CAP`. `LINE_CELL_BUDGET` and `TOTAL_CELL_BUDGET` fail the
+  tests' `const` assertions (`error[E0080]`). `LINE_CAP` becomes 0, and `LINE_CAP - 1` in the
+  tests fails the `arithmetic_overflow` lint at compile time.
+- **Measurement note.** Four attempts at the after run, and one run limited with `-F`, were
+  stopped and thrown away. Each had `TMPDIR` on `/var/mnt/storage`, moved there to avoid the
+  `/tmp` quota. On that disk, the `council` integration binary had not finished when the 300 s
+  limit ran out, where it had taken 34 s on tmpfs. Mutants whose tests had already failed were
+  therefore reported as timeouts. Build copies and
+  the tests' temporary directories belong on tmpfs. Six build copies took about 14 GiB of the
+  38.5 GiB per-user `/tmp` quota.

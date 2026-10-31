@@ -77,6 +77,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 ### Tests
 
 - **The gate sandbox's surviving mutants are closed** (`review/src/sandbox.rs`): tests pin `--cpus=<host CPUs − 1, min 1>` in argv and receipt, refuse a blank runtime or an empty image by name, and bound control-command output at 64 KiB; one `>=` deadline mutant is argued equivalent (EVIDENCE.md).
+- **`mutation_scope`'s quadratic-scan guard fails instead of hanging.** Its 1 MiB `#` run is
+  scanned under a 30 s deadline, so the test binary exits and eager `#` counting, which
+  `code_lines_skip_comments_and_attributes_across_lines` already fails, is reported as caught,
+  not as a timeout (EVIDENCE.md, "Review crate: mutation_scope mutation").
 
 ## [0.5.0] - 2026-10-31
 
