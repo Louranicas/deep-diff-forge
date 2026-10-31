@@ -81,6 +81,7 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   scanned under a 30 s deadline, so the test binary exits and eager `#` counting, which
   `code_lines_skip_comments_and_attributes_across_lines` already fails, is reported as caught,
   not as a timeout (EVIDENCE.md, "Review crate: mutation_scope mutation").
+- **Council admission boundaries are pinned:** nine `review` contract tests kill the 16 `policy.rs`/`model.rs` mutants that survived the whole-crate run (EVIDENCE.md).
 
 ## [0.5.0] - 2026-10-31
 
