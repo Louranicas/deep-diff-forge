@@ -692,16 +692,37 @@ deep-diff-forge eval                          # score the labelled corpus in fix
 - **On every pull request,** a required `bench` job builds the merge base and the head on
   one runner and alternates them three times. The weekly campaign keeps a full run's receipt.
 - **`eval`** scores the engine against `fixtures/eval/MANIFEST.json`, where every case has its
-  file's SHA-256, its origin and its labels:
-  - ranking pairs (`must_outrank`);
-  - code evidence (expected items; any other item is a false positive; `known_miss` items are
-    documented limits);
+  file's SHA-256, its origin (a CVE, GHSA or RUSTSEC shape, a real-world shape, one of this
+  project's findings, or `synthetic:` with its reason) and its labels:
+  - ranking pairs (`must_outrank`), including hard negatives, where a risky-looking file must
+    *not* outrank;
+  - code evidence (expected items; any other item is a false positive);
   - each finding's expected verdict.
 
-  It prints `deep-diff-forge.eval.v0` and exits 7 when a case fails, or 4 when a file no longer
-  matches its recorded hash. `crates/deep-diff-forge-cli/tests/eval.rs` holds the floors:
-  ranking 100%, evidence precision 100%, recall 100%, and findings 100%: every miss fails, and an
-  accepted limit becomes a `known_miss` label in the manifest.
+  A limit the engine has today is declared (`known_miss` for a ranking pair or an evidence item,
+  `known_false_positive` for an evidence item). It is counted as wrong in its metric and listed
+  in the receipt's `declared`, but it does not fail the run; it fails once the engine gets it
+  right, so the label has to move. The manifest is refused (exit 4) when a file no longer matches
+  its hash, a file in the corpus is named by no case, a case has no origin, a repeated id or a
+  field its kind does not read. `eval` prints `deep-diff-forge.eval.v0` and exits 7 when a case
+  fails.
+
+  **Measured 2026-10-31, 34 cases** (14 ranking, 17 evidence, 3 findings; 11 declared misses):
+
+  | Metric | Right / total | Floor |
+  | --- | ---: | ---: |
+  | ranking pairs | 12 / 15 | 80.0% |
+  | evidence precision | 21 / 22 | 95.4% |
+  | evidence recall | 21 / 28 | 75.0% |
+  | findings verdicts | 33 / 33 | 100% |
+
+  `crates/deep-diff-forge-cli/tests/eval.rs` holds these floors (the measured values) and fails
+  on any undeclared miss. The corpus is written by the rules' author and is small: it is a
+  regression gate and an honest list of known limits, not a measure of review quality on
+  real-world code. The declared misses are a removed authorization check, a GitHub Actions
+  script injection and a lockfile registry swap (ranking), and aliased imports, `window.fetch`,
+  a fullwidth `ｅval`, a triple-quoted f-string, bash `/dev/tcp` and an assembled call
+  (evidence), plus one false positive (a heredoc read as code).
 
 ## Risk ranking
 

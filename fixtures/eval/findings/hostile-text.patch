@@ -1,0 +1,7 @@
+diff --git a/src/access.rs b/src/access.rs
+--- a/src/access.rs
++++ b/src/access.rs
+@@ -1,2 +1,2 @@
+-fn allow() -> bool { false }
++fn allow() -> bool { true }
+ fn deny() {}

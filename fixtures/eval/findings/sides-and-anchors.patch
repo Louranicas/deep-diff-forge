@@ -1,0 +1,20 @@
+diff --git a/src/auth.rs b/src/auth.rs
+--- a/src/auth.rs
++++ b/src/auth.rs
+@@ -1,4 +1,4 @@ fn check(token: &str) -> bool
+ fn check(token: &str) -> bool {
+-    token.len() > 8
++    !token.is_empty()
+ }
+ 
+@@ -20,2 +20,3 @@ fn expire()
+ fn expire() {
++    log::debug!("expired");
+ }
+diff --git a/src/db.rs b/src/db.rs
+--- a/src/db.rs
++++ b/src/db.rs
+@@ -1,2 +1,2 @@
+-const POOL: u32 = 8;
++const POOL: u32 = 2;
+ const TIMEOUT: u32 = 30;
