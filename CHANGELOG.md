@@ -6,6 +6,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Dependencies
+
+- **Dependabot's first version updates, applied together** (#63 to #70): serde 1.0.229,
+  serde_json 1.0.154, rustix 1.1.5, unicode-width 0.2.2, tree-sitter 0.26.13,
+  `actions/attest-build-provenance` and `github/codeql-action` 4.39.1 (SHA-pinned). The
+  individual pull requests each failed the SBOM gate (a dependency bump moves the committed
+  SBOM) and the workspace bumps also left `fuzz/Cargo.lock` stale; this change regenerates both,
+  with the fuzz lock moved only as far as the bumps require (its `syn` follows the workspace's
+  3.0.4). tree-sitter 0.26 changed the parse progress callback to return `ControlFlow`: the
+  deadline cancel now returns `Break` where it returned `true`.
+- **Dependabot groups each ecosystem's updates into one pull request** (`cargo`, `fuzz`,
+  `actions`), so the SBOM and fuzz lock are regenerated once per group.
+
 ### Added
 
 - **`deep-diff-forge [--] <old> <new>` reviews two regular files.** `patch::diff_files` runs
@@ -35,6 +48,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   shipped modes (a test runs each one); `cluster-contract` names the two dimensions that run
   (patch, risk) and no longer claims per-lane budgets; `loom-contract` records the withdrawal.
 
+- **Dependabot watches the Python client.** `.github/dependabot.yml` gains a weekly `pip` entry
+  for `sdk/python` (its only requirement is the setuptools build backend), with the same 7-day
+  cooldown as the Cargo and Actions entries.
 - **The Python client is a package.** `sdk/python/pyproject.toml` (setuptools, no dependencies,
   Python 3.9+) installs `deep_diff_forge` as the package `deep-diff-forge`, from a checkout
   (`python3 -m pip install ./sdk/python`) or from GitHub with `#subdirectory=sdk/python`. It is
@@ -73,6 +89,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   workflows on pull requests, pushes to `main` and weekly. Not a required check yet.
 - **Pinned actions are enforced.** `cli/tests/workflow_pins.rs` fails when any `uses:` in any
   workflow is not a local path or a full 40-hex commit SHA.
+
+### Fixed
+
+- **The long-line linearity test no longer fails on a busy host.** `graph`'s
+  `the_import_rule_is_linear_on_long_lines` bounded its scans by 10 s of wall time; at load 56
+  to 89 a linear scan using 1.8 s of CPU took over 10 s, failed the suite, and turned diff
+  mutation results into false "caught" verdicts. It now bounds the scans' own thread CPU time
+  (Linux `/proc/thread-self/schedstat`, wall time elsewhere) at 15 s, and keeps a 120 s
+  wall-clock deadline only against hangs. Measured: linear code passes under 64 busy loops
+  (20 s wall), and the quadratic import rule it guards against (`eee2b4c^`) still fails at 66.7 s
+  of CPU time. Shrinking the lines was rejected: at 20,000 units the quadratic rule took 0.4 s.
 
 ## [0.5.0] - 2026-10-31
 

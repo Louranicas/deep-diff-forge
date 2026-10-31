@@ -1,13 +1,13 @@
 {
   "SPDXID": "SPDXRef-DOCUMENT",
   "creationInfo": {
-    "created": "2026-10-30T07:01:08Z",
+    "created": "2026-10-30T21:12:29Z",
     "creators": [
       "Tool: deep-diff-forge scripts/security/generate_spdx_sbom.py"
     ]
   },
   "dataLicense": "CC0-1.0",
-  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/17c2f48e029d1511dfd1495ca0ba636b",
+  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/505da687dfa3e5bf4e35547c536a8dc7",
   "name": "deep-diff-forge-cargo-lock-sbom",
   "packages": [
     {
@@ -465,7 +465,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "9f7a03b8b284e14b61cb66865511280d438cbd4cfd3f8df4f1ff21964a18edd8"
+          "checksumValue": "632ba22cd7665402de7b20775cfb873b2f643f18042a406c386e71550aed2db9"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -609,7 +609,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "39a54e1d0940ddadd9fed27cb52419d92e28968b8c581de7184953d25fac7ed6"
+          "checksumValue": "4214694f0677d733a63a764ebeddbdfe9b8157fcf30323e95a8977f6008a6921"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -627,7 +627,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "b7fefd96d36884f38c1f81c8833d9694d47c8be6a6874db6fb152780f41e976c"
+          "checksumValue": "987b5430bf4b89251a7e9512c4efc9ab8435fd9dbee54bfd974683bfe6f5d66c"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -645,7 +645,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "4fa2899683f4c06d9a9d88347ab1af8ff387d73be7842a8780e9c478fb17a1b3"
+          "checksumValue": "a3a8a7f9b1e0b929c070d2fd064120336dae4851d8aba5b2a4dbbf75a51b7041"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -663,7 +663,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "b55812af6e5acee1c6b1486b9bf4bda1048b0a8199136ed6cd06cd8d904b26b8"
+          "checksumValue": "8920427c680c7531326b1bd0934b643d6dcca5704b2b7eb9afc2824a43058c82"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -1943,11 +1943,11 @@
       "versionInfo": "0.4.1"
     },
     {
-      "SPDXID": "SPDXRef-Package-rustix-64b8c0008dc96bcb",
+      "SPDXID": "SPDXRef-Package-rustix-e1cf91646ec4a10e",
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "13302af30f997a373ad50b7aa668d9612483e85be6b455e09d95bbd59fb5296f"
+          "checksumValue": "f57824af546c008210d8d6d63bc0fe866a3887d06100469448de3432ffa108ec"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -1955,7 +1955,7 @@
       "externalRefs": [
         {
           "referenceCategory": "PACKAGE-MANAGER",
-          "referenceLocator": "pkg:cargo/rustix@1.1.4",
+          "referenceLocator": "pkg:cargo/rustix@1.1.5",
           "referenceType": "purl"
         }
       ],
@@ -1964,7 +1964,7 @@
       "licenseDeclared": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
       "name": "rustix",
       "primaryPackagePurpose": "LIBRARY",
-      "versionInfo": "1.1.4"
+      "versionInfo": "1.1.5"
     },
     {
       "SPDXID": "SPDXRef-Package-rustversion-54416425b1f3f930",
@@ -2063,11 +2063,11 @@
       "versionInfo": "1.0.28"
     },
     {
-      "SPDXID": "SPDXRef-Package-serde-ef221445decddc3c",
+      "SPDXID": "SPDXRef-Package-serde-d11d11b1d493a45c",
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "d7fc24e39691a0831eaa0eac677b46ecbae407a40fa816b904759822d10f42e8"
+          "checksumValue": "6883caefd46e86eb15d22d3a6d274ad304c5e7934ab70eb58d81b7c4a29ef9db"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -2075,7 +2075,7 @@
       "externalRefs": [
         {
           "referenceCategory": "PACKAGE-MANAGER",
-          "referenceLocator": "pkg:cargo/serde@1.0.228",
+          "referenceLocator": "pkg:cargo/serde@1.0.229",
           "referenceType": "purl"
         }
       ],
@@ -2084,14 +2084,14 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "serde",
       "primaryPackagePurpose": "LIBRARY",
-      "versionInfo": "1.0.228"
+      "versionInfo": "1.0.229"
     },
     {
-      "SPDXID": "SPDXRef-Package-serde-core-95fb5364f7978729",
+      "SPDXID": "SPDXRef-Package-serde-core-0f54d2cfbc66115f",
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "b1c07acb994f88418a0bbb0d393f76c4ca4276d9f4497ca734eb182286169ea8"
+          "checksumValue": "c6049e170e4f7c2b48749fefab59db583bfac4e466cde6d0c53e4f49bc5044f7"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -2099,7 +2099,7 @@
       "externalRefs": [
         {
           "referenceCategory": "PACKAGE-MANAGER",
-          "referenceLocator": "pkg:cargo/serde_core@1.0.228",
+          "referenceLocator": "pkg:cargo/serde_core@1.0.229",
           "referenceType": "purl"
         }
       ],
@@ -2108,14 +2108,14 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "serde_core",
       "primaryPackagePurpose": "LIBRARY",
-      "versionInfo": "1.0.228"
+      "versionInfo": "1.0.229"
     },
     {
-      "SPDXID": "SPDXRef-Package-serde-derive-5c03804b24d1c486",
+      "SPDXID": "SPDXRef-Package-serde-derive-54b46a19636b261a",
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "3de014980e9645f2e33779acd06919c9f3b717a79e10f56004918d12c4365c27"
+          "checksumValue": "d2581160ffa61baa386f882e08b0db20051dc3c782a82268d6473998b61c926e"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -2123,7 +2123,7 @@
       "externalRefs": [
         {
           "referenceCategory": "PACKAGE-MANAGER",
-          "referenceLocator": "pkg:cargo/serde_derive@1.0.228",
+          "referenceLocator": "pkg:cargo/serde_derive@1.0.229",
           "referenceType": "purl"
         }
       ],
@@ -2132,14 +2132,14 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "serde_derive",
       "primaryPackagePurpose": "LIBRARY",
-      "versionInfo": "1.0.228"
+      "versionInfo": "1.0.229"
     },
     {
-      "SPDXID": "SPDXRef-Package-serde-json-acf426ebeed10d1e",
+      "SPDXID": "SPDXRef-Package-serde-json-0a8bc9687473eff2",
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "96f36f0d4419ce7ab53008df556017ef7b8891c1e913ac648e9b2b7f0537a472"
+          "checksumValue": "548aafeb7c702b69b9de950033f10b59f70baf38592d275d8ca8cff19f7750c3"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -2147,7 +2147,7 @@
       "externalRefs": [
         {
           "referenceCategory": "PACKAGE-MANAGER",
-          "referenceLocator": "pkg:cargo/serde_json@1.0.150",
+          "referenceLocator": "pkg:cargo/serde_json@1.0.154",
           "referenceType": "purl"
         }
       ],
@@ -2156,7 +2156,7 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "serde_json",
       "primaryPackagePurpose": "LIBRARY",
-      "versionInfo": "1.0.150"
+      "versionInfo": "1.0.154"
     },
     {
       "SPDXID": "SPDXRef-Package-shlex-5dc06fcc96d56a61",
@@ -2543,11 +2543,11 @@
       "versionInfo": "0.1.9"
     },
     {
-      "SPDXID": "SPDXRef-Package-tree-sitter-9d670108b54c4872",
+      "SPDXID": "SPDXRef-Package-tree-sitter-23c293f9d545b1fe",
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "070f93a29ba47f4d8243fddb26851dffea162736177cd0129a1b600036828653"
+          "checksumValue": "f8e73b2a84bd1e26982c463d194b92c78e9dc8ee605cbcd872eac048447870ce"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -2555,7 +2555,7 @@
       "externalRefs": [
         {
           "referenceCategory": "PACKAGE-MANAGER",
-          "referenceLocator": "pkg:cargo/tree-sitter@0.25.10",
+          "referenceLocator": "pkg:cargo/tree-sitter@0.26.13",
           "referenceType": "purl"
         }
       ],
@@ -2564,7 +2564,7 @@
       "licenseDeclared": "MIT",
       "name": "tree-sitter",
       "primaryPackagePurpose": "LIBRARY",
-      "versionInfo": "0.25.10"
+      "versionInfo": "0.26.13"
     },
     {
       "SPDXID": "SPDXRef-Package-tree-sitter-language-579d5cf43591b7a0",
@@ -2687,11 +2687,11 @@
       "versionInfo": "2.0.1"
     },
     {
-      "SPDXID": "SPDXRef-Package-unicode-width-8406a40b1e839ff7",
+      "SPDXID": "SPDXRef-Package-unicode-width-596faef6bd1433d2",
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "58a703b95d64c5cf5e84edb838fc5b3e426b7dcf54092bb5ffa4c88eb566b6ed"
+          "checksumValue": "dbf0a72e293238d87afd46f58ba597408f40c86e372a1d0b271c89fb4c3639c4"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -2699,7 +2699,7 @@
       "externalRefs": [
         {
           "referenceCategory": "PACKAGE-MANAGER",
-          "referenceLocator": "pkg:cargo/unicode-width@0.2.0",
+          "referenceLocator": "pkg:cargo/unicode-width@0.2.2",
           "referenceType": "purl"
         }
       ],
@@ -2708,7 +2708,7 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "unicode-width",
       "primaryPackagePurpose": "LIBRARY",
-      "versionInfo": "0.2.0"
+      "versionInfo": "0.2.2"
     },
     {
       "SPDXID": "SPDXRef-Package-wasi-6d9383bcdbe32a04",
@@ -3041,7 +3041,7 @@
       "spdxElementId": "SPDXRef-Package-crossterm-f09249501ce7359b"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-rustix-64b8c0008dc96bcb",
+      "relatedSpdxElement": "SPDXRef-Package-rustix-e1cf91646ec4a10e",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-crossterm-f09249501ce7359b"
     },
@@ -3126,7 +3126,7 @@
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-agent-cbc15dfb80e52543"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-json-acf426ebeed10d1e",
+      "relatedSpdxElement": "SPDXRef-Package-serde-json-0a8bc9687473eff2",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-agent-cbc15dfb80e52543"
     },
@@ -3196,7 +3196,7 @@
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-14cee536a9950000"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-json-acf426ebeed10d1e",
+      "relatedSpdxElement": "SPDXRef-Package-serde-json-0a8bc9687473eff2",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-14cee536a9950000"
     },
@@ -3241,17 +3241,17 @@
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-8e3001593639aa1a"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-rustix-64b8c0008dc96bcb",
+      "relatedSpdxElement": "SPDXRef-Package-rustix-e1cf91646ec4a10e",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-8e3001593639aa1a"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-ef221445decddc3c",
+      "relatedSpdxElement": "SPDXRef-Package-serde-d11d11b1d493a45c",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-8e3001593639aa1a"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-json-acf426ebeed10d1e",
+      "relatedSpdxElement": "SPDXRef-Package-serde-json-0a8bc9687473eff2",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-8e3001593639aa1a"
     },
@@ -3266,17 +3266,17 @@
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-graph-b64834cddf003b04"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-rustix-64b8c0008dc96bcb",
+      "relatedSpdxElement": "SPDXRef-Package-rustix-e1cf91646ec4a10e",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-learning-fd596fb30a01cbfb"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-ef221445decddc3c",
+      "relatedSpdxElement": "SPDXRef-Package-serde-d11d11b1d493a45c",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-learning-fd596fb30a01cbfb"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-json-acf426ebeed10d1e",
+      "relatedSpdxElement": "SPDXRef-Package-serde-json-0a8bc9687473eff2",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-learning-fd596fb30a01cbfb"
     },
@@ -3326,7 +3326,7 @@
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-projection-fa6dfef6cc0099ff"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-unicode-width-8406a40b1e839ff7",
+      "relatedSpdxElement": "SPDXRef-Package-unicode-width-596faef6bd1433d2",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-projection-fa6dfef6cc0099ff"
     },
@@ -3341,12 +3341,12 @@
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-1e2ae56c67a7da7f"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-ef221445decddc3c",
+      "relatedSpdxElement": "SPDXRef-Package-serde-d11d11b1d493a45c",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-1e2ae56c67a7da7f"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-json-acf426ebeed10d1e",
+      "relatedSpdxElement": "SPDXRef-Package-serde-json-0a8bc9687473eff2",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-1e2ae56c67a7da7f"
     },
@@ -3371,7 +3371,7 @@
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-sdk-63c75185e7cd0ee5"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-json-acf426ebeed10d1e",
+      "relatedSpdxElement": "SPDXRef-Package-serde-json-0a8bc9687473eff2",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-sdk-63c75185e7cd0ee5"
     },
@@ -3386,7 +3386,7 @@
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-syntax-52cb171456c0c22d"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-tree-sitter-9d670108b54c4872",
+      "relatedSpdxElement": "SPDXRef-Package-tree-sitter-23c293f9d545b1fe",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-syntax-52cb171456c0c22d"
     },
@@ -3766,7 +3766,7 @@
       "spdxElementId": "SPDXRef-Package-ratatui-0d30b3939eabce4e"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-ef221445decddc3c",
+      "relatedSpdxElement": "SPDXRef-Package-serde-d11d11b1d493a45c",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-ratatui-0d30b3939eabce4e"
     },
@@ -3811,7 +3811,7 @@
       "spdxElementId": "SPDXRef-Package-ratatui-core-8490c9bbe9afffbc"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-ef221445decddc3c",
+      "relatedSpdxElement": "SPDXRef-Package-serde-d11d11b1d493a45c",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-ratatui-core-8490c9bbe9afffbc"
     },
@@ -3836,7 +3836,7 @@
       "spdxElementId": "SPDXRef-Package-ratatui-core-8490c9bbe9afffbc"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-unicode-width-8406a40b1e839ff7",
+      "relatedSpdxElement": "SPDXRef-Package-unicode-width-596faef6bd1433d2",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-ratatui-core-8490c9bbe9afffbc"
     },
@@ -3896,7 +3896,7 @@
       "spdxElementId": "SPDXRef-Package-ratatui-widgets-64690d873d8b0928"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-ef221445decddc3c",
+      "relatedSpdxElement": "SPDXRef-Package-serde-d11d11b1d493a45c",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-ratatui-widgets-64690d873d8b0928"
     },
@@ -3916,7 +3916,7 @@
       "spdxElementId": "SPDXRef-Package-ratatui-widgets-64690d873d8b0928"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-unicode-width-8406a40b1e839ff7",
+      "relatedSpdxElement": "SPDXRef-Package-unicode-width-596faef6bd1433d2",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-ratatui-widgets-64690d873d8b0928"
     },
@@ -3968,87 +3968,92 @@
     {
       "relatedSpdxElement": "SPDXRef-Package-bitflags-d4d563d60049bd9b",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-rustix-64b8c0008dc96bcb"
+      "spdxElementId": "SPDXRef-Package-rustix-e1cf91646ec4a10e"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-errno-dc281f2416af1597",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-rustix-64b8c0008dc96bcb"
+      "spdxElementId": "SPDXRef-Package-rustix-e1cf91646ec4a10e"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-libc-06536456656c676c",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-rustix-64b8c0008dc96bcb"
+      "spdxElementId": "SPDXRef-Package-rustix-e1cf91646ec4a10e"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-linux-raw-sys-236465ada6f56de4",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-rustix-64b8c0008dc96bcb"
+      "spdxElementId": "SPDXRef-Package-rustix-e1cf91646ec4a10e"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-windows-sys-27c68f22007adecb",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-rustix-64b8c0008dc96bcb"
+      "spdxElementId": "SPDXRef-Package-rustix-e1cf91646ec4a10e"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-core-95fb5364f7978729",
+      "relatedSpdxElement": "SPDXRef-Package-serde-core-0f54d2cfbc66115f",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-serde-ef221445decddc3c"
+      "spdxElementId": "SPDXRef-Package-serde-d11d11b1d493a45c"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-derive-5c03804b24d1c486",
+      "relatedSpdxElement": "SPDXRef-Package-serde-derive-54b46a19636b261a",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-serde-ef221445decddc3c"
+      "spdxElementId": "SPDXRef-Package-serde-d11d11b1d493a45c"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-derive-5c03804b24d1c486",
+      "relatedSpdxElement": "SPDXRef-Package-serde-derive-54b46a19636b261a",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-serde-core-95fb5364f7978729"
+      "spdxElementId": "SPDXRef-Package-serde-core-0f54d2cfbc66115f"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-proc-macro2-27236d1fa8764158",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-serde-derive-5c03804b24d1c486"
+      "spdxElementId": "SPDXRef-Package-serde-derive-54b46a19636b261a"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-quote-ec8476dd5d618d0f",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-serde-derive-5c03804b24d1c486"
+      "spdxElementId": "SPDXRef-Package-serde-derive-54b46a19636b261a"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-syn-d20a3db27e697501",
+      "relatedSpdxElement": "SPDXRef-Package-syn-1de06c37ccbe7f5d",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-serde-derive-5c03804b24d1c486"
+      "spdxElementId": "SPDXRef-Package-serde-derive-54b46a19636b261a"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-foldhash-d4b752001105c45a",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-serde-json-0a8bc9687473eff2"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-indexmap-b1e820d719405417",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-serde-json-acf426ebeed10d1e"
+      "spdxElementId": "SPDXRef-Package-serde-json-0a8bc9687473eff2"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-itoa-b2d1e708d90af9dd",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-serde-json-acf426ebeed10d1e"
+      "spdxElementId": "SPDXRef-Package-serde-json-0a8bc9687473eff2"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-memchr-e8288522b86be649",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-serde-json-acf426ebeed10d1e"
+      "spdxElementId": "SPDXRef-Package-serde-json-0a8bc9687473eff2"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-ef221445decddc3c",
+      "relatedSpdxElement": "SPDXRef-Package-serde-d11d11b1d493a45c",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-serde-json-acf426ebeed10d1e"
+      "spdxElementId": "SPDXRef-Package-serde-json-0a8bc9687473eff2"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-core-95fb5364f7978729",
+      "relatedSpdxElement": "SPDXRef-Package-serde-core-0f54d2cfbc66115f",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-serde-json-acf426ebeed10d1e"
+      "spdxElementId": "SPDXRef-Package-serde-json-0a8bc9687473eff2"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-zmij-4361f82a8e093f44",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-serde-json-acf426ebeed10d1e"
+      "spdxElementId": "SPDXRef-Package-serde-json-0a8bc9687473eff2"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-libc-06536456656c676c",
@@ -4186,7 +4191,7 @@
       "spdxElementId": "SPDXRef-Package-time-aaffd2605beb7392"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-core-95fb5364f7978729",
+      "relatedSpdxElement": "SPDXRef-Package-serde-core-0f54d2cfbc66115f",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-time-aaffd2605beb7392"
     },
@@ -4198,32 +4203,32 @@
     {
       "relatedSpdxElement": "SPDXRef-Package-cc-d93af1c0ece21fea",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-tree-sitter-9d670108b54c4872"
+      "spdxElementId": "SPDXRef-Package-tree-sitter-23c293f9d545b1fe"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-regex-syntax-3b3cb0df03008147",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-tree-sitter-9d670108b54c4872"
+      "spdxElementId": "SPDXRef-Package-tree-sitter-23c293f9d545b1fe"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-regex-9f6de99efb5d35e9",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-tree-sitter-9d670108b54c4872"
+      "spdxElementId": "SPDXRef-Package-tree-sitter-23c293f9d545b1fe"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-serde-json-acf426ebeed10d1e",
+      "relatedSpdxElement": "SPDXRef-Package-serde-json-0a8bc9687473eff2",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-tree-sitter-9d670108b54c4872"
+      "spdxElementId": "SPDXRef-Package-tree-sitter-23c293f9d545b1fe"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-streaming-iterator-f794e7d83beb3bb2",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-tree-sitter-9d670108b54c4872"
+      "spdxElementId": "SPDXRef-Package-tree-sitter-23c293f9d545b1fe"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-tree-sitter-language-579d5cf43591b7a0",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-tree-sitter-9d670108b54c4872"
+      "spdxElementId": "SPDXRef-Package-tree-sitter-23c293f9d545b1fe"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-cc-d93af1c0ece21fea",
@@ -4246,7 +4251,7 @@
       "spdxElementId": "SPDXRef-Package-unicode-truncate-2d9332b42ffe214f"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-unicode-width-8406a40b1e839ff7",
+      "relatedSpdxElement": "SPDXRef-Package-unicode-width-596faef6bd1433d2",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-unicode-truncate-2d9332b42ffe214f"
     },
