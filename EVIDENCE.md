@@ -872,3 +872,47 @@ with `CARGO_TARGET_DIR` unset.
   tested 61 mutants: 56 caught, 5 unviable, 0 missed.
 - **Ledger.** Recorded as Turso event 106 (kind `mutation`).
 
+
+## Review crate: policy and model mutation (2026-11-01)
+
+The whole-crate baseline of `deep-diff-forge-review` (crate scope, `main` of 2026-10-31) left
+16 survivors in the council's trust boundary: 14 in `policy.rs` (`validate_request`'s model
+argument checks; `validate_report`'s unknown-reviewer check, blank/over-budget summary, claim
+and rationale, finding-id prefix/length/uniqueness, citation and count budgets, duplicate
+responses; `reports_expected`) and 2 in `model.rs` (`Persona::lens` replaced by `""` or
+`"xyzzy"`). Measured: cargo-mutants 27.1.0 on `main` `7774957`, with `CARGO_TARGET_DIR` unset
+and `TMPDIR` on the storage disk (the `/tmp` quota was exhausted by concurrent runs),
+`cargo mutants -p deep-diff-forge-review --file crates/deep-diff-forge-review/src/<policy|model>.rs --test-workspace true -j 6 --timeout 300`.
+
+- **Before (workspace scope, host load 60–176):** `policy.rs` 87 mutants: 49 caught, 0
+  missed, 37 timeouts, 1 unviable. `model.rs` 15: 2 caught, 0 missed, 12 timeouts, 1
+  unviable. The timeouts are the host's, not hangs: every timed-out mutant was killed while
+  `cli`'s `council` test binary (200–250 s on its own under that load) was running, before
+  Cargo reached the review crate's tests that fail on it. Workspace scope at this load cannot
+  separate a missed mutant from a timeout, so the crate-scope baseline is the survivor list.
+- **Pinned.** Nine contract tests in `crates/deep-diff-forge-review/tests/contracts.rs`
+  (`claude/mut-policy-20261101`, `432a0c7`). Each asserts the refusal by its reason, so an
+  earlier check cannot satisfy it: a pinned model is one bounded, non-option token; a report
+  from outside the roster is refused; summary, claim, falsifier and rationale are refused blank
+  and one byte over budget and admitted at it; finding IDs are prefixed, at most 164 bytes and
+  unique; 1–16 citations; 128 findings and 1,536 responses are budgeted separately;
+  `reports_expected` is two per reviewer for 2 and 6 reviewers; each persona has its own
+  lens.
+- **Targeted check (load ~40):** the same two files with
+  `-j 4 --timeout 300 -- --lib --test contracts` (crate scope, only the review crate's unit
+  and contract tests): 102 mutants, 100 caught, 2 unviable, 0 missed, 0 timeouts in 10 min.
+  All 16 baseline survivors are caught.
+- **After (workspace scope, same command):** `policy.rs` 12 caught, 74 timeouts, 1 unviable;
+  `model.rs` 3 caught, 11 timeouts, 1 unviable; 0 missed. A `--iterate` re-run of the
+  timeouts at load 40–65 caught 40 + 4 more and timed out 34 + 7, each again inside `cli`'s
+  `council` binary. A further `--iterate` with `--timeout 900` and nothing else changed
+  caught all of them (34 + 7, 0 timeouts). Combined: `policy.rs` 86 caught, 1 unviable;
+  `model.rs` 14 caught, 1 unviable; **0 missed, 0 timeouts at 900 s**. At the specified
+  300 s, workspace scope with `-j 6` on this host is not measured clean: the timeout is
+  shorter than the workspace suite runs under contention.
+- **Equivalents.** None. The 2 unviable mutants (`assess` and `Gate::required` replaced by
+  `Default::default()`) do not compile: `Assessment` and `Gate` have no `Default`.
+- **Observed, not retried:** under load, `cli`'s
+  `vendoring_output_is_sealed_and_planted_links_or_fifos_are_never_mounted` and
+  `qualification_cannot_restore_pass_over_a_refusal_marker` failed in several mutant runs of
+  `check_execution`; whether they fail on the mutant or on load is not separated.

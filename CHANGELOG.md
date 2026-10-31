@@ -61,6 +61,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   (20 s wall), and the quadratic import rule it guards against (`eee2b4c^`) still fails at 66.7 s
   of CPU time. Shrinking the lines was rejected: at 20,000 units the quadratic rule took 0.4 s.
 
+### Tests
+
+- **Council admission boundaries are pinned:** nine `review` contract tests kill the 16 `policy.rs`/`model.rs` mutants that survived the whole-crate run (EVIDENCE.md).
+
 ## [0.5.0] - 2026-10-31
 
 ### Added
