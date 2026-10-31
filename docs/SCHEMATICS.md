@@ -14,8 +14,9 @@ This document is the target implementation map for Deep-Diff-Forge. It turns the
   --log-format json` since 0.5.0); `rpc` and `mcp` (stdio, no daemon); and library use through
   `deep-diff-forge-sdk`. `--cluster` on `--stdin-patch` or a Git selection runs the cluster
   crate's lanes.
-- **Refused today:** the `chain`, `cluster` and `loom` subcommands and `deep-diff-forge <old>
-  <new>` (`deep-diff-forge --help`, "NOT YET IMPLEMENTED").
+- **Withdrawn 2026-10-31:** the `chain`, `cluster` and `loom` subcommands, each refused with
+  exit 2 and its replacement (`deep-diff-forge --help`, "WITHDRAWN"). `deep-diff-forge <old>
+  <new>` ships for two regular files.
 - **No shared cache:** the daemon holds sessions only; `daemon.health` reports
   `cache_entries: 0` (`crates/deep-diff-forge-daemon/src/handler.rs`, decision D-03).
 
@@ -128,10 +129,10 @@ flowchart TB
 | --- | --- | --- | --- |
 | Library mode | Caller links `deep-diff-forge-sdk` (or the engine crates) directly. | Desktop apps, IDEs, tests, embedded tools. | Built: `deep-diff-forge-sdk`. |
 | CLI one-shot | `deep-diff-forge` runs once and exits. | Pager, CI, shell workflows. | Built. |
-| Chain runner | `deep-diff-forge chain` runs declared stages. | Bash, Claude Code, reproducible pipelines. | Not built; refused. The pipeline crate runs ingest and render for `--jsonl`. |
-| Cluster runner | `deep-diff-forge cluster` runs dimensional lanes in parallel. | Large repos, corpora, bounded local parallelism. | Not built as a subcommand; refused. `--cluster [--parallel N]` runs patch and risk lanes. |
+| Chain runner | `deep-diff-forge chain` runs declared stages. | Bash, Claude Code, reproducible pipelines. | Withdrawn 2026-10-31; refused. The shell joins single commands; the pipeline crate runs ingest and render for `--jsonl`. |
+| Cluster runner | `deep-diff-forge cluster` runs dimensional lanes in parallel. | Large repos, corpora, bounded local parallelism. | Withdrawn as a subcommand 2026-10-31; refused. `--cluster [--parallel N]` runs patch and risk lanes. |
 | Interactive TUI | `deep-diff-forge review` owns terminal event loop. | Review stream, mouse navigation, runtime toggles. | Built (`review`, `review --probe` for a headless frame). |
-| Loom runner | `deep-diff-forge loom` creates plans, fixtures, gates, and receipts. | Assimilating exemplar lessons and new capabilities. | Not built; refused. Only `loom-contract` prints the contract. |
+| Loom runner | `deep-diff-forge loom` creates plans, fixtures, gates, and receipts. | Assimilating exemplar lessons and new capabilities. | Withdrawn 2026-10-31; refused. `loom-contract` records the withdrawal. |
 | Local daemon | `deep-diff-forge daemon` exposes JSON-RPC over a Unix socket. | Repeated review sessions from several local clients. | Built, opt-in. Sessions only, no shared cache. |
 | Stdio JSON-RPC / MCP | `deep-diff-forge rpc`, `deep-diff-forge mcp`. | Agents and scripts without a daemon. | Built. |
 

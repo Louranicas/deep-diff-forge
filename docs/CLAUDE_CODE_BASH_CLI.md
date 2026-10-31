@@ -56,6 +56,10 @@ deep-diff-forge --git-staged --rank
 deep-diff-forge --git-range main..HEAD --repo ../other --json
 deep-diff-forge --git-working-tree --acquisition-json
 
+# two regular files through git diff --no-index, sealed; `--` first if a path is a command name
+deep-diff-forge old.rs new.rs --json
+deep-diff-forge -- doctor notes.txt --rank
+
 # gate: refuse an empty or hunkless patch (exit 7)
 git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require-hunks
 
@@ -100,16 +104,14 @@ take no `--json` flag.
 Each of these exits 2 today:
 
 ```bash
-deep-diff-forge old.rs new.rs                      # today: structural old.rs new.rs
 deep-diff-forge --git                              # today: --git-working-tree
 deep-diff-forge review --git                       # today: git diff | deep-diff-forge review
 deep-diff-forge --git --jsonl --progress
 deep-diff-forge plan --git --json
 deep-diff-forge ingest --git --jsonl | deep-diff-forge plan --stdin --jsonl
-deep-diff-forge chain --manifest .deep-diff-forge/chain.toml
-deep-diff-forge cluster --git --dimensions patch,semantic,risk --parallel auto --jsonl
-deep-diff-forge loom plan --source <repo> --feature "review stream"
-deep-diff-forge loom gate --plan docs/loom/review-stream.json
+deep-diff-forge chain --manifest .deep-diff-forge/chain.toml   # withdrawn: join commands with the shell
+deep-diff-forge cluster --git --parallel auto --jsonl          # withdrawn: --git-working-tree --cluster
+deep-diff-forge loom plan --source <repo> --feature "review stream"   # withdrawn
 deep-diff-forge daemon status --json
 ```
 
@@ -125,7 +127,7 @@ The shipped codes are one registry in the binary
 | 0 | `success` | Success. | `proceed` |
 | 2 | `usage` | CLI usage / argument error. | `fix_invocation` |
 | 3 | `io` | I/O or encoding failure: reading input (stdin, a file, Git, the learning store), non-UTF-8 input, or writing output. | `check_environment` |
-| 4 | `invalid_input` | A patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, or a refused Git acquisition. | `change_input` |
+| 4 | `invalid_input` | A patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, or a refused Git acquisition or file pair. | `change_input` |
 | 6 | `daemon_or_terminal` | Daemon / interactive-terminal failure (for example `review` without a TTY, or `daemon status` with no daemon). | `check_environment` |
 | 7 | `input_contract_refused` | `--require-files` refused a patch with 0 files (`refused: 0 files in input (--require-files)`), or `--require-hunks` refused one with 0 hunks or 0 added+removed lines (`refused: 0 hunks in input (--require-hunks)`). stdout is empty. A gate should pass both flags. | `change_input` |
 | 101 | `panic` | Internal error (a panic). | `report_bug` |

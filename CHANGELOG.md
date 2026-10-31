@@ -21,6 +21,33 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **`deep-diff-forge [--] <old> <new>` reviews two regular files.** `patch::diff_files` runs
+  `git diff --no-index` with the acquisition's hardening, from `/` on the canonical paths, with
+  `core.attributesFile=/dev/null`, `GIT_ATTR_NOSYSTEM=1` and `core.autocrlf=false`; the CLI seals
+  Git's exact bytes and prints every `--stdin-patch` mode (`--json`, `--jsonl`, `--rank`,
+  `--cluster`, `--outline`, `--hunks`, `--layout`, the input guards). Refused, by name: a
+  missing path (exit 3), a path that is itself a symbolic link, a directory or special file
+  (exit 4; a linked parent directory resolves), two sizes over the 64 MiB budget, checked before
+  Git reads them (exit 4). Git's answer must be one of its two shapes for a readable pair (exit 0
+  with no patch, exit 1 with one) with nothing on stderr; otherwise exit 3. Without that check a
+  side removed after DDF's checks (Git: exit 1, empty stdout, `Could not access`) was reviewed as
+  "0 files changed" with exit 0 (review finding, reproduced with real Git and a stub). A first word that is neither a command
+  nor a file stays `unknown command` (exit 2); `--` marks it as a path. Directories are out of
+  scope. Measured while building it: run inside a repository, `git diff --no-index` ran that
+  repository's own clean filter, and the user's `core.autocrlf` changed the compared bytes;
+  `cli/tests/file_pair.rs` fails if either comes back. New errors `GitAcquireError::FileUnreadable`
+  and `FileRefused` (a breaking change for an exhaustive `match` on `GitAcquireError`); the
+  exit-4 registry meaning now names a refused file pair.
+
+### Changed
+
+- **`chain`, `cluster` and `loom` are withdrawn, not planned.** `--help` listed them, with
+  `<old> <new>`, as "NOT YET IMPLEMENTED" and nobody owned them. Each is now refused with exit 2
+  and its replacement, even with a second word that would otherwise be a path pair, and
+  `--help` lists them under "WITHDRAWN". `chain-contract` and `cluster-contract` list only
+  shipped modes (a test runs each one); `cluster-contract` names the two dimensions that run
+  (patch, risk) and no longer claims per-lane budgets; `loom-contract` records the withdrawal.
+
 - **Dependabot watches the Python client.** `.github/dependabot.yml` gains a weekly `pip` entry
   for `sdk/python` (its only requirement is the setuptools build backend), with the same 7-day
   cooldown as the Cargo and Actions entries.

@@ -14,7 +14,7 @@
 
 use deep_diff_forge_patch::{
     GitAcquireError, GitAcquireOptions, GitAcquisition, GitChange, GitChangeKind, GitChangeOrigin,
-    GitPath, GitSelection, StructuredDiff, acquire_git, git_version,
+    GitPath, GitSelection, StructuredDiff, acquire_git, diff_files, git_version,
 };
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt as _;
@@ -927,4 +927,173 @@ fn git_version_reports_the_version_and_is_bounded() {
         "{result:?}"
     );
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+/// `diff_files` returns Git's bytes for two regular files (nothing when they are identical) and
+/// names the canonical paths from `/`, as `git diff --no-index` run there does.
+#[test]
+fn diff_files_returns_git_s_patch_for_two_regular_files() {
+    let fx = fixture("pair");
+    let root = std::fs::canonicalize(&fx.root).unwrap();
+    let (old, new) = (root.join("pair-old.txt"), root.join("pair-new.txt"));
+    std::fs::write(&old, "one\ntwo\n").unwrap();
+    std::fs::write(&new, "one\nthree\n").unwrap();
+    let patch = String::from_utf8(diff_files(&old, &new, &options(false)).unwrap()).unwrap();
+    let (old_name, new_name) = (
+        old.to_str().unwrap().trim_start_matches('/'),
+        new.to_str().unwrap().trim_start_matches('/'),
+    );
+    assert!(
+        patch.starts_with(&format!("diff --git a/{old_name} b/{new_name}\n")),
+        "{patch}"
+    );
+    assert!(
+        patch.ends_with("@@ -1,2 +1,2 @@\n one\n-two\n+three\n"),
+        "{patch}"
+    );
+    assert_eq!(diff_files(&old, &old, &options(false)).unwrap(), b"");
+}
+
+/// The two sizes together may reach the byte budget, not pass it; Git's output is held to the
+/// same budget; and untracked capture is refused rather than ignored.
+#[test]
+fn diff_files_holds_inputs_and_output_to_the_budget_and_refuses_untracked() {
+    let fx = fixture("pair-budget");
+    let (old, new) = (fx.root.join("b-old.txt"), fx.root.join("b-new.txt"));
+    std::fs::write(&old, "12345").unwrap();
+    std::fs::write(&new, "12346").unwrap();
+    let within = |byte_budget| GitAcquireOptions {
+        byte_budget,
+        ..options(false)
+    };
+    let err = diff_files(&old, &new, &within(9)).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "old and new file refused: 5 + 5 bytes exceed the 9-byte input budget"
+    );
+    // Ten bytes are admitted, and the patch Git writes for them is over that budget.
+    assert_eq!(
+        diff_files(&old, &new, &within(10)),
+        Err(GitAcquireError::BudgetExceeded { limit_bytes: 10 })
+    );
+    assert_eq!(diff_files(&old, &old, &within(10)), Ok(Vec::new()));
+    assert!(matches!(
+        diff_files(&old, &new, &options(true)),
+        Err(GitAcquireError::InvalidSelection { .. })
+    ));
+}
+
+/// Each side must exist and be a regular file; the error names the side and what it is.
+#[test]
+fn diff_files_refuses_missing_links_directories_and_special_files() {
+    let fx = fixture("pair-kinds");
+    let file = fx.root.join("k-file.txt");
+    std::fs::write(&file, "x\n").unwrap();
+    let link = fx.root.join("k-link");
+    std::os::unix::fs::symlink(&file, &link).unwrap();
+    let fifo = fx.root.join("k-fifo");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let missing = fx.root.join("k-missing");
+    let message = |old: &Path, new: &Path| {
+        diff_files(old, new, &options(false))
+            .unwrap_err()
+            .to_string()
+    };
+    assert!(
+        message(&missing, &file).starts_with(&format!(
+            "cannot read the old file: {}: ",
+            missing.display()
+        )),
+        "{}",
+        message(&missing, &file)
+    );
+    assert!(message(&file, &missing).starts_with("cannot read the new file: "));
+    assert_eq!(
+        message(&link, &file),
+        format!(
+            "old file refused: {} is a symbolic link, not a regular file",
+            link.display()
+        )
+    );
+    assert_eq!(
+        message(&file, &fx.root),
+        format!(
+            "new file refused: {} is a directory, not a regular file",
+            fx.root.display()
+        )
+    );
+    assert_eq!(
+        message(&fifo, &file),
+        format!(
+            "old file refused: {} is a special file (FIFO, socket or device), not a regular file",
+            fifo.display()
+        )
+    );
+}
+
+/// `diff_files` accepts only the two shapes `git diff --no-index` gives a readable pair: exit 0
+/// with nothing written, or exit 1 with a patch and a silent stderr. Real Git exits 1 with an
+/// empty stdout and `error: Could not access '<path>'` for a side removed after the checks; that
+/// run was reviewed as "no change" with exit 0 (review finding 2026-11-01). Each stub Git below
+/// gives one wrong shape and must be a failure, not an empty or partial patch.
+#[test]
+fn diff_files_refuses_any_git_answer_but_silence_or_a_clean_patch() {
+    let fx = fixture("pair-shapes");
+    let (old, new) = (fx.root.join("s-old.txt"), fx.root.join("s-new.txt"));
+    std::fs::write(&old, "a\n").unwrap();
+    std::fs::write(&new, "b\n").unwrap();
+    let diff_with = |name: &str, script: &str| {
+        let stub = fx.root.join(name);
+        std::fs::write(&stub, format!("#!/bin/sh\n{script}\n")).unwrap();
+        chmod(&stub, 0o755);
+        let opts = GitAcquireOptions {
+            git_program: stub.into_os_string(),
+            ..options(false)
+        };
+        for _ in 0..100 {
+            match diff_files(&old, &new, &opts) {
+                Err(GitAcquireError::Spawn { detail, .. }) if detail.contains("os error 26") => {
+                    pause_for_busy_stub();
+                }
+                other => return other,
+            }
+        }
+        diff_files(&old, &new, &opts)
+    };
+    assert_eq!(
+        diff_with(
+            "vanished-git",
+            "echo \"error: Could not access 'gone'\" >&2; exit 1"
+        ),
+        Err(GitAcquireError::CommandFailed {
+            command: "git diff --no-index",
+            code: Some(1),
+            stderr: "error: Could not access 'gone'".to_owned(),
+        })
+    );
+    for (name, script) in [
+        ("mute-git", "exit 1"),
+        (
+            "noisy-git",
+            "echo 'diff --git a/x b/x'; echo warning >&2; exit 1",
+        ),
+        ("contrary-git", "echo 'diff --git a/x b/x'; exit 0"),
+    ] {
+        let result = diff_with(name, script);
+        assert!(
+            matches!(result, Err(GitAcquireError::CommandFailed { .. })),
+            "{name}: {result:?}"
+        );
+    }
+    assert_eq!(
+        diff_with("patch-git", "echo 'diff --git a/x b/x'; exit 1"),
+        Ok(b"diff --git a/x b/x\n".to_vec())
+    );
+    assert_eq!(diff_with("same-git", "exit 0"), Ok(Vec::new()));
 }

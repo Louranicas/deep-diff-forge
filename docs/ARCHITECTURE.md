@@ -170,10 +170,14 @@ Evidence (code at 0.3.0):
 - `--cluster` places files with `graph::RankedFile::scored` (score, signals and code evidence)
   in `cluster` lanes and joins by `ranked-review-order`; its receipt lists the `patch` and
   `risk` dimensions (measured: `deep-diff-forge --stdin-patch --cluster --json`).
+- `<old> <new>` (2026-10-31) runs `patch::diff_files` (`git diff --no-index` from `/` on two
+  regular files) and feeds Git's bytes into the same `SealedReview` and outputs as
+  `--stdin-patch` (`crates/deep-diff-forge-cli/src/file_pair.rs`).
 
 Not built: a planner that chooses strategies, a shared cache (the daemon reports
-`cache_entries: 0`, decision D-03), daemon subscriptions, and the `chain`, `cluster`, `loom` and
-`<old> <new>` commands (refused today; see `deep-diff-forge --help`).
+`cache_entries: 0`, decision D-03), daemon subscriptions, and directory-pair input. The `chain`,
+`cluster` and `loom` subcommands were withdrawn on 2026-10-31 and are refused with exit 2 (see
+`deep-diff-forge --help`, "WITHDRAWN").
 
 ## Platform scope (decision D-05, 2026-10-27)
 
