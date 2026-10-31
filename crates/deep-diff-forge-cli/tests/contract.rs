@@ -639,22 +639,41 @@ fn help_lists_no_planned_mode_and_each_withdrawn_one_is_refused() {
     let (_, help, _) = run(&["--help"], "");
     assert!(!help.contains("NOT YET IMPLEMENTED"), "{help}");
     let (_, withdrawn) = help.split_once("WITHDRAWN").unwrap();
-    let names: Vec<&str> = withdrawn
+    let entries: Vec<(&str, &str)> = withdrawn
         .lines()
         .filter_map(|line| line.trim().strip_prefix("deep-diff-forge "))
-        .map(|mode| mode.split(':').next().unwrap())
+        .map(|mode| mode.split_once(": ").unwrap())
         .collect();
+    let names: Vec<&str> = entries.iter().map(|(name, _)| *name).collect();
     assert_eq!(names, ["chain", "cluster", "loom"], "{withdrawn}");
-    for name in names {
+    for (name, instead) in entries {
         // A second word would otherwise make it a direct comparison of two paths.
         for args in [vec![name], vec![name, "other"]] {
             let (code, stdout, stderr) = run(&args, "");
             assert_eq!(code, 2, "{args:?} was not refused: {stderr}");
             assert_eq!(stdout, "", "{args:?}");
-            assert!(
-                stderr.contains(&format!("error: `{name}` was withdrawn; ")),
-                "{args:?}: {stderr}"
+            // Exactly its own replacement, the one help lists.
+            assert_eq!(
+                stderr,
+                format!("error: `{name}` was withdrawn; {instead}\n"),
+                "{args:?}"
             );
         }
     }
+}
+
+/// `loom-contract` records the withdrawal instead of promising phases nobody owns.
+#[test]
+fn loom_contract_records_the_withdrawal() {
+    let (code, stdout, _) = run(&["loom-contract"], "");
+    assert_eq!(code, 0);
+    assert!(
+        stdout.starts_with("deep-diff-forge loom-contract v0\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("withdrawn. No loom runner ships and none is planned;"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("PLANNED"), "{stdout}");
 }
