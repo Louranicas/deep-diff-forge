@@ -1711,6 +1711,8 @@ fn mutation_jobs_own_a_build_cache_and_cannot_contaminate_normal_tests() {
 #[test]
 fn qualification_cannot_restore_pass_over_a_refusal_marker() {
     let f = Fixture::new();
+    // The marker comes from qualifying a finished job; one timed out on a loaded host gets none.
+    f.long_budget();
     f.prepare();
     f.install_gate("empty");
     assert_eq!(f.gate("tests").status.code(), Some(7));
@@ -1915,6 +1917,17 @@ fn an_empty_runtime_or_image_is_refused_as_configuration() {
         let f = Fixture::new();
         f.prepare();
         f.install_gate("valid");
+        // A runtime that records being asked anything (`image inspect` included, which the
+        // shared fake answers silently), so the refusal is shown to come first.
+        let asked = f.root.join("runtime-asked");
+        fs::write(
+            f.bin.join("podman"),
+            format!(
+                "#!/bin/sh\necho \"$@\" >> '{}'\nexit 125\n",
+                asked.display()
+            ),
+        )
+        .unwrap();
         let mut command = f.command(
             &["gate", f.run.to_str().unwrap(), "tests", "--execute"],
             "normal",
@@ -1933,6 +1946,10 @@ fn an_empty_runtime_or_image_is_refused_as_configuration() {
         assert!(
             stderr.contains("gate sandbox unavailable: empty runtime or image"),
             "{runtime:?} {image:?}: {stderr}"
+        );
+        assert!(
+            !asked.exists(),
+            "{runtime:?} {image:?}: the runtime was asked"
         );
         assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
     }
@@ -2067,11 +2084,10 @@ fn vendoring_output_is_sealed_and_planted_links_or_fifos_are_never_mounted() {
         "vendor_dirs",
     ] {
         let f = Fixture::new();
-        if mode == "vendor_dirs" {
-            // Creating 100,001 directories takes about 3 s on a loaded host: the case must be
-            // refused by the entry budget, not the clock.
-            f.long_budget();
-        }
+        // The refusal must come from the seal, not the clock. Creating 100,001 directories takes
+        // about 3 s on a loaded host, and at load 60 the other modes passed 2 s too: a vendoring
+        // job that times out writes no `qualification-error.txt` (sandbox mutation run, 2026-11-01).
+        f.long_budget();
         f.prepare();
         f.install_gate(mode);
         let result = f.gate("tests");
@@ -2271,7 +2287,8 @@ fn gates_launch_the_resolved_image_id_with_read_only_inputs_and_bounded_resource
     }
     // Every host CPU but one, never fewer than one: the gate cannot starve its supervising
     // controller, and a one- or two-CPU host still runs it (docs/REVIEW_COUNCIL.md, row 9). The
-    // controller inherits this process's affinity, so both see the same parallelism.
+    // controller inherits this process's affinity, so both see the same parallelism. Below three
+    // host CPUs the bound is 1 whatever the formula, so only there a `cpus -> 1` mutant survives.
     let host = std::thread::available_parallelism().unwrap().get();
     let cpus = host.saturating_sub(1).max(1);
     assert!(

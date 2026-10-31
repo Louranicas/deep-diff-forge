@@ -887,29 +887,41 @@ cargo mutants -p deep-diff-forge-review --file crates/deep-diff-forge-review/src
 
 - **Before: 41 mutants in 9 min:** 28 caught, 3 missed, 0 timeouts, 10 unviable. That run is
   contaminated: 9 of its mutant logs end in "Disk quota exceeded" on the shared `/tmp`. Those 9
-  are 8 false "unviable" (`* with +`/`/` in `control`, `>` to `<`/`==`) and one false "caught"
-  (`&&` to `||` in `from_env`). A clean re-run on the same code plus only the `cpus` test (below)
+  are 8 false "unviable" (`control`'s `* with +` and `* with /` at 95:36, `>` to `<` and `==` at
+  111:32, its three `Ok(Some(..))` replacements at 79:9, and `from_env`'s `delete !` at 59:13)
+  and one false "caught" (`&&` to `||` in `from_env`). A clean re-run on the same code plus only the `cpus` test (below)
   gave 36 caught, 3 missed, 2 unviable. So `main` had 5 real survivors: `from_env` `&&` to `||`,
   `control`'s 64 KiB output bound (`* with +`), `cpus` returning 0 or 1, and `>` to `>=` in
   the control deadline.
 - **Killed.** `cli/tests/council.rs`: `gates_launch_the_resolved_image_id_...` now asserts
-  `--cpus=<host CPUs − 1, min 1>` in argv and receipt (it only checked the prefix);
+  `--cpus=<host CPUs − 1, min 1>` in argv and receipt (it only checked the prefix). It kills
+  `cpus -> 0` on any host but `cpus -> 1` only with at least 3 available CPUs: on 1 or 2 the
+  bound is 1 either way (measured here on 16).
   `an_empty_runtime_or_image_is_refused_as_configuration` refuses a blank `DDF_COUNCIL_PODMAN`
-  and an empty `DDF_COUNCIL_GATE_IMAGE` by name (before, an empty image reached `image inspect`
-  and failed there with another message). `sandbox.rs` unit test
+  and an empty `DDF_COUNCIL_GATE_IMAGE` by name, and its recording fake runtime shows it was
+  never invoked (before, an empty image reached `image inspect` and failed there with another
+  message). `sandbox.rs` unit test
   `control_output_is_kept_whole_up_to_64_kib_and_no_further`: 60,000 bytes arrive whole and
   200,000 are cut at 65,536. No production code changed.
 - **After.** A targeted run (`-F 'from_env|control|cpus'`, `--timeout 900`) tested 15 mutants:
-  14 caught, 1 unviable, 0 missed. Each new test was the one that failed on its mutant. The full
-  command again, at load average 60 to 240 from parallel mutation campaigns on this 16-CPU
-  host: 41 mutants in 49 min, 21 caught, 0 missed, 18 timeouts, 2 unviable. All 18 timeouts
-  were caught in the clean or targeted runs; their logs stop in other crates' tests at 300 s
-  (the `council` suite took up to 254 s in this run, against at most 34 s in the clean one). A clean full run with 0 timeouts is
-  still to be measured on an idle host.
+  14 caught, 1 unviable, 0 missed. Each new test failed on its mutant, except `>` to `>=`
+  (below). The full command again, at load average 60 to 240 from parallel mutation campaigns
+  on this 16-CPU host: 41 mutants in 49 min, 21 caught, 0 missed, 18 timeouts, 2 unviable.
+  17 of the 18 timeouts were caught in the clean re-run or the targeted run; the 18th, 111:32
+  `>=`, is the argued-equivalent mutant and has no genuine kill. Their logs stop in other
+  crates' tests at 300 s (the `council` suite took up to 254 s in this run, against at most
+  40 s in the clean one, and 122 s for the `==` deadline mutant, which waits on its control
+  deadline by design). A clean full run with 0 timeouts is still to be measured on an idle host.
+- **Load flakes.** In the targeted run `vendoring_output_is_sealed_...` failed (no
+  `qualification-error.txt`) on 3 of 15 mutants, and `qualification_cannot_restore_pass_...` on
+  one, none of which touch what they check. Cause, from the code: both ran under the fixture's
+  2 s job budget, and a job that times out is never qualified, so it gets no marker. Both now
+  take `long_budget`, like the other cases whose refusal must not come from the clock. The
+  `cpus` kills hold regardless: their own assertion (council.rs `--cpus`) failed too.
 - **Equivalent.** `start.elapsed() > CONTROL_DEADLINE` to `>=` (line 111). The two differ
   only when a monotonic nanosecond reading equals 30 s exactly. A 20 ms poll that misses that
   reading fires on the next one under either operator, so the deadline moves by at most one
   poll and no test can tell them apart. The targeted run's "caught" for it was false: the
-  failing tests were the load-sensitive vendoring and qualification cases, not a deadline test.
+  failing tests were the load flakes above, not a deadline test.
 - **Unviable (2).** `from_env` to `Ok(Default::default())` and `command` to
   `Default::default()`: neither `Sandbox` nor `Command` implements `Default`.
