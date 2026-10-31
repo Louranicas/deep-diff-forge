@@ -91,12 +91,13 @@ jobs:
         run: cargo test --workspace --locked --no-fail-fast
 
   # Linux arm64 binaries ship from release.yml (since 2026-10-31, built and run on
-  # ubuntu-24.04-arm, the image the release builds on), so the suite runs there on every event
+  # ubuntu-22.04-arm, the image the release builds on: on ubuntu-24.04-arm the binary needed
+  # GLIBC_2.39, over the declared 2.34 floor, measured in PR #79), so the suite runs there on every event
   # too. Not a required check on pull requests (the required set lives in a GitHub ruleset), but
   # it gates every release build through release.yml's `quality`.
   linux-arm64:
     name: Linux arm64 tests
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-22.04-arm
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)

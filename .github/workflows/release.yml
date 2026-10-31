@@ -96,7 +96,7 @@ jobs:
           # runner (free for public repositories); macos-latest is arm64, so the x86_64 macOS
           # binary is cross-built and run under Rosetta 2 (`run_under`).
           - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, run_under: "" }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, run_under: "" }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, run_under: "" }
           - { os: macos-latest, target: x86_64-apple-darwin, run_under: "arch -x86_64" }
           - { os: macos-latest, target: aarch64-apple-darwin, run_under: "" }
     steps:

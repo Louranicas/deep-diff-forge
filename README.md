@@ -207,7 +207,7 @@ binary is run (`--version` and a review) before it ships.
 | Target | Built and run on | Needs | Tests on every pull request |
 | --- | --- | --- | --- |
 | `x86_64-unknown-linux-gnu` | `ubuntu-24.04` | glibc 2.34 or newer | the whole suite (`deploy gate-feature`, required) |
-| `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm`, natively | glibc 2.34 or newer | the whole suite (`Linux arm64 tests`, not required; gates releases) |
+| `aarch64-unknown-linux-gnu` | `ubuntu-22.04-arm`, natively | glibc 2.34 or newer | the whole suite (`Linux arm64 tests`, not required; gates releases) |
 | `aarch64-apple-darwin` | `macos-latest` (arm64) | macOS 11 or newer | the whole suite (`macOS tests`, required); the launchd agent (`macOS launchd agent`, not required; skipped in releases) |
 | `x86_64-apple-darwin` | cross-built on `macos-latest`, run under Rosetta 2 | macOS 10.12 or newer | none (the release smoke only) |
 

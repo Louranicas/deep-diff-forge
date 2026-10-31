@@ -98,7 +98,8 @@ plutil -replace ProgramArguments.0 -string "$bin" "$plist"
 plutil -replace EnvironmentVariables.XDG_RUNTIME_DIR -string "$run" "$plist"
 plutil -replace StandardErrorPath -string "$log" "$plist"
 plutil -lint "$plist"
-! grep -q '/Users/YOU' "$plist" || fail "a /Users/YOU placeholder is left in ${plist}"
+# Only a value counts: the plist's install comment names the placeholder on purpose.
+! grep -q '<string>/Users/YOU' "$plist" || fail "a /Users/YOU placeholder value is left in ${plist}"
 [ "$(plutil -extract ProgramArguments.0 raw -o - "$plist")" = "$bin" ] || fail "ProgramArguments[0] is not ${bin}"
 
 export XDG_RUNTIME_DIR="$run"

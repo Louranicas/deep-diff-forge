@@ -27,7 +27,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   target triples, when a doc omits the glibc floor, or when a doc mentions musl without stating
   it as unsupported:
   - **`aarch64-unknown-linux-gnu` is a release target**, built and run natively on GitHub's
-    `ubuntu-24.04-arm` runner like the others (smoke, checksum, provenance). A `Linux arm64
+    `ubuntu-22.04-arm` runner like the others (smoke, checksum, provenance). Not
+    `ubuntu-24.04-arm`: built there, the binary had a hard need of `GLIBC_2.39`, over the floor
+    (measured by the first CI run of the floor check). A `Linux arm64
     tests` job runs the whole suite there on every event: not a required check on pull requests,
     but it gates every release build through release.yml's `quality`, as `macOS tests` does.
     Both are pending their first CI run.

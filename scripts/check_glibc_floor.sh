@@ -43,6 +43,8 @@ newest="$(printf '%s\n' "$hard" | tail -n 1)"
 weak="$(needs weak | paste -sd ' ' -)"
 if [ "$(printf '%s\n%s\n' "$newest" "$FLOOR" | sort -V | tail -n 1)" != "$FLOOR" ]; then
   echo "::error::$bin requires GLIBC_$newest, newer than the declared floor $FLOOR (docs: README.md#supported-platforms)" >&2
+  # Which symbols need it, so the cause is in the log (objdump is binutils, as readelf is).
+  objdump -T "$bin" 2>/dev/null | awk -v v="(GLIBC_$newest)" '$0 ~ v { print "  needs GLIBC_'"$newest"': " $NF }' >&2 || true
   exit 1
 fi
 echo "glibc floor OK: $bin requires at most GLIBC_$newest (floor $FLOOR); weak, optional: ${weak:-none}"
