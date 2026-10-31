@@ -760,9 +760,9 @@ fn a_repository_worktree_config_filter_never_runs() {
     assert!(!patch.contains("REVIEWED"), "{patch}");
 }
 
-/// A repository filter whose name is not UTF-8 is turned off too, in `.git/config` and in
-/// `config.worktree`. A subsection name is raw bytes matched exactly, and the name was decoded
-/// lossily, so the override named `filter.\u{fffd}` and the repository's `filter.\xff` still ran.
+/// A repository filter whose name is not UTF-8, in `.git/config` or `config.worktree`, refuses
+/// the acquisition and never runs. Naming it to Git by its exact bytes switched it off on Linux
+/// but not on macOS (CI, PR #76), so DDF refuses a name it cannot be sure of naming exactly.
 #[test]
 fn a_repository_filter_with_a_non_utf8_name_never_runs() {
     for (name, file) in [
@@ -782,11 +782,12 @@ fn a_repository_filter_with_a_non_utf8_name_never_runs() {
         );
         std::fs::write(r.join(file), config).unwrap();
         std::fs::write(r.join("noeol.txt"), b"a\nc\nreviewed as written\n").unwrap();
-        let acq = acquire_git(r, &GitSelection::WorkingTree, &options(false)).unwrap();
+        let refused = acquire_git(r, &GitSelection::WorkingTree, &options(false));
+        assert!(
+            matches!(refused, Err(GitAcquireError::InvalidSelection { ref detail }) if detail.contains("not UTF-8")),
+            "{file}: {refused:?}"
+        );
         assert!(!marker.exists(), "a non-UTF-8 filter in {file} ran");
-        let patch = String::from_utf8_lossy(acq.diff().patch_bytes());
-        assert!(patch.contains("+reviewed as written\n"), "{file}: {patch}");
-        assert!(!patch.contains("REVIEWED"), "{file}: {patch}");
     }
 }
 

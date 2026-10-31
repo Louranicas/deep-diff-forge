@@ -283,31 +283,15 @@ fn neutral_filters(
     Ok(env)
 }
 
-/// `filter.<name>.<key>` with the name's bytes as Git listed them. A subsection name is raw bytes
-/// matched exactly: a lossy decode turned `\xff` into U+FFFD, so the override named another
-/// filter and the repository's own still ran (review of 2026-10-31).
-#[cfg(unix)]
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "the same signature as the off-Unix form, which can refuse"
-)]
+/// `filter.<name>.<key>` for a filter name that is UTF-8; any other name refuses the
+/// acquisition. A subsection name is raw bytes matched exactly: a lossy decode turned `\xff` into
+/// U+FFFD, so the override named another filter and the repository's own still ran (review of
+/// 2026-10-31). Passing the exact bytes then fixed it on Linux but not on macOS, where the
+/// repository's `\xff` filter still ran (CI, PR #76), so a name DDF cannot be sure of naming
+/// exactly is refused on every platform rather than left on.
 fn filter_key(name: &[u8], key: &str) -> Result<OsString, GitAcquireError> {
-    use std::os::unix::ffi::OsStringExt as _;
-    Ok(OsString::from_vec(
-        [b"filter.", name, b".", key.as_bytes()].concat(),
-    ))
-}
-
-#[cfg(not(unix))]
-use utf8_filter_key as filter_key;
-
-/// Off Unix an environment value is text, so a filter name that is not UTF-8 cannot be named
-/// exactly, and acquisition is refused rather than leaving that filter on. Unix test builds
-/// compile it too, so its tests run on Unix CI.
-#[cfg(any(not(unix), test))]
-fn utf8_filter_key(name: &[u8], key: &str) -> Result<OsString, GitAcquireError> {
     let name = std::str::from_utf8(name).map_err(|_| GitAcquireError::InvalidSelection {
-        detail: "a repository filter name is not representable on this platform".to_owned(),
+        detail: "a repository filter name is not UTF-8, so it cannot be switched off".to_owned(),
     })?;
     Ok(OsString::from(format!("filter.{name}.{key}")))
 }
@@ -983,22 +967,18 @@ mod tests {
         assert_eq!(unprotected_filter_names(b""), Vec::<Vec<u8>>::new());
     }
 
-    #[cfg(unix)]
     #[test]
-    fn filter_names_reach_git_byte_for_byte_or_not_at_all() {
-        use std::os::unix::ffi::OsStrExt as _;
-        let env = neutral_filters(&[b"\xff".to_vec()], 2).unwrap();
+    fn a_utf8_filter_name_is_named_and_any_other_refuses() {
+        let env = neutral_filters(&[b"lfs".to_vec()], 2).unwrap();
         assert_eq!(env.len(), 9);
-        assert_eq!(env[0].0, "GIT_CONFIG_KEY_2");
-        assert_eq!(env[0].1.as_bytes(), b"filter.\xff.clean");
+        assert_eq!(
+            env[0],
+            ("GIT_CONFIG_KEY_2".into(), "filter.lfs.clean".into())
+        );
         assert_eq!(env[7], ("GIT_CONFIG_VALUE_5".into(), "false".into()));
         assert_eq!(env[8], ("GIT_CONFIG_COUNT".into(), "6".into()));
-        assert_eq!(
-            utf8_filter_key(b"lfs", "clean"),
-            Ok(OsString::from("filter.lfs.clean"))
-        );
         assert!(matches!(
-            utf8_filter_key(b"\xff", "clean"),
+            neutral_filters(&[b"lfs".to_vec(), b"\xff".to_vec()], 0),
             Err(GitAcquireError::InvalidSelection { .. })
         ));
     }
