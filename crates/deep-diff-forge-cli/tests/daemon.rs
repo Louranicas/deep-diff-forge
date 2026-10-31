@@ -488,3 +488,221 @@ fn stop_returns_after_the_daemon_has_exited() {
     assert!(second.exited());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `--format` belongs to `daemon metrics` and takes json or prometheus; `--out` needs the
+/// Prometheus text. Refusals exit 2 before any daemon is asked.
+#[test]
+fn metrics_format_and_out_are_admitted_only_where_they_apply() {
+    for (args, refusal) in [
+        (
+            &["daemon", "health", "--format", "prometheus"][..],
+            "--format applies only to `daemon metrics`",
+        ),
+        (
+            &["daemon", "metrics", "--format", "openmetrics"][..],
+            "--format takes json or prometheus, not openmetrics",
+        ),
+        (
+            &["daemon", "metrics", "--out", "x.prom"][..],
+            "--out applies only to `daemon metrics --format prometheus`",
+        ),
+        (
+            &["daemon", "metrics", "--format", "json", "--out", "x.prom"][..],
+            "--out applies only to `daemon metrics --format prometheus`",
+        ),
+        (
+            &["daemon", "status", "--out", "x.prom"][..],
+            "--out applies only to `daemon metrics --format prometheus`",
+        ),
+    ] {
+        let (code, stdout, stderr) = run(args);
+        assert_eq!(code, 2, "{args:?}: {stderr}");
+        assert_eq!(stdout, "", "{args:?}");
+        assert!(stderr.contains(refusal), "{args:?}: {stderr}");
+    }
+    // No daemon: exit 6, and the textfile is left as it was.
+    let sock = temp_socket("prom-absent");
+    let dir = sock.parent().unwrap();
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).unwrap();
+    let out = dir.join("ddf.prom");
+    std::fs::write(&out, "ddf_daemon_uptime_seconds 1\n").unwrap();
+    let (code, stdout, stderr) = run(&[
+        "daemon",
+        "metrics",
+        "--format",
+        "prometheus",
+        "--out",
+        out.to_str().unwrap(),
+        "--socket",
+        sock.to_str().unwrap(),
+    ]);
+    assert_eq!((code, stdout.as_str()), (6, ""), "{stderr}");
+    assert!(stderr.contains("no daemon at"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "ddf_daemon_uptime_seconds 1\n"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// `daemon metrics --format prometheus` renders the same counters as the JSON answer, on stdout
+/// or, with `--out`, as a whole `0644` file and no temporary left beside it; a symlink at the
+/// path is refused (exit 3) and its target kept.
+#[test]
+fn prometheus_metrics_match_the_json_and_write_a_textfile() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let sock = temp_socket("prometheus");
+    let dir = sock.parent().unwrap().to_path_buf();
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = sock.to_str().unwrap();
+    let mut daemon = Daemon::spawn(path);
+    let mut ready = false;
+    for _ in 0..WAIT_STEPS {
+        if run(&["daemon", "health", "--socket", path]).0 == 0 {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(ready, "the daemon never answered");
+    assert_eq!(run(&["daemon", "status", "--socket", path]).0, 0);
+    let (code, json, _) = run(&["daemon", "metrics", "--format", "json", "--socket", path]);
+    assert_eq!(code, 0);
+    let reply: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        reply["result"]["schema"],
+        "deep-diff-forge.daemon-metrics.v0"
+    );
+    assert_eq!(reply["result"]["methods"]["daemon.status"]["requests"], 1);
+
+    let (code, text, stderr) = run(&[
+        "daemon",
+        "metrics",
+        "--format",
+        "prometheus",
+        "--socket",
+        path,
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        text.contains("\nddf_daemon_requests_total{method=\"daemon.status\"} 1\n"),
+        "{text}"
+    );
+    // The JSON request above is counted too: one daemon.metrics before this one.
+    assert!(
+        text.contains("\nddf_daemon_requests_total{method=\"daemon.metrics\"} 1\n"),
+        "{text}"
+    );
+    assert!(text.contains("# TYPE ddf_daemon_request_duration_seconds histogram\n"));
+    assert!(text.contains(&format!(
+        "ddf_daemon_build_info{{version=\"{}\"}} 1\n",
+        env!("CARGO_PKG_VERSION")
+    )));
+    assert!(text.starts_with("# HELP ") && text.ends_with('\n') && !text.contains("# EOF"));
+
+    let out = dir.join("ddf.prom");
+    let (code, stdout, stderr) = run(&[
+        "daemon",
+        "metrics",
+        "--format",
+        "prometheus",
+        "--out",
+        out.to_str().unwrap(),
+        "--socket",
+        path,
+    ]);
+    assert_eq!((code, stdout.as_str()), (0, ""), "{stderr}");
+    let written = std::fs::read_to_string(&out).unwrap();
+    assert!(
+        written.contains("\nddf_daemon_requests_total{method=\"daemon.metrics\"} 2\n"),
+        "{written}"
+    );
+    assert_eq!(
+        std::fs::metadata(&out).unwrap().permissions().mode() & 0o777,
+        0o644
+    );
+    // Beside the daemon's own socket and lock, only the textfile: no temporary is left.
+    let others: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with("d.sock"))
+        .collect();
+    assert_eq!(others, ["ddf.prom"]);
+
+    let target = dir.join("target");
+    std::fs::write(&target, "keep\n").unwrap();
+    let link = dir.join("link.prom");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let (code, _, stderr) = run(&[
+        "daemon",
+        "metrics",
+        "--format",
+        "prometheus",
+        "--out",
+        link.to_str().unwrap(),
+        "--socket",
+        path,
+    ]);
+    assert_eq!(code, 3, "{stderr}");
+    assert!(
+        stderr.contains("is a symlink; refusing to replace it"),
+        "{stderr}"
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep\n");
+
+    assert_eq!(run(&["daemon", "stop", "--socket", path]).0, 0);
+    assert!(daemon.exited(), "the daemon kept running after daemon stop");
+    drop(daemon);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A daemon that answers no metrics document (an RPC error, as a protocol 1 daemon gives, or a
+/// result of another shape) exits 6 with the reason, and no text is written.
+#[test]
+fn prometheus_metrics_refuse_an_answer_that_is_not_a_metrics_document() {
+    use std::io::{BufRead as _, Write as _};
+    for (answer, reason) in [
+        (
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}"#,
+            "the daemon refused daemon.metrics: method not found",
+        ),
+        (
+            r#"{"jsonrpc":"2.0","id":1,"result":{"schema":"deep-diff-forge.daemon-status.v0"}}"#,
+            "not a deep-diff-forge.daemon-metrics.v0 document",
+        ),
+    ] {
+        let sock = temp_socket("prom-refused");
+        let dir = sock.parent().unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let fake = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .unwrap();
+            assert!(line.contains("daemon.metrics"), "{line}");
+            writeln!(&stream, "{answer}").unwrap();
+        });
+        let out = dir.join("ddf.prom");
+        let (code, stdout, stderr) = run(&[
+            "daemon",
+            "metrics",
+            "--format",
+            "prometheus",
+            "--out",
+            out.to_str().unwrap(),
+            "--socket",
+            sock.to_str().unwrap(),
+        ]);
+        // Assert before joining: a CLI that never connects (one that refuses the options) must
+        // fail this test, not leave it waiting on the fake's accept.
+        assert_eq!((code, stdout.as_str()), (6, ""), "{stderr}");
+        assert!(stderr.contains(reason), "{stderr}");
+        fake.join().unwrap();
+        assert!(!out.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

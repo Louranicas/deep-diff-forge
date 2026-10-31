@@ -5,7 +5,7 @@
 What exists today, checked against `crates/deep-diff-forge-daemon/src/` and the
 0.3.0 debug binary:
 
-- `deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics|stop} [--socket PATH]`.
+- `deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]`.
   `start` always serves in the foreground; a supervisor owns the process.
   `--foreground` is accepted only with `start` (elsewhere: exit 2).
 - One Unix socket, JSON-RPC 2.0, protocol 2 (0 and 1 still negotiate). Methods
@@ -26,7 +26,9 @@ What exists today, checked against `crates/deep-diff-forge-daemon/src/` and the
 - Not implemented: any cache (`cache_entries` is always 0), the `cache`
   command, subscriptions, log levels other than `warn` and `info`, TCP and
   Windows named pipes. Metrics (`daemon.metrics`)
-  and JSON log lines (`--log-format json`) ship ([observability](#observability)).
+  and JSON log lines (`--log-format json`) ship ([observability](#observability)), and since
+  2026-10-31 the metrics also render as Prometheus text for node_exporter's textfile collector,
+  with no new listener ([exporting metrics](#exporting-metrics-to-prometheus)).
 
 Sections below that describe those are target design and say so. The security
 boundary is authoritative in [`SECURITY.md`](../SECURITY.md#local-daemon).
@@ -276,6 +278,7 @@ deep-diff-forge daemon start --allow-repo PATH --log-format json
 deep-diff-forge daemon status
 deep-diff-forge daemon health
 deep-diff-forge daemon metrics          # daemon.metrics, protocol 2
+deep-diff-forge daemon metrics --format prometheus [--out PATH.prom]
 deep-diff-forge daemon stop             # daemon.shutdown, then waits for the exit (at most 35 s)
 ```
 
@@ -353,7 +356,9 @@ Implemented (2026-10-30):
   `deep-diff-forge daemon: <message>`. Both come from `log.rs`, so they cannot drift.
 
 Not implemented: levels other than `warn` and `info`, `info` events for session open and close, and a
-metrics endpoint other than `daemon.metrics` (no TCP, no Prometheus; the plan rules both out).
+metrics endpoint other than `daemon.metrics` (no TCP, no HTTP scrape listener; the plan rules both
+out). The same metrics can be written as a Prometheus text file instead
+([exporting metrics](#exporting-metrics-to-prometheus)).
 
 Original target design, kept as written:
 
@@ -374,6 +379,83 @@ Metrics:
 - `ddf_cache_miss_total{kind}`
 - `ddf_projection_latency_ms{mode}`
 - `ddf_review_rank_latency_ms`
+
+## Exporting metrics to Prometheus
+
+Added 2026-10-31. `deep-diff-forge daemon metrics --format prometheus` prints the `daemon.metrics`
+answer in the [Prometheus text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/)
+(version 0.0.4), and `--out PATH` writes it to a file instead, for
+[node_exporter's textfile collector](https://github.com/prometheus/node_exporter#textfile-collector).
+The daemon gains no listener and the plan's rule stands: the CLI asks the daemon over its socket,
+as `daemon metrics` always has, and renders the answer (`exposition.rs`). The JSON answer
+(`--format json`, the default) is unchanged, and both come from the same document, so they
+cannot disagree.
+
+| Family | Type | From `daemon-metrics.v0` |
+| --- | --- | --- |
+| `ddf_daemon_build_info{version}` | gauge, always 1 | `version` |
+| `ddf_daemon_uptime_seconds` | gauge | `uptime_secs` |
+| `ddf_daemon_requests_total{method}` | counter | `methods.*.requests` |
+| `ddf_daemon_request_errors_total{method,error}` | counter | `methods.*.errors` |
+| `ddf_daemon_request_duration_seconds{method}` | histogram | `methods.*.latency_us.buckets` |
+| `ddf_daemon_admitted_total`, `ddf_daemon_admission_waits_total`, `ddf_daemon_admission_wait_seconds_total`, `ddf_daemon_busy_refusals_total` | counter | `admission.admitted`, `waited`, `wait_us`, `busy` |
+| `ddf_daemon_peak_in_flight_bytes`, `ddf_daemon_peak_running_requests` | gauge | `admission.peak_in_flight_bytes`, `peak_running` |
+| `ddf_daemon_connections_accepted_total`, `ddf_daemon_connection_errors_total` | counter | `connections.accepted`, `errors` |
+| `ddf_daemon_connections_refused_total{reason="at_limit"\|"peer"}` | counter | `connections.refused_at_limit`, `refused_peer` |
+| `ddf_daemon_panics_total`, `ddf_daemon_session_resets_total`, `ddf_daemon_sessions_{opened,closed,evicted}_total` | counter | `engine.*` |
+| `ddf_daemon_peak_retained_bytes` | gauge | `engine.peak_retained_bytes` |
+
+What the text holds, and why:
+
+- **Format 0.0.4, not OpenMetrics.** The textfile collector parses the Prometheus text format;
+  OpenMetrics names a counter family without `_total` in its `TYPE` line, which that parser
+  reads as an untyped family. So there is no `# EOF` line, and no sample has a timestamp (the
+  collector skips a file that has one).
+- **Units in the names.** Latency and admission wait are in seconds, as exact decimals of the
+  microseconds the daemon counts (`0.000008`, `1.5`); the histogram's `le` bounds are the
+  daemon's log₂ buckets, 1 µs to 4.194304 s, then `+Inf`, cumulative.
+- **No `_sum`.** The daemon keeps bucket counts, not total time, so the histogram has
+  `_bucket` and `_count` only: use `histogram_quantile`, not `_sum / _count`. node_exporter
+  re-exports a missing sum as 0 (inferred from its `collector/textfile.go`, which reads
+  `GetSampleSum()`; not run here).
+- **Counters count since the daemon started**, as in the JSON; a restart resets them, which
+  `rate()` handles. A method never called has no series, as it has no JSON entry, and a family
+  with no samples (no errors yet) is left out.
+- **Refuse, don't guess.** A document missing a field, or a daemon that answers an RPC error
+  (protocol 1 has no `daemon.metrics`), exits 6 with the reason and writes nothing. Label values
+  (method names, the version) are escaped.
+- **The file is replaced whole:** written to `.NAME.PID.tmp` in the same directory (not a
+  `.prom` name, so the collector never reads it half written), synced, then renamed over PATH.
+  A symlink or a non-regular file at PATH is refused (exit 3) and left alone, and the temporary
+  is created exclusively, so nothing is written through a link planted there. The mode is
+  `0644`, set exactly whatever the umask: node_exporter runs as its own user and must read it,
+  and the metrics hold counts, the version and method names. No daemon (exit 6) leaves the
+  previous file in place, so alert on its age.
+
+Recipe (the units ship in `contrib/systemd/`; `systemd-analyze --user verify` accepts them
+apart from the binary path on the machine that checked them, 2026-10-31; not run against a real
+node_exporter, so the end-to-end path is unmeasured):
+
+```bash
+# node_exporter reads this directory: --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
+sudo install -d -o "$USER" -m 0755 /var/lib/node_exporter/textfile_collector
+cp contrib/systemd/deep-diff-forge-metrics.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now deep-diff-forge-metrics.timer   # every 15 s
+```
+
+Or from cron: `* * * * * deep-diff-forge daemon metrics --format prometheus --out
+/var/lib/node_exporter/textfile_collector/deep-diff-forge.prom` (cron sets no `XDG_RUNTIME_DIR`,
+so add `--socket` with the path `deep-diff-forge daemon path` prints). One user's daemon per
+directory: two users writing the same families would collide in node_exporter.
+
+Example queries:
+
+```promql
+histogram_quantile(0.99, sum by (le, method) (rate(ddf_daemon_request_duration_seconds_bucket[5m])))
+increase(ddf_daemon_panics_total[1h]) > 0
+time() - node_textfile_mtime_seconds{file=~".*deep-diff-forge.prom"} > 60   # the file went stale
+```
 
 ## Habitat Deployment Cut
 

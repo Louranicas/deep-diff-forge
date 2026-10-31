@@ -8,6 +8,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Added
 
+- **Daemon metrics for Prometheus, without a listener.** `daemon metrics --format prometheus`
+  prints the `daemon.metrics` answer in the Prometheus text format 0.0.4 (`ddf_daemon_*` names,
+  `_total` counters, seconds and bytes in the names, escaped labels, a latency histogram with
+  cumulative `le` buckets and no `_sum`, which the daemon does not keep), and `--out PATH` writes
+  it whole for node_exporter's textfile collector: a temporary file in the same directory, then a
+  rename; a symlink or non-regular file at PATH is refused (exit 3); mode `0644`. A daemon with no
+  usable metrics exits 6 and leaves the file as it was. The JSON answer (`--format json`, the
+  default) and the RPC are unchanged; both renderings read the same document
+  (`deep_diff_forge_daemon::exposition`), and a strict reader in its tests checks the format's
+  rules. `contrib/systemd/deep-diff-forge-metrics.{service,timer}` write it every 15 s. Not run
+  against a real node_exporter or promtool (neither is installed here).
 - **The Python client is a package.** `sdk/python/pyproject.toml` (setuptools, no dependencies,
   Python 3.9+) installs `deep_diff_forge` as the package `deep-diff-forge`, from a checkout
   (`python3 -m pip install ./sdk/python`) or from GitHub with `#subdirectory=sdk/python`. It is
