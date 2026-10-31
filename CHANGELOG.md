@@ -6,6 +6,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Dependencies
+
+- **Dependabot's first version updates, applied together** (#63 to #70): serde 1.0.229,
+  serde_json 1.0.154, rustix 1.1.5, unicode-width 0.2.2, tree-sitter 0.26.13,
+  `actions/attest-build-provenance` and `github/codeql-action` 4.39.1 (SHA-pinned). The
+  individual pull requests each failed the SBOM gate (a dependency bump moves the committed
+  SBOM) and the workspace bumps also left `fuzz/Cargo.lock` stale; this change regenerates both,
+  with the fuzz lock moved only as far as the bumps require (its `syn` follows the workspace's
+  3.0.4). tree-sitter 0.26 changed the parse progress callback to return `ControlFlow`: the
+  deadline cancel now returns `Break` where it returned `true`.
+- **Dependabot groups each ecosystem's updates into one pull request** (`cargo`, `fuzz`,
+  `actions`), so the SBOM and fuzz lock are regenerated once per group.
+
 ### Added
 
 - **Dependabot watches the Python client.** `.github/dependabot.yml` gains a weekly `pip` entry

@@ -14,7 +14,7 @@ description = "The stable Rust facade over Deep-Diff-Forge: review a patch, rank
 deep-diff-forge-core.workspace = true
 deep-diff-forge-patch.workspace = true
 deep-diff-forge-graph.workspace = true
-serde_json = "=1.0.150"
+serde_json = "=1.0.154"
 
 # Only `Client` (a Unix-socket transport) needs the daemon; review, rank and exit build anywhere.
 [target.'cfg(unix)'.dependencies]
