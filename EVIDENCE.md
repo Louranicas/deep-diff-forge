@@ -887,16 +887,26 @@ noticing. Measured: cargo-mutants 27.1.0 on `main` `7774957`, with `CARGO_TARGET
   and `capture_from`. All 40 are caught at workspace scope, by the end-to-end `mutation_base`
   tests in `cli/tests/council.rs`. CI's diff mutation also runs at workspace scope.
 - **Timeout.** `byte == b'r'` replaced by `!=` in `code_lines` (line 412) makes the scan count
-  `#` runs at every byte. The 1 MiB `#` run in `char_literals_and_lifetimes_are_told_apart` then
-  takes hours, so the run hit the 300 s limit before any test could fail it. The scan now runs on
-  its own thread with a two-minute wall-clock deadline. A wide bound cannot fail on a busy host,
-  while a narrow one can, as `graph`'s 10 s bound did. Failing first: with the mutant applied, the
-  test fails at its deadline instead of hanging.
-- **After, 271 mutants in 46 min:** 268 caught, 0 missed, 0 timeouts, 3 unviable. The line-412
-  mutant is caught.
+  `#` runs at every byte. That is a semantic break, and an existing test already caught it:
+  `code_lines_skip_comments_and_attributes_across_lines` failed for this mutant in the before
+  run (its log shows the failure ahead of `*** result: Timeout`). The 1 MiB `#` run in
+  `char_literals_and_lifetimes_are_told_apart` then takes hours, so libtest could not exit and the
+  outcome was reported as a timeout. The scan now runs on its own thread under a 30 s wall-clock
+  deadline. The deadline does not detect this mutant; it only lets the test binary finish, so
+  the existing failure is reported as caught. It would be the only detector for a purely
+  quadratic, behaviour-preserving change, and no mutant in this run was one. The bound is 15x
+  or more above normal (the whole review lib-test binary takes about 1.7 s), so it does not fail
+  on a busy host the way `graph`'s 10 s bound did. Inferred: the caught classification also
+  depends on how long the workspace's earlier test binaries take, because the review lib binary
+  runs after them inside the same 300 s mutant timeout. Measured: this mutant's test phase took
+  184 s under the first after run's 120 s deadline, and 102 s under the 30 s deadline.
+- **After, 271 mutants in 46 min (twice):** 268 caught, 0 missed, 0 timeouts, 3 unviable, both
+  with the 120 s deadline and with the 30 s one. The line-412 mutant is caught: its review
+  lib-test binary reports both tests failed and `finished in 30.00s`.
 - **Equivalents:** none. The 3 unviable mutants turn `<<` into `>>` in `LINE_CELL_BUDGET`,
-  `TOTAL_CELL_BUDGET` and `LINE_CAP`. The tests' `const` assertions on those values stop each one
-  from compiling.
+  `TOTAL_CELL_BUDGET` and `LINE_CAP`. `LINE_CELL_BUDGET` and `TOTAL_CELL_BUDGET` fail the
+  tests' `const` assertions (`error[E0080]`). `LINE_CAP` becomes 0, and `LINE_CAP - 1` in the
+  tests fails the `arithmetic_overflow` lint at compile time.
 - **Measurement note.** Four attempts at the after run, and one run limited with `-F`, were
   stopped and thrown away. Each had `TMPDIR` on `/var/mnt/storage`, moved there to avoid the
   `/tmp` quota. On that disk, the `council` integration binary had not finished when the 300 s

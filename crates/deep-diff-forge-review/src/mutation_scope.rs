@@ -889,18 +889,19 @@ mod tests {
         );
     }
 
-    /// Run `work` on its own thread and fail if it takes more than two minutes of wall time. A
-    /// linear scan of the lines below takes well under a second in a debug build and a quadratic
-    /// one hours, so the generous bound cannot fail on a busy host (the 10 s bound `graph` dropped
-    /// did), yet a diff-mutation run, whose timeout is 300 s, reports a quadratic mutant as caught
-    /// rather than as a timeout.
+    /// Run `work` on its own thread and fail if it takes more than 30 s of wall time. A linear
+    /// scan of the lines below takes well under a second in a debug build (the whole lib-test
+    /// binary about 1.7 s) and a quadratic one hours, so the 15x-plus bound does not fail on a
+    /// busy host (the 10 s bound `graph` dropped did). It also leaves the test binary room to exit
+    /// well inside a diff-mutation run's 300 s timeout after the workspace's other test binaries,
+    /// so a failure is reported as caught rather than as a timeout.
     fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
         let (done, wait) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = done.send(work());
         });
-        wait.recv_timeout(std::time::Duration::from_secs(120))
-            .expect("the lines were scanned within two minutes")
+        wait.recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the lines were scanned within 30 s")
     }
 
     #[test]
@@ -929,8 +930,9 @@ mod tests {
         }
         // A run of `#` is scanned once per byte, not once per position (council r14), in code and
         // inside a raw string (council r15: the former test never reached that path). Eager
-        // counting would take about 2^39 comparisons here, so it fails the deadline (the
-        // diff-mutation run then reports it as caught, not as a timeout).
+        // counting would take about 2^39 comparisons here, so it fails the deadline instead of
+        // keeping the test binary from exiting, and a diff-mutation run sees the other tests'
+        // failures as caught rather than as a timeout.
         let scanned = within_deadline(|| {
             let run = vec![b'#'; 1 << 20];
             let mut raw = b"let s = r#\"".to_vec();

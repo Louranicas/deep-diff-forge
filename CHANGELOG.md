@@ -64,8 +64,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 ### Tests
 
 - **`mutation_scope`'s quadratic-scan guard fails instead of hanging.** Its 1 MiB `#` run is
-  scanned under a two-minute deadline, so eager `#` counting is reported as caught, not as a
-  timeout (EVIDENCE.md, "Review crate: mutation_scope mutation").
+  scanned under a 30 s deadline, so the test binary exits and eager `#` counting, which
+  `code_lines_skip_comments_and_attributes_across_lines` already fails, is reported as caught,
+  not as a timeout (EVIDENCE.md, "Review crate: mutation_scope mutation").
 
 ## [0.5.0] - 2026-10-31
 
