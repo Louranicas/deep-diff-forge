@@ -6,6 +6,7 @@ mod args;
 mod bench;
 mod contract;
 mod eval;
+mod file_pair;
 mod git_input;
 mod mcp;
 mod rpc;
@@ -137,6 +138,11 @@ fn main() {
         Some("chain-contract") => chain_contract(),
         Some("cluster-contract") => cluster_contract(),
         Some("loom-contract") => loom_contract(),
+        Some("--") => file_pair::run(&args),
+        Some(name) if WITHDRAWN.iter().any(|(withdrawn, _)| *withdrawn == name) => {
+            refuse_withdrawn(name);
+        }
+        Some(_) if file_pair::requested(rest) => file_pair::run(&args),
         Some(command) => {
             eprintln!("unknown command: {}", display_safe_bounded(command, 200));
             eprintln!("run `deep-diff-forge --help` for supported bootstrap commands");
@@ -1878,6 +1884,11 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "Report or feed the local-only learning loop.",
     ),
     (
+        "<old>",
+        file_pair::USAGE,
+        "Review two regular files through Git's hardened diff, sealed over the exact bytes; put `--` first when a path is also a command name.",
+    ),
+    (
         "--stdin-patch",
         "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks]",
         "Review a unified or Git patch read from stdin.",
@@ -1935,7 +1946,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     (
         "loom-contract",
         "deep-diff-forge loom-contract",
-        "Print the assimilation-pipeline guarantees.",
+        "Print the loom's withdrawal and the rules that still bind.",
     ),
 ];
 
@@ -1965,6 +1976,10 @@ fn print_help() {
     for (_, line, _) in COMMANDS {
         let _ = writeln!(usage, "  {line}");
     }
+    let mut withdrawn = String::new();
+    for (name, instead) in WITHDRAWN {
+        let _ = writeln!(withdrawn, "  deep-diff-forge {name}: {instead}");
+    }
     emitln!(
         "\
 deep-diff-forge {version}
@@ -1990,15 +2005,38 @@ MACHINE CONTRACT:
   explain_exit_code, exit_code_registry).
   rpc speaks the daemon's JSON-RPC protocol over stdio without a daemon.
 
-NOT YET IMPLEMENTED (each is refused today):
-  deep-diff-forge <old> <new>
-  deep-diff-forge chain
-  deep-diff-forge cluster
-  deep-diff-forge loom
-",
+WITHDRAWN (each is refused with exit 2):
+{withdrawn}",
         version = env!("CARGO_PKG_VERSION")
     );
 }
+
+/// Exit 2 naming what serves instead of the withdrawn subcommand `name`.
+fn refuse_withdrawn(name: &str) -> ! {
+    for (withdrawn, instead) in WITHDRAWN {
+        if withdrawn == name {
+            eprintln!("error: `{name}` was withdrawn; {instead}");
+        }
+    }
+    std::process::exit(exit::USAGE);
+}
+
+/// Subcommands that were published as planned and then withdrawn, with what serves instead. Each
+/// is refused with exit 2 and the replacement, so none is mistaken for a path pair.
+const WITHDRAWN: [(&str, &str); 3] = [
+    (
+        "chain",
+        "join single commands with the shell (chain-contract lists them)",
+    ),
+    (
+        "cluster",
+        "use the --cluster mode of --stdin-patch, a Git selection or <old> <new>",
+    ),
+    (
+        "loom",
+        "nothing replaces it (loom-contract records the withdrawal)",
+    ),
+];
 
 /// `envelope -- <command…>`: print the `ddf.result.v1` object and leave with the command's code.
 fn run_envelope(args: &[String]) {
@@ -2187,11 +2225,17 @@ GUARANTEES:
   - every JSON document names its schema; every JSONL record names its event.
   - pipe failures exit non-zero without truncating a valid final JSON document.
 
-PLANNED MODES:
-  deep-diff-forge --git --json
-  deep-diff-forge rank --stdin --json
-  deep-diff-forge annotate --stdin --jsonl
-  deep-diff-forge render --stdin --plain
+SHIPPED MODES (each one command; the shell joins them):
+  deep-diff-forge --git-working-tree --json
+  deep-diff-forge --stdin-patch --rank --json
+  deep-diff-forge --stdin-patch --jsonl
+  deep-diff-forge --stdin-patch --layout inline
+  deep-diff-forge <old> <new> --json
+
+WITHDRAWN:
+  the chain subcommand, its manifests, and the rank, annotate and render
+  subcommands. Each served mode is a flag above; agent findings are checked
+  with findings verify.
 "
     );
 }
@@ -2203,12 +2247,20 @@ deep-diff-forge cluster-contract v0
 
 GUARANTEES:
   - cluster execution preserves patch truth and stable ids across lanes.
-  - parallel lanes join by deterministic input order unless ranking is requested.
-  - each lane has explicit dimensions, budgets, inputs, outputs, and receipts.
-  - daemon acceleration is optional; one-shot CLI execution remains correct.
+  - lanes join in ranked review order, the same order at every parallelism.
+  - every run prints its dimensions, parallelism, workers and join policy as a receipt.
+  - execution is in-process; no daemon is needed.
 
-PLANNED DIMENSIONS:
-  patch semantic risk agent runtime storage history presentation
+SHIPPED MODE:
+  deep-diff-forge --stdin-patch --cluster [--parallel serial|auto|N] [--json]
+  (the Git selections and <old> <new> take the same flags)
+
+DIMENSIONS RUN:
+  patch risk
+
+WITHDRAWN:
+  the cluster subcommand, and the semantic, agent, runtime, storage, history and
+  presentation lanes.
 "
     );
 }
@@ -2218,14 +2270,13 @@ fn loom_contract() {
         "\
 deep-diff-forge loom-contract v0
 
-GUARANTEES:
-  - loom assimilation produces plans, fixtures, gates, and receipts before merge.
-  - generated Rust crate stubs are explicit outputs, never hidden mutation.
-  - exemplar lessons are recorded with source, boundary, and adoption decision.
-  - unsafe code, network access, and destructive file actions are denied by default.
+STATUS:
+  withdrawn. No loom runner ships and none is planned; `deep-diff-forge loom` is
+  refused with exit 2. No command generates plans, fixtures or crate stubs.
 
-PLANNED PHASES:
-  intake boundary-map weave-plan fixture-synthesis rust-crate-stub gate receipt assimilation
+STILL BINDING ON ANY CHANGE THAT ADOPTS AN EXEMPLAR'S LESSON:
+  - it lands as a reviewed change with its tests; nothing is generated or merged unseen.
+  - unsafe code, network access, and destructive file actions are denied by default.
 "
     );
 }

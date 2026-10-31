@@ -40,13 +40,14 @@ fn usage(message: &str) -> ! {
     std::process::exit(exit::USAGE);
 }
 
-fn exit_code(err: &GitAcquireError) -> i32 {
+pub(crate) fn exit_code(err: &GitAcquireError) -> i32 {
     match err {
         GitAcquireError::InvalidSelection { .. } => exit::USAGE,
         GitAcquireError::Spawn { .. }
         | GitAcquireError::CommandFailed { .. }
         | GitAcquireError::TimedOut { .. }
-        | GitAcquireError::NonUtf8Path { .. } => exit::IO,
+        | GitAcquireError::NonUtf8Path { .. }
+        | GitAcquireError::FileUnreadable { .. } => exit::IO,
         _ => exit::INVALID_INPUT,
     }
 }

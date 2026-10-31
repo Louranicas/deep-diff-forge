@@ -4,6 +4,15 @@ Deep-Diff-Forge commands must be useful as Unix filters before they become
 interactive applications. Every non-interactive command is designed to compose
 with Bash, Claude Code, CI, and other command runners.
 
+## Status 2026-10-31
+
+The `chain` and `cluster` subcommands are **withdrawn** and refused with exit 2 and their
+replacement. Chaining is shell composition of single commands that each honour
+`chain-contract`; clustering is the `--cluster` mode of `--stdin-patch`, the Git selections and
+`<old> <new>`. `chain-contract` and `cluster-contract` now list only shipped modes, and a test
+runs each one (`cli/tests/file_pair.rs`). The manifest and the extra dimensions below are kept
+as design history, not as plans anyone owns.
+
 ## Status 2026-10-28 (0.3.0)
 
 Most of this page is a target design. What ships today:
@@ -37,8 +46,8 @@ Most of this page is a target design. What ships today:
 | Rank | `deep-diff-forge rank` | planned | `--rank` (`rank.v0`) |
 | Annotate | `deep-diff-forge annotate` | planned | none on the CLI |
 | Render | `deep-diff-forge render` | planned | `--layout inline\|side-by-side`, `review --probe` |
-| Chain | `deep-diff-forge chain` | planned | none |
-| Cluster | `deep-diff-forge cluster` | planned | `--cluster [--parallel N]` |
+| Chain | `deep-diff-forge chain` | withdrawn | the shell joins single commands |
+| Cluster | `deep-diff-forge cluster` | withdrawn | `--cluster [--parallel N]` |
 
 ## Pipe Contracts
 

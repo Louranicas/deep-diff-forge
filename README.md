@@ -119,7 +119,7 @@ It is **Bash-first and agent-first**. Every action:
 <sup>4</sup> They re-render a Git diff that stays apply-able.
 <sup>5</sup> Tree-sitter, terminal-injection-safe. Rust today; more grammars are [welcome](CONTRIBUTING.md).
 <sup>6</sup> Token-level and reformat-aware, with best-effort moved-block detection. difftastic's tree-edit-distance diff is deeper.
-<sup>7</sup> `--git-working-tree`, `--git-staged` and `--git-range A..B`. Comparing two files directly (`deep-diff-forge <old> <new>`) is on the roadmap.
+<sup>7</sup> `--git-working-tree`, `--git-staged` and `--git-range A..B`. `deep-diff-forge <old> <new>` compares two regular files through the same hardened Git.
 <sup>8</sup> `hunk` works as a pager but is a full-screen UI, not a stdout filter.
 
 Comparisons are best effort against each tool's default behaviour. Corrections are welcome.
@@ -265,6 +265,7 @@ git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require
 ```bash
 deep-diff-forge --stdin-patch [MODE] [--require-files] [--require-hunks]
 deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [MODE | --acquisition-json]
+deep-diff-forge [--] <old> <new> [MODE] [--require-files] [--require-hunks]
 # MODE: --json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side
 #       | --outline | --hunks [--address A]... [--path P]...   (both: [--max-bytes N] [--cursor C])
 ```
@@ -286,6 +287,32 @@ deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git
 
 Git selections run Git with a fixed argv and stop it after 120 s (`TimedOut`, exit 3), so a
 stalled filesystem or hook cannot hang the caller.
+
+#### Compare two files
+
+`deep-diff-forge <old> <new>` reviews two regular files: Git writes the patch with
+`git diff --no-index`, and DDF seals those exact bytes and prints any MODE above. Git runs from
+`/` on the canonical paths, with no attributes file and no CRLF conversion, so neither a
+repository around the files nor the user's attributes can run a filter or change the bytes
+compared. File headers therefore name the canonical path without its leading `/`
+(`a/home/me/old.rs`). Put `--` first when a path is also a command name
+(`deep-diff-forge -- doctor notes.txt`).
+
+| Refusal | Exit |
+| --- | --- |
+| A path that does not exist or cannot be inspected (`cannot read the old file: …`) | 3 |
+| The path itself is a symbolic link, a directory, or a FIFO, socket or device (`old file refused: … is a directory, not a regular file`); a linked parent directory is resolved, not refused | 4 |
+| Git cannot open a file it was given, as when it is removed after the checks (`` `git diff --no-index` exited with status 1: error: Could not access … ``) | 3 |
+| Two files whose sizes together exceed the 64 MiB input budget, checked before Git reads them | 4 |
+| Fewer than two paths, an unknown option, or conflicting modes | 2 |
+| A first word that is neither a command nor an existing path, without `--` (`unknown command: …`) | 2 |
+
+Directories are out of scope: a tree comparison brings nested repositories, links and special
+files with it, which `--git-range` and the working-tree selections already handle for a
+repository. The check and Git's read are separate steps, so a concurrent writer can still
+change a file in between; compare files you control. Git's answer is checked too: exit 0 must
+come with no patch and exit 1 with one, and anything on Git's stderr is a failure (exit 3), so a
+file that vanishes in between is never reviewed as unchanged.
 
 A gate should **always pass both guards**. When both fail, the files guard reports first.
 
@@ -456,7 +483,7 @@ another), `mode_changed` (only the mode changed, such as the executable bit), `b
 | 0 | Success. | `proceed` |
 | 2 | CLI usage / argument error. | `fix_invocation` |
 | 3 | I/O or encoding failure: reading input (stdin, a file, Git, the learning store), non-UTF-8 input, or writing output. | `check_environment` |
-| 4 | Invalid input: a patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, or a refused Git acquisition. | `change_input` |
+| 4 | Invalid input: a patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, or a refused Git acquisition or file pair. | `change_input` |
 | 6 | Daemon / interactive-terminal failure. | `check_environment` |
 | 7 | Input contract refused. `--require-files`: the (well-formed) patch describes 0 files — stderr `refused: 0 files in input (--require-files)`. `--require-hunks`: the patch has 0 hunks or 0 added+removed lines (header-only, rename-only, context-only) — stderr `refused: 0 hunks in input (--require-hunks)`. Gates should pass both. | `change_input` |
 | 101 | Internal error (a panic). Report it as a bug. | `report_bug` |
@@ -922,8 +949,11 @@ deployment.
 **Known limits.** Contributions are welcome on any of these; see [CONTRIBUTING.md](CONTRIBUTING.md#open-problems-worth-owning):
 
 - The cockpit is tested by headless frames; there is no key-sequence harness yet.
-- Syntax features speak Rust; comparing two files directly (`<old> <new>`) and the `chain`,
-  `cluster` and `loom` subcommands are planned and refused today.
+- Syntax features speak Rust.
+- Comparing two directories is not supported; `<old> <new>` takes two regular files.
+- The `chain`, `cluster` and `loom` subcommands were withdrawn (2026-10-31): chaining is shell
+  composition of single commands, clustering is the `--cluster` mode, and no loom runner is
+  planned. Each is refused with exit 2 and names its replacement.
 
 The L0–L9 maturity labels in `deploy status` are historical capability declarations, not a
 readiness claim. [`docs/ROADMAP.md`](docs/ROADMAP.md) has what comes next.

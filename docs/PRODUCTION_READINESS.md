@@ -365,7 +365,7 @@ headings moved down a level.
 
 **Gaps**
 
-- **[Unmeasured]** Push protection, alert counts and GitHub security settings exist only as self-reported `gh api` results. No CodeQL/code-scanning workflow exists. Global/system Git filters remain trusted (`git_acquire.rs:225-230`), and third-party native/unsafe code is outside the first-party guarantee.
+- **[Unmeasured]** Push protection, alert counts and GitHub security settings exist only as self-reported `gh api` results. No CodeQL/code-scanning workflow exists. Global/system Git filters remain trusted (`PROTECTED_SCOPES` and the module's "Configuration trust" section in `git_acquire.rs`; kept by decision on 2026-10-31, see SECURITY.md, and repository `config.worktree` filters are now turned off too), and third-party native/unsafe code is outside the first-party guarantee.
 
 ##### 3. Supply chain and release integrity — 12 / 15
 
@@ -487,7 +487,17 @@ SDK distribution gap replaces it.
 5. **A whole-crate mutation pass** of `graph` and `agent`, recorded in the ledger, and a
    Python SDK package (+1, facets 1 and 6).
 
-### Follow-up 2026-10-31: the evaluation corpus (not a rescore)
+## Follow-up 2026-10-31 (unreleased): the refused commands
+
+Codex's facet-6 gap, "`chain`, `cluster`, `loom` and direct `<old> <new>` remain refused despite
+published contracts", is closed by the change that adds this note, after v0.5.0 (measured: `cli/tests/file_pair.rs`,
+`cli/tests/contract.rs`). `<old> <new>` reviews two regular files through `git diff --no-index`
+with the acquisition's hardening; directories are refused. `chain`, `cluster` and `loom` were
+withdrawn, not built: each is refused with exit 2 and names its replacement, `--help` lists them
+under "WITHDRAWN", and the three contracts list only modes a test runs. The score above is not
+changed by this note.
+
+## Follow-up 2026-10-31 (unreleased): the evaluation corpus (not a rescore)
 
 The Codex finding that the gate "is only 11 cases" and "excludes one declared miss from recall"
 is addressed; no score above is changed by it.
