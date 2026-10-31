@@ -918,6 +918,12 @@ cargo mutants -p deep-diff-forge-review --file crates/deep-diff-forge-review/src
   2 s job budget, and a job that times out is never qualified, so it gets no marker. Both now
   take `long_budget`, like the other cases whose refusal must not come from the clock. The
   `cpus` kills hold regardless: their own assertion (council.rs `--cpus`) failed too.
+- **Final.** The full command with `--timeout 900`, on this branch's last commit, at load
+  average 56 to 165: 41 mutants in 78 min, 38 caught, 1 missed, 0 timeouts, 2 unviable. The one
+  missed is 111:32 `>=`, the equivalent below. `cpus -> 1` failed only on the `--cpus` assertion.
+  `cpus -> 0` failed on it too, plus 5 other council cases. Those still use the 2 s budget, so
+  read them as load and not as kills. The vendoring and marker cases did not fail on any mutant
+  except one that panics every gate.
 - **Equivalent.** `start.elapsed() > CONTROL_DEADLINE` to `>=` (line 111). The two differ
   only when a monotonic nanosecond reading equals 30 s exactly. A 20 ms poll that misses that
   reading fires on the next one under either operator, so the deadline moves by at most one
