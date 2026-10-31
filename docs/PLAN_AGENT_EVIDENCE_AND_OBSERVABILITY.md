@@ -167,7 +167,7 @@ All three parts share one rule: **a number is a receipt.** Each has a schema, th
 - **The gate.** `cli/tests/eval.rs` runs the committed corpus and enforces floors: evidence precision of 1.0 on the negatives, recall of at least 0.95, ranking pair accuracy of 1.0 and findings accuracy of 1.0.
   - A change that lowers a metric fails CI.
   - A change that raises it updates the floor in the same PR, so the floors only ever ratchet up.
-  - *Delivered 2026-10-31:* a declared miss (`known_miss`, `known_false_positive`) counts as wrong in its metric instead of being left out, so the floors are the measured values (34 cases: ranking 12/15, precision 21/22, recall 21/28, findings 33/33) rather than 100%. An orphan file, a repeated id, a missing origin or an unknown field refuses the manifest. See the [README](../README.md#benchmarks-and-evaluation).
+  - *Delivered 2026-10-31:* a declared miss (`known_miss`, `known_false_positive`) counts as wrong in its metric instead of being left out, so the floors are the measured values (34 cases: ranking 12/15, precision 21/22, recall 21/28, findings 33/33) rather than 100%. An orphan file, a symlink, a repeated id, a missing origin, an unknown field or a ranking pair that is not two distinct paths refuses the manifest; `known_misses` keeps its `v0` meaning (evidence `known_miss` items, N11) and the new `declared` lists every kind. See the [README](../README.md#benchmarks-and-evaluation).
 - **The learning loop.** Eval receipts are the "benchmark receipts" the [learning loop](LEARNING_LOOP.md) lacks: `learn record` accepts a `deep-diff-forge.eval.v0` receipt as evidence (Phase 10).
 
 ---

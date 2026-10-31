@@ -42,13 +42,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   - A declared miss now counts as wrong in its metric; before, the one known miss was left out
     of recall. A ranking pair can be declared (`known_miss`), and so can an evidence false
     positive (`known_false_positive`). The receipt lists them in a new `declared` field, and the
-    summary prints each as `KNOWN …`. A declared miss the engine gets right fails the run.
+    summary prints each as `KNOWN …` under a `declared` count (it printed `known misses`).
+    `known_misses` keeps its meaning, the evidence `known_miss` items (7); `declared` lists
+    every kind (11). A declared miss the engine gets right fails the run.
   - The engine was not changed. It gets 11 cases' labels wrong, all declared: ranking 12/15,
     evidence precision 21/22, recall 21/28, findings 33/33 (measured). `cli/tests/eval.rs`
     holds those values as its floors, which were 100% over a smaller corpus.
   - The manifest is refused (exit 4) when a file of the corpus is named by no case, or a case
-    has no origin, the id of another case, or a field its kind does not read. A case can name
-    only a file of the corpus directory (exit 3 otherwise).
+    has no origin, the id of another case, or a field its kind does not read, when a ranking
+    pair is not exactly two distinct paths (`[p, p]` can never hold, so as a `known_miss` it
+    could never go stale; before, it was a wrong label, exit 7), and when the corpus holds a
+    symlink (it could lead out of the corpus). A case can name only a file of the corpus
+    directory (exit 3 otherwise).
 
 ### Security
 

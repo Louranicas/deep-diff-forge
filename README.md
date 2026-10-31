@@ -701,10 +701,10 @@ deep-diff-forge eval                          # score the labelled corpus in fix
 
   A limit the engine has today is declared (`known_miss` for a ranking pair or an evidence item,
   `known_false_positive` for an evidence item). It is counted as wrong in its metric and listed
-  in the receipt's `declared`, but it does not fail the run; it fails once the engine gets it
+  in the receipt's `declared` (`known_misses` counts only the evidence `known_miss` items), but it does not fail the run; it fails once the engine gets it
   right, so the label has to move. The manifest is refused (exit 4) when a file no longer matches
-  its hash, a file in the corpus is named by no case, a case has no origin, a repeated id or a
-  field its kind does not read. `eval` prints `deep-diff-forge.eval.v0` and exits 7 when a case
+  its hash, a file in the corpus is named by no case or is a symlink, a case has no origin, a
+  repeated id or a field its kind does not read, or a ranking pair is not two distinct paths. `eval` prints `deep-diff-forge.eval.v0` and exits 7 when a case
   fails.
 
   **Measured 2026-10-31, 34 cases** (14 ranking, 17 evidence, 3 findings; 11 declared misses):

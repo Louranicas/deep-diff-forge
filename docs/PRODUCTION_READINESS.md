@@ -499,9 +499,10 @@ is addressed; no score above is changed by it.
   7 missed evidence items, 1 false positive) count as wrong, so the gate reports ranking 12/15,
   precision 21/22, recall 21/28 and findings 33/33, and its floors are those values. Before,
   the one declared miss was left out of recall, which read 7/7.
-- **[Measured]** The manifest cannot drift silently: a file no case names, a repeated id, a
-  missing origin or a field the case's kind does not read is refused (exit 4), and a declared
-  miss the engine now gets right fails (exit 7).
+- **[Measured]** The manifest cannot drift silently: a file no case names, a symlink, a
+  repeated id, a missing origin, a field the case's kind does not read or a ranking pair that is
+  not two distinct paths is refused (exit 4), and a declared miss the engine now gets right
+  fails (exit 7).
 - **[Inferred]** It is still a corpus written by the rules' author, with cases shaped after real
   advisories rather than taken from them. It is a regression gate and a list of known limits,
   not evidence of review quality on real-world code; a held-out corpus remains open.

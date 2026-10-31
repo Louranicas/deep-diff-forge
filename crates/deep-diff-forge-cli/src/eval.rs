@@ -62,7 +62,7 @@ fn text<'v>(case: &'v Value, key: &str) -> Result<&'v str, EvalError> {
         .ok_or_else(|| EvalError::Corpus(format!("case {}: {key} is not a string", id(case))))
 }
 
-/// The corpus directory and every file in it but the manifest.
+/// The corpus directory and every regular file in it but the manifest.
 struct Corpus<'d> {
     dir: &'d Path,
     /// Paths relative to `dir`, `/`-separated.
@@ -87,10 +87,17 @@ impl<'d> Corpus<'d> {
                 } else {
                     format!("{rel}/{name}")
                 };
-                if entry.file_type().map_err(unreadable)?.is_dir() {
+                // `file_type` does not follow a symlink, but `read` would: a link is refused, so
+                // a case cannot reach a file outside the corpus through one.
+                let kind = entry.file_type().map_err(unreadable)?;
+                if kind.is_dir() {
                     pending.push(path);
-                } else {
+                } else if kind.is_file() {
                     files.insert(path);
+                } else {
+                    return Err(EvalError::Corpus(format!(
+                        "{path} is not a regular file: the corpus holds only files and directories"
+                    )));
                 }
             }
         }
@@ -172,7 +179,7 @@ fn admit<'v>(case: &'v Value, ids: &mut BTreeSet<&'v str>) -> Result<&'v str, Ev
 
 /// A file a case names, checked against the SHA-256 the manifest records for it. Only a file of
 /// the corpus directory can be named: a path that leaves it, or names the manifest, cannot be
-/// read.
+/// read, and [`Corpus::walk`] refuses a symlink that could lead out of it.
 fn checked(
     corpus: &Corpus<'_>,
     case: &Value,
@@ -232,6 +239,9 @@ pub struct Scores {
     /// Expected evidence items that were reported, out of all expected items.
     pub evidence_recall: Tally,
     pub findings_verdicts: Tally,
+    /// Evidence `known_miss` items the engine does not find (the `eval.v0` field
+    /// `known_misses`, unchanged in meaning; `declared` lists every kind).
+    pub known_misses: u64,
     /// Declared misses, counted as wrong in their metric but not failures.
     pub declared: Vec<String>,
     pub failures: Vec<String>,
@@ -249,7 +259,8 @@ fn sealed(bytes: &[u8]) -> Result<deep_diff_forge_patch::SealedReview, EvalError
     .map_err(|e| EvalError::Corpus(format!("a case patch does not parse: {e}")))
 }
 
-/// The `[high, low]` path pairs under `key` (none when it is absent).
+/// The `[high, low]` path pairs under `key` (none when it is absent). A pair is exactly two
+/// distinct paths: `[p, p]` can never hold, so declared as a known miss it could never go stale.
 fn pairs<'v>(case: &'v Value, key: &str) -> Result<Vec<(&'v str, &'v str)>, EvalError> {
     let Some(list) = case.get(key) else {
         return Ok(Vec::new());
@@ -258,10 +269,10 @@ fn pairs<'v>(case: &'v Value, key: &str) -> Result<Vec<(&'v str, &'v str)>, Eval
         .as_array()
         .ok_or_else(|| EvalError::Corpus(format!("case {}: {key} is not a list", id(case))))?;
     list.iter()
-        .map(|pair| match (pair[0].as_str(), pair[1].as_str()) {
-            (Some(high), Some(low)) => Ok((high, low)),
+        .map(|pair| match pair.as_array().map(Vec::as_slice) {
+            Some([Value::String(high), Value::String(low)]) if high != low => Ok((&**high, &**low)),
             _ => Err(EvalError::Corpus(format!(
-                "case {}: a pair is not two paths",
+                "case {}: a pair is not two distinct paths",
                 id(case)
             ))),
         })
@@ -274,10 +285,11 @@ fn ranking(corpus: &Corpus<'_>, case: &Value, scores: &mut Scores) -> Result<(),
         .into_iter()
         .map(|r| r.path)
         .collect();
+    // `high` is among the files ranked above `low` (the pair's paths are distinct).
     let above = |high: &str, low: &str| {
         let at = |p: &str| order.iter().position(|o| o == p);
         match (at(high), at(low)) {
-            (Some(h), Some(l)) => Ok(h < l),
+            (Some(_), Some(l)) => Ok(order[..l].iter().any(|o| o == high)),
             _ => Err(EvalError::Corpus(format!(
                 "case {}: {high} or {low} is not in the patch",
                 id(case)
@@ -391,6 +403,7 @@ fn evidence(corpus: &Corpus<'_>, case: &Value, scores: &mut Scores) -> Result<()
                 id(case)
             ));
         } else {
+            scores.known_misses += 1;
             scores
                 .declared
                 .push(format!("{}: misses {miss:?}", id(case)));
@@ -501,7 +514,7 @@ pub fn run(dir: &Path) -> Result<Value, EvalError> {
             "evidence_recall": scores.evidence_recall.json(),
             "findings_verdicts": scores.findings_verdicts.json(),
         },
-        "known_misses": scores.declared.len(),
+        "known_misses": scores.known_misses,
         "declared": scores.declared,
         "failures": scores.failures,
     }))

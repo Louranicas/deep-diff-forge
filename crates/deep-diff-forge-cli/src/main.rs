@@ -1287,7 +1287,10 @@ fn eval_cmd(opts: &[String]) {
         for (name, m) in receipt["metrics"].as_object().into_iter().flatten() {
             emitln!("  {name:<20} {}/{}", m["right"], m["total"]);
         }
-        emitln!("  known misses         {}", receipt["known_misses"]);
+        emitln!(
+            "  declared             {}",
+            receipt["declared"].as_array().map_or(0, Vec::len)
+        );
         for declared in receipt["declared"].as_array().into_iter().flatten() {
             emitln!("  KNOWN {}", declared.as_str().unwrap_or(""));
         }

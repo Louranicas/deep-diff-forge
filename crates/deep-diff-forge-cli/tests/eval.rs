@@ -20,8 +20,10 @@ const RANKING_PAIRS_FLOOR: u64 = 800_000;
 const EVIDENCE_PRECISION_FLOOR: u64 = 954_545;
 const EVIDENCE_RECALL_FLOOR: u64 = 750_000;
 const FINDINGS_FLOOR: u64 = 1_000_000;
-/// Declared misses (plan N4): each counts as wrong in its metric above.
-const KNOWN_MISSES: u64 = 11;
+/// Declared misses (plan N4): each counts as wrong in its metric above. The receipt's
+/// `known_misses` keeps its first meaning, the evidence `known_miss` items; `declared` lists all.
+const DECLARED: u64 = 11;
+const EVIDENCE_KNOWN_MISSES: u64 = 7;
 /// The smallest corpus the gate accepts, and the fewest cases of each kind.
 const MIN_CASES: usize = 30;
 const MIN_CASES_PER_KIND: usize = 3;
@@ -57,10 +59,10 @@ fn the_corpus_meets_its_floors() {
     );
     assert!(ppm("evidence_recall") >= EVIDENCE_RECALL_FLOOR, "{m:#}");
     assert!(ppm("findings_verdicts") >= FINDINGS_FLOOR, "{m:#}");
-    assert_eq!(receipt["known_misses"], KNOWN_MISSES);
+    assert_eq!(receipt["known_misses"], EVIDENCE_KNOWN_MISSES);
     assert_eq!(
         receipt["declared"].as_array().map(Vec::len),
-        Some(usize::try_from(KNOWN_MISSES).unwrap()),
+        Some(usize::try_from(DECLARED).unwrap()),
         "{receipt:#}"
     );
     assert_eq!(receipt["failures"], serde_json::json!([]));
@@ -76,7 +78,12 @@ fn the_corpus_meets_its_floors() {
     .iter()
     .map(|name| total(name) - right(name))
     .sum();
-    assert_eq!(wrong, KNOWN_MISSES, "{m:#}");
+    assert_eq!(wrong, DECLARED, "{m:#}");
+    // Every miss of recall is an evidence known miss: the field kept its eval.v0 meaning.
+    assert_eq!(
+        total("evidence_recall") - right("evidence_recall"),
+        EVIDENCE_KNOWN_MISSES
+    );
     // Every kind is exercised, so no metric is vacuously perfect.
     for name in [
         "ranking_pairs",
@@ -146,7 +153,7 @@ fn the_summary_names_each_metric_and_each_failure() {
         "  ranking_pairs        12/15",
         "  evidence_precision   21/22",
         "  evidence_recall      21/28",
-        "  known misses         11",
+        "  declared             11",
         "  KNOWN ranking/auth-check-removed: src/handlers/delete.rs ranks below docs/CHANGES.md",
         "  KNOWN evidence/shell-heredoc: reports (\"scripts/docs.sh\", \"network_fetch\", \"new\", 3)",
     ] {
@@ -232,21 +239,14 @@ fn the_gate_fails_for_the_reason_it_names() {
         );
     }
 
-    // A file cannot outrank itself: a pair naming one path twice is a wrong label, not a pass.
+    // A file cannot outrank itself: a pair naming one path twice is a malformed label, refused
+    // before anything is scored (`the_manifest_cannot_drift_silently` covers known_miss too).
     let selfish = Copy::new("selfish");
     let mut manifest = selfish.manifest();
     manifest["cases"][0]["must_outrank"][0] = serde_json::json!(["src/util.rs", "src/util.rs"]);
     selfish.write_manifest(&manifest);
-    let (code, receipt, _) = eval(&selfish.0);
-    assert_eq!(code, 7);
-    assert_eq!(
-        receipt["failures"],
-        serde_json::json!(["ranking/circle-probe: src/util.rs ranks below src/util.rs"])
-    );
-    assert_eq!(
-        receipt["metrics"]["ranking_pairs"]["right"], 11,
-        "{receipt:#}"
-    );
+    let (code, _, stderr) = eval(&selfish.0);
+    assert_eq!(code, 4, "{stderr}");
 
     let missing = Copy::new("missing");
     std::fs::remove_file(missing.0.join("findings/mixed.jsonl")).unwrap();
@@ -395,6 +395,65 @@ fn the_manifest_cannot_drift_silently() {
     );
 }
 
+/// A corpus symlink and a ranking pair that is not two distinct paths are refused (exit 4)
+/// before anything is scored.
+#[test]
+fn a_link_and_a_degenerate_pair_are_refused() {
+    let refused = |copy: &Copy, code: i32, says: &str| {
+        let (got, receipt, stderr) = eval(&copy.0);
+        assert_eq!(got, code, "{stderr}\n{receipt:#}");
+        assert!(stderr.contains(says), "{says:?} in {stderr}");
+    };
+
+    // A symlink is refused even where a case names it: it could lead out of the corpus.
+    #[cfg(unix)]
+    {
+        let linked = Copy::new("symlink");
+        let outside = linked.0.with_extension("outside.patch");
+        std::fs::rename(linked.0.join("ranking/npm-preinstall.patch"), &outside).unwrap();
+        std::os::unix::fs::symlink(&outside, linked.0.join("ranking/npm-preinstall.patch"))
+            .unwrap();
+        let (got, receipt, stderr) = eval(&linked.0);
+        let _ = std::fs::remove_file(&outside);
+        assert_eq!(got, 4, "{stderr}\n{receipt:#}");
+        assert!(
+            stderr.contains("ranking/npm-preinstall.patch is not a regular file"),
+            "{stderr}"
+        );
+    }
+
+    // A pair is exactly two distinct paths: [p, p] can never hold, so as a known miss its
+    // label could never go stale; a third path would be ignored.
+    for (name, key, pair) in [
+        (
+            "same-pair",
+            "known_miss",
+            serde_json::json!(["src/util.rs", "src/util.rs"]),
+        ),
+        (
+            "same-must",
+            "must_outrank",
+            serde_json::json!(["src/util.rs", "src/util.rs"]),
+        ),
+        (
+            "three",
+            "must_outrank",
+            serde_json::json!(["src/util.rs", "docs/BIG.md", "x"]),
+        ),
+        ("one", "must_outrank", serde_json::json!(["src/util.rs"])),
+    ] {
+        let copy = Copy::new(name);
+        edit_case(&copy, "ranking/circle-probe", |c| {
+            c[key] = serde_json::json!([pair]);
+        });
+        refused(
+            &copy,
+            4,
+            "case ranking/circle-probe: a pair is not two distinct paths",
+        );
+    }
+}
+
 /// A declared miss fails the gate once the engine gets it right, and a declared false positive
 /// fails once it is no longer reported or is also expected: the labels cannot outlive the limits
 /// they describe.
@@ -406,7 +465,7 @@ fn a_declared_miss_must_still_be_a_miss() {
         (
             receipt["failures"].clone(),
             receipt["metrics"].clone(),
-            receipt["known_misses"].clone(),
+            receipt["declared"].as_array().map_or(0, Vec::len),
         )
     };
 
@@ -426,7 +485,7 @@ fn a_declared_miss_must_still_be_a_miss() {
         metrics["ranking_pairs"],
         serde_json::json!({"right": 13, "total": 15, "ppm": 866_666})
     );
-    assert_eq!(known, KNOWN_MISSES - 1);
+    assert_eq!(known, usize::try_from(DECLARED).unwrap() - 1);
 
     // Evidence: an item the engine finds cannot be declared missed.
     let found = Copy::new("found");
@@ -481,5 +540,5 @@ fn a_declared_miss_must_still_be_a_miss() {
             .ends_with("is not reported, or is expected: remove it")
     );
     assert_eq!(metrics["evidence_precision"]["right"], 22);
-    assert_eq!(known, KNOWN_MISSES - 1);
+    assert_eq!(known, usize::try_from(DECLARED).unwrap() - 1);
 }
