@@ -1,9 +1,24 @@
-use crate::notes::{RENDERS_ALIKE, gutter_width, line_notes, renders_alike};
+use crate::notes::{RENDERS_ALIKE, gutter_width, inline_shown, line_notes, renders_alike};
 use deep_diff_forge_core::{PatchLine, PatchLineKind, ReviewFile, display_safe};
 use std::fmt::Write as _;
 
 /// One inline display row: old/new line numbers, a marker, and the text.
+///
+/// Read its fields; build it with [`inline_rows`]. Outside this crate it cannot be built by a
+/// struct literal, so a flag added later is not a breaking change:
+///
+/// ```compile_fail
+/// let _ = deep_diff_forge_projection::InlineRow {
+///     old_line: None,
+///     new_line: None,
+///     marker: ' ',
+///     text: String::new(),
+///     lossy: false,
+///     no_newline: false,
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct InlineRow {
     /// Old-side line number, if the row exists on the old side.
     pub old_line: Option<u32>,
@@ -83,6 +98,7 @@ fn pairs(lines: &[PatchLine]) -> Vec<Option<usize>> {
 /// Render every file inline: a status/path header, per-hunk separators, and
 /// `old new marker text` rows, each followed by a `\` note for what its text cannot show (a
 /// lossy line, a missing final newline, an added line that shows exactly as its removed pair).
+/// Tabs are printed raw, so "shows exactly as" assumes the terminal's default 8-column tab stops.
 /// The number fields are as wide as the file's largest line number. Patch truth is read-only.
 #[must_use]
 pub fn render_inline(files: &[ReviewFile]) -> String {
@@ -90,6 +106,8 @@ pub fn render_inline(files: &[ReviewFile]) -> String {
     for file in files {
         let status = file.status.label();
         let width = gutter_width(file);
+        // `  old new m ` precedes the text: the screen column its raw tabs advance from.
+        let column = 2 * width + 6;
         // Paths and line text are attacker-controlled; neutralise terminal
         // escapes before they reach a reviewer's terminal.
         let _ = writeln!(out, "{status}  {}", display_safe(&file.path));
@@ -107,7 +125,9 @@ pub fn render_inline(files: &[ReviewFile]) -> String {
                     marker_of(line.kind),
                     display_safe(&line.text)
                 );
-                let alike = pair.is_some_and(|r| renders_alike(&hunk.lines[r].text, &line.text));
+                let alike = pair.is_some_and(|r| {
+                    renders_alike(&hunk.lines[r].text, &line.text, |t| inline_shown(t, column))
+                });
                 let notes = line_notes(line.lossy, line.no_newline);
                 for note in notes.chain(alike.then_some(RENDERS_ALIKE)) {
                     let _ = writeln!(out, "  {} {note}", " ".repeat(2 * width + 1));
@@ -312,6 +332,33 @@ mod tests {
                 Some(7)
             ]
         );
+    }
+
+    /// Review 2026-11-01: inline prints tabs raw, so a pair looks alike by 8-column terminal
+    /// tab stops from the text's column, not by the side-by-side layout's four spaces. Before,
+    /// `\techo` against two spaces (both `  echo` at column 14) had no note, and `\techo`
+    /// against four spaces, which a reader can tell apart, was noted. A trailing space and a
+    /// no-break space against a space are invisible inline too.
+    #[test]
+    fn inline_notes_a_pair_by_what_the_terminal_shows() {
+        let noted = |old: &str, new: &str| {
+            let input = format!("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-{old}\n+{new}\n");
+            render_inline(&parse(&input).unwrap()).contains(crate::notes::RENDERS_ALIKE)
+        };
+        assert!(noted("\techo", "  echo"));
+        assert!(!noted("\techo", "    echo"));
+        assert!(noted("foo", "foo "));
+        assert!(noted("foo", "foo\t"));
+        assert!(noted("a b", "a\u{a0}b"));
+        assert!(!noted("a b", "a  b"));
+        assert!(!noted("a", "b"));
+        // Past line 9999 the text starts at column 16, where a tab is eight spaces wide.
+        let at = |old: &str, new: &str| {
+            let input = format!("--- a/x\n+++ b/x\n@@ -10000 +10000 @@\n-{old}\n+{new}\n");
+            render_inline(&parse(&input).unwrap()).contains(crate::notes::RENDERS_ALIKE)
+        };
+        assert!(at("\techo", "        echo"));
+        assert!(!at("\techo", "  echo"));
     }
 
     /// Bug hunt 2026-11-01: every row of a file keeps its columns when line numbers reach

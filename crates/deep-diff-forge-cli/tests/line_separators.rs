@@ -147,3 +147,43 @@ fn a_page_of_c1_text_fits_its_budget_as_printed() {
         answer.len()
     );
 }
+
+/// Review 2026-11-01: the pretty-printed documents go through the same escaping. Before,
+/// `findings verify` printed a finding's patch path, and `deploy doctor --json` its socket path,
+/// with the raw 8-bit CSI.
+#[test]
+fn del_and_c1_are_escaped_by_the_pretty_printed_documents() {
+    let dir = std::env::temp_dir().join(format!("ddf-c1-pretty-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let findings = dir.join("f.jsonl");
+    let finding = serde_json::json!({"agent": "a", "severity": "low", "title": "t\u{9d}", "body": "b\u{7f}", "path": "p\u{9b}2J"});
+    std::fs::write(&findings, format!("{finding}\n")).unwrap();
+    let out = run(
+        &[
+            "findings",
+            "verify",
+            "--findings",
+            findings.to_str().unwrap(),
+        ],
+        C1_PATCH,
+    );
+    assert_no_raw_c1(&out);
+    let doc: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(doc["accepted"][0]["path"], "p\u{9b}2J", "{out}");
+
+    // No daemon listens there, so doctor exits 6; its document is what is tested.
+    let socket = dir.join("s\u{9b}k");
+    let doctor = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(["deploy", "doctor", "--json", "--socket"])
+        .arg(&socket)
+        .output()
+        .unwrap();
+    let text = String::from_utf8(doctor.stdout).unwrap();
+    assert_no_raw_c1(&text);
+    let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(
+        doc.to_string().contains('\u{9b}'),
+        "the socket path is reported: {text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

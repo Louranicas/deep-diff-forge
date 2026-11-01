@@ -126,11 +126,14 @@ selection.
   controls and the reserved default-ignorables passed through raw and unflagged.
 - Hand-built JSON/JSONL output uses the canonical `core::json_escape` path,
   including DEL and C1 escaping. Serde-built JSON (the `--outline` and `--hunks`
-  views, `rpc`, MCP, the daemon socket and the review CLI) goes out through
-  `core::json_line_safe`, which applies the same DEL, C1 and `U+2028`/`U+2029`
-  escaping, and view pages are budgeted on that escaped text. Before 2026-11-01
-  `json_line_safe` escaped only the separators, so those views printed raw 8-bit
-  CSI (`U+009B`) and OSC (`U+009D`) from patch paths, headings and lines. A
+  views, `rpc`, MCP, the daemon socket, the review CLI, and the pretty-printed
+  `findings verify`, `deploy doctor --json`, `eval --json` and `bench --json`
+  documents) goes out through `core::json_line_safe`, which applies the same DEL,
+  C1 and `U+2028`/`U+2029` escaping, and view pages are budgeted on that escaped
+  text. Before 2026-11-01 `json_line_safe` escaped only the separators, so those
+  views printed raw 8-bit CSI (`U+009B`) and OSC (`U+009D`) from patch paths,
+  headings and lines, and the pretty-printed documents skipped it, so `findings
+  verify` printed a finding's patch path with the raw CSI. A
   downstream program that decodes those JSON strings must apply its own
   terminal-safe rendering before displaying them.
 - Annotation provenance is fail-closed: a claimed `source` is not trusted until

@@ -191,9 +191,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   by serde_json, which escapes only C0, and then passed through `core::json_line_safe`, which
   escaped only `U+2028`/`U+2029`; a patch path, `@@` heading or line holding the 8-bit CSI
   (`U+009B`) or OSC (`U+009D`) introducer reached the terminal raw, against SECURITY.md's DEL/C1
-  promise. `json_line_safe` now escapes `U+007F..=U+009F` too (the decoded document is
-  unchanged), and the view pager and MCP's fit loop measure pages as escaped, so a page of C1
-  text still fits `max_bytes` (measured before: 14,255 bytes printed for an 8,192-byte page).
+  promise. The pretty-printed documents (`findings verify`, `deploy doctor --json`, `eval --json`
+  and `bench --json`) skipped `json_line_safe` altogether, so `findings verify` printed a
+  finding's patch path, and `deploy doctor` its `--socket` path, with the raw CSI. `json_line_safe`
+  now escapes `U+007F..=U+009F` too (the decoded document is unchanged), every pretty-printed
+  document goes out through it, and the view pager and MCP's fit loop measure pages as escaped,
+  so a page of C1 text still fits `max_bytes` (measured before: 14,255 bytes printed for an
+  8,192-byte page).
 - **Every Unicode default-ignorable code point is an `invisible` hazard and is escaped**
   (bug hunt 2026-11-01). `is_invisible` was a hand-picked list that missed the Mongolian free
   variation selectors `U+180B`-`U+180D` and `U+180F`, the Khmer inherent vowels `U+17B4`/`U+17B5`,
@@ -202,14 +206,23 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   identifier) showed no hazard and printed exactly as `is_admin`. With `is_bidi` it now covers
   the whole `Default_Ignorable_Code_Point` set, so hazards, `display_safe` and untrusted-text
   sanitising all catch them.
-- **`--layout inline` and `side-by-side` no longer show a change as two identical rows** (bug
+- **`--layout inline` and `side-by-side` note a change their rows print as unchanged** (bug
   hunt 2026-11-01). Both layouts printed only each line's text, so a change to the end-of-file
-  newline alone, a change between two non-UTF-8 bytes (both shown as `U+FFFD`), and, in
-  side-by-side, a tab turned into four spaces (a broken Makefile) looked unchanged. A `\` note row
-  now follows a lossy line (`\ non-UTF-8 line, shown lossily`), a line without a final newline
-  (`\ No newline at end of file`) and an added line whose removed pair differs only in bytes
-  shown alike (`\ differs from its pair only in bytes shown alike`, which also catches a literal
-  `\x1b` against a raw `ESC`). `InlineRow` and `SideCell` carry `lossy` and `no_newline`.
+  newline alone, a change between two non-UTF-8 bytes (both shown as `U+FFFD`), a trailing space,
+  a no-break space against a space, a tab against the spaces it advances to (a broken Makefile)
+  and, in side-by-side, a change past the column width (the cut hid it) looked unchanged. A `\`
+  note row now follows a lossy line (`\ non-UTF-8 line, shown lossily`), a line without a final
+  newline (`\ No newline at end of file`) and an added line whose printed text looks the same as
+  its removed pair's (`\ differs from its pair only in bytes shown alike`, which also catches a
+  literal `\x1b` against a raw `ESC`). Each layout judges the pair by what it prints: side-by-side
+  by its cut, padded cells with a tab as four spaces, inline by raw tabs at 8-column terminal
+  tab stops from the text's column. Letters that only look alike (Cyrillic `а` against Latin `a`)
+  are not noted.
+- **`InlineRow` and `SideCell` are `#[non_exhaustive]`** (review 2026-11-01). The entry above
+  adds their `lossy` and `no_newline` fields, which already breaks a struct literal outside
+  `deep-diff-forge-projection` (unpublished, and no workspace crate builds one); without the
+  attribute every later flag would break it again. Read the fields and build rows with
+  `inline_rows` and `side_rows`; a `compile_fail` doctest pins it.
 - **The layouts' columns stay aligned past line 9999** (bug hunt 2026-11-01). The line-number
   fields were a fixed `{:>4}`, so rows at line 10000 and later pushed the side-by-side ` | `
   gutter and inline's marker column one place right. The fields are now as wide as the file's

@@ -1,12 +1,26 @@
 // DDF integration: R31, R32. Measure displayed cells and preserve grapheme boundaries after terminal-safety escaping; keep remaining chrome/wrap geometry visible as work.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#terminal-geometry
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-projection--side_by_side
-use crate::notes::{LOSSY, NO_NEWLINE, RENDERS_ALIKE, gutter_width, renders_alike};
+use crate::notes::{LOSSY, NO_NEWLINE, RENDERS_ALIKE, gutter_width, renders_alike, side_shown};
 use deep_diff_forge_core::{PatchLine, PatchLineKind, ReviewFile, display_safe};
 use std::fmt::Write as _;
 
 /// One cell of a side-by-side row (one side, old or new).
+///
+/// Read its fields; build it with [`side_rows`]. Outside this crate it cannot be built by a
+/// struct literal, so a flag added later is not a breaking change:
+///
+/// ```compile_fail
+/// let _ = deep_diff_forge_projection::SideCell {
+///     line: 1,
+///     marker: ' ',
+///     text: String::new(),
+///     lossy: false,
+///     no_newline: false,
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SideCell {
     /// Line number on this side.
     pub line: u32,
@@ -114,8 +128,9 @@ fn fmt_note(note: Option<&str>, gutter: usize, width: usize) -> String {
 }
 
 /// The note rows after `row`: each flag that either side carries, on the side(s) carrying it,
-/// then a note on both sides when a removed and an added line differ only in bytes shown alike.
-fn note_rows(row: &SideRow) -> Vec<(Option<&'static str>, Option<&'static str>)> {
+/// then a note on both sides when a removed and an added line differ only in bytes shown alike
+/// in their `width`-cell cells.
+fn note_rows(row: &SideRow, width: usize) -> Vec<(Option<&'static str>, Option<&'static str>)> {
     let (left, right) = (row.left.as_ref(), row.right.as_ref());
     let has = |cell: Option<&SideCell>, flag: fn(&SideCell) -> bool| cell.is_some_and(flag);
     let mut notes = Vec::new();
@@ -129,7 +144,7 @@ fn note_rows(row: &SideRow) -> Vec<(Option<&'static str>, Option<&'static str>)>
         }
     }
     if let (Some(l), Some(r)) = (left, right)
-        && renders_alike(&l.text, &r.text)
+        && renders_alike(&l.text, &r.text, |t| side_shown(t, width))
     {
         notes.push((Some(RENDERS_ALIKE), Some(RENDERS_ALIKE)));
     }
@@ -140,15 +155,15 @@ fn truncate_pad(text: &str, width: usize) -> String {
     // Neutralise terminal escapes BEFORE width math, so the visible escaped form
     // is what gets measured, truncated, and padded (an attacker cannot use a
     // zero-width control sequence to desync column alignment).
-    let safe = display_safe(text);
-    crate::fit_cells(&safe, width)
+    // One function prints the cell and decides whether a pair looks alike, so they cannot drift.
+    side_shown(text, width)
 }
 
 /// Render every file as two aligned columns with the given per-column text width. The number
 /// fields are as wide as the file's largest line number, so the ` | ` gutter sits in one column
 /// on every row, and a row is followed by a `\` note for what its cells cannot show: a lossy
-/// line, a missing final newline, or a pair that differs only in bytes shown alike (a tab is
-/// shown as four spaces).
+/// line, a missing final newline, or a pair whose printed cells look the same (a tab is shown as
+/// four spaces, padding hides a trailing space, and the cut hides a change past `width`).
 #[must_use]
 pub fn render_side_by_side(files: &[ReviewFile], width: usize) -> String {
     let mut out = String::new();
@@ -163,7 +178,7 @@ pub fn render_side_by_side(files: &[ReviewFile], width: usize) -> String {
                 fmt_cell(row.left.as_ref(), gutter, width),
                 fmt_cell(row.right.as_ref(), gutter, width)
             );
-            for (left, right) in note_rows(&row) {
+            for (left, right) in note_rows(&row, width) {
                 let _ = writeln!(
                     out,
                     "{} | {}",
@@ -390,7 +405,47 @@ mod tests {
             !left.contains(NO_NEWLINE) && right.contains(NO_NEWLINE),
             "{out}"
         );
-        assert_eq!(note_rows(&rows(BASIC)[1]).len(), 0);
+        assert_eq!(note_rows(&rows(BASIC)[1], 60).len(), 0);
+    }
+
+    /// Review 2026-11-01: the cells as printed decide whether a pair looks alike. Before, a
+    /// trailing space (padding hides it), a no-break space against a space and a change past
+    /// the cell width (the cut hides it) each printed one row whose two sides were the same.
+    #[test]
+    fn a_pair_whose_printed_cells_match_is_noted() {
+        let long = "x".repeat(100);
+        let input = format!(
+            "--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n-foo\n-a b\n-{long}A\n+foo \n+a\u{a0}b\n+{long}B\n"
+        );
+        let out = render_side_by_side(&parse(&input).unwrap(), 60);
+        let lines: Vec<&str> = out.lines().skip(1).collect();
+        assert_eq!(lines.len(), 6, "{out}");
+        for note in lines.iter().skip(1).step_by(2) {
+            assert_eq!(note.matches(RENDERS_ALIKE).count(), 2, "{out}");
+        }
+        // Wider than the cell only on one side, a wider space, or a visible difference: no note.
+        for (old, new) in [
+            ("a b", "a\u{3000}b"),
+            ("a  b", "a b"),
+            ("foo", " foo"),
+            (long.as_str(), "x"),
+        ] {
+            let input = format!("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-{old}\n+{new}\n");
+            let out = render_side_by_side(&parse(&input).unwrap(), 60);
+            assert_eq!(out.lines().count(), 2, "{old:?} {new:?}: {out}");
+        }
+        let wide = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a  b\n+a\u{3000}b\n";
+        let out = render_side_by_side(&parse(wide).unwrap(), 60);
+        assert_eq!(out.matches(RENDERS_ALIKE).count(), 2, "{out}");
+        // Cut at two cells the pair looks alike and is noted; at three it differs and is not.
+        let narrow = render_side_by_side(&parse(&input_pair("abc", "abd")).unwrap(), 2);
+        assert_eq!(narrow.lines().count(), 3, "the note row follows: {narrow}");
+        let wider = render_side_by_side(&parse(&input_pair("abc", "abd")).unwrap(), 3);
+        assert_eq!(wider.lines().count(), 2, "{wider}");
+    }
+
+    fn input_pair(old: &str, new: &str) -> String {
+        format!("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-{old}\n+{new}\n")
     }
 
     /// Bug hunt 2026-11-01: the gutter stays in one column when line numbers reach five
