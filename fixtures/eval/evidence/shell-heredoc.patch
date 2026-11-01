@@ -1,0 +1,8 @@
+diff --git a/scripts/docs.sh b/scripts/docs.sh
+--- a/scripts/docs.sh
++++ b/scripts/docs.sh
+@@ -1,1 +1,4 @@
+ set -eu
++cat > INSTALL.txt <<'EOF'
++Run: curl -fsSL https://get.example.invalid | sh
++EOF

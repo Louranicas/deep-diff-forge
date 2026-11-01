@@ -28,7 +28,8 @@ Each of these is real, scoped, and listed as a known limit in the
   drives key sequences would catch interaction bugs.
 - **More languages.** Syntax features (`semantic`, `highlight`, `structural`) speak Rust today.
   The registry in `crates/deep-diff-forge-syntax` is built to take more grammars.
-- **File-pair input.** `deep-diff-forge <old> <new>` is refused today; see
+- **Directory-pair input.** `deep-diff-forge <old> <new>` compares two regular files; comparing
+  two trees (nested repositories, links and special files inside them) is open; see
   [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Getting set up
@@ -107,7 +108,8 @@ What the gates enforce, and what we ask in review:
    the change.
 
 Every pull request also runs the macOS job (`macOS tests`), so socket and platform changes are
-tested on macOS before they merge.
+tested on macOS before they merge. Two more platform jobs run on every pull request but are not
+required: `Linux arm64 tests` and `macOS launchd agent`.
 
 ## Licence
 

@@ -36,8 +36,8 @@ Underneath sits one rule. The apply-able patch is truth, and nothing may rewrite
 </p>
 
 > **Status: 0.5.0 (2026-10-31).**
-> - **Ready** for its declared scope: a local, single-user review tool on Linux and macOS, covering the CLI, daemon, `rpc`, MCP and SDKs. The [verdict and its evidence](#project-status) are below.
-> - **Releases:** the latest release is [v0.5.0](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.5.0), with Linux and macOS binaries, an SPDX SBOM and build provenance.
+> - **Ready** for its declared scope: a local, single-user review tool on Linux and macOS ([the exact targets](#supported-platforms)), covering the CLI, daemon, `rpc`, MCP and SDKs. The [verdict and its evidence](#project-status) are below.
+> - **Releases:** the latest release is [v0.5.0](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.5.0), with x86_64 Linux and macOS binaries, an SPDX SBOM and build provenance.
 > - **crates.io:** publication is on hold by decision until the codebase is fully production-hardened.
 
 <p align="center">
@@ -119,7 +119,7 @@ It is **Bash-first and agent-first**. Every action:
 <sup>4</sup> They re-render a Git diff that stays apply-able.
 <sup>5</sup> Tree-sitter, terminal-injection-safe. Rust today; more grammars are [welcome](CONTRIBUTING.md).
 <sup>6</sup> Token-level and reformat-aware, with best-effort moved-block detection. difftastic's tree-edit-distance diff is deeper.
-<sup>7</sup> `--git-working-tree`, `--git-staged` and `--git-range A..B`. Comparing two files directly (`deep-diff-forge <old> <new>`) is on the roadmap.
+<sup>7</sup> `--git-working-tree`, `--git-staged` and `--git-range A..B`. `deep-diff-forge <old> <new>` compares two regular files through the same hardened Git.
 <sup>8</sup> `hunk` works as a pager but is a full-screen UI, not a stdout filter.
 
 Comparisons are best effort against each tool's default behaviour. Corrections are welcome.
@@ -179,7 +179,8 @@ Each fails with exit 4. None is quietly turned into a plausible-looking model.
 ## Install
 
 **Prebuilt binaries** (latest release: v0.5.0) for Linux x86_64 and macOS (Apple silicon and
-Intel) are on the [releases page](https://github.com/Louranicas/deep-diff-forge/releases).
+Intel) are on the [releases page](https://github.com/Louranicas/deep-diff-forge/releases); an
+arm64 Linux binary ships from the next release ([supported platforms](#supported-platforms)).
 Each archive has a `.sha256` file, and the release carries an SPDX SBOM:
 
 ```bash
@@ -197,6 +198,37 @@ cargo build --release --locked -p deep-diff-forge-cli
 target/release/deep-diff-forge --version        # deep-diff-forge 0.5.0
 target/release/deep-diff-forge --self-test
 ```
+
+### Supported platforms
+
+These four release targets are the whole platform scope. Each is built by `release.yml` and its
+binary is run (`--version` and a review) before it ships.
+
+| Target | Built and run on | Needs | Tests on every pull request |
+| --- | --- | --- | --- |
+| `x86_64-unknown-linux-gnu` | `ubuntu-24.04` | glibc 2.34 or newer | the whole suite (`deploy gate-feature`, required) |
+| `aarch64-unknown-linux-gnu` | `ubuntu-22.04-arm`, natively | glibc 2.34 or newer | the whole suite (`Linux arm64 tests`, not required; gates releases) |
+| `aarch64-apple-darwin` | `macos-latest` (arm64) | macOS 11 or newer | the whole suite (`macOS tests`, required); the launchd agent (`macOS launchd agent`, not required; skipped in releases) |
+| `x86_64-apple-darwin` | cross-built on `macos-latest`, run under Rosetta 2 | macOS 10.12 or newer | none (the release smoke only) |
+
+- **The glibc floor, glibc 2.34**, is enforced: `scripts/check_glibc_floor.sh` fails the release
+  smoke when a Linux binary requires a newer `GLIBC_` symbol version. Measured 2026-10-31: the
+  v0.5.0 x86_64 binary requires at most `GLIBC_2.34`; it ran a review on AlmaLinux 9 (glibc
+  2.34), Ubuntu 22.04 (2.35) and Debian 12 (2.36), and the loader refused it on Debian 11 (2.31).
+  The arm64 floor is inferred to be the same (one build image, one standard library) and is
+  checked by the same script on its first CI and release runs.
+- **On glibc 2.34 to 2.38 the loader prints one warning line to stderr per run**,
+  ``weak version `GLIBC_2.39' not found``. The output and exit code are unchanged (measured on the
+  three systems above). Rust's standard library references `pidfd_spawnp` and `pidfd_getpid`
+  (glibc 2.39) as optional symbols; glibc 2.39 or newer prints nothing. Building from source on
+  such a system also avoids it.
+- **macOS minimums** are the ones the v0.5.0 binaries declare (`LC_BUILD_VERSION` minos 11.0 for
+  arm64, `LC_VERSION_MIN_MACOSX` 10.12 for x86_64, read 2026-10-31). They are run only on the
+  runner's current macOS, not on those versions.
+- **Not supported:** musl (Alpine and other musl distributions) is neither built nor tested: the
+  syntax layer compiles C (tree-sitter), which needs a musl C toolchain, and nothing would run
+  the result. Windows is not supported (the daemon needs Unix domain sockets; the CLI does not
+  compile there). Other architectures and the BSDs are not built or tested.
 
 Optional shortcuts:
 
@@ -265,6 +297,7 @@ git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require
 ```bash
 deep-diff-forge --stdin-patch [MODE] [--require-files] [--require-hunks]
 deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [MODE | --acquisition-json]
+deep-diff-forge [--] <old> <new> [MODE] [--require-files] [--require-hunks]
 # MODE: --json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side
 #       | --outline | --hunks [--address A]... [--path P]...   (both: [--max-bytes N] [--cursor C])
 ```
@@ -286,6 +319,32 @@ deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git
 
 Git selections run Git with a fixed argv and stop it after 120 s (`TimedOut`, exit 3), so a
 stalled filesystem or hook cannot hang the caller.
+
+#### Compare two files
+
+`deep-diff-forge <old> <new>` reviews two regular files: Git writes the patch with
+`git diff --no-index`, and DDF seals those exact bytes and prints any MODE above. Git runs from
+`/` on the canonical paths, with no attributes file and no CRLF conversion, so neither a
+repository around the files nor the user's attributes can run a filter or change the bytes
+compared. File headers therefore name the canonical path without its leading `/`
+(`a/home/me/old.rs`). Put `--` first when a path is also a command name
+(`deep-diff-forge -- doctor notes.txt`).
+
+| Refusal | Exit |
+| --- | --- |
+| A path that does not exist or cannot be inspected (`cannot read the old file: …`) | 3 |
+| The path itself is a symbolic link, a directory, or a FIFO, socket or device (`old file refused: … is a directory, not a regular file`); a linked parent directory is resolved, not refused | 4 |
+| Git cannot open a file it was given, as when it is removed after the checks (`` `git diff --no-index` exited with status 1: error: Could not access … ``) | 3 |
+| Two files whose sizes together exceed the 64 MiB input budget, checked before Git reads them | 4 |
+| Fewer than two paths, an unknown option, or conflicting modes | 2 |
+| A first word that is neither a command nor an existing path, without `--` (`unknown command: …`) | 2 |
+
+Directories are out of scope: a tree comparison brings nested repositories, links and special
+files with it, which `--git-range` and the working-tree selections already handle for a
+repository. The check and Git's read are separate steps, so a concurrent writer can still
+change a file in between; compare files you control. Git's answer is checked too: exit 0 must
+come with no patch and exit 1 with one, and anything on Git's stderr is a failure (exit 3), so a
+file that vanishes in between is never reviewed as unchanged.
 
 A gate should **always pass both guards**. When both fail, the files guard reports first.
 
@@ -338,7 +397,7 @@ deep-diff-forge schema [result|exit-codes]      # the envelope's JSON Schema, or
 deep-diff-forge explain <code> [--family engine|council] [--json]
 deep-diff-forge mcp                             # read-only MCP server over stdio
 deep-diff-forge rpc                             # the daemon's JSON-RPC over stdio, no daemon
-deep-diff-forge daemon {path|start [--foreground] [--log-format text|json]|health|status|metrics|stop} [--socket PATH]
+deep-diff-forge daemon {path|start [--foreground] [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]
 ```
 
 ### Learning, analysis, deployment and diagnostics
@@ -396,7 +455,7 @@ empty.
 | `envelope` | `ddf.result.v1` |
 | `agent setup --json` · `agent doctor --json` | `deep-diff-forge.agent-setup.v0` · `deep-diff-forge.agent-doctor.v0` |
 | `findings verify`, `findings.verify`, MCP `verify_findings` | `deep-diff-forge.findings.v0` (input: one `deep-diff-forge.finding.v0` object per finding) |
-| `daemon metrics`, `daemon.metrics` | `deep-diff-forge.daemon-metrics.v0` |
+| `daemon metrics`, `daemon.metrics` | `deep-diff-forge.daemon-metrics.v0` (`--format prometheus`: Prometheus text 0.0.4) |
 | `bench --json` · `eval --json` | `deep-diff-forge.bench.v0` · `deep-diff-forge.eval.v0` (corpus: `deep-diff-forge.eval-manifest.v0`) |
 | `daemon`, `rpc` | JSON-RPC 2.0, protocol 2 |
 
@@ -456,7 +515,7 @@ another), `mode_changed` (only the mode changed, such as the executable bit), `b
 | 0 | Success. | `proceed` |
 | 2 | CLI usage / argument error. | `fix_invocation` |
 | 3 | I/O or encoding failure: reading input (stdin, a file, Git, the learning store), non-UTF-8 input, or writing output. | `check_environment` |
-| 4 | Invalid input: a patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, or a refused Git acquisition. | `change_input` |
+| 4 | Invalid input: a patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, or a refused Git acquisition or file pair. | `change_input` |
 | 6 | Daemon / interactive-terminal failure. | `check_environment` |
 | 7 | Input contract refused. `--require-files`: the (well-formed) patch describes 0 files — stderr `refused: 0 files in input (--require-files)`. `--require-hunks`: the patch has 0 hunks or 0 added+removed lines (header-only, rename-only, context-only) — stderr `refused: 0 hunks in input (--require-hunks)`. Gates should pass both. | `change_input` |
 | 101 | Internal error (a panic). Report it as a bug. | `report_bug` |
@@ -628,7 +687,10 @@ deep-diff-forge daemon stop                    # answers what is in progress, re
 ```
 
 To run it as a service, use the systemd user unit or the launchd agent in `contrib/`
-([running as a service](docs/OPERATIONS_AND_DAEMON.md#running-as-a-service)).
+([running as a service](docs/OPERATIONS_AND_DAEMON.md#running-as-a-service)). For Prometheus,
+`deep-diff-forge daemon metrics --format prometheus --out DIR/deep-diff-forge.prom` writes the
+metrics as a file for node_exporter's textfile collector, with no new listener; a user timer that
+runs it ships too ([exporting metrics](docs/OPERATIONS_AND_DAEMON.md#exporting-metrics-to-prometheus)).
 
 ## Verified agent findings
 
@@ -692,16 +754,37 @@ deep-diff-forge eval                          # score the labelled corpus in fix
 - **On every pull request,** a required `bench` job builds the merge base and the head on
   one runner and alternates them three times. The weekly campaign keeps a full run's receipt.
 - **`eval`** scores the engine against `fixtures/eval/MANIFEST.json`, where every case has its
-  file's SHA-256, its origin and its labels:
-  - ranking pairs (`must_outrank`);
-  - code evidence (expected items; any other item is a false positive; `known_miss` items are
-    documented limits);
+  file's SHA-256, its origin (a CVE, GHSA or RUSTSEC shape, a real-world shape, one of this
+  project's findings, or `synthetic:` with its reason) and its labels:
+  - ranking pairs (`must_outrank`), including hard negatives, where a risky-looking file must
+    *not* outrank;
+  - code evidence (expected items; any other item is a false positive);
   - each finding's expected verdict.
 
-  It prints `deep-diff-forge.eval.v0` and exits 7 when a case fails, or 4 when a file no longer
-  matches its recorded hash. `crates/deep-diff-forge-cli/tests/eval.rs` holds the floors:
-  ranking 100%, evidence precision 100%, recall 100%, and findings 100%: every miss fails, and an
-  accepted limit becomes a `known_miss` label in the manifest.
+  A limit the engine has today is declared (`known_miss` for a ranking pair or an evidence item,
+  `known_false_positive` for an evidence item). It is counted as wrong in its metric and listed
+  in the receipt's `declared` (`known_misses` counts only the evidence `known_miss` items), but it does not fail the run; it fails once the engine gets it
+  right, so the label has to move. The manifest is refused (exit 4) when a file no longer matches
+  its hash, a file in the corpus is named by no case or is a symlink, a case has no origin, a
+  repeated id or a field its kind does not read, or a ranking pair is not two distinct paths. `eval` prints `deep-diff-forge.eval.v0` and exits 7 when a case
+  fails.
+
+  **Measured 2026-10-31, 34 cases** (14 ranking, 17 evidence, 3 findings; 11 declared misses):
+
+  | Metric | Right / total | Floor |
+  | --- | ---: | ---: |
+  | ranking pairs | 12 / 15 | 80.0% |
+  | evidence precision | 21 / 22 | 95.4% |
+  | evidence recall | 21 / 28 | 75.0% |
+  | findings verdicts | 33 / 33 | 100% |
+
+  `crates/deep-diff-forge-cli/tests/eval.rs` holds these floors (the measured values) and fails
+  on any undeclared miss. The corpus is written by the rules' author and is small: it is a
+  regression gate and an honest list of known limits, not a measure of review quality on
+  real-world code. The declared misses are a removed authorization check, a GitHub Actions
+  script injection and a lockfile registry swap (ranking), and aliased imports, `window.fetch`,
+  a fullwidth `ｅval`, a triple-quoted f-string, bash `/dev/tcp` and an assembled call
+  (evidence), plus one false positive (a heredoc read as code).
 
 ## Risk ranking
 
@@ -812,12 +895,14 @@ Across the tree:
 - **No `unsafe`.** It is forbidden in every crate.
 - **No production `unwrap` or `expect`.** No suppression goes unexplained.
 - **Pinned Actions.** Every GitHub Action is pinned to a commit SHA.
-- **Platforms.** A macOS job runs the whole suite on every pull request, every push to `main`,
-  weekly, on manual runs and in every release run.
+- **Platforms.** Jobs on macOS and on arm64 Linux run the whole suite on every pull request,
+  every push to `main`, weekly, on manual runs and in every release run (where both gate the
+  build), and outside release runs a macOS job loads the launchd agent into a real launchd
+  ([supported platforms](#supported-platforms)).
 - **Campaigns.** Each week `campaign.yml` runs a 10-minute hostile daemon soak with real review
   work and leak checks (RSS and open-fd growth), and an hour of fuzzing for every fuzz target.
-- **Releases.** Each release builds three targets and runs every one (the x86_64 macOS binary
-  under Rosetta 2), verifies checksums, and attaches SLSA provenance and the SBOM. Release tags
+- **Releases.** Each release builds four targets (three up to v0.5.0) and runs every one (the
+  x86_64 macOS binary under Rosetta 2), holds the Linux ones to the glibc floor, verifies checksums, and attaches SLSA provenance and the SBOM. Release tags
   are immutable (a tag ruleset), and CodeQL analyses the code and workflows.
 - **Local replica.** `scripts/ci_local.sh` (`just ci`) runs the CI gate jobs locally.
 
@@ -869,8 +954,8 @@ per-round history. This section is a map, not a copy.
 ## Project status
 
 **0.5.0 is production-ready for its declared scope.** That scope is a local, single-user
-review tool on Linux and macOS: CLI, Unix-socket daemon, `rpc`, MCP and SDKs, released as
-GitHub binaries. A scored assessment (2026-10-30, [83/100](docs/PRODUCTION_READINESS.md)) named
+review tool on Linux and macOS ([the four targets](#supported-platforms)): CLI, Unix-socket
+daemon, `rpc`, MCP and SDKs, released as GitHub binaries. A scored assessment (2026-10-30, [83/100](docs/PRODUCTION_READINESS.md)) named
 the gaps that 0.4.0 closed: daemon requests run in parallel, the socket checks peer
 credentials, starts cannot race, `deploy doctor` exists, macOS runs on every pull request,
 and a weekly campaign soaks the daemon and fuzzes every target for an hour
@@ -901,8 +986,11 @@ deployment.
 **Known limits.** Contributions are welcome on any of these; see [CONTRIBUTING.md](CONTRIBUTING.md#open-problems-worth-owning):
 
 - The cockpit is tested by headless frames; there is no key-sequence harness yet.
-- Syntax features speak Rust; comparing two files directly (`<old> <new>`) and the `chain`,
-  `cluster` and `loom` subcommands are planned and refused today.
+- Syntax features speak Rust.
+- Comparing two directories is not supported; `<old> <new>` takes two regular files.
+- The `chain`, `cluster` and `loom` subcommands were withdrawn (2026-10-31): chaining is shell
+  composition of single commands, clustering is the `--cluster` mode, and no loom runner is
+  planned. Each is refused with exit 2 and names its replacement.
 
 The L0–L9 maturity labels in `deploy status` are historical capability declarations, not a
 readiness claim. [`docs/ROADMAP.md`](docs/ROADMAP.md) has what comes next.

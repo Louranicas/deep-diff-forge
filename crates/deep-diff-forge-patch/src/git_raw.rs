@@ -244,6 +244,21 @@ pub enum GitAcquireError {
         /// Parsed review files.
         files: usize,
     },
+    /// A side of a direct file comparison could not be inspected (missing, unreadable).
+    FileUnreadable {
+        /// `old` or `new`.
+        side: &'static str,
+        /// The path and the operating-system error.
+        detail: String,
+    },
+    /// A side of a direct file comparison is not something DDF compares: a symbolic link, a
+    /// directory, a special file, or more bytes than the budget.
+    FileRefused {
+        /// `old`, `new`, or `old and new` for the shared byte budget.
+        side: &'static str,
+        /// What was refused and why.
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for GitAcquireError {
@@ -295,6 +310,10 @@ impl std::fmt::Display for GitAcquireError {
                 f,
                 "Git emitted {blocks} patch block(s) but the parser produced {files} file(s)"
             ),
+            Self::FileUnreadable { side, detail } => {
+                write!(f, "cannot read the {side} file: {detail}")
+            }
+            Self::FileRefused { side, detail } => write!(f, "{side} file refused: {detail}"),
         }
     }
 }

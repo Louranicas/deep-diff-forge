@@ -134,7 +134,7 @@ pub const EXIT_CODES: &[ExitCode] = &[
         "engine",
         INVALID_INPUT,
         "invalid_input",
-        "Invalid input: a patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, or a refused Git acquisition.",
+        "Invalid input: a patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, or a refused Git acquisition or file pair.",
         NextAction::ChangeInput,
     ),
     entry(

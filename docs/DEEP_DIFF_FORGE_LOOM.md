@@ -1,5 +1,14 @@
 # Deep-Diff-Forge Loom
 
+## Status 2026-10-31: withdrawn
+
+The loom is **withdrawn**: no runner ships and none is planned. `deep-diff-forge loom` is
+refused with exit 2 and says so, and `deep-diff-forge loom-contract` prints the withdrawal and
+the two rules that still bind any change adopting an exemplar's lesson (it lands as a reviewed
+change with its tests; unsafe code, network access and destructive file actions stay denied).
+Crate-stub generation was speculative: no consumer, no owner and no test could hold it to a
+contract. The rest of this page is kept as the 2026-10-28 design record.
+
 ## Status 2026-10-28 (0.3.0)
 
 **Kind:** target design. The loom is **not implemented**.

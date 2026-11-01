@@ -365,7 +365,7 @@ headings moved down a level.
 
 **Gaps**
 
-- **[Unmeasured]** Push protection, alert counts and GitHub security settings exist only as self-reported `gh api` results. No CodeQL/code-scanning workflow exists. Global/system Git filters remain trusted (`git_acquire.rs:225-230`), and third-party native/unsafe code is outside the first-party guarantee.
+- **[Unmeasured]** Push protection, alert counts and GitHub security settings exist only as self-reported `gh api` results. No CodeQL/code-scanning workflow exists. Global/system Git filters remain trusted (`PROTECTED_SCOPES` and the module's "Configuration trust" section in `git_acquire.rs`; kept by decision on 2026-10-31, see SECURITY.md, and repository `config.worktree` filters are now turned off too), and third-party native/unsafe code is outside the first-party guarantee.
 
 ##### 3. Supply chain and release integrity — 12 / 15
 
@@ -499,3 +499,57 @@ open: one `daemon` loop mutant reported as a timeout, `review` in
 workspace scope (727 crate-scope misses, unclassified), and `cli`, `tui`, `learning`,
 `pipeline`, `projection`, `cluster` and `sdk` (**unmeasured**). The 120 historical misses stay
 in the ledger as history.
+
+## Follow-up 2026-10-31: the platform matrix (no rescore)
+
+Answers the accepted point "'Linux and macOS' is broad" and item 3 above. Not a new assessment:
+the score stays as reconciled until the next one.
+
+- **Stated** (measured, read): the scope is four targets, named in README.md#supported-platforms,
+  `SECURITY.md` and `RELEASE_AND_PUBLICATION.md`; `cli/tests/crate_edges.rs` holds the release
+  matrix and the target triples those docs name to the same list, and checks that each doc
+  names the glibc floor and states musl as unsupported. musl, Windows, other architectures and the BSDs are
+  stated as unsupported.
+- **glibc floor 2.34** (measured on the v0.5.0 x86_64 binary: highest required version
+  `GLIBC_2.34`; ran on AlmaLinux 9, Ubuntu 22.04 and Debian 12; refused on Debian 11). On glibc
+  2.34 to 2.38 the loader prints one stderr warning per run (measured). Enforced by
+  `scripts/check_glibc_floor.sh` in the release smoke.
+- **arm64 Linux**: a release target on `ubuntu-24.04-arm` and a `Linux arm64 tests` CI job
+  (inferred until their first runs; pending CI). The test job gates every release build through
+  `quality`. Its glibc floor is inferred to equal x86_64's.
+- **x86_64 macOS** runs in the release smoke under Rosetta 2 (since the 2026-10-31 release
+  hardening); it has no test job.
+- **launchd**: the `macOS launchd agent` job loads the shipped plist into a hosted Mac's launchd
+  and checks health, crash restart, no restart after `daemon stop`, and bootout (pending its
+  first CI run; the flow ran only against a fake `launchctl` on Linux). Skipped in release runs
+  until it has a record on hosted runners.
+
+## Follow-up 2026-10-31 (unreleased): the refused commands
+
+Codex's facet-6 gap, "`chain`, `cluster`, `loom` and direct `<old> <new>` remain refused despite
+published contracts", is closed by the change that adds this note, after v0.5.0 (measured: `cli/tests/file_pair.rs`,
+`cli/tests/contract.rs`). `<old> <new>` reviews two regular files through `git diff --no-index`
+with the acquisition's hardening; directories are refused. `chain`, `cluster` and `loom` were
+withdrawn, not built: each is refused with exit 2 and names its replacement, `--help` lists them
+under "WITHDRAWN", and the three contracts list only modes a test runs. The score above is not
+changed by this note.
+
+## Follow-up 2026-10-31 (unreleased): the evaluation corpus (not a rescore)
+
+The Codex finding that the gate "is only 11 cases" and "excludes one declared miss from recall"
+is addressed; no score above is changed by it.
+
+- **[Measured]** `fixtures/eval` has 34 cases: 14 ranking (3 hard negatives), 17 evidence and 3
+  findings. Every origin is classified: a CVE, GHSA or RUSTSEC shape with its identifier, a
+  real-world shape, one of this project's findings, or `synthetic:` with its reason.
+- **[Measured]** Declared misses are counted, not excluded. The 11 declared (3 ranking pairs,
+  7 missed evidence items, 1 false positive) count as wrong, so the gate reports ranking 12/15,
+  precision 21/22, recall 21/28 and findings 33/33, and its floors are those values. Before,
+  the one declared miss was left out of recall, which read 7/7.
+- **[Measured]** The manifest cannot drift silently: a file no case names, a symlink, a
+  repeated id, a missing origin, a field the case's kind does not read or a ranking pair that is
+  not two distinct paths is refused (exit 4), and a declared miss the engine now gets right
+  fails (exit 7).
+- **[Inferred]** It is still a corpus written by the rules' author, with cases shaped after real
+  advisories rather than taken from them. It is a regression gate and a list of known limits,
+  not evidence of review quality on real-world code; a held-out corpus remains open.

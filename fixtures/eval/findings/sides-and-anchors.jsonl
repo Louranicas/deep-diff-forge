@@ -1,0 +1,14 @@
+{"agent":"codex","severity":"medium","title":"length check dropped","body":"b","address":"057a852cf0fd026f34deb0625d86224831aff1caef56166f65652c77ec5bfdba","side":"old","line":2}
+{"agent":"codex","severity":"medium","title":"debug log","body":"b","path":"src/auth.rs","line":21}
+{"agent":"codex","severity":"medium","title":"wrong hunk","body":"b","address":"057a852cf0fd026f34deb0625d86224831aff1caef56166f65652c77ec5bfdba","line":21}
+{"agent":"codex","severity":"medium","title":"mismatch","body":"b","address":"0b3839547d4698f9c7de89ed332eca8be7e51e3c26fef2570f43b389716c76c6","path":"src/auth.rs"}
+{"agent":"codex","severity":"medium","title":"pool shrunk","body":"b","path":"src/db.rs","review":"8d71676bd8550ae455118a82c01a474d4ae1c3edd4c6bba9f0d3748139a4edd9"}
+{"agent":"codex","severity":"medium","title":"side","body":"b","path":"src/auth.rs","side":"both","line":2}
+{"agent":"codex","severity":"medium","title":"zero","body":"b","path":"src/auth.rs","line":0}
+{"agent":"codex","severity":"medium","title":"extra","body":"b","path":"src/auth.rs","confidence":0.9}
+{"agent":"codex","severity":"medium","title":"schema","body":"b","path":"src/auth.rs","schema":"deep-diff-forge.finding.v1"}
+{"agent":"claude","severity":"medium","title":"length check dropped","body":"b","address":"057a852cf0fd026f34deb0625d86224831aff1caef56166f65652c77ec5bfdba","side":"old","line":2}
+{"agent":"codex","severity":"medium","title":"length check dropped","body":"b","address":"057a852cf0fd026f34deb0625d86224831aff1caef56166f65652c77ec5bfdba","side":"old","line":2}
+{"agent":"codex","severity":"medium","title":"between hunks","body":"b","path":"src/auth.rs","line":10}
+{"agent":"codex","severity":"medium","title":"no anchor","body":"b"}
+{"agent":"codex","severity":"urgent","title":"sev","body":"b","path":"src/db.rs"}

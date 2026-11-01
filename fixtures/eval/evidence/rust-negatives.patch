@@ -1,0 +1,11 @@
+diff --git a/src/cell.rs b/src/cell.rs
+--- a/src/cell.rs
++++ b/src/cell.rs
+@@ -1,1 +1,7 @@
+ use std::cell::Cell;
++/// unsafe is never needed here
++const DOC: &str = r#"unsafe { Command::new("sh") }"#;
++fn unsafe_free(x: Cell<u8>) -> u8 { x.get() }
++#[expect(clippy::cast_possible_truncation, reason = "bounded")]
++#[allow(dead_code)]
++fn unused() {}

@@ -14,7 +14,7 @@
 
 use deep_diff_forge_patch::{
     GitAcquireError, GitAcquireOptions, GitAcquisition, GitChange, GitChangeKind, GitChangeOrigin,
-    GitPath, GitSelection, StructuredDiff, acquire_git, git_version,
+    GitPath, GitSelection, StructuredDiff, acquire_git, diff_files, git_version,
 };
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt as _;
@@ -770,6 +770,243 @@ fn a_repository_local_filter_never_runs() {
     assert!(!marker.exists(), "a repository-local filter ran");
 }
 
+/// A filter in the repository's worktree configuration (`$GIT_DIR/config.worktree`, read once
+/// `extensions.worktreeConfig` is set) never runs either, and the change is captured from the
+/// file's own bytes. Before, only `git config --local` was listed, which does not read that file,
+/// so the filter ran and its output was reviewed in place of the file.
+#[test]
+fn a_repository_worktree_config_filter_never_runs() {
+    let fx = fixture("worktree-filter");
+    let r = &fx.root;
+    let marker = r.join("filter-ran");
+    std::fs::write(r.join(".gitattributes"), "*.txt filter=evil\n").unwrap();
+    git_out(r, &["config", "extensions.worktreeConfig", "true"]);
+    git_out(
+        r,
+        &[
+            "config",
+            "--worktree",
+            "filter.evil.clean",
+            &format!("sh -c 'touch {}; tr a-z A-Z'", marker.display()),
+        ],
+    );
+    std::fs::write(r.join("noeol.txt"), b"a\nc\nreviewed as written\n").unwrap();
+    let acq = acquire_git(r, &GitSelection::WorkingTree, &options(false)).unwrap();
+    assert!(!marker.exists(), "a repository worktree-config filter ran");
+    let patch = String::from_utf8_lossy(acq.diff().patch_bytes());
+    assert!(patch.contains("+reviewed as written\n"), "{patch}");
+    assert!(!patch.contains("REVIEWED"), "{patch}");
+}
+
+/// A repository filter whose name is not UTF-8, in `.git/config` or `config.worktree`, refuses
+/// the acquisition and never runs. On macOS it ran even after the refusal was added, because
+/// `git config --get-regexp ^filter\.` did not list a key that is not UTF-8 (CI, PR #76); the
+/// listing now reads every key.
+#[test]
+fn a_repository_filter_with_a_non_utf8_name_never_runs() {
+    for (name, file) in [
+        ("bytes-filter", ".git/config"),
+        ("bytes-filter-wt", ".git/config.worktree"),
+    ] {
+        let fx = fixture(name);
+        let r = &fx.root;
+        let marker = r.join("filter-ran");
+        std::fs::write(r.join(".gitattributes"), b"*.txt filter=\xff\n").unwrap();
+        git_out(r, &["config", "extensions.worktreeConfig", "true"]);
+        let mut config = std::fs::read(r.join(file)).unwrap_or_default();
+        config.extend_from_slice(b"[filter \"\xff\"]\n\tclean = ");
+        config.extend_from_slice(
+            // Quoted: an unquoted `;` starts a comment in a configuration file.
+            format!("\"sh -c 'touch {}; tr a-z A-Z'\"\n", marker.display()).as_bytes(),
+        );
+        std::fs::write(r.join(file), config).unwrap();
+        std::fs::write(r.join("noeol.txt"), b"a\nc\nreviewed as written\n").unwrap();
+        let refused = acquire_git(r, &GitSelection::WorkingTree, &options(false));
+        assert!(
+            matches!(refused, Err(GitAcquireError::InvalidSelection { ref detail }) if detail.contains("not UTF-8")),
+            "{file}: {refused:?}"
+        );
+        assert!(!marker.exists(), "a non-UTF-8 filter in {file} ran");
+    }
+}
+
+/// A filter the caller passes through `GIT_CONFIG_COUNT`/`KEY`/`VALUE` (the `command` scope) is
+/// the caller's own and runs, whether or not the repository defines filters DDF turns off.
+/// Before, DDF numbered its own entries from 0 and set the count, which replaced the caller's.
+#[test]
+fn a_caller_git_config_env_filter_still_runs() {
+    for repository_filter in [false, true] {
+        let fx = fixture(if repository_filter {
+            "caller-filter-repo"
+        } else {
+            "caller-filter"
+        });
+        let r = &fx.root;
+        std::fs::write(
+            r.join(".gitattributes"),
+            "noeol.txt filter=user\n*.dat filter=evil\n",
+        )
+        .unwrap();
+        let marker = r.join("filter-ran");
+        if repository_filter {
+            git_out(
+                r,
+                &[
+                    "config",
+                    "filter.evil.clean",
+                    &format!("sh -c 'touch {}; cat'", marker.display()),
+                ],
+            );
+        }
+        std::fs::write(r.join("noeol.txt"), b"a\nc\nreviewed as cleaned\n").unwrap();
+        let mut opts = options(false);
+        opts.env.extend(
+            [
+                ("GIT_CONFIG_COUNT", "1"),
+                ("GIT_CONFIG_KEY_0", "filter.user.clean"),
+                ("GIT_CONFIG_VALUE_0", "tr a-z A-Z"),
+            ]
+            .map(|(k, v)| (OsString::from(k), OsString::from(v))),
+        );
+        let acq = acquire_git(r, &GitSelection::WorkingTree, &opts).unwrap();
+        assert!(!marker.exists(), "a repository-local filter ran");
+        let noeol = String::from_utf8_lossy(acq.diff().change_patch(find(&acq, "noeol.txt")));
+        assert!(noeol.contains("+REVIEWED AS CLEANED"), "{noeol}");
+    }
+}
+
+/// A caller count Git reads but DDF cannot (`strtoul` takes a leading space) is refused rather
+/// than guessed: numbering from 0 would replace the caller's entries.
+#[test]
+fn an_unreadable_caller_git_config_count_is_refused() {
+    let fx = fixture("caller-count");
+    let mut opts = options(false);
+    opts.env.extend(
+        [
+            ("GIT_CONFIG_COUNT", " 1"),
+            ("GIT_CONFIG_KEY_0", "core.abbrev"),
+            ("GIT_CONFIG_VALUE_0", "12"),
+        ]
+        .map(|(k, v)| (OsString::from(k), OsString::from(v))),
+    );
+    assert!(matches!(
+        acquire_git(&fx.root, &GitSelection::WorkingTree, &opts),
+        Err(GitAcquireError::InvalidSelection { detail }) if detail.contains("GIT_CONFIG_COUNT")
+    ));
+}
+
+/// The user's own (global and system) configuration is trusted for content filters and nothing
+/// else. A filter defined there, such as Git LFS, runs: its clean output is what the repository
+/// stores, so it is what the change is. Every other program those scopes name (fsmonitor, an
+/// external diff, a diff driver's textconv or command), set directly or through
+/// `include.path`/`includeIf`, never runs, and the capture is byte for byte the one taken without
+/// them. Each of `-c core.fsmonitor=false`, `--no-textconv` and `--no-ext-diff` with
+/// `-c diff.external=`, removed alone, fails this test.
+#[test]
+fn protected_config_keeps_its_filters_and_runs_nothing_else() {
+    let fx = fixture("protected");
+    let r = &fx.root;
+    std::fs::write(r.join("kept.txt"), b"lower\n").unwrap();
+    git_out(r, &["add", "kept.txt"]);
+    git_out(r, &["commit", "-q", "-m", "kept"]);
+    std::fs::write(r.join("kept.txt"), b"lower changed\n").unwrap();
+    std::fs::write(
+        r.join(".gitattributes"),
+        "*.txt diff=evil\nkept.txt filter=keep\n",
+    )
+    .unwrap();
+    let cfg = r.join(".git/ddf-protected");
+    std::fs::create_dir_all(&cfg).unwrap();
+    let ran = |what: &str| cfg.join(format!("ran-{what}"));
+    let script = |what: &str| {
+        let path = cfg.join(format!("{what}.sh"));
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", ran(what).display()),
+        )
+        .unwrap();
+        chmod(&path, 0o755);
+        path.display().to_string()
+    };
+    let clean = cfg.join("clean.sh");
+    std::fs::write(
+        &clean,
+        format!(
+            "#!/bin/sh\ntouch '{}'\nexec tr a-z A-Z\n",
+            ran("filter").display()
+        ),
+    )
+    .unwrap();
+    chmod(&clean, 0o755);
+    let filter = format!(
+        "[filter \"keep\"]\n\tclean = {}\n\trequired = true\n",
+        clean.display()
+    );
+    let benign = cfg.join("benign.cfg");
+    std::fs::write(&benign, &filter).unwrap();
+    let included = cfg.join("included.cfg");
+    std::fs::write(
+        &included,
+        format!("[diff]\n\texternal = {}\n", script("external")),
+    )
+    .unwrap();
+    let conditional = cfg.join("conditional.cfg");
+    std::fs::write(
+        &conditional,
+        format!("[core]\n\tfsmonitor = {}\n", script("fsmonitor")),
+    )
+    .unwrap();
+    let global = cfg.join("global.cfg");
+    std::fs::write(
+        &global,
+        format!(
+            "{filter}[diff \"evil\"]\n\tcommand = {}\n\
+             [include]\n\tpath = {}\n[includeIf \"gitdir:**/{}/\"]\n\tpath = {}\n",
+            script("driver-command"),
+            included.display(),
+            // `**/` and the directory name: macOS temporary paths are symlinked.
+            r.file_name().unwrap().display(),
+            conditional.display(),
+        ),
+    )
+    .unwrap();
+    let system = cfg.join("system.cfg");
+    std::fs::write(
+        &system,
+        format!("[diff \"evil\"]\n\ttextconv = {}\n", script("textconv")),
+    )
+    .unwrap();
+    let with = |global: &Path, system: Option<&Path>| GitAcquireOptions {
+        env: [
+            ("GIT_CONFIG_GLOBAL", global.as_os_str()),
+            (
+                "GIT_CONFIG_SYSTEM",
+                system.map_or("/dev/null".as_ref(), Path::as_os_str),
+            ),
+            ("GIT_CONFIG_NOSYSTEM", "0".as_ref()),
+        ]
+        .into_iter()
+        .map(|(k, v)| (OsString::from(k), v.to_owned()))
+        .collect(),
+        include_untracked: true,
+        ..GitAcquireOptions::default()
+    };
+    let baseline = acquire_git(r, &GitSelection::WorkingTree, &with(&benign, None)).unwrap();
+    std::fs::remove_file(ran("filter")).expect("the user's own filter runs");
+    let hostile =
+        acquire_git(r, &GitSelection::WorkingTree, &with(&global, Some(&system))).unwrap();
+    let mut programs = std::fs::read_dir(&cfg)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("ran-"))
+        .collect::<Vec<_>>();
+    programs.sort();
+    assert_eq!(programs, ["ran-filter"], "only the user's filter runs");
+    assert_eq!(hostile.diff(), baseline.diff());
+    let kept = String::from_utf8_lossy(hostile.diff().change_patch(find(&hostile, "kept.txt")));
+    assert!(kept.contains("-lower\n+LOWER CHANGED\n"), "{kept}");
+}
+
 /// Negative control: resolving `HEAD` unconditionally would fail on a fresh
 /// repository; the port compares against the empty tree instead.
 #[test]
@@ -965,4 +1202,173 @@ fn git_version_reports_the_version_and_is_bounded() {
         "{result:?}"
     );
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+/// `diff_files` returns Git's bytes for two regular files (nothing when they are identical) and
+/// names the canonical paths from `/`, as `git diff --no-index` run there does.
+#[test]
+fn diff_files_returns_git_s_patch_for_two_regular_files() {
+    let fx = fixture("pair");
+    let root = std::fs::canonicalize(&fx.root).unwrap();
+    let (old, new) = (root.join("pair-old.txt"), root.join("pair-new.txt"));
+    std::fs::write(&old, "one\ntwo\n").unwrap();
+    std::fs::write(&new, "one\nthree\n").unwrap();
+    let patch = String::from_utf8(diff_files(&old, &new, &options(false)).unwrap()).unwrap();
+    let (old_name, new_name) = (
+        old.to_str().unwrap().trim_start_matches('/'),
+        new.to_str().unwrap().trim_start_matches('/'),
+    );
+    assert!(
+        patch.starts_with(&format!("diff --git a/{old_name} b/{new_name}\n")),
+        "{patch}"
+    );
+    assert!(
+        patch.ends_with("@@ -1,2 +1,2 @@\n one\n-two\n+three\n"),
+        "{patch}"
+    );
+    assert_eq!(diff_files(&old, &old, &options(false)).unwrap(), b"");
+}
+
+/// The two sizes together may reach the byte budget, not pass it; Git's output is held to the
+/// same budget; and untracked capture is refused rather than ignored.
+#[test]
+fn diff_files_holds_inputs_and_output_to_the_budget_and_refuses_untracked() {
+    let fx = fixture("pair-budget");
+    let (old, new) = (fx.root.join("b-old.txt"), fx.root.join("b-new.txt"));
+    std::fs::write(&old, "12345").unwrap();
+    std::fs::write(&new, "12346").unwrap();
+    let within = |byte_budget| GitAcquireOptions {
+        byte_budget,
+        ..options(false)
+    };
+    let err = diff_files(&old, &new, &within(9)).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "old and new file refused: 5 + 5 bytes exceed the 9-byte input budget"
+    );
+    // Ten bytes are admitted, and the patch Git writes for them is over that budget.
+    assert_eq!(
+        diff_files(&old, &new, &within(10)),
+        Err(GitAcquireError::BudgetExceeded { limit_bytes: 10 })
+    );
+    assert_eq!(diff_files(&old, &old, &within(10)), Ok(Vec::new()));
+    assert!(matches!(
+        diff_files(&old, &new, &options(true)),
+        Err(GitAcquireError::InvalidSelection { .. })
+    ));
+}
+
+/// Each side must exist and be a regular file; the error names the side and what it is.
+#[test]
+fn diff_files_refuses_missing_links_directories_and_special_files() {
+    let fx = fixture("pair-kinds");
+    let file = fx.root.join("k-file.txt");
+    std::fs::write(&file, "x\n").unwrap();
+    let link = fx.root.join("k-link");
+    std::os::unix::fs::symlink(&file, &link).unwrap();
+    let fifo = fx.root.join("k-fifo");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let missing = fx.root.join("k-missing");
+    let message = |old: &Path, new: &Path| {
+        diff_files(old, new, &options(false))
+            .unwrap_err()
+            .to_string()
+    };
+    assert!(
+        message(&missing, &file).starts_with(&format!(
+            "cannot read the old file: {}: ",
+            missing.display()
+        )),
+        "{}",
+        message(&missing, &file)
+    );
+    assert!(message(&file, &missing).starts_with("cannot read the new file: "));
+    assert_eq!(
+        message(&link, &file),
+        format!(
+            "old file refused: {} is a symbolic link, not a regular file",
+            link.display()
+        )
+    );
+    assert_eq!(
+        message(&file, &fx.root),
+        format!(
+            "new file refused: {} is a directory, not a regular file",
+            fx.root.display()
+        )
+    );
+    assert_eq!(
+        message(&fifo, &file),
+        format!(
+            "old file refused: {} is a special file (FIFO, socket or device), not a regular file",
+            fifo.display()
+        )
+    );
+}
+
+/// `diff_files` accepts only the two shapes `git diff --no-index` gives a readable pair: exit 0
+/// with nothing written, or exit 1 with a patch and a silent stderr. Real Git exits 1 with an
+/// empty stdout and `error: Could not access '<path>'` for a side removed after the checks; that
+/// run was reviewed as "no change" with exit 0 (review finding 2026-11-01). Each stub Git below
+/// gives one wrong shape and must be a failure, not an empty or partial patch.
+#[test]
+fn diff_files_refuses_any_git_answer_but_silence_or_a_clean_patch() {
+    let fx = fixture("pair-shapes");
+    let (old, new) = (fx.root.join("s-old.txt"), fx.root.join("s-new.txt"));
+    std::fs::write(&old, "a\n").unwrap();
+    std::fs::write(&new, "b\n").unwrap();
+    let diff_with = |name: &str, script: &str| {
+        let stub = fx.root.join(name);
+        std::fs::write(&stub, format!("#!/bin/sh\n{script}\n")).unwrap();
+        chmod(&stub, 0o755);
+        let opts = GitAcquireOptions {
+            git_program: stub.into_os_string(),
+            ..options(false)
+        };
+        for _ in 0..100 {
+            match diff_files(&old, &new, &opts) {
+                Err(GitAcquireError::Spawn { detail, .. }) if detail.contains("os error 26") => {
+                    pause_for_busy_stub();
+                }
+                other => return other,
+            }
+        }
+        diff_files(&old, &new, &opts)
+    };
+    assert_eq!(
+        diff_with(
+            "vanished-git",
+            "echo \"error: Could not access 'gone'\" >&2; exit 1"
+        ),
+        Err(GitAcquireError::CommandFailed {
+            command: "git diff --no-index",
+            code: Some(1),
+            stderr: "error: Could not access 'gone'".to_owned(),
+        })
+    );
+    for (name, script) in [
+        ("mute-git", "exit 1"),
+        (
+            "noisy-git",
+            "echo 'diff --git a/x b/x'; echo warning >&2; exit 1",
+        ),
+        ("contrary-git", "echo 'diff --git a/x b/x'; exit 0"),
+    ] {
+        let result = diff_with(name, script);
+        assert!(
+            matches!(result, Err(GitAcquireError::CommandFailed { .. })),
+            "{name}: {result:?}"
+        );
+    }
+    assert_eq!(
+        diff_with("patch-git", "echo 'diff --git a/x b/x'; exit 1"),
+        Ok(b"diff --git a/x b/x\n".to_vec())
+    );
+    assert_eq!(diff_with("same-git", "exit 0"), Ok(Vec::new()));
 }

@@ -220,3 +220,41 @@ fn outside_a_repository_is_an_acquisition_failure() {
     assert!(stdout.is_empty());
     assert!(stderr.contains("structured Git acquisition failed"));
 }
+
+/// A filter the caller's inherited `GIT_CONFIG_COUNT`/`KEY`/`VALUE` define is the caller's own
+/// and runs beside a repository filter DDF turns off. Before, DDF's own entries were numbered
+/// from 0, so they replaced the caller's.
+#[test]
+fn an_inherited_git_config_env_filter_runs_and_the_repository_filter_does_not() {
+    let r = repo("inherited-config", true);
+    let ran = |who: &str| r.0.join(format!(".git/ran-{who}"));
+    let marker = |who: &str| format!("sh -c 'touch \"{}\"; cat'", ran(who).display());
+    std::fs::write(
+        r.0.join(".gitattributes"),
+        "café.txt filter=user\nx*/* filter=evil\n",
+    )
+    .unwrap();
+    git(
+        &r.0,
+        &["config", "filter.evil.clean", &marker("repository")],
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .envs(ISOLATE)
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "filter.user.clean")
+        .env("GIT_CONFIG_VALUE_0", marker("caller"))
+        .args(["--git-working-tree", "--repo", r.arg(), "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        ran("caller").exists(),
+        "the caller's own filter did not run"
+    );
+    assert!(!ran("repository").exists(), "a repository filter ran");
+}
