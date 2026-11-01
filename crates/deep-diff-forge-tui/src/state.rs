@@ -3,10 +3,8 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-tui--src--state
 use crate::command::{self, Command, CommandOutput};
 use crate::theme::ThemeKind;
-use crate::ui::HitMap;
 use deep_diff_forge_core::{AgentAnnotation, ReviewFile};
 use deep_diff_forge_graph::{RankedFile, rank};
-use std::cell::Cell;
 
 /// A semantic UI action, decoupled from any specific key binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,8 +150,6 @@ pub struct ReviewApp {
     panel: CommandOutput,
     panel_scroll: usize,
     running: bool,
-    /// Where the last frame drawn from this app put its panes, for mouse hit-testing.
-    last_frame: Cell<HitMap>,
 }
 
 impl ReviewApp {
@@ -214,7 +210,6 @@ impl ReviewApp {
             panel: CommandOutput::default(),
             panel_scroll: 0,
             running: true,
-            last_frame: Cell::new(HitMap::default()),
         }
     }
 
@@ -477,17 +472,6 @@ impl ReviewApp {
         &self.panel
     }
 
-    /// The panes of the last frame drawn from this app (empty before the first), so a click
-    /// maps to what the reviewer saw. Rendering records it; it is not review state.
-    #[must_use]
-    pub fn last_frame(&self) -> HitMap {
-        self.last_frame.get()
-    }
-
-    pub(crate) fn remember_frame(&self, hits: HitMap) {
-        self.last_frame.set(hits);
-    }
-
     /// The result panel's scroll offset.
     #[must_use]
     pub fn panel_scroll(&self) -> usize {
@@ -520,6 +504,24 @@ mod tests {
 
     fn app() -> ReviewApp {
         ReviewApp::from_review(&parse(MULTI).unwrap())
+    }
+
+    /// Review 2026-11-01: a `Cell` holding the last frame's hit map made `ReviewApp` lose
+    /// `Sync`, and let `render` write app state through a shared reference. This fails to
+    /// compile if a field loses `Send` or `Sync` again.
+    #[test]
+    fn review_app_is_send_and_sync() {
+        fn send_and_sync<T: Send + Sync>() {}
+        send_and_sync::<ReviewApp>();
+    }
+
+    /// Rendering reads the app; it does not record anything in it.
+    #[test]
+    fn rendering_leaves_the_app_unchanged() {
+        let a = app();
+        let before = format!("{a:?}");
+        let _ = crate::ui::render_to_lines(&a, 120, 24);
+        assert_eq!(format!("{a:?}"), before);
     }
 
     #[test]

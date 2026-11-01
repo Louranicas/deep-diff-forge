@@ -246,11 +246,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **A mouse click on the file tree could select the wrong file.** The click mapper assumed a
   40-column, unscrolled tree: after the tree scrolled, a click selected the file that row would
   hold at the top (`f02.txt` for a click on `f23.txt`), on an 80-column terminal a click inside
-  the diff changed the selection, and above 125 columns a click on the right of the tree did
-  nothing. Rendering now records a `HitMap` of the frame it drew (the pane rectangles and the
-  tree's scroll; `ReviewApp::last_frame`), and `map_mouse` resolves a click against it, so a click
-  selects the row it lands on and a click on a border or the status bar does nothing (a breaking
-  change to `map_mouse`'s signature; `SelectTreeRow` now carries a row of the whole tree).
+  the diff changed the selection, and above 125 columns a click on the right of the tree focused
+  the diff instead of selecting a file. The event loop now builds a `HitMap` of each frame it
+  draws (the pane rectangles inside their borders and the tree's scroll; `HitMap::of`), and
+  `map_mouse` resolves a click against it, so a click selects the row it lands on and a click on
+  any border, the diff pane's included, or on the status bar does nothing (a breaking change to
+  `map_mouse`'s signature; `SelectTreeRow` now carries a row of the whole tree). The map is kept
+  by the loop, not the app: `render` only reads the `ReviewApp`, which stays `Send` and `Sync`.
 - **Invisible format characters passed `display_safe` unescaped.** The invisible-character list
   missed assigned default-ignorable code points such as U+17B4 KHMER VOWEL INHERENT AQ, which
   Rust accepts inside an identifier: `let is_admin\u{17b4} = …` rendered like the removed

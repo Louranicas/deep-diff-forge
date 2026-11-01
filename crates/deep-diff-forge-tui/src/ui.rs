@@ -75,7 +75,7 @@ pub(crate) enum Hit {
     Menu(u16),
     /// A row of the whole file tree (not a screen row).
     TreeRow(usize),
-    /// Anywhere in the diff pane.
+    /// Inside the diff pane's border.
     Diff,
     /// Borders, the status bar, or outside the frame.
     Nothing,
@@ -91,7 +91,7 @@ impl HitMap {
             menu: panes.menu,
             tree_rows,
             tree_scroll: tree_scroll(app, usize::from(tree_rows.height)),
-            diff: panes.diff,
+            diff: panes.diff.inner(Margin::new(1, 1)),
         }
     }
 
@@ -114,7 +114,6 @@ pub fn render(frame: &mut Frame, app: &ReviewApp) {
     let palette = app.theme().palette();
     let area = frame.area();
     let panes = Panes::of(area);
-    app.remember_frame(HitMap::of(app, area));
 
     let chrome_bg = Style::default().bg(palette.menu_bg);
     frame.render_widget(
@@ -744,7 +743,7 @@ mod tests {
 
     /// Bug hunt 2026-11-01: at 80 columns the tree is 25 columns wide, and a click at column 35,
     /// inside the diff, changed the selection; at 200 columns a click on the tree at column 50
-    /// did nothing.
+    /// focused the diff instead of selecting a file.
     #[test]
     fn a_click_lands_in_the_pane_drawn_at_that_column() {
         let mut a = many(40);
@@ -774,6 +773,31 @@ mod tests {
             assert_eq!(selected_path(&a), before, "({column}, {row})");
             assert_eq!(a.focus(), Focus::Diff, "({column}, {row})");
         }
+    }
+
+    /// Review 2026-11-01: the hit map used the diff pane's whole rectangle, so a click on the
+    /// diff pane's border focused the diff, though a click on any border should do nothing.
+    #[test]
+    fn the_diff_panes_border_is_not_a_click_target() {
+        let area = Rect::new(0, 0, 120, 24);
+        let diff = Panes::of(area).diff;
+        let hits = HitMap::of(&many(3), area);
+        let (left, right) = (diff.x, diff.right() - 1);
+        let (top, bottom) = (diff.y, diff.bottom() - 1);
+        for column in left..=right {
+            assert_eq!(hits.hit(column, top), Hit::Nothing, "top ({column}, {top})");
+            assert_eq!(
+                hits.hit(column, bottom),
+                Hit::Nothing,
+                "bottom ({column}, {bottom})"
+            );
+        }
+        for row in top..=bottom {
+            assert_eq!(hits.hit(left, row), Hit::Nothing, "left ({left}, {row})");
+            assert_eq!(hits.hit(right, row), Hit::Nothing, "right ({right}, {row})");
+        }
+        assert_eq!(hits.hit(left + 1, top + 1), Hit::Diff);
+        assert_eq!(hits.hit(right - 1, bottom - 1), Hit::Diff);
     }
 
     #[test]
