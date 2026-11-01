@@ -19,9 +19,14 @@ use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe, display_safe
 /// `BrokenPipe` (exit 101) the moment the downstream consumer goes away; routing
 /// bulk output through here keeps `deep-diff-forge … | head` a normal success.
 /// std-only, no `unsafe`.
+///
+/// Stdout is line-buffered, so the flush is what writes a tail after the last newline: before,
+/// that tail was written at exit, where a failure is dropped, and `highlight` of a file without
+/// a final newline into `/dev/full` exited 0 (bug hunt 2026-11-01).
 fn emit(s: &str) {
     use std::io::Write as _;
-    if let Err(err) = std::io::stdout().write_all(s.as_bytes()) {
+    let mut stdout = std::io::stdout().lock();
+    if let Err(err) = stdout.write_all(s.as_bytes()).and_then(|()| stdout.flush()) {
         if err.kind() == std::io::ErrorKind::BrokenPipe {
             std::process::exit(exit::SUCCESS);
         }
@@ -355,11 +360,27 @@ pub(crate) fn validate_review_options_or_exit(opts: &[String]) {
         std::process::exit(exit::USAGE);
     }
     // One output mode: before, `--outline --hunks` printed the outline and `--rank --cluster`
-    // one of the two, each with exit 0 (bug hunt 2026-10-28, H2-07).
-    let modes: Vec<&str> = ["--outline", "--hunks", "--cluster", "--rank"]
-        .into_iter()
-        .filter(|mode| has(mode))
-        .collect();
+    // one of the two, each with exit 0 (bug hunt 2026-10-28, H2-07). `--jsonl`, `--layout`,
+    // `--acquisition-json` and a `--json` that is not the format of the mode (`--rank` and
+    // `--cluster` print JSON with it; `--outline` and `--hunks` always do) are modes too: before,
+    // `--jsonl --rank` printed only JSONL and `--json --layout inline` only JSON, each with exit
+    // 0, and `--jsonl --hunks --path nothing` skipped the path check (bug hunt 2026-11-01).
+    let json_is_a_format = ["--rank", "--cluster", "--outline", "--hunks"]
+        .iter()
+        .any(|mode| has(mode));
+    let modes: Vec<&str> = [
+        "--acquisition-json",
+        "--outline",
+        "--hunks",
+        "--cluster",
+        "--rank",
+        "--jsonl",
+        "--json",
+        "--layout",
+    ]
+    .into_iter()
+    .filter(|mode| has(mode) && !(*mode == "--json" && json_is_a_format))
+    .collect();
     if modes.len() > 1 {
         eprintln!(
             "error: {} are separate modes; choose one",
@@ -380,6 +401,10 @@ pub(crate) fn validate_review_options_or_exit(opts: &[String]) {
             .find(|flag| has(flag))
     {
         eprintln!("error: {flag} requires --outline or --hunks");
+        std::process::exit(exit::USAGE);
+    }
+    if has("--address") && has("--path") {
+        eprintln!("error: --hunks takes --address or --path, not both");
         std::process::exit(exit::USAGE);
     }
     if has("--parallel") && !has("--cluster") {
@@ -432,14 +457,11 @@ fn emit_review(review: &deep_diff_forge_patch::SealedReview, opts: &[String]) {
     } else if opts.iter().any(|a| a == "--hunks") {
         let addresses = flag_values(opts, "--address");
         let paths = flag_values(opts, "--path");
+        // Both together were refused before input was read.
         let selection = match (addresses.is_empty(), paths.is_empty()) {
             (true, true) => deep_diff_forge_daemon::views::Selection::All,
-            (false, true) => deep_diff_forge_daemon::views::Selection::Addresses(addresses),
+            (false, _) => deep_diff_forge_daemon::views::Selection::Addresses(addresses),
             (true, false) => deep_diff_forge_daemon::views::Selection::Paths(paths),
-            (false, false) => {
-                eprintln!("error: --hunks takes --address or --path, not both");
-                std::process::exit(exit::USAGE);
-            }
         };
         emit_view(opts, |page| {
             deep_diff_forge_daemon::views::hunks(review, &selection, page)
@@ -859,10 +881,8 @@ fn learn_record(opts: &[String]) {
 const REVIEW_USAGE: &str = "deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME] [--findings FILE]";
 
 fn review_cmd(opts: &[String]) {
-    if opts
-        .iter()
-        .any(|a| matches!(a.as_str(), "--help" | "-h" | "help"))
-    {
+    // The help scan skips option values, so `--findings -h` reads the file named `-h`.
+    if args::help_requested(opts) || opts.first().is_some_and(|a| a == "help") {
         print_review_help();
         return;
     }
@@ -2047,10 +2067,11 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// `<command> --help` (or `-h`) anywhere: print that command's usage and what it
-/// does, and exit 0. `review` prints its own longer help; `council --help` is `council help`.
+/// `<command> --help` (or `-h`) anywhere before a `--`, and not as an option's value
+/// ([`args::help_requested`]): print that command's usage and what it does, and exit 0. `review`
+/// prints its own longer help; `council --help` is `council help`.
 fn command_help(command: &str, args: &[String]) -> bool {
-    let asked = args.iter().any(|a| matches!(a.as_str(), "--help" | "-h"));
+    let asked = args::help_requested(args);
     let name = match command {
         "--git-staged" | "--git-range" => "--git-working-tree",
         other => other,
@@ -2141,7 +2162,10 @@ fn run_envelope(args: &[String]) {
         Ok((json, code)) => {
             // Unlike `emit`, a closed reader keeps the command's own exit code (council sa1).
             use std::io::Write as _;
-            if let Err(err) = std::io::stdout().write_all(json.as_bytes())
+            let mut stdout = std::io::stdout().lock();
+            if let Err(err) = stdout
+                .write_all(json.as_bytes())
+                .and_then(|()| stdout.flush())
                 && err.kind() != std::io::ErrorKind::BrokenPipe
             {
                 eprintln!("error: write failed: {err}");
@@ -2316,11 +2340,13 @@ fn chain_contract() {
 deep-diff-forge chain-contract v0
 
 GUARANTEES:
-  - chainable commands read stdin only when an explicit stdin flag is present.
+  - stdin is read only by --stdin-patch, learn record --stdin, findings verify and
+    review (each takes the patch or receipt there), and rpc and mcp (their protocol).
   - stdout carries primary records; stderr carries diagnostics and progress.
   - JSON output is one complete document; JSONL output is one event per line.
   - every JSON document names its schema; every JSONL record names its event.
-  - pipe failures exit non-zero without truncating a valid final JSON document.
+  - a closed stdout pipe (`| head`) exits 0 and the reader keeps what it read;
+    any other write failure exits 3 (io).
 
 SHIPPED MODES (each one command; the shell joins them):
   deep-diff-forge --git-working-tree --json

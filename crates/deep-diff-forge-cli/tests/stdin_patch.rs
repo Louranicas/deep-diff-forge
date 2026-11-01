@@ -368,3 +368,164 @@ fn chain_contract_promises_what_jsonl_carries() {
         assert!(event["event"].is_string(), "{line}");
     }
 }
+
+/// Bug hunt 2026-11-01: a second output mode was dropped with exit 0. `--jsonl --rank` printed
+/// only JSONL, `--json --layout inline` only JSON, `--cluster --layout inline` only the cluster,
+/// and `--jsonl --hunks --path nothing` skipped the path check. `--json` stays the format of
+/// `--rank` and `--cluster`, and is redundant but true with `--outline` and `--hunks`.
+#[test]
+fn a_second_output_mode_is_refused_not_dropped() {
+    for (args, refused) in [
+        (&["--jsonl", "--rank"][..], "--rank and --jsonl"),
+        (&["--jsonl", "--cluster"], "--cluster and --jsonl"),
+        (&["--jsonl", "--outline"], "--outline and --jsonl"),
+        (&["--jsonl", "--layout", "inline"], "--jsonl and --layout"),
+        (
+            &["--jsonl", "--hunks", "--path", "nothing"],
+            "--hunks and --jsonl",
+        ),
+        (&["--json", "--layout", "inline"], "--json and --layout"),
+        (
+            &["--cluster", "--layout", "inline"],
+            "--cluster and --layout",
+        ),
+        (
+            &["--rank", "--json", "--layout", "side-by-side"],
+            "--rank and --layout",
+        ),
+        (
+            &["--outline", "--layout", "inline"],
+            "--outline and --layout",
+        ),
+    ] {
+        let args: Vec<&str> = std::iter::once("--stdin-patch")
+            .chain(args.iter().copied())
+            .collect();
+        let (code, stdout, stderr) = run(&args, PATCH);
+        assert_eq!((code, stdout.as_str()), (2, ""), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains(&format!("error: {refused} are separate modes; choose one")),
+            "{args:?}: {stderr}"
+        );
+    }
+    for format in [
+        &["--rank", "--json"][..],
+        &["--cluster", "--json"],
+        &["--outline", "--json"],
+        &["--hunks", "--json"],
+    ] {
+        let args: Vec<&str> = std::iter::once("--stdin-patch")
+            .chain(format.iter().copied())
+            .collect();
+        let (code, stdout, stderr) = run(&args, PATCH);
+        assert_eq!(code, 0, "{args:?}: {stderr}");
+        assert!(stdout.contains("\"schema\""), "{args:?}: {stdout}");
+    }
+}
+
+/// `--address` with `--path` is refused before the patch is read, so a patch that would not
+/// parse (exit 4) cannot hide the usage error (exit 2).
+#[test]
+fn address_with_path_is_refused_before_the_patch_is_read() {
+    let truncated = "--- a/x\n+++ b/x\n@@ -1,5 +1 @@\n-a\n";
+    let (code, stdout, stderr) = run(
+        &["--stdin-patch", "--hunks", "--address", "x", "--path", "y"],
+        truncated,
+    );
+    assert_eq!((code, stdout.as_str()), (2, ""), "{stderr}");
+    assert!(
+        stderr.contains("--hunks takes --address or --path, not both"),
+        "{stderr}"
+    );
+}
+
+/// Bug hunt 2026-11-01: a repeated single-valued option used its first value and never read the
+/// later one, so `--parallel 4 --parallel bogus` ran with 4 and exit 0.
+#[test]
+fn a_repeated_single_valued_option_is_refused() {
+    for (args, option) in [
+        (
+            &["--cluster", "--parallel", "4", "--parallel", "bogus"][..],
+            "--parallel",
+        ),
+        (
+            &["--cluster", "--parallel", "4", "--parallel", "8"],
+            "--parallel",
+        ),
+        (&["--layout", "inline", "--layout", "bogus"], "--layout"),
+        (
+            &["--outline", "--max-bytes", "4096", "--max-bytes", "x"],
+            "--max-bytes",
+        ),
+    ] {
+        let args: Vec<&str> = std::iter::once("--stdin-patch")
+            .chain(args.iter().copied())
+            .collect();
+        let (code, stdout, stderr) = run(&args, PATCH);
+        assert_eq!((code, stdout.as_str()), (2, ""), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains(&format!("error: {option} given more than once")),
+            "{args:?}: {stderr}"
+        );
+    }
+    let (code, _, stderr) = run(
+        &["--stdin-patch", "--hunks", "--path", "x", "--path", "x"],
+        PATCH,
+    );
+    assert_eq!(code, 0, "a repeatable option stays repeatable: {stderr}");
+}
+
+/// Bug hunt 2026-11-01: a `-h` that is an option's value is that value, not a help request.
+#[test]
+fn a_path_named_dash_h_is_selected_not_taken_for_help() {
+    let patch = "diff --git a/-h b/-h\n--- a/-h\n+++ b/-h\n@@ -1 +1 @@\n-a\n+b\n";
+    let (code, stdout, stderr) = run(&["--stdin-patch", "--hunks", "--path", "-h"], patch);
+    assert_eq!(code, 0, "{stderr}");
+    let view: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout}"));
+    assert!(view.to_string().contains("\"path\":\"-h\""), "{view}");
+}
+
+/// `chain-contract` states what a closed or failing stdout does: a closed pipe exits 0 (before,
+/// it promised a non-zero exit, which `emit` deliberately does not give), and it names every
+/// command that reads stdin.
+#[test]
+fn chain_contract_states_the_shipped_pipe_and_stdin_behaviour() {
+    let (code, contract, _) = run(&["chain-contract"], "");
+    assert_eq!(code, 0);
+    assert!(
+        contract.contains(
+            "  - a closed stdout pipe (`| head`) exits 0 and the reader keeps what it read;\n    any other write failure exits 3 (io).\n"
+        ),
+        "{contract}"
+    );
+    for reader in [
+        "--stdin-patch",
+        "learn record --stdin",
+        "findings verify",
+        "review",
+        "rpc and mcp",
+    ] {
+        assert!(contract.contains(reader), "{reader}: {contract}");
+    }
+    let patch = (0..3000).fold(String::new(), |mut patch, i| {
+        use std::fmt::Write as _;
+        let _ = write!(patch, "--- a/f{i}\n+++ b/f{i}\n@@ -1 +1 @@\n-a\n+b\n");
+        patch
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(["--stdin-patch", "--json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(patch.as_bytes())
+        .unwrap();
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+}

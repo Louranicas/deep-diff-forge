@@ -115,3 +115,12 @@ fn a_non_utf8_argument_is_an_io_error_not_a_panic() {
     assert!(!String::from_utf8_lossy(&output.stderr).contains("panicked"));
     assert!(String::from_utf8_lossy(&output.stderr).contains("not valid UTF-8"));
 }
+
+/// Bug hunt 2026-11-01: a `-h` given as an option's value is the value. Before, `review
+/// --findings -h` printed the review help with exit 0 instead of reading the file named `-h`.
+#[test]
+fn a_dash_h_value_is_not_a_help_request() {
+    let (code, stdout, stderr) = run(&["review", "--findings", "-h"]);
+    assert_eq!((code, stdout.as_str()), (3, ""), "{stderr}");
+    assert!(stderr.contains("cannot read findings -h"), "{stderr}");
+}

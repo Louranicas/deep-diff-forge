@@ -154,11 +154,15 @@ boundary).
 | JSONL progress | `--jsonl --progress` | planned |
 | TOON-like compact | `--compact` | planned |
 
-Output flags that cannot be combined are refused with exit 2 before any input is read:
-`--json` with `--jsonl`, the view options (`--address`, `--path`, `--max-bytes`, `--cursor`)
-without `--outline` or `--hunks`, and `--parallel` without `--cluster`. Among the rest,
-`--outline` and `--hunks` win, then `--cluster`, then `--rank`, then `--json`, then `--layout`
-(`emit_review` in `main.rs`).
+Output flags that cannot be combined are refused with exit 2 before any input is read: two
+output modes (`--outline`, `--hunks`, `--cluster`, `--rank`, `--jsonl`, `--layout`,
+`--acquisition-json`, and `--json` except as the format of `--rank`, `--cluster`, `--outline`
+or `--hunks`), `--address` with `--path`, the view options (`--address`, `--path`,
+`--max-bytes`, `--cursor`) without `--outline` or `--hunks`, and `--parallel` without
+`--cluster` (`validate_review_options_or_exit` in `main.rs`). An option that takes one value
+is refused when given twice (`args::admit`); `--address`, `--path`, `--allow-repo` and
+`--workload` repeat. `--help` or `-h` prints a command's help wherever it stands, except as an
+option's value (`--path -h`) or after `--`.
 
 ## Claude Code Agent Contract
 

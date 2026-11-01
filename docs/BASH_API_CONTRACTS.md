@@ -102,7 +102,9 @@ deep-diff-forge schema result        # JSON Schema of ddf.result.v1
 deep-diff-forge schema exit-codes    # ddf.exit-codes.v1 registry
 ```
 
-`envelope` exits with the wrapped command's code.
+`envelope` exits with the wrapped command's code, or 128 + N when signal N ended it (the
+status a shell reports; `outcome` is `signal`). Every word after `--` is the wrapped
+command's, so `envelope -- --stdin-patch --help` wraps that command's help.
 
 ## Justfile Runner Contract
 

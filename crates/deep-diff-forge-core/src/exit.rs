@@ -19,6 +19,9 @@ pub const DAEMON_OR_TERMINAL: i32 = 6;
 pub const INPUT_CONTRACT_REFUSED: i32 = 7;
 /// Rust's exit status for a panic.
 pub const PANIC: i32 = 101;
+/// Not a registry code: `envelope` exits `SIGNAL_BASE + N` when the command it wraps is ended by
+/// signal N, the status a shell reports for that command, and says `outcome: signal`.
+pub const SIGNAL_BASE: i32 = 128;
 
 /// Council: the requested operation completed under its contract.
 pub const COUNCIL_COMPLETED: i32 = 0;

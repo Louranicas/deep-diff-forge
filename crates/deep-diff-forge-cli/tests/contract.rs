@@ -702,3 +702,66 @@ fn loom_contract_records_the_withdrawal() {
     );
     assert!(!stdout.contains("PLANNED"), "{stdout}");
 }
+
+/// Bug hunt 2026-11-01: a `--help` or `-h` after envelope's `--` belongs to the wrapped command.
+/// Before, envelope printed its own help as plain text with exit 0 and ran nothing.
+#[test]
+fn envelope_wraps_the_wrapped_command_s_help() {
+    let (code, v) = envelope(&["envelope", "--", "--stdin-patch", "--help"], "");
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["schema"], "ddf.result.v1");
+    assert_eq!(v["command"], serde_json::json!(["--stdin-patch", "--help"]));
+    assert!(
+        v["stdout"]
+            .as_str()
+            .unwrap()
+            .starts_with("Review a unified or Git patch read from stdin."),
+        "{v}"
+    );
+    let (code, v) = envelope(&["envelope", "--", "council", "-h"], "");
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(
+        (v["family"].as_str(), v["outcome"].as_str()),
+        (Some("council"), Some("completed"))
+    );
+}
+
+/// Bug hunt 2026-11-01: a wrapped command ended by signal N makes envelope exit 128 + N, the
+/// status a shell reports for it. Before, it exited 1, a code the registry does not list.
+#[cfg(target_os = "linux")]
+#[test]
+fn envelope_exits_128_plus_the_signal_that_ended_the_command() {
+    let mut envelope = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(["envelope", "--", "mcp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // `mcp` serves until stdin closes; the open pipe keeps it alive until it is killed.
+    let children = format!("/proc/{0}/task/{0}/children", envelope.id());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let child = loop {
+        let listed = std::fs::read_to_string(&children).unwrap_or_default();
+        if let Some(pid) = listed.split_whitespace().next() {
+            break pid.to_owned();
+        }
+        assert!(std::time::Instant::now() < deadline, "no child appeared");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let killed = Command::new("kill")
+        .args(["-TERM", &child])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let stdin = envelope.stdin.take();
+    let out = envelope.wait_with_output().unwrap();
+    drop(stdin);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        (v["outcome"].as_str(), v["signal"].as_i64()),
+        (Some("signal"), Some(15)),
+        "{v}"
+    );
+    assert_eq!(out.status.code(), Some(128 + 15));
+}
