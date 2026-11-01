@@ -11,12 +11,21 @@
 //! evidence item is a false positive a reviewer sees, a hidden one is a miss nobody does.
 //! - Block comments and triple-quoted strings are followed across the lines of one hunk, in
 //!   order ([`ScanState`]); a hunk that starts inside one is read as code.
+//! - A string still open at the end of a line (outside Rust) is read as code from its quote,
+//!   and is also carried to the next line of the hunk. That line is read twice, as code and as
+//!   resuming inside the string, and both readings go on down the hunk (up to four at once);
+//!   what any reading finds code is code. So the closing quote of a multi-line string cannot
+//!   open a phantom string over the code after it. The plain reading, which resumes no
+//!   string, is always one of them, so a quote misread as an opener hides no later line that a
+//!   scan without carried strings keeps; it can still leave that plain reading in a block
+//!   comment or triple string, as any misread quote could before strings were carried.
 //! - An interpolation is scanned as code with its own strings, escapes and comments, and ends
 //!   at its matching closer on the same line. Shell `case` patterns, ANSI-C `$'…'` strings,
 //!   word-start `#` comments, JS regex literals (also on a line that continues an
-//!   expression), TypeScript non-null assertions, Python format specs, nested triple quotes and
-//!   Rust raw strings are known.
-//! - A string still open at the end of a line (outside Rust) is read as code from its quote.
+//!   expression), TypeScript non-null assertions, Python format specs, nested triple quotes,
+//!   Rust raw strings (`r#"…"#`, `br"…"`, `cr"…"`) and Go raw strings (backticks, which run no
+//!   escapes) are known. YAML quoted scalars are kept as code, but a `#` inside one (or inside
+//!   a quoted word of a `run: |` shell line) starts no comment.
 //! - A construct the scanner does not know (a heredoc) is read as code. A
 //!   triple-quoted f-string's interpolations are blanked with the rest of it, a continuation
 //!   line of a multi-line string is read as code, and non-ASCII spellings of a token
@@ -39,7 +48,8 @@ pub enum Language {
     Go,
     /// Shell, and the shell-like build files (`Dockerfile`, `Makefile`).
     Shell,
-    /// YAML (CI workflows): only `#` comments are blanked; quoted scalars are kept.
+    /// YAML (CI workflows): only `#` comments are blanked; quoted scalars are kept, and a `#`
+    /// inside one is not a comment.
     Yaml,
 }
 
@@ -89,26 +99,76 @@ impl Language {
         matches!(self, Self::Rust | Self::JavaScript | Self::Go)
     }
 
-    /// Whether `byte` opens a one-line string.
+    /// Whether `byte` opens a string. A YAML quoted scalar is tracked only so that a `#` in it
+    /// starts no comment: its contents are kept.
     const fn opens_string(self, byte: u8) -> bool {
         match self {
-            Self::Yaml => false,
             Self::Rust => byte == b'"',
-            Self::Go | Self::Python | Self::Shell => byte == b'"' || byte == b'\'',
-            Self::JavaScript => matches!(byte, b'"' | b'\'' | b'`'),
+            Self::Python | Self::Shell | Self::Yaml => byte == b'"' || byte == b'\'',
+            Self::Go | Self::JavaScript => matches!(byte, b'"' | b'\'' | b'`'),
         }
+    }
+
+    /// Whether a string opened by `quote` runs no backslash escapes: a Go raw string
+    /// (backticks) and a YAML single-quoted scalar, whose only escape is a doubled quote.
+    const fn raw_quote(self, quote: u8) -> bool {
+        matches!((self, quote), (Self::Go, b'`') | (Self::Yaml, b'\''))
     }
 }
 
-/// What a multi-line construct left open at the end of the previous line of the same hunk.
+/// What multi-line constructs the previous lines of the same hunk left open: one or more
+/// readings of them, each scanned on the next line, which keeps what any of them finds code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ScanState {
+    /// The plain reading: each line read from the block comment or triple string the previous
+    /// plain reading left open, and from no carried string. It is never dropped, so a line keeps
+    /// at least what this reading finds code, whatever the other readings carry.
+    plain: Reading,
+    /// Up to [`MORE_READINGS`] other readings, distinct from `plain` and from each other: the
+    /// lines read as resuming inside a string a reading left open, and what followed them.
+    more: [Option<Reading>; MORE_READINGS],
+}
+
+/// How many readings besides the plain one a [`ScanState`] carries. Each carried string doubles
+/// a reading, so the count is capped; a reading past the cap is dropped, the plain one never.
+const MORE_READINGS: usize = 3;
+
+impl ScanState {
+    /// The readings, the plain one first.
+    fn readings(&self) -> impl Iterator<Item = Reading> + '_ {
+        std::iter::once(self.plain).chain(self.more.iter().flatten().copied())
+    }
+
+    /// The state after a line: `readings` (the plain one first) without repeats, capped.
+    fn from_readings(readings: &[Reading]) -> Self {
+        let mut state = Self {
+            plain: readings.first().copied().unwrap_or_default(),
+            more: [None; MORE_READINGS],
+        };
+        let mut slots = state.more.iter_mut();
+        for (i, reading) in readings.iter().enumerate().skip(1) {
+            if readings[..i].contains(reading) {
+                continue;
+            }
+            let Some(slot) = slots.next() else { break };
+            *slot = Some(*reading);
+        }
+        state
+    }
+}
+
+/// One reading of what the previous line left open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Reading {
     in_block_comment: bool,
     /// The quote character of an open Python triple-quoted string.
     in_triple: Option<u8>,
     /// In JS, the last code byte of the previous line, so a line that starts with `/` after
     /// `(a - b)` is a division and after `=` a regex.
     js_last: Option<u8>,
+    /// A string the previous line left open at the top level (a [`Frame::Str`] with `start` 0),
+    /// which the next line may resume inside.
+    in_string: Option<Frame>,
 }
 
 /// One level of what is open on a line, innermost last on [`code_view`]'s stack. An empty stack
@@ -116,8 +176,9 @@ pub struct ScanState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Frame {
     /// A string opened at byte `start` by `quote` (three of them when `triple`): its contents
-    /// are blanked. An f- or t-string (`fstring`) runs `{…}`; a shell ANSI-C string (`$'…'`,
-    /// `ansi`) honours backslashes; a Rust raw string (`raw`, its count of `#`) does not, and
+    /// are blanked (kept, in YAML). An f- or t-string (`fstring`) runs `{…}`; a shell ANSI-C
+    /// string (`$'…'`, `ansi`) honours backslashes; a raw string (`raw`: a Rust raw string's
+    /// count of `#`, or 0 for a Go raw string or a YAML single-quoted scalar) does not, and
     /// closes only at a quote followed by that many `#`.
     Str {
         quote: u8,
@@ -311,12 +372,16 @@ fn starts_regex(out: &[u8], previous_line: Option<u8>) -> bool {
 }
 
 /// The number of `#` of a Rust raw string whose opening quote follows `before` (`r"`, `r#"`,
-/// `br##"`), or `None` when the quote opens an ordinary string.
+/// `br##"`, the raw C string `cr#"`), or `None` when the quote opens an ordinary string.
 fn rust_raw_hashes(before: &[u8]) -> Option<usize> {
     let hashes = before.iter().rev().take_while(|b| **b == b'#').count();
     let prefix = &before[..before.len() - hashes];
     let rest = prefix.strip_suffix(b"r")?;
-    let rest = rest.strip_suffix(b"b").unwrap_or(rest);
+    // At most one of `b` and `c`: Rust has no `bcr` or `cbr` prefix.
+    let rest = rest
+        .strip_suffix(b"b")
+        .or_else(|| rest.strip_suffix(b"c"))
+        .unwrap_or(rest);
     rest.last().is_none_or(|b| !is_ident(*b)).then_some(hashes)
 }
 
@@ -347,15 +412,39 @@ fn regex_len(rest: &[u8]) -> Option<usize> {
 /// backslash does not end it. When a desync is possible, the scan errs toward code: a string
 /// still open at the end of the line (outside Rust, whose strings span lines) is read as code
 /// from its quote on, so a quote the scanner misread cannot hide what follows it. `state`
-/// carries an open block comment or triple string to the next line.
+/// carries an open block comment, triple string or string to the next line. A line that may
+/// start inside a carried string is read both as code and as resuming the string, each reading
+/// goes on to the next line, and a byte any reading keeps is kept: the closing quote of a
+/// multi-line string does not open a phantom string over the code after it. The plain reading,
+/// which resumes no string, always goes on, so a quote misread as an opener cannot hide a later
+/// line of the hunk that a scan carrying no string would keep.
 #[must_use]
 pub fn code_view(language: Language, line: &str, state: &mut ScanState) -> String {
+    let mut readings = Vec::with_capacity(2 * (1 + MORE_READINGS));
+    let mut views = Vec::with_capacity(readings.capacity());
+    for mut start in state.readings() {
+        let open = start.in_string.take();
+        let mut plain = start;
+        views.push(scan_line(language, line, &mut plain, None));
+        readings.push(plain);
+        if let Some(open) = open {
+            let mut resumed = start;
+            views.push(scan_line(language, line, &mut resumed, Some(open)));
+            readings.push(resumed);
+        }
+    }
+    *state = ScanState::from_readings(&readings);
+    union_views(line, &views)
+}
+
+/// One line's view, starting inside `open` when the previous line left that string open.
+fn scan_line(language: Language, line: &str, state: &mut Reading, open: Option<Frame>) -> String {
     let bytes = line.as_bytes();
     let mut scan = Scan {
         language,
         bytes,
         out: Vec::with_capacity(bytes.len()),
-        stack: Vec::new(),
+        stack: open.into_iter().collect(),
         blank: 0,
         copy: 0,
         no_regex: false,
@@ -366,6 +455,24 @@ pub fn code_view(language: Language, line: &str, state: &mut ScanState) -> Strin
         }
     }
     scan.finish(state)
+}
+
+/// The bytes of `line` that any of `views` (views of it) keeps, the rest blank. Each view keeps
+/// or blanks a whole character, so the union is valid UTF-8 wherever every view is.
+fn union_views(line: &str, views: &[String]) -> String {
+    let kept = |i: usize| {
+        views
+            .iter()
+            .any(|view| view.as_bytes().get(i).is_some_and(|c| *c != b' '))
+    };
+    let len = views.iter().map(String::len).max().unwrap_or(0);
+    let out: Vec<u8> = line
+        .bytes()
+        .take(len)
+        .enumerate()
+        .map(|(i, byte)| if kept(i) { byte } else { b' ' })
+        .collect();
+    String::from_utf8(out).unwrap_or_default()
 }
 
 /// One line's scan in progress: the view so far, what is open, and how many of the next bytes
@@ -385,7 +492,7 @@ struct Scan<'a> {
 
 impl Scan<'_> {
     /// Scan byte `i`; `false` when the rest of the line is a comment.
-    fn step(&mut self, i: usize, state: &mut ScanState) -> bool {
+    fn step(&mut self, i: usize, state: &mut Reading) -> bool {
         let byte = self.bytes[i];
         if self.blank > 0 {
             self.blank -= 1;
@@ -502,12 +609,17 @@ impl Scan<'_> {
             // and before an f-string's `{`, which Python still runs.
             self.stack[top] = with_escape(true);
         }
-        self.out.push(b' ');
+        // A YAML quoted scalar is code (a `run:` line); the frame only keeps `#` from a comment.
+        self.out.push(if self.language == Language::Yaml {
+            byte
+        } else {
+            b' '
+        });
     }
 
     /// A byte of code: at the top of the line or inside an interpolation. `false` when the rest
     /// of the line is a comment.
-    fn in_code(&mut self, i: usize, state: &mut ScanState) -> bool {
+    fn in_code(&mut self, i: usize, state: &mut Reading) -> bool {
         let (language, bytes) = (self.language, self.bytes);
         let (byte, rest) = (bytes[i], &bytes[i..]);
         let nested = !self.stack.is_empty();
@@ -579,12 +691,15 @@ impl Scan<'_> {
             }
         }
         // In JS a quote right after a word byte opens nothing: no string can start there, and
-        // JSX text (`<p>Can't</p>`) puts apostrophes there.
-        let after_word = language == Language::JavaScript
-            && i > 0
+        // JSX text (`<p>Can't</p>`) puts apostrophes there. Nor in YAML, where a scalar's quote
+        // comes first and `it's` is plain text.
+        let after_word = i > 0
             && is_ident(bytes[i - 1])
-            && byte != b'`'
-            && !ends_with_operand_keyword(&bytes[..i]);
+            && match language {
+                Language::JavaScript => byte != b'`' && !ends_with_operand_keyword(&bytes[..i]),
+                Language::Yaml => true,
+                _ => false,
+            };
         if language.opens_string(byte) && !after_word {
             self.stack.push(Frame::Str {
                 quote: byte,
@@ -592,9 +707,13 @@ impl Scan<'_> {
                 triple: false,
                 fstring: language == Language::Python && is_interpolating_prefix(&bytes[..i]),
                 ansi: language == Language::Shell && byte == b'\'' && i > 0 && bytes[i - 1] == b'$',
-                raw: (language == Language::Rust && byte == b'"')
-                    .then(|| rust_raw_hashes(&bytes[..i]))
-                    .flatten(),
+                raw: if language.raw_quote(byte) {
+                    Some(0)
+                } else {
+                    (language == Language::Rust && byte == b'"')
+                        .then(|| rust_raw_hashes(&bytes[..i]))
+                        .flatten()
+                },
                 escaped: false,
             });
             self.out.push(byte);
@@ -663,7 +782,7 @@ impl Scan<'_> {
     }
 
     /// The view, with a string still open at the end of the line read as code from its quote.
-    fn finish(mut self, state: &mut ScanState) -> String {
+    fn finish(mut self, state: &mut Reading) -> String {
         if self.language == Language::JavaScript
             && let Some(&last) = self.out.trim_ascii_end().last()
         {
@@ -678,6 +797,29 @@ impl Scan<'_> {
         {
             self.out.truncate(start);
             self.out.extend_from_slice(&self.bytes[start..]);
+        }
+        // A string open at the top level goes on to the next line; one inside an interpolation
+        // ends with the line, as the interpolation does.
+        if let [
+            Frame::Str {
+                quote,
+                triple,
+                fstring,
+                ansi,
+                raw,
+                ..
+            },
+        ] = self.stack[..]
+        {
+            state.in_string = Some(Frame::Str {
+                quote,
+                start: 0,
+                triple,
+                fstring,
+                ansi,
+                raw,
+                escaped: false,
+            });
         }
         // Only ASCII bytes are replaced, by ASCII, the scan stops only at an ASCII comment
         // start, and a restored tail starts at an ASCII quote, so the view is valid UTF-8
@@ -1098,7 +1240,7 @@ mod tests {
             code_view(Language::Go, "/* a */ b /* c", &mut state),
             "        b     "
         );
-        assert!(state.in_block_comment);
+        assert!(state.plain.in_block_comment);
     }
 
     #[test]
@@ -1125,6 +1267,237 @@ mod tests {
             "''' + eval"
         );
         assert_eq!(state, ScanState::default());
+    }
+
+    /// Bug hunt 2026-11-01: a Go raw string (backticks) was read as code, so a `/*` in a glob
+    /// opened a block comment over the rest of the hunk, a `//` in a URL ended the line and a
+    /// `"` opened a phantom string.
+    #[test]
+    fn go_raw_strings_are_strings_without_escapes() {
+        for (line, expected) in [
+            (
+                "m, _ := filepath.Glob(`/tmp/*.o`); exec.Command(x)",
+                "m, _ := filepath.Glob(`        `); exec.Command(x)",
+            ),
+            (
+                "u := `https://e.x/p`; exec.Command(x)",
+                "u := `             `; exec.Command(x)",
+            ),
+            ("q := `\"`; exec.Command(x)", "q := ` `; exec.Command(x)"),
+            // A backslash is a plain byte: the second backtick closes the string.
+            (r"q := `a\`; exec.Command(x)", "q := `  `; exec.Command(x)"),
+            // An interpreted string still escapes.
+            (
+                r#"q := "a\"`"; exec.Command(x)"#,
+                r#"q := "    "; exec.Command(x)"#,
+            ),
+        ] {
+            let mut state = ScanState::default();
+            assert_eq!(
+                code_view(Language::Go, line, &mut state),
+                expected,
+                "{line}"
+            );
+            assert_eq!(state, ScanState::default(), "{line}");
+        }
+        // A raw string spans lines: its comment-like text opens nothing on the next lines.
+        let mut state = ScanState::default();
+        let lines = [
+            ("q := `SELECT *", "q := `SELECT *"),
+            ("FROM t /* x", "FROM t /* x"),
+            ("`; exec.Command(x)", "`; exec.Command(x)"),
+            ("exec.Command(y)", "exec.Command(y)"),
+        ];
+        for (line, expected) in lines {
+            assert_eq!(
+                code_view(Language::Go, line, &mut state),
+                expected,
+                "{line}"
+            );
+        }
+        // The plain reading took `/*` for a comment, and keeps it; the reading that resumed the
+        // raw string closed it, and ends with nothing open.
+        assert!(state.plain.in_block_comment);
+        assert!(state.readings().any(|r| r == Reading::default()));
+    }
+
+    /// Bug hunt 2026-11-01: any word-start `#` ended a YAML line, even inside a quoted scalar
+    /// or a quoted shell word of a `run: |` block, so the `curl` or trigger after it was hidden.
+    #[test]
+    fn a_yaml_hash_inside_quotes_is_not_a_comment() {
+        for (line, expected) in [
+            (
+                r#"echo "step #1" && curl x # c"#,
+                r#"echo "step #1" && curl x "#,
+            ),
+            (
+                r#"- run: "echo ' #'; curl x""#,
+                r#"- run: "echo ' #'; curl x""#,
+            ),
+            (
+                r#"on: { a: {}, "x #": 1, pull_request_target: {} }"#,
+                r#"on: { a: {}, "x #": 1, pull_request_target: {} }"#,
+            ),
+            // A doubled quote is a single-quoted scalar's only escape; a backslash is text.
+            (r"x: 'it''s #1' # c", r"x: 'it''s #1' "),
+            (r"x: 'a\' # c", r"x: 'a\' "),
+            // A double-quoted scalar escapes with a backslash.
+            (r#"x: "a\" #" # c"#, r#"x: "a\" #" "#),
+            // A quote after a word byte is plain text, not the start of a scalar.
+            ("name: it's #1 # c", "name: it's "),
+            ("x: a # 'c", "x: a "),
+        ] {
+            assert_eq!(view(Language::Yaml, line), expected, "{line}");
+        }
+    }
+
+    /// Bug hunt 2026-11-01: the line that closes a multi-line string began as plain code, so its
+    /// closing quote opened a phantom string over the code after it.
+    #[test]
+    fn a_line_that_closes_a_multi_line_string_keeps_its_code() {
+        let views = |language: Language, lines: &[&str]| {
+            let mut state = ScanState::default();
+            let out: Vec<String> = lines
+                .iter()
+                .map(|line| code_view(language, line, &mut state))
+                .collect();
+            (out, state)
+        };
+        for (language, lines, expected) in [
+            (
+                Language::Rust,
+                &[r#"const S: &str = ""#, r#""; fn f() { unsafe { *p } }"#][..],
+                &[r#"const S: &str = ""#, r#""; fn f() { unsafe { *p } }"#][..],
+            ),
+            (
+                Language::Shell,
+                &[r#"MSG="hello"#, r#"world"; curl x | sh; echo "done""#],
+                &[r#"MSG="hello"#, r#"world"; curl x | sh; echo "done""#],
+            ),
+            (
+                Language::JavaScript,
+                &["const t = `", "`; eval(p); const u = `x`;"],
+                &["const t = `", "`; eval(p); const u = `x`;"],
+            ),
+            // A backslash at the end of a line escapes the line break, not the next quote.
+            (
+                Language::Python,
+                &[r#"s = "abc\"#, r#""; os.system("id")"#],
+                &[r#"s = "abc\"#, r#""; os.system("id")"#],
+            ),
+            // A line still inside the string, shorter than where the string opened.
+            (
+                Language::Shell,
+                &[r#"echo "a long string"#, "x", r#"y"; curl z"#],
+                &[r#"echo "a long string"#, "x", r#"y"; curl z"#],
+            ),
+        ] {
+            let (out, state) = views(language, lines);
+            assert_eq!(out, expected, "{language:?}: {lines:?}");
+            assert!(
+                state.readings().any(|r| r.in_string.is_none()),
+                "{language:?}: {lines:?}"
+            );
+        }
+        // A quote misread as an opener hides nothing on the next lines, though the reading
+        // that resumes inside it may stay open.
+        let (out, _) = views(
+            Language::Shell,
+            &["echo don't", "curl x | sh; echo 'y'", "curl z | sh"],
+        );
+        assert_eq!(out, ["echo don't", "curl x | sh; echo 'y'", "curl z | sh"]);
+        // A string open inside an interpolation ends with the line.
+        let (_, state) = views(Language::Shell, &[r#"V="$(echo "a"#]);
+        assert_eq!(state, ScanState::default());
+        // A carried string closes, and the resumed reading's comment is the line's comment.
+        let (out, _) = views(Language::Rust, &[r#"let s = ""#, r#"a"; f(); // unsafe"#]);
+        assert_eq!(out[1], format!(r#"a"; f();{}"#, " ".repeat(10)));
+    }
+
+    /// Review 2026-11-01: only the reading that resumed a carried string went on to the next
+    /// line, so a quote misread as an opener (`It's` in a hunk that starts inside a Go raw
+    /// string) was carried from line to line until a real quote "closed" it and a `/*` in the
+    /// string after it opened a block comment over the rest of the hunk. Each line now keeps at
+    /// least what the plain reading, which carries no string, keeps.
+    #[test]
+    fn a_misread_opener_hides_nothing_on_later_lines() {
+        let mut hidden = Vec::new();
+        for (language, lines, tokens) in [
+            (
+                Language::Go,
+                &[
+                    "It's safe to run twice.",
+                    "`,",
+                    "\tRunE: func(cmd *cobra.Command, args []string) error {",
+                    "\t\tfmt.Println(\"don't panic\")",
+                    "\t\tmatches, _ := filepath.Glob(\"/tmp/build/*.o\")",
+                    "\t\t_, _ = http.Get(\"https://example.com/ping\")",
+                    "\t\treturn exec.Command(\"rm\", matches...).Run()",
+                ][..],
+                &["http.Get", "exec.Command"][..],
+            ),
+            (
+                Language::JavaScript,
+                &["  Say 'hi", "`; const p = \"'/*\";", "eval(payload);"],
+                &["eval"],
+            ),
+            (
+                Language::Rust,
+                &["  he said \"hi", "let p = \"/*\";", "unsafe { *p }"],
+                &["unsafe"],
+            ),
+            (
+                Language::Python,
+                &["it's here", "x = \"'\"\"\"", "os.system(\"id\")"],
+                &["os.system"],
+            ),
+        ] {
+            let mut state = ScanState::default();
+            let views: Vec<String> = lines
+                .iter()
+                .map(|line| code_view(language, line, &mut state))
+                .collect();
+            for token in tokens {
+                if !views.iter().any(|v| v.contains(token)) {
+                    hidden.push(format!("{language:?}: {token} in {views:?}"));
+                }
+            }
+        }
+        assert_eq!(hidden, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_union_of_views_keeps_what_either_keeps() {
+        let union = |line: &str, views: &[&str]| {
+            let views: Vec<String> = views.iter().map(ToString::to_string).collect();
+            union_views(line, &views)
+        };
+        assert_eq!(union("abc def", &["a      ", "    de"]), "a   de ");
+        assert_eq!(union("ab", &["ab", ""]), "ab");
+        assert_eq!(union("ab", &["", "  "]), "  ");
+        assert_eq!(union("é x", &["   x", "é  "]), "é x");
+        assert_eq!(union("abc", &["a  ", " b ", "  c"]), "abc");
+        assert_eq!(union("abc", &[]), "");
+    }
+
+    /// Bug hunt 2026-11-01: `cr"…"` (a raw C string) was read as an ordinary string, whose `\"`
+    /// escapes the closing quote.
+    #[test]
+    fn rust_raw_c_strings_are_raw() {
+        for (line, expected) in [
+            (r#"let d = cr"C:\"; unsafe"#, r#"let d = cr"   "; unsafe"#),
+            (
+                r##"let d = cr#"a"b"#; unsafe"##,
+                r##"let d = cr#"   "#; unsafe"##,
+            ),
+            (r#"let d = br"C:\"; unsafe"#, r#"let d = br"   "; unsafe"#),
+            (r#"let d = c"C:"; unsafe"#, r#"let d = c"  "; unsafe"#),
+            // Only one of `b` and `c`, and only at an identifier's start.
+            (r#"let d = xcr"\"; unsafe"#, r#"let d = xcr"          "#),
+            (r#"let d = bcr"\"; unsafe"#, r#"let d = bcr"          "#),
+        ] {
+            assert_eq!(view(Language::Rust, line), expected, "{line}");
+        }
     }
 
     #[test]

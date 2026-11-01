@@ -655,7 +655,8 @@ fn load_journal(directory: &Path, run_id: &str) -> Result<Journal> {
     let path = directory.join(JOURNAL_FILE);
     let mut journal = Journal::default();
     if path.exists() {
-        let bytes = storage::read_bytes(&path, JOURNAL_CAP)?;
+        // The reader's cap is the journal's own refusal, not the run's or the session's.
+        let bytes = storage::read_bytes(&path, JOURNAL_CAP).map_err(|e| corrupt(e.0))?;
         journal.bytes = bytes.len() as u64;
         let text = String::from_utf8(bytes).map_err(|_| corrupt("not UTF-8".into()))?;
         if !text.is_empty() && !text.ends_with('\n') {
@@ -1077,13 +1078,33 @@ impl Drop for Lock {
         let _ = fs::remove_file(&self.0);
     }
 }
-/// Append `events` to the verified journal of `verified_len` bytes, then record a checkpoint.
-fn append(directory: &Path, verified_len: u64, events: &[DecisionEvent]) -> Result<()> {
+/// The journal lines for `events`, refused when appending them to the verified journal of
+/// `verified_len` bytes would pass [`JOURNAL_CAP`]. [`load_journal`] refuses a longer journal, so
+/// writing one would block every later import of the run, dry runs included. A dry run encodes
+/// too, so it reports this refusal before an execute would.
+fn encode(verified_len: u64, events: &[DecisionEvent]) -> Result<Vec<u8>> {
     let mut lines = Vec::new();
     for event in events {
         serde_json::to_writer(&mut lines, event)?;
         lines.push(b'\n');
     }
+    if verified_len + lines.len() as u64 > JOURNAL_CAP {
+        return Err(TuicrImportError::Journal(format!(
+            "appending {} bytes of events to the {verified_len}-byte journal would pass its \
+             {JOURNAL_CAP}-byte cap; nothing was appended",
+            lines.len()
+        )));
+    }
+    Ok(lines)
+}
+/// Append the [`encode`]d `lines` of `events` to the verified journal of `verified_len` bytes, then
+/// record a checkpoint.
+fn append(
+    directory: &Path,
+    verified_len: u64,
+    lines: &[u8],
+    events: &[DecisionEvent],
+) -> Result<()> {
     let path = directory.join(JOURNAL_FILE);
     let mut file = OpenOptions::new()
         .append(true)
@@ -1095,7 +1116,7 @@ fn append(directory: &Path, verified_len: u64, events: &[DecisionEvent]) -> Resu
             "the journal changed while this import was planned".into(),
         ));
     }
-    file.write_all(&lines)?;
+    file.write_all(lines)?;
     file.sync_all()?;
     fs::File::open(directory)?.sync_all()?;
     let Some(last) = events.last() else {
@@ -1123,7 +1144,8 @@ fn append(directory: &Path, verified_len: u64, events: &[DecisionEvent]) -> Resu
 /// Refuses a run, session or export ledger that fails the shared identity checks; a session whose
 /// `base_commit` is not the run's sealed HEAD; dispositions on files whose reviewed bytes differ from
 /// the sealed snapshot; reviewed marks without, or with a changed, tuicr content hash; unsafe
-/// session content; a malformed, rewritten or truncated journal; and a held import lock.
+/// session content; a malformed, rewritten, truncated or oversized journal; events that would take
+/// the journal past its 64 MiB cap; and a held import lock.
 pub fn import_tuicr(
     directory: &Path,
     session_path: &Path,
@@ -1195,8 +1217,9 @@ pub fn import_tuicr(
     plan_comments(&mut planner, &inputs)?;
     plan_tombstones(&mut planner, &inputs)?;
     plan_files(&mut planner, &inputs)?;
+    let lines = encode(journal.bytes, &planner.events)?;
     if options.execute && !planner.events.is_empty() {
-        append(&directory, journal.bytes, &planner.events)?;
+        append(&directory, journal.bytes, &lines, &planner.events)?;
     }
     Ok(TuicrImport {
         schema: "deep-diff-forge.tuicr-import.v1",
@@ -1428,11 +1451,45 @@ mod tests {
             "{at_cap:?}"
         );
         file.set_len(cap + 1).unwrap();
+        // Over the cap is the journal's refusal, not one about the run or session export.
         let over = load_journal(&dir.0, "run").map(|j| j.bytes);
         assert!(
-            matches!(&over, Err(e @ TuicrImportError::Session(_)) if e.to_string().contains("acquisition budget")),
+            matches!(&over, Err(e @ TuicrImportError::Journal(r)) if r.contains("acquisition budget")
+                && e.to_string().starts_with("tuicr import refused (journal): ")),
             "{over:?}"
         );
+    }
+
+    /// The writer keeps to the reader's cap: an import whose events would take the journal past it
+    /// is refused before a byte is written, so the run stays importable.
+    #[test]
+    fn a_batch_that_would_pass_the_journal_cap_is_refused_before_writing() {
+        // The documented 64 MiB, written out so the test does not move with the constant.
+        let cap: u64 = 64 << 20;
+        let events = [planner().blank(EventKind::CommentAdded, user())];
+        let size = encode(0, &events).unwrap().len() as u64;
+        for (verified_len, fits) in [(cap - size, true), (cap - size + 1, false)] {
+            let dir = Scratch::new();
+            let path = dir.0.join(JOURNAL_FILE);
+            fs::File::create(&path)
+                .unwrap()
+                .set_len(verified_len)
+                .unwrap();
+            let result = encode(verified_len, &events)
+                .and_then(|lines| append(&dir.0, verified_len, &lines, &events));
+            let after = fs::metadata(&path).unwrap().len();
+            if fits {
+                assert!(result.is_ok(), "{result:?}");
+                assert_eq!(after, cap);
+            } else {
+                assert!(
+                    matches!(&result, Err(TuicrImportError::Journal(r)) if r.contains("cap; nothing was appended")),
+                    "{result:?}"
+                );
+                assert_eq!(after, verified_len);
+                assert!(!dir.0.join(CHECKPOINT_DIR).exists());
+            }
+        }
     }
 
     #[test]

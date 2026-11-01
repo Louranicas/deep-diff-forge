@@ -138,3 +138,73 @@ fn the_parsers_read_steps_jobs_and_labels() {
     let labels = replica_labels("step \"one\" echo\n  step \"two :: $c\" x\n# step \"no\"\n");
     assert_eq!(labels.into_iter().collect::<Vec<_>>(), ["one", "two"]);
 }
+
+/// The `toolchain:` each job of a workflow pins, in order.
+fn ci_toolchains(workflow: &str) -> Vec<(String, String)> {
+    let mut pins = Vec::new();
+    let mut job = None;
+    for line in workflow.lines().skip_while(|line| *line != "jobs:") {
+        if let Some(key) = line
+            .strip_prefix("  ")
+            .and_then(|rest| rest.strip_suffix(':'))
+            && !key.starts_with(' ')
+            && !key.contains(' ')
+        {
+            job = Some(key.to_owned());
+        } else if let (Some(job), Some(pin)) = (&job, line.trim_start().strip_prefix("toolchain: "))
+        {
+            pins.push((job.clone(), pin.trim().to_owned()));
+        }
+    }
+    pins
+}
+
+/// The toolchain the replica pins for every step (`toolchain=<x>`), and the one its MSRV step
+/// names (`cargo +<x>`).
+fn replica_toolchains(script: &str) -> (Option<&str>, Option<&str>) {
+    let pinned = script
+        .lines()
+        .find_map(|line| line.strip_prefix("toolchain="));
+    let msrv = script
+        .lines()
+        .filter(|line| line.starts_with("step \"check on Rust "))
+        .find_map(|line| line.split("cargo +").nth(1)?.split_whitespace().next());
+    (pinned, msrv)
+}
+
+#[test]
+fn the_replica_runs_on_the_toolchains_ci_pins() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let workflow = std::fs::read_to_string(format!("{root}/.github/workflows/ci.yml")).unwrap();
+    let script = std::fs::read_to_string(format!("{root}/scripts/ci_local.sh")).unwrap();
+    let (pinned, msrv) = replica_toolchains(&script);
+    let pins: Vec<_> = ci_toolchains(&workflow)
+        .into_iter()
+        .filter(|(job, _)| GATE_JOBS.contains(&job.as_str()))
+        .collect();
+    assert!(
+        pins.len() >= 3,
+        "only {pins:?} pinned: the reader is broken"
+    );
+    for (job, pin) in &pins {
+        let replica = if job == "msrv" { msrv } else { pinned };
+        assert_eq!(
+            replica,
+            Some(pin.as_str()),
+            "ci.yml job `{job}` runs on Rust {pin}; scripts/ci_local.sh must run its steps on the same toolchain (a floating default drifts on the next `rustup update`)"
+        );
+    }
+}
+
+#[test]
+fn the_toolchain_readers_read_pins() {
+    let workflow = "on:\njobs:\n  a:\n    steps:\n      - uses: x\n        with:\n          toolchain: 1.2.3\n  b:\n    steps:\n      - with:\n          toolchain: 1.0.0\n";
+    assert_eq!(
+        ci_toolchains(workflow),
+        [("a".into(), "1.2.3".into()), ("b".into(), "1.0.0".into())]
+    );
+    let script =
+        "toolchain=1.2.3\nstep \"check on Rust 1.0\" cargo +1.0.0 check\nstep \"x\" cargo +9 y\n";
+    assert_eq!(replica_toolchains(script), (Some("1.2.3"), Some("1.0.0")));
+    assert_eq!(replica_toolchains("step \"x\" cargo check\n"), (None, None));
+}
