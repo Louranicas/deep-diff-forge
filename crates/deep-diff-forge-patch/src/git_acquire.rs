@@ -9,10 +9,14 @@
 //! -c diff.external= -c core.fsmonitor=false`. The diff itself is
 //! `diff --no-ext-diff --no-color --raw -z --patch --binary --full-index
 //! --no-abbrev --no-textconv --src-prefix=a/ --dst-prefix=b/ --no-relative
-//! --submodule=short <selection> --`; the extra flags pin what user or repository
-//! configuration could otherwise change (abbreviated raw IDs, `diff.noprefix`,
+//! --submodule=short --ignore-submodules=dirty <selection> --`; the extra flags
+//! pin what user or repository configuration could otherwise change (abbreviated raw IDs, `diff.noprefix`,
 //! `diff.mnemonicPrefix`, `diff.relative`, textconv output that would not apply,
-//! `diff.submodule=log` blocks without a `diff --git` header).
+//! `diff.submodule=log` blocks without a `diff --git` header). `--ignore-submodules=dirty`
+//! compares only the commit each submodule records, whatever configuration says to ignore, and
+//! never runs Git inside a submodule: that Git would read the submodule's own configuration and
+//! attributes and run its filters. A submodule's uncommitted changes are therefore not captured
+//! (the superproject never stores them).
 //!
 //! # Untracked files
 //!
@@ -228,8 +232,12 @@ const DIFF_ARGS: &[&str] = &[
     "--submodule=short",
     // diff.ignoreSubmodules or a .gitmodules `ignore = all` would drop a submodule's change from
     // the capture with exit 0, so a gate saw 0 files (bug hunt 2026-10-28, H1-02); the option
-    // overrides both.
-    "--ignore-submodules=none",
+    // overrides both. `dirty`, not `none`: to find a dirty submodule Git runs `git status` inside
+    // it, which reads the submodule's own configuration and attributes and runs its filters,
+    // none of which the superproject's listing turns off (bug hunt 2026-11-01). The commit a
+    // submodule records is still compared; its uncommitted content, which the superproject never
+    // stores, is not.
+    "--ignore-submodules=dirty",
 ];
 
 /// Upper bound on retained Git standard-error text.

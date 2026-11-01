@@ -75,9 +75,11 @@ pub const DEFAULT_LINE_BUDGET: usize = 1_000_000;
 /// caller to act without scraping prose.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PatchParseError {
-    /// EOF marker is malformed, duplicated or not immediately after a content line.
+    /// EOF marker is malformed, duplicated or not immediately after a content line, or a later
+    /// line adds to the side of the file it ended (Git would join that line onto the marked one).
     InvalidEofMarker { line_number: usize },
-    /// Combined multi-parent or mixed text/binary sections need a different model.
+    /// Combined multi-parent or mixed text/binary sections need a different model, and the
+    /// `rename old`/`rename new` headers no current Git writes are not translated.
     UnsupportedFormat { line_number: usize },
     /// A quoted Git path was malformed or was not UTF-8, or a rename or copy names a path
     /// `git apply` refuses: absolute, or with a `.`, `..` or `.git` component.

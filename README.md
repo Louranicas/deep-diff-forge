@@ -453,9 +453,10 @@ carries a bidi control, an invisible character or a control character, gets a `h
 `path_traversal`, `git_internal`, `bidi_control`, `invisible` or `control`. `invisible` covers
 zero-width and joiner characters, invisible operators, fillers, the soft hyphen, variation
 selectors and tag characters; `control` covers C0/C1 controls other than tab and the Unicode
-line and paragraph separators. The carriage return of a CRLF body line does not count; one at
-the end of a path does. Hazards are facts about the bytes, reported only where
-found. An empty list never means the text is safe. They also raise the file's rank
+line and paragraph separators. The carriage return of a CRLF body line does not count; one in
+a path does. A CRLF header's line end is not part of its path: Git drops it, and so does the
+parser, so a CR reaches a path only quoted (`"x\r"`). Hazards are facts about the bytes,
+reported only where found. An empty list never means the text is safe. They also raise the file's rank
 (`hazardous_text`).
 
 ```json

