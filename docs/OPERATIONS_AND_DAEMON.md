@@ -320,7 +320,7 @@ deep-diff-forge cache prune --max-size 20GiB
 | Existing socket | In an owner-private parent, replace only a stale socket; never a live one or a non-socket file. | Implemented: live socket refused with `AddrInUse`, non-socket refused, stale socket removed. |
 | Cache decode failure | Ignore entry, record fallback, continue. | No cache exists. |
 | Parser panic | Catch at worker boundary, mark semantic fallback. | A dispatch panic is caught per request, counted in `daemon.metrics` and answered `INTERNAL_ERROR`; only a panic while the session table was held empties the table and clears its poison, otherwise sessions are kept. |
-| Oversized payload | Reject with structured error. | Request over 80 MiB: `INVALID_REQUEST`, then the connection closes. Response over 80 MiB, an error included, measured as written: `RESOURCE_EXHAUSTED` (8). An error message is cut at 4 KiB (`MAX_ERROR_MESSAGE_BYTES`). |
+| Oversized payload | Reject with structured error. | Request over 80 MiB: `INVALID_REQUEST`, then the connection closes. Response over 80 MiB, an error included, measured as written: `RESOURCE_EXHAUSTED` (8). An error message is cut at 4 KiB (`MAX_ERROR_MESSAGE_BYTES`), on the socket and in the MCP server's tool and protocol errors. |
 | Client disconnect | Cancel session subscription, keep shared cache. | No subscriptions or cache; the worker ends and frees its slot. |
 | Out of budget | Preserve patch twin and record semantic fallback. | Patch input over its byte or line budget is refused (exit 4 on the CLI). |
 | Ninth connection | Apply backpressure. | Accepted and closed at once, with no response. The CLI reports `no answer from the daemon at PATH (it may be at its connection limit; retry)`, exit 6, not `no daemon at`. No slot is kept for `daemon stop` or `daemon health`: while eight clients hold every slot, stop the daemon with a signal. |
@@ -502,7 +502,10 @@ Deployment needs that follow:
   their parsed copy, since a line is parsed before it is admitted and the budget does not count
   it), plus at most 128 MiB of retained sessions. These are inferred from the caps, not measured
   (before 2026-11-01 this said the daemon ran one request at a time, as it did before 0.4.0);
-  size the host or keep patches well under the cap.
+  size the host or keep patches well under the cap. A `review.hunks` selection adds memory for
+  its requested names only, not per hunk: since 2026-11-01 an address selection keeps only the
+  requested addresses, so one address over 300,000 hunks peaks with a path selection (130 MB,
+  measured) rather than 65 MB above it.
 - **`/tmp` inodes:** parallel council and mutation runs create many small files. The host's `/tmp`
   tmpfs has a 1,048,576-inode limit, which an 8-way stress run reached on 2026-10-26. Point
   `TMPDIR` at a disk-backed directory for heavy parallel work.

@@ -54,13 +54,18 @@ pub struct RpcError {
 }
 
 impl RpcError {
-    /// Construct an error.
+    /// Construct an error. The message is cut to [`MAX_ERROR_MESSAGE_BYTES`], so every
+    /// transport that carries it (the socket and the in-process MCP server) is bounded. Bug hunt
+    /// 2026-11-01: the cut was only in [`error_response`], and the MCP server, which reads the
+    /// message directly, answered a 600 KB `review_change` repo with a 900 KB tool error.
     #[must_use]
     pub fn new(code: i64, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-        }
+        let message = message.into();
+        let message = match bounded_message(&message) {
+            std::borrow::Cow::Borrowed(_) => message,
+            std::borrow::Cow::Owned(cut) => cut,
+        };
+        Self { code, message }
     }
 
     /// Method-not-found error for `method`.
@@ -161,8 +166,11 @@ pub fn success_response(id: &Value, result: Value) -> String {
 /// line, past the 80 MiB line cap a client reads (bug hunt 2026-11-01).
 pub const MAX_ERROR_MESSAGE_BYTES: usize = 4096;
 
-/// `message`, cut to [`MAX_ERROR_MESSAGE_BYTES`] as [`error_response`] sends it.
-fn bounded_message(message: &str) -> std::borrow::Cow<'_, str> {
+/// `message`, cut to [`MAX_ERROR_MESSAGE_BYTES`] at a character boundary, with the count of bytes
+/// left out. [`RpcError::new`] and [`error_response`] apply it; the MCP server applies it to its
+/// own errors.
+#[must_use]
+pub fn bounded_message(message: &str) -> std::borrow::Cow<'_, str> {
     if message.len() <= MAX_ERROR_MESSAGE_BYTES {
         return std::borrow::Cow::Borrowed(message);
     }
@@ -177,7 +185,8 @@ fn bounded_message(message: &str) -> std::borrow::Cow<'_, str> {
     ))
 }
 
-/// Serialize an error response for `id`. The message is cut to [`MAX_ERROR_MESSAGE_BYTES`].
+/// Serialize an error response for `id`. The message is cut to [`MAX_ERROR_MESSAGE_BYTES`] again
+/// here, as the fields of an [`RpcError`] built without [`RpcError::new`] are not bounded.
 #[must_use]
 pub fn error_response(id: &Value, error: &RpcError) -> String {
     json!({
@@ -308,10 +317,13 @@ mod tests {
     /// character boundary, with the count of bytes left out; one at the bound is sent whole.
     #[test]
     fn an_error_message_is_cut_to_its_bound() {
+        // Built without `RpcError::new`, so only `error_response` cuts it.
         let message = |s: &str| -> String {
-            let v: Value =
-                serde_json::from_str(&error_response(&json!(1), &RpcError::invalid_params(s)))
-                    .unwrap();
+            let error = RpcError {
+                code: INVALID_PARAMS,
+                message: s.to_owned(),
+            };
+            let v: Value = serde_json::from_str(&error_response(&json!(1), &error)).unwrap();
             v["error"]["message"].as_str().unwrap().to_owned()
         };
         let at = "m".repeat(MAX_ERROR_MESSAGE_BYTES);
@@ -329,6 +341,26 @@ mod tests {
         );
         let huge = message(&"\u{202e}".repeat(1_000_000));
         assert!(huge.len() <= MAX_ERROR_MESSAGE_BYTES + 32, "{}", huge.len());
+    }
+
+    /// Bug hunt 2026-11-01: an error is bounded where it is built, so a transport that reads the
+    /// message without `error_response` (the MCP server) is bounded too; a short one is kept.
+    #[test]
+    fn an_error_is_bounded_where_it_is_built() {
+        let at = "m".repeat(MAX_ERROR_MESSAGE_BYTES);
+        assert_eq!(RpcError::new(INVALID_PARAMS, at.clone()).message, at);
+        assert_eq!(
+            RpcError::invalid_params(format!("{at}xy")).message,
+            format!("{at}... [2 bytes omitted]")
+        );
+        let method = RpcError::method_not_found(&"x".repeat(1_000_000));
+        assert_eq!(method.code, METHOD_NOT_FOUND);
+        assert!(
+            method.message.len() <= MAX_ERROR_MESSAGE_BYTES + 32,
+            "{}",
+            method.message.len()
+        );
+        assert!(method.message.starts_with("method not found: xxx"));
     }
 
     #[test]

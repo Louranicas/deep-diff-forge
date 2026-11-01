@@ -12,7 +12,7 @@
 use deep_diff_forge_core::exit::{EXIT_CODES, ExitCode, lookup};
 use deep_diff_forge_daemon::{
     Engine, INPUT_CONTRACT_REFUSED, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR,
-    PATCH_PARSE_FAILED, Request, RpcError, dispatch,
+    PATCH_PARSE_FAILED, Request, RpcError, bounded_message, dispatch,
 };
 use serde_json::{Map, Value, json};
 use std::io::{BufRead, Write};
@@ -157,7 +157,13 @@ impl Server {
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({"tools": tools()})),
             "tools/call" => call_tool(params, &self.allowed_repos),
-            _ => Err((METHOD_NOT_FOUND, format!("method not found: {method}"))),
+            _ => Err((
+                METHOD_NOT_FOUND,
+                format!(
+                    "method not found: {}",
+                    deep_diff_forge_core::display_safe_bounded(method, ECHO_BYTES)
+                ),
+            )),
         };
         match result {
             Ok(mut value) => {
@@ -238,8 +244,13 @@ fn server_info() -> Value {
     json!({"name": "deep-diff-forge", "version": env!("CARGO_PKG_VERSION")})
 }
 
+/// The most rendered bytes of request-named text (a method, tool or argument name) an error
+/// repeats. Bug hunt 2026-11-01: before, the whole name was repeated.
+const ECHO_BYTES: usize = 1024;
+
+/// A JSON-RPC error answer; the message is cut to the daemon's `MAX_ERROR_MESSAGE_BYTES`.
 fn error(id: &Value, code: i64, message: &str, data: Option<Value>) -> Value {
-    let mut error = json!({"code": code, "message": message});
+    let mut error = json!({"code": code, "message": bounded_message(message)});
     if let Some(data) = data {
         error["data"] = data;
     }
@@ -492,12 +503,23 @@ fn call_tool(mut params: Value, allowed: &[std::path::PathBuf]) -> Result<Value,
     let spec = known
         .as_array()
         .and_then(|tools| tools.iter().find(|t| t["name"] == name.as_str()))
-        .ok_or((INVALID_PARAMS, format!("Unknown tool: {name}")))?;
+        .ok_or_else(|| {
+            (
+                INVALID_PARAMS,
+                format!(
+                    "Unknown tool: {}",
+                    deep_diff_forge_core::display_safe_bounded(&name, ECHO_BYTES)
+                ),
+            )
+        })?;
     if let Some(extra) = arguments
         .keys()
         .find(|k| spec["inputSchema"]["properties"].get(k.as_str()).is_none())
     {
-        return Ok(tool_error(&format!("unknown argument: {extra}")));
+        return Ok(tool_error(&format!(
+            "unknown argument: {}",
+            deep_diff_forge_core::display_safe_bounded(extra, ECHO_BYTES)
+        )));
     }
     // An argument the schema limits to an enum takes only those values: `review_change` with
     // `view: "review"` returned 6.4 MB past its budget (bug hunt 2026-10-28, H2-03).
@@ -789,8 +811,11 @@ fn structured(value: Value) -> Value {
     result
 }
 
+/// A tool error answer; the message is cut to the daemon's `MAX_ERROR_MESSAGE_BYTES`, as on the
+/// socket. Bug hunt 2026-11-01: before, a daemon error reached here whole, so a 600 KB
+/// `review_change` repo of bidi characters drew a 900 KB tool error.
 fn tool_error(message: &str) -> Value {
-    json!({"content": [{"type": "text", "text": message}], "isError": true})
+    json!({"content": [{"type": "text", "text": bounded_message(message)}], "isError": true})
 }
 
 /// Read one line of at most `cap` bytes. `Ok(None)` at end of input; an over-long line is drained
@@ -1422,6 +1447,65 @@ mod tests {
         )
         .unwrap();
         assert_eq!(unknown["isError"], true);
+    }
+
+    /// Bug hunt 2026-11-01: request text an error repeats is cut where the message is built, so
+    /// a tool error stays small. Before, a `review_change` repo of 100,000 bidi characters (600 KB)
+    /// drew a 900 KB tool error, as the 4 KiB cut was only in the socket's `error_response`, and
+    /// an unknown tool, argument or method name came back whole.
+    #[test]
+    fn an_error_repeats_request_text_within_a_bound() {
+        let huge = "\u{202e}".repeat(100_000);
+        let allowed = [std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))];
+        let text = |v: &Value| v["content"][0]["text"].as_str().unwrap().to_owned();
+        let repo = call_tool(
+            json!({"name": "review_change", "arguments": {"repo": huge, "selection": "staged"}}),
+            &allowed,
+        )
+        .unwrap();
+        assert_eq!(repo["isError"], true);
+        let message = text(&repo);
+        assert!(
+            message.starts_with("cannot resolve repo \\u{202e}"),
+            "{message:.80}"
+        );
+        // The repo is cut to `ECHO_BYTES`, and Git's reason still follows it.
+        assert!(
+            message.contains("... [299616 bytes omitted]: "),
+            "{message:.80}"
+        );
+        assert!(message.len() <= ECHO_BYTES + 256, "{}", message.len());
+        let argument = call_tool(
+            json!({"name": "review_change", "arguments": {huge.clone(): 1}}),
+            &allowed,
+        )
+        .unwrap();
+        let message = text(&argument);
+        assert!(message.starts_with("unknown argument: "), "{message:.80}");
+        assert!(message.len() <= ECHO_BYTES + 64, "{}", message.len());
+        let (code, message) = call_tool(json!({"name": huge}), &allowed).unwrap_err();
+        assert_eq!(code, INVALID_PARAMS);
+        assert!(message.starts_with("Unknown tool: "), "{message:.80}");
+        assert!(message.len() <= ECHO_BYTES + 64, "{}", message.len());
+        let v = Server::default()
+            .handle_line(&modern(&huge, &json!({})))
+            .unwrap();
+        assert_eq!(v["error"]["code"], METHOD_NOT_FOUND);
+        let message = v["error"]["message"].as_str().unwrap();
+        assert!(message.len() <= ECHO_BYTES + 64, "{}", message.len());
+        // The last cut, on every message: a tool error and a protocol error stay within the
+        // daemon's bound, however long the message given.
+        let long = "m".repeat(3 * deep_diff_forge_daemon::MAX_ERROR_MESSAGE_BYTES);
+        let cut = format!(
+            "{}... [{} bytes omitted]",
+            "m".repeat(deep_diff_forge_daemon::MAX_ERROR_MESSAGE_BYTES),
+            2 * deep_diff_forge_daemon::MAX_ERROR_MESSAGE_BYTES
+        );
+        assert_eq!(text(&tool_error(&long)), cut);
+        assert_eq!(
+            error(&json!(1), INVALID_PARAMS, &long, None)["error"]["message"],
+            cut
+        );
     }
 
     #[test]

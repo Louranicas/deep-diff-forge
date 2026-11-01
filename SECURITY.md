@@ -172,8 +172,9 @@ flowchart LR
   `RESOURCE_EXHAUSTED` (8) error naming its size (`bounded_response`); before
   2026-10-28 the server sent it and the client failed. Since 2026-11-01 an error
   answer is held to the same cap, measured after `json_line_safe`, and an error
-  message is cut at 4 KiB (`MAX_ERROR_MESSAGE_BYTES`), so request text an error
-  repeats cannot push it past the cap. `deep-diff-forge rpc`
+  message is cut at 4 KiB (`MAX_ERROR_MESSAGE_BYTES`) where it is built, so request
+  text an error repeats cannot push it past the cap; the MCP server's tool and
+  protocol errors are cut the same way. `deep-diff-forge rpc`
   uses the same `process_line` and caps over stdio.
 - Each line read has a 30-second absolute deadline (`READ_TIMEOUT`), applied as
   the remaining time before every read, so slow byte-drip traffic cannot renew

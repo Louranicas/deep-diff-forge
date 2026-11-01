@@ -814,6 +814,11 @@ fn parse_patch_param(request: &Request) -> Result<Vec<ReviewFile>, RpcError> {
         .map_err(|e| RpcError::new(PATCH_PARSE_FAILED, e.to_string()))
 }
 
+/// The most rendered bytes of a request-named path or value that a `review.change` error repeats.
+/// Bug hunt 2026-11-01: before, the whole text was repeated, three times its size for bidi
+/// characters, and the MCP server, which does not go through `error_response`, sent it whole.
+const ECHO_BYTES: usize = 1024;
+
 /// `review.change`: acquire a change from Git in an allowed repository, seal it, and answer with
 /// the chosen view. Git runs with the acquisition crate's fixed argv and a 30 s limit; nothing
 /// is written. A repository outside every allowed root is refused before Git runs.
@@ -828,13 +833,13 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
     let canonical = std::fs::canonicalize(&repo).map_err(|e| {
         RpcError::invalid_params(format!(
             "cannot resolve repo {}: {e}",
-            deep_diff_forge_core::display_safe(&repo.to_string_lossy())
+            deep_diff_forge_core::display_safe_bounded(&repo.to_string_lossy(), ECHO_BYTES)
         ))
     })?;
     if !allowed.iter().any(|root| canonical.starts_with(root)) {
         return Err(RpcError::invalid_params(format!(
             "repo {} is outside the roots this server may read (--allow-repo)",
-            deep_diff_forge_core::display_safe(&canonical.to_string_lossy())
+            deep_diff_forge_core::display_safe_bounded(&canonical.to_string_lossy(), ECHO_BYTES)
         )));
     }
     let options = change_options(bool_param(params, "include_untracked")?);
@@ -847,7 +852,7 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
         other => {
             return Err(RpcError::invalid_params(format!(
                 "selection must be staged, working_tree or range, not {}",
-                deep_diff_forge_core::display_safe(other)
+                deep_diff_forge_core::display_safe_bounded(other, ECHO_BYTES)
             )));
         }
     };
@@ -868,7 +873,7 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
     if !allowed.iter().any(|root| top.starts_with(root)) {
         return Err(RpcError::invalid_params(format!(
             "the repository's top level {} is outside the roots this server may read (--allow-repo)",
-            deep_diff_forge_core::display_safe(&top.to_string_lossy())
+            deep_diff_forge_core::display_safe_bounded(&top.to_string_lossy(), ECHO_BYTES)
         )));
     }
     let captured = acquisition.diff().capture().map_err(git)?;
@@ -899,7 +904,7 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
         other => {
             return Err(RpcError::invalid_params(format!(
                 "view must be outline, hunks, review or rank, not {}",
-                deep_diff_forge_core::display_safe(other)
+                deep_diff_forge_core::display_safe_bounded(other, ECHO_BYTES)
             )));
         }
     };
@@ -957,7 +962,7 @@ fn refuse_foreign_git_dirs(
         if !allowed.iter().any(|root| dir.starts_with(root)) {
             return Err(RpcError::invalid_params(format!(
                 "the repository's {what} {} is outside the roots this server may read (--allow-repo)",
-                deep_diff_forge_core::display_safe(&dir.to_string_lossy())
+                deep_diff_forge_core::display_safe_bounded(&dir.to_string_lossy(), ECHO_BYTES)
             )));
         }
     }

@@ -175,6 +175,21 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   within 256 bytes (`display_safe_bounded`), and every answer `process_line` returns is measured
   as written; one over the cap becomes `RESOURCE_EXHAUSTED` (8), without the id when the id alone
   would put it over.
+- **MCP tool errors are held to the same 4 KiB message bound as the socket.** The cut was only
+  in the socket's `error_response`, and the MCP server reads a daemon error's message directly,
+  so `review_change` with a repo of 100,000 U+202E characters (a 600 KB request) answered with a
+  901 KB tool error (measured, release build); `review.change` repeated each request-named path
+  or value whole, three times its size for bidi characters, and the MCP server repeated an
+  unknown tool, argument or method name whole. Now `RpcError::new` cuts the message where it is
+  built, `review.change` repeats a request-named path or value within 1 KiB, the MCP server
+  repeats a tool, argument or method name within 1 KiB, and every MCP tool and protocol error is
+  cut to `MAX_ERROR_MESSAGE_BYTES`; the same request now answers in 1.3 KB.
+- **`review.hunks` by address holds memory for the requested addresses, not for every hunk.**
+  The address table kept every hunk's 64-character address, whatever was asked, so one address
+  over 300,000 one-line hunks peaked at 195 MB against 130 MB for a path selection (measured,
+  release build), memory that admission does not weigh. The table now keeps only the requested
+  addresses a hunk has, each hunk's address still computed once; the same request peaks at
+  130 MB.
 - **`daemon health` and `daemon stop` no longer say there is no daemon when it is at its
   connection limit.** A daemon serving eight connections closes a ninth at once, unanswered (by
   design), and the client's reset or broken pipe was reported as `no daemon at PATH`: eight idle

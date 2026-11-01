@@ -46,8 +46,8 @@ pub use log::LogFormat;
 pub use protocol::{
     GIT_FAILED, INPUT_CONTRACT_REFUSED, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST,
     MAX_ERROR_MESSAGE_BYTES, METHOD_NOT_FOUND, PARSE_ERROR, PATCH_PARSE_FAILED,
-    PROTOCOL_UNSUPPORTED, PROTOCOL_VERSION, Request, RpcError, SESSION_NOT_FOUND, error_response,
-    parse_request, success_response,
+    PROTOCOL_UNSUPPORTED, PROTOCOL_VERSION, Request, RpcError, SESSION_NOT_FOUND, bounded_message,
+    error_response, parse_request, success_response,
 };
 pub use security::{
     SECURE_DIR_MODE, SECURE_SOCKET_MODE, SocketError, default_socket_path, ensure_runtime_dir,

@@ -468,26 +468,19 @@ fn select_with(
             Ok((units, "all".into()))
         }
         Selection::Addresses(addresses) => {
-            // Every hunk with the address, in review order: two identical sections of one path
-            // share it.
-            let mut by_address: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
-            for (f, file) in files.iter().enumerate() {
-                for (h, hunk) in file.patch_twin.hunks.iter().enumerate() {
-                    by_address
-                        .entry(address(hunk, &file.path))
-                        .or_default()
-                        .push((f, h));
-                }
-            }
             let mut seen = HashSet::new();
-            let mut named = Vec::new();
+            let named: Vec<&str> = addresses
+                .iter()
+                .map(String::as_str)
+                .filter(|a| seen.insert(*a))
+                .collect();
+            let by_address = hunks_by_address(files, &named, address);
             let mut units = Vec::new();
-            for wanted in addresses.iter().filter(|a| seen.insert(a.as_str())) {
+            for &wanted in &named {
                 let found = by_address
                     .get(wanted)
-                    .ok_or_else(|| ViewError::UnknownAddress(wanted.clone()))?;
+                    .ok_or_else(|| ViewError::UnknownAddress(wanted.to_owned()))?;
                 units.extend_from_slice(found);
-                named.push(wanted.as_str());
             }
             Ok((units, format!("a:{}", named.join("\n"))))
         }
@@ -513,6 +506,30 @@ fn select_with(
             Ok((units, format!("p:{}", named.join("\n"))))
         }
     }
+}
+
+/// The hunks of each `wanted` address, in review order (two identical sections of one path share
+/// an address), with each hunk's address computed once. The table holds only the wanted
+/// addresses that some hunk has, so its memory follows the request, not the patch. Bug hunt
+/// 2026-11-01: before, it kept every hunk's 64-character address, so one address over 300,000
+/// hunks peaked at 202 MB against 149 MB for a path selection (measured, release build), memory
+/// the admission weight does not count.
+fn hunks_by_address<'w>(
+    files: &[ReviewFile],
+    wanted: &[&'w str],
+    address: &dyn Fn(&PatchHunk, &str) -> String,
+) -> std::collections::HashMap<&'w str, Vec<(usize, usize)>> {
+    let wanted: std::collections::HashSet<&'w str> = wanted.iter().copied().collect();
+    let mut table: std::collections::HashMap<&'w str, Vec<(usize, usize)>> =
+        std::collections::HashMap::new();
+    for (f, file) in files.iter().enumerate() {
+        for (h, hunk) in file.patch_twin.hunks.iter().enumerate() {
+            if let Some(&key) = wanted.get(address(hunk, &file.path).as_str()) {
+                table.entry(key).or_default().push((f, h));
+            }
+        }
+    }
+    table
 }
 
 #[cfg(test)]
@@ -964,6 +981,25 @@ mod tests {
         let (units, _) = select_with(r.files(), &Selection::Addresses(wanted), &counting).unwrap();
         assert_eq!(units.len(), total);
         assert_eq!(calls.get(), total);
+    }
+
+    /// Bug hunt 2026-11-01: the address table holds only the requested addresses a hunk has, so
+    /// a one-address selection over many hunks keeps one entry. Before, it kept every hunk's
+    /// address (here 18 entries; 300,000 on a 12.6 MB patch peaked 53 MB above a path selection).
+    #[test]
+    fn the_address_table_holds_only_requested_addresses() {
+        let r = review(&patch());
+        let address = |hunk: &PatchHunk, path: &str| hunk.address(path);
+        let f2 = r.files()[2].patch_twin.hunks[1].address("src/f2.rs");
+        let table = hunks_by_address(r.files(), &[f2.as_str(), "absent"], &address);
+        assert_eq!(table.len(), 1);
+        assert_eq!(table[f2.as_str()], [(2, 1)]);
+        // Two identical sections of one path share an address; both are kept, in review order.
+        let one = "--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        let r = review(&format!("{one}{one}"));
+        let x = r.files()[0].patch_twin.hunks[0].address("x.rs");
+        let table = hunks_by_address(r.files(), &[x.as_str()], &address);
+        assert_eq!(table[x.as_str()], [(0, 0), (1, 0)]);
     }
 
     /// Bug hunt 2026-11-01: an unknown address or path is repeated in the error within

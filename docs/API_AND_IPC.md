@@ -353,7 +353,8 @@ process. A client may call `engine.initialize` first but does not have to.
   `<socket>.lock` from before the stale-socket probe until it exits.
 - Treat request fields and agent annotations as untrusted input.
 - Limits (`serve.rs`, `handler.rs`): 80 MiB request and response lines (an error
-  answer too, measured as written, with its message cut at 4 KiB), a
+  answer too, measured as written, with its message cut at 4 KiB, as is every
+  MCP tool and protocol error), a
   30-second absolute read deadline per line, a 30-second write timeout, eight
   concurrent connections, 64 retained sessions (least recently used evicted
   first), and a 128 MiB aggregate retained session-payload budget.
