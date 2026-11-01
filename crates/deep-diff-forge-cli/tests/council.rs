@@ -140,6 +140,15 @@ impl Fixture {
             fs::write(&tool, FAKE_GATE.replace("@MODE@", mode)).unwrap();
             fs::set_permissions(&tool, fs::Permissions::from_mode(0o700)).unwrap();
         }
+        if mode == "vendor_dirs" {
+            // Built here, untimed; the gate renames it into its output (same filesystem).
+            let crate_dir = self.root.join("vendor-dirs-crate");
+            fs::create_dir(&crate_dir).unwrap();
+            fs::write(crate_dir.join("lib.rs"), "pub fn f() {}\n").unwrap();
+            for i in 0..100_001 {
+                fs::create_dir(crate_dir.join(i.to_string())).unwrap();
+            }
+        }
     }
     fn gate(&self, gate: &str) -> Output {
         self.gate_with(gate, "normal")
@@ -526,7 +535,8 @@ sys.exit(subprocess.run([exe]+[host(a) for a in inner[1:]],cwd=host(workdir),env
 const FAKE_IMAGE_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 /// Fake `cargo` inside the fake sandbox. Modes plant what a hostile candidate (or its tools) could
 /// leave in the job's writable `/work`: `vendor_symlink`, `vendor_root_symlink`, `vendor_fifo` and
-/// `vendor_dirs` (more empty directories than the seal's entry budget) in the vendoring output;
+/// `vendor_dirs` (more empty directories than the seal's entry budget, built by `install_gate`
+/// before the job's clock starts and renamed in) in the vendoring output;
 /// `fifo` and `symlinked_dir` at the mutation witness. For the exemption oracle (installed again
 /// as `ddf-cargo-mutants-noexclude` and `ddf-cargo-mutants-strict`): `exempt`/`exempt_txt` hide
 /// `hidden` with something other than the allow-list; the rest hide it with `#[cfg(test)]`, and
@@ -642,11 +652,13 @@ if sys.argv[1:2]==['build'] and '--keep-going' in sys.argv:
 if sys.argv[1:2]==['vendor']:
     out=pathlib.Path(sys.argv[-1])
     if mode=='vendor_root_symlink':out.symlink_to('/etc');sys.exit(0)
-    crate=out/'crate-1.0.0';crate.mkdir(parents=True);(crate/'lib.rs').write_text('pub fn f() {}\n')
+    crate=out/'crate-1.0.0'
+    if mode=='vendor_dirs':
+        # The crate with 100,001 empty directories that `install_gate` built before the clock.
+        out.mkdir(parents=True);os.rename(os.path.join(os.path.dirname(os.path.abspath(__file__)),'..','vendor-dirs-crate'),crate);sys.exit(0)
+    crate.mkdir(parents=True);(crate/'lib.rs').write_text('pub fn f() {}\n')
     if mode=='vendor_symlink':(crate/'escape').symlink_to('/etc')
     if mode=='vendor_fifo':os.mkfifo(crate/'pipe')
-    if mode=='vendor_dirs':
-        for i in range(100_001):(crate/str(i)).mkdir()
     sys.exit(0)
 if 'mutants' in sys.argv:
     assert 'CARGO_TARGET_DIR' not in os.environ,'mutation must not share a cargo target dir'
@@ -2084,9 +2096,10 @@ fn vendoring_output_is_sealed_and_planted_links_or_fifos_are_never_mounted() {
         "vendor_dirs",
     ] {
         let f = Fixture::new();
-        // The refusal must come from the seal, not the clock. Creating 100,001 directories takes
-        // about 3 s on a loaded host, and at load 60 the other modes passed 2 s too: a vendoring
-        // job that times out writes no `qualification-error.txt` (sandbox mutation run, 2026-11-01).
+        // The refusal must come from the seal, not the clock: a vendoring job that times out is
+        // refused as `timed_out` with no `qualification-error.txt`. At load 60 the other modes
+        // passed 2 s, and creating 100,001 directories inside the job took 45 s, so `install_gate`
+        // builds them before the clock starts (sandbox mutation run, 2026-11-01).
         f.long_budget();
         f.prepare();
         f.install_gate(mode);
@@ -2103,7 +2116,22 @@ fn vendoring_output_is_sealed_and_planted_links_or_fifos_are_never_mounted() {
             String::from_utf8_lossy(&result.stderr)
         );
         let vendor = f.run.join("jobs/sandbox-vendor");
-        let refusal = fs::read_to_string(vendor.join("qualification-error.txt")).unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(vendor.join("execution.json")).unwrap()).unwrap();
+        assert_eq!(receipt["outcome"], "passed", "{mode}: {receipt}");
+        let refusal =
+            fs::read_to_string(vendor.join("qualification-error.txt")).unwrap_or_else(|e| {
+                panic!(
+                    "{mode}: {e}; vendor dir: {:?}; execution: {}; qualification: {}; stderr: {}",
+                    fs::read_dir(&vendor).map(|d| d
+                        .filter_map(Result::ok)
+                        .map(|e| e.file_name())
+                        .collect::<Vec<_>>()),
+                    fs::read_to_string(vendor.join("execution.json")).unwrap_or_default(),
+                    fs::read_to_string(vendor.join("qualification.json")).unwrap_or_default(),
+                    String::from_utf8_lossy(&result.stderr)
+                )
+            });
         assert!(
             refusal.contains("vendored output refused"),
             "{mode}: {refusal}"
