@@ -1,11 +1,12 @@
 # Roadmap
 
-## Status 2026-10-31 (0.5.0 and later)
+## Status 2026-11-01 (0.5.0 and later)
 
 This section is current. The phase lists below are the original plan and are kept unchanged;
 the [2026-10-26 status](#status-2026-10-26) is kept as a dated record. Status is read from the
-code on `main` after #54 (`b1b178b`), with the 2026-10-30 additions dated in each row, and from
-`deep-diff-forge --help`.
+code on `main` after #54 (`b1b178b`), with later additions dated in each row, rechecked on
+2026-11-01 against `main` (`c008b7a`) and `deep-diff-forge --help`. Items on hold for lack of
+hardware are under [open items for maintainers](#open-items-for-maintainers).
 
 | Phase | State | What exists / what remains |
 | --- | --- | --- |
@@ -15,10 +16,10 @@ code on `main` after #54 (`b1b178b`), with the 2026-10-30 additions dated in eac
 | 3. Structural diff | Partial | Done: tree-sitter with the Rust grammar only, byte and node budgets and a cooperative time budget, token-level structural diff with reformat-only and best-effort moved-block detection (`structural <old> <new>`). Remaining: more languages, structural spans tied to hunks. |
 | 4. Review intelligence graph | Partial | Done: deterministic file-level risk ranking with generated/vendored suppression; code evidence (2026-10-30): nine lexical signals from the changed lines (`unsafe`, process spawn, network, `eval`, CI privilege, build hooks, secret-shaped text, check suppression, removed tests), each at a hunk address and line, in rank, outline, MCP, daemon and the cockpit. Remaining: hunk-level ranking, symbols, tests, owners, commands in the graph. |
 | 5. Agent collaboration | Partial | Done: grounding and source classification, sanitising, anchor validation (library); the TUI shows the engine's own grounded notes. Done (2026-10-30): verified agent findings, the path for external agent findings into the CLI (`findings verify`), the daemon (`findings.verify`, protocol 2), `rpc`, MCP (`verify_findings`), the Python SDK and the cockpit (`review --findings`), each checked against patch truth (anchor, line, freshness, size, duplicates) and never grounded. Remaining: a persistent findings store; agent review requests. |
-| 6. App surfaces | Partial | Done: TUI. Remaining: a TUI test harness beyond the headless `review --probe` frame; desktop, web, IDE and forge adapters. |
+| 6. App surfaces | Partial | Done: TUI, tested through key sequences (`tui/src/ui.rs`, `TestBackend`) and, since 2026-10-31, through its live loop (`tui/src/run.rs`) and bare `review` in a pseudo-terminal (`cli/tests/review_tty.rs`). Remaining: desktop, web, IDE and forge adapters. |
 | 7. Daemon | Partial | Done: Unix-socket JSON-RPC 2.0, protocol 2 (`daemon.metrics` and `findings.verify`; a client that asks for 0 or 1 gets that version's methods), sessions, `engine.methods`, 0700 directory and 0600 socket. Done since 0.3.0: a peer-credential check on both ends of the socket, a start lock, requests in parallel, and (2026-10-30) `daemon.metrics`, doctor warnings from it, and `--log-format json`. Remaining: AST and line-index cache, subscriptions. |
-| 8. Cluster and loom | Cluster partial, loom withdrawn | Done: `deep-diff-forge-cluster` with contiguous shards, join policies and a receipt, run by `--cluster`. Remaining: semantic and other dimensions. Withdrawn 2026-10-31: the `cluster` and `chain` subcommands (served by `--cluster` and shell composition) and the loom. |
-| 9. Deployment spine | Done | CI (`ci.yml`, 11 required checks; weekly `campaign.yml`), `release.yml` (3 targets, sha256, SLSA attestation on tags), `deploy status\|release\|doctor`, hostile daemon soak smoke, since 2026-10-30 a `bench (base vs head)` job on pull requests (required since 2026-10-31) and a full bench receipt in the weekly campaign, GitHub releases v0.1.0 to v0.4.0, GitLab `main` fast-forwarded from GitHub `main` after each merge. |
+| 8. Cluster and loom | Cluster partial, loom withdrawn | Done: `deep-diff-forge-cluster` with contiguous shards, join policies and a receipt, run by `--cluster`. Two dimensions run: patch and risk (`cluster-contract`). Withdrawn 2026-10-31: the `cluster` and `chain` subcommands (served by `--cluster` and shell composition), the semantic, agent, runtime, storage, history and presentation lanes, and the loom. |
+| 9. Deployment spine | Done | CI (`ci.yml`, 11 required checks; weekly `campaign.yml`), `release.yml` (four targets since 2026-10-31, `aarch64-unknown-linux-gnu` from the release after v0.5.0; every binary run, sha256, SLSA attestation on tags; crates.io job in the `release` environment, owner approval required since 2026-11-01), `deploy status\|release\|doctor`, hostile daemon soak smoke, since 2026-10-30 a `bench (base vs head)` job on pull requests (required since 2026-10-31) and a full bench receipt in the weekly campaign, GitHub releases v0.1.0 to v0.5.0, GitLab `main` fast-forwarded from GitHub `main` after each merge. |
 | 10. Learning loop | Partial | Done: local-only strategy receipts (`learn record --stdin`), scoring and trust (`learn status`), planner, ranking and annotation learners and promotion rules (library only); and since 2026-10-30, a corpus with a manifest (`fixtures/eval/MANIFEST.json`), evaluation receipts (`eval`, `deep-diff-forge.eval.v0`) and benchmark receipts (`bench`, `deep-diff-forge.bench.v0`). Remaining: nothing emits receipts automatically; `learn record` does not take `bench.v0` or `eval.v0`; no wiring of learned weights into ranking. See [LEARNING_LOOP.md](LEARNING_LOOP.md). |
 
 Release and publication:
@@ -40,7 +41,7 @@ Residual risks (open):
 3. ~~Git subprocesses have no time limit~~: closed. One deadline bounds every Git call of an acquisition, 120 s for the CLI and 30 s for `review.change` (`GitAcquireOptions::time_limit`).
 4. ~~macOS tests run on schedule and dispatch only, not on pull requests~~: closed. They run on every pull request and are a required check.
 5. ~~Two `daemon start`s can race in the window between probing and binding~~: closed. A start holds an exclusive lock on `<socket>.lock` from before the probe until the daemon exits.
-6. No TUI test harness beyond the headless probe.
+6. ~~No TUI test harness beyond the headless probe~~: closed 2026-10-31 on Linux (the live loop and a pseudo-terminal run, phase 6). On macOS interactive `review` is unobserved (see below).
 7. The council trial is not designed yet.
 
 Fixed on 2026-10-28 (PRs #21 to #23): a text change hidden after a `GIT binary patch` body (now a
@@ -49,6 +50,21 @@ strict base85 grammar, else exit 4); gate containers run as the caller's uid and
 `SO_RCVTIMEO` `EINVAL`; a second `daemon start` orphaning the first (now `AddrInUse` when a live
 daemon answers); responses over the 80 MiB line cap; an invalid learning receipt exiting 3 (now
 4); `daemon --socket PATH health` misparsing; `--foreground` accepted outside `daemon start`.
+
+## Open items for maintainers
+
+Open for anyone who picks them up.
+
+- **On hold (owner decision 2026-11-01): the launchd agent on a physical Mac.** No real Mac is
+  available. CI covers a hosted macOS runner: the `macOS launchd agent` job loads
+  `contrib/launchd/dev.deep-diff-forge.daemon.plist` with `scripts/launchd_smoke.sh`, and
+  `macOS tests` runs the suite, including the pseudo-terminal `review` test. Still unobserved on
+  real hardware: the agent across login, logout and sleep, and interactive `review` at a real
+  macOS terminal. A maintainer with a Mac can close it by running both and recording the result
+  in [`EVIDENCE.md`](../EVIDENCE.md).
+- **Signed release tags.** Tags are immutable (ruleset) but unsigned
+  ([production readiness](PRODUCTION_READINESS.md)).
+- **Directory pairs and more languages** ([CONTRIBUTING](../CONTRIBUTING.md#open-problems-worth-owning)).
 
 ## Phase 0: Vocabulary and Contracts
 

@@ -4,7 +4,7 @@ This document maps the library crates, the command surface, the JSON-RPC
 methods, the MCP tools, the SDKs and the Unix-domain socket locations. Each
 section says whether it describes what ships today or a planned design.
 
-## Status 2026-10-28 (0.3.0)
+## Status 2026-10-28 (0.3.0), updated 2026-11-01
 
 - **Ships today:** the CLI, the optional Unix-socket daemon (JSON-RPC 2.0,
   protocol 2), `rpc` (the same protocol over stdio, no daemon), `mcp` (a
@@ -90,22 +90,23 @@ and checked by `crates/deep-diff-forge-cli/tests/crate_edges.rs`.
 | `deep-diff-forge-projection` | `inline.rs`, `side_by_side.rs`, `width.rs` | Inline and side-by-side rendering. |
 | `deep-diff-forge-pipeline` | `stages.rs`, `jsonl.rs`, `review.rs` | `ChainStage` trait, `IngestStage` / `RenderStage`, JSONL events, `analysis.v1` bundles. |
 | `deep-diff-forge-syntax` | `language.rs`, `analyze.rs`, `highlight.rs`, `structural.rs` | Tree-sitter symbols, highlighting, structural diff. |
-| `deep-diff-forge-graph` | `rank.rs`, `risk.rs` | Risk signals and deterministic ranking. |
+| `deep-diff-forge-graph` | `rank.rs`, `risk.rs`, `evidence.rs`, `lexical.rs` | Risk signals, lexical code evidence and deterministic ranking. |
 | `deep-diff-forge-agent` | `anchor.rs`, `evidence.rs`, `findings.rs`, `store.rs` | Agent annotation protocol and the findings verifier (`findings.v0`). |
 | `deep-diff-forge-cluster` | `cluster.rs`, `scheduler.rs` | Bounded parallel lanes (patch + risk) with a deterministic join. |
 | `deep-diff-forge-learning` | `receipt.rs`, `store.rs`, `score.rs`, `planner.rs`, `ranking.rs`, `annotation.rs`, `promote.rs` | Local-only L9 learning store. |
-| `deep-diff-forge-daemon` | `protocol.rs`, `handler.rs`, `serve.rs`, `security.rs` | JSON-RPC framing, dispatcher, socket server, socket security. |
+| `deep-diff-forge-daemon` | `protocol.rs`, `handler.rs`, `serve.rs`, `security.rs`, `admission.rs`, `views.rs`, `metrics.rs`, `exposition.rs`, `log.rs`, `inspect.rs` | JSON-RPC framing, dispatcher, socket server, socket security, in-flight admission, outline and hunk views, metrics and their Prometheus text rendering, logs, read-only location checks for `deploy doctor`. |
 | `deep-diff-forge-tui` | `run.rs`, `ui.rs`, `state.rs` and others | Interactive review cockpit. |
 | `deep-diff-forge-review` | `cli.rs`, `execution.rs`, `sandbox.rs`, `tuicr.rs` and others | Review council (`council …` subcommands). |
 | `deep-diff-forge-sdk` | `lib.rs` | Stable Rust facade (see [SDKs](#sdks)). |
-| `deep-diff-forge-cli` | `main.rs`, `args.rs`, `git_input.rs`, `analysis.rs`, `contract.rs`, `mcp.rs`, `rpc.rs`, `bench.rs`, `eval.rs`, `agent.rs`, `doctor.rs` | The `deep-diff-forge` binary, including `bench` (`bench.v0`) and `eval` (`eval.v0`). |
+| `deep-diff-forge-cli` | `main.rs`, `args.rs`, `git_input.rs`, `file_pair.rs`, `analysis.rs`, `contract.rs`, `mcp.rs`, `rpc.rs`, `bench.rs`, `eval.rs`, `agent.rs`, `doctor.rs`, `textfile.rs` | The `deep-diff-forge` binary, including `bench` (`bench.v0`) and `eval` (`eval.v0`). |
 
-Planned, not created: a Git workspace crate, a planner crate and a loom crate.
+Planned, not created: a Git workspace crate and a planner crate. The loom crate is withdrawn (2026-10-31).
 
 ## CLI Command Surface (shipped)
 
-This is the usage block of `deep-diff-forge --help` at 0.5.0 (`bench`,
-`eval`, `findings verify`, `review --findings` and `daemon metrics` arrived in 0.5.0):
+This is the usage block of `deep-diff-forge --help` on `main` (2026-11-01). `bench`,
+`eval`, `findings verify`, `review --findings` and `daemon metrics` arrived in 0.5.0;
+`<old> <new>` and `daemon metrics --format prometheus --out PATH` are unreleased:
 
 ```text
 deep-diff-forge --help
@@ -122,8 +123,9 @@ deep-diff-forge council <example|prepare|review|gate|status|import|export-tuicr|
 deep-diff-forge analyze <patch-file> <base-directory> <candidate-directory>
 deep-diff-forge structural <old> <new> [--json]
 deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME] [--findings FILE]
-deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics|stop} [--socket PATH]
+deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]
 deep-diff-forge learn {status|record --stdin} [--json]
+deep-diff-forge <old> <new> [<--stdin-patch output flags>]
 deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks]
 deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [--acquisition-json | <--stdin-patch output flags>]
 deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... | doctor} [--json]
@@ -159,8 +161,8 @@ deep-diff-forge cache status | cache prune
 | Agent tools | shipped | `--json` (`review.v0`, `rank.v0`, `cluster.v0`), `--jsonl` (`diff.file` events), `envelope` (`ddf.result.v1`), `mcp`. |
 | Claude Code | shipped | `claude-code-contract`; machine commands need no TTY; see [CLAUDE_CODE_BASH_CLI.md](CLAUDE_CODE_BASH_CLI.md). |
 | Bash | shipped | See [BASH_API_CONTRACTS.md](BASH_API_CONTRACTS.md). |
-| Unix filters | partly shipped | Explicit stdin modes (`--stdin-patch`, `learn record --stdin`); the filter subcommands (`ingest`, `plan`, `rank`, `render`) are planned. |
-| Cluster runners | partly shipped | `--cluster` emits a receipt and a deterministic join; lane manifests and replay are planned. |
+| Unix filters | partly shipped | Explicit stdin modes (`--stdin-patch`, `learn record --stdin`). Withdrawn 2026-10-31 (`chain-contract`): the `rank`, `annotate` and `render` subcommands, served by flags. `ingest` and `plan` are not built and have no owner. |
+| Cluster runners | shipped as a mode | `--cluster` emits a receipt and a deterministic join over the patch and risk dimensions. Withdrawn 2026-10-31 (`cluster-contract`): the `cluster` subcommand and the other lanes; lane manifests and replay are design history. |
 | `GIT_EXTERNAL_DIFF` | planned | 7-arg and 9-arg external diff invocation. Not implemented. |
 | `git difftool` | planned | Old/new file paths and labels. Not implemented. |
 | Pager | planned | No pager or ANSI mode for `--stdin-patch`; it prints plain text. |

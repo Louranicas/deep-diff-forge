@@ -1,5 +1,10 @@
 # Recommendation integration — 2026-10-25
 
+> **Status 2026-11-01.** Append-only ledger; its per-finding labels are 2026-10-25 history.
+> Later work is in [`CHANGELOG.md`](../CHANGELOG.md) and [`EVIDENCE.md`](../EVIDENCE.md).
+> Since then: `<old> <new>` ships for two regular files (unreleased), and `chain`, `cluster`
+> and `loom` are withdrawn (2026-10-31).
+
 ## Status 2026-10-28 (0.3.0)
 
 **Kind:** append-only ledger of the 60 tuicr findings DDF-R00–R59, dated 2026-10-25 against base `1b39d66` (0.2.1). The entries below are not rewritten. Their status labels (19 Implemented, 10 Partial foundation, 20 Planned, 6 Evaluation required, 4 Preserved, 1 partially implemented) are as of 2026-10-25.

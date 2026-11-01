@@ -7,6 +7,12 @@ anchors. This gives the engine parallelism without sacrificing review trust.
 > **Target design, not a description of the code.** Lanes other than patch and risk, lane
 > states, budget profiles and the dimension receipt below are not built. The next section is
 > what 0.3.0 has.
+>
+> **Status 2026-11-01.** Shipped: the patch and risk lanes (`deep-diff-forge-cluster`,
+> `run_risk_cluster`) behind `--cluster`, and the vocabulary in `deep-diff-forge-core`.
+> Withdrawn 2026-10-31 (`cluster-contract`): the `cluster` subcommand and the semantic, agent,
+> runtime, storage, history and presentation lanes. Lane states, budget profiles and the
+> dimension receipt are design history with no owner. Nothing is on hold.
 
 ## What exists today (0.3.0)
 
@@ -24,7 +30,7 @@ anchors. This gives the engine parallelism without sacrificing review trust.
   order today (`apply_join`); nothing runs as-ready.
 - **Not built:** the semantic, agent, runtime, storage, history and presentation lanes; lane
   states; the `deep-diff-forge.dimension-receipt.v0` schema; daemon lane caching and
-  subscriptions; the `cluster` subcommand (refused).
+  subscriptions; the `cluster` subcommand (withdrawn 2026-10-31, refused with exit 2).
 
 ## Dimensions
 

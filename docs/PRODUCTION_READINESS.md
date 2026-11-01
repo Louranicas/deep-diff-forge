@@ -7,7 +7,7 @@ code or docs, not run), **unmeasured** (no evidence either way).
 Related: [deployment gap analysis](DEPLOYMENT_GAP_ANALYSIS.md) ·
 [operations and daemon](OPERATIONS_AND_DAEMON.md) ·
 [release and publication](RELEASE_AND_PUBLICATION.md) · [security policy](../SECURITY.md) ·
-[evidence](../EVIDENCE.md) · [roadmap](ROADMAP.md).
+[evidence](../EVIDENCE.md) · [roadmap](ROADMAP.md) · [deployment framework](DEPLOYMENT_FRAMEWORK.md).
 
 ## Assessment 2026-10-30 (`main` `a4bc06f`, workspace 0.3.0 + unreleased)
 
@@ -553,3 +553,26 @@ is addressed; no score above is changed by it.
 - **[Inferred]** It is still a corpus written by the rules' author, with cases shaped after real
   advisories rather than taken from them. It is a regression gate and a list of known limits,
   not evidence of review quality on real-world code; a held-out corpus remains open.
+
+## Follow-up 2026-11-01: release authority, secret scanning and the Mac (no rescore)
+
+Owner decisions of 2026-11-01 against the reconciled list above. Not a new assessment.
+
+- **[Measured]** Release authority, item 1: the `release` environment now has the owner as
+  its required reviewer and a deployment policy of `v*` tags only (`gh api
+  repos/Louranicas/deep-diff-forge/environments`); the `v*` tag ruleset (no deletion, update or
+  bypass) and the fail-closed crates.io job are on `main` (CHANGELOG, Unreleased). Only the
+  crates.io `publish` job runs in that environment. Still open: signed tags, and crates.io
+  trusted publishing (an account-level step).
+- **[Measured]** Code scanning and secret patterns, item 2: CodeQL runs (`codeql.yml`; not a
+  required check). Push protection and provider patterns are on; non-provider patterns and
+  validity checks stay `disabled` for this user-owned repository although the API accepts the
+  change (GitHub documents validity checks for organisation repositories with Secret
+  Protection). gitleaks, in the required `secrets` job and the pre-push hook, is the
+  compensating control. This part of item 2 is closed as unavailable, not done.
+- **[Measured]** Items 4 and 5 moved: `daemon stop` drains, a systemd user unit and a launchd
+  agent ship in `contrib/`, and the Python client is a package (`sdk/python/pyproject.toml`,
+  not on PyPI); all unreleased.
+- **On hold:** running the launchd agent on a physical Mac. No real Mac is available; the
+  `macOS launchd agent` CI job on a hosted runner is the only macOS launchd evidence. It is an
+  open item for future maintainers ([roadmap](ROADMAP.md#open-items-for-maintainers)).

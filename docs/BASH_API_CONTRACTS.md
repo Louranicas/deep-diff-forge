@@ -2,13 +2,17 @@
 
 Deep-Diff-Forge must be easy to drive from strict Bash scripts.
 
+> **Status 2026-11-01.** Sections marked *shipped* are on `main` (`crates/deep-diff-forge-cli`);
+> *planned* ones are not built and have no owner. Withdrawn 2026-10-31: the `chain`, `cluster`,
+> `loom`, `rank`, `annotate` and `render` subcommands (each a flag or the shell today).
+
 ## Status 2026-10-28 (0.3.0)
 
 Everything under "Shipped" was checked against the 0.3.0 binary and
 `crates/deep-diff-forge-cli/src/main.rs`. The earlier "Claude Code invocation
 examples" used commands and flags that do not exist (`--git`, `--budget`,
 `--semantic`, `plan`, `why-first`, `ingest`, `rank`, `render`, `cluster`,
-`loom plan`); they now sit under [Planned](#planned-not-implemented), next to the
+`loom plan`); they now sit under [Planned](#not-built), next to the
 shipped command that does the job today.
 
 ## Contract Rules (shipped)
@@ -88,8 +92,9 @@ Rules:
   and exits 0 unless `--require-files` is passed (measured on 0.3.0).
 
 The same guards apply to the structured Git selections
-(`--git-working-tree`, `--git-staged`, `--git-range A..B`) and to the daemon's
-`diff.compute` (`require_files`, `require_hunks`).
+(`--git-working-tree`, `--git-staged`, `--git-range A..B`), to a file pair
+(`deep-diff-forge <old> <new>`, unreleased) and to the daemon's `diff.compute`
+(`require_files`, `require_hunks`).
 
 ## Machine Envelope (shipped)
 
@@ -132,7 +137,10 @@ Rules:
 
 ### Review document (shipped, `--stdin-patch --json`)
 
-Measured on 0.3.0 for a one-line change:
+Measured on 0.3.0 for a one-line change. Since 0.4.0 each hunk also carries `old_lines`,
+`new_lines`, `section`, `address` and `body_sha256`, and a file or line with hidden or
+traversing text a `hazards` list (additive, still `review.v0`; see the README's
+[output formats](../README.md#output-formats-and-schemas)):
 
 ```json
 {
@@ -239,6 +247,9 @@ deep-diff-forge --git-range main..HEAD --rank --json --require-files --require-h
 deep-diff-forge semantic src/lib.rs --json
 deep-diff-forge structural old.rs new.rs --json
 
+# Two regular files, through hardened `git diff --no-index` (unreleased, 2026-10-31)
+deep-diff-forge old.rs new.rs --rank --json --require-files --require-hunks
+
 # Bounded local parallelism (patch + risk lanes, deterministic join)
 git diff | deep-diff-forge --stdin-patch --cluster --parallel 4 --json
 
@@ -249,9 +260,11 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"engine.methods"}' | deep-diff-f
 `--parallel` takes `serial`, `auto` (the default) or a worker count from 1 (anything else exits 2); a fixed count is
 capped at four times the CPU count.
 
-### Planned (not implemented)
+### Not built
 
-Each of these exits 2 today:
+Each of these exits 2 today. `plan`, `why-first`, `ingest`, `--git` and `--budget` are planned
+and unowned; `rank` and `render` as subcommands are withdrawn (`--rank` and `--layout` serve
+them):
 
 ```bash
 deep-diff-forge --git --json --budget fast

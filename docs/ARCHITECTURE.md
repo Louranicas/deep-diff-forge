@@ -9,6 +9,11 @@
 > holds equal to `cargo metadata` is generated in
 > [Current crates and edges](SCHEMATICS.md#current-crates-and-edges) from
 > [`docs/crate-edges.txt`](crate-edges.txt).
+>
+> **Status 2026-11-01.** Shipped: the two "as built" sections (14 crates). Planned, unowned:
+> the `git`, `planner`, `ui-model` and `fixtures` crates, a shared cache, subscriptions,
+> directory pairs. Withdrawn 2026-10-31: the `loom` crate and the `chain`, `cluster` and `loom`
+> subcommands. Nothing is on hold.
 
 ## Crates as built (0.3.0)
 
@@ -96,7 +101,7 @@ below only as target design.
 | `projection` | Inline and side-by-side rows and text. |
 | `pipeline` | `IngestStage` and `RenderStage` (used by `--jsonl`), and the shared source-pair review service behind `analyze`. |
 | `syntax` | Tree-sitter (Rust grammar only), symbols, highlighting, token-level structural diff. |
-| `graph` | Deterministic risk ranking of files from patch facts. |
+| `graph` | Deterministic risk ranking of files from patch facts and, since 0.5.0, lexical code evidence from the changed lines (`evidence.rs`, `lexical.rs`). |
 | `cluster` | Bounded `std::thread::scope` lanes over contiguous shards, with a join policy and a receipt. |
 | `agent` | Annotation grounding, sources, sanitising and anchor validation; an in-memory store. |
 | `learning` | Local-only strategy receipts, scoring and promotion rules. |
@@ -165,8 +170,9 @@ Evidence (code at 0.3.0):
 - SDK `review` wraps `SealedReview::new`; SDK `rank` is `graph::rank`
   (`crates/deep-diff-forge-sdk/src/lib.rs`).
 - `review` (TUI) reads stdin, parses, and builds `ReviewApp`; its file tree is ranked by
-  `graph`, and its notes are the engine's own findings (`engine_annotations`), not external
-  agent input.
+  `graph`, and its notes are the engine's own findings (`engine_annotations`) plus, since 0.5.0,
+  the agent findings that `review --findings FILE` accepts after `agent::findings` checks them
+  against the patch, shown as agent notes and never grounded.
 - `--cluster` places files with `graph::RankedFile::scored` (score, signals and code evidence)
   in `cluster` lanes and joins by `ranked-review-order`; its receipt lists the `patch` and
   `risk` dimensions (measured: `deep-diff-forge --stdin-patch --cluster --json`).

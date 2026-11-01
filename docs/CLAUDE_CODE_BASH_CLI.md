@@ -2,6 +2,10 @@
 
 Deep-Diff-Forge is optimized first for Claude Code, Bash, and CLI workflows. GUI and IDE surfaces are projections over the same contracts, not separate product truths.
 
+> **Status 2026-11-01.** *Shipped* blocks are on `main` (`crates/deep-diff-forge-cli`);
+> `<old> <new>` and `daemon metrics --format prometheus` are unreleased. *Not built* commands are
+> planned and unowned unless marked withdrawn (`chain`, `cluster`, `loom`, 2026-10-31).
+
 ## Status 2026-10-28 (0.3.0)
 
 The command list, exit codes and output modes below were checked against the
@@ -90,7 +94,8 @@ deep-diff-forge rpc      # daemon JSON-RPC over stdio, no daemon
 # daemon lifecycle (start runs in the foreground; use a second terminal or a supervisor)
 deep-diff-forge daemon start
 deep-diff-forge daemon status
-deep-diff-forge daemon stop
+deep-diff-forge daemon metrics --format prometheus --out DIR/deep-diff-forge.prom   # node_exporter textfile
+deep-diff-forge daemon stop                         # drains; returns once the daemon has exited
 
 # local learning loop
 deep-diff-forge learn status --json
@@ -99,7 +104,7 @@ deep-diff-forge learn status --json
 `daemon health|status|stop` print the daemon's JSON-RPC response line; they
 take no `--json` flag.
 
-### Planned (not implemented)
+### Not built (planned unless marked withdrawn)
 
 Each of these exits 2 today:
 

@@ -1,9 +1,12 @@
 # Operations And Daemon Specification
 
-## Status 2026-10-28 (0.3.0)
+## Status 2026-11-01 (`main` after 0.5.0)
 
-What exists today, checked against `crates/deep-diff-forge-daemon/src/` and the
-0.3.0 debug binary:
+What exists today, first checked against `crates/deep-diff-forge-daemon/src/` and the
+0.3.0 debug binary on 2026-10-28, with later changes dated, and rechecked against
+`main` (`c008b7a`) on 2026-11-01. **Shipped:** everything in this list. **Planned (target
+design, unowned):** the cache, subscriptions and the state machine below. **On hold:** the
+launchd agent on a physical Mac ([running as a service](#running-as-a-service)).
 
 - `deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]`.
   `start` always serves in the foreground; a supervisor owns the process.
@@ -271,6 +274,10 @@ daemon as the CLI does and gives a stop longer than `daemon stop` waits (`STOP_W
   launchd's pid, a restart after SIGKILL, no restart after `daemon stop` (socket gone), and
   `launchctl bootout` with no process left. Its first run on a real launchd was pending CI when
   it was added; the flow was exercised only against a fake `launchctl` on Linux (inferred).
+- **On hold (owner decision 2026-11-01): the launchd agent on a physical Mac.** No real Mac is
+  available, so the hosted-runner CI job above is the only launchd evidence; login, logout and
+  sleep on real hardware are untested. Open for future maintainers
+  ([roadmap](ROADMAP.md#open-items-for-maintainers)).
 
 ## Operational Commands
 
@@ -498,10 +505,11 @@ and listed in the Capacity Map (owner's local vault).
 Deployment needs that follow:
 
 - **Memory:** plan for about 1.1 GB per maximum-size `rpc` or MCP request, and about 250 MB for
-  the CLI. The daemon admits at most eight connections but runs one request at a time, so its
-  peak is about one maximum-size request plus up to eight buffered request lines of up to 80 MiB
-  and at most 128 MiB of retained sessions (inferred from the caps, not measured); size the host
-  or keep patches well under the cap.
+  the CLI. The daemon admits at most eight connections and, since 0.4.0, runs their requests in
+  parallel, but admits at most 128 MiB of request bytes in flight, so its peak is bounded by that
+  admitted work, the buffered request lines (up to 80 MiB each) and at most 128 MiB of retained
+  sessions (inferred from the caps, not measured; the 2026-10-27 figures above predate parallel
+  requests); size the host or keep patches well under the cap.
 - **`/tmp` inodes:** parallel council and mutation runs create many small files. The host's `/tmp`
   tmpfs has a 1,048,576-inode limit, which an 8-way stress run reached on 2026-10-26. Point
   `TMPDIR` at a disk-backed directory for heavy parallel work.

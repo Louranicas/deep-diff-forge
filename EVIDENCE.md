@@ -1102,3 +1102,29 @@ and `TMPDIR` on the storage disk (the `/tmp` quota was exhausted by concurrent r
   `vendoring_output_is_sealed_and_planted_links_or_fifos_are_never_mounted` and
   `qualification_cannot_restore_pass_over_a_refusal_marker` failed in several mutant runs of
   `check_execution`; whether they fail on the mutant or on load is not separated.
+
+## Release approval and secret scanning settings (2026-11-01)
+
+Owner decisions of 2026-11-01, measured with `gh api` the same day. Corrects the "no required
+reviewers" line of [Release integrity settings](#release-integrity-settings-2026-10-31) by this
+new note.
+
+- **Environment `release`:** two protection rules, `branch_policy` (one `tag` policy, `v*`) and
+  `required_reviewers` (the owner, user `Louranicas`; `prevent_self_review: false`). Only the
+  crates.io `publish` job of `release.yml` names the environment. Unmeasured: a tag run that
+  waits for the approval (no tag has been pushed since).
+- **Secret scanning** (`security_and_analysis`): `secret_scanning` and
+  `secret_scanning_push_protection` enabled; `secret_scanning_non_provider_patterns` and
+  `secret_scanning_validity_checks` disabled. Enabling them is accepted by the API but the
+  status stays disabled for this user-owned repository (owner's observation); GitHub documents
+  validity checks for organisation repositories with Secret Protection. Compensating control:
+  gitleaks 8.30.1 in the required `secret scan (gitleaks)` check and the pre-push hook
+  `scripts/hooks/pre-push`.
+- **Required checks** (ruleset 25868121): eleven, unchanged: `deploy gate-feature`, `supply
+  chain audit`, `review controller mutation and fuzz evidence`, `secret scan (gitleaks)`,
+  `declared Rust 1.88 compatibility`, four `diff mutation` shards, `macOS tests`, `bench (base
+  vs head)`.
+- **On hold:** the launchd agent on a physical Mac (no real Mac available); the hosted-runner
+  `macOS launchd agent` job is the only launchd evidence.
+- **Correction to 2026-10-31:** `v0.1.0` is a lightweight tag (`git cat-file -t v0.1.0`:
+  `commit`); `v0.2.0` to `v0.5.0` are annotated. None is signed.

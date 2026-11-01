@@ -1,5 +1,9 @@
 # Storage And 10TB Corpus Policy
 
+> **Status 2026-11-01.** Shipped: none of this in the engine; the safety rules are current
+> operator policy. Planned, unowned: the `[storage]` configuration, the large cache and corpus
+> mirror. Nothing is withdrawn or on hold.
+
 ## Status 2026-10-28 (0.3.0)
 
 **Kind:** policy for the operator workstation's optional storage disk. The safety rules ("Corpus Ingestion Rules", "Destructive Boundary") are current. The paths, the config keys and the large cache are not built.

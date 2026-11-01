@@ -1,5 +1,8 @@
 # Problem-Solver God-Tier Setup
 
+> **Status 2026-11-01.** A process standard, current; no product code implements it, so nothing
+> here is shipped, planned, withdrawn or on hold.
+
 ## Status 2026-10-28 (0.3.0)
 
 **Kind:** process standard for design work done by agents. It describes how a reviewer or agent should reason. It is not product code, and nothing in the binary implements it. "The local advanced agent roster" is a file on the operator workstation and is not in this repository.

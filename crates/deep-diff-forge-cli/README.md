@@ -4,8 +4,9 @@ The command-line front door to **Deep-Diff-Forge**, a deterministic code-review
 engine for diffs. It parses a unified or Git patch into a reviewable model,
 ranks the files by review risk, and never changes the patch it shows you.
 
-This crate builds the `deep-diff-forge` binary (version 0.3.0). It is a local,
-single-user tool for Linux and macOS.
+This crate builds the `deep-diff-forge` binary (version 0.5.0). It is a local,
+single-user tool for Linux and macOS
+([supported platforms](https://github.com/Louranicas/deep-diff-forge#supported-platforms)).
 
 ## Install
 
@@ -15,8 +16,8 @@ crates.io publication is on hold until the project is production-hardened, so
 - **Release binaries:** the [GitHub releases](https://github.com/Louranicas/deep-diff-forge/releases)
   ship `deep-diff-forge-<tag>-<target>.tar.gz` archives with `.sha256` files
   for `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin` and
-  `x86_64-apple-darwin`. Published releases: v0.1.0 and v0.2.0; 0.3.0 is not
-  tagged yet.
+  `x86_64-apple-darwin`, and `aarch64-unknown-linux-gnu` from the release after
+  v0.5.0. Published releases: v0.1.0 to v0.5.0 (latest: v0.5.0, 2026-10-31).
 - **From source** (Rust 1.88 or newer):
 
   ```bash
@@ -37,6 +38,7 @@ git diff | deep-diff-forge review                        # interactive review co
 git diff | deep-diff-forge review --probe                # one cockpit frame, headless
 deep-diff-forge semantic src/lib.rs --json               # tree-sitter symbols
 deep-diff-forge structural old.rs new.rs --json          # real change or reformat only?
+deep-diff-forge old.rs new.rs --rank --json              # two regular files (unreleased)
 deep-diff-forge --help
 ```
 
@@ -62,13 +64,13 @@ deep-diff-forge --git-range main..HEAD --rank --json --require-files --require-h
 
 | Surface | Command | What it is |
 | --- | --- | --- |
-| CLI | `deep-diff-forge …` | Review, rank, cluster, Git selections, `semantic`, `structural`, `highlight`, `analyze`, `learn`, `council`. |
+| CLI | `deep-diff-forge …` | Review, rank, cluster, Git selections, file pairs, `semantic`, `structural`, `highlight`, `analyze`, `findings verify`, `bench`, `eval`, `learn`, `council`, `agent setup\|doctor`. |
 | Machine contract | `envelope -- <command…>`, `schema [result\|exit-codes]`, `explain <code>` | Any command's result as one `ddf.result.v1` object; the exit-code registry. |
-| MCP server | `deep-diff-forge mcp` | Read-only MCP tools over stdio: `review_patch`, `rank_patch`, `explain_exit_code`, `exit_code_registry`. |
-| JSON-RPC over stdio | `deep-diff-forge rpc` | The daemon's protocol (JSON-RPC 2.0, protocol 1) with no daemon. |
-| Optional daemon | `deep-diff-forge daemon {path\|start\|health\|status\|stop}` | The same protocol on an owner-private Unix socket. |
+| MCP server | `deep-diff-forge mcp [--allow-repo PATH]...` | Eight read-only MCP tools over stdio: `review_outline`, `review_hunks`, `review_change`, `review_patch`, `rank_patch`, `verify_findings`, `explain_exit_code`, `exit_code_registry`. |
+| JSON-RPC over stdio | `deep-diff-forge rpc` | The daemon's protocol (JSON-RPC 2.0, protocol 2) with no daemon. |
+| Optional daemon | `deep-diff-forge daemon {path\|start\|health\|status\|metrics\|stop}` | The same protocol on an owner-private Unix socket; `metrics --format prometheus` writes a node_exporter textfile (unreleased). |
 | Rust SDK | crate `deep-diff-forge-sdk` | `review`, `rank`, the exit registry, and a Unix-socket `Client`. |
-| Python SDK | `sdk/python/deep_diff_forge.py` in the repository | Standard library only; `StdioClient` (over `rpc`) and `SocketClient`. |
+| Python SDK | `sdk/python` in the repository (`python3 -m pip install ./sdk/python`; not on PyPI) | Standard library only; `StdioClient` (over `rpc`) and `SocketClient`. |
 
 Every surface that emits a `review.v0` document (`--json`, the daemon's
 `diff.compute`, `rpc`, MCP `review_patch`, the SDK's `review`) uses the same
@@ -85,7 +87,7 @@ subcommands were withdrawn; each is refused with exit 2 and names its replacemen
 | 0 | Success. |
 | 2 | Usage or argument error. |
 | 3 | I/O or encoding failure. |
-| 4 | Invalid input (for example a patch that does not parse, or input over the 64 MiB budget). |
+| 4 | Invalid input (for example a patch that does not parse, input over the 64 MiB budget, or a refused Git acquisition or file pair). |
 | 6 | Daemon or interactive-terminal failure. |
 | 7 | Input contract refused (`--require-files`, `--require-hunks`). |
 | 101 | Internal error (a panic). |
@@ -103,7 +105,7 @@ prints the full registry.
   threat model and residual risks.
 
 This crate is the binary over the workspace's engine crates (`-core`, `-patch`,
-`-projection`, `-pipeline`, `-syntax`, `-graph`, `-tui`, `-cluster`,
+`-projection`, `-pipeline`, `-syntax`, `-graph`, `-agent`, `-tui`, `-cluster`,
 `-learning`, `-daemon`, `-review`). The workspace forbids `unsafe` code and runs
 supply-chain checks in CI.
 

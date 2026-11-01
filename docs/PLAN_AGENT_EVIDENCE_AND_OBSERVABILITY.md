@@ -3,9 +3,17 @@
 **Kind:** plan, append-only after acceptance. Versions are dated sections. A later revision is a new
 section; earlier ones are kept. Evidence labels: **measured**, **inferred**, **unmeasured**.
 
+> **Status 2026-11-01.** Shipped in 0.5.0: Feature A, code evidence (`graph::evidence`,
+> `graph::lexical`); Feature B, verified findings (`agent::findings`, `findings verify`,
+> `findings.verify`, MCP `verify_findings`); System M, `daemon.metrics`, `bench`, `eval`
+> (`cli/src/bench.rs`, `cli/src/eval.rs`). Shipped after 0.5.0 (unreleased): Prometheus text
+> output (`daemon::exposition`, `cli/src/textfile.rs`) and the 34-case corpus. Planned, unowned:
+> a persistent findings store, signed receipts. Withdrawn: `chain`, `cluster`, `loom` (row
+> "Deferred" in 1.0). See [1.3](#13--2026-11-01-later-changes).
+
 Related: [production readiness](PRODUCTION_READINESS.md) · [roadmap](ROADMAP.md) ·
 [API and IPC](API_AND_IPC.md) · [operations](OPERATIONS_AND_DAEMON.md) ·
-[learning loop](LEARNING_LOOP.md) · [testing](TESTING_GOLD_STANDARD.md).
+[learning loop](LEARNING_LOOP.md) · [testing](TESTING_GOLD_STANDARD.md) · [deployment framework](DEPLOYMENT_FRAMEWORK.md).
 
 ## 1.0 — 2026-10-30 (main `ff9e079`, v0.4.0)
 
@@ -242,3 +250,16 @@ The delivery table above stands. These are added to its PRs:
 | PR 3 (M1) | `daemon.metrics`, `daemon metrics`, doctor warnings, and `--log-format json` | `accept_errors` was dropped: it counted only EINTR retries, which no test can reach. Measured overhead: none at the benchmark's resolution. |
 | PR 4 (M2 + M3) | `bench`, `bench_compare.py`, the PR `bench` job, the campaign bench job, `eval`, the corpus (now 11 cases) and the floors | Every eval floor is 100% (recall too, not 0.95), and one documented known miss is reported, not counted. The workloads are `parse_seal`, `rank_with_evidence`, `outline_page`, `findings_verify`, `findings_by_address`, `structural_rust` and `daemon_parallel`. `bench_compare.py` takes `--base FILE... --head FILE...` and compares the best median per side. `learn record` does not take `bench.v0` or `eval.v0` receipts yet: the learning loop's receipt schema is its own and was not changed here. The PR `bench` job is informational; making it required waits on two weeks of false-failure data. |
 
+## 1.3 — 2026-11-01, later changes
+
+Corrections by new note; 1.0 to 1.2 are kept as written.
+
+- **The corpus has 34 cases, not 11** (14 ranking, 17 evidence, 3 findings), and the floors are
+  no longer 100%: declared misses now count as wrong, so the measured floors are ranking 12/15,
+  precision 21/22, recall 21/28 and findings 33/33 (`cli/tests/eval.rs`; CHANGELOG, Unreleased).
+- **`chain`, `cluster` and `loom` are withdrawn, not deferred** (2026-10-31): each is refused
+  with exit 2 and names its replacement.
+- **Prometheus:** still no endpoint or listener; `daemon metrics --format prometheus` renders
+  the Prometheus text format 0.0.4 (not OpenMetrics) for node_exporter's textfile collector.
+- **The PR `bench` job is required** since 2026-10-31 (owner decision); 1.2 called it
+  informational.

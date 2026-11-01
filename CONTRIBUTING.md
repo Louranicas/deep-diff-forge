@@ -22,13 +22,20 @@ reaches `main`.
 ### Open problems worth owning
 
 Each of these is real, scoped, and listed as a known limit in the
-[production-readiness notes](SECURITY.md):
+[security policy](SECURITY.md#residual-risks-and-non-goals) or the
+[roadmap](docs/ROADMAP.md#open-items-for-maintainers):
 
 - **More languages.** Syntax features (`semantic`, `highlight`, `structural`) speak Rust today.
   The registry in `crates/deep-diff-forge-syntax` is built to take more grammars.
 - **Directory-pair input.** `deep-diff-forge <old> <new>` compares two regular files; comparing
   two trees (nested repositories, links and special files inside them) is open; see
   [`docs/ROADMAP.md`](docs/ROADMAP.md).
+- **The launchd agent on a physical Mac (on hold since 2026-11-01).** The maintainer has no real
+  Mac; CI loads the agent on a hosted macOS runner only (`macOS launchd agent`). If you have a
+  Mac, install `contrib/launchd/dev.deep-diff-forge.daemon.plist` as
+  [operations](docs/OPERATIONS_AND_DAEMON.md#running-as-a-service) describes, use it across
+  login, logout and sleep, run `git diff | deep-diff-forge review` in a real terminal, and report
+  what happened in an issue.
 
 ## Getting set up
 
@@ -59,7 +66,10 @@ cargo test --workspace --locked
 ```
 
 `just gate-feature` runs those plus the contract probes. `scripts/ci_local.sh` (or `just ci`)
-replicates every CI gate job on your machine, including the supply-chain checks and the SBOM.
+replicates the `secrets`, `msrv`, `gate` and `supply-chain` CI jobs on your machine, including
+the supply-chain checks and the SBOM; it does not replay the Podman sandbox, diff-mutation or
+bench jobs. `just install-hooks` installs the versioned gitleaks pre-push hook
+(`scripts/hooks/pre-push`), which refuses a push that adds a secret.
 
 What the gates enforce, and what we ask in review:
 

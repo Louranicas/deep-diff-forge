@@ -5,8 +5,13 @@ This document converts the three above-baseline features into implementation-rea
 > **Target design, not a description of the code.** None of the commands in the `CLI` blocks
 > below exist at 0.3.0; each is refused as an unknown command (exit 2). The next section lists
 > what does exist.
+>
+> **Status 2026-11-01.** Shipped: the semantic twin through `analyze` (`pipeline::review`),
+> Rust only; file-level ranking with code evidence (`graph::risk`, `graph::evidence`). Planned,
+> unowned: hunk, symbol, test and owner nodes; the adaptive diff planner and its budget
+> profiles. Nothing here is withdrawn or on hold.
 
-## What exists today (0.3.0)
+## What exists today (0.3.0, updated to 0.5.0)
 
 | Feature | Built | Commands that exist |
 | --- | --- | --- |

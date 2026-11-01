@@ -2,6 +2,12 @@
 
 This document defines the deployment spine for Deep-Diff-Forge from local development through public release, daemon rollout, and post-release learning.
 
+> **Status 2026-11-01.** Shipped: gates 0 to 3, 5 and 6 (`ci.yml`, `release.yml`), and a
+> partial gate 4: the evaluation corpus (`fixtures/eval`, `cli/tests/eval.rs`) instead of
+> snapshot directories. Planned, unowned: gate 4's snapshot layout, gate 8's receipts. On hold:
+> gate 7's crates.io step (owner decision), which also waits for the owner's approval in the
+> `release` environment since 2026-11-01. Nothing is withdrawn.
+
 ## Status 2026-10-28 (0.3.0)
 
 The gate sequence below is the design. What runs today:
@@ -16,8 +22,9 @@ The gate sequence below is the design. What runs today:
   dry run on `workflow_dispatch` that publishes nothing. Details:
   [Release And Publication](RELEASE_AND_PUBLICATION.md#github-actions).
 - Gate 4's snapshot directories (`fixtures/expected/...`) do not exist. The
-  fixtures today are `fixtures/patch/*.patch` (with `fixtures/patch/regressions/`)
-  and `fixtures/council/`; fuzz seeds live in `fuzz/seeds/`.
+  fixtures today are `fixtures/patch/*.patch` (with `fixtures/patch/regressions/`),
+  `fixtures/council/` and, since 0.5.0, the labelled corpus `fixtures/eval/`
+  (34 cases on `main`, 2026-11-01); fuzz seeds live in `fuzz/seeds/`.
 - Gate 8 has no tooling; nothing writes `reports/releases/`.
 - Version 0.5.0 is tagged `v0.5.0` (2026-10-31). Published releases: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`. crates.io
   is on hold (`DDF_CRATES_IO`).

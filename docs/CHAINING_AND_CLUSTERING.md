@@ -13,6 +13,12 @@ replacement. Chaining is shell composition of single commands that each honour
 runs each one (`cli/tests/file_pair.rs`). The manifest and the extra dimensions below are kept
 as design history, not as plans anyone owns.
 
+**Shipped:** shell chaining under `chain-contract`, `--cluster` over the patch and risk
+dimensions (`crates/deep-diff-forge-cluster`, `cli/src/main.rs`). **Withdrawn:** the `chain`,
+`cluster`, `rank`, `annotate` and `render` subcommands, chain manifests and the semantic, agent,
+runtime, storage, history and presentation lanes (`chain-contract`, `cluster-contract`).
+**Not built, unowned:** `ingest` and `plan` as subcommands. Nothing is on hold.
+
 ## Status 2026-10-28 (0.3.0)
 
 Most of this page is a target design. What ships today:
@@ -43,9 +49,9 @@ Most of this page is a target design. What ships today:
 | --- | --- | --- | --- |
 | Ingest | `deep-diff-forge ingest` | planned | `--stdin-patch` or `--git-working-tree` / `--git-staged` / `--git-range` |
 | Plan | `deep-diff-forge plan` | planned | the per-file `strategy` field of `review.v0` |
-| Rank | `deep-diff-forge rank` | planned | `--rank` (`rank.v0`) |
-| Annotate | `deep-diff-forge annotate` | planned | none on the CLI |
-| Render | `deep-diff-forge render` | planned | `--layout inline\|side-by-side`, `review --probe` |
+| Rank | `deep-diff-forge rank` | withdrawn | `--rank` (`rank.v0`) |
+| Annotate | `deep-diff-forge annotate` | withdrawn | `findings verify` checks agent findings |
+| Render | `deep-diff-forge render` | withdrawn | `--layout inline\|side-by-side`, `review --probe` |
 | Chain | `deep-diff-forge chain` | withdrawn | the shell joins single commands |
 | Cluster | `deep-diff-forge cluster` | withdrawn | `--cluster [--parallel N]` |
 
@@ -89,7 +95,7 @@ deep-diff-forge --git-range "origin/main..HEAD" --json --require-files --require
 deep-diff-forge --git-range "origin/main..HEAD" --rank --json > rank.json
 ```
 
-### Planned (not implemented)
+### Not built (design history; `rank`, `annotate` and `render` withdrawn)
 
 ```bash
 deep-diff-forge ingest --git --jsonl \
@@ -102,7 +108,7 @@ deep-diff-forge ingest --git --jsonl \
   | deep-diff-forge render --stdin --compact
 ```
 
-## Chain Manifest (planned, not implemented)
+## Chain Manifest (withdrawn 2026-10-31; design history)
 
 `deep-diff-forge chain` would accept an explicit manifest when pipelines need to
 be reproducible.
@@ -162,7 +168,7 @@ returning a short result. `--parallel` takes `serial`, `auto` or a
 worker count from 1; anything else is a usage error, exit 2 (`parse_parallelism`
 in `main.rs`).
 
-### Target: dimensional lanes (planned)
+### Target: dimensional lanes (withdrawn 2026-10-31; design history)
 
 The core model already names eight dimensions (`ExecutionDimension`: patch,
 semantic, risk, agent, runtime, storage, history, presentation) and three join
@@ -205,7 +211,7 @@ git diff | deep-diff-forge --stdin-patch --cluster --json
 deep-diff-forge --git-range "origin/main..HEAD" --cluster --parallel 4 --json
 ```
 
-### Planned (not implemented)
+### Withdrawn (design history)
 
 ```bash
 deep-diff-forge cluster --git --dimensions patch,semantic,risk --parallel auto --jsonl

@@ -14,7 +14,13 @@ The framework is designed for:
 - Habitat/factory service collaboration without hard runtime coupling.
 - Receipt-backed release and learning loops.
 
-## Status 2026-10-28 (0.3.0)
+> **Status 2026-11-01.** Shipped: the gates, recipes and workflows the next section lists, and
+> L9 in `deploy status`. Planned, unowned: `deploy gate`, `ingest`, the cache, the `DDF_*`
+> variables, release receipts and the missing fixture groups. Withdrawn 2026-10-31: the `chain`,
+> `cluster` and `loom` commands and the loom loop below. On hold: crates.io publication, which
+> also needs the owner's approval in the `release` environment since 2026-11-01.
+
+## Status 2026-10-28 (0.3.0), rechecked 2026-11-01
 
 - Workspace version 0.5.0 on `main`, tagged `v0.5.0` on 2026-10-31. 14 crates under `crates/`
   (core, patch, projection, pipeline, syntax, graph, agent, tui, cluster,
@@ -25,13 +31,13 @@ The framework is designed for:
   `DDF_CRATES_IO` is `open`, never because a token exists.
 - `deploy status` reports maturity L9 (Learning). Its gate list is declared, not
   run; the gates themselves run in CI and in `just ci`.
-- The gates that exist are `.github/workflows/ci.yml` (seven jobs, eleven checks on
-  a pull request; `campaign.yml` weekly), `.github/workflows/release.yml`, the `justfile` recipes listed
+- The gates that exist are `.github/workflows/ci.yml` (ten jobs; thirteen checks on a pull
+  request, eleven of them required; `campaign.yml` weekly; `codeql.yml`, not required), `.github/workflows/release.yml`, the `justfile` recipes listed
   below, [`scripts/ci_local.sh`](../scripts/ci_local.sh) and
   [`scripts/diff_mutation.sh`](../scripts/diff_mutation.sh). See
   [Release And Publication](RELEASE_AND_PUBLICATION.md#github-actions).
 - Not implemented, though described below as design: `deploy gate`, the
-  `ingest`, `chain`, `cluster` and `loom` commands, the cache, the `DDF_*`
+  `ingest` command (the `chain`, `cluster` and `loom` commands are withdrawn), the cache, the `DDF_*`
   configuration variables, release receipts under `reports/releases/`, and the
   `fixtures/{syntax,projection,graph,agent,loom}` groups.
 
@@ -65,7 +71,9 @@ document should link back to this framework through a deployment link section.
 | [Chaining And Clustering](CHAINING_AND_CLUSTERING.md) | Unix filter chaining and local parallel execution. |
 | [Claude Code Bash CLI](CLAUDE_CODE_BASH_CLI.md) | Claude Code and CLI-first contracts. |
 | [Deployment Gap Analysis](DEPLOYMENT_GAP_ANALYSIS.md) | Current framework gaps and non-anthropocentric recommendations. |
-| [Deep-Diff-Forge Loom](DEEP_DIFF_FORGE_LOOM.md) | Assimilation plans, gates, fixtures, receipts. |
+| [Production Readiness](PRODUCTION_READINESS.md) | Dated, scored readiness assessments and follow-ups (append-only). |
+| [Plan: Agent Evidence And Observability](PLAN_AGENT_EVIDENCE_AND_OBSERVABILITY.md) | Plan and delivery record for code evidence, verified findings, metrics, bench and eval. |
+| [Deep-Diff-Forge Loom](DEEP_DIFF_FORGE_LOOM.md) | Withdrawn 2026-10-31; the assimilation design record. |
 | [Dimensional Execution Model](DIMENSIONAL_EXECUTION_MODEL.md) | Execution dimensions, lane states, join policies. |
 | [End To End Deployment](END_TO_END_DEPLOYMENT.md) | Gate sequence from local dev to release and learning. |
 | [Evidence](../EVIDENCE.md) | Sealed deployment evidence record (L0 → L1 patch spine). |
@@ -678,6 +686,8 @@ flowchart LR
 ```
 
 ### Loom Loop
+
+Withdrawn 2026-10-31 with the loom ([loom](DEEP_DIFF_FORGE_LOOM.md)); kept as design history.
 
 ```mermaid
 flowchart LR
