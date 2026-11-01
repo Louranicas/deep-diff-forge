@@ -367,9 +367,10 @@ fn authoritative_patch_keeps_line_endings_verbatim() {
     assert!(noeol.ends_with(b"+c\n\\ No newline at end of file\n"));
 }
 
-/// Negative control: reverting to display-header paths names the mode-only
-/// change `y` (the `diff --git a/x b/y b/x b/y` header is ambiguous); the raw
-/// record keeps `x b/y`.
+/// The review names come from the raw `-z` records: `x b/y`, a tab and a newline
+/// survive. The display parse used to name the mode-only change `y` (the
+/// `diff --git a/x b/y b/x b/y` header splits at either ` b/`); it now splits where both
+/// halves name one path, as `git apply` does, so both name `x b/y` (bug hunt 2026-11-01).
 #[test]
 fn review_paths_come_from_raw_records_not_display_headers() {
     let fx = fixture("paths");
@@ -381,10 +382,7 @@ fn review_paths_come_from_raw_records_not_display_headers() {
     names.sort_unstable();
     assert!(names.contains(&SPACEY) && names.contains(&TAB) && names.contains(&NEWLINE));
     let display: Vec<&str> = captured.files().iter().map(|f| f.path.as_str()).collect();
-    assert!(
-        !display.contains(&SPACEY),
-        "fixture no longer exercises the display-header defect: {display:?}"
-    );
+    assert!(display.contains(&SPACEY), "{display:?}");
 }
 
 /// Negative control: if the patch bytes were a re-rendered projection, or if
@@ -1155,6 +1153,82 @@ fn a_submodule_change_is_captured_whatever_config_ignores() {
     )
     .unwrap();
     assert!(staged(), ".gitmodules ignore = all");
+}
+
+/// A checked-out submodule's own filter never runs. `--ignore-submodules=none` made the
+/// working-tree diff run `git status` inside each submodule to see whether it was dirty, and that
+/// Git read the submodule's configuration (`.git/modules/<name>/config`, or its own `.git`) and
+/// `.gitattributes` and ran its clean filter: only the superproject's filters were turned off, so
+/// reviewing a repository someone handed you ran their code (bug hunt 2026-11-01). The submodule's
+/// commit change is still captured, whatever configuration says to ignore.
+#[test]
+fn a_submodule_filter_never_runs_and_its_commit_change_is_captured() {
+    for absorbed in [false, true] {
+        let fx = fixture(if absorbed {
+            "submodule-filter-absorbed"
+        } else {
+            "submodule-filter"
+        });
+        let r = &fx.root;
+        let sub = r.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        git_out(&sub, &["init", "-q"]);
+        std::fs::write(sub.join("f"), b"hi\n").unwrap();
+        git_out(&sub, &["add", "f"]);
+        git_out(&sub, &["commit", "-qm", "sub"]);
+        git_out(r, &["add", "sub"]);
+        git_out(r, &["commit", "-qm", "gitlink"]);
+        if absorbed {
+            // The configuration then lives in the superproject's `.git/modules/sub/config`.
+            std::fs::write(
+                r.join(".gitmodules"),
+                "[submodule \"sub\"]\n\tpath = sub\n\turl = ./sub\n",
+            )
+            .unwrap();
+            git_out(r, &["config", "submodule.sub.url", "./sub"]);
+            git_out(r, &["submodule", "absorbgitdirs"]);
+            assert!(r.join(".git/modules/sub/config").is_file());
+        }
+        // Move the submodule's commit, then plant the filter and dirty a file at the same size
+        // with a new modification time, so a status inside the submodule must hash it.
+        std::fs::write(sub.join("g"), b"moved\n").unwrap();
+        git_out(&sub, &["add", "g"]);
+        git_out(&sub, &["commit", "-qm", "move"]);
+        let marker = r.join("submodule-filter-ran");
+        std::fs::write(sub.join(".gitattributes"), "* filter=evil\n").unwrap();
+        git_out(
+            &sub,
+            &[
+                "config",
+                "filter.evil.clean",
+                &format!("sh -c 'touch {}; cat'", marker.display()),
+            ],
+        );
+        std::fs::write(sub.join("f"), b"ho\n").unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(sub.join("f"))
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        git_out(r, &["config", "diff.ignoreSubmodules", "all"]);
+        for include_untracked in [false, true] {
+            let acq =
+                acquire_git(r, &GitSelection::WorkingTree, &options(include_untracked)).unwrap();
+            assert!(
+                acq.diff()
+                    .changes()
+                    .iter()
+                    .any(|c| c.review_path().is_some_and(|p| p.as_bytes() == b"sub")),
+                "absorbed {absorbed}: the submodule's commit change was not captured"
+            );
+        }
+        assert!(
+            !marker.exists(),
+            "absorbed {absorbed}: a submodule filter ran"
+        );
+    }
 }
 
 /// `git_version` answers with Git's own version line, needs no repository, and is bounded like

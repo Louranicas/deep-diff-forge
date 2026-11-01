@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Refuse any push whose new commits contain a secret (gitleaks 8.30.1, ~/.local/bin).
 # Versioned in scripts/hooks/pre-push (anchor B-07); install with `just install-hooks`.
-# Shared by every worktree of this repository. Fails closed if gitleaks is missing.
+# Shared by every worktree of this repository. Fails closed if gitleaks is missing or the commits
+# to scan cannot be resolved.
 set -euo pipefail
 gitleaks=$(command -v gitleaks || echo "$HOME/.local/bin/gitleaks")
 [ -x "$gitleaks" ] || { echo "pre-push: gitleaks not found; refusing push" >&2; exit 1; }
@@ -9,12 +10,20 @@ zero=0000000000000000000000000000000000000000
 remote="$1"
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "$zero" ] && continue # branch deletion
-  if [ "$remote_sha" = "$zero" ]; then
-    # New branch: scan commits not already on any remote-tracking ref of this remote.
-    range="$local_sha --not --remotes=$remote"
-  else
+  if [ "$remote_sha" != "$zero" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
     range="$remote_sha..$local_sha"
+  else
+    # New branch, or a remote tip this clone never fetched (a force push over someone else's
+    # update): scan commits not already on any remote-tracking ref of this remote.
+    range="$local_sha --not --remotes=$remote"
   fi
+  # gitleaks 8.30.1 reports a range git cannot resolve as "0 commits scanned, no leaks found"
+  # and exits 0, so its exit status alone would let the push through unscanned.
+  # $range is unquoted on purpose: it is one or several git arguments.
+  git rev-list $range >/dev/null 2>&1 || {
+    echo "pre-push: cannot resolve the commits to scan for $local_ref ($range); refusing push" >&2
+    exit 1
+  }
   echo "pre-push: gitleaks scanning $local_ref ($range)" >&2
   if ! "$gitleaks" git --no-banner --redact --log-opts="$range" . >&2; then
     echo "pre-push: gitleaks found secrets in $local_ref; push refused" >&2

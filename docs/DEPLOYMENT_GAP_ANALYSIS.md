@@ -491,7 +491,9 @@ correctly as conditional, but network dependency states need clearer modeling.
 
 Non-human risk:
 
-- Release automation may mark partial publication as success.
+- Release automation may mark partial publication as success. (GitHub Release: closed
+  2026-11-01; the `release` job needs every `build` leg, so a failed platform publishes nothing.
+  An upload interrupted inside that one job can still leave a partial release.)
 - Mirror drift may remain invisible.
 - crates.io publish may occur when binary release failed.
 

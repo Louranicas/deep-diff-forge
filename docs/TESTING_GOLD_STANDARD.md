@@ -35,7 +35,14 @@ era) no longer holds. How the standard is enforced today:
   (`crates/deep-diff-forge-cli/tests/council_sandbox.rs`, 12 probes) runs on
   every pull request.
 - **Locally:** `just ci` ([`scripts/ci_local.sh`](../scripts/ci_local.sh))
-  replays the `secrets`, `msrv`, `gate` and `supply-chain` jobs step for step.
+  replays the `secrets`, `msrv`, `gate` and `supply-chain` jobs step for step,
+  on the toolchains CI pins (1.99.1, and 1.88.0 for the MSRV step).
+- **Gate scripts fail closed** (`cli/tests/repo_scripts.rs`): the pre-push
+  secret hook refuses a push whose commits it cannot resolve;
+  `diff_mutation.sh` finds changed Rust files by NUL-separated name (not by
+  diff header text) and runs at the repository root from any directory;
+  `fuzz_target.sh` lists targets with a TOML parser and fuzzes a new private
+  corpus each run, under a root it makes if missing.
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
   `fixtures/eval` (34 cases, measured 2026-10-31) must score at least its floors,
   which are the measured values: ranking pairs 12/15, evidence precision 21/22,

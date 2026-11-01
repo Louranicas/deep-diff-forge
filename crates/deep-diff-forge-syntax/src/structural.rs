@@ -4,7 +4,9 @@
 //! Token-level structural (AST-leaf) diffing.
 //!
 //! Unlike a line-oriented diff, this compares the *token streams* produced by
-//! tree-sitter — the grammar's leaf nodes, with whitespace and layout dropped.
+//! tree-sitter — the grammar's leaf nodes, with whitespace and layout dropped. A
+//! comment or a string literal is one token of its exact text (whitespace inside a
+//! literal is its value).
 //! Two consequences follow directly:
 //!
 //! - **Reformat-aware.** A change that only reflows whitespace/newlines yields
@@ -233,7 +235,10 @@ pub fn tokenize_checked(
         // A comment is one token holding its exact bytes. In tree-sitter-rust a plain comment's
         // text is no leaf (only its `//` or `/*` is), so a rewritten comment, such as a changed
         // `// SAFETY:` justification, used to change no token and was called reformat-only.
-        if node.child_count() == 0 || is_comment(node.kind()) {
+        // A string literal is one token too: its whitespace-only content was dropped with the
+        // layout and a raw string's delimiters are no leaf, so `""` to `" "`, a tab to two
+        // spaces and `f(a)` to `f(r"a")` changed no token (bug hunt 2026-11-01).
+        if node.child_count() == 0 || is_whole_token(node.kind()) {
             if let Some(text) = source.get(node.start_byte()..node.end_byte())
                 && !text.trim().is_empty()
             {
@@ -271,6 +276,12 @@ fn comment_token(text: &str) -> String {
 /// Whether a tree-sitter node kind is a comment, whose whole text is one token.
 fn is_comment(kind: &str) -> bool {
     matches!(kind, "line_comment" | "block_comment")
+}
+
+/// Whether a node's whole text is one token: a comment, or a string literal (plain, byte, C or
+/// raw), whose exact bytes, whitespace included, are its value.
+fn is_whole_token(kind: &str) -> bool {
+    is_comment(kind) || matches!(kind, "string_literal" | "raw_string_literal")
 }
 
 fn diff_tokens(language: Language, old: &[Token], new: &[Token]) -> StructuralDiff {
@@ -1123,6 +1134,43 @@ mod tests {
             "pure reformat must report no structural change"
         );
         assert_eq!(d.added + d.removed + d.moved, 0);
+    }
+
+    /// Bug hunt 2026-11-01: a string literal of only whitespace had no token, so `""` to `" "`,
+    /// or a tab to two spaces, was called reformat-only.
+    #[test]
+    fn whitespace_inside_a_string_literal_is_a_change() {
+        for (old, new) in [
+            (
+                "fn s() -> &'static str { \"\" }",
+                "fn s() -> &'static str { \" \" }",
+            ),
+            ("const S: &str = \"\t\";", "const S: &str = \"  \";"),
+            ("const B: &[u8] = b\"\t\";", "const B: &[u8] = b\"  \";"),
+            ("const S: &str = r\" \";", "const S: &str = r\"   \";"),
+            ("const S: &str = r\"a\";", "const S: &str = r#\"a\"#;"),
+            ("fn f() { g(a) }", "fn f() { g(r\"a\") }"),
+        ] {
+            let d = structural_diff(Language::Rust, old, new);
+            assert!(!d.reformat_only(), "{old:?} -> {new:?}");
+            assert_eq!((d.added, d.removed), (1, 1), "{old:?} -> {new:?}");
+        }
+        assert_eq!(
+            tokenize(Language::Rust, "fn f() { x(\" a \", r#\"b\"#) }")
+                .iter()
+                .map(|t| t.text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "fn", "f", "(", ")", "{", "x", "(", "\" a \"", ",", "r#\"b\"#", ")", "}"
+            ]
+        );
+        // Reflowing the code around a literal is still formatting only.
+        let d = structural_diff(
+            Language::Rust,
+            "fn s()->&'static str{\" \"}",
+            "fn s() -> &'static str {\n    \" \"\n}\n",
+        );
+        assert!(d.reformat_only());
     }
 
     #[test]

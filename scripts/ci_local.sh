@@ -9,6 +9,18 @@
 cd "${1:-.}" || exit 2
 unset CARGO_TARGET_DIR
 command -v cargo >/dev/null || { echo "ci_local.sh: no cargo on PATH" >&2; exit 2; }
+# Every step runs on the toolchain ci.yml pins for these jobs, not the floating rustup default, so
+# a `rustup update` cannot make PASS here differ from CI (ci_replica.rs checks the two agree); the
+# MSRV step's `cargo +1.88.0` overrides it.
+toolchain=1.99.1
+for tool in cargo rustfmt cargo-clippy; do
+  rustup which --toolchain "$toolchain" "$tool" >/dev/null 2>&1 || {
+    echo "ci_local.sh: Rust $toolchain with rustfmt and clippy is missing" \
+      "(rustup toolchain install $toolchain --component rustfmt,clippy)" >&2
+    exit 2
+  }
+done
+export RUSTUP_TOOLCHAIN="$toolchain"
 gitleaks=$(command -v gitleaks || echo "$HOME/.local/bin/gitleaks")
 failed=0
 step() {

