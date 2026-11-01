@@ -4,7 +4,13 @@
 name: ci
 
 on:
+  # release.yml calls this workflow as its `quality` gate and passes `release: true`.
   workflow_call:
+    inputs:
+      release:
+        description: "true when release.yml calls this as its quality gate"
+        type: boolean
+        default: false
   pull_request:
   push:
     branches: [main]
@@ -83,6 +89,53 @@ jobs:
       # --no-fail-fast: one run reports every failing test binary, not just the first.
       - name: test on macOS
         run: cargo test --workspace --locked --no-fail-fast
+
+  # Linux arm64 binaries ship from release.yml (since 2026-10-31, built and run on
+  # ubuntu-22.04-arm, the image the release builds on: on ubuntu-24.04-arm the binary needed
+  # GLIBC_2.39, over the declared 2.34 floor, measured in PR #79), so the suite runs there on every event
+  # too. Not a required check on pull requests (the required set lives in a GitHub ruleset), but
+  # it gates every release build through release.yml's `quality`.
+  linux-arm64:
+    name: Linux arm64 tests
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.1
+      - name: test on Linux arm64
+        run: cargo test --workspace --locked --no-fail-fast
+      # The release smoke checks the shipped (release) binary; this is the early warning on the
+      # debug binary the tests built.
+      - name: glibc floor of the arm64 binary
+        run: scripts/check_glibc_floor.sh target/debug/deep-diff-forge
+
+  # The launchd agent in contrib/ loaded by a real launchd: bootstrap, `daemon health`, restart
+  # after a crash, no restart after `daemon stop`, bootout (scripts/launchd_smoke.sh). Its own
+  # job, so the required `macOS tests` check does not depend on it. Not a required check, and
+  # skipped in release runs: until the smoke has a record on hosted runners, its timed waits
+  # must not block a release build (release.yml passes `release: true`). `linux-arm64` is not
+  # skipped there: it tests a target that ships, as `macos` does.
+  launchd:
+    name: macOS launchd agent
+    if: ${{ !inputs.release }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.99.1
+      - name: build the CLI
+        run: cargo build --locked -p deep-diff-forge-cli
+      - name: load the launchd agent and check its lifecycle
+        timeout-minutes: 5
+        run: scripts/launchd_smoke.sh target/debug/deep-diff-forge
 
   gate:
     name: deploy gate-feature

@@ -16,10 +16,14 @@ for.
   council work and the 2026-10-28 fixes listed under
   [Fixed on 2026-10-28](#fixed-on-2026-10-28).
 - Declared scope: a local, single-user review tool (CLI, daemon, `rpc`, `mcp`,
-  SDKs) on x86_64 GNU/Linux (glibc, built on Ubuntu 24.04) and macOS (arm64 and
-  x86_64), shipped as GitHub release binaries; every shipped binary is run in the
-  release smoke test, the x86_64 macOS one under Rosetta 2. Not claimed:
-  crates.io packages, or a daemon shared between users on one host.
+  SDKs) on exactly four targets, shipped as GitHub release binaries:
+  `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` (built on Ubuntu
+  24.04, glibc 2.34 or newer, enforced by `scripts/check_glibc_floor.sh`; arm64
+  from the release after v0.5.0), `aarch64-apple-darwin` and `x86_64-apple-darwin`.
+  Every shipped binary is run in the release smoke test, the x86_64 macOS one under
+  Rosetta 2. Not claimed: musl, Windows, other architectures, crates.io packages,
+  or a daemon shared between users on one host
+  ([supported platforms](README.md#supported-platforms)).
 - Known limits are listed under [Residual risks](#residual-risks-and-non-goals).
 
 ## Reporting a vulnerability
@@ -235,9 +239,9 @@ every gate ran as root inside the container. Gates refuse to run unless
   permissions, do not persist checkout credentials, and have bounded run times.
 - `release.yml` runs on `v*` tags and on manual `workflow_dispatch`. A tag must
   exactly match the workspace version. Both runs repeat the full `ci.yml`
-  quality workflow and a supply-chain gate, build three targets, run every
-  binary (the x86_64 macOS one under Rosetta 2), and verify every archive's
-  SHA-256. A ruleset makes `v*` tags immutable: once pushed, a release tag
+  quality workflow and a supply-chain gate, build four targets, run every
+  binary (the x86_64 macOS one under Rosetta 2), hold the Linux ones to the
+  glibc floor, and verify every archive's SHA-256. A ruleset makes `v*` tags immutable: once pushed, a release tag
   cannot be moved or deleted. Only a
   pushed `v*` tag attests, uploads and (when the owner opens it) publishes to
   crates.io; a dispatched run, from any ref including a tag, is a dry run that
