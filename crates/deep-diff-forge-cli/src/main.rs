@@ -543,7 +543,7 @@ fn daemon_cmd(opts: &[String]) {
     let Ok(location) = SocketLocation::resolve(override_path.as_deref().map(std::path::Path::new))
     else {
         eprintln!(
-            "error: $XDG_RUNTIME_DIR is not set; refusing an insecure world-writable /tmp socket."
+            "error: $XDG_RUNTIME_DIR is unset or relative; refusing an insecure world-writable /tmp socket."
         );
         eprintln!("       set XDG_RUNTIME_DIR, or pass an explicit --socket PATH.");
         std::process::exit(exit::USAGE);
@@ -2281,7 +2281,7 @@ fn doctor() {
     // doctor advertises no path the daemon would refuse.
     match deep_diff_forge_daemon::runtime_base() {
         Some(base) => emitln!("runtime_dir={}", base.display()),
-        None => emitln!("runtime_dir=<unset: set XDG_RUNTIME_DIR>"),
+        None => emitln!("runtime_dir=<unset: set XDG_RUNTIME_DIR to an absolute path>"),
     }
     emitln!("cache_dir={cache_dir}");
     emitln!("state_dir={state_dir}");

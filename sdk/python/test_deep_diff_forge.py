@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -77,6 +78,23 @@ class Stdio(unittest.TestCase):
             self.assertEqual(invalid.exception.code, -32600)
             self.assertEqual(client.call("daemon.health")["status"], "ok")
 
+    def test_a_request_larger_than_the_pipe_buffer_is_answered(self):
+        # The request is written in chunks as the child takes them (well over the 64 KiB pipe).
+        patch = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+" + "n" * (1 << 20) + "\n"
+        with ddf.StdioClient((BIN, "rpc")) as client:
+            self.assertEqual(client.review_patch(patch), cli_review(patch))
+
+    def test_a_lone_surrogate_is_refused_locally_naming_its_finding(self):
+        findings = [{"agent": "codex", "severity": "low", "title": "t", "body": "b", "path": "x"},
+                    {"agent": "codex", "severity": "low", "title": "t\ud800", "body": "b", "path": "x"}]
+        with ddf.StdioClient((BIN, "rpc")) as client:
+            with self.assertRaisesRegex(ValueError, "^finding 1 holds a string that is not valid Unicode"):
+                client.verify_findings(PATCH, findings)
+            with self.assertRaisesRegex(ValueError, "not valid Unicode: surrogates not allowed at character"):
+                client.review_patch("\udfff")
+            # Nothing was sent: the child is alive and the next call is answered in step.
+            self.assertEqual(client.verify_findings(PATCH, findings[:1])["counts"]["accepted"], 1)
+
     def test_an_oversize_request_is_refused_locally(self):
         with ddf.StdioClient((BIN, "rpc")) as client:
             with self.assertRaises(ValueError):
@@ -124,6 +142,37 @@ class Bounds(unittest.TestCase):
             client.call("daemon.health")
         self.assertLess(time.monotonic() - started, 10)
         self.assertIsNotNone(client._process.poll())
+
+    def test_a_child_that_stops_reading_cannot_block_a_large_request(self):
+        # Before, the write blocked once the pipe buffer filled, before any deadline was armed.
+        client = ddf.StdioClient((sys.executable, "-c", "import time; time.sleep(60)"), timeout=0.5)
+        started = time.monotonic()
+        with self.assertRaisesRegex(ddf.TransportError, "no answer within 0.5 s"):
+            client.review_patch("x" * (1 << 20))
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertIsNotNone(client._process.poll())
+
+    def test_an_answer_before_the_request_is_taken_is_still_read(self):
+        # A child that answers and exits without reading: the broken pipe ends the write, and its
+        # answer (here a refusal) is the call's, not "not reading".
+        answer = '{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"too long"}}'
+        client = ddf.StdioClient((sys.executable, "-c", f"print({answer!r}, flush=True)"), timeout=10)
+        with self.assertRaises(ddf.RpcError) as refused:
+            client.review_patch("x" * (1 << 20))
+        self.assertEqual(refused.exception.code, -32600)
+        client.close()
+
+    def test_an_answer_that_is_not_a_valid_response_is_a_transport_error_and_kills_the_child(self):
+        for answer, reason in [(b"notjson", "not a valid response: Expecting value"),
+                               (b"\xff", "not a valid response: 'utf-8' codec can't decode"),
+                               (b'{"jsonrpc":"2.0","id":9,"result":{}}', "response id 9 does not match 1")]:
+            with self.subTest(answer=answer):
+                code = ("import sys, time\nsys.stdin.readline()\n"
+                        f"sys.stdout.buffer.write({answer!r} + b'\\n'); sys.stdout.flush(); time.sleep(60)")
+                client = ddf.StdioClient((sys.executable, "-c", code), timeout=10)
+                with self.assertRaisesRegex(ddf.TransportError, reason):
+                    client.call("daemon.health")
+                self.assertIsNotNone(client._process.poll(), "the child is killed")
 
     def test_a_runaway_answer_is_cut_off(self):
         original = ddf.MAX_REQUEST_BYTES
@@ -176,6 +225,28 @@ class Socket(unittest.TestCase):
             finally:
                 if daemon.poll() is None:
                     daemon.kill()
+
+    def test_an_answer_that_is_not_utf8_json_is_a_transport_error(self):
+        for answer, reason in [(b"\xff\n", "'utf-8' codec can't decode"), (b"notjson\n", "Expecting value")]:
+            with self.subTest(answer=answer), tempfile.TemporaryDirectory() as directory:
+                path = pathlib.Path(directory) / "d.sock"
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+                    listener.bind(str(path))
+                    listener.listen(1)
+
+                    def serve():
+                        connection, _ = listener.accept()
+                        with connection:
+                            connection.recv(1 << 16)
+                            connection.sendall(answer)
+
+                    server = threading.Thread(target=serve)
+                    server.start()
+                    try:
+                        with self.assertRaisesRegex(ddf.TransportError, f"not a valid response: {reason}"):
+                            ddf.SocketClient(path, timeout=5).call("daemon.health")
+                    finally:
+                        server.join(timeout=10)
 
     def test_a_daemon_of_another_user_is_refused_before_anything_is_sent(self):
         with tempfile.TemporaryDirectory() as directory:

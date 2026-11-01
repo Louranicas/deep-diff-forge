@@ -271,6 +271,29 @@ impl StrategyReceipt {
     pub fn from_json(line: &str) -> Result<Self, LearningError> {
         serde_json::from_str(line).map_err(|e| LearningError::Deserialize(e.to_string()))
     }
+
+    /// Parse a receipt as the store holds it: [`from_json`](Self::from_json), and every key must
+    /// be a receipt field. [`from_json`](Self::from_json) drops unknown keys (`learn record`
+    /// relies on it: an extra key is never written), so without this a hand-edited line could
+    /// keep a path or source text in an extra key and still load (anchor A-05). The key is not
+    /// named in the error: it may itself be the path.
+    ///
+    /// # Errors
+    /// [`LearningError::Deserialize`] as [`from_json`](Self::from_json), and
+    /// [`LearningError::InvalidReceipt`] for a key that is not a receipt field.
+    pub(crate) fn from_stored_json(line: &str) -> Result<Self, LearningError> {
+        let receipt = Self::from_json(line)?;
+        let stored: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(line).map_err(|e| LearningError::Deserialize(e.to_string()))?;
+        let fields =
+            serde_json::to_value(&receipt).map_err(|e| LearningError::Serialize(e.to_string()))?;
+        if stored.keys().any(|key| fields.get(key).is_none()) {
+            return Err(LearningError::InvalidReceipt(
+                "a stored receipt holds a key that is not a receipt field",
+            ));
+        }
+        Ok(receipt)
+    }
 }
 
 #[cfg(test)]
@@ -430,6 +453,39 @@ mod tests {
     fn from_json_rejects_unknown_strategy() {
         let bad = r#"{"file_hash":"h","language":"rust","parser_version":"v","strategy":"telepathy","fallback":null,"elapsed_ms":0,"bytes":0,"nodes":0,"cache":"cold","outcome":"pending","revisited":false}"#;
         assert!(StrategyReceipt::from_json(bad).is_err());
+    }
+
+    /// Anchor A-05: a stored line may hold only receipt fields, though it may omit `fallback`
+    /// (an absent option); `from_json`, which `learn record` uses, still drops an extra key.
+    #[test]
+    fn a_stored_receipt_holds_only_receipt_fields() {
+        let json = sample()
+            .with_fallback(Some(FallbackReason::ByteBudget))
+            .to_json()
+            .unwrap();
+        assert_eq!(
+            StrategyReceipt::from_stored_json(&json).unwrap(),
+            StrategyReceipt::from_json(&json).unwrap()
+        );
+        let without_fallback = sample()
+            .to_json()
+            .unwrap()
+            .replace("\"fallback\":null,", "");
+        assert!(!without_fallback.contains("fallback"));
+        assert_eq!(
+            StrategyReceipt::from_stored_json(&without_fallback).unwrap(),
+            sample()
+        );
+        let carrying = json.replacen('{', r#"{"path":"secret/src/payments.rs","#, 1);
+        assert!(StrategyReceipt::from_json(&carrying).is_ok());
+        let error = StrategyReceipt::from_stored_json(&carrying)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "invalid receipt: a stored receipt holds a key that is not a receipt field"
+        );
+        assert!(StrategyReceipt::from_stored_json("not json").is_err());
     }
 
     #[test]
