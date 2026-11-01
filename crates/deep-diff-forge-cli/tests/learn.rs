@@ -157,3 +157,42 @@ fn a_relative_state_home_never_puts_the_store_under_the_working_directory() {
     );
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// `doctor` names the state directory the store uses. Before, it formatted a relative
+/// `XDG_STATE_HOME` as is (`state_dir=relstate/deep-diff-forge`), a place nothing writes to.
+#[test]
+fn doctor_reports_the_state_dir_the_store_uses() {
+    let root = std::env::temp_dir().join(format!("ddf-doctor-state-{}", std::process::id()));
+    let home = root.join("home");
+    let doctor = |state_home: &std::ffi::OsStr| {
+        let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .arg("doctor")
+            .env("XDG_STATE_HOME", state_home)
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let expected = format!(
+        "state_dir={}\n",
+        home.join(".local/state/deep-diff-forge").display()
+    );
+    assert!(doctor("relstate".as_ref()).contains(&expected));
+    let absolute = root.join("state");
+    assert!(doctor(absolute.as_os_str()).contains(&format!(
+        "state_dir={}\n",
+        absolute.join("deep-diff-forge").display()
+    )));
+    let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .arg("doctor")
+        .env("XDG_STATE_HOME", "relstate")
+        .env("HOME", "relhome")
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .contains("state_dir=<unset: set XDG_STATE_HOME or HOME to an absolute path>\n")
+    );
+}

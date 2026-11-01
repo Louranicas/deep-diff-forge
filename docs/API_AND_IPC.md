@@ -300,7 +300,9 @@ A JSON-RPC error raises `RpcError` (with the daemon's `code`); a transport
 failure, including an answer that is not UTF-8 JSON or not a response to the
 request, raises `TransportError`. `StdioClient`'s `timeout` covers the whole
 exchange, writing the request as well as reading the answer; on expiry, or on an
-invalid answer, the child is killed. A request holding a string UTF-8 cannot
+invalid answer (including one nested too deeply to decode), the child is killed. An
+answer that arrives before the whole request is taken is returned, and the child,
+now out of step, is killed. A request holding a string UTF-8 cannot
 carry (a lone surrogate) raises `ValueError` before anything is sent, naming the
 finding's index for `verify_findings`.
 

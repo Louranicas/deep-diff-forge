@@ -162,13 +162,32 @@ class Bounds(unittest.TestCase):
         self.assertEqual(refused.exception.code, -32600)
         client.close()
 
+    def test_an_early_answer_from_a_child_that_stops_reading_but_stays_alive_is_read(self):
+        # Before, the loop kept waiting to write the rest until the deadline, though the whole
+        # answer was already in hand. The unsent tail would garble the next request, so the
+        # out-of-step child is killed once its answer is taken.
+        answer = '{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"too long"}}'
+        code = f"import time\nprint({answer!r}, flush=True)\ntime.sleep(60)"
+        client = ddf.StdioClient((sys.executable, "-c", code), timeout=10)
+        started = time.monotonic()
+        with self.assertRaises(ddf.RpcError) as refused:
+            client.review_patch("x" * (1 << 20))
+        self.assertEqual(refused.exception.code, -32600)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertIsNotNone(client._process.poll(), "the out-of-step child is killed")
+        with self.assertRaises(ddf.TransportError):
+            client.call("daemon.health")
+
     def test_an_answer_that_is_not_a_valid_response_is_a_transport_error_and_kills_the_child(self):
-        for answer, reason in [(b"notjson", "not a valid response: Expecting value"),
-                               (b"\xff", "not a valid response: 'utf-8' codec can't decode"),
-                               (b'{"jsonrpc":"2.0","id":9,"result":{}}', "response id 9 does not match 1")]:
+        # Each answer is the child's source expression, so a long one need not fit in its argv.
+        for answer, reason in [("b'notjson'", "not a valid response: Expecting value"),
+                               ("b'\\xff'", "not a valid response: 'utf-8' codec can't decode"),
+                               ("""b'{"jsonrpc":"2.0","id":9,"result":{}}'""", "response id 9 does not match 1"),
+                               # Before, json.loads raised a bare RecursionError and the child lived on.
+                               ("b'[' * 200_000", "not a valid response: ")]:
             with self.subTest(answer=answer):
                 code = ("import sys, time\nsys.stdin.readline()\n"
-                        f"sys.stdout.buffer.write({answer!r} + b'\\n'); sys.stdout.flush(); time.sleep(60)")
+                        f"sys.stdout.buffer.write({answer} + b'\\n'); sys.stdout.flush(); time.sleep(60)")
                 client = ddf.StdioClient((sys.executable, "-c", code), timeout=10)
                 with self.assertRaisesRegex(ddf.TransportError, reason):
                     client.call("daemon.health")
@@ -227,8 +246,9 @@ class Socket(unittest.TestCase):
                     daemon.kill()
 
     def test_an_answer_that_is_not_utf8_json_is_a_transport_error(self):
-        for answer, reason in [(b"\xff\n", "'utf-8' codec can't decode"), (b"notjson\n", "Expecting value")]:
-            with self.subTest(answer=answer), tempfile.TemporaryDirectory() as directory:
+        for answer, reason in [(b"\xff\n", "'utf-8' codec can't decode"), (b"notjson\n", "Expecting value"),
+                               (b"[" * 200_000 + b"\n", "")]:
+            with self.subTest(answer=answer[:16]), tempfile.TemporaryDirectory() as directory:
                 path = pathlib.Path(directory) / "d.sock"
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
                     listener.bind(str(path))

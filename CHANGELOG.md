@@ -193,6 +193,22 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   relative value invalid: the resolver now falls back to `$HOME/.local/state`, and a relative
   `$HOME` gives `NoStateDir`. The daemon's `runtime_base_from` had the same gap for its socket;
   a relative `XDG_RUNTIME_DIR` now fails closed like an unset one (`daemon path` exits 2).
+- **`doctor` names the state directory the learning store uses.** It formatted `$XDG_STATE_HOME`
+  as is, so after the resolver began ignoring a relative value, `XDG_STATE_HOME=relstate
+  deep-diff-forge doctor` printed `state_dir=relstate/deep-diff-forge`, a place nothing writes
+  to, while `learn record` wrote under `$HOME/.local/state`. `state_dir` is now the parent of the
+  store's own resolved directory (the daemon socket and runtime dir already used the daemon's
+  resolvers), and with no absolute `$XDG_STATE_HOME` or `$HOME` it prints `<unset: …>`.
+- **A deeply nested answer is a `TransportError` too, and the stdio child is killed.** An answer
+  of about 200 KB of `[` made `json.loads` raise `RecursionError`, which `_Client.call` did not
+  map, so it escaped raw on both transports and left the `StdioClient` child running (measured).
+  It is now `TransportError("not a valid response: …")` like any other invalid answer.
+- **`StdioClient` returns an early answer from a child that stops reading but stays alive.** The
+  exchange kept waiting to write the rest of the request until the deadline, though the whole
+  answer was already read: a child that refused a 1 MiB request and then slept gave
+  `TransportError: no answer within 2 s` instead of its refusal (measured). A complete answer line
+  now ends the exchange. Its unsent tail would garble the next request, so the out-of-step child
+  is killed and the next call raises `TransportError`.
 - **A path and a line resolve in every section with the path.** `findings verify` searched only
   the first file section with a finding's path, so in a concatenated patch that names one file
   twice, a line in the later section was refused as `line_outside_hunk` although its address

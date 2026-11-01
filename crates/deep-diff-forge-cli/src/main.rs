@@ -2261,17 +2261,20 @@ fn self_test() {
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "the doctor door: reports the XDG cache and state locations"
+    reason = "the doctor door: reports the XDG cache location"
 )]
 fn doctor() {
     let cache_dir = std::env::var("XDG_CACHE_HOME").map_or_else(
         |_| "~/.cache/deep-diff-forge".into(),
         |base| format!("{base}/deep-diff-forge"),
     );
-    let state_dir = std::env::var("XDG_STATE_HOME").map_or_else(
-        |_| "~/.local/state/deep-diff-forge".into(),
-        |base| format!("{base}/deep-diff-forge"),
-    );
+    // The state dir is the learning store's parent, through the store's own resolver, so
+    // doctor names the place `learn record` writes, even when a relative $XDG_STATE_HOME
+    // is ignored.
+    let state_dir = deep_diff_forge_learning::store::learning_dir()
+        .ok()
+        .and_then(|dir| dir.parent().map(|parent| parent.display().to_string()))
+        .unwrap_or_else(|| "<unset: set XDG_STATE_HOME or HOME to an absolute path>".into());
 
     emitln!("doctor ok: bootstrap binary is executable");
     // Report the runtime dir + daemon socket honestly AND consistently: both go

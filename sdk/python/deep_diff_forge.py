@@ -87,9 +87,10 @@ class _Client:
             return _result(response, request_id)
         except TransportError as error:
             self._invalid(error)
-        except ValueError as error:
-            # An answer that is not UTF-8 JSON is a transport failure, as in the Rust SDK. The
-            # daemon's own errors (RpcError) pass through: the child answered properly.
+        except (ValueError, RecursionError) as error:
+            # An answer that is not UTF-8 JSON is a transport failure, as in the Rust SDK; so is
+            # one nested too deeply for json.loads, which raises RecursionError, not ValueError.
+            # The daemon's own errors (RpcError) pass through: the child answered properly.
             self._invalid(TransportError(f"not a valid response: {error}"))
 
     def _invalid(self, error):
@@ -126,11 +127,13 @@ class _Client:
 
 
 class StdioClient(_Client):
-    """``deep-diff-forge rpc`` as a child process; close it (or use ``with``) to end it. Each request
-    must be taken and its answer arrive within ``timeout`` seconds, and the answer must fit the
+    """``deep-diff-forge rpc`` as a child process; close it (or use ``with``) to end it. Each answer
+    must arrive within ``timeout`` seconds, and the answer must fit the
     daemon's size cap and be a valid response; otherwise the child is killed and ``TransportError``
     raised, so a stuck, runaway or misbehaving child cannot hang or exhaust the caller. The
-    deadline covers the write too: a child that stops reading cannot block a large request."""
+    deadline covers the write too: a child that stops reading cannot block a large request. An
+    answer that arrives before the whole request is taken is returned, and the child, now out of
+    step with the stream, is killed."""
 
     def __init__(self, command=("deep-diff-forge", "rpc"), timeout=30.0):
         super().__init__()
@@ -152,7 +155,8 @@ class StdioClient(_Client):
             selector.register(stdin, selectors.EVENT_WRITE)
             selector.register(stdout, selectors.EVENT_READ)
             # Read while writing, so a child that answers (or refuses) early cannot deadlock us.
-            while pending or b"\n" not in self._buffer:
+            # A whole answer line ends the exchange even if part of the request is unsent.
+            while b"\n" not in self._buffer:
                 if len(self._buffer) > MAX_REQUEST_BYTES:
                     self._fail("the answer exceeds the daemon's maximum size")
                 remaining = deadline - time.monotonic()
@@ -164,12 +168,15 @@ class StdioClient(_Client):
                         pending = self._write(selector, pending)
                     else:
                         chunk = os.read(stdout, 1 << 16)
-                        if not chunk and b"\n" not in self._buffer:
-                            self._fail("deep-diff-forge rpc closed without answering")
                         if not chunk:
-                            pending = pending[:0]  # it answered, then closed: nothing more to send
+                            self._fail("deep-diff-forge rpc closed without answering")
                         self._buffer += chunk
         line, _, self._buffer = self._buffer.partition(b"\n")
+        if pending:
+            # It answered before taking the whole request: the unsent tail would garble the next
+            # one, so the out-of-step child is killed and the next call is a TransportError.
+            self._process.kill()
+            self._process.wait()
         return line
 
     def _write(self, selector, pending):
