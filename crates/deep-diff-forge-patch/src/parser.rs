@@ -3067,11 +3067,12 @@ diff --git a/a b c.rs b/a b c.rs
 
     /// A bare hunk with no headers at all is a modification of an unnamed file, not `unknown`.
     #[test]
-    fn a_bare_hunk_is_a_modification() {
-        let file = one("@@ -1 +1 @@\n-a\n+b\n");
+    fn a_bare_hunk_without_a_file_header_is_refused() {
+        // `git apply` refuses it too ("patch fragment without header"); before the 2026-11-01 bug
+        // hunt it was reviewed as a modification of a file with an empty path.
         assert_eq!(
-            (file.path.as_str(), file.status),
-            ("", FileStatus::Modified)
+            parse("@@ -1 +1 @@\n-a\n+b\n"),
+            Err(PatchParseError::InvalidPath { line_number: 1 })
         );
     }
 }
