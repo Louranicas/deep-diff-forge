@@ -4,8 +4,10 @@
 //! layout/fold/notes/theme toggles, focus, scrolling — lives in a pure, fully
 //! tested state model ([`ReviewApp`]); key bindings map to semantic events
 //! ([`map_key`]); and the ratatui render is exercised headlessly via
-//! [`render_to_lines`] (a `TestBackend`). Only the live event loop ([`run`])
-//! needs a real terminal and is the single untested boundary.
+//! [`render_to_lines`] (a `TestBackend`). The live event loop ([`run`]) runs
+//! the same code under test, driven by scripted events against a `TestBackend`
+//! with a recording terminal; the CLI's `review_tty` test runs it in a
+//! pseudo-terminal.
 //!
 //! The screen composes a menu bar, a ranked directory tree of changed files
 //! (with status, ± counts, and inline-note badges), and a syntax-highlighted

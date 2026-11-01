@@ -985,7 +985,8 @@ deployment.
 
 **Known limits.** Contributions are welcome on any of these; see [CONTRIBUTING.md](CONTRIBUTING.md#open-problems-worth-owning):
 
-- The cockpit is tested by headless frames; there is no key-sequence harness yet.
+- Interactive `review` on macOS is built with a key reader that can wait on `/dev/tty`, but no
+  run on a Mac has been observed yet; the `macOS tests` job's pty test is the check.
 - Syntax features speak Rust.
 - Comparing two directories is not supported; `<old> <new>` takes two regular files.
 - The `chain`, `cluster` and `loom` subcommands were withdrawn (2026-10-31): chaining is shell

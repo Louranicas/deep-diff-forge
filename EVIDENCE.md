@@ -251,6 +251,7 @@ feeds file bytes. Replay manifests are noted as future; the receipt ships now.
   unaffected (it owns the terminal).
 - The live interactive `review` loop (`run`) needs a real TTY and is the single
   untested boundary; all logic lives in the tested state model + `--probe`.
+  (Superseded 2026-10-31; see the `[Unreleased]` CHANGELOG entry on the live loop.)
 
 ## L4 Semantic (continuation, first heavy-dependency wave)
 

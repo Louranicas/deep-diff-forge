@@ -1,13 +1,13 @@
 {
   "SPDXID": "SPDXRef-DOCUMENT",
   "creationInfo": {
-    "created": "2026-10-30T21:12:29Z",
+    "created": "2026-11-01T08:26:21Z",
     "creators": [
       "Tool: deep-diff-forge scripts/security/generate_spdx_sbom.py"
     ]
   },
   "dataLicense": "CC0-1.0",
-  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/505da687dfa3e5bf4e35547c536a8dc7",
+  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/3268b197ba8401f34ad4757f37020add",
   "name": "deep-diff-forge-cargo-lock-sbom",
   "packages": [
     {
@@ -681,7 +681,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "8bb00328f71b19f6673d1c199073b8e2074f88052d5df68953c43e47a1557bf1"
+          "checksumValue": "0fcb510bbe93ff6287c4033b794e67229ab85cd7b3f338c38b65727303b3af00"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -861,6 +861,30 @@
       "name": "errno",
       "primaryPackagePurpose": "LIBRARY",
       "versionInfo": "0.3.14"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-filedescriptor-6fd32620b9e7fa86",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "1279a4640ce9a6e4e404648d35635f2edf01289e71b64e053922363ef9533b37"
+        }
+      ],
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/filedescriptor@0.8.3",
+          "referenceType": "purl"
+        }
+      ],
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "name": "filedescriptor",
+      "primaryPackagePurpose": "LIBRARY",
+      "versionInfo": "0.8.3"
     },
     {
       "SPDXID": "SPDXRef-Package-find-msvc-tools-afd1f3a70133e8bd",
@@ -2447,6 +2471,30 @@
       "versionInfo": "3.0.4"
     },
     {
+      "SPDXID": "SPDXRef-Package-thiserror-f1b532cce00cd656",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "d169d8e8b0ec46a191410fbaa6bac609204a411d770a22cb7afbaf71facef6a9"
+        }
+      ],
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/thiserror@1.0.69",
+          "referenceType": "purl"
+        }
+      ],
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "thiserror",
+      "primaryPackagePurpose": "LIBRARY",
+      "versionInfo": "1.0.69"
+    },
+    {
       "SPDXID": "SPDXRef-Package-thiserror-d1094cbbc23de648",
       "checksums": [
         {
@@ -2469,6 +2517,30 @@
       "name": "thiserror",
       "primaryPackagePurpose": "LIBRARY",
       "versionInfo": "2.0.20"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-thiserror-impl-13616f2297248b18",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "bffd948b1f0555744e242e035597a6c706a4f795986e2650a4bb193df5bf840d"
+        }
+      ],
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/thiserror-impl@1.0.69",
+          "referenceType": "purl"
+        }
+      ],
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "thiserror-impl",
+      "primaryPackagePurpose": "LIBRARY",
+      "versionInfo": "1.0.69"
     },
     {
       "SPDXID": "SPDXRef-Package-thiserror-impl-f20a8f679ca3a473",
@@ -3031,6 +3103,11 @@
       "spdxElementId": "SPDXRef-Package-crossterm-f09249501ce7359b"
     },
     {
+      "relatedSpdxElement": "SPDXRef-Package-filedescriptor-6fd32620b9e7fa86",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-crossterm-f09249501ce7359b"
+    },
+    {
       "relatedSpdxElement": "SPDXRef-Package-mio-3a6edb0f098ada1b",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-crossterm-f09249501ce7359b"
@@ -3489,6 +3566,21 @@
       "relatedSpdxElement": "SPDXRef-Package-windows-sys-27c68f22007adecb",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-errno-dc281f2416af1597"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-libc-06536456656c676c",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-filedescriptor-6fd32620b9e7fa86"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-thiserror-f1b532cce00cd656",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-filedescriptor-6fd32620b9e7fa86"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-winapi-54d255561ab31a1f",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-filedescriptor-6fd32620b9e7fa86"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-allocator-api2-0a27ed619d683e9d",
@@ -4146,9 +4238,29 @@
       "spdxElementId": "SPDXRef-Package-syn-1de06c37ccbe7f5d"
     },
     {
+      "relatedSpdxElement": "SPDXRef-Package-thiserror-impl-13616f2297248b18",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-thiserror-f1b532cce00cd656"
+    },
+    {
       "relatedSpdxElement": "SPDXRef-Package-thiserror-impl-f20a8f679ca3a473",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-thiserror-d1094cbbc23de648"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-proc-macro2-27236d1fa8764158",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-thiserror-impl-13616f2297248b18"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-quote-ec8476dd5d618d0f",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-thiserror-impl-13616f2297248b18"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-syn-d20a3db27e697501",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-thiserror-impl-13616f2297248b18"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-proc-macro2-27236d1fa8764158",

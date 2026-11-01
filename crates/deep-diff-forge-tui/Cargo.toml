@@ -23,5 +23,12 @@ deep-diff-forge-daemon.workspace = true
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29", "layout-cache"] }
 crossterm = "0.29"
 
+# `review` reads its patch on stdin, so crossterm reads keys from `/dev/tty`. Its default reader
+# waits on that fd through mio, which is kqueue on macOS, and kqueue does not take `/dev/tty`
+# (crossterm-rs/crossterm#500). `use-dev-tty` waits through `filedescriptor`, which uses select(2)
+# on macOS. Linux keeps the default reader (epoll takes `/dev/tty`).
+[target.'cfg(target_os = "macos")'.dependencies]
+crossterm = { version = "0.29", features = ["use-dev-tty"] }
+
 [lints]
 workspace = true
