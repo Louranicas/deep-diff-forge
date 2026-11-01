@@ -457,6 +457,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   is now split as `git_header_name` splits it, for any prefixes and a quoted second half, and
   the rightmost ` b/` is used only when the halves name different files (the mode change of two
   files compared with `git diff --no-index`).
+  A name split this way that holds a NUL is refused with `InvalidPath`, as a NUL in any other
+  header name is: kept, it rendered as a quoted `\000` that the parser refused (fuzz, PR #83).
 - **A file section that names no path is refused.** A `diff --git i/x w/y` (or CRLF `i/x w/x`)
   mode change with no `---`/`+++` was reviewed as a file with an empty path (exit 0); Git
   refuses it ("lacks filename information"), as it refuses a hunk with no file headers, which
