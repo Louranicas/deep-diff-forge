@@ -1477,6 +1477,50 @@ mod tests {
         );
     }
 
+    /// Review 2026-11-01 (graph-syntax): a Go hunk that opens inside a cobra raw help string.
+    /// The apostrophe in `It's` was read as an opener and carried down the hunk until the glob's
+    /// `/*` opened a block comment over the `http.Get` and `exec.Command` after it. Without the
+    /// `don't panic` line, and before strings were carried, both were found.
+    #[test]
+    fn a_misread_opener_in_context_hides_no_later_evidence() {
+        let patch = |println: bool| {
+            let mut added = vec![
+                "\t\tmatches, _ := filepath.Glob(\"/tmp/build/*.o\")",
+                "\t\t_, _ = http.Get(\"https://e.x/ping\")",
+                "\t\treturn exec.Command(\"rm\", matches...).Run()",
+            ];
+            if println {
+                added.insert(0, "\t\tfmt.Println(\"don't panic\")");
+            }
+            let mut text = format!(
+                "--- a/cmd/clean.go\n+++ b/cmd/clean.go\n@@ -1,3 +1,{} @@\n",
+                3 + added.len()
+            );
+            for context in [
+                "It's safe to run twice.",
+                "`,",
+                "\tRunE: func(cmd *cobra.Command, args []string) error {",
+            ] {
+                text.push(' ');
+                text.push_str(context);
+                text.push('\n');
+            }
+            for line in added {
+                text.push('+');
+                text.push_str(line);
+                text.push('\n');
+            }
+            parse(&text).unwrap().remove(0)
+        };
+        for println in [false, true] {
+            assert_eq!(
+                signals(&patch(println)),
+                [S::NetworkFetch, S::ProcessSpawn],
+                "println: {println}"
+            );
+        }
+    }
+
     #[test]
     fn build_scripts_and_install_hooks_are_build_hooks() {
         assert_eq!(

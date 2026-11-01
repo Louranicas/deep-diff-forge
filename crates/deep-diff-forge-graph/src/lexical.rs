@@ -13,9 +13,12 @@
 //!   order ([`ScanState`]); a hunk that starts inside one is read as code.
 //! - A string still open at the end of a line (outside Rust) is read as code from its quote,
 //!   and is also carried to the next line of the hunk. That line is read twice, as code and as
-//!   resuming inside the string, and what either reading finds code is code: the closing
-//!   quote of a multi-line string cannot open a phantom string over the code after it, and a
-//!   quote misread as an opener cannot hide the next line.
+//!   resuming inside the string, and both readings go on down the hunk (up to four at once);
+//!   what any reading finds code is code. So the closing quote of a multi-line string cannot
+//!   open a phantom string over the code after it. The plain reading, which resumes no
+//!   string, is always one of them, so a quote misread as an opener hides no later line that a
+//!   scan without carried strings keeps; it can still leave that plain reading in a block
+//!   comment or triple string, as any misread quote could before strings were carried.
 //! - An interpolation is scanned as code with its own strings, escapes and comments, and ends
 //!   at its matching closer on the same line. Shell `case` patterns, ANSI-C `$'…'` strings,
 //!   word-start `#` comments, JS regex literals (also on a line that continues an
@@ -113,9 +116,50 @@ impl Language {
     }
 }
 
-/// What a multi-line construct left open at the end of the previous line of the same hunk.
+/// What multi-line constructs the previous lines of the same hunk left open: one or more
+/// readings of them, each scanned on the next line, which keeps what any of them finds code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ScanState {
+    /// The plain reading: each line read from the block comment or triple string the previous
+    /// plain reading left open, and from no carried string. It is never dropped, so a line keeps
+    /// at least what this reading finds code, whatever the other readings carry.
+    plain: Reading,
+    /// Up to [`MORE_READINGS`] other readings, distinct from `plain` and from each other: the
+    /// lines read as resuming inside a string a reading left open, and what followed them.
+    more: [Option<Reading>; MORE_READINGS],
+}
+
+/// How many readings besides the plain one a [`ScanState`] carries. Each carried string doubles
+/// a reading, so the count is capped; a reading past the cap is dropped, the plain one never.
+const MORE_READINGS: usize = 3;
+
+impl ScanState {
+    /// The readings, the plain one first.
+    fn readings(&self) -> impl Iterator<Item = Reading> + '_ {
+        std::iter::once(self.plain).chain(self.more.iter().flatten().copied())
+    }
+
+    /// The state after a line: `readings` (the plain one first) without repeats, capped.
+    fn from_readings(readings: &[Reading]) -> Self {
+        let mut state = Self {
+            plain: readings.first().copied().unwrap_or_default(),
+            more: [None; MORE_READINGS],
+        };
+        let mut slots = state.more.iter_mut();
+        for (i, reading) in readings.iter().enumerate().skip(1) {
+            if readings[..i].contains(reading) {
+                continue;
+            }
+            let Some(slot) = slots.next() else { break };
+            *slot = Some(*reading);
+        }
+        state
+    }
+}
+
+/// One reading of what the previous line left open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Reading {
     in_block_comment: bool,
     /// The quote character of an open Python triple-quoted string.
     in_triple: Option<u8>,
@@ -369,24 +413,32 @@ fn regex_len(rest: &[u8]) -> Option<usize> {
 /// still open at the end of the line (outside Rust, whose strings span lines) is read as code
 /// from its quote on, so a quote the scanner misread cannot hide what follows it. `state`
 /// carries an open block comment, triple string or string to the next line. A line that may
-/// start inside a carried string is read both as code and as resuming the string, and a byte
-/// either reading keeps is kept: the closing quote of a multi-line string does not open a
-/// phantom string over the code after it, and a misread opener hides nothing on the next line.
+/// start inside a carried string is read both as code and as resuming the string, each reading
+/// goes on to the next line, and a byte any reading keeps is kept: the closing quote of a
+/// multi-line string does not open a phantom string over the code after it. The plain reading,
+/// which resumes no string, always goes on, so a quote misread as an opener cannot hide a later
+/// line of the hunk that a scan carrying no string would keep.
 #[must_use]
 pub fn code_view(language: Language, line: &str, state: &mut ScanState) -> String {
-    let Some(open) = state.in_string.take() else {
-        return scan_line(language, line, state, None);
-    };
-    let mut fresh = *state;
-    let plain = scan_line(language, line, &mut fresh, None);
-    // The resumed reading's state goes on: when the string really was open, its quote closed
-    // it, and what follows was read as it is.
-    let resumed = scan_line(language, line, state, Some(open));
-    union_views(line, &plain, &resumed)
+    let mut readings = Vec::with_capacity(2 * (1 + MORE_READINGS));
+    let mut views = Vec::with_capacity(readings.capacity());
+    for mut start in state.readings() {
+        let open = start.in_string.take();
+        let mut plain = start;
+        views.push(scan_line(language, line, &mut plain, None));
+        readings.push(plain);
+        if let Some(open) = open {
+            let mut resumed = start;
+            views.push(scan_line(language, line, &mut resumed, Some(open)));
+            readings.push(resumed);
+        }
+    }
+    *state = ScanState::from_readings(&readings);
+    union_views(line, &views)
 }
 
 /// One line's view, starting inside `open` when the previous line left that string open.
-fn scan_line(language: Language, line: &str, state: &mut ScanState, open: Option<Frame>) -> String {
+fn scan_line(language: Language, line: &str, state: &mut Reading, open: Option<Frame>) -> String {
     let bytes = line.as_bytes();
     let mut scan = Scan {
         language,
@@ -405,16 +457,20 @@ fn scan_line(language: Language, line: &str, state: &mut ScanState, open: Option
     scan.finish(state)
 }
 
-/// The bytes of `line` that `a` or `b` (two views of it) keeps, the rest blank. Each view keeps
-/// or blanks a whole character, so the union is valid UTF-8 wherever both are.
-fn union_views(line: &str, a: &str, b: &str) -> String {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    let kept = |view: &[u8], i: usize| view.get(i).is_some_and(|c| *c != b' ');
+/// The bytes of `line` that any of `views` (views of it) keeps, the rest blank. Each view keeps
+/// or blanks a whole character, so the union is valid UTF-8 wherever every view is.
+fn union_views(line: &str, views: &[String]) -> String {
+    let kept = |i: usize| {
+        views
+            .iter()
+            .any(|view| view.as_bytes().get(i).is_some_and(|c| *c != b' '))
+    };
+    let len = views.iter().map(String::len).max().unwrap_or(0);
     let out: Vec<u8> = line
         .bytes()
-        .take(a.len().max(b.len()))
+        .take(len)
         .enumerate()
-        .map(|(i, byte)| if kept(a, i) || kept(b, i) { byte } else { b' ' })
+        .map(|(i, byte)| if kept(i) { byte } else { b' ' })
         .collect();
     String::from_utf8(out).unwrap_or_default()
 }
@@ -436,7 +492,7 @@ struct Scan<'a> {
 
 impl Scan<'_> {
     /// Scan byte `i`; `false` when the rest of the line is a comment.
-    fn step(&mut self, i: usize, state: &mut ScanState) -> bool {
+    fn step(&mut self, i: usize, state: &mut Reading) -> bool {
         let byte = self.bytes[i];
         if self.blank > 0 {
             self.blank -= 1;
@@ -563,7 +619,7 @@ impl Scan<'_> {
 
     /// A byte of code: at the top of the line or inside an interpolation. `false` when the rest
     /// of the line is a comment.
-    fn in_code(&mut self, i: usize, state: &mut ScanState) -> bool {
+    fn in_code(&mut self, i: usize, state: &mut Reading) -> bool {
         let (language, bytes) = (self.language, self.bytes);
         let (byte, rest) = (bytes[i], &bytes[i..]);
         let nested = !self.stack.is_empty();
@@ -726,7 +782,7 @@ impl Scan<'_> {
     }
 
     /// The view, with a string still open at the end of the line read as code from its quote.
-    fn finish(mut self, state: &mut ScanState) -> String {
+    fn finish(mut self, state: &mut Reading) -> String {
         if self.language == Language::JavaScript
             && let Some(&last) = self.out.trim_ascii_end().last()
         {
@@ -1184,7 +1240,7 @@ mod tests {
             code_view(Language::Go, "/* a */ b /* c", &mut state),
             "        b     "
         );
-        assert!(state.in_block_comment);
+        assert!(state.plain.in_block_comment);
     }
 
     #[test]
@@ -1259,7 +1315,10 @@ mod tests {
                 "{line}"
             );
         }
-        assert_eq!(state, ScanState::default());
+        // The plain reading took `/*` for a comment, and keeps it; the reading that resumed the
+        // raw string closed it, and ends with nothing open.
+        assert!(state.plain.in_block_comment);
+        assert!(state.readings().any(|r| r == Reading::default()));
     }
 
     /// Bug hunt 2026-11-01: any word-start `#` ended a YAML line, even inside a quoted scalar
@@ -1335,7 +1394,10 @@ mod tests {
         ] {
             let (out, state) = views(language, lines);
             assert_eq!(out, expected, "{language:?}: {lines:?}");
-            assert_eq!(state.in_string, None, "{language:?}: {lines:?}");
+            assert!(
+                state.readings().any(|r| r.in_string.is_none()),
+                "{language:?}: {lines:?}"
+            );
         }
         // A quote misread as an opener hides nothing on the next lines, though the reading
         // that resumes inside it may stay open.
@@ -1352,12 +1414,70 @@ mod tests {
         assert_eq!(out[1], format!(r#"a"; f();{}"#, " ".repeat(10)));
     }
 
+    /// Review 2026-11-01: only the reading that resumed a carried string went on to the next
+    /// line, so a quote misread as an opener (`It's` in a hunk that starts inside a Go raw
+    /// string) was carried from line to line until a real quote "closed" it and a `/*` in the
+    /// string after it opened a block comment over the rest of the hunk. Each line now keeps at
+    /// least what the plain reading, which carries no string, keeps.
+    #[test]
+    fn a_misread_opener_hides_nothing_on_later_lines() {
+        let mut hidden = Vec::new();
+        for (language, lines, tokens) in [
+            (
+                Language::Go,
+                &[
+                    "It's safe to run twice.",
+                    "`,",
+                    "\tRunE: func(cmd *cobra.Command, args []string) error {",
+                    "\t\tfmt.Println(\"don't panic\")",
+                    "\t\tmatches, _ := filepath.Glob(\"/tmp/build/*.o\")",
+                    "\t\t_, _ = http.Get(\"https://example.com/ping\")",
+                    "\t\treturn exec.Command(\"rm\", matches...).Run()",
+                ][..],
+                &["http.Get", "exec.Command"][..],
+            ),
+            (
+                Language::JavaScript,
+                &["  Say 'hi", "`; const p = \"'/*\";", "eval(payload);"],
+                &["eval"],
+            ),
+            (
+                Language::Rust,
+                &["  he said \"hi", "let p = \"/*\";", "unsafe { *p }"],
+                &["unsafe"],
+            ),
+            (
+                Language::Python,
+                &["it's here", "x = \"'\"\"\"", "os.system(\"id\")"],
+                &["os.system"],
+            ),
+        ] {
+            let mut state = ScanState::default();
+            let views: Vec<String> = lines
+                .iter()
+                .map(|line| code_view(language, line, &mut state))
+                .collect();
+            for token in tokens {
+                if !views.iter().any(|v| v.contains(token)) {
+                    hidden.push(format!("{language:?}: {token} in {views:?}"));
+                }
+            }
+        }
+        assert_eq!(hidden, Vec::<String>::new());
+    }
+
     #[test]
     fn a_union_of_views_keeps_what_either_keeps() {
-        assert_eq!(union_views("abc def", "a      ", "    de"), "a   de ");
-        assert_eq!(union_views("ab", "ab", ""), "ab");
-        assert_eq!(union_views("ab", "", "  "), "  ");
-        assert_eq!(union_views("é x", "   x", "é  "), "é x");
+        let union = |line: &str, views: &[&str]| {
+            let views: Vec<String> = views.iter().map(ToString::to_string).collect();
+            union_views(line, &views)
+        };
+        assert_eq!(union("abc def", &["a      ", "    de"]), "a   de ");
+        assert_eq!(union("ab", &["ab", ""]), "ab");
+        assert_eq!(union("ab", &["", "  "]), "  ");
+        assert_eq!(union("é x", &["   x", "é  "]), "é x");
+        assert_eq!(union("abc", &["a  ", " b ", "  c"]), "abc");
+        assert_eq!(union("abc", &[]), "");
     }
 
     /// Bug hunt 2026-11-01: `cr"…"` (a raw C string) was read as an ordinary string, whose `\"`

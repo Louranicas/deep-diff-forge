@@ -165,7 +165,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   Python string continued with `\`) opened a phantom string, and the `unsafe`, `curl`, `eval`
   or `os.system` after it was blanked. A string still open at the end of a line is now carried
   to the next line of the hunk, which is read both as code and as resuming inside the string;
-  a byte either reading keeps is code, so a quote misread as an opener still hides nothing.
+  both readings go on down the hunk, and a byte any reading keeps is code.
+- **A quote misread as an opener no longer hides the rest of the hunk.** An unreleased
+  version of the fix above carried only the reading that resumed the string, so an apostrophe
+  in text (`It's`, in a Go hunk that opens inside a raw help string) stayed open from line to
+  line until a real quote "closed" it, and a `/*` in the string after it (a glob) opened a
+  block comment that blanked every later line: the `http.Get` and `exec.Command` below gave no
+  evidence. The same held in JS, Rust and Python. The plain reading, which resumes no string,
+  now always goes on as well (with at most three others), so a line keeps at least what a scan
+  without carried strings keeps.
 - **Rust raw C strings are raw.** `cr"C:\"` and `cr#"…"#` were read as ordinary strings, whose
   `\"` escapes the closing quote, so the `unsafe` after one on the same line was blanked. The
   raw-string prefix check now accepts one `b` or `c` before the `r`.
