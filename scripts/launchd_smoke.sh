@@ -92,15 +92,23 @@ up_with_launchd_pid() {
 
 mkdir -m 700 "$run"
 mkdir "${work}/LaunchAgents"
-cp "$template" "$plist"
+# Install as the plist's own comment says: replace each /Users/YOU value (here with this run's
+# paths), then check the result with plutil. Rewriting with `plutil -replace` left a placeholder
+# value on a hosted runner (PR #79), so the text substitution an installer does is what runs.
+sed -e "s#<string>/Users/YOU/.local/bin/deep-diff-forge</string>#<string>${bin}</string>#" \
+  -e "s#<string>/Users/YOU/.local/run</string>#<string>${run}</string>#" \
+  -e "s#<string>/Users/YOU/Library/Logs/deep-diff-forge.log</string>#<string>${log}</string>#" \
+  "$template" > "$plist"
 chmod 644 "$plist"
-plutil -replace ProgramArguments.0 -string "$bin" "$plist"
-plutil -replace EnvironmentVariables.XDG_RUNTIME_DIR -string "$run" "$plist"
-plutil -replace StandardErrorPath -string "$log" "$plist"
 plutil -lint "$plist"
 # Only a value counts: the plist's install comment names the placeholder on purpose.
-! grep -q '<string>/Users/YOU' "$plist" || fail "a /Users/YOU placeholder value is left in ${plist}"
-[ "$(plutil -extract ProgramArguments.0 raw -o - "$plist")" = "$bin" ] || fail "ProgramArguments[0] is not ${bin}"
+if grep -n '<string>/Users/YOU' "$plist" >&2; then
+  fail "a /Users/YOU placeholder value is left in ${plist} (lines above)"
+fi
+for pair in "ProgramArguments.0=${bin}" "EnvironmentVariables.XDG_RUNTIME_DIR=${run}" "StandardErrorPath=${log}"; do
+  key="${pair%%=*}"
+  [ "$(plutil -extract "$key" raw -o - "$plist")" = "${pair#*=}" ] || fail "${key} is not ${pair#*=}"
+done
 
 export XDG_RUNTIME_DIR="$run"
 sock="$("$bin" daemon path)"
