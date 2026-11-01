@@ -93,6 +93,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **Dependabot watches the Python client.** `.github/dependabot.yml` gains a weekly `pip` entry
   for `sdk/python` (its only requirement is the setuptools build backend), with the same 7-day
   cooldown as the Cargo and Actions entries.
+- **Whole-crate mutation of `core`, `patch`, `daemon` and `syntax`** (EVIDENCE.md, 2026-11-01).
+  51 tests pin the mutants each crate's own tests missed: hunk addresses and digests, Git
+  C-quoted paths, the raw-record and patch-block identity checks, the exact `review.v0`
+  document, rename and truncation refusals in the parser, a socket line that ends at its
+  newline, and the byte, node and cell budgets of the syntax crate at exactly their limit.
+  Missed by the crate's own tests: `core` 22 to 3, `patch` 82 to 3, `syntax` 29 to 3, each
+  remaining one equivalent or compiled only off Unix. `daemon` (16 missed, 13 timeouts) was
+  re-run in workspace scope only, not whole: the workspace's tests catch all but 3 equivalents
+  (2 of them caught only by `graph`'s timing test on a loaded machine) and one loop mutant that
+  still times out. Tests of edit-script loops, tree walks and
+  quoted-path decoding run under a 10 s deadline, so a loop that stops advancing fails its test
+  instead of hanging the suite. Test code only.
+
 - **The Python client is a package.** `sdk/python/pyproject.toml` (setuptools, no dependencies,
   Python 3.9+) installs `deep_diff_forge` as the package `deep-diff-forge`, from a checkout
   (`python3 -m pip install ./sdk/python`) or from GitHub with `#subdirectory=sdk/python`. It is
@@ -210,6 +223,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   wall-clock deadline only against hangs. Measured: linear code passes under 64 busy loops
   (20 s wall), and the quadratic import rule it guards against (`eee2b4c^`) still fails at 66.7 s
   of CPU time. Shrinking the lines was rejected: at 20,000 units the quadratic rule took 0.4 s.
+
+### Tests
+
+- **The gate sandbox's surviving mutants are closed** (`review/src/sandbox.rs`): tests pin `--cpus=<host CPUs − 1, min 1>` in argv and receipt, refuse a blank runtime or an empty image by name, and bound control-command output at 64 KiB; one `>=` deadline mutant is argued equivalent (EVIDENCE.md).
+- **`mutation_scope`'s quadratic-scan guard fails instead of hanging.** Its 1 MiB `#` run is
+  scanned under a 30 s deadline, so the test binary exits and eager `#` counting, which
+  `code_lines_skip_comments_and_attributes_across_lines` already fails, is reported as caught,
+  not as a timeout (EVIDENCE.md, "Review crate: mutation_scope mutation").
+- **Council admission boundaries are pinned:** nine `review` contract tests kill the 16 `policy.rs`/`model.rs` mutants that survived the whole-crate run (EVIDENCE.md).
 
 ## [0.5.0] - 2026-10-31
 

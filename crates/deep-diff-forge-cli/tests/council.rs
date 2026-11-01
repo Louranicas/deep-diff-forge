@@ -140,6 +140,15 @@ impl Fixture {
             fs::write(&tool, FAKE_GATE.replace("@MODE@", mode)).unwrap();
             fs::set_permissions(&tool, fs::Permissions::from_mode(0o700)).unwrap();
         }
+        if mode == "vendor_dirs" {
+            // Built here, untimed; the gate renames it into its output (same filesystem).
+            let crate_dir = self.root.join("vendor-dirs-crate");
+            fs::create_dir(&crate_dir).unwrap();
+            fs::write(crate_dir.join("lib.rs"), "pub fn f() {}\n").unwrap();
+            for i in 0..100_001 {
+                fs::create_dir(crate_dir.join(i.to_string())).unwrap();
+            }
+        }
     }
     fn gate(&self, gate: &str) -> Output {
         self.gate_with(gate, "normal")
@@ -526,7 +535,8 @@ sys.exit(subprocess.run([exe]+[host(a) for a in inner[1:]],cwd=host(workdir),env
 const FAKE_IMAGE_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 /// Fake `cargo` inside the fake sandbox. Modes plant what a hostile candidate (or its tools) could
 /// leave in the job's writable `/work`: `vendor_symlink`, `vendor_root_symlink`, `vendor_fifo` and
-/// `vendor_dirs` (more empty directories than the seal's entry budget) in the vendoring output;
+/// `vendor_dirs` (more empty directories than the seal's entry budget, built by `install_gate`
+/// before the job's clock starts and renamed in) in the vendoring output;
 /// `fifo` and `symlinked_dir` at the mutation witness. For the exemption oracle (installed again
 /// as `ddf-cargo-mutants-noexclude` and `ddf-cargo-mutants-strict`): `exempt`/`exempt_txt` hide
 /// `hidden` with something other than the allow-list; the rest hide it with `#[cfg(test)]`, and
@@ -642,11 +652,13 @@ if sys.argv[1:2]==['build'] and '--keep-going' in sys.argv:
 if sys.argv[1:2]==['vendor']:
     out=pathlib.Path(sys.argv[-1])
     if mode=='vendor_root_symlink':out.symlink_to('/etc');sys.exit(0)
-    crate=out/'crate-1.0.0';crate.mkdir(parents=True);(crate/'lib.rs').write_text('pub fn f() {}\n')
+    crate=out/'crate-1.0.0'
+    if mode=='vendor_dirs':
+        # The crate with 100,001 empty directories that `install_gate` built before the clock.
+        out.mkdir(parents=True);os.rename(os.path.join(os.path.dirname(os.path.abspath(__file__)),'..','vendor-dirs-crate'),crate);sys.exit(0)
+    crate.mkdir(parents=True);(crate/'lib.rs').write_text('pub fn f() {}\n')
     if mode=='vendor_symlink':(crate/'escape').symlink_to('/etc')
     if mode=='vendor_fifo':os.mkfifo(crate/'pipe')
-    if mode=='vendor_dirs':
-        for i in range(100_001):(crate/str(i)).mkdir()
     sys.exit(0)
 if 'mutants' in sys.argv:
     assert 'CARGO_TARGET_DIR' not in os.environ,'mutation must not share a cargo target dir'
@@ -1711,6 +1723,8 @@ fn mutation_jobs_own_a_build_cache_and_cannot_contaminate_normal_tests() {
 #[test]
 fn qualification_cannot_restore_pass_over_a_refusal_marker() {
     let f = Fixture::new();
+    // The marker comes from qualifying a finished job; one timed out on a loaded host gets none.
+    f.long_budget();
     f.prepare();
     f.install_gate("empty");
     assert_eq!(f.gate("tests").status.code(), Some(7));
@@ -1906,6 +1920,53 @@ fn gates_refuse_without_a_sandbox() {
     }
 }
 
+/// Set but empty is not configured: a blank `DDF_COUNCIL_PODMAN` has no command to run and an
+/// empty `DDF_COUNCIL_GATE_IMAGE` names no image. Each alone is refused as configuration, before
+/// the runtime is asked anything, and no job directory is made.
+#[test]
+fn an_empty_runtime_or_image_is_refused_as_configuration() {
+    for (runtime, image) in [(Some(" \t "), "fake-gate"), (None, "")] {
+        let f = Fixture::new();
+        f.prepare();
+        f.install_gate("valid");
+        // A runtime that records being asked anything (`image inspect` included, which the
+        // shared fake answers silently), so the refusal is shown to come first.
+        let asked = f.root.join("runtime-asked");
+        fs::write(
+            f.bin.join("podman"),
+            format!(
+                "#!/bin/sh\necho \"$@\" >> '{}'\nexit 125\n",
+                asked.display()
+            ),
+        )
+        .unwrap();
+        let mut command = f.command(
+            &["gate", f.run.to_str().unwrap(), "tests", "--execute"],
+            "normal",
+        );
+        command.env("DDF_COUNCIL_GATE_IMAGE", image);
+        if let Some(runtime) = runtime {
+            command.env("DDF_COUNCIL_PODMAN", runtime);
+        }
+        let result = command.output().unwrap();
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert_eq!(
+            result.status.code(),
+            Some(4),
+            "{runtime:?} {image:?}: {stderr}"
+        );
+        assert!(
+            stderr.contains("gate sandbox unavailable: empty runtime or image"),
+            "{runtime:?} {image:?}: {stderr}"
+        );
+        assert!(
+            !asked.exists(),
+            "{runtime:?} {image:?}: the runtime was asked"
+        );
+        assert_eq!(fs::read_dir(f.run.join("jobs")).unwrap().count(), 0);
+    }
+}
+
 #[test]
 fn relative_run_paths_resolve_before_provider_working_directory_changes() {
     let f = Fixture::new();
@@ -2035,11 +2096,11 @@ fn vendoring_output_is_sealed_and_planted_links_or_fifos_are_never_mounted() {
         "vendor_dirs",
     ] {
         let f = Fixture::new();
-        if mode == "vendor_dirs" {
-            // Creating 100,001 directories takes about 3 s on a loaded host: the case must be
-            // refused by the entry budget, not the clock.
-            f.long_budget();
-        }
+        // The refusal must come from the seal, not the clock: a vendoring job that times out is
+        // refused as `timed_out` with no `qualification-error.txt`. At load 60 the other modes
+        // passed 2 s, and creating 100,001 directories inside the job took 45 s, so `install_gate`
+        // builds them before the clock starts (sandbox mutation run, 2026-11-01).
+        f.long_budget();
         f.prepare();
         f.install_gate(mode);
         let result = f.gate("tests");
@@ -2055,7 +2116,22 @@ fn vendoring_output_is_sealed_and_planted_links_or_fifos_are_never_mounted() {
             String::from_utf8_lossy(&result.stderr)
         );
         let vendor = f.run.join("jobs/sandbox-vendor");
-        let refusal = fs::read_to_string(vendor.join("qualification-error.txt")).unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(vendor.join("execution.json")).unwrap()).unwrap();
+        assert_eq!(receipt["outcome"], "passed", "{mode}: {receipt}");
+        let refusal =
+            fs::read_to_string(vendor.join("qualification-error.txt")).unwrap_or_else(|e| {
+                panic!(
+                    "{mode}: {e}; vendor dir: {:?}; execution: {}; qualification: {}; stderr: {}",
+                    fs::read_dir(&vendor).map(|d| d
+                        .filter_map(Result::ok)
+                        .map(|e| e.file_name())
+                        .collect::<Vec<_>>()),
+                    fs::read_to_string(vendor.join("execution.json")).unwrap_or_default(),
+                    fs::read_to_string(vendor.join("qualification.json")).unwrap_or_default(),
+                    String::from_utf8_lossy(&result.stderr)
+                )
+            });
         assert!(
             refusal.contains("vendored output refused"),
             "{mode}: {refusal}"
@@ -2237,7 +2313,20 @@ fn gates_launch_the_resolved_image_id_with_read_only_inputs_and_bounded_resource
     ] {
         assert!(argv.contains(&expected), "missing {expected}: {argv:?}");
     }
-    assert!(argv.iter().any(|a| a.starts_with("--cpus=")));
+    // Every host CPU but one, never fewer than one: the gate cannot starve its supervising
+    // controller, and a one- or two-CPU host still runs it (docs/REVIEW_COUNCIL.md, row 9). The
+    // controller inherits this process's affinity, so both see the same parallelism. Below three
+    // host CPUs the bound is 1 whatever the formula, so only there a `cpus -> 1` mutant survives.
+    let host = std::thread::available_parallelism().unwrap().get();
+    let cpus = host.saturating_sub(1).max(1);
+    assert!(
+        argv.contains(&format!("--cpus={cpus}")),
+        "{host} host CPUs: {argv:?}"
+    );
+    assert_eq!(
+        environment["cpus"], cpus,
+        "the receipt names the same bound"
+    );
     // The vendoring job alone has network and a writable Cargo home; it too runs on a read-only source.
     let vendor = f.runtime_argv("sandbox-vendor").concat();
     assert!(vendor.iter().all(|a| a != "--network=none"));
