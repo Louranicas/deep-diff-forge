@@ -157,6 +157,55 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   (20 s wall), and the quadratic import rule it guards against (`eee2b4c^`) still fails at 66.7 s
   of CPU time. Shrinking the lines was rejected: at 20,000 units the quadratic rule took 0.4 s.
 
+- **The pre-push secret hook no longer lets a force push over an unfetched remote tip through
+  unscanned.** For an existing branch it scanned `<remote tip>..<local>`; when the remote tip was
+  not in the local clone (a `--force` push after someone else updated the branch), git could not
+  resolve the range, gitleaks 8.30.1 logged the error, reported "0 commits scanned, no leaks
+  found" and exited 0, and a committed token reached the remote (measured). The hook now scans
+  `<local> --not --remotes=<remote>` whenever the remote tip is not a local commit, and refuses
+  the push if `git rev-list` cannot resolve the range, so gitleaks' exit status is never the only
+  signal.
+- **`scripts/diff_mutation.sh` no longer passes untested when a changed Rust file's name has a
+  space or a non-ASCII byte.** It detected Rust changes by matching `+++ b/crates/….rs` header
+  text, but git appends a TAB to a header path with a space and C-quotes one with a non-ASCII
+  byte (`core.quotePath`), so a change touching only such files printed "no Rust changes" and
+  exited 0 in all four required shards (measured). Changed files now come from `git diff
+  --name-only -z`, and the diff handed to cargo mutants is written with `core.quotePath=false`:
+  cargo mutants 27.1.0 refuses a quoted header outright (measured, exit 6).
+- **`scripts/diff_mutation.sh` gives the same answer from any directory.** Its `-- crates/`
+  pathspec resolved against the current directory, so from a subdirectory the diff was empty and
+  the gate passed with no mutants tested (measured). It now runs at the repository root; a
+  relative `DDF_MUTATION_OUT` stays relative to the caller.
+- **The release no longer compiles third-party code while holding write and OIDC tokens.** The
+  `build` matrix held `contents: write`, `attestations: write` and `id-token: write` (on dry runs
+  too) while `cargo build` ran every dependency's build scripts and proc macros, which could have
+  minted an OIDC token for the release workflow's identity (inferred from GitHub's documented
+  OIDC behaviour). `build` is now `contents: read` and keeps its archives as workflow artifacts; a
+  new tag-only `release` job, which checks out and runs no project code, re-verifies the
+  checksums, attests and uploads. `cli/tests/release_workflow.rs` refuses an elevated job that
+  compiles.
+- **A failed release platform no longer leaves a published, partial GitHub Release.** Each
+  matrix leg (`fail-fast: false`) uploaded its own assets to a non-draft release, so the legs
+  that passed published while a failed one only turned the run red (traced, not run). The one
+  upload now happens in the `release` job, which needs every `build` leg; crates.io `publish`
+  now needs `release`.
+- **`scripts/fuzz_target.sh` fuzzes a fresh private corpus.** It reused a fixed
+  `/tmp/ddf-<target>-corpus` with `mkdir -p`, so another local user could pre-create it with
+  symlinks the seed copy wrote through (a planted `basic.patch` link overwrote its target with the
+  fixture, measured), and inputs from earlier runs stayed in the corpus. The corpus is now a new
+  `mktemp -d` directory (mode 0700) removed after the run; crashes stay in `fuzz/artifacts/`.
+  Its root (`DDF_FUZZ_CORPUS_ROOT`, else `RUNNER_TEMP`, else `/tmp`) is still made when missing,
+  as `mkdir -p` did, so a root that does not exist yet does not fail the run (measured).
+- **`scripts/fuzz_target.sh --list` lists every `[[bin]]`, however it is laid out.** A line
+  match took only a `name = "…"` on the line right after `[[bin]]`, so a valid table with `path`
+  first or `name="x"` dropped out of the CI smoke and the weekly campaign while still compiling
+  (measured). The list now comes from Python's `tomllib`.
+- **`just ci` runs on the toolchain CI pins.** `scripts/ci_local.sh` ran every step but the MSRV
+  check on the floating rustup default while `ci.yml` pins 1.99.1, so after a `rustup update` a
+  local PASS could differ from CI (inferred). It now exports `RUSTUP_TOOLCHAIN=1.99.1`, exits 2
+  if that toolchain, rustfmt or clippy is missing, and `ci_replica.rs` fails when its pin and
+  `ci.yml`'s disagree.
+
 ## [0.5.0] - 2026-10-31
 
 ### Added

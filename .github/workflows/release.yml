@@ -11,7 +11,8 @@ on:
   # so a dispatch from a tag (even a `v` one) is still a dry run.
   workflow_dispatch:
 
-# Least privilege by default; the job that creates the GitHub Release elevates.
+# Least privilege by default. Only the `release` job elevates, and it compiles and runs no project
+# or dependency code: it publishes the archives the `build` matrix made, once every target passed.
 permissions:
   contents: read
 
@@ -70,10 +71,10 @@ jobs:
   build:
     name: build ${{ matrix.target }}
     needs: [quality, supply-chain]
+    # Read only: this job runs every dependency's build script and proc macro and the built binary,
+    # so it holds no write token and no OIDC token (permissions are per job, not per step).
     permissions:
-      contents: write # create the GitHub Release + upload assets
-      attestations: write # GitHub Artifact Attestations / SLSA provenance
-      id-token: write # OIDC token required by attest-build-provenance
+      contents: read
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -153,38 +154,85 @@ jobs:
           else
             shasum -a 256 -c "${dist}.tar.gz.sha256"
           fi
+      - name: keep the archives for the release job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (node24)
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            deep-diff-forge-*.tar.gz
+            deep-diff-forge-*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+      - name: keep the SBOM for the release job
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (node24)
+        with:
+          name: sbom
+          path: sbom.spdx.json
+          if-no-files-found: error
+          retention-days: 7
+
+  # Publishes only after every matrix leg built and smoked its binary (`needs: build` waits for all
+  # of them; `fail-fast: false` only keeps the others running), so a failed platform leaves no
+  # release rather than a partial one. It holds the write and OIDC grants and runs only on a
+  # pushed `v*` tag, never on a dry run.
+  release:
+    name: GitHub Release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write # create the GitHub Release + upload assets
+      attestations: write # GitHub Artifact Attestations / SLSA provenance
+      id-token: write # OIDC token required by attest-build-provenance
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: fetch the archives of every target
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: fetch the SBOM
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom
+          path: dist
+      # The checksum that ships must verify the archive that ships, after the hand-off too.
+      - name: verify every archive against its checksum
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          ls deep-diff-forge-*.tar.gz >/dev/null
+          for archive in deep-diff-forge-*.tar.gz; do
+            sha256sum -c "${archive}.sha256"
+          done
+          test -s sbom.spdx.json
       # Attestations go to a public transparency log, so only a release tag makes them.
       - name: attest release provenance
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: |
-            deep-diff-forge-*.tar.gz
-            deep-diff-forge-*.tar.gz.sha256
+            dist/deep-diff-forge-*.tar.gz
+            dist/deep-diff-forge-*.tar.gz.sha256
       - name: attest SBOM provenance
-        if: matrix.target == 'x86_64-unknown-linux-gnu' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
-          subject-path: sbom.spdx.json
+          subject-path: dist/sbom.spdx.json
       - name: upload release assets
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3 (node24)
         with:
           files: |
-            deep-diff-forge-*.tar.gz
-            deep-diff-forge-*.tar.gz.sha256
-      - name: upload release SBOM
-        if: matrix.target == 'x86_64-unknown-linux-gnu' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3 (node24)
-        with:
-          files: sbom.spdx.json
+            dist/deep-diff-forge-*.tar.gz
+            dist/deep-diff-forge-*.tar.gz.sha256
+            dist/sbom.spdx.json
 
   # crates.io publication is irreversible and on hold by owner decision (2026-10-27) until the
   # codebase is production-hardened. The hold is this condition, not the absence of a token: the
   # job runs only after the owner sets the repository variable DDF_CRATES_IO to `open`.
   publish:
     name: crates.io publish (owner-gated)
-    needs: build
+    needs: release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && vars.DDF_CRATES_IO == 'open'
     # The token lives in the `release` environment, which only `v*` tags can deploy to.
     environment: release

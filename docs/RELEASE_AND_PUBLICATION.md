@@ -49,7 +49,9 @@ later; 0.5.0 is the current development line):
 
 The local replica of the CI gate is `just ci` ([`scripts/ci_local.sh`](../scripts/ci_local.sh)):
 it runs every step of the `secrets`, `msrv`, `gate` and `supply-chain` jobs and
-prints PASS/FAIL per step (exit 0 only if all pass, 2 if `cargo` is missing).
+prints PASS/FAIL per step (exit 0 only if all pass, 2 if `cargo` or the pinned Rust 1.99.1 with
+rustfmt and clippy is missing). Like CI, every step but the MSRV check runs on Rust 1.99.1, not the
+rustup default. Run `scripts/diff_mutation.sh` from anywhere in the checkout: it moves to the root.
 `just gate-release` is the smaller gate `just release-tag` runs: `fmt`, `check`,
 `clippy`, `pedantic`, `test`, `contracts` and `docs`. The checklist:
 
@@ -138,14 +140,15 @@ are ruleset 25868121's required checks (`bench` added on 2026-10-31; measured wi
 ### `release.yml`
 
 Triggers: `push` of a `v*` tag, and `workflow_dispatch` (dry run). Default
-permission `contents: read`; only `build` elevates.
+permission `contents: read`; only `release` elevates, and it compiles and runs nothing.
 
 | Job | Runner | What it does |
 | --- | --- | --- |
 | `quality` | (calls `ci.yml`) | The full CI workflow. On a tag push its event is `push`, so `diff-mutation` is skipped; `macos` runs. |
 | `supply-chain` (supply chain gate) | ubuntu-26.04 | cargo-deny and cargo-audit as in CI; on a tag, refuses a tag that is not `v` + the workspace version. |
-| `build` (build &lt;target&gt;) | ubuntu-24.04 (Linux), macos-latest (both macOS) | Needs `quality` and `supply-chain`. `cargo build --release --locked -p deep-diff-forge-cli` for `x86_64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. Every binary is run (smoke): `--version` must equal the workspace version and `--stdin-patch --json` must produce a review document; the x86_64 macOS binary is cross-built and run under Rosetta 2 (`run_under: arch -x86_64`, installed if missing), after `file` confirms it is x86_64. Packages, writes and re-verifies the `.sha256`. On a pushed `v*` tag only (never a dispatch, even from a tag): build-provenance attestation for archives, checksums and SBOM, and upload to the GitHub Release. |
-| `publish` (crates.io publish (owner-gated)) | ubuntu-26.04 | Runs only on a pushed `v*` tag (never a dispatch) **and** when `vars.DDF_CRATES_IO == 'open'`. Runs in the `release` environment (deployment policy: `v*` tags only). Publishes the 14 crates in dependency order, skipping crates already live and retrying crates.io's rate limit; fails if `CARGO_REGISTRY_TOKEN` is unset, since the owner opened the gate. |
+| `build` (build &lt;target&gt;) | ubuntu-24.04 (Linux), macos-latest (both macOS) | Needs `quality` and `supply-chain`. `cargo build --release --locked -p deep-diff-forge-cli` for `x86_64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. Every binary is run (smoke): `--version` must equal the workspace version and `--stdin-patch --json` must produce a review document; the x86_64 macOS binary is cross-built and run under Rosetta 2 (`run_under: arch -x86_64`, installed if missing), after `file` confirms it is x86_64. Packages, writes and re-verifies the `.sha256`, and keeps the archives (and the Linux leg's SBOM) as workflow artifacts. Permissions `contents: read` only: it runs every dependency's build scripts and proc macros, so it holds no write or OIDC token, on a tag or a dry run. |
+| `release` (GitHub Release) | ubuntu-26.04 | On a pushed `v*` tag only (never a dispatch, even from a tag). Needs `build`, so it starts only after **every** target built and passed smoke: a failed platform leaves no release rather than a partial one. Holds `contents: write`, `attestations: write` and `id-token: write`, and checks out, compiles and runs no project code. Downloads the archives and SBOM, re-verifies every `.sha256`, attests build provenance for archives, checksums and SBOM, and uploads them to the GitHub Release in one step. |
+| `publish` (crates.io publish (owner-gated)) | ubuntu-26.04 | Needs `release`. Runs only on a pushed `v*` tag (never a dispatch) **and** when `vars.DDF_CRATES_IO == 'open'`. Runs in the `release` environment (deployment policy: `v*` tags only). Publishes the 14 crates in dependency order, skipping crates already live and retrying crates.io's rate limit; fails if `CARGO_REGISTRY_TOKEN` is unset, since the owner opened the gate. |
 
 The Linux binary is built on ubuntu-24.04 on purpose: it links against the
 build image's glibc, and a 26.04 build would not run on 24.04-era systems.
@@ -160,10 +163,10 @@ flowchart TD
     SC["supply-chain: deny, audit, tag = v + workspace version (tags only)"]
     Q --> B
     SC --> B
-    B["build x 3 targets: smoke where runnable, sha256 verify"]
-    B -->|tag ref| Att["attest + upload to GitHub Release"]
+    B["build x 3 targets (contents: read): smoke, sha256 verify, keep archives"]
+    B -->|"tag ref, after every target"| Rel["release: re-verify sha256, attest, upload to GitHub Release"]
     B -->|dispatch| Stop["nothing published"]
-    B -->|"tag ref and DDF_CRATES_IO = open"| Pub["publish: crates.io"]
+    Rel -->|"DDF_CRATES_IO = open"| Pub["publish: crates.io"]
 ```
 
 Both workflows pin third-party Actions to full commit SHAs, do not persist
