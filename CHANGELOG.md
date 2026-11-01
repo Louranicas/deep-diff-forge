@@ -140,21 +140,6 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   runs bare `review` in a pseudo-terminal (Python's `pty`): the alternate screen and mouse
   capture are entered, the cockpit is drawn, `q` exits 0, and both are restored.
 
-### Fixed
-
-- **A failed alternate-screen entry no longer leaves the terminal in raw mode.** `review` switched
-  raw mode on, then wrote the alternate-screen sequence, and armed its restore guard only after
-  that write; if the write failed (stdout closed) it returned with the terminal still raw. The
-  guard is now armed as soon as raw mode is on. If raw mode cannot be switched on, nothing is
-  written.
-- **`review` on macOS reads keys through a reader that can wait on `/dev/tty`.** The patch is
-  on stdin, so crossterm reads keys from `/dev/tty`, and its default reader registers that fd
-  with kqueue, which refuses it on macOS (crossterm-rs/crossterm#500): `review` would fail on
-  its first key read there. The tui crate enables crossterm's `use-dev-tty` feature on macOS
-  only (select(2) through `filedescriptor`; adds `filedescriptor` 0.8.3 and `thiserror` 1 to
-  the macOS build). Inferred from source, not observed on a Mac: the `macOS tests` job runs
-  `cli/tests/review_tty.rs`, which is the check.
-### Changed
 
 - **The evaluation corpus has 34 cases, and declared misses count.** `fixtures/eval` grew from
   11 to 34 cases (14 ranking, 17 evidence, 3 findings), each with a classified origin: a CVE,
@@ -177,43 +162,20 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     symlink (it could lead out of the corpus). A case can name only a file of the corpus
     directory (exit 3 otherwise).
 
-### Security
-
-- **A filter in a repository's `config.worktree` no longer runs during Git acquisition.**
-  Acquisition turned off only the filters `git config --local` lists, which does not read
-  `$GIT_DIR/config.worktree` (used once `extensions.worktreeConfig` is set), so a filter defined
-  there ran and its output was reviewed in place of the file. Acquisition now lists every scope
-  with `--show-scope` and turns off each filter any unprotected scope defines (local, worktree,
-  their includes, and any scope it does not know). Filters from the user's global and system
-  configuration, such as Git LFS, stay on by decision (SECURITY.md); a test with planted global
-  and system files proves that nothing else they name (fsmonitor, external diff, textconv, a
-  diff driver command, set directly or through `include.path`/`includeIf`) runs.
-- **A repository filter whose name is not UTF-8 refuses the acquisition.** The name was
-  decoded lossily (`\xff` became U+FFFD) before DDF named it to Git, and Git matches a subsection
-  name byte for byte, so the override named another filter and the repository's own ran. Passing
-  the raw bytes fixed it on Linux, but the macOS CI job measured the filter still running: macOS
-  Git's `--get-regexp ^filter\.` did not match a key that is not UTF-8, so the filter was never
-  listed. Acquisition now lists every key (`git config --list`) and picks the `filter.` keys
-  itself, and any such name refuses the acquisition on every platform (`InvalidSelection`).
-- **The caller's `GIT_CONFIG_COUNT`/`KEY`/`VALUE` configuration is kept.** DDF numbered its
-  filter overrides from 0 and set the count, which replaced the caller's own entries (all of them
-  when the repository defined no filter). They are now numbered after the caller's count (from
-  `GitAcquireOptions::env`, else inherited); a count Git reads but DDF does not (a leading
-  space) is refused as `InvalidSelection`.
-- **Every release binary is run before it ships.** The x86_64 macOS binary was cross-built and
-  only checksummed; the release smoke now runs it under Rosetta 2 (installed if missing) after
-  checking it is x86_64. A test fails if any release target is built without being run.
-- **The crates.io job fails closed.** With the owner's gate open (`DDF_CRATES_IO=open`) and no
-  `CARGO_REGISTRY_TOKEN`, it used to exit 0 without publishing; it now fails. It runs in a
-  `release` environment that only `v*` tags can deploy to.
-- **Release tags are immutable.** A tag ruleset (`refs/tags/v*`: no deletion, no update, no
-  non-fast-forward, no bypass) stops a published tag being moved to other code.
-- **Code scanning.** `codeql.yml` runs CodeQL (security-extended) over the Rust code and the
-  workflows on pull requests, pushes to `main` and weekly. Not a required check yet.
-- **Pinned actions are enforced.** `cli/tests/workflow_pins.rs` fails when any `uses:` in any
-  workflow is not a local path or a full 40-hex commit SHA.
-
 ### Fixed
+
+- **A failed alternate-screen entry no longer leaves the terminal in raw mode.** `review` switched
+  raw mode on, then wrote the alternate-screen sequence, and armed its restore guard only after
+  that write; if the write failed (stdout closed) it returned with the terminal still raw. The
+  guard is now armed as soon as raw mode is on. If raw mode cannot be switched on, nothing is
+  written.
+- **`review` on macOS reads keys through a reader that can wait on `/dev/tty`.** The patch is
+  on stdin, so crossterm reads keys from `/dev/tty`, and its default reader registers that fd
+  with kqueue, which refuses it on macOS (crossterm-rs/crossterm#500): `review` would fail on
+  its first key read there. The tui crate enables crossterm's `use-dev-tty` feature on macOS
+  only (select(2) through `filedescriptor`; adds `filedescriptor` 0.8.3 and `thiserror` 1 to
+  the macOS build). Inferred from source, not observed on a Mac: the `macOS tests` job runs
+  `cli/tests/review_tty.rs`, which is the check.
 
 - **A `review.hunks` selection that repeats a name can no longer abort the daemon.** Each repeat
   of a path in `paths` pushed every hunk of that file again, so 50,000 repeats of one path over
@@ -416,6 +378,42 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **Enter did nothing in the review view, though the README said it opens the file.** Enter now
   opens the selected file's diff: focus moves to the diff pane. It still runs the selected
   command in the palette.
+
+### Security
+
+- **A filter in a repository's `config.worktree` no longer runs during Git acquisition.**
+  Acquisition turned off only the filters `git config --local` lists, which does not read
+  `$GIT_DIR/config.worktree` (used once `extensions.worktreeConfig` is set), so a filter defined
+  there ran and its output was reviewed in place of the file. Acquisition now lists every scope
+  with `--show-scope` and turns off each filter any unprotected scope defines (local, worktree,
+  their includes, and any scope it does not know). Filters from the user's global and system
+  configuration, such as Git LFS, stay on by decision (SECURITY.md); a test with planted global
+  and system files proves that nothing else they name (fsmonitor, external diff, textconv, a
+  diff driver command, set directly or through `include.path`/`includeIf`) runs.
+- **A repository filter whose name is not UTF-8 refuses the acquisition.** The name was
+  decoded lossily (`\xff` became U+FFFD) before DDF named it to Git, and Git matches a subsection
+  name byte for byte, so the override named another filter and the repository's own ran. Passing
+  the raw bytes fixed it on Linux, but the macOS CI job measured the filter still running: macOS
+  Git's `--get-regexp ^filter\.` did not match a key that is not UTF-8, so the filter was never
+  listed. Acquisition now lists every key (`git config --list`) and picks the `filter.` keys
+  itself, and any such name refuses the acquisition on every platform (`InvalidSelection`).
+- **The caller's `GIT_CONFIG_COUNT`/`KEY`/`VALUE` configuration is kept.** DDF numbered its
+  filter overrides from 0 and set the count, which replaced the caller's own entries (all of them
+  when the repository defined no filter). They are now numbered after the caller's count (from
+  `GitAcquireOptions::env`, else inherited); a count Git reads but DDF does not (a leading
+  space) is refused as `InvalidSelection`.
+- **Every release binary is run before it ships.** The x86_64 macOS binary was cross-built and
+  only checksummed; the release smoke now runs it under Rosetta 2 (installed if missing) after
+  checking it is x86_64. A test fails if any release target is built without being run.
+- **The crates.io job fails closed.** With the owner's gate open (`DDF_CRATES_IO=open`) and no
+  `CARGO_REGISTRY_TOKEN`, it used to exit 0 without publishing; it now fails. It runs in a
+  `release` environment that only `v*` tags can deploy to.
+- **Release tags are immutable.** A tag ruleset (`refs/tags/v*`: no deletion, no update, no
+  non-fast-forward, no bypass) stops a published tag being moved to other code.
+- **Code scanning.** `codeql.yml` runs CodeQL (security-extended) over the Rust code and the
+  workflows on pull requests, pushes to `main` and weekly. Not a required check yet.
+- **Pinned actions are enforced.** `cli/tests/workflow_pins.rs` fails when any `uses:` in any
+  workflow is not a local path or a full 40-hex commit SHA.
 
 ### Tests
 
