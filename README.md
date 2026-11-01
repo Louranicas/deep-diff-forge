@@ -268,7 +268,9 @@ deep-diff-forge agent doctor            # proves MCP, the daemon and the CLI agr
 2. **`review_change`** with `view: "hunks"` and the `addresses` it cares about returns those
    hunks verbatim.
 3. Every answer is sealed (`input_sha256`) and fits `max_bytes`, 32 KiB by default, both copies
-   counted. A `next_cursor` continues, and it belongs to that patch and that selection only.
+   counted, as printed (escapes included). A `next_cursor` continues, and it belongs to that
+   patch and that selection only: a cursor from another patch or selection, or one whose
+   position is outside the selection (no page could have minted it), is refused.
 
 Without `--allow-repo`, `review_outline` and `review_hunks` do the same for a patch the agent
 passes. The same views exist on the CLI (`--outline`, `--hunks`), on the daemon's socket and
@@ -309,7 +311,7 @@ deep-diff-forge [--] <old> <new> [MODE] [--require-files] [--require-hunks]
 | `--jsonl` | One `{"event":"diff.file",…}` event per file, streamed. |
 | `--rank` | Files by review risk, highest first, with their signals. Add `--json` for `deep-diff-forge.rank.v0`. |
 | `--cluster [--parallel serial\|auto\|N]` | The same ranking through bounded parallel lanes with a deterministic join and a receipt. Add `--json` for `deep-diff-forge.cluster.v0`. |
-| `--layout inline` / `--layout side-by-side` | Text projections with old and new line numbers. |
+| `--layout inline` / `--layout side-by-side` | Text projections with old and new line numbers, as wide as the file's largest. A `\` note row follows what a row cannot show: a non-UTF-8 line shown lossily, `\ No newline at end of file`, and a removed/added pair that differs only in bytes shown alike (a tab against spaces, a literal `\x1b` against a raw `ESC`). |
 | `--require-files` | Refuse a patch with 0 files: exit 7, empty stdout, `refused: 0 files in input (--require-files)`. |
 | `--require-hunks` | Refuse a patch with 0 hunks or 0 changed lines (header-only, rename-only, context-only): exit 7, `refused: 0 hunks in input (--require-hunks)`. |
 | `--outline` | `deep-diff-forge.review-outline.v0`: files in review-risk order, each hunk's address, ranges, `@@` heading and counts, no line text. |
@@ -471,8 +473,10 @@ Output is deterministic: the same bytes give byte-identical stdout on every run.
 
 **Hunk addresses.** Every hunk in `review.v0` and in the views carries these fields:
 - `address`: SHA-256 over `ddf-hunk-v1`, the file path, the header's ranges and the body. It names
-  exactly that hunk in that patch: changing the path, the position or one byte of the body
-  changes it.
+  that hunk's content and place in that patch: changing the path, the position or one byte of the
+  body changes it. A patch that repeats a section of one path with a byte-identical hunk at the
+  same ranges gives both copies one address; `--address` then selects every copy, and a finding
+  anchored to it resolves to the first in review order.
 - `body_sha256`: the body alone. It survives a move, so use it to recognise the same change
   across revisions, never as proof that two reviews saw the same patch.
 - `section`: the `@@` heading Git wrote. It is display-only and never re-rendered into the patch.
@@ -484,7 +488,8 @@ The new fields are additive, so the schema stays `review.v0`.
 carries a bidi control, an invisible character or a control character, gets a `hazards` list:
 `path_traversal`, `git_internal`, `bidi_control`, `invisible` or `control`. `invisible` covers
 zero-width and joiner characters, invisible operators, fillers, the soft hyphen, variation
-selectors and tag characters; `control` covers C0/C1 controls other than tab and the Unicode
+selectors (the Mongolian free variation selectors included) and tag characters: with
+`bidi_control`, every Unicode `Default_Ignorable_Code_Point`; `control` covers C0/C1 controls other than tab and the Unicode
 line and paragraph separators. The carriage return of a CRLF body line does not count; one at
 the end of a path does. Hazards are facts about the bytes, reported only where
 found. An empty list never means the text is safe. They also raise the file's rank

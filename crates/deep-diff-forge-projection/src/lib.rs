@@ -12,8 +12,14 @@
 //! [`render_side_by_side`]. Both are driven from the same row builders
 //! ([`inline::inline_rows`], [`side_by_side::side_rows`]) so a TUI, pager, or
 //! JSON consumer can share one model.
+//!
+//! A row never hides a change: what the row's text cannot show (a non-UTF-8 line shown
+//! lossily, a missing end-of-file newline, a removed and an added line that differ only in bytes
+//! the display renders alike, such as a tab against spaces) gets a `\` note row after it, and
+//! the line-number gutter widens to the file's largest line number so every row aligns.
 
 mod inline;
+mod notes;
 mod width;
 pub use width::{cell_width, fit_cells, wrap_cells};
 mod side_by_side;
