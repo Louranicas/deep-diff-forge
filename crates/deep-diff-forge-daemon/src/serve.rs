@@ -290,7 +290,11 @@ pub fn process_line(line: &str, engine: &Engine) -> String {
         Ok(request) => request,
         Err(err) => {
             metrics.request(None, std::time::Duration::ZERO, Some(err.code));
-            return error_response(&Value::Null, &err);
+            return bounded_response(
+                &Value::Null,
+                error_response(&Value::Null, &err),
+                MAX_RESPONSE_BYTES,
+            );
         }
     };
     let id = request.id.clone();
@@ -305,7 +309,8 @@ pub fn process_line(line: &str, engine: &Engine) -> String {
         Err(busy) => {
             metrics.busy();
             metrics.request(method, busy.waited, Some(RESOURCE_EXHAUSTED));
-            return error_response(&id, &RpcError::new(RESOURCE_EXHAUSTED, busy.to_string()));
+            let busy = RpcError::new(RESOURCE_EXHAUSTED, busy.to_string());
+            return bounded_response(&id, error_response(&id, &busy), MAX_RESPONSE_BYTES);
         }
     };
     let admitted = permit.admitted();
@@ -322,10 +327,10 @@ pub fn process_line(line: &str, engine: &Engine) -> String {
     }));
     let took = started.elapsed();
     drop(permit);
-    match outcome {
+    let response = match outcome {
         Ok(Ok(result)) => {
             metrics.request(method, took, None);
-            bounded_response(&id, success_response(&id, result), MAX_RESPONSE_BYTES)
+            success_response(&id, result)
         }
         Ok(Err(err)) => {
             metrics.request(method, took, Some(err.code));
@@ -336,7 +341,11 @@ pub fn process_line(line: &str, engine: &Engine) -> String {
             metrics.request(method, took, Some(INTERNAL_ERROR));
             error_response(&id, &RpcError::new(INTERNAL_ERROR, "internal error"))
         }
-    }
+    };
+    // Every answer, errors too, is held to the line cap. Before, only a success was: an error
+    // repeating request text, or an id echoed with its line separators escaped, could be sent at
+    // two or three times the cap (bug hunt 2026-11-01).
+    bounded_response(&id, response, MAX_RESPONSE_BYTES)
 }
 
 /// Test-only methods `process_line` runs before dispatch: `test.panic` panics while holding the
@@ -404,10 +413,16 @@ pub fn read_capped_line<R: BufRead>(
     reader.take(cap as u64 + 1).read_until(b'\n', buf)
 }
 
-/// `response`, or a `RESOURCE_EXHAUSTED` error for `id` when it is longer than `cap`. Before, the
-/// server sent any size and the client refused lines over the cap, so a large `diff.compute`
-/// succeeded on the server and failed at the client with no error a caller could act on.
+/// `response` as it is written ([`json_line_safe`] applied), or a `RESOURCE_EXHAUSTED` error for
+/// `id` when that is longer than `cap`; when that error is over the cap too, it drops the id if
+/// that makes it shorter (an id that alone would put it over).
+/// Before, the server sent any size and the client refused lines over the cap, so a large
+/// `diff.compute` succeeded on the server and failed at the client with no error a caller could
+/// act on. The size is measured after `json_line_safe`, which writes each line separator in six
+/// bytes rather than three: measured before it, a line could pass the check and be sent at twice
+/// the cap (bug hunt 2026-11-01).
 fn bounded_response(id: &Value, response: String, cap: usize) -> String {
+    let response = line_safe_owned(response);
     if response.len() <= cap {
         return response;
     }
@@ -415,7 +430,25 @@ fn bounded_response(id: &Value, response: String, cap: usize) -> String {
         "the response is {} bytes, over the {cap}-byte line cap; request less (a smaller patch, or diff.plan)",
         response.len()
     );
-    error_response(id, &RpcError::new(RESOURCE_EXHAUSTED, message))
+    let refusal = RpcError::new(RESOURCE_EXHAUSTED, message);
+    let answer = line_safe_owned(error_response(id, &refusal));
+    if answer.len() <= cap {
+        return answer;
+    }
+    let anonymous = error_response(&Value::Null, &refusal);
+    if anonymous.len() < answer.len() {
+        anonymous
+    } else {
+        answer
+    }
+}
+
+/// `line` with [`json_line_safe`] applied, reusing it when nothing needed escaping.
+fn line_safe_owned(line: String) -> String {
+    match json_line_safe(&line) {
+        std::borrow::Cow::Borrowed(_) => line,
+        std::borrow::Cow::Owned(escaped) => escaped,
+    }
 }
 
 /// The outcome of arming a read deadline. macOS refuses `SO_RCVTIMEO` with EINVAL once the
@@ -497,6 +530,32 @@ fn read_capped_line_deadline_noting(
     }
 }
 
+/// The answer to a request line refused before [`process_line`] reads it (one over the cap, one
+/// that is not UTF-8, one sent during a stop): an error with `code` and a null id, counted as a
+/// request of no method answered with `code`, as `process_line` counts its own refusals. Before,
+/// these answers were sent and never counted, so `daemon.metrics` under-reported them (bug hunt
+/// 2026-11-01).
+#[must_use]
+pub fn refusal(engine: &Engine, code: i64, message: &str) -> String {
+    engine.metrics().request(None, Duration::ZERO, Some(code));
+    error_response(&Value::Null, &RpcError::new(code, message))
+}
+
+/// Write [`refusal`] on the connection.
+fn refuse(
+    writer: &mut UnixStream,
+    engine: &Engine,
+    code: i64,
+    message: &str,
+) -> std::io::Result<()> {
+    writeln!(
+        writer,
+        "{}",
+        json_line_safe(&refusal(engine, code, message))
+    )?;
+    writer.flush()
+}
+
 /// Serve one connection: newline-delimited JSON-RPC, one response per request,
 /// until the client disconnects or a shutdown is requested.
 ///
@@ -527,21 +586,21 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
             break;
         }
         if buf.len() > MAX_REQUEST_BYTES {
-            let resp = error_response(
-                &Value::Null,
-                &RpcError::new(INVALID_REQUEST, "request exceeds maximum size"),
-            );
-            writeln!(writer, "{}", json_line_safe(&resp))?;
-            writer.flush()?;
+            refuse(
+                &mut writer,
+                engine,
+                INVALID_REQUEST,
+                "request exceeds maximum size",
+            )?;
             break; // stream position is unreliable past the cap; close the connection.
         }
         let Ok(decoded) = std::str::from_utf8(&buf) else {
-            let resp = error_response(
-                &Value::Null,
-                &RpcError::new(PARSE_ERROR, "request is not valid UTF-8"),
-            );
-            writeln!(writer, "{}", json_line_safe(&resp))?;
-            writer.flush()?;
+            refuse(
+                &mut writer,
+                engine,
+                PARSE_ERROR,
+                "request is not valid UTF-8",
+            )?;
             continue;
         };
         let line = decoded.trim();
@@ -551,15 +610,12 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
         // Counted before the running check, so a stop either waits for this answer or this
         // request sees the stop and is refused: none is cut off after its work began.
         if !engine.is_running() {
-            let resp = error_response(
-                &Value::Null,
-                &RpcError::new(
-                    RESOURCE_EXHAUSTED,
-                    "the daemon is shutting down; retry once it has restarted",
-                ),
-            );
-            writeln!(writer, "{}", json_line_safe(&resp))?;
-            writer.flush()?;
+            refuse(
+                &mut writer,
+                engine,
+                RESOURCE_EXHAUSTED,
+                "the daemon is shutting down; retry once it has restarted",
+            )?;
             break;
         }
         let response = process_line(line, engine);
@@ -2085,6 +2141,111 @@ mod tests {
                 .unwrap()
                 .contains(&format!("{cap} bytes"))
         );
+    }
+
+    /// Bug hunt 2026-11-01: the cap is measured on the line as it is written. A response whose
+    /// line separators `json_line_safe` writes in six bytes rather than three is refused when
+    /// escaping puts it over, and a refusal whose id alone would put it over drops the id.
+    #[test]
+    fn the_cap_holds_after_line_separators_are_escaped() {
+        let id = Value::from(9);
+        let response = success_response(&id, Value::from("\u{2028}".repeat(100)));
+        let written = json_line_safe(&response).len();
+        assert_eq!(written, response.len() + 300);
+        assert_eq!(
+            bounded_response(&id, response.clone(), written),
+            json_line_safe(&response)
+        );
+        let refused: Value =
+            serde_json::from_str(&bounded_response(&id, response.clone(), written - 1)).unwrap();
+        assert_eq!(
+            (&refused["id"], &refused["error"]["code"]),
+            (&id, &Value::from(RESOURCE_EXHAUSTED))
+        );
+        // An id of line separators larger than the cap: the refusal carries a null id instead.
+        let huge = Value::from("\u{2028}".repeat(200));
+        let answer = bounded_response(&huge, success_response(&huge, Value::Null), 400);
+        assert!(answer.len() <= 400, "{}", answer.len());
+        let refused: Value = serde_json::from_str(&answer).unwrap();
+        assert_eq!(
+            (&refused["id"], &refused["error"]["code"]),
+            (&Value::Null, &Value::from(RESOURCE_EXHAUSTED))
+        );
+        // Over a cap too small for any refusal, the id is kept unless dropping it is shorter.
+        for kept in [Value::from(9), Value::from(1234)] {
+            let answer = bounded_response(&kept, success_response(&kept, Value::Null), 10);
+            assert_eq!(serde_json::from_str::<Value>(&answer).unwrap()["id"], kept);
+        }
+        // The refusal keeps the id while it fits once escaped.
+        let small = Value::from("\u{2028}");
+        let answer = bounded_response(
+            &small,
+            success_response(&small, Value::from("x".repeat(500))),
+            400,
+        );
+        assert!(!answer.contains('\u{2028}'), "{answer}");
+        assert_eq!(serde_json::from_str::<Value>(&answer).unwrap()["id"], small);
+    }
+
+    /// Bug hunt 2026-11-01: an error is held to the cap like a success, and one that repeats
+    /// request text keeps its own code with the text cut. Before, an unknown path or param of 27
+    /// million bidi characters drew an error line of 243 MB, three times the cap.
+    #[test]
+    fn an_error_repeating_request_text_stays_small_and_keeps_its_code() {
+        use crate::protocol::{INVALID_PARAMS, SESSION_NOT_FOUND};
+        let e = engine();
+        let bidi = "\u{202e}".repeat(1_000_000);
+        let patch = "--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        for request in [
+            serde_json::json!({"id": 1, "method": "review.hunks", "params": {"patch": patch, "paths": [bidi]}}),
+            serde_json::json!({"id": 1, "method": "daemon.health", "params": {bidi.clone(): 1}}),
+            serde_json::json!({"id": 1, "method": "session.snapshot", "params": {"session": bidi}}),
+        ] {
+            let response = process_line(&request.to_string(), &e);
+            assert!(response.len() < 8 * 1024, "{}", response.len());
+            let v: Value = serde_json::from_str(&response).unwrap();
+            assert_eq!(v["id"], 1);
+            assert!(
+                [INVALID_PARAMS, SESSION_NOT_FOUND].contains(&v["error"]["code"].as_i64().unwrap()),
+                "{response:.200}"
+            );
+        }
+    }
+
+    /// Bug hunt 2026-11-01: a line the connection refuses itself is counted in `daemon.metrics`
+    /// like a line `process_line` refuses: three that are not UTF-8, and one sent during a stop.
+    /// Before, they were answered and never counted.
+    #[test]
+    fn refusals_a_connection_answers_itself_are_counted() {
+        let e = engine();
+        let exchange = |sent: &[u8]| -> Vec<Value> {
+            let (client, server) = UnixStream::pair().expect("socketpair");
+            let mut writer = client.try_clone().unwrap();
+            writer.write_all(sent).unwrap();
+            writer.shutdown(std::net::Shutdown::Write).unwrap();
+            thread::scope(|scope| {
+                let worker = scope.spawn(|| handle_connection(server, &e));
+                let lines = BufReader::new(client)
+                    .lines()
+                    .map(|l| serde_json::from_str(&l.unwrap()).unwrap())
+                    .collect();
+                worker.join().unwrap().unwrap();
+                lines
+            })
+        };
+        let refused = exchange(b"\xff\n\xff\n\xff\n");
+        assert_eq!(refused.len(), 3);
+        assert!(refused.iter().all(|r| r["error"]["code"] == PARSE_ERROR));
+        let _ = process_line(r#"{"method":"daemon.shutdown"}"#, &e);
+        let late = exchange(b"{\"method\":\"daemon.health\"}\n");
+        assert_eq!(late[0]["error"]["code"], RESOURCE_EXHAUSTED);
+        let m = e.metrics().document(Duration::ZERO, "test");
+        assert_eq!(m["methods"]["(unknown)"]["requests"], 4);
+        assert_eq!(
+            m["methods"]["(unknown)"]["errors"],
+            serde_json::json!({"parse_error": 3, "resource_exhausted": 1})
+        );
+        assert_eq!(m["methods"]["daemon.shutdown"]["requests"], 1);
     }
 
     #[test]

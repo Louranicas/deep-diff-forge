@@ -669,7 +669,10 @@ pub fn dispatch(request: &Request, engine: &Engine) -> Result<Value, RpcError> {
                 Some(files) => Ok(ranked_json(&rank(&files))),
                 None => Err(RpcError::new(
                     SESSION_NOT_FOUND,
-                    format!("no such session: {id}"),
+                    format!(
+                        "no such session: {}",
+                        deep_diff_forge_core::display_safe_bounded(&id, 256)
+                    ),
                 )),
             }
         }
@@ -930,7 +933,7 @@ fn refuse_unknown_params(spec: &MethodSpec, params: &Value) -> Result<(), RpcErr
         return Err(RpcError::invalid_params(format!(
             "{} takes no param '{}'",
             spec.name,
-            deep_diff_forge_core::display_safe(unknown)
+            deep_diff_forge_core::display_safe_bounded(unknown, 256)
         )));
     }
     Ok(())

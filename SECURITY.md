@@ -170,13 +170,17 @@ flowchart LR
   `MAX_RESPONSE_BYTES`). An oversized request gets one `INVALID_REQUEST` error
   and the connection closes. A response over the cap is replaced by a
   `RESOURCE_EXHAUSTED` (8) error naming its size (`bounded_response`); before
-  2026-10-28 the server sent it and the client failed. `deep-diff-forge rpc`
+  2026-10-28 the server sent it and the client failed. Since 2026-11-01 an error
+  answer is held to the same cap, measured after `json_line_safe`, and an error
+  message is cut at 4 KiB (`MAX_ERROR_MESSAGE_BYTES`), so request text an error
+  repeats cannot push it past the cap. `deep-diff-forge rpc`
   uses the same `process_line` and caps over stdio.
 - Each line read has a 30-second absolute deadline (`READ_TIMEOUT`), applied as
   the remaining time before every read, so slow byte-drip traffic cannot renew
   it. Writes have a 30-second timeout (`WRITE_TIMEOUT`).
 - At most eight connections are served at once (`MAX_CONNECTIONS`). A further
-  connection is accepted and closed at once, with no response. Workers share one
+  connection is accepted and closed at once, with no response; the CLI reports
+  that as no answer (exit 6), not as no daemon. Workers share one
   engine and their requests run in parallel. Only the session table is locked, and
   only for bookkeeping; parsing, ranking and Git run outside it. The request bytes
   in flight are capped at 128 MiB (`MAX_IN_FLIGHT_BYTES`, `admission.rs`), first

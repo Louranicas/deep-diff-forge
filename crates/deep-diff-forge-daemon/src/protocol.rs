@@ -155,13 +155,35 @@ pub fn success_response(id: &Value, result: Value) -> String {
     Value::Object(object).to_string()
 }
 
-/// Serialize an error response for `id`.
+/// The most bytes of an error message a response carries; a longer one is cut at a character
+/// boundary and says how many bytes were left out. A message can repeat request text (an unknown
+/// param, path or session), and before, it was sent whole: an 81 MB request drew a 243 MB error
+/// line, past the 80 MiB line cap a client reads (bug hunt 2026-11-01).
+pub const MAX_ERROR_MESSAGE_BYTES: usize = 4096;
+
+/// `message`, cut to [`MAX_ERROR_MESSAGE_BYTES`] as [`error_response`] sends it.
+fn bounded_message(message: &str) -> std::borrow::Cow<'_, str> {
+    if message.len() <= MAX_ERROR_MESSAGE_BYTES {
+        return std::borrow::Cow::Borrowed(message);
+    }
+    let end = (0..=MAX_ERROR_MESSAGE_BYTES)
+        .rev()
+        .find(|&end| message.is_char_boundary(end))
+        .unwrap_or(0);
+    std::borrow::Cow::Owned(format!(
+        "{}... [{} bytes omitted]",
+        &message[..end],
+        message.len() - end
+    ))
+}
+
+/// Serialize an error response for `id`. The message is cut to [`MAX_ERROR_MESSAGE_BYTES`].
 #[must_use]
 pub fn error_response(id: &Value, error: &RpcError) -> String {
     json!({
         "jsonrpc": "2.0",
         "id": id,
-        "error": {"code": error.code, "message": error.message}
+        "error": {"code": error.code, "message": bounded_message(&error.message)}
     })
     .to_string()
 }
@@ -280,6 +302,33 @@ mod tests {
         assert_eq!(v["error"]["code"], METHOD_NOT_FOUND);
         assert!(v["error"]["message"].as_str().unwrap().contains("foo"));
         assert!(v.get("result").is_none());
+    }
+
+    /// Bug hunt 2026-11-01: an error message is sent within `MAX_ERROR_MESSAGE_BYTES`, cut at a
+    /// character boundary, with the count of bytes left out; one at the bound is sent whole.
+    #[test]
+    fn an_error_message_is_cut_to_its_bound() {
+        let message = |s: &str| -> String {
+            let v: Value =
+                serde_json::from_str(&error_response(&json!(1), &RpcError::invalid_params(s)))
+                    .unwrap();
+            v["error"]["message"].as_str().unwrap().to_owned()
+        };
+        let at = "m".repeat(MAX_ERROR_MESSAGE_BYTES);
+        assert_eq!(message(&at), at);
+        let over = format!("{at}x");
+        assert_eq!(message(&over), format!("{at}... [1 bytes omitted]"));
+        // A 3-byte character across the bound is left out whole.
+        let across = format!("{}\u{2028}tail", "m".repeat(MAX_ERROR_MESSAGE_BYTES - 1));
+        assert_eq!(
+            message(&across),
+            format!(
+                "{}... [7 bytes omitted]",
+                "m".repeat(MAX_ERROR_MESSAGE_BYTES - 1)
+            )
+        );
+        let huge = message(&"\u{202e}".repeat(1_000_000));
+        assert!(huge.len() <= MAX_ERROR_MESSAGE_BYTES + 32, "{}", huge.len());
     }
 
     #[test]

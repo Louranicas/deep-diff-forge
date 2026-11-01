@@ -92,6 +92,11 @@ impl Default for Page {
     }
 }
 
+/// The most rendered bytes of a requested address or path an error repeats. Bug hunt 2026-11-01:
+/// before, the whole name was repeated, and `display_safe` writes each 3-byte bidi character as
+/// the 8-byte `\u{202e}`, so one 81 MB path came back as a 243 MB error line.
+const ECHO_BYTES: usize = 1024;
+
 /// Why a view was refused. Each is a mistake in the request, never in the patch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViewError {
@@ -116,12 +121,12 @@ impl std::fmt::Display for ViewError {
             Self::UnknownAddress(a) => write!(
                 f,
                 "no hunk of this patch has the address {}",
-                deep_diff_forge_core::display_safe(a)
+                deep_diff_forge_core::display_safe_bounded(a, ECHO_BYTES)
             ),
             Self::UnknownPath(p) => write!(
                 f,
                 "no file of this patch has the path {}",
-                deep_diff_forge_core::display_safe(p)
+                deep_diff_forge_core::display_safe_bounded(p, ECHO_BYTES)
             ),
         }
     }
@@ -435,6 +440,25 @@ fn select(
     files: &[ReviewFile],
     selection: &Selection,
 ) -> Result<(Vec<(usize, usize)>, String), ViewError> {
+    select_with(files, selection, &|hunk: &PatchHunk, path: &str| {
+        hunk.address(path)
+    })
+}
+
+/// [`select`], with each hunk's address computed by `address` (a test counts the calls).
+///
+/// A name the selection repeats selects its hunks once, so a selection never holds more units
+/// than the review has hunks, and each hunk's address is computed once per call. Bug hunt
+/// 2026-11-01: before, every repeat of a path pushed all its hunks again (`paths` of one name
+/// 50,000 times over 4,000 hunks asked for 3.2 GB and an allocation failure aborted the daemon,
+/// which `catch_unwind` cannot contain), and every requested address hashed every hunk again
+/// (4,000 addresses over 4,000 hunks held a worker for 18 s).
+fn select_with(
+    files: &[ReviewFile],
+    selection: &Selection,
+    address: &dyn Fn(&PatchHunk, &str) -> String,
+) -> Result<(Vec<(usize, usize)>, String), ViewError> {
+    use std::collections::{HashMap, HashSet};
     match selection {
         Selection::All => {
             let units = risk_order(files)
@@ -444,39 +468,49 @@ fn select(
             Ok((units, "all".into()))
         }
         Selection::Addresses(addresses) => {
-            let mut units = Vec::with_capacity(addresses.len());
-            // Every hunk with the address: two identical sections of one path share it.
-            for address in addresses {
-                let before = units.len();
-                for (f, file) in files.iter().enumerate() {
-                    units.extend(
-                        (0..file.patch_twin.hunks.len())
-                            .filter(|&h| &file.patch_twin.hunks[h].address(&file.path) == address)
-                            .map(|h| (f, h)),
-                    );
-                }
-                if units.len() == before {
-                    return Err(ViewError::UnknownAddress(address.clone()));
+            // Every hunk with the address, in review order: two identical sections of one path
+            // share it.
+            let mut by_address: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+            for (f, file) in files.iter().enumerate() {
+                for (h, hunk) in file.patch_twin.hunks.iter().enumerate() {
+                    by_address
+                        .entry(address(hunk, &file.path))
+                        .or_default()
+                        .push((f, h));
                 }
             }
-            Ok((units, format!("a:{}", addresses.join("\n"))))
+            let mut seen = HashSet::new();
+            let mut named = Vec::new();
+            let mut units = Vec::new();
+            for wanted in addresses.iter().filter(|a| seen.insert(a.as_str())) {
+                let found = by_address
+                    .get(wanted)
+                    .ok_or_else(|| ViewError::UnknownAddress(wanted.clone()))?;
+                units.extend_from_slice(found);
+                named.push(wanted.as_str());
+            }
+            Ok((units, format!("a:{}", named.join("\n"))))
         }
         Selection::Paths(paths) => {
-            let mut units = Vec::new();
-            // Every section with the path: a concatenated patch can name one file twice.
-            for path in paths {
-                if !files.iter().any(|file| &file.path == path) {
-                    return Err(ViewError::UnknownPath(path.clone()));
-                }
-                for (f, file) in files
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, file)| &file.path == path)
-                {
-                    units.extend((0..file.patch_twin.hunks.len()).map(|h| (f, h)));
-                }
+            // Every section with the path, in review order: a concatenated patch can name one
+            // file twice.
+            let mut by_path: HashMap<&str, Vec<usize>> = HashMap::new();
+            for (f, file) in files.iter().enumerate() {
+                by_path.entry(file.path.as_str()).or_default().push(f);
             }
-            Ok((units, format!("p:{}", paths.join("\n"))))
+            let mut seen = HashSet::new();
+            let mut named = Vec::new();
+            let mut units = Vec::new();
+            for wanted in paths.iter().filter(|p| seen.insert(p.as_str())) {
+                let sections = by_path
+                    .get(wanted.as_str())
+                    .ok_or_else(|| ViewError::UnknownPath(wanted.clone()))?;
+                for &f in sections {
+                    units.extend((0..files[f].patch_twin.hunks.len()).map(|h| (f, h)));
+                }
+                named.push(wanted.as_str());
+            }
+            Ok((units, format!("p:{}", named.join("\n"))))
         }
     }
 }
@@ -853,6 +887,114 @@ mod tests {
             hunks(&r, &Selection::Paths(vec!["y.rs".into()]), &Page::default()),
             Err(ViewError::UnknownPath(_))
         ));
+    }
+
+    /// Bug hunt 2026-11-01: a name the selection repeats selects its hunks once, so the answer is
+    /// the one the name alone gives and no selection holds more units than the review has hunks.
+    /// Before, `paths` of one name 50,000 times over 4,000 hunks built 200 million units and the
+    /// allocation failure aborted the daemon.
+    #[test]
+    fn a_repeated_name_selects_its_hunks_once() {
+        let one = "--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        let other = "--- a/x.rs\n+++ b/x.rs\n@@ -9 +9 @@\n-c\n+d\n";
+        let r = review(&format!("{one}{other}{one}"));
+        let total = 3;
+        let address = r.files()[0].patch_twin.hunks[0].address("x.rs");
+        for (alone, repeated) in [
+            (
+                Selection::Paths(vec!["x.rs".into()]),
+                Selection::Paths(vec!["x.rs".into(); 50]),
+            ),
+            (
+                Selection::Addresses(vec![address.clone()]),
+                Selection::Addresses(vec![address.clone(); 50]),
+            ),
+        ] {
+            let (units, _) = select(r.files(), &repeated).unwrap();
+            assert!(units.len() <= total, "{repeated:?}: {}", units.len());
+            assert_eq!(
+                hunks(&r, &repeated, &Page::default()).unwrap(),
+                hunks(&r, &alone, &Page::default()).unwrap(),
+                "{repeated:?}"
+            );
+        }
+        // A repeat between other names keeps the order of first mention.
+        let r = review(&patch());
+        let picked = Selection::Paths(vec![
+            "src/f2.rs".into(),
+            "src/f0.rs".into(),
+            "src/f2.rs".into(),
+        ]);
+        let (units, key) = select(r.files(), &picked).unwrap();
+        let files: Vec<usize> = units.iter().map(|&(f, _)| f).collect();
+        assert_eq!(files, [2, 2, 2, 0, 0, 0]);
+        assert_eq!(key, "p:src/f2.rs\nsrc/f0.rs");
+        // The same holds for addresses: a repeat is dropped, the order of the rest kept.
+        let f1 = r.files()[1].patch_twin.hunks[1].address("src/f1.rs");
+        let f3 = r.files()[3].patch_twin.hunks[0].address("src/f3.rs");
+        let picked = Selection::Addresses(vec![f3.clone(), f1.clone(), f3.clone()]);
+        let (units, key) = select(r.files(), &picked).unwrap();
+        assert_eq!(units, [(3, 0), (1, 1)]);
+        assert_eq!(key, format!("a:{f3}\n{f1}"));
+    }
+
+    /// Bug hunt 2026-11-01: each hunk's address is computed once per selection, however many
+    /// addresses it names. Before, every requested address hashed every hunk again, so 4,000
+    /// addresses over 4,000 hunks took 18 s (measured, release build).
+    #[test]
+    fn each_hunk_address_is_computed_once_per_selection() {
+        let r = review(&patch());
+        let total: usize = r.files().iter().map(|f| f.patch_twin.hunks.len()).sum();
+        let every: Vec<String> = r
+            .files()
+            .iter()
+            .flat_map(|f| f.patch_twin.hunks.iter().map(|h| h.address(&f.path)))
+            .collect();
+        let wanted: Vec<String> = every
+            .iter()
+            .cycle()
+            .take(every.len() * 20)
+            .cloned()
+            .collect();
+        let calls = std::cell::Cell::new(0usize);
+        let counting = |hunk: &PatchHunk, path: &str| {
+            calls.set(calls.get() + 1);
+            hunk.address(path)
+        };
+        let (units, _) = select_with(r.files(), &Selection::Addresses(wanted), &counting).unwrap();
+        assert_eq!(units.len(), total);
+        assert_eq!(calls.get(), total);
+    }
+
+    /// Bug hunt 2026-11-01: an unknown address or path is repeated in the error within
+    /// `ECHO_BYTES`, with the count of bytes left out. Before, the whole name came back, three
+    /// times its size for bidi characters (a 243 MB error line from an 81 MB request).
+    #[test]
+    fn an_unknown_name_is_repeated_within_a_bound() {
+        let r = review(&patch());
+        let huge = "\u{202e}".repeat(100_000);
+        for selection in [
+            Selection::Paths(vec![huge.clone()]),
+            Selection::Addresses(vec![huge.clone()]),
+        ] {
+            let message = hunks(&r, &selection, &Page::default())
+                .unwrap_err()
+                .to_string();
+            assert!(message.len() <= ECHO_BYTES + 64, "{}", message.len());
+            assert!(
+                message.ends_with("... [299616 bytes omitted]"),
+                "{message:.80}"
+            );
+        }
+        let short = hunks(
+            &r,
+            &Selection::Paths(vec!["no/such.rs".into()]),
+            &Page::default(),
+        );
+        assert_eq!(
+            short.unwrap_err().to_string(),
+            "no file of this patch has the path no/such.rs"
+        );
     }
 
     /// The fit loop returns the first answer that fits, shrinks in proportion while over, and
