@@ -115,8 +115,8 @@ fn conflicting_input_flags_are_usage_errors() {
     }
 }
 
-/// Negative control: if `--git-working-tree` were display-header or stdin
-/// capture, the untracked file would be missing and `x b/y` would be named `y`.
+/// Negative control: if `--git-working-tree` were stdin capture, the untracked file would be
+/// missing (and, before the 2026-11-01 header split, `x b/y` would have been named `y`).
 #[test]
 fn working_tree_json_names_raw_paths_and_includes_untracked() {
     let r = repo("wt", true);

@@ -185,14 +185,49 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `a/` or `b/` was stripped, so `--- vendor/build.rs` was reviewed as vendored code (rank 5, no
   `build_hook`) while Git wrote the top-level `build.rs` (rank 9), a `diff.mnemonicPrefix` diff
   was reviewed as `w/build.rs`, and `diff -ru old/ new/` output kept `new/`. The first component
-  is now stripped whatever it is (a path with no `/` is kept whole), and a `diff --git` line with
-  other prefixes is split where both halves name the same path, as Git splits it.
+  is now stripped whatever it is (a path with no `/` is kept whole).
 - **`rename old`/`rename new` headers are refused.** `git apply` reads them as `rename from`/
   `rename to`; DDF ignored them, so the rename was reviewed as `modified <new>` with no sign that
   the old path is removed. No current Git writes them, so they now refuse the patch with
   `UnsupportedFormat` (exit 4) rather than being translated. A `diff --git a/x b/y` with no
   rename header at all is still reviewed as `modified y` (open: the direct two-file comparison
   depends on it, and the model has no old-path field).
+- **A `diff --git` line is split where both halves name one path, before the ` b/` guess.** The
+  rightmost ` b/` was tried first, so `diff --git a/x b/y b/x b/y` with a mode change was
+  reviewed as `mode_changed y` while `git apply` changed `x b/y`, and the mnemonic
+  `diff --git i/a b/c w/a b/c` as `c` instead of `a b/c`; `i/x "w/x"` got an empty path. The line
+  is now split as `git_header_name` splits it, for any prefixes and a quoted second half, and
+  the rightmost ` b/` is used only when the halves name different files (the mode change of two
+  files compared with `git diff --no-index`).
+- **A file section that names no path is refused.** A `diff --git i/x w/y` (or CRLF `i/x w/x`)
+  mode change with no `---`/`+++` was reviewed as a file with an empty path (exit 0); Git
+  refuses it ("lacks filename information"), as it refuses a hunk with no file headers, which
+  DDF also reviewed with an empty path. Such a section now refuses the patch with `InvalidPath`
+  at its first line (exit 4).
+- **Repeated slashes in a header path are squashed, as Git squashes them.**
+  `--- a/.github//workflows/ci.yml` was reviewed as `.github//workflows/ci.yml` (no
+  `ci_privilege`) while Git wrote `.github/workflows/ci.yml`; the same held for `---`/`+++` in a
+  Git diff and for `rename from`/`rename to`.
+- **A traditional diff keeps the old name when it prefixes the new one.** `--- a/build.rs` with
+  `+++ b/build.rs.new` was reviewed as `modified build.rs.new` (no `build_hook`) while
+  `git apply` changed `build.rs`: without `diff --git`, Git prefers the shorter name when the old
+  name is a strict prefix of an unquoted new one. The parser now chooses as Git does.
+- **An epoch timestamp creates or deletes the file in a traditional diff.**
+  `--- a/new.sh<TAB>1970-01-01 00:00:00.000000000 +0000` (the `diff -N` form) was reviewed as
+  `modified new.sh`, losing `new_file`, while Git created the file; an epoch on the `+++` side
+  deletes the file the `+++` names. The parser now reads the epoch in any zone, as
+  `has_epoch_timestamp` does (not with a fraction other than zero, a CRLF line end, or in a Git
+  diff, where Git does not either).
+- **`-p0` is guessed from the patch, as `git apply` guesses it.** After a traditional diff whose
+  new name has no `/` (`--- x`/`+++ x`), Git keeps every later path whole, so a later
+  `.github/workflows/ci.yml` was reviewed as `workflows/ci.yml`, losing `ci_privilege`. The
+  parser now makes the same guess and holds it for the rest of the patch.
+- **A traditional header name ends where Git's does.** A `diff -u` date after spaces
+  (`--- a/build.rs 2026-01-01 12:00:00`) stayed in the path (`build.rs 2026-01-01 12:00:00`,
+  no `build_hook`), an unquoted CR inside a `---`/`+++` name stayed in it while Git wrote the
+  name before it, and `/dev/null` followed by a space was a path rather than a creation. Names
+  are now read as `find_name_traditional` reads them: a trailing date after a tab or spaces
+  ends the name, otherwise a tab or CR does.
 
 ## [0.5.0] - 2026-10-31
 

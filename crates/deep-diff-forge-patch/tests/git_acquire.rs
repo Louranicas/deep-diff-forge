@@ -367,9 +367,10 @@ fn authoritative_patch_keeps_line_endings_verbatim() {
     assert!(noeol.ends_with(b"+c\n\\ No newline at end of file\n"));
 }
 
-/// Negative control: reverting to display-header paths names the mode-only
-/// change `y` (the `diff --git a/x b/y b/x b/y` header is ambiguous); the raw
-/// record keeps `x b/y`.
+/// The review names come from the raw `-z` records: `x b/y`, a tab and a newline
+/// survive. The display parse used to name the mode-only change `y` (the
+/// `diff --git a/x b/y b/x b/y` header splits at either ` b/`); it now splits where both
+/// halves name one path, as `git apply` does, so both name `x b/y` (bug hunt 2026-11-01).
 #[test]
 fn review_paths_come_from_raw_records_not_display_headers() {
     let fx = fixture("paths");
@@ -381,10 +382,7 @@ fn review_paths_come_from_raw_records_not_display_headers() {
     names.sort_unstable();
     assert!(names.contains(&SPACEY) && names.contains(&TAB) && names.contains(&NEWLINE));
     let display: Vec<&str> = captured.files().iter().map(|f| f.path.as_str()).collect();
-    assert!(
-        !display.contains(&SPACEY),
-        "fixture no longer exercises the display-header defect: {display:?}"
-    );
+    assert!(display.contains(&SPACEY), "{display:?}");
 }
 
 /// Negative control: if the patch bytes were a re-rendered projection, or if

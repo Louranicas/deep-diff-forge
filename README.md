@@ -454,9 +454,11 @@ carries a bidi control, an invisible character or a control character, gets a `h
 zero-width and joiner characters, invisible operators, fillers, the soft hyphen, variation
 selectors and tag characters; `control` covers C0/C1 controls other than tab and the Unicode
 line and paragraph separators. The carriage return of a CRLF body line does not count; one in
-a path does. A CRLF header's line end is not part of its path: Git drops it, and so does the
-parser, so a CR reaches a path only quoted (`"x\r"`). Hazards are facts about the bytes,
-reported only where found. An empty list never means the text is safe. They also raise the file's rank
+a path does. A `---`/`+++` path ends at a CR, as Git's does, so a CRLF patch names the paths
+Git writes and a CR reaches such a path only quoted (`"x\r"`). The `diff --git` line keeps
+its CR: a section named only by that line, such as a mode change, reports a path ending in CR
+with `control`, although Git refuses that patch. Hazards are facts about the bytes, reported
+only where found. An empty list never means the text is safe. They also raise the file's rank
 (`hazardous_text`).
 
 ```json
