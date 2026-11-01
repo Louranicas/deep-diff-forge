@@ -56,9 +56,11 @@ era) no longer holds. How the standard is enforced today:
   open-fd growth over 4 between early and late samples, and an hour of fuzzing
   for every target in `fuzz/Cargo.toml` (`scripts/fuzz_target.sh`, the same
   script as CI's 10 s smoke). A crash keeps its input as an artifact.
-- **Gaps:** The TUI's interactive terminal path has no test harness; unit tests cover its
-  state, tree and rendering, and the headless `review --probe` frame is tested
-  end to end. `deploy gate` (below) is not implemented.
+- **TUI live loop** (2026-10-31): `run.rs` tests drive the production loop and
+  terminal restore with scripted input against a `TestBackend` (frames drawn,
+  burst coalescing, resize, failing and ending input, panic and failed-restore
+  paths), and `cli/tests/review_tty.rs` runs bare `review` in a pseudo-terminal.
+- **Gaps:** `deploy gate` (below) is not implemented.
 
 ## Non-Negotiables
 

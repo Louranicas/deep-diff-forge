@@ -406,4 +406,88 @@ mod tests {
         let json = to_json(&files);
         assert!(json.contains("\"metadata\": [\"index 111..222 100644\"]"));
     }
+
+    /// The whole `review.v0` document for two files, one with two hunks, a lossy line and a
+    /// missing final newline: separators, optional members and summary totals in one exact
+    /// form. The digests were checked with `sha256sum` (see `core`'s `hunk_tests`).
+    #[test]
+    fn a_two_file_review_renders_exactly() {
+        let input: &[u8] = b"--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n a\n-b\xff\n+c\n@@ -9 +9 @@\n-d\n+e\n\\ No newline at end of file\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-f\n+g\n";
+        let files =
+            crate::parse_decoded(&crate::decode(input), crate::ParseOptions::default()).unwrap();
+        assert_eq!(to_json(&files), GOLDEN);
+    }
+
+    const GOLDEN: &str = r#"{
+  "schema": "deep-diff-forge.review.v0",
+  "files": [
+    {
+      "path": "x",
+      "status": "modified",
+      "strategy": "line",
+      "lossy_lines": 1,
+      "hunks": [
+        {
+          "id": 0,
+          "old_start": 1,
+          "new_start": 1,
+          "old_lines": 2,
+          "new_lines": 2,
+          "section": null,
+          "address": "0c375da08797b82b19dd327cab03bc6650c0302582bcdcdfb9c94df3105e95f7",
+          "body_sha256": "4caeae8856c37e6b778101e2f34a6d29c258afb11decccac072ccb482eee2a70",
+          "lines": [
+            {"kind": "context", "old_line": 1, "new_line": 1, "text": "a"},
+            {"kind": "removed", "old_line": 2, "new_line": null, "text": "b�", "lossy": true},
+            {"kind": "added", "old_line": null, "new_line": 2, "text": "c"}
+          ]
+        },
+        {
+          "id": 1,
+          "old_start": 9,
+          "new_start": 9,
+          "old_lines": 1,
+          "new_lines": 1,
+          "section": null,
+          "address": "bd624a787edaf09671d2d89e3b22b6457a0bfdd2534a9edcef592a12a415e747",
+          "body_sha256": "658cca8f2358ede06a0a058ab3bb5fa3f3e78d9fc1cf4394f632b5f64bf6c9b3",
+          "lines": [
+            {"kind": "removed", "old_line": 9, "new_line": null, "text": "d"},
+            {"kind": "added", "old_line": null, "new_line": 9, "text": "e", "no_newline": true}
+          ]
+        }
+      ],
+      "metadata": ["\\ No newline at end of file"]
+    },
+    {
+      "path": "y",
+      "status": "modified",
+      "strategy": "line",
+      "hunks": [
+        {
+          "id": 2,
+          "old_start": 1,
+          "new_start": 1,
+          "old_lines": 1,
+          "new_lines": 1,
+          "section": null,
+          "address": "cc1f23a4548d440bd8795504d590067998f97dcd000e16c97709bbe54f0c7b87",
+          "body_sha256": "4a2e1ae08c814d529acf73e734302cedd7d7b41d24b8b02ef4c45e7fe1ccff7c",
+          "lines": [
+            {"kind": "removed", "old_line": 1, "new_line": null, "text": "f"},
+            {"kind": "added", "old_line": null, "new_line": 1, "text": "g"}
+          ]
+        }
+      ],
+      "metadata": []
+    }
+  ],
+  "summary": {
+    "files_changed": 2,
+    "additions": 3,
+    "deletions": 3,
+    "semantic_fallbacks": 0
+  }
+}
+"#;
 }

@@ -2002,4 +2002,97 @@ diff --git a/a b c.rs b/a b c.rs
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "a b c.rs");
     }
+
+    // Pins for the 2026-10-31 whole-crate mutation run.
+
+    /// A `@@ -0,0 +0,0 @@` hunk is complete as soon as it opens, so the next `+` line is outside
+    /// any hunk rather than over-filling this one.
+    #[test]
+    fn an_empty_hunk_takes_no_body_lines() {
+        assert_eq!(
+            parse("--- a/x\n+++ b/x\n@@ -0,0 +0,0 @@\n+a\n").unwrap_err(),
+            PatchParseError::BodyLineOutsideHunk {
+                line_number: 4,
+                text: "+a".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn a_hunk_with_one_side_still_owed_is_truncated() {
+        assert_eq!(
+            parse("--- a/x\n+++ b/x\n@@ -1,2 +1,1 @@\n a\n").unwrap_err(),
+            PatchParseError::TruncatedHunk {
+                line_number: 4,
+                remaining_old: 1,
+                remaining_new: 0
+            }
+        );
+    }
+
+    /// A file that ended at its `+++` (no hunks) is complete; the next `---` starts another.
+    #[test]
+    fn headers_without_hunks_end_their_file_at_the_next_old_header() {
+        let files = parse("--- a/x\n+++ b/x\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n").unwrap();
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["x", "y"]);
+    }
+
+    /// The old path a rename or copy names must be one path, and the one the `---` header and
+    /// the new side agree with; each contradiction is refused on its own.
+    #[test]
+    fn a_rename_must_agree_with_itself_and_its_headers() {
+        for (case, input, line_number) in [
+            (
+                "two old paths",
+                "diff --git a/x b/z\nrename from x\nrename to z\ncopy from y\ncopy to z\n",
+                5,
+            ),
+            (
+                "another old header",
+                "diff --git a/x b/y\nsimilarity index 90%\nrename from x\nrename to y\n--- a/other\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
+                9,
+            ),
+            (
+                "renamed to nothing",
+                "diff --git a/x b/y\nrename from x\nrename to y\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n",
+                7,
+            ),
+        ] {
+            assert_eq!(
+                parse(input).unwrap_err(),
+                PatchParseError::InvalidPath { line_number },
+                "{case}"
+            );
+        }
+    }
+
+    /// `+++ /dev/null` alone marks a deletion, and the path is the old side's.
+    #[test]
+    fn a_new_side_of_dev_null_is_a_deletion_of_the_old_path() {
+        let file = one("--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n");
+        assert_eq!(
+            (file.path.as_str(), file.status),
+            ("x", FileStatus::Deleted)
+        );
+    }
+
+    #[test]
+    fn either_rename_header_alone_marks_a_rename() {
+        let file = one("diff --git a/x b/y\nrename to y\n");
+        assert_eq!(
+            (file.path.as_str(), file.status),
+            ("y", FileStatus::Renamed)
+        );
+    }
+
+    /// A bare hunk with no headers at all is a modification of an unnamed file, not `unknown`.
+    #[test]
+    fn a_bare_hunk_is_a_modification() {
+        let file = one("@@ -1 +1 @@\n-a\n+b\n");
+        assert_eq!(
+            (file.path.as_str(), file.status),
+            ("", FileStatus::Modified)
+        );
+    }
 }

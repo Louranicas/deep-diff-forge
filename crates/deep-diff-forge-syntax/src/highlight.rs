@@ -498,4 +498,68 @@ mod tests {
         assert_eq!(highlight(Language::Rust, "").len(), 0);
         assert_eq!(highlight_to_ansi(Language::Rust, ""), "");
     }
+
+    // Pins for the 2026-10-31 whole-crate mutation run.
+
+    #[test]
+    fn every_class_has_its_label_and_colour() {
+        use HighlightClass as H;
+        for (class, label, sgr) in [
+            (H::Keyword, "keyword", "35"),
+            (H::Function, "function", "34"),
+            (H::Type, "type", "36"),
+            (H::StringLit, "string", "32"),
+            (H::Comment, "comment", "90"),
+            (H::Number, "number", "33"),
+            (H::Constant, "constant", "33"),
+            (H::Attribute, "attribute", "33"),
+            (H::Operator, "operator", "37"),
+            (H::Variable, "variable", "39"),
+            (H::Plain, "plain", "39"),
+        ] {
+            assert_eq!((class.label(), class.ansi_sgr()), (label, sgr));
+        }
+    }
+
+    #[test]
+    fn every_capture_family_maps_to_its_class() {
+        use HighlightClass as H;
+        for (capture, class) in [
+            ("constructor", H::Function),
+            ("escape", H::StringLit),
+            ("char", H::StringLit),
+            ("number", H::Number),
+            ("float", H::Number),
+            ("integer", H::Number),
+            ("constant.builtin", H::Constant),
+            ("attribute", H::Attribute),
+            ("operator", H::Operator),
+            ("punctuation.bracket", H::Operator),
+            ("variable.parameter", H::Variable),
+            ("property", H::Variable),
+            ("label", H::Variable),
+            ("tag", H::Plain),
+        ] {
+            assert_eq!(HighlightClass::from_capture(capture), class, "{capture}");
+        }
+    }
+
+    #[test]
+    fn flatten_drops_empty_spans() {
+        let span = |start, end| HighlightSpan {
+            start,
+            end,
+            class: HighlightClass::Keyword,
+        };
+        assert_eq!(flatten(vec![span(0, 0), span(0, 3)]), [span(0, 3)]);
+    }
+
+    /// The byte budget is inclusive: a source of exactly `DEFAULT_BYTE_BUDGET` bytes is
+    /// highlighted, one byte more is not.
+    #[test]
+    fn the_byte_budget_admits_exactly_its_size() {
+        let at_budget = format!("//{}", "a".repeat(crate::analyze::DEFAULT_BYTE_BUDGET - 2));
+        assert_eq!(highlight(Language::Rust, &at_budget).len(), 1);
+        assert_eq!(highlight(Language::Rust, &format!("{at_budget}a")).len(), 0);
+    }
 }

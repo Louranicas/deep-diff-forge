@@ -447,7 +447,7 @@ and GitHub (measured). Codex's tool could not run `cargo`, the binary or `gh`, s
 | EVIDENCE did not record the v0.5.0 tag run or verify its assets | **Accepted**: the release run was still in progress when Codex reviewed. | Recorded: run 41143246901, `sha256sum -c` OK, `--version` 0.5.0, one SLSA v1 provenance from `release.yml@refs/tags/v0.5.0` ([EVIDENCE](../EVIDENCE.md#v050-dry-runs-tag-and-published-release-2026-10-31)). |
 | Four branches per remote, not three | **Accepted** at review time: `claude/release-0.5.0` was not yet deleted. | Deleted from both remotes; 3 remain (`main` and the two unmerged branches). |
 | The scheduled hour-long fuzz and 600 s soak never ran | **Accepted** at review time. | Campaign run 41143303217 on the `v0.5.0` commit: 10 targets × 3,601 s with 0 crashes, soak PASS, full bench passed ([EVIDENCE](../EVIDENCE.md#v050-weekly-campaign-at-its-declared-durations-2026-10-31)). The cron schedule itself is still unexercised (first run 2026-11-02). |
-| No TUI key-sequence harness | **Codex is right; the self-assessment was wrong.** `tui/src/ui.rs` drives real keys through `map_key` and renders through `TestBackend` (from line 367). Only the live crossterm loop is untested. | The gap is withdrawn. |
+| No TUI key-sequence harness | **Codex is right; the self-assessment was wrong.** `tui/src/ui.rs` drives real keys through `map_key` and renders through `TestBackend` (from line 367). Only the live crossterm loop is untested. | The gap is withdrawn. Later on 2026-10-31 the live loop was tested too: scripted input through the production loop in `tui/src/run.rs`, and bare `review` in a pseudo-terminal (`cli/tests/review_tty.rs`). |
 | `v0.5.0` is unsigned; no protected release environment or tag rule; any `v*` tag that matches the version publishes | **Accepted** (`git cat-file -p v0.5.0` has no signature; `release.yml` has no `environment:`). v0.1.0 to v0.4.0 are unsigned too. | Open: signed tags, a tag ruleset and a release environment with approval. |
 | An opened crates.io gate without a token exits successfully | **Accepted as described**; the gate is closed (`DDF_CRATES_IO` unset), so nothing publishes today. | Open, for when crates.io opens. |
 | Push protection and alert counts are self-reported | **Disputed.** They were read from the GitHub API on 2026-10-31 (`security_and_analysis`: push protection enabled; 0 open Dependabot and secret alerts), which is a measurement, not a claim. Codex could not run `gh`. | None. |
@@ -486,6 +486,19 @@ SDK distribution gap replaces it.
    service unit (systemd, launchd).
 5. **A whole-crate mutation pass** of `graph` and `agent`, recorded in the ledger, and a
    Python SDK package (+1, facets 1 and 6).
+
+## Addendum 2026-11-01 (whole-crate mutation)
+
+Not a rescore. The facet-1 gap "no whole-crate mutation run since council history (120 missed,
+recorded)" is narrowed, **measured** in [EVIDENCE](../EVIDENCE.md#whole-crate-mutation-of-core-patch-daemon-and-syntax-2026-11-01):
+`graph` and `agent` were run on 2026-10-31, and `core`, `patch`, `daemon` and `syntax` now.
+After 51 new tests, the misses left in `core`, `patch` and `syntax` are equivalent mutants or
+code compiled only off Unix. `daemon`'s after state is workspace scope only (3 equivalents, 2 of
+them caught only spuriously); its crate-scope misses after the change are **unmeasured**. Still
+open: one `daemon` loop mutant reported as a timeout, `review` in
+workspace scope (727 crate-scope misses, unclassified), and `cli`, `tui`, `learning`,
+`pipeline`, `projection`, `cluster` and `sdk` (**unmeasured**). The 120 historical misses stay
+in the ledger as history.
 
 ## Follow-up 2026-10-31: the platform matrix (no rescore)
 

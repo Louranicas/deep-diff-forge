@@ -94,7 +94,9 @@ Durable lessons for future Deep-Diff-Forge sessions. This is not a diary.
   — render into it, read the `Buffer` cells back as strings, assert on content.
   Keep all decision logic in a pure state model; only the live `crossterm` event
   loop needs a TTY (the one untested boundary). The CLI `review --probe` reuses
-  the same `render_to_lines` helper for a no-TTY live proof.
+  the same `render_to_lines` helper for a no-TTY live proof. (Superseded
+  2026-10-31: the loop takes its terminal effects as parameters and is tested
+  with scripted input, and `cli/tests/review_tty.rs` runs it in a pty.)
 - Evidence: `deep-diff-forge-tui` ui.rs tests + `review --probe` output.
 - Affected files/symbols/commands: `crates/deep-diff-forge-tui/src/ui.rs`.
 - Status: permanent.
