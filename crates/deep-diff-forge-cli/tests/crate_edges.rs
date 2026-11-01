@@ -216,9 +216,10 @@ fn release_publication_is_owner_gated_and_the_dry_run_publishes_nothing() {
             && condition.contains("vars.DDF_CRATES_IO == 'open'"),
         "the publish job must run only on a tag and only with the owner's DDF_CRATES_IO=open: {condition:?}"
     );
+    // `release` needs every `build` leg, so this waits for the builds and the GitHub Release.
     assert!(
-        publish.contains("    needs: build\n"),
-        "publication must wait for the builds"
+        publish.contains("    needs: release\n"),
+        "publication must wait for the builds and the GitHub Release"
     );
     assert!(
         publish.contains("    environment: release\n"),
@@ -231,6 +232,10 @@ fn release_publication_is_owner_gated_and_the_dry_run_publishes_nothing() {
         "a missing token must fail the publish job"
     );
     for (name, body) in &jobs {
+        // A job-level tag condition covers every step of the job.
+        let job_tag_only = body
+            .lines()
+            .any(|line| line.starts_with("    if: ") && line.contains("refs/tags/"));
         for step in steps(body) {
             let outward = ["softprops/action-gh-release", "attest-build-provenance"]
                 .iter()
@@ -239,7 +244,7 @@ fn release_publication_is_owner_gated_and_the_dry_run_publishes_nothing() {
                 .lines()
                 .any(|line| line.trim_start().starts_with("if: ") && line.contains("refs/tags/"));
             assert!(
-                !outward || tag_only,
+                !outward || tag_only || job_tag_only,
                 "job {name}: a step that releases or attests must be limited to tag refs:\n{step}"
             );
         }

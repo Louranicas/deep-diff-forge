@@ -236,7 +236,9 @@ every gate ran as root inside the container. Gates refuse to run unless
   The TUI disables unused default features.
 - GitHub Actions are pinned to full commit SHAs (a test,
   `cli/tests/workflow_pins.rs`, fails on any other `uses:`), use least-privilege job
-  permissions, do not persist checkout credentials, and have bounded run times.
+  permissions (in `release.yml` the compiling `build` matrix is read-only; only the tag-only
+  `release` job, which runs no project code, holds write and OIDC grants; checked by
+  `cli/tests/release_workflow.rs`), do not persist checkout credentials, and have bounded run times.
 - `release.yml` runs on `v*` tags and on manual `workflow_dispatch`. A tag must
   exactly match the workspace version. Both runs repeat the full `ci.yml`
   quality workflow and a supply-chain gate, build four targets, run every
@@ -296,8 +298,9 @@ independent authenticity proof.
 The authoritative gate is [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 `just ci` runs [`scripts/ci_local.sh`](scripts/ci_local.sh), a step-for-step
 replica of its `secrets`, `msrv`, `gate` and `supply-chain` jobs (checked by
-`crates/deep-diff-forge-cli/tests/ci_replica.rs`; it needs gitleaks, Rust
-1.88.0, cargo-deny and cargo-audit installed). It does not replay the review
+`crates/deep-diff-forge-cli/tests/ci_replica.rs`, which also checks it runs on the
+toolchains ci.yml pins; it needs gitleaks, Rust 1.99.1 with rustfmt and clippy, Rust 1.88.0,
+cargo-deny and cargo-audit installed). It does not replay the review
 controller evidence job (rootless Podman) or the diff-mutation job; run
 `scripts/diff_mutation.sh origin/main` for the latter. The principal local
 checks are:
