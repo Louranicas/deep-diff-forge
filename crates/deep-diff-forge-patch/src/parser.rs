@@ -1060,9 +1060,10 @@ fn same_name_halves(rest: &str, p0: bool) -> Option<String> {
             }
             start
         } else {
-            if slash < start {
-                slash = start + bytes[start..].iter().position(|&b| b == b'/')?;
-            }
+            // The first `/` at or after `start`, scanned on from the last one found, so each
+            // byte is scanned once (a `slash < start` guard here had an equivalent `<=` mutant).
+            slash = slash.max(start);
+            slash += bytes[slash..].iter().position(|&b| b == b'/')?;
             if slash == start {
                 return None;
             }

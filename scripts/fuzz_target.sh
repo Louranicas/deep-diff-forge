@@ -18,7 +18,15 @@ cd "$(dirname "$0")/.."
 # A TOML parse, not a line match: a [[bin]] laid out another way (path before name, `name="x"`,
 # single quotes, a comment) would otherwise drop out of the list, and so out of CI and the campaign.
 targets() {
-  python3 -I -c 'import sys, tomllib
+  # tomllib is Python 3.11+; tomli is its backport. Neither: a loud failure, never an empty list.
+  python3 -I -c 'import sys
+try:
+    import tomllib
+except ModuleNotFoundError:
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:
+        sys.exit("fuzz_target.sh needs Python 3.11+ (tomllib) or the tomli package")
 for b in tomllib.load(open(sys.argv[1], "rb"))["bin"]:
     print(b["name"])' fuzz/Cargo.toml
 }
