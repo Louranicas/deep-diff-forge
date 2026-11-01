@@ -217,8 +217,9 @@ binary is run (`--version` and a review) before it ships.
   smoke when a Linux binary requires a newer `GLIBC_` symbol version. Measured 2026-10-31: the
   v0.5.0 x86_64 binary requires at most `GLIBC_2.34`; it ran a review on AlmaLinux 9 (glibc
   2.34), Ubuntu 22.04 (2.35) and Debian 12 (2.36), and the loader refused it on Debian 11 (2.31).
-  The arm64 floor is inferred to be the same (one build image, one standard library) and is
-  checked by the same script on its first CI and release runs.
+  The arm64 binary, built on `ubuntu-22.04-arm`, passes the same check in CI (measured; built on
+  `ubuntu-24.04-arm` it needed `GLIBC_2.39`, PR #79); it has not been run on an older arm64
+  distribution (unmeasured).
 - **On glibc 2.34 to 2.38 the loader prints one warning line to stderr per run**,
   ``weak version `GLIBC_2.39' not found``. The output and exit code are unchanged (measured on the
   three systems above). Rust's standard library references `pidfd_spawnp` and `pidfd_getpid`

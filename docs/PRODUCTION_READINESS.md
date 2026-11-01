@@ -514,9 +514,10 @@ the score stays as reconciled until the next one.
   `GLIBC_2.34`; ran on AlmaLinux 9, Ubuntu 22.04 and Debian 12; refused on Debian 11). On glibc
   2.34 to 2.38 the loader prints one stderr warning per run (measured). Enforced by
   `scripts/check_glibc_floor.sh` in the release smoke.
-- **arm64 Linux**: a release target on `ubuntu-24.04-arm` and a `Linux arm64 tests` CI job
-  (inferred until their first runs; pending CI). The test job gates every release build through
-  `quality`. Its glibc floor is inferred to equal x86_64's.
+- **arm64 Linux**: a release target built on `ubuntu-22.04-arm` and a `Linux arm64 tests` CI job
+  on the same image, which gates every release build through `quality`. On `ubuntu-24.04-arm` the
+  binary needed `GLIBC_2.39`, over the floor (measured in PR #79); on 22.04-arm
+  `scripts/check_glibc_floor.sh` passes the 2.34 floor (measured in CI).
 - **x86_64 macOS** runs in the release smoke under Rosetta 2 (since the 2026-10-31 release
   hardening); it has no test job.
 - **launchd**: the `macOS launchd agent` job loads the shipped plist into a hosted Mac's launchd
