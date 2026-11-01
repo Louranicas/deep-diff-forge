@@ -352,12 +352,14 @@ mod tests {
                 format!("a\\u{{{:04x}}}b", u32::from(c))
             );
         }
-        // The visible neighbours of the new ranges stay ordinary text.
+        // The visible neighbours of the new ranges stay ordinary text. U+FFF0..U+FFF8 are
+        // reserved default-ignorables (flagged), so below the annotation controls the first
+        // ordinary code point is U+FFEF.
         for c in [
             '\u{17B3}',
             '\u{17B6}',
             '\u{180A}',
-            '\u{FFF8}',
+            '\u{FFEF}',
             '\u{FFFC}',
             '\u{1BC9F}',
             '\u{1BCA4}',
@@ -391,7 +393,7 @@ mod tests {
             '\u{180A}',
             '\u{1810}',
             '\u{FFEF}',
-            '\u{FFF9}',
+            '\u{FFFC}',
             '\u{1BC9F}',
             '\u{1BCA4}',
             '\u{1D172}',
