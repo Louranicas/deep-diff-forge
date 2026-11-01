@@ -669,7 +669,24 @@ fn review_tool_with(mut arguments: Map<String, Value>, cap: usize) -> Value {
             return tool_error(&format!("no file in the patch is named {missing}"));
         }
         files.retain(|f| paths.iter().any(|p| f["path"] == p.as_str()));
-        review["selected"] = json!(paths);
+        // The summary describes the files the document holds, as it does unfiltered: before, it
+        // kept the whole patch's totals (bug hunt 2026-11-01). The seal stays the whole patch's.
+        // `semantic_fallbacks` stays too: `diff.compute` runs no semantic analysis, so it is 0.
+        let (additions, deletions) = files
+            .iter()
+            .map(line_counts)
+            .fold((0, 0), |(a, d), (fa, fd)| (a + fa, d + fd));
+        let files_changed = files.len();
+        review["summary"]["files_changed"] = json!(files_changed);
+        review["summary"]["additions"] = json!(additions);
+        review["summary"]["deletions"] = json!(deletions);
+        let mut selected: Vec<&String> = Vec::new();
+        for path in paths {
+            if !selected.contains(&path) {
+                selected.push(path);
+            }
+        }
+        review["selected"] = json!(selected);
     }
     let full_bytes = review.to_string().len();
     if summary_only {
@@ -726,6 +743,20 @@ fn rank_tool_with(arguments: Map<String, Value>, cap: usize) -> Value {
     }))
 }
 
+/// A review.v0 file's added and removed lines.
+fn line_counts(file: &Value) -> (u64, u64) {
+    let (mut additions, mut deletions) = (0, 0);
+    let hunks = file["hunks"].as_array().map_or(&[][..], Vec::as_slice);
+    for line in hunks.iter().filter_map(|h| h["lines"].as_array()).flatten() {
+        match line["kind"].as_str() {
+            Some("added") => additions += 1,
+            Some("removed") => deletions += 1,
+            _ => {}
+        }
+    }
+    (additions, deletions)
+}
+
 /// The bytes a rank summary needs besides its file entries (schema, reason and counts).
 const RANK_SUMMARY_OVERHEAD: usize = 512;
 
@@ -737,19 +768,11 @@ fn summarize(review: &Value, full_bytes: usize, reason: &str) -> Value {
         .iter()
         .take(SUMMARY_FILE_LIMIT)
         .map(|file| {
-            let (mut additions, mut deletions) = (0_u64, 0_u64);
-            let hunks = file["hunks"].as_array().map_or(&[][..], Vec::as_slice);
-            for line in hunks.iter().filter_map(|h| h["lines"].as_array()).flatten() {
-                match line["kind"].as_str() {
-                    Some("added") => additions += 1,
-                    Some("removed") => deletions += 1,
-                    _ => {}
-                }
-            }
+            let (additions, deletions) = line_counts(file);
             let mut entry = json!({
                 "path": file["path"],
                 "status": file["status"],
-                "hunks": hunks.len(),
+                "hunks": file["hunks"].as_array().map_or(0, Vec::len),
                 "additions": additions,
                 "deletions": deletions,
             });

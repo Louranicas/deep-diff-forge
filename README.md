@@ -302,6 +302,11 @@ deep-diff-forge [--] <old> <new> [MODE] [--require-files] [--require-hunks]
 #       | --outline | --hunks [--address A]... [--path P]...   (both: [--max-bytes N] [--cursor C])
 ```
 
+Choose one MODE: a second is refused with exit 2 before any input is read. `--json` also
+selects the JSON form of `--rank` and `--cluster` (and is accepted, redundantly, with
+`--outline` and `--hunks`, which always print JSON). An option that takes one value is
+refused when given twice; only `--address` and `--path` repeat.
+
 | Mode | Output |
 | --- | --- |
 | *(none)* | One line per file: status, path, `+adds -dels`, hunk count. |
@@ -554,12 +559,12 @@ deep-diff-forge explain 7 --family council
 
 `envelope` runs the command as a child of the same binary, with stdin passed through. It reports:
 
-- `exit_code`, and `outcome`, the registry name for that code (`undocumented` for an unlisted code, `signal` if the command was killed);
+- `exit_code`, and `outcome`, the registry name for that code (`undocumented` for an unlisted code, `signal` and the `signal` number if the command was killed);
 - `ok`, which is true only for exit 0 with nothing truncated;
 - `stdout`, parsed when it is exactly one JSON value (otherwise text, so `--jsonl` stays text);
 - `stderr`.
 
-The command's own output is unchanged, and `envelope` exits with the command's code. Captured stdout is capped at 16 MiB and stderr at 1 MiB; anything cut is listed in `truncated` and never parsed.
+The command's own output is unchanged, and `envelope` exits with the command's code; a command ended by signal N gives 128 + N, the status a shell reports for it (not a registry code). Everything after `--` is the command's, `--help` included: `envelope -- council --help` wraps council's help. Captured stdout is capped at 16 MiB and stderr at 1 MiB; anything cut is listed in `truncated` and never parsed.
 
 ## MCP server
 

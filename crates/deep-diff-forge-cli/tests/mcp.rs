@@ -259,6 +259,41 @@ fn paths_return_chosen_files_in_full_and_small_reviews_are_unchanged() {
     assert_eq!(asked["structuredContent"]["reason"], "summary requested");
 }
 
+/// Bug hunt 2026-11-01: a document narrowed by `paths` kept the whole patch's summary, so a
+/// review.v0 holding one file said two changed, and `selected` echoed a repeated path.
+#[test]
+fn paths_narrow_the_summary_to_the_files_returned() {
+    let patch = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1,3 @@\n-a\n+b\n+c\n+d\n";
+    assert_eq!(
+        cli_review(patch)["summary"],
+        json!({"files_changed": 2, "additions": 4, "deletions": 2, "semantic_fallbacks": 0})
+    );
+    let only_a =
+        json!({"files_changed": 1, "additions": 1, "deletions": 1, "semantic_fallbacks": 0});
+    let zoom = call(
+        "review_patch",
+        &json!({"patch": patch, "paths": ["a.txt", "a.txt"]}),
+    );
+    let doc = &zoom["structuredContent"];
+    assert_eq!(doc["schema"], "deep-diff-forge.review.v0");
+    assert_eq!(doc["summary"], only_a);
+    assert_eq!(doc["selected"], json!(["a.txt"]));
+    let summary = call(
+        "review_patch",
+        &json!({"patch": patch, "paths": ["b.txt"], "detail": "summary"}),
+    );
+    let summary = &summary["structuredContent"];
+    assert_eq!(summary["schema"], "deep-diff-forge.review-summary.v0");
+    assert_eq!(
+        summary["summary"],
+        json!({"files_changed": 1, "additions": 3, "deletions": 1, "semantic_fallbacks": 0})
+    );
+    assert_eq!(
+        summary["files"],
+        json!([{"path": "b.txt", "status": "modified", "hunks": 1, "additions": 3, "deletions": 1}])
+    );
+}
+
 #[test]
 fn bad_detail_or_paths_are_tool_errors() {
     for arguments in [

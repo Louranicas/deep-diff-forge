@@ -274,6 +274,44 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   still said the daemon "runs one request at a time", from before 0.4.0; it now sizes the peak
   for the requests admission lets run together (two at the 64 MiB budget) and for the waiting
   lines, which are parsed before admission and not counted in its budget.
+- **`envelope` wraps the wrapped command's `--help`.** `envelope -- --stdin-patch --help` and
+  `envelope -- council --help` printed envelope's own help as plain text with exit 0, ran
+  nothing and printed no `ddf.result.v1` object, because the help scan read every word, including
+  those after `--`. The scan (`args::help_requested`) now stops at `--` and skips an option's
+  value, so `--hunks --path -h` selects the file named `-h` and `review --findings -h` reads it,
+  where both printed help. `review` takes the word `help` only first (`review help`): a later
+  `help`, as in `review --side help`, printed the help with exit 0 and is now refused as an
+  unexpected argument (exit 2). `council` keeps its own scan, so `council … --session -h` still
+  prints the council help.
+- **A second output mode is refused, not dropped.** `--jsonl --rank` printed only JSONL,
+  `--json --layout inline` only JSON, `--cluster --layout inline` only the cluster,
+  `--acquisition-json --rank` only the acquisition, and `--jsonl --hunks --path nothing` skipped
+  the path check, each with exit 0. `--jsonl`, `--layout`, `--acquisition-json` and a `--json`
+  that is not the format of `--rank`, `--cluster`, `--outline` or `--hunks` now join the one-mode
+  check (exit 2, before input is read), and `--address` with `--path` is refused there too: it
+  was checked only after the patch was read, so a patch that failed to parse exited 4 instead.
+- **A single-valued option given twice is refused.** The first value was used and a later one
+  was never read or validated: `--parallel 4 --parallel bogus` ran with 4, `--max-bytes 1000000
+  --max-bytes 2048` printed a page 34 times the appended budget, and `--repo . --repo /nonexistent`
+  reviewed `.`, all with exit 0. `args::admit` now exits 2 (`--parallel given more than once`);
+  `--address`, `--path`, `--allow-repo` and `--workload` stay repeatable.
+- **`chain-contract` states the shipped pipe and stdin behaviour.** It promised that pipe
+  failures exit non-zero, but a closed stdout (`| head`) deliberately exits 0, and that stdin is
+  read only with an explicit flag, but `findings verify` and `review` read the patch there
+  without one. It now says a closed pipe exits 0, any other write failure exits 3, and names
+  every command that reads stdin; `docs/CHAINING_AND_CLUSTERING.md` says the same.
+- **A failed write of output without a final newline exits 3.** Stdout is line-buffered, so a
+  tail after the last newline was written at exit, where the error is dropped:
+  `highlight` of a file with no final newline into `/dev/full` exited 0 with the output lost.
+  `emit` and `envelope` now flush and report the failure (exit 3; a closed pipe stays exit 0).
+- **MCP `review_patch` with `paths` summarises the files it returns.** The `summary` kept the
+  whole patch's totals, so a `review.v0` holding one file said `files_changed: 2`, and in
+  `review-summary.v0` too; `selected` echoed a repeated path. The summary is now counted over
+  the kept files (the seal stays the whole patch's) and `selected` lists each path once.
+- **`envelope` exits 128 + N when signal N ends the wrapped command.** It exited 1, which the
+  exit-code registry does not list, so `explain` could not describe it. 128 + N is the status a
+  shell reports for the same command (`exit::SIGNAL_BASE`, not a registry code); the envelope
+  still says `outcome: signal` and the signal number.
 - **The long-line linearity test no longer fails on a busy host.** `graph`'s
   `the_import_rule_is_linear_on_long_lines` bounded its scans by 10 s of wall time; at load 56
   to 89 a linear scan using 1.8 s of CPU took over 10 s, failed the suite, and turned diff
