@@ -683,21 +683,37 @@ fn daemon_metrics_prometheus(location: &deep_diff_forge_daemon::SocketLocation, 
     }
 }
 
+/// What a failed daemon request says about the daemon, before and after its socket path: `kind`
+/// is the request's error kind.
+fn daemon_failure(kind: std::io::ErrorKind) -> (&'static str, &'static str) {
+    use std::io::ErrorKind;
+    match kind {
+        // Something is there, but this user may not use it: a daemon of another user, or a
+        // socket whose mode refuses the connect.
+        ErrorKind::PermissionDenied => ("cannot use the daemon at", ""),
+        // A daemon took the connection, then closed it or let it wait unanswered: at its
+        // connection limit, it closes a further connection at once. Before, this read "no daemon
+        // at" while the daemon ran (bug hunt 2026-11-01).
+        ErrorKind::ConnectionReset
+        | ErrorKind::BrokenPipe
+        | ErrorKind::UnexpectedEof
+        | ErrorKind::TimedOut => (
+            "no answer from the daemon at",
+            " (it may be at its connection limit; retry)",
+        ),
+        _ => ("no daemon at", ""),
+    }
+}
+
 /// One request to the daemon and its answer line; exit 6 when no daemon this user may use
 /// answers.
 fn daemon_request_or_exit(location: &deep_diff_forge_daemon::SocketLocation, line: &str) -> String {
     match deep_diff_forge_daemon::request(location, line) {
         Ok(response) => response,
         Err(err) => {
-            // Something is there, but this user may not use it: a daemon of another user, or a
-            // socket whose mode refuses the connect.
-            let what = if err.kind() == std::io::ErrorKind::PermissionDenied {
-                "cannot use the daemon at"
-            } else {
-                "no daemon at"
-            };
+            let (what, hint) = daemon_failure(err.kind());
             eprintln!(
-                "error: {what} {}: {err}",
+                "error: {what} {}{hint}: {err}",
                 display_safe(&location.path().to_string_lossy())
             );
             std::process::exit(exit::DAEMON_OR_TERMINAL);

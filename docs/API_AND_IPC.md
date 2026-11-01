@@ -185,7 +185,7 @@ version is refused with domain error 2.
 | `diff.compute` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.review.v0` document `--stdin-patch --json` prints for the same patch | 1 |
 | `diff.rank` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints for the same patch (with each file's code `evidence`, below) | 1 |
 | `review.outline` | `patch: string, require_files?, require_hunks?, max_bytes?: integer, cursor?: string` | `deep-diff-forge.review-outline.v0`: files in review-risk order with their hunks' addresses, ranges, `@@` headings and counts, no line text; `next_cursor` continues | 1 |
-| `review.hunks` | `patch: string, require_files?, require_hunks?, addresses?: [string], paths?: [string], max_bytes?, cursor?` | `deep-diff-forge.review-hunks.v0`: the chosen hunks verbatim, continued at a line when one is too long for the page. A path selects every section of that path, an address every hunk with it; a view carries at most 256 bytes of an `@@` heading (`section_truncated: true`) | 1 |
+| `review.hunks` | `patch: string, require_files?, require_hunks?, addresses?: [string], paths?: [string], max_bytes?, cursor?` | `deep-diff-forge.review-hunks.v0`: the chosen hunks verbatim, continued at a line when one is too long for the page. A path selects every section of that path, an address every hunk with it; a name repeated in the list selects its hunks once, in the order of first mention; a view carries at most 256 bytes of an `@@` heading (`section_truncated: true`) | 1 |
 | `review.change` | `repo: string, selection: staged\|working_tree\|range, range?: A..B, include_untracked?, view?: outline\|hunks\|review\|rank`, plus the view's params | that view of the change Git returns, sealed over Git's bytes, with an `acquisition` member (repo, selection, base, target, `include_untracked`, and `omitted_untracked`: untracked directories such as nested repositories that are not in the files); only under an `--allow-repo` root, Git stopped after 30 s; Git failure is error 3 | 1 |
 | `session.open` | `patch: string` | `{session, files}` | 0 |
 | `session.snapshot` | `session: string` | `[ranked file]` | 0 |
@@ -352,7 +352,9 @@ process. A client may call `engine.initialize` first but does not have to.
 - One daemon per socket: `daemon start` holds an exclusive lock on
   `<socket>.lock` from before the stale-socket probe until it exits.
 - Treat request fields and agent annotations as untrusted input.
-- Limits (`serve.rs`, `handler.rs`): 80 MiB request and response lines, a
+- Limits (`serve.rs`, `handler.rs`): 80 MiB request and response lines (an error
+  answer too, measured as written, with its message cut at 4 KiB, as is every
+  MCP tool and protocol error), a
   30-second absolute read deadline per line, a 30-second write timeout, eight
   concurrent connections, 64 retained sessions (least recently used evicted
   first), and a 128 MiB aggregate retained session-payload budget.

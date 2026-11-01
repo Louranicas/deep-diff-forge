@@ -7,10 +7,9 @@
 
 use deep_diff_forge_core::json_line_safe;
 use deep_diff_forge_daemon::{
-    Engine, INVALID_REQUEST, MAX_REQUEST_BYTES, PARSE_ERROR, RpcError, error_response,
-    process_line, read_capped_line,
+    Engine, INVALID_REQUEST, MAX_REQUEST_BYTES, PARSE_ERROR, process_line, read_capped_line,
+    refusal,
 };
-use serde_json::Value;
 use std::io::{BufRead, Write};
 
 /// Answer stdin until it closes or a `daemon.shutdown` request is answered.
@@ -52,22 +51,15 @@ fn serve_capped(
             return Ok(());
         }
         if buf.len() > cap {
-            let error = RpcError::new(INVALID_REQUEST, "request exceeds maximum size");
-            writeln!(
-                output,
-                "{}",
-                json_line_safe(&error_response(&Value::Null, &error))
-            )?;
+            let refused = refusal(engine, INVALID_REQUEST, "request exceeds maximum size");
+            writeln!(output, "{}", json_line_safe(&refused))?;
             output.flush()?;
             return Ok(());
         }
         let response = match std::str::from_utf8(&buf) {
             Ok(text) if text.trim().is_empty() => continue,
             Ok(text) => process_line(text.trim(), engine),
-            Err(_) => error_response(
-                &Value::Null,
-                &RpcError::new(PARSE_ERROR, "request is not valid UTF-8"),
-            ),
+            Err(_) => refusal(engine, PARSE_ERROR, "request is not valid UTF-8"),
         };
         writeln!(output, "{}", json_line_safe(&response))?;
         output.flush()?;
@@ -80,6 +72,7 @@ fn serve_capped(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     fn run(input: &[u8], cap: usize) -> Vec<Value> {
         let input = input.to_vec();
@@ -145,6 +138,26 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0]["error"]["code"], PARSE_ERROR);
         assert_eq!(out[1]["id"], 3);
+    }
+
+    /// Bug hunt 2026-11-01: the lines `rpc` refuses before `process_line` (one that is not UTF-8,
+    /// one over the cap) are counted in `daemon.metrics`, as on the socket. Before, they were
+    /// answered and never counted.
+    #[test]
+    fn refused_lines_are_counted_in_the_metrics() {
+        let engine = Engine::new();
+        let mut out = Vec::new();
+        serve_capped(&mut b"\xff\n\xff\n".as_slice(), &mut out, 256, &engine).unwrap();
+        let mut over = vec![b'x'; 300];
+        over.push(b'\n');
+        serve_capped(&mut over.as_slice(), &mut out, 256, &engine).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap().lines().count(), 3);
+        let m = engine.metrics().document(std::time::Duration::ZERO, "test");
+        assert_eq!(m["methods"]["(unknown)"]["requests"], 3);
+        assert_eq!(
+            m["methods"]["(unknown)"]["errors"],
+            serde_json::json!({"invalid_request": 1, "parse_error": 2})
+        );
     }
 
     /// The cap counts the newline, as on the socket: `cap` bytes plus a newline is one too many.

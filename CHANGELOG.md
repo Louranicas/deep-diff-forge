@@ -215,6 +215,65 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **A `review.hunks` selection that repeats a name can no longer abort the daemon.** Each repeat
+  of a path in `paths` pushed every hunk of that file again, so 50,000 repeats of one path over
+  4,000 hunks (a 619 KB request) asked for 3.2 GB; under a 2 GB address-space limit the
+  allocation failed and the daemon aborted (`SIGABRT`, which `catch_unwind` cannot contain),
+  losing every session and leaving its socket and lock behind. Repeated `addresses` duplicated
+  the same way. A repeated name now selects its hunks once, keeping the order of first mention,
+  so a selection never holds more hunks than the review has; the answer to `["x.rs","x.rs"]` is
+  the answer to `["x.rs"]` (`views.rs` `select`). Also reached through `review.change`
+  `view=hunks` and the MCP `review_hunks` tool.
+- **`review.hunks` by address hashes each hunk once per request.** Every requested address
+  recomputed every hunk's address (a SHA-256 of the hunk), so the cost grew with addresses times
+  hunks: 4,000 addresses over 4,000 hunks (a 490 KB request) held a worker for 18 s, measured on
+  the release build, while admission weighed it by its line length. The selection now builds one
+  address table per call, as `findings.verify` has since DDF-PERF-001, and looks each address up
+  in it; paths are looked up through a path table the same way.
+- **Error answers are held to the 80 MiB line cap.** Only a success was bounded, and an error
+  repeats request text: one unknown path of 27 million U+202E characters (an 81 MB request) drew
+  a 243 MB error line, because `display_safe` writes each 3-byte character as the 8-byte
+  `\u{202e}`, and a client using the daemon's own `request` helper got "daemon response exceeds
+  maximum size" instead of the `INVALID_PARAMS` meant. The cap was also measured before
+  `json_line_safe`, which writes each line separator in 6 bytes rather than 3, so an id of
+  U+2028 characters came back at twice its size. Now an error message is cut at 4 KiB
+  (`MAX_ERROR_MESSAGE_BYTES`, at a character boundary, with the count of bytes left out), an
+  unknown address or path is repeated within 1 KiB and an unknown param name or session id
+  within 256 bytes (`display_safe_bounded`), and every answer `process_line` returns is measured
+  as written; one over the cap becomes `RESOURCE_EXHAUSTED` (8), without the id when the id alone
+  would put it over.
+- **MCP tool errors are held to the same 4 KiB message bound as the socket.** The cut was only
+  in the socket's `error_response`, and the MCP server reads a daemon error's message directly,
+  so `review_change` with a repo of 100,000 U+202E characters (a 600 KB request) answered with a
+  901 KB tool error (measured, release build); `review.change` repeated each request-named path
+  or value whole, three times its size for bidi characters, and the MCP server repeated an
+  unknown tool, argument or method name whole. Now `RpcError::new` cuts the message where it is
+  built, `review.change` repeats a request-named path or value within 1 KiB, the MCP server
+  repeats a tool, argument or method name within 1 KiB, and every MCP tool and protocol error is
+  cut to `MAX_ERROR_MESSAGE_BYTES`; the same request now answers in 1.3 KB.
+- **`review.hunks` by address holds memory for the requested addresses, not for every hunk.**
+  The address table kept every hunk's 64-character address, whatever was asked, so one address
+  over 300,000 one-line hunks peaked at 195 MB against 130 MB for a path selection (measured,
+  release build), memory that admission does not weigh. The table now keeps only the requested
+  addresses a hunk has, each hunk's address still computed once; the same request peaks at
+  130 MB.
+- **`daemon health` and `daemon stop` no longer say there is no daemon when it is at its
+  connection limit.** A daemon serving eight connections closes a ninth at once, unanswered (by
+  design), and the client's reset or broken pipe was reported as `no daemon at PATH`: eight idle
+  connections made the CLI report a running daemon absent for 30 s, and eight that each send a
+  request within 30 s kept it so indefinitely (measured). A reset, broken pipe, early end of file
+  or read timeout now reads `no answer from the daemon at PATH (it may be at its connection limit;
+  retry)`, still exit 6; `no daemon at` is kept for a missing or refused socket.
+- **Refused request lines are counted in `daemon.metrics`.** A line that is not UTF-8, one over
+  the 80 MiB cap and one sent during a stop were answered by the connection itself and never
+  counted, so `ddf_daemon_requests_total{method="(unknown)"}` and its `parse_error`,
+  `invalid_request` and `resource_exhausted` errors under-reported them (three of four parse
+  errors were missing in a measured run). They are now counted under `(unknown)`, on the socket
+  and in `deep-diff-forge rpc` (`serve::refusal`).
+- **The daemon's memory guidance describes parallel requests.** `docs/OPERATIONS_AND_DAEMON.md`
+  still said the daemon "runs one request at a time", from before 0.4.0; it now sizes the peak
+  for the requests admission lets run together (two at the 64 MiB budget) and for the waiting
+  lines, which are parsed before admission and not counted in its budget.
 - **The long-line linearity test no longer fails on a busy host.** `graph`'s
   `the_import_rule_is_linear_on_long_lines` bounded its scans by 10 s of wall time; at load 56
   to 89 a linear scan using 1.8 s of CPU took over 10 s, failed the suite, and turned diff
