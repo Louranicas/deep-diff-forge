@@ -2,7 +2,8 @@
 //! A dependency between workspace crates appears only as a reviewed change to that table.
 #![expect(
     clippy::disallowed_methods,
-    reason = "integration test: runs `cargo metadata` for the workspace graph"
+    reason = "integration test: runs `cargo metadata` for the workspace graph and \
+              `scripts/check_glibc_floor.sh` on the built binary"
 )]
 
 use serde_json::Value;
@@ -258,17 +259,204 @@ fn release_publication_is_owner_gated_and_the_dry_run_publishes_nothing() {
         !smoke.contains("        if:"),
         "the smoke step must run for every target:\n{smoke}"
     );
-    let targets: Vec<&str> = build
+    let rows: Vec<&str> = build
         .lines()
         .filter(|line| line.trim_start().starts_with("- { os:"))
         .collect();
-    assert_eq!(targets.len(), 3, "the release matrix: {targets:?}");
-    for target in targets {
+    assert_eq!(
+        release_targets(&workflow),
+        RELEASE_TARGETS,
+        "the release matrix is the declared platform list: {rows:?}"
+    );
+    for row in rows {
         assert!(
-            target.contains("run_under:") && !target.contains("smoke:"),
-            "each target says how it is run: {target}"
+            row.contains("run_under:") && !row.contains("smoke:"),
+            "each target says how it is run: {row}"
         );
     }
+    // Every Linux binary is held to the declared glibc floor before it ships.
+    assert!(
+        smoke.contains("*-linux-gnu) scripts/check_glibc_floor.sh \"${bin}\" ;;"),
+        "the smoke step must check the glibc floor of every Linux target:\n{smoke}"
+    );
+}
+
+/// The supported platforms, exactly: what release.yml builds and runs, and what the docs declare.
+const RELEASE_TARGETS: [&str; 4] = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+];
+
+/// The `target:` of each `- { os: …, target: …, … }` row of a workflow, in order.
+fn release_targets(workflow: &str) -> Vec<&str> {
+    workflow
+        .lines()
+        .filter(|line| line.trim_start().starts_with("- { os:"))
+        .filter_map(|line| line.split("target: ").nth(1)?.split([',', ' ']).next())
+        .collect()
+}
+
+/// Every target triple a text names (`<arch>-unknown-linux-*`, `<arch>-apple-darwin`,
+/// `<arch>-pc-windows-*`), including one inside an archive name.
+fn named_targets(text: &str) -> BTreeSet<&str> {
+    text.split(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'))
+        .filter_map(|word| {
+            let vendor = ["-unknown-linux-", "-apple-darwin", "-pc-windows-"]
+                .iter()
+                .find_map(|vendor| word.find(vendor))?;
+            let start = word[..vendor].rfind('-').map_or(0, |dash| dash + 1);
+            Some(&word[start..])
+        })
+        .collect()
+}
+
+/// The sentences of a text, with its line wrapping undone.
+fn sentences(text: &str) -> Vec<String> {
+    text.split("\n\n")
+        .flat_map(|paragraph| {
+            paragraph
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .split(". ")
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The places that declare the platform scope name exactly the release targets (no fifth one,
+/// musl or other), the glibc floor that `scripts/check_glibc_floor.sh` enforces, and musl only
+/// as unsupported. Before 2026-10-31 they said "Linux and macOS", shipped no arm64 Linux binary
+/// and declared no glibc floor.
+#[test]
+fn the_declared_platforms_are_the_release_targets_and_the_glibc_floor() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let read = |path: &str| std::fs::read_to_string(format!("{root}/{path}")).unwrap();
+    let floor_script = read("scripts/check_glibc_floor.sh");
+    let floor = floor_script
+        .lines()
+        .find_map(|line| line.strip_prefix("FLOOR="))
+        .expect("a FLOOR= line");
+    assert!(
+        !floor.is_empty() && floor.split('.').all(|part| part.parse::<u32>().is_ok()),
+        "FLOOR={floor}"
+    );
+    for doc in [
+        "README.md",
+        "SECURITY.md",
+        "docs/RELEASE_AND_PUBLICATION.md",
+    ] {
+        let text = read(doc);
+        assert_eq!(
+            named_targets(&text),
+            BTreeSet::from(RELEASE_TARGETS),
+            "{doc} must name exactly the release targets"
+        );
+        assert!(
+            text.contains(&format!("glibc {floor}")),
+            "{doc} does not declare the glibc floor (glibc {floor})"
+        );
+        let musl: Vec<String> = sentences(&text)
+            .into_iter()
+            .filter(|sentence| sentence.contains("musl"))
+            .collect();
+        assert!(!musl.is_empty(), "{doc} does not say where musl stands");
+        for sentence in musl {
+            assert!(
+                sentence.to_lowercase().contains("not "),
+                "{doc} must state musl as unsupported: {sentence}"
+            );
+        }
+    }
+}
+
+/// The two jobs that are not required on pull requests still run inside a release, through
+/// release.yml's `quality` (which calls ci.yml), so each one's place there is a decision:
+/// `linux-arm64` tests a shipped target and gates the build; `launchd`, unproven on hosted
+/// runners, is skipped. Before 2026-10-31 both ran in every release with nothing saying so.
+#[test]
+fn a_release_runs_every_ci_job_but_the_launchd_smoke() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let read = |path: &str| std::fs::read_to_string(format!("{root}/{path}")).unwrap();
+    let release = jobs(&read(".github/workflows/release.yml"));
+    let quality = &release
+        .iter()
+        .find(|(name, _)| name == "quality")
+        .unwrap()
+        .1;
+    assert!(
+        quality.contains("    uses: ./.github/workflows/ci.yml\n    with:\n      release: true\n"),
+        "release.yml must call ci.yml with `release: true`:\n{quality}"
+    );
+    let ci = read(".github/workflows/ci.yml");
+    assert!(
+        ci.contains("  workflow_call:\n    inputs:\n      release:\n"),
+        "ci.yml must declare the `release` input"
+    );
+    let ci_jobs = jobs(&ci);
+    let skipped: Vec<&str> = ci_jobs
+        .iter()
+        .filter(|(_, body)| body.contains("inputs.release"))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(
+        skipped,
+        ["launchd"],
+        "only the launchd smoke stays out of a release"
+    );
+    let launchd = &ci_jobs
+        .iter()
+        .find(|(name, _)| name == "launchd")
+        .unwrap()
+        .1;
+    assert!(
+        launchd.contains("    if: ${{ !inputs.release }}\n"),
+        "the launchd job must be skipped when release.yml calls ci.yml:\n{launchd}"
+    );
+}
+
+/// `scripts/check_glibc_floor.sh` passes the binary this build made and refuses it once the
+/// floor is below what it needs. A copy with `FLOOR=` rewritten stands in for an older floor, so
+/// the script's own readelf parsing is what is tested. Linux only (readelf, glibc).
+#[cfg(target_os = "linux")]
+#[test]
+fn the_glibc_floor_script_passes_this_binary_and_refuses_it_under_a_lower_floor() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let script = std::fs::read_to_string(format!("{root}/scripts/check_glibc_floor.sh")).unwrap();
+    let floor_line = script
+        .lines()
+        .find(|line| line.starts_with("FLOOR="))
+        .expect("a FLOOR= line");
+    let dir = std::env::temp_dir().join(format!("ddf-glibc-floor-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = |floor: &str| {
+        let copy = dir.join(format!("check_glibc_floor_{floor}.sh"));
+        std::fs::write(&copy, script.replace(floor_line, &format!("FLOOR={floor}"))).unwrap();
+        Command::new("bash")
+            .arg(&copy)
+            .arg(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .output()
+            .unwrap()
+    };
+    let declared = floor_line.strip_prefix("FLOOR=").unwrap();
+    let within = run(declared);
+    let stdout = String::from_utf8_lossy(&within.stdout);
+    assert!(
+        within.status.success() && stdout.contains(&format!("(floor {declared})")),
+        "the built binary must be within the declared floor: {within:?}"
+    );
+    let over = run("2.0");
+    let stderr = String::from_utf8_lossy(&over.stderr);
+    assert!(
+        over.status.code() == Some(1)
+            && stderr.contains("::error::")
+            && stderr.contains("newer than the declared floor 2.0"),
+        "a binary over the floor must be refused: {over:?}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -282,6 +470,25 @@ fn the_release_job_reader_sees_jobs_steps_and_conditions() {
     assert!(steps[0].contains("softprops") && !steps[0].contains("if:"));
     assert!(steps[1].contains("refs/tags/"));
     assert!(jobs[1].1.contains("cargo publish") && !jobs[0].1.contains("cargo publish"));
+    let matrix = "        include:\n          - { os: a, target: x-linux, run_under: \"\" }\n          - { os: b, target: y-darwin }\n            target: z\n";
+    assert_eq!(release_targets(matrix), ["x-linux", "y-darwin"]);
+    let triples = named_targets(
+        "`x86_64-unknown-linux-musl`, deep-diff-forge-v1.2.3-aarch64-apple-darwin.tar.gz, \
+         x86_64-pc-windows-msvc; riscv64gc-unknown-linux-gnu. x86_64 Linux",
+    );
+    assert_eq!(
+        triples,
+        BTreeSet::from([
+            "aarch64-apple-darwin",
+            "riscv64gc-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "x86_64-unknown-linux-musl",
+        ])
+    );
+    assert_eq!(
+        sentences("One\nline. Two\n  lines.\n\nThree"),
+        ["One line", "Two lines.", "Three"]
+    );
 }
 
 /// The block between the markers in docs/SCHEMATICS.md, as `table` renders it: one line per crate

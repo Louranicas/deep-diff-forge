@@ -10,9 +10,10 @@ section says whether it describes what ships today or a planned design.
   protocol 2), `rpc` (the same protocol over stdio, no daemon), `mcp` (a
   read-only MCP stdio server), `envelope` / `schema` / `explain`, the Rust SDK
   crate `deep-diff-forge-sdk` and the Python SDK `sdk/python/deep_diff_forge.py`.
-- **Not implemented** (refused with exit 2 today): `deep-diff-forge <old> <new>`,
-  `chain`, `cluster`, `loom`, and every command or method in the planned tables
-  below.
+- **Ships since 2026-10-31:** `deep-diff-forge <old> <new>` for two regular files
+  (CLI only; no daemon or MCP method reads local files).
+- **Withdrawn** (refused with exit 2 and a replacement): `chain`, `cluster`, `loom`.
+- **Not implemented:** every command or method in the planned tables below.
 - Earlier versions of this page listed crates that do not exist
   (`deep-diff-forge-git`, `-planner`, `-loom`) and a socket lifecycle with a lock,
   a cache and notifications that the daemon does not have. Those are corrected
@@ -139,16 +140,15 @@ deep-diff-forge loom-contract
 
 ### Planned commands (not implemented)
 
-Each of these exits 2 (`unknown command`) today:
+Each of these exits 2 today (measured 2026-11-01 on the branch binary): `--git` and `cache`
+as `unknown command`; `--dir a b` as a usage error from the two-file parser
+(`unexpected argument`), since directories are out of scope for `<old> <new>`. `loom` is
+withdrawn, not planned (see the status above).
 
 ```text
-deep-diff-forge <old> <new>
 deep-diff-forge --git                       # today: --git-working-tree | --git-staged | --git-range
 deep-diff-forge --dir <old-dir> <new-dir>
 deep-diff-forge cache status | cache prune
-deep-diff-forge chain
-deep-diff-forge cluster                     # today: --stdin-patch --cluster
-deep-diff-forge loom plan | loom gate | loom receipt
 ```
 
 ## CLI Compatibility Contracts

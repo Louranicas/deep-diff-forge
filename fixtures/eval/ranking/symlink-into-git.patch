@@ -1,0 +1,13 @@
+diff --git a/assets/hook b/assets/hook
+new file mode 120000
+--- /dev/null
++++ b/assets/hook
+@@ -0,0 +1 @@
++../.git/hooks/post-checkout
+\ No newline at end of file
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,1 +1,1 @@
+-fn main() { println!("a"); }
++fn main() { println!("b"); }

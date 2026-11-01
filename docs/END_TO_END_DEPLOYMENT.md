@@ -182,7 +182,8 @@ Release forms, with their state on 2026-10-28:
 - GitLab Release assets: not produced
 - crates.io publish: on hold (`DDF_CRATES_IO`)
 - cargo-binstall metadata: not configured
-- Linux tarball (`x86_64-unknown-linux-gnu`): built by `release.yml`
+- Linux tarballs (`x86_64-unknown-linux-gnu`; `aarch64-unknown-linux-gnu` from the release after
+  v0.5.0, on `ubuntu-22.04-arm`): built by `release.yml`, glibc 2.34 or newer
 - macOS tarballs (`x86_64-apple-darwin`, `aarch64-apple-darwin`): built by `release.yml`
 - optional DEB/RPM after daemon/systemd assets exist: not produced
 

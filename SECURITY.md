@@ -16,10 +16,14 @@ for.
   council work and the 2026-10-28 fixes listed under
   [Fixed on 2026-10-28](#fixed-on-2026-10-28).
 - Declared scope: a local, single-user review tool (CLI, daemon, `rpc`, `mcp`,
-  SDKs) on x86_64 GNU/Linux (glibc, built on Ubuntu 24.04) and macOS (arm64 and
-  x86_64), shipped as GitHub release binaries; every shipped binary is run in the
-  release smoke test, the x86_64 macOS one under Rosetta 2. Not claimed:
-  crates.io packages, or a daemon shared between users on one host.
+  SDKs) on exactly four targets, shipped as GitHub release binaries:
+  `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` (built on Ubuntu
+  24.04, glibc 2.34 or newer, enforced by `scripts/check_glibc_floor.sh`; arm64
+  from the release after v0.5.0), `aarch64-apple-darwin` and `x86_64-apple-darwin`.
+  Every shipped binary is run in the release smoke test, the x86_64 macOS one under
+  Rosetta 2. Not claimed: musl, Windows, other architectures, crates.io packages,
+  or a daemon shared between users on one host
+  ([supported platforms](README.md#supported-platforms)).
 - Known limits are listed under [Residual risks](#residual-risks-and-non-goals).
 
 ## Reporting a vulnerability
@@ -235,17 +239,17 @@ every gate ran as root inside the container. Gates refuse to run unless
   permissions, do not persist checkout credentials, and have bounded run times.
 - `release.yml` runs on `v*` tags and on manual `workflow_dispatch`. A tag must
   exactly match the workspace version. Both runs repeat the full `ci.yml`
-  quality workflow and a supply-chain gate, build three targets, run every
-  binary (the x86_64 macOS one under Rosetta 2), and verify every archive's
-  SHA-256. A ruleset makes `v*` tags immutable: once pushed, a release tag
+  quality workflow and a supply-chain gate, build four targets, run every
+  binary (the x86_64 macOS one under Rosetta 2), hold the Linux ones to the
+  glibc floor, and verify every archive's SHA-256. A ruleset makes `v*` tags immutable: once pushed, a release tag
   cannot be moved or deleted. Only a
   pushed `v*` tag attests, uploads and (when the owner opens it) publishes to
   crates.io; a dispatched run, from any ref including a tag, is a dry run that
   publishes nothing.
   See [`docs/RELEASE_AND_PUBLICATION.md`](docs/RELEASE_AND_PUBLICATION.md).
 - Release archives, checksums, and the generated SPDX SBOM receive GitHub build
-  provenance attestations on tag runs. Dependabot monitors both Cargo graphs and
-  Actions. CodeQL (`codeql.yml`, security-extended queries) analyses the Rust code
+  provenance attestations on tag runs. Dependabot monitors both Cargo graphs, the Python
+  client's build requirement and Actions. CodeQL (`codeql.yml`, security-extended queries) analyses the Rust code
   and the workflows on pull requests, on `main` and weekly; it is not yet a
   required check.
 - crates.io publication is on hold by owner decision until the codebase is
@@ -343,9 +347,33 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
   The flags are objective: no list of "instruction-like" words, so an unflagged line is not
   thereby safe.
 - **A repository's own filters never run.** Git acquisition turns off every content filter
-  (`clean`, `smudge`, `process`) that the repository's local configuration defines, so reviewing a
-  repository someone handed you cannot run their code through `.gitattributes`. Filters from the
-  user's global or system configuration stay on.
+  (`clean`, `smudge`, `process`) that the repository's own configuration defines, so reviewing a
+  repository someone handed you cannot run their code through `.gitattributes`. "Own" is every
+  scope Git does not call protected: `local` (`.git/config`), `worktree` (`config.worktree`,
+  read once `extensions.worktreeConfig` is set) and whatever they include. Before 2026-10-31 only
+  `.git/config` was listed, so a filter in `config.worktree` still ran and its output was reviewed
+  in place of the file (`a_repository_worktree_config_filter_never_runs`). A repository filter
+  whose name is not UTF-8 refuses the acquisition (`InvalidSelection`) on every platform:
+  decoding it lossily named another filter, and on macOS `git config --get-regexp` never listed
+  it, so it ran. The listing now reads every key and picks the `filter.` ones itself
+  (`a_repository_filter_with_a_non_utf8_name_never_runs`, measured on the macOS CI job).
+- **The user's own Git configuration is trusted for filters only (decided 2026-10-31).** Filters
+  from Git's protected scopes (global `~/.gitconfig` or `$XDG_CONFIG_HOME/git/config`, system
+  `/etc/gitconfig`, `-c` and the caller's `GIT_CONFIG_COUNT`/`KEY`/`VALUE`, which DDF's own
+  entries are numbered after rather than replacing; `a_caller_git_config_env_filter_still_runs`)
+  stay on. Whoever can write those files already runs code as the user without Git (the
+  same-account boundary above, and Git's own model in git-config(1), "Protected
+  configuration"), and a filter there such as Git LFS defines what the repository stores:
+  turning it off would show an LFS file's raw bytes against its committed pointer, a change
+  `git add` would never record. A hostile repository can still choose, through
+  `.gitattributes`, which of the user's filters reads which file, as any `git status` in it
+  would. Nothing else in any scope runs: fsmonitor, the hooks path, an external diff, a diff
+  driver's `textconv` or `command`, and transports are overridden on the command line or by flag,
+  which no configuration file outranks. Measured with planted global and system files, set
+  directly and through `include.path` and `includeIf`
+  (`protected_config_keeps_its_filters_and_runs_nothing_else`): only the user's filter ran and the
+  capture was byte for byte the one taken without the planted programs. The review of an LFS file
+  is a review of its pointer, not of the object it names.
 - **Repository reads are opt-in (`review.change`).** The daemon, `rpc` and `mcp`
   read Git only for a repository whose canonical path and Git top level are both
   under a root the operator named with `--allow-repo`, and so must its Git directory and common

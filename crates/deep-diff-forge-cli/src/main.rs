@@ -6,9 +6,11 @@ mod args;
 mod bench;
 mod contract;
 mod eval;
+mod file_pair;
 mod git_input;
 mod mcp;
 mod rpc;
+mod textfile;
 use deep_diff_forge_core::exit;
 use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe, display_safe_bounded};
 
@@ -137,6 +139,11 @@ fn main() {
         Some("chain-contract") => chain_contract(),
         Some("cluster-contract") => cluster_contract(),
         Some("loom-contract") => loom_contract(),
+        Some("--") => file_pair::run(&args),
+        Some(name) if WITHDRAWN.iter().any(|(withdrawn, _)| *withdrawn == name) => {
+            refuse_withdrawn(name);
+        }
+        Some(_) if file_pair::requested(rest) => file_pair::run(&args),
         Some(command) => {
             eprintln!("unknown command: {}", display_safe_bounded(command, 200));
             eprintln!("run `deep-diff-forge --help` for supported bootstrap commands");
@@ -474,7 +481,7 @@ const CURRENT_MATURITY: deep_diff_forge_core::MaturityLevel =
 
 /// `daemon {path|start|health|status|metrics|stop} [--socket PATH]`: drive the optional
 /// UDS JSON-RPC review daemon.
-const DAEMON_USAGE: &str = "deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics|stop} [--socket PATH]";
+const DAEMON_USAGE: &str = "deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]";
 
 fn daemon_cmd(opts: &[String]) {
     use deep_diff_forge_daemon::SocketLocation;
@@ -482,7 +489,13 @@ fn daemon_cmd(opts: &[String]) {
         opts,
         &args::Spec {
             flags: &["--foreground"],
-            valued: &["--socket", "--allow-repo", "--log-format"],
+            valued: &[
+                "--socket",
+                "--allow-repo",
+                "--log-format",
+                "--format",
+                "--out",
+            ],
             positionals: 1,
         },
         DAEMON_USAGE,
@@ -515,6 +528,7 @@ fn daemon_cmd(opts: &[String]) {
             std::process::exit(exit::USAGE);
         }
     };
+    let metrics_output = metrics_output_or_exit(opts, sub);
     if !matches!(
         sub,
         Some("path" | "start" | "health" | "status" | "metrics" | "stop")
@@ -549,32 +563,13 @@ fn daemon_cmd(opts: &[String]) {
         }
         Some("health") => daemon_client(&location, r#"{"id":1,"method":"daemon.health"}"#),
         Some("status") => daemon_client(&location, r#"{"id":1,"method":"daemon.status"}"#),
-        Some("metrics") => daemon_client(&location, r#"{"id":1,"method":"daemon.metrics"}"#),
-        Some("stop") => {
-            // The start lock is opened before the stop, while the socket path still resolves.
-            let waiter = location.stop_waiter();
-            daemon_client(&location, r#"{"id":1,"method":"daemon.shutdown"}"#);
-            // `stop` returns once the daemon has exited (its drain done, its start lock free),
-            // so a `daemon start` right after it does not find the old daemon in the way.
-            match waiter.and_then(|waiter| waiter.wait(deep_diff_forge_daemon::STOP_WAIT)) {
-                Ok(true) => {}
-                Ok(false) => {
-                    eprintln!(
-                        "error: the daemon at {} did not exit within {} s",
-                        display_safe(&location.path().to_string_lossy()),
-                        deep_diff_forge_daemon::STOP_WAIT.as_secs()
-                    );
-                    std::process::exit(exit::DAEMON_OR_TERMINAL);
-                }
-                Err(err) => {
-                    eprintln!(
-                        "error: cannot tell whether the daemon at {} exited: {err}",
-                        display_safe(&location.path().to_string_lossy())
-                    );
-                    std::process::exit(exit::DAEMON_OR_TERMINAL);
-                }
+        Some("metrics") => match metrics_output {
+            MetricsOutput::Prometheus(out) => daemon_metrics_prometheus(&location, out.as_deref()),
+            MetricsOutput::Json => {
+                daemon_client(&location, r#"{"id":1,"method":"daemon.metrics"}"#);
             }
-        }
+        },
+        Some("stop") => daemon_stop(&location),
         _ => {
             eprintln!("usage: {DAEMON_USAGE}");
             std::process::exit(exit::USAGE);
@@ -582,9 +577,117 @@ fn daemon_cmd(opts: &[String]) {
     }
 }
 
+/// `daemon stop`: ask the daemon to shut down, then wait for it to exit.
+fn daemon_stop(location: &deep_diff_forge_daemon::SocketLocation) {
+    // The start lock is opened before the stop, while the socket path still resolves.
+    let waiter = location.stop_waiter();
+    daemon_client(location, r#"{"id":1,"method":"daemon.shutdown"}"#);
+    // `stop` returns once the daemon has exited (its drain done, its start lock free),
+    // so a `daemon start` right after it does not find the old daemon in the way.
+    match waiter.and_then(|waiter| waiter.wait(deep_diff_forge_daemon::STOP_WAIT)) {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!(
+                "error: the daemon at {} did not exit within {} s",
+                display_safe(&location.path().to_string_lossy()),
+                deep_diff_forge_daemon::STOP_WAIT.as_secs()
+            );
+            std::process::exit(exit::DAEMON_OR_TERMINAL);
+        }
+        Err(err) => {
+            eprintln!(
+                "error: cannot tell whether the daemon at {} exited: {err}",
+                display_safe(&location.path().to_string_lossy())
+            );
+            std::process::exit(exit::DAEMON_OR_TERMINAL);
+        }
+    }
+}
+
+/// What `daemon metrics` prints.
+enum MetricsOutput {
+    /// The `daemon.metrics` answer as the daemon sent it.
+    Json,
+    /// The Prometheus text, on stdout or written to the `--out` path.
+    Prometheus(Option<String>),
+}
+
+/// The `--format` and `--out` of `daemon metrics`; exit 2 on one that does not apply.
+fn metrics_output_or_exit(opts: &[String], sub: Option<&str>) -> MetricsOutput {
+    let prometheus = match flag_value(opts, "--format").as_deref() {
+        _ if sub != Some("metrics") && opts.iter().any(|a| a == "--format") => {
+            eprintln!("error: --format applies only to `daemon metrics`");
+            std::process::exit(exit::USAGE);
+        }
+        None | Some("json") => false,
+        Some("prometheus") => true,
+        Some(other) => {
+            eprintln!(
+                "error: --format takes json or prometheus, not {}",
+                display_safe(other)
+            );
+            std::process::exit(exit::USAGE);
+        }
+    };
+    // `--out` writes the Prometheus text for node_exporter's textfile collector; the JSON answer
+    // stays on stdout.
+    let out = flag_value(opts, "--out");
+    if out.is_some() && !prometheus {
+        eprintln!("error: --out applies only to `daemon metrics --format prometheus`");
+        std::process::exit(exit::USAGE);
+    }
+    if prometheus {
+        MetricsOutput::Prometheus(out)
+    } else {
+        MetricsOutput::Json
+    }
+}
+
 fn daemon_client(location: &deep_diff_forge_daemon::SocketLocation, line: &str) {
+    emitln!("{}", daemon_request_or_exit(location, line));
+}
+
+/// `daemon metrics --format prometheus [--out PATH]`: the daemon's `daemon.metrics` answer in the
+/// Prometheus text format, on stdout or written whole to PATH. A daemon that answers no usable
+/// metrics document exits 6 and leaves PATH as it was, so a stale file shows in its mtime.
+fn daemon_metrics_prometheus(location: &deep_diff_forge_daemon::SocketLocation, out: Option<&str>) {
+    let response = daemon_request_or_exit(location, r#"{"id":1,"method":"daemon.metrics"}"#);
+    let reply: serde_json::Value = serde_json::from_str(&response).unwrap_or_default();
+    let text = match deep_diff_forge_daemon::exposition::prometheus_text(&reply["result"]) {
+        Ok(text) => text,
+        Err(reason) => {
+            let reason = reply["error"]["message"]
+                .as_str()
+                .map_or(reason, |message| {
+                    format!("the daemon refused daemon.metrics: {message}")
+                });
+            eprintln!(
+                "error: no metrics from the daemon at {}: {}",
+                display_safe(&location.path().to_string_lossy()),
+                display_safe(&reason)
+            );
+            std::process::exit(exit::DAEMON_OR_TERMINAL);
+        }
+    };
+    let Some(out) = out else {
+        emit(&text);
+        return;
+    };
+    if let Err(err) = textfile::write_atomically(std::path::Path::new(out), text.as_bytes()) {
+        eprintln!(
+            "error: cannot write {}: {}",
+            display_safe(out),
+            display_safe(&err.to_string())
+        );
+        std::process::exit(exit::IO);
+    }
+}
+
+/// One request to the daemon and its answer line; exit 6 when no daemon this user may use
+/// answers.
+fn daemon_request_or_exit(location: &deep_diff_forge_daemon::SocketLocation, line: &str) -> String {
     match deep_diff_forge_daemon::request(location, line) {
-        Ok(response) => emitln!("{response}"),
+        Ok(response) => response,
         Err(err) => {
             // Something is there, but this user may not use it: a daemon of another user, or a
             // socket whose mode refuses the connect.
@@ -1252,8 +1355,9 @@ fn bench_cmd(opts: &[String]) {
 const EVAL_USAGE: &str = "deep-diff-forge eval [--corpus DIR] [--json]";
 
 /// `eval`: score the engine against the labelled corpus in DIR (default `fixtures/eval`) and
-/// print `deep-diff-forge.eval.v0` (`--json`) or a summary. Exit 0 when every case passes, 7 when
-/// one fails, 4 when the corpus is malformed or out of date, 3 when a file cannot be read.
+/// print `deep-diff-forge.eval.v0` (`--json`) or a summary, which lists each declared miss. Exit 0
+/// when every case passes, 7 when one fails, 4 when the corpus is malformed or out of date, 3
+/// when a file cannot be read.
 fn eval_cmd(opts: &[String]) {
     args::admit_or_exit(
         opts,
@@ -1286,7 +1390,13 @@ fn eval_cmd(opts: &[String]) {
         for (name, m) in receipt["metrics"].as_object().into_iter().flatten() {
             emitln!("  {name:<20} {}/{}", m["right"], m["total"]);
         }
-        emitln!("  known misses         {}", receipt["known_misses"]);
+        emitln!(
+            "  declared             {}",
+            receipt["declared"].as_array().map_or(0, Vec::len)
+        );
+        for declared in receipt["declared"].as_array().into_iter().flatten() {
+            emitln!("  KNOWN {}", declared.as_str().unwrap_or(""));
+        }
         for failure in receipt["failures"].as_array().into_iter().flatten() {
             emitln!("  FAIL {}", failure.as_str().unwrap_or(""));
         }
@@ -1863,12 +1973,17 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     (
         "daemon",
         DAEMON_USAGE,
-        "Run or query the optional Unix-socket JSON-RPC daemon; --allow-repo lets review.change read those repositories.",
+        "Run or query the optional Unix-socket JSON-RPC daemon; --allow-repo lets review.change read those repositories; metrics --format prometheus --out PATH writes a node_exporter textfile.",
     ),
     (
         "learn",
         "deep-diff-forge learn {status|record --stdin} [--json]",
         "Report or feed the local-only learning loop.",
+    ),
+    (
+        "<old>",
+        file_pair::USAGE,
+        "Review two regular files through Git's hardened diff, sealed over the exact bytes; put `--` first when a path is also a command name.",
     ),
     (
         "--stdin-patch",
@@ -1928,7 +2043,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     (
         "loom-contract",
         "deep-diff-forge loom-contract",
-        "Print the assimilation-pipeline guarantees.",
+        "Print the loom's withdrawal and the rules that still bind.",
     ),
 ];
 
@@ -1958,6 +2073,10 @@ fn print_help() {
     for (_, line, _) in COMMANDS {
         let _ = writeln!(usage, "  {line}");
     }
+    let mut withdrawn = String::new();
+    for (name, instead) in WITHDRAWN {
+        let _ = writeln!(withdrawn, "  deep-diff-forge {name}: {instead}");
+    }
     emitln!(
         "\
 deep-diff-forge {version}
@@ -1983,15 +2102,38 @@ MACHINE CONTRACT:
   explain_exit_code, exit_code_registry).
   rpc speaks the daemon's JSON-RPC protocol over stdio without a daemon.
 
-NOT YET IMPLEMENTED (each is refused today):
-  deep-diff-forge <old> <new>
-  deep-diff-forge chain
-  deep-diff-forge cluster
-  deep-diff-forge loom
-",
+WITHDRAWN (each is refused with exit 2):
+{withdrawn}",
         version = env!("CARGO_PKG_VERSION")
     );
 }
+
+/// Exit 2 naming what serves instead of the withdrawn subcommand `name`.
+fn refuse_withdrawn(name: &str) -> ! {
+    for (withdrawn, instead) in WITHDRAWN {
+        if withdrawn == name {
+            eprintln!("error: `{name}` was withdrawn; {instead}");
+        }
+    }
+    std::process::exit(exit::USAGE);
+}
+
+/// Subcommands that were published as planned and then withdrawn, with what serves instead. Each
+/// is refused with exit 2 and the replacement, so none is mistaken for a path pair.
+const WITHDRAWN: [(&str, &str); 3] = [
+    (
+        "chain",
+        "join single commands with the shell (chain-contract lists them)",
+    ),
+    (
+        "cluster",
+        "use the --cluster mode of --stdin-patch, a Git selection or <old> <new>",
+    ),
+    (
+        "loom",
+        "nothing replaces it (loom-contract records the withdrawal)",
+    ),
+];
 
 /// `envelope -- <command…>`: print the `ddf.result.v1` object and leave with the command's code.
 fn run_envelope(args: &[String]) {
@@ -2180,11 +2322,17 @@ GUARANTEES:
   - every JSON document names its schema; every JSONL record names its event.
   - pipe failures exit non-zero without truncating a valid final JSON document.
 
-PLANNED MODES:
-  deep-diff-forge --git --json
-  deep-diff-forge rank --stdin --json
-  deep-diff-forge annotate --stdin --jsonl
-  deep-diff-forge render --stdin --plain
+SHIPPED MODES (each one command; the shell joins them):
+  deep-diff-forge --git-working-tree --json
+  deep-diff-forge --stdin-patch --rank --json
+  deep-diff-forge --stdin-patch --jsonl
+  deep-diff-forge --stdin-patch --layout inline
+  deep-diff-forge <old> <new> --json
+
+WITHDRAWN:
+  the chain subcommand, its manifests, and the rank, annotate and render
+  subcommands. Each served mode is a flag above; agent findings are checked
+  with findings verify.
 "
     );
 }
@@ -2196,12 +2344,20 @@ deep-diff-forge cluster-contract v0
 
 GUARANTEES:
   - cluster execution preserves patch truth and stable ids across lanes.
-  - parallel lanes join by deterministic input order unless ranking is requested.
-  - each lane has explicit dimensions, budgets, inputs, outputs, and receipts.
-  - daemon acceleration is optional; one-shot CLI execution remains correct.
+  - lanes join in ranked review order, the same order at every parallelism.
+  - every run prints its dimensions, parallelism, workers and join policy as a receipt.
+  - execution is in-process; no daemon is needed.
 
-PLANNED DIMENSIONS:
-  patch semantic risk agent runtime storage history presentation
+SHIPPED MODE:
+  deep-diff-forge --stdin-patch --cluster [--parallel serial|auto|N] [--json]
+  (the Git selections and <old> <new> take the same flags)
+
+DIMENSIONS RUN:
+  patch risk
+
+WITHDRAWN:
+  the cluster subcommand, and the semantic, agent, runtime, storage, history and
+  presentation lanes.
 "
     );
 }
@@ -2211,14 +2367,13 @@ fn loom_contract() {
         "\
 deep-diff-forge loom-contract v0
 
-GUARANTEES:
-  - loom assimilation produces plans, fixtures, gates, and receipts before merge.
-  - generated Rust crate stubs are explicit outputs, never hidden mutation.
-  - exemplar lessons are recorded with source, boundary, and adoption decision.
-  - unsafe code, network access, and destructive file actions are denied by default.
+STATUS:
+  withdrawn. No loom runner ships and none is planned; `deep-diff-forge loom` is
+  refused with exit 2. No command generates plans, fixtures or crate stubs.
 
-PLANNED PHASES:
-  intake boundary-map weave-plan fixture-synthesis rust-crate-stub gate receipt assimilation
+STILL BINDING ON ANY CHANGE THAT ADOPTS AN EXEMPLAR'S LESSON:
+  - it lands as a reviewed change with its tests; nothing is generated or merged unseen.
+  - unsafe code, network access, and destructive file actions are denied by default.
 "
     );
 }

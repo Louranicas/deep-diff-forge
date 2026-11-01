@@ -557,6 +557,31 @@ fn command_option_rows<'a>(source: &'a str, socket: &'a str) -> Vec<(&'static st
                 "/dev/null/d.sock",
             ],
         ),
+        (
+            "--format",
+            // `metrics` alone takes it; no daemon answers here (exit 6).
+            vec![
+                "daemon",
+                "metrics",
+                "--format",
+                "prometheus",
+                "--socket",
+                socket,
+            ],
+        ),
+        (
+            "--out",
+            vec![
+                "daemon",
+                "metrics",
+                "--format",
+                "prometheus",
+                "--out",
+                "/dev/null/ddf.prom",
+                "--socket",
+                socket,
+            ],
+        ),
         ("--stdin", vec!["learn", "record", "--stdin"]),
         (
             "--quick",
@@ -593,7 +618,7 @@ fn scratch(dir: &std::path::Path, name: &str, text: &str) -> String {
 /// `rows` names exactly the options `--help` documents, and each invocation is admitted.
 fn admits_every_documented_option(rows: &[(&str, Vec<&str>)]) {
     let (_, help, _) = run(&["--help"], "");
-    let (current, _) = help.split_once("NOT YET IMPLEMENTED").unwrap();
+    let (current, _) = help.split_once("WITHDRAWN").unwrap();
     let mut documented: Vec<&str> = current
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
         .filter(|word| word.starts_with("--") && word.len() > 2)
@@ -631,30 +656,49 @@ fn view_handles() -> (String, String) {
 }
 
 /// Anchor E-02: help listed `--git`, `review` and `daemon start` as future modes after they
-/// shipped. Each mode still listed as not implemented must be refused, so implementing one fails
-/// here until it moves to USAGE.
+/// shipped, and then `<old> <new>`, `chain`, `cluster` and `loom` as "not yet implemented" with no
+/// owner. Help now lists no planned mode; each withdrawn one is refused with exit 2 and names what
+/// serves instead, so none reads as a path pair or an unknown word.
 #[test]
-fn modes_listed_as_not_implemented_are_refused() {
+fn help_lists_no_planned_mode_and_each_withdrawn_one_is_refused() {
     let (_, help, _) = run(&["--help"], "");
-    let (_, planned) = help.split_once("NOT YET IMPLEMENTED").unwrap();
-    let planned: Vec<Vec<&str>> = planned
+    assert!(!help.contains("NOT YET IMPLEMENTED"), "{help}");
+    let (_, withdrawn) = help.split_once("WITHDRAWN").unwrap();
+    let entries: Vec<(&str, &str)> = withdrawn
         .lines()
         .filter_map(|line| line.trim().strip_prefix("deep-diff-forge "))
-        .map(|mode| {
-            mode.split_whitespace()
-                .map(|word| if word.starts_with('<') { "x" } else { word })
-                .collect()
-        })
+        .map(|mode| mode.split_once(": ").unwrap())
         .collect();
-    assert!(
-        planned.contains(&vec!["chain"]),
-        "help section not parsed: {planned:?}"
-    );
-    for args in planned {
-        let (code, _, stderr) = run(&args, "");
-        assert_eq!(
-            code, 2,
-            "{args:?} is listed as not implemented but ran: {stderr}"
-        );
+    let names: Vec<&str> = entries.iter().map(|(name, _)| *name).collect();
+    assert_eq!(names, ["chain", "cluster", "loom"], "{withdrawn}");
+    for (name, instead) in entries {
+        // A second word would otherwise make it a direct comparison of two paths.
+        for args in [vec![name], vec![name, "other"]] {
+            let (code, stdout, stderr) = run(&args, "");
+            assert_eq!(code, 2, "{args:?} was not refused: {stderr}");
+            assert_eq!(stdout, "", "{args:?}");
+            // Exactly its own replacement, the one help lists.
+            assert_eq!(
+                stderr,
+                format!("error: `{name}` was withdrawn; {instead}\n"),
+                "{args:?}"
+            );
+        }
     }
+}
+
+/// `loom-contract` records the withdrawal instead of promising phases nobody owns.
+#[test]
+fn loom_contract_records_the_withdrawal() {
+    let (code, stdout, _) = run(&["loom-contract"], "");
+    assert_eq!(code, 0);
+    assert!(
+        stdout.starts_with("deep-diff-forge loom-contract v0\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("withdrawn. No loom runner ships and none is planned;"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("PLANNED"), "{stdout}");
 }

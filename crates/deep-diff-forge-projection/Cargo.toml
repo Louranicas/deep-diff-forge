@@ -11,7 +11,7 @@ categories.workspace = true
 description = "Renderer-neutral projections (inline, side-by-side) of the Deep-Diff-Forge review model."
 
 [dependencies]
-unicode-width = "=0.2.0"
+unicode-width = "=0.2.2"
 unicode-segmentation = "=1.13.3"
 deep-diff-forge-core.workspace = true
 

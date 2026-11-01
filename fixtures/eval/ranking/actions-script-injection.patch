@@ -1,0 +1,16 @@
+diff --git a/.github/workflows/triage.yml b/.github/workflows/triage.yml
+--- a/.github/workflows/triage.yml
++++ b/.github/workflows/triage.yml
+@@ -1,5 +1,6 @@
+ on: issues
+ jobs:
+   label:
+     runs-on: ubuntu-latest
+     steps:
++      - run: echo "${{ github.event.issue.title }}"
+diff --git a/src/greet.rs b/src/greet.rs
+new file mode 100644
+--- /dev/null
++++ b/src/greet.rs
+@@ -0,0 +1,1 @@
++pub fn greet() -> &'static str { "hi" }

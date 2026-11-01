@@ -1,0 +1,8 @@
+diff --git a/report.py b/report.py
+--- a/report.py
++++ b/report.py
+@@ -1,1 +1,4 @@
+ x = input()
++msg = f"""
++{eval(x)}
++"""

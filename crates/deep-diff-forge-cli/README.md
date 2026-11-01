@@ -74,8 +74,9 @@ Every surface that emits a `review.v0` document (`--json`, the daemon's
 `diff.compute`, `rpc`, MCP `review_patch`, the SDK's `review`) uses the same
 parse, guard and seal path, so one patch gets the same document from each.
 
-Not implemented yet (each is refused with exit 2): `deep-diff-forge <old> <new>`,
-`chain`, `cluster` and `loom`.
+`deep-diff-forge <old> <new>` reviews two regular files through the same parse, guard and seal
+path, over the exact bytes `git diff --no-index` writes. The `chain`, `cluster` and `loom`
+subcommands were withdrawn; each is refused with exit 2 and names its replacement.
 
 ## Exit codes
 
