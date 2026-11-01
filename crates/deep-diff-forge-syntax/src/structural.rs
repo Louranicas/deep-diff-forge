@@ -661,6 +661,40 @@ fn coarse_diff(language: Language, old: &[Token], new: &[Token]) -> StructuralDi
 mod tests {
     use super::*;
 
+    /// Run `work` on its own thread and fail if it takes more than ten seconds. The slowest
+    /// diff here takes a few seconds in a debug build, so an edit-script loop whose cursor stops
+    /// advancing fails its test instead of hanging the suite (and a mutation run reports it as
+    /// caught, not as a timeout).
+    fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+        let (done, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(work());
+        });
+        wait.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("a diff finished within ten seconds")
+    }
+
+    // The tests call these deadline-bound wrappers, which shadow the functions under test; the
+    // exhaustive `lcs_ops` and `line_anchored_ops` tests run their loops under one deadline.
+
+    fn structural_diff(language: Language, old: &str, new: &str) -> StructuralDiff {
+        let (old, new) = (old.to_owned(), new.to_owned());
+        within_deadline(move || super::structural_diff(language, &old, &new))
+    }
+
+    fn mark_moves(ops: &[Op], old: &[Token], new: &[Token]) -> Vec<TokenChange> {
+        let ops: Vec<Op> = ops
+            .iter()
+            .map(|op| match *op {
+                Op::Equal(i, j) => Op::Equal(i, j),
+                Op::Delete(i) => Op::Delete(i),
+                Op::Insert(j) => Op::Insert(j),
+            })
+            .collect();
+        let (old, new) = (old.to_vec(), new.to_vec());
+        within_deadline(move || super::mark_moves(&ops, &old, &new))
+    }
+
     /// Anchor C-06: each state reports the flags the JSON outputs carry, exactly as the four
     /// separate fields did on the paths that built them.
     #[test]
@@ -777,46 +811,48 @@ mod tests {
     // exhaustively on small inputs instead.
     #[test]
     fn lcs_ops_is_a_valid_optimal_edit_script() {
-        let sequences = all_sequences(&["a", "b", "c"], 5);
-        let tokens = |seq: &[&str]| -> Vec<Token> {
-            seq.iter()
-                .map(|t| Token {
-                    text: (*t).to_owned(),
-                    line: 1,
-                })
-                .collect()
-        };
-        for old in &sequences {
-            for new in &sequences {
-                let ops = lcs_ops(&tokens(old), &tokens(new));
-                let (mut next_old, mut next_new, mut equal) = (0, 0, 0);
-                for op in &ops {
-                    match *op {
-                        Op::Equal(i, j) => {
-                            assert_eq!((i, j), (next_old, next_new), "{old:?} -> {new:?}");
-                            assert_eq!(old[i], new[j], "{old:?} -> {new:?}");
-                            next_old += 1;
-                            next_new += 1;
-                            equal += 1;
-                        }
-                        Op::Delete(i) => {
-                            assert_eq!(i, next_old, "{old:?} -> {new:?}");
-                            next_old += 1;
-                        }
-                        Op::Insert(j) => {
-                            assert_eq!(j, next_new, "{old:?} -> {new:?}");
-                            next_new += 1;
+        within_deadline(|| {
+            let sequences = all_sequences(&["a", "b", "c"], 5);
+            let tokens = |seq: &[&str]| -> Vec<Token> {
+                seq.iter()
+                    .map(|t| Token {
+                        text: (*t).to_owned(),
+                        line: 1,
+                    })
+                    .collect()
+            };
+            for old in &sequences {
+                for new in &sequences {
+                    let ops = lcs_ops(&tokens(old), &tokens(new));
+                    let (mut next_old, mut next_new, mut equal) = (0, 0, 0);
+                    for op in &ops {
+                        match *op {
+                            Op::Equal(i, j) => {
+                                assert_eq!((i, j), (next_old, next_new), "{old:?} -> {new:?}");
+                                assert_eq!(old[i], new[j], "{old:?} -> {new:?}");
+                                next_old += 1;
+                                next_new += 1;
+                                equal += 1;
+                            }
+                            Op::Delete(i) => {
+                                assert_eq!(i, next_old, "{old:?} -> {new:?}");
+                                next_old += 1;
+                            }
+                            Op::Insert(j) => {
+                                assert_eq!(j, next_new, "{old:?} -> {new:?}");
+                                next_new += 1;
+                            }
                         }
                     }
+                    assert_eq!((next_old, next_new), (old.len(), new.len()));
+                    assert_eq!(
+                        equal,
+                        reference_lcs_len(old, new),
+                        "not a longest common subsequence: {old:?} -> {new:?}"
+                    );
                 }
-                assert_eq!((next_old, next_new), (old.len(), new.len()));
-                assert_eq!(
-                    equal,
-                    reference_lcs_len(old, new),
-                    "not a longest common subsequence: {old:?} -> {new:?}"
-                );
             }
-        }
+        });
     }
 
     // Council r6/r7: every real DDF source file above ~2,000 tokens degraded to partial_lcs,
@@ -869,6 +905,7 @@ mod tests {
         });
         let d = structural_diff(Language::Rust, &old, &two_edits);
         assert!(!d.degraded());
+        assert!(d.minimal(), "within budget, so the exact token LCS");
         assert_eq!((d.added, d.removed), (2, 2));
         // Edits at both ends leave a middle of ~4,700 tokens (21.9 M cells): anchored on the
         // unchanged lines between them, it is still analysed exactly.
@@ -968,41 +1005,46 @@ mod tests {
                 })
                 .collect()
         };
-        for old in &sequences {
-            for new in &sequences {
-                for (old_per_line, new_per_line) in [(1, 1), (2, 2), (1, 3)] {
-                    let (o, n) = (tokens(old, old_per_line), tokens(new, new_per_line));
-                    let ops = line_anchored_ops(&o, &n).unwrap();
-                    let (mut next_old, mut next_new) = (0, 0);
-                    for op in &ops {
-                        match *op {
-                            Op::Equal(i, j) => {
-                                assert_eq!((i, j), (next_old, next_new), "{old:?} -> {new:?}");
-                                assert_eq!(old[i], new[j], "{old:?} -> {new:?}");
-                                next_old += 1;
-                                next_new += 1;
-                            }
-                            Op::Delete(i) => {
-                                assert_eq!(i, next_old, "{old:?} -> {new:?}");
-                                next_old += 1;
-                            }
-                            Op::Insert(j) => {
-                                assert_eq!(j, next_new, "{old:?} -> {new:?}");
-                                next_new += 1;
+        // One deadline per grouping keeps each well inside it (the three take a few seconds
+        // together in a debug build).
+        for (old_per_line, new_per_line) in [(1, 1), (2, 2), (1, 3)] {
+            let sequences = sequences.clone();
+            within_deadline(move || {
+                for old in &sequences {
+                    for new in &sequences {
+                        let (o, n) = (tokens(old, old_per_line), tokens(new, new_per_line));
+                        let ops = line_anchored_ops(&o, &n).unwrap();
+                        let (mut next_old, mut next_new) = (0, 0);
+                        for op in &ops {
+                            match *op {
+                                Op::Equal(i, j) => {
+                                    assert_eq!((i, j), (next_old, next_new), "{old:?} -> {new:?}");
+                                    assert_eq!(old[i], new[j], "{old:?} -> {new:?}");
+                                    next_old += 1;
+                                    next_new += 1;
+                                }
+                                Op::Delete(i) => {
+                                    assert_eq!(i, next_old, "{old:?} -> {new:?}");
+                                    next_old += 1;
+                                }
+                                Op::Insert(j) => {
+                                    assert_eq!(j, next_new, "{old:?} -> {new:?}");
+                                    next_new += 1;
+                                }
                             }
                         }
-                    }
-                    assert_eq!((next_old, next_new), (old.len(), new.len()));
-                    // One token per line: the line LCS is the token LCS, so anchoring is optimal.
-                    if (old_per_line, new_per_line) == (1, 1) {
-                        let equal = ops.iter().filter(|op| matches!(op, Op::Equal(..))).count();
-                        assert_eq!(equal, reference_lcs_len(old, new), "{old:?} -> {new:?}");
-                    }
-                    if old == new && old_per_line == new_per_line {
-                        assert!(ops.iter().all(|op| matches!(op, Op::Equal(..))));
+                        assert_eq!((next_old, next_new), (old.len(), new.len()));
+                        // One token per line: the line LCS is the token LCS, so anchoring is optimal.
+                        if (old_per_line, new_per_line) == (1, 1) {
+                            let equal = ops.iter().filter(|op| matches!(op, Op::Equal(..))).count();
+                            assert_eq!(equal, reference_lcs_len(old, new), "{old:?} -> {new:?}");
+                        }
+                        if old == new && old_per_line == new_per_line {
+                            assert!(ops.iter().all(|op| matches!(op, Op::Equal(..))));
+                        }
                     }
                 }
-            }
+            });
         }
     }
 
@@ -1238,6 +1280,108 @@ mod tests {
         assert!(d.added > 0);
         assert_eq!(d.removed, 0);
         assert!(!d.reformat_only());
+    }
+
+    // Pins for the 2026-10-31 whole-crate mutation run: each budget is inclusive.
+
+    #[test]
+    fn tokenizing_admits_exactly_the_byte_budget() {
+        use deep_diff_forge_core::FallbackReason;
+        let at_budget = format!("//{}", "a".repeat(crate::analyze::DEFAULT_BYTE_BUDGET - 2));
+        assert_eq!(
+            tokenize_checked(Language::Rust, &at_budget).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            tokenize_checked(Language::Rust, &format!("{at_budget}a")),
+            Err(FallbackReason::ByteBudgetExceeded)
+        );
+    }
+
+    /// A tree of exactly 200,000 nodes is tokenized and one statement more is refused. Without
+    /// comments every node is visited once, so tree-sitter's `descendant_count` is the count.
+    #[test]
+    fn tokenizing_admits_exactly_the_node_budget() {
+        use deep_diff_forge_core::FallbackReason;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+        let mut nodes = |source: &str| {
+            parser
+                .parse(source, None)
+                .unwrap()
+                .root_node()
+                .descendant_count()
+        };
+        // `a;` adds three nodes and `-a;` five, so some mix of them reaches any count.
+        let source = |plain: usize, negated: usize| {
+            format!("fn f() {{{}{}}}", "a;".repeat(plain), "-a;".repeat(negated))
+        };
+        let (base, plain, negated) = (nodes(&source(0, 0)), 3, 5);
+        assert_eq!(nodes(&source(1, 0)) - base, plain);
+        assert_eq!(nodes(&source(0, 1)) - base, negated);
+        let left = 200_000 - base;
+        let negated_count = (0..plain)
+            .find(|k| (left - k * negated) % plain == 0)
+            .unwrap();
+        let exact = source((left - negated_count * negated) / plain, negated_count);
+        assert_eq!(nodes(&exact), 200_000);
+        assert!(tokenize_checked(Language::Rust, &exact).is_ok());
+        let over = exact.replacen('{', "{a;", 1);
+        assert_eq!(
+            tokenize_checked(Language::Rust, &over),
+            Err(FallbackReason::NodeBudgetExceeded)
+        );
+    }
+
+    /// One line per function; `edited(i)` says whether the i-th is renamed.
+    fn functions(count: usize, edited: impl Fn(usize) -> bool) -> String {
+        let mut text = String::new();
+        for i in 0..count {
+            text.push_str(if edited(i) { "fn e" } else { "fn f" });
+            text.push_str(&i.to_string());
+            text.push_str("() {}\n");
+        }
+        text
+    }
+
+    /// Edits on the first and last of 2,000 lines leave a middle of 2,000 partial or whole lines
+    /// a side: a line table of exactly the 4 M-cell budget, which is analysed.
+    #[test]
+    fn a_line_table_of_exactly_the_budget_is_analysed() {
+        let old = functions(2000, |_| false);
+        let new = functions(2000, |i| i == 0 || i == 1999);
+        let d = structural_diff(Language::Rust, &old, &new);
+        assert!(!d.degraded() && !d.minimal());
+        assert_eq!((d.added, d.removed), (2, 2));
+    }
+
+    /// Lines inserted near the start and at the end (gaps of 0 cells, and no common suffix) put
+    /// the diff on the anchored path; a block of 400 rewritten five-token lines between whole
+    /// unchanged lines is then a 2,000 by 2,000 gap, exactly the budget, so the file is still
+    /// analysed.
+    #[test]
+    fn gaps_totalling_exactly_the_budget_are_analysed() {
+        use std::fmt::Write as _;
+        let source = |rewritten: &str, inserted: bool| -> String {
+            let mut text = functions(10, |_| false);
+            if inserted {
+                text.push_str("struct Inserted;\n");
+            }
+            text.push_str(&functions(300, |_| false).replace("fn f", "fn h"));
+            for i in 0..400 {
+                let _ = writeln!(text, "type {rewritten}{i} = u8;");
+            }
+            text.push_str(&functions(10, |_| false).replace("fn f", "fn t"));
+            if inserted {
+                text.push_str("struct End;\n");
+            }
+            text
+        };
+        let d = structural_diff(Language::Rust, &source("A", false), &source("B", true));
+        assert!(!d.degraded() && !d.minimal());
+        assert_eq!((d.added, d.removed), (3 + 400 + 3, 400));
     }
 }
 

@@ -203,6 +203,34 @@ fn to_line(row: usize) -> u32 {
 mod tests {
     use super::*;
 
+    /// Run `work` on its own thread and fail if it takes more than ten seconds: these analyses
+    /// take milliseconds, so a tree walk that never ends fails its test instead of hanging the
+    /// suite (and a mutation run reports it as caught, not as a timeout).
+    fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+        let (done, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(work());
+        });
+        wait.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("an analysis finished within ten seconds")
+    }
+
+    // The tests call these deadline-bound wrappers, which shadow the functions under test.
+
+    fn analyze(path: &str, source: &str, options: SyntaxOptions) -> SemanticAnalysis {
+        let (path, source) = (path.to_owned(), source.to_owned());
+        within_deadline(move || super::analyze(&path, &source, options))
+    }
+
+    fn analyze_language(
+        language: Language,
+        source: &str,
+        options: SyntaxOptions,
+    ) -> SemanticAnalysis {
+        let source = source.to_owned();
+        within_deadline(move || super::analyze_language(language, &source, options))
+    }
+
     const SAMPLE: &str = "\
 fn alpha() {
     let x = 1;
@@ -514,5 +542,62 @@ impl Point {
     fn count_errors_zero_for_clean_parse() {
         let a = analyze_rs("fn clean() -> u32 { 42 }");
         assert_eq!(a.parse_status, ParseStatus::Parsed);
+    }
+
+    // Pins for the 2026-10-31 whole-crate mutation run.
+
+    #[test]
+    fn the_default_byte_budget_is_two_mebibytes() {
+        assert_eq!(DEFAULT_BYTE_BUDGET, 2 << 20);
+    }
+
+    /// Both budgets are inclusive: a source of exactly `byte_budget` bytes, or a tree of exactly
+    /// `node_budget` nodes, is analysed; one less of either falls back.
+    #[test]
+    fn the_budgets_admit_exactly_their_size() {
+        let source = "fn main() {}";
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+        let nodes = parser
+            .parse(source, None)
+            .unwrap()
+            .root_node()
+            .descendant_count();
+        let status = |byte_budget, node_budget| {
+            analyze(
+                "x.rs",
+                source,
+                SyntaxOptions {
+                    byte_budget,
+                    node_budget,
+                },
+            )
+            .parse_status
+        };
+        assert_eq!(status(source.len(), nodes), ParseStatus::Parsed);
+        assert_eq!(
+            status(source.len() - 1, nodes),
+            ParseStatus::Fallback {
+                reason: FallbackReason::ByteBudgetExceeded
+            }
+        );
+        assert_eq!(
+            status(source.len(), nodes - 1),
+            ParseStatus::Fallback {
+                reason: FallbackReason::NodeBudgetExceeded
+            }
+        );
+    }
+
+    #[test]
+    fn a_union_is_a_union_symbol() {
+        let a = analyze_rs("union U {\n    a: u32,\n}\n");
+        assert_eq!(a.symbols.len(), 1);
+        assert_eq!(
+            (a.symbols[0].name.as_str(), a.symbols[0].kind.as_str()),
+            ("U", "union")
+        );
     }
 }

@@ -872,3 +872,232 @@ with `CARGO_TARGET_DIR` unset.
   tested 61 mutants: 56 caught, 5 unviable, 0 missed.
 - **Ledger.** Recorded as Turso event 106 (kind `mutation`).
 
+
+## Whole-crate mutation of core, patch, daemon and syntax (2026-11-01)
+
+The readiness gap "no whole-crate mutation run since council history (120 missed, recorded)"
+names the Turso ledger's totals. Measured from the ledger (`mutation_outcomes`): those misses
+were 94 in `review` (council gate rehearsals r7 to r15, diff-scoped), 25 in `daemon` (campaign
+`mutants/daemon-rerun`) and 2 in `syntax` (campaign `mutants/syntax`), all on older code. This
+pass re-ran the crates that matter most for patch truth and the trust boundary, on the code of
+`main` `9527f64`.
+
+**Method.** cargo-mutants 27.1.0, `-p <crate> -j 6 --timeout-multiplier 3`, `CARGO_TARGET_DIR`
+unset, on an export of `9527f64`: each crate against its own tests (crate scope). The survivors
+were then re-run with `--iterate --test-workspace true --timeout 300` (workspace scope, as the
+`diff-mutation` check runs). After the pins, the same commands ran on this branch.
+
+| Crate | Mutants | Before: caught / missed / timeouts / unviable | After: caught / missed / timeouts / unviable |
+| --- | ---: | --- | --- |
+| `core` | 196 | 166 / 22 / 0 / 8 | 185 / 3 / 0 / 8 |
+| `patch` | 637 | 500 / 82 / 3 / 52 | 581 / 4 / 0 / 52, then 3 missed (below) |
+| `daemon` | 565 | 478 / 16 / 13 / 58 | not re-run whole (below) |
+| `syntax` | 435 | 355 / 29 / 20 / 31 | 397 / 3 / 3 / 32; 0 timeouts at 300 s (below) |
+
+- **Workspace scope, before.** `core`: 22 re-run, 20 caught, 2 missed. `patch`: 85 re-run, 58
+  caught, 25 missed, 2 timeouts. `daemon`: 29 re-run, 27 caught, 1 missed, 1 timeout. Of the
+  catches, 2 (`core`), 40 (`patch`) and 2 (`daemon`) failed only
+  `graph`'s `the_import_rule_is_linear_on_long_lines`, whose 10 s deadline the loaded machine
+  (load average 40 to 68) exceeded; those catches are spurious, and the `patch` workspace
+  verdicts are not evidence. Alone the test took 2.4 s.
+- **Pinned.** 51 tests. `core`: hunk counts, body bytes, `body_sha256` and `address` against
+  `sha256sum` of the documented bytes; `json_escape` keeps a space. `patch`: Git C-quoted path
+  decoding and quoting (every escape, octal, NUL, round trip); raw-record parsing (mode width,
+  similarity score, the score's status, the section separator, bytes before the first block);
+  every block identity check (old and new `index` IDs, abbreviated IDs, header end, copy,
+  rename and mode-change lines); an appended stream's ranges; `GitSelection::label`; a failing
+  Git's stderr cut at exactly 8 KiB; a repository path over 1 KiB (Linux only); a nested
+  repository named in `omitted_untracked`; the exact `review.v0` document for two files; parser
+  refusals (an empty hunk, a truncated side, contradictory rename paths) and statuses.
+  `daemon`: a socket line ends at its newline while the peer stays open. `syntax`: every
+  highlight label, colour and capture family; empty spans; the byte, node and cell budgets at
+  exactly their limit (2 MiB, 200,000 nodes, a 2,000 by 2,000 line table, gaps of 4 M cells);
+  exact-LCS minimality; `union` symbols.
+- **Watchdogs.** Loop mutants (`i += 1` to `*=`, a cursor moved back) hang. The tests that run
+  `decode_quoted_prefix`, `structural_diff`, `mark_moves`, the exhaustive `lcs_ops` and
+  `line_anchored_ops` checks and `analyze` now run under a 10 s deadline. `syntax`'s 20
+  timeouts fell to 3 at the automatic 20 s limit, where the hung threads slow the rest of the
+  suite; `-F 'lcs_ops|mark_moves' --timeout 300` tested 122: 119 caught, 1 missed (equivalent,
+  below), 0 timeouts.
+- **`patch` after.** The 4th miss, `omitted_untracked`, was pinned after the run:
+  `-F omitted_untracked` tested 2, 1 caught, 1 unviable.
+- **`daemon` after.** The added test targets the workspace-scope timeout
+  `read_capped_line_deadline_noting` (`||` to `&&`). `-F read_capped_line_deadline_noting`
+  tested 14: 12 caught, 1 unviable, 1 timeout, also at `--timeout 300`. The new test fails in
+  5 s, but `inspect::tests::a_running_daemon_is_live_and_its_lock_usable` then runs past 300 s.
+  Open.
+- **Equivalent or not compiled here (12: 9 in `core`, `patch` and `syntax`, the after-run
+  misses; 3 in `daemon`, workspace scope).** `core` `seal.rs` `compress`, `^` to `|` at 113:32,
+  120:33 and 120:49: the two terms of SHA-256's Ch share no set bit, and either XOR in Maj can
+  be an OR (checked over all inputs). `patch` `git_raw.rs:64` (2): the
+  `#[cfg(not(unix))]` `to_os_string`, compiled on neither Linux nor macOS. `patch`
+  `parser.rs:568:61`: the `new file mode`/`deleted file mode` clause after a rename is
+  unreachable, since the `InconsistentHeader` check returns first. `syntax`
+  `structural.rs:386:70` and `484:70` (`j + 1` to `j * 1` in backtracking): on a mismatch the
+  cell is the maximum of its two neighbours, so both comparisons choose alike. `syntax`
+  `highlight.rs:272:23` (`>` to `>=`): at equality the gap is empty. `daemon`
+  `serve.rs:630:21` and `security.rs:157:21` (`NotFound` guard to `true`, inferred): for any
+  other `lstat` error `create_dir_all` fails on the same path with the same kind. `daemon`
+  `serve.rs:883:25` (`Interrupted` guard to `false`, inferred from the standard library's
+  source): `UnixListener::accept` retries `EINTR` itself. In the workspace-scope run
+  `serve.rs:630:21` was the 1 miss; `security.rs:157:21` and `serve.rs:883:25` are the 2
+  catches that failed only `graph`'s timing test.
+- **`review`, crate scope only.** 1,247 mutants in 12 min: 440 caught, 727 missed, 2 timeouts
+  (`mutation_scope.rs:412`, `code_lines`), 78 unviable. The misses are in `execution.rs` (200),
+  `storage.rs` (147), `journal.rs` (108), `tuicr.rs` (91), `cli.rs` (86), `mutation_scope.rs`
+  (40), `sandbox.rs` (39), `policy.rs` (14) and `model.rs` (2). The crate's behaviour is tested
+  mostly from `cli` (council, sandbox and journal suites), so this count is not its coverage.
+- **Not done.** `review` in workspace scope (its 729 survivors at about 3 min each, several
+  hours here).
+  `cli`, `tui`, `learning`, `pipeline`, `projection`, `cluster` and `sdk` were not run. The
+  ledger was not written: this pass is recorded here only.
+
+## Review crate: sandbox mutation (2026-11-01)
+
+A whole-file mutation pass over the rootless-Podman gate sandbox,
+`crates/deep-diff-forge-review/src/sandbox.rs`, at workspace scope, the scope CI's diff
+mutation uses. Measured: cargo-mutants 27.1.0 on `main` `7774957`, with `CARGO_TARGET_DIR`
+unset:
+
+```
+cargo mutants -p deep-diff-forge-review --file crates/deep-diff-forge-review/src/sandbox.rs \
+  --test-workspace true -j 6 --timeout 300 -o <out>
+```
+
+- **Before: 41 mutants in 9 min:** 28 caught, 3 missed, 0 timeouts, 10 unviable. That run is
+  contaminated: 9 of its mutant logs end in "Disk quota exceeded" on the shared `/tmp`. Those 9
+  are 8 false "unviable" (`control`'s `* with +` and `* with /` at 95:36, `>` to `<` and `==` at
+  111:32, its three `Ok(Some(..))` replacements at 79:9, and `from_env`'s `delete !` at 59:13)
+  and one false "caught" (`&&` to `||` in `from_env`). A clean re-run on the same code plus only the `cpus` test (below)
+  gave 36 caught, 3 missed, 2 unviable. So `main` had 5 real survivors: `from_env` `&&` to `||`,
+  `control`'s 64 KiB output bound (`* with +`), `cpus` returning 0 or 1, and `>` to `>=` in
+  the control deadline.
+- **Killed.** `cli/tests/council.rs`: `gates_launch_the_resolved_image_id_...` now asserts
+  `--cpus=<host CPUs − 1, min 1>` in argv and receipt (it only checked the prefix). It kills
+  `cpus -> 0` on any host but `cpus -> 1` only with at least 3 available CPUs: on 1 or 2 the
+  bound is 1 either way (measured here on 16).
+  `an_empty_runtime_or_image_is_refused_as_configuration` refuses a blank `DDF_COUNCIL_PODMAN`
+  and an empty `DDF_COUNCIL_GATE_IMAGE` by name, and its recording fake runtime shows it was
+  never invoked (before, an empty image reached `image inspect` and failed there with another
+  message). `sandbox.rs` unit test
+  `control_output_is_kept_whole_up_to_64_kib_and_no_further`: 60,000 bytes arrive whole and
+  200,000 are cut at 65,536. No production code changed.
+- **After.** A targeted run (`-F 'from_env|control|cpus'`, `--timeout 900`) tested 15 mutants:
+  14 caught, 1 unviable, 0 missed. Each new test failed on its mutant, except `>` to `>=`
+  (below). The full command again, at load average 60 to 240 from parallel mutation campaigns
+  on this 16-CPU host: 41 mutants in 49 min, 21 caught, 0 missed, 18 timeouts, 2 unviable.
+  17 of the 18 timeouts were caught in the clean re-run or the targeted run; the 18th, 111:32
+  `>=`, is the argued-equivalent mutant and has no genuine kill. Their logs stop in other
+  crates' tests at 300 s (the `council` suite took up to 254 s in this run, against at most
+  40 s in the clean one, and 122 s for the `==` deadline mutant, which waits on its control
+  deadline by design). A clean full run with 0 timeouts is still to be measured on an idle host.
+- **Load flakes.** In the targeted run `vendoring_output_is_sealed_...` failed (no
+  `qualification-error.txt`) on 3 of 15 mutants, and `qualification_cannot_restore_pass_...` on
+  one, none of which touch what they check. Cause, from the code: both ran under the fixture's
+  2 s job budget, and a job that times out is never qualified, so it gets no marker. Both now
+  take `long_budget`, like the other cases whose refusal must not come from the clock. The
+  `cpus` kills hold regardless: their own assertion (council.rs `--cpus`) failed too.
+- **Final.** The full command with `--timeout 900`, on this branch's last commit, at load
+  average 56 to 165: 41 mutants in 78 min, 38 caught, 1 missed, 0 timeouts, 2 unviable. The one
+  missed is 111:32 `>=`, the equivalent below. `cpus -> 1` failed only on the `--cpus` assertion.
+  `cpus -> 0` failed on it too, plus 5 other council cases. Those still use the 2 s budget, so
+  read them as load and not as kills. The vendoring and marker cases did not fail on any mutant
+  except one that panics every gate.
+- **Equivalent.** `start.elapsed() > CONTROL_DEADLINE` to `>=` (line 111). The two differ
+  only when a monotonic nanosecond reading equals 30 s exactly. A 20 ms poll that misses that
+  reading fires on the next one under either operator, so the deadline moves by at most one
+  poll and no test can tell them apart. The targeted run's "caught" for it was false: the
+  failing tests were the load flakes above, not a deadline test.
+- **Unviable (2).** `from_env` to `Ok(Default::default())` and `command` to
+  `Default::default()`: neither `Sandbox` nor `Command` implements `Default`.
+
+## Review crate: mutation_scope mutation (2026-11-01)
+
+`crates/deep-diff-forge-review/src/mutation_scope.rs` decides which lines the council's
+diff-scoped mutation gate mutates, so a gap in its tests could weaken the gate without anyone
+noticing. Measured: cargo-mutants 27.1.0 on `main` `7774957`, with `CARGO_TARGET_DIR` unset:
+`cargo mutants -p deep-diff-forge-review --file crates/deep-diff-forge-review/src/mutation_scope.rs --test-workspace true -j 6 --timeout 300`.
+
+- **Before, 271 mutants:** 267 caught, 0 missed, 1 timeout, 3 unviable. One of the caught
+  mutants (`verified` returning `Ok(vec![])`) was lost when `/tmp` ran out of quota, so it was
+  re-run alone with `-F` (caught).
+- **Crate scope compared with workspace scope.** The 2026-10-31 whole-crate run (crate scope)
+  missed 40 mutants in this file: `require_base`, `verified`, `hex`, `base_blobs`, `capture`
+  and `capture_from`. All 40 are caught at workspace scope, by the end-to-end `mutation_base`
+  tests in `cli/tests/council.rs`. CI's diff mutation also runs at workspace scope.
+- **Timeout.** `byte == b'r'` replaced by `!=` in `code_lines` (line 412) makes the scan count
+  `#` runs at every byte. That is a semantic break, and an existing test already caught it:
+  `code_lines_skip_comments_and_attributes_across_lines` failed for this mutant in the before
+  run (its log shows the failure ahead of `*** result: Timeout`). The 1 MiB `#` run in
+  `char_literals_and_lifetimes_are_told_apart` then takes hours, so libtest could not exit and the
+  outcome was reported as a timeout. The scan now runs on its own thread under a 30 s wall-clock
+  deadline. The deadline does not detect this mutant; it only lets the test binary finish, so
+  the existing failure is reported as caught. It would be the only detector for a purely
+  quadratic, behaviour-preserving change, and no mutant in this run was one. The bound is 15x
+  or more above normal (the whole review lib-test binary takes about 1.7 s), so it does not fail
+  on a busy host the way `graph`'s 10 s bound did. Inferred: the caught classification also
+  depends on how long the workspace's earlier test binaries take, because the review lib binary
+  runs after them inside the same 300 s mutant timeout. Measured: this mutant's test phase took
+  184 s under the first after run's 120 s deadline, and 102 s under the 30 s deadline.
+- **After, 271 mutants in 46 min (twice):** 268 caught, 0 missed, 0 timeouts, 3 unviable, both
+  with the 120 s deadline and with the 30 s one. The line-412 mutant is caught: its review
+  lib-test binary reports both tests failed and `finished in 30.00s`.
+- **Equivalents:** none. The 3 unviable mutants turn `<<` into `>>` in `LINE_CELL_BUDGET`,
+  `TOTAL_CELL_BUDGET` and `LINE_CAP`. `LINE_CELL_BUDGET` and `TOTAL_CELL_BUDGET` fail the
+  tests' `const` assertions (`error[E0080]`). `LINE_CAP` becomes 0, and `LINE_CAP - 1` in the
+  tests fails the `arithmetic_overflow` lint at compile time.
+- **Measurement note.** Four attempts at the after run, and one run limited with `-F`, were
+  stopped and thrown away. Each had `TMPDIR` on `/var/mnt/storage`, moved there to avoid the
+  `/tmp` quota. On that disk, the `council` integration binary had not finished when the 300 s
+  limit ran out, where it had taken 34 s on tmpfs. Mutants whose tests had already failed were
+  therefore reported as timeouts. Build copies and
+  the tests' temporary directories belong on tmpfs. Six build copies took about 14 GiB of the
+  38.5 GiB per-user `/tmp` quota.
+
+## Review crate: policy and model mutation (2026-11-01)
+
+The whole-crate baseline of `deep-diff-forge-review` (crate scope, cargo-mutants 27.1.0,
+started 2026-10-31T13:49:52Z on a tree byte-identical to `main` `9527f64`, whose review crate
+is unchanged through `7774957`; `env -u CARGO_TARGET_DIR cargo mutants -p deep-diff-forge-review
+-j 6 --timeout-multiplier 3`) listed 727 missed mutants; no Turso event records it, so this
+paragraph is its durable reference. Of those, 16 were in the council's trust boundary: 14 in
+`policy.rs` (`validate_request`'s model argument checks; `validate_report`'s unknown-reviewer check, blank/over-budget summary, claim
+and rationale, finding-id prefix/length/uniqueness, citation and count budgets, duplicate
+responses; `reports_expected`) and 2 in `model.rs` (`Persona::lens` replaced by `""` or
+`"xyzzy"`). Measured: cargo-mutants 27.1.0 on `main` `7774957`, with `CARGO_TARGET_DIR` unset
+and `TMPDIR` on the storage disk (the `/tmp` quota was exhausted by concurrent runs),
+`cargo mutants -p deep-diff-forge-review --file crates/deep-diff-forge-review/src/<policy|model>.rs --test-workspace true -j 6 --timeout 300`.
+
+- **Before (workspace scope, host load 60–176):** `policy.rs` 87 mutants: 49 caught, 0
+  missed, 37 timeouts, 1 unviable. `model.rs` 15: 2 caught, 0 missed, 12 timeouts, 1
+  unviable. The timeouts are the host's, not hangs: every timed-out mutant was killed while
+  `cli`'s `council` test binary (200–250 s on its own under that load) was running, before
+  Cargo reached the review crate's tests that fail on it. Workspace scope at this load cannot
+  separate a missed mutant from a timeout, so the crate-scope baseline is the survivor list.
+- **Pinned.** Nine contract tests in `crates/deep-diff-forge-review/tests/contracts.rs`
+  (`claude/mut-policy-20261101`, `432a0c7`). Each asserts the refusal by its reason, so an
+  earlier check cannot satisfy it: a pinned model is one bounded, non-option token; a report
+  from outside the roster is refused; summary, claim, falsifier and rationale are refused blank
+  and one byte over budget and admitted at it; finding IDs are prefixed, at most 164 bytes and
+  unique; 1–16 citations; 128 findings and 1,536 responses are budgeted separately;
+  `reports_expected` is two per reviewer for 2 and 3 reviewers (3 separates `n * 2` from
+  `n + 2`, which 2 cannot); each persona has its own nonempty lens (checked on
+  `Persona::lens`, not on the prompt that embeds it).
+- **Targeted check (load ~40):** the same two files with
+  `-j 4 --timeout 300 -- --lib --test contracts` (crate scope, only the review crate's unit
+  and contract tests): 102 mutants, 100 caught, 2 unviable, 0 missed, 0 timeouts in 10 min (re-run after the test fixes: same counts in 2 min at lower load).
+  All 16 baseline survivors are caught.
+- **After (workspace scope, same command):** `policy.rs` 12 caught, 74 timeouts, 1 unviable;
+  `model.rs` 3 caught, 11 timeouts, 1 unviable; 0 missed. A `--iterate` re-run of the
+  timeouts at load 40–65 caught 40 + 4 more and timed out 34 + 7, each again inside `cli`'s
+  `council` binary. A further `--iterate` with `--timeout 900` and nothing else changed
+  caught all of them (34 + 7, 0 timeouts). Combined: `policy.rs` 86 caught, 1 unviable;
+  `model.rs` 14 caught, 1 unviable; **0 missed, 0 timeouts at 900 s**. At the specified
+  300 s, workspace scope with `-j 6` on this host is not measured clean: the timeout is
+  shorter than the workspace suite runs under contention.
+- **Equivalents.** None. The 2 unviable mutants (`assess` and `Gate::required` replaced by
+  `Default::default()`) do not compile: `Assessment` and `Gate` have no `Default`.
+- **Observed, not retried:** under load, `cli`'s
+  `vendoring_output_is_sealed_and_planted_links_or_fifos_are_never_mounted` and
+  `qualification_cannot_restore_pass_over_a_refusal_marker` failed in several mutant runs of
+  `check_execution`; whether they fail on the mutant or on load is not separated.

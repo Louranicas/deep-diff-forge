@@ -2126,6 +2126,22 @@ mod tests {
         assert_eq!((read, line), (sent.len(), sent));
     }
 
+    /// A line ends at its newline while the peer stays open: a client waiting for the answer to
+    /// the request it just sent must not be read until the deadline. The bytes after the newline
+    /// stay buffered for the next read.
+    #[test]
+    fn a_line_from_an_open_peer_ends_at_its_newline() {
+        let (local, peer) = UnixStream::pair().expect("socketpair");
+        (&peer).write_all(b"first\nsecond").unwrap();
+        let mut reader = BufReader::new(local);
+        let mut line = Vec::new();
+        let read = read_capped_line_deadline(&mut reader, &mut line, 1024, Duration::from_secs(5))
+            .expect("a newline ends the line before the deadline");
+        assert_eq!((read, line.as_slice()), (6, &b"first\n"[..]));
+        assert_eq!(reader.buffer(), b"second");
+        drop(peer);
+    }
+
     #[test]
     fn socket_line_read_reports_non_timeout_errors_unchanged() {
         // Closing a Unix stream socket with unread data in its receive queue

@@ -308,3 +308,33 @@ pub(crate) fn container_name(run_id: &str, job: &str) -> Result<String> {
         &run_id[..run_id.len().min(16)]
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Sandbox;
+
+    /// A runtime whose control command is a shell script printing `bytes` zero bytes to stdout.
+    fn printing(bytes: usize) -> Sandbox {
+        Sandbox {
+            runtime: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                format!("head -c {bytes} /dev/zero"),
+                "fake-runtime".into(),
+            ],
+            image: "unused".into(),
+        }
+    }
+
+    /// The controller keeps a runtime control command's stdout up to 64 KiB and no more: a
+    /// runtime (or a descendant holding its pipe) cannot grow the controller's memory without
+    /// bound, and output inside the bound reaches the caller whole.
+    #[test]
+    fn control_output_is_kept_whole_up_to_64_kib_and_no_further() {
+        let (status, bytes) = printing(60_000).control(&[]).unwrap().unwrap();
+        assert!(status.success(), "{status:?}");
+        assert_eq!(bytes.len(), 60_000);
+        let (_, bytes) = printing(200_000).control(&[]).unwrap().unwrap();
+        assert_eq!(bytes.len(), 64 * 1024);
+    }
+}
