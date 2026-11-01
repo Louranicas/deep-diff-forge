@@ -380,6 +380,65 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `code_lines_skip_comments_and_attributes_across_lines` already fails, is reported as caught,
   not as a timeout (EVIDENCE.md, "Review crate: mutation_scope mutation").
 - **Council admission boundaries are pinned:** nine `review` contract tests kill the 16 `policy.rs`/`model.rs` mutants that survived the whole-crate run (EVIDENCE.md).
+- **The Python `StdioClient` timeout covers the request write.** `_exchange` wrote the request
+  with a blocking `write` and `flush`, and only the read had a deadline: a request larger than
+  the pipe buffer (64 KiB; any real patch) sent to a child that had stopped reading blocked
+  forever, and the child was never killed (measured: `timeout=1.0`, a 1 MiB patch, `sleep 30` as
+  the child, killed by an outer 8 s `timeout`). Both pipes are now non-blocking and one selector
+  writes the request in chunks and reads the answer under one deadline; on expiry the child is
+  killed and `TransportError` raised (measured: after 1.0 s). A child that answers and closes
+  before taking the whole request is read, not reported as "not reading".
+- **Learning store: an append never glues a receipt onto an unterminated last line.**
+  `append_receipt` wrote at the end without checking the last byte. After a torn write, or a hand
+  edit that dropped the final newline (which `load_receipts` accepts), the next `learn record`
+  exited 0 but merged its receipt into that line: every later `learn status` failed with exit 3
+  (`trailing characters`), and deleting the bad line also lost the new receipt. The append now
+  writes a newline first when the store does not end in one, so the new receipt is its own line
+  and a torn fragment stays a separate, visible corrupt line.
+- **The Python client maps every invalid answer to `TransportError` and kills the child.** An
+  answer that was not UTF-8 or not JSON escaped `_Client.call` as a raw `UnicodeDecodeError` or
+  `JSONDecodeError` (both transports) and left the stdio child running; an answer for another
+  request id did not kill it either. They now raise `TransportError("not a valid response: …")`
+  as the Rust SDK does, and `StdioClient` kills the child. A finding holding a lone surrogate,
+  which `json.loads` accepts but UTF-8 cannot carry, raised a bare `UnicodeEncodeError` for the
+  whole `verify_findings` batch; it now raises `ValueError` naming the finding's index before
+  anything is sent (the CLI, reading JSONL bytes, refuses such a line as `malformed`; one request
+  cannot carry it at all).
+- **A stored receipt may hold only receipt fields (anchor A-05).** `load_receipts` parsed each
+  line with serde's default, which drops unknown keys, so a hand-edited line carrying a `path` or
+  `source` key was counted and scored, against the documented promise that a line holding a path
+  is refused, naming its line. A stored line with a key that is not a receipt field is now
+  refused (`receipt store line N: invalid receipt: a stored receipt holds a key that is not a
+  receipt field`, exit 3); the key is not echoed, since it may be the path. `learn record --stdin`
+  still drops extra keys, as the privacy probe requires: they are never written.
+- **A relative `XDG_STATE_HOME` or `XDG_RUNTIME_DIR` is ignored.** `resolve_learning_dir`
+  accepted any non-empty value, so `XDG_STATE_HOME=relstate` put the learning store under the
+  working directory, often the repository under review. The XDG Base Directory spec makes a
+  relative value invalid: the resolver now falls back to `$HOME/.local/state`, and a relative
+  `$HOME` gives `NoStateDir`. The daemon's `runtime_base_from` had the same gap for its socket;
+  a relative `XDG_RUNTIME_DIR` now fails closed like an unset one (`daemon path` exits 2).
+- **`doctor` names the state directory the learning store uses.** It formatted `$XDG_STATE_HOME`
+  as is, so after the resolver began ignoring a relative value, `XDG_STATE_HOME=relstate
+  deep-diff-forge doctor` printed `state_dir=relstate/deep-diff-forge`, a place nothing writes
+  to, while `learn record` wrote under `$HOME/.local/state`. `state_dir` is now the parent of the
+  store's own resolved directory (the daemon socket and runtime dir already used the daemon's
+  resolvers), and with no absolute `$XDG_STATE_HOME` or `$HOME` it prints `<unset: …>`.
+- **A deeply nested answer is a `TransportError` too, and the stdio child is killed.** An answer
+  of about 200 KB of `[` made `json.loads` raise `RecursionError`, which `_Client.call` did not
+  map, so it escaped raw on both transports and left the `StdioClient` child running (measured).
+  It is now `TransportError("not a valid response: …")` like any other invalid answer.
+- **`StdioClient` returns an early answer from a child that stops reading but stays alive.** The
+  exchange kept waiting to write the rest of the request until the deadline, though the whole
+  answer was already read: a child that refused a 1 MiB request and then slept gave
+  `TransportError: no answer within 2 s` instead of its refusal (measured). A complete answer line
+  now ends the exchange. Its unsent tail would garble the next request, so the out-of-step child
+  is killed and the next call raises `TransportError`.
+- **A path and a line resolve in every section with the path.** `findings verify` searched only
+  the first file section with a finding's path, so in a concatenated patch that names one file
+  twice, a line in the later section was refused as `line_outside_hunk` although its address
+  form was accepted. `resolve`, the cockpit's `annotations` (which fell back to a file note) and
+  `validate_anchor` (which refused a later section's hunk or span) now search every section with
+  the path, in review order; a path without a line still anchors to the first.
 
 ## [0.5.0] - 2026-10-31
 

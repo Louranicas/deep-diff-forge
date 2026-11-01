@@ -297,14 +297,21 @@ pins the public signatures.
 `verify_findings(patch, findings, require_files=False, require_hunks=False)`
 (`findings.verify`, protocol 2) and `methods()`.
 A JSON-RPC error raises `RpcError` (with the daemon's `code`); a transport
-failure raises `TransportError`.
+failure, including an answer that is not UTF-8 JSON or not a response to the
+request, raises `TransportError`. `StdioClient`'s `timeout` covers the whole
+exchange, writing the request as well as reading the answer; on expiry, or on an
+invalid answer (including one nested too deeply to decode), the child is killed. An
+answer that arrives before the whole request is taken is returned, and the child,
+now out of step, is killed. A request holding a string UTF-8 cannot
+carry (a lone surrogate) raises `ValueError` before anything is sent, naming the
+finding's index for `verify_findings`.
 
 ## Unix Domain Socket Locations
 
 | Platform | Socket path or status |
 | --- | --- |
 | Unix with `$XDG_RUNTIME_DIR` | `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock` |
-| Unix without `$XDG_RUNTIME_DIR` | Fails closed with exit 2: pass `--socket PATH`; there is no `/tmp` fallback |
+| Unix without `$XDG_RUNTIME_DIR` (unset or relative) | Fails closed with exit 2: pass `--socket PATH`; there is no `/tmp` fallback |
 | Windows | Daemon unsupported; no named-pipe or TCP listener |
 
 `deep-diff-forge daemon path` prints the resolved socket. The managed runtime

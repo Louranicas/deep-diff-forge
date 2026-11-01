@@ -422,8 +422,8 @@ deep-diff-forge {claude-code-contract|chain-contract|cluster-contract|loom-contr
 ```
 
 `learn` is local-only. A receipt holds hashes, counts and timings, never a path or a source
-line. Receipts live under `$XDG_STATE_HOME/deep-diff-forge/learning/`. An invalid receipt
-exits 4.
+line. Receipts live under `$XDG_STATE_HOME/deep-diff-forge/learning/` (an absolute path; a
+relative one is ignored for `$HOME/.local/state`). An invalid receipt exits 4.
 
 `analyze` checks that a patch turns the captured base directory into the candidate before it
 attaches semantics.
@@ -681,7 +681,8 @@ server on an owner-private Unix domain socket.
   Symlinks are resolved first, and Git is stopped after 30 s. A Git failure is error 3.
 
 **Default socket:** `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock`. There is no
-`/tmp` fallback. Without `$XDG_RUNTIME_DIR` the daemon fails closed until you pass `--socket PATH`.
+`/tmp` fallback. Without `$XDG_RUNTIME_DIR` (or with a relative one, which the XDG spec makes
+invalid) the daemon fails closed until you pass `--socket PATH`.
 
 **JSON-RPC methods** (protocol 2; `engine.methods` lists them with their parameters and the protocol that added them):
 `engine.initialize`, `engine.methods`, `daemon.health`, `daemon.status`,
@@ -719,8 +720,8 @@ deep-diff-forge review --findings found.jsonl < change.patch              # the 
 
 - **Anchors.** A finding is anchored by a hunk `address` (from the outline or `rank.v0`
   evidence), or by a `path` with an optional `line` and `side` (`new` or `old`). A path and a
-  line resolve to the hunk that holds the line, so a finding survives an agent that never saw
-  addresses.
+  line resolve to the hunk that holds the line, in any section with the path (a concatenated
+  patch can name one file twice), so a finding survives an agent that never saw addresses.
 - **Accepted findings** come back normalised from the review: the path, the address, and the
   line's own kind and text. The title and body are sanitised: no control, bidi or invisible
   characters.

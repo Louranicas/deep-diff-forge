@@ -713,8 +713,8 @@ Read by the code or scripts today:
 | Variable | Purpose |
 | --- | --- |
 | `CARGO_TARGET_DIR=target` | Keep build output repo-local (exported by the `justfile`). |
-| `XDG_RUNTIME_DIR` | Daemon socket base; unset and no `--socket` means the daemon refuses (exit 2). |
-| `XDG_STATE_HOME` | Learning store base. |
+| `XDG_RUNTIME_DIR` | Daemon socket base; unset or relative and no `--socket` means the daemon refuses (exit 2). |
+| `XDG_STATE_HOME` | Learning store base; a relative value is ignored (falls back to `$HOME/.local/state`). |
 | `DDF_COUNCIL_GATE_IMAGE` | Local image the council gate sandbox runs; gates refuse without it. |
 | `DDF_COUNCIL_PODMAN` | Podman command for the gate sandbox. |
 | `DDF_SOAK_SECONDS` | Duration of `scripts/security/daemon_soak.py` (default 60; CI uses 10, the weekly campaign 600 with `--require-growth-check`). |

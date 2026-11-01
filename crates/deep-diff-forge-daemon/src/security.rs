@@ -41,7 +41,7 @@ impl std::fmt::Display for SocketError {
             Self::WrongOwner => "runtime directory is not owned by the effective user",
             Self::Symlink => "runtime path is a symlink",
             Self::NoRuntimeDir => {
-                "no secure runtime directory ($XDG_RUNTIME_DIR unset; no /tmp fallback)"
+                "no secure runtime directory ($XDG_RUNTIME_DIR unset or relative; no /tmp fallback)"
             }
         };
         f.write_str(msg)
@@ -52,7 +52,9 @@ impl std::error::Error for SocketError {}
 
 /// Pure resolver for the runtime base directory from the `XDG_RUNTIME_DIR` value.
 ///
-/// Returns `None` when the variable is unset or empty. There is deliberately
+/// Returns `None` when the variable is unset, empty or relative (the XDG Base
+/// Directory spec makes a relative value invalid; one would put the socket under
+/// the working directory). There is deliberately
 /// **no world-writable `/tmp` fallback**: `$XDG_RUNTIME_DIR` (typically
 /// `/run/user/<uid>`) is a per-user, kernel-managed, owner-only directory, while
 /// a predictable `/tmp` path invites symlink/TOCTOU squatting. When it is
@@ -60,11 +62,14 @@ impl std::error::Error for SocketError {}
 /// `--socket PATH` (or sets `XDG_RUNTIME_DIR`). Factored out for env-free tests.
 #[must_use]
 pub fn runtime_base_from(xdg_runtime_dir: Option<OsString>) -> Option<PathBuf> {
-    xdg_runtime_dir.filter(|v| !v.is_empty()).map(PathBuf::from)
+    // An empty path is not absolute, so one check refuses both.
+    xdg_runtime_dir
+        .filter(|v| Path::new(v).is_absolute())
+        .map(PathBuf::from)
 }
 
 /// The runtime base directory from the live environment, or `None` if
-/// `$XDG_RUNTIME_DIR` is unset/empty (no insecure fallback).
+/// `$XDG_RUNTIME_DIR` is unset, empty or relative (no insecure fallback).
 #[must_use]
 #[expect(
     clippy::disallowed_methods,
@@ -283,6 +288,9 @@ mod tests {
     fn runtime_base_none_without_xdg() {
         assert_eq!(runtime_base_from(None), None);
         assert_eq!(runtime_base_from(Some(OsString::new())), None);
+        // Relative values are invalid: the socket would land under the working directory.
+        assert_eq!(runtime_base_from(Some(OsString::from("run"))), None);
+        assert_eq!(runtime_base_from(Some(OsString::from("./run/user"))), None);
     }
 
     #[test]
