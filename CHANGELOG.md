@@ -215,6 +215,42 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **Go raw strings no longer hide the code after them from evidence.** The lexical scanner did
+  not know Go's backtick strings and read their text as code, so a `/*` in a glob
+  (`` filepath.Glob(`/tmp/build/*.o`) ``) opened a block comment that blanked every later line
+  of the hunk, a `//` in a URL ended the line and a `"` opened a phantom string: the
+  `exec.Command` and `http.Get` after them gave no `process_spawn` or `network_fetch`. A
+  backtick now opens a Go string that runs no escapes and is followed across lines.
+- **A `#` inside a quoted YAML scalar or a quoted shell word is no longer a comment.** Any
+  word-start `#` ended a YAML line, so `echo "step #1" && curl … | sh` in a `run: |` block,
+  `run: "echo ' #'; curl …"` and a flow mapping with a `"x #"` key before
+  `pull_request_target` lost their `network_fetch` and `ci_privilege` evidence. YAML quotes are
+  now tracked (a `''` or, in double quotes, a backslash escape; not after a word byte, so
+  `it's` is text), and their contents are still kept as code.
+- **The line that closes a multi-line string keeps its evidence.** Each line began as plain
+  code, so the quote that closes a multi-line string (Rust, a shell string, a JS template, a
+  Python string continued with `\`) opened a phantom string, and the `unsafe`, `curl`, `eval`
+  or `os.system` after it was blanked. A string still open at the end of a line is now carried
+  to the next line of the hunk, which is read both as code and as resuming inside the string;
+  both readings go on down the hunk, and a byte any reading keeps is code.
+- **A quote misread as an opener no longer hides the rest of the hunk.** An unreleased
+  version of the fix above carried only the reading that resumed the string, so an apostrophe
+  in text (`It's`, in a Go hunk that opens inside a raw help string) stayed open from line to
+  line until a real quote "closed" it, and a `/*` in the string after it (a glob) opened a
+  block comment that blanked every later line: the `http.Get` and `exec.Command` below gave no
+  evidence. The same held in JS, Rust and Python. The plain reading, which resumes no string,
+  now always goes on as well (with at most three others), so a line keeps at least what a scan
+  without carried strings keeps.
+- **Rust raw C strings are raw.** `cr"C:\"` and `cr#"…"#` were read as ordinary strings, whose
+  `\"` escapes the closing quote, so the `unsafe` after one on the same line was blanked. The
+  raw-string prefix check now accepts one `b` or `c` before the `r`.
+- **A change to a whitespace-only string literal is no longer called formatting only.** The
+  structural diff dropped every whitespace-only leaf as layout, but tree-sitter has no layout
+  leaves: the leaves dropped were string contents, so `""` to `" "`, or a tab to two spaces,
+  gave `reformat_only: true` in `structural` and in `analyze`'s coverage. A raw string's
+  delimiters are no leaf either, so `f(a)` to `f(r"a")` changed no token. A string literal is
+  now one token of its exact text, as a comment is; a token change inside a literal is reported
+  as the whole literal removed and added.
 - **The long-line linearity test no longer fails on a busy host.** `graph`'s
   `the_import_rule_is_linear_on_long_lines` bounded its scans by 10 s of wall time; at load 56
   to 89 a linear scan using 1.8 s of CPU took over 10 s, failed the suite, and turned diff
