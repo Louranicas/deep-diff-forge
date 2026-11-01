@@ -369,7 +369,7 @@ git diff | deep-diff-forge review --probe --cols 120 --rows 40 --cmd rank
 | `j` / `k` · `↓` / `↑` | next / previous file, in rank order |
 | `g` / `G` · `Home` / `End` | first / last file |
 | `h` / `l` · `←` / `→` | focus the file tree / the diff |
-| `Enter` | open the file, or run the selected palette command |
+| `Enter` | open the selected file's diff (focus it), or run the selected palette command |
 | `s` · `Tab` · `t` | toggle inline and side-by-side |
 | `z` · `w` · `n` | fold context · wrap rows · show notes |
 | `v` · `Space` | mark the file reviewed and move on |
@@ -378,8 +378,9 @@ git diff | deep-diff-forge review --probe --cols 120 --rows 40 --cmd rank
 | `Ctrl-d` / `Ctrl-u` · `PageDown` / `PageUp` | scroll the diff |
 | `q` · `Esc` | quit · close the overlay |
 
-The mouse works too: the wheel scrolls, and clicks select files, focus the diff and open
-menus. The palette (`:` in the app, or `--palette` / `--cmd NAME` headless) runs `rank`,
+The mouse works too: the wheel scrolls, and clicks select the file on the row clicked, focus
+the diff when inside its pane and open menus; a click on a border or the status bar does
+nothing. The palette (`:` in the app, or `--palette` / `--cmd NAME` headless) runs `rank`,
 `outline`, `cluster`, `summary`, `notes`, `review`, `daemon`, `learning` and `maturity`
 against the loaded review. An unknown name or a non-numeric size is a usage error (exit 2).
 
@@ -494,7 +495,8 @@ carries a bidi control, an invisible character or a control character, gets a `h
 `path_traversal`, `git_internal`, `bidi_control`, `invisible` or `control`. `invisible` covers
 zero-width and joiner characters, invisible operators, fillers, the soft hyphen, variation
 selectors (the Mongolian free variation selectors included) and tag characters: with
-`bidi_control`, every Unicode `Default_Ignorable_Code_Point`; `control` covers C0/C1 controls other than tab and the Unicode
+`bidi_control`, every Unicode `Default_Ignorable_Code_Point`, plus the interlinear annotation
+controls; `control` covers C0/C1 controls other than tab and the Unicode
 line and paragraph separators. The carriage return of a CRLF body line does not count; one at
 the end of a path does. Hazards are facts about the bytes, reported only where
 found. An empty list never means the text is safe. They also raise the file's rank

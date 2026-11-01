@@ -104,10 +104,11 @@ fn is_bidi(c: char) -> bool {
 
 /// Characters that render as nothing (or as blank space indistinguishable from none) yet
 /// change the bytes: zero-width and joiner characters, invisible operators, fillers,
-/// variation selectors and tag characters (the payload channels of invisible-text attacks).
-/// Together with [`is_bidi`] this covers every Unicode `Default_Ignorable_Code_Point`
-/// (DerivedCoreProperties.txt), so a code point a renderer is told to draw as nothing is never
-/// passed through unmarked.
+/// variation selectors and tag characters (the payload channels of invisible-text attacks), plus
+/// the interlinear annotation controls. Together with [`is_bidi`] this covers every Unicode
+/// `Default_Ignorable_Code_Point` (DerivedCoreProperties.txt), so a code point a renderer is told
+/// to draw as nothing is never passed through unmarked. A hand-picked subset let U+17B4, which is
+/// valid inside a Rust identifier, through unescaped (bug hunt 2026-11-01).
 fn is_invisible(c: char) -> bool {
     matches!(
         u32::from(c),
@@ -123,6 +124,7 @@ fn is_invisible(c: char) -> bool {
         | 0x3164 | 0xFFA0     // Hangul filler, halfwidth Hangul filler
         | 0xFE00..=0xFE0F     // variation selectors 1-16
         | 0xFFF0..=0xFFF8     // reserved default-ignorables before the specials
+        | 0xFFF9..=0xFFFB     // interlinear annotation anchor, separator, terminator
         | 0x1BCA0..=0x1BCA3   // shorthand format controls
         | 0x1D173..=0x1D17A   // musical symbol formatting
         | 0xE0000..=0xE0FFF   // tag characters, variation selectors 17-256, reserved
@@ -136,8 +138,9 @@ fn is_line_separator(c: char) -> bool {
 
 /// Objective hazards in one line of patch text: `bidi_control` (a bidirectional override,
 /// embedding, isolate or mark, which can make rendered code differ from its bytes),
-/// `invisible` (a zero-width, joiner, filler, invisible-operator, variation-selector or tag
-/// character, or a soft hyphen) and `control` (a C0/C1 control other than tab, a Unicode line
+/// `invisible` (any other assigned Unicode default-ignorable code point, such as a zero-width, joiner,
+/// filler, invisible-operator, variation-selector, format-control or tag character, a soft
+/// hyphen or a Khmer inherent vowel, and the interlinear annotation controls) and `control` (a C0/C1 control other than tab, a Unicode line
 /// or paragraph separator, and never the carriage return of a CRLF line ending). These are
 /// facts about the bytes, not a guess about intent: an empty list never means the text is
 /// safe.
@@ -322,6 +325,21 @@ mod tests {
             '\u{E007F}',
             '\u{E0100}',
             '\u{E01EF}',
+            // Bug hunt 2026-11-01: the rest of Default_Ignorable_Code_Point, and the
+            // interlinear annotation controls, reached a terminal raw and unflagged.
+            '\u{17B4}',
+            '\u{17B5}',
+            '\u{180B}',
+            '\u{180D}',
+            '\u{180F}',
+            '\u{206A}',
+            '\u{206F}',
+            '\u{FFF9}',
+            '\u{FFFB}',
+            '\u{1BCA0}',
+            '\u{1BCA3}',
+            '\u{1D173}',
+            '\u{1D17A}',
         ] {
             assert_eq!(
                 text_hazards(&format!("a{c}b")),
@@ -332,6 +350,25 @@ mod tests {
             assert_eq!(
                 display_safe(&format!("a{c}b")),
                 format!("a\\u{{{:04x}}}b", u32::from(c))
+            );
+        }
+        // The visible neighbours of the new ranges stay ordinary text.
+        for c in [
+            '\u{17B3}',
+            '\u{17B6}',
+            '\u{180A}',
+            '\u{FFF8}',
+            '\u{FFFC}',
+            '\u{1BC9F}',
+            '\u{1BCA4}',
+            '\u{1D172}',
+            '\u{1D17B}',
+            '\u{2070}',
+        ] {
+            assert!(
+                text_hazards(&format!("a{c}b")).is_empty(),
+                "{:x}",
+                u32::from(c)
             );
         }
         for c in ['\u{2028}', '\u{2029}'] {

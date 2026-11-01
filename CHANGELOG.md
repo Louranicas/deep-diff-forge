@@ -371,6 +371,51 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   byte-identical hunks at the same ranges in repeated sections of one path share an address, by
   design (views select every copy, findings resolve to the first); the rustdoc and README said
   otherwise. Documentation only: the hash is unchanged, so addresses stay stable.
+- **A file whose section started past row 65,535 of the review could not be shown.** The diff
+  pane scrolled through ratatui's `u16` paragraph offset, so selecting such a file drew another
+  file's rows under its title and tree marker, no key could scroll past the cap, and `v` marked
+  the unseen file reviewed (reproduced with a 70,000-line file before a one-line one). The pane,
+  the file tree and the command panel now draw only their visible rows, unscrolled, from `usize`
+  offsets; `ReviewApp::scroll` and `ReviewApp::panel_scroll` return `usize` (a breaking change
+  for a caller that stores them as `u16`).
+- **A key took 7.2 s on a 900,000-line patch.** Every frame built and syntax-painted a row for
+  every line of every file, then showed about 20 of them, so each key, resize or mouse burst cost
+  time and memory in proportion to the review. The diff pane now counts rows in one cheap walk
+  and builds only the visible window, and the tree builds only its visible rows. Measured on the
+  same patch: 12 to 24 ms per key and 197 MB, from 7.2 s and 1.3 GB. Wrapped rows of ASCII text
+  are counted without being segmented; the first frame after `w` takes 0.18 s. Each frame still
+  walks the whole review once to count its rows.
+- **The default inline view dropped tab characters.** `display_safe` keeps a tab, and ratatui
+  discards it as a control character, so tab indentation, and a dedent such as `return` moving
+  out of an `if` in Python, looked unchanged; side-by-side and wrapped rows were right. Tabs are
+  now expanded to four spaces before any untrusted text becomes a span (`safe_span`,
+  `themed_spans`) and before the row's tint is measured. `projection` gains `expand_tabs` and
+  `clip_cells`.
+- **A mouse click on the file tree could select the wrong file.** The click mapper assumed a
+  40-column, unscrolled tree: after the tree scrolled, a click selected the file that row would
+  hold at the top (`f02.txt` for a click on `f23.txt`), on an 80-column terminal a click inside
+  the diff changed the selection, and above 125 columns a click on the right of the tree focused
+  the diff instead of selecting a file. The event loop now builds a `HitMap` of each frame it
+  draws (the pane rectangles inside their borders and the tree's scroll; `HitMap::of`), and
+  `map_mouse` resolves a click against it, so a click selects the row it lands on and a click on
+  any border, the diff pane's included, or on the status bar does nothing (a breaking change to
+  `map_mouse`'s signature; `SelectTreeRow` now carries a row of the whole tree). The map is kept
+  by the loop, not the app: `render` only reads the `ReviewApp`, which stays `Send` and `Sync`.
+- **Invisible format characters passed `display_safe` unescaped.** The invisible-character list
+  missed assigned default-ignorable code points such as U+17B4 KHMER VOWEL INHERENT AQ, which
+  Rust accepts inside an identifier: `let is_admin\u{17b4} = …` rendered like the removed
+  `let is_admin = …`, with no hazard note. The Khmer inherent vowels, the Mongolian free
+  variation selectors, the deprecated format characters U+206A to U+206F, the interlinear
+  annotation controls, the shorthand format controls and the musical format controls are now
+  escaped, reported as the `invisible` hazard, and dropped from untrusted annotation text.
+- **A long or wide file name pushed a note's grounding label off the pane.** The note box
+  measured its title and body in characters, not terminal cells, and never shortened the file
+  name, so a CJK or 70-character name clipped `partially_grounded` and the box's corner. The box
+  now measures in cells, clips the name with `…` so the label and corner fit, and wraps and pads
+  its body by cell width.
+- **Enter did nothing in the review view, though the README said it opens the file.** Enter now
+  opens the selected file's diff: focus moves to the diff pane. It still runs the selected
+  command in the palette.
 
 ### Tests
 

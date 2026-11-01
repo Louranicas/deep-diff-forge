@@ -15,6 +15,7 @@ use deep_diff_forge_core::{AgentAnnotation, FileStatus};
 use deep_diff_forge_graph::change_counts;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::ops::Range;
 
 /// The directory portion of a path (everything before the last `/`), or the
 /// empty string for a root-level file.
@@ -134,35 +135,61 @@ fn file_line(app: &ReviewApp, palette: &Palette, index: usize) -> Line<'static> 
 }
 
 /// Build the sidebar lines for the whole review.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn tree_lines(app: &ReviewApp, palette: &Palette) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    for (dir, indices) in grouped(app) {
-        let label = if dir.is_empty() {
-            "./".to_string()
-        } else {
-            format!("{dir}/")
-        };
-        lines.push(Line::from(safe_span(
-            &label,
-            Style::default()
-                .fg(palette.dim)
-                .add_modifier(Modifier::BOLD),
-        )));
-        for index in indices {
-            lines.push(file_line(app, palette, index));
+    tree_window(app, palette, 0..usize::MAX)
+}
+
+/// Build only the sidebar rows inside `window` (indices into the whole tree). Building every
+/// row on every frame, then scrolling with ratatui's `u16` offset, made the frame cost grow
+/// with the review and left rows past 65,535 unreachable (bug hunt 2026-11-01).
+#[must_use]
+pub(crate) fn tree_window(
+    app: &ReviewApp,
+    palette: &Palette,
+    window: Range<usize>,
+) -> Vec<Line<'static>> {
+    if app.is_empty() {
+        if window.contains(&0) {
+            return vec![Line::from(Span::styled(
+                "no files",
+                Style::default().fg(palette.dim),
+            ))];
         }
+        return Vec::new();
     }
-    if lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "no files",
-            Style::default().fg(palette.dim),
-        )));
+    let mut lines = Vec::new();
+    let mut row = 0;
+    for (dir, indices) in grouped(app) {
+        if row >= window.end {
+            break;
+        }
+        if window.contains(&row) {
+            let label = if dir.is_empty() {
+                "./".to_string()
+            } else {
+                format!("{dir}/")
+            };
+            lines.push(Line::from(safe_span(
+                &label,
+                Style::default()
+                    .fg(palette.dim)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
+        row += 1; // directory header line
+        for index in indices {
+            if window.contains(&row) {
+                lines.push(file_line(app, palette, index));
+            }
+            row += 1;
+        }
     }
     lines
 }
 
-/// The line index (within [`tree_lines`]) of the selected file's row, so the
+/// The line index (within the whole tree) of the selected file's row, so the
 /// caller can scroll the sidebar to keep the selection visible.
 #[must_use]
 pub(crate) fn selected_row(app: &ReviewApp) -> usize {
@@ -180,7 +207,7 @@ pub(crate) fn selected_row(app: &ReviewApp) -> usize {
     0
 }
 
-/// Resolve a visible [`tree_lines`] row to a ranked file index. Directory
+/// Resolve a row of the whole tree (not a screen row) to a ranked file index. Directory
 /// header rows and out-of-range rows return `None`.
 #[must_use]
 pub(crate) fn file_index_at_row(app: &ReviewApp, target_row: usize) -> Option<usize> {

@@ -25,7 +25,7 @@
 mod inline;
 mod notes;
 mod width;
-pub use width::{cell_width, fit_cells, wrap_cells};
+pub use width::{cell_width, clip_cells, expand_tabs, fit_cells, wrap_cells};
 mod side_by_side;
 
 pub use inline::{InlineRow, inline_rows, render_inline};

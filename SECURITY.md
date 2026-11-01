@@ -123,7 +123,8 @@ selection.
   visually reordering them. Before 2026-11-01 the Mongolian free variation
   selectors (`U+180B`-`U+180D`, `U+180F`, which rustc accepts inside an
   identifier), the Khmer inherent vowels, the musical and shorthand format
-  controls and the reserved default-ignorables passed through raw and unflagged.
+  controls, the reserved default-ignorables and the interlinear annotation controls passed
+  through raw and unflagged.
 - Hand-built JSON/JSONL output uses the canonical `core::json_escape` path,
   including DEL and C1 escaping. Serde-built JSON (the `--outline` and `--hunks`
   views, `rpc`, MCP, the daemon socket, the review CLI, and the pretty-printed
