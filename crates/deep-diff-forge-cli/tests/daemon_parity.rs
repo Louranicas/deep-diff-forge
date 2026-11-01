@@ -35,12 +35,11 @@ fn cli(patch: &str, mode: &[&str], flags: &[&str]) -> (i32, String, String) {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(patch.as_bytes())
-        .unwrap();
+    // A refusal of the arguments (`--address` with `--path`) exits before stdin is read, so the
+    // write can race the exit and meet a closed pipe; the exit code and stderr are still checked.
+    if let Err(error) = child.stdin.take().unwrap().write_all(patch.as_bytes()) {
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error}");
+    }
     let out = child.wait_with_output().unwrap();
     (
         out.status.code().unwrap(),
