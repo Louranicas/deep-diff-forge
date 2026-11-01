@@ -155,7 +155,7 @@ ddf-integration-20261025 council gate /absolute/new-run-directory mutation --exe
 ddf-integration-20261025 council status /absolute/new-run-directory
 ```
 
-The output directory's parent must exist, and the new run must be outside the reviewed repository. Existing runs/jobs/reports are never overwritten. `council import <run> <report.json>` admits external structured reports but explicitly labels manual import unverified; it cannot satisfy a missing measured provider invocation. The run's `manifest.json` and captured artifacts are reviewable before `--execute`. Preparation/status do not launch a hosted model. No execution occurs merely because a reviewer requested a check.
+The output directory's parent must exist, and the new run must be outside the reviewed repository. A relative run directory is resolved once, against the controller's working directory, and used absolutely from then on, so the sealed snapshot and its mutation scope name the same files however the run is spelled. Existing runs/jobs/reports are never overwritten. `council import <run> <report.json>` admits external structured reports but explicitly labels manual import unverified; it cannot satisfy a missing measured provider invocation. The run's `manifest.json` and captured artifacts are reviewable before `--execute`. Preparation/status do not launch a hosted model. No execution occurs merely because a reviewer requested a check.
 
 Exit 0 means the requested operation completed under its contract; status exit 0 specifically means ready for human review. Exit 7 is HOLD/failed/inconclusive execution. Exit 4 is malformed input, stale admission, existing artifact or protocol/IO failure. No command implies acceptance, merge, release or deployment.
 
@@ -242,7 +242,7 @@ Exit 0 means the import completed. Exit 7 means the events include a conflict; t
 
   The byte check above also applies to the mark.
 - **Idempotency and bounds.** Re-running against an unchanged session plans and appends nothing.
-  - The session file is capped at 32 MiB and the journal at 64 MiB.
+  - The session file is capped at 32 MiB and the journal at 64 MiB. An import whose events would take the journal past 64 MiB is refused before anything is written, in a dry run as in an execute, so the journal never grows past what the next import can read.
   - Comment ids must be short identifiers and must be unique across the session.
   - File keys must be relative paths with only normal components.
   - Unknown lifecycle states and comment sides are refused.

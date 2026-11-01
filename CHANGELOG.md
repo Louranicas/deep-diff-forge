@@ -304,6 +304,24 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `code_lines_skip_comments_and_attributes_across_lines` already fails, is reported as caught,
   not as a timeout (EVIDENCE.md, "Review crate: mutation_scope mutation").
 - **Council admission boundaries are pinned:** nine `review` contract tests kill the 16 `policy.rs`/`model.rs` mutants that survived the whole-crate run (EVIDENCE.md).
+- **A relative run directory no longer lets the candidate shrink the sealed mutation scope.**
+  `council prepare <request> run` with a `mutation_base` handed Git the snapshot as relative
+  `run/source/<path>` lines on `hash-object --stdin-paths`, and Git runs inside the reviewed
+  repository, so it hashed `<repository>/run/source/<path>` instead of the sealed copy. With
+  nothing there, prepare failed (exit 4, `Git acquisition command failed`); with an ignored copy
+  planted there holding a changed file's base bytes, the file matched its base blob and was left
+  out of `mutation.diff` and its sealed `mutation_diff_sha256` (measured: a changed `y.rs` dropped,
+  and with every changed file planted, an empty diff). `prepare` now names the run absolutely
+  (its canonical parent joined with its name) before anything is written.
+- **`council import-tuicr --execute` no longer writes a journal its own reader refuses.** Appends
+  checked only that the journal length was unchanged, never the 64 MiB cap `load_journal`
+  enforces, so imports of large comments (measured: three 22 MiB ones) took `decisions.jsonl` to
+  69,208,645 bytes, after which every import of the run, dry runs included, was refused until the
+  append-only journal was edited by hand. The planned events are now encoded and refused before
+  anything is written when they would pass the cap, in a dry run as in an execute (exit 4,
+  `tuicr import refused (journal): ... would pass its 67108864-byte cap; nothing was appended`).
+  A journal already over the cap is reported as a journal refusal, not as `tuicr export refused
+  (run): artifact exceeds acquisition budget`.
 
 ## [0.5.0] - 2026-10-31
 
