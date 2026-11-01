@@ -356,7 +356,14 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
   whose name is not UTF-8 refuses the acquisition (`InvalidSelection`) on every platform:
   decoding it lossily named another filter, and on macOS `git config --get-regexp` never listed
   it, so it ran. The listing now reads every key and picks the `filter.` ones itself
-  (`a_repository_filter_with_a_non_utf8_name_never_runs`, measured on the macOS CI job).
+  (`a_repository_filter_with_a_non_utf8_name_never_runs`, measured on the macOS CI job). A
+  checked-out submodule is part of the repository too: until 2026-11-01 the working-tree diff
+  (`--ignore-submodules=none`) ran `git status` inside each submodule to see whether it was
+  dirty, which read the submodule's own configuration (`.git/modules/<name>/config`) and
+  `.gitattributes` and ran its clean filter. Acquisition now passes `--ignore-submodules=dirty`,
+  which compares only the commit each submodule records and never runs Git inside it
+  (`a_submodule_filter_never_runs_and_its_commit_change_is_captured`); a submodule's uncommitted
+  changes are therefore not captured.
 - **The user's own Git configuration is trusted for filters only (decided 2026-10-31).** Filters
   from Git's protected scopes (global `~/.gitconfig` or `$XDG_CONFIG_HOME/git/config`, system
   `/etc/gitconfig`, `-c` and the caller's `GIT_CONFIG_COUNT`/`KEY`/`VALUE`, which DDF's own
