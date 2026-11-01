@@ -9,7 +9,7 @@
 //! changed, so every existing consumer keeps working, and the envelope exits with the child's code.
 
 use crate::mcp::entry_json;
-use deep_diff_forge_core::exit::{EXIT_CODES, lookup};
+use deep_diff_forge_core::exit::{self, EXIT_CODES, lookup};
 use serde_json::{Value, json};
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -186,7 +186,9 @@ pub fn wrap(
 }
 
 /// `envelope -- <command…>`: run the command as a child of this binary and wrap the result. Returns
-/// the envelope text and the exit code to leave with (the child's; 1 if it ended on a signal).
+/// the envelope text and the exit code to leave with: the child's, or 128 + N if signal N ended it
+/// (the shell's convention, [`exit::SIGNAL_BASE`]). Before, a signal gave exit 1, a code the
+/// registry does not list (bug hunt 2026-11-01).
 #[expect(
     clippy::disallowed_methods,
     reason = "the envelope door: runs the wrapped deep-diff-forge command as a child"
@@ -221,7 +223,10 @@ pub fn envelope(args: &[String]) -> Result<(String, i32), String> {
         .map_err(|e| format!("waiting for the command: {e}"))?;
     let status: Result<i32, i32> = status.code().ok_or_else(|| signal_of(status));
     let value = wrap(command, status, (&out.0, out.1), (&err.0, err.1));
-    Ok((format!("{value}\n"), status.unwrap_or(1)))
+    Ok((
+        format!("{value}\n"),
+        status.unwrap_or_else(|signal| exit::SIGNAL_BASE + signal),
+    ))
 }
 
 /// The signal that ended `status`, or 0 where there is none to read.

@@ -147,3 +147,30 @@ fn source_commands_refuse_a_fifo_without_blocking() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("not a regular file"));
     std::fs::remove_file(fifo).unwrap();
 }
+
+/// Bug hunt 2026-11-01: output after the last newline stayed in stdout's line buffer and was
+/// written at exit, where a failure is dropped, so this exited 0 with the output lost. Linux only:
+/// macOS has no `/dev/full`.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_failed_write_of_output_without_a_final_newline_exits_3() {
+    for (name, source) in [("tail.rs", &b"fn a(){}"[..]), ("line.rs", b"fn a(){}\n")] {
+        let path = write_temp(name, source);
+        let full = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .arg("highlight")
+            .arg(&path)
+            .stdout(full)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(3), "{name}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("error: write failed"),
+            "{name}"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+}

@@ -1,6 +1,6 @@
 use crate::input::{map_key, map_mouse};
 use crate::state::ReviewApp;
-use crate::ui::render;
+use crate::ui::{HitMap, render};
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -115,17 +115,23 @@ fn event_loop<B: Backend>(
 where
     io::Error: From<B::Error>,
 {
+    // The panes of the frame last drawn, so a click resolves against what the reviewer saw.
+    // The loop keeps it, not the app: rendering stays a read of the app.
+    let mut hits = HitMap::default();
     while app.is_running() {
-        terminal.draw(|frame| render(frame, app))?;
+        terminal.draw(|frame| {
+            render(frame, app);
+            hits = HitMap::of(app, frame.area());
+        })?;
         // Block for the next event, then drain the entire queued burst before
         // the next redraw. Mouse capture (xterm any-motion mode 1003, enabled
         // above) emits one motion event per cell of travel — hundreds per
         // second. Redrawing once per event pegs a core; coalescing collapses an
         // N-event burst into a single redraw. Blocking on the first `read`
         // keeps an idle review at ~0% CPU.
-        dispatch(app, &read()?);
+        dispatch(app, &hits, &read()?);
         while app.is_running() && poll(Duration::ZERO)? {
-            dispatch(app, &read()?);
+            dispatch(app, &hits, &read()?);
         }
     }
     Ok(())
@@ -135,10 +141,13 @@ where
 ///
 /// Mouse-motion and other non-actionable events fold to a no-op so a burst of
 /// them costs only the (cheap) `handle` call, not a re-render.
-fn dispatch(app: &mut ReviewApp, event: &Event) {
+///
+/// A click resolves against `hits`, the panes of the frame last drawn, even when an
+/// earlier event in the same burst has already moved the selection.
+fn dispatch(app: &mut ReviewApp, hits: &HitMap, event: &Event) {
     match event {
         Event::Key(key) => app.handle(map_key(*key)),
-        Event::Mouse(mouse) => app.handle(map_mouse(*mouse)),
+        Event::Mouse(mouse) => app.handle(map_mouse(*mouse, hits)),
         _ => {}
     }
 }
@@ -528,15 +537,70 @@ mod tests {
         assert_eq!(out.screen, expected_frame(&app(), 60, 20));
     }
 
+    fn click(column: u16, row: u16) -> Event {
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// The screen row of the tree line naming `path` in the frame `app` draws at this size.
+    fn tree_row(app: &ReviewApp, width: u16, height: u16, path: &str) -> u16 {
+        let lines = crate::ui::render_to_lines(app, width, height);
+        let row = lines
+            .iter()
+            .position(|line| line.chars().take(30).collect::<String>().contains(path))
+            .unwrap_or_else(|| panic!("{path} is in the tree: {lines:#?}"));
+        u16::try_from(row).unwrap()
+    }
+
+    /// A click on a tree row of the live frame selects the file that row shows.
+    #[test]
+    fn a_click_selects_the_tree_row_the_live_frame_drew() {
+        let mut live = app();
+        let other = live
+            .files()
+            .iter()
+            .position(|f| f.path == "src/other.rs")
+            .unwrap();
+        assert_ne!(live.selected_index(), other);
+        let row = tree_row(&live, 100, 30, "other.rs");
+        let out = review(
+            &mut live,
+            vec![Step::Later(click(5, row)), Step::Later(key('q'))],
+            Fault::None,
+        );
+        out.result.unwrap();
+        assert_eq!(live.selected_index(), other);
+    }
+
+    /// Review 2026-11-01: the loop, not the app, keeps the drawn frame's panes. After a resize
+    /// to 60 columns, column 25 is in the diff pane, though at 100 columns it is in the tree.
+    #[test]
+    fn a_click_after_a_resize_resolves_against_the_resized_frame() {
+        let mut live = app();
+        let before = live.selected_index();
+        let row = tree_row(&live, 100, 30, "other.rs");
+        let out = review(
+            &mut live,
+            vec![
+                Step::Resize(60, 20),
+                Step::Later(click(25, row)),
+                Step::Later(key('q')),
+            ],
+            Fault::None,
+        );
+        out.result.unwrap();
+        assert_eq!(live.selected_index(), before, "the click was in the diff");
+        assert_eq!(live.focus(), crate::state::Focus::Diff);
+    }
+
     #[test]
     fn a_mouse_click_reaches_the_review() {
         let mut live = app();
-        let click = Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 70,
-            row: 10,
-            modifiers: KeyModifiers::NONE,
-        });
+        let click = click(70, 10);
         let before = live.focus();
         let out = review(
             &mut live,

@@ -268,7 +268,9 @@ deep-diff-forge agent doctor            # proves MCP, the daemon and the CLI agr
 2. **`review_change`** with `view: "hunks"` and the `addresses` it cares about returns those
    hunks verbatim.
 3. Every answer is sealed (`input_sha256`) and fits `max_bytes`, 32 KiB by default, both copies
-   counted. A `next_cursor` continues, and it belongs to that patch and that selection only.
+   counted, as printed (escapes included). A `next_cursor` continues, and it belongs to that
+   patch and that selection only: a cursor from another patch or selection, or one whose
+   position is outside the selection (no page could have minted it), is refused.
 
 Without `--allow-repo`, `review_outline` and `review_hunks` do the same for a patch the agent
 passes. The same views exist on the CLI (`--outline`, `--hunks`), on the daemon's socket and
@@ -302,6 +304,11 @@ deep-diff-forge [--] <old> <new> [MODE] [--require-files] [--require-hunks]
 #       | --outline | --hunks [--address A]... [--path P]...   (both: [--max-bytes N] [--cursor C])
 ```
 
+Choose one MODE: a second is refused with exit 2 before any input is read. `--json` also
+selects the JSON form of `--rank` and `--cluster` (and is accepted, redundantly, with
+`--outline` and `--hunks`, which always print JSON). An option that takes one value is
+refused when given twice; only `--address` and `--path` repeat.
+
 | Mode | Output |
 | --- | --- |
 | *(none)* | One line per file: status, path, `+adds -dels`, hunk count. |
@@ -309,7 +316,7 @@ deep-diff-forge [--] <old> <new> [MODE] [--require-files] [--require-hunks]
 | `--jsonl` | One `{"event":"diff.file",…}` event per file, streamed. |
 | `--rank` | Files by review risk, highest first, with their signals. Add `--json` for `deep-diff-forge.rank.v0`. |
 | `--cluster [--parallel serial\|auto\|N]` | The same ranking through bounded parallel lanes with a deterministic join and a receipt. Add `--json` for `deep-diff-forge.cluster.v0`. |
-| `--layout inline` / `--layout side-by-side` | Text projections with old and new line numbers. |
+| `--layout inline` / `--layout side-by-side` | Text projections with old and new line numbers, as wide as the file's largest. A `\` note row follows what a row cannot show: a non-UTF-8 line shown lossily, `\ No newline at end of file`, and a removed/added pair whose printed text looks the same (a tab against the spaces it advances to, a literal `\x1b` against a raw `ESC`, a trailing or no-break space, or in side-by-side a change past the column width). Inline prints tabs raw and judges them by 8-column tab stops; side-by-side shows a tab as four spaces. Letters that only look alike (Cyrillic `а` against Latin `a`) are not noted. |
 | `--require-files` | Refuse a patch with 0 files: exit 7, empty stdout, `refused: 0 files in input (--require-files)`. |
 | `--require-hunks` | Refuse a patch with 0 hunks or 0 changed lines (header-only, rename-only, context-only): exit 7, `refused: 0 hunks in input (--require-hunks)`. |
 | `--outline` | `deep-diff-forge.review-outline.v0`: files in review-risk order, each hunk's address, ranges, `@@` heading and counts, no line text. |
@@ -362,7 +369,7 @@ git diff | deep-diff-forge review --probe --cols 120 --rows 40 --cmd rank
 | `j` / `k` · `↓` / `↑` | next / previous file, in rank order |
 | `g` / `G` · `Home` / `End` | first / last file |
 | `h` / `l` · `←` / `→` | focus the file tree / the diff |
-| `Enter` | open the file, or run the selected palette command |
+| `Enter` | open the selected file's diff (focus it), or run the selected palette command |
 | `s` · `Tab` · `t` | toggle inline and side-by-side |
 | `z` · `w` · `n` | fold context · wrap rows · show notes |
 | `v` · `Space` | mark the file reviewed and move on |
@@ -371,8 +378,9 @@ git diff | deep-diff-forge review --probe --cols 120 --rows 40 --cmd rank
 | `Ctrl-d` / `Ctrl-u` · `PageDown` / `PageUp` | scroll the diff |
 | `q` · `Esc` | quit · close the overlay |
 
-The mouse works too: the wheel scrolls, and clicks select files, focus the diff and open
-menus. The palette (`:` in the app, or `--palette` / `--cmd NAME` headless) runs `rank`,
+The mouse works too: the wheel scrolls, and clicks select the file on the row clicked, focus
+the diff when inside its pane and open menus; a click on a border or the status bar does
+nothing. The palette (`:` in the app, or `--palette` / `--cmd NAME` headless) runs `rank`,
 `outline`, `cluster`, `summary`, `notes`, `review`, `daemon`, `learning` and `maturity`
 against the loaded review. An unknown name or a non-numeric size is a usage error (exit 2).
 
@@ -415,8 +423,8 @@ deep-diff-forge {claude-code-contract|chain-contract|cluster-contract|loom-contr
 ```
 
 `learn` is local-only. A receipt holds hashes, counts and timings, never a path or a source
-line. Receipts live under `$XDG_STATE_HOME/deep-diff-forge/learning/`. An invalid receipt
-exits 4.
+line. Receipts live under `$XDG_STATE_HOME/deep-diff-forge/learning/` (an absolute path; a
+relative one is ignored for `$HOME/.local/state`). An invalid receipt exits 4.
 
 `analyze` checks that a patch turns the captured base directory into the candidate before it
 attaches semantics.
@@ -471,8 +479,10 @@ Output is deterministic: the same bytes give byte-identical stdout on every run.
 
 **Hunk addresses.** Every hunk in `review.v0` and in the views carries these fields:
 - `address`: SHA-256 over `ddf-hunk-v1`, the file path, the header's ranges and the body. It names
-  exactly that hunk in that patch: changing the path, the position or one byte of the body
-  changes it.
+  that hunk's content and place in that patch: changing the path, the position or one byte of the
+  body changes it. A patch that repeats a section of one path with a byte-identical hunk at the
+  same ranges gives both copies one address; `--address` then selects every copy, and a finding
+  anchored to it resolves to the first in review order.
 - `body_sha256`: the body alone. It survives a move, so use it to recognise the same change
   across revisions, never as proof that two reviews saw the same patch.
 - `section`: the `@@` heading Git wrote. It is display-only and never re-rendered into the patch.
@@ -484,13 +494,15 @@ The new fields are additive, so the schema stays `review.v0`.
 carries a bidi control, an invisible character or a control character, gets a `hazards` list:
 `path_traversal`, `git_internal`, `bidi_control`, `invisible` or `control`. `invisible` covers
 zero-width and joiner characters, invisible operators, fillers, the soft hyphen, variation
-selectors and tag characters; `control` covers C0/C1 controls other than tab and the Unicode
-line and paragraph separators. The carriage return of a CRLF body line does not count; one in
-a path does. A `---`/`+++` path ends at a CR, as Git's does, so a CRLF patch names the paths
-Git writes and a CR reaches such a path only quoted (`"x\r"`). The `diff --git` line keeps
-its CR: a section named only by that line, such as a mode change, reports a path ending in CR
-with `control`, although Git refuses that patch. Hazards are facts about the bytes, reported
-only where found. An empty list never means the text is safe. They also raise the file's rank
+selectors (the Mongolian free variation selectors included) and tag characters: with
+`bidi_control`, every Unicode `Default_Ignorable_Code_Point`, plus the interlinear annotation
+controls; `control` covers C0/C1 controls other than tab and the Unicode line and paragraph
+separators. The carriage return of a CRLF body line does not count; one in a path does. A
+`---`/`+++` path ends at a CR, as Git's does, so a CRLF patch names the paths Git writes and a
+CR reaches such a path only quoted (`"x\r"`). The `diff --git` line keeps its CR: a section
+named only by that line, such as a mode change, reports a path ending in CR with `control`,
+although Git refuses that patch. Hazards are facts about the bytes, reported only where found.
+An empty list never means the text is safe. They also raise the file's rank
 (`hazardous_text`).
 
 ```json
@@ -557,12 +569,12 @@ deep-diff-forge explain 7 --family council
 
 `envelope` runs the command as a child of the same binary, with stdin passed through. It reports:
 
-- `exit_code`, and `outcome`, the registry name for that code (`undocumented` for an unlisted code, `signal` if the command was killed);
+- `exit_code`, and `outcome`, the registry name for that code (`undocumented` for an unlisted code, `signal` and the `signal` number if the command was killed);
 - `ok`, which is true only for exit 0 with nothing truncated;
 - `stdout`, parsed when it is exactly one JSON value (otherwise text, so `--jsonl` stays text);
 - `stderr`.
 
-The command's own output is unchanged, and `envelope` exits with the command's code. Captured stdout is capped at 16 MiB and stderr at 1 MiB; anything cut is listed in `truncated` and never parsed.
+The command's own output is unchanged, and `envelope` exits with the command's code; a command ended by signal N gives 128 + N, the status a shell reports for it (not a registry code). Everything after `--` is the command's, `--help` included: `envelope -- council --help` wraps council's help. Captured stdout is capped at 16 MiB and stderr at 1 MiB; anything cut is listed in `truncated` and never parsed.
 
 ## MCP server
 
@@ -674,7 +686,8 @@ server on an owner-private Unix domain socket.
   Symlinks are resolved first, and Git is stopped after 30 s. A Git failure is error 3.
 
 **Default socket:** `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock`. There is no
-`/tmp` fallback. Without `$XDG_RUNTIME_DIR` the daemon fails closed until you pass `--socket PATH`.
+`/tmp` fallback. Without `$XDG_RUNTIME_DIR` (or with a relative one, which the XDG spec makes
+invalid) the daemon fails closed until you pass `--socket PATH`.
 
 **JSON-RPC methods** (protocol 2; `engine.methods` lists them with their parameters and the protocol that added them):
 `engine.initialize`, `engine.methods`, `daemon.health`, `daemon.status`,
@@ -712,8 +725,8 @@ deep-diff-forge review --findings found.jsonl < change.patch              # the 
 
 - **Anchors.** A finding is anchored by a hunk `address` (from the outline or `rank.v0`
   evidence), or by a `path` with an optional `line` and `side` (`new` or `old`). A path and a
-  line resolve to the hunk that holds the line, so a finding survives an agent that never saw
-  addresses.
+  line resolve to the hunk that holds the line, in any section with the path (a concatenated
+  patch can name one file twice), so a finding survives an agent that never saw addresses.
 - **Accepted findings** come back normalised from the review: the path, the address, and the
   line's own kind and text. The title and body are sanitised: no control, bidi or invisible
   characters.

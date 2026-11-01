@@ -73,9 +73,29 @@ class _Client:
         request_id = next(self._ids)
         line = json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
                           separators=(",", ":"), ensure_ascii=False)
-        if len(line.encode()) + 1 > MAX_REQUEST_BYTES:
+        try:
+            request = line.encode() + b"\n"
+        except UnicodeEncodeError as error:
+            # Python strings can hold a lone surrogate; UTF-8, and so the daemon, cannot.
+            raise ValueError(f"the request holds a string that is not valid Unicode: {error.reason} "
+                             f"at character {error.start}") from error
+        if len(request) > MAX_REQUEST_BYTES:
             raise ValueError("request exceeds the daemon's maximum size")
-        return _result(json.loads(self._exchange(line)), request_id)
+        answer = self._exchange(request)
+        try:
+            response = json.loads(answer.decode("utf-8"))
+            return _result(response, request_id)
+        except TransportError as error:
+            self._invalid(error)
+        except (ValueError, RecursionError) as error:
+            # An answer that is not UTF-8 JSON is a transport failure, as in the Rust SDK; so is
+            # one nested too deeply for json.loads, which raises RecursionError, not ValueError.
+            # The daemon's own errors (RpcError) pass through: the child answered properly.
+            self._invalid(TransportError(f"not a valid response: {error}"))
+
+    def _invalid(self, error):
+        """Raise ``error``, the transport failure for an answer that is not a valid response."""
+        raise error
 
     def review_patch(self, patch, require_files=False, require_hunks=False):
         """The ``deep-diff-forge.review.v0`` document for ``patch``."""
@@ -87,8 +107,18 @@ class _Client:
 
     def verify_findings(self, patch, findings, require_files=False, require_hunks=False):
         """The sealed ``deep-diff-forge.findings.v0`` verdict on ``findings`` (finding objects) for
-        ``patch``: each accepted with its anchor normalised, or refused with a reason. Protocol 2."""
-        return self.call("findings.verify", patch=patch, findings=list(findings), require_files=require_files,
+        ``patch``: each accepted with its anchor normalised, or refused with a reason. Protocol 2.
+
+        The findings travel as one request, so a finding holding a string UTF-8 cannot carry (a lone
+        surrogate, which ``json.loads`` accepts) raises ``ValueError`` naming its index before
+        anything is sent; the CLI, reading JSONL bytes, refuses such a line as ``malformed``."""
+        findings = list(findings)
+        for index, finding in enumerate(findings):
+            try:
+                json.dumps(finding, ensure_ascii=False).encode()
+            except UnicodeEncodeError as error:
+                raise ValueError(f"finding {index} holds a string that is not valid Unicode: {error.reason}") from error
+        return self.call("findings.verify", patch=patch, findings=findings, require_files=require_files,
                          require_hunks=require_hunks)
 
     def methods(self):
@@ -98,9 +128,12 @@ class _Client:
 
 class StdioClient(_Client):
     """``deep-diff-forge rpc`` as a child process; close it (or use ``with``) to end it. Each answer
-    must arrive within ``timeout`` seconds and fit the daemon's size cap; otherwise the child is
-    killed and ``TransportError`` raised, so a stuck or runaway child cannot hang or exhaust the
-    caller."""
+    must arrive within ``timeout`` seconds, and the answer must fit the
+    daemon's size cap and be a valid response; otherwise the child is killed and ``TransportError``
+    raised, so a stuck, runaway or misbehaving child cannot hang or exhaust the caller. The
+    deadline covers the write too: a child that stops reading cannot block a large request. An
+    answer that arrives before the whole request is taken is returned, and the child, now out of
+    step with the stream, is killed."""
 
     def __init__(self, command=("deep-diff-forge", "rpc"), timeout=30.0):
         super().__init__()
@@ -108,38 +141,64 @@ class StdioClient(_Client):
         self._buffer = b""
         self._process = subprocess.Popen(list(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                          stderr=subprocess.DEVNULL)
+        # Both pipes are non-blocking and driven by one selector under one deadline: a blocking
+        # write of a request larger than the pipe buffer would hang on a child that stops reading,
+        # before any deadline was armed.
+        os.set_blocking(self._process.stdin.fileno(), False)
         os.set_blocking(self._process.stdout.fileno(), False)
 
-    def _exchange(self, line):
-        try:
-            self._process.stdin.write(line.encode() + b"\n")
-            self._process.stdin.flush()
-        except BrokenPipeError:
-            self._fail("deep-diff-forge rpc is not reading")
-        return self._read_line().decode()
-
-    def _read_line(self):
+    def _exchange(self, request):
         deadline = time.monotonic() + self._timeout
-        fd = self._process.stdout.fileno()
+        pending = memoryview(request)
+        stdin, stdout = self._process.stdin.fileno(), self._process.stdout.fileno()
         with selectors.DefaultSelector() as selector:
-            selector.register(fd, selectors.EVENT_READ)
+            selector.register(stdin, selectors.EVENT_WRITE)
+            selector.register(stdout, selectors.EVENT_READ)
+            # Read while writing, so a child that answers (or refuses) early cannot deadlock us.
+            # A whole answer line ends the exchange even if part of the request is unsent.
             while b"\n" not in self._buffer:
                 if len(self._buffer) > MAX_REQUEST_BYTES:
                     self._fail("the answer exceeds the daemon's maximum size")
                 remaining = deadline - time.monotonic()
-                if remaining <= 0 or not selector.select(remaining):
+                ready = selector.select(remaining) if remaining > 0 else []
+                if not ready:
                     self._fail(f"no answer within {self._timeout} s")
-                chunk = os.read(fd, 1 << 16)
-                if not chunk:
-                    self._fail("deep-diff-forge rpc closed without answering")
-                self._buffer += chunk
+                for key, _ in ready:
+                    if key.fd == stdin:
+                        pending = self._write(selector, pending)
+                    else:
+                        chunk = os.read(stdout, 1 << 16)
+                        if not chunk:
+                            self._fail("deep-diff-forge rpc closed without answering")
+                        self._buffer += chunk
         line, _, self._buffer = self._buffer.partition(b"\n")
+        if pending:
+            # It answered before taking the whole request: the unsent tail would garble the next
+            # one, so the out-of-step child is killed and the next call is a TransportError.
+            self._process.kill()
+            self._process.wait()
         return line
 
-    def _fail(self, message):
+    def _write(self, selector, pending):
+        """Write what the pipe takes of ``pending``; the rest, or nothing once it is all written."""
+        try:
+            pending = pending[os.write(self._process.stdin.fileno(), pending):]
+        except BlockingIOError:
+            return pending
+        except BrokenPipeError:
+            # The child stopped reading: it may still answer (a refusal), or close without one.
+            pending = pending[:0]
+        if not pending:
+            selector.unregister(self._process.stdin.fileno())
+        return pending
+
+    def _invalid(self, error):
         self._process.kill()
         self._process.wait()
-        raise TransportError(message)
+        raise error
+
+    def _fail(self, message):
+        self._invalid(TransportError(message))
 
     def close(self):
         if self._process.stdin and not self._process.stdin.closed:
@@ -185,7 +244,7 @@ class SocketClient(_Client):
         self._path = str(path)
         self._timeout = timeout
 
-    def _exchange(self, line):
+    def _exchange(self, request):
         # A missing socket, a refused connection or a timeout is "could not be reached", the
         # same TransportError the stdio client raises, not a bare OSError.
         try:
@@ -196,11 +255,12 @@ class SocketClient(_Client):
                 uid = _peer_uid(connection)
                 if uid is not None and uid != os.geteuid():
                     raise TransportError(f"the daemon at {self._path} runs as uid {uid}, not uid {os.geteuid()}")
-                connection.sendall((line + "\n").encode())
-                with connection.makefile("r", encoding="utf-8") as reader:
+                connection.sendall(request)
+                # Bytes, not text: the caller decodes under its TransportError mapping.
+                with connection.makefile("rb") as reader:
                     answer = reader.readline(MAX_REQUEST_BYTES + 1)
         except OSError as error:
             raise TransportError(f"the daemon at {self._path} could not be reached: {error}") from error
-        if not answer.endswith("\n"):
+        if not answer.endswith(b"\n"):
             raise TransportError("the daemon closed without a complete answer")
         return answer

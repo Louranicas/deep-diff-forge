@@ -118,11 +118,25 @@ selection.
   `crates/deep-diff-forge-patch/src/parser.rs`).
 - Human-facing terminal output passes through `core::display_safe`, which
   exposes ANSI/CSI/OSC controls, C0/C1 controls, carriage returns, DEL, bidi
-  overrides/isolates, directional marks, zero-width characters, and BOM rather
-  than executing or visually reordering them.
-- Raw JSON/JSONL terminal output uses the canonical `core::json_escape` path,
-  including DEL and C1 escaping. A downstream program that decodes those JSON
-  strings must apply its own terminal-safe rendering before displaying them.
+  overrides/isolates, directional marks, zero-width characters, BOM and every
+  other Unicode `Default_Ignorable_Code_Point` rather than executing, hiding or
+  visually reordering them. Before 2026-11-01 the Mongolian free variation
+  selectors (`U+180B`-`U+180D`, `U+180F`, which rustc accepts inside an
+  identifier), the Khmer inherent vowels, the musical and shorthand format
+  controls, the reserved default-ignorables and the interlinear annotation controls passed
+  through raw and unflagged.
+- Hand-built JSON/JSONL output uses the canonical `core::json_escape` path,
+  including DEL and C1 escaping. Serde-built JSON (the `--outline` and `--hunks`
+  views, `rpc`, MCP, the daemon socket, the review CLI, and the pretty-printed
+  `findings verify`, `deploy doctor --json`, `eval --json` and `bench --json`
+  documents) goes out through `core::json_line_safe`, which applies the same DEL,
+  C1 and `U+2028`/`U+2029` escaping, and view pages are budgeted on that escaped
+  text. Before 2026-11-01 `json_line_safe` escaped only the separators, so those
+  views printed raw 8-bit CSI (`U+009B`) and OSC (`U+009D`) from patch paths,
+  headings and lines, and the pretty-printed documents skipped it, so `findings
+  verify` printed a finding's patch path with the raw CSI. A
+  downstream program that decodes those JSON strings must apply its own
+  terminal-safe rendering before displaying them.
 - Annotation provenance is fail-closed: a claimed `source` is not trusted until
   evidence grounds it.
 
@@ -174,13 +188,18 @@ flowchart LR
   `MAX_RESPONSE_BYTES`). An oversized request gets one `INVALID_REQUEST` error
   and the connection closes. A response over the cap is replaced by a
   `RESOURCE_EXHAUSTED` (8) error naming its size (`bounded_response`); before
-  2026-10-28 the server sent it and the client failed. `deep-diff-forge rpc`
+  2026-10-28 the server sent it and the client failed. Since 2026-11-01 an error
+  answer is held to the same cap, measured after `json_line_safe`, and an error
+  message is cut at 4 KiB (`MAX_ERROR_MESSAGE_BYTES`) where it is built, so request
+  text an error repeats cannot push it past the cap; the MCP server's tool and
+  protocol errors are cut the same way. `deep-diff-forge rpc`
   uses the same `process_line` and caps over stdio.
 - Each line read has a 30-second absolute deadline (`READ_TIMEOUT`), applied as
   the remaining time before every read, so slow byte-drip traffic cannot renew
   it. Writes have a 30-second timeout (`WRITE_TIMEOUT`).
 - At most eight connections are served at once (`MAX_CONNECTIONS`). A further
-  connection is accepted and closed at once, with no response. Workers share one
+  connection is accepted and closed at once, with no response; the CLI reports
+  that as no answer (exit 6), not as no daemon. Workers share one
   engine and their requests run in parallel. Only the session table is locked, and
   only for bookkeeping; parsing, ranking and Git run outside it. The request bytes
   in flight are capped at 128 MiB (`MAX_IN_FLIGHT_BYTES`, `admission.rs`), first

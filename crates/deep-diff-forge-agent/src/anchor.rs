@@ -15,24 +15,25 @@ pub fn anchor_path(anchor: &AnnotationAnchor) -> &str {
 
 /// Validate that an anchor refers to something that actually exists in the
 /// review: the file must be present, and for hunk/span anchors the referenced
-/// id must exist within that file. Untrusted anchors that do not resolve are
-/// rejected (returns `false`) rather than silently accepted.
+/// id must exist within a section with that path (a concatenated patch can name
+/// one file twice). Untrusted anchors that do not resolve are rejected (returns
+/// `false`) rather than silently accepted.
 #[must_use]
 pub fn validate_anchor(anchor: &AnnotationAnchor, files: &[ReviewFile]) -> bool {
     let path = anchor_path(anchor);
-    let Some(file) = files.iter().find(|f| f.path == path) else {
-        return false;
-    };
-    match anchor {
-        AnnotationAnchor::File { .. } => true,
-        AnnotationAnchor::Hunk { hunk_id, .. } => {
-            file.patch_twin.hunks.iter().any(|h| h.id == *hunk_id)
-        }
-        AnnotationAnchor::SemanticSpan { span_id, .. } => file
-            .semantic_twin
-            .as_ref()
-            .is_some_and(|t| t.spans.iter().any(|s| s.id == *span_id)),
-    }
+    files
+        .iter()
+        .filter(|f| f.path == path)
+        .any(|file| match anchor {
+            AnnotationAnchor::File { .. } => true,
+            AnnotationAnchor::Hunk { hunk_id, .. } => {
+                file.patch_twin.hunks.iter().any(|h| h.id == *hunk_id)
+            }
+            AnnotationAnchor::SemanticSpan { span_id, .. } => file
+                .semantic_twin
+                .as_ref()
+                .is_some_and(|t| t.spans.iter().any(|s| s.id == *span_id)),
+        })
 }
 
 #[cfg(test)]
@@ -70,6 +71,42 @@ mod tests {
         };
         assert!(validate_anchor(&span(7), &files));
         assert!(!validate_anchor(&span(8), &files));
+    }
+
+    /// A concatenated patch can name one file twice: an anchor on the later section's hunk or
+    /// span resolves. Before, only the first section with the path was searched.
+    #[test]
+    fn anchors_resolve_in_every_section_with_the_path() {
+        use deep_diff_forge_core::{ParseStatus, SemanticSpan, SemanticSpanId, SemanticTwin};
+        let mut files = parse(
+            "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n\
+             --- a/src/x.rs\n+++ b/src/x.rs\n@@ -10,1 +10,1 @@\n-c\n+d\n",
+        )
+        .unwrap();
+        let later = files[1].patch_twin.hunks[0].id;
+        assert_ne!(later, files[0].patch_twin.hunks[0].id);
+        files[1].semantic_twin = Some(SemanticTwin {
+            language: "rust".into(),
+            parse_status: ParseStatus::Parsed,
+            spans: vec![SemanticSpan {
+                id: SemanticSpanId(3),
+                hunk_id: later,
+                kind: deep_diff_forge_core::SemanticChangeKind::AddedNode,
+                old_range: None,
+                new_range: None,
+            }],
+        });
+        let hunk = |hunk_id| AnnotationAnchor::Hunk {
+            path: "src/x.rs".into(),
+            hunk_id,
+        };
+        assert!(validate_anchor(&hunk(later), &files));
+        assert!(!validate_anchor(&hunk(HunkId(999)), &files));
+        let span = AnnotationAnchor::SemanticSpan {
+            path: "src/x.rs".into(),
+            span_id: SemanticSpanId(3),
+        };
+        assert!(validate_anchor(&span, &files));
     }
 
     #[test]

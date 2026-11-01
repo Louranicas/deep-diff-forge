@@ -92,12 +92,18 @@ impl Default for Page {
     }
 }
 
+/// The most rendered bytes of a requested address or path an error repeats. Bug hunt 2026-11-01:
+/// before, the whole name was repeated, and `display_safe` writes each 3-byte bidi character as
+/// the 8-byte `\u{202e}`, so one 81 MB path came back as a 243 MB error line.
+const ECHO_BYTES: usize = 1024;
+
 /// Why a view was refused. Each is a mistake in the request, never in the patch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViewError {
     /// `max_bytes` is outside [`MIN_MAX_BYTES`]..=[`MAX_MAX_BYTES`].
     Budget(usize),
-    /// The cursor is malformed, or belongs to another patch or another selection.
+    /// The cursor is malformed, belongs to another patch or another selection, or points outside
+    /// the selection (a position no page of it could have minted).
     Cursor(String),
     /// No hunk of this patch has the address.
     UnknownAddress(String),
@@ -116,12 +122,12 @@ impl std::fmt::Display for ViewError {
             Self::UnknownAddress(a) => write!(
                 f,
                 "no hunk of this patch has the address {}",
-                deep_diff_forge_core::display_safe(a)
+                deep_diff_forge_core::display_safe_bounded(a, ECHO_BYTES)
             ),
             Self::UnknownPath(p) => write!(
                 f,
                 "no file of this patch has the path {}",
-                deep_diff_forge_core::display_safe(p)
+                deep_diff_forge_core::display_safe_bounded(p, ECHO_BYTES)
             ),
         }
     }
@@ -238,8 +244,10 @@ fn line_json(line: &deep_diff_forge_core::PatchLine) -> Value {
     value
 }
 
+/// The bytes `value` takes as emitted: every sink writes serde's text through
+/// [`json_line_safe`](deep_diff_forge_core::json_line_safe), whose escapes can lengthen it.
 fn size(value: &Value) -> usize {
-    value.to_string().len()
+    deep_diff_forge_core::json_line_safe(&value.to_string()).len()
 }
 
 /// A cursor: the seal's first 16 hex digits, the selection's digest, then the item and the
@@ -252,7 +260,17 @@ fn cursor(seal: &InputSeal, selection: &str, item: usize, inner: usize) -> Strin
     )
 }
 
-fn resume(page: &Page, seal: &InputSeal, selection: &str) -> Result<(usize, usize), ViewError> {
+/// The `(item, inner)` position a page starts at. A cursor must be one this patch's pages could
+/// have minted for this selection: canonical decimal positions, an `item` inside the selection,
+/// and an `inner` position that is `0` or inside that item (`inner_len(item)` is its length, or
+/// `None` past the selection's end). Anything else is refused rather than answered: skipping past
+/// the end would report unseen lines or hunks as complete.
+fn resume(
+    page: &Page,
+    seal: &InputSeal,
+    selection: &str,
+    inner_len: impl Fn(usize) -> Option<usize>,
+) -> Result<(usize, usize), ViewError> {
     if !(MIN_MAX_BYTES..=MAX_MAX_BYTES).contains(&page.max_bytes) {
         return Err(ViewError::Budget(page.max_bytes));
     }
@@ -271,10 +289,24 @@ fn resume(page: &Page, seal: &InputSeal, selection: &str) -> Result<(usize, usiz
     if picked != &deep_diff_forge_core::sha256_hex(selection.as_bytes())[..8] {
         return Err(ViewError::Cursor("it belongs to another selection".into()));
     }
-    match (item.parse(), inner.parse()) {
-        (Ok(item), Ok(inner)) => Ok((item, inner)),
-        _ => Err(ViewError::Cursor("its positions are not numbers".into())),
+    let (Some(item), Some(inner)) = (position(item), position(inner)) else {
+        return Err(ViewError::Cursor("its positions are not numbers".into()));
+    };
+    match inner_len(item) {
+        Some(len) if inner == 0 || inner < len => Ok((item, inner)),
+        _ => Err(ViewError::Cursor(
+            "its position is outside the selection".into(),
+        )),
     }
+}
+
+/// A cursor position exactly as [`cursor`] writes it: ASCII digits, no sign, and no leading
+/// zero except in `0` itself.
+fn position(text: &str) -> Option<usize> {
+    let canonical = !text.is_empty()
+        && text.bytes().all(|b| b.is_ascii_digit())
+        && (text == "0" || !text.starts_with('0'));
+    canonical.then(|| text.parse().ok()).flatten()
 }
 
 /// `deep-diff-forge.review-outline.v0`: every file in review-risk order, each with its score,
@@ -284,8 +316,12 @@ fn resume(page: &Page, seal: &InputSeal, selection: &str) -> Result<(usize, usiz
 /// [`ViewError::Budget`] or [`ViewError::Cursor`] for a bad page request.
 pub fn outline(review: &SealedReview, page: &Page) -> Result<Value, ViewError> {
     let (files, seal) = (review.files(), review.seal());
-    let (start_file, start_hunk) = resume(page, seal, "outline")?;
     let order = risk_order(files);
+    let (start_file, start_hunk) = resume(page, seal, "outline", |item| {
+        order
+            .get(item)
+            .map(|(index, _, _)| files[*index].patch_twin.hunks.len())
+    })?;
     let (input_sha256, tool) = seal_members(seal);
     let hunk_total: usize = files.iter().map(|f| f.patch_twin.hunks.len()).sum();
     let (additions, deletions) = files
@@ -371,7 +407,11 @@ pub fn hunks(
 ) -> Result<Value, ViewError> {
     let (files, seal) = (review.files(), review.seal());
     let (units, key) = select(files, selection)?;
-    let (start_unit, start_line) = resume(page, seal, &key)?;
+    let (start_unit, start_line) = resume(page, seal, &key, |item| {
+        units
+            .get(item)
+            .map(|&(f, h)| files[f].patch_twin.hunks[h].lines.len())
+    })?;
     let (input_sha256, tool) = seal_members(seal);
     let mut budget = page.max_bytes - ENVELOPE_BYTES;
     let mut out = Vec::new();
@@ -435,6 +475,25 @@ fn select(
     files: &[ReviewFile],
     selection: &Selection,
 ) -> Result<(Vec<(usize, usize)>, String), ViewError> {
+    select_with(files, selection, &|hunk: &PatchHunk, path: &str| {
+        hunk.address(path)
+    })
+}
+
+/// [`select`], with each hunk's address computed by `address` (a test counts the calls).
+///
+/// A name the selection repeats selects its hunks once, so a selection never holds more units
+/// than the review has hunks, and each hunk's address is computed once per call. Bug hunt
+/// 2026-11-01: before, every repeat of a path pushed all its hunks again (`paths` of one name
+/// 50,000 times over 4,000 hunks asked for 3.2 GB and an allocation failure aborted the daemon,
+/// which `catch_unwind` cannot contain), and every requested address hashed every hunk again
+/// (4,000 addresses over 4,000 hunks held a worker for 18 s).
+fn select_with(
+    files: &[ReviewFile],
+    selection: &Selection,
+    address: &dyn Fn(&PatchHunk, &str) -> String,
+) -> Result<(Vec<(usize, usize)>, String), ViewError> {
+    use std::collections::{HashMap, HashSet};
     match selection {
         Selection::All => {
             let units = risk_order(files)
@@ -444,41 +503,68 @@ fn select(
             Ok((units, "all".into()))
         }
         Selection::Addresses(addresses) => {
-            let mut units = Vec::with_capacity(addresses.len());
-            // Every hunk with the address: two identical sections of one path share it.
-            for address in addresses {
-                let before = units.len();
-                for (f, file) in files.iter().enumerate() {
-                    units.extend(
-                        (0..file.patch_twin.hunks.len())
-                            .filter(|&h| &file.patch_twin.hunks[h].address(&file.path) == address)
-                            .map(|h| (f, h)),
-                    );
-                }
-                if units.len() == before {
-                    return Err(ViewError::UnknownAddress(address.clone()));
-                }
+            let mut seen = HashSet::new();
+            let named: Vec<&str> = addresses
+                .iter()
+                .map(String::as_str)
+                .filter(|a| seen.insert(*a))
+                .collect();
+            let by_address = hunks_by_address(files, &named, address);
+            let mut units = Vec::new();
+            for &wanted in &named {
+                let found = by_address
+                    .get(wanted)
+                    .ok_or_else(|| ViewError::UnknownAddress(wanted.to_owned()))?;
+                units.extend_from_slice(found);
             }
-            Ok((units, format!("a:{}", addresses.join("\n"))))
+            Ok((units, format!("a:{}", named.join("\n"))))
         }
         Selection::Paths(paths) => {
-            let mut units = Vec::new();
-            // Every section with the path: a concatenated patch can name one file twice.
-            for path in paths {
-                if !files.iter().any(|file| &file.path == path) {
-                    return Err(ViewError::UnknownPath(path.clone()));
-                }
-                for (f, file) in files
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, file)| &file.path == path)
-                {
-                    units.extend((0..file.patch_twin.hunks.len()).map(|h| (f, h)));
-                }
+            // Every section with the path, in review order: a concatenated patch can name one
+            // file twice.
+            let mut by_path: HashMap<&str, Vec<usize>> = HashMap::new();
+            for (f, file) in files.iter().enumerate() {
+                by_path.entry(file.path.as_str()).or_default().push(f);
             }
-            Ok((units, format!("p:{}", paths.join("\n"))))
+            let mut seen = HashSet::new();
+            let mut named = Vec::new();
+            let mut units = Vec::new();
+            for wanted in paths.iter().filter(|p| seen.insert(p.as_str())) {
+                let sections = by_path
+                    .get(wanted.as_str())
+                    .ok_or_else(|| ViewError::UnknownPath(wanted.clone()))?;
+                for &f in sections {
+                    units.extend((0..files[f].patch_twin.hunks.len()).map(|h| (f, h)));
+                }
+                named.push(wanted.as_str());
+            }
+            Ok((units, format!("p:{}", named.join("\n"))))
         }
     }
+}
+
+/// The hunks of each `wanted` address, in review order (two identical sections of one path share
+/// an address), with each hunk's address computed once. The table holds only the wanted
+/// addresses that some hunk has, so its memory follows the request, not the patch. Bug hunt
+/// 2026-11-01: before, it kept every hunk's 64-character address, so one address over 300,000
+/// hunks peaked at 202 MB against 149 MB for a path selection (measured, release build), memory
+/// the admission weight does not count.
+fn hunks_by_address<'w>(
+    files: &[ReviewFile],
+    wanted: &[&'w str],
+    address: &dyn Fn(&PatchHunk, &str) -> String,
+) -> std::collections::HashMap<&'w str, Vec<(usize, usize)>> {
+    let wanted: std::collections::HashSet<&'w str> = wanted.iter().copied().collect();
+    let mut table: std::collections::HashMap<&'w str, Vec<(usize, usize)>> =
+        std::collections::HashMap::new();
+    for (f, file) in files.iter().enumerate() {
+        for (h, hunk) in file.patch_twin.hunks.iter().enumerate() {
+            if let Some(&key) = wanted.get(address(hunk, &file.path).as_str()) {
+                table.entry(key).or_default().push((f, h));
+            }
+        }
+    }
+    table
 }
 
 #[cfg(test)]
@@ -855,6 +941,133 @@ mod tests {
         ));
     }
 
+    /// Bug hunt 2026-11-01: a name the selection repeats selects its hunks once, so the answer is
+    /// the one the name alone gives and no selection holds more units than the review has hunks.
+    /// Before, `paths` of one name 50,000 times over 4,000 hunks built 200 million units and the
+    /// allocation failure aborted the daemon.
+    #[test]
+    fn a_repeated_name_selects_its_hunks_once() {
+        let one = "--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        let other = "--- a/x.rs\n+++ b/x.rs\n@@ -9 +9 @@\n-c\n+d\n";
+        let r = review(&format!("{one}{other}{one}"));
+        let total = 3;
+        let address = r.files()[0].patch_twin.hunks[0].address("x.rs");
+        for (alone, repeated) in [
+            (
+                Selection::Paths(vec!["x.rs".into()]),
+                Selection::Paths(vec!["x.rs".into(); 50]),
+            ),
+            (
+                Selection::Addresses(vec![address.clone()]),
+                Selection::Addresses(vec![address.clone(); 50]),
+            ),
+        ] {
+            let (units, _) = select(r.files(), &repeated).unwrap();
+            assert!(units.len() <= total, "{repeated:?}: {}", units.len());
+            assert_eq!(
+                hunks(&r, &repeated, &Page::default()).unwrap(),
+                hunks(&r, &alone, &Page::default()).unwrap(),
+                "{repeated:?}"
+            );
+        }
+        // A repeat between other names keeps the order of first mention.
+        let r = review(&patch());
+        let picked = Selection::Paths(vec![
+            "src/f2.rs".into(),
+            "src/f0.rs".into(),
+            "src/f2.rs".into(),
+        ]);
+        let (units, key) = select(r.files(), &picked).unwrap();
+        let files: Vec<usize> = units.iter().map(|&(f, _)| f).collect();
+        assert_eq!(files, [2, 2, 2, 0, 0, 0]);
+        assert_eq!(key, "p:src/f2.rs\nsrc/f0.rs");
+        // The same holds for addresses: a repeat is dropped, the order of the rest kept.
+        let f1 = r.files()[1].patch_twin.hunks[1].address("src/f1.rs");
+        let f3 = r.files()[3].patch_twin.hunks[0].address("src/f3.rs");
+        let picked = Selection::Addresses(vec![f3.clone(), f1.clone(), f3.clone()]);
+        let (units, key) = select(r.files(), &picked).unwrap();
+        assert_eq!(units, [(3, 0), (1, 1)]);
+        assert_eq!(key, format!("a:{f3}\n{f1}"));
+    }
+
+    /// Bug hunt 2026-11-01: each hunk's address is computed once per selection, however many
+    /// addresses it names. Before, every requested address hashed every hunk again, so 4,000
+    /// addresses over 4,000 hunks took 18 s (measured, release build).
+    #[test]
+    fn each_hunk_address_is_computed_once_per_selection() {
+        let r = review(&patch());
+        let total: usize = r.files().iter().map(|f| f.patch_twin.hunks.len()).sum();
+        let every: Vec<String> = r
+            .files()
+            .iter()
+            .flat_map(|f| f.patch_twin.hunks.iter().map(|h| h.address(&f.path)))
+            .collect();
+        let wanted: Vec<String> = every
+            .iter()
+            .cycle()
+            .take(every.len() * 20)
+            .cloned()
+            .collect();
+        let calls = std::cell::Cell::new(0usize);
+        let counting = |hunk: &PatchHunk, path: &str| {
+            calls.set(calls.get() + 1);
+            hunk.address(path)
+        };
+        let (units, _) = select_with(r.files(), &Selection::Addresses(wanted), &counting).unwrap();
+        assert_eq!(units.len(), total);
+        assert_eq!(calls.get(), total);
+    }
+
+    /// Bug hunt 2026-11-01: the address table holds only the requested addresses a hunk has, so
+    /// a one-address selection over many hunks keeps one entry. Before, it kept every hunk's
+    /// address (here 18 entries; 300,000 on a 12.6 MB patch peaked 53 MB above a path selection).
+    #[test]
+    fn the_address_table_holds_only_requested_addresses() {
+        let r = review(&patch());
+        let address = |hunk: &PatchHunk, path: &str| hunk.address(path);
+        let f2 = r.files()[2].patch_twin.hunks[1].address("src/f2.rs");
+        let table = hunks_by_address(r.files(), &[f2.as_str(), "absent"], &address);
+        assert_eq!(table.len(), 1);
+        assert_eq!(table[f2.as_str()], [(2, 1)]);
+        // Two identical sections of one path share an address; both are kept, in review order.
+        let one = "--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        let r = review(&format!("{one}{one}"));
+        let x = r.files()[0].patch_twin.hunks[0].address("x.rs");
+        let table = hunks_by_address(r.files(), &[x.as_str()], &address);
+        assert_eq!(table[x.as_str()], [(0, 0), (1, 0)]);
+    }
+
+    /// Bug hunt 2026-11-01: an unknown address or path is repeated in the error within
+    /// `ECHO_BYTES`, with the count of bytes left out. Before, the whole name came back, three
+    /// times its size for bidi characters (a 243 MB error line from an 81 MB request).
+    #[test]
+    fn an_unknown_name_is_repeated_within_a_bound() {
+        let r = review(&patch());
+        let huge = "\u{202e}".repeat(100_000);
+        for selection in [
+            Selection::Paths(vec![huge.clone()]),
+            Selection::Addresses(vec![huge.clone()]),
+        ] {
+            let message = hunks(&r, &selection, &Page::default())
+                .unwrap_err()
+                .to_string();
+            assert!(message.len() <= ECHO_BYTES + 64, "{}", message.len());
+            assert!(
+                message.ends_with("... [299616 bytes omitted]"),
+                "{message:.80}"
+            );
+        }
+        let short = hunks(
+            &r,
+            &Selection::Paths(vec!["no/such.rs".into()]),
+            &Page::default(),
+        );
+        assert_eq!(
+            short.unwrap_err().to_string(),
+            "no file of this patch has the path no/such.rs"
+        );
+    }
+
     /// The fit loop returns the first answer that fits, shrinks in proportion while over, and
     /// stops at the minimum budget or the last attempt; an error passes straight through.
     #[test]
@@ -1006,5 +1219,123 @@ mod tests {
                 .to_string()
                 .contains("another patch")
         );
+    }
+
+    /// Bug hunt 2026-11-01: a cursor no page could have minted is refused. Before, a position
+    /// past the hunk's end answered that hunk as `complete: true` with no lines,
+    /// `remaining_hunks: 0` and no `next_cursor`; one past the selection answered an empty page
+    /// with nothing remaining; and `+0.05` was read as `0.5`.
+    #[test]
+    fn cursors_outside_the_selection_are_refused() {
+        let text = "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n-b\n+c\n+d\n";
+        let one = review(text);
+        let prefix = |selection: &str| {
+            format!(
+                "{}.{}",
+                &one.seal().input_sha256[..16],
+                &deep_diff_forge_core::sha256_hex(selection.as_bytes())[..8]
+            )
+        };
+        let at = |item: &str, inner: &str| {
+            page(
+                MIN_MAX_BYTES,
+                Some(format!("{}.{item}.{inner}", prefix("all"))),
+            )
+        };
+        // Genuine positions: the start, and every line inside the one hunk.
+        for inner in ["0", "1", "3"] {
+            let answer = hunks(&one, &Selection::All, &at("0", inner)).unwrap();
+            assert_eq!(
+                answer["hunks"][0]["line_offset"],
+                json!(inner.parse::<usize>().unwrap())
+            );
+        }
+        for (item, inner) in [
+            ("0", "4"),
+            ("0", "99999"),
+            ("1", "0"),
+            ("7", "0"),
+            ("+0", "1"),
+            ("0", "+1"),
+            ("0", "01"),
+            ("00", "1"),
+            ("0", ""),
+            ("0", "-1"),
+            ("0", "1e0"),
+        ] {
+            let err = hunks(&one, &Selection::All, &at(item, inner))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("invalid cursor"), "{item}.{inner}: {err}");
+        }
+        let outline_at = |item: &str, inner: &str| {
+            outline(
+                &one,
+                &page(
+                    MIN_MAX_BYTES,
+                    Some(format!("{}.{item}.{inner}", prefix("outline"))),
+                ),
+            )
+        };
+        assert!(outline_at("0", "0").is_ok());
+        for (item, inner) in [("0", "1"), ("0", "999"), ("1", "0")] {
+            let err = outline_at(item, inner).unwrap_err().to_string();
+            assert!(
+                err.contains("outside the selection"),
+                "{item}.{inner}: {err}"
+            );
+        }
+    }
+
+    /// An outline over files with no hunks (binary sections) mints cursors at hunk `0` of a
+    /// file that has none; resuming them must still work, page after page.
+    #[test]
+    fn outline_cursors_at_a_file_without_hunks_resume() {
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        for i in 0..40 {
+            let name = format!("assets/{}{i}.png", "p".repeat(60));
+            let _ = writeln!(
+                text,
+                "diff --git a/{name} b/{name}\nBinary files a/{name} and b/{name} differ"
+            );
+        }
+        let review = review(&text);
+        let (mut cursor, mut listed, mut pages) = (None, 0, 0);
+        loop {
+            let answer = outline(&review, &page(MIN_MAX_BYTES, cursor.clone())).unwrap();
+            listed += answer["files"].as_array().unwrap().len();
+            pages += 1;
+            cursor = answer["next_cursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+            assert!(cursor.as_deref().unwrap().ends_with(".0"), "{cursor:?}");
+        }
+        assert_eq!(listed, 40);
+        assert!(pages > 1, "the budget forces paging");
+    }
+
+    /// Bug hunt 2026-11-01: a page is budgeted by what its sinks write. `json_line_safe` turns
+    /// each two-byte C1 character into a six-byte escape; before, the pager measured serde's raw
+    /// text, so a page of C1-heavy lines was emitted over `max_bytes`.
+    #[test]
+    fn pages_of_escaped_text_fit_their_budget_as_emitted() {
+        use std::fmt::Write as _;
+        let mut text = String::from("--- a/x\n+++ b/x\n@@ -0,0 +1,200 @@\n");
+        for _ in 0..200 {
+            let _ = writeln!(text, "+{}", "\u{9b}".repeat(30));
+        }
+        let review = review(&text);
+        let mut cursor = None;
+        loop {
+            let answer = hunks(&review, &Selection::All, &page(8192, cursor)).unwrap();
+            let emitted = deep_diff_forge_core::json_line_safe(&answer.to_string()).len();
+            assert!(emitted <= 8192, "{emitted} > 8192");
+            cursor = answer["next_cursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
     }
 }
