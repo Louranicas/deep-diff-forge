@@ -25,7 +25,10 @@ use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe, display_safe
 /// a final newline into `/dev/full` exited 0 (bug hunt 2026-11-01).
 fn emit(s: &str) {
     use std::io::Write as _;
-    let mut stdout = std::io::stdout().lock();
+    // The unlocked handle, as before the flush was added: CodeQL's Rust models read a write
+    // through a `StdoutLock` as logging, and flagged every value printed here by its name
+    // (`trusted`, `session_id`) as cleartext logging on PR #83. Output is single-threaded.
+    let mut stdout = std::io::stdout();
     if let Err(err) = stdout.write_all(s.as_bytes()).and_then(|()| stdout.flush()) {
         if err.kind() == std::io::ErrorKind::BrokenPipe {
             std::process::exit(exit::SUCCESS);
