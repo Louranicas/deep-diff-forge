@@ -320,6 +320,57 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   wall-clock deadline only against hangs. Measured: linear code passes under 64 busy loops
   (20 s wall), and the quadratic import rule it guards against (`eee2b4c^`) still fails at 66.7 s
   of CPU time. Shrinking the lines was rejected: at 20,000 units the quadratic rule took 0.4 s.
+- **Serde-built JSON no longer prints raw DEL or C1 controls** (bug hunt 2026-11-01). The
+  `--hunks` and `--outline` views, `rpc`, MCP, the daemon socket and the review CLI are written
+  by serde_json, which escapes only C0, and then passed through `core::json_line_safe`, which
+  escaped only `U+2028`/`U+2029`; a patch path, `@@` heading or line holding the 8-bit CSI
+  (`U+009B`) or OSC (`U+009D`) introducer reached the terminal raw, against SECURITY.md's DEL/C1
+  promise. The pretty-printed documents (`findings verify`, `deploy doctor --json`, `eval --json`
+  and `bench --json`) skipped `json_line_safe` altogether, so `findings verify` printed a
+  finding's patch path, and `deploy doctor` its `--socket` path, with the raw CSI. `json_line_safe`
+  now escapes `U+007F..=U+009F` too (the decoded document is unchanged), every pretty-printed
+  document goes out through it, and the view pager and MCP's fit loop measure pages as escaped,
+  so a page of C1 text still fits `max_bytes` (measured before: 14,255 bytes printed for an
+  8,192-byte page).
+- **Every Unicode default-ignorable code point is an `invisible` hazard and is escaped**
+  (bug hunt 2026-11-01). `is_invisible` was a hand-picked list that missed the Mongolian free
+  variation selectors `U+180B`-`U+180D` and `U+180F`, the Khmer inherent vowels `U+17B4`/`U+17B5`,
+  `U+2065`, `U+206A`-`U+206F`, `U+FFF0`-`U+FFF8`, `U+1BCA0`-`U+1BCA3`, `U+1D173`-`U+1D17A` and the
+  rest of `U+E0000`-`U+E0FFF`; `let ok = is_admin\u{180B};` (rustc accepts it as a distinct
+  identifier) showed no hazard and printed exactly as `is_admin`. With `is_bidi` it now covers
+  the whole `Default_Ignorable_Code_Point` set, so hazards, `display_safe` and untrusted-text
+  sanitising all catch them.
+- **`--layout inline` and `side-by-side` note a change their rows print as unchanged** (bug
+  hunt 2026-11-01). Both layouts printed only each line's text, so a change to the end-of-file
+  newline alone, a change between two non-UTF-8 bytes (both shown as `U+FFFD`), a trailing space,
+  a no-break space against a space, a tab against the spaces it advances to (a broken Makefile)
+  and, in side-by-side, a change past the column width (the cut hid it) looked unchanged. A `\`
+  note row now follows a lossy line (`\ non-UTF-8 line, shown lossily`), a line without a final
+  newline (`\ No newline at end of file`) and an added line whose printed text looks the same as
+  its removed pair's (`\ differs from its pair only in bytes shown alike`, which also catches a
+  literal `\x1b` against a raw `ESC`). Each layout judges the pair by what it prints: side-by-side
+  by its cut, padded cells with a tab as four spaces, inline by raw tabs at 8-column terminal
+  tab stops from the text's column. Letters that only look alike (Cyrillic `а` against Latin `a`)
+  are not noted.
+- **`InlineRow` and `SideCell` are `#[non_exhaustive]`** (review 2026-11-01). The entry above
+  adds their `lossy` and `no_newline` fields, which already breaks a struct literal outside
+  `deep-diff-forge-projection` (unpublished, and no workspace crate builds one); without the
+  attribute every later flag would break it again. Read the fields and build rows with
+  `inline_rows` and `side_rows`; a `compile_fail` doctest pins it.
+- **The layouts' columns stay aligned past line 9999** (bug hunt 2026-11-01). The line-number
+  fields were a fixed `{:>4}`, so rows at line 10000 and later pushed the side-by-side ` | `
+  gutter and inline's marker column one place right. The fields are now as wide as the file's
+  largest line number (at least 4).
+- **A view cursor outside its selection is refused** (bug hunt 2026-11-01). `resume` checked a
+  cursor's patch and selection but not its positions, so a forged or corrupted cursor past a
+  hunk's end answered that hunk as `complete: true` with no lines, `remaining_hunks: 0` and no
+  `next_cursor` (exit 0), one past the selection answered an empty page with nothing remaining,
+  and `+0.05` was read as `0.5`. A position must now be canonical decimal and inside the selection
+  (a hunk's line or a file's hunk, or `0`); anything else is `ViewError::Cursor` (CLI exit 2).
+- **`PatchHunk::address` no longer claims to name exactly one hunk** (bug hunt 2026-11-01). Two
+  byte-identical hunks at the same ranges in repeated sections of one path share an address, by
+  design (views select every copy, findings resolve to the first); the rustdoc and README said
+  otherwise. Documentation only: the hash is unchanged, so addresses stay stable.
 
 ### Tests
 

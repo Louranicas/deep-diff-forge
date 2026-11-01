@@ -102,7 +102,8 @@ const ECHO_BYTES: usize = 1024;
 pub enum ViewError {
     /// `max_bytes` is outside [`MIN_MAX_BYTES`]..=[`MAX_MAX_BYTES`].
     Budget(usize),
-    /// The cursor is malformed, or belongs to another patch or another selection.
+    /// The cursor is malformed, belongs to another patch or another selection, or points outside
+    /// the selection (a position no page of it could have minted).
     Cursor(String),
     /// No hunk of this patch has the address.
     UnknownAddress(String),
@@ -243,8 +244,10 @@ fn line_json(line: &deep_diff_forge_core::PatchLine) -> Value {
     value
 }
 
+/// The bytes `value` takes as emitted: every sink writes serde's text through
+/// [`json_line_safe`](deep_diff_forge_core::json_line_safe), whose escapes can lengthen it.
 fn size(value: &Value) -> usize {
-    value.to_string().len()
+    deep_diff_forge_core::json_line_safe(&value.to_string()).len()
 }
 
 /// A cursor: the seal's first 16 hex digits, the selection's digest, then the item and the
@@ -257,7 +260,17 @@ fn cursor(seal: &InputSeal, selection: &str, item: usize, inner: usize) -> Strin
     )
 }
 
-fn resume(page: &Page, seal: &InputSeal, selection: &str) -> Result<(usize, usize), ViewError> {
+/// The `(item, inner)` position a page starts at. A cursor must be one this patch's pages could
+/// have minted for this selection: canonical decimal positions, an `item` inside the selection,
+/// and an `inner` position that is `0` or inside that item (`inner_len(item)` is its length, or
+/// `None` past the selection's end). Anything else is refused rather than answered: skipping past
+/// the end would report unseen lines or hunks as complete.
+fn resume(
+    page: &Page,
+    seal: &InputSeal,
+    selection: &str,
+    inner_len: impl Fn(usize) -> Option<usize>,
+) -> Result<(usize, usize), ViewError> {
     if !(MIN_MAX_BYTES..=MAX_MAX_BYTES).contains(&page.max_bytes) {
         return Err(ViewError::Budget(page.max_bytes));
     }
@@ -276,10 +289,24 @@ fn resume(page: &Page, seal: &InputSeal, selection: &str) -> Result<(usize, usiz
     if picked != &deep_diff_forge_core::sha256_hex(selection.as_bytes())[..8] {
         return Err(ViewError::Cursor("it belongs to another selection".into()));
     }
-    match (item.parse(), inner.parse()) {
-        (Ok(item), Ok(inner)) => Ok((item, inner)),
-        _ => Err(ViewError::Cursor("its positions are not numbers".into())),
+    let (Some(item), Some(inner)) = (position(item), position(inner)) else {
+        return Err(ViewError::Cursor("its positions are not numbers".into()));
+    };
+    match inner_len(item) {
+        Some(len) if inner == 0 || inner < len => Ok((item, inner)),
+        _ => Err(ViewError::Cursor(
+            "its position is outside the selection".into(),
+        )),
     }
+}
+
+/// A cursor position exactly as [`cursor`] writes it: ASCII digits, no sign, and no leading
+/// zero except in `0` itself.
+fn position(text: &str) -> Option<usize> {
+    let canonical = !text.is_empty()
+        && text.bytes().all(|b| b.is_ascii_digit())
+        && (text == "0" || !text.starts_with('0'));
+    canonical.then(|| text.parse().ok()).flatten()
 }
 
 /// `deep-diff-forge.review-outline.v0`: every file in review-risk order, each with its score,
@@ -289,8 +316,12 @@ fn resume(page: &Page, seal: &InputSeal, selection: &str) -> Result<(usize, usiz
 /// [`ViewError::Budget`] or [`ViewError::Cursor`] for a bad page request.
 pub fn outline(review: &SealedReview, page: &Page) -> Result<Value, ViewError> {
     let (files, seal) = (review.files(), review.seal());
-    let (start_file, start_hunk) = resume(page, seal, "outline")?;
     let order = risk_order(files);
+    let (start_file, start_hunk) = resume(page, seal, "outline", |item| {
+        order
+            .get(item)
+            .map(|(index, _, _)| files[*index].patch_twin.hunks.len())
+    })?;
     let (input_sha256, tool) = seal_members(seal);
     let hunk_total: usize = files.iter().map(|f| f.patch_twin.hunks.len()).sum();
     let (additions, deletions) = files
@@ -376,7 +407,11 @@ pub fn hunks(
 ) -> Result<Value, ViewError> {
     let (files, seal) = (review.files(), review.seal());
     let (units, key) = select(files, selection)?;
-    let (start_unit, start_line) = resume(page, seal, &key)?;
+    let (start_unit, start_line) = resume(page, seal, &key, |item| {
+        units
+            .get(item)
+            .map(|&(f, h)| files[f].patch_twin.hunks[h].lines.len())
+    })?;
     let (input_sha256, tool) = seal_members(seal);
     let mut budget = page.max_bytes - ENVELOPE_BYTES;
     let mut out = Vec::new();
@@ -1184,5 +1219,123 @@ mod tests {
                 .to_string()
                 .contains("another patch")
         );
+    }
+
+    /// Bug hunt 2026-11-01: a cursor no page could have minted is refused. Before, a position
+    /// past the hunk's end answered that hunk as `complete: true` with no lines,
+    /// `remaining_hunks: 0` and no `next_cursor`; one past the selection answered an empty page
+    /// with nothing remaining; and `+0.05` was read as `0.5`.
+    #[test]
+    fn cursors_outside_the_selection_are_refused() {
+        let text = "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n-b\n+c\n+d\n";
+        let one = review(text);
+        let prefix = |selection: &str| {
+            format!(
+                "{}.{}",
+                &one.seal().input_sha256[..16],
+                &deep_diff_forge_core::sha256_hex(selection.as_bytes())[..8]
+            )
+        };
+        let at = |item: &str, inner: &str| {
+            page(
+                MIN_MAX_BYTES,
+                Some(format!("{}.{item}.{inner}", prefix("all"))),
+            )
+        };
+        // Genuine positions: the start, and every line inside the one hunk.
+        for inner in ["0", "1", "3"] {
+            let answer = hunks(&one, &Selection::All, &at("0", inner)).unwrap();
+            assert_eq!(
+                answer["hunks"][0]["line_offset"],
+                json!(inner.parse::<usize>().unwrap())
+            );
+        }
+        for (item, inner) in [
+            ("0", "4"),
+            ("0", "99999"),
+            ("1", "0"),
+            ("7", "0"),
+            ("+0", "1"),
+            ("0", "+1"),
+            ("0", "01"),
+            ("00", "1"),
+            ("0", ""),
+            ("0", "-1"),
+            ("0", "1e0"),
+        ] {
+            let err = hunks(&one, &Selection::All, &at(item, inner))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("invalid cursor"), "{item}.{inner}: {err}");
+        }
+        let outline_at = |item: &str, inner: &str| {
+            outline(
+                &one,
+                &page(
+                    MIN_MAX_BYTES,
+                    Some(format!("{}.{item}.{inner}", prefix("outline"))),
+                ),
+            )
+        };
+        assert!(outline_at("0", "0").is_ok());
+        for (item, inner) in [("0", "1"), ("0", "999"), ("1", "0")] {
+            let err = outline_at(item, inner).unwrap_err().to_string();
+            assert!(
+                err.contains("outside the selection"),
+                "{item}.{inner}: {err}"
+            );
+        }
+    }
+
+    /// An outline over files with no hunks (binary sections) mints cursors at hunk `0` of a
+    /// file that has none; resuming them must still work, page after page.
+    #[test]
+    fn outline_cursors_at_a_file_without_hunks_resume() {
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        for i in 0..40 {
+            let name = format!("assets/{}{i}.png", "p".repeat(60));
+            let _ = writeln!(
+                text,
+                "diff --git a/{name} b/{name}\nBinary files a/{name} and b/{name} differ"
+            );
+        }
+        let review = review(&text);
+        let (mut cursor, mut listed, mut pages) = (None, 0, 0);
+        loop {
+            let answer = outline(&review, &page(MIN_MAX_BYTES, cursor.clone())).unwrap();
+            listed += answer["files"].as_array().unwrap().len();
+            pages += 1;
+            cursor = answer["next_cursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+            assert!(cursor.as_deref().unwrap().ends_with(".0"), "{cursor:?}");
+        }
+        assert_eq!(listed, 40);
+        assert!(pages > 1, "the budget forces paging");
+    }
+
+    /// Bug hunt 2026-11-01: a page is budgeted by what its sinks write. `json_line_safe` turns
+    /// each two-byte C1 character into a six-byte escape; before, the pager measured serde's raw
+    /// text, so a page of C1-heavy lines was emitted over `max_bytes`.
+    #[test]
+    fn pages_of_escaped_text_fit_their_budget_as_emitted() {
+        use std::fmt::Write as _;
+        let mut text = String::from("--- a/x\n+++ b/x\n@@ -0,0 +1,200 @@\n");
+        for _ in 0..200 {
+            let _ = writeln!(text, "+{}", "\u{9b}".repeat(30));
+        }
+        let review = review(&text);
+        let mut cursor = None;
+        loop {
+            let answer = hunks(&review, &Selection::All, &page(8192, cursor)).unwrap();
+            let emitted = deep_diff_forge_core::json_line_safe(&answer.to_string()).len();
+            assert!(emitted <= 8192, "{emitted} > 8192");
+            cursor = answer["next_cursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
     }
 }

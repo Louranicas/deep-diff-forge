@@ -12,8 +12,18 @@
 //! [`render_side_by_side`]. Both are driven from the same row builders
 //! ([`inline::inline_rows`], [`side_by_side::side_rows`]) so a TUI, pager, or
 //! JSON consumer can share one model.
+//!
+//! What a row's printed text cannot show gets a `\` note row after it: a non-UTF-8 line shown
+//! lossily, a missing end-of-file newline, and a removed and an added line whose printed text
+//! looks the same in that layout (a tab against the spaces it advances to, a trailing or
+//! no-break space, a literal `\x1b` against a raw `ESC`, and in side-by-side a change past the
+//! cell width). The inline layout prints tabs raw and judges them by 8-column tab stops; the
+//! side-by-side layout shows a tab as four spaces. Letters that only look alike (confusables
+//! such as Cyrillic `а` against Latin `a`) are different glyphs and are not noted. The
+//! line-number gutter widens to the file's largest line number so every row aligns.
 
 mod inline;
+mod notes;
 mod width;
 pub use width::{cell_width, fit_cells, wrap_cells};
 mod side_by_side;

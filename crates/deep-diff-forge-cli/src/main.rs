@@ -41,6 +41,14 @@ macro_rules! emitln {
     ($($arg:tt)*) => { emit(&format!("{}\n", format_args!($($arg)*))) };
 }
 
+/// Print a serde-built JSON document, pretty, through `json_line_safe`: serde escapes only C0,
+/// and a document can carry patch paths and other untrusted text holding DEL, C1 (the 8-bit CSI
+/// `U+009B`) or `U+2028`/`U+2029`. Every pretty-printed `--json` document goes out here.
+fn emit_pretty_json(document: &serde_json::Value) {
+    let text = serde_json::to_string_pretty(document).unwrap_or_default();
+    emitln!("{}", deep_diff_forge_core::json_line_safe(&text));
+}
+
 // Declared after `emitln!`, which it uses (a `macro_rules!` is visible only below it).
 mod agent;
 mod doctor;
@@ -1364,10 +1372,7 @@ fn bench_cmd(opts: &[String]) {
         }
     };
     if opts.iter().any(|a| a == "--json") {
-        emitln!(
-            "{}",
-            serde_json::to_string_pretty(&receipt).unwrap_or_default()
-        );
+        emit_pretty_json(&receipt);
         return;
     }
     emitln!(
@@ -1418,10 +1423,7 @@ fn eval_cmd(opts: &[String]) {
     };
     let failures = receipt["failures"].as_array().map_or(0, Vec::len);
     if opts.iter().any(|a| a == "--json") {
-        emitln!(
-            "{}",
-            serde_json::to_string_pretty(&receipt).unwrap_or_default()
-        );
+        emit_pretty_json(&receipt);
     } else {
         emitln!("deep-diff-forge eval: {} cases", receipt["cases"]);
         for (name, m) in receipt["metrics"].as_object().into_iter().flatten() {
@@ -1479,7 +1481,7 @@ fn findings_cmd(opts: &[String]) {
         &deep_diff_forge_core::sha256_hex(text.as_bytes()),
         &seal.tool_version,
     );
-    emitln!("{}", serde_json::to_string_pretty(&doc).unwrap_or_default());
+    emit_pretty_json(&doc);
     let all_accepted = verdict.refused.is_empty() && verdict.over_limit == 0;
     if opts.iter().any(|a| a == "--require-all") && !all_accepted {
         std::process::exit(EXIT_REFUSED);
@@ -1551,11 +1553,7 @@ fn deploy_doctor(json: bool, socket: Option<&std::path::Path>) {
     let findings = doctor::gather(socket);
     let checks = doctor::checks(&findings);
     if json {
-        emitln!(
-            "{}",
-            serde_json::to_string_pretty(&doctor::document(findings.version, &checks))
-                .unwrap_or_default()
-        );
+        emit_pretty_json(&doctor::document(findings.version, &checks));
     } else {
         emit(&doctor::text(&checks));
     }

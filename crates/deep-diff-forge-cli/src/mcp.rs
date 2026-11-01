@@ -616,7 +616,8 @@ fn view_tool(
     deep_diff_forge_daemon::views::fit_emitted(
         max_bytes,
         2,
-        |value| structured(value.clone()).to_string().len(),
+        // Measured as the sink writes it: `json_line_safe` lengthens C1, DEL and separators.
+        |value| deep_diff_forge_core::json_line_safe(&structured(value.clone()).to_string()).len(),
         |inner| {
             let mut arguments = arguments.clone();
             arguments.insert("max_bytes".into(), json!(inner));

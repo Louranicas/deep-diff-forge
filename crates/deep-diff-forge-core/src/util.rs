@@ -35,20 +35,33 @@ pub fn json_escape(value: &str) -> String {
     out
 }
 
-/// Make serialized JSON text safe for line-delimited transport: each raw `U+2028` or `U+2029`
-/// becomes the escape `\u2028`/`\u2029`. In valid JSON these characters can occur only inside
-/// strings, where the escape means the same character, so the document is unchanged; only a
-/// line-aware reader's view of it is. Use it where a serializer that does not escape them
-/// (`serde_json`) writes a line or document out; [`json_escape`] already escapes them.
+/// Make serialized JSON text safe for line-delimited transport and for a terminal: each raw
+/// `U+2028` or `U+2029` becomes `\u2028`/`\u2029`, and each raw `DEL` (`U+007F`) or C1 control
+/// (`U+0080..=U+009F`, which includes the 8-bit CSI `U+009B` and OSC `U+009D` introducers)
+/// becomes its `\u00xx` escape, the same hardening [`json_escape`] applies. In valid JSON these
+/// characters can occur only inside strings, where the escape means the same character, so the
+/// decoded document is unchanged; only a line-aware reader's or a terminal's view of it is. Use
+/// it wherever a serializer that does not escape them (`serde_json`, which escapes only C0
+/// controls) writes a line or document out, and measure a byte budget on its output.
 #[must_use]
 pub fn json_line_safe(json: &str) -> Cow<'_, str> {
-    if !json.contains(['\u{2028}', '\u{2029}']) {
+    let Some(first) = json.find(needs_line_safe_escape) else {
         return Cow::Borrowed(json);
+    };
+    let mut out = String::from(&json[..first]);
+    for ch in json[first..].chars() {
+        if needs_line_safe_escape(ch) {
+            let _ = write!(out, "\\u{:04x}", u32::from(ch));
+        } else {
+            out.push(ch);
+        }
     }
-    Cow::Owned(
-        json.replace('\u{2028}', "\\u2028")
-            .replace('\u{2029}', "\\u2029"),
-    )
+    Cow::Owned(out)
+}
+
+/// The characters `serde_json` leaves raw that [`json_escape`] escapes.
+fn needs_line_safe_escape(c: char) -> bool {
+    matches!(u32::from(c), 0x7f..=0x9f | 0x2028 | 0x2029)
 }
 
 /// Whether `c` must be escaped before being written to a terminal: any control
@@ -92,20 +105,27 @@ fn is_bidi(c: char) -> bool {
 /// Characters that render as nothing (or as blank space indistinguishable from none) yet
 /// change the bytes: zero-width and joiner characters, invisible operators, fillers,
 /// variation selectors and tag characters (the payload channels of invisible-text attacks).
+/// Together with [`is_bidi`] this covers every Unicode `Default_Ignorable_Code_Point`
+/// (DerivedCoreProperties.txt), so a code point a renderer is told to draw as nothing is never
+/// passed through unmarked.
 fn is_invisible(c: char) -> bool {
     matches!(
         u32::from(c),
         0x200B..=0x200D       // ZWSP ZWNJ ZWJ
         | 0xFEFF              // ZWNBSP / BOM
-        | 0x2060..=0x2064     // WJ, invisible function application, times, separator, plus
+        | 0x2060..=0x2065     // WJ, invisible function application, times, separator, plus; reserved
+        | 0x206A..=0x206F     // deprecated format characters (ISS..NODS)
         | 0x00AD              // soft hyphen
         | 0x034F              // combining grapheme joiner
-        | 0x180E              // Mongolian vowel separator
+        | 0x17B4 | 0x17B5     // Khmer inherent vowels
+        | 0x180B..=0x180F     // Mongolian free variation selectors 1-4 and vowel separator
         | 0x115F | 0x1160     // Hangul choseong and jungseong fillers
         | 0x3164 | 0xFFA0     // Hangul filler, halfwidth Hangul filler
         | 0xFE00..=0xFE0F     // variation selectors 1-16
-        | 0xE0000..=0xE007F   // tag characters
-        | 0xE0100..=0xE01EF   // variation selectors 17-256
+        | 0xFFF0..=0xFFF8     // reserved default-ignorables before the specials
+        | 0x1BCA0..=0x1BCA3   // shorthand format controls
+        | 0x1D173..=0x1D17A   // musical symbol formatting
+        | 0xE0000..=0xE0FFF   // tag characters, variation selectors 17-256, reserved
     )
 }
 
@@ -324,12 +344,21 @@ mod tests {
         // Neighbours of each range stay clean.
         for c in [
             '\u{205F}',
-            '\u{2065}',
+            '\u{2070}',
             '\u{FE10}',
-            '\u{E0080}',
-            '\u{E01F0}',
+            '\u{E1000}',
             '\u{2027}',
             '\u{202F}',
+            '\u{17B3}',
+            '\u{17B6}',
+            '\u{180A}',
+            '\u{1810}',
+            '\u{FFEF}',
+            '\u{FFF9}',
+            '\u{1BC9F}',
+            '\u{1BCA4}',
+            '\u{1D172}',
+            '\u{1D17B}',
         ] {
             assert_eq!(
                 text_hazards(&format!("a{c}b")),
@@ -341,6 +370,64 @@ mod tests {
         assert_eq!(text_hazards("x\r"), Vec::<&str>::new());
         assert_eq!(path_hazards("x\r"), ["control"]);
         assert_eq!(path_hazards("src/\u{2060}lib.rs"), ["invisible"]);
+    }
+
+    /// Bug hunt 2026-11-01: the rest of Unicode's `Default_Ignorable_Code_Point` set is
+    /// invisible too. Before, `is_admin\u{180B}` (a Mongolian free variation selector, which
+    /// rustc accepts inside an identifier) showed no hazard and printed exactly as `is_admin`.
+    #[test]
+    fn every_default_ignorable_code_point_is_a_hazard() {
+        for c in [
+            '\u{17B4}',
+            '\u{17B5}',
+            '\u{180B}',
+            '\u{180C}',
+            '\u{180D}',
+            '\u{180F}',
+            '\u{2065}',
+            '\u{206A}',
+            '\u{206F}',
+            '\u{FFF0}',
+            '\u{FFF8}',
+            '\u{1BCA0}',
+            '\u{1BCA3}',
+            '\u{1D173}',
+            '\u{1D17A}',
+            '\u{E0080}',
+            '\u{E01F0}',
+            '\u{E0FFF}',
+        ] {
+            let text = format!("is_admin{c}");
+            assert_eq!(text_hazards(&text), ["invisible"], "{:x}", u32::from(c));
+            assert_eq!(
+                display_safe(&text),
+                format!("is_admin\\u{{{:04x}}}", u32::from(c))
+            );
+            assert!(is_unsafe_in_untrusted_text(c), "{:x}", u32::from(c));
+        }
+    }
+
+    /// Bug hunt 2026-11-01: serde-built JSON (the `--hunks` and `--outline` views, MCP, RPC,
+    /// the daemon) gets the DEL and C1 hardening hand-built JSON has. Before, a line holding the
+    /// 8-bit CSI `U+009B` reached the terminal raw.
+    #[test]
+    fn line_safe_json_escapes_del_and_c1_like_json_escape() {
+        for c in ['\u{7f}', '\u{80}', '\u{9b}', '\u{9d}', '\u{9f}'] {
+            // What serde_json writes: C1 and DEL raw inside the string.
+            let raw = format!("{{\"t\":\"a{c}b\"}}");
+            let safe = json_line_safe(&raw);
+            assert!(!safe.contains(c), "{:x}", u32::from(c));
+            assert_eq!(
+                safe,
+                format!("{{\"t\":{}}}", json_escape(&format!("a{c}b")))
+            );
+        }
+        for c in ['\u{7e}', '\u{a0}', 'é'] {
+            assert!(matches!(
+                json_line_safe(&format!("\"{c}\"")),
+                Cow::Borrowed(_)
+            ));
+        }
     }
 
     /// Bug hunt 2026-10-28, H4-06: the line and paragraph separators never reach a line-aware
