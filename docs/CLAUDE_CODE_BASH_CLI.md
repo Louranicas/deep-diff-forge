@@ -162,7 +162,9 @@ or `--hunks`), `--address` with `--path`, the view options (`--address`, `--path
 `--cluster` (`validate_review_options_or_exit` in `main.rs`). An option that takes one value
 is refused when given twice (`args::admit`); `--address`, `--path`, `--allow-repo` and
 `--workload` repeat. `--help` or `-h` prints a command's help wherever it stands, except as an
-option's value (`--path -h`) or after `--`.
+option's value (`--path -h`) or after `--` (`args::help_requested`); `review` also takes `help`
+as its first word, and a later `help` is refused (exit 2). `council` keeps its own scan, which
+reads every word: `council export-tuicr RUN --session -h` prints the council help.
 
 ## Claude Code Agent Contract
 

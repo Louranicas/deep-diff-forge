@@ -124,3 +124,16 @@ fn a_dash_h_value_is_not_a_help_request() {
     assert_eq!((code, stdout.as_str()), (3, ""), "{stderr}");
     assert!(stderr.contains("cannot read findings -h"), "{stderr}");
 }
+
+/// Bug hunt 2026-11-01: `review` takes the word `help` only as its first argument. Before, a
+/// `help` anywhere, as in `review --side help`, printed the review help with exit 0 instead of
+/// refusing the stray word.
+#[test]
+fn review_takes_help_only_as_its_first_word() {
+    let (code, stdout, _) = run(&["review", "help"]);
+    assert_eq!(code, 0);
+    assert!(stdout.starts_with("deep-diff-forge review"), "{stdout}");
+    let (code, stdout, stderr) = run(&["review", "--side", "help"]);
+    assert_eq!((code, stdout.as_str()), (2, ""), "{stderr}");
+    assert!(stderr.contains("unexpected argument: help"), "{stderr}");
+}

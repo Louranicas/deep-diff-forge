@@ -153,7 +153,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   nothing and printed no `ddf.result.v1` object, because the help scan read every word, including
   those after `--`. The scan (`args::help_requested`) now stops at `--` and skips an option's
   value, so `--hunks --path -h` selects the file named `-h` and `review --findings -h` reads it,
-  where both printed help.
+  where both printed help. `review` takes the word `help` only first (`review help`): a later
+  `help`, as in `review --side help`, printed the help with exit 0 and is now refused as an
+  unexpected argument (exit 2). `council` keeps its own scan, so `council … --session -h` still
+  prints the council help.
 - **A second output mode is refused, not dropped.** `--jsonl --rank` printed only JSONL,
   `--json --layout inline` only JSON, `--cluster --layout inline` only the cluster,
   `--acquisition-json --rank` only the acquisition, and `--jsonl --hunks --path nothing` skipped

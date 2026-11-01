@@ -881,7 +881,8 @@ fn learn_record(opts: &[String]) {
 const REVIEW_USAGE: &str = "deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME] [--findings FILE]";
 
 fn review_cmd(opts: &[String]) {
-    // The help scan skips option values, so `--findings -h` reads the file named `-h`.
+    // The help scan skips option values, so `--findings -h` reads the file named `-h`. The word
+    // `help` counts only first: before, `--side help` printed help, now `admit` refuses it.
     if args::help_requested(opts) || opts.first().is_some_and(|a| a == "help") {
         print_review_help();
         return;
@@ -2069,7 +2070,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
 
 /// `<command> --help` (or `-h`) anywhere before a `--`, and not as an option's value
 /// ([`args::help_requested`]): print that command's usage and what it does, and exit 0. `review`
-/// prints its own longer help; `council --help` is `council help`.
+/// prints its own longer help; `council --help` is `council help`, and council's own scan reads
+/// every word, values and words after `--` included.
 fn command_help(command: &str, args: &[String]) -> bool {
     let asked = args::help_requested(args);
     let name = match command {
