@@ -9,9 +9,12 @@
 //! If a line contains any terminal-unsafe control character or a Trojan-Source
 //! bidi/invisible codepoint, the entire line is emitted as one escaped,
 //! unstyled span — colouring never gets the chance to reintroduce a raw escape.
+//! Both doors also expand tabs ([`expand_tabs`]): `display_safe` keeps a tab, and ratatui
+//! drops it as a control character, which hid tab indentation in the inline view.
 
 use crate::theme::Palette;
 use deep_diff_forge_core::display_safe;
+use deep_diff_forge_projection::expand_tabs;
 use deep_diff_forge_syntax::{Language, highlight};
 use ratatui::style::Style;
 use ratatui::text::Span;
@@ -20,7 +23,7 @@ use std::borrow::Cow;
 /// A single, fully-escaped span for arbitrary untrusted text (paths, labels).
 #[must_use]
 pub fn safe_span(raw: &str, style: Style) -> Span<'static> {
-    Span::styled(display_safe(raw).into_owned(), style)
+    Span::styled(expand_tabs(&display_safe(raw)).into_owned(), style)
 }
 
 /// Convert one source line into themed, terminal-safe spans over `base`.
@@ -35,7 +38,8 @@ pub fn themed_spans(
     palette: &Palette,
     base: Style,
 ) -> Vec<Span<'static>> {
-    match display_safe(raw) {
+    let raw = expand_tabs(raw);
+    match display_safe(&raw) {
         // Unsafe content: never colour it — show the escaped form, unstyled.
         Cow::Owned(escaped) => vec![Span::styled(escaped, base)],
         // Clean content: safe to colour from the raw (== safe) text.
@@ -161,5 +165,27 @@ mod tests {
         let src = "let s = \"café→\"; // 注释";
         let spans = themed_spans(Language::Rust, src, &p, Style::default());
         assert_eq!(joined(&spans), src);
+    }
+
+    /// Bug hunt 2026-11-01: ratatui drops a tab as a control character, so a raw tab reaching a
+    /// span erased tab indentation from the inline view.
+    #[test]
+    fn spans_never_carry_a_raw_tab() {
+        let p = palette();
+        for raw in ["\t\treturn 1", "\tlet x = \u{1b};"] {
+            let out = joined(&themed_spans(Language::Rust, raw, &p, Style::default()));
+            assert!(!out.contains('\t'), "{out:?}");
+            assert!(out.starts_with("    "), "{out:?}");
+        }
+        assert_eq!(
+            joined(&themed_spans(
+                Language::Rust,
+                "\t\treturn 1",
+                &p,
+                Style::default()
+            )),
+            "        return 1"
+        );
+        assert_eq!(safe_span("a\tb.rs", Style::default()).content, "a    b.rs");
     }
 }

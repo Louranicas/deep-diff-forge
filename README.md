@@ -362,7 +362,7 @@ git diff | deep-diff-forge review --probe --cols 120 --rows 40 --cmd rank
 | `j` / `k` · `↓` / `↑` | next / previous file, in rank order |
 | `g` / `G` · `Home` / `End` | first / last file |
 | `h` / `l` · `←` / `→` | focus the file tree / the diff |
-| `Enter` | open the file, or run the selected palette command |
+| `Enter` | open the selected file's diff (focus it), or run the selected palette command |
 | `s` · `Tab` · `t` | toggle inline and side-by-side |
 | `z` · `w` · `n` | fold context · wrap rows · show notes |
 | `v` · `Space` | mark the file reviewed and move on |
@@ -371,8 +371,8 @@ git diff | deep-diff-forge review --probe --cols 120 --rows 40 --cmd rank
 | `Ctrl-d` / `Ctrl-u` · `PageDown` / `PageUp` | scroll the diff |
 | `q` · `Esc` | quit · close the overlay |
 
-The mouse works too: the wheel scrolls, and clicks select files, focus the diff and open
-menus. The palette (`:` in the app, or `--palette` / `--cmd NAME` headless) runs `rank`,
+The mouse works too: the wheel scrolls, and clicks select the file on the row clicked, focus
+the diff and open menus. The palette (`:` in the app, or `--palette` / `--cmd NAME` headless) runs `rank`,
 `outline`, `cluster`, `summary`, `notes`, `review`, `daemon`, `learning` and `maturity`
 against the loaded review. An unknown name or a non-numeric size is a usage error (exit 2).
 
@@ -483,8 +483,9 @@ The new fields are additive, so the schema stays `review.v0`.
 **Hazards.** A file whose path traverses, names `.git` or hides characters, and a line that
 carries a bidi control, an invisible character or a control character, gets a `hazards` list:
 `path_traversal`, `git_internal`, `bidi_control`, `invisible` or `control`. `invisible` covers
-zero-width and joiner characters, invisible operators, fillers, the soft hyphen, variation
-selectors and tag characters; `control` covers C0/C1 controls other than tab and the Unicode
+every assigned Unicode default-ignorable code point that is not a bidi control (zero-width and joiner
+characters, invisible operators, fillers, the soft hyphen, the Khmer inherent vowels, variation
+selectors, format controls and tag characters) and the interlinear annotation controls; `control` covers C0/C1 controls other than tab and the Unicode
 line and paragraph separators. The carriage return of a CRLF body line does not count; one at
 the end of a path does. Hazards are facts about the bytes, reported only where
 found. An empty list never means the text is safe. They also raise the file's rank

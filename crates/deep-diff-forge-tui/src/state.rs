@@ -3,8 +3,10 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-tui--src--state
 use crate::command::{self, Command, CommandOutput};
 use crate::theme::ThemeKind;
+use crate::ui::HitMap;
 use deep_diff_forge_core::{AgentAnnotation, ReviewFile};
 use deep_diff_forge_graph::{RankedFile, rank};
+use std::cell::Cell;
 
 /// A semantic UI action, decoupled from any specific key binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,13 +41,15 @@ pub enum AppEvent {
     FocusDiff,
     /// Toggle the selected file's "reviewed" flag (and advance when marking it).
     ToggleViewed,
-    /// Select the file row at a visible tree row index.
+    /// Select the file at a row of the whole file tree (counted from the tree's first row,
+    /// not the screen; a directory row or a row past the end is a no-op).
     SelectTreeRow(usize),
     /// Show/hide the help overlay.
     ToggleHelp,
     /// Open the command palette.
     OpenPalette,
-    /// Confirm the current overlay selection (Enter).
+    /// Open the selected file's diff (focus the diff pane), or confirm the current overlay
+    /// selection (Enter).
     Select,
     /// Dismiss the current overlay, or quit when none is open (Esc).
     Cancel,
@@ -138,7 +142,7 @@ pub struct ReviewApp {
     /// Per-file "reviewed" flags, aligned to `ranked`.
     viewed: Vec<bool>,
     selected: usize,
-    scroll: u16,
+    scroll: usize,
     layout: LayoutMode,
     theme: ThemeKind,
     focus: Focus,
@@ -146,8 +150,10 @@ pub struct ReviewApp {
     overlay: Overlay,
     palette_index: usize,
     panel: CommandOutput,
-    panel_scroll: u16,
+    panel_scroll: usize,
     running: bool,
+    /// Where the last frame drawn from this app put its panes, for mouse hit-testing.
+    last_frame: Cell<HitMap>,
 }
 
 impl ReviewApp {
@@ -208,6 +214,7 @@ impl ReviewApp {
             panel: CommandOutput::default(),
             panel_scroll: 0,
             running: true,
+            last_frame: Cell::new(HitMap::default()),
         }
     }
 
@@ -247,7 +254,8 @@ impl ReviewApp {
             AppEvent::ToggleNotes => self.view.show_notes = !self.view.show_notes,
             AppEvent::CycleTheme => self.theme = self.theme.next(),
             AppEvent::FocusSidebar => self.focus = Focus::Sidebar,
-            AppEvent::FocusDiff => self.focus = Focus::Diff,
+            // Enter opens the selected file: its diff is already shown, so it takes focus.
+            AppEvent::FocusDiff | AppEvent::Select => self.focus = Focus::Diff,
             AppEvent::ToggleViewed => self.toggle_viewed(),
             AppEvent::SelectTreeRow(row) => self.select_tree_row(row),
             AppEvent::ToggleHelp => self.overlay = Overlay::Help,
@@ -257,7 +265,7 @@ impl ReviewApp {
             }
             // Esc with no overlay quits.
             AppEvent::Cancel => self.running = false,
-            AppEvent::Quit | AppEvent::Select | AppEvent::None => {}
+            AppEvent::Quit | AppEvent::None => {}
         }
     }
 
@@ -409,9 +417,9 @@ impl ReviewApp {
         &self.annotations
     }
 
-    /// Current scroll offset of the diff pane.
+    /// Current scroll offset of the diff pane, in rows below the selected file's first row.
     #[must_use]
-    pub fn scroll(&self) -> u16 {
+    pub fn scroll(&self) -> usize {
         self.scroll
     }
 
@@ -469,9 +477,20 @@ impl ReviewApp {
         &self.panel
     }
 
+    /// The panes of the last frame drawn from this app (empty before the first), so a click
+    /// maps to what the reviewer saw. Rendering records it; it is not review state.
+    #[must_use]
+    pub fn last_frame(&self) -> HitMap {
+        self.last_frame.get()
+    }
+
+    pub(crate) fn remember_frame(&self, hits: HitMap) {
+        self.last_frame.set(hits);
+    }
+
     /// The result panel's scroll offset.
     #[must_use]
-    pub fn panel_scroll(&self) -> u16 {
+    pub fn panel_scroll(&self) -> usize {
         self.panel_scroll
     }
 }
@@ -669,6 +688,21 @@ mod tests {
         assert_eq!(a.focus(), Focus::Diff);
         a.handle(AppEvent::FocusSidebar);
         assert_eq!(a.focus(), Focus::Sidebar);
+    }
+
+    /// Bug hunt 2026-11-01: the README promised that Enter opens the file, and in the review
+    /// view Enter did nothing. It now opens the selected file's diff: focus moves to it, and
+    /// the selection, layout and overlay stay as they were.
+    #[test]
+    fn enter_in_the_review_opens_the_selected_files_diff() {
+        let mut a = app();
+        a.handle(AppEvent::Next);
+        assert_eq!(a.focus(), Focus::Sidebar);
+        a.handle(AppEvent::Select);
+        assert_eq!(a.focus(), Focus::Diff);
+        assert_eq!(a.selected_index(), 1);
+        assert_eq!(a.overlay(), Overlay::None);
+        assert!(a.is_running());
     }
 
     #[test]

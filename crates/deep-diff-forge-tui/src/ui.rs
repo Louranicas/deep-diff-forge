@@ -9,15 +9,15 @@
 
 use crate::chrome::{help_lines, menu_bar, status_bar};
 use crate::command::Command;
-use crate::diffview::diff_document;
+use crate::diffview::diff_window;
 use crate::paint::safe_span;
 use crate::state::{Focus, Overlay, ReviewApp};
 use crate::theme::Palette;
-use crate::tree::{selected_row, tree_lines};
+use crate::tree::{selected_row, tree_window};
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
@@ -25,35 +25,109 @@ use ratatui::widgets::{
     Wrap,
 };
 
+/// The cockpit's four rectangles in a terminal `area`: the menu bar, the file tree, the
+/// diff pane and the status bar. Rendering and mouse hit-testing both use it, so a click
+/// resolves against the panes the reviewer sees.
+struct Panes {
+    menu: Rect,
+    tree: Rect,
+    diff: Rect,
+    status: Rect,
+}
+
+impl Panes {
+    fn of(area: Rect) -> Self {
+        let bands = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ])
+            .split(area);
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(32), Constraint::Percentage(68)])
+            .split(bands[1]);
+        Self {
+            menu: bands[0],
+            tree: cols[0],
+            diff: cols[1],
+            status: bands[2],
+        }
+    }
+}
+
+/// Where a frame drew its panes and which tree row it showed first, so a mouse click maps to
+/// what the reviewer clicked on. Build it from the same app state and area as the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HitMap {
+    menu: Rect,
+    tree_rows: Rect,
+    tree_scroll: usize,
+    diff: Rect,
+}
+
+/// What a click at one screen cell lands on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Hit {
+    /// A menu-bar column.
+    Menu(u16),
+    /// A row of the whole file tree (not a screen row).
+    TreeRow(usize),
+    /// Anywhere in the diff pane.
+    Diff,
+    /// Borders, the status bar, or outside the frame.
+    Nothing,
+}
+
+impl HitMap {
+    /// The hit map of a frame rendered from `app` into `area`.
+    #[must_use]
+    pub fn of(app: &ReviewApp, area: Rect) -> Self {
+        let panes = Panes::of(area);
+        let tree_rows = panes.tree.inner(Margin::new(1, 1));
+        Self {
+            menu: panes.menu,
+            tree_rows,
+            tree_scroll: tree_scroll(app, usize::from(tree_rows.height)),
+            diff: panes.diff,
+        }
+    }
+
+    pub(crate) fn hit(&self, column: u16, row: u16) -> Hit {
+        let at = Position::new(column, row);
+        if self.menu.contains(at) {
+            Hit::Menu(column - self.menu.x)
+        } else if self.tree_rows.contains(at) {
+            Hit::TreeRow(self.tree_scroll + usize::from(row - self.tree_rows.y))
+        } else if self.diff.contains(at) {
+            Hit::Diff
+        } else {
+            Hit::Nothing
+        }
+    }
+}
+
 /// Render the whole review cockpit into a frame.
 pub fn render(frame: &mut Frame, app: &ReviewApp) {
     let palette = app.theme().palette();
     let area = frame.area();
-    let bands = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(area);
+    let panes = Panes::of(area);
+    app.remember_frame(HitMap::of(app, area));
 
     let chrome_bg = Style::default().bg(palette.menu_bg);
     frame.render_widget(
-        Paragraph::new(menu_bar(app, &palette, usize::from(bands[0].width))).style(chrome_bg),
-        bands[0],
+        Paragraph::new(menu_bar(app, &palette, usize::from(panes.menu.width))).style(chrome_bg),
+        panes.menu,
     );
 
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(32), Constraint::Percentage(68)])
-        .split(bands[1]);
-    render_tree(frame, app, &palette, cols[0]);
-    render_diff(frame, app, &palette, cols[1]);
+    render_tree(frame, app, &palette, panes.tree);
+    render_diff(frame, app, &palette, panes.diff);
 
     frame.render_widget(
-        Paragraph::new(status_bar(app, &palette, usize::from(bands[2].width))).style(chrome_bg),
-        bands[2],
+        Paragraph::new(status_bar(app, &palette, usize::from(panes.status.width))).style(chrome_bg),
+        panes.status,
     );
 
     match app.overlay() {
@@ -80,13 +154,21 @@ fn render_tree(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: Rect
             Style::default().fg(palette.accent),
         )));
     let inner_height = usize::from(area.height.saturating_sub(2));
-    let scroll = keep_visible(selected_row(app), inner_height);
+    let scroll = tree_scroll(app, inner_height);
     frame.render_widget(
-        Paragraph::new(tree_lines(app, palette))
-            .block(block)
-            .scroll((scroll, 0)),
+        Paragraph::new(tree_window(
+            app,
+            palette,
+            scroll..scroll.saturating_add(inner_height),
+        ))
+        .block(block),
         area,
     );
+}
+
+/// The first tree row a viewport of `height` rows shows: the selection stays visible.
+fn tree_scroll(app: &ReviewApp, height: usize) -> usize {
+    keep_visible(selected_row(app), height)
 }
 
 fn render_diff(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: Rect) {
@@ -117,16 +199,12 @@ fn render_diff(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: Rect
     let inner_width = usize::from(area.width.saturating_sub(2));
     let inner_height = usize::from(area.height.saturating_sub(2));
     // One continuous document of all files; the selected file's section start is
-    // the scroll anchor, and `app.scroll()` is the manual delta from there.
-    let (lines, starts) = diff_document(app, palette, inner_width);
-    let total = lines.len();
-    let base = starts.get(app.selected_index()).copied().unwrap_or(0);
-    let scroll = base.saturating_add(usize::from(app.scroll()));
-    let scroll_u16 = u16::try_from(scroll.min(total.saturating_sub(1))).unwrap_or(u16::MAX);
-    frame.render_widget(
-        Paragraph::new(lines).block(block).scroll((scroll_u16, 0)),
-        area,
-    );
+    // the scroll anchor, and `app.scroll()` is the manual delta from there. Only the
+    // visible rows are built, and they are drawn unscrolled: ratatui's paragraph offset
+    // is a `u16`, which pinned every view past document row 65,535 there.
+    let window = diff_window(app, palette, inner_width, app.scroll(), inner_height);
+    let total = window.total;
+    frame.render_widget(Paragraph::new(window.lines).block(block), area);
     // A scrollbar on the right border when the document overflows the viewport.
     if total > inner_height {
         let track = Rect {
@@ -135,7 +213,7 @@ fn render_diff(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: Rect
             width: area.width,
             height: area.height.saturating_sub(2),
         };
-        let mut sb = ScrollbarState::new(total).position(scroll.min(total));
+        let mut sb = ScrollbarState::new(total).position(window.offset);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .thumb_style(Style::default().fg(palette.accent))
@@ -254,12 +332,9 @@ fn render_panel(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: Rec
         .collect();
     let total = lines.len();
     let inner_height = usize::from(popup.height.saturating_sub(2));
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .scroll((app.panel_scroll(), 0)),
-        popup,
-    );
+    let offset = app.panel_scroll().min(total.saturating_sub(1));
+    let visible: Vec<Line<'static>> = lines.into_iter().skip(offset).take(inner_height).collect();
+    frame.render_widget(Paragraph::new(visible).block(block), popup);
     if total > inner_height {
         let track = Rect {
             x: popup.x,
@@ -267,7 +342,7 @@ fn render_panel(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: Rec
             width: popup.width,
             height: popup.height.saturating_sub(2),
         };
-        let mut sb = ScrollbarState::new(total).position(usize::from(app.panel_scroll()));
+        let mut sb = ScrollbarState::new(total).position(offset);
         frame.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .thumb_style(Style::default().fg(palette.accent))
@@ -281,11 +356,11 @@ fn render_panel(frame: &mut Frame, app: &ReviewApp, palette: &Palette, area: Rec
 }
 
 /// Scroll offset that keeps `row` within a viewport of `height` lines.
-fn keep_visible(row: usize, height: usize) -> u16 {
+fn keep_visible(row: usize, height: usize) -> usize {
     if height == 0 || row < height {
         return 0;
     }
-    u16::try_from(row - height + 1).unwrap_or(u16::MAX)
+    row - height + 1
 }
 
 /// A `w`×`h` rectangle centred in `area`, clamped to `area`.
@@ -339,6 +414,7 @@ mod tests {
     use super::*;
     use crate::state::AppEvent;
     use deep_diff_forge_patch::parse;
+    use std::fmt::Write as _;
 
     const MULTI: &str = "\
 --- a/src/lib.rs
@@ -610,5 +686,183 @@ mod tests {
             !screen(&a).contains('✓'),
             "the reviewed toggle must not fire under an open overlay"
         );
+    }
+
+    /// A review of `n` one-line changes, `f00.txt` onward, all in one directory.
+    fn many(n: usize) -> ReviewApp {
+        let mut src = String::new();
+        for i in 0..n {
+            let _ = writeln!(
+                src,
+                "--- a/f{i:02}.txt\n+++ b/f{i:02}.txt\n@@ -1,1 +1,1 @@\n-old{i:02}\n+new{i:02}"
+            );
+        }
+        ReviewApp::from_review(&parse(&src).unwrap())
+    }
+
+    fn click(app: &mut ReviewApp, width: u16, height: u16, column: u16, row: u16) {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let hits = HitMap::of(app, Rect::new(0, 0, width, height));
+        let down = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.handle(crate::input::map_mouse(down, &hits));
+    }
+
+    fn selected_path(app: &ReviewApp) -> String {
+        app.selected_file().unwrap().path.clone()
+    }
+
+    /// Bug hunt 2026-11-01: after `G` scrolled the tree, a click on the row showing `f23.txt`
+    /// selected `f02.txt`, the row at that height of the unscrolled tree.
+    #[test]
+    fn a_click_on_a_scrolled_tree_selects_the_file_shown_there() {
+        let mut a = many(40);
+        a.handle(AppEvent::Bottom);
+        let frame = render_to_lines(&a, 120, 24);
+        let row = frame
+            .iter()
+            .position(|line| line.contains("M f23.txt"))
+            .expect("f23 is on screen after G");
+        click(&mut a, 120, 24, 5, u16::try_from(row).unwrap());
+        assert_eq!(selected_path(&a), "f23.txt");
+        // Every visible file row selects the file it shows.
+        for (row, line) in frame.iter().enumerate().skip(2).take(21) {
+            let Some(at) = line.find(" f") else { continue };
+            let name = &line[at + 1..at + 8];
+            if !name.starts_with('f') || name.as_bytes()[3] != b'.' {
+                continue;
+            }
+            a.handle(AppEvent::Bottom);
+            click(&mut a, 120, 24, 5, u16::try_from(row).unwrap());
+            assert_eq!(selected_path(&a), name, "row {row}: {line}");
+        }
+    }
+
+    /// Bug hunt 2026-11-01: at 80 columns the tree is 25 columns wide, and a click at column 35,
+    /// inside the diff, changed the selection; at 200 columns a click on the tree at column 50
+    /// did nothing.
+    #[test]
+    fn a_click_lands_in_the_pane_drawn_at_that_column() {
+        let mut a = many(40);
+        for _ in 0..5 {
+            a.handle(AppEvent::Next);
+        }
+        let before = selected_path(&a);
+        click(&mut a, 80, 24, 35, 5);
+        assert_eq!(selected_path(&a), before);
+        assert_eq!(a.focus(), Focus::Diff);
+
+        let mut wide = many(40);
+        let frame = render_to_lines(&wide, 200, 24);
+        let row = frame.iter().position(|l| l.contains("M f03.txt")).unwrap();
+        click(&mut wide, 200, 24, 50, u16::try_from(row).unwrap());
+        assert_eq!(selected_path(&wide), "f03.txt");
+        assert_eq!(wide.focus(), Focus::Sidebar);
+    }
+
+    #[test]
+    fn borders_and_the_status_bar_are_not_click_targets() {
+        let mut a = many(40);
+        a.handle(AppEvent::FocusDiff);
+        let before = selected_path(&a);
+        for (column, row) in [(0, 5), (5, 1), (5, 23), (60, 23), (130, 5), (5, 30)] {
+            click(&mut a, 120, 24, column, row);
+            assert_eq!(selected_path(&a), before, "({column}, {row})");
+            assert_eq!(a.focus(), Focus::Diff, "({column}, {row})");
+        }
+    }
+
+    #[test]
+    fn hit_map_measures_from_its_area() {
+        let a = many(3);
+        let hits = HitMap::of(&a, Rect::new(4, 3, 120, 24));
+        assert_eq!(hits.hit(4, 3), Hit::Menu(0));
+        assert_eq!(hits.hit(10, 3), Hit::Menu(6));
+        assert_eq!(hits.hit(6, 5), Hit::TreeRow(0));
+        assert_eq!(hits.hit(6, 7), Hit::TreeRow(2));
+        assert_eq!(hits.hit(4, 5), Hit::Nothing);
+        assert_eq!(hits.hit(100, 10), Hit::Diff);
+        assert_eq!(hits.hit(2, 10), Hit::Nothing);
+    }
+
+    /// Bug hunt 2026-11-01: the diff pane scrolled through ratatui's `u16` offset, so a file
+    /// whose section started past document row 65,535 was never shown: selecting it drew rows
+    /// of the file before it under its title.
+    #[test]
+    fn a_file_past_row_65535_is_shown_when_selected() {
+        let n = 70_000;
+        let mut src = format!("--- /dev/null\n+++ b/a_big.txt\n@@ -0,0 +1,{n} @@\n");
+        for i in 0..n {
+            let _ = writeln!(src, "+bigline {i}");
+        }
+        src.push_str(
+            "--- a/z_small.txt\n+++ b/z_small.txt\n@@ -1,1 +1,1 @@\n-SMALL_OLD_MARKER\n+SMALL_NEW_MARKER\n",
+        );
+        let mut a = ReviewApp::from_review(&parse(&src).unwrap());
+        a.handle(AppEvent::Next);
+        let out = render_to_lines(&a, 120, 24).join("\n");
+        assert!(out.contains("review · 2/2 files"), "{out}");
+        assert!(out.contains("z_small.txt  [modified]"), "{out}");
+        assert!(out.contains("SMALL_OLD_MARKER"), "{out}");
+        assert!(out.contains("SMALL_NEW_MARKER"), "{out}");
+        assert!(!out.contains("bigline"), "{out}");
+        // Scrolling down from the big file's start reaches its rows past 65,535 too.
+        let mut big = ReviewApp::from_review(&parse(&src).unwrap());
+        for _ in 0..66_000 {
+            big.handle(AppEvent::ScrollDown);
+        }
+        let shown: Vec<usize> = render_to_lines(&big, 120, 24)
+            .iter()
+            .filter_map(|l| l.split("bigline ").nth(1))
+            .filter_map(|n| n.split_whitespace().next()?.parse().ok())
+            .collect();
+        assert!(shown.len() > 10, "{shown:?}");
+        assert!(shown.iter().all(|&n| n > 65_900), "{shown:?}");
+    }
+
+    /// The tree scrolls without the `u16` cap as well: its offset is a row of the whole tree,
+    /// and only the rows in the window are built.
+    #[test]
+    fn tree_offsets_are_not_capped_and_the_window_is_exact() {
+        assert_eq!(keep_visible(70_000, 20), 69_981);
+        let a = many(10);
+        let window = crate::tree::tree_window(&a, &a.theme().palette(), 3..5);
+        let text: Vec<String> = window
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(text.len(), 2, "{text:?}");
+        assert!(
+            text[0].contains("f02.txt") && text[1].contains("f03.txt"),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn panel_scrolls_by_its_offset() {
+        use crate::command::Command;
+        let mut a = many(30);
+        let rank = Command::all()
+            .iter()
+            .position(|c| *c == Command::Rank)
+            .unwrap();
+        a.handle(AppEvent::OpenPalette);
+        for _ in 0..rank {
+            a.handle(AppEvent::Next);
+        }
+        a.handle(AppEvent::Select);
+        assert_eq!(a.overlay(), Overlay::Panel);
+        let top = render_to_lines(&a, 120, 24);
+        a.handle(AppEvent::ScrollDown);
+        a.handle(AppEvent::ScrollDown);
+        let scrolled = render_to_lines(&a, 120, 24);
+        // The panel's third row is now its first.
+        let body = |row: &str| row.chars().skip(5).take(100).collect::<String>();
+        assert_ne!(body(&top[3]), body(&top[5]), "{top:#?}");
+        assert_eq!(body(&scrolled[3]), body(&top[5]), "{top:#?}\n{scrolled:#?}");
     }
 }

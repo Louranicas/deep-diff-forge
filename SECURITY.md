@@ -118,7 +118,8 @@ selection.
   `crates/deep-diff-forge-patch/src/parser.rs`).
 - Human-facing terminal output passes through `core::display_safe`, which
   exposes ANSI/CSI/OSC controls, C0/C1 controls, carriage returns, DEL, bidi
-  overrides/isolates, directional marks, zero-width characters, and BOM rather
+  overrides/isolates, directional marks, zero-width characters, BOM and the other
+  assigned Unicode default-ignorable code points (as visible `\u{...}` escapes) rather
   than executing or visually reordering them.
 - Raw JSON/JSONL terminal output uses the canonical `core::json_escape` path,
   including DEL and C1 escaping. A downstream program that decodes those JSON

@@ -26,6 +26,12 @@ to 0.20 s after a quadratic step was removed. The syntax crate's notes record or
 about 0.29 ms per KiB in a release build, and a 455 KiB hostile input cut at about 3 s instead
 of running 125 s (`crates/deep-diff-forge-syntax/src/lib.rs`).
 
+Measured (2026-11-01, release build, tmux at 120x24): the review cockpit builds and paints only
+the rows on screen. Each frame still walks the whole review once to count rows, at about 25 ns
+a row unwrapped. On a 900,000-line patch a key took 7.2 s and the process held 1.3 GB when every
+row was built on every frame; it now takes 12 to 24 ms and 197 MB. With wrapping on, the first
+frame after `w` takes 0.18 s.
+
 Not built: the adaptive planner (the parser sets `Binary` or `Line` only), region strategies,
 word diff, progressive rendering, any AST or line-index cache, arena allocation. Generated and
 vendored files are detected and scored to zero in ranking (`graph`), not summarised. Parallel

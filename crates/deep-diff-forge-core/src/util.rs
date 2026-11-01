@@ -90,20 +90,29 @@ fn is_bidi(c: char) -> bool {
 }
 
 /// Characters that render as nothing (or as blank space indistinguishable from none) yet
-/// change the bytes: zero-width and joiner characters, invisible operators, fillers,
-/// variation selectors and tag characters (the payload channels of invisible-text attacks).
+/// change the bytes: every assigned Unicode `Default_Ignorable_Code_Point` that is not a bidi
+/// control (zero-width and joiner characters, invisible operators, fillers, the Khmer inherent
+/// vowels, variation selectors, deprecated, shorthand and musical format controls and tag
+/// characters), plus the interlinear annotation controls. These are the payload channels of
+/// invisible-text attacks; unassigned code points stay out, as before. A hand-picked subset let U+17B4, which is
+/// valid inside a Rust identifier, through unescaped (bug hunt 2026-11-01).
 fn is_invisible(c: char) -> bool {
     matches!(
         u32::from(c),
         0x200B..=0x200D       // ZWSP ZWNJ ZWJ
         | 0xFEFF              // ZWNBSP / BOM
         | 0x2060..=0x2064     // WJ, invisible function application, times, separator, plus
+        | 0x206A..=0x206F     // deprecated format characters (symmetric swapping, shaping)
         | 0x00AD              // soft hyphen
         | 0x034F              // combining grapheme joiner
-        | 0x180E              // Mongolian vowel separator
+        | 0x17B4 | 0x17B5     // Khmer inherent vowels AQ and AA
+        | 0x180B..=0x180F     // Mongolian free variation selectors and vowel separator
         | 0x115F | 0x1160     // Hangul choseong and jungseong fillers
         | 0x3164 | 0xFFA0     // Hangul filler, halfwidth Hangul filler
         | 0xFE00..=0xFE0F     // variation selectors 1-16
+        | 0xFFF9..=0xFFFB     // interlinear annotation anchor, separator, terminator
+        | 0x1BCA0..=0x1BCA3   // shorthand format controls
+        | 0x1D173..=0x1D17A   // musical symbol format controls
         | 0xE0000..=0xE007F   // tag characters
         | 0xE0100..=0xE01EF   // variation selectors 17-256
     )
@@ -116,8 +125,9 @@ fn is_line_separator(c: char) -> bool {
 
 /// Objective hazards in one line of patch text: `bidi_control` (a bidirectional override,
 /// embedding, isolate or mark, which can make rendered code differ from its bytes),
-/// `invisible` (a zero-width, joiner, filler, invisible-operator, variation-selector or tag
-/// character, or a soft hyphen) and `control` (a C0/C1 control other than tab, a Unicode line
+/// `invisible` (any other assigned Unicode default-ignorable code point, such as a zero-width, joiner,
+/// filler, invisible-operator, variation-selector, format-control or tag character, a soft
+/// hyphen or a Khmer inherent vowel, and the interlinear annotation controls) and `control` (a C0/C1 control other than tab, a Unicode line
 /// or paragraph separator, and never the carriage return of a CRLF line ending). These are
 /// facts about the bytes, not a guess about intent: an empty list never means the text is
 /// safe.
@@ -302,6 +312,21 @@ mod tests {
             '\u{E007F}',
             '\u{E0100}',
             '\u{E01EF}',
+            // Bug hunt 2026-11-01: the rest of Default_Ignorable_Code_Point, and the
+            // interlinear annotation controls, reached a terminal raw and unflagged.
+            '\u{17B4}',
+            '\u{17B5}',
+            '\u{180B}',
+            '\u{180D}',
+            '\u{180F}',
+            '\u{206A}',
+            '\u{206F}',
+            '\u{FFF9}',
+            '\u{FFFB}',
+            '\u{1BCA0}',
+            '\u{1BCA3}',
+            '\u{1D173}',
+            '\u{1D17A}',
         ] {
             assert_eq!(
                 text_hazards(&format!("a{c}b")),
@@ -312,6 +337,25 @@ mod tests {
             assert_eq!(
                 display_safe(&format!("a{c}b")),
                 format!("a\\u{{{:04x}}}b", u32::from(c))
+            );
+        }
+        // The visible neighbours of the new ranges stay ordinary text.
+        for c in [
+            '\u{17B3}',
+            '\u{17B6}',
+            '\u{180A}',
+            '\u{FFF8}',
+            '\u{FFFC}',
+            '\u{1BC9F}',
+            '\u{1BCA4}',
+            '\u{1D172}',
+            '\u{1D17B}',
+            '\u{2070}',
+        ] {
+            assert!(
+                text_hazards(&format!("a{c}b")).is_empty(),
+                "{:x}",
+                u32::from(c)
             );
         }
         for c in ['\u{2028}', '\u{2029}'] {
