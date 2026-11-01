@@ -255,7 +255,9 @@ every gate ran as root inside the container. Gates refuse to run unless
   The TUI disables unused default features.
 - GitHub Actions are pinned to full commit SHAs (a test,
   `cli/tests/workflow_pins.rs`, fails on any other `uses:`), use least-privilege job
-  permissions, do not persist checkout credentials, and have bounded run times.
+  permissions (in `release.yml` the compiling `build` matrix is read-only; only the tag-only
+  `release` job, which runs no project code, holds write and OIDC grants; checked by
+  `cli/tests/release_workflow.rs`), do not persist checkout credentials, and have bounded run times.
 - `release.yml` runs on `v*` tags and on manual `workflow_dispatch`. A tag must
   exactly match the workspace version. Both runs repeat the full `ci.yml`
   quality workflow and a supply-chain gate, build four targets, run every
@@ -315,8 +317,9 @@ independent authenticity proof.
 The authoritative gate is [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 `just ci` runs [`scripts/ci_local.sh`](scripts/ci_local.sh), a step-for-step
 replica of its `secrets`, `msrv`, `gate` and `supply-chain` jobs (checked by
-`crates/deep-diff-forge-cli/tests/ci_replica.rs`; it needs gitleaks, Rust
-1.88.0, cargo-deny and cargo-audit installed). It does not replay the review
+`crates/deep-diff-forge-cli/tests/ci_replica.rs`, which also checks it runs on the
+toolchains ci.yml pins; it needs gitleaks, Rust 1.99.1 with rustfmt and clippy, Rust 1.88.0,
+cargo-deny and cargo-audit installed). It does not replay the review
 controller evidence job (rootless Podman) or the diff-mutation job; run
 `scripts/diff_mutation.sh origin/main` for the latter. The principal local
 checks are:
@@ -375,7 +378,14 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
   whose name is not UTF-8 refuses the acquisition (`InvalidSelection`) on every platform:
   decoding it lossily named another filter, and on macOS `git config --get-regexp` never listed
   it, so it ran. The listing now reads every key and picks the `filter.` ones itself
-  (`a_repository_filter_with_a_non_utf8_name_never_runs`, measured on the macOS CI job).
+  (`a_repository_filter_with_a_non_utf8_name_never_runs`, measured on the macOS CI job). A
+  checked-out submodule is part of the repository too: until 2026-11-01 the working-tree diff
+  (`--ignore-submodules=none`) ran `git status` inside each submodule to see whether it was
+  dirty, which read the submodule's own configuration (`.git/modules/<name>/config`) and
+  `.gitattributes` and ran its clean filter. Acquisition now passes `--ignore-submodules=dirty`,
+  which compares only the commit each submodule records and never runs Git inside it
+  (`a_submodule_filter_never_runs_and_its_commit_change_is_captured`); a submodule's uncommitted
+  changes are therefore not captured.
 - **The user's own Git configuration is trusted for filters only (decided 2026-10-31).** Filters
   from Git's protected scopes (global `~/.gitconfig` or `$XDG_CONFIG_HOME/git/config`, system
   `/etc/gitconfig`, `-c` and the caller's `GIT_CONFIG_COUNT`/`KEY`/`VALUE`, which DDF's own

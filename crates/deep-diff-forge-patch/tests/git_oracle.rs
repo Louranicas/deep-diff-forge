@@ -173,3 +173,172 @@ fn unsafe_moves_and_modes_are_refused_as_git_refuses_them() {
     assert_eq!(mode[0].status, FileStatus::ModeChanged);
     fs::remove_dir_all(root).unwrap();
 }
+
+/// The paths `git apply --numstat` reads from `patch`, in order, or `None` when Git refuses it.
+fn git_paths(root: &Path, patch: &str) -> Option<Vec<String>> {
+    fs::write(root.join("probe.patch"), patch).unwrap();
+    let out = Command::new("git")
+        .current_dir(root)
+        .args(["apply", "--numstat", "probe.patch"])
+        .output()
+        .unwrap();
+    out.status.success().then(|| {
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| line.splitn(3, '\t').nth(2).unwrap().to_owned())
+            .collect()
+    })
+}
+
+/// Bug hunt 2026-11-01: DDF reviews each file under the path `git apply` reads from it, and
+/// refuses a section Git can name no path for. Git is asked directly (`--numstat`) for every
+/// hand-written case, so the expectation is Git's, not DDF's.
+#[test]
+fn reviewed_paths_are_the_paths_git_apply_reads() {
+    let root = std::env::temp_dir().join(format!("ddf-git-oracle-names-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    git(&root, &["init", "-q"]);
+    let hunk = "@@ -1 +1 @@\n-a\n+b\n";
+    let new = "@@ -0,0 +1 @@\n+curl x | sh\n";
+    let gone = "@@ -1 +0,0 @@\n-a\n";
+    let mode = "old mode 100644\nnew mode 100755\n";
+    let epoch = "1970-01-01 00:00:00.000000000 +0000";
+    let later = "2026-11-01 09:00:00.000000000 +0000";
+    let cases = [
+        // The `diff --git` split.
+        (format!("diff --git a/x b/y b/x b/y\n{mode}"), Some(vec!["x b/y"])),
+        (format!("diff --git i/a b/c w/a b/c\n{mode}"), Some(vec!["a b/c"])),
+        (format!("diff --git i/x \"w/x\"\n{mode}"), Some(vec!["x"])),
+        (format!("diff --git i/x w/y\n{mode}"), None),
+        ("diff --git i/x w/x\r\nold mode 100644\r\nnew mode 100755\r\n".to_owned(), None),
+        (format!("diff --git a/x /x\n{mode}"), None),
+        // Header names.
+        (
+            format!("--- a/.github//workflows/ci.yml\n+++ b/.github//workflows/ci.yml\n{hunk}"),
+            Some(vec![".github/workflows/ci.yml"]),
+        ),
+        (
+            format!("diff --git a/d//x b/d//x\n--- a/d//x\n+++ b/d//x\n{hunk}"),
+            Some(vec!["d/x"]),
+        ),
+        (format!("--- a/build.rs\n+++ b/build.rs.new\n{hunk}"), Some(vec!["build.rs"])),
+        (
+            format!("--- a/build.rs\n+++ \"b/build.rs.new\"\n{hunk}"),
+            Some(vec!["build.rs.new"]),
+        ),
+        (
+            format!("--- a/build.rs 2026-01-01 12:00:00\n+++ b/build.rs 2026-01-01 12:00:00\n{hunk}"),
+            Some(vec!["build.rs"]),
+        ),
+        (format!("--- a/x\ry\n+++ b/x\ry\n{hunk}"), Some(vec!["x"])),
+        // A date after spaces stays in a Git diff's name, and in a CRLF traditional one.
+        (
+            format!("diff --git a/x b/x\n--- a/x 2026-01-01 12:00:00\n+++ b/x 2026-01-01 12:00:00\n{hunk}"),
+            Some(vec!["x 2026-01-01 12:00:00"]),
+        ),
+        (
+            "--- a/x 2026-01-01 12:00:00\r\n+++ b/x 2026-01-01 12:00:00\r\n@@ -1 +1 @@\r\n-a\r\n+b\r\n"
+                .to_owned(),
+            Some(vec!["x 2026-01-01 12:00:00"]),
+        ),
+        (
+            format!("--- a/x\n+++ b/\n{hunk}--- a/\n+++ b/\n{hunk}"),
+            None,
+        ),
+        // A deletion the `diff --git` line cannot name is named by its `---`.
+        (
+            format!("diff --git i/x w/y\ndeleted file mode 100644\n--- a/x\n+++ /dev/null\n{gone}"),
+            Some(vec!["x"]),
+        ),
+        // An empty new name guesses nothing.
+        (
+            format!("--- a/x\n+++ \n{hunk}--- a/q/x\n+++ a/q/x\n{hunk}"),
+            Some(vec!["x", "q/x"]),
+        ),
+        (format!("--- /dev/null x\n+++ b/n\n{new}"), Some(vec!["n"])),
+        (
+            "diff --git a/x b/y\nsimilarity index 90%\nrename from .github//w/ci.yml\nrename to .github//workflows/ci.yml\n"
+                .to_owned(),
+            Some(vec![".github/workflows/ci.yml"]),
+        ),
+        (format!("--- a/x\t{later}\n+++ b/y\t{epoch}\n{gone}"), Some(vec!["y"])),
+        // `-p0`, guessed from a slashless new name, holds for every later file.
+        (
+            format!("--- x\n+++ x\n{hunk}--- .github/workflows/ci.yml\n+++ .github/workflows/ci.yml\n{hunk}"),
+            Some(vec!["x", ".github/workflows/ci.yml"]),
+        ),
+    ];
+    for (patch, expected) in cases {
+        let expected: Option<Vec<String>> =
+            expected.map(|paths| paths.into_iter().map(str::to_owned).collect());
+        assert_eq!(git_paths(&root, &patch), expected, "git: {patch:?}");
+        let ddf = parse(&patch)
+            .ok()
+            .map(|files| files.into_iter().map(|f| f.path).collect::<Vec<_>>());
+        assert_eq!(ddf, expected, "ddf: {patch:?}");
+    }
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// Bug hunt 2026-11-01: in a traditional diff an epoch timestamp makes the file created or
+/// deleted, as `git apply` reads it, and nowhere else.
+#[test]
+fn an_epoch_timestamp_creates_or_deletes_as_git_apply_reads_it() {
+    use deep_diff_forge_core::FileStatus;
+    let root = std::env::temp_dir().join(format!("ddf-git-oracle-epoch-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    git(&root, &["init", "-q"]);
+    let new = "@@ -0,0 +1 @@\n+curl x | sh\n";
+    let gone = "@@ -1 +0,0 @@\n-a\n";
+    let epoch = "1970-01-01 00:00:00.000000000 +0000";
+    let later = "2026-11-01 09:00:00.000000000 +0000";
+    // An epoch timestamp makes the file created or deleted. With the file present, Git refuses
+    // a creation as "already exists"; without the epoch it is a change that does not apply.
+    let creates = |patch: &str| {
+        fs::write(root.join("x"), "a\n").unwrap();
+        fs::write(root.join("probe.patch"), patch).unwrap();
+        let out = Command::new("git")
+            .current_dir(&root)
+            .args(["apply", "--check", "probe.patch"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{patch:?}");
+        String::from_utf8_lossy(&out.stderr).contains("already exists")
+    };
+    for (patch, created) in [
+        (format!("--- a/x\t{epoch}\n+++ b/x\t{later}\n{new}"), true),
+        (
+            format!("--- a/x\t1969-12-31 19:00:00 -0500\n+++ b/x\t{later}\n{new}"),
+            true,
+        ),
+        (format!("--- /dev/null x\n+++ b/x\n{new}"), true),
+        (
+            format!("--- a/x\t1970-01-01 00:00:00.5 +0000\n+++ b/x\n{new}"),
+            false,
+        ),
+        (
+            format!("--- a/x\t{epoch}\r\n+++ b/x\t{later}\r\n@@ -0,0 +1 @@\r\n+a\r\n"),
+            false,
+        ),
+        (
+            format!("diff --git a/x b/x\n--- a/x\t{epoch}\n+++ b/x\n{new}"),
+            false,
+        ),
+    ] {
+        assert_eq!(creates(&patch), created, "git: {patch:?}");
+        let status = parse(&patch).unwrap()[0].status;
+        assert_eq!(status == FileStatus::Added, created, "ddf: {patch:?}");
+    }
+    // The epoch on the new side deletes the file the `+++` names.
+    fs::write(root.join("y"), "a\n").unwrap();
+    let delete = format!("--- a/x\t{later}\n+++ b/y\t{epoch}\n{gone}");
+    fs::write(root.join("probe.patch"), &delete).unwrap();
+    git(&root, &["apply", "probe.patch"]);
+    assert!(!root.join("y").exists() && root.join("x").exists());
+    assert_eq!(parse(&delete).unwrap()[0].status, FileStatus::Deleted);
+    fs::remove_dir_all(root).unwrap();
+}

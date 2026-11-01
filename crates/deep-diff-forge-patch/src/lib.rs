@@ -75,12 +75,16 @@ pub const DEFAULT_LINE_BUDGET: usize = 1_000_000;
 /// caller to act without scraping prose.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PatchParseError {
-    /// EOF marker is malformed, duplicated or not immediately after a content line.
+    /// EOF marker is malformed, duplicated or not immediately after a content line, or a later
+    /// line adds to the side of the file it ended (Git would join that line onto the marked one).
     InvalidEofMarker { line_number: usize },
-    /// Combined multi-parent or mixed text/binary sections need a different model.
+    /// Combined multi-parent or mixed text/binary sections need a different model, and the
+    /// `rename old`/`rename new` headers no current Git writes are not translated.
     UnsupportedFormat { line_number: usize },
-    /// A quoted Git path was malformed or was not UTF-8, or a rename or copy names a path
-    /// `git apply` refuses: absolute, or with a `.`, `..` or `.git` component.
+    /// A quoted Git path was malformed or was not UTF-8, a rename or copy names a path
+    /// `git apply` refuses (absolute, or with a `.`, `..` or `.git` component), or a file
+    /// section names no path at all, as with a `diff --git i/x w/y` mode change that has no
+    /// `---`/`+++` (Git: "lacks filename information"); the line is the section's first.
     InvalidPath { line_number: usize },
     /// A mode header (`old mode`, `new mode`, `new file mode`, `deleted file mode`) is not one
     /// to six octal digits; `git apply` refuses it as an invalid mode.

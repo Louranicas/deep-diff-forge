@@ -106,6 +106,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           toolchain: 1.99.1
+      # 22.04's python3 is 3.10, without the tomllib that scripts/fuzz_target.sh parses
+      # fuzz/Cargo.toml with (measured in PR #82).
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
       - name: test on Linux arm64
         run: cargo test --workspace --locked --no-fail-fast
       # The release smoke checks the shipped (release) binary; this is the early warning on the

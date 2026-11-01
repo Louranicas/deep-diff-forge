@@ -1060,7 +1060,7 @@ mod tests {
 
     #[test]
     fn paths_come_from_raw_bytes_not_from_headers() {
-        // A path that display-header splitting gets wrong: "x b/y".
+        // A path that display-header splitting on the rightmost ` b/` got wrong: "x b/y".
         let raw = ":100644 100755 1111111111111111111111111111111111111111 0000000000000000000000000000000000000000 M\0x b/y\0";
         let patch = "diff --git a/x b/y b/x b/y\nold mode 100644\nnew mode 100755\n";
         let diff = StructuredDiff::parse(&stream(raw, patch)).unwrap();
