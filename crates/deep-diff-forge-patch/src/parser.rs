@@ -800,9 +800,8 @@ impl FileBuf {
         } else {
             let first = side(old);
             let name = match (first, strip_p(new, self.p0)) {
-                (Some(first), Some(second))
-                    if !new_quoted && first.len() < second.len() && second.starts_with(&first) =>
-                {
+                // Git asks for a strict prefix; an equal name is the same choice either way.
+                (Some(first), Some(second)) if !new_quoted && second.starts_with(&first) => {
                     Some(first)
                 }
                 (_, Some(second)) => Some(squash_slashes(second)),
@@ -2824,6 +2823,12 @@ diff --git a/x b/x
             "1970-01-01 00:00:00 +3000",
             "1970-01-01 00:00:00 +0060",
             "1970-01-01 00:00:00 +00:0",
+            // Out of `[0-2][0-9]`/`[0-5][0-9]`, though the sums would make the epoch (measured:
+            // Git applies these as changes, not creations).
+            "1970-01-01 30:00:00 +3000",
+            "1970-01-01 00:60:00 +0100",
+            "1970-01-01 01:00:00 +0060",
+            "1970-01-01 01:00:00 +00:60",
         ] {
             assert!(!has_epoch_timestamp(&format!("a/x\t{stamp}")), "{stamp}");
         }
