@@ -372,7 +372,8 @@ git diff | deep-diff-forge review --probe --cols 120 --rows 40 --cmd rank
 | `q` · `Esc` | quit · close the overlay |
 
 The mouse works too: the wheel scrolls, and clicks select the file on the row clicked, focus
-the diff and open menus. The palette (`:` in the app, or `--palette` / `--cmd NAME` headless) runs `rank`,
+the diff when inside its pane and open menus; a click on a border or the status bar does
+nothing. The palette (`:` in the app, or `--palette` / `--cmd NAME` headless) runs `rank`,
 `outline`, `cluster`, `summary`, `notes`, `review`, `daemon`, `learning` and `maturity`
 against the loaded review. An unknown name or a non-numeric size is a usage error (exit 2).
 

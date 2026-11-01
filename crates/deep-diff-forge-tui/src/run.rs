@@ -551,7 +551,7 @@ mod tests {
         let lines = crate::ui::render_to_lines(app, width, height);
         let row = lines
             .iter()
-            .position(|line| line[..line.len().min(30)].contains(path))
+            .position(|line| line.chars().take(30).collect::<String>().contains(path))
             .unwrap_or_else(|| panic!("{path} is in the tree: {lines:#?}"));
         u16::try_from(row).unwrap()
     }
