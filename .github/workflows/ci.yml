@@ -310,10 +310,14 @@ jobs:
   diff-mutation:
     # Anchor B-01: every pull request's changed Rust lines are mutated against its merge base, and
     # one missed mutant or timeout fails. Sharded four ways so a large change still fits.
+    # Each mutant runs the whole workspace suite (council podman tests included), about a minute
+    # each: PR #83's shards held 106-107 mutants, and two were cancelled at the old 120-minute
+    # limit (measured 2026-11-02). 300 stays under the hosted runners' 360-minute job cap; the
+    # shard names are unchanged because ruleset 25868121 requires them.
     name: diff mutation (shard ${{ matrix.shard }}/4)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-26.04
-    timeout-minutes: 120
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:

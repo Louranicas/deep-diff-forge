@@ -25,10 +25,16 @@ The sections after this one mix the built loop with target design. What exists, 
   Measured with the 0.3.0 binary: a `parser_version` containing a space exits 4 with
   `invalid receipt: parser_version must be a bounded identifier token`.
 - **Store.** One file, `$XDG_STATE_HOME/deep-diff-forge/learning/receipts/strategy.jsonl`
-  (else `$HOME/.local/state/deep-diff-forge/learning/...`). The `learning/` and `receipts/`
+  (else `$HOME/.local/state/deep-diff-forge/learning/...`; a relative value of either is
+  invalid under the XDG spec and ignored, so the store never lands under the working
+  directory). The `learning/` and `receipts/`
   directories are made `0700` and must be owned by the effective user and not be symlinks; the
   file is a regular, non-symlink file (measured: `0600`). Limits: 64 MiB store, 1 MiB per
-  record, 100,000 records loaded. A missing store reads as "no data yet".
+  record, 100,000 records loaded. A missing store reads as "no data yet". An append to a store
+  whose last byte is not a newline (a torn write, a hand edit) writes one first, so the new
+  receipt is its own line. On load, every line must parse, pass the checks above and hold only
+  receipt fields (an extra key such as `path` is refused, naming the line; `learn record` drops
+  extra keys and never writes them); one bad line fails the load with exit 3.
 
 ## Purpose
 

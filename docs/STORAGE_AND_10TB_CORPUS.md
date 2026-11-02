@@ -7,7 +7,7 @@
 **At 0.3.0** (checked in code and with the binary):
 
 - The engine reads no `[storage]` configuration. `large_cache_dir` and `large_corpus_dir` appear in no crate. The engine writes nothing to this disk, and it has no corpus mirror or benchmark archive.
-- The engine writes no cache. `deep-diff-forge doctor` prints `cache_dir`, `state_dir` and the daemon socket path. The only persistent store is the local-only learning store under the state directory (`learn record`).
+- The engine writes no cache. `deep-diff-forge doctor` prints `cache_dir`, `state_dir` (the learning store's own resolved base, so a relative `XDG_STATE_HOME` is not reported) and the daemon socket path. The only persistent store is the local-only learning store under the state directory (`learn record`).
 - Test fixtures live in the repository under `fixtures/` (`fixtures/patch/`, `fixtures/council/`).
 - On the current operator workstation the `STORAGE-10TB` disk is mounted at `/var/mnt/storage`, not `/mnt/storage-10tb` (measured with `findmnt`). Every absolute path in this document is an operator-workstation path and is not in the repository.
 

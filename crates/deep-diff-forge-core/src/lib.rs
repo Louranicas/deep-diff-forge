@@ -252,9 +252,13 @@ impl PatchHunk {
     }
 
     /// The hunk's address within one review: SHA-256 over `ddf-hunk-v1`, the file path, the
-    /// header's ranges and the body, NUL-separated. It names exactly one hunk of one sealed
-    /// patch: any change to the path, the position or a byte of the body changes it, and a
-    /// different patch never shares it except by containing the same hunk at the same place.
+    /// header's ranges and the body, NUL-separated. Any change to the path, the position or a
+    /// byte of the body changes it, and a different patch never shares it except by containing
+    /// the same hunk at the same place. It names a hunk's content and place, not its occurrence:
+    /// a patch that repeats a section of one path with a byte-identical hunk at the same ranges
+    /// (a concatenated `a->b`, `b->a`, `a->b` series) gives both copies the same address.
+    /// Selecting by it returns every copy, and a finding anchored to it resolves to the first in
+    /// review order; the copies' content is identical, so either reading is true of both.
     #[must_use]
     pub fn address(&self, path: &str) -> String {
         let (old_count, new_count) = self.counts();

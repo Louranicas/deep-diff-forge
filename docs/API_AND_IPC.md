@@ -185,7 +185,7 @@ version is refused with domain error 2.
 | `diff.compute` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.review.v0` document `--stdin-patch --json` prints for the same patch | 1 |
 | `diff.rank` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints for the same patch (with each file's code `evidence`, below) | 1 |
 | `review.outline` | `patch: string, require_files?, require_hunks?, max_bytes?: integer, cursor?: string` | `deep-diff-forge.review-outline.v0`: files in review-risk order with their hunks' addresses, ranges, `@@` headings and counts, no line text; `next_cursor` continues | 1 |
-| `review.hunks` | `patch: string, require_files?, require_hunks?, addresses?: [string], paths?: [string], max_bytes?, cursor?` | `deep-diff-forge.review-hunks.v0`: the chosen hunks verbatim, continued at a line when one is too long for the page. A path selects every section of that path, an address every hunk with it; a view carries at most 256 bytes of an `@@` heading (`section_truncated: true`) | 1 |
+| `review.hunks` | `patch: string, require_files?, require_hunks?, addresses?: [string], paths?: [string], max_bytes?, cursor?` | `deep-diff-forge.review-hunks.v0`: the chosen hunks verbatim, continued at a line when one is too long for the page. A path selects every section of that path, an address every hunk with it; a name repeated in the list selects its hunks once, in the order of first mention; a view carries at most 256 bytes of an `@@` heading (`section_truncated: true`) | 1 |
 | `review.change` | `repo: string, selection: staged\|working_tree\|range, range?: A..B, include_untracked?, view?: outline\|hunks\|review\|rank`, plus the view's params | that view of the change Git returns, sealed over Git's bytes, with an `acquisition` member (repo, selection, base, target, `include_untracked`, and `omitted_untracked`: untracked directories such as nested repositories that are not in the files); only under an `--allow-repo` root, Git stopped after 30 s; Git failure is error 3 | 1 |
 | `session.open` | `patch: string` | `{session, files}` | 0 |
 | `session.snapshot` | `session: string` | `[ranked file]` | 0 |
@@ -297,14 +297,21 @@ pins the public signatures.
 `verify_findings(patch, findings, require_files=False, require_hunks=False)`
 (`findings.verify`, protocol 2) and `methods()`.
 A JSON-RPC error raises `RpcError` (with the daemon's `code`); a transport
-failure raises `TransportError`.
+failure, including an answer that is not UTF-8 JSON or not a response to the
+request, raises `TransportError`. `StdioClient`'s `timeout` covers the whole
+exchange, writing the request as well as reading the answer; on expiry, or on an
+invalid answer (including one nested too deeply to decode), the child is killed. An
+answer that arrives before the whole request is taken is returned, and the child,
+now out of step, is killed. A request holding a string UTF-8 cannot
+carry (a lone surrogate) raises `ValueError` before anything is sent, naming the
+finding's index for `verify_findings`.
 
 ## Unix Domain Socket Locations
 
 | Platform | Socket path or status |
 | --- | --- |
 | Unix with `$XDG_RUNTIME_DIR` | `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock` |
-| Unix without `$XDG_RUNTIME_DIR` | Fails closed with exit 2: pass `--socket PATH`; there is no `/tmp` fallback |
+| Unix without `$XDG_RUNTIME_DIR` (unset or relative) | Fails closed with exit 2: pass `--socket PATH`; there is no `/tmp` fallback |
 | Windows | Daemon unsupported; no named-pipe or TCP listener |
 
 `deep-diff-forge daemon path` prints the resolved socket. The managed runtime
@@ -352,7 +359,9 @@ process. A client may call `engine.initialize` first but does not have to.
 - One daemon per socket: `daemon start` holds an exclusive lock on
   `<socket>.lock` from before the stale-socket probe until it exits.
 - Treat request fields and agent annotations as untrusted input.
-- Limits (`serve.rs`, `handler.rs`): 80 MiB request and response lines, a
+- Limits (`serve.rs`, `handler.rs`): 80 MiB request and response lines (an error
+  answer too, measured as written, with its message cut at 4 KiB, as is every
+  MCP tool and protocol error), a
   30-second absolute read deadline per line, a 30-second write timeout, eight
   concurrent connections, 64 retained sessions (least recently used evicted
   first), and a 128 MiB aggregate retained session-payload budget.

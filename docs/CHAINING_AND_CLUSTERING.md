@@ -52,7 +52,7 @@ Most of this page is a target design. What ships today:
 ## Pipe Contracts
 
 ```text
-stdin   = input only when an explicit stdin flag is set (--stdin-patch, learn record --stdin)
+stdin   = input only for --stdin-patch, learn record --stdin, findings verify and review (the patch), and rpc and mcp (their protocol)
 stdout  = primary output only
 stderr  = diagnostics and warnings
 status  = an exit code from the registry (deep-diff-forge schema exit-codes)
@@ -65,9 +65,10 @@ Rules:
 - `--jsonl` emits one event per line (`{"event":"diff.file",…}`). Today the
   events carry no `schema` field, and the whole output is written when the run
   ends.
-- Pipe failure is not hidden as success; a closed stdout (`| head`) ends the
-  command cleanly.
-- Stdin is never consumed by accident; a stdin mode must be explicit.
+- A closed stdout (`| head`) ends the command cleanly with exit 0; the reader
+  keeps what it read. Any other write failure, including one in output that does
+  not end in a newline, exits 3 (io).
+- Stdin is never consumed by accident: only the commands above read it.
 - Target: default human output uses ANSI only when stdout is a TTY (today only
   `highlight` colours); large outputs flush by file, hunk or event boundary.
 

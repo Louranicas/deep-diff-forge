@@ -329,6 +329,18 @@ fn malformed_invocations_are_usage_errors_before_any_file_is_read() {
             vec![file.as_str(), file.as_str(), "--parallel", "2"],
             "--parallel requires --cluster",
         ),
+        // Bug hunt 2026-11-01: `--jsonl` won and the `--hunks --path` check never ran.
+        (
+            vec![
+                file.as_str(),
+                file.as_str(),
+                "--jsonl",
+                "--hunks",
+                "--path",
+                "nothing",
+            ],
+            "--hunks and --jsonl are separate modes",
+        ),
     ] {
         let (code, stdout, stderr) = ddf(&args);
         assert_eq!((code, stdout.as_str()), (2, ""), "{args:?}: {stderr}");

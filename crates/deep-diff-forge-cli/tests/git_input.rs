@@ -258,3 +258,48 @@ fn an_inherited_git_config_env_filter_runs_and_the_repository_filter_does_not() 
     );
     assert!(!ran("repository").exists(), "a repository filter ran");
 }
+
+/// Bug hunt 2026-11-01: `--acquisition-json` with a review mode printed the acquisition and
+/// dropped the mode, and a second `--repo` was never read, each with exit 0.
+#[test]
+fn a_second_mode_or_a_repeated_repo_is_a_usage_error() {
+    let r = repo("modes", true);
+    for (args, message) in [
+        (
+            vec![
+                "--git-working-tree",
+                "--repo",
+                r.arg(),
+                "--acquisition-json",
+                "--rank",
+            ],
+            "--acquisition-json and --rank are separate modes",
+        ),
+        (
+            vec![
+                "--git-staged",
+                "--repo",
+                r.arg(),
+                "--acquisition-json",
+                "--layout",
+                "inline",
+            ],
+            "--acquisition-json and --layout are separate modes",
+        ),
+        (
+            vec![
+                "--git-working-tree",
+                "--repo",
+                r.arg(),
+                "--repo",
+                "/nonexistent",
+                "--json",
+            ],
+            "--repo given more than once",
+        ),
+    ] {
+        let (code, stdout, stderr) = ddf(&args);
+        assert_eq!((code, stdout.as_str()), (2, ""), "{args:?}: {stderr}");
+        assert!(stderr.contains(message), "{args:?}: {stderr}");
+    }
+}

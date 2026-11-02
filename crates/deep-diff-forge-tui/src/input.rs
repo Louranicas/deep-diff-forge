@@ -1,5 +1,6 @@
 use crate::chrome::MENUS;
 use crate::state::AppEvent;
+use crate::ui::{Hit, HitMap};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 /// Map a key event to a semantic [`AppEvent`].
@@ -35,22 +36,26 @@ pub fn map_key(key: KeyEvent) -> AppEvent {
     }
 }
 
-/// Map a mouse event to a semantic [`AppEvent`].
+/// Map a mouse event to a semantic [`AppEvent`], against the panes of the frame the reviewer
+/// clicked on ([`HitMap::of`] the app and area that frame was drawn from).
 ///
-/// The terminal event loop does not know the rendered pane rectangles, so this
-/// mapper intentionally handles only stable, layout-independent gestures:
-/// wheel scrolling and coarse left/right focus clicks. Rich hit testing can be
-/// layered on later without changing the state machine.
+/// The wheel scrolls the diff; a left click on the menu bar runs its menu, on a tree row
+/// selects that row's file, and in the diff pane focuses the diff. A click on a border, the
+/// status bar or a directory row does nothing. The tree row is resolved through the tree's
+/// scroll and its real width: a fixed 40-column split, counted from the top of an unscrolled
+/// tree, selected the wrong file once the tree had scrolled, and on a narrow terminal a click
+/// in the diff changed the selection (bug hunt 2026-11-01).
 #[must_use]
-pub fn map_mouse(mouse: MouseEvent) -> AppEvent {
+pub fn map_mouse(mouse: MouseEvent, hits: &HitMap) -> AppEvent {
     match mouse.kind {
-        MouseEventKind::Down(MouseButton::Left) if mouse.row == 0 => map_menu_click(mouse.column),
         MouseEventKind::ScrollUp => AppEvent::ScrollUp,
         MouseEventKind::ScrollDown => AppEvent::ScrollDown,
-        MouseEventKind::Down(MouseButton::Left) if mouse.column < 40 => {
-            AppEvent::SelectTreeRow(usize::from(mouse.row.saturating_sub(2)))
-        }
-        MouseEventKind::Down(MouseButton::Left) => AppEvent::FocusDiff,
+        MouseEventKind::Down(MouseButton::Left) => match hits.hit(mouse.column, mouse.row) {
+            Hit::Menu(column) => map_menu_click(column),
+            Hit::TreeRow(row) => AppEvent::SelectTreeRow(row),
+            Hit::Diff => AppEvent::FocusDiff,
+            Hit::Nothing => AppEvent::None,
+        },
         _ => AppEvent::None,
     }
 }
@@ -90,6 +95,14 @@ mod tests {
 
     fn ctrl(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    /// The panes of a 125x24 frame: the tree is columns 0..40, its rows start on screen row 2.
+    fn hits() -> HitMap {
+        HitMap::of(
+            &crate::state::ReviewApp::new(Vec::new()),
+            ratatui::layout::Rect::new(0, 0, 125, 24),
+        )
     }
 
     fn mouse(kind: MouseEventKind, column: u16) -> MouseEvent {
@@ -217,23 +230,29 @@ mod tests {
     #[test]
     fn mouse_wheel_scrolls() {
         assert_eq!(
-            map_mouse(mouse(MouseEventKind::ScrollUp, 80)),
+            map_mouse(mouse(MouseEventKind::ScrollUp, 80), &hits()),
             AppEvent::ScrollUp
         );
         assert_eq!(
-            map_mouse(mouse(MouseEventKind::ScrollDown, 80)),
+            map_mouse(mouse(MouseEventKind::ScrollDown, 80), &hits()),
             AppEvent::ScrollDown
         );
     }
 
     #[test]
-    fn mouse_left_click_coarsely_focuses_panes() {
+    fn mouse_left_click_selects_a_tree_row_or_focuses_the_diff() {
         assert_eq!(
-            map_mouse(body_mouse(MouseEventKind::Down(MouseButton::Left), 10)),
+            map_mouse(
+                body_mouse(MouseEventKind::Down(MouseButton::Left), 10),
+                &hits()
+            ),
             AppEvent::SelectTreeRow(2)
         );
         assert_eq!(
-            map_mouse(body_mouse(MouseEventKind::Down(MouseButton::Left), 80)),
+            map_mouse(
+                body_mouse(MouseEventKind::Down(MouseButton::Left), 80),
+                &hits()
+            ),
             AppEvent::FocusDiff
         );
     }
@@ -241,7 +260,7 @@ mod tests {
     #[test]
     fn other_mouse_events_are_noops() {
         assert_eq!(
-            map_mouse(mouse(MouseEventKind::Down(MouseButton::Right), 80)),
+            map_mouse(mouse(MouseEventKind::Down(MouseButton::Right), 80), &hits()),
             AppEvent::None
         );
     }
@@ -254,7 +273,10 @@ mod tests {
             for column in start..end {
                 let column = u16::try_from(column).expect("menu column fits u16");
                 assert_eq!(
-                    map_mouse(mouse(MouseEventKind::Down(MouseButton::Left), column)),
+                    map_mouse(
+                        mouse(MouseEventKind::Down(MouseButton::Left), column),
+                        &hits()
+                    ),
                     event,
                     "column {column} in {label} should map consistently"
                 );
@@ -269,7 +291,10 @@ mod tests {
         for column in file_end..view_start {
             let column = u16::try_from(column).expect("menu column fits u16");
             assert_eq!(
-                map_mouse(mouse(MouseEventKind::Down(MouseButton::Left), column)),
+                map_mouse(
+                    mouse(MouseEventKind::Down(MouseButton::Left), column),
+                    &hits()
+                ),
                 AppEvent::None
             );
         }
