@@ -5,15 +5,15 @@
 >
 > **Status 2026-11-01.** Shipped: interactive terminal mode (`deep-diff-forge-tui`), agent mode
 > read and verify paths (`cli/src/mcp.rs`, `agent::findings`), file-pair input
-> (`cli/src/file_pair.rs`, unreleased). Planned, unowned: pager mode as `GIT_EXTERNAL_DIFF` or
+> (`cli/src/file_pair.rs`, since 0.6.0). Planned, unowned: pager mode as `GIT_EXTERNAL_DIFF` or
 > difftool, desktop and web renderers. Withdrawn: the loom (see [loom](DEEP_DIFF_FORGE_LOOM.md)).
 
 ## What exists today (0.3.0, updated 2026-11-01)
 
 Against the four product modes below:
 
-- **Pager mode:** partial. `deep-diff-forge <old> <new>` reviews two regular files (2026-10-31,
-  unreleased); there is no `GIT_EXTERNAL_DIFF` or difftool mode, no directory pair, and Git is
+- **Pager mode:** partial. `deep-diff-forge <old> <new>` reviews two regular files (since
+  0.6.0); there is no `GIT_EXTERNAL_DIFF` or difftool mode, no directory pair, and Git is
   the only VCS read (`--git-working-tree`, `--git-staged`, `--git-range`). Patches on stdin are
   reviewed with `--stdin-patch`.
 - **Interactive terminal mode:** built as `deep-diff-forge review` (patch on stdin): ranked file

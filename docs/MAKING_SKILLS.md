@@ -36,7 +36,7 @@ This guide covers two targets:
 > **Updated 2026-11-01.** The MCP server has eight tools (below), `agent setup` prints the
 > registration line for Claude Code or Codex, `findings verify` checks an agent's findings
 > against the patch, and two files can be compared directly (`deep-diff-forge <old> <new>`,
-> unreleased). Everything on this page is a guide to shipped commands; nothing is planned,
+> since 0.6.0). Everything on this page is a guide to shipped commands; nothing is planned,
 > withdrawn or on hold here.
 
 ### Which should you build — Skill, extension, MCP server, or slash command?

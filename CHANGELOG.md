@@ -6,6 +6,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-02
+
 ### Dependencies
 
 - **Dependabot's first version updates, applied together** (#63 to #70): serde 1.0.229,
@@ -32,7 +34,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     (measured by the first CI run of the floor check). A `Linux arm64
     tests` job runs the whole suite there on every event: not a required check on pull requests,
     but it gates every release build through release.yml's `quality`, as `macOS tests` does.
-    Both are pending their first CI run.
+    Both passed on their first pull-request run (#79, 2026-11-01) and on every pull request
+    since.
   - **A declared and enforced glibc floor: 2.34.** `scripts/check_glibc_floor.sh` fails the
     release smoke when a Linux binary needs a newer `GLIBC_` symbol version; a Linux-only test in
     `crate_edges.rs` runs it on the built binary (passes) and with a lowered floor (refused). Measured: the
@@ -171,7 +174,7 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   timeout, weaker response validation), measured in a clean venv. The output is untracked and
   ignored (`/sdk/python/build/`, `/sdk/python/dist/`, `*.egg-info/`), and
   `cli/tests/python_sdk.rs` fails if `.gitignore` stops ignoring it. The `pyproject.toml` install
-  comment names `@main`, since `@v0.5.0` has no package metadata. Found by the independent
+  comment names `@v0.6.0`, the first tag with package metadata. Found by the independent
   rescore of 2026-11-02.
 - **A failed alternate-screen entry no longer leaves the terminal in raw mode.** `review` switched
   raw mode on, then wrote the alternate-screen sequence, and armed its restore guard only after
@@ -1809,7 +1812,8 @@ A supply-chain & fuzz hardening pass then raised the release/CI posture:
   `--json`/`--jsonl` stability tests. Corrected the daemon's `lib.rs` doc from
   "thread-per-connection" to the true single-threaded sequential accept loop.
 
-[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.6.0
 [0.5.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.3.0

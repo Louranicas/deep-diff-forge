@@ -36,8 +36,8 @@ errors, and reliable concurrency.
   `LearningError`, `RpcError`); there is no shared `EngineError`. The CLI maps them to the
   exit-code registry (`deep-diff-forge schema exit-codes`).
 - **Testing:** unit, fixture, contract, integration and fuzz levels exist, and since 0.5.0 a
-  labelled evaluation corpus (`fixtures/eval`, scored by `eval`; 11 cases in 0.5.0, 34 on
-  `main`). Fuzz targets (10): `patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`, `council_report`,
+  labelled evaluation corpus (`fixtures/eval`, scored by `eval`; 11 cases in 0.5.0, 34
+  since 0.6.0). Fuzz targets (10): `patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`, `council_report`,
   `stdio_mcp`, `stdio_rpc`, `structural_soundness`, `findings_verify`, `evidence_scan`
   (`fuzz/Cargo.toml`). CI runs diff-scoped
   cargo-mutants on each pull request's changed lines.
