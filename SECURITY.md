@@ -6,20 +6,20 @@ an exceptional one. This policy documents the maintained security boundary,
 the controls enforced by the repository, and the limits operators must account
 for.
 
-## Status 2026-11-01 (`main` after 0.5.0)
+## Status 2026-11-02 (0.6.0)
 
-- `main` carries **0.5.0**, tagged `v0.5.0` on 2026-10-31; cutting any later
+- `main` carries **0.6.0**, tagged `v0.6.0` on 2026-11-02; cutting any later
   `v*` tag is the owner's decision. The published releases are `v0.1.0`,
-  `v0.2.0`, `v0.3.0`, `v0.4.0` and `v0.5.0`. `0.2.1` was never tagged or published.
+  `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0` and `v0.6.0`. `0.2.1` was never tagged or published.
 - The controls below describe the code on `main`. The `v0.2.0` binaries were
   built on 2026-06-24 and predate the SOL-1 hardening (2026-09-04), the review
   council work and the 2026-10-28 fixes listed under
   [Fixed on 2026-10-28](#fixed-on-2026-10-28).
 - Declared scope: a local, single-user review tool (CLI, daemon, `rpc`, `mcp`,
   SDKs) on exactly four targets, shipped as GitHub release binaries:
-  `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` (built on Ubuntu
-  24.04, glibc 2.34 or newer, enforced by `scripts/check_glibc_floor.sh`; arm64
-  from the release after v0.5.0), `aarch64-apple-darwin` and `x86_64-apple-darwin`.
+  `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` (x86_64 built on
+  Ubuntu 24.04, arm64 on Ubuntu 22.04 since v0.6.0; glibc 2.34 or newer, enforced
+  by `scripts/check_glibc_floor.sh`), `aarch64-apple-darwin` and `x86_64-apple-darwin`.
   Every shipped binary is run in the release smoke test, the x86_64 macOS one under
   Rosetta 2. Not claimed: musl, Windows, other architectures, crates.io packages,
   or a daemon shared between users on one host
@@ -53,8 +53,9 @@ Fixes land on `main` first and reach users in the next tagged release.
 
 | Version | State | Security fixes |
 | --- | --- | --- |
-| `main` | Development line after `v0.5.0` | Land here first. |
-| `v0.5.0` (2026-10-31) | Latest published release | Yes: the next release carries them. |
+| `main` | Development line after `v0.6.0` | Land here first. |
+| `v0.6.0` (2026-11-02) | Latest published release | Yes: the next release carries them. |
+| `v0.5.0` (2026-10-31) | Published, superseded | No. It lacks the 0.6.0 Git-filter fixes (a `config.worktree` or checked-out submodule filter no longer runs during acquisition) and the escaping of every default-ignorable code point. |
 | `v0.4.0` (2026-10-30) | Published, superseded | No. It lacks the 0.5.0 code-evidence fix (DDF-EVID-001) and the bidi/invisible-character sanitising of agent text. |
 | `v0.3.0` (2026-10-29) | Published, superseded | No. It lacks the 0.4.0 daemon fixes (peer credentials, start lock). |
 | `v0.2.0` (2026-06-24) | Published, superseded | No. It does not contain the fixes made since 2026-06-24. |
@@ -419,7 +420,7 @@ says when it closed:
   (`protected_config_keeps_its_filters_and_runs_nothing_else`): only the user's filter ran and the
   capture was byte for byte the one taken without the planted programs. The review of an LFS file
   is a review of its pointer, not of the object it names.
-- **A file pair is compared through Git, outside any repository (unreleased, 2026-10-31).**
+- **A file pair is compared through Git, outside any repository (since 0.6.0).**
   `deep-diff-forge <old> <new>` refuses a path that is itself a symbolic link, a directory or a
   special file, and two files over the 64 MiB budget, then runs `git diff --no-index` with the
   acquisition's fixed argv and environment, from `/`, with `core.attributesFile=/dev/null`,
@@ -428,7 +429,7 @@ says when it closed:
   attributes chooses a filter or changes the bytes (`cli/tests/file_pair.rs`). The check and
   Git's read are separate steps: a writer racing them can change what is compared, so compare
   files you control. A file that vanishes in between is an error, never "unchanged".
-- **Release tags are not signed.** `v0.2.0` to `v0.5.0` are unsigned annotated tags and `v0.1.0` a lightweight tag (open in
+- **Release tags are not signed.** `v0.2.0` to `v0.6.0` are unsigned annotated tags and `v0.1.0` a lightweight tag (open in
   [production readiness](docs/PRODUCTION_READINESS.md)); a tag ruleset makes them immutable and
   the checksums and build provenance identify the artifacts.
 - **Repository reads are opt-in (`review.change`).** The daemon, `rpc` and `mcp`

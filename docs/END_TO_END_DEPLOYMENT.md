@@ -24,9 +24,9 @@ The gate sequence below is the design. What runs today:
 - Gate 4's snapshot directories (`fixtures/expected/...`) do not exist. The
   fixtures today are `fixtures/patch/*.patch` (with `fixtures/patch/regressions/`),
   `fixtures/council/` and, since 0.5.0, the labelled corpus `fixtures/eval/`
-  (34 cases on `main`, 2026-11-01); fuzz seeds live in `fuzz/seeds/`.
+  (34 cases since 0.6.0); fuzz seeds live in `fuzz/seeds/`.
 - Gate 8 has no tooling; nothing writes `reports/releases/`.
-- Version 0.5.0 is tagged `v0.5.0` (2026-10-31). Published releases: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`. crates.io
+- Version 0.6.0 is tagged `v0.6.0` (2026-11-02). Published releases: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`. crates.io
   is on hold (`DDF_CRATES_IO`).
 - The local remote-tracking refs (last fetch, 2026-10-28) show GitLab `main` at
   `2f03f40`, the same commit as GitHub `main`; the 2026-10-26 instruction not to
@@ -189,8 +189,8 @@ Release forms, with their state on 2026-10-28:
 - GitLab Release assets: not produced
 - crates.io publish: on hold (`DDF_CRATES_IO`)
 - cargo-binstall metadata: not configured
-- Linux tarballs (`x86_64-unknown-linux-gnu`; `aarch64-unknown-linux-gnu` from the release after
-  v0.5.0, on `ubuntu-22.04-arm`): built by `release.yml`, glibc 2.34 or newer
+- Linux tarballs (`x86_64-unknown-linux-gnu`; `aarch64-unknown-linux-gnu` since
+  v0.6.0, on `ubuntu-22.04-arm`): built by `release.yml`, glibc 2.34 or newer
 - macOS tarballs (`x86_64-apple-darwin`, `aarch64-apple-darwin`): built by `release.yml`
 - optional DEB/RPM after daemon/systemd assets exist: not produced
 

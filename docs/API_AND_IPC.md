@@ -106,7 +106,7 @@ Planned, not created: a Git workspace crate and a planner crate. The loom crate 
 
 This is the usage block of `deep-diff-forge --help` on `main` (2026-11-01). `bench`,
 `eval`, `findings verify`, `review --findings` and `daemon metrics` arrived in 0.5.0;
-`<old> <new>` and `daemon metrics --format prometheus --out PATH` are unreleased:
+`<old> <new>` and `daemon metrics --format prometheus --out PATH` arrived in 0.6.0:
 
 ```text
 deep-diff-forge --help

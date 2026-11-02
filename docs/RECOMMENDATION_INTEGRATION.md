@@ -2,7 +2,7 @@
 
 > **Status 2026-11-01.** Append-only ledger; its per-finding labels are 2026-10-25 history.
 > Later work is in [`CHANGELOG.md`](../CHANGELOG.md) and [`EVIDENCE.md`](../EVIDENCE.md).
-> Since then: `<old> <new>` ships for two regular files (unreleased), and `chain`, `cluster`
+> Since then: `<old> <new>` ships for two regular files (since 0.6.0), and `chain`, `cluster`
 > and `loom` are withdrawn (2026-10-31).
 
 ## Status 2026-10-28 (0.3.0)

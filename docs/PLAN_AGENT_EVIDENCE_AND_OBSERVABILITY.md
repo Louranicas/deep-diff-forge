@@ -6,7 +6,7 @@ section; earlier ones are kept. Evidence labels: **measured**, **inferred**, **u
 > **Status 2026-11-01.** Shipped in 0.5.0: Feature A, code evidence (`graph::evidence`,
 > `graph::lexical`); Feature B, verified findings (`agent::findings`, `findings verify`,
 > `findings.verify`, MCP `verify_findings`); System M, `daemon.metrics`, `bench`, `eval`
-> (`cli/src/bench.rs`, `cli/src/eval.rs`). Shipped after 0.5.0 (unreleased): Prometheus text
+> (`cli/src/bench.rs`, `cli/src/eval.rs`). Shipped in 0.6.0: Prometheus text
 > output (`daemon::exposition`, `cli/src/textfile.rs`) and the 34-case corpus. Planned, unowned:
 > a persistent findings store, signed receipts. Withdrawn: `chain`, `cluster`, `loom` (row
 > "Deferred" in 1.0). See [1.3](#13--2026-11-01-later-changes).
@@ -257,7 +257,7 @@ Corrections by new note; 1.0 to 1.2 are kept as written.
 
 - **The corpus has 34 cases, not 11** (14 ranking, 17 evidence, 3 findings), and the floors are
   no longer 100%: declared misses now count as wrong, so the measured floors are ranking 12/15,
-  precision 21/22, recall 21/28 and findings 33/33 (`cli/tests/eval.rs`; CHANGELOG, Unreleased).
+  precision 21/22, recall 21/28 and findings 33/33 (`cli/tests/eval.rs`; CHANGELOG, 0.6.0).
 - **`chain`, `cluster` and `loom` are withdrawn, not deferred** (2026-10-31): each is refused
   with exit 2 and names its replacement.
 - **Prometheus:** still no endpoint or listener; `daemon metrics --format prometheus` renders

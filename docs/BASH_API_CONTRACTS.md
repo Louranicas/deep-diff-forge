@@ -93,7 +93,7 @@ Rules:
 
 The same guards apply to the structured Git selections
 (`--git-working-tree`, `--git-staged`, `--git-range A..B`), to a file pair
-(`deep-diff-forge <old> <new>`, unreleased) and to the daemon's `diff.compute`
+(`deep-diff-forge <old> <new>`, since 0.6.0) and to the daemon's `diff.compute`
 (`require_files`, `require_hunks`).
 
 ## Machine Envelope (shipped)
@@ -249,7 +249,7 @@ deep-diff-forge --git-range main..HEAD --rank --json --require-files --require-h
 deep-diff-forge semantic src/lib.rs --json
 deep-diff-forge structural old.rs new.rs --json
 
-# Two regular files, through hardened `git diff --no-index` (unreleased, 2026-10-31)
+# Two regular files, through hardened `git diff --no-index` (since 0.6.0)
 deep-diff-forge old.rs new.rs --rank --json --require-files --require-hunks
 
 # Bounded local parallelism (patch + risk lanes, deterministic join)

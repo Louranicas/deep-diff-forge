@@ -3,7 +3,7 @@
 Deep-Diff-Forge is optimized first for Claude Code, Bash, and CLI workflows. GUI and IDE surfaces are projections over the same contracts, not separate product truths.
 
 > **Status 2026-11-01.** *Shipped* blocks are on `main` (`crates/deep-diff-forge-cli`);
-> `<old> <new>` and `daemon metrics --format prometheus` are unreleased. *Not built* commands are
+> `<old> <new>` and `daemon metrics --format prometheus` arrived in 0.6.0. *Not built* commands are
 > planned and unowned unless marked withdrawn (`chain`, `cluster`, `loom`, 2026-10-31).
 
 ## Status 2026-10-28 (0.3.0)

@@ -35,9 +35,9 @@ Underneath sits one rule. The apply-able patch is truth, and nothing may rewrite
   <sub>Real output, not a mock-up: <code>scripts/docs/render_terminal_svg.py</code> runs the binary on the crate changes of PR #23 and draws what it prints.</sub>
 </p>
 
-> **Status: 0.5.0 (2026-10-31).**
+> **Status: 0.6.0 (2026-11-02).**
 > - **Ready** for its declared scope: a local, single-user review tool on Linux and macOS ([the exact targets](#supported-platforms)), covering the CLI, daemon, `rpc`, MCP and SDKs. The [verdict and its evidence](#project-status) are below.
-> - **Releases:** the latest release is [v0.5.0](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.5.0), with x86_64 Linux and macOS binaries, an SPDX SBOM and build provenance.
+> - **Releases:** the latest release is [v0.6.0](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.6.0), with Linux (x86_64 and arm64) and macOS binaries, an SPDX SBOM and build provenance.
 > - **crates.io:** publication is on hold by decision until the codebase is fully production-hardened.
 
 <p align="center">
@@ -178,26 +178,24 @@ Each fails with exit 4. None is quietly turned into a plausible-looking model.
 
 ## Install
 
-**Prebuilt binaries** (latest release: v0.5.0) for Linux x86_64 and macOS (Apple silicon and
-Intel) are on the [releases page](https://github.com/Louranicas/deep-diff-forge/releases); an
-arm64 Linux binary ships from the next release ([supported platforms](#supported-platforms)).
+**Prebuilt binaries** (latest release: v0.6.0) for Linux (x86_64 and, since v0.6.0, arm64) and
+macOS (Apple silicon and Intel) are on the [releases page](https://github.com/Louranicas/deep-diff-forge/releases)
+([supported platforms](#supported-platforms)).
 Each archive has a `.sha256` file, and the release carries an SPDX SBOM:
 
 ```bash
-curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.5.0/deep-diff-forge-v0.5.0-x86_64-unknown-linux-gnu.tar.gz
-curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.5.0/deep-diff-forge-v0.5.0-x86_64-unknown-linux-gnu.tar.gz.sha256
-sha256sum -c deep-diff-forge-v0.5.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.6.0/deep-diff-forge-v0.6.0-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.6.0/deep-diff-forge-v0.6.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c deep-diff-forge-v0.6.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
-**From source** (`main`: 0.5.0 plus the [unreleased changes](CHANGELOG.md#unreleased), which this README
-describes, such as `<old> <new>` and `daemon metrics --format prometheus`). This needs Rust
-**1.88+** (edition 2024):
+**From source** (0.6.0, everything in this README). This needs Rust **1.88+** (edition 2024):
 
 ```bash
 git clone https://github.com/Louranicas/deep-diff-forge.git
 cd deep-diff-forge
 cargo build --release --locked -p deep-diff-forge-cli
-target/release/deep-diff-forge --version        # deep-diff-forge 0.5.0
+target/release/deep-diff-forge --version        # deep-diff-forge 0.6.0
 target/release/deep-diff-forge --self-test
 ```
 
@@ -516,7 +514,7 @@ An empty list never means the text is safe. They also raise the file's rank
 {
   "schema": "deep-diff-forge.rank.v0",
   "input_sha256": "9317219840467a00fbb7bc3ff905b0ae26a999582c12c8d02f49d380b398bbb3",
-  "tool": {"name": "deep-diff-forge", "version": "0.5.0"},
+  "tool": {"name": "deep-diff-forge", "version": "0.6.0"},
   "ranked": [
     {"path": "src/lib.rs", "status": "modified", "score": 7, "signals": ["public_api_surface"]},
     {"path": "tests/it.rs", "status": "modified", "score": 1, "signals": ["test_only"]}
@@ -640,8 +638,8 @@ checks every answer's version, id and error shape.
 
 **Python:** `sdk/python/deep_diff_forge.py` uses only the standard library, and installs as the
 package `deep-diff-forge` (`python3 -m pip install ./sdk/python`, or from GitHub with
-`"deep-diff-forge @ git+https://github.com/Louranicas/deep-diff-forge@main#subdirectory=sdk/python"`;
-not on PyPI; the package metadata is unreleased, so `@v0.5.0` has no `pyproject.toml` to install). It drives the `deep-diff-forge` binary, which it does not ship. It speaks the
+`"deep-diff-forge @ git+https://github.com/Louranicas/deep-diff-forge@v0.6.0#subdirectory=sdk/python"`;
+not on PyPI; the package metadata arrived in 0.6.0, so `@v0.5.0` and older tags have no `pyproject.toml` to install). It drives the `deep-diff-forge` binary, which it does not ship. It speaks the
 daemon protocol over two transports with the same calls:
 
 - `deep-diff-forge rpc` over a pipe (`StdioClient`), which needs no daemon;
@@ -705,7 +703,7 @@ invalid) the daemon fails closed until you pass `--socket PATH`.
 ```bash
 deep-diff-forge daemon start --foreground      # terminal 1
 deep-diff-forge daemon health                  # terminal 2
-# {"id":1,"jsonrpc":"2.0","result":{"cache_entries":0,"pid":…,"protocol":2,"retained_bytes":0,"sessions":0,"status":"ok","version":"0.5.0"}}
+# {"id":1,"jsonrpc":"2.0","result":{"cache_entries":0,"pid":…,"protocol":2,"retained_bytes":0,"sessions":0,"status":"ok","version":"0.6.0"}}
 deep-diff-forge daemon stop                    # answers what is in progress, returns once it has exited
 ```
 
@@ -984,17 +982,20 @@ per-round history. This section is a map, not a copy.
 
 ## Project status
 
-**0.5.0 is production-ready for its declared scope.** That scope is a local, single-user
+**0.6.0 is production-ready for its declared scope.** That scope is a local, single-user
 review tool on Linux and macOS ([the four targets](#supported-platforms)): CLI, Unix-socket
 daemon, `rpc`, MCP and SDKs, released as GitHub binaries. A scored assessment (2026-10-30, [83/100](docs/PRODUCTION_READINESS.md)) named
 the gaps that 0.4.0 closed: daemon requests run in parallel, the socket checks peer
 credentials, starts cannot race, `deploy doctor` exists, macOS runs on every pull request,
 and a weekly campaign soaks the daemon and fuzzes every target for an hour
-([EVIDENCE.md](EVIDENCE.md#v040-release-readiness-2026-10-30)). 0.5.0 adds code evidence in
+([EVIDENCE.md](EVIDENCE.md#v040-release-readiness-2026-10-30)). 0.5.0 added code evidence in
 risk ranking, verified agent findings, daemon metrics, and the `bench` and `eval` commands,
-and fixes DDF-EVID-001 ([EVIDENCE.md](EVIDENCE.md#v050-release-readiness-2026-10-31)). Its
+and fixed DDF-EVID-001 ([EVIDENCE.md](EVIDENCE.md#v050-release-readiness-2026-10-31)). Its
 assessment of 2026-10-31 scored 91 (self) and 81 (an independent rescore by Codex), reconciled
-at [86/100](docs/PRODUCTION_READINESS.md#reconciled-score-86--100), with the open items listed there. The evidence below was
+at [86/100](docs/PRODUCTION_READINESS.md#reconciled-score-86--100), with the open items listed there. 0.6.0 adds the
+arm64 Linux target, `<old> <new>` for two regular files, Prometheus daemon metrics and a 34-case
+evaluation corpus; the assessment of 2026-11-02 (`main` `1eaba47`) was reconciled at
+[89/100](docs/PRODUCTION_READINESS.md#reconciled-score-89--100). The evidence below was
 measured for `v0.3.0` on 2026-10-29 and still holds:
 
 - **Release dry run.** The release workflow passed at `478db26`: every quality gate including

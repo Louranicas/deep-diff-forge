@@ -30,7 +30,7 @@ as an alias of `side-by-side` (`layout_from_str` in `crates/deep-diff-forge-proj
 | Runtime view toggles | `--toggle <name>=<value>` *(not implemented)* | TUI keys only | session toggles | projection toggle tests | Toggles rerender without recomputing patch truth. |
 | Syntax highlighting | `--syntax on\|off` *(not implemented)* | `highlight <path> [--color\|--no-color]` | token spans | language fixtures | Supported files highlight and unsupported files degrade. |
 | Structural diffing | `--semantic on\|off` *(not implemented)* | `semantic <path> [--json]`, `structural <old> <new> [--json]` | `SemanticTwin` | syntax fixtures | Semantic spans synchronize to patch hunks. |
-| Pager-compatible mode | default pipe/TTY behavior | `git diff \| deep-diff-forge --stdin-patch --layout inline` (without a flag, `--stdin-patch` prints a per-file summary); `deep-diff-forge <old> <new>` for two regular files (unreleased, 2026-10-31); no Git external-diff or difftool integration | inline projection | Git external diff tests | Works with Git diff/difftool and plain shell pipes. |
+| Pager-compatible mode | default pipe/TTY behavior | `git diff \| deep-diff-forge --stdin-patch --layout inline` (without a flag, `--stdin-patch` prints a per-file summary); `deep-diff-forge <old> <new>` for two regular files (since 0.6.0); no Git external-diff or difftool integration | inline projection | Git external diff tests | Works with Git diff/difftool and plain shell pipes. |
 
 ## Pioneer Features
 
