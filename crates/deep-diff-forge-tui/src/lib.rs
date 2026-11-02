@@ -34,4 +34,4 @@ pub use notes::{duplicate_path, engine_annotations, file_annotations, hunk_annot
 pub use run::run;
 pub use state::{AppEvent, Focus, LayoutMode, Overlay, ReviewApp};
 pub use theme::{Palette, ThemeKind};
-pub use ui::{render, render_to_lines};
+pub use ui::{HitMap, render, render_to_lines};

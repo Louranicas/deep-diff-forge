@@ -382,6 +382,10 @@ impl Parser {
             file.git_old = Some(p_name(&old, self.p0));
             file.git_new = Some(p_name(&new, self.p0));
         } else if let Some(name) = same_name_halves(rest, self.p0) {
+            // Through `decode_path`, as every other name is: a NUL is no Git path, and kept
+            // here it rendered as a quoted `\000` that the parser then refused (fuzz, PR #83).
+            let name = super::paths::decode_path(&name)
+                .ok_or(PatchParseError::InvalidPath { line_number })?;
             file.git_old = Some(name.clone());
             file.git_new = Some(name);
         } else if let Some(sep) = rest.rfind(" \"b/").or_else(|| rest.rfind(" b/")) {
@@ -2445,6 +2449,9 @@ diff --git a/x b/x
             "diff --git i/x w/x\r\nold mode 100644\r\nnew mode 100755\r\n",
             "diff --git a/x /x\nold mode 100644\nnew mode 100755\n",
             "diff --git x\n",
+            // A NUL in the one name both halves give (fuzz, PR #83).
+            "diff --git a/s\0 b/s\0\n",
+            "diff --git a/s\0\x0006  prt a/s\0\x0006 \n }\n",
         ] {
             assert_eq!(
                 parse(patch),

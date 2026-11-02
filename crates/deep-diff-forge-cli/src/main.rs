@@ -19,9 +19,17 @@ use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe, display_safe
 /// `BrokenPipe` (exit 101) the moment the downstream consumer goes away; routing
 /// bulk output through here keeps `deep-diff-forge … | head` a normal success.
 /// std-only, no `unsafe`.
+///
+/// Stdout is line-buffered, so the flush is what writes a tail after the last newline: before,
+/// that tail was written at exit, where a failure is dropped, and `highlight` of a file without
+/// a final newline into `/dev/full` exited 0 (bug hunt 2026-11-01).
 fn emit(s: &str) {
     use std::io::Write as _;
-    if let Err(err) = std::io::stdout().write_all(s.as_bytes()) {
+    // The unlocked handle, as before the flush was added: CodeQL's Rust models read a write
+    // through a `StdoutLock` as logging, and flagged every value printed here by its name
+    // (`trusted`, `session_id`) as cleartext logging on PR #83. Output is single-threaded.
+    let mut stdout = std::io::stdout();
+    if let Err(err) = stdout.write_all(s.as_bytes()).and_then(|()| stdout.flush()) {
         if err.kind() == std::io::ErrorKind::BrokenPipe {
             std::process::exit(exit::SUCCESS);
         }
@@ -34,6 +42,14 @@ fn emit(s: &str) {
 macro_rules! emitln {
     () => { emit("\n") };
     ($($arg:tt)*) => { emit(&format!("{}\n", format_args!($($arg)*))) };
+}
+
+/// Print a serde-built JSON document, pretty, through `json_line_safe`: serde escapes only C0,
+/// and a document can carry patch paths and other untrusted text holding DEL, C1 (the 8-bit CSI
+/// `U+009B`) or `U+2028`/`U+2029`. Every pretty-printed `--json` document goes out here.
+fn emit_pretty_json(document: &serde_json::Value) {
+    let text = serde_json::to_string_pretty(document).unwrap_or_default();
+    emitln!("{}", deep_diff_forge_core::json_line_safe(&text));
 }
 
 // Declared after `emitln!`, which it uses (a `macro_rules!` is visible only below it).
@@ -355,11 +371,27 @@ pub(crate) fn validate_review_options_or_exit(opts: &[String]) {
         std::process::exit(exit::USAGE);
     }
     // One output mode: before, `--outline --hunks` printed the outline and `--rank --cluster`
-    // one of the two, each with exit 0 (bug hunt 2026-10-28, H2-07).
-    let modes: Vec<&str> = ["--outline", "--hunks", "--cluster", "--rank"]
-        .into_iter()
-        .filter(|mode| has(mode))
-        .collect();
+    // one of the two, each with exit 0 (bug hunt 2026-10-28, H2-07). `--jsonl`, `--layout`,
+    // `--acquisition-json` and a `--json` that is not the format of the mode (`--rank` and
+    // `--cluster` print JSON with it; `--outline` and `--hunks` always do) are modes too: before,
+    // `--jsonl --rank` printed only JSONL and `--json --layout inline` only JSON, each with exit
+    // 0, and `--jsonl --hunks --path nothing` skipped the path check (bug hunt 2026-11-01).
+    let json_is_a_format = ["--rank", "--cluster", "--outline", "--hunks"]
+        .iter()
+        .any(|mode| has(mode));
+    let modes: Vec<&str> = [
+        "--acquisition-json",
+        "--outline",
+        "--hunks",
+        "--cluster",
+        "--rank",
+        "--jsonl",
+        "--json",
+        "--layout",
+    ]
+    .into_iter()
+    .filter(|mode| has(mode) && !(*mode == "--json" && json_is_a_format))
+    .collect();
     if modes.len() > 1 {
         eprintln!(
             "error: {} are separate modes; choose one",
@@ -380,6 +412,10 @@ pub(crate) fn validate_review_options_or_exit(opts: &[String]) {
             .find(|flag| has(flag))
     {
         eprintln!("error: {flag} requires --outline or --hunks");
+        std::process::exit(exit::USAGE);
+    }
+    if has("--address") && has("--path") {
+        eprintln!("error: --hunks takes --address or --path, not both");
         std::process::exit(exit::USAGE);
     }
     if has("--parallel") && !has("--cluster") {
@@ -432,14 +468,11 @@ fn emit_review(review: &deep_diff_forge_patch::SealedReview, opts: &[String]) {
     } else if opts.iter().any(|a| a == "--hunks") {
         let addresses = flag_values(opts, "--address");
         let paths = flag_values(opts, "--path");
+        // Both together were refused before input was read.
         let selection = match (addresses.is_empty(), paths.is_empty()) {
             (true, true) => deep_diff_forge_daemon::views::Selection::All,
-            (false, true) => deep_diff_forge_daemon::views::Selection::Addresses(addresses),
+            (false, _) => deep_diff_forge_daemon::views::Selection::Addresses(addresses),
             (true, false) => deep_diff_forge_daemon::views::Selection::Paths(paths),
-            (false, false) => {
-                eprintln!("error: --hunks takes --address or --path, not both");
-                std::process::exit(exit::USAGE);
-            }
         };
         emit_view(opts, |page| {
             deep_diff_forge_daemon::views::hunks(review, &selection, page)
@@ -543,7 +576,7 @@ fn daemon_cmd(opts: &[String]) {
     let Ok(location) = SocketLocation::resolve(override_path.as_deref().map(std::path::Path::new))
     else {
         eprintln!(
-            "error: $XDG_RUNTIME_DIR is not set; refusing an insecure world-writable /tmp socket."
+            "error: $XDG_RUNTIME_DIR is unset or relative; refusing an insecure world-writable /tmp socket."
         );
         eprintln!("       set XDG_RUNTIME_DIR, or pass an explicit --socket PATH.");
         std::process::exit(exit::USAGE);
@@ -683,21 +716,37 @@ fn daemon_metrics_prometheus(location: &deep_diff_forge_daemon::SocketLocation, 
     }
 }
 
+/// What a failed daemon request says about the daemon, before and after its socket path: `kind`
+/// is the request's error kind.
+fn daemon_failure(kind: std::io::ErrorKind) -> (&'static str, &'static str) {
+    use std::io::ErrorKind;
+    match kind {
+        // Something is there, but this user may not use it: a daemon of another user, or a
+        // socket whose mode refuses the connect.
+        ErrorKind::PermissionDenied => ("cannot use the daemon at", ""),
+        // A daemon took the connection, then closed it or let it wait unanswered: at its
+        // connection limit, it closes a further connection at once. Before, this read "no daemon
+        // at" while the daemon ran (bug hunt 2026-11-01).
+        ErrorKind::ConnectionReset
+        | ErrorKind::BrokenPipe
+        | ErrorKind::UnexpectedEof
+        | ErrorKind::TimedOut => (
+            "no answer from the daemon at",
+            " (it may be at its connection limit; retry)",
+        ),
+        _ => ("no daemon at", ""),
+    }
+}
+
 /// One request to the daemon and its answer line; exit 6 when no daemon this user may use
 /// answers.
 fn daemon_request_or_exit(location: &deep_diff_forge_daemon::SocketLocation, line: &str) -> String {
     match deep_diff_forge_daemon::request(location, line) {
         Ok(response) => response,
         Err(err) => {
-            // Something is there, but this user may not use it: a daemon of another user, or a
-            // socket whose mode refuses the connect.
-            let what = if err.kind() == std::io::ErrorKind::PermissionDenied {
-                "cannot use the daemon at"
-            } else {
-                "no daemon at"
-            };
+            let (what, hint) = daemon_failure(err.kind());
             eprintln!(
-                "error: {what} {}: {err}",
+                "error: {what} {}{hint}: {err}",
                 display_safe(&location.path().to_string_lossy())
             );
             std::process::exit(exit::DAEMON_OR_TERMINAL);
@@ -859,10 +908,9 @@ fn learn_record(opts: &[String]) {
 const REVIEW_USAGE: &str = "deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME] [--findings FILE]";
 
 fn review_cmd(opts: &[String]) {
-    if opts
-        .iter()
-        .any(|a| matches!(a.as_str(), "--help" | "-h" | "help"))
-    {
+    // The help scan skips option values, so `--findings -h` reads the file named `-h`. The word
+    // `help` counts only first: before, `--side help` printed help, now `admit` refuses it.
+    if args::help_requested(opts) || opts.first().is_some_and(|a| a == "help") {
         print_review_help();
         return;
     }
@@ -1327,10 +1375,7 @@ fn bench_cmd(opts: &[String]) {
         }
     };
     if opts.iter().any(|a| a == "--json") {
-        emitln!(
-            "{}",
-            serde_json::to_string_pretty(&receipt).unwrap_or_default()
-        );
+        emit_pretty_json(&receipt);
         return;
     }
     emitln!(
@@ -1381,10 +1426,7 @@ fn eval_cmd(opts: &[String]) {
     };
     let failures = receipt["failures"].as_array().map_or(0, Vec::len);
     if opts.iter().any(|a| a == "--json") {
-        emitln!(
-            "{}",
-            serde_json::to_string_pretty(&receipt).unwrap_or_default()
-        );
+        emit_pretty_json(&receipt);
     } else {
         emitln!("deep-diff-forge eval: {} cases", receipt["cases"]);
         for (name, m) in receipt["metrics"].as_object().into_iter().flatten() {
@@ -1442,7 +1484,7 @@ fn findings_cmd(opts: &[String]) {
         &deep_diff_forge_core::sha256_hex(text.as_bytes()),
         &seal.tool_version,
     );
-    emitln!("{}", serde_json::to_string_pretty(&doc).unwrap_or_default());
+    emit_pretty_json(&doc);
     let all_accepted = verdict.refused.is_empty() && verdict.over_limit == 0;
     if opts.iter().any(|a| a == "--require-all") && !all_accepted {
         std::process::exit(EXIT_REFUSED);
@@ -1514,11 +1556,7 @@ fn deploy_doctor(json: bool, socket: Option<&std::path::Path>) {
     let findings = doctor::gather(socket);
     let checks = doctor::checks(&findings);
     if json {
-        emitln!(
-            "{}",
-            serde_json::to_string_pretty(&doctor::document(findings.version, &checks))
-                .unwrap_or_default()
-        );
+        emit_pretty_json(&doctor::document(findings.version, &checks));
     } else {
         emit(&doctor::text(&checks));
     }
@@ -2047,10 +2085,12 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// `<command> --help` (or `-h`) anywhere: print that command's usage and what it
-/// does, and exit 0. `review` prints its own longer help; `council --help` is `council help`.
+/// `<command> --help` (or `-h`) anywhere before a `--`, and not as an option's value
+/// ([`args::help_requested`]): print that command's usage and what it does, and exit 0. `review`
+/// prints its own longer help; `council --help` is `council help`, and council's own scan reads
+/// every word, values and words after `--` included.
 fn command_help(command: &str, args: &[String]) -> bool {
-    let asked = args.iter().any(|a| matches!(a.as_str(), "--help" | "-h"));
+    let asked = args::help_requested(args);
     let name = match command {
         "--git-staged" | "--git-range" => "--git-working-tree",
         other => other,
@@ -2141,7 +2181,10 @@ fn run_envelope(args: &[String]) {
         Ok((json, code)) => {
             // Unlike `emit`, a closed reader keeps the command's own exit code (council sa1).
             use std::io::Write as _;
-            if let Err(err) = std::io::stdout().write_all(json.as_bytes())
+            let mut stdout = std::io::stdout().lock();
+            if let Err(err) = stdout
+                .write_all(json.as_bytes())
+                .and_then(|()| stdout.flush())
                 && err.kind() != std::io::ErrorKind::BrokenPipe
             {
                 eprintln!("error: write failed: {err}");
@@ -2261,17 +2304,20 @@ fn self_test() {
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "the doctor door: reports the XDG cache and state locations"
+    reason = "the doctor door: reports the XDG cache location"
 )]
 fn doctor() {
     let cache_dir = std::env::var("XDG_CACHE_HOME").map_or_else(
         |_| "~/.cache/deep-diff-forge".into(),
         |base| format!("{base}/deep-diff-forge"),
     );
-    let state_dir = std::env::var("XDG_STATE_HOME").map_or_else(
-        |_| "~/.local/state/deep-diff-forge".into(),
-        |base| format!("{base}/deep-diff-forge"),
-    );
+    // The state dir is the learning store's parent, through the store's own resolver, so
+    // doctor names the place `learn record` writes, even when a relative $XDG_STATE_HOME
+    // is ignored.
+    let state_dir = deep_diff_forge_learning::store::learning_dir()
+        .ok()
+        .and_then(|dir| dir.parent().map(|parent| parent.display().to_string()))
+        .unwrap_or_else(|| "<unset: set XDG_STATE_HOME or HOME to an absolute path>".into());
 
     emitln!("doctor ok: bootstrap binary is executable");
     // Report the runtime dir + daemon socket honestly AND consistently: both go
@@ -2281,7 +2327,7 @@ fn doctor() {
     // doctor advertises no path the daemon would refuse.
     match deep_diff_forge_daemon::runtime_base() {
         Some(base) => emitln!("runtime_dir={}", base.display()),
-        None => emitln!("runtime_dir=<unset: set XDG_RUNTIME_DIR>"),
+        None => emitln!("runtime_dir=<unset: set XDG_RUNTIME_DIR to an absolute path>"),
     }
     emitln!("cache_dir={cache_dir}");
     emitln!("state_dir={state_dir}");
@@ -2316,11 +2362,13 @@ fn chain_contract() {
 deep-diff-forge chain-contract v0
 
 GUARANTEES:
-  - chainable commands read stdin only when an explicit stdin flag is present.
+  - stdin is read only by --stdin-patch, learn record --stdin, findings verify and
+    review (each takes the patch or receipt there), and rpc and mcp (their protocol).
   - stdout carries primary records; stderr carries diagnostics and progress.
   - JSON output is one complete document; JSONL output is one event per line.
   - every JSON document names its schema; every JSONL record names its event.
-  - pipe failures exit non-zero without truncating a valid final JSON document.
+  - a closed stdout pipe (`| head`) exits 0 and the reader keeps what it read;
+    any other write failure exits 3 (io).
 
 SHIPPED MODES (each one command; the shell joins them):
   deep-diff-forge --git-working-tree --json

@@ -223,6 +223,69 @@ fn a_daemon_this_user_may_not_use_is_not_reported_absent() {
     let _ = std::fs::remove_dir_all(sock.parent().unwrap());
 }
 
+/// Bug hunt 2026-11-01: a daemon at its connection limit closes a further connection unanswered,
+/// and the CLI says so (exit 6) instead of saying there is no daemon; once a slot is free it is
+/// served again. Before, `daemon health` and `daemon stop` said "no daemon at" while it ran.
+#[test]
+fn a_daemon_at_its_connection_limit_is_not_reported_absent() {
+    use std::io::{BufRead as _, Write as _};
+    let sock = temp_socket("at-limit");
+    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    let path = sock.to_str().unwrap();
+    let mut daemon = Daemon::spawn(path);
+    let mut ready = false;
+    for _ in 0..WAIT_STEPS {
+        if run(&["daemon", "health", "--socket", path]).0 == 0 {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(ready, "the daemon never answered");
+    // Eight connections, each served once, so every worker slot is held.
+    let mut holders = Vec::new();
+    for _ in 0..8 {
+        let mut held = std::os::unix::net::UnixStream::connect(&sock).unwrap();
+        held.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        writeln!(held, r#"{{"method":"daemon.health"}}"#).unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(held.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert!(line.contains("\"status\":\"ok\""), "{line}");
+        holders.push(held);
+    }
+    for sub in ["health", "stop"] {
+        let (code, stdout, stderr) = run(&["daemon", sub, "--socket", path]);
+        assert_eq!((code, stdout.as_str()), (6, ""), "{sub}: {stderr}");
+        assert!(
+            stderr.contains("no answer from the daemon at")
+                && stderr.contains("(it may be at its connection limit; retry)"),
+            "{sub}: {stderr}"
+        );
+        assert!(!stderr.contains("no daemon at"), "{sub}: {stderr}");
+    }
+    assert!(daemon.0.try_wait().unwrap().is_none(), "the daemon stopped");
+    drop(holders);
+    let mut served = false;
+    for _ in 0..WAIT_STEPS {
+        if run(&["daemon", "health", "--socket", path]).0 == 0 {
+            served = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        served,
+        "the daemon did not serve again once the slots were free"
+    );
+    assert_eq!(run(&["daemon", "stop", "--socket", path]).0, 0);
+    assert!(daemon.exited(), "the daemon kept running after daemon stop");
+    drop(daemon);
+    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+}
+
 /// A second `daemon start` on a running daemon's socket exits 6 and leaves that daemon serving.
 #[test]
 fn a_second_start_is_refused_and_the_first_keeps_serving() {

@@ -9,8 +9,8 @@ use std::fmt;
 /// Errors the learning loop can surface.
 #[derive(Debug)]
 pub enum LearningError {
-    /// The home/state directory could not be resolved (no `$XDG_STATE_HOME`,
-    /// no `$HOME`).
+    /// The home/state directory could not be resolved (no absolute
+    /// `$XDG_STATE_HOME` or `$HOME`).
     NoStateDir,
     /// A filesystem operation failed.
     Io(std::io::Error),
@@ -29,7 +29,7 @@ impl fmt::Display for LearningError {
             Self::NoStateDir => {
                 write!(
                     f,
-                    "could not resolve a state directory ($XDG_STATE_HOME or $HOME)"
+                    "could not resolve a state directory (an absolute $XDG_STATE_HOME or $HOME)"
                 )
             }
             Self::Io(e) => write!(f, "io error: {e}"),

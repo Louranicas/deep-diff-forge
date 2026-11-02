@@ -16,6 +16,56 @@ pub(crate) struct Spec {
     pub positionals: usize,
 }
 
+/// The valued options that may be given more than once; each is read with `flag_values`. Any
+/// other valued option given twice is refused: before, the first value was used and a later one
+/// was never read or validated, so `--max-bytes 4096 --max-bytes x` and
+/// `--repo . --repo /nonexistent` both exited 0 (bug hunt 2026-11-01).
+pub(crate) const REPEATABLE: [&str; 4] = ["--address", "--path", "--allow-repo", "--workload"];
+
+/// Every valued option any [`Spec`] declares. [`help_requested`] reads a `-h` that follows one of
+/// these as its value, not as a request for help; [`admit`] checks, in debug builds, that a spec
+/// declares no valued option missing here, so the two lists cannot drift.
+pub(crate) const VALUED: [&str; 20] = [
+    "--layout",
+    "--parallel",
+    "--address",
+    "--path",
+    "--max-bytes",
+    "--cursor",
+    "--repo",
+    "--socket",
+    "--allow-repo",
+    "--log-format",
+    "--format",
+    "--out",
+    "--client",
+    "--cmd",
+    "--cols",
+    "--rows",
+    "--findings",
+    "--workload",
+    "--corpus",
+    "--family",
+];
+
+/// Whether `args` ask for help: `--help` or `-h` standing as an option, before any `--` and not
+/// as the value of the option before it. Words after `--` belong to someone else: `envelope --
+/// --stdin-patch --help` wraps the child's help, and before this printed envelope's own help with
+/// exit 0 and no `ddf.result.v1` object; `--hunks --path -h` selects the file named `-h`.
+pub(crate) fn help_requested(args: &[String]) -> bool {
+    let mut previous: Option<&str> = None;
+    for arg in args.iter().map(String::as_str) {
+        if arg == "--" {
+            return false;
+        }
+        if matches!(arg, "--help" | "-h") && !previous.is_some_and(|p| VALUED.contains(&p)) {
+            return true;
+        }
+        previous = Some(arg);
+    }
+    false
+}
+
 /// A command that takes no arguments at all.
 pub(crate) const NONE: Spec = Spec {
     flags: &[],
@@ -27,7 +77,12 @@ pub(crate) const NONE: Spec = Spec {
 /// positionals come back in order, so a command never rescans `args` for them: before, the daemon
 /// took the first non-option argument as its subcommand, which in `--socket PATH health` was PATH.
 pub(crate) fn admit<'a>(args: &'a [String], spec: &Spec) -> Result<Vec<&'a str>, String> {
+    debug_assert!(
+        spec.valued.iter().all(|option| VALUED.contains(option)),
+        "a valued option is missing from args::VALUED"
+    );
     let mut positionals = Vec::new();
+    let mut seen: Vec<&str> = Vec::new();
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let arg = arg.as_str();
@@ -35,6 +90,10 @@ pub(crate) fn admit<'a>(args: &'a [String], spec: &Spec) -> Result<Vec<&'a str>,
             if rest.next().is_none_or(|value| value.starts_with("--")) {
                 return Err(format!("{arg} needs a value"));
             }
+            if seen.contains(&arg) && !REPEATABLE.contains(&arg) {
+                return Err(format!("{arg} given more than once"));
+            }
+            seen.push(arg);
         } else if spec.flags.contains(&arg) {
         } else if arg.starts_with('-') {
             return Err(format!("unknown option: {arg}"));
@@ -94,6 +153,52 @@ mod tests {
             Ok(vec!["x.rs"])
         );
         assert_eq!(admit(&args(&["--layout", "inline"]), &SPEC), Ok(vec![]));
+    }
+
+    /// A single-valued option given twice is refused whatever its values, so neither a bad later
+    /// value nor an appended override is silently dropped; the repeatable ones stay admitted.
+    #[test]
+    fn a_single_valued_option_given_twice_is_refused() {
+        for list in [
+            &["--layout", "inline", "--layout", "bogus"][..],
+            &["--layout", "inline", "x.rs", "--layout", "inline"],
+        ] {
+            assert_eq!(
+                admit(&args(list), &SPEC),
+                Err("--layout given more than once".to_owned()),
+                "{list:?}"
+            );
+        }
+        let repeatable = Spec {
+            flags: &[],
+            valued: &["--path", "--address", "--allow-repo", "--workload"],
+            positionals: 0,
+        };
+        for option in REPEATABLE {
+            assert_eq!(
+                admit(&args(&[option, "a", option, "b"]), &repeatable),
+                Ok(vec![]),
+                "{option}"
+            );
+        }
+    }
+
+    #[test]
+    fn help_is_an_option_before_any_separator_and_never_a_value() {
+        for (list, asked) in [
+            (&["--help"][..], true),
+            (&["-h"], true),
+            (&["7", "--help"], true),
+            (&["--json", "-h"], true),
+            (&["--hunks", "--path", "-h"], false),
+            (&["--hunks", "--path", "-h", "-h"], true),
+            (&["--", "--stdin-patch", "--help"], false),
+            (&["--", "council", "-h"], false),
+            (&["--json"], false),
+            (&[], false),
+        ] {
+            assert_eq!(help_requested(&args(list)), asked, "{list:?}");
+        }
     }
 
     #[test]

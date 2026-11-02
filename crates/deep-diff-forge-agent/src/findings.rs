@@ -432,18 +432,20 @@ fn resolve<'f>(
         };
     }
     let path = path.ok_or(Refusal::Malformed)?;
-    let file = files
-        .iter()
-        .find(|f| f.path == path)
-        .ok_or(Refusal::UnknownPath)?;
+    // Every section with the path, in review order: a concatenated patch can name one file twice,
+    // and a line in a later section is as much in the review as one in the first.
+    let mut sections = files.iter().filter(|f| f.path == path).peekable();
+    let first = *sections.peek().ok_or(Refusal::UnknownPath)?;
     match line {
-        None => Ok((file, AnchorKind::File, None)),
-        Some(number) => file
-            .patch_twin
-            .hunks
-            .iter()
-            .find(|h| line_in(h, side, number).is_some())
-            .map(|h| (file, AnchorKind::Line, Some(h)))
+        None => Ok((first, AnchorKind::File, None)),
+        Some(number) => sections
+            .find_map(|file| {
+                file.patch_twin
+                    .hunks
+                    .iter()
+                    .find(|h| line_in(h, side, number).is_some())
+                    .map(|h| (file, AnchorKind::Line, Some(h)))
+            })
             .ok_or(Refusal::LineOutsideHunk),
     }
 }
@@ -476,8 +478,9 @@ pub fn annotations(accepted: &[Accepted], files: &[ReviewFile]) -> Vec<AgentAnno
     accepted
         .iter()
         .map(|a| {
+            // Every section with the path: the hunk may be in a later one.
             let hunk = a.address.as_ref().and_then(|address| {
-                files.iter().find(|f| f.path == a.path).and_then(|f| {
+                files.iter().filter(|f| f.path == a.path).find_map(|f| {
                     f.patch_twin
                         .hunks
                         .iter()
@@ -679,6 +682,72 @@ mod tests {
             (a.anchor, a.address, a.line),
             (AnchorKind::File, None, None)
         );
+    }
+
+    /// A concatenated patch can name one file twice; a path and a line resolve against every
+    /// section with the path, and the cockpit note lands on the later section's hunk. Before, only
+    /// the first section was searched: line 10 was refused as `line_outside_hunk`.
+    #[test]
+    fn a_path_named_twice_resolves_lines_in_every_section() {
+        let files = parse(
+            "--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n\
+             --- a/x.rs\n+++ b/x.rs\n@@ -10,1 +10,1 @@\n-c\n+d\n",
+        )
+        .unwrap();
+        assert_eq!(files.len(), 2);
+        let second = files[1].patch_twin.hunks[0].address("x.rs");
+        let finding = |line: Option<u32>| {
+            let mut f =
+                json!({"agent": "a", "severity": "low", "title": "t", "body": "b", "path": "x.rs"});
+            if let Some(line) = line {
+                f["line"] = json!(line);
+            }
+            f.to_string()
+        };
+        let (one, ten, ninety_nine, file) = (
+            finding(Some(1)),
+            finding(Some(10)),
+            finding(Some(99)),
+            finding(None),
+        );
+        let verdict = verify(
+            &files,
+            SEAL,
+            [
+                one.as_str(),
+                ten.as_str(),
+                ninety_nine.as_str(),
+                file.as_str(),
+            ],
+        );
+        let reasons: Vec<Refusal> = verdict.refused.iter().map(|r| r.reason).collect();
+        assert_eq!(reasons, vec![Refusal::LineOutsideHunk]);
+        let anchors: Vec<(AnchorKind, Option<String>)> = verdict
+            .accepted
+            .iter()
+            .map(|a| (a.anchor, a.address.clone()))
+            .collect();
+        assert_eq!(
+            anchors,
+            vec![
+                (
+                    AnchorKind::Line,
+                    Some(files[0].patch_twin.hunks[0].address("x.rs"))
+                ),
+                (AnchorKind::Line, Some(second.clone())),
+                (AnchorKind::File, None),
+            ]
+        );
+        assert_eq!(verdict.accepted[1].line.as_ref().unwrap().text, "d");
+        let notes = annotations(&verdict.accepted, &files);
+        assert_eq!(
+            notes[1].anchor,
+            AnnotationAnchor::Hunk {
+                path: "x.rs".into(),
+                hunk_id: files[1].patch_twin.hunks[0].id
+            }
+        );
+        assert!(crate::validate_anchor(&notes[1].anchor, &files));
     }
 
     #[test]

@@ -15,7 +15,7 @@
 
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Read as _, Write};
+use std::io::{BufRead, BufReader, Read, Seek as _, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::error::LearningError;
@@ -35,7 +35,10 @@ const MAX_RECEIPTS: usize = 100_000;
 /// Pure resolver for the learning directory, given the two relevant env values.
 ///
 /// Order: `$XDG_STATE_HOME/deep-diff-forge/learning`, else
-/// `$HOME/.local/state/deep-diff-forge/learning`. Empty values are ignored.
+/// `$HOME/.local/state/deep-diff-forge/learning`. Empty and relative values are
+/// ignored: the XDG Base Directory spec makes a relative path invalid, and one
+/// would put the store under the working directory, often the repository under
+/// review.
 /// Factored out so it is testable without mutating process-global environment
 /// (which is `unsafe` under edition 2024 and would couple parallel tests).
 ///
@@ -45,13 +48,14 @@ pub fn resolve_learning_dir(
     xdg_state_home: Option<OsString>,
     home: Option<OsString>,
 ) -> Result<PathBuf, LearningError> {
+    // An empty path is not absolute, so one check refuses both.
     if let Some(base) = xdg_state_home
-        && !base.is_empty()
+        && Path::new(&base).is_absolute()
     {
         return Ok(PathBuf::from(base).join(LEARNING_SUBDIR));
     }
     if let Some(home) = home
-        && !home.is_empty()
+        && Path::new(&home).is_absolute()
     {
         return Ok(PathBuf::from(home)
             .join(".local/state")
@@ -64,7 +68,7 @@ pub fn resolve_learning_dir(
 ///
 /// # Errors
 /// Returns [`LearningError::NoStateDir`] if neither `$XDG_STATE_HOME` nor
-/// `$HOME` is set.
+/// `$HOME` is set to an absolute path.
 #[expect(
     clippy::disallowed_methods,
     reason = "the learning-store door: XDG_STATE_HOME and HOME locate the store"
@@ -80,7 +84,10 @@ pub fn receipts_path(dir: &Path) -> PathBuf {
 }
 
 /// Append one receipt as a JSONL line under `dir`, creating directories as
-/// needed. Append-only: existing receipts are never rewritten.
+/// needed. Append-only: existing receipts are never rewritten. A store whose
+/// last byte is not a newline (a torn write, or a hand edit that dropped the
+/// final newline) gets one first, so the new receipt is its own line and is
+/// never glued onto the last one.
 ///
 /// # Errors
 /// Returns an error if the directory cannot be created, the receipt cannot be
@@ -105,6 +112,15 @@ pub fn append_receipt(dir: &Path, receipt: &StrategyReceipt) -> Result<(), Learn
     }
     let mut file = open_receipts_for_append(&path)?;
     let current_len = file.metadata()?.len();
+    if current_len > 0 {
+        // Writes still go to the end (O_APPEND); the seek only reads the last byte.
+        let mut last = [0_u8];
+        file.seek(SeekFrom::End(-1))?;
+        file.read_exact(&mut last)?;
+        if last != *b"\n" {
+            line.insert(0, '\n');
+        }
+    }
     if current_len.saturating_add(line.len() as u64) > MAX_RECEIPTS_BYTES {
         return Err(invalid_data(
             "receipt store exceeds the on-disk size budget",
@@ -248,13 +264,13 @@ fn existing_receipts_file(path: &Path) -> Result<Option<(fs::Metadata, File)>, L
 
 fn open_receipts_for_append(path: &Path) -> Result<File, LearningError> {
     if let Some((path_metadata, _)) = existing_receipts_file(path)? {
-        let file = OpenOptions::new().append(true).open(path)?;
+        let file = OpenOptions::new().read(true).append(true).open(path)?;
         validate_receipts_file(&path_metadata, &file)?;
         return Ok(file);
     }
 
     let mut options = OpenOptions::new();
-    options.create_new(true).append(true);
+    options.create_new(true).read(true).append(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
@@ -289,8 +305,9 @@ fn read_capped_line(
 /// fail-soft: "no data yet" is a normal state). Blank lines are skipped. A
 /// single corrupt line aborts with [`LearningError::Deserialize`] rather than
 /// silently dropping data, so corruption is visible rather than masked. Every
-/// record must also pass the privacy checks [`append_receipt`] applies, so a
-/// hand-edited line holding a path is refused, naming its line (anchor A-05).
+/// record must also pass the privacy checks [`append_receipt`] applies and hold
+/// only receipt fields, so a hand-edited line holding a path, in a field or in
+/// an extra key, is refused, naming its line (anchor A-05).
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read, or if a non-blank
@@ -330,7 +347,7 @@ pub fn load_receipts(dir: &Path) -> Result<Vec<StrategyReceipt>, LearningError> 
                 "receipt store exceeds the record-count budget",
             ));
         }
-        let receipt = StrategyReceipt::from_json(trimmed)
+        let receipt = StrategyReceipt::from_stored_json(trimmed)
             .and_then(|receipt| validate_receipt_for_storage(&receipt).map(|()| receipt))
             .map_err(|error| {
                 LearningError::Io(std::io::Error::new(
@@ -751,7 +768,16 @@ mod tests {
         )
         .to_json()
         .unwrap();
-        for bad in [unredacted, path_language] {
+        let extra_key =
+            StrategyReceipt::new(crate::redacted_id("x"), "rust", "v1", Strategy::Patch)
+                .to_json()
+                .unwrap()
+                .replacen(
+                    '{',
+                    r#"{"path":"secret/src/payments.rs","source":"fn f() {}","#,
+                    1,
+                );
+        for bad in [unredacted, path_language, extra_key] {
             let mut store = good.clone();
             store.extend_from_slice(bad.as_bytes());
             store.push(b'\n');
@@ -786,6 +812,43 @@ mod tests {
             error.contains("receipt store line 2: ") && error.contains("contradicts"),
             "{error}"
         );
+    }
+
+    /// A store whose last record lost its newline (a torn write, a hand edit) is readable; an
+    /// append gives the new receipt its own line rather than gluing it onto the last one, which
+    /// made the whole store unreadable while `learn record` reported success.
+    #[test]
+    fn append_after_a_missing_final_newline_keeps_every_receipt() {
+        let dir = temp_dir();
+        let _guard = Scratch(dir.clone());
+        let first = receipt(Strategy::Patch, ReviewOutcome::Accepted);
+        let second = receipt(Strategy::Syntax, ReviewOutcome::Rejected);
+        append_receipt(&dir, &first).unwrap();
+        let path = receipts_path(&dir);
+        let mut store = fs::read(&path).unwrap();
+        assert_eq!(store.pop(), Some(b'\n'));
+        write_private(&path, &store);
+        assert_eq!(load_receipts(&dir).unwrap(), vec![first.clone()]);
+        append_receipt(&dir, &second).unwrap();
+        assert_eq!(load_receipts(&dir).unwrap(), vec![first, second.clone()]);
+        assert_eq!(count_receipts(&dir).unwrap(), 2);
+        // A torn tail stays its own (corrupt, visible) line; the receipt after it is whole.
+        let torn = fs::read(&path).unwrap().len() - 20;
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(torn as u64)
+            .unwrap();
+        append_receipt(&dir, &second).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3, "{text}");
+        assert_eq!(lines[2], second.to_json().unwrap());
+        let error = load_receipts(&dir).unwrap_err().to_string();
+        assert!(error.contains("receipt store line 2: "), "{error}");
+        // A store that already ends in a newline gets no blank line.
+        assert!(text.ends_with('\n') && !text.contains("\n\n"));
     }
 
     #[test]
@@ -838,6 +901,28 @@ mod tests {
             resolve_learning_dir(Some(OsString::new()), Some(OsString::from("/home/someone")))
                 .expect("dir");
         assert!(dir.starts_with("/home/someone/.local/state"));
+    }
+
+    /// A relative value is invalid (XDG Base Directory spec): it would put the store under the
+    /// working directory, often the repository under review.
+    #[test]
+    fn resolver_ignores_relative_values() {
+        let dir = resolve_learning_dir(
+            Some(OsString::from("relstate")),
+            Some(OsString::from("/home/someone")),
+        )
+        .expect("dir");
+        assert_eq!(
+            dir,
+            PathBuf::from("/home/someone/.local/state/deep-diff-forge/learning")
+        );
+        assert!(matches!(
+            resolve_learning_dir(
+                Some(OsString::from("./state")),
+                Some(OsString::from("home"))
+            ),
+            Err(LearningError::NoStateDir)
+        ));
     }
 
     #[test]

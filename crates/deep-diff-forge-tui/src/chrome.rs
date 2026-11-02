@@ -131,7 +131,7 @@ pub(crate) fn help_lines(palette: &Palette) -> Vec<Line<'static>> {
         ("v / Space", "mark file reviewed (advances to the next)"),
         ("T", "cycle colour theme"),
         (":", "open the command menu"),
-        ("Enter", "run the selected palette command"),
+        ("Enter", "open the file's diff / run palette command"),
         ("? / Esc", "toggle help / dismiss overlay"),
         ("q", "quit the review"),
     ];

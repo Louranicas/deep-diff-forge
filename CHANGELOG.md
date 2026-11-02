@@ -177,6 +177,103 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   the macOS build). Inferred from source, not observed on a Mac: the `macOS tests` job runs
   `cli/tests/review_tty.rs`, which is the check.
 
+- **A `review.hunks` selection that repeats a name can no longer abort the daemon.** Each repeat
+  of a path in `paths` pushed every hunk of that file again, so 50,000 repeats of one path over
+  4,000 hunks (a 619 KB request) asked for 3.2 GB; under a 2 GB address-space limit the
+  allocation failed and the daemon aborted (`SIGABRT`, which `catch_unwind` cannot contain),
+  losing every session and leaving its socket and lock behind. Repeated `addresses` duplicated
+  the same way. A repeated name now selects its hunks once, keeping the order of first mention,
+  so a selection never holds more hunks than the review has; the answer to `["x.rs","x.rs"]` is
+  the answer to `["x.rs"]` (`views.rs` `select`). Also reached through `review.change`
+  `view=hunks` and the MCP `review_hunks` tool.
+- **`review.hunks` by address hashes each hunk once per request.** Every requested address
+  recomputed every hunk's address (a SHA-256 of the hunk), so the cost grew with addresses times
+  hunks: 4,000 addresses over 4,000 hunks (a 490 KB request) held a worker for 18 s, measured on
+  the release build, while admission weighed it by its line length. The selection now builds one
+  address table per call, as `findings.verify` has since DDF-PERF-001, and looks each address up
+  in it; paths are looked up through a path table the same way.
+- **Error answers are held to the 80 MiB line cap.** Only a success was bounded, and an error
+  repeats request text: one unknown path of 27 million U+202E characters (an 81 MB request) drew
+  a 243 MB error line, because `display_safe` writes each 3-byte character as the 8-byte
+  `\u{202e}`, and a client using the daemon's own `request` helper got "daemon response exceeds
+  maximum size" instead of the `INVALID_PARAMS` meant. The cap was also measured before
+  `json_line_safe`, which writes each line separator in 6 bytes rather than 3, so an id of
+  U+2028 characters came back at twice its size. Now an error message is cut at 4 KiB
+  (`MAX_ERROR_MESSAGE_BYTES`, at a character boundary, with the count of bytes left out), an
+  unknown address or path is repeated within 1 KiB and an unknown param name or session id
+  within 256 bytes (`display_safe_bounded`), and every answer `process_line` returns is measured
+  as written; one over the cap becomes `RESOURCE_EXHAUSTED` (8), without the id when the id alone
+  would put it over.
+- **MCP tool errors are held to the same 4 KiB message bound as the socket.** The cut was only
+  in the socket's `error_response`, and the MCP server reads a daemon error's message directly,
+  so `review_change` with a repo of 100,000 U+202E characters (a 600 KB request) answered with a
+  901 KB tool error (measured, release build); `review.change` repeated each request-named path
+  or value whole, three times its size for bidi characters, and the MCP server repeated an
+  unknown tool, argument or method name whole. Now `RpcError::new` cuts the message where it is
+  built, `review.change` repeats a request-named path or value within 1 KiB, the MCP server
+  repeats a tool, argument or method name within 1 KiB, and every MCP tool and protocol error is
+  cut to `MAX_ERROR_MESSAGE_BYTES`; the same request now answers in 1.3 KB.
+- **`review.hunks` by address holds memory for the requested addresses, not for every hunk.**
+  The address table kept every hunk's 64-character address, whatever was asked, so one address
+  over 300,000 one-line hunks peaked at 195 MB against 130 MB for a path selection (measured,
+  release build), memory that admission does not weigh. The table now keeps only the requested
+  addresses a hunk has, each hunk's address still computed once; the same request peaks at
+  130 MB.
+- **`daemon health` and `daemon stop` no longer say there is no daemon when it is at its
+  connection limit.** A daemon serving eight connections closes a ninth at once, unanswered (by
+  design), and the client's reset or broken pipe was reported as `no daemon at PATH`: eight idle
+  connections made the CLI report a running daemon absent for 30 s, and eight that each send a
+  request within 30 s kept it so indefinitely (measured). A reset, broken pipe, early end of file
+  or read timeout now reads `no answer from the daemon at PATH (it may be at its connection limit;
+  retry)`, still exit 6; `no daemon at` is kept for a missing or refused socket.
+- **Refused request lines are counted in `daemon.metrics`.** A line that is not UTF-8, one over
+  the 80 MiB cap and one sent during a stop were answered by the connection itself and never
+  counted, so `ddf_daemon_requests_total{method="(unknown)"}` and its `parse_error`,
+  `invalid_request` and `resource_exhausted` errors under-reported them (three of four parse
+  errors were missing in a measured run). They are now counted under `(unknown)`, on the socket
+  and in `deep-diff-forge rpc` (`serve::refusal`).
+- **The daemon's memory guidance describes parallel requests.** `docs/OPERATIONS_AND_DAEMON.md`
+  still said the daemon "runs one request at a time", from before 0.4.0; it now sizes the peak
+  for the requests admission lets run together (two at the 64 MiB budget) and for the waiting
+  lines, which are parsed before admission and not counted in its budget.
+- **`envelope` wraps the wrapped command's `--help`.** `envelope -- --stdin-patch --help` and
+  `envelope -- council --help` printed envelope's own help as plain text with exit 0, ran
+  nothing and printed no `ddf.result.v1` object, because the help scan read every word, including
+  those after `--`. The scan (`args::help_requested`) now stops at `--` and skips an option's
+  value, so `--hunks --path -h` selects the file named `-h` and `review --findings -h` reads it,
+  where both printed help. `review` takes the word `help` only first (`review help`): a later
+  `help`, as in `review --side help`, printed the help with exit 0 and is now refused as an
+  unexpected argument (exit 2). `council` keeps its own scan, so `council … --session -h` still
+  prints the council help.
+- **A second output mode is refused, not dropped.** `--jsonl --rank` printed only JSONL,
+  `--json --layout inline` only JSON, `--cluster --layout inline` only the cluster,
+  `--acquisition-json --rank` only the acquisition, and `--jsonl --hunks --path nothing` skipped
+  the path check, each with exit 0. `--jsonl`, `--layout`, `--acquisition-json` and a `--json`
+  that is not the format of `--rank`, `--cluster`, `--outline` or `--hunks` now join the one-mode
+  check (exit 2, before input is read), and `--address` with `--path` is refused there too: it
+  was checked only after the patch was read, so a patch that failed to parse exited 4 instead.
+- **A single-valued option given twice is refused.** The first value was used and a later one
+  was never read or validated: `--parallel 4 --parallel bogus` ran with 4, `--max-bytes 1000000
+  --max-bytes 2048` printed a page 34 times the appended budget, and `--repo . --repo /nonexistent`
+  reviewed `.`, all with exit 0. `args::admit` now exits 2 (`--parallel given more than once`);
+  `--address`, `--path`, `--allow-repo` and `--workload` stay repeatable.
+- **`chain-contract` states the shipped pipe and stdin behaviour.** It promised that pipe
+  failures exit non-zero, but a closed stdout (`| head`) deliberately exits 0, and that stdin is
+  read only with an explicit flag, but `findings verify` and `review` read the patch there
+  without one. It now says a closed pipe exits 0, any other write failure exits 3, and names
+  every command that reads stdin; `docs/CHAINING_AND_CLUSTERING.md` says the same.
+- **A failed write of output without a final newline exits 3.** Stdout is line-buffered, so a
+  tail after the last newline was written at exit, where the error is dropped:
+  `highlight` of a file with no final newline into `/dev/full` exited 0 with the output lost.
+  `emit` and `envelope` now flush and report the failure (exit 3; a closed pipe stays exit 0).
+- **MCP `review_patch` with `paths` summarises the files it returns.** The `summary` kept the
+  whole patch's totals, so a `review.v0` holding one file said `files_changed: 2`, and in
+  `review-summary.v0` too; `selected` echoed a repeated path. The summary is now counted over
+  the kept files (the seal stays the whole patch's) and `selected` lists each path once.
+- **`envelope` exits 128 + N when signal N ends the wrapped command.** It exited 1, which the
+  exit-code registry does not list, so `explain` could not describe it. 128 + N is the status a
+  shell reports for the same command (`exit::SIGNAL_BASE`, not a registry code); the envelope
+  still says `outcome: signal` and the signal number.
 - **Go raw strings no longer hide the code after them from evidence.** The lexical scanner did
   not know Go's backtick strings and read their text as code, so a `/*` in a glob
   (`` filepath.Glob(`/tmp/build/*.o`) ``) opened a block comment that blanked every later line
@@ -221,6 +318,102 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   wall-clock deadline only against hangs. Measured: linear code passes under 64 busy loops
   (20 s wall), and the quadratic import rule it guards against (`eee2b4c^`) still fails at 66.7 s
   of CPU time. Shrinking the lines was rejected: at 20,000 units the quadratic rule took 0.4 s.
+- **Serde-built JSON no longer prints raw DEL or C1 controls** (bug hunt 2026-11-01). The
+  `--hunks` and `--outline` views, `rpc`, MCP, the daemon socket and the review CLI are written
+  by serde_json, which escapes only C0, and then passed through `core::json_line_safe`, which
+  escaped only `U+2028`/`U+2029`; a patch path, `@@` heading or line holding the 8-bit CSI
+  (`U+009B`) or OSC (`U+009D`) introducer reached the terminal raw, against SECURITY.md's DEL/C1
+  promise. The pretty-printed documents (`findings verify`, `deploy doctor --json`, `eval --json`
+  and `bench --json`) skipped `json_line_safe` altogether, so `findings verify` printed a
+  finding's patch path, and `deploy doctor` its `--socket` path, with the raw CSI. `json_line_safe`
+  now escapes `U+007F..=U+009F` too (the decoded document is unchanged), every pretty-printed
+  document goes out through it, and the view pager and MCP's fit loop measure pages as escaped,
+  so a page of C1 text still fits `max_bytes` (measured before: 14,255 bytes printed for an
+  8,192-byte page).
+- **Every Unicode default-ignorable code point is an `invisible` hazard and is escaped**
+  (bug hunt 2026-11-01). `is_invisible` was a hand-picked list that missed the Mongolian free
+  variation selectors `U+180B`-`U+180D` and `U+180F`, the Khmer inherent vowels `U+17B4`/`U+17B5`,
+  `U+2065`, `U+206A`-`U+206F`, `U+FFF0`-`U+FFF8`, `U+1BCA0`-`U+1BCA3`, `U+1D173`-`U+1D17A` and the
+  rest of `U+E0000`-`U+E0FFF`; `let ok = is_admin\u{180B};` (rustc accepts it as a distinct
+  identifier) showed no hazard and printed exactly as `is_admin`. With `is_bidi` it now covers
+  the whole `Default_Ignorable_Code_Point` set, so hazards, `display_safe` and untrusted-text
+  sanitising all catch them.
+- **`--layout inline` and `side-by-side` note a change their rows print as unchanged** (bug
+  hunt 2026-11-01). Both layouts printed only each line's text, so a change to the end-of-file
+  newline alone, a change between two non-UTF-8 bytes (both shown as `U+FFFD`), a trailing space,
+  a no-break space against a space, a tab against the spaces it advances to (a broken Makefile)
+  and, in side-by-side, a change past the column width (the cut hid it) looked unchanged. A `\`
+  note row now follows a lossy line (`\ non-UTF-8 line, shown lossily`), a line without a final
+  newline (`\ No newline at end of file`) and an added line whose printed text looks the same as
+  its removed pair's (`\ differs from its pair only in bytes shown alike`, which also catches a
+  literal `\x1b` against a raw `ESC`). Each layout judges the pair by what it prints: side-by-side
+  by its cut, padded cells with a tab as four spaces, inline by raw tabs at 8-column terminal
+  tab stops from the text's column. Letters that only look alike (Cyrillic `а` against Latin `a`)
+  are not noted.
+- **`InlineRow` and `SideCell` are `#[non_exhaustive]`** (review 2026-11-01). The entry above
+  adds their `lossy` and `no_newline` fields, which already breaks a struct literal outside
+  `deep-diff-forge-projection` (unpublished, and no workspace crate builds one); without the
+  attribute every later flag would break it again. Read the fields and build rows with
+  `inline_rows` and `side_rows`; a `compile_fail` doctest pins it.
+- **The layouts' columns stay aligned past line 9999** (bug hunt 2026-11-01). The line-number
+  fields were a fixed `{:>4}`, so rows at line 10000 and later pushed the side-by-side ` | `
+  gutter and inline's marker column one place right. The fields are now as wide as the file's
+  largest line number (at least 4).
+- **A view cursor outside its selection is refused** (bug hunt 2026-11-01). `resume` checked a
+  cursor's patch and selection but not its positions, so a forged or corrupted cursor past a
+  hunk's end answered that hunk as `complete: true` with no lines, `remaining_hunks: 0` and no
+  `next_cursor` (exit 0), one past the selection answered an empty page with nothing remaining,
+  and `+0.05` was read as `0.5`. A position must now be canonical decimal and inside the selection
+  (a hunk's line or a file's hunk, or `0`); anything else is `ViewError::Cursor` (CLI exit 2).
+- **`PatchHunk::address` no longer claims to name exactly one hunk** (bug hunt 2026-11-01). Two
+  byte-identical hunks at the same ranges in repeated sections of one path share an address, by
+  design (views select every copy, findings resolve to the first); the rustdoc and README said
+  otherwise. Documentation only: the hash is unchanged, so addresses stay stable.
+- **A file whose section started past row 65,535 of the review could not be shown.** The diff
+  pane scrolled through ratatui's `u16` paragraph offset, so selecting such a file drew another
+  file's rows under its title and tree marker, no key could scroll past the cap, and `v` marked
+  the unseen file reviewed (reproduced with a 70,000-line file before a one-line one). The pane,
+  the file tree and the command panel now draw only their visible rows, unscrolled, from `usize`
+  offsets; `ReviewApp::scroll` and `ReviewApp::panel_scroll` return `usize` (a breaking change
+  for a caller that stores them as `u16`).
+- **A key took 7.2 s on a 900,000-line patch.** Every frame built and syntax-painted a row for
+  every line of every file, then showed about 20 of them, so each key, resize or mouse burst cost
+  time and memory in proportion to the review. The diff pane now counts rows in one cheap walk
+  and builds only the visible window, and the tree builds only its visible rows. Measured on the
+  same patch: 12 to 24 ms per key and 197 MB, from 7.2 s and 1.3 GB. Wrapped rows of ASCII text
+  are counted without being segmented; the first frame after `w` takes 0.18 s. Each frame still
+  walks the whole review once to count its rows.
+- **The default inline view dropped tab characters.** `display_safe` keeps a tab, and ratatui
+  discards it as a control character, so tab indentation, and a dedent such as `return` moving
+  out of an `if` in Python, looked unchanged; side-by-side and wrapped rows were right. Tabs are
+  now expanded to four spaces before any untrusted text becomes a span (`safe_span`,
+  `themed_spans`) and before the row's tint is measured. `projection` gains `expand_tabs` and
+  `clip_cells`.
+- **A mouse click on the file tree could select the wrong file.** The click mapper assumed a
+  40-column, unscrolled tree: after the tree scrolled, a click selected the file that row would
+  hold at the top (`f02.txt` for a click on `f23.txt`), on an 80-column terminal a click inside
+  the diff changed the selection, and above 125 columns a click on the right of the tree focused
+  the diff instead of selecting a file. The event loop now builds a `HitMap` of each frame it
+  draws (the pane rectangles inside their borders and the tree's scroll; `HitMap::of`), and
+  `map_mouse` resolves a click against it, so a click selects the row it lands on and a click on
+  any border, the diff pane's included, or on the status bar does nothing (a breaking change to
+  `map_mouse`'s signature; `SelectTreeRow` now carries a row of the whole tree). The map is kept
+  by the loop, not the app: `render` only reads the `ReviewApp`, which stays `Send` and `Sync`.
+- **Invisible format characters passed `display_safe` unescaped.** The invisible-character list
+  missed assigned default-ignorable code points such as U+17B4 KHMER VOWEL INHERENT AQ, which
+  Rust accepts inside an identifier: `let is_admin\u{17b4} = …` rendered like the removed
+  `let is_admin = …`, with no hazard note. The Khmer inherent vowels, the Mongolian free
+  variation selectors, the deprecated format characters U+206A to U+206F, the interlinear
+  annotation controls, the shorthand format controls and the musical format controls are now
+  escaped, reported as the `invisible` hazard, and dropped from untrusted annotation text.
+- **A long or wide file name pushed a note's grounding label off the pane.** The note box
+  measured its title and body in characters, not terminal cells, and never shortened the file
+  name, so a CJK or 70-character name clipped `partially_grounded` and the box's corner. The box
+  now measures in cells, clips the name with `…` so the label and corner fit, and wraps and pads
+  its body by cell width.
+- **Enter did nothing in the review view, though the README said it opens the file.** Enter now
+  opens the selected file's diff: focus moves to the diff pane. It still runs the selected
+  command in the palette.
 - **A checked-out submodule's own filter no longer runs during working-tree acquisition.**
   `--ignore-submodules=none` (the H1-02 fix) made `git diff` run `git status` inside each
   submodule to see whether it was dirty, and that Git read the submodule's configuration
@@ -264,6 +457,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   is now split as `git_header_name` splits it, for any prefixes and a quoted second half, and
   the rightmost ` b/` is used only when the halves name different files (the mode change of two
   files compared with `git diff --no-index`).
+  A name split this way that holds a NUL is refused with `InvalidPath`, as a NUL in any other
+  header name is: kept, it rendered as a quoted `\000` that the parser refused (fuzz, PR #83).
 - **A file section that names no path is refused.** A `diff --git i/x w/y` (or CRLF `i/x w/x`)
   mode change with no `---`/`+++` was reviewed as a file with an empty path (exit 0); Git
   refuses it ("lacks filename information"), as it refuses a hunk with no file headers, which
@@ -338,6 +533,65 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `code_lines_skip_comments_and_attributes_across_lines` already fails, is reported as caught,
   not as a timeout (EVIDENCE.md, "Review crate: mutation_scope mutation").
 - **Council admission boundaries are pinned:** nine `review` contract tests kill the 16 `policy.rs`/`model.rs` mutants that survived the whole-crate run (EVIDENCE.md).
+- **The Python `StdioClient` timeout covers the request write.** `_exchange` wrote the request
+  with a blocking `write` and `flush`, and only the read had a deadline: a request larger than
+  the pipe buffer (64 KiB; any real patch) sent to a child that had stopped reading blocked
+  forever, and the child was never killed (measured: `timeout=1.0`, a 1 MiB patch, `sleep 30` as
+  the child, killed by an outer 8 s `timeout`). Both pipes are now non-blocking and one selector
+  writes the request in chunks and reads the answer under one deadline; on expiry the child is
+  killed and `TransportError` raised (measured: after 1.0 s). A child that answers and closes
+  before taking the whole request is read, not reported as "not reading".
+- **Learning store: an append never glues a receipt onto an unterminated last line.**
+  `append_receipt` wrote at the end without checking the last byte. After a torn write, or a hand
+  edit that dropped the final newline (which `load_receipts` accepts), the next `learn record`
+  exited 0 but merged its receipt into that line: every later `learn status` failed with exit 3
+  (`trailing characters`), and deleting the bad line also lost the new receipt. The append now
+  writes a newline first when the store does not end in one, so the new receipt is its own line
+  and a torn fragment stays a separate, visible corrupt line.
+- **The Python client maps every invalid answer to `TransportError` and kills the child.** An
+  answer that was not UTF-8 or not JSON escaped `_Client.call` as a raw `UnicodeDecodeError` or
+  `JSONDecodeError` (both transports) and left the stdio child running; an answer for another
+  request id did not kill it either. They now raise `TransportError("not a valid response: …")`
+  as the Rust SDK does, and `StdioClient` kills the child. A finding holding a lone surrogate,
+  which `json.loads` accepts but UTF-8 cannot carry, raised a bare `UnicodeEncodeError` for the
+  whole `verify_findings` batch; it now raises `ValueError` naming the finding's index before
+  anything is sent (the CLI, reading JSONL bytes, refuses such a line as `malformed`; one request
+  cannot carry it at all).
+- **A stored receipt may hold only receipt fields (anchor A-05).** `load_receipts` parsed each
+  line with serde's default, which drops unknown keys, so a hand-edited line carrying a `path` or
+  `source` key was counted and scored, against the documented promise that a line holding a path
+  is refused, naming its line. A stored line with a key that is not a receipt field is now
+  refused (`receipt store line N: invalid receipt: a stored receipt holds a key that is not a
+  receipt field`, exit 3); the key is not echoed, since it may be the path. `learn record --stdin`
+  still drops extra keys, as the privacy probe requires: they are never written.
+- **A relative `XDG_STATE_HOME` or `XDG_RUNTIME_DIR` is ignored.** `resolve_learning_dir`
+  accepted any non-empty value, so `XDG_STATE_HOME=relstate` put the learning store under the
+  working directory, often the repository under review. The XDG Base Directory spec makes a
+  relative value invalid: the resolver now falls back to `$HOME/.local/state`, and a relative
+  `$HOME` gives `NoStateDir`. The daemon's `runtime_base_from` had the same gap for its socket;
+  a relative `XDG_RUNTIME_DIR` now fails closed like an unset one (`daemon path` exits 2).
+- **`doctor` names the state directory the learning store uses.** It formatted `$XDG_STATE_HOME`
+  as is, so after the resolver began ignoring a relative value, `XDG_STATE_HOME=relstate
+  deep-diff-forge doctor` printed `state_dir=relstate/deep-diff-forge`, a place nothing writes
+  to, while `learn record` wrote under `$HOME/.local/state`. `state_dir` is now the parent of the
+  store's own resolved directory (the daemon socket and runtime dir already used the daemon's
+  resolvers), and with no absolute `$XDG_STATE_HOME` or `$HOME` it prints `<unset: …>`.
+- **A deeply nested answer is a `TransportError` too, and the stdio child is killed.** An answer
+  of about 200 KB of `[` made `json.loads` raise `RecursionError`, which `_Client.call` did not
+  map, so it escaped raw on both transports and left the `StdioClient` child running (measured).
+  It is now `TransportError("not a valid response: …")` like any other invalid answer.
+- **`StdioClient` returns an early answer from a child that stops reading but stays alive.** The
+  exchange kept waiting to write the rest of the request until the deadline, though the whole
+  answer was already read: a child that refused a 1 MiB request and then slept gave
+  `TransportError: no answer within 2 s` instead of its refusal (measured). A complete answer line
+  now ends the exchange. Its unsent tail would garble the next request, so the out-of-step child
+  is killed and the next call raises `TransportError`.
+- **A path and a line resolve in every section with the path.** `findings verify` searched only
+  the first file section with a finding's path, so in a concatenated patch that names one file
+  twice, a line in the later section was refused as `line_outside_hunk` although its address
+  form was accepted. `resolve`, the cockpit's `annotations` (which fell back to a file note) and
+  `validate_anchor` (which refused a later section's hunk or span) now search every section with
+  the path, in review order; a path without a line still anchors to the first.
 - **A relative run directory no longer lets the candidate shrink the sealed mutation scope.**
   `council prepare <request> run` with a `mutation_base` handed Git the snapshot as relative
   `run/source/<path>` lines on `hash-object --stdin-paths`, and Git runs inside the reviewed
