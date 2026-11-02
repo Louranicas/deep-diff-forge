@@ -1161,3 +1161,18 @@ independent rescore of 2026-11-02 found missing from this file (its gap 18).
   Unreleased, Fixed.
 - **Not yet measured:** the weekly `campaign.yml` cron (`41 5 * * 1`) had not fired at the time
   of writing. Every campaign so far was a manual dispatch.
+
+## v0.6.0 release dry runs (2026-11-02)
+
+Measured with `gh` on 2026-11-02.
+
+- **First dry run, run 41386917463 on `aac52a6`** (#87 merged): **failed**.
+  - The quality jobs passed, and three of the four builds passed (`x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`).
+  - `build aarch64-unknown-linux-gnu` failed in `smoke the release binary` with `ModuleNotFoundError: No module named 'tomllib'`: the `ubuntu-22.04-arm` runner's Python is 3.10. Nothing was published; a dispatched run never publishes.
+  - The cause was the same defect `ci.yml` had (DDF-CI-ARM-001, #82). It had been latent in `release.yml` since #79 added the target. Fixed in #88 (DDF-REL-ARM-002; CHANGELOG 0.6.0, Fixed).
+- **Second dry run, run 41397808294 on `9c7a875`** (#88 merged): **success**.
+  - Every quality job passed: gate, supply chain, review-controller evidence, MSRV, macOS tests, Linux arm64 tests and the secret scan.
+  - All four builds built and smoked their binaries, `aarch64-unknown-linux-gnu` included.
+  - `crates.io publish` and `GitHub Release` were skipped, as on every dispatched run.
+- **Scheduled runs:** no `schedule` run has ever been recorded for `codeql.yml`, `ci.yml` or `campaign.yml` (`gh run list --event schedule` is empty for all three). On Monday 2026-11-02, the first Monday since their crons were added, none had fired by 07:20 UTC. All workflows are `active`; the cause is unknown. The campaign for the release commit was dispatched by hand: run 41403461497 on `9c7a875`, still in progress when this was written.
+- **Tag:** not yet pushed. `v0.6.0` waits for the owner's go-ahead.
