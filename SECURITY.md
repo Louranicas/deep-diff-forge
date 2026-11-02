@@ -271,8 +271,8 @@ every gate ran as root inside the container. Gates refuse to run unless
 - Release archives, checksums, and the generated SPDX SBOM receive GitHub build
   provenance attestations on tag runs. Dependabot monitors both Cargo graphs, the Python
   client's build requirement and Actions. CodeQL (`codeql.yml`, security-extended queries) analyses the Rust code
-  and the workflows on pull requests, on `main` and weekly; it is not yet a
-  required check.
+  and the workflows on pull requests, on `main` and weekly; since 2026-11-02 both analyses,
+  `codeql (rust)` and `codeql (actions)`, are required checks.
 - crates.io publication is on hold by owner decision until the codebase is
   production-hardened. The `publish` job runs only on a tag and only when the
   repository variable `DDF_CRATES_IO` is `open`; a configured

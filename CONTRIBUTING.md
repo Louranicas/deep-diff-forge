@@ -101,7 +101,7 @@ What the gates enforce, and what we ask in review:
 3. Open a pull request and fill in the template. Draft pull requests are welcome for early
    feedback.
 4. `main` is protected. Merging needs a pull request, a branch that is up to date with `main`,
-   and **eleven required checks**:
+   and **thirteen required checks**:
    - the gate;
    - supply chain;
    - review-controller evidence;
@@ -109,7 +109,8 @@ What the gates enforce, and what we ask in review:
    - Rust 1.88 compatibility;
    - macOS tests;
    - the bench comparison (base vs head);
-   - four diff-mutation shards.
+   - four diff-mutation shards;
+   - CodeQL for the Rust code and for the workflows (since 2026-11-02).
 
    Nobody can bypass them, including the maintainer.
 5. Add an entry under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) when users would notice

@@ -32,7 +32,8 @@ The framework is designed for:
 - `deploy status` reports maturity L9 (Learning). Its gate list is declared, not
   run; the gates themselves run in CI and in `just ci`.
 - The gates that exist are `.github/workflows/ci.yml` (ten jobs; thirteen checks on a pull
-  request, eleven of them required; `campaign.yml` weekly; `codeql.yml`, not required), `.github/workflows/release.yml`, the `justfile` recipes listed
+  request, eleven of them required; `campaign.yml` weekly; `codeql.yml`, whose two analyses are
+  required too since 2026-11-02), `.github/workflows/release.yml`, the `justfile` recipes listed
   below, [`scripts/ci_local.sh`](../scripts/ci_local.sh) and
   [`scripts/diff_mutation.sh`](../scripts/diff_mutation.sh). See
   [Release And Publication](RELEASE_AND_PUBLICATION.md#github-actions).

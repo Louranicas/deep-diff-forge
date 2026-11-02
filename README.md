@@ -901,7 +901,7 @@ Deeper: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/SCHEMATICS.md`
 ## Quality gates
 
 Deep-Diff-Forge reviews untrusted code, so it is built to make bad code hard to write. `main`
-changes only through a pull request, on a branch that is up to date, after **eleven required
+changes only through a pull request, on a branch that is up to date, after **thirteen required
 checks**. Nobody can bypass them.
 
 | Required check | What it proves |
@@ -914,6 +914,7 @@ checks**. Nobody can bypass them.
 | `macOS tests` | the whole suite on macOS |
 | `secret scan (gitleaks)` | a pinned, checksum-verified gitleaks over the full history |
 | `bench (base vs head)` | the merge base and the head benchmarked on one runner; a workload over 25% and 0.2 ms slower fails |
+| `codeql (rust)`, `codeql (actions)` | CodeQL security-extended queries over the Rust code and the workflows (required since 2026-11-02) |
 
 Across the tree:
 - **No `unsafe`.** It is forbidden in every crate.

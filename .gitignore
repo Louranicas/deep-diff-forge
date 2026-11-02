@@ -21,3 +21,9 @@ __pycache__/
 # cargo-mutants output
 /mutants.out/
 /mutants.out.old/
+
+# Python packaging output (`pip install ./sdk/python`, `python -m build`). A stale tracked
+# `build/lib` can be reused by setuptools and install an old client.
+/sdk/python/build/
+/sdk/python/dist/
+*.egg-info/
