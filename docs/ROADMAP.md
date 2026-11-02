@@ -62,8 +62,9 @@ Open for anyone who picks them up.
   real hardware: the agent across login, logout and sleep, and interactive `review` at a real
   macOS terminal. A maintainer with a Mac can close it by running both and recording the result
   in [`EVIDENCE.md`](../EVIDENCE.md).
-- **Signed release tags.** Tags are immutable (ruleset) but unsigned
-  ([production readiness](PRODUCTION_READINESS.md)).
+- **Signed tags shown as "Verified" on the forges.** Release tags are signed from v0.6.0 on
+  and verify against `.github/allowed_signers`. The signing key is not yet registered on the
+  GitHub or GitLab account ([release](RELEASE_AND_PUBLICATION.md#signed-tags)).
 - **Directory pairs and more languages** ([CONTRIBUTING](../CONTRIBUTING.md#open-problems-worth-owning)).
 
 ## Phase 0: Vocabulary and Contracts

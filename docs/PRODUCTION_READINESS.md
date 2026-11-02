@@ -684,3 +684,24 @@ the next rescore.
    survivors classified (facet 1).
 5. **Record the first scheduled campaign**, and run the node-exporter path and the minimum OS
    versions (facets 4 and 5).
+
+## Owner decisions and the signed v0.6.0 tag (2026-11-03)
+
+Added after the 89/100 reconciliation; it does not rescore.
+
+- **[Owner decision]** Release tags are signed. **[Measured]** `v0.6.0` (tag object
+  `d165dd9`, commit `571006b`) carries an SSH signature, and `git tag -v` with
+  `.github/allowed_signers` reports a good signature from ED25519 key
+  `SHA256:h4S5C3lX4poSYOx8ii8yezKBlp5pQf2jy168XgwWR8I`. `just release-tag` now signs and
+  verifies through `scripts/sign_release_tag.sh`, tested in `cli/tests/repo_scripts.rs`.
+- **[Owner decision]** The GitHub Release job stays outside the `release` approval. Releases
+  are run by an agent (Claude Code) after the owner approves each tag; the approval covers
+  only crates.io. Codex's facet-3 gap "the GitHub Release is not behind the approval" is
+  accepted, not open.
+- **[Owner decision]** crates.io stays on hold until the owner reopens it, so trusted
+  publishing is deferred with it.
+- **[Measured]** GitHub reports the v0.6.0 tag signature as `verified: false`,
+  `reason: unknown_key`: the signing key is not registered on the account. Registering it
+  as a signing key on GitHub and GitLab is an account action for the owner. The
+  `allowed_signers` check does not depend on it.
+

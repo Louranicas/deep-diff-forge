@@ -1,5 +1,5 @@
 //! The repository's gate scripts fail closed: the pre-push secret hook, the diff-scoped mutation
-//! gate (anchor B-01) and the fuzz runner. Each is run for real against a scratch repository,
+//! gate (anchor B-01), the fuzz runner and the release-tag signer. Each is run for real against a scratch repository,
 //! with a recording stand-in for the expensive tool it hands off to (gitleaks, cargo mutants,
 //! cargo fuzz), so what is checked is the script's own decision.
 #![cfg(unix)]
@@ -379,4 +379,119 @@ fn fuzz_creates_a_corpus_root_that_does_not_exist_yet() {
     assert!(corpus.starts_with(&root), "{}", corpus.display());
     assert!(root.is_dir(), "the root is kept");
     assert!(!corpus.exists(), "the corpus is removed after the run");
+}
+
+// --- scripts/sign_release_tag.sh ----------------------------------------------------------
+
+/// A repository with one commit and a fresh SSH key at `<scratch>/key`; `.github/allowed_signers`
+/// lists that key when `trusted`, and another fresh key otherwise.
+fn signing_repo(s: &Scratch, trusted: bool) -> PathBuf {
+    let repo = s.0.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    commit(&repo, "f", "hi\n");
+    for key in ["key", "other"] {
+        let out = run(Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(s.0.join(key)));
+        assert!(out.status.success(), "{out:?}");
+    }
+    let listed =
+        std::fs::read_to_string(s.0.join(if trusted { "key.pub" } else { "other.pub" })).unwrap();
+    std::fs::create_dir_all(repo.join(".github")).unwrap();
+    std::fs::write(
+        repo.join(".github/allowed_signers"),
+        format!("ddf@example.invalid namespaces=\"git\" {listed}"),
+    )
+    .unwrap();
+    repo
+}
+
+/// Runs the script in `repo`, signing with `<scratch>/key`.
+fn sign_tag(s: &Scratch, repo: &Path) -> Output {
+    run(Command::new("bash")
+        .current_dir(repo)
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "user.signingkey")
+        .env("GIT_CONFIG_VALUE_0", s.0.join("key.pub"))
+        .args([&format!("{ROOT}/scripts/sign_release_tag.sh"), "1.2.3"]))
+}
+
+fn tags(repo: &Path) -> String {
+    git(repo, &["tag", "--list"])
+}
+
+#[test]
+fn a_release_tag_signed_by_an_allowed_key_is_kept_and_verifies() {
+    let s = scratch("sign-ok");
+    let repo = signing_repo(&s, true);
+    let out = sign_tag(&s, &repo);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(tags(&repo), "v1.2.3");
+    let tag = git(&repo, &["cat-file", "-p", "v1.2.3"]);
+    assert!(tag.contains("-----BEGIN SSH SIGNATURE-----"), "{tag}");
+}
+
+#[test]
+fn a_release_tag_signed_by_a_key_not_in_allowed_signers_is_deleted() {
+    let s = scratch("sign-untrusted");
+    let repo = signing_repo(&s, false);
+    let out = sign_tag(&s, &repo);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("not signed by a key in .github/allowed_signers"),
+        "{out:?}"
+    );
+    assert_eq!(
+        tags(&repo),
+        "",
+        "the unverified tag must not survive to be pushed"
+    );
+}
+
+#[test]
+fn no_release_tag_is_made_without_allowed_signers() {
+    let s = scratch("sign-none");
+    let repo = signing_repo(&s, true);
+    std::fs::remove_file(repo.join(".github/allowed_signers")).unwrap();
+    let out = sign_tag(&s, &repo);
+    assert!(!out.status.success(), "{out:?}");
+    assert_eq!(tags(&repo), "");
+}
+
+#[test]
+fn the_release_recipe_tags_only_through_the_signing_script() {
+    let justfile = std::fs::read_to_string(format!("{ROOT}/justfile")).unwrap();
+    let recipe = justfile
+        .split("\nrelease-tag version:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n\n").next())
+        .expect("the release-tag recipe");
+    assert!(
+        !recipe.contains("git tag "),
+        "the recipe must not tag directly:\n{recipe}"
+    );
+    let sign = recipe
+        .find("scripts/sign_release_tag.sh")
+        .expect("the recipe signs the tag");
+    let push = recipe.find("git push").expect("the recipe pushes the tag");
+    assert!(
+        sign < push,
+        "the tag is signed and verified before it is pushed"
+    );
+    let signers = std::fs::read_to_string(format!("{ROOT}/.github/allowed_signers")).unwrap();
+    for line in signers
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+    {
+        assert!(
+            line.contains("namespaces=\"git\" ssh-"),
+            "allowed_signers line: {line}"
+        );
+        assert!(
+            !line.contains("PRIVATE"),
+            "allowed_signers holds public keys only"
+        );
+    }
 }
