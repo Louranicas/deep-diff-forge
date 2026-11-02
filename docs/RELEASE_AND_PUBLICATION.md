@@ -87,7 +87,8 @@ checklist; neither has tooling yet.
 ## Tag And Push
 
 `main` reaches GitHub only through a merged pull request: the branch ruleset
-requires a PR, eleven passing checks (the PR-time jobs of `ci.yml`), an
+requires a PR, thirteen passing checks (the PR-time jobs of `ci.yml` and the two
+CodeQL analyses of `codeql.yml`), an
 up-to-date branch, and allows no bypass. The tag is cut from that commit with
 the `justfile` recipe:
 
@@ -143,7 +144,7 @@ Toolchain pinned to 1.99.1 except where noted.
 
 On a pull request thirteen checks run (`secrets`, `msrv`, `macos`, `linux-arm64`, `launchd`,
 `gate`, `review-controller-evidence`, four `diff-mutation` shards, `supply-chain`, `bench`); eleven
-of them, all but `linux-arm64` and `launchd`, are ruleset 25868121's required checks (`bench` added on 2026-10-31; measured with `gh api`; the ruleset lives in GitHub settings, not in the repository).
+of them, all but `linux-arm64` and `launchd`, are required by ruleset 25868121 (`bench` added on 2026-10-31), and so are `codeql.yml`'s `codeql (rust)` and `codeql (actions)` (added 2026-11-02, after 14 consecutive passing runs of 4 to 5 minutes), thirteen in all (measured with `gh api`; the ruleset lives in GitHub settings, not in the repository).
 
 ### `release.yml`
 

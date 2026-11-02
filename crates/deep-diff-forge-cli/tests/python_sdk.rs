@@ -43,6 +43,20 @@ fn the_python_package_carries_the_workspace_version() {
     );
 }
 
+/// `pip install ./sdk/python` reuses an existing `build/lib`, so a tracked one installs a stale
+/// client: on 2026-11-02 it installed the module from before the bug-hunt fixes. Packaging output
+/// stays out of Git.
+#[test]
+fn python_packaging_output_is_never_tracked() {
+    let ignored = read(".gitignore");
+    for pattern in ["/sdk/python/build/", "/sdk/python/dist/", "*.egg-info/"] {
+        assert!(
+            ignored.lines().any(|line| line.trim() == pattern),
+            ".gitignore must hold {pattern}"
+        );
+    }
+}
+
 #[test]
 fn the_version_reader_is_exact() {
     assert_eq!(

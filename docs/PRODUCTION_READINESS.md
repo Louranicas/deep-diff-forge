@@ -577,3 +577,110 @@ Owner decisions of 2026-11-01 against the reconciled list above. Not a new asses
 - **On hold:** running the launchd agent on a physical Mac. No real Mac is available; the
   `macOS launchd agent` CI job on a hosted runner is the only macOS launchd evidence. It is an
   open item for future maintainers ([roadmap](ROADMAP.md#open-items-for-maintainers)).
+
+## Assessment 2026-11-02 (`main` `1eaba47`, Claude's self-assessment)
+
+The same seven facets and weights. The scope is unchanged: a local, single-user review engine.
+The score was written before reading the independent rescore below.
+
+**What changed since the reconciled 86 (2026-10-31):**
+
+- The full-stack bug hunt (#82, #83). 53 findings were confirmed; 49 were fixed with
+  failing-first tests and diff mutation; 3 are deferred (listed under known limitations below);
+  1 could not be reproduced. The most serious fixed findings:
+  - a submodule clean filter ran during working-tree acquisition;
+  - a 619 KB request could abort the daemon;
+  - the pre-push secret hook failed open;
+  - the release build job held write and OIDC grants, and one failed platform could publish a
+    partial release.
+- Release authority: an approval-gated `release` environment, a `v*` tag ruleset and a
+  fail-closed crates.io job.
+- Platforms: arm64 Linux in CI and as a release target; the x86_64 macOS archive runs under
+  Rosetta 2 in the release smoke.
+- Operability: `daemon stop` drains, and a systemd user unit and a launchd agent ship.
+- Interfaces: the Python client has package metadata.
+
+| # | Facet | Weight | Reconciled 10-31 | Self 11-02 |
+| --- | --- | ---: | ---: | ---: |
+| 1 | Correctness and patch-truth integrity | 20 | 19 | 19 |
+| 2 | Security and trust boundary | 15 | 13 | 14 |
+| 3 | Supply chain and release integrity | 15 | 13 | 14 |
+| 4 | Reliability and operability | 15 | 13 | 14 |
+| 5 | Platform and portability | 10 | 7 | 8 |
+| 6 | Interfaces and integration contracts | 15 | 13 | 14 |
+| 7 | Documentation, governance and evidence | 10 | 8 | 8 |
+| | **Total** | **100** | **86** | **91** |
+
+## Independent rescore 2026-11-02 (Codex, `main` `1eaba47`)
+
+Codex (`codex exec -s read-only`) read the tree at `1eaba47` and was given the measured facts it
+could not check itself (test counts, CI results and repository settings). It was not shown the
+self-assessment.
+
+| # | Facet | Weight | Codex | Reason (Codex's, shortened) |
+| --- | --- | ---: | ---: | --- |
+| 1 | Correctness and patch-truth integrity | 20 | 19 | Strong parser and oracle testing, mutation-gated fixes. Against: one patch-model ambiguity; incomplete mutation and evaluation evidence. |
+| 2 | Security and trust boundary | 15 | 14 | Hostile-input bounds, same-UID daemon, sandbox, CodeQL and secret controls. Against: CodeQL optional; the user's global Git filters stay trusted. |
+| 3 | Supply chain and release integrity | 15 | 13 | Pinned Actions, audits, SBOM, provenance, immutable tags, split release jobs. Against: unsigned tags; the GitHub Release is not behind the approval. |
+| 4 | Reliability and operability | 15 | 13 | Bounded parallel daemon, drain, metrics, soak, service units. Against: no control path at saturation; a signal stop does not drain. |
+| 5 | Platform and portability | 10 | 8 | Four targets, arm64 Linux CI and smoke. Against: minimum OS versions are not executed. |
+| 6 | Interfaces and integration contracts | 15 | 14 | Shared tested contracts. Against: SDK distribution; the old/new-path form. |
+| 7 | Documentation, governance and evidence | 10 | 8 | Extensive and candid. Against: recent PR evidence not recorded; packaging statements drift. |
+| | **Total** | **100** | **89** | |
+
+## Reconciliation 2026-11-02 (Claude, after the independent rescore)
+
+Each of Codex's 18 gaps was checked against the tree, and the ones that can be fixed in this
+change were fixed.
+
+| Gap (Codex's numbering) | Verdict | Action |
+| --- | --- | --- |
+| 17: tracked, stale Python build output | **Accepted, and worse than stated.** Reproduced: `pip install ./sdk/python` from `1eaba47` installed the stale copy, the client from before the bug-hunt fixes. | Fixed in this change (CHANGELOG, Fixed); a test pins the `.gitignore` entries. |
+| 16: `pyproject.toml` installs from `@v0.5.0`, which has no package metadata | **Accepted.** | The comment names `@main`, as the README already does. |
+| 6: CodeQL is not required | **Accepted.** | Required since 2026-11-02 (thirteen checks). |
+| 18: `EVIDENCE.md` does not record #82 to #84 | **Accepted.** | Recorded ([EVIDENCE](../EVIDENCE.md#bug-hunt-merges-docs-sync-and-required-codeql-2026-11-02)). |
+| 12: no complete arm64 or launchd CI evidence | **Partly disputed.** Both jobs passed on #83 and #84 (measured, now in EVIDENCE). They are still not required, and no release dry run exists for this commit. | The dry run comes with the next release. |
+| 10: the GitHub Release is not behind the approval | **Accepted.** Only crates.io `publish` names the `release` environment. | Open, for the owner: gating the release job puts every release on hold for the owner's approval. |
+| 9, 11: unsigned tags; a long-lived crates.io token | **Accepted.** | Open, for the owner (a signing key; trusted publishing is an account step). crates.io is on hold. |
+| 13: no control path at saturation; a signal stop does not drain | **Accepted.** SIGTERM has no handler (`OPERATIONS_AND_DAEMON.md`, launchd notes); the systemd unit drains through `daemon stop`. | Open: DDF-HUNT-DAEMON-7 below. |
+| 2: `diff --git a/x b/y` with no rename header | **Accepted.** | Open: DDF-HUNT-PATCH-6 below. |
+| 1: the tree is not a released version | **Accepted.** | The next release. |
+| 3, 4, 5, 7, 8, 14, 15 (eval corpus, whole-crate mutation, campaign schedule, secret patterns, global Git filters, node-exporter path, minimum OS versions) | **Accepted** as stated; each is already recorded as open or residual above. | None now. |
+
+### Reconciled score: 89 / 100
+
+| # | Facet | Weight | Self | Codex | Reconciled |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1 | Correctness and patch-truth integrity | 20 | 19 | 19 | 19 |
+| 2 | Security and trust boundary | 15 | 14 | 14 | 14 |
+| 3 | Supply chain and release integrity | 15 | 14 | 13 | 13 |
+| 4 | Reliability and operability | 15 | 14 | 13 | 13 |
+| 5 | Platform and portability | 10 | 8 | 8 | 8 |
+| 6 | Interfaces and integration contracts | 15 | 14 | 14 | 14 |
+| 7 | Documentation, governance and evidence | 10 | 8 | 8 | 8 |
+| | **Total** | **100** | **91** | **89** | **89** |
+
+Facets 3 and 4 take Codex's score: the release approval covers only crates.io, and the daemon
+has no control path at saturation. The fixes in this change are not scored here; they count at
+the next rescore.
+
+### Known limitations (deferred by the 2026-11-01 bug hunt, open on `main`)
+
+| ID | Area | Limitation | Why deferred |
+| --- | --- | --- | --- |
+| DDF-HUNT-PATCH-6 | patch | A `diff --git a/x b/y` section with no rename header is reviewed as `modified y`, while `git apply` deletes `x` and creates `y`. The model has no old-path field for this form. | Needs a patch-model decision: represent it, or refuse it. |
+| DDF-HUNT-DAEMON-7 | daemon | Eight idle connections fill the daemon's connection limit, and then `daemon.shutdown` and `health` cannot get in. Only a signal stops it then. SIGTERM, which `launchctl bootout` also sends, does not drain and leaves the socket file behind (the systemd unit stops through `daemon stop`, which drains; [operations](OPERATIONS_AND_DAEMON.md)). A same-user process can cause this. | Needs a control-channel design. |
+| DDF-HUNT-CLI-8 | cli | `findings verify --findings FIFO` (and `review --findings`) waits forever for a writer. | Low severity: the caller chose the path. |
+
+### What would raise the score, in order of impact
+
+1. **Release the hardened tree** (facets 3 and 7): a four-target dry run, then a tag. Owner
+   decisions: signed tags, and the GitHub Release job behind the `release` approval.
+2. **Close DDF-HUNT-PATCH-6** (facet 1): refuse or represent the old/new-path form. Add a
+   held-out real-world evaluation corpus.
+3. **A daemon control path at saturation** (DDF-HUNT-DAEMON-7) and a drain on supervisor
+   signals (facet 4).
+4. **Whole-crate mutation** of `review`, `daemon` (crate scope) and the unmeasured crates, with
+   survivors classified (facet 1).
+5. **Record the first scheduled campaign**, and run the node-exporter path and the minimum OS
+   versions (facets 4 and 5).

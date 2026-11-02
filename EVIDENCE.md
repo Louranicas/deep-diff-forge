@@ -1128,3 +1128,36 @@ new note.
   `macOS launchd agent` job is the only launchd evidence.
 - **Correction to 2026-10-31:** `v0.1.0` is a lightweight tag (`git cat-file -t v0.1.0`:
   `commit`); `v0.2.0` to `v0.5.0` are annotated. None is signed.
+
+## Bug-hunt merges, docs sync and required CodeQL (2026-11-02)
+
+Measured with `gh` and in the maintainer's session on 2026-11-02. This records what the
+independent rescore of 2026-11-02 found missing from this file (its gap 18).
+
+- **Merges:** #82 (bug hunt part 1) at `6f573d1` (2026-11-01 17:00 UTC), #83 (part 2) at
+  `5580374` (2026-11-02 00:20 UTC) and #84 (docs sync) at `1eaba47` (01:17 UTC). GitLab `main`
+  was fast-forwarded to each one (`git ls-remote`: both remotes at `1eaba47`).
+- **#83 checks:** all 16 passed at head `f3fd89d`, the 11 required ones among them. They include
+  `Linux arm64 tests` (1 min), `macOS launchd agent` (1 min) and `macOS tests` (4 min). The four
+  `diff mutation` shards took 50, 70, 140 and 163 minutes. The 140- and 163-minute shards needed
+  the 300-minute job limit: at 120 minutes the earlier run cancelled them. `review controller
+  mutation and fuzz evidence` took 54 minutes.
+- **#84 checks:** all 16 passed at head `8d5d587`; with no Rust lines changed, each mutation
+  shard took 1 minute.
+- **Tree of `1eaba47`** (equal to #84's head tree, `1582e8e`): `scripts/ci_local.sh` reports
+  `steps failed: 0` (Rust 1.99.1). `cargo test --workspace --locked`: 1,856 passed, 0 failed, 4
+  ignored.
+- **Repository settings** (`gh api`): 0 open Dependabot, secret-scanning and code-scanning
+  alerts; Dependabot security updates, secret scanning and push protection enabled. Before this
+  change there were 0 open pull requests and 3 remote branches (`main`, `release/stage-e` and
+  `docs/vault-highways-s1009380`).
+- **CodeQL required:** the last 14 completed `codeql.yml` runs (pull requests and `main`) all
+  passed, each in 4 to 5 minutes. Ruleset 25868121 now requires `codeql (rust)` and
+  `codeql (actions)`, thirteen checks in all (`gh api`, read back after the change; strict
+  up-to-date policy, no bypass actors).
+- **Python install from a checkout:** in a clean venv, `pip install ./sdk/python` from `1eaba47`
+  installed `sdk/python/build/lib/deep_diff_forge.py` (byte-identical to the stale copy, not to
+  the source module). From this change's tree it installs the source module. See CHANGELOG,
+  Unreleased, Fixed.
+- **Not yet measured:** the weekly `campaign.yml` cron (`41 5 * * 1`) had not fired at the time
+  of writing. Every campaign so far was a manual dispatch.

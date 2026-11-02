@@ -164,6 +164,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **`pip install ./sdk/python` installs the current client** (2026-11-02). The repository
+  tracked setuptools output (`sdk/python/build/lib/deep_diff_forge.py` and
+  `deep_diff_forge.egg-info/`). setuptools reuses an existing `build/lib`, so an install from a
+  checkout of `main` installed that copy: the client from before the bug-hunt fixes (no write
+  timeout, weaker response validation), measured in a clean venv. The output is untracked and
+  ignored (`/sdk/python/build/`, `/sdk/python/dist/`, `*.egg-info/`), and
+  `cli/tests/python_sdk.rs` fails if `.gitignore` stops ignoring it. The `pyproject.toml` install
+  comment names `@main`, since `@v0.5.0` has no package metadata. Found by the independent
+  rescore of 2026-11-02.
 - **A failed alternate-screen entry no longer leaves the terminal in raw mode.** `review` switched
   raw mode on, then wrote the alternate-screen sequence, and armed its restore guard only after
   that write; if the write failed (stdout closed) it returned with the terminal still raw. The
@@ -491,6 +500,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Security
 
+- **CodeQL is a required check** (2026-11-02). Ruleset 25868121 now requires `codeql (rust)` and
+  `codeql (actions)` as well, thirteen checks in all, after 14 consecutive passing runs of 4 to
+  5 minutes. Before this, a failed or cancelled CodeQL run did not block a merge.
 - **A filter in a repository's `config.worktree` no longer runs during Git acquisition.**
   Acquisition turned off only the filters `git config --local` lists, which does not read
   `$GIT_DIR/config.worktree` (used once `extensions.worktreeConfig` is set), so a filter defined
@@ -662,6 +674,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Documentation
 
+- **Production readiness rescored at `main` `1eaba47`** (2026-11-02): self-assessment 91, Codex's
+  independent rescore 89, reconciled 89 (`docs/PRODUCTION_READINESS.md`). The three bugs the
+  bug hunt deferred are now listed in the repository too, as known limitations; they were
+  recorded only in the maintainers' vault. `EVIDENCE.md` records the merges of #82 to #84.
 - **The docs match `main` and say what is shipped, planned, withdrawn or on hold** (2026-11-01).
   Each design and planning doc opens with a dated status block naming the module behind what
   ships. Corrected: the Python install line (`@v0.5.0` has no `pyproject.toml`; it now names

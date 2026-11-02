@@ -1,6 +1,6 @@
 # Static analysis (CodeQL) of the Rust code and of these workflows. Results go to the
-# repository's code scanning alerts. Not a required check until its findings and run time on
-# these runners are known (2026-10-31).
+# repository's code scanning alerts. Both analyses are required checks of ruleset 25868121 since
+# 2026-11-02, after 14 consecutive passing runs of 4 to 5 minutes on these runners.
 name: codeql
 
 on:
