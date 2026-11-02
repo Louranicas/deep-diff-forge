@@ -1,5 +1,8 @@
 # Refactor & Feature Plan (S1008412)
 
+> **Status 2026-11-01.** Historical plan, completed in 2026-06 (shipped: P1 to P4, in `patch`,
+> `daemon` and `syntax`). Nothing in it is planned, withdrawn or on hold.
+
 ## Status 2026-10-28 (0.3.0)
 
 **Kind:** historical plan, completed in 2026-06 (see "Status — DONE" at the end). It is kept as a record and is not a current task list.

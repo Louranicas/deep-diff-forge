@@ -148,7 +148,7 @@ and its surviving mutants demand.
 | `deep-diff-forge-agent` | grounded vs ungrounded annotations, evidence links, sanitization, approval records. |
 | `deep-diff-forge-tui` | layout state, keyboard/mouse commands, sidebar navigation, toggles, viewport stability. |
 | `deep-diff-forge-cluster` | deterministic sharding, lane failures, join policies, replay manifests, resource receipts. |
-| `deep-diff-forge-loom` (not implemented; `loom` is refused) | intake, boundary map, fixture synthesis, gate receipts, license/provenance fields. |
+| `deep-diff-forge-loom` (withdrawn 2026-10-31; `loom` is refused with exit 2) | none: no crate exists. A change that adopts an exemplar's lesson lands as a reviewed change with its own tests (`loom-contract`). |
 | `deep-diff-forge-learning` | receipt validation, privacy (no source, patch text or paths), store bounds and permissions, promotion/demotion. |
 | `deep-diff-forge-review` | council admission, receipt qualification, sandbox argv, tuicr import/export, sealed evidence. |
 | `deep-diff-forge-sdk` | client framing, error mapping, parity with the daemon and `rpc`. |

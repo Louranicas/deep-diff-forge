@@ -1,5 +1,8 @@
 # Distinguished Agentic Rust Coder V4
 
+> **Status 2026-11-01.** A process standard, current; no product code implements it, so nothing
+> here is shipped, planned, withdrawn or on hold.
+
 ## Status 2026-10-28 (0.3.0)
 
 **Kind:** process standard for implementation, review and reporting. It is current.

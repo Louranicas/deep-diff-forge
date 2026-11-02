@@ -6,6 +6,10 @@ errors, and reliable concurrency.
 
 > **Target design, not a description of the code**, except this first section. Crates and
 > dependencies named below may not exist.
+>
+> **Status 2026-11-01.** Shipped: everything in the next section (14 crates under `crates/`).
+> Planned, unowned: the `git` and `planner` crates and the dependencies the later sections name
+> but the code does not use. Withdrawn 2026-10-31: the `loom` crate and its milestone step.
 
 ## What exists today (0.3.0)
 
@@ -17,11 +21,13 @@ errors, and reliable concurrency.
 - **Crates:** 14, listed with their edges in
   [ARCHITECTURE.md](ARCHITECTURE.md#crates-as-built-030). `git`, `planner` and `loom` from the
   table below do not exist; `learning`, `review` and `sdk` exist and are not in it.
-- **External dependencies actually used** (from each crate's `Cargo.toml`): `serde` and
-  `serde_json` (daemon, learning, review, cli, sdk), `rustix` (daemon, learning), `nix` (review),
+- **External dependencies actually used** (from each crate's `Cargo.toml`, rechecked
+  2026-11-01): `serde` (daemon, learning, review), `serde_json` (agent, daemon, learning,
+  review, cli, sdk), `rustix` (daemon, learning), `nix` (review, cli, and daemon off Linux for
+  `getpeereid`),
   `tree-sitter` and `tree-sitter-rust` (syntax, pinned exactly), `ratatui` and `crossterm` (tui;
-  its `use-dev-tty` feature on macOS, which reads keys through `filedescriptor`), `unicode-width` and `unicode-segmentation` (projection). `core`, `patch`, `graph`, `cluster`,
-  `pipeline` and `agent` have no external dependencies.
+  its `use-dev-tty` feature on macOS, which reads keys through `filedescriptor`), `unicode-width` and `unicode-segmentation` (projection). `core`, `patch`, `graph`, `cluster`
+  and `pipeline` have no external dependencies.
 - **Not used:** `clap` (arguments are parsed by `crates/deep-diff-forge-cli/src/args.rs`),
   `gix` (Git input runs the `git` program), `rayon` (`cluster` uses `std::thread::scope`),
   `tokio` (the daemon uses `std::os::unix::net` and threads), `blake3` (seals use a pure-Rust
@@ -29,12 +35,14 @@ errors, and reliable concurrency.
 - **Errors:** each crate has its own error type (for example `PatchParseError`, `ReviewError`,
   `LearningError`, `RpcError`); there is no shared `EngineError`. The CLI maps them to the
   exit-code registry (`deep-diff-forge schema exit-codes`).
-- **Testing:** unit, fixture, contract, integration and fuzz levels exist; the corpus level does
-  not. Fuzz targets: `patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
-  `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness` (`fuzz/Cargo.toml`). CI runs diff-scoped
+- **Testing:** unit, fixture, contract, integration and fuzz levels exist, and since 0.5.0 a
+  labelled evaluation corpus (`fixtures/eval`, scored by `eval`; 11 cases in 0.5.0, 34 on
+  `main`). Fuzz targets (10): `patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`, `council_report`,
+  `stdio_mcp`, `stdio_rpc`, `structural_soundness`, `findings_verify`, `evidence_scan`
+  (`fuzz/Cargo.toml`). CI runs diff-scoped
   cargo-mutants on each pull request's changed lines.
-- **First milestone below:** steps 1 to 5 are done; step 6 (loom fixture) is not, since loom
-  does not exist.
+- **First milestone below:** steps 1 to 5 are done; step 6 (loom fixture) is withdrawn with
+  the loom (2026-10-31).
 
 ## Rust Principles
 

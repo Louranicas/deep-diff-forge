@@ -1,5 +1,10 @@
 # Review roster, adversarial council and verification controller
 
+> **Status 2026-11-01.** Shipped: the council, its eight gates and the rootless Podman sandbox
+> (`crates/deep-diff-forge-review`, `deep-diff-forge council …`). Planned, unowned: a controlled
+> trial of review quality, and the TUI and daemon as council clients. Nothing is withdrawn or on
+> hold. The rounds below are dated history.
+
 ## Status 2026-10-28 (0.3.0)
 
 **Kind:** current reference for the review council, plus per-round history. The rounds r4–r22 below are dated records and are kept as written.

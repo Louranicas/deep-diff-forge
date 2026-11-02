@@ -1,23 +1,32 @@
 # Vision
 
 > **Target design, not a description of the code.** This is where the project is aiming. For what
-> 0.3.0 does, see the next section and [ARCHITECTURE.md](ARCHITECTURE.md#crates-as-built-030).
+> the code does, see the next section and [ARCHITECTURE.md](ARCHITECTURE.md#crates-as-built-030).
+>
+> **Status 2026-11-01.** Shipped: interactive terminal mode (`deep-diff-forge-tui`), agent mode
+> read and verify paths (`cli/src/mcp.rs`, `agent::findings`), file-pair input
+> (`cli/src/file_pair.rs`, unreleased). Planned, unowned: pager mode as `GIT_EXTERNAL_DIFF` or
+> difftool, desktop and web renderers. Withdrawn: the loom (see [loom](DEEP_DIFF_FORGE_LOOM.md)).
 
-## What exists today (0.3.0)
+## What exists today (0.3.0, updated 2026-11-01)
 
 Against the four product modes below:
 
-- **Pager mode:** not built. `deep-diff-forge <old> <new>` is refused, there is no
-  `GIT_EXTERNAL_DIFF` mode, and Git is the only VCS read (`--git-working-tree`, `--git-staged`,
-  `--git-range`). Patches on stdin are reviewed with `--stdin-patch`.
+- **Pager mode:** partial. `deep-diff-forge <old> <new>` reviews two regular files (2026-10-31,
+  unreleased); there is no `GIT_EXTERNAL_DIFF` or difftool mode, no directory pair, and Git is
+  the only VCS read (`--git-working-tree`, `--git-staged`, `--git-range`). Patches on stdin are
+  reviewed with `--stdin-patch`.
 - **Interactive terminal mode:** built as `deep-diff-forge review` (patch on stdin): ranked file
   sidebar, inline or side-by-side diff, folding, wrapping, themes, mouse scroll and click,
   command palette.
 - **Desktop/web embeddable mode:** no desktop or web renderer. Programs embed the engine through
   the Rust `deep-diff-forge-sdk` crate or the stdlib Python client in `sdk/python`.
-- **Agent mode:** read-only. Agents get the review document and ranking over `mcp`
-  (`review_patch`, `rank_patch`, `explain_exit_code`, `exit_code_registry`), `rpc`, or the
-  daemon. They cannot yet attach claims; the TUI's notes are the engine's own findings.
+- **Agent mode:** read-only. Agents get the review document, ranking, outline and hunks over
+  `mcp` (eight tools, among them `review_outline`, `review_hunks` and `review_change`), `rpc`, or
+  the daemon. Since 0.5.0 an agent's findings are checked against patch truth
+  (`findings verify`, `findings.verify`, MCP `verify_findings`) and shown in the cockpit as
+  agent notes (`review --findings`), never grounded; DDF checks where a finding points, never
+  what it claims.
 
 Deep-Diff-Forge should become the leading diff engine by merging four currently separate worlds:
 

@@ -189,7 +189,9 @@ curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.5.0/
 sha256sum -c deep-diff-forge-v0.5.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
-**From source** (0.5.0, everything in this README). This needs Rust **1.88+** (edition 2024):
+**From source** (`main`: 0.5.0 plus the [unreleased changes](CHANGELOG.md#unreleased), which this README
+describes, such as `<old> <new>` and `daemon metrics --format prometheus`). This needs Rust
+**1.88+** (edition 2024):
 
 ```bash
 git clone https://github.com/Louranicas/deep-diff-forge.git
@@ -215,8 +217,9 @@ binary is run (`--version` and a review) before it ships.
   smoke when a Linux binary requires a newer `GLIBC_` symbol version. Measured 2026-10-31: the
   v0.5.0 x86_64 binary requires at most `GLIBC_2.34`; it ran a review on AlmaLinux 9 (glibc
   2.34), Ubuntu 22.04 (2.35) and Debian 12 (2.36), and the loader refused it on Debian 11 (2.31).
-  The arm64 floor is inferred to be the same (one build image, one standard library) and is
-  checked by the same script on its first CI and release runs.
+  The arm64 binary, built on `ubuntu-22.04-arm`, passes the same check in CI (measured; built on
+  `ubuntu-24.04-arm` it needed `GLIBC_2.39`, PR #79); it has not been run on an older arm64
+  distribution (unmeasured).
 - **On glibc 2.34 to 2.38 the loader prints one warning line to stderr per run**,
   ``weak version `GLIBC_2.39' not found``. The output and exit code are unchanged (measured on the
   three systems above). Rust's standard library references `pidfd_spawnp` and `pidfd_getpid`
@@ -325,7 +328,11 @@ refused when given twice; only `--address` and `--path` repeat.
 | `--acquisition-json` | Git input only: the `deep-diff-forge.git-acquisition.v0` identity of what Git returned. |
 
 Git selections run Git with a fixed argv and stop it after 120 s (`TimedOut`, exit 3), so a
-stalled filesystem or hook cannot hang the caller.
+stalled filesystem or hook cannot hang the caller. A repository's own content filters (from its
+local or worktree configuration and their includes) never run; the user's global and system
+filters, such as Git LFS, stay on by decision, and nothing else they configure runs
+([SECURITY.md](SECURITY.md#residual-risks-and-non-goals)). A filter name that is not UTF-8
+refuses the acquisition (`InvalidSelection`, which exits 2 today, measured 2026-11-01).
 
 #### Compare two files
 
@@ -633,8 +640,8 @@ checks every answer's version, id and error shape.
 
 **Python:** `sdk/python/deep_diff_forge.py` uses only the standard library, and installs as the
 package `deep-diff-forge` (`python3 -m pip install ./sdk/python`, or from GitHub with
-`"deep-diff-forge @ git+https://github.com/Louranicas/deep-diff-forge@v0.5.0#subdirectory=sdk/python"`;
-not on PyPI). It drives the `deep-diff-forge` binary, which it does not ship. It speaks the
+`"deep-diff-forge @ git+https://github.com/Louranicas/deep-diff-forge@main#subdirectory=sdk/python"`;
+not on PyPI; the package metadata is unreleased, so `@v0.5.0` has no `pyproject.toml` to install). It drives the `deep-diff-forge` binary, which it does not ship. It speaks the
 daemon protocol over two transports with the same calls:
 
 - `deep-diff-forge rpc` over a pipe (`StdioClient`), which needs no daemon;
@@ -879,8 +886,8 @@ flowchart LR
 | `deep-diff-forge-projection` | Renderer-neutral inline and side-by-side projections. |
 | `deep-diff-forge-pipeline` | Composable Unix-filter stages and JSONL. |
 | `deep-diff-forge-syntax` | Tree-sitter detection, budgeted parsing, symbols, highlighting, token-level structural diff. |
-| `deep-diff-forge-graph` | The review intelligence graph: deterministic risk ranking. |
-| `deep-diff-forge-agent` | Annotation provenance, grounding, sanitisation, anchor validation. |
+| `deep-diff-forge-graph` | The review intelligence graph: deterministic risk ranking and lexical code evidence. |
+| `deep-diff-forge-agent` | Annotation provenance, grounding, sanitisation, anchor validation, agent-findings verification. |
 | `deep-diff-forge-cluster` | Bounded parallel lanes, deterministic joins, receipts. |
 | `deep-diff-forge-learning` | Local-only learning loop: receipts, scoring, gated promotion. |
 | `deep-diff-forge-daemon` | The optional Unix-socket JSON-RPC service and its shared request handler. |
@@ -905,7 +912,8 @@ checks**. Nobody can bypass them.
 | `supply chain audit` | `cargo-deny` (bans, licences, sources, advisories), strict `cargo-audit`, and the committed SPDX SBOM regenerated and compared |
 | `declared Rust 1.88 compatibility` | the MSRV still builds |
 | `macOS tests` | the whole suite on macOS |
-| `secret scan (gitleaks)` | a pinned, checksum-verified gitleaks |
+| `secret scan (gitleaks)` | a pinned, checksum-verified gitleaks over the full history |
+| `bench (base vs head)` | the merge base and the head benchmarked on one runner; a workload over 25% and 0.2 ms slower fails |
 
 Across the tree:
 - **No `unsafe`.** It is forbidden in every crate.
@@ -919,7 +927,13 @@ Across the tree:
   work and leak checks (RSS and open-fd growth), and an hour of fuzzing for every fuzz target.
 - **Releases.** Each release builds four targets (three up to v0.5.0) and runs every one (the
   x86_64 macOS binary under Rosetta 2), holds the Linux ones to the glibc floor, verifies checksums, and attaches SLSA provenance and the SBOM. Release tags
-  are immutable (a tag ruleset), and CodeQL analyses the code and workflows.
+  are immutable (a tag ruleset), and CodeQL analyses the code and workflows. The crates.io job
+  (on hold) runs in the `release` environment, which deploys only from `v*` tags and, since
+  2026-11-01, waits for the owner's approval.
+- **Secret scanning.** GitHub secret scanning with push protection and provider patterns is on.
+  Non-provider patterns and validity checks are not available for this user-owned repository, so
+  gitleaks (the `secret scan` check and the versioned pre-push hook) is the compensating control
+  ([SECURITY.md](SECURITY.md#supply-chain-and-releases)).
 - **Local replica.** `scripts/ci_local.sh` (`just ci`) runs the CI gate jobs locally.
 
 The engine is hardened against:
@@ -1003,6 +1017,9 @@ deployment.
 
 - Interactive `review` on macOS is built with a key reader that can wait on `/dev/tty`, but no
   run on a Mac has been observed yet; the `macOS tests` job's pty test is the check.
+- **On hold (2026-11-01): the launchd agent on a physical Mac.** No real Mac is available to the
+  maintainer; CI loads the agent on a hosted macOS runner only. Running it on a physical Mac is
+  an open item for future maintainers ([ROADMAP](docs/ROADMAP.md#open-items-for-maintainers)).
 - Syntax features speak Rust.
 - Comparing two directories is not supported; `<old> <new>` takes two regular files.
 - The `chain`, `cluster` and `loom` subcommands were withdrawn (2026-10-31): chaining is shell

@@ -660,6 +660,20 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   if that toolchain, rustfmt or clippy is missing, and `ci_replica.rs` fails when its pin and
   `ci.yml`'s disagree.
 
+### Documentation
+
+- **The docs match `main` and say what is shipped, planned, withdrawn or on hold** (2026-11-01).
+  Each design and planning doc opens with a dated status block naming the module behind what
+  ships. Corrected: the Python install line (`@v0.5.0` has no `pyproject.toml`; it now names
+  `@main`), the README's required-check table (it omitted `bench`), `<old> <new>` described as
+  refused (VISION, gap analysis), `rank`, `annotate`, `render` and the extra cluster lanes
+  listed as planned (they are withdrawn), the daemon sizing that assumed one request at a time,
+  the dependency and fuzz-target lists, and the eval corpus size. Recorded the owner decisions
+  of 2026-11-01: the `release` environment needs the owner's approval and deploys only from
+  `v*` tags; secret scanning has push protection and provider patterns, gitleaks stands in for
+  the non-provider patterns and validity checks GitHub does not offer this repository; the
+  launchd agent on a physical Mac is on hold, an open item in ROADMAP and CONTRIBUTING.
+
 ## [0.5.0] - 2026-10-31
 
 ### Added

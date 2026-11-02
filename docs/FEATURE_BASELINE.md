@@ -1,15 +1,18 @@
 # Feature Baseline
 
 This baseline is non-negotiable for the first complete product cut. It is a requirement list,
-not a description of the code; the next section says where 0.3.0 stands.
+not a description of the code; the next section says where the code stands.
 
-## Status at 0.3.0 (2026-10-28)
+> **Status 2026-11-01.** Each row below is labelled Built, Partial or Not built; Not built
+> means planned and unowned. Nothing here is withdrawn or on hold.
+
+## Status at 0.3.0 (2026-10-28, rows updated to 2026-11-01)
 
 | Capability | State | Evidence |
 | --- | --- | --- |
 | Review-first interactive UI | Built | `deep-diff-forge review`; `crates/deep-diff-forge-tui`. |
 | Multi-file review stream + sidebar | Partial | Ranked file tree with status, counts and a reviewed flag; one file's diff at a time, no continuous stream. |
-| Inline agent / AI annotations | Partial | Engine-generated notes with grounding labels (`engine_annotations`); no input path for external agent notes. |
+| Inline agent / AI annotations | Partial | Engine-generated notes with grounding labels (`engine_annotations`). Since 0.5.0, external agent findings are checked against the patch (`findings verify`, `agent::findings`) and shown as agent notes (`review --findings`), never grounded; anchored to hunks and lines, not to symbols or commands. |
 | Responsive auto split/stack layout | Not built | Inline and side-by-side are toggled by hand (`--side`, a key); no width-based switch, no stacked layout. |
 | Mouse support inside the viewer | Partial | Scroll, menu-bar clicks, tree-row select and pane focus (`map_mouse`); no resize or context actions. |
 | Runtime view toggles | Partial | Layout, fold, wrap, notes, theme. No syntax/word/whitespace/moves/generated toggles. |

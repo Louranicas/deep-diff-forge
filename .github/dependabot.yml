@@ -14,6 +14,13 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
+    # tree-sitter 0.27 needs rustc 1.90, over the declared MSRV 1.88 (measured: PR #73, closed).
+    # Lift these with an MSRV raise.
+    ignore:
+      - dependency-name: tree-sitter
+        versions: [">=0.27"]
+      - dependency-name: tree-sitter-language
+        versions: [">=0.1.9"]
 
   # The fuzz harness has its own lockfile (fuzz/Cargo.lock), outside the workspace (anchor B-06).
   - package-ecosystem: cargo

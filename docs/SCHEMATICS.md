@@ -4,14 +4,19 @@
 
 This document is the target implementation map for Deep-Diff-Forge. It turns the product vision into concrete boundaries, APIs, processes, and data flows.
 
-## What exists today (0.5.0 and main)
+## What exists today (0.5.0 and main, rechecked 2026-11-01)
+
+Status labels: **shipped** is everything in this list; **planned** (unowned) are the `git` and
+`planner` crates, a shared cache and the diagrams' other boxes; **withdrawn** are the items
+below so marked; nothing is **on hold** here.
 
 - **Crates:** the 14 in [Current crates and edges](#current-crates-and-edges) below. The as-built
   crate graph and data flow are drawn in [ARCHITECTURE.md](ARCHITECTURE.md#crates-as-built-030).
-  `git`, `planner` and `loom` crates do not exist.
+  The `git` and `planner` crates do not exist (planned); the `loom` crate is withdrawn.
 - **Process modes that exist:** CLI one-shot; `review` (interactive TUI, patch on stdin); the
   optional Unix-socket daemon (`daemon path|start|health|status|stop`; `metrics` and `start
-  --log-format json` since 0.5.0); `rpc` and `mcp` (stdio, no daemon); and library use through
+  --log-format json` since 0.5.0; `metrics --format prometheus [--out PATH]` and a draining
+  `stop` on `main`, unreleased); `rpc` and `mcp` (stdio, no daemon); and library use through
   `deep-diff-forge-sdk`. `--cluster` on `--stdin-patch` or a Git selection runs the cluster
   crate's lanes.
 - **Withdrawn 2026-10-31:** the `chain`, `cluster` and `loom` subcommands, each refused with

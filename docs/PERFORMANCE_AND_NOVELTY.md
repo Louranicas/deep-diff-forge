@@ -5,8 +5,13 @@ This document records the top-tail design choices that make Deep-Diff-Forge more
 > **Target design, not a description of the code.** The planner, the shared AST cache daemon,
 > progressive rendering and region strategies below are not built. The next section is what
 > 0.3.0 has.
+>
+> **Status 2026-11-01.** Shipped: the budgets in the table below (patch, syntax, daemon, MCP
+> crates) and `bench` with a required base-vs-head job (`cli/src/bench.rs`,
+> `scripts/bench_compare.py`). Planned, unowned: the adaptive planner, region strategies, word
+> diff, progressive rendering, an AST or line-index cache. Nothing is withdrawn or on hold.
 
-## What exists today (0.3.0)
+## What exists today (0.3.0, updated 2026-11-01)
 
 Budgets in the code (constants, read from source):
 
@@ -19,6 +24,7 @@ Budgets in the code (constants, read from source):
 | Syntax time | `deep-diff-forge-syntax` `backstop_for` | 1 s plus 5 ms per KiB, cooperative cancel |
 | Daemon request line | `deep-diff-forge-daemon` `MAX_REQUEST_BYTES` | 80 MiB; a larger response is refused with `RESOURCE_EXHAUSTED` (8) |
 | Daemon sessions | `deep-diff-forge-daemon` `MAX_SESSIONS`, `MAX_RETAINED_SESSION_BYTES` | 64 sessions, 128 MiB retained |
+| Daemon work in flight (0.4.0) | `deep-diff-forge-daemon` `MAX_IN_FLIGHT_BYTES`, `MAX_CONNECTIONS` | 128 MiB of request bytes, 8 connections |
 | MCP response | `deep-diff-forge-cli` `REVIEW_FULL_CAP` | 256 KiB, then a summary document |
 
 Measured (2026-10-28, PR #21 to #23 work): metadata parsing of a 1M-line patch went from 139 s
@@ -34,9 +40,11 @@ frame after `w` takes 0.18 s.
 
 Not built: the adaptive planner (the parser sets `Binary` or `Line` only), region strategies,
 word diff, progressive rendering, any AST or line-index cache, arena allocation. Generated and
-vendored files are detected and scored to zero in ranking (`graph`), not summarised. Parallel
-work exists only as `--cluster [--parallel N]`, which scores files on `std::thread::scope`
-lanes and returns the same order for any worker count.
+vendored files are detected and lose their path bonuses in ranking (`graph::risk`), but never
+score zero and keep the new, deleted, binary, hazard, symlink and executable signals; they are
+not summarised. Parallel work is `--cluster [--parallel N]`, which scores files on
+`std::thread::scope` lanes and returns the same order for any worker count, and, since 0.4.0,
+the daemon's requests, which run in parallel under the in-flight cap above.
 
 ## Performance Target
 

@@ -16,6 +16,11 @@ The result should not be one large engine crate. It should be a set of Rust
 crates that can be tested, benchmarked, fuzzed, and released with stable
 contracts.
 
+> **Status 2026-11-01.** Shipped: the 14 crates listed next. Planned, unowned: the `git`,
+> `planner` and `fixtures` crates. Withdrawn 2026-10-31: the `loom` crate and loom-driven
+> development (`loom-contract`); the loom rules and rows below are design history. Nothing is
+> on hold.
+
 ## What exists today (0.3.0)
 
 The rest of this document is the original plan. What the code has, from `Cargo.toml`,
@@ -27,7 +32,8 @@ The rest of this document is the original plan. What the code has, from `Cargo.t
   not in this plan; `git`, `planner`, `loom` and `fixtures` are in the plan and do not exist.
 - **Module trees are flatter than planned.** For example `patch/src` has `decode.rs`,
   `git_acquire.rs`, `git_raw.rs`, `guards.rs`, `json.rs`, `parser.rs`, `paths.rs`, `render.rs`
-  and `sealed.rs`; the daemon has `handler.rs`, `protocol.rs`, `security.rs` and `serve.rs`.
+  and `sealed.rs`; the daemon has `admission.rs`, `exposition.rs`, `handler.rs`, `inspect.rs`,
+  `log.rs`, `metrics.rs`, `protocol.rs`, `security.rs`, `serve.rs` and `views.rs`.
   The trees in [Crate Charters](#crate-charters) are targets.
 - **Dependencies differ from the target graph.** Built: `graph`, `agent` and `projection`
   depend on `core` only (the plan adds `patch`, `syntax` or `graph`; `patch` is a dev-only edge

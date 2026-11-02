@@ -11,6 +11,11 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 - crates.io is on hold by owner decision until the codebase is
   production-hardened. `release.yml` publishes only when the repository
   variable `DDF_CRATES_IO` is `open`.
+- **Owner decision 2026-11-01:** the GitHub `release` environment requires the
+  owner's approval (required reviewer) and deploys only from `v*` tags (measured
+  with `gh api .../environments`). Only the crates.io `publish` job runs in it,
+  so a tag run builds, attests and uploads without waiting, and a publish waits
+  for the owner even with the gate open.
 - `deep-diff-forge deploy release` reports this posture as a declared snapshot:
   `github` and `gitlab` published, `github-release` and `crates.io` blocked
   (a build cannot know whether its own version was tagged).
@@ -125,7 +130,7 @@ Toolchain pinned to 1.99.1 except where noted.
 
 | Job (check name) | Runner | Runs on | What it does |
 | --- | --- | --- | --- |
-| `secrets` (secret scan (gitleaks)) | ubuntu-26.04 | every trigger | gitleaks 8.30.1, SHA-256-pinned, over full history. |
+| `secrets` (secret scan (gitleaks)) | ubuntu-26.04 | every trigger | gitleaks 8.30.1, SHA-256-pinned, over full history. With the pre-push hook, the control that stands in for the non-provider patterns and validity checks GitHub does not offer this user-owned repository ([SECURITY.md](../SECURITY.md#supply-chain-and-releases)). |
 | `msrv` (declared Rust 1.88 compatibility) | ubuntu-26.04 | every trigger | `cargo check --workspace --all-targets --locked` on 1.88.0. |
 | `macos` (macOS tests) | macos-latest | every trigger (each pull request since 2026-10-30) | `cargo test --workspace --locked --no-fail-fast`. |
 | `linux-arm64` (Linux arm64 tests) | ubuntu-22.04-arm | every trigger (since 2026-10-31) | `cargo test --workspace --locked --no-fail-fast`, then `scripts/check_glibc_floor.sh` on the debug binary. Not required on pull requests; gates every release build (through `quality`). |
@@ -151,10 +156,12 @@ permission `contents: read`; only `release` elevates, and it compiles and runs n
 | `supply-chain` (supply chain gate) | ubuntu-26.04 | cargo-deny and cargo-audit as in CI; on a tag, refuses a tag that is not `v` + the workspace version. |
 | `build` (build &lt;target&gt;) | ubuntu-24.04 (x86_64 Linux), ubuntu-22.04-arm (arm64 Linux), macos-latest (both macOS) | Needs `quality` and `supply-chain`. `cargo build --release --locked -p deep-diff-forge-cli` for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. Every binary is run (smoke): `--version` must equal the workspace version and `--stdin-patch --json` must produce a review document; a Linux binary must need no `GLIBC_` version newer than the floor (`scripts/check_glibc_floor.sh`, glibc 2.34); the x86_64 macOS binary is cross-built and run under Rosetta 2 (`run_under: arch -x86_64`, installed if missing), after `file` confirms it is x86_64. Packages, writes and re-verifies the `.sha256`, and keeps the archives (and the x86_64 Linux leg's SBOM) as workflow artifacts. Permissions `contents: read` only: it runs every dependency's build scripts and proc macros, so it holds no write or OIDC token, on a tag or a dry run. |
 | `release` (GitHub Release) | ubuntu-26.04 | On a pushed `v*` tag only (never a dispatch, even from a tag). Needs `build`, so it starts only after **every** target built and passed smoke: a failed platform leaves no release rather than a partial one. Holds `contents: write`, `attestations: write` and `id-token: write`, and checks out, compiles and runs no project code. Downloads the archives and SBOM, re-verifies every `.sha256`, attests build provenance for archives, checksums and SBOM, and uploads them to the GitHub Release in one step. |
-| `publish` (crates.io publish (owner-gated)) | ubuntu-26.04 | Needs `release`. Runs only on a pushed `v*` tag (never a dispatch) **and** when `vars.DDF_CRATES_IO == 'open'`. Runs in the `release` environment (deployment policy: `v*` tags only). Publishes the 14 crates in dependency order, skipping crates already live and retrying crates.io's rate limit; fails if `CARGO_REGISTRY_TOKEN` is unset, since the owner opened the gate. |
+| `publish` (crates.io publish (owner-gated)) | ubuntu-26.04 | Needs `release`. Runs only on a pushed `v*` tag (never a dispatch) **and** when `vars.DDF_CRATES_IO == 'open'`. Runs in the `release` environment (deployment policy: `v*` tags only; required reviewer: the owner, since 2026-11-01). Publishes the 14 crates in dependency order, skipping crates already live and retrying crates.io's rate limit; fails if `CARGO_REGISTRY_TOKEN` is unset, since the owner opened the gate. |
 
-The Linux binaries are built on ubuntu-24.04 (and its arm64 image) on purpose: they link
-against the build image's glibc, and a 26.04 build would not run on 24.04-era systems. Their
+The Linux binaries are built on older images on purpose (x86_64 on ubuntu-24.04, arm64 on
+ubuntu-22.04-arm): they link against the build image's glibc, and a 26.04 build would not run on
+24.04-era systems. The arm64 binary built on ubuntu-24.04-arm needed `GLIBC_2.39` (measured in
+PR #79), hence the older arm64 image. Their
 declared floor is glibc 2.34 (measured on the v0.5.0 x86_64 binary; on glibc 2.34 to 2.38 the
 loader prints one stderr warning per run, see
 [supported platforms](../README.md#supported-platforms)). musl is not built: the tree-sitter C
@@ -173,7 +180,8 @@ flowchart TD
     B["build x 4 targets (contents: read): smoke, glibc floor, sha256 verify, keep archives"]
     B -->|"tag ref, after every target"| Rel["release: re-verify sha256, attest, upload to GitHub Release"]
     B -->|dispatch| Stop["nothing published"]
-    Rel -->|"DDF_CRATES_IO = open"| Pub["publish: crates.io"]
+    Rel -->|"DDF_CRATES_IO = open"| Appr["release environment: owner approves"]
+    Appr --> Pub["publish: crates.io"]
 ```
 
 Both workflows pin third-party Actions to full commit SHAs, do not persist

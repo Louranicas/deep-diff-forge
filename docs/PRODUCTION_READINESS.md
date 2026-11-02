@@ -7,7 +7,7 @@ code or docs, not run), **unmeasured** (no evidence either way).
 Related: [deployment gap analysis](DEPLOYMENT_GAP_ANALYSIS.md) ·
 [operations and daemon](OPERATIONS_AND_DAEMON.md) ·
 [release and publication](RELEASE_AND_PUBLICATION.md) · [security policy](../SECURITY.md) ·
-[evidence](../EVIDENCE.md) · [roadmap](ROADMAP.md).
+[evidence](../EVIDENCE.md) · [roadmap](ROADMAP.md) · [deployment framework](DEPLOYMENT_FRAMEWORK.md).
 
 ## Assessment 2026-10-30 (`main` `a4bc06f`, workspace 0.3.0 + unreleased)
 
@@ -514,9 +514,10 @@ the score stays as reconciled until the next one.
   `GLIBC_2.34`; ran on AlmaLinux 9, Ubuntu 22.04 and Debian 12; refused on Debian 11). On glibc
   2.34 to 2.38 the loader prints one stderr warning per run (measured). Enforced by
   `scripts/check_glibc_floor.sh` in the release smoke.
-- **arm64 Linux**: a release target on `ubuntu-24.04-arm` and a `Linux arm64 tests` CI job
-  (inferred until their first runs; pending CI). The test job gates every release build through
-  `quality`. Its glibc floor is inferred to equal x86_64's.
+- **arm64 Linux**: a release target built on `ubuntu-22.04-arm` and a `Linux arm64 tests` CI job
+  on the same image, which gates every release build through `quality`. On `ubuntu-24.04-arm` the
+  binary needed `GLIBC_2.39`, over the floor (measured in PR #79); on 22.04-arm
+  `scripts/check_glibc_floor.sh` passes the 2.34 floor (measured in CI).
 - **x86_64 macOS** runs in the release smoke under Rosetta 2 (since the 2026-10-31 release
   hardening); it has no test job.
 - **launchd**: the `macOS launchd agent` job loads the shipped plist into a hosted Mac's launchd
@@ -553,3 +554,26 @@ is addressed; no score above is changed by it.
 - **[Inferred]** It is still a corpus written by the rules' author, with cases shaped after real
   advisories rather than taken from them. It is a regression gate and a list of known limits,
   not evidence of review quality on real-world code; a held-out corpus remains open.
+
+## Follow-up 2026-11-01: release authority, secret scanning and the Mac (no rescore)
+
+Owner decisions of 2026-11-01 against the reconciled list above. Not a new assessment.
+
+- **[Measured]** Release authority, item 1: the `release` environment now has the owner as
+  its required reviewer and a deployment policy of `v*` tags only (`gh api
+  repos/Louranicas/deep-diff-forge/environments`); the `v*` tag ruleset (no deletion, update or
+  bypass) and the fail-closed crates.io job are on `main` (CHANGELOG, Unreleased). Only the
+  crates.io `publish` job runs in that environment. Still open: signed tags, and crates.io
+  trusted publishing (an account-level step).
+- **[Measured]** Code scanning and secret patterns, item 2: CodeQL runs (`codeql.yml`; not a
+  required check). Push protection and provider patterns are on; non-provider patterns and
+  validity checks stay `disabled` for this user-owned repository although the API accepts the
+  change (GitHub documents validity checks for organisation repositories with Secret
+  Protection). gitleaks, in the required `secrets` job and the pre-push hook, is the
+  compensating control. This part of item 2 is closed as unavailable, not done.
+- **[Measured]** Items 4 and 5 moved: `daemon stop` drains, a systemd user unit and a launchd
+  agent ship in `contrib/`, and the Python client is a package (`sdk/python/pyproject.toml`,
+  not on PyPI); all unreleased.
+- **On hold:** running the launchd agent on a physical Mac. No real Mac is available; the
+  `macOS launchd agent` CI job on a hosted runner is the only macOS launchd evidence. It is an
+  open item for future maintainers ([roadmap](ROADMAP.md#open-items-for-maintainers)).

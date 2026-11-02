@@ -6,7 +6,7 @@ an exceptional one. This policy documents the maintained security boundary,
 the controls enforced by the repository, and the limits operators must account
 for.
 
-## Status 2026-10-28 (0.3.0)
+## Status 2026-11-01 (`main` after 0.5.0)
 
 - `main` carries **0.5.0**, tagged `v0.5.0` on 2026-10-31; cutting any later
   `v*` tag is the owner's decision. The published releases are `v0.1.0`,
@@ -280,9 +280,24 @@ every gate ran as root inside the container. Gates refuse to run unless
   environment, which only `v*` tags can deploy to, and an open gate without a
   token fails the job instead of passing without publishing. It would publish
   with that token; crates.io trusted publishing remains an account-level
-  hardening step outside this repository. No crates.io release is recorded in
+  hardening step outside this repository. Since 2026-11-01 (owner decision) the
+  `release` environment also has the owner as its required reviewer, so the job
+  waits for the owner's approval, and its deployment policy admits only `v*`
+  tags (measured with `gh api .../environments`). Only the `publish` job uses
+  that environment; the build, attestation and GitHub Release upload do not
+  wait for it. No crates.io release is recorded in
   [`EVIDENCE.md`](EVIDENCE.md) (not re-checked against crates.io in this
   refresh).
+- **Secret scanning (owner decision, 2026-11-01).** GitHub secret scanning is on
+  with push protection and the provider patterns. Non-provider patterns and
+  validity checks are not available for this user-owned repository: the API
+  accepts the change, but their status stays `disabled` (measured with
+  `gh api repos/Louranicas/deep-diff-forge`, `security_and_analysis`), and GitHub
+  documents validity checks for organisation repositories with Secret Protection.
+  The compensating control is gitleaks: the required `secrets` CI job
+  (`secret scan (gitleaks)`, full history) and the versioned pre-push hook
+  `scripts/hooks/pre-push` (`just install-hooks`), which refuses a push when
+  gitleaks finds a secret or is missing.
 - CI and release toolchains are pinned (stable 1.99.1, `nightly-2026-10-25`),
   so a toolchain release cannot change a gate's result. The committed SBOM is
   reproducible: its namespace is content-addressed and `created` comes from the
@@ -345,7 +360,8 @@ SBOM, and attests it before irreversible publication.
 
 ## Residual risks and non-goals
 
-Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
+Known limits, first listed at 0.3.0 (production-readiness review, 2026-10-28); each closed item
+says when it closed:
 
 - **Closed in 0.4.0: one engine serialized daemon requests.** Every
   connection shared one `Mutex<Engine>`, so one slow request delayed all other
@@ -403,6 +419,18 @@ Known limits on `main` at 0.3.0 (production-readiness review, 2026-10-28):
   (`protected_config_keeps_its_filters_and_runs_nothing_else`): only the user's filter ran and the
   capture was byte for byte the one taken without the planted programs. The review of an LFS file
   is a review of its pointer, not of the object it names.
+- **A file pair is compared through Git, outside any repository (unreleased, 2026-10-31).**
+  `deep-diff-forge <old> <new>` refuses a path that is itself a symbolic link, a directory or a
+  special file, and two files over the 64 MiB budget, then runs `git diff --no-index` with the
+  acquisition's fixed argv and environment, from `/`, with `core.attributesFile=/dev/null`,
+  `GIT_ATTR_NOSYSTEM=1`, `core.autocrlf=false`, `--no-ext-diff` and `--no-textconv`
+  (`deep_diff_forge_patch::diff_files`), so neither a repository around the files nor the user's
+  attributes chooses a filter or changes the bytes (`cli/tests/file_pair.rs`). The check and
+  Git's read are separate steps: a writer racing them can change what is compared, so compare
+  files you control. A file that vanishes in between is an error, never "unchanged".
+- **Release tags are not signed.** `v0.2.0` to `v0.5.0` are unsigned annotated tags and `v0.1.0` a lightweight tag (open in
+  [production readiness](docs/PRODUCTION_READINESS.md)); a tag ruleset makes them immutable and
+  the checksums and build provenance identify the artifacts.
 - **Repository reads are opt-in (`review.change`).** The daemon, `rpc` and `mcp`
   read Git only for a repository whose canonical path and Git top level are both
   under a root the operator named with `--allow-repo`, and so must its Git directory and common
