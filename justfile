@@ -115,7 +115,7 @@ publish-dry-run:
     cargo publish --dry-run -p deep-diff-forge-learning --allow-dirty
 
 # Cut a release: validate the tag matches the workspace version + a clean tree,
-# run the release gate, then tag and push BOTH remotes (`origin` is GitHub). Pushing
+# run the release gate, then sign the tag and push BOTH remotes (`origin` is GitHub). Pushing
 # the tag fires release.yml: cross-platform binaries, checksums, provenance and the
 # GitHub Release. crates.io publishes only when the repository variable
 # DDF_CRATES_IO is `open` (on hold by owner decision; irreversible, yank-only).
@@ -143,7 +143,9 @@ release-tag version:
       echo "the release gate changed the working tree; commit or discard before tagging" >&2
       exit 1
     fi
-    git tag -a "v${want}" -m "v${want}"
+    # Signed with the caller's user.signingkey and verified against .github/allowed_signers;
+    # an unverified tag is deleted here, before it can be pushed.
+    scripts/sign_release_tag.sh "${want}"
     git push origin "v${want}"
     git push gitlab "v${want}"
     printf 'tagged + pushed v%s to both remotes; release.yml is now running.\n' "${want}"

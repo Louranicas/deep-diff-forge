@@ -6,6 +6,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Security
+
+- Release tags are signed. `just release-tag` now signs the tag with SSH through
+  `scripts/sign_release_tag.sh` and deletes it, before pushing, unless it verifies against
+  the new `.github/allowed_signers`. v0.6.0 is the first signed tag. Tests run the script
+  with a trusted key, an untrusted key and no signers file.
+
 ## [0.6.0] - 2026-11-02
 
 ### Dependencies

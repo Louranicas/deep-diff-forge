@@ -97,10 +97,40 @@ just release-tag 0.6.0
 ```
 
 `release-tag` refuses a version that differs from `[workspace.package].version`
-or a dirty tree, runs `just gate-release`, creates an annotated tag `vX.Y.Z`,
-and pushes it to the remotes named `origin` (GitHub) and `gitlab`. The tag push
+or a dirty tree, runs `just gate-release`, creates a signed annotated tag `vX.Y.Z`
+(see [Signed Tags](#signed-tags)), and pushes it to the remotes named `origin`
+(GitHub) and `gitlab`. The tag push
 starts `release.yml`. crates.io publishes only when `DDF_CRATES_IO == 'open'`
 (see below).
+
+## Signed Tags
+
+Release tags are SSH-signed from v0.6.0 on (owner decision 2026-11-03).
+`scripts/sign_release_tag.sh`, which `release-tag` calls, signs the tag with the
+caller's `user.signingkey` and keeps it only if `git tag -v` verifies it against
+`.github/allowed_signers`. A tag signed by any other key, or unsigned, is deleted
+before the push; tags are immutable once pushed. `repo_scripts.rs` runs the
+script against scratch keys: a trusted key, an untrusted key and no signers file.
+
+The signing key is used for nothing else and stays on the owner's machine. To
+sign, point git at it for the release command only:
+
+```bash
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.signingkey \
+  GIT_CONFIG_VALUE_0=~/.ssh/id_ed25519_ddf_release_signing.pub just release-tag X.Y.Z
+```
+
+To verify a release tag from a clone:
+
+```bash
+git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v v0.6.0
+```
+
+Rotating the key means adding the new public key to `.github/allowed_signers`
+in a reviewed PR before the first tag it signs. Old lines stay, so older tags
+keep verifying. Whether GitHub and GitLab show the tag as "Verified" depends on
+the key also being registered as a signing key on each account; the
+`allowed_signers` check above does not.
 
 ## Artifact Layout
 

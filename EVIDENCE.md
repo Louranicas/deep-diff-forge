@@ -1176,3 +1176,20 @@ Measured with `gh` on 2026-11-02.
   - `crates.io publish` and `GitHub Release` were skipped, as on every dispatched run.
 - **Scheduled runs:** no `schedule` run has ever been recorded for `codeql.yml`, `ci.yml` or `campaign.yml` (`gh run list --event schedule` is empty for all three). On Monday 2026-11-02, the first Monday since their crons were added, none had fired by 07:20 UTC. All workflows are `active`; the cause is unknown. The campaign for the release commit was dispatched by hand: run 41403461497 on `9c7a875` (07:00 to 08:02 UTC): **success**. All 10 fuzz-target campaigns passed, along with `fuzz targets`, `daemon soak (long)` and `bench (full)`.
 - **Tag:** not yet pushed. `v0.6.0` waits for the owner's go-ahead.
+
+## v0.6.0 release (2026-11-03)
+
+- **Tag.** `just release-tag 0.6.0` at `571006b` (the gate passed, gitleaks found no leaks)
+  pushed the signed annotated tag `v0.6.0` (object `d165dd9`) to GitHub and GitLab; both
+  remotes show the same object. `git tag -v` against `.github/allowed_signers`: good "git"
+  signature, ED25519 key `SHA256:h4S5C3lX4poSYOx8ii8yezKBlp5pQf2jy168XgwWR8I`. GitHub's
+  verification reads `unknown_key` (the key is not registered on the account).
+- **Release run** 41520557372: the quality jobs (secret scan, supply chain audit, review
+  controller mutation and fuzz evidence, Rust 1.88, Linux arm64 and macOS tests, deploy
+  gate) and the four builds passed; the GitHub Release job published; crates.io was skipped
+  (owner hold).
+- **Assets**, downloaded from the published release: four archives, four `.sha256` files and
+  `sbom.spdx.json`. `sha256sum -c` passed for all four archives. The x86_64 Linux archive holds
+  the binary, `README.md` and both licences, and the binary prints `deep-diff-forge 0.6.0`.
+  `gh attestation verify` passed for the four archives and the SBOM.
+

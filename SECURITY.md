@@ -429,8 +429,10 @@ says when it closed:
   attributes chooses a filter or changes the bytes (`cli/tests/file_pair.rs`). The check and
   Git's read are separate steps: a writer racing them can change what is compared, so compare
   files you control. A file that vanishes in between is an error, never "unchanged".
-- **Release tags are not signed.** `v0.2.0` to `v0.6.0` are unsigned annotated tags and `v0.1.0` a lightweight tag (open in
-  [production readiness](docs/PRODUCTION_READINESS.md)); a tag ruleset makes them immutable and
+- **Tags before v0.6.0 are not signed.** v0.6.0 and later are SSH-signed and verify with
+  `git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v vX.Y.Z`
+  ([release](docs/RELEASE_AND_PUBLICATION.md#signed-tags)). `v0.2.0` to `v0.5.0` are unsigned
+  annotated tags and `v0.1.0` a lightweight tag. A tag ruleset makes every tag immutable, and
   the checksums and build provenance identify the artifacts.
 - **Repository reads are opt-in (`review.change`).** The daemon, `rpc` and `mcp`
   read Git only for a repository whose canonical path and Git top level are both
