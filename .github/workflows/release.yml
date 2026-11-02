@@ -128,7 +128,10 @@ jobs:
             ${RUN_UNDER} /usr/bin/true 2>/dev/null || sudo softwareupdate --install-rosetta --agree-to-license
             file "${bin}" | grep -q x86_64 || { echo "::error::${bin} is not an x86_64 binary"; exit 1; }
           fi
-          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          # The version as `just release-tag` reads it. Not Python's tomllib: the
+          # ubuntu-22.04-arm runner's python3 is 3.10, which lacks it (v0.6.0 dry run).
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/p' Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)"
+          test -n "${version}" || { echo "::error::no [workspace.package] version in Cargo.toml"; exit 1; }
           test "$(${RUN_UNDER} "${bin}" --version)" = "deep-diff-forge ${version}" || {
             echo "::error::${bin} --version does not report ${version}"; exit 1
           }

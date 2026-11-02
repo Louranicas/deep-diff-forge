@@ -121,6 +121,20 @@ fn check(workflow: &str) -> Vec<String> {
                 job.name
             ));
         }
+        // Matrix legs run on different runners, and their system Pythons differ: the
+        // `ubuntu-22.04-arm` one is 3.10, without `tomllib` (the v0.6.0 dry run failed on it).
+        if job.matrix
+            && job
+                .lines
+                .iter()
+                .any(|line| !line.trim_start().starts_with('#') && line.contains("tomllib"))
+            && !job.uses("actions/setup-python")
+        {
+            problems.push(format!(
+                "matrix job `{}` imports tomllib without actions/setup-python",
+                job.name
+            ));
+        }
         if publishes && !job.needs.iter().any(|n| n == "build") {
             problems.push(format!(
                 "job `{}` publishes without `needs: build`",
@@ -176,4 +190,22 @@ fn the_reader_refuses_a_build_job_that_publishes() {
         check("jobs:\n  a:\n    steps:\n      - run: true\n").len(),
         1
     );
+}
+
+#[test]
+fn the_reader_refuses_tomllib_in_a_matrix_job_without_setup_python() {
+    let release = "  release:\n    needs: build\n    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')\n    permissions:\n      contents: write\n    steps:\n      - uses: softprops/action-gh-release@x\n";
+    let build = "jobs:\n  build:\n    strategy:\n      fail-fast: false\n    steps:\n      - run: python3 -c 'import tomllib'\n";
+    let problems = check(&format!("{build}{release}"));
+    assert_eq!(problems.len(), 1, "{problems:#?}");
+    assert!(problems[0].contains("tomllib"), "{problems:#?}");
+    let pinned = "jobs:\n  build:\n    strategy:\n      fail-fast: false\n    steps:\n      - uses: actions/setup-python@x\n      - run: python3 -c 'import tomllib'\n";
+    assert_eq!(check(&format!("{pinned}{release}")), Vec::<String>::new());
+    let commented = "jobs:\n  build:\n    strategy:\n      fail-fast: false\n    steps:\n      # not tomllib: it is missing on 3.10\n      - run: sed -n p Cargo.toml\n";
+    assert_eq!(
+        check(&format!("{commented}{release}")),
+        Vec::<String>::new()
+    );
+    let single = "jobs:\n  build:\n    steps:\n      - run: python3 -c 'import tomllib'\n";
+    assert_eq!(check(&format!("{single}{release}")), Vec::<String>::new());
 }

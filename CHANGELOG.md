@@ -167,6 +167,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **The arm64 Linux release build smokes its binary** (2026-11-02). The smoke step read the
+  workspace version with Python's `tomllib`, which the `ubuntu-22.04-arm` runner's Python 3.10
+  lacks, so the first release dry run with the arm64 target (run 41386917463 on `aac52a6`) failed
+  before the smoke ran; the other three targets passed. `ci.yml` had the same defect, fixed in
+  #82 (DDF-CI-ARM-001), but `release.yml` kept it. The step now reads the version as
+  `just release-tag` does (`sed`), and `cli/tests/release_workflow.rs` refuses a matrix job that
+  imports `tomllib` without `actions/setup-python`.
 - **`pip install ./sdk/python` installs the current client** (2026-11-02). The repository
   tracked setuptools output (`sdk/python/build/lib/deep_diff_forge.py` and
   `deep_diff_forge.egg-info/`). setuptools reuses an existing `build/lib`, so an install from a
