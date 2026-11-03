@@ -37,6 +37,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **A move header with no partner is refused, as Git refuses it** (expert circle 2026-11-03).
+  `copy from x`, `copy to y`, `rename from x` or `rename to y` alone, with no `---`/`+++` to name
+  the other side, was reviewed as a copy or rename. `git apply` refuses each ("git diff header
+  lacks filename information"). Where `---`/`+++` does name the other side, DDF now records it as
+  the header Git reads. Before, `rename to y` beside `--- a/x` rendered as a move from `y`.
+- **A mode that Git reads as unchanged is no mode change** (expert circle 2026-11-03). Git
+  canonicalises modes (`canon_mode`): only the owner's execute bit counts for a regular file. So
+  `100644 -> 100664`, and a lone `old mode` or `new mode`, change nothing. A section whose only
+  content is such a header is refused, as `git apply` refuses it ("patch with only garbage");
+  it was reviewed as a mode or type change.
 - **A Git section naming two different files is reviewed as the rename `git apply` makes**
   (DDF-HUNT-PATCH-6). `diff --git a/x b/y` with `--- a/x`/`+++ b/y` and no rename header was
   reviewed as `modified y`, but `git apply` deletes `x` and creates `y`. The review now says

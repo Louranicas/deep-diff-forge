@@ -84,10 +84,13 @@ pub enum PatchParseError {
     /// A quoted Git path was malformed or was not UTF-8, a rename or copy names a path
     /// `git apply` refuses (absolute, or with a `.`, `..` or `.git` component), or a file
     /// section names no path at all, as with a `diff --git i/x w/y` mode change that has no
-    /// `---`/`+++` (Git: "lacks filename information"); the line is the section's first.
+    /// `---`/`+++`, or a move header whose other side no header names (`copy from x` alone)
+    /// (Git: "lacks filename information"); the line is the section's first.
     InvalidPath { line_number: usize },
     /// A mode header (`old mode`, `new mode`, `new file mode`, `deleted file mode`) is not one
-    /// to six octal digits; `git apply` refuses it as an invalid mode.
+    /// to six octal digits; `git apply` refuses it as an invalid mode. Also a section whose only
+    /// content is a mode header that names no change once Git canonicalises it (`100644` to
+    /// `100664`, or a lone `old mode`), which `git apply` refuses as "patch with only garbage".
     InvalidMode { line_number: usize },
     /// A file header out of place: an extended header after the file's `---`, `+++` or first
     /// hunk, a `+++` that does not follow a `---` at once, or a `---` with no `+++` after it.

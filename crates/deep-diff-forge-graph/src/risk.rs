@@ -779,7 +779,12 @@ mod tests {
         };
         assert_eq!(mode("100644", "100755"), (4, vec![ExecutableBit]));
         assert_eq!(mode("100755", "100644"), (2, vec![]));
-        assert_eq!(mode("100755", "100775"), (2, vec![]));
+        // Git reads `100755 -> 100775` as no change (`canon_mode`) and refuses a section that
+        // holds nothing else, so the parser does too (expert circle 2026-11-03).
+        assert!(
+            deep_diff_forge_patch::parse(&header("f", "old mode 100755\nnew mode 100775\n"))
+                .is_err()
+        );
         assert_eq!(
             mode("120000", "100755"),
             (7, vec![SymlinkChange, ExecutableBit])

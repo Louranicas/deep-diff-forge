@@ -44,6 +44,20 @@ const fn object_type(mode: u32) -> u32 {
     mode & 0o170_000
 }
 
+/// Git's `canon_mode`, which `parse_mode_line` applies to every `old mode`/`new mode`: a regular
+/// file is `100755` when its owner may execute it (`ce_permissions`) and `100644` otherwise, a
+/// symlink `120000`, a directory `040000`, and anything else a submodule `160000`. So
+/// `100644 -> 100664` is no mode change to Git (expert circle 2026-11-03, C2).
+const fn canon_mode(mode: u32) -> u32 {
+    match object_type(mode) {
+        0o100_000 if mode & 0o100 != 0 => 0o100_755,
+        0o100_000 => 0o100_644,
+        0o120_000 => 0o120_000,
+        0o040_000 => 0o040_000,
+        _ => 0o160_000,
+    }
+}
+
 /// A path `git apply` refuses to write ("invalid path"): absolute, empty, or with a `.`, `..`
 /// or `.git` component. A rename or copy names one only to escape the tree or to reach
 /// `.git/hooks` (bug hunt 2026-10-28, H1-09).
@@ -640,6 +654,11 @@ impl Parser {
                     line_number: self.last_line,
                 });
             }
+            if !file.complete_move_headers() {
+                return Err(PatchParseError::InvalidPath {
+                    line_number: file.first_line,
+                });
+            }
             if !moved && !file.record_implied_rename() {
                 return Err(PatchParseError::InvalidPath {
                     line_number: self.last_line,
@@ -688,6 +707,13 @@ impl Parser {
             if file.resolve_path().is_empty() {
                 return Err(PatchParseError::InvalidPath {
                     line_number: file.first_line,
+                });
+            }
+            // A section whose only change is a mode Git reads as unchanged (`canon_mode`) is
+            // "patch with only garbage" to Git; it was reviewed as a mode change (C2).
+            if file.only_an_unchanged_mode() {
+                return Err(PatchParseError::InvalidMode {
+                    line_number: self.last_line,
                 });
             }
             self.files.push(file.into_review_file());
@@ -896,6 +922,88 @@ impl FileBuf {
         true
     }
 
+    /// `parse_git_diff_header` takes a move's old name from `rename from`/`copy from` or `---`,
+    /// and its new name from `rename to`/`copy to` or `+++`; with either unknown it refuses the
+    /// section ("git diff header lacks filename information"). `copy from x` alone was reviewed
+    /// as a copy, and `rename to y` beside `--- a/x` rendered as a move from `y` (expert circle
+    /// 2026-11-03, C1). A side named only by `---`/`+++` is recorded as the header Git reads it
+    /// as, so the status, `old_path` and the rendered patch agree with Git. `false` when a side
+    /// is unknown, is `/dev/null` (Git would write a file called `dev/null`), or is a path Git
+    /// refuses to write. A section with no move header is left alone.
+    fn complete_move_headers(&mut self) -> bool {
+        let says = |prefix: &str| self.metadata.iter().any(|m| m.starts_with(prefix));
+        let verb = if says("rename from ") || says("rename to ") {
+            "rename"
+        } else if says("copy from ") || says("copy to ") {
+            "copy"
+        } else {
+            return true;
+        };
+        let missing = [
+            (
+                format!("{verb} from "),
+                !says(&format!("{verb} from ")),
+                self.old_raw.clone(),
+            ),
+            (
+                format!("{verb} to "),
+                !says(&format!("{verb} to ")),
+                self.new_raw.clone(),
+            ),
+        ];
+        for (prefix, absent, raw) in missing {
+            if !absent {
+                continue;
+            }
+            let Some(name) = raw
+                .filter(|raw| raw != "/dev/null")
+                .map(|raw| p_name(&raw, self.p0))
+                .filter(|name| !git_refuses_path(name))
+            else {
+                return false;
+            };
+            self.metadata
+                .push(format!("{prefix}{}", super::paths::quote(&name)));
+            if verb == "rename" {
+                if prefix.ends_with("from ") {
+                    self.rename_from = Some(name);
+                } else {
+                    self.rename_to = Some(name);
+                }
+            }
+        }
+        true
+    }
+
+    /// The section's mode headers are its only content, and Git reads no mode change in them:
+    /// `metadata_changes` wants both modes, different once canonical, when there is no hunk,
+    /// binary body, new or deleted file, rename or copy.
+    fn only_an_unchanged_mode(&self) -> bool {
+        let mode = |prefix: &str| {
+            self.metadata
+                .iter()
+                .find_map(|m| m.strip_prefix(prefix))
+                .and_then(parse_mode)
+                .map(canon_mode)
+        };
+        let has_mode = mode("old mode ").is_some() || mode("new mode ").is_some();
+        let changed =
+            matches!((mode("old mode "), mode("new mode ")), (Some(old), Some(new)) if old != new);
+        let other = self.metadata.iter().any(|m| {
+            [
+                "new file mode ",
+                "deleted file mode ",
+                "rename ",
+                "copy ",
+                "Binary files ",
+                "GIT binary patch",
+            ]
+            .iter()
+            .any(|p| m.starts_with(p))
+        });
+        has_mode && !changed && self.hunks.is_empty() && !other
+    }
+
     fn resolve_status(&self) -> FileStatus {
         let has = |prefix: &str| self.metadata.iter().any(|m| m.starts_with(prefix));
         let old_devnull = self.old_raw.as_deref() == Some("/dev/null");
@@ -908,6 +1016,7 @@ impl FileBuf {
                 .iter()
                 .find_map(|m| m.strip_prefix(prefix))
                 .and_then(parse_mode)
+                .map(canon_mode)
         };
         let mode_change = has("old mode ") || has("new mode ");
         let same_type = matches!(
@@ -1765,7 +1874,7 @@ new mode 100755
                 "{old} -> {new}"
             );
         }
-        for (old, new) in [("100755", "100644"), ("100644", "100664")] {
+        for (old, new) in [("100755", "100644"), ("100664", "100744")] {
             let input = format!("diff --git a/l b/l\nold mode {old}\nnew mode {new}\n");
             assert_eq!(
                 one(&input).status,
@@ -1773,11 +1882,24 @@ new mode 100755
                 "{old} -> {new}"
             );
         }
-        // Half a mode pair cannot show the type was kept.
-        assert_eq!(
-            one("diff --git a/l b/l\nnew mode 100755\n").status,
-            FileStatus::TypeChanged
-        );
+        // Git canonicalises modes (`canon_mode`): only the owner's execute bit matters for a
+        // regular file, so `100644 -> 100664` changes nothing, and half a mode pair is no
+        // change either (`metadata_changes`). Git refuses such a section as "patch with only
+        // garbage"; it was reviewed as a mode or type change (expert circle 2026-11-03, C2).
+        for headers in [
+            "old mode 100644\nnew mode 100664\n",
+            "old mode 100755\nnew mode 100754\n",
+            "new mode 100755\n",
+            "old mode 100644\n",
+        ] {
+            assert_eq!(
+                parse(&format!("diff --git a/l b/l\n{headers}")),
+                Err(PatchParseError::InvalidMode {
+                    line_number: 1 + headers.lines().count()
+                }),
+                "{headers:?}"
+            );
+        }
         // A mode change beside content stays a modification.
         let input = "diff --git a/l b/l\nold mode 100644\nnew mode 100755\n--- a/l\n+++ b/l\n@@ -1 +1 @@\n-a\n+b\n";
         assert_eq!(one(input).status, FileStatus::Modified);
@@ -1818,11 +1940,20 @@ copy to y
         assert_eq!(file.path, "y");
         let edited = "diff --git a/x b/y\nsimilarity index 90%\ncopy from x\ncopy to y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n";
         assert_eq!(one(edited).status, FileStatus::Copied);
-        // Either copy header alone marks the copy.
+        // One copy header alone names one side only; Git refuses it ("git diff header lacks
+        // filename information"), and it was reviewed as a copy (expert circle 2026-11-03, C1).
         for half in ["copy from x", "copy to y"] {
             let input = format!("diff --git a/x b/y\n{half}\n");
-            assert_eq!(one(&input).status, FileStatus::Copied, "{half}");
+            assert_eq!(
+                parse(&input),
+                Err(PatchParseError::InvalidPath { line_number: 1 }),
+                "{half}"
+            );
         }
+        // `---` names the old side of a `copy to`, as Git reads it.
+        let file = one("diff --git a/x b/x\ncopy to y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n");
+        assert_eq!((file.path.as_str(), file.status), ("y", FileStatus::Copied));
+        assert!(file.patch_twin.metadata.contains(&"copy from x".to_owned()));
     }
 
     /// Bug hunt 2026-10-28, H1-09: Git refuses a rename or copy that writes outside the tree or
@@ -3128,11 +3259,30 @@ diff --git a/a b c.rs b/a b c.rs
     }
 
     #[test]
-    fn either_rename_header_alone_marks_a_rename() {
-        let file = one("diff --git a/x b/y\nrename to y\n");
+    fn a_rename_header_alone_needs_the_other_name_from_the_file_headers() {
+        // Git refuses a move whose other side no header names ("git diff header lacks filename
+        // information"); both were reviewed as a rename (expert circle 2026-11-03, C1).
+        for half in ["rename to y", "rename from x"] {
+            assert_eq!(
+                parse(&format!("diff --git a/x b/y\n{half}\n")),
+                Err(PatchParseError::InvalidPath { line_number: 1 }),
+                "{half}"
+            );
+        }
+        // `--- a/x` names the old side of `rename to y`: Git moves `x` to `y`. The old side is
+        // recorded, so the rendered patch moves `x` too (it rendered as a move from `y`).
+        let file = one("diff --git a/x b/x\nrename to y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n");
         assert_eq!(
             (file.path.as_str(), file.status),
             ("y", FileStatus::Renamed)
+        );
+        assert_eq!(crate::render::old_path(&file).as_deref(), Some("x"));
+        let rendered = crate::render_unified(std::slice::from_ref(&file));
+        assert_eq!(parse(&rendered).unwrap(), vec![file], "{rendered}");
+        // A `/dev/null` side is no name for a move: Git would write a file called `dev/null`.
+        assert_eq!(
+            parse("diff --git a/x b/x\nrename from x\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n"),
+            Err(PatchParseError::InvalidPath { line_number: 1 })
         );
     }
 
