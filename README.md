@@ -208,8 +208,8 @@ binary is run (`--version` and a review) before it ships.
 | --- | --- | --- | --- |
 | `x86_64-unknown-linux-gnu` | `ubuntu-24.04` | glibc 2.34 or newer | the whole suite (`deploy gate-feature`, required) |
 | `aarch64-unknown-linux-gnu` | `ubuntu-22.04-arm`, natively | glibc 2.34 or newer | the whole suite (`Linux arm64 tests`, not required; gates releases) |
-| `aarch64-apple-darwin` | `macos-latest` (arm64) | macOS 11 or newer | the whole suite (`macOS tests`, required); the launchd agent (`macOS launchd agent`, not required; skipped in releases) |
-| `x86_64-apple-darwin` | cross-built on `macos-latest`, run under Rosetta 2 | macOS 10.12 or newer | none (the release smoke only) |
+| `aarch64-apple-darwin` | `macos-26` (arm64) | macOS 11 or newer | the whole suite (`macOS tests`, required); the launchd agent (`macOS launchd agent`, not required; skipped in releases) |
+| `x86_64-apple-darwin` | cross-built on `macos-26`, run under Rosetta 2 | macOS 10.12 or newer | none (the release smoke only) |
 
 - **The glibc floor, glibc 2.34**, is enforced: `scripts/check_glibc_floor.sh` fails the release
   smoke when a Linux binary requires a newer `GLIBC_` symbol version. Measured 2026-10-31: the

@@ -6,6 +6,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The macOS runners are pinned to `macos-26`** (it was `macos-latest`, which named
+  `macos-26-arm64` on 2026-11-03). A test in `release_workflow.rs` fails if any workflow
+  uses a `-latest` runner label, so a GitHub repoint can no longer move a build or the
+  required `macOS tests` check to a new major image unannounced. The job names, and so the
+  required checks, are unchanged.
+
 ## [0.7.0] - 2026-11-03
 
 ### Security
