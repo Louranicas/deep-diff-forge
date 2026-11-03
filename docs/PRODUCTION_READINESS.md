@@ -704,6 +704,9 @@ Added after the 89/100 reconciliation; it does not rescore.
   `reason: unknown_key`: the signing key is not registered on the account. Registering it
   as a signing key on GitHub and GitLab is an account action for the owner. The
   `allowed_signers` check does not depend on it.
+- **[Measured, correction 2026-11-03]** The owner has since registered the key on GitHub as a
+  signing key. GitHub now reports the v0.6.0 tag object `d165dd9` as `verified: true`,
+  `reason: valid`, so the `unknown_key` line above is superseded. GitLab: not registered.
 
 ### DDF-HUNT-CLI-8 fixed (2026-11-03)
 
