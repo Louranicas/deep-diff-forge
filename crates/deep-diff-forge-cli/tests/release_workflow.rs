@@ -209,3 +209,50 @@ fn the_reader_refuses_tomllib_in_a_matrix_job_without_setup_python() {
     let single = "jobs:\n  build:\n    steps:\n      - run: python3 -c 'import tomllib'\n";
     assert_eq!(check(&format!("{single}{release}")), Vec::<String>::new());
 }
+
+/// Every `runs-on:` label and matrix `os:` value that floats: a `-latest` label moves to a new
+/// major image when GitHub repoints it, so the same commit builds and tests on a different
+/// system without any change in this repository.
+fn floating_runner_labels(workflow: &str) -> Vec<String> {
+    workflow
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter_map(|line| {
+            let at = line
+                .find("runs-on:")
+                .map(|i| i + "runs-on:".len())
+                .or_else(|| line.find("{ os:").map(|i| i + "{ os:".len()))?;
+            let label = line[at..]
+                .split([',', '}'])
+                .next()
+                .unwrap_or_default()
+                .trim();
+            label.ends_with("-latest").then(|| label.to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn no_workflow_runs_on_a_floating_runner_label() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../.github/workflows");
+    let mut read = 0;
+    for name in ["ci.yml", "release.yml", "campaign.yml", "codeql.yml"] {
+        let workflow = std::fs::read_to_string(format!("{dir}/{name}")).unwrap();
+        assert_eq!(
+            floating_runner_labels(&workflow),
+            Vec::<String>::new(),
+            "{name}"
+        );
+        read += 1;
+    }
+    assert_eq!(read, 4);
+}
+
+#[test]
+fn the_runner_reader_finds_a_floating_label() {
+    let workflow = "jobs:\n  macos:\n    runs-on: macos-latest\n  build:\n    strategy:\n      matrix:\n        include:\n          - { os: ubuntu-latest, target: x }\n          - { os: macos-26, target: y }\n  pinned:\n    runs-on: ubuntu-24.04\n    # runs-on: windows-latest is a comment\n";
+    assert_eq!(
+        floating_runner_labels(workflow),
+        vec!["macos-latest".to_owned(), "ubuntu-latest".to_owned()]
+    );
+}

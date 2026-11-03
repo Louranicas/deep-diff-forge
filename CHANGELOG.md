@@ -16,6 +16,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   signing (found on the first `release-tag 0.7.0`; no tag was made). The tests' command
   runner now removes both unless a test sets its own. Measured: the workspace suite passes
   under the exact release-tag environment, and the old runner failed it.
+### Changed
+
+- **The macOS runners are pinned to `macos-26`** (it was `macos-latest`, which named
+  `macos-26-arm64` on 2026-11-03). A test in `release_workflow.rs` fails if any workflow
+  uses a `-latest` runner label, so a GitHub repoint can no longer move a build or the
+  required `macOS tests` check to a new major image unannounced. The job names, and so the
+  required checks, are unchanged.
 
 ## [0.7.0] - 2026-11-03
 
