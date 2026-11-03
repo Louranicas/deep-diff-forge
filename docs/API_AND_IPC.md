@@ -104,8 +104,8 @@ Planned, not created: a Git workspace crate and a planner crate. The loom crate 
 
 ## CLI Command Surface (shipped)
 
-This is the usage block of `deep-diff-forge --help` at 0.6.0 (compared line by line with the
-binary on 2026-11-02). `bench`,
+This is the usage block of `deep-diff-forge --help` at 0.7.0 (compared line by line with the
+binary on 2026-11-03; unchanged since 0.6.0). `bench`,
 `eval`, `findings verify`, `review --findings` and `daemon metrics` arrived in 0.5.0;
 `<old> <new>` and `daemon metrics --format prometheus --out PATH` arrived in 0.6.0:
 
@@ -419,7 +419,7 @@ and a different value for the same input when that fixes a value that misreporte
 does. A fix of that kind is listed under `### Changed` in the CHANGELOG, with the inputs it
 affects. Removing or renaming a member, or changing a member's type, needs a new schema name.
 
-`old_path` (since the release after 0.6.0): in `review.v0` files and `diff.file` JSONL events,
+`old_path` (since 0.7.0): in `review.v0` files and `diff.file` JSONL events,
 the path a `renamed` or `copied` file takes its content from. It is absent for every other
 file. Its hazards count in the file's `hazards`. The rename headers in `metadata` may be ones
 DDF records for an implied move (DDF-HUNT-PATCH-6), not lines from the input.

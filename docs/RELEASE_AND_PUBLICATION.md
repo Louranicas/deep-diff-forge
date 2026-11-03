@@ -2,10 +2,10 @@
 
 This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
-## Status 2026-11-02 (0.6.0)
+## Status 2026-11-03 (0.7.0 prepared)
 
-- The workspace version on `main` is **0.6.0**, tagged `v0.6.0` on 2026-11-02
-  by owner decision. Pushing any later `v*` tag is the owner's decision too.
+- The workspace version on `main` is **0.7.0**, not yet tagged; `v0.6.0` (2026-11-02)
+  is the latest tag. Pushing `v0.7.0`, or any later `v*` tag, is the owner's decision.
 - Published GitHub releases: `v0.1.0` (2026-06-22), `v0.2.0` (2026-06-24) and
   `v0.3.0` (2026-10-29), `v0.4.0` (2026-10-30), `v0.5.0` (2026-10-31) and `v0.6.0` (2026-11-02). `0.2.1` was never tagged.
 - crates.io is on hold by owner decision until the codebase is
@@ -26,7 +26,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
 | Channel | Purpose | Today |
 | --- | --- | --- |
-| `main` | Current development branch. | 0.6.0, reached only through pull requests (branch ruleset). |
+| `main` | Current development branch. | 0.7.0, reached only through pull requests (branch ruleset). |
 | GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`. |
 | GitLab mirror | Secondary remote and redundancy. | Pushed to match GitHub. |
 | crates.io | Rust library and CLI distribution. | On hold (`DDF_CRATES_IO`). |
@@ -38,7 +38,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 Semantic versioning. The plan below is the original 2026-06 sequence, kept as
 written; the releases did not follow it (`v0.2.0` already held 12 crates,
 including the TUI, daemon and learning crates; the review and SDK crates came
-later; 0.6.0 is the current development line):
+later; 0.7.0 is the current development line):
 
 ```text
 0.1.0: model and CLI bootstrap
@@ -93,7 +93,7 @@ up-to-date branch, and allows no bypass. The tag is cut from that commit with
 the `justfile` recipe:
 
 ```bash
-just release-tag 0.6.0
+just release-tag 0.7.0
 ```
 
 `release-tag` refuses a version that differs from `[workspace.package].version`
