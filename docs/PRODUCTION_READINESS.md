@@ -755,4 +755,8 @@ history. **[Measured]**
   On 2026-11-02 `codeql` (12:30 UTC), `ci` (12:36) and `campaign` (13:49) ran from their crons,
   about eight hours after the scheduled times, as GitHub allows under load. `ci` and `codeql`
   passed. `campaign` failed on the crash above.
+- **GitLab signing key (correction, 2026-11-03).** The release signing key is now registered on
+  GitLab too, with usage type Signing, so the "GitLab: not registered" lines above are
+  superseded. GitLab's tag signature API reports only `signature_type: SSH` for v0.6.0, so a
+  "Verified" status there is unmeasured.
 
