@@ -730,3 +730,26 @@ history. **[Measured]**
   slots. A signal from the same user, which `systemctl stop` and `launchctl bootout` send,
   always stops the daemon cleanly.
 
+### DDF-HUNT-PATCH-6 fixed, a fuzz crash fixed, scheduled runs confirmed (2026-11-03)
+
+**[Measured]**
+- **DDF-HUNT-PATCH-6** (Known limitations above, now history). Git was asked directly: for
+  `diff --git a/x b/y` with `--- a/x`/`+++ b/y` and no rename header, `git apply` reports
+  `x => y`, deletes `x` and creates `y`. DDF now records the rename headers Git would write, so
+  the status is `renamed` and the old path is kept. Test:
+  `differing_names_without_a_rename_header_are_the_rename_git_applies` (`patch/tests/git_oracle.rs`)
+  applies the original and the rendered patch and checks the tree. It fails on the old parser.
+  Without `---`/`+++` (a mode change only), Git refuses the section ("lacks filename
+  information") and DDF keeps its earlier reading of the `diff --git` line, unchanged.
+- **DDF-FUZZ-PATCH-8**. The first scheduled fuzz campaign (run 41456383570, 2026-11-02, on
+  `571006b`, the v0.6.0 commit) found a `patch_parser` crash. A quoted `diff --git` half
+  squashed `//` while an unquoted one kept it, so parse and render drifted. Both now keep the
+  slashes, as `git_header_name` does. The input is in `fixtures/patch/regressions/` and the test
+  `a_doubled_slash_in_a_diff_git_name_survives_quoting` fails on the old parser. The defect is in
+  v0.6.0. Its impact: a name with `//` in the `diff --git` line of a patch that has no `---`/`+++`
+  could be reviewed under a path with one slash fewer than Git's.
+- **Scheduled runs do fire.** The earlier observation that they never ran was taken too early.
+  On 2026-11-02 `codeql` (12:30 UTC), `ci` (12:36) and `campaign` (13:49) ran from their crons,
+  about eight hours after the scheduled times, as GitHub allows under load. `ci` and `codeql`
+  passed. `campaign` failed on the crash above.
+

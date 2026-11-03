@@ -15,6 +15,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **A Git section naming two different files is reviewed as the rename `git apply` makes**
+  (DDF-HUNT-PATCH-6). `diff --git a/x b/y` with `--- a/x`/`+++ b/y` and no rename header was
+  reviewed as `modified y`, but `git apply` deletes `x` and creates `y`. The review now says
+  `renamed` and keeps `x` as the old path. Two-file review (`deep-diff-forge <old> <new>`, which
+  reads `git diff --no-index` output) therefore reports `renamed`. A Git oracle test applies the
+  original and the rendered patch and compares the trees.
+- **A doubled slash in a `diff --git` name no longer breaks render stability** (DDF-FUZZ-PATCH-8,
+  found by the scheduled fuzz campaign of 2026-11-02 on the v0.6.0 commit). A quoted half lost a
+  `/` that an unquoted half kept. The crash input is kept in `fixtures/patch/regressions/`.
 - **A FIFO given as an input file no longer hangs the CLI** (DDF-HUNT-CLI-8). `findings verify
   --findings FIFO` and `review --findings FIFO` waited for ever for a writer, and so did `eval`
   when the corpus's `MANIFEST.json` was a FIFO, because it is read before the corpus walk checks

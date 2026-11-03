@@ -640,35 +640,8 @@ impl Parser {
                     line_number: self.last_line,
                 });
             }
-            // `git apply` reads a Git section whose old and new names differ, with no rename or
-            // copy header, as a rename: `diff --git a/x b/y` with `--- a/x`/`+++ b/y` deletes `x`
-            // and creates `y` (it reports `x => y`). It was reviewed as `modified y`, hiding that
-            // `x` goes (DDF-HUNT-PATCH-6). The section records the rename headers Git would have
-            // written, so its status, old path and rendered patch all say what Git does.
-            // `git diff --no-index` writes this form for two files (`<old> <new>`). The names are
-            // the `---`/`+++` ones Git reads; with neither, Git names no file and refuses the
-            // section, and the `diff --git` fallback above stands.
-            if file.git && !moved {
-                let side = |raw: Option<&str>| {
-                    raw.filter(|p| *p != "/dev/null")
-                        .map(|p| p_name(p, file.p0))
-                };
-                let old = side(file.old_raw.as_deref());
-                let new = side(file.new_raw.as_deref());
-                // A new or deleted file has `/dev/null` on one side (anything else is refused
-                // above), so it never names two paths here.
-                if let (Some(old), Some(new)) = (old, new)
-                    && old != new
-                    && !old.is_empty()
-                    && !new.is_empty()
-                {
-                    file.metadata
-                        .push(format!("rename from {}", super::paths::quote(&old)));
-                    file.metadata
-                        .push(format!("rename to {}", super::paths::quote(&new)));
-                    file.rename_from = Some(old);
-                    file.rename_to = Some(new);
-                }
+            if !moved {
+                file.record_implied_rename();
             }
             // Contradictory rename/copy labels cannot be faithfully reconstructed.
             // Reject them rather than choosing one path and silently changing truth.
@@ -877,6 +850,38 @@ impl FileBuf {
                 fallback: None,
                 notes: Vec::new(),
             },
+        }
+    }
+
+    /// `git apply` reads a Git section whose old and new names differ, with no rename or copy
+    /// header, as a rename: `diff --git a/x b/y` with `--- a/x`/`+++ b/y` deletes `x` and creates
+    /// `y` (it reports `x => y`). It was reviewed as `modified y`, hiding that `x` goes
+    /// (DDF-HUNT-PATCH-6). The section records the rename headers Git would have written, so its
+    /// status, old path and rendered patch all say what Git does. `git diff --no-index` writes
+    /// this form for two files (`<old> <new>`). The names are the `---`/`+++` ones Git reads;
+    /// with neither, Git names no file and refuses the section, and the `diff --git` fallback
+    /// stands. A new or deleted file has `/dev/null` on one side (anything else is refused before
+    /// this), so it never names two paths here. Call only for a section with no rename or copy.
+    fn record_implied_rename(&mut self) {
+        if !self.git {
+            return;
+        }
+        let side = |raw: Option<&str>| {
+            raw.filter(|p| *p != "/dev/null")
+                .map(|p| p_name(p, self.p0))
+        };
+        if let (Some(old), Some(new)) =
+            (side(self.old_raw.as_deref()), side(self.new_raw.as_deref()))
+            && old != new
+            && !old.is_empty()
+            && !new.is_empty()
+        {
+            self.metadata
+                .push(format!("rename from {}", super::paths::quote(&old)));
+            self.metadata
+                .push(format!("rename to {}", super::paths::quote(&new)));
+            self.rename_from = Some(old);
+            self.rename_to = Some(new);
         }
     }
 
