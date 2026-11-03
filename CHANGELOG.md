@@ -88,6 +88,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   control slots beyond the eight data slots answer `daemon.health`, `daemon.status`,
   `daemon.metrics` and `daemon.shutdown`. Each holds one small request, read within 5 s. Before,
   eight idle clients kept `daemon stop` out and only a signal stopped the daemon.
+- **On macOS, a daemon at its connection limit is no longer reported as absent.** macOS refuses to
+  set a write timeout on a connection the daemon has already closed, and the CLI read that
+  `EINVAL` as "no daemon at". It now reports "no answer", with exit 6 (found by macOS CI on this
+  change).
 - **SIGTERM and SIGINT stop the daemon cleanly**: they now drain the answers in progress, remove
   the socket and exit 0, as `daemon stop` does. That covers `launchctl bootout`, `systemctl stop`,
   `kill` and Ctrl-C. Before, the signal killed the daemon and left its socket file behind.
