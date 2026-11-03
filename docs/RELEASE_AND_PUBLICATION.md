@@ -2,12 +2,12 @@
 
 This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
-## Status 2026-11-03 (0.7.0 prepared)
+## Status 2026-11-04 (0.7.0 released)
 
-- The workspace version on `main` is **0.7.0**, not yet tagged; `v0.6.0` (2026-11-02)
-  is the latest tag. Pushing `v0.7.0`, or any later `v*` tag, is the owner's decision.
+- **0.7.0 is released** as the signed tag `v0.7.0` (2026-11-03), the latest tag. Pushing
+  any later `v*` tag is the owner's decision.
 - Published GitHub releases: `v0.1.0` (2026-06-22), `v0.2.0` (2026-06-24) and
-  `v0.3.0` (2026-10-29), `v0.4.0` (2026-10-30), `v0.5.0` (2026-10-31) and `v0.6.0` (2026-11-02). `0.2.1` was never tagged.
+  `v0.3.0` (2026-10-29), `v0.4.0` (2026-10-30), `v0.5.0` (2026-10-31), `v0.6.0` (2026-11-02) and `v0.7.0` (2026-11-03). `0.2.1` was never tagged.
 - crates.io is on hold by owner decision until the codebase is
   production-hardened. `release.yml` publishes only when the repository
   variable `DDF_CRATES_IO` is `open`.
@@ -27,7 +27,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 | Channel | Purpose | Today |
 | --- | --- | --- |
 | `main` | Current development branch. | 0.7.0, reached only through pull requests (branch ruleset). |
-| GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`. |
+| GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`. |
 | GitLab mirror | Secondary remote and redundancy. | Pushed to match GitHub. |
 | crates.io | Rust library and CLI distribution. | On hold (`DDF_CRATES_IO`). |
 | cargo-binstall | Fast binary installation. | Not configured (no binstall metadata in any `Cargo.toml`). |
@@ -129,7 +129,7 @@ A dry run checks the newest `v*` tag the same way.
 To verify a release tag from a clone:
 
 ```bash
-git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v v0.6.0
+git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v v0.7.0
 ```
 
 Rotating the key means adding the new public key to `.github/allowed_signers`
