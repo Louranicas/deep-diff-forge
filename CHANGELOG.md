@@ -8,6 +8,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Security
 
+- **Release archives are reproducible** (expert circle 2026-11-03, C14). `scripts/package_release.py`
+  replaces `tar czf`: sorted entries, the commit time as every mtime, uid/gid 0, fixed modes, USTAR,
+  and a gzip header with no name or time. The same inputs give the same bytes; a control test
+  shows `tar czf` does not. The macOS runner image still floats (`macos-latest`).
 - **The release workflow refuses a tag that is not signed by an allowed key** (expert circle
   2026-11-03, C4). The supply-chain gate verifies the pushed tag against `main`'s
   `.github/allowed_signers` before any build, so a tag pushed without `just release-tag`, or

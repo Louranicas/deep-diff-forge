@@ -169,10 +169,12 @@ jobs:
         run: |
           set -euo pipefail
           dist="deep-diff-forge-${TAG}-${TARGET}"
-          mkdir -p "${dist}"
-          cp "target/${TARGET}/release/deep-diff-forge" "${dist}/"
-          cp README.md LICENSE-MIT LICENSE-APACHE "${dist}/"
-          tar czf "${dist}.tar.gz" "${dist}"
+          # Reproducible: sorted entries, the commit time as every mtime, uid/gid 0, fixed modes
+          # and a gzip header without name or time (scripts/package_release.py), not `tar czf`.
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          python3 -I scripts/package_release.py "${dist}" . \
+            "target/${TARGET}/release/deep-diff-forge" README.md LICENSE-MIT LICENSE-APACHE
           if command -v sha256sum >/dev/null 2>&1; then
             sha256sum "${dist}.tar.gz" > "${dist}.tar.gz.sha256"
           else

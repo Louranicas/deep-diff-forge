@@ -833,3 +833,12 @@ deductions for what remains open.
 4. One exit code for "not a regular file", and a transient flag on RPC error 8 (facet 6).
 5. Run the minimum OS floors, or narrow the README claim (facet 5).
 
+### C14 addressed (2026-11-03)
+
+**[Measured]** Release archives are packed by `scripts/package_release.py`, so two packs of the
+same inputs are byte-identical (`a_release_archive_is_the_same_bytes_from_the_same_inputs`). The
+control `plain_tar_czf_is_not_reproducible` shows that the old `tar czf` packs differed.
+**[Unmeasured]** The script has not yet run on the macOS runners; the next release dry run is
+its first. Open: the macOS image floats (`macos-latest`), and the binaries themselves have not
+been rebuilt independently and compared.
+

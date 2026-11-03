@@ -157,6 +157,31 @@ Each archive holds one directory with the `deep-diff-forge` binary,
 Integrity is a SHA-256 file per archive plus GitHub build-provenance attestations; there is no
 signed `checksums.txt` (corrected 2026-10-27, anchor E-02).
 
+### Reproducible archives
+
+Since 2026-11-03 (expert circle, C14), the archives are packed by `scripts/package_release.py`,
+not `tar czf`. It uses Python's stdlib, so the same code runs on the Linux and macOS runners. It
+sorts the entries under one directory and stamps every entry with `SOURCE_DATE_EPOCH`, which
+release.yml sets to the commit time. Every entry is owned by uid and gid 0 with no names. The
+binary gets mode 0755 and the documents 0644. The format is USTAR, and the gzip header carries
+no file name and mtime 0. Packing the same files again gives the same bytes; `repo_scripts.rs`
+tests that, and a control test shows that `tar czf` does not.
+
+To compare a release archive with a rebuild, compare the uncompressed tar streams. The gzip bytes
+also depend on the zlib build.
+
+```bash
+SOURCE_DATE_EPOCH="$(git log -1 --format=%ct vX.Y.Z)" python3 -I scripts/package_release.py \
+  deep-diff-forge-vX.Y.Z-TARGET out/ target/TARGET/release/deep-diff-forge README.md LICENSE-MIT LICENSE-APACHE
+gzip -dc out/deep-diff-forge-vX.Y.Z-TARGET.tar.gz | sha256sum
+gzip -dc deep-diff-forge-vX.Y.Z-TARGET.tar.gz | sha256sum   # the released archive
+```
+
+The archive is reproducible given the binary. The binary itself is reproducible only on the same
+toolchain and runner image. The Linux images are pinned (`ubuntu-24.04`, `ubuntu-22.04-arm`),
+but the macOS builds use `macos-latest`, because the repository pins no versioned macOS label.
+Pinning one is open.
+
 ## GitHub Actions
 
 ### `ci.yml`

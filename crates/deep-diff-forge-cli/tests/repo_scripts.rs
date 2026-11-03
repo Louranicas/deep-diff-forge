@@ -590,3 +590,119 @@ fn the_sbom_checksums_are_the_crate_archive_checksums_cargo_lock_records() {
     }
     assert!(checked > 50, "only {checked} registry packages found");
 }
+
+// --- scripts/package_release.py -----------------------------------------------------------
+
+/// Inputs for one pack: an executable and two documents, with their mtimes set to `stamp`.
+fn release_inputs(dir: &Path, stamp: &str) -> Vec<PathBuf> {
+    std::fs::create_dir_all(dir).unwrap();
+    let bin = dir.join("deep-diff-forge");
+    tool(&bin, "echo ddf\n");
+    std::fs::write(dir.join("README.md"), "read me\n").unwrap();
+    std::fs::write(dir.join("LICENSE-MIT"), "mit\n").unwrap();
+    let files = vec![bin, dir.join("README.md"), dir.join("LICENSE-MIT")];
+    for file in &files {
+        let out = run(Command::new("touch").args(["-t", stamp]).arg(file));
+        assert!(out.status.success(), "{out:?}");
+    }
+    files
+}
+
+fn package(out: &Path, files: &[PathBuf], epoch: &str) -> Vec<u8> {
+    std::fs::create_dir_all(out).unwrap();
+    let done = run(Command::new("python3")
+        .arg("-I")
+        .arg(format!("{ROOT}/scripts/package_release.py"))
+        .arg("ddf-v9.9.9-test")
+        .arg(out)
+        .args(files)
+        .env("SOURCE_DATE_EPOCH", epoch));
+    assert!(done.status.success(), "{done:?}");
+    std::fs::read(out.join("ddf-v9.9.9-test.tar.gz")).unwrap()
+}
+
+/// Expert circle 2026-11-03 (C14): packing the same files twice, from copies with different
+/// mtimes, gives the same bytes; every entry is sorted, owned by 0:0, stamped with
+/// SOURCE_DATE_EPOCH and has a fixed mode.
+#[test]
+fn a_release_archive_is_the_same_bytes_from_the_same_inputs() {
+    let s = scratch("package");
+    let first = package(
+        &s.0.join("out1"),
+        &release_inputs(&s.0.join("a"), "202001010000"),
+        "1700000000",
+    );
+    let second = package(
+        &s.0.join("out2"),
+        &release_inputs(&s.0.join("b"), "202511031200"),
+        "1700000000",
+    );
+    assert_eq!(first, second, "two packs of the same inputs differ");
+    assert_ne!(
+        first,
+        package(
+            &s.0.join("out3"),
+            &release_inputs(&s.0.join("c"), "202001010000"),
+            "1700000001"
+        ),
+        "the epoch is what stamps the archive"
+    );
+    let listing = run(Command::new("python3").arg("-I").arg("-c").arg(
+        "import sys,tarfile\nfor m in tarfile.open(sys.argv[1]).getmembers(): print(m.name, m.uid, m.gid, repr(m.uname), m.mtime, oct(m.mode))",
+    ).arg(s.0.join("out1/ddf-v9.9.9-test.tar.gz")));
+    assert!(listing.status.success(), "{listing:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&listing.stdout),
+        "ddf-v9.9.9-test 0 0 '' 1700000000 0o755\n\
+         ddf-v9.9.9-test/LICENSE-MIT 0 0 '' 1700000000 0o644\n\
+         ddf-v9.9.9-test/README.md 0 0 '' 1700000000 0o644\n\
+         ddf-v9.9.9-test/deep-diff-forge 0 0 '' 1700000000 0o755\n"
+    );
+}
+
+/// The control the test above guards against: `tar czf`, as release.yml packed before, records
+/// the inputs' mtimes, so the same files packed from two copies differ.
+#[test]
+fn plain_tar_czf_is_not_reproducible() {
+    let s = scratch("package-control");
+    let mut packs = Vec::new();
+    for (dir, stamp) in [("a", "202001010000"), ("b", "202511031200")] {
+        let root = s.0.join(dir);
+        release_inputs(&root.join("dist"), stamp);
+        let out = run(Command::new("tar")
+            .current_dir(&root)
+            .args(["czf", "x.tar.gz", "dist"]));
+        assert!(out.status.success(), "{out:?}");
+        packs.push(std::fs::read(root.join("x.tar.gz")).unwrap());
+    }
+    assert_ne!(packs[0], packs[1]);
+}
+
+#[test]
+fn release_yml_packs_through_the_reproducible_script() {
+    let workflow =
+        std::fs::read_to_string(format!("{ROOT}/.github/workflows/release.yml")).unwrap();
+    assert!(workflow.contains("scripts/package_release.py"));
+    assert!(workflow.contains("SOURCE_DATE_EPOCH=\"$(git log -1 --format=%ct)\""));
+    assert!(
+        !workflow
+            .lines()
+            .any(|l| !l.trim_start().starts_with('#') && l.contains("tar czf")),
+        "release.yml packs with tar czf again"
+    );
+}
+
+#[test]
+fn package_release_refuses_without_an_epoch() {
+    let s = scratch("package-epoch");
+    let files = release_inputs(&s.0.join("a"), "202001010000");
+    let out = run(Command::new("python3")
+        .arg("-I")
+        .arg(format!("{ROOT}/scripts/package_release.py"))
+        .arg("x")
+        .arg(&s.0)
+        .args(&files)
+        .env_remove("SOURCE_DATE_EPOCH"));
+    assert!(!out.status.success(), "{out:?}");
+    assert!(!s.0.join("x.tar.gz").exists());
+}
