@@ -480,6 +480,23 @@ fn settle_read_timeout(armed: std::io::Result<()>) -> std::io::Result<()> {
     }
 }
 
+/// The outcome of arming the client's write deadline. macOS refuses `SO_SNDTIMEO` with EINVAL
+/// once the peer has shut the connection, as a daemon at its connection limit does at once (it
+/// accepts and closes). That is a daemon that closed without answering, so it is reported as
+/// `UnexpectedEof` (exit 6, "no answer"), not as an unexplained error the CLI read as "no daemon
+/// at" (macOS CI, PR #92).
+fn settle_write_timeout(armed: std::io::Result<()>) -> std::io::Result<()> {
+    match armed {
+        Err(err) if err.raw_os_error() == Some(rustix::io::Errno::INVAL.raw_os_error()) => {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "daemon closed the connection before the request",
+            ))
+        }
+        other => other,
+    }
+}
+
 /// Read one bounded line from a socket under an absolute deadline.
 fn read_capped_line_deadline(
     reader: &mut BufReader<UnixStream>,
@@ -1086,7 +1103,7 @@ pub fn request(location: &SocketLocation, line: &str) -> std::io::Result<String>
         ));
     }
     let mut stream = location.connect()?;
-    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
+    settle_write_timeout(stream.set_write_timeout(Some(WRITE_TIMEOUT)))?;
     writeln!(stream, "{line}")?;
     stream.flush()?;
     let mut reader = BufReader::new(stream);
@@ -2431,6 +2448,23 @@ mod tests {
         );
         let refused = std::io::Error::new(std::io::ErrorKind::InvalidInput, "zero timeout");
         assert!(settle_read_timeout(Err(refused)).is_err());
+    }
+
+    /// macOS's EINVAL on arming the write deadline of a connection the daemon already closed is a
+    /// closed connection (`UnexpectedEof`, exit 6), and every other outcome passes through.
+    #[test]
+    fn a_refused_write_deadline_is_a_daemon_that_closed() {
+        let einval = std::io::Error::from_raw_os_error(rustix::io::Errno::INVAL.raw_os_error());
+        assert_eq!(
+            settle_write_timeout(Err(einval)).unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+        assert!(settle_write_timeout(Ok(())).is_ok());
+        let other = std::io::Error::from_raw_os_error(rustix::io::Errno::BADF.raw_os_error());
+        assert_eq!(
+            settle_write_timeout(Err(other)).unwrap_err().raw_os_error(),
+            Some(rustix::io::Errno::BADF.raw_os_error())
+        );
     }
 
     /// A peer that sends one line and closes cleanly has sent a complete line, however many
