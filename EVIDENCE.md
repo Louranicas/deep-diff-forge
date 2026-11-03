@@ -1192,4 +1192,8 @@ Measured with `gh` on 2026-11-02.
   `sbom.spdx.json`. `sha256sum -c` passed for all four archives. The x86_64 Linux archive holds
   the binary, `README.md` and both licences, and the binary prints `deep-diff-forge 0.6.0`.
   `gh attestation verify` passed for the four archives and the SBOM.
+- **Correction, 2026-11-03.** The owner registered the signing key on GitHub
+  (`SHA256:h4S5C3lX4poSYOx8ii8yezKBlp5pQf2jy168XgwWR8I`, key type Signing). The GitHub API
+  now reports the v0.6.0 tag as `verified: true`, `reason: valid`, superseding the
+  `unknown_key` reading above.
 
