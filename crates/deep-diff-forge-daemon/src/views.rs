@@ -801,7 +801,8 @@ mod tests {
         for max_bytes in [MIN_MAX_BYTES, 4096, DEFAULT_MAX_BYTES] {
             let mut seen = Vec::new();
             let mut cursor = None;
-            loop {
+            // Bounded, so a pager that never ends fails here rather than spinning.
+            for _ in 0..10_000 {
                 let answer = outline(&review, &page(max_bytes, cursor.clone())).unwrap();
                 assert!(answer.to_string().len() <= max_bytes, "budget {max_bytes}");
                 assert!(!answer.to_string().contains("LINE 1"), "no line text");
@@ -821,6 +822,7 @@ mod tests {
                     break;
                 }
             }
+            assert!(cursor.is_none(), "paging ended, budget {max_bytes}");
             let unique: std::collections::BTreeSet<String> = seen.iter().cloned().collect();
             assert_eq!(seen.len(), unique.len(), "no repeats, budget {max_bytes}");
             assert_eq!(unique, expected, "budget {max_bytes}");
@@ -1302,7 +1304,8 @@ mod tests {
         }
         let review = review(&text);
         let (mut cursor, mut listed, mut pages) = (None, 0, 0);
-        loop {
+        // Bounded, so a pager that never ends fails here rather than spinning.
+        for _ in 0..10_000 {
             let answer = outline(&review, &page(MIN_MAX_BYTES, cursor.clone())).unwrap();
             listed += answer["files"].as_array().unwrap().len();
             pages += 1;
@@ -1312,6 +1315,7 @@ mod tests {
             }
             assert!(cursor.as_deref().unwrap().ends_with(".0"), "{cursor:?}");
         }
+        assert!(cursor.is_none(), "paging ended");
         assert_eq!(listed, 40);
         assert!(pages > 1, "the budget forces paging");
     }
@@ -1328,8 +1332,9 @@ mod tests {
         }
         let review = review(&text);
         let mut cursor = None;
-        loop {
-            let answer = hunks(&review, &Selection::All, &page(8192, cursor)).unwrap();
+        // Bounded, so a pager that never ends fails here rather than spinning.
+        for _ in 0..10_000 {
+            let answer = hunks(&review, &Selection::All, &page(8192, cursor.clone())).unwrap();
             let emitted = deep_diff_forge_core::json_line_safe(&answer.to_string()).len();
             assert!(emitted <= 8192, "{emitted} > 8192");
             cursor = answer["next_cursor"].as_str().map(str::to_owned);
@@ -1337,5 +1342,6 @@ mod tests {
                 break;
             }
         }
+        assert!(cursor.is_none(), "paging ended");
     }
 }

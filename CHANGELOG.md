@@ -14,6 +14,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   refuses `SO_RCVTIMEO` on a socket whose peer has closed (`EINVAL`). It failed attempt 1 of the
   v0.7.0 release run. Both now arm it before the thread starts. A test race; the product already
   treats that `EINVAL` as settled.
+- **Three daemon paging tests are bounded** (DDF-TEST-PAGEBOUND-001). `outline_pages_cover_every_hunk_once`,
+  `outline_cursors_at_a_file_without_hunks_resume` and `pages_of_escaped_text_fit_their_budget_as_emitted`
+  paged until `next_cursor` was null, so a pager that never ends spun the test instead of failing it
+  (a mutation run left two such binaries spinning). Each now takes at most 10,000 pages and then
+  asserts paging ended. Control: with `next_cursor` falling back to the request cursor, the old
+  tests ran to the 120 s mutation timeout; the new ones fail in 40 s.
 
 ## [0.7.0] - 2026-11-03
 
