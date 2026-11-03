@@ -342,3 +342,49 @@ fn an_epoch_timestamp_creates_or_deletes_as_git_apply_reads_it() {
     assert_eq!(parse(&delete).unwrap()[0].status, FileStatus::Deleted);
     fs::remove_dir_all(root).unwrap();
 }
+
+/// DDF-HUNT-PATCH-6: a Git section whose old and new names differ, with no rename header, is a
+/// rename to `git apply` (it deletes `x` and creates `y`), not a change to `y`. The review says
+/// so, and the rendered patch leaves the tree Git's reading of the original leaves.
+#[test]
+fn differing_names_without_a_rename_header_are_the_rename_git_applies() {
+    let root = std::env::temp_dir().join(format!("ddf-git-oracle-moved-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    git(&root, &["init", "-q"]);
+    let hunk = "@@ -1 +1 @@\n-a\n+b\n";
+    for patch in [
+        format!("diff --git a/x b/y\n--- a/x\n+++ b/y\n{hunk}"),
+        format!("diff --git a/x b/x\n--- a/x\n+++ b/y\n{hunk}"),
+        format!("diff --git a/x b/y\nindex 7898192..6178079 100644\n--- a/x\n+++ b/y\n{hunk}"),
+    ] {
+        let files = parse(&patch).unwrap();
+        assert_eq!(files.len(), 1, "{patch:?}");
+        assert_eq!(
+            (files[0].path.as_str(), files[0].status),
+            ("y", deep_diff_forge_core::FileStatus::Renamed),
+            "{patch:?}"
+        );
+        let rendered = render_unified(&files);
+        assert_eq!(parse(&rendered).unwrap(), files, "{rendered:?}");
+        for (name, text) in [
+            ("original", patch.as_str()),
+            ("rendered", rendered.as_str()),
+        ] {
+            let _ = fs::remove_file(root.join("y"));
+            fs::write(root.join("x"), "a\n").unwrap();
+            fs::write(root.join("p.patch"), text).unwrap();
+            git(&root, &["apply", "p.patch"]);
+            assert!(
+                !root.join("x").exists(),
+                "{name}: git keeps x for {patch:?}"
+            );
+            assert_eq!(
+                fs::read_to_string(root.join("y")).unwrap(),
+                "b\n",
+                "{name}: {patch:?}"
+            );
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+}

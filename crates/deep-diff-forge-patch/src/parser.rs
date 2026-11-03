@@ -379,8 +379,12 @@ impl Parser {
                 .ok_or(PatchParseError::InvalidPath { line_number })?;
             let new = super::paths::decode_path(remaining.trim_start())
                 .ok_or(PatchParseError::InvalidPath { line_number })?;
-            file.git_old = Some(p_name(&old, self.p0));
-            file.git_new = Some(p_name(&new, self.p0));
+            // `git_header_name` keeps a quoted half's slashes as written, as it keeps an unquoted
+            // one's (`same_name_halves`). Squashing only the quoted form gave `x//y` from the
+            // unquoted header and `x/y` from its rendered, quoted twin, so parse and render
+            // drifted apart (fuzz campaign 2026-11-02, DDF-FUZZ-PATCH-8).
+            file.git_old = Some(header_half(&old, self.p0));
+            file.git_new = Some(header_half(&new, self.p0));
         } else if let Some(name) = same_name_halves(rest, self.p0) {
             // Through `decode_path`, as every other name is: a NUL is no Git path, and kept
             // here it rendered as a quoted `\000` that the parser then refused (fuzz, PR #83).
@@ -589,7 +593,7 @@ impl Parser {
     }
 
     fn flush_file(&mut self) -> Result<(), PatchParseError> {
-        if let Some(file) = self.file.take() {
+        if let Some(mut file) = self.file.take() {
             if file.awaiting_new_header {
                 return Err(PatchParseError::MisplacedHeader {
                     line_number: self.last_line,
@@ -635,6 +639,36 @@ impl Parser {
                 return Err(PatchParseError::UnsupportedFormat {
                     line_number: self.last_line,
                 });
+            }
+            // `git apply` reads a Git section whose old and new names differ, with no rename or
+            // copy header, as a rename: `diff --git a/x b/y` with `--- a/x`/`+++ b/y` deletes `x`
+            // and creates `y` (it reports `x => y`). It was reviewed as `modified y`, hiding that
+            // `x` goes (DDF-HUNT-PATCH-6). The section records the rename headers Git would have
+            // written, so its status, old path and rendered patch all say what Git does.
+            // `git diff --no-index` writes this form for two files (`<old> <new>`). The names are
+            // the `---`/`+++` ones Git reads; with neither, Git names no file and refuses the
+            // section, and the `diff --git` fallback above stands.
+            if file.git && !moved {
+                let side = |raw: Option<&str>| {
+                    raw.filter(|p| *p != "/dev/null")
+                        .map(|p| p_name(p, file.p0))
+                };
+                let old = side(file.old_raw.as_deref());
+                let new = side(file.new_raw.as_deref());
+                let created_or_deleted = says("new file mode ") || says("deleted file mode ");
+                if let (Some(old), Some(new)) = (old, new)
+                    && old != new
+                    && !created_or_deleted
+                    && !old.is_empty()
+                    && !new.is_empty()
+                {
+                    file.metadata
+                        .push(format!("rename from {}", super::paths::quote(&old)));
+                    file.metadata
+                        .push(format!("rename to {}", super::paths::quote(&new)));
+                    file.rename_from = Some(old);
+                    file.rename_to = Some(new);
+                }
             }
             // Contradictory rename/copy labels cannot be faithfully reconstructed.
             // Reject them rather than choosing one path and silently changing truth.
@@ -999,6 +1033,18 @@ fn p_name(path: &str, p0: bool) -> String {
         path.split_once('/').map_or(path, |(_, rest)| rest)
     };
     squash_slashes(stripped)
+}
+
+/// A `diff --git` half's name as `git_header_name` takes it: the path after its first component
+/// (all of it under `-p0`), its slashes as written. Squashing them is `find_name`'s, for the
+/// `---`/`+++` names ([`p_name`]).
+fn header_half(path: &str, p0: bool) -> String {
+    if p0 {
+        return path.to_owned();
+    }
+    path.split_once('/')
+        .map_or(path, |(_, rest)| rest)
+        .to_owned()
 }
 
 /// `find_name_common`'s strip: the path after its first component (all of it under `-p0`), or
@@ -2524,9 +2570,10 @@ diff --git a/x b/x
             ),
             // The prefix choice is a traditional diff's; a Git diff takes the `+++` name.
             (
+                // Two names in a Git section are a move to `git apply` (DDF-HUNT-PATCH-6).
                 format!("diff --git a/build.rs b/build.rs.new\n--- a/build.rs\n+++ b/build.rs.new\n{hunk}"),
                 "build.rs.new",
-                FileStatus::Modified,
+                FileStatus::Renamed,
             ),
             (
                 format!("--- a/build.rs 2026-01-01 12:00:00\n+++ b/build.rs 2026-01-01 12:00:00\n{hunk}"),

@@ -106,13 +106,16 @@ fn two_files_are_reviewed_in_each_output_mode_over_git_s_exact_bytes() {
     assert_eq!(review["schema"], "deep-diff-forge.review.v0");
     assert_eq!(review["input_sha256"], seal.as_str());
     assert_eq!(review["files"][0]["path"], &new[1..]);
+    // Two names are a move to `git apply`, which deletes `old` and creates `new` from these
+    // bytes (DDF-HUNT-PATCH-6), so the review calls it that and not a change to `new`.
+    assert_eq!(review["files"][0]["status"], "renamed");
     assert_eq!(review["summary"]["additions"], 1);
     assert_eq!(review["summary"]["deletions"], 1);
 
     let (code, stdout, _) = ddf(&[&old, &new]);
     assert_eq!(code, 0);
     assert!(
-        stdout.contains(&format!("modified  {}", &new[1..])),
+        stdout.contains(&format!("renamed  {}", &new[1..])),
         "{stdout}"
     );
     for (mode, schema) in [
