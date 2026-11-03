@@ -1070,7 +1070,9 @@ fn read_source_file_or_exit(path: &str) -> String {
                 "error: source is not a regular file: {}",
                 display_safe_bounded(path, 200)
             );
-            std::process::exit(exit::IO);
+            // A path that exists but is not a regular file stays one: invalid input, exit 4,
+            // as for `<old> <new>` and `eval` (expert circle 2026-11-03, C16).
+            std::process::exit(exit::INVALID_INPUT);
         }
     }
 }
@@ -1503,7 +1505,7 @@ fn read_findings_or_exit(path: &str) -> String {
                 "error: findings {} is not a regular file",
                 display_safe(path)
             );
-            std::process::exit(exit::IO);
+            std::process::exit(exit::INVALID_INPUT);
         }
     };
     if let Err(err) = read {

@@ -18,6 +18,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **"Not a regular file" exits 4 in every command** (expert circle C16). `structural`,
+  `semantic` and the other syntax commands, `analyze`, and `--findings` exited 3 for a FIFO,
+  directory, device or socket. `<old> <new>` and `eval` already exited 4. A path that cannot be
+  read at all (missing, no permission) still exits 3.
 - **The same input can now report `renamed` where it reported `modified`** (DDF-HUNT-PATCH-6).
   This affects a Git section whose `---`/`+++` names differ, with no rename header: two-file
   review (`deep-diff-forge <old> <new>`), and `--stdin-patch`, `diff.compute` or MCP input of that

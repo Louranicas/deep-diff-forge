@@ -36,7 +36,7 @@ Underneath sits one rule. The apply-able patch is truth, and nothing may rewrite
 </p>
 
 > **Status: 0.6.0 (2026-11-02).**
-> - **Ready** for its declared scope: a local, single-user review tool on Linux and macOS ([the exact targets](#supported-platforms)), covering the CLI, daemon, `rpc`, MCP and SDKs. The [verdict and its evidence](#project-status) are below.
+> - **Ready** for its declared scope: a local, single-user review tool on Linux and macOS ([the exact targets](#supported-platforms)), covering the CLI, daemon, `rpc`, MCP and SDKs. All four targets are built and smoke-tested on current CI runners. The oldest OS versions listed are declared from the binaries, not run. The [verdict and its evidence](#project-status) are below.
 > - **Releases:** the latest release is [v0.6.0](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.6.0), with Linux (x86_64 and arm64) and macOS binaries, an SPDX SBOM and build provenance.
 > - **crates.io:** publication is on hold by decision until the codebase is fully production-hardened.
 
@@ -535,7 +535,7 @@ another), `mode_changed` (only the mode changed, such as the executable bit), `b
 | 0 | Success. | `proceed` |
 | 2 | CLI usage / argument error. | `fix_invocation` |
 | 3 | I/O or encoding failure: reading input (stdin, a file, Git, the learning store), non-UTF-8 input, or writing output. | `check_environment` |
-| 4 | Invalid input: a patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, or a refused Git acquisition or file pair. | `change_input` |
+| 4 | Invalid input: a patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, a named path that is not a regular file, or a refused Git acquisition or file pair. | `change_input` |
 | 6 | Daemon / interactive-terminal failure. | `check_environment` |
 | 7 | Input contract refused. `--require-files`: the (well-formed) patch describes 0 files — stderr `refused: 0 files in input (--require-files)`. `--require-hunks`: the patch has 0 hunks or 0 added+removed lines (header-only, rename-only, context-only) — stderr `refused: 0 hunks in input (--require-hunks)`. Gates should pass both. | `change_input` |
 | 101 | Internal error (a panic). Report it as a bug. | `report_bug` |
