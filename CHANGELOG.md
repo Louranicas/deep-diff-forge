@@ -6,6 +6,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Security
+
+- **The release workflow refuses a tag that is not signed by an allowed key** (expert circle
+  2026-11-03, C4). The supply-chain gate verifies the pushed tag against `main`'s
+  `.github/allowed_signers` before any build, so a tag pushed without `just release-tag`, or
+  from a commit that lists its own key, publishes nothing. A dry run checks the newest `v*` tag.
+- **SBOM checksums identify the package source** (C6). Each registry package now carries the
+  SHA-256 of its `.crate` archive, as recorded in `Cargo.lock`, not a hash of its `Cargo.toml`.
+  Workspace members carry none.
+
 ### Changed
 
 - **The same input can now report `renamed` where it reported `modified`** (DDF-HUNT-PATCH-6).

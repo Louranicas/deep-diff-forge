@@ -495,3 +495,98 @@ fn the_release_recipe_tags_only_through_the_signing_script() {
         );
     }
 }
+
+// --- scripts/verify_release_tag.sh --------------------------------------------------------
+
+fn verify_tag(repo: &Path, tag: &str, signers: &Path) -> Output {
+    run(Command::new("bash")
+        .current_dir(repo)
+        .arg(format!("{ROOT}/scripts/verify_release_tag.sh"))
+        .arg(tag)
+        .arg(signers))
+}
+
+#[test]
+fn the_release_workflow_accepts_only_a_tag_signed_by_an_allowed_key() {
+    let s = scratch("verify-tag");
+    let repo = signing_repo(&s, true);
+    let signers = repo.join(".github/allowed_signers");
+    // Signed by the allowed key, through the same script `just release-tag` uses.
+    assert!(sign_tag(&s, &repo).status.success());
+    let out = verify_tag(&repo, "v1.2.3", &signers);
+    assert!(out.status.success(), "{out:?}");
+    // Annotated but unsigned, and lightweight: neither carries a signature.
+    git(&repo, &["tag", "-a", "v2.0.0", "-m", "v2.0.0"]);
+    git(&repo, &["tag", "v3.0.0"]);
+    for tag in ["v2.0.0", "v3.0.0"] {
+        let out = verify_tag(&repo, tag, &signers);
+        assert!(!out.status.success(), "{tag}: {out:?}");
+    }
+    // Signed, but by a key the signers file does not list.
+    let other = s.0.join("other-signers");
+    std::fs::write(
+        &other,
+        format!(
+            "ddf@example.invalid namespaces=\"git\" {}",
+            std::fs::read_to_string(s.0.join("other.pub")).unwrap()
+        ),
+    )
+    .unwrap();
+    assert!(!verify_tag(&repo, "v1.2.3", &other).status.success());
+    // No signers at all.
+    assert!(
+        !verify_tag(&repo, "v1.2.3", &s.0.join("missing"))
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn the_release_workflow_verifies_the_tag_against_main_s_signers_before_building() {
+    let workflow =
+        std::fs::read_to_string(format!("{ROOT}/.github/workflows/release.yml")).unwrap();
+    let verify = workflow
+        .find("scripts/verify_release_tag.sh")
+        .expect("release.yml verifies the tag signature");
+    assert!(
+        workflow[..verify].contains("git show FETCH_HEAD:.github/allowed_signers"),
+        "the signers come from main, not the tagged commit"
+    );
+    let gate = workflow.find("  supply-chain:").unwrap();
+    let build = workflow.find("\n  build:").unwrap();
+    assert!(
+        gate < verify && verify < build,
+        "the check is in the supply-chain gate"
+    );
+    assert!(
+        workflow[build..].contains("needs: [quality, supply-chain]"),
+        "build waits for the gate"
+    );
+}
+
+// --- scripts/security/generate_spdx_sbom.py -----------------------------------------------
+
+/// Expert circle 2026-11-03 (C6): each registry package in the committed SBOM carries the
+/// SHA-256 Cargo.lock records for its `.crate` archive, the checksum that identifies its source.
+#[test]
+fn the_sbom_checksums_are_the_crate_archive_checksums_cargo_lock_records() {
+    let lock = std::fs::read_to_string(format!("{ROOT}/Cargo.lock")).unwrap();
+    let sbom = std::fs::read_to_string(format!("{ROOT}/sbom.spdx.json")).unwrap();
+    let mut checked = 0;
+    for entry in lock.split("[[package]]").skip(1) {
+        let field = |key: &str| {
+            entry
+                .lines()
+                .find_map(|l| l.strip_prefix(&format!("{key} = \"")))
+                .map(|v| v.trim_end_matches('"').to_owned())
+        };
+        if let Some(sum) = field("checksum") {
+            assert!(
+                sbom.contains(&format!("\"checksumValue\": \"{sum}\"")),
+                "{entry}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 50, "only {checked} registry packages found");
+}

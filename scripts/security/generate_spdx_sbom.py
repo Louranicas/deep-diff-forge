@@ -67,8 +67,23 @@ def _external_refs(package: dict[str, Any]) -> list[dict[str, str]]:
     ]
 
 
+def _lock_checksums() -> dict[tuple[str, str, str], str]:
+    """The `checksum` Cargo.lock records for each registry package: the SHA-256 of its `.crate`
+    archive, which is what identifies the package's source. Hashing the package's cached
+    `Cargo.toml` (before 2026-11-03) identified only its manifest (expert circle, C6)."""
+    import tomllib
+
+    lock = tomllib.loads((REPO / "Cargo.lock").read_text(encoding="utf-8"))
+    return {
+        (entry["name"], entry["version"], entry.get("source", "")): entry["checksum"]
+        for entry in lock.get("package", [])
+        if "checksum" in entry
+    }
+
+
 def main() -> int:
     metadata = _run_metadata()
+    lock_checksums = _lock_checksums()
     packages = metadata["packages"]
     root_package_ids = set(metadata.get("workspace_members", []))
     package_by_id = {p["id"]: p for p in packages}
@@ -79,15 +94,12 @@ def main() -> int:
         spdx_id = _spdx_id(pkg["name"], pkg["version"])
         package_ids[pkg["id"]] = spdx_id
         source = pkg.get("source") or "NOASSERTION"
+        # Registry packages carry their `.crate` archive's SHA-256 from Cargo.lock; workspace
+        # members have no archive, so they carry none rather than a manifest hash.
         checksums: list[dict[str, str]] = []
-        manifest = pkg.get("manifest_path")
-        if manifest and pathlib.Path(manifest).is_file():
-            checksums.append(
-                {
-                    "algorithm": "SHA256",
-                    "checksumValue": hashlib.sha256(pathlib.Path(manifest).read_bytes()).hexdigest(),
-                }
-            )
+        crate_sha256 = lock_checksums.get((pkg["name"], pkg["version"], pkg.get("source") or ""))
+        if crate_sha256:
+            checksums.append({"algorithm": "SHA256", "checksumValue": crate_sha256})
         spdx_packages.append(
             {
                 "name": pkg["name"],

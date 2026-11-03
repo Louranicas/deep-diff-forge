@@ -120,6 +120,12 @@ GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.signingkey \
   GIT_CONFIG_VALUE_0=~/.ssh/id_ed25519_ddf_release_signing.pub just release-tag X.Y.Z
 ```
 
+The release workflow checks the same thing on the server side. Before anything is built, its
+supply-chain gate runs `scripts/verify_release_tag.sh` on the pushed tag, against the
+`.github/allowed_signers` from `main`. It never uses the tagged commit's copy, which a tag on
+another branch could supply. An unsigned, lightweight or foreign-signed tag fails the release.
+A dry run checks the newest `v*` tag the same way.
+
 To verify a release tag from a clone:
 
 ```bash
