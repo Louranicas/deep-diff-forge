@@ -6,7 +6,8 @@
 #   2. a daemon killed by a signal is restarted (KeepAlive, SuccessfulExit false);
 #   3. after `daemon stop` (exit 0) the socket is gone and launchd does not restart it;
 #   4. `launchctl bootout` unloads the job;
-#   5. a bootout of a running daemon (SIGTERM, no drain) leaves no process and no restart.
+#   5. a bootout of a running daemon (SIGTERM, handled as `daemon stop` since DDF-HUNT-DAEMON-7)
+#      leaves no process, no restart and no socket.
 # Every wait is bounded. macOS only: the `macOS launchd agent` job of ci.yml runs it. It needs
 # the domain of the logged-in user (`gui/<uid>`) and falls back to `user/<uid>`, which a
 # session without a GUI login has.
@@ -155,12 +156,8 @@ wait_for 45 "pid ${third} to exit after bootout" process_gone "$third"
 sleep 5
 ! answers || fail "a daemon answers after bootout"
 [ -z "$(pgrep -x deep-diff-forge || true)" ] || fail "a deep-diff-forge process runs after bootout: $(pgrep -x deep-diff-forge)"
-# SIGTERM is not handled, so the socket file stays behind; the next start replaces it.
-if [ -e "$sock" ]; then
-  state="a stale socket left at ${sock}"
-else
-  state="no socket left"
-fi
-echo "5. bootout of running pid ${third}: process gone, job unloaded, not restarted (${state})"
+# SIGTERM stops the daemon as `daemon stop` does, so it removes its socket (DDF-HUNT-DAEMON-7).
+no_socket || fail "${sock} was left behind after bootout (SIGTERM)"
+echo "5. bootout of running pid ${third}: process gone, job unloaded, not restarted, socket removed"
 domain=""
 echo "launchd smoke OK"

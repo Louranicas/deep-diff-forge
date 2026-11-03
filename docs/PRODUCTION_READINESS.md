@@ -715,3 +715,18 @@ a non-regular file is refused at once. The regression tests `a_fifo_as_the_findi
 (`cli/tests/findings.rs`) and `a_fifo_manifest_is_refused_not_waited_on` (`cli/tests/eval.rs`)
 fail on the old code, where they hit their 10-second deadline, and pass on the new.
 
+### DDF-HUNT-DAEMON-7 fixed (2026-11-03)
+
+Supersedes the DDF-HUNT-DAEMON-7 rows above (known limitations and gap 13); they stay as
+history. **[Measured]**
+- Two control slots beyond the eight data slots answer `daemon.health`, `daemon.status`,
+  `daemon.metrics` and `daemon.shutdown`. Each holds one request of at most 4 KiB, read within
+  5 s. Test: `serve::tests::a_daemon_at_its_connection_limit_still_answers_health_and_stops`.
+  It fails with the control slots set to 0.
+- SIGTERM and SIGINT stop the daemon as `daemon stop` does: no new connections, the socket
+  removed, a drain, exit 0. Test: `sigterm_and_sigint_stop_the_daemon_and_remove_its_socket`
+  (`cli/tests/daemon.rs`). It fails on the previous code, where the signal killed the process.
+- Residual: a same-user process that keeps reconnecting can still hold the data and control
+  slots. A signal from the same user, which `systemctl stop` and `launchctl bootout` send,
+  always stops the daemon cleanly.
+

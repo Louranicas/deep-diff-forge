@@ -11,7 +11,7 @@
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.deep-diff-forge.daemon.plist
   Stop with `deep-diff-forge daemon stop`: it lets the requests in progress finish and exits 0,
   and launchd restarts the daemon only after a failure. `launchctl bootout` sends SIGTERM, which
-  does not drain.
+  the daemon handles the same way (drain, socket removed, exit 0).
   Docs: docs/OPERATIONS_AND_DAEMON.md#running-as-a-service
 -->
 <plist version="1.0">

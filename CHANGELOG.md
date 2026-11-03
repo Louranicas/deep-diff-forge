@@ -23,6 +23,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   regular file (exit 3; exit 4 for the eval corpus). The syntax commands and analysis already did
   this, and now share the helper. Tests run each command against a FIFO under a 10-second
   deadline; on the old code they time out.
+- **The daemon can be stopped and checked at its connection limit** (DDF-HUNT-DAEMON-7). Two
+  control slots beyond the eight data slots answer `daemon.health`, `daemon.status`,
+  `daemon.metrics` and `daemon.shutdown`. Each holds one small request, read within 5 s. Before,
+  eight idle clients kept `daemon stop` out and only a signal stopped the daemon.
+- **SIGTERM and SIGINT stop the daemon cleanly**: they now drain the answers in progress, remove
+  the socket and exit 0, as `daemon stop` does. That covers `launchctl bootout`, `systemctl stop`,
+  `kill` and Ctrl-C. Before, the signal killed the daemon and left its socket file behind.
 
 ## [0.6.0] - 2026-11-02
 

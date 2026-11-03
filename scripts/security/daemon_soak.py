@@ -37,6 +37,10 @@ PI_REPORT_DIR = REPO / ".pi" / "reports"
 MAX_REQUEST_BYTES = 80 * 1024 * 1024
 MAX_CONNECTIONS = 8
 HEALTH = b'{"jsonrpc":"2.0","id":7,"method":"daemon.health"}'
+# Beyond the data slots, two control slots answer only daemon.health/status/metrics/shutdown.
+CONTROL_CONNECTIONS = 2
+RESOURCE_EXHAUSTED = 8
+WORK = b'{"jsonrpc":"2.0","id":8,"method":"diff.plan","params":{"patch":""}}'
 BIN = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", str(REPO / "target"))) / "debug" / "deep-diff-forge"
 
 
@@ -126,7 +130,9 @@ def oversize_probe(socket_path: pathlib.Path) -> dict[str, Any]:
 
 
 def flood_probe(socket_path: pathlib.Path) -> dict[str, Any]:
-    """Past the connection limit a connection is closed unanswered; slots free when holders leave."""
+    """With every data slot held, a control slot still answers health and refuses work as busy
+    (DDF-HUNT-DAEMON-7); with the control slots held too, a connection is closed unanswered; the
+    slots free when the holders leave."""
     holders = []
     try:
         for _ in range(MAX_CONNECTIONS):
@@ -134,21 +140,42 @@ def flood_probe(socket_path: pathlib.Path) -> dict[str, Any]:
             sock.settimeout(5)
             sock.connect(str(socket_path))
             holders.append(sock)
-        # Each holder proves its worker is running, so all slots are taken.
+        # Each holder proves its worker is running, so all data slots are taken.
         for sock in holders:
             sock.sendall(HEALTH + b"\n")
             if b'"ok"' not in read_line(sock):
                 raise RuntimeError("a connection under the limit was not served")
+        control = answer_or_closed(socket_path, HEALTH + b"\n")
+        if b'"ok"' not in control:
+            raise RuntimeError(f"health was not answered on a control slot at the limit: {control[:200]!r}")
+        work = answer_or_closed(socket_path, WORK + b"\n")
+        refused = json.loads(work).get("error", {}) if work else {}
+        if refused.get("code") != RESOURCE_EXHAUSTED or "connection limit" not in refused.get("message", ""):
+            raise RuntimeError(f"work on a control slot was not refused as busy: {work[:200]!r}")
+        # Silent connections take both control slots; the next is closed unanswered.
+        for _ in range(CONTROL_CONNECTIONS):
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            sock.connect(str(socket_path))
+            holders.append(sock)
         extra = answer_or_closed(socket_path, HEALTH + b"\n")
         if extra:
-            raise RuntimeError(f"connection {MAX_CONNECTIONS + 1} was served past the limit: {extra[:200]!r}")
+            raise RuntimeError(
+                f"connection {MAX_CONNECTIONS + CONTROL_CONNECTIONS + 1} was served past every slot: {extra[:200]!r}"
+            )
     finally:
         for sock in holders:
             sock.close()
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         if b'"ok"' in answer_or_closed(socket_path, HEALTH + b"\n"):
-            return {"kind": "flood", "held": MAX_CONNECTIONS, "extra": "closed unanswered", "recovered": True}
+            return {
+                "kind": "flood",
+                "held": MAX_CONNECTIONS,
+                "control": "health answered, work refused busy",
+                "extra": "closed unanswered",
+                "recovered": True,
+            }
         time.sleep(0.05)
     raise RuntimeError("the daemon did not serve again after the flood ended")
 
