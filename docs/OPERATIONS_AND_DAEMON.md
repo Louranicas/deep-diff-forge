@@ -355,7 +355,8 @@ Implemented (2026-10-30):
     `sessions_evicted` and `peak_retained_bytes`.
   - **Recording cost.** Every counter is an `AtomicU64` written with relaxed adds, so recording
     takes no lock on the parallel request path. Counters live as long as the process; history is
-    the weekly campaign's receipts.
+    the weekly campaign's receipts: the soak records `daemon metrics` at its start and at its end
+    in the receipt's `metrics` (since 2026-11-03; before that the receipts held no counters).
 - **`deploy doctor`** reads `daemon.metrics` from a live daemon and warns (exit 0) on contained
   panics, busy refusals or session-table resets, with their counts. A daemon without
   `daemon.metrics` (protocol 1) is reported without them.

@@ -935,6 +935,37 @@ fn drain_report(before: usize, drained: bool, left: usize) -> Option<(&'static s
     }
 }
 
+/// SIGTERM (`kill`, `launchctl bootout`, `systemctl kill`) and SIGINT (Ctrl-C) stop the daemon
+/// as `daemon.shutdown` does: the loop ends, the socket is removed and the answers in progress
+/// drain. Before, either signal killed the process and left the socket file behind
+/// (DDF-HUNT-DAEMON-7). Returns the handle that ends the watcher and its thread.
+fn watch_signals(
+    engine: &Arc<Engine>,
+    socket_path: &Path,
+) -> std::io::Result<(signal_hook::iterator::Handle, std::thread::JoinHandle<()>)> {
+    let mut signals = signal_hook::iterator::Signals::new([
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGINT,
+    ])?;
+    let handle = signals.handle();
+    let engine = Arc::clone(engine);
+    let wakeup = socket_path.to_path_buf();
+    let watch = std::thread::Builder::new()
+        .name("ddf-daemon-signals".to_string())
+        .spawn(move || {
+            if let Some(signal) = signals.forever().next() {
+                engine.stop();
+                engine.log(
+                    "shutdown_signal",
+                    &format!("signal {signal} received; stopping"),
+                );
+                // Unblock the accept loop, as a `daemon.shutdown` connection does.
+                let _ = UnixStream::connect(wakeup);
+            }
+        })?;
+    Ok((handle, watch))
+}
+
 /// The accept loop of [`run_server_with`] over a listener already bound at `location`.
 fn serve_bound(
     location: &SocketLocation,
@@ -950,32 +981,14 @@ fn serve_bound(
     let engine = Arc::new(engine);
     let active_connections = Arc::new(AtomicUsize::new(0));
     let control_connections = Arc::new(AtomicUsize::new(0));
-    // SIGTERM (`kill`, `launchctl bootout`, `systemctl kill`) and SIGINT (Ctrl-C) stop the daemon
-    // as `daemon.shutdown` does: the loop ends, the socket is removed and the answers in progress
-    // drain. Before, either signal killed the process and left the socket file behind
-    // (DDF-HUNT-DAEMON-7).
-    let mut signals = signal_hook::iterator::Signals::new([
-        signal_hook::consts::SIGTERM,
-        signal_hook::consts::SIGINT,
-    ])?;
-    let signal_handle = signals.handle();
-    let signal_watch = {
-        let engine = Arc::clone(&engine);
-        let wakeup = socket_path.clone();
-        std::thread::Builder::new()
-            .name("ddf-daemon-signals".to_string())
-            .spawn(move || {
-                if let Some(signal) = signals.forever().next() {
-                    engine.stop();
-                    engine.log(
-                        "shutdown_signal",
-                        &format!("signal {signal} received; stopping"),
-                    );
-                    // Unblock the accept loop, as a `daemon.shutdown` connection does.
-                    let _ = UnixStream::connect(wakeup);
-                }
-            })?
-    };
+    // From here the socket is this server's: a setup failure removes it before returning, as
+    // the end of the loop does, so no error leaves a stale socket behind (expert circle C8).
+    let (signal_handle, signal_watch) = watch_signals(&engine, &socket_path)
+        .inspect_err(|_| cleanup_owned_socket(&socket_path, socket_identity))?;
+    // A persistent accept error ends the loop like a shutdown, so the socket is still removed and
+    // the answers in progress still drain; the error is returned afterwards. Before, it returned
+    // at once, leaving the socket and cutting the answers off (expert circle C8).
+    let mut failure = None;
     loop {
         // Break immediately if a previous connection already triggered shutdown.
         if !engine.is_running() {
@@ -1041,8 +1054,17 @@ fn serve_bound(
                     );
                 }
             }
-            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(err) => return Err(err),
+            // A client that gave up while queued (ECONNABORTED) or a signal: accept the next.
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted
+                ) => {}
+            Err(err) => {
+                engine.log("accept_failed", &format!("stopping: accept failed: {err}"));
+                failure = Some(err);
+                break;
+            }
         }
     }
     // The signal watcher has nothing left to stop.
@@ -1062,7 +1084,7 @@ fn serve_bound(
     }
     // The start lock is released only now, after the cleanup and the drain.
     drop(start_lock);
-    Ok(())
+    failure.map_or(Ok(()), Err)
 }
 
 /// Client: connect to the daemon, send one request line, return the response.
@@ -2679,10 +2701,11 @@ mod tests {
         let engine = Engine::new();
         let next_fd = std::fs::File::open("/dev/null").unwrap().as_raw_fd();
         let limit = getrlimit(Resource::Nofile);
+        // Two spare descriptors: the signal watcher's socket pair. Then accept() has none.
         setrlimit(
             Resource::Nofile,
             Rlimit {
-                current: Some(u64::try_from(next_fd).unwrap()),
+                current: Some(u64::try_from(next_fd).unwrap() + 2),
                 maximum: limit.maximum,
             },
         )
@@ -2690,6 +2713,15 @@ mod tests {
         let err = serve_bound(&location, bound, engine)
             .expect_err("a persistent accept error must stop the server");
         assert_eq!(err.raw_os_error(), Some(24), "EMFILE: {err}");
+        // The error still removes the socket (expert circle C8): before, it was left behind.
+        assert!(
+            !location.path().exists(),
+            "a fatal accept error left the socket behind"
+        );
+        // The parent's proof that this half ran (an empty filter would also exit 0). Written
+        // after the limit is restored, as a file needs a descriptor.
+        setrlimit(Resource::Nofile, limit).unwrap();
+        std::fs::write(location.path().with_extension("ran"), b"").unwrap();
     }
 
     #[test]
@@ -2731,12 +2763,12 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(10));
         };
-        // run_server returns before cleanup on error, so the bound socket file
-        // proves the child really ran it (not an empty test filter).
-        let bound = sock.exists();
+        // The child's marker proves it really ran (not an empty test filter); it asserts the
+        // socket was removed itself.
+        let ran = sock.with_extension("ran").exists();
         let _ = std::fs::remove_dir_all(sock.parent().unwrap());
         let status = status.expect("run_server kept looping on a persistent accept error");
         assert!(status.success(), "child test failed: {status}");
-        assert!(bound, "child never bound the socket");
+        assert!(ran, "the child half never ran");
     }
 }

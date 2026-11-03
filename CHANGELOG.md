@@ -47,6 +47,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `100644 -> 100664`, and a lone `old mode` or `new mode`, change nothing. A section whose only
   content is such a header is refused, as `git apply` refuses it ("patch with only garbage");
   it was reviewed as a mode or type change.
+- **A fatal accept error no longer strands the daemon's socket** (expert circle C8, 2026-11-03).
+  A persistent accept failure, such as EMFILE when the process runs out of descriptors, returned
+  at once. That skipped the socket cleanup and cut off the answers in progress. It now ends the
+  loop as a shutdown does: the socket is removed, the answers drain, and then the error is
+  returned. A setup failure after binding (the signal watcher) removes the socket too. A client
+  that gave up while queued (ECONNABORTED) no longer stops the daemon.
+- **`eval` holds the corpus to byte limits** (expert circle C5). The manifest and each case
+  file are limited to 8 MiB, and the case files together to 64 MiB. Each limit is checked
+  before a file is read whole, and going over it is exit 4. Before, `read_to_end` had no limit.
+- **The soak receipt records the daemon's counters** (expert circle C10). `daemon metrics` is
+  read at the start and at the end of the weekly soak and kept in the receipt's `metrics`, so the
+  history that OPERATIONS_AND_DAEMON points to exists. The soak fails when the final read fails.
 - **A Git section naming two different files is reviewed as the rename `git apply` makes**
   (DDF-HUNT-PATCH-6). `diff --git a/x b/y` with `--- a/x`/`+++ b/y` and no rename header was
   reviewed as `modified y`, but `git apply` deletes `x` and creates `y`. The review now says
