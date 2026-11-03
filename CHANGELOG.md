@@ -45,6 +45,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **A client whose request the daemon refuses early still gets the refusal.** Under the new read
+  budget the daemon answers an over-budget line and closes before the rest is sent, which broke the
+  client's write. `request` reported the broken pipe instead of the answer waiting for it. It now
+  reads the answer first (found by the release dry run on Linux arm64).
 - **The daemon caps the request bytes it reads across connections** (expert circle C3). Each data
   connection reserves its line's bytes, as they arrive, against one 160 MiB budget
   (`MAX_READ_BYTES`), and holds them until its answer is written. Before, each of the eight

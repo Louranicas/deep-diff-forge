@@ -1164,13 +1164,21 @@ pub fn request(location: &SocketLocation, line: &str) -> std::io::Result<String>
     }
     let mut stream = location.connect()?;
     settle_write_timeout(stream.set_write_timeout(Some(WRITE_TIMEOUT)))?;
-    writeln!(stream, "{line}")?;
-    stream.flush()?;
+    // A daemon that refuses a line early (its read budget is full) answers and closes before the
+    // rest arrives, so the write breaks with the answer already waiting: read it, and report the
+    // broken pipe only when there is none.
+    let sent = writeln!(stream, "{line}").and_then(|()| stream.flush());
+    if let Err(err) = &sent
+        && err.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        return Err(sent.unwrap_err());
+    }
     let mut reader = BufReader::new(stream);
     let mut response = Vec::new();
     let read =
         read_capped_line_deadline(&mut reader, &mut response, MAX_RESPONSE_BYTES, READ_TIMEOUT)?;
     if read == 0 {
+        sent?;
         return Err(std::io::Error::new(
             std::io::ErrorKind::UnexpectedEof,
             "daemon closed without a response",
@@ -1819,7 +1827,9 @@ mod tests {
         second
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
-        writeln!(second, "{}", padded_health(2, 2000)).unwrap();
+        // The daemon may refuse and close before the whole line is sent (Linux arm64 CI saw
+        // EPIPE here); the refusal is read either way.
+        let _ = writeln!(second, "{}", padded_health(2, 2000));
         let mut refused = String::new();
         BufReader::new(&second).read_line(&mut refused).unwrap();
         assert!(
@@ -1841,6 +1851,14 @@ mod tests {
         let client = SocketLocation::at(sock.clone());
         let health = request(&client, &padded_health(3, 3500)).expect("health after release");
         assert!(health.contains("\"status\":\"ok\""), "{health}");
+        // A line far larger than the socket buffer is refused while the client is still writing
+        // it, so its write breaks; `request` still returns the daemon's answer, not the pipe.
+        let refused = request(&client, &padded_health(5, 1 << 20))
+            .expect("the daemon's refusal, not a broken pipe");
+        assert!(
+            refused.contains(&format!("\"code\":{RESOURCE_EXHAUSTED}")),
+            "{refused}"
+        );
         request(&client, r#"{"id":4,"method":"daemon.shutdown"}"#).expect("stop");
         assert!(joined(server).is_ok());
     }
