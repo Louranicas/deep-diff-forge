@@ -1197,3 +1197,20 @@ Measured with `gh` on 2026-11-02.
   now reports the v0.6.0 tag as `verified: true`, `reason: valid`, superseding the
   `unknown_key` reading above.
 
+## Corrections from the expert-circle review (2026-11-03)
+
+- **The v0.6.0 tag-signing record above is incomplete.** `just release-tag 0.6.0` ran at
+  `571006b`, whose recipe still used `git tag -a` (`justfile` at that commit).
+  `scripts/sign_release_tag.sh` did not exist yet; PR #90 added it afterwards. The tag was
+  signed because the command ran with `tag.gpgSign=true`, `gpg.format=ssh` and
+  `user.signingkey` set through `GIT_CONFIG_*` environment variables, so Git signed the
+  annotated tag. `git tag -v` verified it afterwards, by hand. The signature facts recorded
+  above are unchanged.
+- **The status header at the top of this file still reads "Current at 0.5.0".** It is a dated
+  header, so it is not rewritten. The newest evidence is the v0.6.0 release section and the
+  sections after it.
+- **"Build provenance for the binary" (L8 and later wording) means the release archives.**
+  `actions/attest-build-provenance` attests the four `.tar.gz` archives, their `.sha256` files
+  and `sbom.spdx.json` (`release.yml`), not the extracted binary. A binary is covered through the
+  archive that holds it.
+

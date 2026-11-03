@@ -44,7 +44,7 @@ pub use git_raw::{
 };
 pub use guards::{InputGuards, has_reviewable_hunks};
 pub use parser::{ParseOptions, parse, parse_decoded, parse_with};
-pub use render::render_unified;
+pub use render::{old_path, render_unified};
 pub use sealed::{ReviewError, SealedReview};
 
 #[cfg(feature = "json")]

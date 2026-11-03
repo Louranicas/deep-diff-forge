@@ -1935,8 +1935,12 @@ fn print_patch_summary(files: &[deep_diff_forge_core::ReviewFile]) {
             0 => String::new(),
             n => format!("  [{n} non-UTF-8 line(s) shown lossily]"),
         };
+        // A move names the file it removes or copies from (DDF-HUNT-PATCH-6).
+        let from = deep_diff_forge_patch::old_path(file)
+            .map(|old| format!(" (from {})", display_safe(&old)))
+            .unwrap_or_default();
         emitln!(
-            "{status:>14}  {}  (+{adds} -{dels}, {hunks} hunks){lossy}",
+            "{status:>14}  {}{from}  (+{adds} -{dels}, {hunks} hunks){lossy}",
             display_safe(&file.path)
         );
     }

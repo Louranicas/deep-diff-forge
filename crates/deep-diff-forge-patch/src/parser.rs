@@ -640,8 +640,10 @@ impl Parser {
                     line_number: self.last_line,
                 });
             }
-            if !moved {
-                file.record_implied_rename();
+            if !moved && !file.record_implied_rename() {
+                return Err(PatchParseError::InvalidPath {
+                    line_number: self.last_line,
+                });
             }
             // Contradictory rename/copy labels cannot be faithfully reconstructed.
             // Reject them rather than choosing one path and silently changing truth.
@@ -862,9 +864,14 @@ impl FileBuf {
     /// with neither, Git names no file and refuses the section, and the `diff --git` fallback
     /// stands. A new or deleted file has `/dev/null` on one side (anything else is refused before
     /// this), so it never names two paths here. Call only for a section with no rename or copy.
-    fn record_implied_rename(&mut self) {
+    /// `false` when either name is one Git refuses to write (`..`, `.git`, absolute): Git
+    /// refuses such a move ("invalid path"), and so must the review, as it refuses an explicit
+    /// `rename to ../x`; recorded as written, its own rendering was refused (expert circle
+    /// 2026-11-03).
+    #[must_use]
+    fn record_implied_rename(&mut self) -> bool {
         if !self.git {
-            return;
+            return true;
         }
         let side = |raw: Option<&str>| {
             raw.filter(|p| *p != "/dev/null")
@@ -876,6 +883,9 @@ impl FileBuf {
             && !old.is_empty()
             && !new.is_empty()
         {
+            if git_refuses_path(&old) || git_refuses_path(&new) {
+                return false;
+            }
             self.metadata
                 .push(format!("rename from {}", super::paths::quote(&old)));
             self.metadata
@@ -883,6 +893,7 @@ impl FileBuf {
             self.rename_from = Some(old);
             self.rename_to = Some(new);
         }
+        true
     }
 
     fn resolve_status(&self) -> FileStatus {

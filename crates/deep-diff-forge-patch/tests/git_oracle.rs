@@ -388,3 +388,24 @@ fn differing_names_without_a_rename_header_are_the_rename_git_applies() {
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+/// Expert circle 2026-11-03: an implied move to or from a path Git refuses to write is refused,
+/// as Git refuses it, instead of being recorded as rename headers the parser then refuses.
+#[test]
+fn an_implied_move_to_a_path_git_refuses_is_refused() {
+    let root = std::env::temp_dir().join(format!("ddf-git-oracle-unsafe-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    git(&root, &["init", "-q"]);
+    let hunk = "@@ -1 +1 @@\n-a\n+b\n";
+    for (old, new) in [
+        ("Cargo.toml", "../evil"),
+        ("x", ".git/hooks/p"),
+        ("../up", "x"),
+    ] {
+        let patch = format!("diff --git a/{old} b/{new}\n--- a/{old}\n+++ b/{new}\n{hunk}");
+        assert!(!git_accepts(&root, &patch), "git applies {patch:?}");
+        assert!(parse(&patch).is_err(), "ddf accepts {patch:?}");
+    }
+    fs::remove_dir_all(root).unwrap();
+}

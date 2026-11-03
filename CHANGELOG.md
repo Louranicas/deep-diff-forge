@@ -6,6 +6,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The same input can now report `renamed` where it reported `modified`** (DDF-HUNT-PATCH-6).
+  This affects a Git section whose `---`/`+++` names differ, with no rename header: two-file
+  review (`deep-diff-forge <old> <new>`), and `--stdin-patch`, `diff.compute` or MCP input of that
+  shape. A consumer filtering on `status == "modified"` for such input now sees `renamed`. The
+  status names did not change, so the schemas stay `v0`. The `v0` compatibility rule is now
+  written down in `docs/API_AND_IPC.md` (Protocol Versioning).
+- **New `old_path` member** in `review.v0` files and `diff.file` JSONL events, for a `renamed` or
+  `copied` file, plus `(from <old>)` in the text summary. The hazards of the old path count in
+  `hazards`, so renaming `.github/workflows/x` away is flagged.
+
 ### Security
 
 - Release tags are signed. `just release-tag` now signs the tag with SSH through

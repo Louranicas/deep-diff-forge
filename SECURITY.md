@@ -198,9 +198,12 @@ flowchart LR
 - Each line read has a 30-second absolute deadline (`READ_TIMEOUT`), applied as
   the remaining time before every read, so slow byte-drip traffic cannot renew
   it. Writes have a 30-second timeout (`WRITE_TIMEOUT`).
-- At most eight connections are served at once (`MAX_CONNECTIONS`). A further
-  connection is accepted and closed at once, with no response; the CLI reports
-  that as no answer (exit 6), not as no daemon. Workers share one
+- At most eight connections are served at once (`MAX_CONNECTIONS`). Beyond them, two
+  control slots (`CONTROL_CONNECTIONS`) take one request each, of at most 4 KiB read within
+  5 s, and answer only `daemon.health`, `daemon.status`, `daemon.metrics` and
+  `daemon.shutdown` (anything else is refused `RESOURCE_EXHAUSTED`). A connection beyond those
+  is accepted and closed at once, with no response; the CLI reports that as no answer (exit 6),
+  not as no daemon. SIGTERM and SIGINT stop the daemon as `daemon stop` does. Workers share one
   engine and their requests run in parallel. Only the session table is locked, and
   only for bookkeeping; parsing, ranking and Git run outside it. The request bytes
   in flight are capped at 128 MiB (`MAX_IN_FLIGHT_BYTES`, `admission.rs`), first

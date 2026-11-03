@@ -61,7 +61,7 @@ deep-diff-forge --git-range main..HEAD --repo ../other --json
 deep-diff-forge --git-working-tree --acquisition-json
 
 # two regular files through git diff --no-index, sealed; `--` first if a path is a command name.
-# The file is `renamed` old -> new, as `git apply` reads those bytes (DDF-HUNT-PATCH-6, after 0.6.0).
+# The file is `renamed`, with `old_path` naming the old file, as `git apply` reads those bytes (DDF-HUNT-PATCH-6, after 0.6.0).
 deep-diff-forge old.rs new.rs --json
 deep-diff-forge -- doctor notes.txt --rank
 
