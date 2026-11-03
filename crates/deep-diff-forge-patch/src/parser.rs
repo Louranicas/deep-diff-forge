@@ -1847,6 +1847,32 @@ Binary files a/logo.png and b/logo.png differ
         assert_eq!(file.planner.strategy, DiffStrategy::Binary);
     }
 
+    /// Git's `canon_mode`, value for value: the owner's execute bit alone picks 755 or 644 for
+    /// a regular file, and every other type collapses to its bare type, a submodule otherwise.
+    #[test]
+    fn modes_canonicalise_as_git_canonicalises_them() {
+        for (mode, canon) in [
+            (0o100_644, 0o100_644),
+            (0o100_664, 0o100_644),
+            (0o100_645, 0o100_644),
+            (0o100_744, 0o100_755),
+            (0o100_100, 0o100_755),
+            (0o100_755, 0o100_755),
+            (0o120_000, 0o120_000),
+            (0o120_777, 0o120_000),
+            (0o040_000, 0o040_000),
+            (0o160_000, 0o160_000),
+            (0o000_644, 0o160_000),
+        ] {
+            assert_eq!(canon_mode(mode), canon, "{mode:o}");
+        }
+        // A symlink or a directory that becomes a submodule is a type change, not "no change".
+        for old in ["120000", "040000"] {
+            let input = format!("diff --git a/l b/l\nold mode {old}\nnew mode 160000\n");
+            assert_eq!(one(&input).status, FileStatus::TypeChanged, "{old}");
+        }
+    }
+
     #[test]
     fn pure_mode_change_is_mode_changed() {
         let input = "\
