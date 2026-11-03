@@ -655,10 +655,10 @@ impl Parser {
                 };
                 let old = side(file.old_raw.as_deref());
                 let new = side(file.new_raw.as_deref());
-                let created_or_deleted = says("new file mode ") || says("deleted file mode ");
+                // A new or deleted file has `/dev/null` on one side (anything else is refused
+                // above), so it never names two paths here.
                 if let (Some(old), Some(new)) = (old, new)
                     && old != new
-                    && !created_or_deleted
                     && !old.is_empty()
                     && !new.is_empty()
                 {
