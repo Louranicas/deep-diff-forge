@@ -1903,13 +1903,15 @@ mod tests {
     #[test]
     fn a_control_connection_answers_one_small_request() {
         let (client, server) = UnixStream::pair().expect("socketpair");
+        // Armed before the server can answer and close: macOS refuses SO_RCVTIMEO with EINVAL
+        // once the peer has closed (v0.7.0 release run, macOS).
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let connection = thread::spawn(move || handle_control_connection(server, &engine()));
         let mut writer = client.try_clone().unwrap();
         writeln!(writer, "{}", "x".repeat(CONTROL_REQUEST_BYTES + 1)).unwrap();
         writer.flush().unwrap();
-        client
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
         let mut response = String::new();
         BufReader::new(client).read_line(&mut response).unwrap();
         assert!(
@@ -1925,14 +1927,16 @@ mod tests {
     #[test]
     fn a_connection_answers_and_ends_within_a_deadline() {
         let (client, server) = UnixStream::pair().expect("socketpair");
+        // Armed before the server can answer and close: macOS refuses SO_RCVTIMEO with EINVAL
+        // once the peer has closed (v0.7.0 release run, macOS).
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let connection = thread::spawn(move || handle_connection(server, &engine()));
         let mut writer = client.try_clone().unwrap();
         writeln!(writer, r#"{{"id":1,"method":"daemon.health"}}"#).unwrap();
         writer.flush().unwrap();
         writer.shutdown(std::net::Shutdown::Write).unwrap();
-        client
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
         let mut response = String::new();
         let read = BufReader::new(client).read_line(&mut response);
         assert!(read.is_ok_and(|n| n > 0), "no answer within 5 s");
