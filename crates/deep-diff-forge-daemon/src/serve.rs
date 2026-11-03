@@ -966,13 +966,14 @@ fn watch_signals(
     Ok((handle, watch))
 }
 
-/// An accept error the loop retries: a signal (EINTR) or a client that gave up while queued
-/// (ECONNABORTED). Any other ends the loop, cleanly (expert circle C8).
-fn accept_error_is_transient(kind: std::io::ErrorKind) -> bool {
-    matches!(
-        kind,
+/// The accept error that ends the loop, or `None` for one it retries: a signal (EINTR) or a
+/// client that gave up while queued (ECONNABORTED). Any other ends it, cleanly (expert circle C8).
+fn fatal_accept_error(err: std::io::Error) -> Option<std::io::Error> {
+    (!matches!(
+        err.kind(),
         std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted
-    )
+    ))
+    .then_some(err)
 }
 
 /// The accept loop of [`run_server_with`] over a listener already bound at `location`.
@@ -1063,11 +1064,12 @@ fn serve_bound(
                     );
                 }
             }
-            Err(err) if accept_error_is_transient(err.kind()) => {}
             Err(err) => {
-                engine.log("accept_failed", &format!("stopping: accept failed: {err}"));
-                failure = Some(err);
-                break;
+                if let Some(err) = fatal_accept_error(err) {
+                    engine.log("accept_failed", &format!("stopping: accept failed: {err}"));
+                    failure = Some(err);
+                    break;
+                }
             }
         }
     }
@@ -2681,14 +2683,16 @@ mod tests {
     #[test]
     fn only_a_signal_or_an_aborted_client_is_retried_by_accept() {
         use std::io::ErrorKind;
-        assert!(accept_error_is_transient(ErrorKind::Interrupted));
-        assert!(accept_error_is_transient(ErrorKind::ConnectionAborted));
+        for retried in [ErrorKind::Interrupted, ErrorKind::ConnectionAborted] {
+            assert!(fatal_accept_error(retried.into()).is_none(), "{retried:?}");
+        }
         for fatal in [
             ErrorKind::Other,
             ErrorKind::PermissionDenied,
             ErrorKind::InvalidInput,
         ] {
-            assert!(!accept_error_is_transient(fatal), "{fatal:?}");
+            let kept = fatal_accept_error(fatal.into()).expect("a fatal error ends the loop");
+            assert_eq!(kept.kind(), fatal);
         }
     }
 
