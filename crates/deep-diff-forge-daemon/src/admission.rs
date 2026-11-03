@@ -651,8 +651,13 @@ mod tests {
                 scope.spawn(|| {
                     for _ in 0..500 {
                         let mut line = budget.reservation();
-                        while line.grow(64) {}
-                        assert!(line.held() <= 1000);
+                        // Bounded, so a budget that never refuses fails here rather than spinning.
+                        for _ in 0..32 {
+                            if !line.grow(64) {
+                                break;
+                            }
+                        }
+                        assert!(line.held() <= 1000, "held {}", line.held());
                     }
                 });
             }
