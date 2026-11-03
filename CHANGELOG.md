@@ -6,6 +6,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`just release-tag` no longer fails its own gate under a signing configuration.** The
+  repository-script tests kept out the global and system Git files but inherited
+  configuration passed in the environment (`GIT_CONFIG_COUNT`, and `GIT_CONFIG_PARAMETERS`
+  from `git -c`). With `tag.gpgSign=true` there, as `release-tag` is run, a lightweight test
+  tag became an annotated one that asked for an editor, and the release gate failed before
+  signing (found on the first `release-tag 0.7.0`; no tag was made). The tests' command
+  runner now removes both unless a test sets its own. Measured: the workspace suite passes
+  under the exact release-tag environment, and the old runner failed it.
+
 ## [0.7.0] - 2026-11-03
 
 ### Security

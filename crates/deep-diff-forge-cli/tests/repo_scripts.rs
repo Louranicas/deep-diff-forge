@@ -52,7 +52,19 @@ fn path_with(bin: &Path) -> String {
 }
 
 fn run(cmd: &mut Command) -> Output {
-    let out = cmd.envs(ISOLATE).output().unwrap();
+    // `ISOLATE` keeps out the global and system files, but configuration also arrives in the
+    // environment: `git -c` exports `GIT_CONFIG_PARAMETERS`, and `just release-tag` is run
+    // with the signing keys in `GIT_CONFIG_COUNT`. Inherited, `tag.gpgSign=true` turned the
+    // lightweight tag below into an annotated one that asked for an editor. A command that
+    // sets its own `GIT_CONFIG_COUNT` (`sign_tag`) keeps it.
+    if !cmd.get_envs().any(|(key, _)| key == "GIT_CONFIG_COUNT") {
+        cmd.env_remove("GIT_CONFIG_COUNT");
+    }
+    let out = cmd
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .envs(ISOLATE)
+        .output()
+        .unwrap();
     assert!(
         !String::from_utf8_lossy(&out.stderr).contains("command not found"),
         "{cmd:?}: {}",
