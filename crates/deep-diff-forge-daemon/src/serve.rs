@@ -966,6 +966,15 @@ fn watch_signals(
     Ok((handle, watch))
 }
 
+/// An accept error the loop retries: a signal (EINTR) or a client that gave up while queued
+/// (ECONNABORTED). Any other ends the loop, cleanly (expert circle C8).
+fn accept_error_is_transient(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted
+    )
+}
+
 /// The accept loop of [`run_server_with`] over a listener already bound at `location`.
 fn serve_bound(
     location: &SocketLocation,
@@ -1054,12 +1063,7 @@ fn serve_bound(
                     );
                 }
             }
-            // A client that gave up while queued (ECONNABORTED) or a signal: accept the next.
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted
-                ) => {}
+            Err(err) if accept_error_is_transient(err.kind()) => {}
             Err(err) => {
                 engine.log("accept_failed", &format!("stopping: accept failed: {err}"));
                 failure = Some(err);
@@ -2672,6 +2676,20 @@ mod tests {
         let err = bind_explicit(&file.join("sub").join("d.sock")).expect_err("ENOTDIR");
         assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
         assert_eq!(std::fs::read(&file).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn only_a_signal_or_an_aborted_client_is_retried_by_accept() {
+        use std::io::ErrorKind;
+        assert!(accept_error_is_transient(ErrorKind::Interrupted));
+        assert!(accept_error_is_transient(ErrorKind::ConnectionAborted));
+        for fatal in [
+            ErrorKind::Other,
+            ErrorKind::PermissionDenied,
+            ErrorKind::InvalidInput,
+        ] {
+            assert!(!accept_error_is_transient(fatal), "{fatal:?}");
+        }
     }
 
     const ACCEPT_ERROR_CHILD_ENV: &str = "DDF_TEST_ACCEPT_ERROR_SOCKET";

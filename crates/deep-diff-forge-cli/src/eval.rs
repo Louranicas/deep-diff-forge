@@ -558,6 +558,13 @@ pub fn run(dir: &Path) -> Result<Value, EvalError> {
 
 #[cfg(test)]
 mod tests {
+    /// The limits the CHANGELOG and the refusal messages name.
+    #[test]
+    fn the_corpus_limits_are_8_mib_a_file_and_64_mib_in_all() {
+        assert_eq!(FILE_BYTES, 8 << 20);
+        assert_eq!(CORPUS_BYTES, 64 << 20);
+    }
+
     /// Expert circle C5: a case file is read only up to what the corpus may still hold, so the
     /// case files together cannot pass [`CORPUS_BYTES`]; the budget falls by each file read.
     #[test]
