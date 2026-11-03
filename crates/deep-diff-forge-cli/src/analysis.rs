@@ -80,7 +80,9 @@ pub(crate) fn run(args: &[String]) -> Result<String, Error> {
 fn open_regular(path: &Path, what: &str) -> Result<fs::File, Error> {
     crate::regular::open_regular(path).map_err(|refusal| match refusal {
         crate::regular::Refusal::Io(error) => Error::Io(error.to_string()),
-        crate::regular::Refusal::NotRegular => Error::Io(format!("{what} is not a regular file")),
+        crate::regular::Refusal::NotRegular => {
+            Error::Invalid(format!("{what} is not a regular file"))
+        }
     })
 }
 

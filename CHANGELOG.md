@@ -6,8 +6,26 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Security
+
+- **Release archives are reproducible** (expert circle 2026-11-03, C14). `scripts/package_release.py`
+  replaces `tar czf`: sorted entries, the commit time as every mtime, uid/gid 0, fixed modes, USTAR,
+  and a gzip header with no name or time. The same inputs give the same bytes; a control test
+  shows `tar czf` does not. The macOS runner image still floats (`macos-latest`).
+- **The release workflow refuses a tag that is not signed by an allowed key** (expert circle
+  2026-11-03, C4). The supply-chain gate verifies the pushed tag against `main`'s
+  `.github/allowed_signers` before any build, so a tag pushed without `just release-tag`, or
+  from a commit that lists its own key, publishes nothing. A dry run checks the newest `v*` tag.
+- **SBOM checksums identify the package source** (C6). Each registry package now carries the
+  SHA-256 of its `.crate` archive, as recorded in `Cargo.lock`, not a hash of its `Cargo.toml`.
+  Workspace members carry none.
+
 ### Changed
 
+- **"Not a regular file" exits 4 in every command** (expert circle C16). `structural`,
+  `semantic` and the other syntax commands, `analyze`, and `--findings` exited 3 for a FIFO,
+  directory, device or socket. `<old> <new>` and `eval` already exited 4. A path that cannot be
+  read at all (missing, no permission) still exits 3.
 - **The same input can now report `renamed` where it reported `modified`** (DDF-HUNT-PATCH-6).
   This affects a Git section whose `---`/`+++` names differ, with no rename header: two-file
   review (`deep-diff-forge <old> <new>`), and `--stdin-patch`, `diff.compute` or MCP input of that
@@ -27,6 +45,44 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **A client whose request the daemon refuses early still gets the refusal.** Under the new read
+  budget the daemon answers an over-budget line and closes before the rest is sent, which broke the
+  client's write. `request` reported the broken pipe instead of the answer waiting for it. It now
+  reads the answer first (found by the release dry run on Linux arm64).
+- **The daemon caps the request bytes it reads across connections** (expert circle C3). Each data
+  connection reserves its line's bytes, as they arrive, against one 160 MiB budget
+  (`MAX_READ_BYTES`), and holds them until its answer is written. Before, each of the eight
+  connections could buffer an 80 MiB line, and its parsed copy, outside the in-flight budget:
+  about 1.25 GiB at worst. A line over the budget is answered `RESOURCE_EXHAUSTED` and its
+  connection closed. Control connections are not counted.
+- **Daemon work stops at its client's read deadline** (C9). A socket request runs under its
+  client's 30 s deadline. It is checked before the work starts and after each heavy stage (the
+  parse, a Git acquisition, a session snapshot); past it, the request ends `RESOURCE_EXHAUSTED`
+  and releases its worker and admission weight. Before, the work went on for an answer nobody
+  would read. The stdio `rpc` and MCP servers have no such deadline.
+
+- **A move header with no partner is refused, as Git refuses it** (expert circle 2026-11-03).
+  `copy from x`, `copy to y`, `rename from x` or `rename to y` alone, with no `---`/`+++` to name
+  the other side, was reviewed as a copy or rename. `git apply` refuses each ("git diff header
+  lacks filename information"). Where `---`/`+++` does name the other side, DDF now records it as
+  the header Git reads. Before, `rename to y` beside `--- a/x` rendered as a move from `y`.
+- **A mode that Git reads as unchanged is no mode change** (expert circle 2026-11-03). Git
+  canonicalises modes (`canon_mode`): only the owner's execute bit counts for a regular file. So
+  `100644 -> 100664`, and a lone `old mode` or `new mode`, change nothing. A section whose only
+  content is such a header is refused, as `git apply` refuses it ("patch with only garbage");
+  it was reviewed as a mode or type change.
+- **A fatal accept error no longer strands the daemon's socket** (expert circle C8, 2026-11-03).
+  A persistent accept failure, such as EMFILE when the process runs out of descriptors, returned
+  at once. That skipped the socket cleanup and cut off the answers in progress. It now ends the
+  loop as a shutdown does: the socket is removed, the answers drain, and then the error is
+  returned. A setup failure after binding (the signal watcher) removes the socket too. A client
+  that gave up while queued (ECONNABORTED) no longer stops the daemon.
+- **`eval` holds the corpus to byte limits** (expert circle C5). The manifest and each case
+  file are limited to 8 MiB, and the case files together to 64 MiB. Each limit is checked
+  before a file is read whole, and going over it is exit 4. Before, `read_to_end` had no limit.
+- **The soak receipt records the daemon's counters** (expert circle C10). `daemon metrics` is
+  read at the start and at the end of the weekly soak and kept in the receipt's `metrics`, so the
+  history that OPERATIONS_AND_DAEMON points to exists. The soak fails when the final read fails.
 - **A Git section naming two different files is reviewed as the rename `git apply` makes**
   (DDF-HUNT-PATCH-6). `diff --git a/x b/y` with `--- a/x`/`+++ b/y` and no rename header was
   reviewed as `modified y`, but `git apply` deletes `x` and creates `y`. The review now says

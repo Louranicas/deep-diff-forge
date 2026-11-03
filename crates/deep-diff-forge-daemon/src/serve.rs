@@ -504,7 +504,7 @@ fn read_capped_line_deadline(
     cap: usize,
     timeout: Duration,
 ) -> std::io::Result<usize> {
-    read_capped_line_deadline_noting(reader, buf, cap, timeout, &mut || {})
+    read_capped_line_deadline_noting(reader, buf, cap, timeout, &mut || {}, &mut |_| true)
 }
 
 /// [`read_capped_line_deadline`], calling `first_byte` once, when the line's first bytes arrive
@@ -519,6 +519,7 @@ fn read_capped_line_deadline_noting(
     cap: usize,
     timeout: Duration,
     first_byte: &mut dyn FnMut(),
+    reserve: &mut dyn FnMut(usize) -> bool,
 ) -> std::io::Result<usize> {
     let deadline = Instant::now() + timeout;
     let maximum = cap.saturating_add(1);
@@ -556,6 +557,14 @@ fn read_capped_line_deadline_noting(
         let allowed = available.len().min(maximum.saturating_sub(buf.len()));
         let newline = available[..allowed].iter().position(|byte| *byte == b'\n');
         let consumed = newline.map_or(allowed, |position| position + 1);
+        // Each chunk is reserved before it is held, so the lines being read across connections
+        // stay within the daemon's read budget (C3). The rest of the line is not read.
+        if !reserve(consumed) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::QuotaExceeded,
+                "the daemon's read budget is full",
+            ));
+        }
         buf.extend_from_slice(&available[..consumed]);
         reader.consume(consumed);
 
@@ -608,13 +617,31 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
         // for one still being sent, as for one being worked on. An idle connection is not
         // counted: a stop does not wait for clients that send nothing.
         let mut answer = None;
-        read_capped_line_deadline_noting(
+        // The line's bytes count against the daemon's read budget from the moment they are read
+        // until its answer is written (C3); a line the budget has no room for is answered busy
+        // and its connection closed, since the rest of it is unread.
+        let mut held = engine.read_budget().reservation();
+        let read = read_capped_line_deadline_noting(
             &mut reader,
             &mut buf,
             MAX_REQUEST_BYTES,
             READ_TIMEOUT,
             &mut || answer = Some(engine.answering().start()),
-        )?;
+            &mut |bytes| held.grow(bytes),
+        );
+        if let Err(err) = &read
+            && err.kind() == std::io::ErrorKind::QuotaExceeded
+        {
+            engine.metrics().busy();
+            refuse(
+                &mut writer,
+                engine,
+                RESOURCE_EXHAUSTED,
+                "the daemon is busy: its budget for request bytes being read is full; retry later",
+            )?;
+            break;
+        }
+        read?;
         // Nothing read is a clean end of file. The buffer decides, not the count returned, so a
         // read that consumed nothing cannot spin this loop.
         if buf.is_empty() {
@@ -653,7 +680,10 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
             )?;
             break;
         }
-        let response = process_line(line, engine);
+        // The client stops reading `READ_TIMEOUT` after it sent the line, so the work stops
+        // then too, and gives back its worker and admission weight (C9).
+        let deadline = crate::metrics::now() + READ_TIMEOUT;
+        let response = crate::deadline::within(deadline, || process_line(line, engine));
         writeln!(writer, "{}", json_line_safe(&response))?;
         writer.flush()?;
         drop(answer);
@@ -685,6 +715,8 @@ pub fn handle_control_connection(stream: UnixStream, engine: &Engine) -> std::io
         CONTROL_REQUEST_BYTES,
         CONTROL_READ_TIMEOUT,
         &mut || answer = Some(engine.answering().start()),
+        // At most 4 KiB, and it must get in when the data connections fill the read budget.
+        &mut |_| true,
     )?;
     if buf.is_empty() {
         return Ok(());
@@ -952,6 +984,47 @@ fn drain_report(before: usize, drained: bool, left: usize) -> Option<(&'static s
     }
 }
 
+/// SIGTERM (`kill`, `launchctl bootout`, `systemctl kill`) and SIGINT (Ctrl-C) stop the daemon
+/// as `daemon.shutdown` does: the loop ends, the socket is removed and the answers in progress
+/// drain. Before, either signal killed the process and left the socket file behind
+/// (DDF-HUNT-DAEMON-7). Returns the handle that ends the watcher and its thread.
+fn watch_signals(
+    engine: &Arc<Engine>,
+    socket_path: &Path,
+) -> std::io::Result<(signal_hook::iterator::Handle, std::thread::JoinHandle<()>)> {
+    let mut signals = signal_hook::iterator::Signals::new([
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGINT,
+    ])?;
+    let handle = signals.handle();
+    let engine = Arc::clone(engine);
+    let wakeup = socket_path.to_path_buf();
+    let watch = std::thread::Builder::new()
+        .name("ddf-daemon-signals".to_string())
+        .spawn(move || {
+            if let Some(signal) = signals.forever().next() {
+                engine.stop();
+                engine.log(
+                    "shutdown_signal",
+                    &format!("signal {signal} received; stopping"),
+                );
+                // Unblock the accept loop, as a `daemon.shutdown` connection does.
+                let _ = UnixStream::connect(wakeup);
+            }
+        })?;
+    Ok((handle, watch))
+}
+
+/// The accept error that ends the loop, or `None` for one it retries: a signal (EINTR) or a
+/// client that gave up while queued (ECONNABORTED). Any other ends it, cleanly (expert circle C8).
+fn fatal_accept_error(err: std::io::Error) -> Option<std::io::Error> {
+    (!matches!(
+        err.kind(),
+        std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted
+    ))
+    .then_some(err)
+}
+
 /// The accept loop of [`run_server_with`] over a listener already bound at `location`.
 fn serve_bound(
     location: &SocketLocation,
@@ -967,32 +1040,14 @@ fn serve_bound(
     let engine = Arc::new(engine);
     let active_connections = Arc::new(AtomicUsize::new(0));
     let control_connections = Arc::new(AtomicUsize::new(0));
-    // SIGTERM (`kill`, `launchctl bootout`, `systemctl kill`) and SIGINT (Ctrl-C) stop the daemon
-    // as `daemon.shutdown` does: the loop ends, the socket is removed and the answers in progress
-    // drain. Before, either signal killed the process and left the socket file behind
-    // (DDF-HUNT-DAEMON-7).
-    let mut signals = signal_hook::iterator::Signals::new([
-        signal_hook::consts::SIGTERM,
-        signal_hook::consts::SIGINT,
-    ])?;
-    let signal_handle = signals.handle();
-    let signal_watch = {
-        let engine = Arc::clone(&engine);
-        let wakeup = socket_path.clone();
-        std::thread::Builder::new()
-            .name("ddf-daemon-signals".to_string())
-            .spawn(move || {
-                if let Some(signal) = signals.forever().next() {
-                    engine.stop();
-                    engine.log(
-                        "shutdown_signal",
-                        &format!("signal {signal} received; stopping"),
-                    );
-                    // Unblock the accept loop, as a `daemon.shutdown` connection does.
-                    let _ = UnixStream::connect(wakeup);
-                }
-            })?
-    };
+    // From here the socket is this server's: a setup failure removes it before returning, as
+    // the end of the loop does, so no error leaves a stale socket behind (expert circle C8).
+    let (signal_handle, signal_watch) = watch_signals(&engine, &socket_path)
+        .inspect_err(|_| cleanup_owned_socket(&socket_path, socket_identity))?;
+    // A persistent accept error ends the loop like a shutdown, so the socket is still removed and
+    // the answers in progress still drain; the error is returned afterwards. Before, it returned
+    // at once, leaving the socket and cutting the answers off (expert circle C8).
+    let mut failure = None;
     loop {
         // Break immediately if a previous connection already triggered shutdown.
         if !engine.is_running() {
@@ -1058,8 +1113,13 @@ fn serve_bound(
                     );
                 }
             }
-            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(err) => return Err(err),
+            Err(err) => {
+                if let Some(err) = fatal_accept_error(err) {
+                    engine.log("accept_failed", &format!("stopping: accept failed: {err}"));
+                    failure = Some(err);
+                    break;
+                }
+            }
         }
     }
     // The signal watcher has nothing left to stop.
@@ -1079,7 +1139,7 @@ fn serve_bound(
     }
     // The start lock is released only now, after the cleanup and the drain.
     drop(start_lock);
-    Ok(())
+    failure.map_or(Ok(()), Err)
 }
 
 /// Client: connect to the daemon, send one request line, return the response.
@@ -1104,13 +1164,21 @@ pub fn request(location: &SocketLocation, line: &str) -> std::io::Result<String>
     }
     let mut stream = location.connect()?;
     settle_write_timeout(stream.set_write_timeout(Some(WRITE_TIMEOUT)))?;
-    writeln!(stream, "{line}")?;
-    stream.flush()?;
+    // A daemon that refuses a line early (its read budget is full) answers and closes before the
+    // rest arrives, so the write breaks with the answer already waiting: read it, and report the
+    // broken pipe only when there is none.
+    let sent = writeln!(stream, "{line}").and_then(|()| stream.flush());
+    if let Err(err) = &sent
+        && err.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        return Err(sent.unwrap_err());
+    }
     let mut reader = BufReader::new(stream);
     let mut response = Vec::new();
     let read =
         read_capped_line_deadline(&mut reader, &mut response, MAX_RESPONSE_BYTES, READ_TIMEOUT)?;
     if read == 0 {
+        sent?;
         return Err(std::io::Error::new(
             std::io::ErrorKind::UnexpectedEof,
             "daemon closed without a response",
@@ -1230,6 +1298,44 @@ mod tests {
             .set_read_timeout(Some(READ_TIMEOUT))
             .expect("set timeout");
         assert_eq!(server.read_timeout().unwrap(), Some(READ_TIMEOUT));
+    }
+
+    /// Expert circle 2026-11-03, C9: work past its client's read deadline stops, answering
+    /// `RESOURCE_EXHAUSTED`, and its admission weight is given back. Each heavy method checks
+    /// the deadline after its parse; without a deadline (stdio `rpc`, MCP) the same request is
+    /// answered.
+    #[test]
+    fn a_request_past_its_deadline_is_stopped_and_releases_its_weight() {
+        let e = engine();
+        let patch = "--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n";
+        let lines = [
+            format!(r#"{{"id":1,"method":"diff.compute","params":{{"patch":{patch:?}}}}}"#),
+            format!(r#"{{"id":2,"method":"diff.plan","params":{{"patch":{patch:?}}}}}"#),
+            format!(r#"{{"id":3,"method":"diff.rank","params":{{"patch":{patch:?}}}}}"#),
+            format!(r#"{{"id":4,"method":"session.open","params":{{"patch":{patch:?}}}}}"#),
+        ];
+        let passed = crate::metrics::now();
+        for line in &lines {
+            let stopped: Value =
+                serde_json::from_str(&crate::deadline::within(passed, || process_line(line, &e)))
+                    .unwrap();
+            assert_eq!(stopped["error"]["code"], RESOURCE_EXHAUSTED, "{line}");
+            assert!(
+                stopped["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("read deadline"),
+                "{stopped}"
+            );
+            assert_eq!(e.admission().in_flight(), 0, "the weight is given back");
+            let answered: Value = serde_json::from_str(&process_line(line, &e)).unwrap();
+            assert!(answered.get("result").is_some(), "{answered}");
+        }
+        assert_eq!(
+            e.session_count(),
+            1,
+            "the stopped session.open opened nothing"
+        );
     }
 
     #[test]
@@ -1688,6 +1794,73 @@ mod tests {
         assert!(joined(server).is_ok(), "the thread did not finish");
         // Socket is cleaned up on shutdown.
         assert!(!sock.exists());
+    }
+
+    /// A `daemon.health` request padded with spaces to `bytes` bytes, newline excluded.
+    fn padded_health(id: u32, bytes: usize) -> String {
+        let head = format!(r#"{{"id":{id},"method":"daemon.health""#);
+        format!("{head}{}}}", " ".repeat(bytes - head.len() - 1))
+    }
+
+    /// Expert circle 2026-11-03, C3: the request bytes being read across connections stay
+    /// within the read budget. A line that would take them past it is answered busy, and the
+    /// bytes of an answered line are given back. Before, every connection buffered a whole line,
+    /// up to 80 MiB, whatever the others held.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test: lets the server read the first client's bytes before the second sends"
+    )]
+    fn request_lines_being_read_share_one_byte_budget() {
+        let sock = temp_socket_with_parent("read-budget", 0o700);
+        let server_loc = SocketLocation::at(sock.clone());
+        let engine = Engine::new().with_read_budget(4096);
+        let server = thread::spawn(move || run_server_with(&server_loc, engine));
+        wait_for_socket(&sock);
+        // The first client holds 3000 bytes of a line it has not finished.
+        let first_line = padded_health(1, 3000);
+        let mut first = UnixStream::connect(&sock).unwrap();
+        first.write_all(&first_line.as_bytes()[..3000]).unwrap();
+        thread::sleep(Duration::from_millis(200));
+        // 3000 + 2000 is over 4096: the second line is refused busy, and its connection closed.
+        let mut second = UnixStream::connect(&sock).unwrap();
+        second
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        // The daemon may refuse and close before the whole line is sent (Linux arm64 CI saw
+        // EPIPE here); the refusal is read either way.
+        let _ = writeln!(second, "{}", padded_health(2, 2000));
+        let mut refused = String::new();
+        BufReader::new(&second).read_line(&mut refused).unwrap();
+        assert!(
+            refused.contains(&format!("\"code\":{RESOURCE_EXHAUSTED}"))
+                && refused.contains("budget for request bytes being read is full"),
+            "{refused}"
+        );
+        // The first line completes and is answered.
+        first
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        first.write_all(b"\n").unwrap();
+        let mut answer = String::new();
+        BufReader::new(&first).read_line(&mut answer).unwrap();
+        assert!(answer.contains("\"status\":\"ok\""), "{answer}");
+        drop(first);
+        thread::sleep(Duration::from_millis(200));
+        // Its 3000 bytes were given back: a 3500-byte line now fits.
+        let client = SocketLocation::at(sock.clone());
+        let health = request(&client, &padded_health(3, 3500)).expect("health after release");
+        assert!(health.contains("\"status\":\"ok\""), "{health}");
+        // A line far larger than the socket buffer is refused while the client is still writing
+        // it, so its write breaks; `request` still returns the daemon's answer, not the pipe.
+        let refused = request(&client, &padded_health(5, 1 << 20))
+            .expect("the daemon's refusal, not a broken pipe");
+        assert!(
+            refused.contains(&format!("\"code\":{RESOURCE_EXHAUSTED}")),
+            "{refused}"
+        );
+        request(&client, r#"{"id":4,"method":"daemon.shutdown"}"#).expect("stop");
+        assert!(joined(server).is_ok());
     }
 
     /// DDF-HUNT-DAEMON-7: eight idle connections hold every data slot, and a further connection
@@ -2686,6 +2859,22 @@ mod tests {
         assert_eq!(std::fs::read(&file).unwrap(), b"keep");
     }
 
+    #[test]
+    fn only_a_signal_or_an_aborted_client_is_retried_by_accept() {
+        use std::io::ErrorKind;
+        for retried in [ErrorKind::Interrupted, ErrorKind::ConnectionAborted] {
+            assert!(fatal_accept_error(retried.into()).is_none(), "{retried:?}");
+        }
+        for fatal in [
+            ErrorKind::Other,
+            ErrorKind::PermissionDenied,
+            ErrorKind::InvalidInput,
+        ] {
+            let kept = fatal_accept_error(fatal.into()).expect("a fatal error ends the loop");
+            assert_eq!(kept.kind(), fatal);
+        }
+    }
+
     const ACCEPT_ERROR_CHILD_ENV: &str = "DDF_TEST_ACCEPT_ERROR_SOCKET";
 
     // Child half of `run_server_returns_persistent_accept_errors`. It lowers the
@@ -2713,10 +2902,11 @@ mod tests {
         let engine = Engine::new();
         let next_fd = std::fs::File::open("/dev/null").unwrap().as_raw_fd();
         let limit = getrlimit(Resource::Nofile);
+        // Two spare descriptors: the signal watcher's socket pair. Then accept() has none.
         setrlimit(
             Resource::Nofile,
             Rlimit {
-                current: Some(u64::try_from(next_fd).unwrap()),
+                current: Some(u64::try_from(next_fd).unwrap() + 2),
                 maximum: limit.maximum,
             },
         )
@@ -2724,6 +2914,15 @@ mod tests {
         let err = serve_bound(&location, bound, engine)
             .expect_err("a persistent accept error must stop the server");
         assert_eq!(err.raw_os_error(), Some(24), "EMFILE: {err}");
+        // The error still removes the socket (expert circle C8): before, it was left behind.
+        assert!(
+            !location.path().exists(),
+            "a fatal accept error left the socket behind"
+        );
+        // The parent's proof that this half ran (an empty filter would also exit 0). Written
+        // after the limit is restored, as a file needs a descriptor.
+        setrlimit(Resource::Nofile, limit).unwrap();
+        std::fs::write(location.path().with_extension("ran"), b"").unwrap();
     }
 
     #[test]
@@ -2765,12 +2964,12 @@ mod tests {
             }
             thread::sleep(Duration::from_millis(10));
         };
-        // run_server returns before cleanup on error, so the bound socket file
-        // proves the child really ran it (not an empty test filter).
-        let bound = sock.exists();
+        // The child's marker proves it really ran (not an empty test filter); it asserts the
+        // socket was removed itself.
+        let ran = sock.with_extension("ran").exists();
         let _ = std::fs::remove_dir_all(sock.parent().unwrap());
         let status = status.expect("run_server kept looping on a persistent accept error");
         assert!(status.success(), "child test failed: {status}");
-        assert!(bound, "child never bound the socket");
+        assert!(ran, "the child half never ran");
     }
 }

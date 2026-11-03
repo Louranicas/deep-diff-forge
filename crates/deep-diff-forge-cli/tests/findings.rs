@@ -278,7 +278,8 @@ fn a_fifo_as_the_findings_file_is_refused_not_waited_on() {
         &["review", "--probe", "--findings", path][..],
     ] {
         let (code, stderr) = exit_within_deadline(args);
-        assert_eq!(code, 3, "{args:?}: {stderr}");
+        // Not a regular file is invalid input, exit 4, in every command (expert circle C16).
+        assert_eq!(code, 4, "{args:?}: {stderr}");
         assert!(
             stderr.contains("is not a regular file"),
             "{args:?}: {stderr}"

@@ -12,6 +12,7 @@
 //! refused as [`Busy`], and its place in the queue is given up so the requests behind it move on.
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -283,6 +284,113 @@ impl Drop for Answer<'_> {
     }
 }
 
+/// The request-line bytes all connections may hold at once while they read, before
+/// [`Admission`] weighs any of them: room for two maximum-size request lines
+/// (`serve::MAX_REQUEST_BYTES`, 80 MiB), so one always fits. Before, each of the eight workers
+/// could buffer a whole maximum line, and parse it, outside the in-flight budget: about 1.25 GiB
+/// at worst (expert circle 2026-11-03, C3).
+pub const MAX_READ_BYTES: usize = 160 * 1024 * 1024;
+
+/// A shared cap on the request bytes being read and held, across connections. A connection
+/// reserves each chunk before it buffers it ([`ReadBudget::reservation`]) and gives the bytes
+/// back when its reservation drops, after the answer is written. A chunk that would take the
+/// total past the cap is refused, and that request is answered busy.
+#[derive(Debug)]
+pub struct ReadBudget {
+    limit: usize,
+    held: AtomicUsize,
+    peak: AtomicUsize,
+}
+
+impl Default for ReadBudget {
+    fn default() -> Self {
+        Self::new(MAX_READ_BYTES)
+    }
+}
+
+impl ReadBudget {
+    /// A budget of `limit` bytes.
+    #[must_use]
+    pub fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            held: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+        }
+    }
+
+    /// An empty reservation against this budget; it returns what it holds when dropped.
+    #[must_use]
+    pub fn reservation(&self) -> ReadReservation<'_> {
+        ReadReservation {
+            budget: self,
+            held: 0,
+        }
+    }
+
+    /// The bytes held now.
+    #[must_use]
+    pub fn held(&self) -> usize {
+        self.held.load(Ordering::Acquire)
+    }
+
+    /// The most bytes ever held at once.
+    #[must_use]
+    pub fn peak(&self) -> usize {
+        self.peak.load(Ordering::Acquire)
+    }
+
+    /// Take `bytes` if the total stays within the limit.
+    fn take(&self, bytes: usize) -> bool {
+        let mut held = self.held.load(Ordering::Acquire);
+        loop {
+            let Some(total) = held.checked_add(bytes).filter(|total| *total <= self.limit) else {
+                return false;
+            };
+            match self
+                .held
+                .compare_exchange_weak(held, total, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => {
+                    self.peak.fetch_max(total, Ordering::AcqRel);
+                    return true;
+                }
+                Err(now) => held = now,
+            }
+        }
+    }
+}
+
+/// The bytes one request line holds against a [`ReadBudget`].
+#[derive(Debug)]
+pub struct ReadReservation<'a> {
+    budget: &'a ReadBudget,
+    held: usize,
+}
+
+impl ReadReservation<'_> {
+    /// Hold `bytes` more, or `false`, holding nothing more, when the budget has no room.
+    pub fn grow(&mut self, bytes: usize) -> bool {
+        let taken = self.budget.take(bytes);
+        if taken {
+            self.held += bytes;
+        }
+        taken
+    }
+
+    /// The bytes this reservation holds.
+    #[must_use]
+    pub fn held(&self) -> usize {
+        self.held
+    }
+}
+
+impl Drop for ReadReservation<'_> {
+    fn drop(&mut self) {
+        self.budget.held.fetch_sub(self.held, Ordering::AcqRel);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// A stop waits for the answers in progress and no longer; an answer ends its count when it
@@ -513,5 +621,53 @@ mod tests {
         assert!(outcome.is_err());
         assert_eq!((gate.running(), gate.in_flight()), (0, 0));
         let _next = gate.admit(90).unwrap();
+    }
+
+    #[test]
+    fn a_read_budget_takes_bytes_up_to_its_limit_and_returns_them_on_drop() {
+        let budget = ReadBudget::new(10);
+        let mut first = budget.reservation();
+        assert!(first.grow(6));
+        let mut second = budget.reservation();
+        assert!(!second.grow(5), "6 + 5 is over 10");
+        assert_eq!((budget.held(), second.held()), (6, 0));
+        assert!(second.grow(4), "6 + 4 is exactly the limit");
+        assert_eq!(budget.held(), 10);
+        drop(first);
+        assert_eq!(budget.held(), 4);
+        assert!(second.grow(6));
+        assert_eq!(second.held(), 10);
+        drop(second);
+        assert_eq!((budget.held(), budget.peak()), (0, 10));
+        assert_eq!(ReadBudget::default().limit, MAX_READ_BYTES);
+        assert_eq!(MAX_READ_BYTES, 160 * 1024 * 1024);
+    }
+
+    #[test]
+    fn concurrent_readers_never_hold_more_than_the_budget() {
+        let budget = ReadBudget::new(1000);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..500 {
+                        let mut line = budget.reservation();
+                        // Bounded, so a budget that never refuses fails here rather than spinning.
+                        for _ in 0..32 {
+                            if !line.grow(64) {
+                                break;
+                            }
+                        }
+                        assert!(line.held() <= 1000, "held {}", line.held());
+                    }
+                });
+            }
+        });
+        assert_eq!(budget.held(), 0);
+        assert!(budget.peak() <= 1000, "peak {}", budget.peak());
+        assert!(
+            budget.peak() > 900,
+            "the budget was used: peak {}",
+            budget.peak()
+        );
     }
 }

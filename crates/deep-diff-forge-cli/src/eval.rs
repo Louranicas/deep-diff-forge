@@ -47,20 +47,34 @@ fn id(case: &Value) -> &str {
     case["id"].as_str().unwrap_or("?")
 }
 
-/// Read the corpus file `rel`. Only a regular file is read: `MANIFEST.json` is read before
-/// [`Corpus::walk`] checks the tree, and a FIFO there hung `eval` (DDF-HUNT-CLI-8).
-fn read(dir: &Path, rel: &str) -> Result<Vec<u8>, EvalError> {
+/// The most one corpus file (the manifest or a case's file) may hold: the findings cap, far
+/// above any case. A larger file is refused before it is read whole (expert circle C5).
+const FILE_BYTES: u64 = 8 * 1024 * 1024;
+/// The most all the case files of one corpus may hold together: the default patch budget.
+const CORPUS_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Read the corpus file `rel`, refusing it when it holds more than `cap` bytes. Only a regular
+/// file is read: `MANIFEST.json` is read before [`Corpus::walk`] checks the tree, and a FIFO
+/// there hung `eval` (DDF-HUNT-CLI-8).
+fn read(dir: &Path, rel: &str, cap: u64) -> Result<Vec<u8>, EvalError> {
     use std::io::Read as _;
     let unreadable = |e: std::io::Error| EvalError::Read(format!("{rel}: {e}"));
-    let mut file =
-        crate::regular::open_regular(&dir.join(rel)).map_err(|refusal| match refusal {
-            crate::regular::Refusal::Io(e) => unreadable(e),
-            crate::regular::Refusal::NotRegular => {
-                EvalError::Corpus(format!("{rel} is not a regular file"))
-            }
-        })?;
+    let file = crate::regular::open_regular(&dir.join(rel)).map_err(|refusal| match refusal {
+        crate::regular::Refusal::Io(e) => unreadable(e),
+        crate::regular::Refusal::NotRegular => {
+            EvalError::Corpus(format!("{rel} is not a regular file"))
+        }
+    })?;
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(unreadable)?;
+    // One byte past the cap tells a file at the cap from one over it.
+    file.take(cap.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(unreadable)?;
+    if bytes.len() as u64 > cap {
+        return Err(EvalError::Corpus(format!(
+            "{rel} holds more than {cap} bytes, the corpus limit"
+        )));
+    }
     Ok(bytes)
 }
 
@@ -80,6 +94,8 @@ struct Corpus<'d> {
     dir: &'d Path,
     /// Paths relative to `dir`, `/`-separated.
     files: BTreeSet<String>,
+    /// Bytes the case files may still hold together (from [`CORPUS_BYTES`]).
+    remaining: std::cell::Cell<u64>,
 }
 
 impl<'d> Corpus<'d> {
@@ -115,7 +131,11 @@ impl<'d> Corpus<'d> {
             }
         }
         files.remove("MANIFEST.json");
-        Ok(Self { dir, files })
+        Ok(Self {
+            dir,
+            files,
+            remaining: std::cell::Cell::new(CORPUS_BYTES),
+        })
     }
 }
 
@@ -203,7 +223,10 @@ fn checked(
     if !corpus.files.contains(rel) {
         return Err(EvalError::Read(format!("{rel}: not a file of the corpus")));
     }
-    let bytes = read(corpus.dir, rel)?;
+    let bytes = read(corpus.dir, rel, FILE_BYTES.min(corpus.remaining.get()))?;
+    corpus
+        .remaining
+        .set(corpus.remaining.get() - bytes.len() as u64);
     let expected = text(case, sha_key)?;
     let actual = deep_diff_forge_core::sha256_hex(&bytes);
     if actual != expected {
@@ -482,7 +505,7 @@ fn findings(corpus: &Corpus<'_>, case: &Value, scores: &mut Scores) -> Result<()
 /// [`EvalError`] when a file is missing or the corpus is malformed, out of date or holds a file
 /// no case names.
 pub fn run(dir: &Path) -> Result<Value, EvalError> {
-    let manifest_bytes = read(dir, "MANIFEST.json")?;
+    let manifest_bytes = read(dir, "MANIFEST.json", FILE_BYTES)?;
     let manifest: Value = serde_json::from_slice(&manifest_bytes)
         .map_err(|e| EvalError::Corpus(format!("MANIFEST.json: {e}")))?;
     if manifest["schema"] != "deep-diff-forge.eval-manifest.v0" {
@@ -535,6 +558,41 @@ pub fn run(dir: &Path) -> Result<Value, EvalError> {
 
 #[cfg(test)]
 mod tests {
+    /// The limits the CHANGELOG and the refusal messages name.
+    #[test]
+    fn the_corpus_limits_are_8_mib_a_file_and_64_mib_in_all() {
+        assert_eq!(FILE_BYTES, 8 << 20);
+        assert_eq!(CORPUS_BYTES, 64 << 20);
+    }
+
+    /// Expert circle C5: a case file is read only up to what the corpus may still hold, so the
+    /// case files together cannot pass [`CORPUS_BYTES`]; the budget falls by each file read.
+    #[test]
+    fn case_files_together_are_held_to_the_corpus_budget() {
+        let dir = std::env::temp_dir().join(format!("ddf-eval-budget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a"), b"12345").unwrap();
+        std::fs::write(dir.join("b"), b"123456").unwrap();
+        let corpus = Corpus {
+            dir: &dir,
+            files: ["a", "b"].iter().map(|f| (*f).to_owned()).collect(),
+            remaining: std::cell::Cell::new(10),
+        };
+        let case = |file: &str, bytes: &[u8]| json!({"id": file, "f": file, "s": deep_diff_forge_core::sha256_hex(bytes)});
+        assert_eq!(
+            checked(&corpus, &case("a", b"12345"), "f", "s").unwrap(),
+            b"12345"
+        );
+        assert_eq!(corpus.remaining.get(), 5);
+        let err = checked(&corpus, &case("b", b"123456"), "f", "s").unwrap_err();
+        assert!(
+            matches!(&err, EvalError::Corpus(m) if m.contains("more than 5 bytes")),
+            "{err}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     use super::*;
 
     #[test]

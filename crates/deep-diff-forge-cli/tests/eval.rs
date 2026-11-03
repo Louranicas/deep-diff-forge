@@ -583,3 +583,28 @@ fn a_fifo_manifest_is_refused_not_waited_on() {
         "{stderr}"
     );
 }
+
+/// Expert circle C5: a corpus file over the 8 MiB file limit is refused, exit 4, before it is
+/// read whole; one at the limit is read (and here fails only its hash check).
+#[test]
+fn a_corpus_file_over_the_limit_is_refused() {
+    let dir = std::env::temp_dir().join(format!("ddf-eval-cap-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let limit = 8 * 1024 * 1024;
+    for (size, refused) in [(limit + 1, true), (limit, false)] {
+        std::fs::write(dir.join("MANIFEST.json"), vec![b' '; size]).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .args(["eval", "--json", "--corpus", dir.to_str().unwrap()])
+            .output()
+            .expect("run");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(4), "{size}: {stderr}");
+        assert_eq!(
+            stderr.contains("more than 8388608 bytes"),
+            refused,
+            "{size}: {stderr}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -298,6 +298,22 @@ def growth(samples: list[dict[str, Any]]) -> dict[str, int] | None:
     }
 
 
+def metrics_record(done: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    """The daemon's own counters (`daemon metrics`), kept in the receipt so the weekly campaign's
+    receipts are the counters' history, as OPERATIONS_AND_DAEMON.md says. A failed or unparsable
+    read is recorded as such, never as empty counters."""
+    if done.returncode != 0:
+        return {"error": f"exit {done.returncode}: {done.stderr.strip()[:300]}"}
+    try:
+        answer = json.loads(done.stdout)
+    except json.JSONDecodeError as exc:
+        return {"error": f"not JSON: {exc}"}
+    result = answer.get("result") if isinstance(answer, dict) else None
+    if not isinstance(result, dict):
+        return {"error": f"no result: {done.stdout.strip()[:300]}"}
+    return result
+
+
 def proc_sample(pid: int) -> dict[str, Any]:
     proc = pathlib.Path("/proc") / str(pid)
     status: dict[str, str] = {}
@@ -381,6 +397,7 @@ def main() -> int:
         deadline = time.monotonic() + args.seconds
         iteration = 0
         try:
+            receipt["metrics"] = {"start": metrics_record(cli(socket_path, "metrics"))}
             # Hostile volume first, so the timed loop below proves the daemon recovered.
             for probe in (oversize_probe, flood_probe, concurrent_probe):
                 receipt["checks"].append(probe(socket_path))
@@ -413,6 +430,9 @@ def main() -> int:
                 receipt["samples"].append({"iteration": iteration, **proc_sample(proc.pid)})
                 time.sleep(1)
 
+            receipt["metrics"]["end"] = metrics_record(cli(socket_path, "metrics"))
+            if "error" in receipt["metrics"]["end"]:
+                raise RuntimeError(f"daemon metrics failed: {receipt['metrics']['end']['error']}")
             stop = cli(socket_path, "stop", timeout=10)
             receipt["checks"].append({"kind": "stop", "code": stop.returncode, "stdout": stop.stdout.strip()[:300]})
             if stop.returncode != 0:

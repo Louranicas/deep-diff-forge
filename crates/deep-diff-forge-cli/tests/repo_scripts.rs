@@ -495,3 +495,214 @@ fn the_release_recipe_tags_only_through_the_signing_script() {
         );
     }
 }
+
+// --- scripts/verify_release_tag.sh --------------------------------------------------------
+
+fn verify_tag(repo: &Path, tag: &str, signers: &Path) -> Output {
+    run(Command::new("bash")
+        .current_dir(repo)
+        .arg(format!("{ROOT}/scripts/verify_release_tag.sh"))
+        .arg(tag)
+        .arg(signers))
+}
+
+#[test]
+fn the_release_workflow_accepts_only_a_tag_signed_by_an_allowed_key() {
+    let s = scratch("verify-tag");
+    let repo = signing_repo(&s, true);
+    let signers = repo.join(".github/allowed_signers");
+    // Signed by the allowed key, through the same script `just release-tag` uses.
+    assert!(sign_tag(&s, &repo).status.success());
+    let out = verify_tag(&repo, "v1.2.3", &signers);
+    assert!(out.status.success(), "{out:?}");
+    // Annotated but unsigned, and lightweight: neither carries a signature.
+    git(&repo, &["tag", "-a", "v2.0.0", "-m", "v2.0.0"]);
+    git(&repo, &["tag", "v3.0.0"]);
+    for tag in ["v2.0.0", "v3.0.0"] {
+        let out = verify_tag(&repo, tag, &signers);
+        assert!(!out.status.success(), "{tag}: {out:?}");
+    }
+    // Signed, but by a key the signers file does not list.
+    let other = s.0.join("other-signers");
+    std::fs::write(
+        &other,
+        format!(
+            "ddf@example.invalid namespaces=\"git\" {}",
+            std::fs::read_to_string(s.0.join("other.pub")).unwrap()
+        ),
+    )
+    .unwrap();
+    assert!(!verify_tag(&repo, "v1.2.3", &other).status.success());
+    // No signers at all.
+    assert!(
+        !verify_tag(&repo, "v1.2.3", &s.0.join("missing"))
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn the_release_workflow_verifies_the_tag_against_main_s_signers_before_building() {
+    let workflow =
+        std::fs::read_to_string(format!("{ROOT}/.github/workflows/release.yml")).unwrap();
+    let verify = workflow
+        .find("scripts/verify_release_tag.sh")
+        .expect("release.yml verifies the tag signature");
+    assert!(
+        workflow[..verify].contains("git show FETCH_HEAD:.github/allowed_signers"),
+        "the signers come from main, not the tagged commit"
+    );
+    let gate = workflow.find("  supply-chain:").unwrap();
+    let build = workflow.find("\n  build:").unwrap();
+    assert!(
+        gate < verify && verify < build,
+        "the check is in the supply-chain gate"
+    );
+    assert!(
+        workflow[build..].contains("needs: [quality, supply-chain]"),
+        "build waits for the gate"
+    );
+}
+
+// --- scripts/security/generate_spdx_sbom.py -----------------------------------------------
+
+/// Expert circle 2026-11-03 (C6): each registry package in the committed SBOM carries the
+/// SHA-256 Cargo.lock records for its `.crate` archive, the checksum that identifies its source.
+#[test]
+fn the_sbom_checksums_are_the_crate_archive_checksums_cargo_lock_records() {
+    let lock = std::fs::read_to_string(format!("{ROOT}/Cargo.lock")).unwrap();
+    let sbom = std::fs::read_to_string(format!("{ROOT}/sbom.spdx.json")).unwrap();
+    let mut checked = 0;
+    for entry in lock.split("[[package]]").skip(1) {
+        let field = |key: &str| {
+            entry
+                .lines()
+                .find_map(|l| l.strip_prefix(&format!("{key} = \"")))
+                .map(|v| v.trim_end_matches('"').to_owned())
+        };
+        if let Some(sum) = field("checksum") {
+            assert!(
+                sbom.contains(&format!("\"checksumValue\": \"{sum}\"")),
+                "{entry}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 50, "only {checked} registry packages found");
+}
+
+// --- scripts/package_release.py -----------------------------------------------------------
+
+/// Inputs for one pack: an executable and two documents, with their mtimes set to `stamp`.
+fn release_inputs(dir: &Path, stamp: &str) -> Vec<PathBuf> {
+    std::fs::create_dir_all(dir).unwrap();
+    let bin = dir.join("deep-diff-forge");
+    tool(&bin, "echo ddf\n");
+    std::fs::write(dir.join("README.md"), "read me\n").unwrap();
+    std::fs::write(dir.join("LICENSE-MIT"), "mit\n").unwrap();
+    let files = vec![bin, dir.join("README.md"), dir.join("LICENSE-MIT")];
+    for file in &files {
+        let out = run(Command::new("touch").args(["-t", stamp]).arg(file));
+        assert!(out.status.success(), "{out:?}");
+    }
+    files
+}
+
+fn package(out: &Path, files: &[PathBuf], epoch: &str) -> Vec<u8> {
+    std::fs::create_dir_all(out).unwrap();
+    let done = run(Command::new("python3")
+        .arg("-I")
+        .arg(format!("{ROOT}/scripts/package_release.py"))
+        .arg("ddf-v9.9.9-test")
+        .arg(out)
+        .args(files)
+        .env("SOURCE_DATE_EPOCH", epoch));
+    assert!(done.status.success(), "{done:?}");
+    std::fs::read(out.join("ddf-v9.9.9-test.tar.gz")).unwrap()
+}
+
+/// Expert circle 2026-11-03 (C14): packing the same files twice, from copies with different
+/// mtimes, gives the same bytes; every entry is sorted, owned by 0:0, stamped with
+/// `SOURCE_DATE_EPOCH` and has a fixed mode.
+#[test]
+fn a_release_archive_is_the_same_bytes_from_the_same_inputs() {
+    let s = scratch("package");
+    let first = package(
+        &s.0.join("out1"),
+        &release_inputs(&s.0.join("a"), "202001010000"),
+        "1700000000",
+    );
+    let second = package(
+        &s.0.join("out2"),
+        &release_inputs(&s.0.join("b"), "202511031200"),
+        "1700000000",
+    );
+    assert_eq!(first, second, "two packs of the same inputs differ");
+    assert_ne!(
+        first,
+        package(
+            &s.0.join("out3"),
+            &release_inputs(&s.0.join("c"), "202001010000"),
+            "1700000001"
+        ),
+        "the epoch is what stamps the archive"
+    );
+    let listing = run(Command::new("python3").arg("-I").arg("-c").arg(
+        "import sys,tarfile\nfor m in tarfile.open(sys.argv[1]).getmembers(): print(m.name, m.uid, m.gid, repr(m.uname), m.mtime, oct(m.mode))",
+    ).arg(s.0.join("out1/ddf-v9.9.9-test.tar.gz")));
+    assert!(listing.status.success(), "{listing:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&listing.stdout),
+        "ddf-v9.9.9-test 0 0 '' 1700000000 0o755\n\
+         ddf-v9.9.9-test/LICENSE-MIT 0 0 '' 1700000000 0o644\n\
+         ddf-v9.9.9-test/README.md 0 0 '' 1700000000 0o644\n\
+         ddf-v9.9.9-test/deep-diff-forge 0 0 '' 1700000000 0o755\n"
+    );
+}
+
+/// The control the test above guards against: `tar czf`, as release.yml packed before, records
+/// the inputs' mtimes, so the same files packed from two copies differ.
+#[test]
+fn plain_tar_czf_is_not_reproducible() {
+    let s = scratch("package-control");
+    let mut packs = Vec::new();
+    for (dir, stamp) in [("a", "202001010000"), ("b", "202511031200")] {
+        let root = s.0.join(dir);
+        release_inputs(&root.join("dist"), stamp);
+        let out = run(Command::new("tar")
+            .current_dir(&root)
+            .args(["czf", "x.tar.gz", "dist"]));
+        assert!(out.status.success(), "{out:?}");
+        packs.push(std::fs::read(root.join("x.tar.gz")).unwrap());
+    }
+    assert_ne!(packs[0], packs[1]);
+}
+
+#[test]
+fn release_yml_packs_through_the_reproducible_script() {
+    let workflow =
+        std::fs::read_to_string(format!("{ROOT}/.github/workflows/release.yml")).unwrap();
+    assert!(workflow.contains("scripts/package_release.py"));
+    assert!(workflow.contains("SOURCE_DATE_EPOCH=\"$(git log -1 --format=%ct)\""));
+    assert!(
+        !workflow
+            .lines()
+            .any(|l| !l.trim_start().starts_with('#') && l.contains("tar czf")),
+        "release.yml packs with tar czf again"
+    );
+}
+
+#[test]
+fn package_release_refuses_without_an_epoch() {
+    let s = scratch("package-epoch");
+    let files = release_inputs(&s.0.join("a"), "202001010000");
+    let out = run(Command::new("python3")
+        .arg("-I")
+        .arg(format!("{ROOT}/scripts/package_release.py"))
+        .arg("x")
+        .arg(&s.0)
+        .args(&files)
+        .env_remove("SOURCE_DATE_EPOCH"));
+    assert!(!out.status.success(), "{out:?}");
+    assert!(!s.0.join("x.tar.gz").exists());
+}

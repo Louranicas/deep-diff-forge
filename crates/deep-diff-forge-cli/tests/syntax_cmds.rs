@@ -143,7 +143,8 @@ fn source_commands_refuse_a_fifo_without_blocking() {
         .arg(&fifo)
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(3));
+    // Not a regular file is invalid input, exit 4, in every command (expert circle C16).
+    assert_eq!(output.status.code(), Some(4));
     assert!(String::from_utf8_lossy(&output.stderr).contains("not a regular file"));
     std::fs::remove_file(fifo).unwrap();
 }

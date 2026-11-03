@@ -24,6 +24,23 @@ def samples(rss: list[int], fds: list[int]) -> list[dict[str, object]]:
     ]
 
 
+def done(code: int, stdout: str, stderr: str = "") -> "daemon_soak.subprocess.CompletedProcess[str]":
+    return daemon_soak.subprocess.CompletedProcess(["metrics"], code, stdout, stderr)
+
+
+class Metrics(unittest.TestCase):
+    """The receipt keeps the daemon's counters, or says why it could not read them."""
+
+    def test_the_counters_are_kept(self) -> None:
+        answer = '{"jsonrpc":"2.0","id":1,"result":{"engine":{"panics":0}}}'
+        self.assertEqual(daemon_soak.metrics_record(done(0, answer)), {"engine": {"panics": 0}})
+
+    def test_a_failed_read_is_an_error_not_empty_counters(self) -> None:
+        self.assertIn("error", daemon_soak.metrics_record(done(6, "", "no answer")))
+        self.assertIn("error", daemon_soak.metrics_record(done(0, "garbage")))
+        self.assertIn("error", daemon_soak.metrics_record(done(0, '{"error":{"code":8}}')))
+
+
 class Growth(unittest.TestCase):
     def test_a_flat_run_shows_no_growth(self) -> None:
         self.assertEqual(

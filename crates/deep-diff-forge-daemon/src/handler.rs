@@ -215,6 +215,7 @@ pub struct Engine {
     /// Repository roots `review.change` may read (canonical paths). Empty: it reads none.
     allowed_repos: Vec<std::path::PathBuf>,
     admission: Admission,
+    read_budget: crate::admission::ReadBudget,
     answering: Answering,
     metrics: Metrics,
     log_format: crate::log::LogFormat,
@@ -251,6 +252,7 @@ impl Engine {
             started: Instant::now(),
             allowed_repos: Vec::new(),
             admission: Admission::default(),
+            read_budget: crate::admission::ReadBudget::default(),
             answering: Answering::default(),
             metrics: Metrics::new(),
             log_format: crate::log::LogFormat::Text,
@@ -316,6 +318,21 @@ impl Engine {
     #[must_use]
     pub fn admission(&self) -> &Admission {
         &self.admission
+    }
+
+    /// The cap on request-line bytes held across connections while they are read and answered
+    /// ([`crate::admission::MAX_READ_BYTES`]).
+    #[must_use]
+    pub fn read_budget(&self) -> &crate::admission::ReadBudget {
+        &self.read_budget
+    }
+
+    /// The engine with a read budget of `limit` bytes, for tests that fill it.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_read_budget(mut self, limit: usize) -> Self {
+        self.read_budget = crate::admission::ReadBudget::new(limit);
+        self
     }
 
     /// The requests read and not yet answered, which a stop waits for.
@@ -603,6 +620,8 @@ pub fn dispatch(request: &Request, engine: &Engine) -> Result<Value, RpcError> {
         return Err(RpcError::method_not_found(&request.method));
     };
     refuse_unknown_params(spec, &request.params)?;
+    // A request that waited out its client's deadline for admission is not started (C9).
+    crate::deadline::check()?;
     match spec.name {
         "engine.initialize" => {
             // Versions are additive, so any version up to ours is served, and the answer lists the
@@ -671,6 +690,7 @@ pub fn dispatch(request: &Request, engine: &Engine) -> Result<Value, RpcError> {
             let id = str_param(&request.params, "session")?;
             // The table is released at the end of this statement; ranking runs outside it.
             let files = engine.sessions().snapshot_files(&id);
+            crate::deadline::check()?;
             match files {
                 Some(files) => Ok(ranked_json(&rank(&files))),
                 None => Err(RpcError::new(
@@ -741,15 +761,22 @@ fn sealed(request: &Request) -> Result<deep_diff_forge_patch::SealedReview, RpcE
         files: bool_param(&request.params, "require_files")?,
         hunks: bool_param(&request.params, "require_hunks")?,
     };
-    deep_diff_forge_patch::SealedReview::new(patch.as_bytes(), guards, env!("CARGO_PKG_VERSION"))
-        .map_err(|error| match error {
-            deep_diff_forge_patch::ReviewError::Parse(e) => {
-                RpcError::new(PATCH_PARSE_FAILED, e.to_string())
-            }
-            refused @ deep_diff_forge_patch::ReviewError::Refused(_) => {
-                RpcError::new(INPUT_CONTRACT_REFUSED, refused.to_string())
-            }
-        })
+    let review = deep_diff_forge_patch::SealedReview::new(
+        patch.as_bytes(),
+        guards,
+        env!("CARGO_PKG_VERSION"),
+    )
+    .map_err(|error| match error {
+        deep_diff_forge_patch::ReviewError::Parse(e) => {
+            RpcError::new(PATCH_PARSE_FAILED, e.to_string())
+        }
+        refused @ deep_diff_forge_patch::ReviewError::Refused(_) => {
+            RpcError::new(INPUT_CONTRACT_REFUSED, refused.to_string())
+        }
+    })?;
+    // The parse is the heaviest stage; past the deadline, the rest is not done (C9).
+    crate::deadline::check()?;
+    Ok(review)
 }
 
 /// `diff.compute`: the review document the CLI's `--stdin-patch --json` prints for the same patch.
@@ -816,8 +843,10 @@ fn bool_param(params: &Value, key: &str) -> Result<bool, RpcError> {
 
 fn parse_patch_param(request: &Request) -> Result<Vec<ReviewFile>, RpcError> {
     let patch = str_param(&request.params, "patch")?;
-    deep_diff_forge_patch::parse(&patch)
-        .map_err(|e| RpcError::new(PATCH_PARSE_FAILED, e.to_string()))
+    let files = deep_diff_forge_patch::parse(&patch)
+        .map_err(|e| RpcError::new(PATCH_PARSE_FAILED, e.to_string()))?;
+    crate::deadline::check()?;
+    Ok(files)
 }
 
 /// The most rendered bytes of a request-named path or value that a `review.change` error repeats.
@@ -872,6 +901,7 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
         other => RpcError::new(crate::protocol::GIT_FAILED, other.to_string()),
     };
     let acquisition = acquire_git(&canonical, &selection, &options).map_err(git)?;
+    crate::deadline::check()?;
     // The repository is Git's top level, which can lie above the path asked for: a subdirectory
     // of a larger repository would otherwise expose the whole outer repository's change.
     let top =
@@ -887,6 +917,7 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
         .diff()
         .sealed_review(&captured, env!("CARGO_PKG_VERSION"))
         .map_err(git)?;
+    crate::deadline::check()?;
     let guards = deep_diff_forge_patch::InputGuards {
         files: bool_param(params, "require_files")?,
         hunks: bool_param(params, "require_hunks")?,

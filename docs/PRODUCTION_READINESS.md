@@ -760,3 +760,97 @@ history. **[Measured]**
   superseded. GitLab's tag signature API reports only `signature_type: SSH` for v0.6.0, so a
   "Verified" status there is unmeasured.
 
+## Assessment 2026-11-03: adversarial circle of experts
+
+Assessed after v0.6.0, on the release candidate branch (`fix-deferred-bugs` at `ff58ccb`, then
+PR #92). The circle had five experts, each scoring all seven facets independently from the
+code, without seeing the others' scores:
+
+- four Codex personas (`codex exec -s read-only`): Mara Ilic (Git internals), Ivo Navarro
+  (offensive security), Sena Okafor (site reliability) and Okon Adeyemi (release governance);
+- one Claude persona: Rhea Lindqvist (agent integration).
+
+A sixth agent, the chair (Claude), then tried to refute each of the 17 claims that would change
+a score. Verdicts: 12 confirmed, 5 partly confirmed, 0 refuted.
+
+| # | Facet | Weight | Mara | Ivo | Sena | Okon | Rhea | Mean | Reconciled |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | Correctness and patch-truth integrity | 20 | 16 | 19 | 19 | 18 | 19 | 18.2 | 19 |
+| 2 | Security and trust boundary | 15 | 14 | 12 | 14 | 13 | 13 | 13.2 | 13 |
+| 3 | Supply chain and release integrity | 15 | 13 | 10 | 12 | 10 | 13 | 11.6 | 12 |
+| 4 | Reliability and operability | 15 | 14 | 13 | 12 | 14 | 13 | 13.2 | 13 |
+| 5 | Platform and portability | 10 | 8 | 8 | 7 | 8 | 8 | 7.8 | 8 |
+| 6 | Interfaces and integration contracts | 15 | 12 | 13 | 14 | 14 | 12 | 13.0 | 13 |
+| 7 | Documentation, governance and evidence | 10 | 8 | 8 | 8 | 5 | 8 | 7.4 | 8 |
+| | **Total** | **100** | **85** | **83** | **86** | **82** | **86** | **84.4** | **86** |
+
+**Reconciled: 86 / 100.** The previous reconciled score was 89. The lower score does not mean the
+code got worse. A sharper, adversarial reading found real defects that earlier assessments missed:
+
+- the first scheduled fuzz campaign found a crash in the shipped v0.6.0 (DDF-FUZZ-PATCH-8);
+- release authority rested on procedure, not on an enforced control;
+- the parser accepted move headers that Git refuses;
+- the accept loop had a cleanup gap.
+
+The reconciled column credits the fixes below, all merged or in the follow-up PR, and keeps the
+deductions for what remains open.
+
+### Fixed in response (each claim checked first, each fix test-proven)
+
+| Claim | Finding | Fix |
+| --- | --- | --- |
+| Mara 1 | An implied move (PATCH-6) to or from a path Git refuses was accepted, and DDF then refused its own rendering | Refused at parse (git oracle test) |
+| C1 | A lone `rename from/to` or `copy from/to` header was accepted; Git refuses it | Refused unless `---`/`+++` names the other side (oracle test) |
+| C2 | `100644 -> 100664` was reported as a mode change; Git canonicalises it away | `canon_mode` as Git does; a mode change Git reads as no change is refused |
+| C4 | Any pushed `v*` tag published; signing was only checked locally | The supply-chain gate verifies the tag against `main`'s `allowed_signers` before building |
+| C5 | `eval --corpus` read files without limit | 8 MiB per file, 64 MiB per corpus |
+| C6 | SBOM checksums hashed `Cargo.toml` | The `.crate` SHA-256 recorded in Cargo.lock |
+| C7, C11, C12, C13 | Stale or incomplete SECURITY/EVIDENCE statements | Dated corrections |
+| C8 | A fatal `accept()` error skipped cleanup and drain | It runs the shutdown epilogue; transient errors are retried |
+| C10 | Soak receipts held no daemon metrics | The soak records `daemon metrics` at the start and the end |
+| C15 | `renamed` gave no structured old path; the old path's hazards were ignored | `old_path` in review.v0, JSONL and text; its hazards count |
+| Rhea 2 | `modified` became `renamed` for the same input, filed only as a fix | `### Changed` entry, and the v0 compatibility rule written down |
+| macOS CI | At the connection limit, macOS's EINVAL read as "no daemon" | Mapped to "no answer", exit 6 |
+
+### Open, with owner decisions noted
+
+| Claim | Open item | Status |
+| --- | --- | --- |
+| C3 | Up to eight maximum-size request lines buffered before admission (about 1.25 GiB worst case) | Design: account for bytes while reading |
+| C9 | No execution deadline or cancellation after the client gives up | Design: a cooperative deadline in dispatch |
+| C14 | Release archives are not byte-reproducible | Design: normalised tar/gzip, `SOURCE_DATE_EPOCH`, pinned images |
+| C16 | "Not a regular file" exits 3 in some commands and 4 in others | Needs an exit-code policy decision; it changes caller behaviour |
+| C17 | README headline readiness for four targets, while minimum OS floors are not executed | Wording |
+| Ivo 3 | Global, system or command-scope Git filters still run on hostile repositories | Accepted trust boundary (same UID) |
+| Release authority | The GitHub Release job is outside the approval environment; the signing key has no passphrase and shares a UID with the forge tokens | **Owner decisions 2026-11-03: accepted.** The tag-signature check (C4) now enforces the key half. |
+| v0.6.0 | The shipped release contains DDF-FUZZ-PATCH-8 | Recommendation: release 0.7.0 (the `renamed` value change makes it more than a patch release) |
+
+### What would raise the score
+
+1. Release 0.7.0 with these fixes (facets 1, 3 and 7).
+2. Byte accounting before admission, and dispatch deadlines (facets 2 and 4).
+3. Reproducible archives and per-target SBOMs (facet 3).
+4. One exit code for "not a regular file", and a transient flag on RPC error 8 (facet 6).
+5. Run the minimum OS floors, or narrow the README claim (facet 5).
+
+### C14 addressed (2026-11-03)
+
+**[Measured]** Release archives are packed by `scripts/package_release.py`, so two packs of the
+same inputs are byte-identical (`a_release_archive_is_the_same_bytes_from_the_same_inputs`). The
+control `plain_tar_czf_is_not_reproducible` shows that the old `tar czf` packs differed.
+**[Unmeasured]** The script has not yet run on the macOS runners; the next release dry run is
+its first. Open: the macOS image floats (`macos-latest`), and the binaries themselves have not
+been rebuilt independently and compared.
+
+### C3 and C9 fixed (2026-11-03)
+
+**[Measured]** These two open items from the circle assessment above are fixed. The "Open" rows
+for them stay as history.
+- **C3:** request lines held across connections share a 160 MiB read budget (`ReadBudget`,
+  `admission.rs`). Tests: `request_lines_being_read_share_one_byte_budget` (socket) and
+  `concurrent_readers_never_hold_more_than_the_budget` (peak at most the limit). The socket test
+  fails with the reservation disabled.
+- **C9:** socket requests stop at the client's 30 s deadline, checked between stages
+  (`deadline.rs`). Test: `a_request_past_its_deadline_is_stopped_and_releases_its_weight`. It
+  fails with the check disabled.
+

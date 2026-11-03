@@ -409,3 +409,67 @@ fn an_implied_move_to_a_path_git_refuses_is_refused() {
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+/// Expert circle 2026-11-03 (C1, C2): a move header whose other side no header names, and a
+/// section whose only change is a mode Git reads as unchanged, are refused as Git refuses them;
+/// the complete forms Git accepts are reviewed. Git is asked for every case.
+#[test]
+fn half_moves_and_unchanged_modes_are_judged_as_git_judges_them() {
+    use deep_diff_forge_core::FileStatus;
+    let root = std::env::temp_dir().join(format!("ddf-git-oracle-halves-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    git(&root, &["init", "-q"]);
+    fs::write(root.join("x"), "a\n").unwrap();
+    git(&root, &["add", "x"]);
+    let refused = [
+        "diff --git a/x b/y\nsimilarity index 100%\ncopy from x\n",
+        "diff --git a/x b/y\nsimilarity index 100%\ncopy to y\n",
+        "diff --git a/x b/y\nsimilarity index 100%\nrename from x\n",
+        "diff --git a/x b/y\nsimilarity index 100%\nrename to y\n",
+        "diff --git a/x b/x\nold mode 100644\nnew mode 100664\n",
+        "diff --git a/x b/x\nold mode 100755\nnew mode 100754\n",
+        "diff --git a/x b/x\nnew mode 100755\n",
+    ];
+    for patch in refused {
+        assert!(!git_accepts(&root, patch), "git takes {patch:?}");
+        assert!(parse(patch).is_err(), "ddf takes {patch:?}");
+    }
+    let accepted = [
+        (
+            "diff --git a/x b/y\nsimilarity index 100%\ncopy from x\ncopy to y\n",
+            FileStatus::Copied,
+        ),
+        (
+            "diff --git a/x b/y\nsimilarity index 100%\nrename from x\nrename to y\n",
+            FileStatus::Renamed,
+        ),
+        (
+            "diff --git a/x b/x\nrename to y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
+            FileStatus::Renamed,
+        ),
+        (
+            "diff --git a/x b/x\ncopy to y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
+            FileStatus::Copied,
+        ),
+        (
+            "diff --git a/x b/x\nold mode 100644\nnew mode 100744\n",
+            FileStatus::ModeChanged,
+        ),
+        (
+            "diff --git a/x b/x\nold mode 100644\nnew mode 100664\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+            FileStatus::Modified,
+        ),
+    ];
+    for (patch, status) in accepted {
+        assert!(git_accepts(&root, patch), "git refuses {patch:?}");
+        let files = parse(patch).unwrap();
+        assert_eq!(files[0].status, status, "{patch:?}");
+        let rendered = render_unified(&files);
+        assert!(
+            git_accepts(&root, &rendered),
+            "git refuses the rendering {rendered:?}"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
