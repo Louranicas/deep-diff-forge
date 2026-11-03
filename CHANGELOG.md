@@ -6,6 +6,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-03
+
 ### Security
 
 - **Release archives are reproducible** (expert circle 2026-11-03, C14). `scripts/package_release.py`
@@ -19,6 +21,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **SBOM checksums identify the package source** (C6). Each registry package now carries the
   SHA-256 of its `.crate` archive, as recorded in `Cargo.lock`, not a hash of its `Cargo.toml`.
   Workspace members carry none.
+- **Release tags are signed.** `just release-tag` now signs the tag with SSH through
+  `scripts/sign_release_tag.sh` and deletes it, before pushing, unless it verifies against
+  the new `.github/allowed_signers`. v0.6.0 is the first signed tag. Tests run the script
+  with a trusted key, an untrusted key and no signers file.
 
 ### Changed
 
@@ -35,13 +41,6 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **New `old_path` member** in `review.v0` files and `diff.file` JSONL events, for a `renamed` or
   `copied` file, plus `(from <old>)` in the text summary. The hazards of the old path count in
   `hazards`, so renaming `.github/workflows/x` away is flagged.
-
-### Security
-
-- Release tags are signed. `just release-tag` now signs the tag with SSH through
-  `scripts/sign_release_tag.sh` and deletes it, before pushing, unless it verifies against
-  the new `.github/allowed_signers`. v0.6.0 is the first signed tag. Tests run the script
-  with a trusted key, an untrusted key and no signers file.
 
 ### Fixed
 
@@ -1925,7 +1924,8 @@ A supply-chain & fuzz hardening pass then raised the release/CI posture:
   `--json`/`--jsonl` stability tests. Corrected the daemon's `lib.rs` doc from
   "thread-per-connection" to the true single-threaded sequential accept loop.
 
-[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.7.0
 [0.6.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.6.0
 [0.5.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.4.0

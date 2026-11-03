@@ -6,10 +6,10 @@ an exceptional one. This policy documents the maintained security boundary,
 the controls enforced by the repository, and the limits operators must account
 for.
 
-## Status 2026-11-02 (0.6.0)
+## Status 2026-11-03 (0.7.0 prepared)
 
-- `main` carries **0.6.0**, tagged `v0.6.0` on 2026-11-02; cutting any later
-  `v*` tag is the owner's decision. The published releases are `v0.1.0`,
+- `main` carries **0.7.0**, not yet tagged; `v0.6.0` (2026-11-02) is the latest
+  tag, and cutting `v0.7.0` or any later `v*` tag is the owner's decision. The published releases are `v0.1.0`,
   `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0` and `v0.6.0`. `0.2.1` was never tagged or published.
 - The controls below describe the code on `main`. The `v0.2.0` binaries were
   built on 2026-06-24 and predate the SOL-1 hardening (2026-09-04), the review
@@ -53,7 +53,7 @@ Fixes land on `main` first and reach users in the next tagged release.
 
 | Version | State | Security fixes |
 | --- | --- | --- |
-| `main` | Development line after `v0.6.0` | Land here first. |
+| `main` | 0.7.0, not yet tagged | Land here first. |
 | `v0.6.0` (2026-11-02) | Latest published release | Yes: the next release carries them. |
 | `v0.5.0` (2026-10-31) | Published, superseded | No. It lacks the 0.6.0 Git-filter fixes (a `config.worktree` or checked-out submodule filter no longer runs during acquisition) and the escaping of every default-ignorable code point. |
 | `v0.4.0` (2026-10-30) | Published, superseded | No. It lacks the 0.5.0 code-evidence fix (DDF-EVID-001) and the bidi/invisible-character sanitising of agent text. |
