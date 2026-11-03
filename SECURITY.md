@@ -210,6 +210,13 @@ flowchart LR
   come, first served; a `review.change` weighs the 64 MiB patch budget, and a
   request heavier than the cap runs alone. A request that waits 30 s for its
   turn is answered `RESOURCE_EXHAUSTED` and gives up its place.
+- Request lines being read and answered are capped across connections at 160 MiB
+  (`MAX_READ_BYTES`, `admission.rs`, since 2026-11-03). Before, eight connections
+  could each hold an 80 MiB line, and parse it, outside the in-flight budget. A
+  line over the shared budget is answered `RESOURCE_EXHAUSTED` and its connection
+  closed. Work on a socket request stops at its client's 30 s read deadline
+  (`deadline.rs`), checked between stages, so a client that has given up does not
+  hold a worker and admission weight.
 - Sessions are LRU-bounded to 64 (`MAX_SESSIONS`) and their aggregate retained
   payload is capped at 128 MiB (`MAX_RETAINED_SESSION_BYTES`, `handler.rs`).
 - A dispatch panic is caught per request. A panic while the session table was

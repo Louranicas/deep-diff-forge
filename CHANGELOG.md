@@ -45,6 +45,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **The daemon caps the request bytes it reads across connections** (expert circle C3). Each data
+  connection reserves its line's bytes, as they arrive, against one 160 MiB budget
+  (`MAX_READ_BYTES`), and holds them until its answer is written. Before, each of the eight
+  connections could buffer an 80 MiB line, and its parsed copy, outside the in-flight budget:
+  about 1.25 GiB at worst. A line over the budget is answered `RESOURCE_EXHAUSTED` and its
+  connection closed. Control connections are not counted.
+- **Daemon work stops at its client's read deadline** (C9). A socket request runs under its
+  client's 30 s deadline. It is checked before the work starts and after each heavy stage (the
+  parse, a Git acquisition, a session snapshot); past it, the request ends `RESOURCE_EXHAUSTED`
+  and releases its worker and admission weight. Before, the work went on for an answer nobody
+  would read. The stdio `rpc` and MCP servers have no such deadline.
+
 - **A move header with no partner is refused, as Git refuses it** (expert circle 2026-11-03).
   `copy from x`, `copy to y`, `rename from x` or `rename to y` alone, with no `---`/`+++` to name
   the other side, was reviewed as a copy or rename. `git apply` refuses each ("git diff header

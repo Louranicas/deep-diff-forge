@@ -842,3 +842,15 @@ control `plain_tar_czf_is_not_reproducible` shows that the old `tar czf` packs d
 its first. Open: the macOS image floats (`macos-latest`), and the binaries themselves have not
 been rebuilt independently and compared.
 
+### C3 and C9 fixed (2026-11-03)
+
+**[Measured]** These two open items from the circle assessment above are fixed. The "Open" rows
+for them stay as history.
+- **C3:** request lines held across connections share a 160 MiB read budget (`ReadBudget`,
+  `admission.rs`). Tests: `request_lines_being_read_share_one_byte_budget` (socket) and
+  `concurrent_readers_never_hold_more_than_the_budget` (peak at most the limit). The socket test
+  fails with the reservation disabled.
+- **C9:** socket requests stop at the client's 30 s deadline, checked between stages
+  (`deadline.rs`). Test: `a_request_past_its_deadline_is_stopped_and_releases_its_weight`. It
+  fails with the check disabled.
+

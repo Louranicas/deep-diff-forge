@@ -181,6 +181,21 @@ request delayed every other client.
 - **No request waits forever.** One whose turn has not come within 30 s (`ADMISSION_WAIT`, the
   client's read deadline) is answered `RESOURCE_EXHAUSTED` (8), "the daemon is busy", and gives
   up its place, so the requests behind it move on.
+- **The lines being read share one byte budget** (since 2026-11-03, expert circle C3;
+  `admission.rs` `ReadBudget`). Every data connection reserves each chunk of its request line
+  before it buffers it, and holds the reservation until its answer is written. The total across
+  connections stays within `MAX_READ_BYTES` (160 MiB, room for two maximum-size lines, so one
+  always fits). A line the budget has no room for is answered `RESOURCE_EXHAUSTED`, "its budget
+  for request bytes being read is full", and its connection is closed, since the rest of the line
+  is unread. Control connections (at most 4 KiB) are not counted, so they get in when the budget
+  is full.
+- **Work stops at the client's deadline** (since 2026-11-03, C9; `deadline.rs`). A socket client
+  stops reading 30 s after it sent its request, so the daemon runs each request under that
+  deadline. Before starting, and after each heavy stage (the parse, a Git acquisition, a session
+  snapshot), the handler checks it. Past it, the request ends `RESOURCE_EXHAUSTED`, "ran past its
+  client's 30 s read deadline", and its worker and admission weight are released. A stage
+  already running finishes first, bounded by its own input budget. `rpc` and MCP over stdio have
+  no client deadline and are not cut.
 - **The session table's loops are bounded:** at most one eviction per session held, and at most
   `MAX_SESSIONS + 1` candidate ids, so a fault in either cannot spin.
 - **Panics.** A panic while the session table was held empties the table and clears its poison
@@ -507,9 +522,10 @@ Deployment needs that follow:
   ([Concurrency](#concurrency)): admission lets requests run together while their weights stay
   within 128 MiB, so two at the 64 MiB patch budget run at once (one heavier than the cap runs
   alone). Its peak is therefore about two maximum-size requests (about 2.2 GB by the figure
-  above), plus the lines of the connections waiting for admission (up to 80 MiB each, held with
-  their parsed copy, since a line is parsed before it is admitted and the budget does not count
-  it), plus at most 128 MiB of retained sessions. These are inferred from the caps, not measured
+  above), plus the lines of the connections waiting for admission, plus at most 128 MiB of
+  retained sessions. Since 2026-11-03 the request lines held across connections are capped at
+  160 MiB in total (`MAX_READ_BYTES`), about 320 MiB with their parsed copies. Before, each of
+  the eight connections could hold an 80 MiB line and its parsed copy, about 1.25 GiB. These are inferred from the caps, not measured
   (before 2026-11-01 this said the daemon ran one request at a time, as it did before 0.4.0);
   size the host or keep patches well under the cap. A `review.hunks` selection adds memory for
   its requested names only, not per hunk: since 2026-11-01 an address selection keeps only the

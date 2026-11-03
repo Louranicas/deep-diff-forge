@@ -504,7 +504,7 @@ fn read_capped_line_deadline(
     cap: usize,
     timeout: Duration,
 ) -> std::io::Result<usize> {
-    read_capped_line_deadline_noting(reader, buf, cap, timeout, &mut || {})
+    read_capped_line_deadline_noting(reader, buf, cap, timeout, &mut || {}, &mut |_| true)
 }
 
 /// [`read_capped_line_deadline`], calling `first_byte` once, when the line's first bytes arrive
@@ -519,6 +519,7 @@ fn read_capped_line_deadline_noting(
     cap: usize,
     timeout: Duration,
     first_byte: &mut dyn FnMut(),
+    reserve: &mut dyn FnMut(usize) -> bool,
 ) -> std::io::Result<usize> {
     let deadline = Instant::now() + timeout;
     let maximum = cap.saturating_add(1);
@@ -556,6 +557,14 @@ fn read_capped_line_deadline_noting(
         let allowed = available.len().min(maximum.saturating_sub(buf.len()));
         let newline = available[..allowed].iter().position(|byte| *byte == b'\n');
         let consumed = newline.map_or(allowed, |position| position + 1);
+        // Each chunk is reserved before it is held, so the lines being read across connections
+        // stay within the daemon's read budget (C3). The rest of the line is not read.
+        if !reserve(consumed) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::QuotaExceeded,
+                "the daemon's read budget is full",
+            ));
+        }
         buf.extend_from_slice(&available[..consumed]);
         reader.consume(consumed);
 
@@ -608,13 +617,31 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
         // for one still being sent, as for one being worked on. An idle connection is not
         // counted: a stop does not wait for clients that send nothing.
         let mut answer = None;
-        read_capped_line_deadline_noting(
+        // The line's bytes count against the daemon's read budget from the moment they are read
+        // until its answer is written (C3); a line the budget has no room for is answered busy
+        // and its connection closed, since the rest of it is unread.
+        let mut held = engine.read_budget().reservation();
+        let read = read_capped_line_deadline_noting(
             &mut reader,
             &mut buf,
             MAX_REQUEST_BYTES,
             READ_TIMEOUT,
             &mut || answer = Some(engine.answering().start()),
-        )?;
+            &mut |bytes| held.grow(bytes),
+        );
+        if let Err(err) = &read
+            && err.kind() == std::io::ErrorKind::QuotaExceeded
+        {
+            engine.metrics().busy();
+            refuse(
+                &mut writer,
+                engine,
+                RESOURCE_EXHAUSTED,
+                "the daemon is busy: its budget for request bytes being read is full; retry later",
+            )?;
+            break;
+        }
+        read?;
         // Nothing read is a clean end of file. The buffer decides, not the count returned, so a
         // read that consumed nothing cannot spin this loop.
         if buf.is_empty() {
@@ -653,7 +680,10 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
             )?;
             break;
         }
-        let response = process_line(line, engine);
+        // The client stops reading `READ_TIMEOUT` after it sent the line, so the work stops
+        // then too, and gives back its worker and admission weight (C9).
+        let deadline = crate::metrics::now() + READ_TIMEOUT;
+        let response = crate::deadline::within(deadline, || process_line(line, engine));
         writeln!(writer, "{}", json_line_safe(&response))?;
         writer.flush()?;
         drop(answer);
@@ -685,6 +715,8 @@ pub fn handle_control_connection(stream: UnixStream, engine: &Engine) -> std::io
         CONTROL_REQUEST_BYTES,
         CONTROL_READ_TIMEOUT,
         &mut || answer = Some(engine.answering().start()),
+        // At most 4 KiB, and it must get in when the data connections fill the read budget.
+        &mut |_| true,
     )?;
     if buf.is_empty() {
         return Ok(());
@@ -1260,6 +1292,44 @@ mod tests {
         assert_eq!(server.read_timeout().unwrap(), Some(READ_TIMEOUT));
     }
 
+    /// Expert circle 2026-11-03, C9: work past its client's read deadline stops, answering
+    /// `RESOURCE_EXHAUSTED`, and its admission weight is given back. Each heavy method checks
+    /// the deadline after its parse; without a deadline (stdio `rpc`, MCP) the same request is
+    /// answered.
+    #[test]
+    fn a_request_past_its_deadline_is_stopped_and_releases_its_weight() {
+        let e = engine();
+        let patch = "--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n";
+        let lines = [
+            format!(r#"{{"id":1,"method":"diff.compute","params":{{"patch":{patch:?}}}}}"#),
+            format!(r#"{{"id":2,"method":"diff.plan","params":{{"patch":{patch:?}}}}}"#),
+            format!(r#"{{"id":3,"method":"diff.rank","params":{{"patch":{patch:?}}}}}"#),
+            format!(r#"{{"id":4,"method":"session.open","params":{{"patch":{patch:?}}}}}"#),
+        ];
+        let passed = crate::metrics::now();
+        for line in &lines {
+            let stopped: Value =
+                serde_json::from_str(&crate::deadline::within(passed, || process_line(line, &e)))
+                    .unwrap();
+            assert_eq!(stopped["error"]["code"], RESOURCE_EXHAUSTED, "{line}");
+            assert!(
+                stopped["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("read deadline"),
+                "{stopped}"
+            );
+            assert_eq!(e.admission().in_flight(), 0, "the weight is given back");
+            let answered: Value = serde_json::from_str(&process_line(line, &e)).unwrap();
+            assert!(answered.get("result").is_some(), "{answered}");
+        }
+        assert_eq!(
+            e.session_count(),
+            1,
+            "the stopped session.open opened nothing"
+        );
+    }
+
     #[test]
     fn process_line_health_ok() {
         let e = engine();
@@ -1716,6 +1786,63 @@ mod tests {
         assert!(joined(server).is_ok(), "the thread did not finish");
         // Socket is cleaned up on shutdown.
         assert!(!sock.exists());
+    }
+
+    /// A `daemon.health` request padded with spaces to `bytes` bytes, newline excluded.
+    fn padded_health(id: u32, bytes: usize) -> String {
+        let head = format!(r#"{{"id":{id},"method":"daemon.health""#);
+        format!("{head}{}}}", " ".repeat(bytes - head.len() - 1))
+    }
+
+    /// Expert circle 2026-11-03, C3: the request bytes being read across connections stay
+    /// within the read budget. A line that would take them past it is answered busy, and the
+    /// bytes of an answered line are given back. Before, every connection buffered a whole line,
+    /// up to 80 MiB, whatever the others held.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test: lets the server read the first client's bytes before the second sends"
+    )]
+    fn request_lines_being_read_share_one_byte_budget() {
+        let sock = temp_socket_with_parent("read-budget", 0o700);
+        let server_loc = SocketLocation::at(sock.clone());
+        let engine = Engine::new().with_read_budget(4096);
+        let server = thread::spawn(move || run_server_with(&server_loc, engine));
+        wait_for_socket(&sock);
+        // The first client holds 3000 bytes of a line it has not finished.
+        let first_line = padded_health(1, 3000);
+        let mut first = UnixStream::connect(&sock).unwrap();
+        first.write_all(&first_line.as_bytes()[..3000]).unwrap();
+        thread::sleep(Duration::from_millis(200));
+        // 3000 + 2000 is over 4096: the second line is refused busy, and its connection closed.
+        let mut second = UnixStream::connect(&sock).unwrap();
+        second
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        writeln!(second, "{}", padded_health(2, 2000)).unwrap();
+        let mut refused = String::new();
+        BufReader::new(&second).read_line(&mut refused).unwrap();
+        assert!(
+            refused.contains(&format!("\"code\":{RESOURCE_EXHAUSTED}"))
+                && refused.contains("budget for request bytes being read is full"),
+            "{refused}"
+        );
+        // The first line completes and is answered.
+        first
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        first.write_all(b"\n").unwrap();
+        let mut answer = String::new();
+        BufReader::new(&first).read_line(&mut answer).unwrap();
+        assert!(answer.contains("\"status\":\"ok\""), "{answer}");
+        drop(first);
+        thread::sleep(Duration::from_millis(200));
+        // Its 3000 bytes were given back: a 3500-byte line now fits.
+        let client = SocketLocation::at(sock.clone());
+        let health = request(&client, &padded_health(3, 3500)).expect("health after release");
+        assert!(health.contains("\"status\":\"ok\""), "{health}");
+        request(&client, r#"{"id":4,"method":"daemon.shutdown"}"#).expect("stop");
+        assert!(joined(server).is_ok());
     }
 
     /// DDF-HUNT-DAEMON-7: eight idle connections hold every data slot, and a further connection
