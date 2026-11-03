@@ -154,6 +154,12 @@ deep-diff-forge --dir <old-dir> <new-dir>
 deep-diff-forge cache status | cache prune
 ```
 
+Every file the CLI reads by a name you give it is opened without blocking and is read only if it
+is a regular file. That covers `--findings FILE`, the source files of `structural`, `semantic` and
+the other syntax commands, analysis patch and source files, and the eval corpus's `MANIFEST.json`.
+A FIFO, directory, device or socket is refused at once instead of being waited on: exit 3 for
+`--findings` and source files, exit 4 for the eval corpus (`crates/deep-diff-forge-cli/src/regular.rs`).
+
 ## CLI Compatibility Contracts
 
 | Integration | Status | Contract |

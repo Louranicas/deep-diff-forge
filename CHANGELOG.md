@@ -13,6 +13,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   the new `.github/allowed_signers`. v0.6.0 is the first signed tag. Tests run the script
   with a trusted key, an untrusted key and no signers file.
 
+### Fixed
+
+- **A FIFO given as an input file no longer hangs the CLI** (DDF-HUNT-CLI-8). `findings verify
+  --findings FIFO` and `review --findings FIFO` waited for ever for a writer, and so did `eval`
+  when the corpus's `MANIFEST.json` was a FIFO, because it is read before the corpus walk checks
+  file types. Every user-named input file is now opened through one helper (`regular.rs`): it
+  opens with `O_NONBLOCK`, checks the type of the open descriptor, and refuses anything but a
+  regular file (exit 3; exit 4 for the eval corpus). The syntax commands and analysis already did
+  this, and now share the helper. Tests run each command against a FIFO under a 10-second
+  deadline; on the old code they time out.
+
 ## [0.6.0] - 2026-11-02
 
 ### Dependencies

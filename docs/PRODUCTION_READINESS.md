@@ -705,3 +705,13 @@ Added after the 89/100 reconciliation; it does not rescore.
   as a signing key on GitHub and GitLab is an account action for the owner. The
   `allowed_signers` check does not depend on it.
 
+### DDF-HUNT-CLI-8 fixed (2026-11-03)
+
+**[Measured]** The deferred limitation "`findings verify --findings FIFO` (and `review --findings`)
+waits forever for a writer" (Known limitations above) is fixed. The same hang was also found in
+`eval`, when the corpus's `MANIFEST.json` is a FIFO. All user-named input files now open through
+`crates/deep-diff-forge-cli/src/regular.rs` (`O_NONBLOCK` plus `fstat` on the open descriptor), so
+a non-regular file is refused at once. The regression tests `a_fifo_as_the_findings_file_is_refused_not_waited_on`
+(`cli/tests/findings.rs`) and `a_fifo_manifest_is_refused_not_waited_on` (`cli/tests/eval.rs`)
+fail on the old code, where they hit their 10-second deadline, and pass on the new.
+
