@@ -6,6 +6,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two daemon tests no longer race the server on macOS** (DDF-TEST-MACTIMEOUT-001, #97).
+  `a_connection_answers_and_ends_within_a_deadline` and `a_control_connection_answers_one_small_request`
+  armed the client's read timeout after the connection thread could answer and close, and macOS
+  refuses `SO_RCVTIMEO` on a socket whose peer has closed (`EINVAL`). It failed attempt 1 of the
+  v0.7.0 release run. Both now arm it before the thread starts. A test race; the product already
+  treats that `EINVAL` as settled.
+
 ## [0.7.0] - 2026-11-03
 
 PRs #95 and #96 merged before the tag, so their entries below ship in v0.7.0 (`3823fcf`).
