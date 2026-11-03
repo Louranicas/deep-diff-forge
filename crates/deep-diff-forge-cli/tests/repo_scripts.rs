@@ -623,7 +623,7 @@ fn package(out: &Path, files: &[PathBuf], epoch: &str) -> Vec<u8> {
 
 /// Expert circle 2026-11-03 (C14): packing the same files twice, from copies with different
 /// mtimes, gives the same bytes; every entry is sorted, owned by 0:0, stamped with
-/// SOURCE_DATE_EPOCH and has a fixed mode.
+/// `SOURCE_DATE_EPOCH` and has a fixed mode.
 #[test]
 fn a_release_archive_is_the_same_bytes_from_the_same_inputs() {
     let s = scratch("package");
