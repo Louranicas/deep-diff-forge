@@ -53,6 +53,12 @@ fn render(files: &[ReviewFile], seal: Option<&InputSeal>) -> String {
         out.push_str("    {\n");
         let _ = writeln!(out, "      \"path\": {},", quote(&file.path));
         let _ = writeln!(out, "      \"status\": {},", quote(file.status.label()));
+        // Present only for a rename or copy, so other output is unchanged: the file the move
+        // takes the content from (DDF-HUNT-PATCH-6; expert circle 2026-11-03).
+        let old_path = crate::render::old_path(file);
+        if let Some(old) = &old_path {
+            let _ = writeln!(out, "      \"old_path\": {},", quote(old));
+        }
         let _ = writeln!(
             out,
             "      \"strategy\": {},",
@@ -68,7 +74,17 @@ fn render(files: &[ReviewFile], seal: Option<&InputSeal>) -> String {
         }
         // Objective hazards in the path (traversal, `.git`, bidi, invisible, control); present
         // only when there are any, so other output is unchanged.
-        let path_hazards = deep_diff_forge_core::path_hazards(&file.path);
+        // A move's old path is checked too: renaming `.github/workflows/x` away is a hazard.
+        let mut path_hazards = deep_diff_forge_core::path_hazards(&file.path);
+        for hazard in old_path
+            .as_deref()
+            .map(deep_diff_forge_core::path_hazards)
+            .unwrap_or_default()
+        {
+            if !path_hazards.contains(&hazard) {
+                path_hazards.push(hazard);
+            }
+        }
         if !path_hazards.is_empty() {
             let _ = writeln!(
                 out,
@@ -490,4 +506,34 @@ mod tests {
   }
 }
 "#;
+
+    /// A move reports the file it takes its content from as `old_path`, and that path's hazards
+    /// count too; other files carry no `old_path` (expert circle 2026-11-03).
+    #[test]
+    fn a_move_names_its_old_path_and_its_hazards() {
+        let moved = crate::parse(
+            "diff --git a/.github/workflows/ci.yml b/ci.yml\n--- a/.github/workflows/ci.yml\n+++ b/ci.yml\n@@ -1 +1 @@\n-a\n+b\n",
+        )
+        .unwrap();
+        let out = to_json(&moved);
+        assert!(
+            out.contains("\"old_path\": \".github/workflows/ci.yml\""),
+            "{out}"
+        );
+        let explicit = crate::parse(
+            "diff --git a/x b/y\nsimilarity index 100%\nrename from ../x\nrename to y\n",
+        );
+        assert!(explicit.is_err(), "Git refuses a move from `..`");
+        let plain =
+            crate::parse("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n").unwrap();
+        assert!(!to_json(&plain).contains("old_path"));
+        let hazard = crate::parse(
+            "diff --git a/x\u{202e}y b/z\n--- a/x\u{202e}y\n+++ b/z\n@@ -1 +1 @@\n-a\n+b\n",
+        )
+        .unwrap();
+        assert!(
+            to_json(&hazard).contains("\"hazards\""),
+            "the old path's bidi control counts"
+        );
+    }
 }

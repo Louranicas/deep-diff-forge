@@ -263,8 +263,10 @@ daemon as the CLI does and gives a stop longer than `daemon stop` waits (`STOP_W
   `XDG_RUNTIME_DIR`, so the agent sets one (`~/.local/run`, created `0700`), and shells that use
   the daemon export the same value. Replace `/Users/YOU` and `launchctl bootstrap gui/$(id -u)
   <plist>`. Stop it with `deep-diff-forge
-  daemon stop`, which drains; `launchctl bootout` sends SIGTERM, which does not, and leaves the
-  socket file behind (no SIGTERM handler; the next start replaces a stale socket). Since
+  daemon stop` or `launchctl bootout`. Since DDF-HUNT-DAEMON-7 (2026-11-03) the daemon handles
+  SIGTERM and SIGINT as `daemon stop`: it stops accepting, removes its socket, drains the
+  answers in progress and exits 0. Before, SIGTERM killed it without a drain and left the
+  socket file behind. Since
   2026-10-31 the `macOS launchd agent` job of `ci.yml` runs `scripts/launchd_smoke.sh` on a
   hosted Mac (on every CI event except a release run, which skips it until it has a record):
   bootstrap into `gui/<uid>` (falling back to `user/<uid>`), `daemon health` with
@@ -329,7 +331,7 @@ deep-diff-forge cache prune --max-size 20GiB
 | Oversized payload | Reject with structured error. | Request over 80 MiB: `INVALID_REQUEST`, then the connection closes. Response over 80 MiB, an error included, measured as written: `RESOURCE_EXHAUSTED` (8). An error message is cut at 4 KiB (`MAX_ERROR_MESSAGE_BYTES`), on the socket and in the MCP server's tool and protocol errors. |
 | Client disconnect | Cancel session subscription, keep shared cache. | No subscriptions or cache; the worker ends and frees its slot. |
 | Out of budget | Preserve patch twin and record semantic fallback. | Patch input over its byte or line budget is refused (exit 4 on the CLI). |
-| Ninth connection | Apply backpressure. | Accepted and closed at once, with no response. The CLI reports `no answer from the daemon at PATH (it may be at its connection limit; retry)`, exit 6, not `no daemon at`. No slot is kept for `daemon stop` or `daemon health`: while eight clients hold every slot, stop the daemon with a signal. |
+| Ninth connection | Apply backpressure. | Since DDF-HUNT-DAEMON-7 (2026-11-03) two control slots sit beyond the eight data slots. A connection on one gets one request of at most 4 KiB, read within 5 s. `daemon.health`, `daemon.status`, `daemon.metrics` and `daemon.shutdown` are answered; any other method is refused `RESOURCE_EXHAUSTED` (8) with "connection limit"; then the connection closes. So `daemon health` and `daemon stop` work while eight clients hold every data slot. With the control slots taken as well, a connection is accepted and closed at once, with no response, and the CLI reports `no answer from the daemon at PATH (it may be at its connection limit; retry)`, exit 6, not `no daemon at`. SIGTERM or SIGINT always stops the daemon cleanly. |
 
 ## Observability
 

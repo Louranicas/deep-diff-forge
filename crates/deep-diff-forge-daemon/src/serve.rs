@@ -263,6 +263,24 @@ const MAX_RESPONSE_BYTES: usize = MAX_REQUEST_BYTES;
 
 /// Maximum number of connection worker threads alive at once.
 const MAX_CONNECTIONS: usize = 8;
+/// Connections admitted beyond [`MAX_CONNECTIONS`], each for one control request (see
+/// [`handle_control_connection`]). Before, a connection over the limit was closed unanswered, so
+/// eight idle clients kept `daemon stop` and `daemon health` out (DDF-HUNT-DAEMON-7).
+const CONTROL_CONNECTIONS: usize = 2;
+/// The methods a control connection answers: the ones an operator needs while every data slot is
+/// held. Each is answered from the engine's counters, without request work.
+const CONTROL_METHODS: [&str; 4] = [
+    "daemon.health",
+    "daemon.status",
+    "daemon.metrics",
+    "daemon.shutdown",
+];
+/// Maximum bytes of a control request line: a control request has no parameters, so a slot
+/// beyond the limit never buffers more than this.
+const CONTROL_REQUEST_BYTES: usize = 4096;
+/// How long a control connection waits for its request: short, so a client that sends nothing
+/// gives its control slot back soon.
+const CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a stop waits for the answers in progress: a client's own read deadline, after which
 /// nobody is reading them.
 const DRAIN_WAIT: Duration = Duration::from_secs(30);
@@ -462,6 +480,23 @@ fn settle_read_timeout(armed: std::io::Result<()>) -> std::io::Result<()> {
     }
 }
 
+/// The outcome of arming the client's write deadline. macOS refuses `SO_SNDTIMEO` with EINVAL
+/// once the peer has shut the connection, as a daemon at its connection limit does at once (it
+/// accepts and closes). That is a daemon that closed without answering, so it is reported as
+/// `UnexpectedEof` (exit 6, "no answer"), not as an unexplained error the CLI read as "no daemon
+/// at" (macOS CI, PR #92).
+fn settle_write_timeout(armed: std::io::Result<()>) -> std::io::Result<()> {
+    match armed {
+        Err(err) if err.raw_os_error() == Some(rustix::io::Errno::INVAL.raw_os_error()) => {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "daemon closed the connection before the request",
+            ))
+        }
+        other => other,
+    }
+}
+
 /// Read one bounded line from a socket under an absolute deadline.
 fn read_capped_line_deadline(
     reader: &mut BufReader<UnixStream>,
@@ -626,6 +661,54 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
             break;
         }
     }
+    Ok(())
+}
+
+/// Serve one connection admitted on a control slot, beyond the data limit: read one request line
+/// of at most [`CONTROL_REQUEST_BYTES`] within [`CONTROL_READ_TIMEOUT`], answer it if it calls one
+/// of [`CONTROL_METHODS`], refuse it as busy otherwise, and close. So with every data slot held, a
+/// client can still check the daemon or stop it, and the extra slots cannot be held for long.
+///
+/// # Errors
+///
+/// Returns any underlying stream I/O error.
+pub fn handle_control_connection(stream: UnixStream, engine: &Engine) -> std::io::Result<()> {
+    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut writer = stream;
+    let mut buf = Vec::new();
+    // Counted from its first byte, as on a data connection, so a stop waits for its answer.
+    let mut answer = None;
+    read_capped_line_deadline_noting(
+        &mut reader,
+        &mut buf,
+        CONTROL_REQUEST_BYTES,
+        CONTROL_READ_TIMEOUT,
+        &mut || answer = Some(engine.answering().start()),
+    )?;
+    if buf.is_empty() {
+        return Ok(());
+    }
+    let control = std::str::from_utf8(&buf)
+        .ok()
+        .filter(|_| buf.len() <= CONTROL_REQUEST_BYTES)
+        .map(str::trim)
+        .filter(|line| {
+            parse_request(line)
+                .is_ok_and(|request| CONTROL_METHODS.contains(&request.method.as_str()))
+        });
+    let response = match control {
+        Some(line) => process_line(line, engine),
+        None => refusal(
+            engine,
+            RESOURCE_EXHAUSTED,
+            "the daemon is at its connection limit; until a connection closes it answers only \
+             daemon.health, daemon.status, daemon.metrics and daemon.shutdown",
+        ),
+    };
+    writeln!(writer, "{}", json_line_safe(&response))?;
+    writer.flush()?;
+    drop(answer);
     Ok(())
 }
 
@@ -812,10 +895,11 @@ impl Drop for ActiveConnection {
     }
 }
 
-fn try_acquire_connection(active: &Arc<AtomicUsize>) -> bool {
+/// Take one of `limit` slots counted by `active`, or report that all are taken.
+fn try_acquire_connection(active: &Arc<AtomicUsize>, limit: usize) -> bool {
     let mut count = active.load(Ordering::Acquire);
     loop {
-        if count >= MAX_CONNECTIONS {
+        if count >= limit {
             return false;
         }
         match active.compare_exchange_weak(count, count + 1, Ordering::AcqRel, Ordering::Acquire) {
@@ -882,6 +966,33 @@ fn serve_bound(
     // Shared by every connection thread; requests run in parallel (see `process_line`).
     let engine = Arc::new(engine);
     let active_connections = Arc::new(AtomicUsize::new(0));
+    let control_connections = Arc::new(AtomicUsize::new(0));
+    // SIGTERM (`kill`, `launchctl bootout`, `systemctl kill`) and SIGINT (Ctrl-C) stop the daemon
+    // as `daemon.shutdown` does: the loop ends, the socket is removed and the answers in progress
+    // drain. Before, either signal killed the process and left the socket file behind
+    // (DDF-HUNT-DAEMON-7).
+    let mut signals = signal_hook::iterator::Signals::new([
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGINT,
+    ])?;
+    let signal_handle = signals.handle();
+    let signal_watch = {
+        let engine = Arc::clone(&engine);
+        let wakeup = socket_path.clone();
+        std::thread::Builder::new()
+            .name("ddf-daemon-signals".to_string())
+            .spawn(move || {
+                if let Some(signal) = signals.forever().next() {
+                    engine.stop();
+                    engine.log(
+                        "shutdown_signal",
+                        &format!("signal {signal} received; stopping"),
+                    );
+                    // Unblock the accept loop, as a `daemon.shutdown` connection does.
+                    let _ = UnixStream::connect(wakeup);
+                }
+            })?
+    };
     loop {
         // Break immediately if a previous connection already triggered shutdown.
         if !engine.is_running() {
@@ -899,24 +1010,35 @@ fn serve_bound(
                     drop(stream);
                     continue;
                 }
-                if !try_acquire_connection(&active_connections) {
-                    engine.metrics().refused_at_limit();
-                    // Dropping the accepted stream applies backpressure without
-                    // allocating another stack or worker thread.
-                    drop(stream);
-                    continue;
-                }
+                // A data slot, else a control slot (one control request), else backpressure.
+                let (active, control) =
+                    if try_acquire_connection(&active_connections, MAX_CONNECTIONS) {
+                        (Arc::clone(&active_connections), false)
+                    } else if try_acquire_connection(&control_connections, CONTROL_CONNECTIONS) {
+                        (Arc::clone(&control_connections), true)
+                    } else {
+                        engine.metrics().refused_at_limit();
+                        // Dropping the accepted stream applies backpressure without
+                        // allocating another stack or worker thread.
+                        drop(stream);
+                        continue;
+                    };
                 engine.metrics().accepted();
                 let arc = Arc::clone(&engine);
                 let wakeup = socket_path.clone();
-                let active = Arc::clone(&active_connections);
+                let release = Arc::clone(&active);
                 // A per-connection error must NOT tear down the daemon — the
                 // spawned thread logs it and the accept loop continues.
                 let spawned = std::thread::Builder::new()
                     .name("ddf-daemon-connection".to_string())
                     .spawn(move || {
                         let _active_guard = ActiveConnection(active);
-                        if let Err(err) = handle_connection(stream, &arc) {
+                        let served = if control {
+                            handle_control_connection(stream, &arc)
+                        } else {
+                            handle_connection(stream, &arc)
+                        };
+                        if let Err(err) = served {
                             arc.metrics().connection_error();
                             arc.log("connection_error", &format!("connection error: {err}"));
                         }
@@ -929,7 +1051,7 @@ fn serve_bound(
                     });
                 if let Err(err) = spawned {
                     // The closure never ran, so release the slot explicitly.
-                    active_connections.fetch_sub(1, Ordering::AcqRel);
+                    release.fetch_sub(1, Ordering::AcqRel);
                     engine.log(
                         "worker_spawn_failed",
                         &format!("could not spawn connection worker: {err}"),
@@ -940,6 +1062,9 @@ fn serve_bound(
             Err(err) => return Err(err),
         }
     }
+    // The signal watcher has nothing left to stop.
+    signal_handle.close();
+    let _ = signal_watch.join();
     cleanup_owned_socket(location.path(), socket_identity);
     // Closing the listener refuses the connections still queued in its backlog at once; before,
     // they waited out the drain. The start lock stays held until the drain is done.
@@ -978,7 +1103,7 @@ pub fn request(location: &SocketLocation, line: &str) -> std::io::Result<String>
         ));
     }
     let mut stream = location.connect()?;
-    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
+    settle_write_timeout(stream.set_write_timeout(Some(WRITE_TIMEOUT)))?;
     writeln!(stream, "{line}")?;
     stream.flush()?;
     let mut reader = BufReader::new(stream);
@@ -1510,12 +1635,12 @@ mod tests {
         let active = Arc::new(AtomicUsize::new(0));
         let mut guards = Vec::new();
         for _ in 0..MAX_CONNECTIONS {
-            assert!(try_acquire_connection(&active));
+            assert!(try_acquire_connection(&active, MAX_CONNECTIONS));
             guards.push(ActiveConnection(Arc::clone(&active)));
         }
-        assert!(!try_acquire_connection(&active));
+        assert!(!try_acquire_connection(&active, MAX_CONNECTIONS));
         guards.pop();
-        assert!(try_acquire_connection(&active));
+        assert!(try_acquire_connection(&active, MAX_CONNECTIONS));
         // Balance the final successful acquisition; the remaining guards clean
         // up their own slots on drop.
         active.fetch_sub(1, Ordering::AcqRel);
@@ -1563,6 +1688,62 @@ mod tests {
         assert!(joined(server).is_ok(), "the thread did not finish");
         // Socket is cleaned up on shutdown.
         assert!(!sock.exists());
+    }
+
+    /// DDF-HUNT-DAEMON-7: eight idle connections hold every data slot, and a further connection
+    /// still gets `daemon.health` and `daemon.shutdown` answered, on a control slot. Before, it was
+    /// closed unanswered, and only a signal stopped the daemon.
+    #[test]
+    fn a_daemon_at_its_connection_limit_still_answers_health_and_stops() {
+        let sock = temp_socket_with_parent("full", 0o700);
+        let server_loc = SocketLocation::at(sock.clone());
+        let server = thread::spawn(move || run_server(&server_loc));
+        wait_for_socket(&sock);
+        // Accepted in order, so each holds a data slot before the requests below are accepted.
+        let idle: Vec<UnixStream> = (0..MAX_CONNECTIONS)
+            .map(|_| UnixStream::connect(&sock).expect("idle connection"))
+            .collect();
+        let client = SocketLocation::at(sock.clone());
+
+        let health = request(&client, r#"{"id":1,"method":"daemon.health"}"#).expect("health");
+        assert!(health.contains("\"status\":\"ok\""), "{health}");
+        let work = request(
+            &client,
+            r#"{"id":2,"method":"diff.plan","params":{"patch":""}}"#,
+        )
+        .expect("an answer, not a closed connection");
+        assert!(
+            work.contains(&format!("\"code\":{RESOURCE_EXHAUSTED}"))
+                && work.contains("connection limit"),
+            "{work}"
+        );
+        let stop = request(&client, r#"{"id":3,"method":"daemon.shutdown"}"#).expect("stop");
+        assert!(stop.contains("\"stopping\":true"), "{stop}");
+
+        assert!(joined(server).is_ok(), "the daemon did not stop");
+        assert!(!sock.exists(), "the socket was left behind");
+        drop(idle);
+    }
+
+    /// A control slot holds one small request: a silent client loses it at the control deadline,
+    /// and an oversized line is refused, so the slots cannot be held as the data slots can.
+    #[test]
+    fn a_control_connection_answers_one_small_request() {
+        let (client, server) = UnixStream::pair().expect("socketpair");
+        let connection = thread::spawn(move || handle_control_connection(server, &engine()));
+        let mut writer = client.try_clone().unwrap();
+        writeln!(writer, "{}", "x".repeat(CONTROL_REQUEST_BYTES + 1)).unwrap();
+        writer.flush().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut response = String::new();
+        BufReader::new(client).read_line(&mut response).unwrap();
+        assert!(
+            response.contains(&format!("\"code\":{RESOURCE_EXHAUSTED}")),
+            "{response}"
+        );
+        assert!(joined(connection).is_ok_and(|served| served.is_ok()));
     }
 
     /// A connection answers its request and ends at end of file, both within a deadline, so a
@@ -2267,6 +2448,23 @@ mod tests {
         );
         let refused = std::io::Error::new(std::io::ErrorKind::InvalidInput, "zero timeout");
         assert!(settle_read_timeout(Err(refused)).is_err());
+    }
+
+    /// macOS's EINVAL on arming the write deadline of a connection the daemon already closed is a
+    /// closed connection (`UnexpectedEof`, exit 6), and every other outcome passes through.
+    #[test]
+    fn a_refused_write_deadline_is_a_daemon_that_closed() {
+        let einval = std::io::Error::from_raw_os_error(rustix::io::Errno::INVAL.raw_os_error());
+        assert_eq!(
+            settle_write_timeout(Err(einval)).unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+        assert!(settle_write_timeout(Ok(())).is_ok());
+        let other = std::io::Error::from_raw_os_error(rustix::io::Errno::BADF.raw_os_error());
+        assert_eq!(
+            settle_write_timeout(Err(other)).unwrap_err().raw_os_error(),
+            Some(rustix::io::Errno::BADF.raw_os_error())
+        );
     }
 
     /// A peer that sends one line and closes cleanly has sent a complete line, however many

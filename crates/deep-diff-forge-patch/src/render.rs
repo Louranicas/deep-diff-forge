@@ -104,15 +104,21 @@ fn render_hunk(out: &mut String, hunk: &PatchHunk) {
 }
 
 fn old_label(file: &ReviewFile) -> String {
-    for meta in &file.patch_twin.metadata {
-        if let Some(from) = meta
+    old_path(file).unwrap_or_else(|| file.path.clone())
+}
+
+/// The path a renamed or copied file came from, from its `rename from`/`copy from` header
+/// (one Git wrote, or the one the parser records for an implied move, DDF-HUNT-PATCH-6).
+/// `None` for any other file. Every output surface reports it as `old_path`, so a consumer
+/// never has to parse the metadata strings to learn which file a rename removes.
+#[must_use]
+pub fn old_path(file: &ReviewFile) -> Option<String> {
+    file.patch_twin.metadata.iter().find_map(|meta| {
+        let from = meta
             .strip_prefix("rename from ")
-            .or_else(|| meta.strip_prefix("copy from "))
-        {
-            return super::paths::decode_path(from).unwrap_or_else(|| from.to_string());
-        }
-    }
-    file.path.clone()
+            .or_else(|| meta.strip_prefix("copy from "))?;
+        Some(super::paths::decode_path(from).unwrap_or_else(|| from.to_string()))
+    })
 }
 
 #[cfg(test)]

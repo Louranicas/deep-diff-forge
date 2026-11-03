@@ -324,6 +324,12 @@ impl Engine {
         &self.answering
     }
 
+    /// Stop serving, as `daemon.shutdown` does: the accept loop ends at its next connection and
+    /// the answers in progress drain. The daemon calls it on SIGTERM and SIGINT.
+    pub fn stop(&self) {
+        self.running.store(false, Ordering::Release);
+    }
+
     /// Whether the engine is still serving (cleared by `daemon.shutdown`).
     #[must_use]
     pub fn is_running(&self) -> bool {
@@ -641,7 +647,7 @@ pub fn dispatch(request: &Request, engine: &Engine) -> Result<Value, RpcError> {
             "protocol": PROTOCOL_VERSION,
         })),
         "daemon.shutdown" => {
-            engine.running.store(false, Ordering::Release);
+            engine.stop();
             Ok(json!({"stopping": true}))
         }
         "diff.plan" => {

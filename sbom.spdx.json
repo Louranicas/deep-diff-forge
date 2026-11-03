@@ -1,13 +1,13 @@
 {
   "SPDXID": "SPDXRef-DOCUMENT",
   "creationInfo": {
-    "created": "2026-11-01T08:26:21Z",
+    "created": "2026-11-02T03:10:00Z",
     "creators": [
       "Tool: deep-diff-forge scripts/security/generate_spdx_sbom.py"
     ]
   },
   "dataLicense": "CC0-1.0",
-  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/08c4b5b8edb5f611bbddefdd2f3a6f37",
+  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/0a16b1468fbef5e456fba371f81cbab6",
   "name": "deep-diff-forge-cargo-lock-sbom",
   "packages": [
     {
@@ -519,7 +519,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "de8de456b34fdcbc8ffa217c8cc021233db615123a8d2b0b2d83cfb21ea0904f"
+          "checksumValue": "290cdc35634d6e2601b4d90adf81c913140b0b3c6c0333a2d528cba409238fca"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -3329,6 +3329,11 @@
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-serde-json-0a8bc9687473eff2",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-3e0207ef11f573e3"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-signal-hook-fd99a64769a9d396",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-3e0207ef11f573e3"
     },

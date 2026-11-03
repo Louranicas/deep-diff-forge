@@ -47,8 +47,21 @@ fn id(case: &Value) -> &str {
     case["id"].as_str().unwrap_or("?")
 }
 
+/// Read the corpus file `rel`. Only a regular file is read: `MANIFEST.json` is read before
+/// [`Corpus::walk`] checks the tree, and a FIFO there hung `eval` (DDF-HUNT-CLI-8).
 fn read(dir: &Path, rel: &str) -> Result<Vec<u8>, EvalError> {
-    std::fs::read(dir.join(rel)).map_err(|e| EvalError::Read(format!("{rel}: {e}")))
+    use std::io::Read as _;
+    let unreadable = |e: std::io::Error| EvalError::Read(format!("{rel}: {e}"));
+    let mut file =
+        crate::regular::open_regular(&dir.join(rel)).map_err(|refusal| match refusal {
+            crate::regular::Refusal::Io(e) => unreadable(e),
+            crate::regular::Refusal::NotRegular => {
+                EvalError::Corpus(format!("{rel} is not a regular file"))
+            }
+        })?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(unreadable)?;
+    Ok(bytes)
 }
 
 fn field<'v>(case: &'v Value, key: &str) -> Result<&'v Value, EvalError> {

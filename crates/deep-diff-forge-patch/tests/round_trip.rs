@@ -88,3 +88,15 @@ fn discovered_fuzz_inputs_fail_explicitly_or_render_stably() {
         }
     }
 }
+
+/// Fuzz campaign 2026-11-02 (crash-9548c554, DDF-FUZZ-PATCH-8): an unquoted `diff --git` name
+/// with `//` kept its slashes, its rendered, quoted twin lost one, so render was not stable.
+#[test]
+fn a_doubled_slash_in_a_diff_git_name_survives_quoting() {
+    let input = "diff --git ae.rff --git ae.rs b/new/164%~rename fro0m oldad//s b/new/164%~rename fro0m oldad//s";
+    let first = parse(input).unwrap();
+    let rendered = render_unified(&first);
+    let second = parse(&rendered).unwrap();
+    assert_eq!(first, second, "{rendered:?}");
+    assert_eq!(rendered, render_unified(&second));
+}

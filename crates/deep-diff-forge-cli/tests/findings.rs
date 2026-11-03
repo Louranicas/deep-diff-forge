@@ -215,3 +215,73 @@ fn the_cockpit_shows_accepted_findings_as_agent_notes() {
     );
     assert_eq!(code, 3);
 }
+
+/// A FIFO at `name` in the temp directory, removed when the test ends.
+struct Fifo(PathBuf);
+
+impl Fifo {
+    fn new(name: &str) -> Self {
+        let path =
+            std::env::temp_dir().join(format!("ddf-findings-fifo-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        Self(path)
+    }
+}
+
+impl Drop for Fifo {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Runs the binary with stdin closed and returns its exit code, or kills it and fails the test
+/// when it has not exited within ten seconds (the old code waited for a FIFO writer for ever).
+fn exit_within_deadline(args: &[&str]) -> (i32, String) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            child.kill().unwrap();
+            let _ = child.wait();
+            panic!("{args:?} still running after 10 s: it waits on the FIFO");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// DDF-HUNT-CLI-8: a FIFO with no writer given as `--findings` is refused at once with exit 3,
+/// for `findings verify` and `review --findings` alike, instead of blocking in `open`.
+#[test]
+fn a_fifo_as_the_findings_file_is_refused_not_waited_on() {
+    let fifo = Fifo::new("verify");
+    let path = fifo.0.to_str().unwrap();
+    for args in [
+        &["findings", "verify", "--findings", path][..],
+        &["review", "--probe", "--findings", path][..],
+    ] {
+        let (code, stderr) = exit_within_deadline(args);
+        assert_eq!(code, 3, "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("is not a regular file"),
+            "{args:?}: {stderr}"
+        );
+    }
+}

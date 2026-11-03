@@ -29,9 +29,13 @@ pub fn jsonl_events(files: &[ReviewFile]) -> String {
             0 => String::new(),
             n => format!(",\"lossy_lines\":{n}"),
         };
+        // `old_path` appears only for a rename or copy, so other output is unchanged.
+        let old_path = deep_diff_forge_patch::old_path(file)
+            .map(|old| format!(",\"old_path\":{}", quote(&old)))
+            .unwrap_or_default();
         let _ = writeln!(
             out,
-            "{{\"event\":\"diff.file\",\"path\":{},\"status\":\"{}\",\"additions\":{},\"deletions\":{},\"hunks\":{}{lossy}}}",
+            "{{\"event\":\"diff.file\",\"path\":{},\"status\":\"{}\"{old_path},\"additions\":{},\"deletions\":{},\"hunks\":{}{lossy}}}",
             quote(&file.path),
             file.status.label(),
             additions,

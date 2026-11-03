@@ -154,6 +154,12 @@ deep-diff-forge --dir <old-dir> <new-dir>
 deep-diff-forge cache status | cache prune
 ```
 
+Every file the CLI reads by a name you give it is opened without blocking and is read only if it
+is a regular file. That covers `--findings FILE`, the source files of `structural`, `semantic` and
+the other syntax commands, analysis patch and source files, and the eval corpus's `MANIFEST.json`.
+A FIFO, directory, device or socket is refused at once instead of being waited on: exit 3 for
+`--findings` and source files, exit 4 for the eval corpus (`crates/deep-diff-forge-cli/src/regular.rs`).
+
 ## CLI Compatibility Contracts
 
 | Integration | Status | Contract |
@@ -219,7 +225,7 @@ Domain codes:
 | 3 | Git failed (`review.change`) | 3 (`io`) |
 | 4 | Patch parse failed | 4 (`invalid_input`) |
 | 7 | Input contract refused (`refused: …`) | 7 (`input_contract_refused`) |
-| 8 | Resource budget exceeded: a session over the retained-payload budget, no free session id, a response over 80 MiB, findings over 8 MiB, or the daemon busy (no admission within 30 s) | — |
+| 8 | Resource budget exceeded: a session over the retained-payload budget, no free session id, a response over 80 MiB, findings over 8 MiB, the daemon busy (no admission within 30 s), or, on a control slot at the connection limit, any method but `daemon.health`, `daemon.status`, `daemon.metrics` and `daemon.shutdown` ("connection limit"). Busy and connection-limit refusals clear when load drops; the size limits do not | — |
 
 The Rust SDK maps domain errors 4 and 7 to CLI exits 4 and 7, and any other RPC
 or transport error to 6 (`Error::exit_code`).
@@ -404,6 +410,17 @@ reason.
 Shipped: `engine.protocol = 2` (`protocol.rs`, `PROTOCOL_VERSION`; 0 and 1 still negotiate),
 negotiated through `engine.initialize` as described above. Documents carry their own schema
 names (`deep-diff-forge.review.v0`, `ddf.result.v1` and so on).
+
+What may change within a `v0` schema name (stated 2026-11-03, after an expert-circle review):
+new members (present only when they apply, such as `hazards` and `old_path`), new enum values,
+and a different value for the same input when that fixes a value that misreported what Git
+does. A fix of that kind is listed under `### Changed` in the CHANGELOG, with the inputs it
+affects. Removing or renaming a member, or changing a member's type, needs a new schema name.
+
+`old_path` (since the release after 0.6.0): in `review.v0` files and `diff.file` JSONL events,
+the path a `renamed` or `copied` file takes its content from. It is absent for every other
+file. Its hazards count in the file's `hazards`. The rename headers in `metadata` may be ones
+DDF records for an implied move (DDF-HUNT-PATCH-6), not lines from the input.
 
 Planned: separate version numbers for the model, the projection and agent
 annotations.

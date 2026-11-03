@@ -7,7 +7,6 @@ use deep_diff_forge_pipeline::review::{SourcePair, analyze_review};
 use std::{
     fmt, fs,
     io::Read as _,
-    os::unix::fs::OpenOptionsExt as _,
     path::{Component, Path},
 };
 
@@ -79,19 +78,10 @@ pub(crate) fn run(args: &[String]) -> Result<String, Error> {
 }
 
 fn open_regular(path: &Path, what: &str) -> Result<fs::File, Error> {
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(nix::libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|error| Error::Io(error.to_string()))?;
-    if !file
-        .metadata()
-        .map_err(|error| Error::Io(error.to_string()))?
-        .is_file()
-    {
-        return Err(Error::Io(format!("{what} is not a regular file")));
-    }
-    Ok(file)
+    crate::regular::open_regular(path).map_err(|refusal| match refusal {
+        crate::regular::Refusal::Io(error) => Error::Io(error.to_string()),
+        crate::regular::Refusal::NotRegular => Error::Io(format!("{what} is not a regular file")),
+    })
 }
 
 fn read_patch(path: &Path) -> Result<String, Error> {

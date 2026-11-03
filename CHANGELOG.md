@@ -6,12 +6,55 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The same input can now report `renamed` where it reported `modified`** (DDF-HUNT-PATCH-6).
+  This affects a Git section whose `---`/`+++` names differ, with no rename header: two-file
+  review (`deep-diff-forge <old> <new>`), and `--stdin-patch`, `diff.compute` or MCP input of that
+  shape. A consumer filtering on `status == "modified"` for such input now sees `renamed`. The
+  status names did not change, so the schemas stay `v0`. The `v0` compatibility rule is now
+  written down in `docs/API_AND_IPC.md` (Protocol Versioning).
+- **New `old_path` member** in `review.v0` files and `diff.file` JSONL events, for a `renamed` or
+  `copied` file, plus `(from <old>)` in the text summary. The hazards of the old path count in
+  `hazards`, so renaming `.github/workflows/x` away is flagged.
+
 ### Security
 
 - Release tags are signed. `just release-tag` now signs the tag with SSH through
   `scripts/sign_release_tag.sh` and deletes it, before pushing, unless it verifies against
   the new `.github/allowed_signers`. v0.6.0 is the first signed tag. Tests run the script
   with a trusted key, an untrusted key and no signers file.
+
+### Fixed
+
+- **A Git section naming two different files is reviewed as the rename `git apply` makes**
+  (DDF-HUNT-PATCH-6). `diff --git a/x b/y` with `--- a/x`/`+++ b/y` and no rename header was
+  reviewed as `modified y`, but `git apply` deletes `x` and creates `y`. The review now says
+  `renamed` and keeps `x` as the old path. Two-file review (`deep-diff-forge <old> <new>`, which
+  reads `git diff --no-index` output) therefore reports `renamed`. A Git oracle test applies the
+  original and the rendered patch and compares the trees.
+- **A doubled slash in a `diff --git` name no longer breaks render stability** (DDF-FUZZ-PATCH-8,
+  found by the scheduled fuzz campaign of 2026-11-02 on the v0.6.0 commit). A quoted half lost a
+  `/` that an unquoted half kept. The crash input is kept in `fixtures/patch/regressions/`.
+- **A FIFO given as an input file no longer hangs the CLI** (DDF-HUNT-CLI-8). `findings verify
+  --findings FIFO` and `review --findings FIFO` waited for ever for a writer, and so did `eval`
+  when the corpus's `MANIFEST.json` was a FIFO, because it is read before the corpus walk checks
+  file types. Every user-named input file is now opened through one helper (`regular.rs`): it
+  opens with `O_NONBLOCK`, checks the type of the open descriptor, and refuses anything but a
+  regular file (exit 3; exit 4 for the eval corpus). The syntax commands and analysis already did
+  this, and now share the helper. Tests run each command against a FIFO under a 10-second
+  deadline; on the old code they time out.
+- **The daemon can be stopped and checked at its connection limit** (DDF-HUNT-DAEMON-7). Two
+  control slots beyond the eight data slots answer `daemon.health`, `daemon.status`,
+  `daemon.metrics` and `daemon.shutdown`. Each holds one small request, read within 5 s. Before,
+  eight idle clients kept `daemon stop` out and only a signal stopped the daemon.
+- **On macOS, a daemon at its connection limit is no longer reported as absent.** macOS refuses to
+  set a write timeout on a connection the daemon has already closed, and the CLI read that
+  `EINVAL` as "no daemon at". It now reports "no answer", with exit 6 (found by macOS CI on this
+  change).
+- **SIGTERM and SIGINT stop the daemon cleanly**: they now drain the answers in progress, remove
+  the socket and exit 0, as `daemon stop` does. That covers `launchctl bootout`, `systemctl stop`,
+  `kill` and Ctrl-C. Before, the signal killed the daemon and left its socket file behind.
 
 ## [0.6.0] - 2026-11-02
 

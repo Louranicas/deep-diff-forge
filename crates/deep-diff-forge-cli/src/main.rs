@@ -9,6 +9,7 @@ mod eval;
 mod file_pair;
 mod git_input;
 mod mcp;
+mod regular;
 mod rpc;
 mod textfile;
 use deep_diff_forge_core::exit;
@@ -1058,26 +1059,20 @@ fn open_palette_command(app: &mut deep_diff_forge_tui::ReviewApp, index: usize) 
 /// Open and read a source file under the byte cap, exiting on failure. The
 /// shared helper behind the file-reading subcommands.
 fn read_source_file_or_exit(path: &str) -> String {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(nix::libc::O_NONBLOCK)
-        .open(path)
-    {
-        Ok(f) => f,
-        Err(err) => {
+    match regular::open_regular(std::path::Path::new(path)) {
+        Ok(file) => read_capped_or_exit(file, "source file"),
+        Err(regular::Refusal::Io(err)) => {
             eprintln!("error: could not read {}: {err}", display_safe(path));
             std::process::exit(exit::IO);
         }
-    };
-    if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
-        eprintln!(
-            "error: source is not a regular file: {}",
-            display_safe_bounded(path, 200)
-        );
-        std::process::exit(exit::IO);
+        Err(regular::Refusal::NotRegular) => {
+            eprintln!(
+                "error: source is not a regular file: {}",
+                display_safe_bounded(path, 200)
+            );
+            std::process::exit(exit::IO);
+        }
     }
-    read_capped_or_exit(file, "source file")
 }
 
 /// `structural <old> <new> [--json]`: token-level (AST-leaf) structural diff —
@@ -1491,16 +1486,26 @@ fn findings_cmd(opts: &[String]) {
     }
 }
 
-/// A findings file: at most 8 MiB of UTF-8. Exit 3 when it cannot be read, 4 when it is over
-/// the limit or not UTF-8.
+/// A findings file: at most 8 MiB of UTF-8. Exit 3 when it cannot be read or is not a regular
+/// file (a FIFO is refused, not waited on: DDF-HUNT-CLI-8), 4 when it is over the limit or not
+/// UTF-8.
 fn read_findings_or_exit(path: &str) -> String {
     use deep_diff_forge_agent::findings::MAX_FINDINGS_BYTES;
     use std::io::Read as _;
     let mut findings = Vec::new();
-    let read = std::fs::File::open(path).and_then(|file| {
-        file.take(MAX_FINDINGS_BYTES as u64 + 1)
-            .read_to_end(&mut findings)
-    });
+    let read = match regular::open_regular(std::path::Path::new(path)) {
+        Ok(file) => file
+            .take(MAX_FINDINGS_BYTES as u64 + 1)
+            .read_to_end(&mut findings),
+        Err(regular::Refusal::Io(err)) => Err(err),
+        Err(regular::Refusal::NotRegular) => {
+            eprintln!(
+                "error: findings {} is not a regular file",
+                display_safe(path)
+            );
+            std::process::exit(exit::IO);
+        }
+    };
     if let Err(err) = read {
         eprintln!("error: cannot read findings {}: {err}", display_safe(path));
         std::process::exit(exit::IO);
@@ -1930,8 +1935,12 @@ fn print_patch_summary(files: &[deep_diff_forge_core::ReviewFile]) {
             0 => String::new(),
             n => format!("  [{n} non-UTF-8 line(s) shown lossily]"),
         };
+        // A move names the file it removes or copies from (DDF-HUNT-PATCH-6).
+        let from = deep_diff_forge_patch::old_path(file)
+            .map(|old| format!(" (from {})", display_safe(&old)))
+            .unwrap_or_default();
         emitln!(
-            "{status:>14}  {}  (+{adds} -{dels}, {hunks} hunks){lossy}",
+            "{status:>14}  {}{from}  (+{adds} -{dels}, {hunks} hunks){lossy}",
             display_safe(&file.path)
         );
     }

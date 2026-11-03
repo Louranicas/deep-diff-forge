@@ -707,3 +707,56 @@ Added after the 89/100 reconciliation; it does not rescore.
 - **[Measured, correction 2026-11-03]** The owner has since registered the key on GitHub as a
   signing key. GitHub now reports the v0.6.0 tag object `d165dd9` as `verified: true`,
   `reason: valid`, so the `unknown_key` line above is superseded. GitLab: not registered.
+
+### DDF-HUNT-CLI-8 fixed (2026-11-03)
+
+**[Measured]** The deferred limitation "`findings verify --findings FIFO` (and `review --findings`)
+waits forever for a writer" (Known limitations above) is fixed. The same hang was also found in
+`eval`, when the corpus's `MANIFEST.json` is a FIFO. All user-named input files now open through
+`crates/deep-diff-forge-cli/src/regular.rs` (`O_NONBLOCK` plus `fstat` on the open descriptor), so
+a non-regular file is refused at once. The regression tests `a_fifo_as_the_findings_file_is_refused_not_waited_on`
+(`cli/tests/findings.rs`) and `a_fifo_manifest_is_refused_not_waited_on` (`cli/tests/eval.rs`)
+fail on the old code, where they hit their 10-second deadline, and pass on the new.
+
+### DDF-HUNT-DAEMON-7 fixed (2026-11-03)
+
+Supersedes the DDF-HUNT-DAEMON-7 rows above (known limitations and gap 13); they stay as
+history. **[Measured]**
+- Two control slots beyond the eight data slots answer `daemon.health`, `daemon.status`,
+  `daemon.metrics` and `daemon.shutdown`. Each holds one request of at most 4 KiB, read within
+  5 s. Test: `serve::tests::a_daemon_at_its_connection_limit_still_answers_health_and_stops`.
+  It fails with the control slots set to 0.
+- SIGTERM and SIGINT stop the daemon as `daemon stop` does: no new connections, the socket
+  removed, a drain, exit 0. Test: `sigterm_and_sigint_stop_the_daemon_and_remove_its_socket`
+  (`cli/tests/daemon.rs`). It fails on the previous code, where the signal killed the process.
+- Residual: a same-user process that keeps reconnecting can still hold the data and control
+  slots. A signal from the same user, which `systemctl stop` and `launchctl bootout` send,
+  always stops the daemon cleanly.
+
+### DDF-HUNT-PATCH-6 fixed, a fuzz crash fixed, scheduled runs confirmed (2026-11-03)
+
+**[Measured]**
+- **DDF-HUNT-PATCH-6** (Known limitations above, now history). Git was asked directly: for
+  `diff --git a/x b/y` with `--- a/x`/`+++ b/y` and no rename header, `git apply` reports
+  `x => y`, deletes `x` and creates `y`. DDF now records the rename headers Git would write, so
+  the status is `renamed` and the old path is kept. Test:
+  `differing_names_without_a_rename_header_are_the_rename_git_applies` (`patch/tests/git_oracle.rs`)
+  applies the original and the rendered patch and checks the tree. It fails on the old parser.
+  Without `---`/`+++` (a mode change only), Git refuses the section ("lacks filename
+  information") and DDF keeps its earlier reading of the `diff --git` line, unchanged.
+- **DDF-FUZZ-PATCH-8**. The first scheduled fuzz campaign (run 41456383570, 2026-11-02, on
+  `571006b`, the v0.6.0 commit) found a `patch_parser` crash. A quoted `diff --git` half
+  squashed `//` while an unquoted one kept it, so parse and render drifted. Both now keep the
+  slashes, as `git_header_name` does. The input is in `fixtures/patch/regressions/` and the test
+  `a_doubled_slash_in_a_diff_git_name_survives_quoting` fails on the old parser. The defect is in
+  v0.6.0. Its impact: a name with `//` in the `diff --git` line of a patch that has no `---`/`+++`
+  could be reviewed under a path with one slash fewer than Git's.
+- **Scheduled runs do fire.** The earlier observation that they never ran was taken too early.
+  On 2026-11-02 `codeql` (12:30 UTC), `ci` (12:36) and `campaign` (13:49) ran from their crons,
+  about eight hours after the scheduled times, as GitHub allows under load. `ci` and `codeql`
+  passed. `campaign` failed on the crash above.
+- **GitLab signing key (correction, 2026-11-03).** The release signing key is now registered on
+  GitLab too, with usage type Signing, so the "GitLab: not registered" lines above are
+  superseded. GitLab's tag signature API reports only `signature_type: SSH` for v0.6.0, so a
+  "Verified" status there is unmeasured.
+

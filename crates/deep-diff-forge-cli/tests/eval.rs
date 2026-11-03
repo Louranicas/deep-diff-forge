@@ -542,3 +542,44 @@ fn a_declared_miss_must_still_be_a_miss() {
     assert_eq!(metrics["evidence_precision"]["right"], 22);
     assert_eq!(known, usize::try_from(DECLARED).unwrap() - 1);
 }
+
+/// DDF-HUNT-CLI-8: `MANIFEST.json` is read before the corpus walk checks file types, so a FIFO
+/// there blocked `eval` in `open` for ever. It is refused at once with exit 4.
+#[cfg(unix)]
+#[test]
+fn a_fifo_manifest_is_refused_not_waited_on() {
+    let dir = std::env::temp_dir().join(format!("ddf-eval-fifo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(
+        Command::new("mkfifo")
+            .arg(dir.join("MANIFEST.json"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(["eval", "--json", "--corpus", dir.to_str().unwrap()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            child.kill().unwrap();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(&dir);
+            panic!("eval still running after 10 s: it waits on the FIFO manifest");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let out = child.wait_with_output().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(4), "{stderr}");
+    assert!(
+        stderr.contains("MANIFEST.json is not a regular file"),
+        "{stderr}"
+    );
+}

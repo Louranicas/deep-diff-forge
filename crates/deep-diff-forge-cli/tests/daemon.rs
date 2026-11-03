@@ -223,9 +223,11 @@ fn a_daemon_this_user_may_not_use_is_not_reported_absent() {
     let _ = std::fs::remove_dir_all(sock.parent().unwrap());
 }
 
-/// Bug hunt 2026-11-01: a daemon at its connection limit closes a further connection unanswered,
-/// and the CLI says so (exit 6) instead of saying there is no daemon; once a slot is free it is
-/// served again. Before, `daemon health` and `daemon stop` said "no daemon at" while it ran.
+/// Bug hunt 2026-11-01: a daemon with every slot held closes a further connection unanswered,
+/// and the CLI says so (exit 6) instead of saying there is no daemon. Before, `daemon health` and
+/// `daemon stop` said "no daemon at" while it ran. Since DDF-HUNT-DAEMON-7 a daemon whose eight
+/// data slots are held still answers `daemon health` and `daemon stop` on a control slot, so
+/// every slot here means the data slots and both control slots.
 #[test]
 fn a_daemon_at_its_connection_limit_is_not_reported_absent() {
     use std::io::{BufRead as _, Write as _};
@@ -242,7 +244,7 @@ fn a_daemon_at_its_connection_limit_is_not_reported_absent() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(ready, "the daemon never answered");
-    // Eight connections, each served once, so every worker slot is held.
+    // Eight connections, each served once, so every data slot is held.
     let mut holders = Vec::new();
     for _ in 0..8 {
         let mut held = std::os::unix::net::UnixStream::connect(&sock).unwrap();
@@ -256,6 +258,14 @@ fn a_daemon_at_its_connection_limit_is_not_reported_absent() {
         assert!(line.contains("\"status\":\"ok\""), "{line}");
         holders.push(held);
     }
+    // With only the data slots held, the control path answers health.
+    let (code, stdout, stderr) = run(&["daemon", "health", "--socket", path]);
+    assert_eq!(code, 0, "health at the data limit: {stderr}");
+    assert!(stdout.contains("\"status\":\"ok\""), "{stdout}");
+    // Two silent connections take both control slots (each for up to 5 s).
+    let control: Vec<_> = (0..2)
+        .map(|_| std::os::unix::net::UnixStream::connect(&sock).unwrap())
+        .collect();
     for sub in ["health", "stop"] {
         let (code, stdout, stderr) = run(&["daemon", sub, "--socket", path]);
         assert_eq!((code, stdout.as_str()), (6, ""), "{sub}: {stderr}");
@@ -267,21 +277,22 @@ fn a_daemon_at_its_connection_limit_is_not_reported_absent() {
         assert!(!stderr.contains("no daemon at"), "{sub}: {stderr}");
     }
     assert!(daemon.0.try_wait().unwrap().is_none(), "the daemon stopped");
-    drop(holders);
-    let mut served = false;
+    drop(control);
+    // The data slots are still held: `daemon stop` gets in on a control slot.
+    let mut stopped = false;
     for _ in 0..WAIT_STEPS {
-        if run(&["daemon", "health", "--socket", path]).0 == 0 {
-            served = true;
+        if run(&["daemon", "stop", "--socket", path]).0 == 0 {
+            stopped = true;
             break;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(
-        served,
-        "the daemon did not serve again once the slots were free"
+        stopped,
+        "daemon stop did not get in with the data slots held"
     );
-    assert_eq!(run(&["daemon", "stop", "--socket", path]).0, 0);
     assert!(daemon.exited(), "the daemon kept running after daemon stop");
+    drop(holders);
     drop(daemon);
     let _ = std::fs::remove_dir_all(sock.parent().unwrap());
 }
@@ -784,5 +795,41 @@ fn prometheus_metrics_refuse_an_answer_that_is_not_a_metrics_document() {
         fake.join().unwrap();
         assert!(!out.exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// DDF-HUNT-DAEMON-7: SIGTERM (what `launchctl bootout` and a plain `kill` send) and SIGINT
+/// (Ctrl-C on a foreground daemon) stop the daemon as `daemon stop` does: it exits 0 and removes
+/// its socket. Before, the signal killed it and the socket file was left behind.
+#[test]
+fn sigterm_and_sigint_stop_the_daemon_and_remove_its_socket() {
+    for signal in ["TERM", "INT"] {
+        let sock = temp_socket(&format!("signal-{signal}"));
+        let dir = sock.parent().unwrap().to_path_buf();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .unwrap();
+        let path = sock.to_str().unwrap().to_owned();
+        let mut daemon = Daemon::spawn(&path);
+        let ready = (0..WAIT_STEPS).any(|_| {
+            let up = run(&["daemon", "health", "--socket", &path]).0 == 0;
+            if !up {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            up
+        });
+        assert!(ready, "SIG{signal}: the daemon never answered");
+        let sent = Command::new("kill")
+            .args([&format!("-{signal}"), &daemon.0.id().to_string()])
+            .status()
+            .expect("run kill");
+        assert!(sent.success(), "SIG{signal}: kill failed");
+        assert!(daemon.exited(), "SIG{signal}: the daemon did not exit");
+        let status = daemon.0.try_wait().unwrap().unwrap();
+        assert_eq!(status.code(), Some(0), "SIG{signal}: {status:?}");
+        assert!(!sock.exists(), "SIG{signal}: the socket was left behind");
+        drop(daemon);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
