@@ -854,3 +854,11 @@ for them stay as history.
   (`deadline.rs`). Test: `a_request_past_its_deadline_is_stopped_and_releases_its_weight`. It
   fails with the check disabled.
 
+### macOS runner pinned (2026-11-03)
+
+The open item above ("the macOS image floats") is closed for the major version. `ci.yml` and
+`release.yml` run on `macos-26`, the image `macos-latest` named on 2026-11-03 (measured from the
+release dry run 41589040037 logs: `Image: macos-26-arm64`, version `20261026.0455.2`). The test
+`no_workflow_runs_on_a_floating_runner_label` rejects any `-latest` label, and a planted
+`macos-latest` made it fail (measured). Still open: GitHub updates the image's patch level weekly,
+so reproducing a macOS binary bit for bit needs the same image version. No rescore.
