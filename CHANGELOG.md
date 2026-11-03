@@ -6,32 +6,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
-### Fixed
-
-- **`just release-tag` no longer fails its own gate under a signing configuration.** The
-  repository-script tests kept out the global and system Git files but inherited
-  configuration passed in the environment (`GIT_CONFIG_COUNT`, and `GIT_CONFIG_PARAMETERS`
-  from `git -c`). With `tag.gpgSign=true` there, as `release-tag` is run, a lightweight test
-  tag became an annotated one that asked for an editor, and the release gate failed before
-  signing (found on the first `release-tag 0.7.0`; no tag was made). The tests' command
-  runner now removes both unless a test sets its own. Measured: the workspace suite passes
-  under the exact release-tag environment, and the old runner failed it.
-### Changed
-
-- **The macOS runners are pinned to `macos-26`** (it was `macos-latest`, which named
-  `macos-26-arm64` on 2026-11-03). A test in `release_workflow.rs` fails if any workflow
-  uses a `-latest` runner label, so a GitHub repoint can no longer move a build or the
-  required `macOS tests` check to a new major image unannounced. The job names, and so the
-  required checks, are unchanged.
-
 ## [0.7.0] - 2026-11-03
+
+PRs #95 and #96 merged before the tag, so their entries below ship in v0.7.0 (`3823fcf`).
 
 ### Security
 
 - **Release archives are reproducible** (expert circle 2026-11-03, C14). `scripts/package_release.py`
   replaces `tar czf`: sorted entries, the commit time as every mtime, uid/gid 0, fixed modes, USTAR,
   and a gzip header with no name or time. The same inputs give the same bytes; a control test
-  shows `tar czf` does not. The macOS runner image still floats (`macos-latest`).
+  shows `tar czf` does not. The macOS runner image was pinned to `macos-26` before the tag (see Changed).
 - **The release workflow refuses a tag that is not signed by an allowed key** (expert circle
   2026-11-03, C4). The supply-chain gate verifies the pushed tag against `main`'s
   `.github/allowed_signers` before any build, so a tag pushed without `just release-tag`, or
@@ -46,6 +30,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **The macOS runners are pinned to `macos-26`** (it was `macos-latest`, which named
+  `macos-26-arm64` on 2026-11-03). A test in `release_workflow.rs` fails if any workflow
+  uses a `-latest` runner label, so a GitHub repoint can no longer move a build or the
+  required `macOS tests` check to a new major image unannounced. The job names, and so the
+  required checks, are unchanged.
 - **"Not a regular file" exits 4 in every command** (expert circle C16). `structural`,
   `semantic` and the other syntax commands, `analyze`, and `--findings` exited 3 for a FIFO,
   directory, device or socket. `<old> <new>` and `eval` already exited 4. A path that cannot be
@@ -62,6 +51,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **`just release-tag` no longer fails its own gate under a signing configuration.** The
+  repository-script tests kept out the global and system Git files but inherited
+  configuration passed in the environment (`GIT_CONFIG_COUNT`, and `GIT_CONFIG_PARAMETERS`
+  from `git -c`). With `tag.gpgSign=true` there, as `release-tag` is run, a lightweight test
+  tag became an annotated one that asked for an editor, and the release gate failed before
+  signing (found on the first `release-tag 0.7.0`; no tag was made). The tests' command
+  runner now removes both unless a test sets its own. Measured: the workspace suite passes
+  under the exact release-tag environment, and the old runner failed it.
 - **A client whose request the daemon refuses early still gets the refusal.** Under the new read
   budget the daemon answers an over-budget line and closes before the rest is sent, which broke the
   client's write. `request` reported the broken pipe instead of the answer waiting for it. It now
