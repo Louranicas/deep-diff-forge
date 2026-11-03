@@ -2,12 +2,12 @@
 
 This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
-## Status 2026-11-03 (0.7.0 prepared)
+## Status 2026-11-04 (0.7.0 released)
 
-- The workspace version on `main` is **0.7.0**, not yet tagged; `v0.6.0` (2026-11-02)
-  is the latest tag. Pushing `v0.7.0`, or any later `v*` tag, is the owner's decision.
+- **0.7.0 is released** as the signed tag `v0.7.0` (2026-11-03), the latest tag. Pushing
+  any later `v*` tag is the owner's decision.
 - Published GitHub releases: `v0.1.0` (2026-06-22), `v0.2.0` (2026-06-24) and
-  `v0.3.0` (2026-10-29), `v0.4.0` (2026-10-30), `v0.5.0` (2026-10-31) and `v0.6.0` (2026-11-02). `0.2.1` was never tagged.
+  `v0.3.0` (2026-10-29), `v0.4.0` (2026-10-30), `v0.5.0` (2026-10-31), `v0.6.0` (2026-11-02) and `v0.7.0` (2026-11-03). `0.2.1` was never tagged.
 - crates.io is on hold by owner decision until the codebase is
   production-hardened. `release.yml` publishes only when the repository
   variable `DDF_CRATES_IO` is `open`.
@@ -27,7 +27,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 | Channel | Purpose | Today |
 | --- | --- | --- |
 | `main` | Current development branch. | 0.7.0, reached only through pull requests (branch ruleset). |
-| GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`. |
+| GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`. |
 | GitLab mirror | Secondary remote and redundancy. | Pushed to match GitHub. |
 | crates.io | Rust library and CLI distribution. | On hold (`DDF_CRATES_IO`). |
 | cargo-binstall | Fast binary installation. | Not configured (no binstall metadata in any `Cargo.toml`). |
@@ -129,7 +129,7 @@ A dry run checks the newest `v*` tag the same way.
 To verify a release tag from a clone:
 
 ```bash
-git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v v0.6.0
+git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v v0.7.0
 ```
 
 Rotating the key means adding the new public key to `.github/allowed_signers`
@@ -178,9 +178,10 @@ gzip -dc deep-diff-forge-vX.Y.Z-TARGET.tar.gz | sha256sum   # the released archi
 ```
 
 The archive is reproducible given the binary. The binary itself is reproducible only on the same
-toolchain and runner image. The Linux images are pinned (`ubuntu-24.04`, `ubuntu-22.04-arm`),
-but the macOS builds use `macos-latest`, because the repository pins no versioned macOS label.
-Pinning one is open.
+toolchain and runner image. Every runner label is pinned to a major image (`ubuntu-24.04`,
+`ubuntu-22.04-arm`, and since 2026-11-03 `macos-26`, the image `macos-latest` named then), and
+`release_workflow.rs` fails on any `-latest` label. GitHub still updates a pinned image's
+patch level weekly, so a rebuild is byte-identical only on the same image version.
 
 ## GitHub Actions
 
@@ -194,9 +195,9 @@ Toolchain pinned to 1.99.1 except where noted.
 | --- | --- | --- | --- |
 | `secrets` (secret scan (gitleaks)) | ubuntu-26.04 | every trigger | gitleaks 8.30.1, SHA-256-pinned, over full history. With the pre-push hook, the control that stands in for the non-provider patterns and validity checks GitHub does not offer this user-owned repository ([SECURITY.md](../SECURITY.md#supply-chain-and-releases)). |
 | `msrv` (declared Rust 1.88 compatibility) | ubuntu-26.04 | every trigger | `cargo check --workspace --all-targets --locked` on 1.88.0. |
-| `macos` (macOS tests) | macos-latest | every trigger (each pull request since 2026-10-30) | `cargo test --workspace --locked --no-fail-fast`. |
+| `macos` (macOS tests) | macos-26 | every trigger (each pull request since 2026-10-30) | `cargo test --workspace --locked --no-fail-fast`. |
 | `linux-arm64` (Linux arm64 tests) | ubuntu-22.04-arm | every trigger (since 2026-10-31) | `cargo test --workspace --locked --no-fail-fast`, then `scripts/check_glibc_floor.sh` on the debug binary. Not required on pull requests; gates every release build (through `quality`). |
-| `launchd` (macOS launchd agent) | macos-latest | every trigger (since 2026-10-31) | Builds the CLI and runs `scripts/launchd_smoke.sh`: the `contrib/launchd` agent, pointed at the built binary, is bootstrapped into `gui/<uid>` (or `user/<uid>`), answers `daemon health` with launchd's pid, is restarted after SIGKILL, is not restarted after `daemon stop` (socket gone), and is unloaded by `launchctl bootout`. Not required on pull requests; skipped in release runs (`release: true`) until it has a record on hosted runners. |
+| `launchd` (macOS launchd agent) | macos-26 | every trigger (since 2026-10-31) | Builds the CLI and runs `scripts/launchd_smoke.sh`: the `contrib/launchd` agent, pointed at the built binary, is bootstrapped into `gui/<uid>` (or `user/<uid>`), answers `daemon health` with launchd's pid, is restarted after SIGKILL, is not restarted after `daemon stop` (socket gone), and is unloaded by `launchctl bootout`. Not required on pull requests; skipped in release runs (`release: true`) until it has a record on hosted runners. |
 | `gate` (deploy gate-feature) | ubuntu-26.04 | every trigger | Review-policy check and selftest, exemption-oracle tests, fmt, check, clippy `-D warnings`, pedantic (workspace, patch without default features, fuzz crate), tests, rustdoc `-D warnings`, contract probes, `deploy status --json`, fuzz-harness compile, soak leak-check and bench-comparison regression tests (`scripts/security/test_daemon_soak.py`, `scripts/test_bench_compare.py`), 10 s hostile daemon soak, privacy probes, Python SDK against the built binary. |
 | `review-controller-evidence` (review controller mutation and fuzz evidence) | ubuntu-26.04 | every trigger | Scoped cargo-mutants of the review controller; 10 s instrumented fuzz smoke for every target in `fuzz/Cargo.toml` (`scripts/fuzz_target.sh --list`) (`nightly-2026-10-25`; fails if a declared target is not run); builds the council gate image and runs the rootless-Podman planted-breach suite (`council_sandbox`, 12 probes). |
 | `bench` (bench (base vs head)) | ubuntu-26.04 | `pull_request` only | Builds the merge base and the head in release mode, runs `bench --quick --json` alternately three times, and compares the best medians with `scripts/bench_compare.py`. Required since 2026-10-31 (owner decision). |
@@ -216,7 +217,7 @@ permission `contents: read`; only `release` elevates, and it compiles and runs n
 | --- | --- | --- |
 | `quality` | (calls `ci.yml` with `release: true`) | The full CI workflow, and `build` waits for all of it. On a tag push its event is `push`, so `diff-mutation` and `bench` are skipped; `macos` and `linux-arm64` run and gate the build although pull requests do not require `linux-arm64`; `launchd` is skipped (`release: true`) until its smoke has a record on hosted runners. |
 | `supply-chain` (supply chain gate) | ubuntu-26.04 | cargo-deny and cargo-audit as in CI; on a tag, refuses a tag that is not `v` + the workspace version. |
-| `build` (build &lt;target&gt;) | ubuntu-24.04 (x86_64 Linux), ubuntu-22.04-arm (arm64 Linux), macos-latest (both macOS) | Needs `quality` and `supply-chain`. `cargo build --release --locked -p deep-diff-forge-cli` for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. Every binary is run (smoke): `--version` must equal the workspace version and `--stdin-patch --json` must produce a review document; a Linux binary must need no `GLIBC_` version newer than the floor (`scripts/check_glibc_floor.sh`, glibc 2.34); the x86_64 macOS binary is cross-built and run under Rosetta 2 (`run_under: arch -x86_64`, installed if missing), after `file` confirms it is x86_64. Packages, writes and re-verifies the `.sha256`, and keeps the archives (and the x86_64 Linux leg's SBOM) as workflow artifacts. Permissions `contents: read` only: it runs every dependency's build scripts and proc macros, so it holds no write or OIDC token, on a tag or a dry run. |
+| `build` (build &lt;target&gt;) | ubuntu-24.04 (x86_64 Linux), ubuntu-22.04-arm (arm64 Linux), macos-26 (both macOS) | Needs `quality` and `supply-chain`. `cargo build --release --locked -p deep-diff-forge-cli` for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. Every binary is run (smoke): `--version` must equal the workspace version and `--stdin-patch --json` must produce a review document; a Linux binary must need no `GLIBC_` version newer than the floor (`scripts/check_glibc_floor.sh`, glibc 2.34); the x86_64 macOS binary is cross-built and run under Rosetta 2 (`run_under: arch -x86_64`, installed if missing), after `file` confirms it is x86_64. Packages, writes and re-verifies the `.sha256`, and keeps the archives (and the x86_64 Linux leg's SBOM) as workflow artifacts. Permissions `contents: read` only: it runs every dependency's build scripts and proc macros, so it holds no write or OIDC token, on a tag or a dry run. |
 | `release` (GitHub Release) | ubuntu-26.04 | On a pushed `v*` tag only (never a dispatch, even from a tag). Needs `build`, so it starts only after **every** target built and passed smoke: a failed platform leaves no release rather than a partial one. Holds `contents: write`, `attestations: write` and `id-token: write`, and checks out, compiles and runs no project code. Downloads the archives and SBOM, re-verifies every `.sha256`, attests build provenance for archives, checksums and SBOM, and uploads them to the GitHub Release in one step. |
 | `publish` (crates.io publish (owner-gated)) | ubuntu-26.04 | Needs `release`. Runs only on a pushed `v*` tag (never a dispatch) **and** when `vars.DDF_CRATES_IO == 'open'`. Runs in the `release` environment (deployment policy: `v*` tags only; required reviewer: the owner, since 2026-11-01). Publishes the 14 crates in dependency order, skipping crates already live and retrying crates.io's rate limit; fails if `CARGO_REGISTRY_TOKEN` is unset, since the owner opened the gate. |
 

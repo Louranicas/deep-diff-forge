@@ -1214,3 +1214,20 @@ Measured with `gh` on 2026-11-02.
   and `sbom.spdx.json` (`release.yml`), not the extracted binary. A binary is covered through the
   archive that holds it.
 
+
+## v0.7.0 release (2026-11-03)
+
+- **Inputs.**
+  - PR #95 (`macos-26` runner pin) merged at `af1e82c`.
+  - PR #96 (DDF-TEST-GITENV-001, repository-script tests strip `GIT_CONFIG_*`) merged at `3823fcf`. Before its merge, `scripts/ci_local.sh` reported `steps failed: 0` (1,898 tests).
+  - Release dry runs passed on both branches: 41620792043 and 41633566735.
+- **Tag.** `just release-tag 0.7.0` ran at `3823fcf`, after the release gate passed and gitleaks found no leaks. It pushed the signed annotated tag `v0.7.0` (object `8a1da93`) to GitHub and GitLab. `git -c gpg.ssh.allowedSignersFile=.github/allowed_signers verify-tag v0.7.0` reports `Good "git" signature` for ED25519 `SHA256:h4S5C3lX4poSYOx8ii8yezKBlp5pQf2jy168XgwWR8I`.
+- **Release run [41642199569](https://github.com/Louranicas/deep-diff-forge/actions/runs/41642199569).**
+  - Attempt 1 failed in `quality / macOS tests` only, at `serve::tests::a_connection_answers_and_ends_within_a_deadline`: `set_read_timeout` returned `EINVAL`.
+    - The test armed the read timeout after the connection thread could answer and close, and macOS refuses `SO_RCVTIMEO` on a socket whose peer has closed. This is a test race (DDF-TEST-MACTIMEOUT-001), fixed in #97. The product already treats that EINVAL as settled.
+    - Because the builds depend on the quality gate, nothing was built or published.
+  - The owner chose to rerun the failed job. Attempt 2 passed: the quality gate, four builds and the GitHub Release. The crates.io publish was skipped (owner-gated).
+- **Artifacts.**
+  - Nine assets: four archives, their `.sha256` files, and `sbom.spdx.json`.
+  - For x86_64 Linux: `sha256sum -c` passed, and the binary prints `deep-diff-forge 0.7.0`.
+  - `gh attestation verify` passed: predicate `https://slsa.dev/provenance/v1`, source ref `refs/tags/v0.7.0`, signer `release.yml@refs/tags/v0.7.0`.

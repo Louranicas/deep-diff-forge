@@ -17,7 +17,7 @@ crates.io publication is on hold until the project is production-hardened, so
   ship `deep-diff-forge-<tag>-<target>.tar.gz` archives with `.sha256` files
   for `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin` and
   `x86_64-apple-darwin`, and `aarch64-unknown-linux-gnu` since v0.6.0.
-  Published releases: v0.1.0 to v0.6.0 (latest: v0.6.0, 2026-11-02).
+  Published releases: v0.1.0 to v0.7.0 (latest: v0.7.0, 2026-11-03).
 - **From source** (Rust 1.88 or newer):
 
   ```bash
