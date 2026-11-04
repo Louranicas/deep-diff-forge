@@ -862,3 +862,88 @@ release dry run 41589040037 logs: `Image: macos-26-arm64`, version `20261026.045
 `no_workflow_runs_on_a_floating_runner_label` rejects any `-latest` label, and a planted
 `macos-latest` made it fail (measured). Still open: GitHub updates the image's patch level weekly,
 so reproducing a macOS binary bit for bit needs the same image version. No rescore.
+
+## Assessment 2026-11-04 (`main` `7c0910b`, v0.7.0 and test-only fixes; Claude)
+
+**Score: 80 / 100**, down from the reconciled 86. Four reviewers each read one layer (patch
+parser, daemon and SDKs, CLI contracts, supply chain); every important claim was then checked
+against the published v0.7.0 binary before it was reported.
+
+**The blocker (measured):** `@@-1,1 +1,1 @@`, a hunk header with no space after `@@`, was
+accepted. Git does not read it as a hunk header, and reads the lines after it as a new file. In
+a scratch repository DDF reported one modified file (`x`, 3 hunks, exit 0), while `git apply`
+passed `--check` and changed `x` **and** rewrote a second file DDF never showed. The parser
+trimmed whitespace after `@@`; Git requires exactly `@@ -`. The fuzz target compared DDF only
+with itself, skipped non-UTF-8 input, and the Git-oracle tests had no header cases.
+
+| Facet | Weight | Before | 2026-11-04 |
+| --- | ---: | ---: | ---: |
+| Correctness and patch-truth integrity | 20 | 19 | 15 |
+| Security and trust boundary | 15 | 13 | 13 |
+| Supply chain and release integrity | 15 | 12 | 13 |
+| Reliability and operability | 15 | 13 | 12 |
+| Platform and portability | 10 | 8 | 7 |
+| Interfaces and integration contracts | 15 | 13 | 12 |
+| Documentation, governance and evidence | 10 | 8 | 8 |
+| **Total** | **100** | **86** | **80** |
+
+### Fixed in response (each claim checked first, each fix test-proven)
+
+**[Measured]** Every fix below has a test that fails without it.
+
+- **#100, the parser (item 1).**
+  - `parse_hunk_header` is a literal port of Git's grammar (`@@ -` RANGE ` +` RANGE ` @@`).
+  - A hunk may open only where Git's would: after `+++`, a Git extended header, the previous
+    hunk or its `\` marker (`MisplacedHunk`).
+  - Refused as Git refuses or ignores them: a hunk with no `+` or `-` line
+    (`HunkWithoutChange`), and a section Git reads no patch from (`SectionWithoutPatch`).
+  - A header line that is not UTF-8 is refused (`LossyHeader`, exit 3), instead of being
+    reviewed under a substituted name.
+  - `tests/git_differential.rs` is a differential oracle: whatever DDF accepts, `git apply
+    --numstat -z` must read as the same files and counts. It covers more than 150 one-character
+    mutants of a hunk header in two placements. All six of its tests fail on v0.7.0's parser.
+  - The fuzz target decodes raw bytes and is seeded from every patch fixture.
+- **#101, the daemon and child processes (items 3 and 4).**
+  - A request's read budget goes back once its answer is ready.
+  - Each response has 30 s from its first byte. It is written non-blocking, with the deadline
+    checked before every write and each wait for space bounded by `poll`. A blocking write
+    cannot give that bound, because `SO_SNDTIMEO` restarts for each buffer a call waits for.
+    Chunked blocking writes passed on Linux and failed on macOS CI; a 4 KB send buffer now
+    models macOS on Linux.
+  - `review.change` checks its deadline between its two Git stages.
+  - `core::process::run_bounded` gives `tuicr` and the council's Git calls a deadline and
+    capped output. `clippy.toml` disallows the unbounded waits (`Command::output`,
+    `Command::status`, `Child::wait`, `Child::wait_with_output`).
+  - `findings verify --require-findings` exits 7 on a findings file with no findings. Non-UTF-8
+    input exits 3 everywhere.
+  - Silent writes cannot compile: the `Sent` and `Written` proof types have no `Default`.
+  - Diff mutation on the PR: 0 missed, 0 timeouts.
+- **Release builds from one codegen unit (#101).** The bench gate caught `parse_seal` 1.27x
+  slower on a branch that changed no parser code. Identical binaries measured 1.00x; built with
+  one codegen unit each, base and head were within 1.01x. The default 16-unit split had made the
+  shipped parser slower by chance. `release_binaries_are_built_from_one_codegen_unit` keeps the
+  setting.
+- **The fuzz campaign (item 2):** run 41825957934 on `main` `6358dc4` passed (measured). All ten targets ran for
+  3,600 s each, alongside the long daemon soak and the full bench. `patch_parser` ran
+  14,413,643 inputs (about 4,000 a second) to 2,328 coverage edges, from raw bytes and the
+  seeded fixtures, with no crash. The last scheduled run (2026-11-02) had failed on that target;
+  that crash is a regression fixture now.
+
+### Open
+
+- **Owner decisions (item 5).**
+  - Turn on Immutable Releases (an agent's attempt was refused, correctly, as a shared-settings
+    change).
+  - Decide whether to yank crates.io `0.2.0`.
+  - Tag 0.7.1; each tag needs the owner's word.
+- **Test hygiene (new, measured).** Tests build scratch directories from
+  `std::env::temp_dir()` directly, at about 100 call sites, many with no guard that removes
+  them. One clean run of the daemon and core tests left 37 directories behind.
+- **From the assessment, unchanged.**
+  - The council's outputs carry no schema version.
+  - A `release.yml` edited on a tagged branch would bypass the tag-signature check
+    (same-owner risk).
+  - The SIGTERM wake-up depends on reconnecting by socket path, and a second signal during the
+    drain is ignored.
+
+No rescore until 0.7.1 ships and an independent rescore reads it.
