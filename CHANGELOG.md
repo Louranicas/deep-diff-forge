@@ -8,6 +8,48 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Security
 
+- **A client that reads slowly can no longer hold the daemon's read budget** (production
+  readiness 2026-11-04). A request's bytes stayed reserved until its answer was written, and
+  `SO_SNDTIMEO` bounded each write call, not the response, so two clients that read a byte every
+  29 s held the whole 160 MiB budget and every other request was refused busy. The bytes now go
+  back once the answer is ready, and each response must be read within 30 s of its first byte
+  (`write_line_within`; every response and refusal is written through it). The write is
+  non-blocking: the deadline is checked before every write call, and each wait for space is a
+  `poll` bounded by the time left. A blocking write cannot give that bound, because
+  `SO_SNDTIMEO` restarts for each buffer the call waits for (measured):
+  - one 2 MB write to a client reading 128 KiB every 300 ms ran seconds past an 800 ms limit on
+    Linux;
+  - 64 KiB writes with the timeout re-armed between them still did on macOS (PR #101 CI), whose
+    Unix socket send buffers default to 8 KB.
+
+  The tests' controls catch the single write, the 64 KiB writes (a 4 KB send buffer models
+  macOS: 1.50 s past a 500 ms limit) and the budget held through the write.
+- **Every child process DDF waits for has a deadline and capped output.** `tuicr` (120 s, 32 MiB)
+  and the council's Git calls (120 s, the caller's cap) waited without either. Both now run
+  through `deep_diff_forge_core::process::run_bounded`, which kills and reaps a child past its
+  limits without waiting on a grandchild that holds its pipes. `clippy.toml` disallows the
+  unbounded waits (`Command::output`, `Command::status`, `Child::wait`,
+  `Child::wait_with_output`) outside a reviewed door.
+
+### Added
+
+- **`findings verify --require-findings`** refuses (exit 7) a findings file that holds no
+  findings. `--require-all` holds for an empty file, so a gate on it passed an agent that wrote
+  nothing; a gate that needs findings adds both. `Verdict::total` counts them.
+
+### Changed
+
+- **Release binaries are built from one codegen unit** (`[profile.release] codegen-units = 1`).
+  With the default 16, a binary built from this release's daemon and process changes, which
+  touch no parser code, parsed 27% slower than `main`'s (`parse_seal`, 1.27x in CI and locally;
+  identical binaries measured 1.00x). Built with one unit each, the two were within 1.01x
+  (measured). `release_binaries_are_built_from_one_codegen_unit` keeps the setting.
+
+- **Non-UTF-8 input exits 3 (`io`) everywhere**, as the exit-code registry names it: a findings
+  file and an `eval` corpus file name or findings file exited 4, and an `analyze` source exited
+  4 while its patch exited 3.
+- **`review.change` checks its deadline between its two Git stages**, so a request overruns its
+  client's deadline by one stage at most, as documented (C9), not two.
 - **A malformed hunk header can no longer hide a file from the review** (production readiness
   2026-11-04). The parser trimmed the space after `@@`, so `@@-1,1 +1,1 @@` was read as a hunk of
   the current file and the `--- a/evil` / `+++ b/evil` lines after it as that hunk's body, while
@@ -20,8 +62,6 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **A header line that is not UTF-8 is refused** (`LossyHeader`, exit 3), instead of being
   reviewed under a substituted name (`caf\xe9` and `caf\xe8` both read `caf\u{fffd}`). Lossy
   hunk lines and preamble are still reviewed and marked, as before.
-
-### Changed
 
 - **Patches Git refuses or reads no patch from are refused:** a hunk that adds and removes
   nothing (`HunkWithoutChange`: Git's "corrupt patch"; it was exit 7 under `--require-hunks`, exit

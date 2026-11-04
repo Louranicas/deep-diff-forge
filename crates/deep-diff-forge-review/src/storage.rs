@@ -13,7 +13,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read as _, Write as _},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
 };
 pub(crate) const REPORT_CAP: u64 = 128 * 1024;
 const CONTEXT_CAP: usize = 512 * 1024;
@@ -149,49 +149,38 @@ fn git_command(repository: &Path) -> Command {
     }
     command
 }
-/// [`git_bytes`] with `input` on Git's standard input, written from its own thread so that a large
-/// input and a large output cannot block each other.
+/// How long one council Git command may run: Git acquisition's limit
+/// (`deep_diff_forge_patch::GitAcquireOptions`). Before, `council status`, `prepare` and `import`
+/// waited without one (production readiness 2026-11-04).
+const GIT_TIME_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+/// [`git_bytes`] with `input` on Git's standard input, under [`GIT_TIME_LIMIT`] and with at most
+/// `cap` bytes of output.
 pub(crate) fn git_input(
     repository: &Path,
     args: &[&str],
     input: &[u8],
     cap: u64,
 ) -> Result<Vec<u8>> {
-    let mut child = git_command(repository)
-        .args(args)
-        .stdin(if input.is_empty() {
-            Stdio::null()
-        } else {
-            Stdio::piped()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    // Only a command given input gets a writer thread; dropping its handle closes Git's input.
-    let writer = child.stdin.take().map(|mut stdin| {
-        let input = input.to_vec();
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(&input);
-        })
-    });
-    let mut bytes = Vec::new();
-    let output = child
-        .stdout
-        .take()
-        .ok_or_else(|| ReviewFailure("missing Git output stream".into()))?;
-    output.take(cap + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > cap {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(ReviewFailure(
-            "Git output acquisition budget exceeded".into(),
-        ));
-    }
-    require(child.wait()?.success(), "Git acquisition command failed")?;
-    if let Some(writer) = writer {
-        let _ = writer.join();
-    }
-    Ok(bytes)
+    use deep_diff_forge_core::process::{Limits, Stopped, run_bounded};
+    let limits = Limits {
+        time: GIT_TIME_LIMIT,
+        stdout_bytes: cap,
+        stderr_bytes: 0,
+    };
+    let done =
+        run_bounded(git_command(repository).args(args), input, limits).map_err(
+            |stop| match stop {
+                Stopped::OutputLimit { .. } => {
+                    ReviewFailure("Git output acquisition budget exceeded".into())
+                }
+                Stopped::Spawn(e) | Stopped::Io(e) => ReviewFailure::from(e),
+                timed_out @ Stopped::TimedOut { .. } => {
+                    ReviewFailure(format!("Git acquisition command stopped: {timed_out}"))
+                }
+            },
+        )?;
+    require(done.status.success(), "Git acquisition command failed")?;
+    Ok(done.stdout)
 }
 /// The fingerprinted source file set: Git HEAD plus tracked and non-ignored untracked paths.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

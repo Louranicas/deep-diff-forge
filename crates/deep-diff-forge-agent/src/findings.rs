@@ -211,6 +211,14 @@ pub struct Verdict {
     pub over_limit: usize,
 }
 
+impl Verdict {
+    /// The findings read: accepted, refused or past the limit. Blank entries are not findings.
+    #[must_use]
+    pub fn total(&self) -> usize {
+        self.accepted.len() + self.refused.len() + self.over_limit
+    }
+}
+
 /// Verify findings, one JSON object per entry of `findings`, against `files` (the review whose
 /// seal is `input_sha256`). Blank entries are skipped and not counted.
 #[must_use]
@@ -580,6 +588,18 @@ pub fn document(
 
 #[cfg(test)]
 mod tests {
+    /// `total` counts every kind of finding, those past the limit included.
+    #[test]
+    fn total_counts_accepted_refused_and_over_limit() {
+        let none = super::Verdict::default();
+        assert_eq!(none.total(), 0);
+        let over = super::Verdict {
+            over_limit: 2,
+            ..super::Verdict::default()
+        };
+        assert_eq!(over.total(), 2);
+    }
+
     use super::*;
     use deep_diff_forge_patch::parse;
 

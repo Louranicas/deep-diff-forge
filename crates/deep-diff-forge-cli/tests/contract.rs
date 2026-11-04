@@ -498,6 +498,16 @@ fn patch_option_rows<'a>(
                 "--require-all",
             ],
         ),
+        (
+            "--require-findings",
+            vec![
+                "findings",
+                "verify",
+                "--findings",
+                findings,
+                "--require-findings",
+            ],
+        ),
         ("--require-hunks", vec!["--stdin-patch", "--require-hunks"]),
         ("--stdin-patch", vec!["--stdin-patch"]),
     ]

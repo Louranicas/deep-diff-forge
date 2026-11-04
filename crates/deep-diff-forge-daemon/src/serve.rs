@@ -292,8 +292,110 @@ pub const STOP_WAIT: Duration = Duration::from_secs(DRAIN_WAIT.as_secs() + 5);
 /// cannot keep a worker alive forever.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long [`request`] waits for the daemon's answer: the server's own deadline. In this crate's
+/// tests it is shorter, so a daemon that goes silent (a mutant that skips writing its answer)
+/// fails the suite in seconds instead of holding every socket test for 30 s, which ran the
+/// mutation gate into its timeout (production readiness 2026-11-04).
+const CLIENT_READ_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_secs(5)
+} else {
+    READ_TIMEOUT
+};
+
 /// Bound blocked writes to clients that stop reading responses.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long the daemon gives a client to read one whole response line, from its first byte. The
+/// client's own read deadline is the same 30 s, after which nobody is reading it.
+pub(crate) const RESPONSE_WRITE_LIMIT: Duration = Duration::from_secs(30);
+
+/// Write `line` and its newline within `limit` of the first byte. Every response and refusal the
+/// daemon sends is written here (production readiness 2026-11-04: a client that kept reading a
+/// little held its connection slot, and its request's read budget, for as long as it liked).
+///
+/// The socket is non-blocking for the write. The deadline is checked before every `write` call,
+/// and each wait for buffer space is a `poll` bounded by the time left, so the response stops at
+/// `limit` plus one non-blocking call, whatever the platform's buffers. A blocking write cannot
+/// give that bound, because `SO_SNDTIMEO` restarts for each buffer the call waits for:
+/// - one 2 MB write to a client reading 128 KiB every 300 ms ran for seconds past an 800 ms
+///   limit on Linux (measured, 2026-11-04);
+/// - 64 KiB writes with the timeout re-armed between them still did on macOS (PR #101 CI,
+///   measured), whose Unix socket send buffers default to 8 KB, so one 64 KiB write waits many
+///   times.
+fn write_line_within(
+    writer: &mut UnixStream,
+    line: &str,
+    limit: Duration,
+) -> std::io::Result<Sent> {
+    let deadline = crate::metrics::now() + limit;
+    writer.set_nonblocking(true)?;
+    let written = write_all_by(writer, line.as_bytes(), deadline)
+        .and_then(|Written(())| write_all_by(writer, b"\n", deadline));
+    // The connection's reader shares this descriptor and reads the next request blocking, so
+    // blocking comes back on whether or not the write succeeded.
+    let restored = writer.set_nonblocking(false);
+    let Written(()) = written?;
+    restored?;
+    Ok(Sent(()))
+}
+
+/// Proof that [`write_all_by`] wrote all its bytes, as [`Sent`] is for a whole line: without it,
+/// a write that wrote nothing compiled, and every client waited for an answer that never came
+/// (diff mutation, 2026-11-04).
+#[must_use]
+struct Written(());
+
+/// Write all of `bytes` to the non-blocking `writer` by `deadline`.
+fn write_all_by(
+    writer: &mut UnixStream,
+    mut bytes: &[u8],
+    deadline: Instant,
+) -> std::io::Result<Written> {
+    // While a byte is left (a pattern, so no negation a mutant could drop to skip the write).
+    while let [_, ..] = bytes {
+        let left = time_left(deadline)?;
+        match writer.write(bytes) {
+            Ok(n) => bytes = &bytes[n..],
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                wait_writable(writer, left)?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(Written(()))
+}
+
+/// The time before `deadline`, or the error that abandons the response.
+fn time_left(deadline: Instant) -> std::io::Result<Duration> {
+    deadline
+        .checked_duration_since(crate::metrics::now())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the client did not read the response in time",
+            )
+        })
+}
+
+/// Wait until `writer` has buffer space, or `left` has passed. A wait that ends early (a signal,
+/// or space that another wake-up took) is fine: the caller checks the deadline before writing.
+fn wait_writable(writer: &UnixStream, left: Duration) -> std::io::Result<()> {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    let timeout = Timespec::try_from(left).map_err(std::io::Error::other)?;
+    let mut fds = [PollFd::new(writer, PollFlags::OUT)];
+    match poll(&mut fds, Some(&timeout)) {
+        Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Proof that a whole response line went to the client. Only [`write_line_within`] makes one,
+/// after its last write, and every response path binds it, so none can report success without
+/// having written the line.
+/// A silently skipped write hung every client until its 30 s timeout (production readiness
+/// 2026-11-04, diff mutation).
+#[must_use]
+struct Sent(());
 
 /// Process one request line against the shared engine, returning the response
 /// line. This is the socket-free core of connection handling.
@@ -592,12 +694,12 @@ fn refuse(
     code: i64,
     message: &str,
 ) -> std::io::Result<()> {
-    writeln!(
+    let Sent(()) = write_line_within(
         writer,
-        "{}",
-        json_line_safe(&refusal(engine, code, message))
+        &json_line_safe(&refusal(engine, code, message)),
+        engine.write_limit(),
     )?;
-    writer.flush()
+    Ok(())
 }
 
 /// Serve one connection: newline-delimited JSON-RPC, one response per request,
@@ -607,7 +709,6 @@ fn refuse(
 ///
 /// Returns any underlying stream I/O error.
 pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result<()> {
-    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
     let mut buf = Vec::new();
@@ -684,8 +785,15 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
         // then too, and gives back its worker and admission weight (C9).
         let deadline = crate::metrics::now() + READ_TIMEOUT;
         let response = crate::deadline::within(deadline, || process_line(line, engine));
-        writeln!(writer, "{}", json_line_safe(&response))?;
-        writer.flush()?;
+        // The request is answered: its bytes go back to the read budget before the response is
+        // written, so a client that reads slowly holds only its own slot, not the budget every
+        // other request needs to be read.
+        drop(held);
+        let Sent(()) = write_line_within(
+            &mut writer,
+            &json_line_safe(&response),
+            engine.write_limit(),
+        )?;
         drop(answer);
         if !engine.is_running() {
             break;
@@ -703,7 +811,6 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
 ///
 /// Returns any underlying stream I/O error.
 pub fn handle_control_connection(stream: UnixStream, engine: &Engine) -> std::io::Result<()> {
-    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
     let mut buf = Vec::new();
@@ -738,8 +845,11 @@ pub fn handle_control_connection(stream: UnixStream, engine: &Engine) -> std::io
              daemon.health, daemon.status, daemon.metrics and daemon.shutdown",
         ),
     };
-    writeln!(writer, "{}", json_line_safe(&response))?;
-    writer.flush()?;
+    let Sent(()) = write_line_within(
+        &mut writer,
+        &json_line_safe(&response),
+        engine.write_limit(),
+    )?;
     drop(answer);
     Ok(())
 }
@@ -1175,8 +1285,12 @@ pub fn request(location: &SocketLocation, line: &str) -> std::io::Result<String>
     }
     let mut reader = BufReader::new(stream);
     let mut response = Vec::new();
-    let read =
-        read_capped_line_deadline(&mut reader, &mut response, MAX_RESPONSE_BYTES, READ_TIMEOUT)?;
+    let read = read_capped_line_deadline(
+        &mut reader,
+        &mut response,
+        MAX_RESPONSE_BYTES,
+        CLIENT_READ_TIMEOUT,
+    )?;
     if read == 0 {
         sent?;
         return Err(std::io::Error::new(
@@ -1861,6 +1975,172 @@ mod tests {
         );
         request(&client, r#"{"id":4,"method":"daemon.shutdown"}"#).expect("stop");
         assert!(joined(server).is_ok());
+    }
+
+    /// Production readiness 2026-11-04: a client that sends a request and then reads its answer
+    /// slowly (or not at all) gives its request's bytes back to the read budget as soon as the
+    /// answer is ready, and is cut off once the write limit has passed for the whole response.
+    /// Before, the budget stayed held through the write, and `SO_SNDTIMEO` bounded only each
+    /// write call, so two such clients could hold the whole budget indefinitely.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test: lets the stalled client's answer block, then outlast the write limit"
+    )]
+    fn a_slow_reader_gives_back_the_read_budget_and_is_cut_off_at_the_write_limit() {
+        let sock = temp_socket_with_parent("slow-reader", 0o700);
+        let server_loc = SocketLocation::at(sock.clone());
+        let engine = Engine::new()
+            .with_read_budget(200_000)
+            .with_write_limit(Duration::from_millis(800));
+        let server = thread::spawn(move || run_server_with(&server_loc, engine));
+        wait_for_socket(&sock);
+        // About 120 KB of request whose answer (a line per added line, about 2.4 MB) is far
+        // larger than the socket's buffers, so the daemon's write blocks while nobody reads.
+        let patch = format!(
+            "--- a/x\n+++ b/x\n@@ -0,0 +1,30000 @@\n{}",
+            "+x\n".repeat(30_000)
+        );
+        let line = |id: u32| {
+            format!(r#"{{"id":{id},"method":"diff.compute","params":{{"patch":{patch:?}}}}}"#)
+        };
+        let mut stalled = UnixStream::connect(&sock).unwrap();
+        writeln!(stalled, "{}", line(1)).unwrap();
+        // Its first byte means the answer is ready and being written. A fixed pause raced the
+        // work under a loaded test run (ci_local), where the answer was not ready yet.
+        stalled
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut first = [0u8; 1];
+        std::io::Read::read_exact(&mut stalled, &mut first).unwrap();
+        // 120 KB + 120 KB is over the 200,000-byte budget: answered only if the first request's
+        // bytes were given back while its answer is still being written.
+        let client = SocketLocation::at(sock.clone());
+        let second = request(&client, &line(2)).expect("a second request while the first stalls");
+        assert!(
+            second.contains(r#""result""#),
+            "{}",
+            &second[..second.len().min(300)]
+        );
+        // The first client now reads in bursts, each soon enough that every blocked write call
+        // makes progress (a burst frees whole socket segments, about 100 KB each), so per-write
+        // timeouts alone never fire and the answer would take seconds. The whole response has
+        // 800 ms: it is abandoned, which the daemon counts as a connection error.
+        let trickle = thread::spawn(move || {
+            stalled
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut chunk = vec![0u8; 128 * 1024];
+            let mut got = 0usize;
+            for _ in 0..15 {
+                match std::io::Read::read(&mut stalled, &mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got += n,
+                }
+                thread::sleep(Duration::from_millis(300));
+            }
+            got
+        });
+        thread::sleep(Duration::from_millis(2000));
+        let metrics: Value = serde_json::from_str(
+            &request(&client, r#"{"id":4,"method":"daemon.metrics"}"#).expect("metrics"),
+        )
+        .unwrap();
+        assert_eq!(
+            metrics["result"]["connections"]["errors"], 1,
+            "the trickling client's answer was not abandoned at the write limit: {metrics}"
+        );
+        let got = trickle.join().unwrap();
+        assert!(
+            got < second.len(),
+            "the trickling client got all {got} bytes"
+        );
+        request(&client, r#"{"id":3,"method":"daemon.shutdown"}"#).expect("stop");
+        assert!(joined(server).is_ok());
+    }
+
+    /// PR #101 CI (macOS): when the send buffer is much smaller than one write, a reader that
+    /// takes a little, often, keeps every wait for space short, so a deadline checked only between
+    /// 64 KiB writes ran seconds past the limit. A 4 KB send buffer models macOS's 8 KB Unix
+    /// socket buffers on Linux, so this fails here as it did there.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test: a reader that takes a little at a time, and the write timed"
+    )]
+    fn a_response_stops_at_its_limit_even_when_every_wait_for_space_is_short() {
+        let (mut daemon_end, client_end) = UnixStream::pair().unwrap();
+        rustix::net::sockopt::set_socket_send_buffer_size(&daemon_end, 4096).unwrap();
+        let reader = thread::spawn(move || {
+            let mut client_end = client_end;
+            client_end
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut buf = [0u8; 4096];
+            let mut got = 0usize;
+            loop {
+                match std::io::Read::read(&mut client_end, &mut buf) {
+                    Ok(0) | Err(_) => break got,
+                    Ok(n) => got += n,
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        });
+        // About 40 KB/s against 1 MiB: the whole line would take some 25 s.
+        let line = "x".repeat(1 << 20);
+        let limit = Duration::from_millis(500);
+        let started = Instant::now();
+        let written = write_line_within(&mut daemon_end, &line, limit);
+        let took = started.elapsed();
+        drop(daemon_end);
+        let got = reader.join().unwrap();
+        let Err(error) = written else {
+            panic!("all {got} bytes were written within {limit:?}");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
+        assert!(took >= limit, "abandoned before its limit: {took:?}");
+        assert!(
+            took < limit + Duration::from_millis(400),
+            "ran past its {limit:?} limit: {took:?}"
+        );
+        assert!(got < line.len(), "the reader got all {got} bytes");
+    }
+
+    /// A client that has gone ends its response at once, with the write's own error, not at the
+    /// response's limit: a write error other than "no space yet" is not waited out.
+    #[test]
+    #[expect(clippy::disallowed_methods, reason = "test: times the write")]
+    fn a_closed_peer_ends_the_response_at_once_not_at_its_limit() {
+        let (mut daemon_end, client_end) = UnixStream::pair().unwrap();
+        drop(client_end);
+        let started = Instant::now();
+        let written = write_line_within(&mut daemon_end, "answer", Duration::from_secs(10));
+        let took = started.elapsed();
+        let Err(error) = written else {
+            panic!("a line was reported written to a closed peer");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error}");
+        assert!(took < Duration::from_secs(2), "waited {took:?}");
+    }
+
+    /// Waiting for buffer space waits, up to the time given, rather than returning at once: a wait
+    /// that returned at once turned every slow client into a busy loop until the limit.
+    #[test]
+    #[expect(clippy::disallowed_methods, reason = "test: times the wait")]
+    fn waiting_for_space_waits_until_its_time_is_up() {
+        let (mut daemon_end, _client_end) = UnixStream::pair().unwrap();
+        daemon_end.set_nonblocking(true).unwrap();
+        let block = [0u8; 4096];
+        // Fill the socket until it has no space; nobody reads the other end.
+        while daemon_end.write(&block).is_ok() {}
+        let started = Instant::now();
+        wait_writable(&daemon_end, Duration::from_millis(300)).unwrap();
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_millis(250),
+            "returned after {took:?}"
+        );
+        assert!(took < Duration::from_secs(5), "waited {took:?}");
     }
 
     /// DDF-HUNT-DAEMON-7: eight idle connections hold every data slot, and a further connection

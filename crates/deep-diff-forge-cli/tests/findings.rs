@@ -129,10 +129,60 @@ fn the_file_limit_is_exactly_8_mib_of_utf8() {
     let (code, _, stderr) = run(&["findings", "verify", "--findings", over.path()], PATCH);
     assert_eq!(code, 4);
     assert!(stderr.contains("over the 8388608-byte limit"), "{stderr}");
+    // Not UTF-8 is an encoding failure, exit 3, as the registry names it (it was 4 here while a
+    // non-UTF-8 patch header and source exited 3; production readiness 2026-11-04).
     let latin1 = Findings::new("latin1", b"{\"agent\": \"\xe9\"}\n");
     let (code, _, stderr) = run(&["findings", "verify", "--findings", latin1.path()], PATCH);
-    assert_eq!(code, 4);
+    assert_eq!(code, 3);
     assert!(stderr.contains("not UTF-8"), "{stderr}");
+}
+
+/// Production readiness 2026-11-04: `--require-all` holds for a file with no findings (none was
+/// refused), so a gate on it passed an agent that wrote nothing. `--require-findings` refuses a
+/// file that holds none; blank lines are not findings, and a refused finding is one.
+#[test]
+fn require_findings_refuses_a_file_with_none_and_only_then() {
+    let empty = Findings::new("empty", b"");
+    let blank = Findings::new("blank", b"\n  \n\n");
+    let good_only = Findings::new("good-only", line(&good()).as_bytes());
+    let bad_only = Findings::new("bad-only", line(&bad()).as_bytes());
+    let mixed = Findings::new(
+        "mixed-some",
+        format!("{}{}", line(&good()), line(&bad())).as_bytes(),
+    );
+    for (file, code) in [
+        (&empty, 7),
+        (&blank, 7),
+        (&good_only, 0),
+        (&bad_only, 0),
+        (&mixed, 0),
+    ] {
+        let args = [
+            "findings",
+            "verify",
+            "--findings",
+            file.path(),
+            "--require-findings",
+        ];
+        let (got, stdout, stderr) = run(&args, PATCH);
+        assert_eq!(got, code, "{}: {stderr}", file.path());
+        // The verdict is printed either way; the refusal is on stderr.
+        assert!(stdout.contains("deep-diff-forge.findings.v0"), "{stdout}");
+        assert_eq!(
+            stderr.contains("refused: 0 findings in the findings file (--require-findings)"),
+            code == 7,
+            "{stderr}"
+        );
+    }
+    // Without the flag an empty file still passes, and `--require-all` alone still holds for it.
+    for extra in [&[][..], &["--require-all"][..]] {
+        let args = [
+            &["findings", "verify", "--findings", empty.path()][..],
+            extra,
+        ]
+        .concat();
+        assert_eq!(run(&args, PATCH).0, 0, "{extra:?}");
+    }
 }
 
 #[test]

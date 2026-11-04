@@ -32,12 +32,15 @@ pub enum EvalError {
     Read(String),
     /// The manifest or a case is malformed, or a file does not match its recorded SHA-256.
     Corpus(String),
+    /// A file name or a findings file is not UTF-8: an encoding failure (exit 3), as the
+    /// exit-code registry names non-UTF-8 input everywhere.
+    Encoding(String),
 }
 
 impl std::fmt::Display for EvalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Read(m) | Self::Corpus(m) => f.write_str(m),
+            Self::Read(m) | Self::Corpus(m) | Self::Encoding(m) => f.write_str(m),
         }
     }
 }
@@ -107,7 +110,7 @@ impl<'d> Corpus<'d> {
             for entry in std::fs::read_dir(dir.join(&rel)).map_err(unreadable)? {
                 let entry = entry.map_err(unreadable)?;
                 let Ok(name) = entry.file_name().into_string() else {
-                    return Err(EvalError::Corpus(format!(
+                    return Err(EvalError::Encoding(format!(
                         "{rel}/: a file name is not UTF-8"
                     )));
                 };
@@ -460,7 +463,7 @@ fn findings(corpus: &Corpus<'_>, case: &Value, scores: &mut Scores) -> Result<()
     let review = sealed(&checked(corpus, case, "patch", "sha256")?)?;
     let raw = checked(corpus, case, "findings", "findings_sha256")?;
     let raw = String::from_utf8(raw)
-        .map_err(|_| EvalError::Corpus(format!("case {}: findings are not UTF-8", id(case))))?;
+        .map_err(|_| EvalError::Encoding(format!("case {}: findings are not UTF-8", id(case))))?;
     let verdict = deep_diff_forge_agent::findings::verify(
         review.files(),
         &review.seal().input_sha256,

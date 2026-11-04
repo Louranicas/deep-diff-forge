@@ -16,19 +16,27 @@ use crate::{
 use deep_diff_forge_core::sha256_hex;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::{
     error::Error,
     fmt, fs,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
 };
 
 /// The only tuicr session format this adapter has been checked against (tuicr 0.27.0).
 pub const SESSION_VERSION: &str = "1.3";
 pub(crate) const SESSION_CAP: u64 = 32 * 1024 * 1024;
 const LOG_CAP: u64 = 16 * 1024 * 1024;
+/// How long one `tuicr` subcommand may run, and how much it may write. Before, a hung or very
+/// chatty `tuicr review list` stalled or bloated `council export-tuicr`/`import-tuicr`
+/// (production readiness 2026-11-04).
+const TUICR_LIMITS: deep_diff_forge_core::process::Limits = deep_diff_forge_core::process::Limits {
+    time: std::time::Duration::from_secs(120),
+    stdout_bytes: SESSION_CAP,
+    // 64 KiB, as a shift: a zero cap would drop the stderr a failed tuicr is reported with.
+    stderr_bytes: 1 << 16,
+};
 pub(crate) const SOURCE_CAP: u64 = 64 * 1024 * 1024;
 pub(crate) const LEDGER_DIR: &str = "exports";
 const NOT_AUTHORITY: &str = "Model claim, not verified fact. Local draft note only: not an approval, forge post, review mark or disposition.";
@@ -722,30 +730,22 @@ fn tuicr_binary() -> Result<PathBuf> {
         })
         .ok_or_else(|| TuicrExportError::TuicrUnavailable("no executable tuicr on PATH".into()))
 }
-/// Run tuicr with fixed argv (no shell), feeding `input` on stdin; returns stdout.
+/// Run tuicr with fixed argv (no shell), feeding `input` on stdin, under [`TUICR_LIMITS`];
+/// returns stdout. A run past its limits is killed and reported as a failed tuicr.
 #[expect(
     clippy::disallowed_methods,
     reason = "the tuicr door: spawns the review TUI"
 )]
 fn tuicr(binary: &Path, cwd: &Path, args: &[&str], input: &[u8]) -> Result<Vec<u8>> {
-    let mut child = Command::new(binary)
-        .args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| TuicrExportError::TuicrUnavailable(e.to_string()))?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| TuicrExportError::TuicrUnavailable("missing stdin pipe".into()))?;
-    // Write on a separate thread so a large payload cannot deadlock against a full stdout pipe.
-    let output = std::thread::scope(|scope| {
-        let writer = scope.spawn(move || stdin.write_all(input));
-        let output = child.wait_with_output();
-        let _ = writer.join();
-        output
+    use deep_diff_forge_core::process::{Stopped, run_bounded};
+    let mut command = Command::new(binary);
+    command.args(args).current_dir(cwd);
+    let output = run_bounded(&mut command, input, TUICR_LIMITS).map_err(|stop| match stop {
+        Stopped::Spawn(e) => TuicrExportError::TuicrUnavailable(e.to_string()),
+        stopped => TuicrExportError::TuicrFailed {
+            status: None,
+            stderr: stopped.to_string(),
+        },
     })?;
     if !output.status.success() {
         return Err(TuicrExportError::TuicrFailed {
