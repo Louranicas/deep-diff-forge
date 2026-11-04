@@ -299,11 +299,17 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// client's own read deadline is the same 30 s, after which nobody is reading it.
 pub(crate) const RESPONSE_WRITE_LIMIT: Duration = Duration::from_secs(30);
 
-/// Write `line` and its newline within `limit` of the first byte, re-arming the socket's write
-/// timeout to the time left before each write. `SO_SNDTIMEO` alone bounds one write call, not the
-/// response: any progress resets it, so a client that read a byte every 29 s held its connection
-/// slot, and its request's read budget, for as long as it liked (production readiness
-/// 2026-11-04). Every response and refusal the daemon sends is written here.
+/// Most bytes handed to one `write` call (see [`write_line_within`]).
+const WRITE_CHUNK: usize = 64 * 1024;
+
+/// Write `line` and its newline within `limit` of the first byte, in writes of at most
+/// [`WRITE_CHUNK`] bytes, re-arming the socket's write timeout to the time left before each.
+/// `SO_SNDTIMEO` alone bounds no response: Linux applies it afresh to each socket buffer a write
+/// waits for, inside the one call, so a single 2 MB write to a client reading 128 KiB every
+/// 300 ms ran for seconds past an 800 ms limit (measured, 2026-11-04), and a client that kept
+/// reading a little held its connection slot, and its request's read budget, for as long as it
+/// liked (production readiness 2026-11-04). A chunk fits in one buffer, so each call returns
+/// within the time left. Every response and refusal the daemon sends is written here.
 fn write_line_within(writer: &mut UnixStream, line: &str, limit: Duration) -> std::io::Result<()> {
     let deadline = crate::metrics::now() + limit;
     for mut part in [line.as_bytes(), b"\n".as_slice()] {
@@ -318,7 +324,7 @@ fn write_line_within(writer: &mut UnixStream, line: &str, limit: Duration) -> st
                     )
                 })?;
             writer.set_write_timeout(Some(left))?;
-            let written = writer.write(part)?;
+            let written = writer.write(part.get(..WRITE_CHUNK).unwrap_or(part))?;
             if written == 0 {
                 return Err(std::io::ErrorKind::WriteZero.into());
             }
@@ -1917,15 +1923,15 @@ mod tests {
         let sock = temp_socket_with_parent("slow-reader", 0o700);
         let server_loc = SocketLocation::at(sock.clone());
         let engine = Engine::new()
-            .with_read_budget(100_000)
+            .with_read_budget(200_000)
             .with_write_limit(Duration::from_millis(800));
         let server = thread::spawn(move || run_server_with(&server_loc, engine));
         wait_for_socket(&sock);
-        // About 60 KB of request whose answer (a line per added line) is far larger than the
-        // socket's buffers, so the daemon's write blocks while nobody reads.
+        // About 120 KB of request whose answer (a line per added line, about 2.4 MB) is far
+        // larger than the socket's buffers, so the daemon's write blocks while nobody reads.
         let patch = format!(
-            "--- a/x\n+++ b/x\n@@ -0,0 +1,15000 @@\n{}",
-            "+x\n".repeat(15_000)
+            "--- a/x\n+++ b/x\n@@ -0,0 +1,30000 @@\n{}",
+            "+x\n".repeat(30_000)
         );
         let line = |id: u32| {
             format!(r#"{{"id":{id},"method":"diff.compute","params":{{"patch":{patch:?}}}}}"#)
@@ -1933,7 +1939,7 @@ mod tests {
         let mut stalled = UnixStream::connect(&sock).unwrap();
         writeln!(stalled, "{}", line(1)).unwrap();
         thread::sleep(Duration::from_millis(300));
-        // 60 KB + 60 KB is over the 100,000-byte budget: answered only if the first request's
+        // 120 KB + 120 KB is over the 200,000-byte budget: answered only if the first request's
         // bytes were given back while its answer is still being written.
         let client = SocketLocation::at(sock.clone());
         let second = request(&client, &line(2)).expect("a second request while the first stalls");
@@ -1942,19 +1948,38 @@ mod tests {
             "{}",
             &second[..second.len().min(300)]
         );
-        // Past the write limit the stalled answer is abandoned: what the client then reads ends
-        // without the response's closing newline.
-        thread::sleep(Duration::from_millis(1500));
-        stalled
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
-        let mut got = Vec::new();
-        let _ = std::io::Read::read_to_end(&mut stalled, &mut got);
+        // The first client now reads in bursts, each soon enough that every blocked write call
+        // makes progress (a burst frees whole socket segments, about 100 KB each), so per-write
+        // timeouts alone never fire and the answer would take seconds. The whole response has
+        // 800 ms: it is abandoned, which the daemon counts as a connection error.
+        let trickle = thread::spawn(move || {
+            stalled
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut chunk = vec![0u8; 128 * 1024];
+            let mut got = 0usize;
+            for _ in 0..15 {
+                match std::io::Read::read(&mut stalled, &mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got += n,
+                }
+                thread::sleep(Duration::from_millis(300));
+            }
+            got
+        });
+        thread::sleep(Duration::from_millis(2000));
+        let metrics: Value = serde_json::from_str(
+            &request(&client, r#"{"id":4,"method":"daemon.metrics"}"#).expect("metrics"),
+        )
+        .unwrap();
+        assert_eq!(
+            metrics["result"]["connections"]["errors"], 1,
+            "the trickling client's answer was not abandoned at the write limit: {metrics}"
+        );
+        let got = trickle.join().unwrap();
         assert!(
-            got.len() < second.len() && !got.ends_with(b"\n"),
-            "the stalled client got {} of {} bytes",
-            got.len(),
-            second.len()
+            got < second.len(),
+            "the trickling client got all {got} bytes"
         );
         request(&client, r#"{"id":3,"method":"daemon.shutdown"}"#).expect("stop");
         assert!(joined(server).is_ok());

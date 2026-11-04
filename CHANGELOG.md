@@ -13,7 +13,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `SO_SNDTIMEO` bounded each write call, not the response, so two clients that read a byte every
   29 s held the whole 160 MiB budget and every other request was refused busy. The bytes now go
   back once the answer is ready, and each response must be read within 30 s of its first byte
-  (`write_line_within`; every response and refusal is written through it).
+  (`write_line_within`; every response and refusal is written through it), in writes of at most
+  64 KiB: Linux re-applies `SO_SNDTIMEO` to each socket buffer a single write waits for, so one
+  2 MB write to a client reading 128 KiB every 300 ms ran seconds past an 800 ms limit (measured;
+  the test's control catches both the unchunked write and the budget held through it).
 - **Every child process DDF waits for has a deadline and capped output.** `tuicr` (120 s, 32 MiB)
   and the council's Git calls (120 s, the caller's cap) waited without either. Both now run
   through `deep_diff_forge_core::process::run_bounded`, which kills and reaps a child past its
