@@ -57,8 +57,9 @@ corpus="$(mktemp -d "$root/ddf-$target-corpus.XXXXXX")"
 trap 'rm -rf "$corpus"' EXIT
 case "$target" in
   patch_parser | review_json)
-    # Every committed patch, the fuzz regressions and Git oracle findings included.
-    find fixtures/patch -type f -name '*.patch' -exec cp -t "$corpus/" {} +
+    # Every committed patch, the fuzz regressions and Git oracle findings included. One `cp` per
+    # file: BSD cp (macOS) has no `-t` (macOS CI, PR #100).
+    find fixtures/patch -type f -name '*.patch' -exec cp {} "$corpus/" ';'
     max_len=65536
     ;;
   council_report)
