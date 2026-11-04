@@ -729,9 +729,13 @@ fn daemon_failure(kind: std::io::ErrorKind) -> (&'static str, &'static str) {
         // A daemon took the connection, then closed it or let it wait unanswered: at its
         // connection limit, it closes a further connection at once. Before, this read "no daemon
         // at" while the daemon ran (bug hunt 2026-11-01).
+        // macOS reports a connection the daemon accepted and closed at once as not connected
+        // (ENOTCONN, from the peer-credential check), which only a connection that succeeded
+        // can be (macOS CI, PR #100).
         ErrorKind::ConnectionReset
         | ErrorKind::BrokenPipe
         | ErrorKind::UnexpectedEof
+        | ErrorKind::NotConnected
         | ErrorKind::TimedOut => (
             "no answer from the daemon at",
             " (it may be at its connection limit; retry)",
@@ -2436,4 +2440,36 @@ STILL BINDING ON ANY CHANGE THAT ADOPTS AN EXEMPLAR'S LESSON:
   - unsafe code, network access, and destructive file actions are denied by default.
 "
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::daemon_failure;
+    use std::io::ErrorKind;
+
+    /// A connection that got in and then lost its daemon is "no answer" (exit 6, retry), never
+    /// "no daemon at", whichever way the platform reports it; only a failed connect is absence.
+    #[test]
+    fn a_daemon_that_closed_the_connection_is_not_reported_absent() {
+        let no_answer = (
+            "no answer from the daemon at",
+            " (it may be at its connection limit; retry)",
+        );
+        for kind in [
+            ErrorKind::ConnectionReset,
+            ErrorKind::BrokenPipe,
+            ErrorKind::UnexpectedEof,
+            ErrorKind::NotConnected,
+            ErrorKind::TimedOut,
+        ] {
+            assert_eq!(daemon_failure(kind), no_answer, "{kind:?}");
+        }
+        for kind in [ErrorKind::NotFound, ErrorKind::ConnectionRefused] {
+            assert_eq!(daemon_failure(kind), ("no daemon at", ""), "{kind:?}");
+        }
+        assert_eq!(
+            daemon_failure(ErrorKind::PermissionDenied),
+            ("cannot use the daemon at", "")
+        );
+    }
 }

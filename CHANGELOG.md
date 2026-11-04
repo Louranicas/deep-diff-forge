@@ -44,6 +44,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **A daemon at its connection limit is no longer reported absent on macOS.** The daemon accepts
+  and closes a connection over its limit; macOS can report that as `ENOTCONN` from the client's
+  peer-credential check, which the CLI read as "no daemon at" (exit 6, wrong message) instead
+  of "no answer … (it may be at its connection limit; retry)". Seen on PR #100's macOS run.
+
 - **Two daemon tests no longer race the server on macOS** (DDF-TEST-MACTIMEOUT-001, #97).
   `a_connection_answers_and_ends_within_a_deadline` and `a_control_connection_answers_one_small_request`
   armed the client's read timeout after the connection thread could answer and close, and macOS
