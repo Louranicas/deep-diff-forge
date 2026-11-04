@@ -224,13 +224,14 @@ Domain codes:
 | --- | --- | --- |
 | 1 | No such session | — |
 | 2 | Protocol not supported | — |
-| 3 | Git failed (`review.change`) | 3 (`io`) |
+| 3 | Git failed (`review.change`), or a patch header that is not UTF-8 (`patch parse failed: header line N is not UTF-8 …`) | 3 (`io`) |
 | 4 | Patch parse failed | 4 (`invalid_input`) |
 | 7 | Input contract refused (`refused: …`) | 7 (`input_contract_refused`) |
 | 8 | Resource budget exceeded: a session over the retained-payload budget, no free session id, a response over 80 MiB, findings over 8 MiB, the daemon busy (no admission within 30 s), or, on a control slot at the connection limit, any method but `daemon.health`, `daemon.status`, `daemon.metrics` and `daemon.shutdown` ("connection limit"). Busy and connection-limit refusals clear when load drops; the size limits do not | — |
 
-The Rust SDK maps domain errors 4 and 7 to CLI exits 4 and 7, and any other RPC
-or transport error to 6 (`Error::exit_code`).
+The Rust SDK maps domain errors 3, 4 and 7 to CLI exits 3, 4 and 7, and any other RPC
+or transport error to 6 (`Error::exit_code`). A parse refusal takes its code from
+`PatchParseError::exit_code`, the one place that decides it for the CLI, the daemon and the SDK.
 
 ### Planned methods (not implemented)
 

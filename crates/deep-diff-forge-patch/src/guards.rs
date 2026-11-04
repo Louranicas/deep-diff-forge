@@ -98,8 +98,9 @@ mod tests {
         );
         let changed = files("--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+b\n");
         assert_eq!(both.refusal(&changed), None);
-        let context_only = files("--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n a\n");
-        assert!(!has_reviewable_hunks(&context_only));
+        // A hunk of context lines alone no longer parses (Git: corrupt patch), so a file whose
+        // only hunk changes nothing cannot reach the guard; a header-only diff still can.
+        assert!(crate::parse("--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n a\n").is_err());
         let added = files("--- a/x\n+++ b/x\n@@ -0,0 +1,1 @@\n+b\n");
         let removed = files("--- a/x\n+++ b/x\n@@ -1,1 +0,0 @@\n-a\n");
         assert!(has_reviewable_hunks(&added) && has_reviewable_hunks(&removed));

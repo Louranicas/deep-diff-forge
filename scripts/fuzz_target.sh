@@ -57,7 +57,8 @@ corpus="$(mktemp -d "$root/ddf-$target-corpus.XXXXXX")"
 trap 'rm -rf "$corpus"' EXIT
 case "$target" in
   patch_parser | review_json)
-    cp fixtures/patch/*.patch "$corpus/"
+    # Every committed patch, the fuzz regressions and Git oracle findings included.
+    find fixtures/patch -type f -name '*.patch' -exec cp -t "$corpus/" {} +
     max_len=65536
     ;;
   council_report)

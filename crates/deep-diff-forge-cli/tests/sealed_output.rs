@@ -229,7 +229,9 @@ fn help_documents_require_files() {
 // ---- --require-hunks -----------------------------------------------------
 
 /// One file, zero hunks: `--require-files` alone is satisfied by this.
-const HEADER_ONLY: &str = "diff --git a/x b/x\n";
+/// A header-only section Git reads as no change (`0 0 x`). A bare `diff --git` line is no patch
+/// to Git and is refused at parse since 2026-11-04.
+const HEADER_ONLY: &str = "diff --git a/x b/x\nindex 1..2 100644\n";
 const RENAME_ONLY: &str =
     "diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n";
 /// The recommended gate invocation from the README.
@@ -293,16 +295,51 @@ fn require_hunks_refuses_rename_only_diff() {
 }
 
 #[test]
-fn require_hunks_refuses_context_only_hunk() {
-    // A hunk exists but adds and removes nothing: still nothing to review.
+fn a_context_only_hunk_is_refused_as_corrupt_with_or_without_require_hunks() {
+    // A hunk that adds and removes nothing is corrupt to Git, so it is a parse refusal (exit 4)
+    // before any contract is judged; it was exit 7 under --require-hunks and 0 without.
     let context_only = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n same\n";
-    let (code, stdout, stderr) = run_text(
-        &["--stdin-patch", "--json", "--require-hunks"],
-        context_only,
+    for args in [
+        &["--stdin-patch", "--json", "--require-hunks"][..],
+        &["--stdin-patch", "--json"][..],
+    ] {
+        let (code, stdout, stderr) = run_text(args, context_only);
+        assert_eq!(code, 4, "{args:?}");
+        assert_eq!(stdout.len(), 0);
+        assert!(stderr.contains("adds and removes nothing"), "{stderr}");
+    }
+}
+
+#[test]
+fn a_header_that_is_not_utf8_exits_3_and_latin1_content_is_reviewed() {
+    let (code, stdout, stderr) = run(
+        &["--stdin-patch", "--json"],
+        b"--- a/caf\xe9\n+++ b/caf\xe9\n@@ -1 +1 @@\n-a\n+b\n",
     );
-    assert_eq!(code, 7);
-    assert_eq!(stdout.len(), 0);
-    assert_eq!(stderr, "refused: 0 hunks in input (--require-hunks)\n");
+    assert_eq!(code, 3, "{stderr}");
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("is not UTF-8"), "{stderr}");
+    let (code, _, stderr) = run(
+        &["--stdin-patch", "--json"],
+        b"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-caf\xe9\n+cafe\n",
+    );
+    assert_eq!(code, 0, "{stderr}");
+}
+
+#[test]
+fn a_hunk_header_git_does_not_read_is_refused_not_reviewed() {
+    // Production readiness 2026-11-04: `@@-1,1` (no space) hid the `evil` change from the
+    // review while `git apply` wrote it.
+    let (code, stdout, stderr) = run_text(
+        &["--stdin-patch", "--json"],
+        "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n@@-1,1 +1,1 @@\n--- a/evil\n+++ b/evil\n@@ -1 +1 @@\n-a\n+pwned\n",
+    );
+    assert_eq!(code, 4);
+    assert!(stdout.is_empty());
+    assert!(
+        stderr.contains("malformed hunk header at line 7"),
+        "{stderr}"
+    );
 }
 
 #[test]

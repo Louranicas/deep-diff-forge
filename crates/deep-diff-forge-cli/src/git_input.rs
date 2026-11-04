@@ -48,6 +48,7 @@ pub(crate) fn exit_code(err: &GitAcquireError) -> i32 {
         | GitAcquireError::TimedOut { .. }
         | GitAcquireError::NonUtf8Path { .. }
         | GitAcquireError::FileUnreadable { .. } => exit::IO,
+        GitAcquireError::Parse(error) => error.exit_code(),
         _ => exit::INVALID_INPUT,
     }
 }

@@ -29,6 +29,7 @@ fn public_signatures_are_pinned() {
     // Error is #[non_exhaustive]: callers must keep a wildcard arm.
     let describe = |e: &Error| match e {
         Error::Parse(_) => "parse",
+        Error::Encoding(_) => "encoding",
         Error::Refused(_) => "refused",
         Error::Rpc { .. } => "rpc",
         Error::Transport(_) => "transport",

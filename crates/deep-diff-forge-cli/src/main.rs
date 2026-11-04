@@ -441,14 +441,15 @@ pub(crate) fn validate_review_options_or_exit(opts: &[String]) {
 }
 
 /// The one parse → guard → seal path ([`deep_diff_forge_patch::SealedReview`], anchor C-05), with
-/// the CLI's exits: 4 for a parse failure, 7 for a refused contract.
+/// the CLI's exits: the parse error's own code for a parse failure
+/// ([`deep_diff_forge_patch::PatchParseError::exit_code`]), 7 for a refused contract.
 fn sealed_review_or_exit(bytes: &[u8], guards: InputGuards) -> deep_diff_forge_patch::SealedReview {
     use deep_diff_forge_patch::ReviewError;
     match deep_diff_forge_patch::SealedReview::new(bytes, guards.0, env!("CARGO_PKG_VERSION")) {
         Ok(review) => review,
         Err(ReviewError::Parse(error)) => {
             eprintln!("error: patch parse failed: {error}");
-            std::process::exit(exit::INVALID_INPUT);
+            std::process::exit(error.exit_code());
         }
         Err(refused @ ReviewError::Refused(_)) => {
             eprintln!("{refused}");

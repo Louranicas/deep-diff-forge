@@ -68,6 +68,9 @@ impl Guards {
 pub enum Error {
     /// The patch could not be parsed (CLI exit 4, daemon error 4).
     Parse(String),
+    /// The patch names a path or value in a header that is not UTF-8, so it cannot be reviewed
+    /// exactly (CLI exit 3, daemon error 3): an encoding failure, not a malformed patch.
+    Encoding(String),
     /// A well-formed patch broke a contract the caller required (CLI exit 7, daemon error 7).
     Refused(&'static str),
     /// The daemon answered with a JSON-RPC error.
@@ -79,7 +82,9 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Parse(message) => write!(f, "patch parse failed: {message}"),
+            Self::Parse(message) | Self::Encoding(message) => {
+                write!(f, "patch parse failed: {message}")
+            }
             Self::Refused(reason) => write!(f, "refused: {reason}"),
             Self::Rpc { code, message } => write!(f, "daemon error {code}: {message}"),
             Self::Transport(message) => write!(f, "daemon transport failed: {message}"),
@@ -91,11 +96,13 @@ impl std::error::Error for Error {}
 
 impl Error {
     /// The CLI exit code (engine family) this error corresponds to. A daemon's domain errors keep
-    /// their meaning: error 4 is invalid input and error 7 a refused contract, as on the CLI
-    /// (council sdc1).
+    /// their meaning: error 3 is an I/O or encoding failure, error 4 invalid input and error 7 a
+    /// refused contract, as on the CLI (council sdc1).
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
+            Self::Encoding(_) => exit::IO,
+            Self::Rpc { code, .. } if *code == i64::from(exit::IO) => exit::IO,
             Self::Parse(_) => exit::INVALID_INPUT,
             Self::Refused(_) => exit::INPUT_CONTRACT_REFUSED,
             Self::Rpc { code, .. } if *code == i64::from(exit::INVALID_INPUT) => {
@@ -138,13 +145,17 @@ impl Review {
 ///
 /// # Errors
 ///
-/// [`Error::Parse`] for a patch that does not parse; [`Error::Refused`] for one that breaks a
+/// [`Error::Parse`] for a patch that does not parse, [`Error::Encoding`] for one whose header is
+/// not UTF-8, as the CLI tells them apart by exit code; [`Error::Refused`] for one that breaks a
 /// contract in `guards`.
 pub fn review(patch: &str, guards: Guards) -> Result<Review, Error> {
     // The one parse → guard → seal path shared with the CLI and the daemon (anchor C-05).
     deep_diff_forge_patch::SealedReview::new(patch.as_bytes(), guards.0, env!("CARGO_PKG_VERSION"))
         .map(Review)
         .map_err(|error| match error {
+            deep_diff_forge_patch::ReviewError::Parse(e) if e.exit_code() == exit::IO => {
+                Error::Encoding(e.to_string())
+            }
             deep_diff_forge_patch::ReviewError::Parse(e) => Error::Parse(e.to_string()),
             deep_diff_forge_patch::ReviewError::Refused(reason) => Error::Refused(reason),
         })
@@ -265,7 +276,21 @@ mod tests {
             Error::Refused("0 hunks in input (--require-hunks)")
         );
         assert!(super::review("", Guards::none().require_files()).is_err());
-        assert!(super::review("diff --git a/x b/x\n", Guards::none().require_files()).is_ok());
+        assert!(
+            super::review(
+                "diff --git a/x b/x\nindex 1..2 100644\n",
+                Guards::none().require_files()
+            )
+            .is_ok()
+        );
+        // A literal U+FFFD is valid UTF-8, not a lossy decode: the path is exact.
+        assert!(
+            super::review(
+                "--- a/caf\u{fffd}\n+++ b/caf\u{fffd}\n@@ -1 +1 @@\n-a\n+b\n",
+                Guards::none()
+            )
+            .is_ok()
+        );
         assert!(super::review("", Guards::none()).is_ok());
         let err = super::review("--- a/x\n+++ b/x\n+stray\n", Guards::all()).unwrap_err();
         assert!(matches!(err, Error::Parse(_)), "{err}");
@@ -287,6 +312,15 @@ mod tests {
     #[test]
     fn errors_map_to_the_registry_and_read_well() {
         assert_eq!(Error::Parse("x".into()).exit_code(), 4);
+        assert_eq!(Error::Encoding("x".into()).exit_code(), 3);
+        assert_eq!(
+            Error::Rpc {
+                code: 3,
+                message: "m".into()
+            }
+            .exit_code(),
+            3
+        );
         assert_eq!(Error::Refused("r").exit_code(), 7);
         assert_eq!(
             Error::Rpc {

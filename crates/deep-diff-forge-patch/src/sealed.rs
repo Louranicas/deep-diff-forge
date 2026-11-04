@@ -154,15 +154,15 @@ mod tests {
         let lines = &review.files()[0].patch_twin.hunks[0].lines;
         let marked: Vec<bool> = lines.iter().map(|l| l.lossy).collect();
         assert_eq!(marked, [true, false, false, false]);
+        // A lossy header line is refused, not reviewed under the substituted path.
         let header =
             b"diff --git a/caf\xe9 b/caf\xe9\n--- a/caf\xe9\n+++ b/caf\xe9\n@@ -1 +1 @@\n-a\n+b\n";
-        let review = SealedReview::new(header, NONE, "v").unwrap();
-        assert!(
-            review.files()[0].patch_twin.hunks[0]
-                .lines
-                .iter()
-                .all(|l| !l.lossy)
-        );
+        assert!(matches!(
+            SealedReview::new(header, NONE, "v"),
+            Err(ReviewError::Parse(PatchParseError::LossyHeader {
+                line_number: 1
+            }))
+        ));
         assert!(review.files()[0].patch_twin.lossy_lines > 0);
     }
 }
