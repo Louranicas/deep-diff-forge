@@ -1416,7 +1416,7 @@ fn eval_cmd(opts: &[String]) {
         Err(err) => {
             eprintln!("error: eval: {}", display_safe(&err.to_string()));
             std::process::exit(match err {
-                eval::EvalError::Read(_) => exit::IO,
+                eval::EvalError::Read(_) | eval::EvalError::Encoding(_) => exit::IO,
                 eval::EvalError::Corpus(_) => exit::INVALID_INPUT,
             });
         }
@@ -1445,20 +1445,26 @@ fn eval_cmd(opts: &[String]) {
     }
 }
 
-const FINDINGS_USAGE: &str = "deep-diff-forge findings verify --findings FILE [--require-all] [--require-files] [--require-hunks]";
+const FINDINGS_USAGE: &str = "deep-diff-forge findings verify --findings FILE [--require-all] [--require-findings] [--require-files] [--require-hunks]";
 
 /// `findings verify`: check agent findings (JSONL, one `deep-diff-forge.finding.v0` per line)
 /// against the patch on stdin, and print the sealed `deep-diff-forge.findings.v0` verdict.
 /// `findings_sha256` covers the file's exact bytes. Exit 0; 7 with `--require-all` when any
-/// finding is refused or over the limit (or `--require-files` / `--require-hunks` refuse the
-/// patch); 4 when the patch does not parse or the findings file is over 8 MiB or not UTF-8; 3
-/// when it cannot be read; 2 on a usage error.
+/// finding is refused or over the limit, with `--require-findings` when the file holds none (an
+/// agent that wrote nothing is not a passing review), or when `--require-files` /
+/// `--require-hunks` refuse the patch; 4 when the patch does not parse or the findings file is
+/// over 8 MiB; 3 when it cannot be read or is not UTF-8; 2 on a usage error.
 fn findings_cmd(opts: &[String]) {
     use deep_diff_forge_agent::findings::{document, verify};
     let positionals = args::admit_or_exit(
         opts,
         &args::Spec {
-            flags: &["--require-all", "--require-files", "--require-hunks"],
+            flags: &[
+                "--require-all",
+                "--require-findings",
+                "--require-files",
+                "--require-hunks",
+            ],
             valued: &["--findings"],
             positionals: 1,
         },
@@ -1482,15 +1488,20 @@ fn findings_cmd(opts: &[String]) {
         &seal.tool_version,
     );
     emit_pretty_json(&doc);
+    let required = |flag: &str| opts.iter().any(|a| a == flag);
+    if required("--require-findings") && verdict.total() == 0 {
+        eprintln!("refused: 0 findings in the findings file (--require-findings)");
+        std::process::exit(EXIT_REFUSED);
+    }
     let all_accepted = verdict.refused.is_empty() && verdict.over_limit == 0;
-    if opts.iter().any(|a| a == "--require-all") && !all_accepted {
+    if required("--require-all") && !all_accepted {
         std::process::exit(EXIT_REFUSED);
     }
 }
 
-/// A findings file: at most 8 MiB of UTF-8. Exit 3 when it cannot be read or is not a regular
-/// file (a FIFO is refused, not waited on: DDF-HUNT-CLI-8), 4 when it is over the limit or not
-/// UTF-8.
+/// A findings file: at most 8 MiB of UTF-8. Exit 3 when it cannot be read or is not UTF-8, 4
+/// when it is not a regular file (a FIFO is refused, not waited on: DDF-HUNT-CLI-8) or is over
+/// the limit.
 fn read_findings_or_exit(path: &str) -> String {
     use deep_diff_forge_agent::findings::MAX_FINDINGS_BYTES;
     use std::io::Read as _;
@@ -1521,7 +1532,7 @@ fn read_findings_or_exit(path: &str) -> String {
     }
     String::from_utf8(findings).unwrap_or_else(|_| {
         eprintln!("error: findings {} are not UTF-8", display_safe(path));
-        std::process::exit(exit::INVALID_INPUT);
+        std::process::exit(exit::IO);
     })
 }
 

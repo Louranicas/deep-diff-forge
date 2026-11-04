@@ -117,7 +117,7 @@ deep-diff-forge doctor
 deep-diff-forge deploy {status|release|doctor} [--json] [--socket PATH]
 deep-diff-forge bench [--quick] [--workload NAME]... [--json]
 deep-diff-forge eval [--corpus DIR] [--json]
-deep-diff-forge findings verify --findings FILE [--require-all] [--require-files] [--require-hunks]
+deep-diff-forge findings verify --findings FILE [--require-all] [--require-findings] [--require-files] [--require-hunks]
 deep-diff-forge semantic <path> [--json]
 deep-diff-forge highlight <path> [--color|--no-color]
 deep-diff-forge council <example|prepare|review|gate|status|import|export-tuicr|import-tuicr>
@@ -373,7 +373,9 @@ process. A client may call `engine.initialize` first but does not have to.
 - Limits (`serve.rs`, `handler.rs`): 80 MiB request and response lines (an error
   answer too, measured as written, with its message cut at 4 KiB, as is every
   MCP tool and protocol error), a
-  30-second absolute read deadline per line, a 30-second write timeout, eight
+  30-second absolute read deadline per line, 30 seconds for a client to read each whole
+  response (the time left is re-armed before every write, so reading a byte at a time does not
+  extend it; a request's bytes go back to the read budget once its answer is ready), eight
   concurrent connections, 64 retained sessions (least recently used evicted
   first), and a 128 MiB aggregate retained session-payload budget.
 
@@ -456,9 +458,11 @@ annotations.
 - **Limits.** 10,000 findings per call (the rest are `over_limit`) and 8 MiB:
   - the CLI exits 4 on an oversized file;
   - the daemon answers `RESOURCE_EXHAUSTED` (8) when the array's JSONL is over 8 MiB.
-- **CLI exits:** 0; 7 with `--require-all` when any finding is refused or over the limit (or
-  `--require-files` / `--require-hunks` refuse the patch); 4 for a patch that does not parse, or
-  a findings file over 8 MiB or not UTF-8; 3 when the file cannot be read; 2 on a usage error.
+- **CLI exits:** 0; 7 with `--require-all` when any finding is refused or over the limit, with
+  `--require-findings` when the file holds no findings (`--require-all` alone holds for an empty
+  file, so a gate that needs an agent's findings adds both), or when `--require-files` /
+  `--require-hunks` refuse the patch; 4 for a patch that does not parse, or a findings file over
+  8 MiB; 3 when the file cannot be read or is not UTF-8; 2 on a usage error.
 - **Implementation.** `deep-diff-forge-agent::findings` is the one verifier: the CLI, the daemon
   (so `rpc` and MCP), the cockpit and the `findings_verify` fuzz target all call it.
 

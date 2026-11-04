@@ -4,6 +4,7 @@
 mod deploy;
 pub mod exit;
 pub mod git;
+pub mod process;
 mod release;
 mod seal;
 mod util;

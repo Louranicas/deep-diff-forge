@@ -219,6 +219,8 @@ pub struct Engine {
     answering: Answering,
     metrics: Metrics,
     log_format: crate::log::LogFormat,
+    /// How long a client has to read one response ([`crate::serve::RESPONSE_WRITE_LIMIT`]).
+    write_limit: std::time::Duration,
 }
 
 // Every connection thread shares one engine, so a field that is not thread-safe fails the build
@@ -256,6 +258,7 @@ impl Engine {
             answering: Answering::default(),
             metrics: Metrics::new(),
             log_format: crate::log::LogFormat::Text,
+            write_limit: crate::serve::RESPONSE_WRITE_LIMIT,
         }
     }
 
@@ -332,6 +335,21 @@ impl Engine {
     #[must_use]
     pub(crate) fn with_read_budget(mut self, limit: usize) -> Self {
         self.read_budget = crate::admission::ReadBudget::new(limit);
+        self
+    }
+
+    /// How long a client has to read one whole response before its connection is closed.
+    #[must_use]
+    pub fn write_limit(&self) -> std::time::Duration {
+        self.write_limit
+    }
+
+    /// The engine with a response write limit of `limit`, for tests with a client that stops
+    /// reading.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_write_limit(mut self, limit: std::time::Duration) -> Self {
+        self.write_limit = limit;
         self
     }
 
@@ -879,6 +897,10 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
     }
     let options = change_options(bool_param(params, "include_untracked")?);
     refuse_foreign_git_dirs(&canonical, allowed, &options)?;
+    // That was a Git stage of its own, under its own limit: past the client's deadline, the
+    // acquisition is not started, so one request overruns its deadline by one stage at most
+    // (C9), not two (production readiness 2026-11-04).
+    crate::deadline::check()?;
     let selection = match str_param(params, "selection")?.as_str() {
         "staged" => GitSelection::Staged,
         "working_tree" => GitSelection::WorkingTree,
@@ -1141,6 +1163,46 @@ mod tests {
     fn call(line: &str, engine: &Engine) -> Result<Value, RpcError> {
         let req = parse_request(line)?;
         dispatch(&req, engine)
+    }
+
+    /// Production readiness 2026-11-04: past its deadline, `review.change` starts no acquisition
+    /// after the foreign-Git-directory check, which is a Git stage of its own, so one request
+    /// overruns its deadline by one stage at most. The range names no commit: an acquisition that
+    /// ran fails as Git or the selection does, never as a stopped request.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test: makes a Git repository and reads the clock"
+    )]
+    fn review_change_past_its_deadline_starts_no_acquisition() {
+        let root = std::env::temp_dir().join(format!("ddf-change-deadline-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let init = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        let allowed = vec![std::fs::canonicalize(&root).unwrap()];
+        let params = serde_json::json!({
+            "repo": root.to_str().unwrap(),
+            "selection": "range",
+            "range": "no-such-ref..HEAD",
+        });
+        // Control: with time left, the acquisition runs and refuses the range.
+        let ran = review_change(&params, &allowed).unwrap_err();
+        assert_ne!(ran.code, RESOURCE_EXHAUSTED, "{}", ran.message);
+        let stopped =
+            crate::deadline::within(crate::metrics::now(), || review_change(&params, &allowed))
+                .unwrap_err();
+        assert_eq!(
+            (stopped.code, stopped.message.contains("deadline")),
+            (RESOURCE_EXHAUSTED, true),
+            "{}",
+            stopped.message
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// `review.change` stops Git after 30 s and reads untracked files only when asked.

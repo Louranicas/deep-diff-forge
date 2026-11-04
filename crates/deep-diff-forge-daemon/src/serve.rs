@@ -295,6 +295,39 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Bound blocked writes to clients that stop reading responses.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long the daemon gives a client to read one whole response line, from its first byte. The
+/// client's own read deadline is the same 30 s, after which nobody is reading it.
+pub(crate) const RESPONSE_WRITE_LIMIT: Duration = Duration::from_secs(30);
+
+/// Write `line` and its newline within `limit` of the first byte, re-arming the socket's write
+/// timeout to the time left before each write. `SO_SNDTIMEO` alone bounds one write call, not the
+/// response: any progress resets it, so a client that read a byte every 29 s held its connection
+/// slot, and its request's read budget, for as long as it liked (production readiness
+/// 2026-11-04). Every response and refusal the daemon sends is written here.
+fn write_line_within(writer: &mut UnixStream, line: &str, limit: Duration) -> std::io::Result<()> {
+    let deadline = crate::metrics::now() + limit;
+    for mut part in [line.as_bytes(), b"\n".as_slice()] {
+        while !part.is_empty() {
+            let left = deadline
+                .checked_duration_since(crate::metrics::now())
+                .filter(|left| !left.is_zero())
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "the client did not read the response in time",
+                    )
+                })?;
+            writer.set_write_timeout(Some(left))?;
+            let written = writer.write(part)?;
+            if written == 0 {
+                return Err(std::io::ErrorKind::WriteZero.into());
+            }
+            part = part.get(written..).unwrap_or_default();
+        }
+    }
+    writer.flush()
+}
+
 /// Process one request line against the shared engine, returning the response
 /// line. This is the socket-free core of connection handling.
 ///
@@ -592,12 +625,11 @@ fn refuse(
     code: i64,
     message: &str,
 ) -> std::io::Result<()> {
-    writeln!(
+    write_line_within(
         writer,
-        "{}",
-        json_line_safe(&refusal(engine, code, message))
-    )?;
-    writer.flush()
+        &json_line_safe(&refusal(engine, code, message)),
+        engine.write_limit(),
+    )
 }
 
 /// Serve one connection: newline-delimited JSON-RPC, one response per request,
@@ -607,7 +639,6 @@ fn refuse(
 ///
 /// Returns any underlying stream I/O error.
 pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result<()> {
-    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
     let mut buf = Vec::new();
@@ -684,8 +715,15 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
         // then too, and gives back its worker and admission weight (C9).
         let deadline = crate::metrics::now() + READ_TIMEOUT;
         let response = crate::deadline::within(deadline, || process_line(line, engine));
-        writeln!(writer, "{}", json_line_safe(&response))?;
-        writer.flush()?;
+        // The request is answered: its bytes go back to the read budget before the response is
+        // written, so a client that reads slowly holds only its own slot, not the budget every
+        // other request needs to be read.
+        drop(held);
+        write_line_within(
+            &mut writer,
+            &json_line_safe(&response),
+            engine.write_limit(),
+        )?;
         drop(answer);
         if !engine.is_running() {
             break;
@@ -703,7 +741,6 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
 ///
 /// Returns any underlying stream I/O error.
 pub fn handle_control_connection(stream: UnixStream, engine: &Engine) -> std::io::Result<()> {
-    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
     let mut buf = Vec::new();
@@ -738,8 +775,11 @@ pub fn handle_control_connection(stream: UnixStream, engine: &Engine) -> std::io
              daemon.health, daemon.status, daemon.metrics and daemon.shutdown",
         ),
     };
-    writeln!(writer, "{}", json_line_safe(&response))?;
-    writer.flush()?;
+    write_line_within(
+        &mut writer,
+        &json_line_safe(&response),
+        engine.write_limit(),
+    )?;
     drop(answer);
     Ok(())
 }
@@ -1860,6 +1900,63 @@ mod tests {
             "{refused}"
         );
         request(&client, r#"{"id":4,"method":"daemon.shutdown"}"#).expect("stop");
+        assert!(joined(server).is_ok());
+    }
+
+    /// Production readiness 2026-11-04: a client that sends a request and then reads its answer
+    /// slowly (or not at all) gives its request's bytes back to the read budget as soon as the
+    /// answer is ready, and is cut off once the write limit has passed for the whole response.
+    /// Before, the budget stayed held through the write, and `SO_SNDTIMEO` bounded only each
+    /// write call, so two such clients could hold the whole budget indefinitely.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test: lets the stalled client's answer block, then outlast the write limit"
+    )]
+    fn a_slow_reader_gives_back_the_read_budget_and_is_cut_off_at_the_write_limit() {
+        let sock = temp_socket_with_parent("slow-reader", 0o700);
+        let server_loc = SocketLocation::at(sock.clone());
+        let engine = Engine::new()
+            .with_read_budget(100_000)
+            .with_write_limit(Duration::from_millis(800));
+        let server = thread::spawn(move || run_server_with(&server_loc, engine));
+        wait_for_socket(&sock);
+        // About 60 KB of request whose answer (a line per added line) is far larger than the
+        // socket's buffers, so the daemon's write blocks while nobody reads.
+        let patch = format!(
+            "--- a/x\n+++ b/x\n@@ -0,0 +1,15000 @@\n{}",
+            "+x\n".repeat(15_000)
+        );
+        let line = |id: u32| {
+            format!(r#"{{"id":{id},"method":"diff.compute","params":{{"patch":{patch:?}}}}}"#)
+        };
+        let mut stalled = UnixStream::connect(&sock).unwrap();
+        writeln!(stalled, "{}", line(1)).unwrap();
+        thread::sleep(Duration::from_millis(300));
+        // 60 KB + 60 KB is over the 100,000-byte budget: answered only if the first request's
+        // bytes were given back while its answer is still being written.
+        let client = SocketLocation::at(sock.clone());
+        let second = request(&client, &line(2)).expect("a second request while the first stalls");
+        assert!(
+            second.contains(r#""result""#),
+            "{}",
+            &second[..second.len().min(300)]
+        );
+        // Past the write limit the stalled answer is abandoned: what the client then reads ends
+        // without the response's closing newline.
+        thread::sleep(Duration::from_millis(1500));
+        stalled
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut got = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stalled, &mut got);
+        assert!(
+            got.len() < second.len() && !got.ends_with(b"\n"),
+            "the stalled client got {} of {} bytes",
+            got.len(),
+            second.len()
+        );
+        request(&client, r#"{"id":3,"method":"daemon.shutdown"}"#).expect("stop");
         assert!(joined(server).is_ok());
     }
 

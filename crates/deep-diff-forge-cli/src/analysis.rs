@@ -152,7 +152,7 @@ fn read_source(
     *remaining -= bytes.len();
     String::from_utf8(bytes)
         .map(Some)
-        .map_err(|_| Error::Invalid(format!("source is not UTF-8: {relative:?}")))
+        .map_err(|_| Error::Io(format!("source is not UTF-8: {relative:?}")))
 }
 
 #[cfg(test)]

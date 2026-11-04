@@ -6,6 +6,35 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Security
+
+- **A client that reads slowly can no longer hold the daemon's read budget** (production
+  readiness 2026-11-04). A request's bytes stayed reserved until its answer was written, and
+  `SO_SNDTIMEO` bounded each write call, not the response, so two clients that read a byte every
+  29 s held the whole 160 MiB budget and every other request was refused busy. The bytes now go
+  back once the answer is ready, and each response must be read within 30 s of its first byte
+  (`write_line_within`; every response and refusal is written through it).
+- **Every child process DDF waits for has a deadline and capped output.** `tuicr` (120 s, 32 MiB)
+  and the council's Git calls (120 s, the caller's cap) waited without either. Both now run
+  through `deep_diff_forge_core::process::run_bounded`, which kills and reaps a child past its
+  limits without waiting on a grandchild that holds its pipes. `clippy.toml` disallows the
+  unbounded waits (`Command::output`, `Command::status`, `Child::wait`,
+  `Child::wait_with_output`) outside a reviewed door.
+
+### Added
+
+- **`findings verify --require-findings`** refuses (exit 7) a findings file that holds no
+  findings. `--require-all` holds for an empty file, so a gate on it passed an agent that wrote
+  nothing; a gate that needs findings adds both. `Verdict::total` counts them.
+
+### Changed
+
+- **Non-UTF-8 input exits 3 (`io`) everywhere**, as the exit-code registry names it: a findings
+  file and an `eval` corpus file name or findings file exited 4, and an `analyze` source exited
+  4 while its patch exited 3.
+- **`review.change` checks its deadline between its two Git stages**, so a request overruns its
+  client's deadline by one stage at most, as documented (C9), not two.
+
 ### Fixed
 
 - **Two daemon tests no longer race the server on macOS** (DDF-TEST-MACTIMEOUT-001, #97).

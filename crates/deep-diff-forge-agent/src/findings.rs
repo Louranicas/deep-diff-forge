@@ -211,6 +211,14 @@ pub struct Verdict {
     pub over_limit: usize,
 }
 
+impl Verdict {
+    /// The findings read: accepted, refused or past the limit. Blank entries are not findings.
+    #[must_use]
+    pub fn total(&self) -> usize {
+        self.accepted.len() + self.refused.len() + self.over_limit
+    }
+}
+
 /// Verify findings, one JSON object per entry of `findings`, against `files` (the review whose
 /// seal is `input_sha256`). Blank entries are skipped and not counted.
 #[must_use]
