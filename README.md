@@ -522,8 +522,9 @@ An empty list never means the text is safe. They also raise the file's rank
 }
 ```
 
-Strings are RFC 8259-escaped, and valid UTF-8 passes through. A line decoded lossily is marked
-`"lossy": true`. File statuses use one snake-case spelling everywhere: `added`, `modified`,
+Strings are RFC 8259-escaped, and valid UTF-8 passes through. A hunk line decoded lossily is
+marked `"lossy": true`; a header line that is not UTF-8 (a path, a mode, a hunk header) is
+refused with exit 3, because the name it gives would be a substitute. File statuses use one snake-case spelling everywhere: `added`, `modified`,
 `deleted`, `renamed`, `copied`, `type_changed` (a file, a symlink or a submodule became
 another), `mode_changed` (only the mode changed, such as the executable bit), `binary_changed`,
 `unknown`.

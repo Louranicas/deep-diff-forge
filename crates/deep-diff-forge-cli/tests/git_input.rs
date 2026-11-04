@@ -303,3 +303,27 @@ fn a_second_mode_or_a_repeated_repo_is_a_usage_error() {
         assert!(stderr.contains(message), "{args:?}: {stderr}");
     }
 }
+
+/// Production readiness 2026-11-04: a changed file whose name is not UTF-8 is refused as an
+/// encoding failure, exit 3, as before; it is now refused when its `diff --git` header is read
+/// (`LossyHeader`), so the exit code comes from the parse error (`PatchParseError::exit_code`).
+/// Linux only: macOS file systems refuse a name that is not UTF-8.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_changed_file_whose_name_is_not_utf8_exits_3() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let root = std::env::temp_dir().join(format!("ddf-cli-git-latin1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let r = Repo(root);
+    git(&r.0, &["init", "-q"]);
+    let name = r.0.join(std::ffi::OsStr::from_bytes(b"caf\xe9.txt"));
+    std::fs::write(&name, b"old\n").unwrap();
+    git(&r.0, &["add", "-A"]);
+    git(&r.0, &["commit", "-q", "-m", "base"]);
+    std::fs::write(&name, b"new\n").unwrap();
+    let (code, stdout, stderr) = ddf(&["--git-working-tree", "--repo", r.arg(), "--json"]);
+    assert_eq!(code, 3, "{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("is not UTF-8"), "{stderr}");
+}

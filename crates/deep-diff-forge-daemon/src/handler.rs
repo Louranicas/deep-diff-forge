@@ -785,8 +785,10 @@ fn sealed(request: &Request) -> Result<deep_diff_forge_patch::SealedReview, RpcE
         env!("CARGO_PKG_VERSION"),
     )
     .map_err(|error| match error {
+        // The domain code is the CLI's exit code for the same refusal: 4 (PATCH_PARSE_FAILED),
+        // or 3 for a header that is not UTF-8 (`PatchParseError::exit_code`).
         deep_diff_forge_patch::ReviewError::Parse(e) => {
-            RpcError::new(PATCH_PARSE_FAILED, e.to_string())
+            RpcError::new(i64::from(e.exit_code()), e.to_string())
         }
         refused @ deep_diff_forge_patch::ReviewError::Refused(_) => {
             RpcError::new(INPUT_CONTRACT_REFUSED, refused.to_string())
@@ -917,8 +919,8 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
         deep_diff_forge_patch::GitAcquireError::InvalidSelection { .. } => {
             RpcError::invalid_params(e.to_string())
         }
-        deep_diff_forge_patch::GitAcquireError::Parse(_) => {
-            RpcError::new(PATCH_PARSE_FAILED, e.to_string())
+        deep_diff_forge_patch::GitAcquireError::Parse(ref parse) => {
+            RpcError::new(i64::from(parse.exit_code()), e.to_string())
         }
         other => RpcError::new(crate::protocol::GIT_FAILED, other.to_string()),
     };
@@ -1947,7 +1949,7 @@ mod tests {
                 "refused: 0 files in input (--require-files)"
             )
         );
-        let header = call(r#"{"method":"diff.compute","params":{"patch":"diff --git a/x b/x\n","require_hunks":true}}"#, &e).unwrap_err();
+        let header = call(r#"{"method":"diff.compute","params":{"patch":"diff --git a/x b/x\nindex 1..2 100644\n","require_hunks":true}}"#, &e).unwrap_err();
         assert_eq!(
             (header.code, header.message.as_str()),
             (

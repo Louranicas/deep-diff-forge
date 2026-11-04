@@ -115,7 +115,39 @@ pub enum PatchParseError {
         /// First observed count over the limit.
         actual_lines: usize,
     },
-    /// A hunk header (`@@ -a,b +c,d @@`) could not be parsed.
+    /// A hunk header in a place `git apply` does not read one as part of the file: not right
+    /// after the file's `+++` (or a Git section's extended headers) and not right after the
+    /// previous hunk's last line. Git ends the file's hunks at any other line, so a hunk after a
+    /// blank or stray line is "patch fragment without header" to Git, and taking it as this
+    /// file's would review lines Git refuses or applies elsewhere.
+    MisplacedHunk {
+        /// 1-based line number of the hunk header.
+        line_number: usize,
+    },
+    /// A hunk that adds and removes nothing (only context lines, or none). `git apply` refuses
+    /// it as a corrupt patch.
+    HunkWithoutChange {
+        /// 1-based line number where the hunk ended.
+        line_number: usize,
+    },
+    /// A file section from which `git apply` reads no patch: a `diff --git` line with no
+    /// extended header or hunk after it (Git: not a header), or a traditional `---`/`+++` pair
+    /// with no hunk (Git: "No valid patches"). A Git section of `---`/`+++` alone is refused
+    /// too, since the model could not render it back. The line is the section's first.
+    SectionWithoutPatch {
+        /// 1-based line number where the section began.
+        line_number: usize,
+    },
+    /// A header line (a path, mode or hunk header the parser reads meaning from) that is not
+    /// UTF-8. Decoded lossily, the value it names would be a substitute: `caf\xe9` and
+    /// `caf\xe8` both read `caf\u{fffd}`, so two files would share one reviewed path.
+    LossyHeader {
+        /// 1-based line number of the header line.
+        line_number: usize,
+    },
+    /// A line that begins with `@@` is not a hunk header in exactly Git's grammar
+    /// (`@@ -a[,b] +c[,d] @@`, single spaces, digits only). Git either refuses it as corrupt or
+    /// does not read it as a hunk at all, ending the file there.
     MalformedHunkHeader {
         /// 1-based line number of the offending header.
         line_number: usize,
@@ -149,6 +181,37 @@ pub enum PatchParseError {
         /// Raw text of the offending body line.
         text: String,
     },
+}
+
+impl PatchParseError {
+    /// The engine exit code for this refusal ([`deep_diff_forge_core::exit`]), decided here once
+    /// for every surface that reports one. A header that is not UTF-8 is an encoding failure
+    /// (`io`, 3), as the exit-code registry names non-UTF-8 input and as a Git acquisition
+    /// refuses a non-UTF-8 path; every other refusal is `invalid_input` (4). The match names
+    /// every variant, so a new refusal does not compile until its code is chosen.
+    #[must_use]
+    pub const fn exit_code(&self) -> i32 {
+        use deep_diff_forge_core::exit;
+        match self {
+            Self::LossyHeader { .. } => exit::IO,
+            Self::InvalidEofMarker { .. }
+            | Self::UnsupportedFormat { .. }
+            | Self::InvalidPath { .. }
+            | Self::InvalidMode { .. }
+            | Self::MisplacedHeader { .. }
+            | Self::InconsistentHeader { .. }
+            | Self::UnterminatedLine { .. }
+            | Self::BudgetExceeded { .. }
+            | Self::LineBudgetExceeded { .. }
+            | Self::MisplacedHunk { .. }
+            | Self::HunkWithoutChange { .. }
+            | Self::SectionWithoutPatch { .. }
+            | Self::MalformedHunkHeader { .. }
+            | Self::BodyLineOutsideHunk { .. }
+            | Self::TruncatedHunk { .. }
+            | Self::HunkLineCountMismatch { .. } => exit::INVALID_INPUT,
+        }
+    }
 }
 
 impl std::fmt::Display for PatchParseError {
@@ -194,6 +257,22 @@ impl std::fmt::Display for PatchParseError {
             } => write!(
                 f,
                 "patch contains at least {actual_lines} lines, exceeding the {limit_lines}-line budget"
+            ),
+            Self::MisplacedHunk { line_number } => write!(
+                f,
+                "hunk header at line {line_number} does not follow its file's +++ header or the previous hunk, so git apply does not read it as part of the file"
+            ),
+            Self::HunkWithoutChange { line_number } => write!(
+                f,
+                "hunk ending at line {line_number} adds and removes nothing (git apply refuses it as corrupt)"
+            ),
+            Self::SectionWithoutPatch { line_number } => write!(
+                f,
+                "the file section beginning at line {line_number} holds nothing git apply reads as a patch (no extended header, no hunk)"
+            ),
+            Self::LossyHeader { line_number } => write!(
+                f,
+                "header line {line_number} is not UTF-8, so the path or value it names cannot be reviewed exactly"
             ),
             Self::MalformedHunkHeader { line_number, text } => write!(
                 f,

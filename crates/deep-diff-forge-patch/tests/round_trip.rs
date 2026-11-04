@@ -80,8 +80,13 @@ fn discovered_fuzz_inputs_fail_explicitly_or_render_stably() {
     );
     for entry in std::fs::read_dir(directory).unwrap() {
         let path = entry.unwrap().path();
-        let input = std::fs::read_to_string(&path).unwrap();
-        if let Ok(files) = parse(&input) {
+        // Bytes, as the fuzzer feeds them: a regression may not be UTF-8.
+        let input = std::fs::read(&path).unwrap();
+        let decoded = deep_diff_forge_patch::decode(&input);
+        if let Ok(files) = deep_diff_forge_patch::parse_decoded(
+            &decoded,
+            deep_diff_forge_patch::ParseOptions::default(),
+        ) {
             let rendered = render_unified(&files);
             let reparsed = parse(&rendered).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
             assert_eq!(rendered, render_unified(&reparsed), "{}", path.display());
@@ -93,8 +98,12 @@ fn discovered_fuzz_inputs_fail_explicitly_or_render_stably() {
 /// with `//` kept its slashes, its rendered, quoted twin lost one, so render was not stable.
 #[test]
 fn a_doubled_slash_in_a_diff_git_name_survives_quoting() {
-    let input = "diff --git ae.rff --git ae.rs b/new/164%~rename fro0m oldad//s b/new/164%~rename fro0m oldad//s";
-    let first = parse(input).unwrap();
+    let line = "diff --git ae.rff --git ae.rs b/new/164%~rename fro0m oldad//s b/new/164%~rename fro0m oldad//s";
+    // The crash input was this line alone, which Git reads no patch from; it is refused since
+    // 2026-11-04, so the name is carried by a mode change Git does read.
+    assert!(parse(line).is_err());
+    let input = format!("{line}\nold mode 100644\nnew mode 100755\n");
+    let first = parse(&input).unwrap();
     let rendered = render_unified(&first);
     let second = parse(&rendered).unwrap();
     assert_eq!(first, second, "{rendered:?}");

@@ -37,8 +37,44 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   4 while its patch exited 3.
 - **`review.change` checks its deadline between its two Git stages**, so a request overruns its
   client's deadline by one stage at most, as documented (C9), not two.
+- **A malformed hunk header can no longer hide a file from the review** (production readiness
+  2026-11-04). The parser trimmed the space after `@@`, so `@@-1,1 +1,1 @@` was read as a hunk of
+  the current file and the `--- a/evil` / `+++ b/evil` lines after it as that hunk's body, while
+  `git apply` ended the file there and wrote `evil`. Measured on v0.7.0: DDF reviewed one file,
+  exit 0; `git apply` changed two. Hunk headers now follow Git's `parse_fragment_header` byte for
+  byte (`@@ -` RANGE ` +` RANGE ` @@`), and any line beginning `@@` that is not one is refused.
+- **A hunk is accepted only where Git reads one** (`MisplacedHunk`): right after its file's `+++`
+  or a Git section's extended header, or right after the previous hunk. A hunk after a blank or
+  stray line is "patch fragment without header" to Git.
+- **A header line that is not UTF-8 is refused** (`LossyHeader`, exit 3), instead of being
+  reviewed under a substituted name (`caf\xe9` and `caf\xe8` both read `caf\u{fffd}`). Lossy
+  hunk lines and preamble are still reviewed and marked, as before.
+
+- **Patches Git refuses or reads no patch from are refused:** a hunk that adds and removes
+  nothing (`HunkWithoutChange`: Git's "corrupt patch"; it was exit 7 under `--require-hunks`, exit
+  0 without), a `diff --git` line with nothing after it, and a traditional `---`/`+++` pair with
+  no hunk (`SectionWithoutPatch`). Exit 4.
+- **One place decides a parse refusal's exit code** (`PatchParseError::exit_code`): the CLI, the
+  structured Git selections and the daemon's domain code use it, and the Rust SDK maps daemon
+  error 3 to exit 3, as the registry names it.
+
+### Testing
+
+- **Differential Git oracle** (`crates/deep-diff-forge-patch/tests/git_differential.rs`): for every
+  patch DDF accepts, `git apply --numstat -z` must name the same files with the same added and
+  deleted counts. It runs over every patch fixture and fuzz regression, and over every
+  one-character edit of a hunk header placed in front of a hidden file. All six of its tests fail
+  on v0.7.0's parser, each for the reason it names (control, measured).
+- **The `patch_parser` fuzz target reads raw bytes** through the lossy decoder (it skipped non-UTF-8
+  input), checks that no accepted hunk is change-free, and is seeded with every committed patch,
+  regressions included.
 
 ### Fixed
+
+- **A daemon at its connection limit is no longer reported absent on macOS.** The daemon accepts
+  and closes a connection over its limit; macOS can report that as `ENOTCONN` from the client's
+  peer-credential check, which the CLI read as "no daemon at" (exit 6, wrong message) instead
+  of "no answer … (it may be at its connection limit; retry)". Seen on PR #100's macOS run.
 
 - **Two daemon tests no longer race the server on macOS** (DDF-TEST-MACTIMEOUT-001, #97).
   `a_connection_answers_and_ends_within_a_deadline` and `a_control_connection_answers_one_small_request`

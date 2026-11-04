@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn context_left_uses_old_right_uses_new() {
-        let input = "--- a/x\n+++ b/x\n@@ -5,1 +9,1 @@\n same\n";
+        let input = "--- a/x\n+++ b/x\n@@ -5,2 +9,2 @@\n same\n-a\n+b\n";
         let r = rows(input);
         assert_eq!(r[0].left.as_ref().unwrap().line, 5);
         assert_eq!(r[0].right.as_ref().unwrap().line, 9);

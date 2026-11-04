@@ -348,16 +348,20 @@ fn fuzz_runs_on_a_fresh_private_corpus_and_never_writes_through_a_planted_one() 
     assert_eq!(mode, "700", "the corpus is private");
     let mut seeded: Vec<_> = lines.map(str::to_owned).collect();
     seeded.sort();
-    let mut fixtures: Vec<_> = std::fs::read_dir(format!("{ROOT}/fixtures/patch"))
-        .unwrap()
-        .map(|e| e.unwrap().file_name().into_string().unwrap())
-        // The script's `*.patch` glob is case-sensitive, and so is this.
-        .filter(|name| {
-            Path::new(name)
-                .extension()
-                .is_some_and(|ext| ext == "patch")
-        })
-        .collect();
+    // Every `*.patch` under fixtures/patch, regressions included (the script's `find -name` is
+    // case-sensitive, and so is this).
+    let mut fixtures = Vec::new();
+    let mut pending = vec![PathBuf::from(format!("{ROOT}/fixtures/patch"))];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "patch") {
+                fixtures.push(path.file_name().unwrap().to_str().unwrap().to_owned());
+            }
+        }
+    }
     fixtures.sort();
     assert_eq!(
         seeded, fixtures,
