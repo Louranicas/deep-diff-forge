@@ -152,7 +152,8 @@ fn parse_lines(
                 actual_lines: index + 1,
             });
         }
-        parser.feed(line, index + 1)?;
+        let is_lossy = lossy.next_if_eq(&&(index + 1)).is_some();
+        parser.feed(line, index + 1, is_lossy)?;
         // Git refuses a patch whose last hunk line has no line feed as corrupt; reading it as
         // complete would review a line Git will not apply (bug hunt 2026-10-28, H1-04).
         if unterminated_last == Some(index + 1) && parser.can_mark_eof {
@@ -160,8 +161,9 @@ fn parse_lines(
                 line_number: index + 1,
             });
         }
-        if lossy.next_if_eq(&&(index + 1)).is_some() {
-            // `can_mark_eof` is set exactly when this line was a hunk body line.
+        if is_lossy {
+            // `can_mark_eof` is set exactly when this line was a hunk body line; any other lossy
+            // line `feed` let through was ignored preamble.
             if parser.can_mark_eof
                 && let Some(body) = parser.last_body_line()
             {
@@ -238,6 +240,11 @@ struct Parser {
     /// Last line number fed, so end-of-input truncation can be located.
     last_line: usize,
     can_mark_eof: bool,
+    /// The previous line is one a hunk header may follow: the file's `+++`, a Git section's
+    /// extended header, or the last line of a hunk (or its `\ No newline` marker). Git reads a
+    /// file's hunks only as one unbroken run from there (`parse_single_patch` stops at the first
+    /// line that is not `@@ -`), so a hunk anywhere else is not this file's to Git.
+    hunk_may_open: bool,
     /// `git apply` without `-p` guesses `-p0` from the first traditional diff whose new name has
     /// no `/` (`guess_p_value`), and keeps it for every later file of the patch: after `--- x`,
     /// `--- .github/workflows/ci.yml` names that path, not `workflows/ci.yml`.
@@ -255,9 +262,12 @@ impl Parser {
             .or_else(|| file.hunks.last_mut().and_then(|h| h.lines.last_mut()))
     }
 
-    fn feed(&mut self, line: &str, line_number: usize) -> Result<(), PatchParseError> {
+    /// Feed one line. `lossy` says it was not UTF-8 and was decoded with substitutes: allowed in
+    /// a hunk body (marked) and in ignored preamble, refused anywhere the parser reads meaning.
+    fn feed(&mut self, line: &str, line_number: usize, lossy: bool) -> Result<(), PatchParseError> {
         self.last_line = line_number;
         let can_mark_eof = std::mem::take(&mut self.can_mark_eof);
+        let hunk_may_open = std::mem::take(&mut self.hunk_may_open);
         // The "\ No newline at end of file" marker applies to the preceding
         // line and is recorded as file metadata, whether or not a hunk is still
         // open (it can arrive after the hunk's line counts are exhausted).
@@ -278,6 +288,9 @@ impl Parser {
                     file.eof_new = Some(line_number);
                 }
             }
+            // The marker is part of the hunk it ends: a hunk may follow it as it could follow
+            // the line before.
+            self.hunk_may_open = hunk_may_open;
             return Ok(());
         }
         // While a hunk is open and not yet exhausted, body lines belong to it.
@@ -293,8 +306,10 @@ impl Parser {
                 }
                 self.can_mark_eof = true;
                 if hunk.rem_old == 0 && hunk.rem_new == 0 {
-                    // Counts satisfied: a clean close (cannot truncate).
+                    // Counts satisfied: a clean close (cannot truncate). The next hunk of this
+                    // file, if any, must come right here.
                     self.close_hunk(line_number)?;
+                    self.hunk_may_open = true;
                 }
                 return Ok(());
             }
@@ -302,15 +317,25 @@ impl Parser {
             // closing here rejects the truncated hunk.
             self.close_hunk(line_number)?;
         }
-        self.dispatch_non_body(line, line_number)
+        match self.dispatch_non_body(line, line_number, hunk_may_open)? {
+            LineUse::Interpreted if lossy => Err(PatchParseError::LossyHeader { line_number }),
+            LineUse::Interpreted | LineUse::Ignored => Ok(()),
+        }
     }
 
-    fn dispatch_non_body(&mut self, line: &str, line_number: usize) -> Result<(), PatchParseError> {
+    fn dispatch_non_body(
+        &mut self,
+        line: &str,
+        line_number: usize,
+        hunk_may_open: bool,
+    ) -> Result<LineUse, PatchParseError> {
         if line.starts_with("diff --cc ") || line.starts_with("diff --combined ") {
             return Err(PatchParseError::UnsupportedFormat { line_number });
         }
         if let Some(rest) = line.strip_prefix("diff --git ") {
-            return self.start_git_file(rest, line_number);
+            return self
+                .start_git_file(rest, line_number)
+                .map(|()| LineUse::Interpreted);
         }
         // After `GIT binary patch`, git's format allows only body lines until the next
         // `diff --git`; anything else is refused. Before, every later line went into the body, so
@@ -322,7 +347,7 @@ impl Parser {
         {
             if is_binary_body_line(line) {
                 file.binary_body.push(line.to_string());
-                return Ok(());
+                return Ok(LineUse::Interpreted);
             }
             return Err(PatchParseError::UnsupportedFormat { line_number });
         }
@@ -341,23 +366,36 @@ impl Parser {
             return Err(PatchParseError::MisplacedHeader { line_number });
         }
         if let Some(rest) = line.strip_prefix("--- ") {
-            return self.on_old_header(rest, had_cr, line_number);
+            return self
+                .on_old_header(rest, had_cr, line_number)
+                .map(|()| LineUse::Interpreted);
         }
         if let Some(rest) = line.strip_prefix("+++ ") {
-            return self.on_new_header(rest, had_cr, line_number);
+            self.on_new_header(rest, had_cr, line_number)?;
+            self.hunk_may_open = true;
+            return Ok(LineUse::Interpreted);
         }
+        // Every line that begins `@@` is a hunk header to be judged, never preamble: Git ends the
+        // file at an `@@` line it cannot read, and ignoring one here let the lines after it be
+        // reviewed as this file's while Git applied them elsewhere.
         if line.starts_with("@@") {
-            return self.open_hunk(line, line_number);
+            return self
+                .open_hunk(line, line_number, hunk_may_open)
+                .map(|()| LineUse::Interpreted);
         }
         if self.try_metadata(line, line_number)? {
-            return Ok(());
+            // `parse_git_diff_header` reads extended headers until the first other line, and a
+            // hunk may begin there; a `diff --git` line alone is no header to Git
+            // (`git_hdr_len <= len`), so the hunk needs one of these first.
+            self.hunk_may_open = true;
+            return Ok(LineUse::Interpreted);
         }
         // `git format-patch` writes a bare `---` before the diffstat and a `-- ` signature after
         // the last hunk; git ignores both outside a hunk, so they are mail framing, not body
         // lines (bug hunt 2026-10-28, H1-07). Only these exact lines: anything else stays a
         // stray body marker.
         if line == "---" || line == "-- " {
-            return Ok(());
+            return Ok(LineUse::Ignored);
         }
         // A stray body marker outside any hunk is malformed; quiet preamble
         // (commit messages, diffstats, blank lines) is ignored.
@@ -367,7 +405,7 @@ impl Parser {
                 text: line.to_string(),
             });
         }
-        Ok(())
+        Ok(LineUse::Ignored)
     }
 
     fn start_git_file(&mut self, rest: &str, line_number: usize) -> Result<(), PatchParseError> {
@@ -487,23 +525,24 @@ impl Parser {
         Ok(())
     }
 
-    fn open_hunk(&mut self, line: &str, line_number: usize) -> Result<(), PatchParseError> {
+    fn open_hunk(
+        &mut self,
+        line: &str,
+        line_number: usize,
+        hunk_may_open: bool,
+    ) -> Result<(), PatchParseError> {
         let header =
             parse_hunk_header(line).ok_or_else(|| PatchParseError::MalformedHunkHeader {
                 line_number,
                 text: line.to_string(),
             })?;
-        if self.file.is_none() {
-            // A hunk with no headers names no path, so `flush_file` refuses it here.
-            self.file = Some(FileBuf {
-                first_line: line_number,
-                ..FileBuf::default()
-            });
-        }
+        // Only where Git would read it as this file's next hunk; `hunk_may_open` is set only
+        // inside a file, so a hunk before any header (which names no path) is refused here too.
+        let Some(file) = self.file.as_mut().filter(|_| hunk_may_open) else {
+            return Err(PatchParseError::MisplacedHunk { line_number });
+        };
         // A hunk ends the file's headers, even when no `---`/`+++` came first (fuzz).
-        if let Some(file) = self.file.as_mut() {
-            file.past_headers = true;
-        }
+        file.past_headers = true;
         let id = HunkId(self.next_hunk_id);
         self.next_hunk_id += 1;
         self.hunk = Some(HunkBuf {
@@ -592,6 +631,10 @@ impl Parser {
                     remaining_old: hunk.rem_old,
                     remaining_new: hunk.rem_new,
                 });
+            }
+            // Git's `parse_fragment`: a fragment with nothing added or deleted is corrupt.
+            if hunk.lines.iter().all(|l| l.kind == PatchLineKind::Context) {
+                return Err(PatchParseError::HunkWithoutChange { line_number });
             }
             if let Some(file) = self.file.as_mut() {
                 file.hunks.push(PatchHunk {
@@ -701,21 +744,7 @@ impl Parser {
                     }
                 }
             }
-            // Git refuses a section it can name no path for ("git diff header lacks filename
-            // information"): a `diff --git i/x w/y` mode change was reviewed as a file with an
-            // empty path (bug hunt 2026-11-01).
-            if file.resolve_path().is_empty() {
-                return Err(PatchParseError::InvalidPath {
-                    line_number: file.first_line,
-                });
-            }
-            // A section whose only change is a mode Git reads as unchanged (`canon_mode`) is
-            // "patch with only garbage" to Git; it was reviewed as a mode change (C2).
-            if file.only_an_unchanged_mode() {
-                return Err(PatchParseError::InvalidMode {
-                    line_number: self.last_line,
-                });
-            }
+            file.refuse_what_git_reads_nothing_from(self.last_line)?;
             self.files.push(file.into_review_file());
         }
         Ok(())
@@ -807,6 +836,38 @@ impl HunkBuf {
 }
 
 impl FileBuf {
+    /// Refuse a section Git names no file or no change from. `last_line` is where the section
+    /// ended.
+    fn refuse_what_git_reads_nothing_from(&self, last_line: usize) -> Result<(), PatchParseError> {
+        // Git refuses a section it can name no path for ("git diff header lacks filename
+        // information"): a `diff --git i/x w/y` mode change was reviewed as a file with an
+        // empty path (bug hunt 2026-11-01).
+        if self.resolve_path().is_empty() {
+            return Err(PatchParseError::InvalidPath {
+                line_number: self.first_line,
+            });
+        }
+        // A section whose only change is a mode Git reads as unchanged (`canon_mode`) is
+        // "patch with only garbage" to Git; it was reviewed as a mode change (C2).
+        if self.only_an_unchanged_mode() {
+            return Err(PatchParseError::InvalidMode {
+                line_number: last_line,
+            });
+        }
+        // Git reads no patch from a `diff --git` line with nothing after it (`find_header`:
+        // `git_hdr_len <= len`), nor from a traditional `---`/`+++` with no hunk. Reviewing
+        // either named a file Git leaves alone, and the bare line could take the next section's
+        // headers (production readiness 2026-11-04). A Git section of `---`/`+++` alone is
+        // refused too: the model keeps no headers without hunks, so it rendered as the bare line
+        // (fuzz, crash-c8eba407).
+        if self.hunks.is_empty() && (!self.git || self.metadata.is_empty()) {
+            return Err(PatchParseError::SectionWithoutPatch {
+                line_number: self.first_line,
+            });
+        }
+        Ok(())
+    }
+
     /// The marker that ended the side the body line `line` adds to, if one did. The marker drops
     /// the newline of the line before it, so Git joins the next line of that side onto it: `+cu`,
     /// a marker, then `+rl … | sh` was reviewed as two lines and applied as one `curl … | sh`
@@ -1077,6 +1138,18 @@ impl FileBuf {
     }
 }
 
+/// What a line outside a hunk body was to the parser. [`Parser::feed`] refuses a lossily
+/// decoded line that was [`LineUse::Interpreted`], so a header kind added later cannot read a
+/// substituted path or value without that refusal: the dispatcher must say which a line was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+enum LineUse {
+    /// A header, mode, binary body or hunk header: its text became part of the model.
+    Interpreted,
+    /// Preamble or mail framing that Git also ignores: nothing was read from it.
+    Ignored,
+}
+
 /// Parsed contents of a hunk header.
 struct HunkHeader {
     old_start: u32,
@@ -1086,34 +1159,31 @@ struct HunkHeader {
     section: Option<String>,
 }
 
-/// Parse `@@ -a,b +c,d @@ [optional section heading]`.
+/// Parse a hunk header in exactly the grammar of Git's `parse_fragment_header` (`apply.c`):
 ///
-/// The opening `@@` is already required by the call site (line starts with `@@`).
-/// This function additionally requires the mandatory closing `@@` token — a unified
-/// diff hunk header without it is malformed and the patch MUST be rejected (patch
-/// truth: malformed input must never silently normalise to a valid internal model).
+/// ```text
+/// "@@ -" RANGE " +" RANGE " @@" [ " " heading ]      RANGE = DIGITS [ "," DIGITS ]
+/// ```
 ///
-/// Trailing section-heading text after the closing `@@` is allowed and ignored.
+/// Each literal is matched byte for byte, as Git's `memcmp` matches it: no other spacing, no
+/// tab, no sign. Leniency here is not tolerance, it is a second reading of the patch. Git does
+/// not read `@@-1 +1 @@` or `@@  -1 +1 @@` as a hunk at all: it ends the file and goes on
+/// looking for the next one, so trimming the space made DDF review a change to one file while
+/// `git apply` wrote the lines after it, `---`/`+++` included, to another (production readiness
+/// 2026-11-04). Git refuses `@@ -1  +1 @@` and `@@ -1 +1\t@@` as corrupt.
+///
+/// After the closing `@@` Git ignores the rest of the line. DDF keeps it as the display-only
+/// section heading when a space comes first, as Git writes it, and refuses any other text
+/// (`@@x`, `@@@`): its rendering would change the header bytes.
 fn parse_hunk_header(line: &str) -> Option<HunkHeader> {
-    let rest = line.strip_prefix("@@")?.trim_start();
-    let rest = rest.strip_prefix('-')?;
-    let mut parts = rest.splitn(2, ' ');
-    let old = parts.next()?;
-    let after = parts.next()?.trim_start();
-    let new = after.strip_prefix('+')?;
-    // Collect whitespace-split tokens: first is the `new[,count]` range,
-    // second MUST be exactly `@@` (the mandatory closer).
-    let mut tokens = new.split_whitespace();
-    let new_range = tokens.next()?;
-    match tokens.next() {
-        Some("@@") => {}
-        _ => return None,
-    }
-    // Any further text is the optional section heading, kept for display only.
-    let (old_start, old_count) = parse_range(old)?;
-    let (new_start, new_count) = parse_range(new_range)?;
-    let heading = new.split_once("@@").map_or("", |(_, rest)| rest);
-    let heading = heading.strip_prefix(' ').unwrap_or(heading);
+    let rest = line.strip_prefix("@@ -")?;
+    let (old_start, old_count, rest) = take_range(rest)?;
+    let rest = rest.strip_prefix(" +")?;
+    let (new_start, new_count, rest) = take_range(rest)?;
+    let heading = match rest.strip_prefix(" @@")? {
+        "" => "",
+        after => after.strip_prefix(' ')?,
+    };
     Some(HunkHeader {
         old_start,
         old_count,
@@ -1123,24 +1193,30 @@ fn parse_hunk_header(line: &str) -> Option<HunkHeader> {
     })
 }
 
-/// Parse a `start` or `start,count` range; count defaults to 1.
-fn parse_range(range: &str) -> Option<(u32, u32)> {
-    // Digits only: `u32::from_str` also takes a leading `+`, which git refuses (H1-04).
-    let number = |text: &str| {
-        (!text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
-            .then(|| text.parse::<u32>().ok())
-            .flatten()
+/// Git's `parse_range`: `start` or `start,count` (the count defaults to 1), each one or more
+/// ASCII digits, read from the front of `text`. Returns the two numbers and the text after them.
+/// A number past `u32` is refused rather than wrapped.
+fn take_range(text: &str) -> Option<(u32, u32, &str)> {
+    let (start, rest) = take_digits(text)?;
+    let Some(after_comma) = rest.strip_prefix(',') else {
+        return Some((start, 1, rest));
     };
-    let mut nums = range.split(',');
-    let start = number(nums.next()?)?;
-    let count = match nums.next() {
-        Some(c) => number(c)?,
-        None => 1,
-    };
-    if nums.next().is_some() {
+    let (count, rest) = take_digits(after_comma)?;
+    Some((start, count, rest))
+}
+
+/// One or more ASCII digits from the front of `text`, as a `u32`, and the text after them.
+/// Digits only: `u32::from_str` also takes a leading `+`, which Git refuses (H1-04).
+fn take_digits(text: &str) -> Option<(u32, &str)> {
+    let end = text
+        .bytes()
+        .position(|b| !b.is_ascii_digit())
+        .unwrap_or(text.len());
+    let (digits, rest) = text.split_at_checked(end)?;
+    if digits.is_empty() {
         return None;
     }
-    Some((start, count))
+    Some((digits.parse().ok()?, rest))
 }
 
 /// A header path as `git apply` (default `-p1`) writes it: its first component stripped,
@@ -2448,7 +2524,7 @@ diff --git a/x b/x
             refused("--- a/x\n@@ -1 +1 @@\n-a\n+b\n"),
             PatchParseError::MisplacedHeader { line_number: 2 }
         ));
-        assert_eq!(parse_range("1,2,3"), None);
+        assert!(parse_hunk_header("@@ -1,2,3 +1 @@").is_none());
         // A final context or EOF-marker line, and preamble without a line feed, are fine.
         assert!(
             parse("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n\\ No newline at end of file\n").is_ok()
@@ -2685,7 +2761,7 @@ diff --git a/x b/x
         // A hunk with no file headers at all (Git: "patch fragment without header").
         assert_eq!(
             parse("commit message\n@@ -1 +1 @@\n-a\n+b\n"),
-            Err(PatchParseError::InvalidPath { line_number: 2 })
+            Err(PatchParseError::MisplacedHunk { line_number: 2 })
         );
         // A traditional section whose names are empty after their first component (Git:
         // "unable to find filename") is refused at its `---`.
@@ -3064,10 +3140,13 @@ diff --git a/x b/x
     }
 
     #[test]
-    fn parse_range_defaults_count() {
-        assert_eq!(parse_range("5"), Some((5, 1)));
-        assert_eq!(parse_range("5,3"), Some((5, 3)));
-        assert_eq!(parse_range("x"), None);
+    fn take_range_defaults_count_and_returns_the_rest() {
+        assert_eq!(take_range("5"), Some((5, 1, "")));
+        assert_eq!(take_range("5,3 +1"), Some((5, 3, " +1")));
+        assert_eq!(take_range("x"), None);
+        assert_eq!(take_range("5,"), None);
+        assert_eq!(take_range("+5"), None);
+        assert_eq!(take_range("4294967296"), None);
     }
 
     // --- hunk-header closing `@@` enforcement (patch truth) ---
@@ -3212,16 +3291,13 @@ diff --git a/a b c.rs b/a b c.rs
 
     // Pins for the 2026-10-31 whole-crate mutation run.
 
-    /// A `@@ -0,0 +0,0 @@` hunk is complete as soon as it opens, so the next `+` line is outside
-    /// any hunk rather than over-filling this one.
+    /// A `@@ -0,0 +0,0 @@` hunk is complete as soon as it opens, so it takes no body line (the
+    /// `+a` does not over-fill it) and, holding nothing, is refused as Git refuses it.
     #[test]
     fn an_empty_hunk_takes_no_body_lines() {
         assert_eq!(
             parse("--- a/x\n+++ b/x\n@@ -0,0 +0,0 @@\n+a\n").unwrap_err(),
-            PatchParseError::BodyLineOutsideHunk {
-                line_number: 4,
-                text: "+a".to_string()
-            }
+            PatchParseError::HunkWithoutChange { line_number: 4 }
         );
     }
 
@@ -3237,10 +3313,27 @@ diff --git a/a b c.rs b/a b c.rs
         );
     }
 
-    /// A file that ended at its `+++` (no hunks) is complete; the next `---` starts another.
+    /// A traditional file that ends at its `+++` (no hunks) ends at the next `---`, and is
+    /// refused: Git reads no patch from it (it reads only `y` here, so reviewing `x` named a
+    /// file Git leaves alone). A Git section's headers without hunks are a no-change file.
     #[test]
     fn headers_without_hunks_end_their_file_at_the_next_old_header() {
-        let files = parse("--- a/x\n+++ b/x\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n").unwrap();
+        assert_eq!(
+            parse("--- a/x\n+++ b/x\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n"),
+            Err(PatchParseError::SectionWithoutPatch { line_number: 1 })
+        );
+        // A Git section of `---`/`+++` alone cannot be rendered back (fuzz, crash-c8eba407); one
+        // with an extended header can.
+        assert_eq!(
+            parse(
+                "diff --git a/x b/x\n--- a/x\n+++ b/x\ndiff --git a/y b/y\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n"
+            ),
+            Err(PatchParseError::SectionWithoutPatch { line_number: 1 })
+        );
+        let files = parse(
+            "diff --git a/x b/x\nindex 1..2 100644\ndiff --git a/y b/y\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
+        )
+        .unwrap();
         let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(paths, ["x", "y"]);
     }
@@ -3316,10 +3409,11 @@ diff --git a/a b c.rs b/a b c.rs
     #[test]
     fn a_bare_hunk_without_a_file_header_is_refused() {
         // `git apply` refuses it too ("patch fragment without header"); before the 2026-11-01 bug
-        // hunt it was reviewed as a modification of a file with an empty path.
+        // hunt it was reviewed as a modification of a file with an empty path. Since
+        // 2026-11-04 it is refused at the hunk, which no `+++` precedes.
         assert_eq!(
             parse("@@ -1 +1 @@\n-a\n+b\n"),
-            Err(PatchParseError::InvalidPath { line_number: 1 })
+            Err(PatchParseError::MisplacedHunk { line_number: 1 })
         );
     }
 }

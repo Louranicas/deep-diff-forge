@@ -1083,16 +1083,17 @@ mod tests {
             diff.changes()[0].old_path.as_ref().unwrap().as_bytes(),
             b"bad-\xff"
         );
-        // Non-UTF-8 content is captured (lossily, marked) with its exact bytes sealed; a
-        // non-UTF-8 path is still refused, because a path is an identity.
-        let captured = diff.capture().unwrap();
-        assert!(!captured.is_exact());
-        assert_eq!(captured.original_bytes(), diff.patch_bytes());
-        assert_eq!(captured.files()[0].patch_twin.lossy_lines, 1);
-        assert!(matches!(
-            diff.review_files(&captured),
-            Err(GitAcquireError::NonUtf8Path { .. })
-        ));
+        // A non-UTF-8 path is refused, because a path is an identity. Its `diff --git` header
+        // is now refused when captured, before any file is built from a substituted name
+        // (production readiness 2026-11-04); the exit code stays 3, an encoding failure.
+        let Err(GitAcquireError::Parse(error)) = diff.capture() else {
+            panic!("a non-UTF-8 header path was captured");
+        };
+        assert_eq!(
+            error,
+            crate::PatchParseError::LossyHeader { line_number: 1 }
+        );
+        assert_eq!(error.exit_code(), deep_diff_forge_core::exit::IO);
     }
 
     #[test]
