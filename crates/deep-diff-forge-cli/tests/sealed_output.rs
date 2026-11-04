@@ -317,7 +317,7 @@ fn a_header_that_is_not_utf8_exits_3_and_latin1_content_is_reviewed() {
         b"--- a/caf\xe9\n+++ b/caf\xe9\n@@ -1 +1 @@\n-a\n+b\n",
     );
     assert_eq!(code, 3, "{stderr}");
-    assert!(stdout.is_empty());
+    assert_eq!(stdout.len(), 0);
     assert!(stderr.contains("is not UTF-8"), "{stderr}");
     let (code, _, stderr) = run(
         &["--stdin-patch", "--json"],
@@ -335,7 +335,7 @@ fn a_hunk_header_git_does_not_read_is_refused_not_reviewed() {
         "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n@@-1,1 +1,1 @@\n--- a/evil\n+++ b/evil\n@@ -1 +1 @@\n-a\n+pwned\n",
     );
     assert_eq!(code, 4);
-    assert!(stdout.is_empty());
+    assert_eq!(stdout.len(), 0);
     assert!(
         stderr.contains("malformed hunk header at line 7"),
         "{stderr}"

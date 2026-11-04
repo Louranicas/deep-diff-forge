@@ -71,8 +71,8 @@ fn git_numstat(root: &Path, patch: &[u8]) -> Option<Vec<Numstat>> {
                 (field != b"-").then(|| std::str::from_utf8(field).unwrap().parse().unwrap())
             };
             let (added, deleted) = (count(), count());
-            let path = fields.next().expect("numstat path").to_vec();
-            (added.zip(deleted), path)
+            let written = fields.next().expect("numstat path").to_vec();
+            (added.zip(deleted), written)
         })
         .collect();
     Some(records)

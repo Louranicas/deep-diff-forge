@@ -744,26 +744,7 @@ impl Parser {
                     }
                 }
             }
-            // Git refuses a section it can name no path for ("git diff header lacks filename
-            // information"): a `diff --git i/x w/y` mode change was reviewed as a file with an
-            // empty path (bug hunt 2026-11-01).
-            if file.resolve_path().is_empty() {
-                return Err(PatchParseError::InvalidPath {
-                    line_number: file.first_line,
-                });
-            }
-            // A section whose only change is a mode Git reads as unchanged (`canon_mode`) is
-            // "patch with only garbage" to Git; it was reviewed as a mode change (C2).
-            if file.only_an_unchanged_mode() {
-                return Err(PatchParseError::InvalidMode {
-                    line_number: self.last_line,
-                });
-            }
-            if file.reads_no_patch() {
-                return Err(PatchParseError::SectionWithoutPatch {
-                    line_number: file.first_line,
-                });
-            }
+            file.refuse_what_git_reads_nothing_from(self.last_line)?;
             self.files.push(file.into_review_file());
         }
         Ok(())
@@ -855,12 +836,36 @@ impl HunkBuf {
 }
 
 impl FileBuf {
-    /// Git reads no patch from this section: a `diff --git` line with nothing after it
-    /// (`find_header`: `git_hdr_len <= len`), or a traditional `---`/`+++` with no hunk.
-    /// Reviewing either named a file Git leaves alone, and the bare line could take the next
-    /// section's headers (production readiness 2026-11-04).
-    fn reads_no_patch(&self) -> bool {
-        self.hunks.is_empty() && (!self.git || (self.metadata.is_empty() && self.old_raw.is_none()))
+    /// Refuse a section Git names no file or no change from. `last_line` is where the section
+    /// ended.
+    fn refuse_what_git_reads_nothing_from(&self, last_line: usize) -> Result<(), PatchParseError> {
+        // Git refuses a section it can name no path for ("git diff header lacks filename
+        // information"): a `diff --git i/x w/y` mode change was reviewed as a file with an
+        // empty path (bug hunt 2026-11-01).
+        if self.resolve_path().is_empty() {
+            return Err(PatchParseError::InvalidPath {
+                line_number: self.first_line,
+            });
+        }
+        // A section whose only change is a mode Git reads as unchanged (`canon_mode`) is
+        // "patch with only garbage" to Git; it was reviewed as a mode change (C2).
+        if self.only_an_unchanged_mode() {
+            return Err(PatchParseError::InvalidMode {
+                line_number: last_line,
+            });
+        }
+        // Git reads no patch from a `diff --git` line with nothing after it (`find_header`:
+        // `git_hdr_len <= len`), nor from a traditional `---`/`+++` with no hunk. Reviewing
+        // either named a file Git leaves alone, and the bare line could take the next section's
+        // headers (production readiness 2026-11-04).
+        if self.hunks.is_empty()
+            && (!self.git || (self.metadata.is_empty() && self.old_raw.is_none()))
+        {
+            return Err(PatchParseError::SectionWithoutPatch {
+                line_number: self.first_line,
+            });
+        }
+        Ok(())
     }
 
     /// The marker that ended the side the body line `line` adds to, if one did. The marker drops
