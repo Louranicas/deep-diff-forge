@@ -39,6 +39,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **Release binaries are built from one codegen unit** (`[profile.release] codegen-units = 1`).
+  With the default 16, a binary built from this release's daemon and process changes, which
+  touch no parser code, parsed 27% slower than `main`'s (`parse_seal`, 1.27x in CI and locally;
+  identical binaries measured 1.00x). Built with one unit each, the two were within 1.01x
+  (measured). `release_binaries_are_built_from_one_codegen_unit` keeps the setting.
+
 - **Non-UTF-8 input exits 3 (`io`) everywhere**, as the exit-code registry names it: a findings
   file and an `eval` corpus file name or findings file exited 4, and an `analyze` source exited
   4 while its patch exited 3.

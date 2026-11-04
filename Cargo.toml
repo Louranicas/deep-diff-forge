@@ -72,3 +72,11 @@ deep-diff-forge-daemon = { path = "crates/deep-diff-forge-daemon", version = "0.
 deep-diff-forge-sdk = { path = "crates/deep-diff-forge-sdk", version = "0.7.0" }
 
 deep-diff-forge-review = { path = "crates/deep-diff-forge-review", version = "0.7.0" }
+
+# One codegen unit, so a release binary's speed does not depend on how LLVM happens to split
+# unrelated code. With the default 16, PR #101 (which changed no parser code) built a binary
+# whose parse_seal bench was 1.27x slower than main's, reproduced locally and in CI; built with
+# one unit each, the two were within 1.01x (measured, 2026-11-04). It also makes the release
+# build more reproducible. Checked by release_workflow.rs.
+[profile.release]
+codegen-units = 1

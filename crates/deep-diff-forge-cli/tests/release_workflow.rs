@@ -256,3 +256,38 @@ fn the_runner_reader_finds_a_floating_label() {
         vec!["macos-latest".to_owned(), "ubuntu-latest".to_owned()]
     );
 }
+
+/// The value of `codegen-units` in the `[profile.release]` section of a Cargo manifest.
+fn release_codegen_units(manifest: &str) -> Option<String> {
+    let mut in_release = false;
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_release = line == "[profile.release]";
+        } else if let (true, Some(value)) = (in_release, line.strip_prefix("codegen-units")) {
+            return value
+                .trim_start()
+                .strip_prefix('=')
+                .map(|v| v.trim().to_owned());
+        }
+    }
+    None
+}
+
+/// Release binaries are built from one codegen unit (see the workspace manifest): with the
+/// default, a change to unrelated code made the shipped parser 27% slower (PR #101, measured).
+#[test]
+fn release_binaries_are_built_from_one_codegen_unit() {
+    let manifest =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml")).unwrap();
+    assert_eq!(release_codegen_units(&manifest).as_deref(), Some("1"));
+}
+
+#[test]
+fn the_profile_reader_finds_only_the_release_setting() {
+    let manifest = "[profile.dev]\ncodegen-units = 4\n\n[profile.release]\nlto = true\ncodegen-units = 16\n[workspace]\n";
+    assert_eq!(release_codegen_units(manifest).as_deref(), Some("16"));
+    assert_eq!(
+        release_codegen_units("[profile.dev]\ncodegen-units = 1\n"),
+        None
+    );
+}
