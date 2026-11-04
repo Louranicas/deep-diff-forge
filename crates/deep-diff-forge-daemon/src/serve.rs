@@ -1938,7 +1938,13 @@ mod tests {
         };
         let mut stalled = UnixStream::connect(&sock).unwrap();
         writeln!(stalled, "{}", line(1)).unwrap();
-        thread::sleep(Duration::from_millis(300));
+        // Its first byte means the answer is ready and being written. A fixed pause raced the
+        // work under a loaded test run (ci_local), where the answer was not ready yet.
+        stalled
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
+        let mut first = [0u8; 1];
+        std::io::Read::read_exact(&mut stalled, &mut first).unwrap();
         // 120 KB + 120 KB is over the 200,000-byte budget: answered only if the first request's
         // bytes were given back while its answer is still being written.
         let client = SocketLocation::at(sock.clone());
