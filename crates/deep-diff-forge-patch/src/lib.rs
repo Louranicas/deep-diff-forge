@@ -131,8 +131,9 @@ pub enum PatchParseError {
         line_number: usize,
     },
     /// A file section from which `git apply` reads no patch: a `diff --git` line with no
-    /// extended header, `---`/`+++` or hunk after it (Git: not a header), or a traditional
-    /// `---`/`+++` pair with no hunk (Git: "No valid patches"). The line is the section's first.
+    /// extended header or hunk after it (Git: not a header), or a traditional `---`/`+++` pair
+    /// with no hunk (Git: "No valid patches"). A Git section of `---`/`+++` alone is refused
+    /// too, since the model could not render it back. The line is the section's first.
     SectionWithoutPatch {
         /// 1-based line number where the section began.
         line_number: usize,

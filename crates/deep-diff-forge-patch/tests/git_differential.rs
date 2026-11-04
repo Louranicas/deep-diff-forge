@@ -274,9 +274,15 @@ fn a_section_git_reads_no_patch_from_is_refused() {
             "ddf: {patch:?}"
         );
     }
+    assert!(matches!(
+        parse_decoded(
+            &decode(b"diff --git a/x b/x\n--- a/x\n+++ b/x\n"),
+            ParseOptions::default()
+        ),
+        Err(PatchParseError::SectionWithoutPatch { .. })
+    ));
     for patch in [
         "diff --git a/x b/x\nindex 1..2 100644\n",
-        "diff --git a/x b/x\n--- a/x\n+++ b/x\n",
         "diff --git a/e b/e\nnew file mode 100644\nindex 0000000..e69de29\n",
         "diff --git a/x b/x\nindex 1..2 100644\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
     ] {

@@ -68,9 +68,6 @@ impl Guards {
 pub enum Error {
     /// The patch could not be parsed (CLI exit 4, daemon error 4).
     Parse(String),
-    /// The patch names a path or value in a header that is not UTF-8, so it cannot be reviewed
-    /// exactly (CLI exit 3, daemon error 3): an encoding failure, not a malformed patch.
-    Encoding(String),
     /// A well-formed patch broke a contract the caller required (CLI exit 7, daemon error 7).
     Refused(&'static str),
     /// The daemon answered with a JSON-RPC error.
@@ -82,9 +79,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Parse(message) | Self::Encoding(message) => {
-                write!(f, "patch parse failed: {message}")
-            }
+            Self::Parse(message) => write!(f, "patch parse failed: {message}"),
             Self::Refused(reason) => write!(f, "refused: {reason}"),
             Self::Rpc { code, message } => write!(f, "daemon error {code}: {message}"),
             Self::Transport(message) => write!(f, "daemon transport failed: {message}"),
@@ -101,7 +96,6 @@ impl Error {
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::Encoding(_) => exit::IO,
             Self::Rpc { code, .. } if *code == i64::from(exit::IO) => exit::IO,
             Self::Parse(_) => exit::INVALID_INPUT,
             Self::Refused(_) => exit::INPUT_CONTRACT_REFUSED,
@@ -145,17 +139,14 @@ impl Review {
 ///
 /// # Errors
 ///
-/// [`Error::Parse`] for a patch that does not parse, [`Error::Encoding`] for one whose header is
-/// not UTF-8, as the CLI tells them apart by exit code; [`Error::Refused`] for one that breaks a
-/// contract in `guards`.
+/// [`Error::Parse`] for a patch that does not parse (a `&str` is UTF-8, so the lossy-header
+/// refusal, exit 3, cannot arise here); [`Error::Refused`] for one that breaks a contract in
+/// `guards`.
 pub fn review(patch: &str, guards: Guards) -> Result<Review, Error> {
     // The one parse → guard → seal path shared with the CLI and the daemon (anchor C-05).
     deep_diff_forge_patch::SealedReview::new(patch.as_bytes(), guards.0, env!("CARGO_PKG_VERSION"))
         .map(Review)
         .map_err(|error| match error {
-            deep_diff_forge_patch::ReviewError::Parse(e) if e.exit_code() == exit::IO => {
-                Error::Encoding(e.to_string())
-            }
             deep_diff_forge_patch::ReviewError::Parse(e) => Error::Parse(e.to_string()),
             deep_diff_forge_patch::ReviewError::Refused(reason) => Error::Refused(reason),
         })
@@ -312,7 +303,6 @@ mod tests {
     #[test]
     fn errors_map_to_the_registry_and_read_well() {
         assert_eq!(Error::Parse("x".into()).exit_code(), 4);
-        assert_eq!(Error::Encoding("x".into()).exit_code(), 3);
         assert_eq!(
             Error::Rpc {
                 code: 3,

@@ -28,8 +28,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   0 without), a `diff --git` line with nothing after it, and a traditional `---`/`+++` pair with
   no hunk (`SectionWithoutPatch`). Exit 4.
 - **One place decides a parse refusal's exit code** (`PatchParseError::exit_code`): the CLI, the
-  structured Git selections, the daemon's domain code and the Rust SDK all use it. The SDK gains
-  `Error::Encoding` (exit 3) and maps daemon error 3 to exit 3, as the registry names it.
+  structured Git selections and the daemon's domain code use it, and the Rust SDK maps daemon
+  error 3 to exit 3, as the registry names it.
 
 ### Testing
 

@@ -857,10 +857,10 @@ impl FileBuf {
         // Git reads no patch from a `diff --git` line with nothing after it (`find_header`:
         // `git_hdr_len <= len`), nor from a traditional `---`/`+++` with no hunk. Reviewing
         // either named a file Git leaves alone, and the bare line could take the next section's
-        // headers (production readiness 2026-11-04).
-        if self.hunks.is_empty()
-            && (!self.git || (self.metadata.is_empty() && self.old_raw.is_none()))
-        {
+        // headers (production readiness 2026-11-04). A Git section of `---`/`+++` alone is
+        // refused too: the model keeps no headers without hunks, so it rendered as the bare line
+        // (fuzz, crash-c8eba407).
+        if self.hunks.is_empty() && (!self.git || self.metadata.is_empty()) {
             return Err(PatchParseError::SectionWithoutPatch {
                 line_number: self.first_line,
             });
@@ -3322,8 +3322,16 @@ diff --git a/a b c.rs b/a b c.rs
             parse("--- a/x\n+++ b/x\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n"),
             Err(PatchParseError::SectionWithoutPatch { line_number: 1 })
         );
+        // A Git section of `---`/`+++` alone cannot be rendered back (fuzz, crash-c8eba407); one
+        // with an extended header can.
+        assert_eq!(
+            parse(
+                "diff --git a/x b/x\n--- a/x\n+++ b/x\ndiff --git a/y b/y\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n"
+            ),
+            Err(PatchParseError::SectionWithoutPatch { line_number: 1 })
+        );
         let files = parse(
-            "diff --git a/x b/x\n--- a/x\n+++ b/x\ndiff --git a/y b/y\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
+            "diff --git a/x b/x\nindex 1..2 100644\ndiff --git a/y b/y\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
         )
         .unwrap();
         let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
