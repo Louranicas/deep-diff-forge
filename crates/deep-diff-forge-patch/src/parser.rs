@@ -759,13 +759,7 @@ impl Parser {
                     line_number: self.last_line,
                 });
             }
-            // Git reads no patch from a `diff --git` line with nothing after it (`find_header`:
-            // `git_hdr_len <= len`), nor from a traditional `---`/`+++` with no hunk; reviewing
-            // either named a file Git leaves alone, and the bare line could take the next
-            // section's headers (production readiness 2026-11-04).
-            if file.hunks.is_empty()
-                && (!file.git || (file.metadata.is_empty() && file.old_raw.is_none()))
-            {
+            if file.reads_no_patch() {
                 return Err(PatchParseError::SectionWithoutPatch {
                     line_number: file.first_line,
                 });
@@ -861,6 +855,14 @@ impl HunkBuf {
 }
 
 impl FileBuf {
+    /// Git reads no patch from this section: a `diff --git` line with nothing after it
+    /// (`find_header`: `git_hdr_len <= len`), or a traditional `---`/`+++` with no hunk.
+    /// Reviewing either named a file Git leaves alone, and the bare line could take the next
+    /// section's headers (production readiness 2026-11-04).
+    fn reads_no_patch(&self) -> bool {
+        self.hunks.is_empty() && (!self.git || (self.metadata.is_empty() && self.old_raw.is_none()))
+    }
+
     /// The marker that ended the side the body line `line` adds to, if one did. The marker drops
     /// the newline of the line before it, so Git joins the next line of that side onto it: `+cu`,
     /// a marker, then `+rl … | sh` was reviewed as two lines and applied as one `curl … | sh`
