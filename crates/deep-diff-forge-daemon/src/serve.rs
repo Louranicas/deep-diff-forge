@@ -292,6 +292,16 @@ pub const STOP_WAIT: Duration = Duration::from_secs(DRAIN_WAIT.as_secs() + 5);
 /// cannot keep a worker alive forever.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long [`request`] waits for the daemon's answer: the server's own deadline. In this crate's
+/// tests it is shorter, so a daemon that goes silent (a mutant that skips writing its answer)
+/// fails the suite in seconds instead of holding every socket test for 30 s, which ran the
+/// mutation gate into its timeout (production readiness 2026-11-04).
+const CLIENT_READ_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_secs(5)
+} else {
+    READ_TIMEOUT
+};
+
 /// Bound blocked writes to clients that stop reading responses.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -299,8 +309,9 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// client's own read deadline is the same 30 s, after which nobody is reading it.
 pub(crate) const RESPONSE_WRITE_LIMIT: Duration = Duration::from_secs(30);
 
-/// Most bytes handed to one `write` call (see [`write_line_within`]).
-const WRITE_CHUNK: usize = 64 * 1024;
+/// Most bytes handed to one `write` call (see [`write_line_within`]): 64 KiB, written as a shift
+/// so the only arithmetic mutant (a zero) breaks every response.
+const WRITE_CHUNK: usize = 1 << 16;
 
 /// Write `line` and its newline within `limit` of the first byte, in writes of at most
 /// [`WRITE_CHUNK`] bytes, re-arming the socket's write timeout to the time left before each.
@@ -1221,8 +1232,12 @@ pub fn request(location: &SocketLocation, line: &str) -> std::io::Result<String>
     }
     let mut reader = BufReader::new(stream);
     let mut response = Vec::new();
-    let read =
-        read_capped_line_deadline(&mut reader, &mut response, MAX_RESPONSE_BYTES, READ_TIMEOUT)?;
+    let read = read_capped_line_deadline(
+        &mut reader,
+        &mut response,
+        MAX_RESPONSE_BYTES,
+        CLIENT_READ_TIMEOUT,
+    )?;
     if read == 0 {
         sent?;
         return Err(std::io::Error::new(
@@ -1941,7 +1956,7 @@ mod tests {
         // Its first byte means the answer is ready and being written. A fixed pause raced the
         // work under a loaded test run (ci_local), where the answer was not ready yet.
         stalled
-            .set_read_timeout(Some(Duration::from_secs(30)))
+            .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         let mut first = [0u8; 1];
         std::io::Read::read_exact(&mut stalled, &mut first).unwrap();

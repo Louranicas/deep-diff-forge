@@ -34,7 +34,8 @@ const LOG_CAP: u64 = 16 * 1024 * 1024;
 const TUICR_LIMITS: deep_diff_forge_core::process::Limits = deep_diff_forge_core::process::Limits {
     time: std::time::Duration::from_secs(120),
     stdout_bytes: SESSION_CAP,
-    stderr_bytes: 64 * 1024,
+    // 64 KiB, as a shift: a zero cap would drop the stderr a failed tuicr is reported with.
+    stderr_bytes: 1 << 16,
 };
 pub(crate) const SOURCE_CAP: u64 = 64 * 1024 * 1024;
 pub(crate) const LEDGER_DIR: &str = "exports";

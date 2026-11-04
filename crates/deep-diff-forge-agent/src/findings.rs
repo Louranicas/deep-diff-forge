@@ -588,6 +588,18 @@ pub fn document(
 
 #[cfg(test)]
 mod tests {
+    /// `total` counts every kind of finding, those past the limit included.
+    #[test]
+    fn total_counts_accepted_refused_and_over_limit() {
+        let none = super::Verdict::default();
+        assert_eq!(none.total(), 0);
+        let over = super::Verdict {
+            over_limit: 2,
+            ..super::Verdict::default()
+        };
+        assert_eq!(over.total(), 2);
+    }
+
     use super::*;
     use deep_diff_forge_patch::parse;
 
