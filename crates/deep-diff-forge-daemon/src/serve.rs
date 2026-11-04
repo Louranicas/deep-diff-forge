@@ -321,29 +321,40 @@ const WRITE_CHUNK: usize = 1 << 16;
 /// reading a little held its connection slot, and its request's read budget, for as long as it
 /// liked (production readiness 2026-11-04). A chunk fits in one buffer, so each call returns
 /// within the time left. Every response and refusal the daemon sends is written here.
-fn write_line_within(writer: &mut UnixStream, line: &str, limit: Duration) -> std::io::Result<()> {
+fn write_line_within(
+    writer: &mut UnixStream,
+    line: &str,
+    limit: Duration,
+) -> std::io::Result<Sent> {
     let deadline = crate::metrics::now() + limit;
-    for mut part in [line.as_bytes(), b"\n".as_slice()] {
-        while !part.is_empty() {
-            let left = deadline
-                .checked_duration_since(crate::metrics::now())
-                .filter(|left| !left.is_zero())
-                .ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "the client did not read the response in time",
-                    )
-                })?;
-            writer.set_write_timeout(Some(left))?;
-            let written = writer.write(part.get(..WRITE_CHUNK).unwrap_or(part))?;
-            if written == 0 {
-                return Err(std::io::ErrorKind::WriteZero.into());
-            }
-            part = part.get(written..).unwrap_or_default();
-        }
+    for chunk in line
+        .as_bytes()
+        .chunks(WRITE_CHUNK)
+        .chain([b"\n".as_slice()])
+    {
+        let left = deadline
+            .checked_duration_since(crate::metrics::now())
+            .filter(|left| !left.is_zero())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "the client did not read the response in time",
+                )
+            })?;
+        writer.set_write_timeout(Some(left))?;
+        writer.write_all(chunk)?;
     }
-    writer.flush()
+    writer.flush()?;
+    Ok(Sent(()))
 }
+
+/// Proof that a whole response line went to the client. Only [`write_line_within`] makes one,
+/// after its last write, and every response path binds it, so none can report success without
+/// having written the line.
+/// A silently skipped write hung every client until its 30 s timeout (production readiness
+/// 2026-11-04, diff mutation).
+#[must_use]
+struct Sent(());
 
 /// Process one request line against the shared engine, returning the response
 /// line. This is the socket-free core of connection handling.
@@ -642,11 +653,12 @@ fn refuse(
     code: i64,
     message: &str,
 ) -> std::io::Result<()> {
-    write_line_within(
+    let Sent(()) = write_line_within(
         writer,
         &json_line_safe(&refusal(engine, code, message)),
         engine.write_limit(),
-    )
+    )?;
+    Ok(())
 }
 
 /// Serve one connection: newline-delimited JSON-RPC, one response per request,
@@ -736,7 +748,7 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
         // written, so a client that reads slowly holds only its own slot, not the budget every
         // other request needs to be read.
         drop(held);
-        write_line_within(
+        let Sent(()) = write_line_within(
             &mut writer,
             &json_line_safe(&response),
             engine.write_limit(),
@@ -792,7 +804,7 @@ pub fn handle_control_connection(stream: UnixStream, engine: &Engine) -> std::io
              daemon.health, daemon.status, daemon.metrics and daemon.shutdown",
         ),
     };
-    write_line_within(
+    let Sent(()) = write_line_within(
         &mut writer,
         &json_line_safe(&response),
         engine.write_limit(),
