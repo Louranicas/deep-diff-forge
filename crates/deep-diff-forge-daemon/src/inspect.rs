@@ -199,18 +199,23 @@ mod tests {
         }
     }
 
-    /// A daemon serving `location` in this process until `daemon.shutdown`.
+    /// A daemon serving `location` in this process until `daemon.shutdown`. It is retried only
+    /// until it listens; a daemon that listens and does not answer fails at once. Retrying the
+    /// health request instead waited 500 client timeouts for a daemon that never answers (a
+    /// silent-write mutant, 2026-11-04).
     fn serve(location: &SocketLocation) -> std::thread::JoinHandle<std::io::Result<()>> {
         let at = SocketLocation::at(location.path());
         let server = std::thread::spawn(move || run_server(&at));
         for _ in 0..500 {
-            if request(location, r#"{"id":1,"method":"daemon.health"}"#).is_ok() {
+            if std::os::unix::net::UnixStream::connect(location.path()).is_ok() {
+                request(location, r#"{"id":1,"method":"daemon.health"}"#)
+                    .expect("the test daemon listens but did not answer daemon.health");
                 return server;
             }
             std::thread::yield_now();
             std::thread::park_timeout(std::time::Duration::from_millis(10));
         }
-        panic!("the test daemon never answered");
+        panic!("the test daemon never listened");
     }
 
     fn private_dir(name: &str) -> Dir {
