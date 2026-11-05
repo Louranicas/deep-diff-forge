@@ -22,3 +22,6 @@ deep-diff-forge-core.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+deep-diff-forge-testkit.workspace = true

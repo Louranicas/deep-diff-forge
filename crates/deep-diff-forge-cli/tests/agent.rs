@@ -5,6 +5,7 @@
     reason = "integration test: drives the binary"
 )]
 
+use deep_diff_forge_testkit::Scratch;
 use std::process::Command;
 
 fn run(args: &[&str]) -> (i32, String, String) {
@@ -28,8 +29,8 @@ fn binary() -> String {
 
 #[test]
 fn setup_prints_each_clients_registration_for_this_binary() {
-    let root = std::env::temp_dir();
-    let root = std::fs::canonicalize(root).unwrap();
+    let scratch = Scratch::new("agent-setup");
+    let root = std::fs::canonicalize(scratch.path()).unwrap();
     let root = root.to_str().unwrap();
     let (code, claude, _) = run(&["agent", "setup", "--client", "claude", "--allow-repo", root]);
     assert_eq!(code, 0);

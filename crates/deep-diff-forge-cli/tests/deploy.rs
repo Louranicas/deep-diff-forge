@@ -5,6 +5,7 @@
     reason = "integration test: drives real processes, the environment and wall-clock time"
 )]
 
+use deep_diff_forge_testkit::Scratch;
 use std::process::Command;
 
 fn run(args: &[&str]) -> (i32, String, String) {
@@ -103,27 +104,17 @@ fn deploy_unknown_subcommand_exits_two() {
 /// as a failure.
 const WAIT_STEPS: usize = 1000;
 
-/// A private directory under the system temp dir, removed when the test ends.
-struct Dir(std::path::PathBuf);
+/// A private (0700) scratch directory, removed when the test ends. The label stays short: the
+/// socket path inside it must fit macOS's 104-byte limit.
+struct Dir(Scratch);
 
 impl Dir {
     fn new(name: &str) -> Self {
-        use std::os::unix::fs::PermissionsExt as _;
-        let path = std::env::temp_dir().join(format!("ddf-doctor-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        Self(path)
+        Self(Scratch::new(&format!("d-{name}")))
     }
 
     fn socket(&self) -> String {
         self.0.join("d.sock").to_str().unwrap().to_owned()
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 

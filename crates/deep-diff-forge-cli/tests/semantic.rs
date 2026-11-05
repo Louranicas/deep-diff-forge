@@ -5,6 +5,7 @@
     reason = "integration test: drives real processes, the environment and wall-clock time"
 )]
 
+use deep_diff_forge_testkit::Scratch;
 use std::process::Command;
 
 fn run(args: &[&str]) -> (i32, String, String) {
@@ -19,17 +20,16 @@ fn run(args: &[&str]) -> (i32, String, String) {
     )
 }
 
-fn write_temp(name: &str, contents: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("ddf-sem-{}-{name}", std::process::id()));
-    std::fs::write(&path, contents).expect("write temp file");
-    path
+fn write_temp(scratch: &Scratch, name: &str, contents: &str) -> std::path::PathBuf {
+    scratch.write(name, contents)
 }
 
 const RUST_SRC: &str = "fn alpha() {}\nstruct Point { x: i32 }\n";
 
 #[test]
 fn semantic_json_reports_schema_and_symbols() {
-    let p = write_temp("a.rs", RUST_SRC);
+    let scratch = Scratch::new("sem");
+    let p = write_temp(&scratch, "a.rs", RUST_SRC);
     let (code, stdout, _) = run(&["semantic", p.to_str().unwrap(), "--json"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("\"schema\": \"deep-diff-forge.semantic.v0\""));
@@ -41,7 +41,8 @@ fn semantic_json_reports_schema_and_symbols() {
 
 #[test]
 fn semantic_human_lists_symbols() {
-    let p = write_temp("b.rs", RUST_SRC);
+    let scratch = Scratch::new("sem");
+    let p = write_temp(&scratch, "b.rs", RUST_SRC);
     let (code, stdout, _) = run(&["semantic", p.to_str().unwrap()]);
     assert_eq!(code, 0);
     assert!(stdout.contains("rust, parsed"));
@@ -51,7 +52,8 @@ fn semantic_human_lists_symbols() {
 
 #[test]
 fn semantic_unsupported_extension_falls_back() {
-    let p = write_temp("c.txt", RUST_SRC);
+    let scratch = Scratch::new("sem");
+    let p = write_temp(&scratch, "c.txt", RUST_SRC);
     let (code, stdout, _) = run(&["semantic", p.to_str().unwrap(), "--json"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("\"language\": \"unsupported\""));
@@ -74,7 +76,8 @@ fn semantic_unreadable_file_exits_three() {
 
 #[test]
 fn semantic_broken_rust_reports_errors() {
-    let p = write_temp("d.rs", "fn broken( {");
+    let scratch = Scratch::new("sem");
+    let p = write_temp(&scratch, "d.rs", "fn broken( {");
     let (code, stdout, _) = run(&["semantic", p.to_str().unwrap(), "--json"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("parsed_with_errors:"));

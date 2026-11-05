@@ -13,6 +13,7 @@
 )]
 
 use deep_diff_forge_review::Profile;
+use deep_diff_forge_testkit::Scratch;
 use std::os::unix::fs::MetadataExt;
 use std::{
     fs,
@@ -190,15 +191,15 @@ fn git(repository: &Path, args: &[&str]) {
 const FORGED: &str = "jobs/forged-by-gate.txt";
 
 /// A committed probe crate (plus `extra` files) and its analysis/decision/request under a fresh root;
-/// returns (root, request).
-fn fixture(home: &str, uid: u32, label: &str, extra: &[(&str, &str)]) -> (PathBuf, PathBuf) {
-    let root = std::env::temp_dir().join(format!(
-        "ddf-council-sandbox-{}-{label}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir(&root).unwrap();
-    let root = fs::canonicalize(&root).unwrap();
+/// returns (the scratch guard that removes root, root, request).
+fn fixture(
+    home: &str,
+    uid: u32,
+    label: &str,
+    extra: &[(&str, &str)],
+) -> (Scratch, PathBuf, PathBuf) {
+    let scratch = Scratch::new(&format!("council-sandbox-{label}"));
+    let root = fs::canonicalize(scratch.path()).unwrap();
     let forged = root.join("run").join(FORGED);
     let repository = root.join("repo");
     fs::create_dir_all(repository.join("src")).unwrap();
@@ -268,7 +269,7 @@ fn fixture(home: &str, uid: u32, label: &str, extra: &[(&str, &str)]) -> (PathBu
     spec.mutation_package = "ddf-sandbox-probe".into();
     let request = root.join("request.json");
     fs::write(&request, serde_json::to_vec(&spec).unwrap()).unwrap();
-    (root, request)
+    (scratch, root, request)
 }
 
 fn council(args: &[&str], runtime: Option<&str>) -> Output {
@@ -387,7 +388,7 @@ fn real_sandbox_refuses_planted_breaches() {
 /// with the build script run offline inside its own sandbox job.
 fn exemption_oracle_probe(home: &str, uid: u32) {
     let build = "fn main() {\n    println!(\"cargo:rustc-cfg=test\");\n}\n";
-    let (root, request) = fixture(home, uid, "exemption", &[("build.rs", build)]);
+    let (_scratch, root, request) = fixture(home, uid, "exemption", &[("build.rs", build)]);
     let run = root.join("run");
     prepare(&request, &run);
     let mutation = gate(&run, "mutation", None);
@@ -410,7 +411,6 @@ fn exemption_oracle_probe(home: &str, uid: u32) {
     );
     assert_eq!(witness["builds"], 2, "{witness}");
     assert!(!run.join("jobs/gate-mutation").exists());
-    let _ = fs::remove_dir_all(&root);
 }
 
 /// A binary whose `#[cfg(test)]` module file another binary also `include!`s. Through a relative path,
@@ -431,7 +431,7 @@ fn exemption_oracle_include_probes(home: &str, uid: u32) {
         let ship = format!(
             "include!(\"{include}\");\n\nfn main() {{\n    std::process::exit(i32::try_from(hidden()).unwrap_or(1));\n}}\n"
         );
-        let (root, request) = fixture(
+        let (_scratch, root, request) = fixture(
             home,
             uid,
             label,
@@ -457,14 +457,13 @@ fn exemption_oracle_include_probes(home: &str, uid: u32) {
             "{label}: {witness}"
         );
         assert!(!run.join("jobs/gate-mutation").exists());
-        let _ = fs::remove_dir_all(&root);
     }
 }
 
 /// Breach probes in the tests gate, then a mutation gate on the same run (the positive control for
 /// [`witness_symlink_probe`]).
 fn breach_probes(home: &str, uid: u32, image_id: &str) {
-    let (root, request) = fixture(home, uid, "probes", &[]);
+    let (_scratch, root, request) = fixture(home, uid, "probes", &[]);
     let run = root.join("run");
     let forged = run.join(FORGED);
     prepare(&request, &run);
@@ -535,12 +534,11 @@ fn breach_probes(home: &str, uid: u32, image_id: &str) {
         String::from_utf8_lossy(&mutation.stderr)
     );
     assert!(json(&run.join("jobs/gate-mutation/qualification.json"))["witness_sha256"].is_string());
-    let _ = fs::remove_dir_all(&root);
 }
 
 /// A witness reached through a container-written directory symlink is refused, not followed.
 fn witness_symlink_probe(home: &str, uid: u32) {
-    let (root, request) = fixture(home, uid, "witness", &[("plant-witness-symlink", "")]);
+    let (_scratch, root, request) = fixture(home, uid, "witness", &[("plant-witness-symlink", "")]);
     let run = root.join("run");
     prepare(&request, &run);
     let mutation = gate(&run, "mutation", None);
@@ -562,12 +560,11 @@ fn witness_symlink_probe(home: &str, uid: u32) {
     assert_eq!(receipts[0]["outcome"], "inconclusive");
     let refusal = fs::read_to_string(job.join("qualification-error.txt")).unwrap();
     assert!(refusal.contains("mutation witness refused"), "{refusal}");
-    let _ = fs::remove_dir_all(&root);
 }
 
 /// A symlink planted in the vendoring output is refused; nothing is sealed or mounted.
 fn vendor_symlink_probe(home: &str, uid: u32) {
-    let (root, request) = fixture(home, uid, "vendor", &[]);
+    let (_scratch, root, request) = fixture(home, uid, "vendor", &[]);
     let run = root.join("run");
     prepare(&request, &run);
     let wrapper = root.join("plant-vendor-symlink.py");
@@ -592,13 +589,12 @@ fn vendor_symlink_probe(home: &str, uid: u32) {
     assert!(refusal.contains("symlink or special file"), "{refusal}");
     assert!(!run.join("vendor").exists());
     assert!(!run.join("jobs/gate-check").exists());
-    let _ = fs::remove_dir_all(&root);
 }
 
 /// Candidate toolchain configuration is refused before any job (vendoring included) exists.
 fn toolchain_config_probe(home: &str, uid: u32) {
     for planted in ["rust-toolchain.toml", ".cargo/config.toml"] {
-        let (root, request) = fixture(home, uid, "toolchain", &[]);
+        let (_scratch, root, request) = fixture(home, uid, "toolchain", &[]);
         let repository = root.join("repo");
         fs::create_dir_all(repository.join(".cargo")).unwrap();
         fs::write(
@@ -630,6 +626,5 @@ fn toolchain_config_probe(home: &str, uid: u32) {
             String::from_utf8_lossy(&refused.stderr)
         );
         assert_eq!(fs::read_dir(run.join("jobs")).unwrap().count(), 0);
-        let _ = fs::remove_dir_all(&root);
     }
 }

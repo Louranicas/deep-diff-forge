@@ -6,6 +6,7 @@
     reason = "integration test: drives the real binary as a child process"
 )]
 
+use deep_diff_forge_testkit::Scratch;
 use serde_json::{Value, json};
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -15,24 +16,23 @@ const PATCH: &str = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+b\n";
 const MAX: usize = 8 * 1024 * 1024;
 
 /// A findings file holding `bytes`, removed when the test ends.
-struct Findings(PathBuf);
+struct Findings {
+    path: PathBuf,
+    _scratch: Scratch,
+}
 
 impl Findings {
     fn new(name: &str, bytes: &[u8]) -> Self {
-        let path =
-            std::env::temp_dir().join(format!("ddf-findings-{name}-{}.jsonl", std::process::id()));
-        std::fs::write(&path, bytes).unwrap();
-        Self(path)
+        let scratch = Scratch::new(&format!("findings-{name}"));
+        let path = scratch.write(format!("{name}.jsonl"), bytes);
+        Self {
+            path,
+            _scratch: scratch,
+        }
     }
 
     fn path(&self) -> &str {
-        self.0.to_str().unwrap()
-    }
-}
-
-impl Drop for Findings {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        self.path.to_str().unwrap()
     }
 }
 
@@ -188,7 +188,8 @@ fn require_findings_refuses_a_file_with_none_and_only_then() {
 #[test]
 fn usage_read_and_patch_errors_have_their_codes() {
     let file = Findings::new("errors", line(&good()).as_bytes());
-    let missing = std::env::temp_dir().join("ddf-findings-missing-nope.jsonl");
+    let scratch = Scratch::new("findings-missing");
+    let missing = scratch.join("nope.jsonl");
     assert_eq!(
         run(
             &[
@@ -266,14 +267,16 @@ fn the_cockpit_shows_accepted_findings_as_agent_notes() {
     assert_eq!(code, 3);
 }
 
-/// A FIFO at `name` in the temp directory, removed when the test ends.
-struct Fifo(PathBuf);
+/// A FIFO at `name` in a scratch directory, removed when the test ends.
+struct Fifo {
+    path: PathBuf,
+    _scratch: Scratch,
+}
 
 impl Fifo {
     fn new(name: &str) -> Self {
-        let path =
-            std::env::temp_dir().join(format!("ddf-findings-fifo-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        let scratch = Scratch::new(&format!("findings-fifo-{name}"));
+        let path = scratch.join(name);
         assert!(
             Command::new("mkfifo")
                 .arg(&path)
@@ -281,13 +284,10 @@ impl Fifo {
                 .unwrap()
                 .success()
         );
-        Self(path)
-    }
-}
-
-impl Drop for Fifo {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        Self {
+            path,
+            _scratch: scratch,
+        }
     }
 }
 
@@ -322,7 +322,7 @@ fn exit_within_deadline(args: &[&str]) -> (i32, String) {
 #[test]
 fn a_fifo_as_the_findings_file_is_refused_not_waited_on() {
     let fifo = Fifo::new("verify");
-    let path = fifo.0.to_str().unwrap();
+    let path = fifo.path.to_str().unwrap();
     for args in [
         &["findings", "verify", "--findings", path][..],
         &["review", "--probe", "--findings", path][..],

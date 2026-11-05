@@ -9,6 +9,8 @@ disallowed-methods = [
     { path = "std::time::Instant::now", reason = "read a clock only through a named door" },
     { path = "std::time::SystemTime::now", reason = "read a clock only through a named door" },
     { path = "std::thread::sleep", reason = "sleep only through a named door" },
+    # Scratch files: a hand-built temp path is a leak waiting to happen (DDF-TEST-TMPLEAK-001).
+    { path = "std::env::temp_dir", reason = "take a self-removing directory: deep_diff_forge_testkit::Scratch" },
     # Unbounded waits: a child that hangs or never stops writing hangs or bloats its caller. Use
     # `deep_diff_forge_core::process::run_bounded` (a deadline and output caps), or reap a child
     # you just killed inside a reviewed door.

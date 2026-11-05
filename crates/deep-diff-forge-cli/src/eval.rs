@@ -572,9 +572,8 @@ mod tests {
     /// case files together cannot pass [`CORPUS_BYTES`]; the budget falls by each file read.
     #[test]
     fn case_files_together_are_held_to_the_corpus_budget() {
-        let dir = std::env::temp_dir().join(format!("ddf-eval-budget-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = deep_diff_forge_testkit::Scratch::new("eval-budget");
+        let dir = scratch.path().to_owned();
         std::fs::write(dir.join("a"), b"12345").unwrap();
         std::fs::write(dir.join("b"), b"123456").unwrap();
         let corpus = Corpus {
@@ -593,7 +592,6 @@ mod tests {
             matches!(&err, EvalError::Corpus(m) if m.contains("more than 5 bytes")),
             "{err}"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     use super::*;

@@ -6,7 +6,7 @@
     reason = "integration test: drives real processes, the environment and wall-clock time"
 )]
 
-use std::io::Write as _;
+use deep_diff_forge_testkit::Scratch;
 use std::process::Command;
 
 const ESC: u8 = 0x1b;
@@ -19,16 +19,14 @@ fn run(args: &[&str]) -> (i32, Vec<u8>) {
     (out.status.code().unwrap_or(-1), out.stdout)
 }
 
-fn write_temp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("ddf-synh-{}-{name}", std::process::id()));
-    let mut f = std::fs::File::create(&path).expect("create");
-    f.write_all(bytes).expect("write");
-    path
+fn write_temp(scratch: &Scratch, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+    scratch.write(name, bytes)
 }
 
 #[test]
 fn highlight_colorizes_rust() {
-    let path = write_temp("hl.rs", b"fn main() { let x = 1; }\n");
+    let scratch = Scratch::new("synh");
+    let path = write_temp(&scratch, "hl.rs", b"fn main() { let x = 1; }\n");
     let (code, out) = run(&["highlight", path.to_str().unwrap(), "--color"]);
     assert_eq!(code, 0);
     // ANSI SGR codes are present, and the identifiers survive.
@@ -38,7 +36,8 @@ fn highlight_colorizes_rust() {
 
 #[test]
 fn highlight_no_color_is_plain() {
-    let path = write_temp("hlplain.rs", b"fn main() {}\n");
+    let scratch = Scratch::new("synh");
+    let path = write_temp(&scratch, "hlplain.rs", b"fn main() {}\n");
     let (code, out) = run(&["highlight", path.to_str().unwrap(), "--no-color"]);
     assert_eq!(code, 0);
     assert!(!out.contains(&ESC), "--no-color must not emit escapes");
@@ -49,7 +48,8 @@ fn highlight_no_color_is_plain() {
 /// the first fix only covered the coloured path (bug hunt 2026-10-28, H4-01).
 #[test]
 fn highlight_keeps_line_breaks_without_color() {
-    let path = std::env::temp_dir().join(format!("ddf-hl-lines-{}.rs", std::process::id()));
+    let scratch = Scratch::new("hl-lines");
+    let path = scratch.join("hl-lines.rs");
     std::fs::write(&path, "fn a() {}\n// \u{1b}[2J\nfn b() {}\n").unwrap();
     for args in [
         &["highlight", path.to_str().unwrap()][..],
@@ -62,14 +62,14 @@ fn highlight_keeps_line_breaks_without_color() {
         assert!(!out.contains("\\x0a") && !out.contains('\u{1b}'), "{out:?}");
         assert!(out.contains("\\x1b[2J"), "{out:?}");
     }
-    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn highlight_neutralizes_escape_in_source_even_with_color() {
     // A string literal carrying a raw ESC must not leak it: only our SGR codes
     // are raw ESC; the source ESC is rendered as the literal \x1b.
-    let path = write_temp("evil.rs", b"fn x() { let s = \"\x1b[2Jpwn\"; }\n");
+    let scratch = Scratch::new("synh");
+    let path = write_temp(&scratch, "evil.rs", b"fn x() { let s = \"\x1b[2Jpwn\"; }\n");
     let (code, out) = run(&["highlight", path.to_str().unwrap(), "--color"]);
     assert_eq!(code, 0);
     let text = String::from_utf8_lossy(&out);
@@ -83,8 +83,9 @@ fn highlight_neutralizes_escape_in_source_even_with_color() {
 
 #[test]
 fn structural_reports_reformat_only() {
-    let old = write_temp("a.rs", b"fn main(){let x=1;}\n");
-    let new = write_temp("b.rs", b"fn   main ( ) {\n    let x = 1 ;\n}\n");
+    let scratch = Scratch::new("synh");
+    let old = write_temp(&scratch, "a.rs", b"fn main(){let x=1;}\n");
+    let new = write_temp(&scratch, "b.rs", b"fn   main ( ) {\n    let x = 1 ;\n}\n");
     let (code, out) = run(&["structural", old.to_str().unwrap(), new.to_str().unwrap()]);
     assert_eq!(code, 0);
     assert!(String::from_utf8_lossy(&out).contains("formatting only"));
@@ -92,8 +93,9 @@ fn structural_reports_reformat_only() {
 
 #[test]
 fn structural_json_reports_token_changes() {
-    let old = write_temp("c.rs", b"fn f() { a(); b(); }\n");
-    let new = write_temp("d.rs", b"fn f() { a(); c(); }\n");
+    let scratch = Scratch::new("synh");
+    let old = write_temp(&scratch, "c.rs", b"fn f() { a(); b(); }\n");
+    let new = write_temp(&scratch, "d.rs", b"fn f() { a(); c(); }\n");
     let (code, out) = run(&[
         "structural",
         old.to_str().unwrap(),
@@ -110,7 +112,8 @@ fn structural_json_reports_token_changes() {
 
 #[test]
 fn structural_missing_args_is_usage_error() {
-    let only = write_temp("one.rs", b"fn main() {}\n");
+    let scratch = Scratch::new("synh");
+    let only = write_temp(&scratch, "one.rs", b"fn main() {}\n");
     let (code, _) = run(&["structural", only.to_str().unwrap()]);
     assert_eq!(code, 2);
 }
@@ -119,8 +122,9 @@ fn structural_missing_args_is_usage_error() {
 fn structural_unsupported_language_errors_not_reformat_only() {
     // A non-Rust file must NOT silently report "formatting only" (both sides
     // tokenize empty); it errors explicitly instead.
-    let a = write_temp("a.txt", b"hello\n");
-    let b = write_temp("b.txt", b"world\n");
+    let scratch = Scratch::new("synh");
+    let a = write_temp(&scratch, "a.txt", b"hello\n");
+    let b = write_temp(&scratch, "b.txt", b"world\n");
     let (code, out) = run(&["structural", a.to_str().unwrap(), b.to_str().unwrap()]);
     assert_eq!(code, 2);
     assert!(!String::from_utf8_lossy(&out).contains("formatting only"));
@@ -129,8 +133,8 @@ fn structural_unsupported_language_errors_not_reformat_only() {
 #[cfg(unix)]
 #[test]
 fn source_commands_refuse_a_fifo_without_blocking() {
-    let fifo = std::env::temp_dir().join(format!("ddf-source-fifo-{}", std::process::id()));
-    let _ = std::fs::remove_file(&fifo);
+    let scratch = Scratch::new("source-fifo");
+    let fifo = scratch.join("fifo");
     assert!(
         Command::new("mkfifo")
             .arg(&fifo)
@@ -146,7 +150,6 @@ fn source_commands_refuse_a_fifo_without_blocking() {
     // Not a regular file is invalid input, exit 4, in every command (expert circle C16).
     assert_eq!(output.status.code(), Some(4));
     assert!(String::from_utf8_lossy(&output.stderr).contains("not a regular file"));
-    std::fs::remove_file(fifo).unwrap();
 }
 
 /// Bug hunt 2026-11-01: output after the last newline stayed in stdout's line buffer and was
@@ -155,8 +158,9 @@ fn source_commands_refuse_a_fifo_without_blocking() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_failed_write_of_output_without_a_final_newline_exits_3() {
+    let scratch = Scratch::new("synh");
     for (name, source) in [("tail.rs", &b"fn a(){}"[..]), ("line.rs", b"fn a(){}\n")] {
-        let path = write_temp(name, source);
+        let path = write_temp(&scratch, name, source);
         let full = std::fs::OpenOptions::new()
             .write(true)
             .open("/dev/full")
@@ -172,6 +176,5 @@ fn a_failed_write_of_output_without_a_final_newline_exits_3() {
             String::from_utf8_lossy(&output.stderr).contains("error: write failed"),
             "{name}"
         );
-        std::fs::remove_file(path).unwrap();
     }
 }

@@ -17,6 +17,7 @@ members = [
   "crates/deep-diff-forge-review",
   "crates/deep-diff-forge-cli",
   "crates/deep-diff-forge-sdk",
+  "crates/deep-diff-forge-testkit",
 ]
 resolver = "2"
 exclude = ["fuzz"]
@@ -72,6 +73,9 @@ deep-diff-forge-daemon = { path = "crates/deep-diff-forge-daemon", version = "0.
 deep-diff-forge-sdk = { path = "crates/deep-diff-forge-sdk", version = "0.7.0" }
 
 deep-diff-forge-review = { path = "crates/deep-diff-forge-review", version = "0.7.0" }
+# Test-only and never published: path only, so `cargo publish` strips it from dev-dependencies
+# (deny.toml `allow-wildcard-paths` admits exactly this). Never a normal dependency (B-05 table).
+deep-diff-forge-testkit = { path = "crates/deep-diff-forge-testkit" }
 
 # One codegen unit, so a release binary's speed does not depend on how LLVM happens to split
 # unrelated code. With the default 16, PR #101 (which changed no parser code) built a binary

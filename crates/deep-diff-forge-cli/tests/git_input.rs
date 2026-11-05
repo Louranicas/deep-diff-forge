@@ -10,6 +10,7 @@
     reason = "integration test: drives real processes, the environment and wall-clock time"
 )]
 
+use deep_diff_forge_testkit::Scratch;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -52,13 +53,11 @@ fn ddf(args: &[&str]) -> (i32, String, String) {
     )
 }
 
-struct Repo(PathBuf);
-
-impl Drop for Repo {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+/// A repository path and the scratch directory that holds it, removed on drop.
+struct Repo(
+    PathBuf,
+    #[expect(dead_code, reason = "held for its Drop, which removes the directory")] Scratch,
+);
 
 impl Repo {
     fn arg(&self) -> &str {
@@ -70,10 +69,9 @@ impl Repo {
 /// an untracked file.
 fn repo(name: &str, dirty: bool) -> Repo {
     use std::os::unix::fs::PermissionsExt as _;
-    let root = std::env::temp_dir().join(format!("ddf-cli-git-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(root.join("x b")).unwrap();
-    let r = Repo(root);
+    let scratch = Scratch::new(&format!("cli-git-{name}"));
+    std::fs::create_dir_all(scratch.join("x b")).unwrap();
+    let r = Repo(scratch.path().to_owned(), scratch);
     git(&r.0, &["init", "-q"]);
     std::fs::write(r.0.join("café.txt"), b"old\n").unwrap();
     std::fs::write(r.0.join("x b/y"), b"y\n").unwrap();
@@ -205,12 +203,14 @@ fn range_selection_reviews_commits_and_bad_revisions_fail() {
 
 #[test]
 fn outside_a_repository_is_an_acquisition_failure() {
-    let dir = Repo(std::env::temp_dir().join(format!("ddf-cli-git-none-{}", std::process::id())));
+    let scratch = Scratch::new("cli-git-none");
+    let ceiling = scratch.path().to_owned();
+    let dir = Repo(scratch.join("none"), scratch);
     std::fs::create_dir_all(&dir.0).unwrap();
-    // Stop discovery at the temporary directory so an enclosing repo cannot leak in.
+    // Stop discovery at the scratch directory so an enclosing repo cannot leak in.
     let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
         .envs(ISOLATE)
-        .env("GIT_CEILING_DIRECTORIES", std::env::temp_dir())
+        .env("GIT_CEILING_DIRECTORIES", ceiling)
         .args(["--git-staged", "--repo", dir.arg()])
         .output()
         .unwrap();
@@ -312,10 +312,8 @@ fn a_second_mode_or_a_repeated_repo_is_a_usage_error() {
 #[test]
 fn a_changed_file_whose_name_is_not_utf8_exits_3() {
     use std::os::unix::ffi::OsStrExt as _;
-    let root = std::env::temp_dir().join(format!("ddf-cli-git-latin1-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    let r = Repo(root);
+    let scratch = Scratch::new("cli-git-latin1");
+    let r = Repo(scratch.path().to_owned(), scratch);
     git(&r.0, &["init", "-q"]);
     let name = r.0.join(std::ffi::OsStr::from_bytes(b"caf\xe9.txt"));
     std::fs::write(&name, b"old\n").unwrap();

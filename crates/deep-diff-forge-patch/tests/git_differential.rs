@@ -15,33 +15,21 @@
 
 use deep_diff_forge_core::{FileStatus, PatchLineKind, ReviewFile};
 use deep_diff_forge_patch::{ParseOptions, PatchParseError, decode, parse_decoded};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{fs, path::Path, process::Command};
 
 /// A scratch Git repository, removed when dropped (also when an assertion fails).
-struct Scratch(PathBuf);
+struct Scratch(deep_diff_forge_testkit::Scratch);
 
 impl Scratch {
     fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("ddf-git-diff-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
+        let root = deep_diff_forge_testkit::Scratch::new(&format!("git-diff-{tag}"));
         let init = Command::new("git")
-            .current_dir(&root)
+            .current_dir(root.path())
             .args(["init", "-q"])
             .output()
             .unwrap();
         assert!(init.status.success(), "git init failed");
         Self(root)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
@@ -124,7 +112,10 @@ fn every_patch_fixture_reads_as_git_reads_it() {
                 pending.push(path);
             } else if path.extension().is_some_and(|e| e == "patch") {
                 seen += 1;
-                accepted += usize::from(reads_as_git_does(&scratch.0, &fs::read(&path).unwrap()));
+                accepted += usize::from(reads_as_git_does(
+                    scratch.0.path(),
+                    &fs::read(&path).unwrap(),
+                ));
             }
         }
     }
@@ -174,12 +165,12 @@ fn no_hunk_header_mutant_hides_a_file_from_the_review() {
     // Control: the unmutated header is a hunk of `x` to both readers, so `evil` is read as
     // removed and added lines of `x` and no file is hidden.
     let control = format!("{VISIBLE}@@ -1,1 +1,1 @@\n{HIDDEN}");
-    assert!(reads_as_git_does(&scratch.0, control.as_bytes()));
+    assert!(reads_as_git_does(scratch.0.path(), control.as_bytes()));
     // The finding itself: Git writes `evil` from this patch, DDF must not accept it.
     let finding = format!("{VISIBLE}@@-1,1 +1,1 @@\n{HIDDEN}");
-    let git = git_numstat(&scratch.0, finding.as_bytes()).expect("git applies the finding");
+    let git = git_numstat(scratch.0.path(), finding.as_bytes()).expect("git applies the finding");
     assert!(git.iter().any(|(_, path)| path == b"evil"), "{git:?}");
-    assert!(!reads_as_git_does(&scratch.0, finding.as_bytes()));
+    assert!(!reads_as_git_does(scratch.0.path(), finding.as_bytes()));
 
     let mutants = header_mutants("@@ -1,1 +1,1 @@");
     let (mut accepted, mut refused) = (0, 0);
@@ -189,7 +180,7 @@ fn no_hunk_header_mutant_hides_a_file_from_the_review() {
             format!("{VISIBLE}{mutant}\n{HIDDEN}"),
             format!("diff --git a/x b/x\n--- a/x\n+++ b/x\n{mutant}\n-a\n+b\n{HIDDEN}"),
         ] {
-            if reads_as_git_does(&scratch.0, patch.as_bytes()) {
+            if reads_as_git_does(scratch.0.path(), patch.as_bytes()) {
                 accepted += 1;
             } else {
                 refused += 1;
@@ -220,7 +211,7 @@ fn hunks_follow_their_file_header_or_the_previous_hunk() {
     ];
     for patch in &git_refuses {
         assert_eq!(
-            git_numstat(&scratch.0, patch.as_bytes()),
+            git_numstat(scratch.0.path(), patch.as_bytes()),
             None,
             "git: {patch:?}"
         );
@@ -245,7 +236,7 @@ fn hunks_follow_their_file_header_or_the_previous_hunk() {
     ];
     for patch in &git_accepts {
         assert!(
-            reads_as_git_does(&scratch.0, patch.as_bytes()),
+            reads_as_git_does(scratch.0.path(), patch.as_bytes()),
             "ddf refused {patch:?}"
         );
     }
@@ -262,7 +253,7 @@ fn a_section_git_reads_no_patch_from_is_refused() {
         "diff --git a/x b/x\ndiff --git a/y b/y\nindex 1..2 100644\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
     ] {
         assert_eq!(
-            git_numstat(&scratch.0, patch.as_bytes()),
+            git_numstat(scratch.0.path(), patch.as_bytes()),
             None,
             "git: {patch:?}"
         );
@@ -287,10 +278,10 @@ fn a_section_git_reads_no_patch_from_is_refused() {
         "diff --git a/x b/x\nindex 1..2 100644\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
     ] {
         // Accepted or refused, never read differently from Git.
-        reads_as_git_does(&scratch.0, patch.as_bytes());
+        reads_as_git_does(scratch.0.path(), patch.as_bytes());
     }
     assert!(reads_as_git_does(
-        &scratch.0,
+        scratch.0.path(),
         b"diff --git a/x b/x\nindex 1..2 100644\n"
     ));
 }
@@ -304,7 +295,7 @@ fn hunks_that_change_nothing_are_refused_as_git_refuses_them() {
         "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n a\n b\n",
     ] {
         assert_eq!(
-            git_numstat(&scratch.0, patch.as_bytes()),
+            git_numstat(scratch.0.path(), patch.as_bytes()),
             None,
             "git: {patch:?}"
         );
@@ -319,7 +310,7 @@ fn hunks_that_change_nothing_are_refused_as_git_refuses_them() {
     }
     // Control: one changed line among context is a change.
     let changed = "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n a\n-b\n+c\n";
-    assert!(reads_as_git_does(&scratch.0, changed.as_bytes()));
+    assert!(reads_as_git_does(scratch.0.path(), changed.as_bytes()));
 }
 
 #[test]
@@ -343,5 +334,5 @@ fn a_header_that_is_not_utf8_is_refused_but_preamble_and_content_are_not() {
     // A Latin-1 commit message and Latin-1 content are reviewed (content marked lossy), and Git
     // reads the same files.
     let mail = b"From: Ren\xe9\nSubject: caf\xe9\n\n---\ndiff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-caf\xe9\n+cafe\n";
-    assert!(reads_as_git_does(&scratch.0, mail));
+    assert!(reads_as_git_does(scratch.0.path(), mail));
 }

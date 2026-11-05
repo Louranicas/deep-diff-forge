@@ -16,6 +16,7 @@ use deep_diff_forge_patch::{
     GitAcquireError, GitAcquireOptions, GitAcquisition, GitChange, GitChangeKind, GitChangeOrigin,
     GitPath, GitSelection, StructuredDiff, acquire_git, diff_files, git_version,
 };
+use deep_diff_forge_testkit::Scratch;
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -73,12 +74,7 @@ fn options(include_untracked: bool) -> GitAcquireOptions {
 
 struct Fixture {
     root: PathBuf,
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
+    _scratch: Scratch,
 }
 
 const TAB: &str = "tab\there.txt";
@@ -132,10 +128,13 @@ fn git_version_stub(root: &Path, options: &GitAcquireOptions) -> Result<String, 
 
 /// Base commit plus a dirty working tree covering every required case.
 fn fixture(name: &str) -> Fixture {
-    let root = std::env::temp_dir().join(format!("ddf-git-acq-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let scratch = Scratch::new(&format!("git-acq-{name}"));
+    let root = scratch.join(format!("repo-{name}"));
     std::fs::create_dir_all(root.join("x b")).unwrap();
-    let fx = Fixture { root };
+    let fx = Fixture {
+        root,
+        _scratch: scratch,
+    };
     let r = &fx.root;
     git_out(r, &["init", "-q"]);
     let w = |p: &str, b: &[u8]| std::fs::write(r.join(p), b).unwrap();
@@ -397,7 +396,6 @@ fn authoritative_patch_applies_in_a_clean_clone() {
         "{}-clone",
         r.file_name().unwrap().to_string_lossy()
     ));
-    let _ = std::fs::remove_dir_all(&clone);
     git_out(
         r.parent().unwrap(),
         &[
@@ -407,9 +405,6 @@ fn authoritative_patch_applies_in_a_clean_clone() {
             &clone.to_string_lossy(),
         ],
     );
-    let guard = Fixture {
-        root: clone.clone(),
-    };
     let patch = clone.join("../ddf-acq.patch");
     std::fs::write(&patch, acq.diff().patch_bytes()).unwrap();
     let patch_arg = patch.to_string_lossy().into_owned();
@@ -446,7 +441,6 @@ fn authoritative_patch_applies_in_a_clean_clone() {
     );
     assert!(!clone.join("gone.txt").exists());
     assert!(!clone.join("rename-src.txt").exists());
-    drop(guard);
 }
 
 /// Negative control: an implementation that ran `git add -N` (or refreshed the
@@ -1009,10 +1003,11 @@ fn protected_config_keeps_its_filters_and_runs_nothing_else() {
 /// repository; the port compares against the empty tree instead.
 #[test]
 fn unborn_head_compares_against_the_empty_tree() {
-    let root = std::env::temp_dir().join(format!("ddf-git-acq-unborn-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    let fx = Fixture { root };
+    let scratch = Scratch::new("git-acq-unborn");
+    let fx = Fixture {
+        root: scratch.path().to_path_buf(),
+        _scratch: scratch,
+    };
     git_out(&fx.root, &["init", "-q"]);
     std::fs::write(fx.root.join("first.txt"), b"1\n").unwrap();
     git_out(&fx.root, &["add", "first.txt"]);
@@ -1050,9 +1045,8 @@ fn repository_config_cannot_reshape_the_acquisition() {
 /// with the exact bytes sealed. Before, the whole acquisition failed ("not UTF-8", exit 3).
 #[test]
 fn non_utf8_content_is_acquired_marked_and_sealed_exactly() {
-    let root = std::env::temp_dir().join(format!("ddf-git-acq-latin-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    let scratch = Scratch::new("git-acq-latin");
+    let root = scratch.path().to_path_buf();
     git_out(&root, &["init", "-q"]);
     std::fs::write(root.join("latin.txt"), b"caf\xe9\n").unwrap();
     std::fs::write(root.join("ok.txt"), b"a\n").unwrap();
@@ -1070,7 +1064,6 @@ fn non_utf8_content_is_acquired_marked_and_sealed_exactly() {
         .map(|f| (f.path.as_str(), f.patch_twin.lossy_lines))
         .collect();
     assert_eq!(lossy, [("latin.txt", 2), ("ok.txt", 0)]);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// Anchor A-02: acquisition in a partial clone must not fetch. Before, `git diff` lazily ran
@@ -1078,8 +1071,8 @@ fn non_utf8_content_is_acquired_marked_and_sealed_exactly() {
 /// now transports are off, so a missing blob is an error and no object arrives.
 #[test]
 fn a_partial_clone_is_never_fetched_from() {
-    let root = std::env::temp_dir().join(format!("ddf-git-acq-promisor-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let scratch = Scratch::new("git-acq-promisor");
+    let root = scratch.path().to_path_buf();
     let origin = root.join("origin");
     std::fs::create_dir_all(&origin).unwrap();
     git_out(&origin, &["init", "-q"]);
@@ -1111,7 +1104,6 @@ fn a_partial_clone_is_never_fetched_from() {
         before,
         "acquisition fetched from the promisor remote"
     );
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// Bug hunt 2026-10-28, H1-02: `diff.ignoreSubmodules = all`, from any configuration level, or a

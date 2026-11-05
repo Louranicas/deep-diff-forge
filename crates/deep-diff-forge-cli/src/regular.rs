@@ -39,25 +39,26 @@ pub(crate) fn open_regular(path: &Path) -> Result<File, Refusal> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deep_diff_forge_testkit::Scratch;
     use std::io::Read as _;
 
     #[test]
     fn a_regular_file_opens_and_reads_whole() {
-        let path = std::env::temp_dir().join(format!("ddf-regular-{}", std::process::id()));
-        std::fs::write(&path, b"abc").unwrap();
+        let scratch = Scratch::new("regular");
+        let path = scratch.write("regular", b"abc");
         let mut text = String::new();
         open_regular(&path)
             .unwrap()
             .read_to_string(&mut text)
             .unwrap();
         assert_eq!(text, "abc");
-        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn a_directory_is_not_regular_and_a_missing_path_is_an_io_error() {
+        let scratch = Scratch::new("regular-dir");
         assert!(matches!(
-            open_regular(&std::env::temp_dir()),
+            open_regular(scratch.path()),
             Err(Refusal::NotRegular)
         ));
         assert!(matches!(

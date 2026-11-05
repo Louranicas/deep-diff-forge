@@ -10,6 +10,7 @@
     reason = "integration test: drives the real binary as a child process"
 )]
 
+use deep_diff_forge_testkit::Scratch;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -98,13 +99,16 @@ fn the_corpus_meets_its_floors() {
     }
 }
 
-/// A copy of the corpus, removed when the test ends.
-struct Copy(PathBuf);
+/// A copy of the corpus inside a scratch directory, removed when the test ends.
+struct Copy(
+    PathBuf,
+    #[expect(dead_code, reason = "held for its Drop, which removes the directory")] Scratch,
+);
 
 impl Copy {
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("ddf-eval-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let scratch = Scratch::new(&format!("eval-{name}"));
+        let dir = scratch.join("corpus");
         for sub in ["", "ranking", "evidence", "findings"] {
             std::fs::create_dir_all(dir.join(sub)).unwrap();
             for entry in std::fs::read_dir(corpus().join(sub)).unwrap() {
@@ -114,7 +118,7 @@ impl Copy {
                 }
             }
         }
-        Self(dir)
+        Self(dir, scratch)
     }
 
     fn manifest(&self) -> Value {
@@ -123,12 +127,6 @@ impl Copy {
 
     fn write_manifest(&self, manifest: &Value) {
         std::fs::write(self.0.join("MANIFEST.json"), manifest.to_string()).unwrap();
-    }
-}
-
-impl Drop for Copy {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -414,7 +412,6 @@ fn a_link_and_a_degenerate_pair_are_refused() {
         std::os::unix::fs::symlink(&outside, linked.0.join("ranking/npm-preinstall.patch"))
             .unwrap();
         let (got, receipt, stderr) = eval(&linked.0);
-        let _ = std::fs::remove_file(&outside);
         assert_eq!(got, 4, "{stderr}\n{receipt:#}");
         assert!(
             stderr.contains("ranking/npm-preinstall.patch is not a regular file"),
@@ -548,9 +545,7 @@ fn a_declared_miss_must_still_be_a_miss() {
 #[cfg(unix)]
 #[test]
 fn a_fifo_manifest_is_refused_not_waited_on() {
-    let dir = std::env::temp_dir().join(format!("ddf-eval-fifo-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = Scratch::new("eval-fifo");
     assert!(
         Command::new("mkfifo")
             .arg(dir.join("MANIFEST.json"))
@@ -559,7 +554,7 @@ fn a_fifo_manifest_is_refused_not_waited_on() {
             .success()
     );
     let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
-        .args(["eval", "--json", "--corpus", dir.to_str().unwrap()])
+        .args(["eval", "--json", "--corpus", dir.path().to_str().unwrap()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -569,13 +564,11 @@ fn a_fifo_manifest_is_refused_not_waited_on() {
         if std::time::Instant::now() > deadline {
             child.kill().unwrap();
             let _ = child.wait();
-            let _ = std::fs::remove_dir_all(&dir);
             panic!("eval still running after 10 s: it waits on the FIFO manifest");
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let out = child.wait_with_output().unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(4), "{stderr}");
     assert!(
@@ -588,14 +581,12 @@ fn a_fifo_manifest_is_refused_not_waited_on() {
 /// read whole; one at the limit is read (and here fails only its hash check).
 #[test]
 fn a_corpus_file_over_the_limit_is_refused() {
-    let dir = std::env::temp_dir().join(format!("ddf-eval-cap-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = Scratch::new("eval-cap");
     let limit = 8 * 1024 * 1024;
     for (size, refused) in [(limit + 1, true), (limit, false)] {
         std::fs::write(dir.join("MANIFEST.json"), vec![b' '; size]).unwrap();
         let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
-            .args(["eval", "--json", "--corpus", dir.to_str().unwrap()])
+            .args(["eval", "--json", "--corpus", dir.path().to_str().unwrap()])
             .output()
             .expect("run");
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -606,5 +597,4 @@ fn a_corpus_file_over_the_limit_is_refused() {
             "{size}: {stderr}"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }

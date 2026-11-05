@@ -4,14 +4,14 @@
     reason = "integration test: drives real processes, the environment and wall-clock time"
 )]
 
+use deep_diff_forge_testkit::Scratch;
 use std::{
     fs,
-    path::{Path, PathBuf},
     process::{Command, Output},
 };
 const PATCH: &str = "--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-fn a() {}\n+fn b() {}\n";
-fn setup(label: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("ddf-analysis-{}-{label}", std::process::id()));
+fn setup(label: &str) -> Scratch {
+    let root = Scratch::new(&format!("analysis-{label}"));
     fs::create_dir_all(root.join("old")).unwrap();
     fs::create_dir_all(root.join("new")).unwrap();
     fs::write(root.join("old/x.rs"), "fn a() {}\n").unwrap();
@@ -19,7 +19,7 @@ fn setup(label: &str) -> PathBuf {
     fs::write(root.join("change.patch"), PATCH).unwrap();
     root
 }
-fn run(root: &Path) -> Output {
+fn run(root: &Scratch) -> Output {
     Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
         .arg("analyze")
         .arg(root.join("change.patch"))
@@ -49,7 +49,6 @@ fn analyze_exports_deterministic_scoped_semantics() {
     ] {
         assert!(json.contains(field), "{field}: {json}");
     }
-    fs::remove_dir_all(root).unwrap();
 }
 #[test]
 fn wrong_source_bytes_and_traversal_are_rejected() {
@@ -62,7 +61,6 @@ fn wrong_source_bytes_and_traversal_are_rejected() {
     )
     .unwrap();
     assert_eq!(run(&root).status.code(), Some(4));
-    fs::remove_dir_all(root).unwrap();
 }
 #[cfg(unix)]
 #[test]
@@ -73,7 +71,6 @@ fn source_symlinks_are_rejected() {
     let output = run(&root);
     assert_eq!(output.status.code(), Some(4));
     assert!(String::from_utf8_lossy(&output.stderr).contains("symlink rejected"));
-    fs::remove_dir_all(root).unwrap();
 }
 
 /// A wrong number of paths or an option is a usage error (exit 2, fix the command line). Before,
@@ -120,7 +117,6 @@ fn analyze_distinguishes_io_failures_from_invalid_content() {
     )
     .unwrap();
     assert_eq!(run(&root).status.code(), Some(4));
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[cfg(unix)]
@@ -147,7 +143,6 @@ fn analyze_refuses_fifo_inputs_without_blocking() {
     // Not a regular file is invalid input, exit 4, in every command (expert circle C16).
     assert_eq!(output.status.code(), Some(4));
     assert!(String::from_utf8_lossy(&output.stderr).contains("not a regular file"));
-    fs::remove_dir_all(root).unwrap();
 }
 
 /// Both source roots must be directories: a file in either place is invalid input.
@@ -169,5 +164,4 @@ fn each_source_root_must_be_a_directory() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    fs::remove_dir_all(root).unwrap();
 }

@@ -7,31 +7,24 @@ use deep_diff_forge_review::{
     Manifest, Outcome, Persona, Profile, Provider, Report, Round, SealedManifest, Severity,
     Verdict, assess, load_manifest, validate_report, validate_request,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
+use deep_diff_forge_testkit::Scratch;
 
 /// Seal `m` as `prepare` does and read it back through `load_manifest`, the only way to get the
 /// `SealedManifest` that `assess` takes (anchor C-01).
 fn seal(mut m: Manifest) -> SealedManifest {
-    static RUN: AtomicUsize = AtomicUsize::new(0);
     for artifact in &mut m.artifacts {
         artifact.sha256 = deep_diff_forge_core::sha256_hex(artifact.text.as_bytes());
     }
     m.run_id.clear();
     m.run_id = deep_diff_forge_core::sha256_hex(&serde_json::to_vec(&m).unwrap());
-    let directory = std::env::temp_dir().join(format!(
-        "ddf-review-contracts-{}-{}",
-        std::process::id(),
-        RUN.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&directory).unwrap();
+    let scratch = Scratch::new("review-contracts");
+    let directory = scratch.path();
     std::fs::write(
         directory.join("manifest.json"),
         serde_json::to_vec_pretty(&m).unwrap(),
     )
     .unwrap();
-    let sealed = load_manifest(&directory).unwrap();
-    std::fs::remove_dir_all(&directory).unwrap();
-    sealed
+    load_manifest(directory).unwrap()
 }
 fn manifest() -> SealedManifest {
     seal(unsealed())

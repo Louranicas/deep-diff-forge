@@ -1316,6 +1316,7 @@ pub fn request(location: &SocketLocation, line: &str) -> std::io::Result<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deep_diff_forge_testkit::Scratch;
     use serde_json::Value;
     use std::thread;
     use std::time::Duration;
@@ -1750,17 +1751,16 @@ mod tests {
         assert!(second.contains("deep-diff-forge"));
     }
 
-    fn temp_socket(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "ddf-srv-{}-{name}/deep-diff-forge.sock",
-            std::process::id()
-        ))
+    /// A socket path in a Scratch whose parent directory does not exist yet.
+    fn scratch_socket(name: &str) -> (Scratch, std::path::PathBuf) {
+        let scratch = Scratch::new(name);
+        let sock = scratch.join("s").join("deep-diff-forge.sock");
+        (scratch, sock)
     }
 
     #[test]
     fn bind_secure_sets_owner_only_modes() {
-        let sock = temp_socket("bind");
-        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+        let (_scratch, sock) = scratch_socket("bind");
         let listener = bind_secure(&sock).expect("bind");
         let sock_mode = std::fs::metadata(&sock).unwrap().permissions().mode();
         let dir_mode = std::fs::metadata(sock.parent().unwrap())
@@ -1782,8 +1782,7 @@ mod tests {
 
     #[test]
     fn bind_secure_replaces_stale_socket() {
-        let sock = temp_socket("stale");
-        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+        let (_scratch, sock) = scratch_socket("stale");
         let first = bind_secure(&sock).expect("first bind");
         drop(first);
         // Bind again over the now-stale socket file; must succeed.
@@ -1793,8 +1792,7 @@ mod tests {
 
     #[test]
     fn bind_secure_refuses_to_delete_regular_file() {
-        let sock = temp_socket("secure-regular-file");
-        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+        let (_scratch, sock) = scratch_socket("sec-reg");
         std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
         std::fs::write(&sock, b"important").unwrap();
         let err = bind_secure(&sock).expect_err("regular file must not be removed");
@@ -1804,8 +1802,7 @@ mod tests {
 
     #[test]
     fn cleanup_never_removes_regular_file() {
-        let sock = temp_socket("cleanup-regular-file");
-        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+        let (_scratch, sock) = scratch_socket("cl-reg");
         std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
         std::fs::write(&sock, b"important").unwrap();
         let metadata = std::fs::metadata(&sock).unwrap();
@@ -1816,8 +1813,7 @@ mod tests {
     /// The socket this server bound is removed on shutdown (legitimate nearby case).
     #[test]
     fn cleanup_removes_the_socket_it_bound() {
-        let sock = temp_socket("cleanup-own");
-        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+        let (_scratch, sock) = scratch_socket("cl-own");
         std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
         let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         let metadata = std::fs::symlink_metadata(&sock).unwrap();
@@ -1830,8 +1826,7 @@ mod tests {
     /// Before this test the identity comparison had no test (Remaining Work 2.6).
     #[test]
     fn cleanup_never_removes_a_socket_swapped_in_after_bind() {
-        let sock = temp_socket("cleanup-swapped");
-        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+        let (_scratch, sock) = scratch_socket("cl-swap");
         std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
         let ours = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         let metadata = std::fs::symlink_metadata(&sock).unwrap();
@@ -1879,21 +1874,19 @@ mod tests {
         }
     }
 
-    /// Pre-create a parent directory at the given mode, returning the socket path.
-    fn temp_socket_with_parent(name: &str, parent_mode: u32) -> std::path::PathBuf {
-        let sock = temp_socket(name);
-        let parent = sock.parent().unwrap();
-        let _ = std::fs::remove_dir_all(parent);
-        std::fs::create_dir_all(parent).expect("create parent");
-        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(parent_mode))
+    /// A Scratch parent directory at the given mode, and the socket path inside it.
+    fn scratch_socket_with_parent(name: &str, parent_mode: u32) -> (Scratch, std::path::PathBuf) {
+        let parent = Scratch::new(name);
+        std::fs::set_permissions(parent.path(), std::fs::Permissions::from_mode(parent_mode))
             .expect("chmod parent");
-        sock
+        let sock = parent.join("deep-diff-forge.sock");
+        (parent, sock)
     }
 
     #[test]
     fn run_server_full_round_trip_then_shutdown() {
         // Explicit SocketLocation requires the parent to exist and be owner-private.
-        let sock = temp_socket_with_parent("run", 0o700);
+        let (_scratch, sock) = scratch_socket_with_parent("run", 0o700);
         let server_loc = SocketLocation::at(sock.clone());
         let server = thread::spawn(move || run_server(&server_loc));
         wait_for_socket(&sock);
@@ -1926,7 +1919,7 @@ mod tests {
         reason = "test: lets the server read the first client's bytes before the second sends"
     )]
     fn request_lines_being_read_share_one_byte_budget() {
-        let sock = temp_socket_with_parent("read-budget", 0o700);
+        let (_scratch, sock) = scratch_socket_with_parent("budget", 0o700);
         let server_loc = SocketLocation::at(sock.clone());
         let engine = Engine::new().with_read_budget(4096);
         let server = thread::spawn(move || run_server_with(&server_loc, engine));
@@ -1988,7 +1981,7 @@ mod tests {
         reason = "test: lets the stalled client's answer block, then outlast the write limit"
     )]
     fn a_slow_reader_gives_back_the_read_budget_and_is_cut_off_at_the_write_limit() {
-        let sock = temp_socket_with_parent("slow-reader", 0o700);
+        let (_scratch, sock) = scratch_socket_with_parent("slow-rd", 0o700);
         let server_loc = SocketLocation::at(sock.clone());
         let engine = Engine::new()
             .with_read_budget(200_000)
@@ -2148,7 +2141,7 @@ mod tests {
     /// closed unanswered, and only a signal stopped the daemon.
     #[test]
     fn a_daemon_at_its_connection_limit_still_answers_health_and_stops() {
-        let sock = temp_socket_with_parent("full", 0o700);
+        let (_scratch, sock) = scratch_socket_with_parent("full", 0o700);
         let server_loc = SocketLocation::at(sock.clone());
         let server = thread::spawn(move || run_server(&server_loc));
         wait_for_socket(&sock);
@@ -2270,7 +2263,7 @@ mod tests {
     /// real socket.
     #[test]
     fn the_stop_waiter_follows_a_symlinked_socket_path() {
-        let sock = temp_socket_with_parent("waitlink", 0o700);
+        let (_scratch, sock) = scratch_socket_with_parent("waitlink", 0o700);
         let location = SocketLocation::at(sock.clone());
         let bound = location.bind().unwrap();
         let link = sock.with_file_name("link.sock");
@@ -2281,13 +2274,12 @@ mod tests {
             "the daemon behind the symlink still holds its lock"
         );
         drop(bound);
-        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
     }
 
     /// The stop wait sees a held start lock as running and a free or absent one as stopped.
     #[test]
     fn wait_stopped_follows_the_start_lock() {
-        let sock = temp_socket_with_parent("waitstop", 0o700);
+        let (_scratch, sock) = scratch_socket_with_parent("waitstop", 0o700);
         let location = SocketLocation::at(sock.clone());
         assert!(
             location.wait_stopped(Duration::ZERO).unwrap(),
@@ -2313,7 +2305,6 @@ mod tests {
             "a free lock file: nothing runs"
         );
         assert_eq!(STOP_WAIT, Duration::from_secs(35));
-        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
     }
 
     #[test]
@@ -2355,7 +2346,7 @@ mod tests {
     /// process exit cut the running answer off, and a late request still ran.
     #[test]
     fn a_stop_waits_for_the_answer_in_progress() {
-        let sock = temp_socket_with_parent("drain", 0o700);
+        let (_scratch, sock) = scratch_socket_with_parent("drain", 0o700);
         let server_loc = SocketLocation::at(sock.clone());
         let server = thread::spawn(move || run_server(&server_loc));
         wait_for_socket(&sock);
@@ -2418,7 +2409,7 @@ mod tests {
     #[test]
     fn run_server_diff_plan_over_socket() {
         // Explicit SocketLocation requires the parent to exist and be owner-private.
-        let sock = temp_socket_with_parent("plan", 0o700);
+        let (_scratch, sock) = scratch_socket_with_parent("plan", 0o700);
         let server_loc = SocketLocation::at(sock.clone());
         let server = thread::spawn(move || run_server(&server_loc));
         wait_for_socket(&sock);
@@ -2437,15 +2428,15 @@ mod tests {
     fn request_to_missing_daemon_errors() {
         // connect() does not require the parent to exist or be secure; it simply
         // tries to open the socket path and fails if no daemon is listening.
-        let sock = temp_socket("absent");
-        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+        let (_scratch, sock) = scratch_socket("absent");
         let client = SocketLocation::at(sock);
         assert!(request(&client, r#"{"method":"daemon.health"}"#).is_err());
     }
 
     #[test]
     fn request_rejects_multiline_input_before_connecting() {
-        let client = SocketLocation::at(temp_socket("multiline"));
+        let (_scratch, sock) = scratch_socket("multiline");
+        let client = SocketLocation::at(sock);
         let err = request(&client, "{}\n{}").unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
@@ -2487,13 +2478,10 @@ mod tests {
     // F2: explicit-bind policy tests (fail-before/pass-after)
     // -------------------------------------------------------------------------
 
-    // Build a temp parent dir at the given mode and return (parent, sock_path).
-    fn explicit_temp(label: &str, mode: u32) -> (std::path::PathBuf, std::path::PathBuf) {
-        let parent =
-            std::env::temp_dir().join(format!("ddf-explicit-{}-{label}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&parent);
-        std::fs::create_dir_all(&parent).expect("create parent");
-        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(mode))
+    // Build a Scratch parent dir at the given mode and return (parent, sock_path).
+    fn explicit_scratch(label: &str, mode: u32) -> (Scratch, std::path::PathBuf) {
+        let parent = Scratch::new(label);
+        std::fs::set_permissions(parent.path(), std::fs::Permissions::from_mode(mode))
             .expect("chmod parent");
         let sock = parent.join("test.sock");
         (parent, sock)
@@ -2505,7 +2493,7 @@ mod tests {
     /// unreachable.
     #[test]
     fn a_start_in_progress_keeps_the_socket_it_is_replacing() {
-        let (_, sock) = explicit_temp("start-race", 0o700);
+        let (_parent, sock) = explicit_scratch("start-race", 0o700);
         drop(UnixListener::bind(&sock).unwrap());
         let before = std::fs::symlink_metadata(&sock).unwrap();
         let other_start = take_start_lock(&sock).expect("the other start's lock");
@@ -2522,7 +2510,7 @@ mod tests {
     /// and still answers.
     #[test]
     fn a_second_start_leaves_the_running_daemon_reachable() {
-        let (_, sock) = explicit_temp("second-start", 0o700);
+        let (_parent, sock) = explicit_scratch("second", 0o700);
         let first = bind_explicit(&sock).expect("first start");
         let identity = std::fs::symlink_metadata(&sock).unwrap();
         let err = bind_secure(&sock).expect_err("the first daemon holds the lock");
@@ -2537,7 +2525,7 @@ mod tests {
     /// daemon create or lock a file elsewhere.
     #[test]
     fn the_start_lock_never_follows_a_symlink() {
-        let (parent, sock) = explicit_temp("lock-symlink", 0o700);
+        let (parent, sock) = explicit_scratch("lock-link", 0o700);
         let target = parent.join("elsewhere");
         std::fs::write(&target, b"keep").unwrap();
         std::os::unix::fs::symlink(&target, parent.join("test.sock.lock")).unwrap();
@@ -2554,7 +2542,7 @@ mod tests {
     #[test]
     #[cfg(not(target_vendor = "apple"))]
     fn a_start_lock_that_is_not_a_regular_file_is_refused() {
-        let (parent, sock) = explicit_temp("lock-fifo", 0o700);
+        let (parent, sock) = explicit_scratch("lock-fifo", 0o700);
         rustix::fs::mknodat(
             rustix::fs::CWD,
             parent.join("test.sock.lock"),
@@ -2586,7 +2574,7 @@ mod tests {
     // still be 0700 — we never touch the caller's directory.
     #[test]
     fn explicit_bind_does_not_chmod_parent() {
-        let (parent, sock) = explicit_temp("nochmod", 0o700);
+        let (parent, sock) = explicit_scratch("nochmod", 0o700);
         let listener = bind_explicit(&sock).expect("bind_explicit on 0700 parent");
         let parent_mode = std::fs::metadata(&parent).unwrap().permissions().mode();
         assert_eq!(
@@ -2602,7 +2590,7 @@ mod tests {
     // and must leave the parent at 0755 — the finding's exact regression check.
     #[test]
     fn explicit_bind_rejects_world_readable_parent() {
-        let (parent, sock) = explicit_temp("worldread", 0o755);
+        let (parent, sock) = explicit_scratch("worldread", 0o755);
         let result = bind_explicit(&sock);
         assert!(
             result.is_err(),
@@ -2624,7 +2612,7 @@ mod tests {
     // returns Err and the file is still present.
     #[test]
     fn explicit_bind_refuses_to_delete_regular_file() {
-        let (_, sock) = explicit_temp("regularfile", 0o700);
+        let (_parent, sock) = explicit_scratch("regfile", 0o700);
         // Place a regular file at the socket path.
         std::fs::write(&sock, b"important data").expect("write regular file");
         let result = bind_explicit(&sock);
@@ -2648,7 +2636,7 @@ mod tests {
     // file AND the symlink untouched (lstat, not stat; never delete a non-socket).
     #[test]
     fn explicit_bind_refuses_symlink_at_socket_path() {
-        let (parent, sock) = explicit_temp("symlink-at-path", 0o700);
+        let (parent, sock) = explicit_scratch("sym-path", 0o700);
         let victim = parent.join("victim.txt");
         std::fs::write(&victim, b"do not delete").expect("write victim");
         std::os::unix::fs::symlink(&victim, &sock).expect("create symlink at socket path");
@@ -2677,7 +2665,7 @@ mod tests {
     // a second bind_explicit must succeed by removing only the socket.
     #[test]
     fn explicit_bind_replaces_stale_socket() {
-        let (_, sock) = explicit_temp("staleexplicit", 0o700);
+        let (_parent, sock) = explicit_scratch("stale-expl", 0o700);
         // First bind — creates the socket.
         let first = bind_explicit(&sock).expect("first explicit bind");
         drop(first);
@@ -2693,9 +2681,8 @@ mod tests {
     // not mutating any pre-existing directory.
     #[test]
     fn explicit_bind_creates_missing_parent_at_0700() {
-        let parent =
-            std::env::temp_dir().join(format!("ddf-explicit-{}-mkparent", std::process::id()));
-        let _ = std::fs::remove_dir_all(&parent);
+        let scratch = Scratch::new("mkparent");
+        let parent = scratch.join("absent");
         assert!(!parent.exists(), "precondition: parent must be absent");
         let sock = parent.join("test.sock");
         let listener = bind_explicit(&sock).expect("bind_explicit must create the missing parent");
@@ -2707,7 +2694,6 @@ mod tests {
             "freshly created parent must be owner-private (0700)"
         );
         drop(listener);
-        let _ = std::fs::remove_dir_all(&parent);
     }
 
     // F2-T5: SocketLocation::at() produces an Explicit provenance location.
@@ -2717,7 +2703,7 @@ mod tests {
     // create the parent when it already exists).
     #[test]
     fn socket_location_at_uses_explicit_policy() {
-        let (parent, sock) = explicit_temp("atloc", 0o700);
+        let (parent, sock) = explicit_scratch("atloc", 0o700);
         let loc = SocketLocation::at(sock.clone());
         // `bind()` on a 0700 pre-existing parent via `at()` must succeed.
         let listener = loc.bind().expect("SocketLocation::at bind on 0700 parent");
@@ -2731,7 +2717,7 @@ mod tests {
     // Complements the direct bind_explicit test through the public API surface.
     #[test]
     fn socket_location_at_rejects_world_readable_parent() {
-        let (parent, sock) = explicit_temp("atloc-wr", 0o755);
+        let (parent, sock) = explicit_scratch("atloc-wr", 0o755);
         let loc = SocketLocation::at(sock);
         assert!(
             loc.bind().is_err(),
@@ -2747,7 +2733,7 @@ mod tests {
     #[test]
     fn resolve_explicit_uses_explicit_policy() {
         // An explicit path through resolve() must refuse a world-readable parent.
-        let (parent, sock) = explicit_temp("resolve-explicit", 0o755);
+        let (parent, sock) = explicit_scratch("resolve", 0o755);
         let loc = SocketLocation::resolve(Some(&sock)).expect("resolve explicit");
         assert!(
             loc.bind().is_err(),
@@ -3036,8 +3022,8 @@ mod tests {
     fn client_request_size_cap_boundary() {
         // A line whose framed form (plus newline) fits the server cap passes the size gate
         // and fails only at connect; one byte more is refused before connecting.
-        let client = SocketLocation::at(temp_socket("client-cap"));
-        let _ = std::fs::remove_dir_all(client.path().parent().unwrap());
+        let (_scratch, sock) = scratch_socket("client-cap");
+        let client = SocketLocation::at(sock);
         let at_cap = " ".repeat(MAX_REQUEST_BYTES - 1);
         let err = request(&client, &at_cap).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
@@ -3047,8 +3033,11 @@ mod tests {
     }
 
     // Answer one request at `sock` with the raw `response` bytes.
-    fn fake_daemon(name: &str, response: Vec<u8>) -> (SocketLocation, thread::JoinHandle<()>) {
-        let (_, sock) = explicit_temp(name, 0o700);
+    fn fake_daemon(
+        name: &str,
+        response: Vec<u8>,
+    ) -> (Scratch, SocketLocation, thread::JoinHandle<()>) {
+        let (parent, sock) = explicit_scratch(name, 0o700);
         let listener = UnixListener::bind(&sock).expect("bind fake daemon");
         let handle = thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept");
@@ -3058,14 +3047,14 @@ mod tests {
                 .unwrap();
             let _ = (&stream).write_all(&response);
         });
-        (SocketLocation::at(sock), handle)
+        (parent, SocketLocation::at(sock), handle)
     }
 
     #[test]
     fn client_accepts_response_exactly_at_cap() {
         let mut response = vec![b'x'; MAX_RESPONSE_BYTES - 1];
         response.push(b'\n');
-        let (location, daemon) = fake_daemon("resp-at-cap", response);
+        let (_parent, location, daemon) = fake_daemon("resp-at-cap", response);
         let got = request(&location, r#"{"method":"daemon.health"}"#).expect("at-cap response");
         assert_eq!(got.len(), MAX_RESPONSE_BYTES - 1);
         joined(daemon).unwrap();
@@ -3073,7 +3062,8 @@ mod tests {
 
     #[test]
     fn client_rejects_response_over_cap() {
-        let (location, daemon) = fake_daemon("resp-over-cap", vec![b'x'; MAX_RESPONSE_BYTES + 1]);
+        let (_parent, location, daemon) =
+            fake_daemon("resp-over", vec![b'x'; MAX_RESPONSE_BYTES + 1]);
         let err = request(&location, r#"{"method":"daemon.health"}"#).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         joined(daemon).unwrap();
@@ -3082,7 +3072,7 @@ mod tests {
     /// A socket a daemon still listens on is never removed; one nothing listens on is.
     #[test]
     fn only_a_socket_nothing_listens_on_is_removed() {
-        let (parent, _) = explicit_temp("stale-live", 0o700);
+        let (parent, _) = explicit_scratch("stale-live", 0o700);
         let sock = parent.join("d.sock");
         let live = UnixListener::bind(&sock).unwrap();
         let err = remove_stale_socket(&sock).expect_err("a live daemon owns it");
@@ -3106,7 +3096,7 @@ mod tests {
         if rustix::process::geteuid().is_root() {
             return;
         }
-        let (parent, _) = explicit_temp("stale-unprobed", 0o700);
+        let (parent, _) = explicit_scratch("unprobed", 0o700);
         let sock = parent.join("d.sock");
         drop(UnixListener::bind(&sock).unwrap());
         std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -3124,7 +3114,7 @@ mod tests {
     fn remove_stale_socket_propagates_non_missing_errors() {
         // lstat through a regular file fails with ENOTDIR. Only ENOENT means
         // "nothing to remove"; anything else must surface as an error.
-        let (parent, _) = explicit_temp("stale-notdir", 0o700);
+        let (parent, _) = explicit_scratch("stale-nd", 0o700);
         let file = parent.join("file");
         std::fs::write(&file, b"keep").unwrap();
         let err = remove_stale_socket(&file.join("d.sock")).expect_err("ENOTDIR");
@@ -3135,7 +3125,7 @@ mod tests {
     #[test]
     fn explicit_bind_propagates_non_missing_parent_errors() {
         // A parent below a regular file is not "missing"; nothing is created.
-        let (parent, _) = explicit_temp("parent-notdir", 0o700);
+        let (parent, _) = explicit_scratch("parent-nd", 0o700);
         let file = parent.join("file");
         std::fs::write(&file, b"keep").unwrap();
         let err = bind_explicit(&file.join("sub").join("d.sock")).expect_err("ENOTDIR");
@@ -3217,7 +3207,7 @@ mod tests {
     fn run_server_returns_persistent_accept_errors() {
         // A non-EINTR accept error must end run_server with that error rather
         // than spin forever retrying it.
-        let sock = temp_socket_with_parent("accept-error", 0o700);
+        let (_scratch, sock) = scratch_socket_with_parent("acc-err", 0o700);
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -3251,7 +3241,6 @@ mod tests {
         // The child's marker proves it really ran (not an empty test filter); it asserts the
         // socket was removed itself.
         let ran = sock.with_extension("ran").exists();
-        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
         let status = status.expect("run_server kept looping on a persistent accept error");
         assert!(status.success(), "child test failed: {status}");
         assert!(ran, "the child half never ran");

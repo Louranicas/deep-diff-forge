@@ -51,7 +51,7 @@ git diff | target/debug/deep-diff-forge review     # see your own change in the 
 ```
 
 Start with the [README](README.md), then [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for
-how the 14 crates fit together.
+how the 14 crates fit together (plus `deep-diff-forge-testkit`, test-only and never published).
 
 ## The quality bar
 

@@ -101,14 +101,7 @@ fn create_temporary(path: &Path, name: &OsStr) -> io::Result<(PathBuf, File)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ddf-textfile-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use deep_diff_forge_testkit::Scratch;
 
     fn entries(dir: &Path) -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(dir)
@@ -121,7 +114,8 @@ mod tests {
 
     #[test]
     fn a_new_file_is_written_world_readable_and_no_temporary_is_left() {
-        let dir = scratch("new");
+        let scratch = Scratch::new("textfile-new");
+        let dir = scratch.path();
         let path = dir.join("ddf.prom");
         write_atomically(&path, b"a 1\n").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"a 1\n");
@@ -131,13 +125,13 @@ mod tests {
             let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, MODE);
         }
-        assert_eq!(entries(&dir), ["ddf.prom"]);
-        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(entries(dir), ["ddf.prom"]);
     }
 
     #[test]
     fn an_existing_file_is_replaced_not_rewritten_in_place() {
-        let dir = scratch("replace");
+        let scratch = Scratch::new("textfile-replace");
+        let dir = scratch.path();
         let path = dir.join("ddf.prom");
         fs::write(&path, b"old old old\n").unwrap();
         // A reader holding the old file keeps the old contents: the new file is a new inode.
@@ -146,14 +140,14 @@ mod tests {
         write_atomically(&path, b"new\n").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"new\n");
         assert_eq!(fs::read(&held).unwrap(), b"old old old\n");
-        assert_eq!(entries(&dir), ["ddf.prom", "held"]);
-        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(entries(dir), ["ddf.prom", "held"]);
     }
 
     #[cfg(unix)]
     #[test]
     fn a_symlink_or_a_directory_at_the_path_is_refused_and_left_alone() {
-        let dir = scratch("refuse");
+        let scratch = Scratch::new("textfile-refuse");
+        let dir = scratch.path();
         let target = dir.join("target");
         fs::write(&target, b"keep\n").unwrap();
         let link = dir.join("ddf.prom");
@@ -172,28 +166,28 @@ mod tests {
         fs::create_dir(&sub).unwrap();
         let err = write_atomically(&sub, b"new\n").unwrap_err();
         assert!(err.to_string().contains("is not a regular file"), "{err}");
-        assert_eq!(entries(&dir), ["ddf.prom", "sub", "target"]);
+        assert_eq!(entries(dir), ["ddf.prom", "sub", "target"]);
         let err = write_atomically(Path::new("/"), b"new\n").unwrap_err();
         assert!(err.to_string().contains("names no file"), "{err}");
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn a_path_that_cannot_be_examined_or_written_is_an_error() {
-        let dir = scratch("unreachable");
+        let scratch = Scratch::new("textfile-unreachable");
+        let dir = scratch.path();
         let file = dir.join("file");
         fs::write(&file, b"x").unwrap();
         // A path under a regular file, or in a missing directory: the temporary cannot be made.
         assert!(write_atomically(&file.join("ddf.prom"), b"new\n").is_err());
         let err = write_atomically(&dir.join("missing/ddf.prom"), b"new\n").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
-        assert_eq!(entries(&dir), ["file"]);
-        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(entries(dir), ["file"]);
     }
 
     #[test]
     fn a_taken_temporary_name_is_skipped_not_written_through_or_removed() {
-        let dir = scratch("planted");
+        let scratch = Scratch::new("textfile-planted");
+        let dir = scratch.path();
         let path = dir.join("ddf.prom");
         let name = path.file_name().unwrap();
         // What a run killed before its rename leaves behind, under this PID.
@@ -203,13 +197,13 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"new\n");
         assert_eq!(fs::read(&planted).unwrap(), b"not ours\n");
         let planted_name = format!(".ddf.prom.{}.0.tmp", std::process::id());
-        assert_eq!(entries(&dir), [planted_name, "ddf.prom".to_owned()]);
-        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(entries(dir), [planted_name, "ddf.prom".to_owned()]);
     }
 
     #[test]
     fn every_temporary_name_taken_is_an_error_naming_the_cleanup() {
-        let dir = scratch("exhausted");
+        let scratch = Scratch::new("textfile-exhausted");
+        let dir = scratch.path();
         let path = dir.join("ddf.prom");
         let name = path.file_name().unwrap();
         for attempt in 0..TEMPORARY_ATTEMPTS {
@@ -219,13 +213,12 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert!(err.to_string().contains("all 8 temporary names"), "{err}");
         assert!(!path.exists());
-        assert_eq!(entries(&dir).len(), 8);
+        assert_eq!(entries(dir).len(), 8);
         for attempt in 0..TEMPORARY_ATTEMPTS {
             assert_eq!(
                 fs::read(temporary_name(&path, name, attempt)).unwrap(),
                 b"not ours\n"
             );
         }
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -1243,6 +1243,7 @@ pub fn import_tuicr(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deep_diff_forge_testkit::Scratch;
 
     fn lines(file: &str, side: &str, start: u32, end: u32) -> Anchor {
         Anchor::Lines {
@@ -1344,26 +1345,6 @@ mod tests {
             basis: ActorBasis::TuicrAuthor,
         }
     }
-    /// A private directory, removed on drop.
-    struct Scratch(PathBuf);
-    impl Scratch {
-        fn new() -> Self {
-            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let dir = std::env::temp_dir().join(format!(
-                "ddf-journal-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            ));
-            fs::create_dir(&dir).unwrap();
-            Self(dir)
-        }
-    }
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
     #[test]
     fn event_hash_covers_every_field_but_itself() {
         let mut planner = planner();
@@ -1389,7 +1370,7 @@ mod tests {
     /// chain link or run, and a re-serialised line must be byte-identical.
     #[test]
     fn every_journal_line_check_refuses_on_its_own() {
-        let dir = Scratch::new();
+        let dir = Scratch::new("journal");
         let mut p = planner();
         p.push(p.blank(EventKind::CommentAdded, user())).unwrap();
         p.push(p.blank(EventKind::Deleted, user())).unwrap();
@@ -1398,12 +1379,8 @@ mod tests {
         };
         let line = |e: &DecisionEvent| serde_json::to_string(e).unwrap();
         let load = |last: &str| {
-            fs::write(
-                dir.0.join(JOURNAL_FILE),
-                format!("{}\n{last}\n", line(first)),
-            )
-            .unwrap();
-            load_journal(&dir.0, "run")
+            fs::write(dir.join(JOURNAL_FILE), format!("{}\n{last}\n", line(first))).unwrap();
+            load_journal(dir.path(), "run")
         };
         let resealed = |edit: fn(&mut DecisionEvent)| {
             let mut e = last.clone();
@@ -1439,20 +1416,20 @@ mod tests {
 
     #[test]
     fn journal_is_read_up_to_its_cap_and_no_further() {
-        let dir = Scratch::new();
+        let dir = Scratch::new("journal");
         // The documented 64 MiB, written out so the test does not move with the constant.
         let cap: u64 = 64 << 20;
-        let file = fs::File::create(dir.0.join(JOURNAL_FILE)).unwrap();
+        let file = fs::File::create(dir.join(JOURNAL_FILE)).unwrap();
         // Exactly the cap is read in full, then refused for its content (NULs, no final newline).
         file.set_len(cap).unwrap();
-        let at_cap = load_journal(&dir.0, "run").map(|j| j.bytes);
+        let at_cap = load_journal(dir.path(), "run").map(|j| j.bytes);
         assert!(
             matches!(&at_cap, Err(TuicrImportError::Journal(r)) if r.contains("incomplete")),
             "{at_cap:?}"
         );
         file.set_len(cap + 1).unwrap();
         // Over the cap is the journal's refusal, not one about the run or session export.
-        let over = load_journal(&dir.0, "run").map(|j| j.bytes);
+        let over = load_journal(dir.path(), "run").map(|j| j.bytes);
         assert!(
             matches!(&over, Err(e @ TuicrImportError::Journal(r)) if r.contains("acquisition budget")
                 && e.to_string().starts_with("tuicr import refused (journal): ")),
@@ -1469,14 +1446,14 @@ mod tests {
         let events = [planner().blank(EventKind::CommentAdded, user())];
         let size = encode(0, &events).unwrap().len() as u64;
         for (verified_len, fits) in [(cap - size, true), (cap - size + 1, false)] {
-            let dir = Scratch::new();
-            let path = dir.0.join(JOURNAL_FILE);
+            let dir = Scratch::new("journal");
+            let path = dir.join(JOURNAL_FILE);
             fs::File::create(&path)
                 .unwrap()
                 .set_len(verified_len)
                 .unwrap();
             let result = encode(verified_len, &events)
-                .and_then(|lines| append(&dir.0, verified_len, &lines, &events));
+                .and_then(|lines| append(dir.path(), verified_len, &lines, &events));
             let after = fs::metadata(&path).unwrap().len();
             if fits {
                 assert!(result.is_ok(), "{result:?}");
@@ -1487,7 +1464,7 @@ mod tests {
                     "{result:?}"
                 );
                 assert_eq!(after, verified_len);
-                assert!(!dir.0.join(CHECKPOINT_DIR).exists());
+                assert!(!dir.join(CHECKPOINT_DIR).exists());
             }
         }
     }
@@ -1526,17 +1503,17 @@ mod tests {
 
     #[test]
     fn only_an_existing_lock_file_is_reported_as_locked() {
-        let dir = Scratch::new();
-        let lock = Lock::acquire(&dir.0).unwrap();
+        let dir = Scratch::new("journal");
+        let lock = Lock::acquire(dir.path()).unwrap();
         assert!(matches!(
-            Lock::acquire(&dir.0),
+            Lock::acquire(dir.path()),
             Err(TuicrImportError::Locked { .. })
         ));
         drop(lock);
-        assert!(!dir.0.join(LOCK_FILE).exists(), "the lock is released");
+        assert!(!dir.join(LOCK_FILE).exists(), "the lock is released");
         // Any other failure to create the lock is reported as itself.
         assert!(matches!(
-            Lock::acquire(&dir.0.join("missing")),
+            Lock::acquire(&dir.join("missing")),
             Err(TuicrImportError::Session(_))
         ));
     }

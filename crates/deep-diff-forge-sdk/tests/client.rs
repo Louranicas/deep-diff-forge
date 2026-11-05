@@ -8,14 +8,12 @@
 )]
 
 use deep_diff_forge_sdk::{Client, Error, Guards, review};
+use deep_diff_forge_testkit::Scratch;
 use serde_json::{Value, json};
-use std::os::unix::fs::DirBuilderExt as _;
 
 #[test]
 fn the_client_and_the_facade_agree_with_a_live_daemon() {
-    let dir = std::env::temp_dir().join(format!("ddf-sdk-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+    let dir = Scratch::new("sdk");
     let socket = dir.join("d.sock");
     let location = deep_diff_forge_daemon::SocketLocation::at(&socket);
     let server = std::thread::spawn(move || deep_diff_forge_daemon::run_server(&location));
@@ -64,5 +62,4 @@ fn the_client_and_the_facade_agree_with_a_live_daemon() {
         true
     );
     server.join().unwrap().unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
 }
