@@ -6,6 +6,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-06
+
+**Breaking.** 0.8.0 is a minor release because it changes contracts 0.7.0 callers rely on:
+`PatchParseError` gains four variants (`MisplacedHunk`, `LossyHeader`, `HunkWithoutChange`,
+`SectionWithoutPatch`) and is now `#[non_exhaustive]`; patches Git refuses or reads differently
+are refused (exit 4) instead of reviewed; and non-UTF-8 input exits 3 where some commands
+exited 4. Each is listed below.
+
 ### Security
 
 - **A client that reads slowly can no longer hold the daemon's read budget** (production
@@ -67,6 +75,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   nothing (`HunkWithoutChange`: Git's "corrupt patch"; it was exit 7 under `--require-hunks`, exit
   0 without), a `diff --git` line with nothing after it, and a traditional `---`/`+++` pair with
   no hunk (`SectionWithoutPatch`). Exit 4.
+- **`PatchParseError` is `#[non_exhaustive]`**, so a future refusal is a new variant without
+  breaking callers that match it; outside the patch crate, match with a wildcard arm or use
+  `exit_code`.
 - **One place decides a parse refusal's exit code** (`PatchParseError::exit_code`): the CLI, the
   structured Git selections and the daemon's domain code use it, and the Rust SDK maps daemon
   error 3 to exit 3, as the registry names it.
@@ -2044,7 +2055,8 @@ A supply-chain & fuzz hardening pass then raised the release/CI posture:
   `--json`/`--jsonl` stability tests. Corrected the daemon's `lib.rs` doc from
   "thread-per-connection" to the true single-threaded sequential accept loop.
 
-[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.0
 [0.7.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.7.0
 [0.6.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.6.0
 [0.5.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.5.0

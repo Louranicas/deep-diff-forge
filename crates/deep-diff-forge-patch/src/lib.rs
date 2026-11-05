@@ -73,7 +73,12 @@ pub const DEFAULT_LINE_BUDGET: usize = 1_000_000;
 /// truth can be produced from the input, the engine must report the failure
 /// rather than fabricate a diff. Every variant carries enough context for a
 /// caller to act without scraping prose.
+///
+/// `#[non_exhaustive]` since 0.8.0: a new refusal is a new variant, and matching code outside
+/// this crate keeps a wildcard arm (or uses [`PatchParseError::exit_code`]), so adding one is
+/// not a breaking change.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PatchParseError {
     /// EOF marker is malformed, duplicated or not immediately after a content line, or a later
     /// line adds to the side of the file it ended (Git would join that line onto the marked one).
