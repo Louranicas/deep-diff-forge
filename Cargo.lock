@@ -190,6 +190,7 @@ dependencies = [
  "deep-diff-forge-projection",
  "deep-diff-forge-review",
  "deep-diff-forge-syntax",
+ "deep-diff-forge-testkit",
  "deep-diff-forge-tui",
  "nix",
  "serde_json",
@@ -216,6 +217,7 @@ dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-graph",
  "deep-diff-forge-patch",
+ "deep-diff-forge-testkit",
  "nix",
  "rustix",
  "serde",
@@ -235,6 +237,7 @@ dependencies = [
 name = "deep-diff-forge-learning"
 version = "0.7.0"
 dependencies = [
+ "deep-diff-forge-testkit",
  "rustix",
  "serde",
  "serde_json",
@@ -245,6 +248,7 @@ name = "deep-diff-forge-patch"
 version = "0.7.0"
 dependencies = [
  "deep-diff-forge-core",
+ "deep-diff-forge-testkit",
 ]
 
 [[package]]
@@ -273,6 +277,7 @@ name = "deep-diff-forge-review"
 version = "0.7.0"
 dependencies = [
  "deep-diff-forge-core",
+ "deep-diff-forge-testkit",
  "nix",
  "serde",
  "serde_json",
@@ -286,6 +291,7 @@ dependencies = [
  "deep-diff-forge-daemon",
  "deep-diff-forge-graph",
  "deep-diff-forge-patch",
+ "deep-diff-forge-testkit",
  "serde_json",
 ]
 
@@ -297,6 +303,10 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-rust",
 ]
+
+[[package]]
+name = "deep-diff-forge-testkit"
+version = "0.7.0"
 
 [[package]]
 name = "deep-diff-forge-tui"

@@ -23,19 +23,16 @@ const ISOLATE: [(&str, &str); 6] = [
     ("GIT_COMMITTER_EMAIL", "ddf@example.invalid"),
 ];
 
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+/// A scratch directory's path and its guard, which removes it when dropped.
+struct Scratch(
+    PathBuf,
+    #[expect(dead_code, reason = "held for its Drop, which removes the directory")]
+    deep_diff_forge_testkit::Scratch,
+);
 
 fn scratch(name: &str) -> Scratch {
-    let root = std::env::temp_dir().join(format!("ddf-scripts-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    Scratch(root)
+    let guard = deep_diff_forge_testkit::Scratch::new(&format!("scripts-{name}"));
+    Scratch(guard.path().to_owned(), guard)
 }
 
 /// Writes an executable shell script.

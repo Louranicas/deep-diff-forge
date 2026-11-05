@@ -5,6 +5,7 @@
     reason = "integration test: drives the binary with an isolated environment"
 )]
 
+use deep_diff_forge_testkit::Scratch;
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
@@ -38,9 +39,8 @@ fn total(json: &str) -> u64 {
 
 #[test]
 fn learn_records_receipts_and_reports_them() {
-    let state = std::env::temp_dir().join(format!("ddf-learn-e2e-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&state);
-    std::fs::create_dir_all(&state).unwrap();
+    let scratch = Scratch::new("learn-e2e");
+    let state = scratch.path().to_owned();
 
     let (code, out, err) = learn(&state, &["status", "--json"], "");
     assert_eq!(code, 0, "{err}");
@@ -73,8 +73,6 @@ fn learn_records_receipts_and_reports_them() {
     assert_eq!((code, out.as_str()), (2, ""), "{err}");
     let (code, _, _) = learn(&state, &["record"], "");
     assert_eq!(code, 2, "record needs --stdin");
-
-    std::fs::remove_dir_all(&state).unwrap();
 }
 
 /// The store keeps every receipt and shows every hand edit: a record appended after a final
@@ -83,9 +81,8 @@ fn learn_records_receipts_and_reports_them() {
 /// key is refused, naming its line (anchor A-05).
 #[test]
 fn learn_store_survives_a_lost_newline_and_refuses_extra_keys() {
-    let state = std::env::temp_dir().join(format!("ddf-learn-torn-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&state);
-    std::fs::create_dir_all(&state).unwrap();
+    let scratch = Scratch::new("learn-torn");
+    let state = scratch.path().to_owned();
     let store = state.join("deep-diff-forge/learning/receipts/strategy.jsonl");
 
     for _ in 0..2 {
@@ -114,8 +111,6 @@ fn learn_store_survives_a_lost_newline_and_refuses_extra_keys() {
         "{err}"
     );
     assert!(!err.contains("secret"), "the key is not echoed: {err}");
-
-    std::fs::remove_dir_all(&state).unwrap();
 }
 
 /// A relative `XDG_STATE_HOME` is invalid (XDG Base Directory spec) and ignored: the store goes
@@ -123,8 +118,7 @@ fn learn_store_survives_a_lost_newline_and_refuses_extra_keys() {
 /// review).
 #[test]
 fn a_relative_state_home_never_puts_the_store_under_the_working_directory() {
-    let root = std::env::temp_dir().join(format!("ddf-learn-relative-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new("learn-relative");
     let (cwd, home) = (root.join("checkout"), root.join("home"));
     std::fs::create_dir_all(&cwd).unwrap();
     std::fs::create_dir_all(&home).unwrap();
@@ -155,14 +149,13 @@ fn a_relative_state_home_never_puts_the_store_under_the_working_directory() {
         home.join(".local/state/deep-diff-forge/learning/receipts/strategy.jsonl")
             .is_file()
     );
-    std::fs::remove_dir_all(&root).unwrap();
 }
 
 /// `doctor` names the state directory the store uses. Before, it formatted a relative
 /// `XDG_STATE_HOME` as is (`state_dir=relstate/deep-diff-forge`), a place nothing writes to.
 #[test]
 fn doctor_reports_the_state_dir_the_store_uses() {
-    let root = std::env::temp_dir().join(format!("ddf-doctor-state-{}", std::process::id()));
+    let root = Scratch::new("doctor-state");
     let home = root.join("home");
     let doctor = |state_home: &std::ffi::OsStr| {
         let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))

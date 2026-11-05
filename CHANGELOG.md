@@ -82,6 +82,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   input), checks that no accepted hunk is change-free, and is seeded with every committed patch,
   regressions included.
 
+- **Tests clean up after themselves** (DDF-TEST-TMPLEAK-001). About 100 test sites built
+  `temp_dir()/ddf-<name>-<pid>` by hand, and many never removed it: one full `cargo test
+  --workspace` left 51 files and directories in the temp dir (measured). Every test now takes a
+  `deep_diff_forge_testkit::Scratch`, a fresh 0700 directory that is removed when it drops, pass
+  or panic. The new crate `deep-diff-forge-testkit` is test-only and never published (path-only
+  dev-dependency; `deny.toml` `allow-wildcard-paths`). `clippy.toml` disallows
+  `std::env::temp_dir`, and `only_the_testkit_names_the_temp_dir` scans every Rust file for it,
+  since integration tests opt out of `disallowed_methods` file by file.
+
 ### Fixed
 
 - **A daemon at its connection limit is no longer reported absent on macOS.** The daemon accepts

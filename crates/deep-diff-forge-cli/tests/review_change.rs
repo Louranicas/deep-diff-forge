@@ -9,17 +9,15 @@
 use deep_diff_forge_daemon::{
     Engine, GIT_FAILED, INPUT_CONTRACT_REFUSED, INVALID_PARAMS, dispatch, parse_request,
 };
+use deep_diff_forge_testkit::Scratch;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-struct Dir(PathBuf);
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+struct Dir(
+    PathBuf,
+    #[expect(dead_code, reason = "held for its Drop, which removes the directory")] Scratch,
+);
 
 fn git(dir: &Path, args: &[&str]) {
     let status = Command::new("git")
@@ -42,12 +40,10 @@ fn git(dir: &Path, args: &[&str]) {
 
 /// A repository with one commit, a `sub/` directory, and a staged change in `src/lib.rs`.
 fn repo(name: &str) -> Dir {
-    let root =
-        std::env::temp_dir().join(format!("ddf-review-change-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = Scratch::new(&format!("review-change-{name}"));
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::create_dir_all(root.join("sub")).unwrap();
-    let dir = Dir(std::fs::canonicalize(&root).unwrap());
+    let dir = Dir(std::fs::canonicalize(root.path()).unwrap(), root);
     git(&dir.0, &["init", "-q"]);
     std::fs::write(dir.0.join("src/lib.rs"), "fn a() {}\n").unwrap();
     std::fs::write(dir.0.join("sub/x.txt"), "x\n").unwrap();

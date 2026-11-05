@@ -35,3 +35,4 @@ nix = { version = "=0.31.3", default-features = false }
 workspace = true
 
 [dev-dependencies]
+deep-diff-forge-testkit.workspace = true

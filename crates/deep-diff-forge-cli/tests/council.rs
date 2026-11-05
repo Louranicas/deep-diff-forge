@@ -8,35 +8,27 @@
 )]
 
 use deep_diff_forge_review::{Profile, Request};
+use deep_diff_forge_testkit::Scratch;
 use std::os::unix::fs::PermissionsExt;
 use std::{
     fs,
     path::PathBuf,
     process::{Command, Output, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
-static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Fixture {
     root: PathBuf,
     repository: PathBuf,
     run: PathBuf,
     request: PathBuf,
     bin: PathBuf,
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
-    }
+    /// Removes `root` when the fixture drops.
+    _scratch: Scratch,
 }
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "ddf-council-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
+        let scratch = Scratch::new("council");
+        let root = scratch.path().to_owned();
         let repository = root.join("repo");
         fs::create_dir(&repository).unwrap();
         fs::write(repository.join("x.rs"), "fn b() {}\n").unwrap();
@@ -97,6 +89,7 @@ impl Fixture {
             run,
             request,
             bin,
+            _scratch: scratch,
         }
     }
     /// The controller process. Providers still see `DDF_FAKE_MODE`; sandboxed gates never do.

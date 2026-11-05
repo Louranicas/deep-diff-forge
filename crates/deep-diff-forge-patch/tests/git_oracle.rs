@@ -8,6 +8,7 @@
 )]
 
 use deep_diff_forge_patch::{parse, render_unified};
+use deep_diff_forge_testkit::Scratch;
 use std::{fs, path::Path, process::Command};
 fn git(root: &Path, args: &[&str]) -> Vec<u8> {
     let out = Command::new("git")
@@ -24,8 +25,8 @@ fn git(root: &Path, args: &[&str]) -> Vec<u8> {
 }
 #[test]
 fn reconstructed_patches_apply_to_exact_base() {
-    let root = std::env::temp_dir().join(format!("ddf-git-oracle-{}", std::process::id()));
-    fs::create_dir_all(&root).unwrap();
+    let scratch = Scratch::new("git-oracle");
+    let root = scratch.path().to_path_buf();
     git(&root, &["init", "-q"]);
     let cases: Vec<(&str, Vec<u8>, Vec<u8>)> = vec![
         ("eof", b"old".to_vec(), b"new".to_vec()),
@@ -71,7 +72,6 @@ fn reconstructed_patches_apply_to_exact_base() {
         assert_eq!(fs::read(root.join(path)).unwrap(), new, "{path}");
         git(&root, &["add", "--", path]);
     }
-    fs::remove_dir_all(root).unwrap();
 }
 #[test]
 fn unsupported_and_invalid_paths_fail_explicitly() {
@@ -105,9 +105,8 @@ fn git_accepts(root: &Path, patch: &str) -> bool {
 #[test]
 fn unsafe_moves_and_modes_are_refused_as_git_refuses_them() {
     use deep_diff_forge_core::FileStatus;
-    let root = std::env::temp_dir().join(format!("ddf-git-oracle-moves-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).unwrap();
+    let scratch = Scratch::new("git-oracle-moves");
+    let root = scratch.path().to_path_buf();
     git(&root, &["init", "-q"]);
     fs::write(root.join("x"), "x\n").unwrap();
     git(&root, &["add", "x"]);
@@ -171,7 +170,6 @@ fn unsafe_moves_and_modes_are_refused_as_git_refuses_them() {
     git(&root, &["update-index", "--chmod=+x", "x"]);
     let mode = parse(&diff(&["--", "x"])).unwrap();
     assert_eq!(mode[0].status, FileStatus::ModeChanged);
-    fs::remove_dir_all(root).unwrap();
 }
 
 /// The paths `git apply --numstat` reads from `patch`, in order, or `None` when Git refuses it.
@@ -196,9 +194,8 @@ fn git_paths(root: &Path, patch: &str) -> Option<Vec<String>> {
 /// hand-written case, so the expectation is Git's, not DDF's.
 #[test]
 fn reviewed_paths_are_the_paths_git_apply_reads() {
-    let root = std::env::temp_dir().join(format!("ddf-git-oracle-names-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).unwrap();
+    let scratch = Scratch::new("git-oracle-names");
+    let root = scratch.path().to_path_buf();
     git(&root, &["init", "-q"]);
     let hunk = "@@ -1 +1 @@\n-a\n+b\n";
     let new = "@@ -0,0 +1 @@\n+curl x | sh\n";
@@ -279,8 +276,6 @@ fn reviewed_paths_are_the_paths_git_apply_reads() {
             .map(|files| files.into_iter().map(|f| f.path).collect::<Vec<_>>());
         assert_eq!(ddf, expected, "ddf: {patch:?}");
     }
-
-    fs::remove_dir_all(root).unwrap();
 }
 
 /// Bug hunt 2026-11-01: in a traditional diff an epoch timestamp makes the file created or
@@ -288,9 +283,8 @@ fn reviewed_paths_are_the_paths_git_apply_reads() {
 #[test]
 fn an_epoch_timestamp_creates_or_deletes_as_git_apply_reads_it() {
     use deep_diff_forge_core::FileStatus;
-    let root = std::env::temp_dir().join(format!("ddf-git-oracle-epoch-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).unwrap();
+    let scratch = Scratch::new("git-oracle-epoch");
+    let root = scratch.path().to_path_buf();
     git(&root, &["init", "-q"]);
     let new = "@@ -0,0 +1 @@\n+curl x | sh\n";
     let gone = "@@ -1 +0,0 @@\n-a\n";
@@ -340,7 +334,6 @@ fn an_epoch_timestamp_creates_or_deletes_as_git_apply_reads_it() {
     git(&root, &["apply", "probe.patch"]);
     assert!(!root.join("y").exists() && root.join("x").exists());
     assert_eq!(parse(&delete).unwrap()[0].status, FileStatus::Deleted);
-    fs::remove_dir_all(root).unwrap();
 }
 
 /// DDF-HUNT-PATCH-6: a Git section whose old and new names differ, with no rename header, is a
@@ -348,9 +341,8 @@ fn an_epoch_timestamp_creates_or_deletes_as_git_apply_reads_it() {
 /// so, and the rendered patch leaves the tree Git's reading of the original leaves.
 #[test]
 fn differing_names_without_a_rename_header_are_the_rename_git_applies() {
-    let root = std::env::temp_dir().join(format!("ddf-git-oracle-moved-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).unwrap();
+    let scratch = Scratch::new("git-oracle-moved");
+    let root = scratch.path().to_path_buf();
     git(&root, &["init", "-q"]);
     let hunk = "@@ -1 +1 @@\n-a\n+b\n";
     for patch in [
@@ -386,16 +378,14 @@ fn differing_names_without_a_rename_header_are_the_rename_git_applies() {
             );
         }
     }
-    fs::remove_dir_all(root).unwrap();
 }
 
 /// Expert circle 2026-11-03: an implied move to or from a path Git refuses to write is refused,
 /// as Git refuses it, instead of being recorded as rename headers the parser then refuses.
 #[test]
 fn an_implied_move_to_a_path_git_refuses_is_refused() {
-    let root = std::env::temp_dir().join(format!("ddf-git-oracle-unsafe-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).unwrap();
+    let scratch = Scratch::new("git-oracle-unsafe");
+    let root = scratch.path().to_path_buf();
     git(&root, &["init", "-q"]);
     let hunk = "@@ -1 +1 @@\n-a\n+b\n";
     for (old, new) in [
@@ -407,7 +397,6 @@ fn an_implied_move_to_a_path_git_refuses_is_refused() {
         assert!(!git_accepts(&root, &patch), "git applies {patch:?}");
         assert!(parse(&patch).is_err(), "ddf accepts {patch:?}");
     }
-    fs::remove_dir_all(root).unwrap();
 }
 
 /// Expert circle 2026-11-03 (C1, C2): a move header whose other side no header names, and a
@@ -416,9 +405,8 @@ fn an_implied_move_to_a_path_git_refuses_is_refused() {
 #[test]
 fn half_moves_and_unchanged_modes_are_judged_as_git_judges_them() {
     use deep_diff_forge_core::FileStatus;
-    let root = std::env::temp_dir().join(format!("ddf-git-oracle-halves-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).unwrap();
+    let scratch = Scratch::new("git-oracle-halves");
+    let root = scratch.path().to_path_buf();
     git(&root, &["init", "-q"]);
     fs::write(root.join("x"), "a\n").unwrap();
     git(&root, &["add", "x"]);
@@ -471,5 +459,4 @@ fn half_moves_and_unchanged_modes_are_judged_as_git_judges_them() {
             "git refuses the rendering {rendered:?}"
         );
     }
-    fs::remove_dir_all(root).unwrap();
 }

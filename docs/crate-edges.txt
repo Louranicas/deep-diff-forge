@@ -6,9 +6,15 @@
 # a Cargo.toml edit; the documented crate graphs (anchor E-01) are drawn from it.
 
 dev agent -> patch
+dev cli -> testkit
 dev cluster -> patch
+dev daemon -> testkit
 dev graph -> patch
+dev learning -> testkit
+dev patch -> testkit
 dev projection -> patch
+dev review -> testkit
+dev sdk -> testkit
 normal agent -> core
 normal cli -> agent
 normal cli -> cluster

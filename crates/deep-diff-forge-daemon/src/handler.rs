@@ -1177,9 +1177,8 @@ mod tests {
         reason = "test: makes a Git repository and reads the clock"
     )]
     fn review_change_past_its_deadline_starts_no_acquisition() {
-        let root = std::env::temp_dir().join(format!("ddf-change-deadline-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
+        let scratch = deep_diff_forge_testkit::Scratch::new("change-deadline");
+        let root = scratch.path().to_path_buf();
         let init = std::process::Command::new("git")
             .args(["init", "-q"])
             .current_dir(&root)
@@ -1204,7 +1203,6 @@ mod tests {
             "{}",
             stopped.message
         );
-        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// `review.change` stops Git after 30 s and reads untracked files only when asked.
@@ -1247,7 +1245,8 @@ mod tests {
     /// The allowed roots are kept canonical, and a root that does not exist is refused.
     #[test]
     fn allowed_repositories_are_canonical_and_must_exist() {
-        let root = std::env::temp_dir().join(format!("ddf-allow-{}", std::process::id()));
+        let scratch = deep_diff_forge_testkit::Scratch::new("allow");
+        let root = scratch.path().to_path_buf();
         std::fs::create_dir_all(root.join("sub")).unwrap();
         let engine = Engine::new()
             .allowing_repos(&[root.join("sub").join("..")])
@@ -1261,7 +1260,6 @@ mod tests {
             panic!("a missing root was allowed");
         };
         assert_eq!(named, missing);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

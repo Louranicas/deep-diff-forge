@@ -11,15 +11,14 @@
 )]
 
 use deep_diff_forge_review::Profile;
+use deep_diff_forge_testkit::Scratch;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
-    sync::atomic::{AtomicU64, Ordering},
 };
-static NEXT: AtomicU64 = AtomicU64::new(0);
 const SOURCE: &str = "fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}\n";
 /// Notes for the fixture run: two summaries plus three findings.
 const NOTES: usize = 5;
@@ -30,11 +29,8 @@ struct Fixture {
     run: PathBuf,
     bin: PathBuf,
     fake_tuicr: PathBuf,
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
-    }
+    /// Removes `root` when the fixture drops.
+    _scratch: Scratch,
 }
 fn git(repository: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -62,12 +58,8 @@ impl Fixture {
     }
     /// As [`Fixture::new`], with `setup` applied to the committed repository before the run is prepared.
     fn with_repository(setup: impl FnOnce(&Path)) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "ddf-tuicr-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
+        let scratch = Scratch::new("tuicr");
+        let root = scratch.path().to_owned();
         let repository = root.join("repo");
         fs::create_dir(&repository).unwrap();
         fs::write(repository.join("x.rs"), SOURCE).unwrap();
@@ -115,6 +107,7 @@ impl Fixture {
             repository,
             bin,
             fake_tuicr,
+            _scratch: scratch,
         };
         let run = f.run.to_str().unwrap().to_owned();
         let prepared = f.council(&["prepare", request.to_str().unwrap(), &run]);

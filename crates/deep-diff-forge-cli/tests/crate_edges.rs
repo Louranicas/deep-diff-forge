@@ -435,8 +435,7 @@ fn the_glibc_floor_script_passes_this_binary_and_refuses_it_under_a_lower_floor(
         .lines()
         .find(|line| line.starts_with("FLOOR="))
         .expect("a FLOOR= line");
-    let dir = std::env::temp_dir().join(format!("ddf-glibc-floor-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = deep_diff_forge_testkit::Scratch::new("glibc-floor");
     let run = |floor: &str| {
         let copy = dir.join(format!("check_glibc_floor_{floor}.sh"));
         std::fs::write(&copy, script.replace(floor_line, &format!("FLOOR={floor}"))).unwrap();
@@ -461,7 +460,6 @@ fn the_glibc_floor_script_passes_this_binary_and_refuses_it_under_a_lower_floor(
             && stderr.contains("newer than the declared floor 2.0"),
         "a binary over the floor must be refused: {over:?}"
     );
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

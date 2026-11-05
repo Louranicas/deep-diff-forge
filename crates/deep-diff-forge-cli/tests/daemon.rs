@@ -6,6 +6,7 @@
     reason = "integration test: drives real processes, the environment and wall-clock time"
 )]
 
+use deep_diff_forge_testkit::Scratch;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -93,13 +94,19 @@ impl Drop for Daemon {
     }
 }
 
-fn temp_socket(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("ddf-clid-{}-{name}/d.sock", std::process::id()))
+/// A socket path `<scratch>/<name>/d.sock` whose directory is not yet made, and the scratch
+/// directory that holds it (removed when dropped). The label stays short: the path must fit
+/// macOS's 104-byte socket limit.
+fn temp_socket(name: &str) -> (Scratch, PathBuf) {
+    let scratch = Scratch::new("clid");
+    let sock = scratch.join(name).join("d.sock");
+    (scratch, sock)
 }
 
 #[test]
 fn daemon_path_prints_socket() {
-    let runtime = std::env::temp_dir().join(format!("ddf-clid-{}-runtime", std::process::id()));
+    let scratch = Scratch::new("clid-rt");
+    let runtime = scratch.join("runtime");
     let (code, stdout, _) = run_with_runtime_dir(&["daemon", "path"], Some(&runtime));
     assert_eq!(code, 0);
     assert!(stdout.contains("deep-diff-forge.sock"));
@@ -131,8 +138,7 @@ fn daemon_path_respects_socket_flag() {
 
 #[test]
 fn daemon_health_without_daemon_exits_6() {
-    let sock = temp_socket("nohealth");
-    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    let (_scratch, sock) = temp_socket("nohealth");
     let (code, _, stderr) = run(&["daemon", "health", "--socket", sock.to_str().unwrap()]);
     assert_eq!(code, 6);
     assert!(stderr.contains("no daemon"));
@@ -142,8 +148,7 @@ fn daemon_health_without_daemon_exits_6() {
 /// PATH health` took PATH as the subcommand and failed with a usage error.
 #[test]
 fn daemon_subcommand_follows_or_precedes_the_socket_option() {
-    let sock = temp_socket("order");
-    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    let (_scratch, sock) = temp_socket("order");
     let path = sock.to_str().unwrap();
     let (code, stdout, stderr) = run(&["daemon", "--socket", path, "path"]);
     assert_eq!((code, stdout.trim()), (0, path), "{stderr}");
@@ -171,8 +176,7 @@ fn daemon_unknown_subcommand_exits_2() {
 
 #[test]
 fn daemon_full_lifecycle_start_health_stop() {
-    let sock = temp_socket("life");
-    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    let (_scratch, sock) = temp_socket("life");
 
     // Start the daemon as a child process (run_server blocks until shutdown).
     let mut child = Daemon::spawn(sock.to_str().unwrap());
@@ -199,7 +203,6 @@ fn daemon_full_lifecycle_start_health_stop() {
     // The server exits shortly after shutdown.
     assert!(child.exited(), "the daemon kept running after daemon stop");
     drop(child);
-    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
 }
 
 /// A socket this user may not connect to is reported as unusable, not as absent. A mode-000
@@ -207,8 +210,7 @@ fn daemon_full_lifecycle_start_health_stop() {
 /// refused the same way.
 #[test]
 fn a_daemon_this_user_may_not_use_is_not_reported_absent() {
-    let sock = temp_socket("unusable");
-    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    let (_scratch, sock) = temp_socket("unusable");
     std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
     if std::os::unix::fs::MetadataExt::uid(&std::fs::metadata(sock.parent().unwrap()).unwrap()) == 0
     {
@@ -220,7 +222,6 @@ fn a_daemon_this_user_may_not_use_is_not_reported_absent() {
     assert_eq!(code, 6);
     assert!(stderr.contains("cannot use the daemon at"), "{stderr}");
     drop(listener);
-    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
 }
 
 /// Bug hunt 2026-11-01: a daemon with every slot held closes a further connection unanswered,
@@ -231,8 +232,7 @@ fn a_daemon_this_user_may_not_use_is_not_reported_absent() {
 #[test]
 fn a_daemon_at_its_connection_limit_is_not_reported_absent() {
     use std::io::{BufRead as _, Write as _};
-    let sock = temp_socket("at-limit");
-    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    let (_scratch, sock) = temp_socket("at-limit");
     let path = sock.to_str().unwrap();
     let mut daemon = Daemon::spawn(path);
     let mut ready = false;
@@ -294,14 +294,12 @@ fn a_daemon_at_its_connection_limit_is_not_reported_absent() {
     assert!(daemon.exited(), "the daemon kept running after daemon stop");
     drop(holders);
     drop(daemon);
-    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
 }
 
 /// A second `daemon start` on a running daemon's socket exits 6 and leaves that daemon serving.
 #[test]
 fn a_second_start_is_refused_and_the_first_keeps_serving() {
-    let sock = temp_socket("second-start");
-    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    let (_scratch, sock) = temp_socket("second-start");
     let path = sock.to_str().unwrap();
     let mut first = Daemon::spawn(path);
     let mut ready = false;
@@ -327,14 +325,12 @@ fn a_second_start_is_refused_and_the_first_keeps_serving() {
     assert_eq!(run(&["daemon", "stop", "--socket", path]).0, 0);
     assert!(first.exited(), "the daemon kept running after daemon stop");
     drop(first);
-    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
 }
 
 /// `daemon metrics` reads a live daemon's counters: the requests it served are there, by method.
 #[test]
 fn daemon_metrics_reports_what_the_daemon_served() {
-    let sock = temp_socket("metrics");
-    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    let (_scratch, sock) = temp_socket("metrics");
     let path = sock.to_str().unwrap();
     let mut daemon = Daemon::spawn(path);
     let mut ready = false;
@@ -362,7 +358,6 @@ fn daemon_metrics_reports_what_the_daemon_served() {
     assert_eq!(run(&["daemon", "stop", "--socket", path]).0, 0);
     assert!(daemon.exited(), "the daemon kept running after daemon stop");
     drop(daemon);
-    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
 }
 
 #[test]
@@ -407,8 +402,7 @@ fn log_format_belongs_to_start_and_takes_text_or_json() {
 #[test]
 fn json_logs_are_one_object_per_line() {
     use std::io::{Read as _, Write as _};
-    let sock = temp_socket("jsonlog");
-    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    let (_scratch, sock) = temp_socket("jsonlog");
     std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
     std::fs::set_permissions(
         sock.parent().unwrap(),
@@ -490,7 +484,6 @@ fn json_logs_are_one_object_per_line() {
     assert_eq!(run(&["daemon", "stop", "--socket", path]).0, 0);
     assert!(daemon.exited());
     drop(daemon);
-    let _ = std::fs::remove_dir_all(sock.parent().unwrap());
 }
 
 /// `daemon stop` returns only once the daemon has exited: with a large request still being
@@ -499,9 +492,8 @@ fn json_logs_are_one_object_per_line() {
 #[test]
 fn stop_returns_after_the_daemon_has_exited() {
     use std::io::{BufRead as _, BufReader, Write as _};
-    let sock = temp_socket("stopwait");
+    let (_scratch, sock) = temp_socket("stopwait");
     let dir = sock.parent().unwrap().to_path_buf();
-    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     let path = sock.to_str().unwrap().to_owned();
@@ -575,7 +567,6 @@ fn stop_returns_after_the_daemon_has_exited() {
         "the request in progress was not answered"
     );
     assert!(second.exited());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `--format` belongs to `daemon metrics` and takes json or prometheus; `--out` needs the
@@ -610,9 +601,8 @@ fn metrics_format_and_out_are_admitted_only_where_they_apply() {
         assert!(stderr.contains(refusal), "{args:?}: {stderr}");
     }
     // No daemon: exit 6, and the textfile is left as it was.
-    let sock = temp_socket("prom-absent");
+    let (_scratch, sock) = temp_socket("prom-absent");
     let dir = sock.parent().unwrap();
-    let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir).unwrap();
     let out = dir.join("ddf.prom");
     std::fs::write(&out, "ddf_daemon_uptime_seconds 1\n").unwrap();
@@ -632,7 +622,6 @@ fn metrics_format_and_out_are_admitted_only_where_they_apply() {
         std::fs::read_to_string(&out).unwrap(),
         "ddf_daemon_uptime_seconds 1\n"
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// `daemon metrics --format prometheus` renders the same counters as the JSON answer, on stdout
@@ -641,9 +630,8 @@ fn metrics_format_and_out_are_admitted_only_where_they_apply() {
 #[test]
 fn prometheus_metrics_match_the_json_and_write_a_textfile() {
     use std::os::unix::fs::PermissionsExt as _;
-    let sock = temp_socket("prometheus");
+    let (_scratch, sock) = temp_socket("prometheus");
     let dir = sock.parent().unwrap().to_path_buf();
-    let _ = std::fs::remove_dir_all(&dir);
     let path = sock.to_str().unwrap();
     let mut daemon = Daemon::spawn(path);
     let mut ready = false;
@@ -745,7 +733,6 @@ fn prometheus_metrics_match_the_json_and_write_a_textfile() {
     assert_eq!(run(&["daemon", "stop", "--socket", path]).0, 0);
     assert!(daemon.exited(), "the daemon kept running after daemon stop");
     drop(daemon);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A daemon that answers no metrics document (an RPC error, as a protocol 1 daemon gives, or a
@@ -763,9 +750,8 @@ fn prometheus_metrics_refuse_an_answer_that_is_not_a_metrics_document() {
             "not a deep-diff-forge.daemon-metrics.v0 document",
         ),
     ] {
-        let sock = temp_socket("prom-refused");
+        let (_scratch, sock) = temp_socket("prom-refused");
         let dir = sock.parent().unwrap();
-        let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(dir).unwrap();
         let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         let fake = std::thread::spawn(move || {
@@ -794,7 +780,6 @@ fn prometheus_metrics_refuse_an_answer_that_is_not_a_metrics_document() {
         assert!(stderr.contains(reason), "{stderr}");
         fake.join().unwrap();
         assert!(!out.exists());
-        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
@@ -804,9 +789,8 @@ fn prometheus_metrics_refuse_an_answer_that_is_not_a_metrics_document() {
 #[test]
 fn sigterm_and_sigint_stop_the_daemon_and_remove_its_socket() {
     for signal in ["TERM", "INT"] {
-        let sock = temp_socket(&format!("signal-{signal}"));
+        let (_scratch, sock) = temp_socket(&format!("signal-{signal}"));
         let dir = sock.parent().unwrap().to_path_buf();
-        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .unwrap();
@@ -830,6 +814,5 @@ fn sigterm_and_sigint_stop_the_daemon_and_remove_its_socket() {
         assert_eq!(status.code(), Some(0), "SIG{signal}: {status:?}");
         assert!(!sock.exists(), "SIG{signal}: the socket was left behind");
         drop(daemon);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

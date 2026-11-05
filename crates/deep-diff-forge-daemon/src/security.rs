@@ -247,12 +247,11 @@ pub fn require_peer_user(stream: &UnixStream, expected: u32) -> std::io::Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deep_diff_forge_testkit::Scratch;
 
-    fn temp_dir(name: &str, mode: u32) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ddf-sec-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    fn private_scratch(name: &str, mode: u32) -> Scratch {
+        let dir = Scratch::new(&format!("sec-{name}"));
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(mode)).expect("chmod");
         dir
     }
 
@@ -307,54 +306,56 @@ mod tests {
 
     #[test]
     fn private_dir_0700_validates() {
-        let dir = temp_dir("ok", 0o700);
-        assert_eq!(validate_private_dir(&dir), Ok(()));
+        let dir = private_scratch("ok", 0o700);
+        assert_eq!(validate_private_dir(dir.path()), Ok(()));
     }
 
     #[test]
     fn world_readable_dir_is_too_permissive() {
-        let dir = temp_dir("perm", 0o755);
-        assert_eq!(validate_private_dir(&dir), Err(SocketError::TooPermissive));
+        let dir = private_scratch("perm", 0o755);
+        assert_eq!(
+            validate_private_dir(dir.path()),
+            Err(SocketError::TooPermissive)
+        );
     }
 
     #[test]
     fn group_writable_dir_is_too_permissive() {
-        let dir = temp_dir("grp", 0o770);
-        assert_eq!(validate_private_dir(&dir), Err(SocketError::TooPermissive));
+        let dir = private_scratch("grp", 0o770);
+        assert_eq!(
+            validate_private_dir(dir.path()),
+            Err(SocketError::TooPermissive)
+        );
     }
 
     #[test]
     fn missing_dir_is_missing() {
-        let dir = std::env::temp_dir().join(format!("ddf-sec-absent-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let scratch = Scratch::new("sec-absent");
+        let dir = scratch.join("absent");
         assert_eq!(validate_private_dir(&dir), Err(SocketError::Missing));
     }
 
     #[test]
     fn file_is_not_a_directory() {
-        let path = std::env::temp_dir().join(format!("ddf-sec-file-{}", std::process::id()));
-        std::fs::write(&path, b"x").expect("write");
+        let scratch = Scratch::new("sec-file");
+        let path = scratch.write("file", b"x");
         assert_eq!(validate_private_dir(&path), Err(SocketError::NotADirectory));
     }
 
     #[test]
     fn symlink_is_rejected() {
         // A symlink (even one pointing at a valid owner-private dir) is refused.
-        let target = temp_dir("symtarget", 0o700);
-        let link = std::env::temp_dir().join(format!("ddf-sec-symlink-{}", std::process::id()));
-        let _ = std::fs::remove_file(&link);
-        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+        let target = private_scratch("symtarget", 0o700);
+        let links = Scratch::new("sec-symlink");
+        let link = links.join("link");
+        std::os::unix::fs::symlink(target.path(), &link).expect("symlink");
         assert_eq!(validate_private_dir(&link), Err(SocketError::Symlink));
-        let _ = std::fs::remove_file(&link);
     }
 
     #[test]
     fn ensure_runtime_dir_creates_and_secures() {
-        let dir = std::env::temp_dir().join(format!(
-            "ddf-sec-ensure-{}/deep-diff-forge",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+        let scratch = Scratch::new("sec-ensure");
+        let dir = scratch.join("absent").join("deep-diff-forge");
         ensure_runtime_dir(&dir).expect("ensure");
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, SECURE_DIR_MODE);
@@ -362,17 +363,18 @@ mod tests {
 
     #[test]
     fn ensure_runtime_dir_rejects_symlink_without_chmodding_target() {
-        let target = temp_dir("ensure-sym-target", 0o755);
-        let link =
-            std::env::temp_dir().join(format!("ddf-sec-ensure-symlink-{}", std::process::id()));
-        let _ = std::fs::remove_file(&link);
-        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+        let target = private_scratch("ensure-sym-target", 0o755);
+        let links = Scratch::new("sec-ensure-symlink");
+        let link = links.join("link");
+        std::os::unix::fs::symlink(target.path(), &link).expect("symlink");
 
         let err = ensure_runtime_dir(&link).expect_err("symlink must be rejected");
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
-        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        let mode = std::fs::metadata(target.path())
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o755, "target permissions must be untouched");
-        let _ = std::fs::remove_file(&link);
     }
 
     // The live wrappers must resolve exactly what the pure resolver yields for
@@ -398,12 +400,11 @@ mod tests {
     fn ensure_runtime_dir_propagates_non_missing_errors_without_creating() {
         // A regular file used as a parent makes lstat fail with ENOTDIR, not
         // ENOENT; that must be reported, not treated as "absent, create it".
-        let file = std::env::temp_dir().join(format!("ddf-sec-notdir-{}", std::process::id()));
-        std::fs::write(&file, b"x").expect("write");
+        let scratch = Scratch::new("sec-notdir");
+        let file = scratch.write("file", b"x");
         let err = ensure_runtime_dir(&file.join("deep-diff-forge")).expect_err("ENOTDIR");
         assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
         assert!(std::fs::metadata(&file).unwrap().is_file());
-        let _ = std::fs::remove_file(&file);
     }
 
     #[test]

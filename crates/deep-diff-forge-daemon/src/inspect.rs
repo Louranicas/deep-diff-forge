@@ -188,16 +188,8 @@ fn lock_state(lock: &Path) -> LockState {
 mod tests {
     use super::*;
     use crate::serve::run_server;
+    use deep_diff_forge_testkit::Scratch;
     use std::os::unix::fs::PermissionsExt as _;
-    use std::path::PathBuf;
-
-    struct Dir(PathBuf);
-
-    impl Drop for Dir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     /// A daemon serving `location` in this process until `daemon.shutdown`. It is retried only
     /// until it listens; a daemon that listens and does not answer fails at once. Retrying the
@@ -218,18 +210,16 @@ mod tests {
         panic!("the test daemon never listened");
     }
 
-    fn private_dir(name: &str) -> Dir {
-        let dir = std::env::temp_dir().join(format!("ddf-inspect-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        Dir(dir)
+    fn private_dir(name: &str) -> Scratch {
+        let dir = Scratch::new(&format!("in-{name}"));
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
     }
 
     #[test]
     fn a_fresh_location_has_nothing_yet() {
         let dir = private_dir("fresh");
-        let location = SocketLocation::at(dir.0.join("sub").join("d.sock"));
+        let location = SocketLocation::at(dir.join("sub").join("d.sock"));
         assert_eq!(
             inspect(&location),
             Inspection {
@@ -243,7 +233,7 @@ mod tests {
     #[test]
     fn a_running_daemon_is_live_and_its_lock_usable() {
         let dir = private_dir("live");
-        let location = SocketLocation::at(dir.0.join("d.sock"));
+        let location = SocketLocation::at(dir.join("d.sock"));
         let server = serve(&location);
         let found = inspect(&location);
         assert_eq!(found.dir, DirState::Private);
@@ -297,7 +287,7 @@ mod tests {
     #[test]
     fn a_socket_nothing_answers_on_is_stale() {
         let dir = private_dir("stale");
-        let path = dir.0.join("d.sock");
+        let path = dir.join("d.sock");
         drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
         assert_eq!(socket_state(&SocketLocation::at(&path)), SocketState::Stale);
     }
@@ -305,7 +295,7 @@ mod tests {
     #[test]
     fn a_file_at_the_socket_path_is_not_a_socket() {
         let dir = private_dir("file");
-        let path = dir.0.join("d.sock");
+        let path = dir.join("d.sock");
         std::fs::write(&path, b"").unwrap();
         assert_eq!(
             socket_state(&SocketLocation::at(&path)),
@@ -316,7 +306,7 @@ mod tests {
     #[test]
     fn a_socket_this_user_may_not_connect_to_is_foreign() {
         let dir = private_dir("foreign");
-        let path = dir.0.join("d.sock");
+        let path = dir.join("d.sock");
         let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         // Root bypasses the mode, so the check only means something for an ordinary user.
@@ -332,19 +322,19 @@ mod tests {
     #[test]
     fn a_start_lock_a_start_would_refuse_is_refused() {
         let dir = private_dir("lock");
-        let link = dir.0.join("link.lock");
-        std::os::unix::fs::symlink(dir.0.join("elsewhere"), &link).unwrap();
+        let link = dir.join("link.lock");
+        std::os::unix::fs::symlink(dir.join("elsewhere"), &link).unwrap();
         assert_eq!(
             lock_state(&link),
             LockState::Refused("the start lock is a symlink")
         );
-        let not_file = dir.0.join("dir.lock");
+        let not_file = dir.join("dir.lock");
         std::fs::create_dir(&not_file).unwrap();
         assert_eq!(
             lock_state(&not_file),
             LockState::Refused("the start lock is not a regular file")
         );
-        let usable = dir.0.join("ok.lock");
+        let usable = dir.join("ok.lock");
         std::fs::write(&usable, b"").unwrap();
         assert_eq!(lock_state(&usable), LockState::Usable);
     }
@@ -354,7 +344,7 @@ mod tests {
     #[test]
     fn an_unreadable_path_is_not_absent() {
         let dir = private_dir("unreadable");
-        let file = dir.0.join("file");
+        let file = dir.join("file");
         std::fs::write(&file, b"").unwrap();
         let under = file.join("d.sock");
         assert_eq!(
@@ -375,7 +365,7 @@ mod tests {
     #[test]
     fn a_daemon_that_closes_unanswered_is_unreachable() {
         let dir = private_dir("closes");
-        let path = dir.0.join("d.sock");
+        let path = dir.join("d.sock");
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         let closer = std::thread::spawn(move || drop(listener.accept()));
         let found = socket_state(&SocketLocation::at(&path));
@@ -401,9 +391,9 @@ mod tests {
     #[test]
     fn a_shared_directory_is_refused() {
         let dir = private_dir("shared");
-        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(
-            dir_state(&dir.0),
+            dir_state(dir.path()),
             DirState::Refused(SocketError::TooPermissive)
         );
     }

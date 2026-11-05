@@ -7,6 +7,7 @@
     reason = "integration test: drives the binary"
 )]
 
+use deep_diff_forge_testkit::Scratch;
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
@@ -153,8 +154,7 @@ fn a_page_of_c1_text_fits_its_budget_as_printed() {
 /// with the raw 8-bit CSI.
 #[test]
 fn del_and_c1_are_escaped_by_the_pretty_printed_documents() {
-    let dir = std::env::temp_dir().join(format!("ddf-c1-pretty-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = Scratch::new("c1-pretty");
     let findings = dir.join("f.jsonl");
     let finding = serde_json::json!({"agent": "a", "severity": "low", "title": "t\u{9d}", "body": "b\u{7f}", "path": "p\u{9b}2J"});
     std::fs::write(&findings, format!("{finding}\n")).unwrap();
@@ -185,5 +185,4 @@ fn del_and_c1_are_escaped_by_the_pretty_printed_documents() {
         doc.to_string().contains('\u{9b}'),
         "the socket path is reported: {text}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }

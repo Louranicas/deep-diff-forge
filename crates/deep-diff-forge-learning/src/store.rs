@@ -403,24 +403,7 @@ pub fn count_receipts(dir: &Path) -> Result<usize, LearningError> {
 mod tests {
     use super::*;
     use crate::receipt::{CacheState, ReviewOutcome, Strategy};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    /// Unique scratch dir per test — no `Math.random`/clock; a process-unique
-    /// counter keeps parallel tests from colliding.
-    fn temp_dir() -> PathBuf {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let pid = std::process::id();
-        std::env::temp_dir().join(format!("ddf-learn-store-{pid}-{n}"))
-    }
-
-    struct Scratch(PathBuf);
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
+    use deep_diff_forge_testkit::Scratch;
 
     fn receipt(s: Strategy, outcome: ReviewOutcome) -> StrategyReceipt {
         StrategyReceipt::new(crate::redacted_id("x"), "rust", "v", s)
@@ -448,22 +431,22 @@ mod tests {
 
     #[test]
     fn load_missing_store_is_empty_not_error() {
-        let dir = temp_dir();
-        let _g = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         assert_eq!(load_receipts(&dir).expect("load"), Vec::new());
     }
 
     #[test]
     fn count_missing_store_is_zero() {
-        let dir = temp_dir();
-        let _g = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         assert_eq!(count_receipts(&dir).expect("count"), 0);
     }
 
     #[test]
     fn append_then_load_round_trips() {
-        let dir = temp_dir();
-        let _g = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         let r = receipt(Strategy::Syntax, ReviewOutcome::Accepted);
         append_receipt(&dir, &r).expect("append");
         let loaded = load_receipts(&dir).expect("load");
@@ -474,8 +457,8 @@ mod tests {
     #[test]
     fn store_is_owner_private() {
         use std::os::unix::fs::PermissionsExt as _;
-        let dir = temp_dir();
-        let _g = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted)).expect("append");
         let file_mode = fs::metadata(receipts_path(&dir))
             .unwrap()
@@ -505,8 +488,8 @@ mod tests {
 
     #[test]
     fn append_is_additive() {
-        let dir = temp_dir();
-        let _g = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted)).expect("a");
         append_receipt(&dir, &receipt(Strategy::Syntax, ReviewOutcome::Rejected)).expect("b");
         append_receipt(&dir, &receipt(Strategy::Hybrid, ReviewOutcome::Skipped)).expect("c");
@@ -516,8 +499,8 @@ mod tests {
 
     #[test]
     fn append_creates_nested_dirs() {
-        let dir = temp_dir();
-        let _g = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         assert!(!receipts_path(&dir).exists());
         append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted)).expect("append");
         assert!(receipts_path(&dir).exists());
@@ -525,8 +508,8 @@ mod tests {
 
     #[test]
     fn load_skips_blank_lines() {
-        let dir = temp_dir();
-        let _g = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         let path = receipts_path(&dir);
         let r = receipt(Strategy::Patch, ReviewOutcome::Accepted);
         let body = format!("\n{}\n\n", r.to_json().unwrap());
@@ -536,8 +519,8 @@ mod tests {
 
     #[test]
     fn load_surfaces_corruption_rather_than_dropping() {
-        let dir = temp_dir();
-        let _g = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         let path = receipts_path(&dir);
         write_private(&path, b"this is not json\n");
         assert!(load_receipts(&dir).is_err());
@@ -547,9 +530,9 @@ mod tests {
     #[test]
     fn append_rejects_symlink_directory_without_chmodding_target() {
         use std::os::unix::fs::PermissionsExt as _;
-        let target = temp_dir();
-        let link = temp_dir();
-        let _target_guard = Scratch(target.clone());
+        let scratch = Scratch::new("learn-store");
+        let target = scratch.join("target");
+        let link = scratch.join("link");
         fs::create_dir_all(&target).unwrap();
         fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
         std::os::unix::fs::symlink(&target, &link).unwrap();
@@ -560,14 +543,13 @@ mod tests {
             fs::metadata(&target).unwrap().permissions().mode() & 0o777,
             0o755
         );
-        let _ = fs::remove_file(&link);
     }
 
     #[cfg(unix)]
     #[test]
     fn read_and_append_reject_receipt_file_symlink() {
-        let dir = temp_dir();
-        let _guard = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         let path = receipts_path(&dir);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let victim = dir.join("victim.jsonl");
@@ -583,8 +565,8 @@ mod tests {
     #[test]
     fn read_rejects_world_readable_receipt_store() {
         use std::os::unix::fs::PermissionsExt as _;
-        let dir = temp_dir();
-        let _guard = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         let path = receipts_path(&dir);
         write_private(&path, b"\n");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
@@ -593,8 +575,8 @@ mod tests {
 
     #[test]
     fn read_rejects_oversized_sparse_store() {
-        let dir = temp_dir();
-        let _guard = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         let path = receipts_path(&dir);
         write_private(&path, b"");
         OpenOptions::new()
@@ -620,8 +602,8 @@ mod tests {
     /// included) is read, one byte more is refused by name, on both read paths.
     #[test]
     fn the_per_record_budget_is_inclusive_on_read() {
-        let dir = temp_dir();
-        let _guard = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         let path = receipts_path(&dir);
         let mut line = vec![b'x'; MAX_RECEIPT_LINE_BYTES - 1];
         line.push(b'\n');
@@ -641,8 +623,8 @@ mod tests {
     /// refused by name. Blank lines are not records.
     #[test]
     fn the_record_count_budget_is_inclusive() {
-        let dir = temp_dir();
-        let _guard = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         let path = receipts_path(&dir);
         let mut one = receipt(Strategy::Patch, ReviewOutcome::Accepted)
             .to_json()
@@ -667,8 +649,8 @@ mod tests {
     /// left as it was. A store exactly at the budget is still readable.
     #[test]
     fn append_refuses_to_grow_the_store_past_its_budget() {
-        let dir = temp_dir();
-        let _guard = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted)).unwrap();
         let path = receipts_path(&dir);
         OpenOptions::new()
@@ -701,8 +683,8 @@ mod tests {
     /// whole by both read paths.
     #[test]
     fn a_store_exactly_at_the_size_budget_is_readable() {
-        let dir = temp_dir();
-        let _guard = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         let path = receipts_path(&dir);
         let size = usize::try_from(MAX_RECEIPTS_BYTES).unwrap();
         write_private(&path, &blank_padding(size));
@@ -714,8 +696,8 @@ mod tests {
     /// The on-disk budget is inclusive on append: an append that lands exactly on it succeeds.
     #[test]
     fn an_append_that_reaches_the_size_budget_exactly_is_kept() {
-        let dir = temp_dir();
-        let _guard = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         let path = receipts_path(&dir);
         let new = receipt(Strategy::Patch, ReviewOutcome::Accepted);
         let line = new.to_json().unwrap().len() + 1;
@@ -750,8 +732,8 @@ mod tests {
     /// only `append_receipt` checked it and `load_receipts` accepted any parseable line.
     #[test]
     fn load_refuses_records_that_append_would_refuse() {
-        let dir = temp_dir();
-        let _guard = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted)).unwrap();
         assert_eq!(load_receipts(&dir).unwrap().len(), 1);
         let good = fs::read(receipts_path(&dir)).unwrap();
@@ -790,8 +772,8 @@ mod tests {
     /// Anchor C-11: a self-contradicting receipt is refused on append and on load.
     #[test]
     fn a_revisited_outcome_without_the_revisit_flag_is_refused() {
-        let dir = temp_dir();
-        let _guard = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         let contradictory =
             StrategyReceipt::new(crate::redacted_id("x"), "rust", "v1", Strategy::Patch)
                 .with_outcome(ReviewOutcome::Revisited, false);
@@ -819,8 +801,8 @@ mod tests {
     /// made the whole store unreadable while `learn record` reported success.
     #[test]
     fn append_after_a_missing_final_newline_keeps_every_receipt() {
-        let dir = temp_dir();
-        let _guard = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         let first = receipt(Strategy::Patch, ReviewOutcome::Accepted);
         let second = receipt(Strategy::Syntax, ReviewOutcome::Rejected);
         append_receipt(&dir, &first).unwrap();
@@ -853,8 +835,8 @@ mod tests {
 
     #[test]
     fn append_rejects_path_like_metadata_tokens() {
-        let dir = temp_dir();
-        let _guard = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         let receipt = StrategyReceipt::new(
             crate::redacted_id("x"),
             "../../secret",
@@ -866,8 +848,8 @@ mod tests {
 
     #[test]
     fn order_is_preserved() {
-        let dir = temp_dir();
-        let _g = Scratch(dir.clone());
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
         append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted)).unwrap();
         append_receipt(&dir, &receipt(Strategy::Syntax, ReviewOutcome::Accepted)).unwrap();
         let loaded = load_receipts(&dir).expect("load");

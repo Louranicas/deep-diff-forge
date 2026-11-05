@@ -157,7 +157,8 @@ mod tests {
 
     #[test]
     fn from_dir_on_missing_store_is_empty() {
-        let dir = std::env::temp_dir().join(format!("ddf-learn-report-{}", std::process::id()));
+        let scratch = deep_diff_forge_testkit::Scratch::new("learn-report");
+        let dir = scratch.join("absent");
         let report = LearningReport::from_dir(&dir).expect("report");
         assert_eq!(report.total_receipts, 0);
     }

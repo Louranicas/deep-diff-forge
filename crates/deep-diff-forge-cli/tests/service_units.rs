@@ -2,6 +2,7 @@
 //! least the time `daemon stop` waits for the drain, so a service manager does not kill a daemon
 //! that is still answering.
 
+use deep_diff_forge_testkit::Scratch;
 use std::path::Path;
 
 fn read(relative: &str) -> String {
@@ -104,9 +105,7 @@ fn the_metrics_units_write_a_textfile_the_cli_way() {
     );
     assert_eq!(unit_value(&timer, "OnUnitActiveSec"), "15s");
 
-    let dir = std::env::temp_dir().join(format!("ddf-units-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = Scratch::new("units");
     let out = dir.join("deep-diff-forge.prom");
     let mut admitted = args[..4].to_vec();
     let socket = dir.join("d.sock");
@@ -126,7 +125,6 @@ fn the_metrics_units_write_a_textfile_the_cli_way() {
         "{}",
         String::from_utf8_lossy(&ran.stderr)
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

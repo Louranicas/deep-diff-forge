@@ -374,6 +374,80 @@ fn json_rpc_codes_are_named_constants() {
     }
 }
 
+/// Every `.rs` file under the workspace's crates, tests and benches included, by path relative
+/// to `crates/`.
+fn every_rust_file() -> Vec<(String, String)> {
+    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+    let mut dirs = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let name = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                files.push((name, std::fs::read_to_string(&path).unwrap()));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// The lines of `text` that reach the temp dir by name: any `temp_dir`, so neither
+/// `std::env::temp_dir()`, an imported `temp_dir` nor a local helper of that name slips by.
+fn temp_dir_lines(text: &str) -> Vec<(usize, &str)> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains("temp_dir"))
+        .map(|(index, line)| (index + 1, line))
+        .collect()
+}
+
+/// DDF-TEST-TMPLEAK-001: a test's files live in a `deep_diff_forge_testkit::Scratch`, which
+/// removes them when it drops, pass or panic. Before, about 100 sites built
+/// `temp_dir()/ddf-<name>-<pid>` by hand, and one full test run left 51 entries behind.
+/// `clippy.toml` disallows `std::env::temp_dir`, but integration tests opt out of
+/// `disallowed_methods` file by file, so only a scan of every file can hold the line.
+#[test]
+fn only_the_testkit_names_the_temp_dir() {
+    const DOOR: &str = "deep-diff-forge-testkit/src/lib.rs";
+    const THIS: &str = "deep-diff-forge-cli/tests/contract.rs";
+    assert_eq!(
+        temp_dir_lines("a\nlet d = std::env::temp_dir();\nuse std::env::temp_dir;\nb\n"),
+        [
+            (2, "let d = std::env::temp_dir();"),
+            (3, "use std::env::temp_dir;")
+        ]
+    );
+    let files = every_rust_file();
+    assert!(
+        files
+            .iter()
+            .any(|(name, _)| name == "deep-diff-forge-cli/tests/contract.rs"),
+        "the scan must see integration tests"
+    );
+    let offenders: Vec<String> = files
+        .iter()
+        .filter(|(name, _)| name != DOOR && name != THIS)
+        .flat_map(|(name, text)| {
+            temp_dir_lines(text)
+                .into_iter()
+                .map(move |(number, line)| format!("{name}:{number}: {}", line.trim()))
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "use deep_diff_forge_testkit::Scratch, not the temp dir by hand:\n{}",
+        offenders.join("\n")
+    );
+}
+
 #[test]
 fn envelope_keeps_the_commands_code_when_its_reader_closes() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))

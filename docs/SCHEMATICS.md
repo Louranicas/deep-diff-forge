@@ -44,18 +44,19 @@ Generated from `docs/crate-edges.txt` (checked against `cargo metadata` by
 
 <!-- crate-edges:begin -->
 - `agent` → core, patch [dev]
-- `cli` → agent, cluster, core, daemon, graph, learning, patch, pipeline, projection, review, syntax, tui
+- `cli` → agent, cluster, core, daemon, graph, learning, patch, pipeline, projection, review, syntax, tui, testkit [dev]
 - `cluster` → core, graph, patch [dev]
 - `core` → (no workspace dependencies)
-- `daemon` → agent, core, graph, patch
+- `daemon` → agent, core, graph, patch, testkit [dev]
 - `graph` → core, patch [dev]
-- `learning` → (no workspace dependencies)
-- `patch` → core
+- `learning` → testkit [dev]
+- `patch` → core, testkit [dev]
 - `pipeline` → core, graph, patch, projection, syntax
 - `projection` → core, patch [dev]
-- `review` → core
-- `sdk` → core, daemon (cfg(unix)), graph, patch
+- `review` → core, testkit [dev]
+- `sdk` → core, daemon (cfg(unix)), graph, patch, testkit [dev]
 - `syntax` → core
+- `testkit` → (no workspace dependencies)
 - `tui` → agent, cluster, core, daemon, graph, learning, patch, projection, syntax
 <!-- crate-edges:end -->
 

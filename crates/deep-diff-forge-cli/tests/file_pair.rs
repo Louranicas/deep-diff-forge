@@ -9,6 +9,7 @@
     reason = "integration test: drives real processes, the environment and wall-clock time"
 )]
 
+use deep_diff_forge_testkit::Scratch;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -18,22 +19,16 @@ const ISOLATE: [(&str, &str); 2] = [
     ("GIT_CONFIG_NOSYSTEM", "1"),
 ];
 
-/// A scratch directory, removed on drop.
-struct Dir(PathBuf);
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+/// A scratch directory (its canonical path), removed on drop.
+struct Dir(
+    PathBuf,
+    #[expect(dead_code, reason = "held for its Drop, which removes the directory")] Scratch,
+);
 
 impl Dir {
     fn new(name: &str) -> Self {
-        let root =
-            std::env::temp_dir().join(format!("ddf-file-pair-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        Self(std::fs::canonicalize(root).unwrap())
+        let scratch = Scratch::new(&format!("file-pair-{name}"));
+        Self(std::fs::canonicalize(scratch.path()).unwrap(), scratch)
     }
 
     fn file(&self, name: &str, bytes: &[u8]) -> String {
@@ -63,7 +58,8 @@ fn ddf_in(cwd: &Path, env: &[(&str, &str)], args: &[&str]) -> (i32, String, Stri
 }
 
 fn ddf(args: &[&str]) -> (i32, String, String) {
-    ddf_in(&std::env::temp_dir(), &ISOLATE, args)
+    let cwd = Scratch::new("file-pair-cwd");
+    ddf_in(cwd.path(), &ISOLATE, args)
 }
 
 /// What an isolated Git prints for the pair, run from `/` with the flags DDF uses: the oracle for
@@ -188,8 +184,9 @@ fn a_file_git_cannot_open_after_the_checks_is_exit_3_not_an_empty_review() {
     .unwrap();
     std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let env = [ISOLATE[0], ISOLATE[1], ("PATH", bin.to_str().unwrap())];
+    let cwd = Scratch::new("file-pair-cwd");
     let (code, stdout, stderr) = (0..100)
-        .map(|_| ddf_in(&std::env::temp_dir(), &env, &[&old, &new, "--json"]))
+        .map(|_| ddf_in(cwd.path(), &env, &[&old, &new, "--json"]))
         .find(|(_, _, stderr)| !stderr.contains("os error 26"))
         .unwrap();
     assert_eq!((code, stdout.as_str()), (3, ""), "{stderr}");

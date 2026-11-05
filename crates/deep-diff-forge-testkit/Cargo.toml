@@ -1,0 +1,15 @@
+[package]
+name = "deep-diff-forge-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+description = "Test-only helpers for the Deep-Diff-Forge workspace: scratch directories that remove themselves."
+# Never published and never a normal dependency: other crates take it only as a path-only
+# dev-dependency, which `cargo publish` strips (docs/crate-edges.txt holds only `dev` edges to it).
+publish = false
+
+[lints]
+workspace = true

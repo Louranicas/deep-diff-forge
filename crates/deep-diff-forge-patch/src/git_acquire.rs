@@ -1019,6 +1019,7 @@ mod tests {
 #[cfg(unix)]
 mod runner_tests {
     use super::*;
+    use deep_diff_forge_testkit::Scratch;
     use std::os::unix::fs::PermissionsExt as _;
 
     #[expect(
@@ -1030,14 +1031,13 @@ mod runner_tests {
     }
 
     /// A stand-in Git that ignores its arguments and prints exactly `bytes` bytes.
-    fn printing(name: &str, bytes: usize) -> (PathBuf, GitAcquireOptions) {
+    fn printing(name: &str, bytes: usize) -> (Scratch, GitAcquireOptions) {
         stub(name, &format!("head -c {bytes} /dev/zero | tr '\\0' x\n"))
     }
 
     /// A stand-in Git that runs the shell `script` and ignores its arguments.
-    fn stub(name: &str, script: &str) -> (PathBuf, GitAcquireOptions) {
-        let dir = std::env::temp_dir().join(format!("ddf-runner-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+    fn stub(name: &str, script: &str) -> (Scratch, GitAcquireOptions) {
+        let dir = Scratch::new(&format!("runner-{name}"));
         let stub = dir.join("git");
         std::fs::write(&stub, format!("#!/bin/sh\n{script}")).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1055,7 +1055,7 @@ mod runner_tests {
         let (dir, options) = printing("budget", 100);
         let runner = Runner {
             options: &options,
-            cwd: dir.clone(),
+            cwd: dir.path().to_path_buf(),
             deadline: deadline_after(options.time_limit),
             config_env: Vec::new(),
         };
@@ -1081,7 +1081,6 @@ mod runner_tests {
             runner.run("stub", &[], &[0], 99),
             Err(GitAcquireError::BudgetExceeded { limit_bytes: 99 })
         ));
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A failing Git's standard error reaches the caller, cut at `STDERR_CAP` bytes so a chatty
@@ -1094,7 +1093,7 @@ mod runner_tests {
         );
         let runner = Runner {
             options: &options,
-            cwd: dir.clone(),
+            cwd: dir.path().to_path_buf(),
             deadline: deadline_after(options.time_limit),
             config_env: Vec::new(),
         };
@@ -1118,7 +1117,6 @@ mod runner_tests {
         };
         assert!(stderr.starts_with("fatal: boom"), "{stderr:.40}");
         assert_eq!(stderr.len(), 8 * 1024);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

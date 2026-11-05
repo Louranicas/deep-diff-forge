@@ -836,6 +836,7 @@ pub(crate) fn executions(directory: &Path, manifest: &Manifest) -> Result<Vec<Ex
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deep_diff_forge_testkit::Scratch;
 
     /// Anchor C-03: the run id is an unkeyed digest of the manifest, so a manifest edited and
     /// resealed passes the seal. A mutation base without its sealed diff (or the reverse) must
@@ -850,7 +851,8 @@ mod tests {
     /// a correct schema over a tampered body, are each refused by name.
     #[test]
     fn the_seal_needs_the_schema_and_the_digest() {
-        let directory = std::env::temp_dir().join(format!("ddf-seal-{}", std::process::id()));
+        let scratch = Scratch::new("seal");
+        let directory = scratch.join("run");
         let mut request = crate::cli::example();
         request.profile = crate::model::Profile::Roster;
         request.reviewers.truncate(2);
@@ -888,13 +890,12 @@ mod tests {
                 }
             }
         }
-        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]
     fn a_resealed_manifest_with_half_a_mutation_scope_is_refused() {
-        let directory = std::env::temp_dir().join(format!("ddf-c03-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&directory);
+        let scratch = Scratch::new("c03");
+        let directory = scratch.join("run");
         let mut request = crate::cli::example();
         request.profile = crate::model::Profile::Roster;
         request.reviewers.truncate(2);

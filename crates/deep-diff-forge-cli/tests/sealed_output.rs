@@ -9,6 +9,7 @@
     reason = "integration test: drives real processes, the environment and wall-clock time"
 )]
 
+use deep_diff_forge_testkit::Scratch;
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
@@ -120,10 +121,9 @@ fn cluster_json_carries_seal() {
 #[test]
 fn semantic_json_seals_the_source_file_bytes() {
     let src = "fn alpha() {}\n";
-    let path = std::env::temp_dir().join(format!("ddf-seal-{}.rs", std::process::id()));
-    std::fs::write(&path, src).expect("write temp file");
+    let scratch = Scratch::new("seal");
+    let path = scratch.write("seal.rs", src);
     let (code, stdout, _) = run_text(&["semantic", path.to_str().unwrap(), "--json"], "");
-    let _ = std::fs::remove_file(&path);
     assert_eq!(code, 0);
     let head = format!(
         "{{\n  \"schema\": \"deep-diff-forge.semantic.v0\",\n{}  \"path\": ",
