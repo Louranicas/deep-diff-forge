@@ -115,16 +115,13 @@ fn temp_root() -> PathBuf {
 /// made read-only (to provoke a refusal), so on failure every directory under `path` is made
 /// owner-writable and the removal is tried once more. Symlinks are removed, never followed.
 fn remove_tree(path: &Path) -> std::io::Result<()> {
+    if std::fs::remove_dir_all(path).is_ok() {
+        return Ok(());
+    }
+    make_owner_writable(path);
     match std::fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(_) => {
-            make_owner_writable(path);
-            match std::fs::remove_dir_all(path) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
-                _ => Ok(()),
-            }
-        }
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
     }
 }
 
@@ -192,7 +189,47 @@ mod tests {
     fn two_scratches_with_one_label_never_share_a_directory() {
         let (a, b) = (Scratch::new("testkit-same"), Scratch::new("testkit-same"));
         assert_ne!(a.path(), b.path());
-        assert_eq!(a.path().parent(), Some(temp_root().as_path()));
+    }
+
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "checks the door against the temp dir it stands for"
+    )]
+    fn a_scratch_lives_directly_in_the_system_temp_dir() {
+        let scratch = Scratch::new("testkit-where");
+        assert!(scratch.path().is_absolute());
+        assert_eq!(
+            scratch.path().parent(),
+            Some(std::env::temp_dir().as_path())
+        );
+    }
+
+    #[test]
+    fn an_absent_path_is_already_removed() {
+        let scratch = Scratch::new("testkit-absent");
+        assert!(remove_tree(&scratch.join("never-made")).is_ok());
+    }
+
+    /// A leak fails the test: when the directory cannot be removed, the drop panics. Here the
+    /// directory is swapped for a regular file, which `remove_dir_all` refuses.
+    #[test]
+    fn a_directory_that_cannot_be_removed_fails_the_test() {
+        let scratch = Scratch::new("testkit-stuck");
+        let path = scratch.path().to_owned();
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, "not a directory").unwrap();
+        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(scratch)));
+        std::fs::remove_file(&path).unwrap();
+        let message = *dropped
+            .expect_err("a scratch that was not removed must fail the test")
+            .downcast::<String>()
+            .unwrap();
+        assert!(message.contains("was not removed"), "{message}");
+        assert!(
+            remove_tree(&path).is_ok(),
+            "removing a missing path is success"
+        );
     }
 
     #[cfg(unix)]
