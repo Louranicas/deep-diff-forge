@@ -420,14 +420,19 @@ fn signing_repo(s: &Scratch, trusted: bool) -> PathBuf {
     repo
 }
 
-/// Runs the script in `repo`, signing with `<scratch>/key`.
+/// Runs the script in `repo`, signing `v1.2.3` with `<scratch>/key`.
 fn sign_tag(s: &Scratch, repo: &Path) -> Output {
+    sign_version(s, repo, "1.2.3")
+}
+
+/// Runs the script in `repo`, signing `v<version>` at HEAD with `<scratch>/key`.
+fn sign_version(s: &Scratch, repo: &Path, version: &str) -> Output {
     run(Command::new("bash")
         .current_dir(repo)
         .env("GIT_CONFIG_COUNT", "1")
         .env("GIT_CONFIG_KEY_0", "user.signingkey")
         .env("GIT_CONFIG_VALUE_0", s.0.join("key.pub"))
-        .args([&format!("{ROOT}/scripts/sign_release_tag.sh"), "1.2.3"]))
+        .args([&format!("{ROOT}/scripts/sign_release_tag.sh"), version]))
 }
 
 fn tags(repo: &Path) -> String {
@@ -511,12 +516,20 @@ fn the_release_recipe_tags_only_through_the_signing_script() {
 
 // --- scripts/verify_release_tag.sh --------------------------------------------------------
 
-fn verify_tag(repo: &Path, tag: &str, signers: &Path) -> Output {
+/// Runs the release workflow's check of `tag`, with `main` the commit `main` points at.
+fn verify_tag_on(repo: &Path, tag: &str, signers: &Path, main: &str) -> Output {
     run(Command::new("bash")
         .current_dir(repo)
         .arg(format!("{ROOT}/scripts/verify_release_tag.sh"))
         .arg(tag)
-        .arg(signers))
+        .arg(signers)
+        .arg(main))
+}
+
+/// [`verify_tag_on`] with `main` at the repository's `main` branch.
+fn verify_tag(repo: &Path, tag: &str, signers: &Path) -> Output {
+    let main = git(repo, &["rev-parse", "main"]);
+    verify_tag_on(repo, tag, signers, &main)
 }
 
 #[test]
@@ -554,6 +567,42 @@ fn the_release_workflow_accepts_only_a_tag_signed_by_an_allowed_key() {
     );
 }
 
+/// Low-severity finding of 2026-11-04: a tag signed by an allowed key, but on a commit that never
+/// reached `main`, was released. The check now refuses it, and still accepts a tag that `main`
+/// has moved past.
+#[test]
+fn the_release_workflow_refuses_a_signed_tag_on_a_commit_not_on_main() {
+    let s = scratch("verify-main");
+    let repo = signing_repo(&s, true);
+    let signers = repo.join(".github/allowed_signers");
+    // Committed on `main`, so switching branches keeps it.
+    let listed = std::fs::read_to_string(&signers).unwrap();
+    commit(&repo, ".github/allowed_signers", &listed);
+    assert!(sign_tag(&s, &repo).status.success());
+    // A side branch, never merged, with a correctly signed tag on its commit.
+    git(&repo, &["checkout", "-q", "-b", "side"]);
+    commit(&repo, "side.txt", "unreviewed\n");
+    assert!(sign_version(&s, &repo, "2.0.0").status.success());
+    // `main` moves on past v1.2.3.
+    git(&repo, &["checkout", "-q", "main"]);
+    commit(&repo, "later.txt", "later\n");
+    let out = verify_tag(&repo, "v2.0.0", &signers);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("not on main"),
+        "{out:?}"
+    );
+    let out = verify_tag(&repo, "v1.2.3", &signers);
+    assert!(out.status.success(), "{out:?}");
+    // The `main` commit is required: without it the check refuses rather than skipping.
+    let out = run(Command::new("bash")
+        .current_dir(&repo)
+        .arg(format!("{ROOT}/scripts/verify_release_tag.sh"))
+        .arg("v1.2.3")
+        .arg(&signers));
+    assert!(!out.status.success(), "{out:?}");
+}
+
 #[test]
 fn the_release_workflow_verifies_the_tag_against_main_s_signers_before_building() {
     let workflow =
@@ -561,9 +610,25 @@ fn the_release_workflow_verifies_the_tag_against_main_s_signers_before_building(
     let verify = workflow
         .find("scripts/verify_release_tag.sh")
         .expect("release.yml verifies the tag signature");
+    let fetch_main = workflow[..verify]
+        .rfind("git fetch --quiet --no-tags origin main")
+        .expect("the gate fetches main");
     assert!(
-        workflow[..verify].contains("git show FETCH_HEAD:.github/allowed_signers"),
+        workflow[fetch_main..verify].contains("main=\"$(git rev-parse FETCH_HEAD)\"")
+            && workflow[fetch_main..verify]
+                .contains("git show \"${main}:.github/allowed_signers\""),
         "the signers come from main, not the tagged commit"
+    );
+    assert!(
+        workflow[verify..].starts_with(
+            "scripts/verify_release_tag.sh \"${tag}\" \"${RUNNER_TEMP}/allowed_signers\" \"${main}\""
+        ),
+        "the check is given main's commit, so a tag off main is refused"
+    );
+    let gate_job = &workflow[workflow.find("  supply-chain:").unwrap()..verify];
+    assert!(
+        gate_job.contains("fetch-depth: 0"),
+        "the gate checks out full history, which the on-main check needs"
     );
     let gate = workflow.find("  supply-chain:").unwrap();
     let build = workflow.find("\n  build:").unwrap();

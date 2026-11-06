@@ -15,6 +15,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   the field. The field is added, nothing is removed or renamed. `prepare`, `export-tuicr` and
   `import-tuicr` already named theirs and are unchanged. Test:
   `every_council_result_names_its_schema` (fails on the old CLI: `review` had no schema).
+### Security
+
+- **A release is built only from a tag on `main`** (low-severity finding of the 2026-11-04
+  assessment). The release workflow already refused a tag not signed by an allowed key; a
+  correctly signed tag on a commit that never reached `main` was still released. The
+  supply-chain gate now passes `main`'s commit to `scripts/verify_release_tag.sh`, which refuses
+  a tag whose commit is not an ancestor of it, and checks out full history for that. Measured:
+  the old script verified such a tag (`repo_scripts.rs` control). A branch that also edits
+  `release.yml` can still drop the check; `RELEASE_AND_PUBLICATION.md` says so.
 
 ## [0.8.0] - 2026-11-06
 
