@@ -915,6 +915,13 @@ Digest-pinned gate image with the exact toolchains and tools gates run; built by
 
 Explicit preparation/status/import and opt-in execution commands; manual reports cannot mint provider evidence.
 
+Every result a command prints names its schema in a top-level `schema` field (since 2026-11-07):
+`review`, `status`, `gate` and `import` print `deep-diff-forge.council-<command>.v1` (`gate` prints
+an array, and each result in it carries the field); `prepare` prints the manifest,
+`deep-diff-forge.council.v1`; `export-tuicr` and `import-tuicr` print
+`deep-diff-forge.tuicr-export.v1` and `deep-diff-forge.tuicr-import.v1`. `example` prints a
+request template for `prepare`, which refuses unknown fields, so it has none.
+
 [Exact crate/module](../crates/deep-diff-forge-review/src/cli.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--cli)
 
 <a id="policy-controls"></a>

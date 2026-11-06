@@ -22,9 +22,11 @@ pub fn dispatch(args: &[String]) -> Result<(String, i32)> {
     }
     let command = args.first().map_or("help", String::as_str);
     match command {
+        // A template for `prepare` to read, not a result: `Request` refuses unknown fields.
         "example" if args.len() == 1 => output(&example(), true),
         "prepare" if args.len() == 3 => {
             let request: Request = storage::read_json(Path::new(&args[1]), 128 * 1024)?;
+            // The manifest names its own schema (`deep-diff-forge.council.v1`).
             output(&prepare(request, Path::new(&args[2]))?, true)
         }
         "status" if args.len() == 2 => status(Path::new(&args[1])),
@@ -39,12 +41,13 @@ pub fn dispatch(args: &[String]) -> Result<(String, i32)> {
                 }
             };
             let result = run_reviewer(Path::new(&args[1]), &args[2], round)?;
-            output(&result, result.outcome == Outcome::Passed)
+            stamped("review", &result, result.outcome == Outcome::Passed)
         }
         "gate" if args.len() == 4 && args[3] == "--execute" => {
             let gate: Gate = serde_json::from_str(&format!("{:?}", args[2]))?;
             let results = run_gate(Path::new(&args[1]), gate)?;
-            output(
+            stamped(
+                "gate",
                 &results,
                 results.iter().all(|r| r.outcome == Outcome::Passed),
             )
@@ -59,16 +62,61 @@ pub fn dispatch(args: &[String]) -> Result<(String, i32)> {
     }
 }
 const HELP: &str = "council example | prepare <request.json> <new-run-dir> | status <run-dir> | review <run-dir> <reviewer-id> <independent|challenge> --execute | gate <run-dir> <format|check|clippy|pedantic|tests|antipatterns|fuzz|mutation> --execute | import <run-dir> <report.json> | export-tuicr <run-dir> --session <tuicr-session.json> [--allow-review-level] [--execute] | import-tuicr <run-dir> --session <tuicr-session.json> [--execute]\n";
+/// The schema of a council result that had none: `deep-diff-forge.council-<command>.v1`, for
+/// `review`, `gate`, `status` and `import`. Before, those results did not say which shape they
+/// were (low-severity finding of the 2026-11-04 assessment), so a consumer could not tell a
+/// changed shape from a broken one. `prepare`, `export-tuicr` and `import-tuicr` already named
+/// theirs.
+#[must_use]
+pub fn result_schema(command: &str) -> String {
+    format!("deep-diff-forge.council-{command}.v1")
+}
+/// Name the schema in a result: in the object, or in each object of an array (`gate` prints
+/// one result per gate, and stays an array so readers of it keep working).
+fn stamp(command: &str, value: &impl serde::Serialize) -> Result<serde_json::Value> {
+    let schema = serde_json::Value::String(result_schema(command));
+    let mut value = serde_json::to_value(value)?;
+    let objects: Vec<&mut serde_json::Map<String, serde_json::Value>> = match &mut value {
+        serde_json::Value::Object(object) => vec![object],
+        serde_json::Value::Array(items) => items
+            .iter_mut()
+            .map(|item| item.as_object_mut())
+            .collect::<Option<_>>()
+            .ok_or_else(|| {
+                ReviewFailure(format!("council {command}: a result is not an object"))
+            })?,
+        _ => {
+            return Err(ReviewFailure(format!(
+                "council {command}: the result is not an object"
+            )));
+        }
+    };
+    for object in objects {
+        require(
+            object.insert("schema".into(), schema.clone()).is_none(),
+            "a council result already has a schema field",
+        )?;
+    }
+    Ok(value)
+}
+fn stamped(command: &str, value: &impl serde::Serialize, passed: bool) -> Result<(String, i32)> {
+    output(&stamp(command, value)?, passed)
+}
 fn output(value: &impl serde::Serialize, passed: bool) -> Result<(String, i32)> {
     Ok((
-        deep_diff_forge_core::json_line_safe(&serde_json::to_string_pretty(value)?).into_owned()
-            + "\n",
+        render(value)?,
         if passed {
             exit::COUNCIL_COMPLETED
         } else {
             exit::COUNCIL_HOLD
         },
     ))
+}
+fn render(value: &impl serde::Serialize) -> Result<String> {
+    Ok(
+        deep_diff_forge_core::json_line_safe(&serde_json::to_string_pretty(value)?).into_owned()
+            + "\n",
+    )
 }
 fn status(directory: &Path) -> Result<(String, i32)> {
     let manifest = load_manifest(directory)?;
@@ -82,7 +130,8 @@ fn status(directory: &Path) -> Result<(String, i32)> {
             .reasons
             .push("controller execution is active or interrupted".into());
     }
-    output(
+    stamped(
+        "status",
         &result,
         result.state == crate::AssessmentState::ReadyForHumanReview,
     )
@@ -108,7 +157,15 @@ fn import(directory: &Path, path: &Path) -> Result<(String, i32)> {
         &storage::report_path(directory, &report.reviewer_id, report.round)?,
         &report,
     )?;
-    Ok(("{\"imported\":true,\"provenance\":\"manual_unverified\",\"satisfies_execution_gate\":false}\n".into(), exit::COUNCIL_COMPLETED))
+    stamped(
+        "import",
+        &serde_json::json!({
+            "imported": true,
+            "provenance": "manual_unverified",
+            "satisfies_execution_gate": false,
+        }),
+        true,
+    )
 }
 /// Parse `export-tuicr <run-dir> --session <path> [--allow-review-level] [--execute]`; dry run by default.
 fn export_tuicr(args: &[String]) -> Result<(String, i32)> {
@@ -133,6 +190,7 @@ fn export_tuicr(args: &[String]) -> Result<(String, i32)> {
         }
     }
     let session = session.ok_or_else(usage)?;
+    // Names its own schema (`deep-diff-forge.tuicr-export.v1`).
     output(
         &crate::export_tuicr(Path::new(run), Path::new(session), options)?,
         true,
@@ -160,6 +218,7 @@ fn import_tuicr(args: &[String]) -> Result<(String, i32)> {
     }
     let session = session.ok_or_else(usage)?;
     let result = crate::import_tuicr(Path::new(run), Path::new(session), options)?;
+    // Names its own schema (`deep-diff-forge.tuicr-import.v1`).
     output(&result, result.conflicts == 0)
 }
 /// Portable request template; caller chooses concrete paths and available model IDs.
