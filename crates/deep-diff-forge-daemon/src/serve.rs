@@ -1168,7 +1168,7 @@ fn watch_signals(
                         ),
                     );
                     cleanup_owned_socket(&socket_path, socket_identity);
-                    std::process::exit(128 + signal);
+                    std::process::exit(deep_diff_forge_core::exit::SIGNAL_BASE + signal);
                 }
             }
         })?;
