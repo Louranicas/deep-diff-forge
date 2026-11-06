@@ -692,9 +692,11 @@ impl Parser {
                 || ((says("new file mode ") || says("deleted file mode ")) && moved)
                 // A new file has no old lines and a deleted one no new lines; git refuses both
                 // ("new file depends on old contents"), and the model could not render them.
-                || (says("new file mode ")
+                // A traditional diff's `/dev/null` side makes the same new or deleted file
+                // without a mode line, and Git refuses it alike (fuzz, rescore of v0.8.0).
+                || ((says("new file mode ") || (!file.git && file.resolve_status() == FileStatus::Added))
                     && file.hunks.iter().flat_map(|h| &h.lines).any(|l| l.kind != PatchLineKind::Added))
-                || (says("deleted file mode ")
+                || ((says("deleted file mode ") || (!file.git && file.resolve_status() == FileStatus::Deleted))
                     && file.hunks.iter().flat_map(|h| &h.lines).any(|l| l.kind != PatchLineKind::Removed))
                 // With hunks, the file headers are written from the status, so a new or deleted
                 // file whose status is anything else (binary, or a `/dev/null` on the wrong side)
@@ -3401,6 +3403,26 @@ diff --git a/a b c.rs b/a b c.rs
                 parse(input).unwrap_err(),
                 PatchParseError::InvalidPath { line_number },
                 "{case}"
+            );
+        }
+    }
+
+    /// A traditional diff's `/dev/null` side makes a new or deleted file as a mode line does, and
+    /// Git refuses one whose hunks keep old lines or new lines ("new file hello.txt depends on old
+    /// contents", "deleted file x still has contents"). It was accepted, and its Git rendering
+    /// did not reparse (fuzz crash 46a60f66 on this branch).
+    #[test]
+    fn a_traditional_new_or_deleted_file_has_only_added_or_removed_lines() {
+        for input in [
+            "--- /dev/null\n+++ b/n\n@@ -0,0 +1,2 @@\n+a\n+b\n@@ -1,1 +0,0 @@\n-x\n",
+            "--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n@@ -3,0 +1 @@\n+z\n",
+        ] {
+            assert!(
+                matches!(
+                    parse(input),
+                    Err(PatchParseError::InconsistentHeader { .. })
+                ),
+                "{input:?}"
             );
         }
     }

@@ -20,7 +20,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   while DDF reviewed a rename of `tool.py`.
 - **`+++ /dev/null` in a Git section needs `deleted file mode`** (rescore F3), and `--- /dev/null`
   needs `new file mode`. Without it Git deleted the old file and also created one named
-  `dev/null`, which the review did not show.
+  `dev/null`, which the review did not show. The rendering of a traditional diff's added or
+  deleted file now carries the mode line Git implies (`100644`), so it still reparses.
+- **A traditional new or deleted file must only add or only remove lines**, as with a mode line.
+  Git refuses one that does not ("new file depends on old contents", "deleted file still has
+  contents"); DDF accepted it. Found by fuzzing this branch; the input is a regression fixture.
 - Test: `no_extended_header_mutant_reads_differently_from_git` asserts the findings against
   `git apply --numstat`, then breaks every extended-header position of four Git sections with a
   blank line, a note or `---`, followed by each kind of late header; each case must be refused
