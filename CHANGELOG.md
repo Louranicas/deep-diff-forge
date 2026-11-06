@@ -29,6 +29,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `git apply --numstat`, then breaks every extended-header position of four Git sections with a
   blank line, a note or `---`, followed by each kind of late header; each case must be refused
   or read exactly as Git reads it. Control: it fails on the v0.8.0 parser at F1.
+- **A release is built only from a tag on `main`** (low-severity finding of the 2026-11-04
+  assessment). The release workflow already refused a tag not signed by an allowed key; a
+  correctly signed tag on a commit that never reached `main` was still released. The
+  supply-chain gate now passes `main`'s commit to `scripts/verify_release_tag.sh`, which refuses
+  a tag whose commit is not an ancestor of it, and checks out full history for that. Measured:
+  the old script verified such a tag (`repo_scripts.rs` control). A branch that also edits
+  `release.yml` can still drop the check; `RELEASE_AND_PUBLICATION.md` says so.
 
 ## [0.8.0] - 2026-11-06
 
