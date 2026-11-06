@@ -783,6 +783,100 @@ fn prometheus_metrics_refuse_an_answer_that_is_not_a_metrics_document() {
     }
 }
 
+/// A daemon started at `<scratch>/<label>/d.sock` that has answered `health`.
+fn ready_daemon(label: &str) -> (Scratch, PathBuf, Daemon) {
+    let (scratch, sock) = temp_socket(label);
+    let dir = sock.parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let path = sock.to_str().unwrap().to_owned();
+    let daemon = Daemon::spawn(&path);
+    let ready = (0..WAIT_STEPS).any(|_| {
+        let up = run(&["daemon", "health", "--socket", &path]).0 == 0;
+        if !up {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        up
+    });
+    assert!(ready, "{label}: the daemon never answered");
+    (scratch, sock, daemon)
+}
+
+fn send_signal(daemon: &Daemon, signal: &str) {
+    let sent = Command::new("kill")
+        .args([&format!("-{signal}"), &daemon.0.id().to_string()])
+        .status()
+        .expect("run kill");
+    assert!(sent.success(), "SIG{signal}: kill failed");
+}
+
+/// Low-severity finding of the 2026-11-04 assessment: a signal woke the accept loop by
+/// connecting to the socket path. Once that path was gone (removed by hand, or by a cleaner of
+/// the runtime directory), the connection failed and the daemon waited for a client that could
+/// no longer arrive. It now wakes through a private socket pair.
+#[test]
+fn a_signal_stops_the_daemon_after_its_socket_path_is_gone() {
+    for signal in ["TERM", "INT"] {
+        let (_scratch, sock, mut daemon) = ready_daemon(&format!("gone-{signal}"));
+        std::fs::remove_file(&sock).unwrap();
+        send_signal(&daemon, signal);
+        assert!(
+            daemon.exited(),
+            "SIG{signal}: the daemon did not exit once its socket path was gone"
+        );
+        let status = daemon.0.try_wait().unwrap().unwrap();
+        assert_eq!(status.code(), Some(0), "SIG{signal}: {status:?}");
+    }
+}
+
+/// Low-severity finding of the 2026-11-04 assessment: a second signal during the drain was
+/// ignored, so a second Ctrl-C waited out the drain (up to 30 s). It now exits at once, with
+/// 128 plus the signal's number.
+#[test]
+fn a_second_signal_during_the_drain_exits_at_once() {
+    use std::io::{BufRead as _, Write as _};
+    for (signal, code) in [("TERM", 143), ("INT", 130)] {
+        let (_scratch, sock, mut daemon) = ready_daemon(&format!("twice-{signal}"));
+        // A connection whose thread is reading: one request answered, then the first byte of
+        // another, which counts as a request in progress, so the drain waits for it.
+        let stream = std::os::unix::net::UnixStream::connect(&sock).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        writeln!(&stream, r#"{{"id":1,"method":"daemon.health"}}"#).unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(&stream)
+            .read_line(&mut line)
+            .unwrap();
+        assert!(line.contains(r#""id":1"#), "{line}");
+        write!(&stream, "{{").unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        send_signal(&daemon, signal);
+        // The first signal stops it: the socket goes, and the drain holds the process.
+        let removed = (0..WAIT_STEPS).any(|_| {
+            let gone = !sock.exists();
+            if !gone {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            gone
+        });
+        assert!(removed, "SIG{signal}: the first signal did not stop the daemon");
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            daemon.0.try_wait().unwrap().is_none(),
+            "SIG{signal}: the daemon exited without waiting for the request in progress"
+        );
+        send_signal(&daemon, signal);
+        assert!(
+            daemon.exited(),
+            "SIG{signal}: a second signal did not end the drain"
+        );
+        let status = daemon.0.try_wait().unwrap().unwrap();
+        assert_eq!(status.code(), Some(code), "SIG{signal}: {status:?}");
+        drop(stream);
+    }
+}
+
 /// DDF-HUNT-DAEMON-7: SIGTERM (what `launchctl bootout` and a plain `kill` send) and SIGINT
 /// (Ctrl-C on a foreground daemon) stop the daemon as `daemon stop` does: it exits 0 and removes
 /// its socket. Before, the signal killed it and the socket file was left behind.

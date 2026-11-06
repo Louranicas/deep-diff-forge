@@ -6,6 +6,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A signal stops the daemon even when its socket path is gone, and a second signal ends the
+  drain** (low-severity findings of the 2026-11-04 assessment). A stop woke the accept loop by
+  connecting to the socket path, so once the path was removed the daemon waited for a client
+  that could no longer arrive. The loop now polls the listener together with a private socket
+  pair that a stop writes to; the listener is non-blocking, and an accepted socket is made
+  blocking again (macOS passes the mode on). A second SIGTERM or SIGINT during the drain was
+  ignored; it now exits at once with 128 plus the signal's number, after removing the socket
+  if it is still this daemon's. Tests: `a_signal_stops_the_daemon_after_its_socket_path_is_gone`
+  and `a_second_signal_during_the_drain_exits_at_once`; both fail on the old daemon (measured).
+
 ## [0.8.0] - 2026-11-06
 
 **Breaking.** 0.8.0 is a minor release because it changes contracts 0.7.0 callers rely on:
