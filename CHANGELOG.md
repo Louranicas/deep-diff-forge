@@ -28,6 +28,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [0.8.0] - 2026-11-06
 
+Tagged `v0.8.0` at `dd1aa89` (2026-11-07 local time; 2026-11-06 UTC), signed.
+
 **Breaking.** 0.8.0 is a minor release because it changes contracts 0.7.0 callers rely on:
 `PatchParseError` gains four variants (`MisplacedHunk`, `LossyHeader`, `HunkWithoutChange`,
 `SectionWithoutPatch`) and is now `#[non_exhaustive]`; patches Git refuses or reads differently
