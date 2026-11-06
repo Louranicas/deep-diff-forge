@@ -6,6 +6,26 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Security
+
+- **A rename's reviewed destination is the one Git writes** (independent rescore of v0.8.0,
+  F1, high). Git ends a `diff --git` section's extended header at the first line it does not
+  read as one (a blank line, any text) and at a last line with no line feed; DDF read on. So
+  `rename to .github/workflows/pwn.yml`, a note, then `rename to docs/harmless.md` was reviewed
+  as a harmless docs move (exit 0, through the CLI, `rpc` and MCP) while `git apply` installed
+  the workflow. Measured on v0.8.0 with Git 2.56. After the header ends, a header line or a
+  `---` is now refused (exit 4), and so is a header line with no line feed.
+- **A Git section's `---`/`+++` after its header ended is refused** (rescore F2). Git reads that
+  pair as a new, traditional patch: `--- a/too<TAB>.py` after a blank line made Git modify `too`
+  while DDF reviewed a rename of `tool.py`.
+- **`+++ /dev/null` in a Git section needs `deleted file mode`** (rescore F3), and `--- /dev/null`
+  needs `new file mode`. Without it Git deleted the old file and also created one named
+  `dev/null`, which the review did not show.
+- Test: `no_extended_header_mutant_reads_differently_from_git` asserts the findings against
+  `git apply --numstat`, then breaks every extended-header position of four Git sections with a
+  blank line, a note or `---`, followed by each kind of late header; each case must be refused
+  or read exactly as Git reads it. Control: it fails on the v0.8.0 parser at F1.
+
 ## [0.8.0] - 2026-11-06
 
 **Breaking.** 0.8.0 is a minor release because it changes contracts 0.7.0 callers rely on:
