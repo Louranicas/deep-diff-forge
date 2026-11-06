@@ -860,7 +860,10 @@ fn a_second_signal_during_the_drain_exits_at_once() {
             }
             gone
         });
-        assert!(removed, "SIG{signal}: the first signal did not stop the daemon");
+        assert!(
+            removed,
+            "SIG{signal}: the first signal did not stop the daemon"
+        );
         std::thread::sleep(Duration::from_millis(300));
         assert!(
             daemon.0.try_wait().unwrap().is_none(),
