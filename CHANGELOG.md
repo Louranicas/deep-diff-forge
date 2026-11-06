@@ -19,6 +19,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   and `a_second_signal_during_the_drain_exits_at_once`; both fail on the old daemon (measured).
   `an_idle_daemon_uses_no_cpu` keeps the loop waiting in `poll`: without the wait it spins on
   the non-blocking listener (1.86 s of CPU in 2 s idle).
+### Security
+
+- **A release is built only from a tag on `main`** (low-severity finding of the 2026-11-04
+  assessment). The release workflow already refused a tag not signed by an allowed key; a
+  correctly signed tag on a commit that never reached `main` was still released. The
+  supply-chain gate now passes `main`'s commit to `scripts/verify_release_tag.sh`, which refuses
+  a tag whose commit is not an ancestor of it, and checks out full history for that. Measured:
+  the old script verified such a tag (`repo_scripts.rs` control). A branch that also edits
+  `release.yml` can still drop the check; `RELEASE_AND_PUBLICATION.md` says so.
 
 ## [0.8.0] - 2026-11-06
 
