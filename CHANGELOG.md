@@ -17,6 +17,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   ignored; it now exits at once with 128 plus the signal's number, after removing the socket
   if it is still this daemon's. Tests: `a_signal_stops_the_daemon_after_its_socket_path_is_gone`
   and `a_second_signal_during_the_drain_exits_at_once`; both fail on the old daemon (measured).
+  `an_idle_daemon_uses_no_cpu` keeps the loop waiting in `poll`: without the wait it spins on
+  the non-blocking listener (1.86 s of CPU in 2 s idle).
 
 ## [0.8.0] - 2026-11-06
 

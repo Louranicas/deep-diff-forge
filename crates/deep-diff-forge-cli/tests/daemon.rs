@@ -810,6 +810,45 @@ fn send_signal(daemon: &Daemon, signal: &str) {
     assert!(sent.success(), "SIG{signal}: kill failed");
 }
 
+/// CPU seconds used by `pid`. On Linux from `/proc/<pid>/stat` (user and system clock ticks,
+/// fields 14 and 15, at the usual 100 a second): `ps` there reports whole seconds, too coarse
+/// for a loaded runner. Elsewhere from `ps -o time=` (`[[dd-]hh:]mm:ss[.ff]`).
+fn cpu_seconds(pid: u32) -> f64 {
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        // Fields after the command name, which is in parentheses and may hold spaces.
+        let fields: Vec<&str> = stat
+            .rsplit_once(')')
+            .expect("a stat line")
+            .1
+            .split_whitespace()
+            .collect();
+        let ticks: f64 = fields[11].parse::<f64>().unwrap() + fields[12].parse::<f64>().unwrap();
+        return ticks / 100.0;
+    }
+    let out = Command::new("ps")
+        .args(["-o", "time=", "-p", &pid.to_string()])
+        .output()
+        .expect("run ps");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let time = text.trim().rsplit('-').next().unwrap_or_default();
+    time.split(':')
+        .map(|part| part.parse::<f64>().expect("a ps time field"))
+        .fold(0.0, |total, part| total * 60.0 + part)
+}
+
+/// The accept loop waits in `poll` for a client or a stop. The listener is non-blocking, so a
+/// loop that skipped the wait would spin on `WouldBlock`: every request still answered, every
+/// stop still seen, and a whole core burnt while idle (diff mutation of PR #108 found no test
+/// that noticed).
+#[test]
+fn an_idle_daemon_uses_no_cpu() {
+    let (_scratch, _sock, daemon) = ready_daemon("idle");
+    let before = cpu_seconds(daemon.0.id());
+    std::thread::sleep(Duration::from_secs(2));
+    let used = cpu_seconds(daemon.0.id()) - before;
+    assert!(used < 0.5, "an idle daemon used {used} s of CPU in 2 s");
+}
+
 /// Low-severity finding of the 2026-11-04 assessment: a signal woke the accept loop by
 /// connecting to the socket path. Once that path was gone (removed by hand, or by a cleaner of
 /// the runtime directory), the connection failed and the daemon waited for a client that could
