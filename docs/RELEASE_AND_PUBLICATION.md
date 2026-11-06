@@ -125,7 +125,14 @@ The release workflow checks the same thing on the server side. Before anything i
 supply-chain gate runs `scripts/verify_release_tag.sh` on the pushed tag, against the
 `.github/allowed_signers` from `main`. It never uses the tagged commit's copy, which a tag on
 another branch could supply. An unsigned, lightweight or foreign-signed tag fails the release.
-A dry run checks the newest `v*` tag the same way.
+So does a signed tag on a commit that is not on `main` (since 2026-11-07): a release is built
+only from reviewed code. A dry run checks the newest `v*` tag the same way.
+
+What this does not cover: GitHub runs the `release.yml` of the tagged commit, so a branch that
+also edits `release.yml` could drop both checks. Doing that needs push access to a branch and
+the release-signing key, so it is the owner's own risk. The tag ruleset (26252036) stops a
+pushed `v*` tag being moved or deleted, but not created; restricting creation would close the
+gap and is the owner's decision.
 
 To verify a release tag from a clone:
 
