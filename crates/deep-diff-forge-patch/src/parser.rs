@@ -141,10 +141,13 @@ fn parse_lines(
         });
     }
 
-    let mut parser = Parser::default();
     let mut lossy = lossy.iter().peekable();
     let unterminated_last =
         (!input.is_empty() && !input.ends_with('\n')).then(|| input.split_terminator('\n').count());
+    let mut parser = Parser {
+        unterminated_last,
+        ..Parser::default()
+    };
     for (index, line) in input.split_terminator('\n').enumerate() {
         if index >= DEFAULT_LINE_BUDGET {
             return Err(PatchParseError::LineBudgetExceeded {
@@ -201,6 +204,11 @@ struct FileBuf {
     awaiting_new_header: bool,
     /// The file's `---`/`+++` or first hunk arrived: extended headers are no longer admitted.
     past_headers: bool,
+    /// A Git section's extended header has ended at a line Git does not read as one (a blank
+    /// line, any text): `parse_git_diff_header` stops at the first such line, so a later
+    /// `rename to`, mode or `---` line is not this file's to Git. Taking it reviewed a rename to
+    /// a path other than the one `git apply` wrote (independent rescore of v0.8.0, F1 and F2).
+    header_ended: bool,
     /// The line number of a `\ No newline at end of file` marker that ended the old side, and
     /// of one that ended the new side: no later body line may add to a side its marker ended.
     eof_old: Option<usize>,
@@ -249,6 +257,9 @@ struct Parser {
     /// no `/` (`guess_p_value`), and keeps it for every later file of the patch: after `--- x`,
     /// `--- .github/workflows/ci.yml` names that path, not `workflows/ci.yml`.
     p0: bool,
+    /// The number of the input's last line when it has no line feed. `parse_git_diff_header`
+    /// stops before a line without one, so a header there is not read by Git (rescore F1).
+    unterminated_last: Option<usize>,
 }
 
 impl Parser {
@@ -319,7 +330,20 @@ impl Parser {
         }
         match self.dispatch_non_body(line, line_number, hunk_may_open)? {
             LineUse::Interpreted if lossy => Err(PatchParseError::LossyHeader { line_number }),
-            LineUse::Interpreted | LineUse::Ignored => Ok(()),
+            // A header line with no line feed ends the input, and Git does not read it.
+            LineUse::Interpreted if self.unterminated_last == Some(line_number) => {
+                Err(PatchParseError::UnterminatedLine { line_number })
+            }
+            LineUse::Interpreted => Ok(()),
+            LineUse::Ignored => {
+                if let Some(file) = self.file.as_mut()
+                    && file.git
+                    && !file.past_headers
+                {
+                    file.header_ended = true;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -480,7 +504,9 @@ impl Parser {
             });
         }
         if let Some(file) = self.file.as_mut() {
-            if file.old_raw.is_some() {
+            // After a Git section's header ended, Git reads a `---`/`+++` pair as a new,
+            // traditional patch, not as this file's names (rescore F2).
+            if file.old_raw.is_some() || file.header_ended {
                 return Err(PatchParseError::MisplacedHeader { line_number });
             }
             let traditional = !file.git;
@@ -570,7 +596,7 @@ impl Parser {
             || ["rename from ", "rename to ", "copy from ", "copy to "]
                 .iter()
                 .any(|p| line.starts_with(p));
-        if extended && file.past_headers {
+        if extended && (file.past_headers || file.header_ended) {
             return Err(PatchParseError::MisplacedHeader { line_number });
         }
         // `git apply` also reads `rename old`/`rename new` as `rename from`/`rename to`, which no
@@ -666,9 +692,11 @@ impl Parser {
                 || ((says("new file mode ") || says("deleted file mode ")) && moved)
                 // A new file has no old lines and a deleted one no new lines; git refuses both
                 // ("new file depends on old contents"), and the model could not render them.
-                || (says("new file mode ")
+                // A traditional diff's `/dev/null` side makes the same new or deleted file
+                // without a mode line, and Git refuses it alike (fuzz, rescore of v0.8.0).
+                || ((says("new file mode ") || (!file.git && file.resolve_status() == FileStatus::Added))
                     && file.hunks.iter().flat_map(|h| &h.lines).any(|l| l.kind != PatchLineKind::Added))
-                || (says("deleted file mode ")
+                || ((says("deleted file mode ") || (!file.git && file.resolve_status() == FileStatus::Deleted))
                     && file.hunks.iter().flat_map(|h| &h.lines).any(|l| l.kind != PatchLineKind::Removed))
                 // With hunks, the file headers are written from the status, so a new or deleted
                 // file whose status is anything else (binary, or a `/dev/null` on the wrong side)
@@ -682,6 +710,18 @@ impl Parser {
                     && file.old_raw.as_deref().is_some_and(|p| p != "/dev/null"))
                 || (says("deleted file mode ")
                     && file.new_raw.as_deref().is_some_and(|p| p != "/dev/null"))
+                // In a Git section, `/dev/null` is a side only with the matching mode line: Git
+                // read `+++ /dev/null` without `deleted file mode` as a file named `dev/null`,
+                // deleting the old file and creating that one, where the review showed only the
+                // deletion (rescore F3). A move has its own refusal of a `/dev/null` side below.
+                || (file.git
+                    && !moved
+                    && file.new_raw.as_deref() == Some("/dev/null")
+                    && !says("deleted file mode "))
+                || (file.git
+                    && !moved
+                    && file.old_raw.as_deref() == Some("/dev/null")
+                    && !says("new file mode "))
             {
                 return Err(PatchParseError::InconsistentHeader {
                     line_number: self.last_line,
@@ -3365,6 +3405,60 @@ diff --git a/a b c.rs b/a b c.rs
                 "{case}"
             );
         }
+    }
+
+    /// A traditional diff's `/dev/null` side makes a new or deleted file as a mode line does, and
+    /// Git refuses one whose hunks keep old lines or new lines ("new file hello.txt depends on old
+    /// contents", "deleted file x still has contents"). It was accepted, and its Git rendering
+    /// did not reparse (fuzz crash 46a60f66 on this branch).
+    #[test]
+    fn a_traditional_new_or_deleted_file_has_only_added_or_removed_lines() {
+        for input in [
+            "--- /dev/null\n+++ b/n\n@@ -0,0 +1,2 @@\n+a\n+b\n@@ -1,1 +0,0 @@\n-x\n",
+            "--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n@@ -3,0 +1 @@\n+z\n",
+        ] {
+            assert!(
+                matches!(
+                    parse(input),
+                    Err(PatchParseError::InconsistentHeader { .. })
+                ),
+                "{input:?}"
+            );
+        }
+    }
+
+    /// In a Git section a `/dev/null` side needs its mode line (rescore of v0.8.0, F3). Without
+    /// `deleted file mode`, Git deleted `x` and created a file named `dev/null`; without
+    /// `new file mode`, it read a move from `dev/null` (`git apply -v`: "dev/null => n").
+    /// A traditional diff's `/dev/null` needs no mode line.
+    #[test]
+    fn a_git_section_s_dev_null_side_needs_its_mode_line() {
+        for (case, input) in [
+            (
+                "deletion",
+                "diff --git a/x b/x\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n",
+            ),
+            (
+                "addition",
+                "diff --git a/n b/n\n--- /dev/null\n+++ b/n\n@@ -0,0 +1 @@\n+n\n",
+            ),
+        ] {
+            assert!(
+                matches!(
+                    parse(input),
+                    Err(PatchParseError::InconsistentHeader { .. })
+                ),
+                "{case}"
+            );
+        }
+        let added = one(
+            "diff --git a/n b/n\nnew file mode 100644\n--- /dev/null\n+++ b/n\n@@ -0,0 +1 @@\n+n\n",
+        );
+        assert_eq!(added.status, FileStatus::Added);
+        let deleted = one(
+            "diff --git a/x b/x\ndeleted file mode 100644\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n",
+        );
+        assert_eq!(deleted.status, FileStatus::Deleted);
     }
 
     /// `+++ /dev/null` alone marks a deletion, and the path is the old side's.
