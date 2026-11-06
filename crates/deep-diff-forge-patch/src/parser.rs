@@ -3405,6 +3405,40 @@ diff --git a/a b c.rs b/a b c.rs
         }
     }
 
+    /// In a Git section a `/dev/null` side needs its mode line (rescore of v0.8.0, F3). Without
+    /// `deleted file mode`, Git deleted `x` and created a file named `dev/null`; without
+    /// `new file mode`, it read a move from `dev/null` (`git apply -v`: "dev/null => n").
+    /// A traditional diff's `/dev/null` needs no mode line.
+    #[test]
+    fn a_git_section_s_dev_null_side_needs_its_mode_line() {
+        for (case, input) in [
+            (
+                "deletion",
+                "diff --git a/x b/x\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n",
+            ),
+            (
+                "addition",
+                "diff --git a/n b/n\n--- /dev/null\n+++ b/n\n@@ -0,0 +1 @@\n+n\n",
+            ),
+        ] {
+            assert!(
+                matches!(
+                    parse(input),
+                    Err(PatchParseError::InconsistentHeader { .. })
+                ),
+                "{case}"
+            );
+        }
+        let added = one(
+            "diff --git a/n b/n\nnew file mode 100644\n--- /dev/null\n+++ b/n\n@@ -0,0 +1 @@\n+n\n",
+        );
+        assert_eq!(added.status, FileStatus::Added);
+        let deleted = one(
+            "diff --git a/x b/x\ndeleted file mode 100644\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n",
+        );
+        assert_eq!(deleted.status, FileStatus::Deleted);
+    }
+
     /// `+++ /dev/null` alone marks a deletion, and the path is the old side's.
     #[test]
     fn a_new_side_of_dev_null_is_a_deletion_of_the_old_path() {
