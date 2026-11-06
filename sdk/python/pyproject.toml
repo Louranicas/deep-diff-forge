@@ -1,6 +1,6 @@
 # The Python client as an installable package (standard library only, no dependencies).
 # Install from a checkout:  python3 -m pip install ./sdk/python
-# or from GitHub:          python3 -m pip install "deep-diff-forge @ git+https://github.com/Louranicas/deep-diff-forge@v0.7.0#subdirectory=sdk/python"
+# or from GitHub:          python3 -m pip install "deep-diff-forge @ git+https://github.com/Louranicas/deep-diff-forge@v0.8.0#subdirectory=sdk/python"
 # It drives the `deep-diff-forge` binary (a release archive or `cargo build`); it does not ship it.
 # `version` equals the workspace version and `deep_diff_forge.__version__` (cli/tests/python_sdk.rs).
 [build-system]
