@@ -1231,3 +1231,19 @@ Measured with `gh` on 2026-11-02.
   - Nine assets: four archives, their `.sha256` files, and `sbom.spdx.json`.
   - For x86_64 Linux: `sha256sum -c` passed, and the binary prints `deep-diff-forge 0.7.0`.
   - `gh attestation verify` passed: predicate `https://slsa.dev/provenance/v1`, source ref `refs/tags/v0.7.0`, signer `release.yml@refs/tags/v0.7.0`.
+
+## v0.8.0 release (2026-11-07)
+
+- **Inputs.**
+  - PR #103 (DDF-TEST-TMPLEAK-001, the test-only `deep-diff-forge-testkit`) merged at `cb39f13`.
+  - PR #104 (prepare 0.8.0; `PatchParseError` is `#[non_exhaustive]`) merged at `dd1aa89`. Before its push, `scripts/ci_local.sh` reported `steps failed: 0` (1,933 tests).
+  - The owner chose 0.8.0 over 0.7.1: the release changes the public parse error and some exit codes.
+  - Release dry run [42098103256](https://github.com/Louranicas/deep-diff-forge/actions/runs/42098103256) on `dd1aa89` passed: the quality gate and four builds.
+- **Tag.** `just release-tag 0.8.0` (through the owner's `release_tag.sh`) ran at `dd1aa89`, after the release gate passed and gitleaks found no leaks. It pushed the signed annotated tag `v0.8.0` (object `b1fe8ac`) to GitHub and GitLab. `git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v v0.8.0` reports `Good "git" signature` for ED25519 `SHA256:h4S5C3lX4poSYOx8ii8yezKBlp5pQf2jy168XgwWR8I`.
+- **Release run [42282244060](https://github.com/Louranicas/deep-diff-forge/actions/runs/42282244060).** Attempt 1 passed (19:44Z to 20:36Z on 2026-11-06): the supply chain gate, the quality gate, four builds and the GitHub Release. The crates.io publish was skipped (owner-gated).
+- **Immutable.** This is the first release published with Immutable Releases on (2026-11-05). The workflow uploaded every asset to a draft before publishing it, and `gh release view v0.8.0` reports `isImmutable: true`.
+- **Artifacts.**
+  - Nine assets: four archives, their `.sha256` files, and `sbom.spdx.json`.
+  - For x86_64 Linux: `sha256sum -c` passed, and the binary prints `deep-diff-forge 0.8.0`.
+  - `gh attestation verify` passed: predicate `https://slsa.dev/provenance/v1`, source ref `refs/tags/v0.8.0` at `dd1aa89`, signer `release.yml@refs/tags/v0.8.0`.
+- **The headline fix, on the released binary.** A patch whose second hunk header is `@@-1,1 +1,1 @@` (no space), followed by `diff --git a/evil b/evil`, is refused: `--stdin-patch --json` exits 4 with `malformed hunk header at line 7`. v0.7.0 reviewed one file where `git apply` wrote two (DDF-PATCH-HUNKSMUGGLE-001).

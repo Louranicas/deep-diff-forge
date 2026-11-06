@@ -6,11 +6,11 @@ an exceptional one. This policy documents the maintained security boundary,
 the controls enforced by the repository, and the limits operators must account
 for.
 
-## Status 2026-11-06 (0.8.0 prepared)
+## Status 2026-11-07 (0.8.0 released)
 
-- `main` carries 0.8.0, not yet tagged. `v0.7.0` (2026-11-03, signed) is the latest release;
-  cutting `v0.8.0` or any later `v*` tag is the owner's decision. The published releases are `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`,
-  `v0.5.0`, `v0.6.0` and `v0.7.0`. `0.2.1` was never tagged or published.
+- `v0.8.0` (2026-11-07, signed) is the latest release; cutting any later `v*` tag is the
+  owner's decision. The published releases are `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`,
+  `v0.5.0`, `v0.6.0`, `v0.7.0` and `v0.8.0`. `0.2.1` was never tagged or published.
 - The controls below describe the code on `main`. The `v0.2.0` binaries were
   built on 2026-06-24 and predate the SOL-1 hardening (2026-09-04), the review
   council work and the 2026-10-28 fixes listed under
@@ -53,8 +53,9 @@ Fixes land on `main` first and reach users in the next tagged release.
 
 | Version | State | Security fixes |
 | --- | --- | --- |
-| `main` | 0.8.0, not yet tagged | Land here first. |
-| `v0.7.0` (2026-11-03) | Latest published release | Yes: the next release carries them. |
+| `main` | 0.8.0 and later changes, untagged | Land here first. |
+| `v0.8.0` (2026-11-07) | Latest published release | Yes: the next release carries them. |
+| `v0.7.0` (2026-11-03) | Published, superseded | No. It lacks the 0.8.0 hunk-header fix (a header without its space hid a file that `git apply` wrote), the refusal of non-UTF-8 file names, the daemon's response deadline for slow readers and the bounds on child processes. |
 | `v0.6.0` (2026-11-02) | Published, superseded | No. It lacks the 0.7.0 daemon read budget and request deadlines, the release workflow's tag-signature check and the DDF-FUZZ-PATCH-8 fix (a doubled slash in a `diff --git` name broke render stability). |
 | `v0.5.0` (2026-10-31) | Published, superseded | No. It lacks the 0.6.0 Git-filter fixes (a `config.worktree` or checked-out submodule filter no longer runs during acquisition) and the escaping of every default-ignorable code point. |
 | `v0.4.0` (2026-10-30) | Published, superseded | No. It lacks the 0.5.0 code-evidence fix (DDF-EVID-001) and the bidi/invisible-character sanitising of agent text. |
