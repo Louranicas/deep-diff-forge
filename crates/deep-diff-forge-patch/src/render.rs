@@ -28,6 +28,23 @@ fn render_file(out: &mut String, file: &ReviewFile) {
         super::paths::quote(&format!("a/{old_label}")),
         super::paths::quote(&format!("b/{new_label}"))
     );
+    // A `/dev/null` side of a Git section needs its mode line, which a traditional diff's added or
+    // deleted file never had; Git gives such a file a regular file's mode. Without it Git reads a
+    // move from or to a file named `dev/null`, and the parser refuses the rendering.
+    let has = |prefix: &str| {
+        file.patch_twin
+            .metadata
+            .iter()
+            .any(|m| m.starts_with(prefix))
+    };
+    if !file.patch_twin.hunks.is_empty() {
+        if file.status == FileStatus::Added && !has("new file mode ") {
+            out.push_str("new file mode 100644\n");
+        }
+        if file.status == FileStatus::Deleted && !has("deleted file mode ") {
+            out.push_str("deleted file mode 100644\n");
+        }
+    }
     for meta in &file.patch_twin.metadata {
         // The no-newline marker belongs inside a hunk, not in the file header.
         if meta.starts_with('\\') {
@@ -164,6 +181,30 @@ mod tests {
         let files = parse(input).unwrap();
         let out = render_unified(&files);
         assert!(out.contains("+++ /dev/null\n"));
+    }
+
+    /// A traditional diff's added or deleted file has no mode line, but the rendering is a Git
+    /// section, where a `/dev/null` side needs one: without it Git reads a move from or to a
+    /// file named `dev/null`, and the parser refuses it (rescore of v0.8.0, F3; fuzz smoke).
+    /// The mode Git gives such a file is a regular file's, `100644`.
+    #[test]
+    fn a_traditional_added_or_deleted_file_renders_its_git_mode_line() {
+        for (input, mode) in [
+            (
+                "--- /dev/null\n+++ b/n\n@@ -0,0 +1 @@\n+n\n",
+                "new file mode 100644\n",
+            ),
+            (
+                "--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n",
+                "deleted file mode 100644\n",
+            ),
+        ] {
+            let files = parse(input).unwrap();
+            let out = render_unified(&files);
+            assert!(out.contains(mode), "{out}");
+            let reparsed = parse(&out).unwrap_or_else(|e| panic!("{e:?}: {out}"));
+            assert_eq!(render_unified(&reparsed), out);
+        }
     }
 
     #[test]

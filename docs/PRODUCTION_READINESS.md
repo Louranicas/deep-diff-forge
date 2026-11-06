@@ -947,3 +947,55 @@ with itself, skipped non-UTF-8 input, and the Git-oracle tests had no header cas
     drain is ignored.
 
 No rescore until 0.7.1 ships and an independent rescore reads it.
+
+## Assessment 2026-11-07 (`v0.8.0`, `dd1aa89`; independent rescore)
+
+**Score: 80 / 100**, level with v0.7.0 but for different reasons. A fresh assessor, given the
+rubric above and a read-only checkout of the tag but not the previous assessor's conclusions,
+read the code, ran the suite (1,929 passed, 0 failed) and drove the released binary. It also
+ran a random line-mutation differential against `git apply` (60,000 mutants of `fixtures/`).
+Its high finding was then reproduced by hand against Git 2.56 before it was acted on.
+
+| Facet | Weight | 2026-11-04 (v0.7.0) | 2026-11-07 (v0.8.0) |
+| --- | ---: | ---: | ---: |
+| Correctness and patch-truth integrity | 20 | | 15 |
+| Security and trust boundary | 15 | | 12 |
+| Supply chain and release integrity | 15 | | 13 |
+| Reliability and operability | 15 | | 13 |
+| Platform and portability | 10 | | 8 |
+| Interfaces and integration contracts | 15 | | 12 |
+| Documentation, governance and evidence | 10 | | 7 |
+| **Total** | 100 | **80** | **80** |
+
+The 2026-11-04 section scored by a different facet split, so its column is left blank rather
+than mapped.
+
+**Up (measured):** the hunk-header smuggle is closed; SIGTERM drains and removes the socket; the
+control slots answer while every data slot is held; idle connections drop at 30 s; the tag
+signature, the SLSA attestation and the checksums verify; Immutable Releases is on; a full test
+run leaves no scratch directory behind.
+
+**The new high finding (F1, measured, fixed on `main` after v0.8.0):** Git ends a `diff --git`
+section's extended header at the first line it does not read as one, and at a last line with no
+line feed; DDF read on. `rename to .github/workflows/pwn.yml`, a line of text, then
+`rename to docs/harmless.md` was reviewed as a docs move (exit 0, CLI, `rpc` and MCP alike)
+while `git apply` installed the workflow. The 0.8.0 differential oracle mutated only hunk
+headers, so this sibling of the 0.7.0 blocker went uncaught. Two related readings (F2: a
+`---`/`+++` pair after the header ended; F3: `+++ /dev/null` without `deleted file mode`)
+are fixed with it, and the oracle now breaks every extended-header position
+(`no_extended_header_mutant_reads_differently_from_git`).
+
+**Open:**
+
+- crates.io `0.2.0` is still installable and not yanked (owner decision; F4).
+- A same-user process holding ten idle connections blocks `health` and `stop` until they time
+  out (F5; the accepted same-user boundary).
+- The status lines shipped inside a release archive are written before the tag, so they say
+  "not yet tagged" (F6). The post-release docs PR corrects `main` only.
+- `Linux arm64 tests` and `macOS launchd agent` are not required checks, and `launchd` is
+  skipped on release runs (F7).
+- The differential is not in the fuzz harness.
+
+The low-severity items left open on 2026-11-04 are fixed on `main`: the council's results name
+their schema; a release is built only from a signed tag on `main`; a signal stops the daemon
+without its socket path, and a second signal ends the drain. A rescore follows 0.8.1.
