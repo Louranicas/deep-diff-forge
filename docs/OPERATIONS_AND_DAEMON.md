@@ -281,7 +281,9 @@ daemon as the CLI does and gives a stop longer than `daemon stop` waits (`STOP_W
   daemon stop` or `launchctl bootout`. Since DDF-HUNT-DAEMON-7 (2026-11-03) the daemon handles
   SIGTERM and SIGINT as `daemon stop`: it stops accepting, removes its socket, drains the
   answers in progress and exits 0. Before, SIGTERM killed it without a drain and left the
-  socket file behind. Since
+  socket file behind. Since 2026-11-07 a signal stops it even when its socket path is gone, and
+  a second signal during the drain (a second Ctrl-C) exits at once with 128 plus the signal's
+  number (143 for SIGTERM, 130 for SIGINT); before, the drain ran its course. Since
   2026-10-31 the `macOS launchd agent` job of `ci.yml` runs `scripts/launchd_smoke.sh` on a
   hosted Mac (on every CI event except a release run, which skips it until it has a record):
   bootstrap into `gui/<uid>` (falling back to `user/<uid>`), `daemon health` with

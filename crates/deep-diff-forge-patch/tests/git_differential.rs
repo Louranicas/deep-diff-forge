@@ -195,6 +195,102 @@ fn no_hunk_header_mutant_hides_a_file_from_the_review() {
     );
 }
 
+/// Git sections whose extended headers the mutants below break: a pure rename, a mode change
+/// with a hunk, a new file and an indexed modification.
+const GIT_SECTIONS: [&str; 4] = [
+    "diff --git a/old/name.rs b/old/name.rs\nsimilarity index 100%\nrename from old/name.rs\nrename to src/x.rs\n",
+    "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+    "diff --git a/n b/n\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/n\n@@ -0,0 +1 @@\n+n\n",
+    "diff --git a/x b/x\nindex 1111111..2222222 100644\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+];
+
+/// Lines that end a Git extended header, and header lines placed after the end.
+const BREAKS: [&str; 3] = ["", "See notes", "---"];
+const LATE_HEADERS: [&str; 6] = [
+    "rename to .github/workflows/pwn.yml",
+    "rename from elsewhere",
+    "new mode 100755",
+    "deleted file mode 100644",
+    "--- a/evil\n+++ b/evil",
+    "@@ -1 +1 @@\n-a\n+b",
+];
+
+/// Independent rescore of v0.8.0 (F1 to F3): Git ends a `diff --git` section's extended header at
+/// the first line it does not read as one (`parse_git_diff_header`), and at a last line with no
+/// line feed. DDF read on, so a `rename to` after a blank line or a note named the reviewed
+/// destination while Git wrote the earlier one. Every break of every header, followed by each
+/// kind of late header line, must be refused or read exactly as Git reads it.
+#[test]
+fn no_extended_header_mutant_reads_differently_from_git() {
+    let scratch = Scratch::new("ext-header");
+    let root = scratch.0.path();
+    // The findings, each applied by Git to a file the review did not show.
+    let rename = "diff --git a/old/name.rs b/old/name.rs\nsimilarity index 100%\nrename from old/name.rs\nrename to .github/workflows/pwn.yml\n";
+    let findings = [
+        (format!("{rename}See notes\nrename to docs/harmless.md\n"), &b".github/workflows/pwn.yml"[..]),
+        (format!("{rename}\nrename to docs/harmless.md\n"), b".github/workflows/pwn.yml"),
+        (
+            "diff --git a/old/name.rs b/old/name.rs\nsimilarity index 100%\nrename from old/name.rs\nrename to .github/workflows/pwn.yml\nrename to docs/harmless.md"
+                .to_owned(),
+            b".github/workflows/pwn.yml",
+        ),
+        (
+            "diff --git a/tool.py b/tool.py\n\n--- a/too\t.py\n+++ b/tool.py\n@@ -1 +1,2 @@\n import os\n+evil()\n"
+                .to_owned(),
+            b"too",
+        ),
+        (
+            "diff --git a/gone.txt b/gone.txt\n--- a/gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-obsolete\n"
+                .to_owned(),
+            b"dev/null",
+        ),
+    ];
+    for (patch, written) in &findings {
+        let git = git_numstat(root, patch.as_bytes()).expect("git applies the finding");
+        assert!(git.iter().any(|(_, path)| path == written), "{git:?}");
+        assert!(!reads_as_git_does(root, patch.as_bytes()), "{patch:?}");
+    }
+    let (mut accepted, mut refused, mut cases) = (0, 0, 0);
+    for section in GIT_SECTIONS {
+        let lines: Vec<&str> = section.lines().collect();
+        // The header is the lines before the first `---` or hunk.
+        let header_end = lines
+            .iter()
+            .position(|l| l.starts_with("--- ") || l.starts_with("@@"))
+            .unwrap_or(lines.len());
+        for at in 1..=header_end {
+            for brk in BREAKS {
+                for late in std::iter::once(None).chain(LATE_HEADERS.map(Some)) {
+                    let mut mutant: Vec<&str> = lines[..at].to_vec();
+                    mutant.push(brk);
+                    mutant.extend(late);
+                    mutant.extend(&lines[at..]);
+                    let patch = mutant.join("\n") + "\n";
+                    cases += 1;
+                    if reads_as_git_does(root, patch.as_bytes()) {
+                        accepted += 1;
+                    } else {
+                        refused += 1;
+                    }
+                }
+            }
+        }
+        // The section's last line without its line feed.
+        cases += 1;
+        if reads_as_git_does(root, section.trim_end_matches('\n').as_bytes()) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // Not vacuous: hundreds of cases, with Git-identical acceptances and refusals both seen.
+    assert!(cases > 250, "{cases}");
+    assert!(
+        accepted > 0 && refused > 100,
+        "accepted {accepted}, refused {refused}"
+    );
+}
+
 /// A file's hunks are one unbroken run, as Git reads them; Git's verdict is asked for each case.
 #[test]
 fn hunks_follow_their_file_header_or_the_previous_hunk() {

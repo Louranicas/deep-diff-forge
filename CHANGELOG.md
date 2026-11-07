@@ -15,8 +15,42 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   the field. The field is added, nothing is removed or renamed. `prepare`, `export-tuicr` and
   `import-tuicr` already named theirs and are unchanged. Test:
   `every_council_result_names_its_schema` (fails on the old CLI: `review` had no schema).
+### Fixed
+
+- **A signal stops the daemon even when its socket path is gone, and a second signal ends the
+  drain** (low-severity findings of the 2026-11-04 assessment). A stop woke the accept loop by
+  connecting to the socket path, so once the path was removed the daemon waited for a client
+  that could no longer arrive. The loop now polls the listener together with a private socket
+  pair that a stop writes to; the listener is non-blocking, and an accepted socket is made
+  blocking again (macOS passes the mode on). A second SIGTERM or SIGINT during the drain was
+  ignored; it now exits at once with 128 plus the signal's number, after removing the socket
+  if it is still this daemon's. Tests: `a_signal_stops_the_daemon_after_its_socket_path_is_gone`
+  and `a_second_signal_during_the_drain_exits_at_once`; both fail on the old daemon (measured).
+  `an_idle_daemon_uses_no_cpu` keeps the loop waiting in `poll`: without the wait it spins on
+  the non-blocking listener (1.86 s of CPU in 2 s idle).
 ### Security
 
+- **A rename's reviewed destination is the one Git writes** (independent rescore of v0.8.0,
+  F1, high). Git ends a `diff --git` section's extended header at the first line it does not
+  read as one (a blank line, any text) and at a last line with no line feed; DDF read on. So
+  `rename to .github/workflows/pwn.yml`, a note, then `rename to docs/harmless.md` was reviewed
+  as a harmless docs move (exit 0, through the CLI, `rpc` and MCP) while `git apply` installed
+  the workflow. Measured on v0.8.0 with Git 2.56. After the header ends, a header line or a
+  `---` is now refused (exit 4), and so is a header line with no line feed.
+- **A Git section's `---`/`+++` after its header ended is refused** (rescore F2). Git reads that
+  pair as a new, traditional patch: `--- a/too<TAB>.py` after a blank line made Git modify `too`
+  while DDF reviewed a rename of `tool.py`.
+- **`+++ /dev/null` in a Git section needs `deleted file mode`** (rescore F3), and `--- /dev/null`
+  needs `new file mode`. Without it Git deleted the old file and also created one named
+  `dev/null`, which the review did not show. The rendering of a traditional diff's added or
+  deleted file now carries the mode line Git implies (`100644`), so it still reparses.
+- **A traditional new or deleted file must only add or only remove lines**, as with a mode line.
+  Git refuses one that does not ("new file depends on old contents", "deleted file still has
+  contents"); DDF accepted it. Found by fuzzing this branch; the input is a regression fixture.
+- Test: `no_extended_header_mutant_reads_differently_from_git` asserts the findings against
+  `git apply --numstat`, then breaks every extended-header position of four Git sections with a
+  blank line, a note or `---`, followed by each kind of late header; each case must be refused
+  or read exactly as Git reads it. Control: it fails on the v0.8.0 parser at F1.
 - **A release is built only from a tag on `main`** (low-severity finding of the 2026-11-04
   assessment). The release workflow already refused a tag not signed by an allowed key; a
   correctly signed tag on a commit that never reached `main` was still released. The
