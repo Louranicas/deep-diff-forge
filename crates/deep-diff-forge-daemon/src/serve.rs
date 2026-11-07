@@ -2108,10 +2108,10 @@ mod tests {
         // makes progress (a burst frees whole socket segments, about 100 KB each), so per-write
         // timeouts alone never fire and the answer would take seconds. The whole response has
         // 800 ms: it is abandoned, which the daemon counts as a connection error.
+        // The read timeout set above (10 s) still bounds each read. It is not set again here: by
+        // the time this thread runs, the daemon may already have abandoned the answer and closed
+        // its end, and macOS refuses `setsockopt` on such a socket (EINVAL).
         let trickle = thread::spawn(move || {
-            stalled
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
             let mut chunk = vec![0u8; 128 * 1024];
             let mut got = 0usize;
             for _ in 0..15 {
