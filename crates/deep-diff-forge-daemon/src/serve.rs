@@ -1094,13 +1094,53 @@ fn drain_report(before: usize, drained: bool, left: usize) -> Option<(&'static s
     }
 }
 
+/// Wakes the accept loop without a connection: the writing end of a socket pair that the loop
+/// polls alongside the listener. Before, a stop woke the loop by connecting to the socket path,
+/// which fails once the path is removed or replaced; the loop then waited for the next client
+/// (low-severity finding of the 2026-11-04 assessment).
+#[derive(Clone)]
+struct Wake(Arc<UnixStream>);
+
+impl Wake {
+    /// The waker and the end the loop polls.
+    fn pair() -> std::io::Result<(Self, UnixStream)> {
+        let (waker, woken) = UnixStream::pair()?;
+        waker.set_nonblocking(true)?;
+        Ok((Self(Arc::new(waker)), woken))
+    }
+
+    /// Never blocks: if the pair's buffer is full, a wake-up is already pending.
+    fn wake(&self) {
+        let _ = (&*self.0).write(&[1]);
+    }
+}
+
+/// Block until a client is waiting on `listener` or `woken` has a wake-up. A signal (EINTR)
+/// returns too; the caller checks again either way.
+fn wait_for_client_or_wake(listener: &UnixListener, woken: &UnixStream) -> std::io::Result<()> {
+    use rustix::event::{PollFd, PollFlags, poll};
+    let mut fds = [
+        PollFd::new(listener, PollFlags::IN),
+        PollFd::new(woken, PollFlags::IN),
+    ];
+    match poll(&mut fds, None) {
+        Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// SIGTERM (`kill`, `launchctl bootout`, `systemctl kill`) and SIGINT (Ctrl-C) stop the daemon
 /// as `daemon.shutdown` does: the loop ends, the socket is removed and the answers in progress
 /// drain. Before, either signal killed the process and left the socket file behind
-/// (DDF-HUNT-DAEMON-7). Returns the handle that ends the watcher and its thread.
+/// (DDF-HUNT-DAEMON-7). A signal that arrives once the daemon is stopping (a second Ctrl-C
+/// during the drain) exits at once, with 128 plus the signal's number, after removing the
+/// socket if it is still this daemon's; before, it was ignored until the drain ended. Returns
+/// the handle that ends the watcher and its thread; the caller keeps it through the drain.
 fn watch_signals(
     engine: &Arc<Engine>,
+    wake: Wake,
     socket_path: &Path,
+    socket_identity: (u64, u64),
 ) -> std::io::Result<(signal_hook::iterator::Handle, std::thread::JoinHandle<()>)> {
     let mut signals = signal_hook::iterator::Signals::new([
         signal_hook::consts::SIGTERM,
@@ -1108,31 +1148,119 @@ fn watch_signals(
     ])?;
     let handle = signals.handle();
     let engine = Arc::clone(engine);
-    let wakeup = socket_path.to_path_buf();
+    let socket_path = socket_path.to_path_buf();
     let watch = std::thread::Builder::new()
         .name("ddf-daemon-signals".to_string())
         .spawn(move || {
-            if let Some(signal) = signals.forever().next() {
-                engine.stop();
-                engine.log(
-                    "shutdown_signal",
-                    &format!("signal {signal} received; stopping"),
-                );
-                // Unblock the accept loop, as a `daemon.shutdown` connection does.
-                let _ = UnixStream::connect(wakeup);
+            for signal in signals.forever() {
+                if engine.is_running() {
+                    engine.stop();
+                    engine.log(
+                        "shutdown_signal",
+                        &format!("signal {signal} received; stopping"),
+                    );
+                    wake.wake();
+                } else {
+                    engine.log(
+                        "shutdown_forced",
+                        &format!(
+                            "signal {signal} received while stopping; exiting without waiting for the answers in progress"
+                        ),
+                    );
+                    cleanup_owned_socket(&socket_path, socket_identity);
+                    std::process::exit(deep_diff_forge_core::exit::SIGNAL_BASE + signal);
+                }
             }
         })?;
     Ok((handle, watch))
 }
 
-/// The accept error that ends the loop, or `None` for one it retries: a signal (EINTR) or a
-/// client that gave up while queued (ECONNABORTED). Any other ends it, cleanly (expert circle C8).
+/// The accept error that ends the loop, or `None` for one it retries: a signal (EINTR), a
+/// client that gave up while queued (ECONNABORTED), or no client after all (the listener is
+/// non-blocking, so a client that left between the poll and `accept` is `WouldBlock`). Any other
+/// ends it, cleanly (expert circle C8).
 fn fatal_accept_error(err: std::io::Error) -> Option<std::io::Error> {
     (!matches!(
         err.kind(),
-        std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted
+        std::io::ErrorKind::Interrupted
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::WouldBlock
     ))
     .then_some(err)
+}
+
+/// Serve one accepted client on its own thread, or refuse it: another user, or no slot left.
+/// A per-connection error never ends the daemon; the thread logs it.
+fn admit(
+    stream: UnixStream,
+    engine: &Arc<Engine>,
+    me: u32,
+    (active_connections, control_connections): (&Arc<AtomicUsize>, &Arc<AtomicUsize>),
+    wake: &Wake,
+) {
+    // macOS hands the listener's non-blocking mode to the accepted socket; the
+    // connection code expects a blocking one, as on Linux.
+    if let Err(err) = stream.set_nonblocking(false) {
+        engine.metrics().connection_error();
+        engine.log("connection_error", &format!("connection error: {err}"));
+        drop(stream);
+        return;
+    }
+    // Only this daemon's own user is served, whatever the socket's mode.
+    if let Err(err) = require_peer_user(&stream, me) {
+        engine.metrics().refused_peer();
+        engine.log(
+            "connection_refused",
+            &format!("refused a connection: {err}"),
+        );
+        drop(stream);
+        return;
+    }
+    // A data slot, else a control slot (one control request), else backpressure.
+    let (active, control) = if try_acquire_connection(active_connections, MAX_CONNECTIONS) {
+        (Arc::clone(active_connections), false)
+    } else if try_acquire_connection(control_connections, CONTROL_CONNECTIONS) {
+        (Arc::clone(control_connections), true)
+    } else {
+        engine.metrics().refused_at_limit();
+        // Dropping the accepted stream applies backpressure without
+        // allocating another stack or worker thread.
+        drop(stream);
+        return;
+    };
+    engine.metrics().accepted();
+    let arc = Arc::clone(engine);
+    let wake = wake.clone();
+    let release = Arc::clone(&active);
+    // A per-connection error must NOT tear down the daemon — the
+    // spawned thread logs it and the accept loop continues.
+    let spawned = std::thread::Builder::new()
+        .name("ddf-daemon-connection".to_string())
+        .spawn(move || {
+            let _active_guard = ActiveConnection(active);
+            let served = if control {
+                handle_control_connection(stream, &arc)
+            } else {
+                handle_connection(stream, &arc)
+            };
+            if let Err(err) = served {
+                arc.metrics().connection_error();
+                arc.log("connection_error", &format!("connection error: {err}"));
+            }
+            // If the connection just triggered a shutdown, wake the accept loop,
+            // which is waiting for a client.
+            if !arc.is_running() {
+                wake.wake();
+            }
+        });
+    if let Err(err) = spawned {
+        // The closure never ran, so release the slot explicitly.
+        release.fetch_sub(1, Ordering::AcqRel);
+        engine.log(
+            "worker_spawn_failed",
+            &format!("could not spawn connection worker: {err}"),
+        );
+    }
 }
 
 /// The accept loop of [`run_server_with`] over a listener already bound at `location`.
@@ -1152,8 +1280,12 @@ fn serve_bound(
     let control_connections = Arc::new(AtomicUsize::new(0));
     // From here the socket is this server's: a setup failure removes it before returning, as
     // the end of the loop does, so no error leaves a stale socket behind (expert circle C8).
-    let (signal_handle, signal_watch) = watch_signals(&engine, &socket_path)
+    let (wake, woken) = Wake::pair()
+        .and_then(|pair| listener.set_nonblocking(true).map(|()| pair))
         .inspect_err(|_| cleanup_owned_socket(&socket_path, socket_identity))?;
+    let (signal_handle, signal_watch) =
+        watch_signals(&engine, wake.clone(), &socket_path, socket_identity)
+            .inspect_err(|_| cleanup_owned_socket(&socket_path, socket_identity))?;
     // A persistent accept error ends the loop like a shutdown, so the socket is still removed and
     // the answers in progress still drain; the error is returned afterwards. Before, it returned
     // at once, leaving the socket and cutting the answers off (expert circle C8).
@@ -1163,66 +1295,23 @@ fn serve_bound(
         if !engine.is_running() {
             break;
         }
+        // Wait for a client or a stop's wake-up; a stop must not need a connection to be seen.
+        if let Err(err) = wait_for_client_or_wake(listener, &woken) {
+            engine.log("accept_failed", &format!("stopping: poll failed: {err}"));
+            failure = Some(err);
+            break;
+        }
+        if !engine.is_running() {
+            break;
+        }
         match listener.accept() {
-            Ok((stream, _)) => {
-                // Only this daemon's own user is served, whatever the socket's mode.
-                if let Err(err) = require_peer_user(&stream, me) {
-                    engine.metrics().refused_peer();
-                    engine.log(
-                        "connection_refused",
-                        &format!("refused a connection: {err}"),
-                    );
-                    drop(stream);
-                    continue;
-                }
-                // A data slot, else a control slot (one control request), else backpressure.
-                let (active, control) =
-                    if try_acquire_connection(&active_connections, MAX_CONNECTIONS) {
-                        (Arc::clone(&active_connections), false)
-                    } else if try_acquire_connection(&control_connections, CONTROL_CONNECTIONS) {
-                        (Arc::clone(&control_connections), true)
-                    } else {
-                        engine.metrics().refused_at_limit();
-                        // Dropping the accepted stream applies backpressure without
-                        // allocating another stack or worker thread.
-                        drop(stream);
-                        continue;
-                    };
-                engine.metrics().accepted();
-                let arc = Arc::clone(&engine);
-                let wakeup = socket_path.clone();
-                let release = Arc::clone(&active);
-                // A per-connection error must NOT tear down the daemon — the
-                // spawned thread logs it and the accept loop continues.
-                let spawned = std::thread::Builder::new()
-                    .name("ddf-daemon-connection".to_string())
-                    .spawn(move || {
-                        let _active_guard = ActiveConnection(active);
-                        let served = if control {
-                            handle_control_connection(stream, &arc)
-                        } else {
-                            handle_connection(stream, &arc)
-                        };
-                        if let Err(err) = served {
-                            arc.metrics().connection_error();
-                            arc.log("connection_error", &format!("connection error: {err}"));
-                        }
-                        // If the connection just triggered a shutdown, unblock the
-                        // accept loop (which is blocking on listener.accept()) by
-                        // opening a short-lived wakeup connection to ourselves.
-                        if !arc.is_running() {
-                            let _ = UnixStream::connect(wakeup);
-                        }
-                    });
-                if let Err(err) = spawned {
-                    // The closure never ran, so release the slot explicitly.
-                    release.fetch_sub(1, Ordering::AcqRel);
-                    engine.log(
-                        "worker_spawn_failed",
-                        &format!("could not spawn connection worker: {err}"),
-                    );
-                }
-            }
+            Ok((stream, _)) => admit(
+                stream,
+                &engine,
+                me,
+                (&active_connections, &control_connections),
+                &wake,
+            ),
             Err(err) => {
                 if let Some(err) = fatal_accept_error(err) {
                     engine.log("accept_failed", &format!("stopping: accept failed: {err}"));
@@ -1232,9 +1321,6 @@ fn serve_bound(
             }
         }
     }
-    // The signal watcher has nothing left to stop.
-    signal_handle.close();
-    let _ = signal_watch.join();
     cleanup_owned_socket(location.path(), socket_identity);
     // Closing the listener refuses the connections still queued in its backlog at once; before,
     // they waited out the drain. The start lock stays held until the drain is done.
@@ -1247,6 +1333,9 @@ fn serve_bound(
     if let Some((event, message)) = drain_report(before, drained, engine.answering().count()) {
         engine.log(event, &message);
     }
+    // The signal watcher ends only now: until the drain is over, a further signal exits at once.
+    signal_handle.close();
+    let _ = signal_watch.join();
     // The start lock is released only now, after the cleanup and the drain.
     drop(start_lock);
     failure.map_or(Ok(()), Err)
@@ -3136,7 +3225,11 @@ mod tests {
     #[test]
     fn only_a_signal_or_an_aborted_client_is_retried_by_accept() {
         use std::io::ErrorKind;
-        for retried in [ErrorKind::Interrupted, ErrorKind::ConnectionAborted] {
+        for retried in [
+            ErrorKind::Interrupted,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::WouldBlock,
+        ] {
             assert!(fatal_accept_error(retried.into()).is_none(), "{retried:?}");
         }
         for fatal in [
@@ -3176,11 +3269,12 @@ mod tests {
         let engine = Engine::new();
         let next_fd = std::fs::File::open("/dev/null").unwrap().as_raw_fd();
         let limit = getrlimit(Resource::Nofile);
-        // Two spare descriptors: the signal watcher's socket pair. Then accept() has none.
+        // Four spare descriptors: the signal watcher's socket pair and the accept loop's wake-up
+        // pair. Then accept() has none.
         setrlimit(
             Resource::Nofile,
             Rlimit {
-                current: Some(u64::try_from(next_fd).unwrap() + 2),
+                current: Some(u64::try_from(next_fd).unwrap() + 4),
                 maximum: limit.maximum,
             },
         )
