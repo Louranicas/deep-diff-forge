@@ -2509,10 +2509,66 @@ fn a_manual_import_is_stored_unverified_and_a_foreign_report_is_refused() {
     let out: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
     assert_eq!(
         out,
-        serde_json::json!({"imported": true, "provenance": "manual_unverified", "satisfies_execution_gate": false})
+        serde_json::json!({"imported": true, "provenance": "manual_unverified", "satisfies_execution_gate": false, "schema": "deep-diff-forge.council-import.v1"})
     );
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(&stored).unwrap()).unwrap();
     assert_eq!(saved, report);
+}
+
+/// Low-severity finding of the 2026-11-04 assessment: no council result named its schema, so a
+/// consumer could not tell a changed shape from a broken one. `review`, `status`, `gate` and
+/// `import` now carry `deep-diff-forge.council-<command>.v1` (`gate` stays an array and stamps
+/// each result); `prepare` keeps the manifest's own.
+#[test]
+fn every_council_result_names_its_schema() {
+    let f = Fixture::new();
+    let schema_of = |out: &Output| -> serde_json::Value {
+        assert!(
+            out.status.code().is_some_and(|c| c == 0 || c == 7),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let prepared = f.call(
+        &[
+            "prepare",
+            f.request.to_str().unwrap(),
+            f.run.to_str().unwrap(),
+        ],
+        "normal",
+    );
+    // The manifest already named its schema; it keeps it.
+    assert_eq!(schema_of(&prepared)["schema"], "deep-diff-forge.council.v1");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.run.join("manifest.json")).unwrap()).unwrap();
+    let reviewer = manifest["request"]["reviewers"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let review = f.review(&reviewer, "independent", "normal");
+    assert_eq!(
+        schema_of(&review)["schema"],
+        "deep-diff-forge.council-review.v1"
+    );
+    assert_eq!(
+        schema_of(&f.status())["schema"],
+        "deep-diff-forge.council-status.v1"
+    );
+    f.install_gate("valid");
+    let gate = schema_of(&f.gate("check"));
+    let results = gate.as_array().expect("gate prints one result per gate");
+    assert_ne!(results.len(), 0);
+    for result in results {
+        assert_eq!(
+            result["schema"], "deep-diff-forge.council-gate.v1",
+            "{gate}"
+        );
+    }
+    // `example` is a template for `prepare` to read, which refuses unknown fields: no schema.
+    let example = f.call(&["example"], "normal");
+    let example: serde_json::Value = serde_json::from_slice(&example.stdout).unwrap();
+    assert!(example.get("schema").is_none(), "{example}");
 }
 
 #[test]

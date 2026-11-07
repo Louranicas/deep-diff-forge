@@ -6,6 +6,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Added
+
+- **Every council result names its schema** (low-severity finding of the 2026-11-04
+  assessment). `council review`, `status`, `gate` and `import` printed JSON with no `schema`
+  field, so a consumer could not tell a changed shape from a broken one. They now carry
+  `deep-diff-forge.council-<command>.v1`; `gate` stays an array and each result in it carries
+  the field. The field is added, nothing is removed or renamed. `prepare`, `export-tuicr` and
+  `import-tuicr` already named theirs and are unchanged. Test:
+  `every_council_result_names_its_schema` (fails on the old CLI: `review` had no schema).
 ### Fixed
 
 - **A signal stops the daemon even when its socket path is gone, and a second signal ends the
