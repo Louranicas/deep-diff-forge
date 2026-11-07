@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deep-diff-forge"
-version = "0.8.0"
+version = "0.8.1"
 description = "Python client for the Deep-Diff-Forge patch-review engine (daemon socket or `deep-diff-forge rpc`)"
 readme = "README.md"
 requires-python = ">=3.9"

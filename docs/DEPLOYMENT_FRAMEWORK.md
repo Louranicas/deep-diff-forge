@@ -22,7 +22,7 @@ The framework is designed for:
 
 ## Status 2026-10-28 (0.3.0), rechecked 2026-11-01
 
-- Workspace version 0.8.0, released as the signed tag `v0.8.0` (2026-11-07), the latest tag. 14 crates under `crates/`
+- Workspace version 0.8.1 on `main`, not yet tagged; the latest tag is the signed `v0.8.0` (2026-11-07). 14 crates under `crates/`
   (core, patch, projection, pipeline, syntax, graph, agent, tui, cluster,
   learning, daemon, review, sdk, cli); edition 2024, MSRV 1.88, toolchain
   1.99.1. Internal edges: [`crate-edges.txt`](crate-edges.txt).
