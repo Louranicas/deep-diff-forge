@@ -6,6 +6,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-07
+
+**Security release.** v0.8.0 reviewed a rename to a different destination than `git apply`
+writes when a line Git does not read as a header (a blank line, any text) came between two
+`rename to` lines (independent rescore of v0.8.0, F1, high). Upgrade from 0.8.0; every change
+below is a fix or an addition, and no interface changes.
+
 ### Added
 
 - **Every council result names its schema** (low-severity finding of the 2026-11-04
@@ -2110,7 +2117,8 @@ A supply-chain & fuzz hardening pass then raised the release/CI posture:
   `--json`/`--jsonl` stability tests. Corrected the daemon's `lib.rs` doc from
   "thread-per-connection" to the true single-threaded sequential accept loop.
 
-[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.1
 [0.8.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.0
 [0.7.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.7.0
 [0.6.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.6.0
