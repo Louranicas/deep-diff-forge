@@ -999,3 +999,69 @@ are fixed with it, and the oracle now breaks every extended-header position
 The low-severity items left open on 2026-11-04 are fixed on `main`: the council's results name
 their schema; a release is built only from a signed tag on `main`; a signal stops the daemon
 without its socket path, and a second signal ends the drain. A rescore follows 0.8.1.
+
+## Assessment 2026-11-09 (`v0.8.1`, `d290379`; independent rescore)
+
+**Score: 80 / 100**, level with v0.8.0. F1 to F3 are fixed in the release: their repros exit 4.
+But two new high findings of the same kind turned up, both present since v0.8.0. As before, the
+assessor was a fresh agent with the rubric and a read-only checkout of the tag, but not the
+previous conclusions. It read the code, ran `cargo test -p deep-diff-forge-patch` (249 passed)
+and drove the released binary. It wrote 191 probes and ran about 183,000 random line mutants,
+each compared against `git apply --numstat` and `--summary`. Each finding below was reproduced
+by hand against Git 2.56 with a real apply before it was acted on.
+
+| Facet | Weight | 2026-11-07 (v0.8.0) | 2026-11-09 (v0.8.1) |
+| --- | ---: | ---: | ---: |
+| Correctness and patch-truth integrity | 20 | 15 | 14 |
+| Security and trust boundary | 15 | 12 | 11 |
+| Supply chain and release integrity | 15 | 13 | 14 |
+| Reliability and operability | 15 | 13 | 14 |
+| Platform and portability | 10 | 8 | 8 |
+| Interfaces and integration contracts | 15 | 12 | 13 |
+| Documentation, governance and evidence | 10 | 7 | 6 |
+| **Total** | 100 | **80** | **80** |
+
+**Up (measured):**
+
+- A release is built only from a signed tag whose commit is on `main`.
+- A signal stops the daemon after its socket path is gone, a second signal ends the drain, and
+  an idle daemon uses no CPU.
+- Council results name their schema.
+
+**The new findings (measured; fixed on `main` after v0.8.1):**
+
+- **N1 (high).** DDF never read `copy to`, so a copy was reviewed under the `diff --git` or
+  `+++` name. `diff --git a/README.md b/docs/README-copy.md` with
+  `copy to .github/workflows/pwn.yml` and a hunk was reviewed as a docs copy (exit 0, CLI, `rpc`
+  and MCP) while `git apply` wrote the workflow with the hunk's content.
+- **N2 (high).** `diff --git a/.github/workflows/ci.yml …` with `--- README` / `+++ README`:
+  Git reads a name that `-p1` leaves nothing of as no name, and changed the workflow. DDF
+  reviewed `README`.
+- **N3 (medium).** Repeated mode headers, and an `index` line's mode: Git keeps the last, and
+  made a script executable that DDF, reading the first, showed unchanged.
+
+The oracle compared numstat only, never modes or copies, and its mutants never wrote `copy to`
+or a name without a `/`. It now compares `--summary` too and inserts each of those
+(`no_duplicated_or_copy_header_mutant_reads_differently_from_git`). Its first run on the fix
+found two further readings Git refuses, which are refused now as well: a second `---`/`+++`
+pair before a Git section's first hunk, and a new or deleted file whose `+++` or `---` differs
+from the `diff --git` name.
+
+**Down:** the README called 0.8.1 production-ready and its differential complete over "every
+extended-header position"; it compared numstat only. Both statements are corrected.
+
+**Open:**
+
+- crates.io `0.2.0` is still installable and not yanked (owner decision; F4).
+- Ten idle same-user connections block `health` and `stop` until they time out (F5).
+- The status lines inside a release archive still say "not yet tagged" (F6).
+- `Linux arm64 tests` and `macOS launchd agent` are not required checks (F7).
+- The differential is not in the fuzz harness.
+- **Low:** DDF accepts some inputs Git refuses, which it reviews as changes that never apply:
+  - empty or patch-free input (exit 0, no files);
+  - binary bodies it does not decode;
+  - a `diff --git` line with two different names and no other name, which is the form
+    `git diff --no-index` writes for the file-pair mode.
+
+  A traditional `@@ -0,0` hunk on `--- a/x` creates a file to Git and is labelled `modified`;
+  its content is shown in full.

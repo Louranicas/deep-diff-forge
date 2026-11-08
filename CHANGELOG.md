@@ -6,6 +6,35 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Security
+
+- **A copy's reviewed destination is the one Git writes** (independent rescore of v0.8.1, N1,
+  high). Git takes a copy's new path from its last `copy to` line; DDF never read that line and
+  reviewed the `diff --git` or `+++` name instead. `diff --git a/README.md b/docs/README-copy.md`
+  with `copy to .github/workflows/pwn.yml` and a hunk was reviewed as a docs copy (exit 0, CLI,
+  `rpc` and MCP `review_outline`) while `git apply` wrote the workflow with the hunk's content.
+  Present since `copy` headers were first read; measured on v0.8.0 and v0.8.1 with Git 2.56.
+  The last `copy to` is now the reviewed path, as Git reads it.
+- **A Git section's `---`/`+++` name that `-p1` leaves nothing of is refused** (rescore N2,
+  high). Git reads `--- README` as no name and keeps the `diff --git` one, so
+  `diff --git a/.github/workflows/ci.yml …` with `--- README` / `+++ README` changed the
+  workflow while DDF reviewed `README`. No tool writes this form; it is refused (exit 4).
+- **A repeated mode header, or an `index` mode beside a mode header, is refused** (rescore N3,
+  medium). Git keeps the last of each, and reads an `index` line's mode as the old mode, so
+  `old mode 100755` / `new mode 100755` / `index … 100644` made a script executable while DDF,
+  reading the first, showed no mode change. Git never writes either form.
+- **What Git refuses as inconsistent is refused**: a section that is both a rename and a copy, a
+  `+++` that differs from the `rename to` or `copy to` name, a new file's `+++` or a deleted
+  file's `---` that differs from the `diff --git` name, and a second `---`/`+++` pair before a
+  Git section's first hunk (rescore L2 and oracle mutants). Each was reviewed as a change that
+  never applies.
+- Test: `no_duplicated_or_copy_header_mutant_reads_differently_from_git`. The `git apply` oracle
+  now compares `--summary` as well as `--numstat`: copies and the paths they write, created and
+  deleted files, and mode changes. The test asserts the findings, then inserts each kind of
+  extended header, a duplicate mode, an `index` mode, `copy to`, a nameless `---`/`+++` and a
+  mismatched name at every position of five Git sections; each case must be refused or read
+  exactly as Git reads it. Control: it fails on the v0.8.1 parser at N1.
+
 ## [0.8.1] - 2026-11-07
 
 Tagged `v0.8.1` at `d290379` (2026-11-08), signed.

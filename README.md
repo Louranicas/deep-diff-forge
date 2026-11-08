@@ -983,7 +983,12 @@ per-round history. This section is a map, not a copy.
 
 ## Project status
 
-**0.8.1 is production-ready for its declared scope.** That scope is a local, single-user
+**0.8.1 is not production-ready.** Its independent rescore (2026-11-09) scored
+[80/100](docs/PRODUCTION_READINESS.md#assessment-2026-11-09-v081-d290379-independent-rescore)
+and found two high findings, both present since 0.8.0: a copy, and a `---`/`+++` name with
+nothing after its first component, could each be reviewed as a different file than the one
+`git apply` writes. Both are fixed on `main` and ship in the next release. The declared scope
+is a local, single-user
 review tool on Linux and macOS ([the four targets](#supported-platforms)): CLI, Unix-socket
 daemon, `rpc`, MCP and SDKs, released as GitHub binaries. A scored assessment (2026-10-30, [83/100](docs/PRODUCTION_READINESS.md)) named
 the gaps that 0.4.0 closed: daemon requests run in parallel, the socket checks peer
@@ -1007,8 +1012,9 @@ came with it (Git's hunk grammar byte for byte, checked against `git apply`; bou
 processes; a daemon response deadline). An independent rescore of v0.8.0 (2026-11-07) also
 scored [80/100](docs/PRODUCTION_READINESS.md#assessment-2026-11-07-v080-dd1aa89-independent-rescore):
 a line between two `rename to` headers made the review name a destination Git did not write.
-0.8.1 fixes that, with a `git apply` differential over every extended-header position, and is
-rescored next. The evidence below was
+0.8.1 fixes that, with a `git apply` differential that breaks every extended-header position.
+That differential compared line counts only; it now compares Git's summary too (copies,
+created and deleted files, and modes). The evidence below was
 measured for `v0.3.0` on 2026-10-29 and still holds:
 
 - **Release dry run.** The release workflow passed at `478db26`: every quality gate including
