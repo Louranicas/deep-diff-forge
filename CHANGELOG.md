@@ -8,6 +8,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [0.8.1] - 2026-11-07
 
+Tagged `v0.8.1` at `d290379` (2026-11-08), signed.
+
 **Security release.** v0.8.0 reviewed a rename to a different destination than `git apply`
 writes when a line Git does not read as a header (a blank line, any text) came between two
 `rename to` lines (independent rescore of v0.8.0, F1, high). Upgrade from 0.8.0; every change

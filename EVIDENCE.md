@@ -1247,3 +1247,19 @@ Measured with `gh` on 2026-11-02.
   - For x86_64 Linux: `sha256sum -c` passed, and the binary prints `deep-diff-forge 0.8.0`.
   - `gh attestation verify` passed: predicate `https://slsa.dev/provenance/v1`, source ref `refs/tags/v0.8.0` at `dd1aa89`, signer `release.yml@refs/tags/v0.8.0`.
 - **The headline fix, on the released binary.** A patch whose second hunk header is `@@-1,1 +1,1 @@` (no space), followed by `diff --git a/evil b/evil`, is refused: `--stdin-patch --json` exits 4 with `malformed hunk header at line 7`. v0.7.0 reviewed one file where `git apply` wrote two (DDF-PATCH-HUNKSMUGGLE-001).
+
+## v0.8.1 release (2026-11-08)
+
+- **Inputs.**
+  - The independent rescore of v0.8.0 (2026-11-07, 80/100) found F1 (high): a line Git does not read as a header between two `rename to` lines made the review name a destination Git did not write.
+  - PRs #106 to #110 merged: the tag-on-main check, the F1 fix with a `git apply` differential (#107), the daemon's signal handling, council result schemas, and a macOS test-timing fix.
+  - PR #111 (prepare 0.8.1, a patch release) merged at `d290379`. Before its push, `scripts/ci_local.sh` reported `steps failed: 0` (1,942 tests).
+  - Release dry run [42336058309](https://github.com/Louranicas/deep-diff-forge/actions/runs/42336058309) on `d290379` passed: the quality gate and four builds.
+- **Tag.** `just release-tag 0.8.1` (through the owner's `release_tag.sh`) ran at `d290379`, after the release gate passed and gitleaks found no leaks. It pushed the signed annotated tag `v0.8.1` (object `dc89a82`) to GitHub and GitLab. `git tag -v v0.8.1` against `.github/allowed_signers` reports a good signature for ED25519 `SHA256:h4S5C3lX4poSYOx8ii8yezKBlp5pQf2jy168XgwWR8I`, and `scripts/verify_release_tag.sh` confirms the tag's commit is on `main`.
+- **Release run [42480066117](https://github.com/Louranicas/deep-diff-forge/actions/runs/42480066117).** Attempt 1 passed (12:24Z to 13:18Z on 2026-11-08): the supply chain gate, the quality gate, four builds and the GitHub Release. The crates.io publish was skipped (owner-gated).
+- **Immutable.** `gh release view v0.8.1` reports `isImmutable: true`.
+- **Artifacts.**
+  - Nine assets: four archives, their `.sha256` files, and `sbom.spdx.json`.
+  - For x86_64 Linux: `sha256sum -c` passed, and the binary prints `deep-diff-forge 0.8.1`.
+  - `gh attestation verify` passed: predicate `https://slsa.dev/provenance/v1`, source ref `refs/tags/v0.8.1` at `d290379`, signer `release.yml@refs/tags/v0.8.1`.
+- **The headline fix, on the released binary.** The F1 patch has a rename from `docs/a.md`, then `rename to .github/workflows/pwn.yml`, then the line `note: reviewed`, then `rename to docs/harmless.md`. `git apply --summary` reports `rename docs/a.md => .github/workflows/pwn.yml`. v0.8.0's `review --probe` showed `harmless.md` as renamed and exited 0. v0.8.1 refuses the patch with exit 4: `file header out of place at line 6`.
