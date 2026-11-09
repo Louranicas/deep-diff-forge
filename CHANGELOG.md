@@ -10,9 +10,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 **Security release** ([GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp)). v0.8.1 and earlier could
 review a different file or mode than `git apply` writes: a copy under a name other than its
-`copy to`, a Git section whose `---`/`+++` name `-p1` leaves nothing of, and repeated mode
-headers (independent rescore of v0.8.1, N1 and N2 high, N3 medium). Upgrade from 0.8.1;
-every change below is a fix, and no interface changes.
+`copy to`, a Git section whose `---`/`+++` name `-p1` leaves nothing of, repeated mode
+headers (independent rescore of v0.8.1, N1 and N2 high, N3 medium), a copy, rename or mode
+line after a binary line, and a move name with a carriage return in it (rescore of the
+untagged 0.8.2, F1 high, F2 medium). Upgrade from 0.8.1; every change below is a fix, and no
+interface changes.
 
 ### Security
 
@@ -27,6 +29,22 @@ every change below is a fix, and no interface changes.
   high). Git reads `--- README` as no name and keeps the `diff --git` one, so
   `diff --git a/.github/workflows/ci.yml …` with `--- README` / `+++ README` changed the
   workflow while DDF reviewed `README`. No tool writes this form; it is refused (exit 4).
+- **A binary line ends a Git section's header** (independent rescore of `af5c3d1`, the
+  untagged 0.8.2, F1, high). Git stops reading extended headers at `Binary files … differ` and
+  `GIT binary patch`, and its patch for the section ends there. DDF read on, so
+  `diff --git a/.github/workflows/ci.yml …` with an `index` line, `Binary files … differ`, then
+  `copy from docs/logo.png` / `copy to docs/logo-copy.png` was reviewed as a binary copy of a
+  logo (exit 0, CLI and MCP `review_outline`) while `git apply` rewrote the workflow from the
+  `index` line's blob, which only has to be in the object database. A `rename` after the binary
+  line did the same in v0.8.1; the N1 fix above made the copy form hide the workflow path too.
+  A header, `---`/`+++` or hunk after a binary line is now refused, as are `GIT binary patch`
+  with trailing text, `Binary files` without `differ`, and a `GIT binary patch` with no
+  `literal` or `delta` line, which Git refuses.
+- **A move name with a carriage return in it is refused** (same rescore, F2, medium). Git reads
+  an unquoted `rename to`/`copy to` name only up to a carriage return (or vertical tab or form
+  feed), so `rename to build.rs\rdocs/notes.md` created `build.rs` while the review showed the
+  whole line with a control-character hazard but no build-script signal. Git quotes such names,
+  so an unquoted one is refused (exit 4).
 - **A repeated mode header, or an `index` mode beside a mode header, is refused** (rescore N3,
   medium). Git keeps the last of each, and reads an `index` line's mode as the old mode, so
   `old mode 100755` / `new mode 100755` / `index … 100644` made a script executable while DDF,
@@ -42,6 +60,10 @@ every change below is a fix, and no interface changes.
   extended header, a duplicate mode, an `index` mode, `copy to`, a nameless `---`/`+++` and a
   mismatched name at every position of five Git sections; each case must be refused or read
   exactly as Git reads it. Control: it fails on the v0.8.1 parser at N1.
+- Test: `no_header_after_a_binary_line_or_control_in_a_move_name_is_read`, with binary lines and
+  control-character move names added to the inserted headers. Control: both tests fail on
+  `af5c3d1`. The refusal message for contradictory headers now names repeated modes and
+  rename-and-copy, not only a new or deleted file.
 
 ## [0.8.1] - 2026-11-07
 

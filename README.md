@@ -987,8 +987,9 @@ per-round history. This section is a map, not a copy.
 [80/100](docs/PRODUCTION_READINESS.md#assessment-2026-11-09-v081-d290379-independent-rescore)
 and found two high findings, both present since 0.8.0: a copy, and a `---`/`+++` name with
 nothing after its first component, could each be reviewed as a different file than the one
-`git apply` writes ([GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp)). 0.8.2 fixes both, and is rescored once
-released. The declared scope
+`git apply` writes ([GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp)). 0.8.2 fixes both, and two more
+of the kind that a rescore of the untagged 0.8.2 found (a header after a binary line, and a
+carriage return in a move name); it is rescored once released. The declared scope
 is a local, single-user
 review tool on Linux and macOS ([the four targets](#supported-platforms)): CLI, Unix-socket
 daemon, `rpc`, MCP and SDKs, released as GitHub binaries. A scored assessment (2026-10-30, [83/100](docs/PRODUCTION_READINESS.md)) named

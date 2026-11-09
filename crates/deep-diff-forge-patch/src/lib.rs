@@ -102,7 +102,8 @@ pub enum PatchParseError {
     /// Git ignores such lines, so taking them as headers changed what the review showed.
     MisplacedHeader { line_number: usize },
     /// The headers contradict each other: `new file mode` with an old path that is not
-    /// `/dev/null`, or `deleted file mode` with a new path that is not.
+    /// `/dev/null`, `deleted file mode` with a new path that is not, a repeated mode header (or an
+    /// `index` mode beside one), or a section that is both a rename and a copy.
     InconsistentHeader { line_number: usize },
     /// The patch ends inside a hunk line that has no line feed, which Git refuses as corrupt.
     UnterminatedLine { line_number: usize },
@@ -243,7 +244,7 @@ impl std::fmt::Display for PatchParseError {
             ),
             Self::InconsistentHeader { line_number } => write!(
                 f,
-                "contradictory file headers ending at line {line_number} (new or deleted file without /dev/null)"
+                "contradictory file headers ending at line {line_number} (a new or deleted file without /dev/null, a repeated mode, or a move that is both a rename and a copy)"
             ),
             Self::UnterminatedLine { line_number } => write!(
                 f,
