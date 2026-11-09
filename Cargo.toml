@@ -23,7 +23,7 @@ resolver = "2"
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Louranicas/deep-diff-forge"
@@ -59,20 +59,20 @@ allow_attributes_without_reason = "deny"
 # version bump is a single edit to `[workspace.package].version` + the lines
 # below.
 [workspace.dependencies]
-deep-diff-forge-core = { path = "crates/deep-diff-forge-core", version = "0.8.1" }
-deep-diff-forge-patch = { path = "crates/deep-diff-forge-patch", version = "0.8.1" }
-deep-diff-forge-projection = { path = "crates/deep-diff-forge-projection", version = "0.8.1" }
-deep-diff-forge-pipeline = { path = "crates/deep-diff-forge-pipeline", version = "0.8.1" }
-deep-diff-forge-syntax = { path = "crates/deep-diff-forge-syntax", version = "0.8.1" }
-deep-diff-forge-graph = { path = "crates/deep-diff-forge-graph", version = "0.8.1" }
-deep-diff-forge-agent = { path = "crates/deep-diff-forge-agent", version = "0.8.1" }
-deep-diff-forge-tui = { path = "crates/deep-diff-forge-tui", version = "0.8.1" }
-deep-diff-forge-cluster = { path = "crates/deep-diff-forge-cluster", version = "0.8.1" }
-deep-diff-forge-learning = { path = "crates/deep-diff-forge-learning", version = "0.8.1" }
-deep-diff-forge-daemon = { path = "crates/deep-diff-forge-daemon", version = "0.8.1" }
-deep-diff-forge-sdk = { path = "crates/deep-diff-forge-sdk", version = "0.8.1" }
+deep-diff-forge-core = { path = "crates/deep-diff-forge-core", version = "0.8.2" }
+deep-diff-forge-patch = { path = "crates/deep-diff-forge-patch", version = "0.8.2" }
+deep-diff-forge-projection = { path = "crates/deep-diff-forge-projection", version = "0.8.2" }
+deep-diff-forge-pipeline = { path = "crates/deep-diff-forge-pipeline", version = "0.8.2" }
+deep-diff-forge-syntax = { path = "crates/deep-diff-forge-syntax", version = "0.8.2" }
+deep-diff-forge-graph = { path = "crates/deep-diff-forge-graph", version = "0.8.2" }
+deep-diff-forge-agent = { path = "crates/deep-diff-forge-agent", version = "0.8.2" }
+deep-diff-forge-tui = { path = "crates/deep-diff-forge-tui", version = "0.8.2" }
+deep-diff-forge-cluster = { path = "crates/deep-diff-forge-cluster", version = "0.8.2" }
+deep-diff-forge-learning = { path = "crates/deep-diff-forge-learning", version = "0.8.2" }
+deep-diff-forge-daemon = { path = "crates/deep-diff-forge-daemon", version = "0.8.2" }
+deep-diff-forge-sdk = { path = "crates/deep-diff-forge-sdk", version = "0.8.2" }
 
-deep-diff-forge-review = { path = "crates/deep-diff-forge-review", version = "0.8.1" }
+deep-diff-forge-review = { path = "crates/deep-diff-forge-review", version = "0.8.2" }
 # Test-only and never published: path only, so `cargo publish` strips it from dev-dependencies
 # (deny.toml `allow-wildcard-paths` admits exactly this). Never a normal dependency (B-05 table).
 deep-diff-forge-testkit = { path = "crates/deep-diff-forge-testkit" }
