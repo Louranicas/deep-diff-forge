@@ -415,8 +415,9 @@ impl Parser {
         if self.try_metadata(line, line_number)? {
             // `parse_git_diff_header` reads extended headers until the first other line, and a
             // hunk may begin there; a `diff --git` line alone is no header to Git
-            // (`git_hdr_len <= len`), so the hunk needs one of these first.
-            self.hunk_may_open = true;
+            // (`git_hdr_len <= len`), so the hunk needs one of these first. A binary line ends
+            // the section's patch, so no hunk may follow it.
+            self.hunk_may_open = !self.file.as_ref().is_some_and(|f| f.header_ended);
             return Ok(LineUse::Interpreted);
         }
         // `git format-patch` writes a bare `---` before the diffstat and a `-- ` signature after
@@ -630,7 +631,15 @@ impl Parser {
         }
         // Git squashes the repeated slashes of a moved path (`find_name`), so `rename to
         // .github//workflows/ci.yml` writes `.github/workflows/ci.yml`.
+        //
+        // Git reads an unquoted move name up to the first whitespace other than a space or tab
+        // (`find_name` with no terminator), so `rename to build.rs\rdocs/notes.md` writes
+        // `build.rs` while the review showed the whole line (rescore of `af5c3d1`, F2). Git
+        // quotes a name with a control character, so an unquoted one is refused.
         let moved_path = |path: &str| {
+            if !path.starts_with('"') && path.contains(['\r', '\x0b', '\x0c']) {
+                return Err(PatchParseError::InvalidPath { line_number });
+            }
             super::paths::decode_path(path)
                 .filter(|p| !git_refuses_path(p))
                 .map(|p| squash_slashes(&p))
@@ -677,7 +686,20 @@ impl Parser {
             return Err(PatchParseError::InconsistentHeader { line_number });
         }
         if META_PREFIXES.iter().any(|p| line.starts_with(p)) {
+            // `GIT binary patch` and `Binary files … differ` are not extended headers to Git:
+            // `parse_git_diff_header` stops at them, and the section's patch ends there. Read on,
+            // a later `copy to`, `rename to` or mode line named a file or mode Git never touched,
+            // while Git rewrote the `diff --git` file from the blob in the `index` line (rescore of
+            // `af5c3d1`, F1). They now end the header, so any header after them is refused, and
+            // so is a line Git would not take for either (`GIT binary patchX`, no `differ`).
+            let literal = line.starts_with("GIT binary patch");
+            let marker = line.starts_with("Binary files ");
+            if (literal && line != "GIT binary patch") || (marker && !line.ends_with(" differ")) {
+                return Err(PatchParseError::UnsupportedFormat { line_number });
+            }
+            let binary = literal || marker;
             file.in_binary_body |= line == "GIT binary patch";
+            file.header_ended |= binary;
             file.metadata.push(line.to_string());
             return Ok(true);
         }
@@ -766,11 +788,16 @@ impl Parser {
                     line_number: self.last_line,
                 });
             }
-            if !file.hunks.is_empty()
-                && file
-                    .metadata
-                    .iter()
-                    .any(|m| m == "GIT binary patch" || m.starts_with("Binary files "))
+            // A binary file has no text hunks: a binary line ends the header, after which `---`,
+            // `+++` and `@@` are refused (`try_metadata`), and after a hunk the binary line is.
+            // Git's `parse_binary` needs a `literal` or `delta` line first and refuses the patch
+            // without one ("unrecognized binary patch"); an empty body was reviewed as a binary
+            // change (the oracle's mutants, after F1).
+            if file.in_binary_body
+                && !file
+                    .binary_body
+                    .first()
+                    .is_some_and(|l| l.starts_with("literal ") || l.starts_with("delta "))
             {
                 return Err(PatchParseError::UnsupportedFormat {
                     line_number: self.last_line,
@@ -2576,10 +2603,6 @@ diff --git a/x b/x
                 "deleted from /dev/null",
                 "deleted file mode 100644\n--- /dev/null\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n",
             ),
-            (
-                "new and binary with a hunk",
-                "new file mode 100644\nBinary files /dev/null and b/x differ\n--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+a\n",
-            ),
         ] {
             let err = parse(&format!("{git}{body}")).unwrap_err();
             assert!(
@@ -2587,15 +2610,23 @@ diff --git a/x b/x
                 "{case}: {err:?}"
             );
         }
-        // Text hunks beside binary markers on an ordinary file are an unsupported format.
-        let err = parse(&format!(
-            "{git}Binary files a/x and b/x differ\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"
-        ))
-        .unwrap_err();
-        assert!(
-            matches!(err, PatchParseError::UnsupportedFormat { .. }),
-            "{err:?}"
-        );
+        // Text beside a binary marker: Git's patch for the section ends at the marker, so a
+        // `---`/`+++` or hunk after it is out of place, and a marker after a hunk is too.
+        for body in [
+            "new file mode 100644\nBinary files /dev/null and b/x differ\n--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+a\n",
+            "Binary files a/x and b/x differ\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+            "index 1111111..2222222 100644\nBinary files a/x and b/x differ\n@@ -1 +1 @@\n-a\n+b\n",
+            "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\nBinary files a/x and b/x differ\n",
+        ] {
+            let err = parse(&format!("{git}{body}")).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    PatchParseError::MisplacedHeader { .. } | PatchParseError::MisplacedHunk { .. }
+                ),
+                "{body:?}: {err:?}"
+            );
+        }
     }
 
     /// `git format-patch` output parses (bug hunt 2026-10-28, H1-07): the bare `---` before the

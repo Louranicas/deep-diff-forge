@@ -1065,3 +1065,42 @@ extended-header position"; it compared numstat only. Both statements are correct
 
   A traditional `@@ -0,0` hunk on `--- a/x` creates a file to Git and is labelled `modified`;
   its content is shown in full.
+
+## Assessment 2026-11-09 (`main` `af5c3d1`, the untagged 0.8.2; independent rescore before the tag)
+
+**Score: 80 / 100**, level with v0.8.1. A fresh assessor scored the code to be tagged as v0.8.2, with the rubric and a read-only checkout, and read the previous section only after forming a view. N1 to N3 are fixed: the copy is read as Git reads it, and N2 and N3 exit 4. But one new high finding and one medium of the same kind turned up, so the tag waited for their fix. The facets are unchanged from v0.8.1 (14, 11, 14, 14, 8, 13, 6). There is no release yet, so supply chain was scored on the v0.8.1 pipeline and the green CI on `af5c3d1`.
+
+**Method (measured):** 34 hand probes, a random differential of 36,000 cases over six seeds (one or two sections, up to four random extended headers of every kind, names with directories, quotes, UTF-8, CR, tab and `a//b`, CRLF and an unterminated last line), each compared against `git apply --numstat -z` and `--summary` with Git 2.56. Workspace tests: 1,939 passed. Both findings were reproduced by hand against a real `git apply` before they were fixed.
+
+**The findings (fixed before the tag):**
+
+- **F1 (high).** Git ends a section's extended header at `Binary files … differ` or `GIT binary patch`; DDF read on. `diff --git a/.github/workflows/ci.yml …`, an `index` line, `Binary files … differ`, then `copy from docs/logo.png` / `copy to docs/logo-copy.png` was reviewed as a binary copy of a logo (exit 0, CLI and MCP), while `git apply` rewrote the workflow from the `index` blob. The blob only has to be in the object database, for example from any fetched branch. The rename form was already in v0.8.1. The N1 fix moved the copy form's reviewed path off the workflow entirely. Mode lines after the binary line showed a mode change Git never makes.
+- **F2 (medium).** Git reads an unquoted move name only up to a carriage return. `rename to build.rs\rdocs/notes.md` created `build.rs`; DDF showed the whole line with a control hazard but no build-script signal.
+
+**Fix:**
+- A binary line ends the header. Any header, `---`/`+++` or hunk after it is refused.
+- These are refused too:
+  - `GIT binary patch` with trailing text;
+  - `Binary files` without `differ`;
+  - a binary patch with no `literal` or `delta` line. The oracle's first run on the fix found this one.
+- An unquoted move name with CR, vertical tab or form feed is refused.
+- The differential inserts binary lines and control-character names at every position, plus `no_header_after_a_binary_line_or_control_in_a_move_name_is_read`. Both tests fail on `af5c3d1`.
+- The refusal for contradictory headers now names its causes (the assessor's L-e).
+
+**Open (unchanged unless noted):**
+
+- F4 (crates.io 0.2.0 not yanked).
+- F5: twelve idle connections make `health` and `stop` fail in about 3 ms with exit 6.
+- F6: the release-archive status lines.
+- F7: the arm64 and launchd checks are not required.
+- The differential is not in the fuzz harness.
+- **Lows:**
+  - empty input exits 0;
+  - binary bodies are not decoded;
+  - a nameless `diff --git`;
+  - a traditional `@@ -0,0` is labelled modified;
+  - `Binary files` straight after `diff --git` shows a file Git reads no patch for;
+  - `Files a/x and b/x differ` is binary to Git and shown as modified;
+  - `rename from dir//x` shows the unsquashed old path;
+  - a binary copy or rename keeps the `binary_changed` status, so whether the old path survives shows only in its metadata.
+- **Regressions:** none on input Git writes. 85 of 36,000 cases v0.8.1 read correctly are now refused on purpose: repeated or `index` modes, and nameless `---`/`+++` names, forms no Git writes.

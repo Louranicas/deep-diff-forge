@@ -167,7 +167,11 @@ fn ddf_summary(files: &[ReviewFile]) -> Vec<Summary> {
             || says("copy from ")
             || says("similarity index ")
             || says("dissimilarity index ");
-        if file.status == FileStatus::Copied {
+        // A binary copy keeps the `binary_changed` status, with the copy in its metadata and
+        // `old_path`.
+        if file.status == FileStatus::Copied
+            || (file.status == FileStatus::BinaryChanged && says("copy from "))
+        {
             lines.push(Summary::Copy {
                 from: deep_diff_forge_patch::old_path(file).unwrap_or_default(),
                 to: file.path.clone(),
@@ -413,7 +417,11 @@ fn no_extended_header_mutant_reads_differently_from_git() {
 
 /// Header lines a mutant adds to a Git section: each kind of extended header, `---`/`+++` names
 /// that `-p1` leaves nothing of, and names that differ from the section's own.
-const EXTRA_HEADERS: [&str; 14] = [
+const EXTRA_HEADERS: [&str; 18] = [
+    "Binary files a/x and b/x differ",
+    "GIT binary patch",
+    "rename to build.rs\rdocs/notes.md",
+    "copy to x\x0bdocs/y",
     "copy to .github/workflows/pwn.yml",
     "copy from elsewhere",
     "rename to .github/workflows/pwn.yml",
@@ -519,6 +527,52 @@ fn no_duplicated_or_copy_header_mutant_reads_differently_from_git() {
         accepted > 10 && refused > 100,
         "accepted {accepted}, refused {refused}"
     );
+}
+
+/// Independent rescore of `af5c3d1` (F1, F2): Git ends a section's extended header at a
+/// `Binary files … differ` or `GIT binary patch` line, and reads an unquoted move name only up
+/// to a carriage return (or other whitespace that is not a space or tab). DDF read headers after
+/// a binary line as the section's own, so a `copy to` or `rename to` there showed a harmless file
+/// while Git rewrote the `diff --git` file (the workflow) from its `index` blob; and it showed
+/// `build.rs\rdocs/notes.md` where Git wrote `build.rs`. Git applies every finding below; DDF
+/// must refuse each one.
+#[test]
+fn no_header_after_a_binary_line_or_control_in_a_move_name_is_read() {
+    let scratch = Scratch::new("binary-header");
+    let root = scratch.0.path();
+    let workflow = "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\nindex 1111111..2222222 100644\nBinary files a/.github/workflows/ci.yml and b/.github/workflows/ci.yml differ\n";
+    let findings = [
+        // F1: Git rewrites the workflow; DDF showed `docs/logo-copy.png` or `docs/logo-v2.png`.
+        format!("{workflow}copy from docs/logo.png\ncopy to docs/logo-copy.png\n"),
+        format!("{workflow}rename from docs/logo.png\nrename to docs/logo-v2.png\n"),
+        // F1, mode: DDF showed a mode change Git never makes.
+        format!("{workflow}old mode 100644\nnew mode 100755\n"),
+        // F2: Git writes `build.rs`, with the hunk's content.
+        "diff --git a/docs/a.md b/docs/a.md\nsimilarity index 50%\nrename from docs/a.md\nrename to build.rs\rdocs/notes.md\n@@ -1 +1 @@\n-hello\n+fn main() {}\n".to_owned(),
+        "diff --git a/docs/a.md b/docs/b.md\nsimilarity index 100%\ncopy from docs/a.md\ncopy to build.rs\rdocs/b.md\n".to_owned(),
+    ];
+    for patch in &findings {
+        assert!(
+            git_numstat(root, patch.as_bytes()).is_some(),
+            "git applies the finding: {patch:?}"
+        );
+        assert!(!reads_as_git_does(root, patch.as_bytes()), "ddf: {patch:?}");
+    }
+    // Lines Git would not take for a binary marker are refused too, not read as one.
+    for patch in [
+        "diff --git a/x b/x\nGIT binary patchX\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+        "diff --git a/x b/x\nindex 1111111..2222222 100644\nBinary files a/x and b/x\n",
+    ] {
+        assert!(!reads_as_git_does(root, patch.as_bytes()), "ddf: {patch:?}");
+    }
+    // Controls: the binary sections Git writes, and a quoted move name, are still reviewed.
+    for patch in [
+        workflow.to_owned(),
+        "diff --git a/x b/y\nsimilarity index 100%\nrename from x\nrename to y\n".to_owned(),
+        "diff --git a/x b/y\nsimilarity index 100%\nrename from x\nrename to \"y z\"\n".to_owned(),
+    ] {
+        assert!(reads_as_git_does(root, patch.as_bytes()), "{patch:?}");
+    }
 }
 
 /// A file's hunks are one unbroken run, as Git reads them; Git's verdict is asked for each case.
