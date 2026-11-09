@@ -35,8 +35,8 @@ Underneath sits one rule. The apply-able patch is truth, and nothing may rewrite
   <sub>Real output, not a mock-up: <code>scripts/docs/render_terminal_svg.py</code> runs the binary on the crate changes of PR #23 and draws what it prints.</sub>
 </p>
 
-> **Status: 0.8.1, released 2026-11-08 as the signed tag `v0.8.1`.** It fixes a review of rename headers in v0.8.0 that differed from `git apply` ([CHANGELOG](CHANGELOG.md)).
-> - **Ready** for its declared scope: a local, single-user review tool on Linux and macOS ([the exact targets](#supported-platforms)), covering the CLI, daemon, `rpc`, MCP and SDKs. All four targets are built and smoke-tested on current CI runners. The oldest OS versions listed are declared from the binaries, not run. The [verdict and its evidence](#project-status) are below.
+> **Status: 0.8.2 on `main` (2026-11-09), not yet tagged.** It fixes reviews of copies, nameless `---`/`+++` names and repeated mode headers in v0.8.1 that differed from `git apply` ([advisory](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp), [CHANGELOG](CHANGELOG.md)).
+> - **Declared scope:** a local, single-user review tool on Linux and macOS ([the exact targets](#supported-platforms)), covering the CLI, daemon, `rpc`, MCP and SDKs. All four targets are built and smoke-tested on current CI runners. The oldest OS versions listed are declared from the binaries, not run. The [verdict and its evidence](#project-status) are below.
 > - **Releases:** the latest release is [v0.8.1](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.1), with Linux (x86_64 and arm64) and macOS binaries, an SPDX SBOM and build provenance.
 > - **crates.io:** publication is on hold by decision until the codebase is fully production-hardened.
 
@@ -189,13 +189,13 @@ curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.8.1/
 sha256sum -c deep-diff-forge-v0.8.1-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
-**From source** (`main`: 0.8.1, everything in this README). This needs Rust **1.88+** (edition 2024):
+**From source** (`main`: 0.8.2, everything in this README). This needs Rust **1.88+** (edition 2024):
 
 ```bash
 git clone https://github.com/Louranicas/deep-diff-forge.git
 cd deep-diff-forge
 cargo build --release --locked -p deep-diff-forge-cli
-target/release/deep-diff-forge --version        # deep-diff-forge 0.8.1
+target/release/deep-diff-forge --version        # deep-diff-forge 0.8.2
 target/release/deep-diff-forge --self-test
 ```
 
@@ -514,7 +514,7 @@ An empty list never means the text is safe. They also raise the file's rank
 {
   "schema": "deep-diff-forge.rank.v0",
   "input_sha256": "9317219840467a00fbb7bc3ff905b0ae26a999582c12c8d02f49d380b398bbb3",
-  "tool": {"name": "deep-diff-forge", "version": "0.8.1"},
+  "tool": {"name": "deep-diff-forge", "version": "0.8.2"},
   "ranked": [
     {"path": "src/lib.rs", "status": "modified", "score": 7, "signals": ["public_api_surface"]},
     {"path": "tests/it.rs", "status": "modified", "score": 1, "signals": ["test_only"]}
@@ -704,7 +704,7 @@ invalid) the daemon fails closed until you pass `--socket PATH`.
 ```bash
 deep-diff-forge daemon start --foreground      # terminal 1
 deep-diff-forge daemon health                  # terminal 2
-# {"id":1,"jsonrpc":"2.0","result":{"cache_entries":0,"pid":…,"protocol":2,"retained_bytes":0,"sessions":0,"status":"ok","version":"0.8.1"}}
+# {"id":1,"jsonrpc":"2.0","result":{"cache_entries":0,"pid":…,"protocol":2,"retained_bytes":0,"sessions":0,"status":"ok","version":"0.8.2"}}
 deep-diff-forge daemon stop                    # answers what is in progress, returns once it has exited
 ```
 
@@ -987,7 +987,8 @@ per-round history. This section is a map, not a copy.
 [80/100](docs/PRODUCTION_READINESS.md#assessment-2026-11-09-v081-d290379-independent-rescore)
 and found two high findings, both present since 0.8.0: a copy, and a `---`/`+++` name with
 nothing after its first component, could each be reviewed as a different file than the one
-`git apply` writes. Both are fixed on `main` and ship in the next release. The declared scope
+`git apply` writes ([GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp)). 0.8.2 fixes both, and is rescored once
+released. The declared scope
 is a local, single-user
 review tool on Linux and macOS ([the four targets](#supported-platforms)): CLI, Unix-socket
 daemon, `rpc`, MCP and SDKs, released as GitHub binaries. A scored assessment (2026-10-30, [83/100](docs/PRODUCTION_READINESS.md)) named

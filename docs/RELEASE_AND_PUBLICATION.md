@@ -2,12 +2,12 @@
 
 This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
-## Status 2026-11-08 (0.8.1 released)
+## Status 2026-11-09 (0.8.2 prepared)
 
-- **0.8.1 is released** as the signed tag `v0.8.1` (2026-11-08), the latest tag: a security
-  release for v0.8.0's rename-header review (rescore F1). Immutable Releases is on (since
-  2026-11-05), so its assets and tag cannot change. Pushing any later `v*` tag is the owner's
-  decision.
+- `main` carries **0.8.2**, not yet tagged, a security release for v0.8.1's copy, name and
+  mode review (rescore N1-N3, GHSA-gp5v-m67f-gmgp). The signed `v0.8.1` (2026-11-08) is the
+  latest tag; Immutable Releases is on (since 2026-11-05). Pushing `v0.8.2`, or any later `v*`
+  tag, is the owner's decision.
 - Published GitHub releases: `v0.1.0` (2026-06-22), `v0.2.0` (2026-06-24) and
   `v0.3.0` (2026-10-29), `v0.4.0` (2026-10-30), `v0.5.0` (2026-10-31), `v0.6.0` (2026-11-02), `v0.7.0` (2026-11-03), `v0.8.0` (2026-11-07) and `v0.8.1` (2026-11-08). `0.2.1` was never tagged.
 - crates.io is on hold by owner decision until the codebase is
@@ -28,7 +28,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
 | Channel | Purpose | Today |
 | --- | --- | --- |
-| `main` | Current development branch. | 0.8.1, reached only through pull requests (branch ruleset). |
+| `main` | Current development branch. | 0.8.2, reached only through pull requests (branch ruleset). |
 | GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`. |
 | GitLab mirror | Secondary remote and redundancy. | Pushed to match GitHub. |
 | crates.io | Rust library and CLI distribution. | On hold (`DDF_CRATES_IO`). |
@@ -40,7 +40,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 Semantic versioning. The plan below is the original 2026-06 sequence, kept as
 written; the releases did not follow it (`v0.2.0` already held 12 crates,
 including the TUI, daemon and learning crates; the review and SDK crates came
-later; 0.8.1 is the current development line):
+later; 0.8.2 is the current development line):
 
 ```text
 0.1.0: model and CLI bootstrap
@@ -95,7 +95,7 @@ up-to-date branch, and allows no bypass. The tag is cut from that commit with
 the `justfile` recipe:
 
 ```bash
-just release-tag 0.8.1
+just release-tag 0.8.2
 ```
 
 `release-tag` refuses a version that differs from `[workspace.package].version`

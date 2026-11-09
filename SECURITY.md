@@ -6,11 +6,12 @@ an exceptional one. This policy documents the maintained security boundary,
 the controls enforced by the repository, and the limits operators must account
 for.
 
-## Status 2026-11-08 (0.8.1 released)
+## Status 2026-11-09 (0.8.2 prepared)
 
-- `v0.8.1` (2026-11-08, signed) is the latest release, a security release for v0.8.0's
-  rename-header review (rescore F1, high); upgrade from 0.8.0. Cutting any later `v*` tag is the
-  owner's decision. The published releases are `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`,
+- `main` carries 0.8.2, not yet tagged. `v0.8.1` (2026-11-08, signed) is the latest release;
+  it can review a different file or mode than `git apply` writes (rescore N1-N3,
+  [GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp)), which 0.8.2 fixes. Cutting `v0.8.2` or any later `v*` tag is
+  the owner's decision. The published releases are `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`,
   `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0` and `v0.8.1`. `0.2.1` was never tagged or published.
 - The controls below describe the code on `main`. The `v0.2.0` binaries were
   built on 2026-06-24 and predate the SOL-1 hardening (2026-09-04), the review
@@ -54,8 +55,8 @@ Fixes land on `main` first and reach users in the next tagged release.
 
 | Version | State | Security fixes |
 | --- | --- | --- |
-| `main` | 0.8.1 and later changes, untagged | Land here first. |
-| `v0.8.1` (2026-11-08) | Latest published release | Yes: the next release carries them. |
+| `main` | 0.8.2, not yet tagged | Land here first. |
+| `v0.8.1` (2026-11-08) | Latest published release | Yes: 0.8.2 carries them, the copy, name and mode fixes (N1-N3) first. |
 | `v0.8.0` (2026-11-07) | Published, superseded | No. It reviews a rename to a different destination than `git apply` writes when a non-header line comes between two `rename to` lines (rescore F1, high); 0.8.1 fixes it. |
 | `v0.7.0` (2026-11-03) | Published, superseded | No. It lacks the 0.8.0 hunk-header fix (a header without its space hid a file that `git apply` wrote), the refusal of non-UTF-8 file names, the daemon's response deadline for slow readers and the bounds on child processes. |
 | `v0.6.0` (2026-11-02) | Published, superseded | No. It lacks the 0.7.0 daemon read budget and request deadlines, the release workflow's tag-signature check and the DDF-FUZZ-PATCH-8 fix (a doubled slash in a `diff --git` name broke render stability). |

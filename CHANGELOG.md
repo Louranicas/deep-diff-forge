@@ -6,6 +6,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-09
+
+**Security release** ([GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp)). v0.8.1 and earlier could
+review a different file or mode than `git apply` writes: a copy under a name other than its
+`copy to`, a Git section whose `---`/`+++` name `-p1` leaves nothing of, and repeated mode
+headers (independent rescore of v0.8.1, N1 and N2 high, N3 medium). Upgrade from 0.8.1;
+every change below is a fix, and no interface changes.
+
 ### Security
 
 - **A copy's reviewed destination is the one Git writes** (independent rescore of v0.8.1, N1,
@@ -2148,7 +2156,8 @@ A supply-chain & fuzz hardening pass then raised the release/CI posture:
   `--json`/`--jsonl` stability tests. Corrected the daemon's `lib.rs` doc from
   "thread-per-connection" to the true single-threaded sequential accept loop.
 
-[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.2
 [0.8.1]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.1
 [0.8.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.0
 [0.7.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.7.0
