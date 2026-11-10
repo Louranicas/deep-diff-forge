@@ -29,10 +29,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 - **The Git differential puts one section's leftovers in front of another.** Its generated
   cases were single sections, so a name left by an earlier line was never in play. A bare
-  `diff --git` line, one line of every kind, then each section (115 cases) is now compared
-  with `git apply`, beside the findings themselves. Control: the new tests fail on the
-  v0.8.2 parser.
-- Test fixtures across the workspace used `diff --git` followed directly by `Binary files …
+  `diff --git` line, one of 23 lines (the extended headers, header breaks and binary body
+  lines), then each of five sections (115 cases) is now compared with `git apply`, beside the
+  findings themselves. Its summary comparison now includes the mode a file is created or
+  deleted with, which it dropped before: a symlink or an executable is created by its mode
+  alone. Control: the new tests fail on the v0.8.2 parser.
+- Twelve test fixtures in eleven files used `diff --git` followed directly by `Binary files …
   differ` as "a binary file". They now have the `index` line Git writes.
 
 ### Known limits (from the same rescore; not fixed here)

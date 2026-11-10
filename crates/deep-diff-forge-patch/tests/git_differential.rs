@@ -86,13 +86,14 @@ fn ddf_numstat(files: &[ReviewFile]) -> Vec<Numstat> {
 }
 
 /// One line of `git apply --summary` that numstat cannot show: a copy and the path it writes, a
-/// created or deleted file, or a mode change (`<move>` for a moved file's, which Git prints with
+/// created or deleted file with its mode (a symlink or an executable is created by its mode
+/// alone), or a mode change (`<move>` for a moved file's, which Git prints with
 /// no name). Paths are as Git prints them with `core.quotepath=false`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Summary {
     Copy { from: String, to: String },
-    Create(String),
-    Delete(String),
+    Create { mode: u32, path: String },
+    Delete { mode: u32, path: String },
     Mode { old: u32, new: u32, path: String },
 }
 
@@ -135,9 +136,17 @@ fn git_summary(root: &Path, patch: &[u8]) -> Option<Vec<Summary>> {
             let (from, to) = expand_move(rest);
             lines.push(Summary::Copy { from, to });
         } else if let Some(rest) = line.strip_prefix("create mode ") {
-            lines.push(Summary::Create(rest.split_once(' ')?.1.to_owned()));
+            let (mode, name) = rest.split_once(' ')?;
+            lines.push(Summary::Create {
+                mode: u32::from_str_radix(mode, 8).ok()?,
+                path: name.to_owned(),
+            });
         } else if let Some(rest) = line.strip_prefix("delete mode ") {
-            lines.push(Summary::Delete(rest.split_once(' ')?.1.to_owned()));
+            let (mode, name) = rest.split_once(' ')?;
+            lines.push(Summary::Delete {
+                mode: u32::from_str_radix(mode, 8).ok()?,
+                path: name.to_owned(),
+            });
         } else if let Some(rest) = line.strip_prefix("mode change ") {
             let (old, rest) = rest.split_once(" => ")?;
             let (new, named) = rest.split_once(' ').unwrap_or((rest, "<move>"));
@@ -180,11 +189,18 @@ fn ddf_summary(files: &[ReviewFile]) -> Vec<Summary> {
                 to: file.path.clone(),
             });
         }
+        // The mode is the one on the file's own line, or Git's default for a traditional diff.
         if file.status == FileStatus::Added || says("new file mode ") {
-            lines.push(Summary::Create(file.path.clone()));
+            lines.push(Summary::Create {
+                mode: mode("new file mode ").unwrap_or(0o100_644),
+                path: file.path.clone(),
+            });
         }
         if file.status == FileStatus::Deleted || says("deleted file mode ") {
-            lines.push(Summary::Delete(file.path.clone()));
+            lines.push(Summary::Delete {
+                mode: mode("deleted file mode ").unwrap_or(0o100_644),
+                path: file.path.clone(),
+            });
         }
         if let (Some(old), Some(new)) = (mode("old mode "), mode("new mode "))
             && old != new
@@ -594,7 +610,7 @@ fn no_name_carries_over_from_a_bare_header_and_no_mode_overrides_a_new_file_mode
     let findings = [
         // F3: Git applies the hunk to `first`.
         format!("diff --git a/first b/first\nBinary files a/first and b/first differ\n{second}"),
-        format!("diff --git a/first b/first\nGIT binary patch\n{second}"),
+        format!("diff --git a/first b/first\nGIT binary patch\nliteral 0\nHcmV?d00001\n\n{second}"),
         // F2: Git creates an executable, then a symlink.
         format!(
             "diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 100644\nnew mode 100755\n{new_file}"

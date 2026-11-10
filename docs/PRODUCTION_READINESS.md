@@ -1127,7 +1127,7 @@ The assessor is a different one each time, so part of the drop is probably a str
 **The findings:**
 
 - **F3 (high), fixed on `main`.** A `diff --git` line with no extended header is no header to Git, so a binary line straight after it is no patch; but the line's names stay in Git's patch for the next section that brings none. `diff --git a/first b/first`, `Binary files … differ`, then a section for `second` with an `index` line and a hunk: DDF showed a text change to `second`; Git wrote it to `first` and left `second` alone, exit 0. The previous assessment listed "`Binary files` straight after `diff --git` shows a file Git reads no patch for" as a low; it was the first half of this.
-- **F2 (medium), fixed on `main`.** `new file mode 100644` followed by `new mode 100755` or `120000`: Git keeps the later mode and creates an executable or a symlink; DDF showed a plain new file. `--outline` and `--rank` did flag the mode; the JSON and inline output only carried both raw lines. The N3 fix in 0.8.2 refused a repeated mode header and an `index` mode, not this pair.
+- **F2 (medium), fixed on `main`.** `new file mode 100644` followed by `new mode 100755` or `120000`: Git keeps the later mode and creates an executable or a symlink; DDF showed a plain new file. `--outline` and `--rank` did flag the mode; the JSON carried only the two raw lines, and inline output showed no mode at all. The N3 fix in 0.8.2 refused a repeated mode header and an `index` mode, not this pair.
 - **F1 (medium), open.** A `GIT binary patch` body that passes DDF's line grammar but does not inflate: Git prints "corrupt binary patch", applies the sections before it, drops that one and every later one, and exits 0. DDF shows all of them as changed. Nothing unreviewed lands; reviewed changes are silently missing. The previous assessment listed "binary bodies are not decoded" as a low.
 - **F4 (medium, reliability), open.** A mail-format patch whose commit message has a line beginning `-` or `+` (a bullet) is refused with exit 4; Git applies it.
 - **F5 (medium, display), open.** `--layout inline` shows no modes, no symlink type and no rename source.
@@ -1136,7 +1136,7 @@ The assessor is a different one each time, so part of the drop is probably a str
 **Fix (F3 and F2):**
 - A binary line straight after `diff --git` is refused.
 - `new file mode` or `deleted file mode` beside `old mode` or `new mode` is refused, in either order.
-- The differential gains the findings, their controls and 115 generated two-section cases (a bare `diff --git` line, one line of every kind, then each section). The existing generated cases were single sections and passed on the v0.8.2 parser; the new tests fail on it.
+- The differential gains the findings, their controls and 115 generated two-section cases (a bare `diff --git` line, one of 23 lines, then each of five sections), and its summary comparison now includes the mode a file is created or deleted with. The existing generated cases were single sections and passed on the v0.8.2 parser; the new tests fail on it.
 
 **Open:** F1, F4 and F5 above; F4 to F7 of the earlier assessments (crates.io 0.2.0, idle connections, archive status lines, arm64 and launchd checks not required); the differential is not in the fuzz harness. 727 of the assessor's generated cases are the known class where Git refuses a section it can name no file for and DDF shows the `b/` name.
 
