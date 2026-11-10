@@ -141,10 +141,20 @@ fn git_summary(root: &Path, patch: &[u8]) -> Option<Vec<Summary>> {
                 mode: u32::from_str_radix(mode, 8).ok()?,
                 path: name.to_owned(),
             });
+        } else if let Some(name) = line.strip_prefix("create ") {
+            lines.push(Summary::Create {
+                mode: 0,
+                path: name.to_owned(),
+            });
         } else if let Some(rest) = line.strip_prefix("delete mode ") {
             let (mode, name) = rest.split_once(' ')?;
             lines.push(Summary::Delete {
                 mode: u32::from_str_radix(mode, 8).ok()?,
+                path: name.to_owned(),
+            });
+        } else if let Some(name) = line.strip_prefix("delete ") {
+            lines.push(Summary::Delete {
+                mode: 0,
                 path: name.to_owned(),
             });
         } else if let Some(rest) = line.strip_prefix("mode change ") {
@@ -189,16 +199,25 @@ fn ddf_summary(files: &[ReviewFile]) -> Vec<Summary> {
                 to: file.path.clone(),
             });
         }
-        // The mode is the one on the file's own line, or Git's default for a traditional diff.
+        // The mode is the one on the file's own line, as Git canonicalises it (`canon_mode`:
+        // the owner's execute bit picks 755 or 644 for a regular file). A traditional diff has
+        // no mode line, and Git prints ` create x` with no mode; that is `0` on both sides.
+        let canon = |mode: u32| match mode & 0o170_000 {
+            0o100_000 if mode & 0o100 != 0 => 0o100_755,
+            0o100_000 => 0o100_644,
+            0o120_000 => 0o120_000,
+            0o040_000 => 0o040_000,
+            _ => 0o160_000,
+        };
         if file.status == FileStatus::Added || says("new file mode ") {
             lines.push(Summary::Create {
-                mode: mode("new file mode ").unwrap_or(0o100_644),
+                mode: mode("new file mode ").map_or(0, canon),
                 path: file.path.clone(),
             });
         }
         if file.status == FileStatus::Deleted || says("deleted file mode ") {
             lines.push(Summary::Delete {
-                mode: mode("deleted file mode ").unwrap_or(0o100_644),
+                mode: mode("deleted file mode ").map_or(0, canon),
                 path: file.path.clone(),
             });
         }
@@ -642,6 +661,40 @@ fn no_name_carries_over_from_a_bare_header_and_no_mode_overrides_a_new_file_mode
         "diff --git a/x b/x\ndeleted file mode 100644\nold mode 100755\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n".to_owned(),
     ] {
         assert!(!reads_as_git_does(root, patch.as_bytes()), "ddf: {patch:?}");
+    }
+    // Found while the fix was reviewed: Git reads a mode with no file-type bits as a submodule
+    // (`canon_mode`), and for a submodule it makes a directory and writes nothing from the
+    // hunks. Each of these was reviewed as a new file holding `a`; Git says `create mode 160000`.
+    for mode in ["644", "755", "0", "000644", "140000", "160000"] {
+        let patch = format!(
+            "diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode {mode}\n{new_file}"
+        );
+        assert_eq!(
+            git_summary(root, patch.as_bytes()),
+            Some(vec![Summary::Create {
+                mode: 0o160_000,
+                path: "docs/notes.txt".to_owned()
+            }]),
+            "git: {patch:?}"
+        );
+        assert!(!reads_as_git_does(root, patch.as_bytes()), "ddf: {patch:?}");
+    }
+    // A submodule as Git writes it is still reviewed, and so are the modes Git canonicalises.
+    let id = "1".repeat(40);
+    for patch in [
+        format!(
+            "diff --git a/sub b/sub\nnew file mode 160000\nindex 0000000..1111111\n--- /dev/null\n+++ b/sub\n@@ -0,0 +1 @@\n+Subproject commit {id}\n"
+        ),
+        format!(
+            "diff --git a/sub b/sub\ndeleted file mode 160000\nindex 1111111..0000000\n--- a/sub\n+++ /dev/null\n@@ -1 +0,0 @@\n-Subproject commit {id}\n"
+        ),
+        format!(
+            "diff --git a/sub b/sub\nindex 1111111..2222222 160000\n--- a/sub\n+++ b/sub\n@@ -1 +1 @@\n-Subproject commit {id}\n+Subproject commit {id}-dirty\n"
+        ),
+        format!("diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 100664\n{new_file}"),
+        format!("diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 100700\n{new_file}"),
+    ] {
+        assert!(reads_as_git_does(root, patch.as_bytes()), "{patch:?}");
     }
     // Generated: a bare `diff --git a/first b/first`, one line of any kind, then each section,
     // and a section with no `---`/`+++` of its own. Whatever the line is, the review must be
