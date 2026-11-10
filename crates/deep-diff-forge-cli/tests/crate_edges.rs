@@ -424,8 +424,16 @@ fn a_release_runs_every_ci_job_but_the_launchd_smoke() {
 }
 
 /// `scripts/check_glibc_floor.sh` passes the binary this build made and refuses it once the
-/// floor is below what it needs. A copy with `FLOOR=` rewritten stands in for an older floor, so
+/// floor is below what it needs. A copy with `FLOOR=` rewritten stands in for another floor, so
 /// the script's own readelf parsing is what is tested. Linux only (readelf, glibc).
+///
+/// Whether a build is within the declared floor depends on its linker, not only on the code.
+/// Rust's standard library references `pidfd_spawnp` and `pidfd_getpid` (glibc 2.39) as weak
+/// symbols. LLD marks the version need `WEAK`, and an older loader then only warns. GNU ld
+/// leaves it unmarked, and an older loader refuses the binary (measured 2026-11-10: a GNU ld
+/// 2.46 build on glibc 2.43 does not start on glibc 2.35). The script is right to refuse such a
+/// build, so the test accepts that refusal, and only when every symbol behind a version above
+/// the floor is weak. A strong symbol above the floor fails the test with either linker.
 #[cfg(target_os = "linux")]
 #[test]
 fn the_glibc_floor_script_passes_this_binary_and_refuses_it_under_a_lower_floor() {
@@ -446,12 +454,61 @@ fn the_glibc_floor_script_passes_this_binary_and_refuses_it_under_a_lower_floor(
             .unwrap()
     };
     let declared = floor_line.strip_prefix("FLOOR=").unwrap();
+    let version = |text: &str| -> Vec<u32> {
+        text.split('.')
+            .map(|part| part.parse().expect("a dotted numeric glibc version"))
+            .collect()
+    };
+    // The newest version this build's linker left as a hard need, read from the script's own
+    // report under a floor no glibc reaches.
+    let probe = run("999.0");
+    let report = String::from_utf8_lossy(&probe.stdout);
+    let hard = report
+        .split("requires at most GLIBC_")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("the script must report the newest hard need: {probe:?}"));
+    assert!(probe.status.success(), "{probe:?}");
     let within = run(declared);
-    let stdout = String::from_utf8_lossy(&within.stdout);
-    assert!(
-        within.status.success() && stdout.contains(&format!("(floor {declared})")),
-        "the built binary must be within the declared floor: {within:?}"
-    );
+    if version(hard) <= version(declared) {
+        let stdout = String::from_utf8_lossy(&within.stdout);
+        assert!(
+            within.status.success() && stdout.contains(&format!("(floor {declared})")),
+            "the built binary must be within the declared floor: {within:?}"
+        );
+    } else {
+        // The linker left a version above the floor unmarked. The refusal must name it, and no
+        // strong symbol may need a version above the floor.
+        let stderr = String::from_utf8_lossy(&within.stderr);
+        assert!(
+            within.status.code() == Some(1)
+                && stderr.contains(&format!(
+                    "requires GLIBC_{hard}, newer than the declared floor {declared}"
+                )),
+            "a build whose linker left GLIBC_{hard} unmarked must be refused: {within:?}"
+        );
+        let symbols = Command::new("readelf")
+            .args(["--dyn-syms", "--wide"])
+            .arg(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .output()
+            .unwrap();
+        assert!(symbols.status.success(), "{symbols:?}");
+        let strong_over_floor: Vec<String> = String::from_utf8_lossy(&symbols.stdout)
+            .lines()
+            .filter(|line| !line.split_whitespace().any(|field| field == "WEAK"))
+            .filter_map(|line| {
+                let name = line
+                    .split_whitespace()
+                    .find(|field| field.contains("@GLIBC_"))?;
+                let needs = name.split("@GLIBC_").nth(1)?;
+                (version(needs) > version(declared)).then(|| name.to_string())
+            })
+            .collect();
+        assert!(
+            strong_over_floor.is_empty(),
+            "strong symbols need a glibc newer than the declared floor {declared}: {strong_over_floor:?}"
+        );
+    }
     let over = run("2.0");
     let stderr = String::from_utf8_lossy(&over.stderr);
     assert!(
