@@ -685,7 +685,9 @@ mod tests {
 
     #[test]
     fn binary_change_signal_fires() {
-        let f = file("diff --git a/p.png b/p.png\nBinary files a/p.png and b/p.png differ\n");
+        let f = file(
+            "diff --git a/p.png b/p.png\nindex 1111111..2222222 100644\nBinary files a/p.png and b/p.png differ\n",
+        );
         let (_, signals) = score_file(&f);
         assert!(signals.contains(&RiskSignal::BinaryChange));
     }

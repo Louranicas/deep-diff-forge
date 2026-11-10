@@ -997,8 +997,13 @@ fixes both, and two more of the kind that a rescore of the code before its tag f
 ([80/100](docs/PRODUCTION_READINESS.md#assessment-2026-11-09-main-af5c3d1-the-untagged-082-independent-rescore-before-the-tag):
 a header after a binary line, and a carriage return in a move name). The last three
 independent rescores (v0.8.0, v0.8.1 and that one) each scored 80 and each found a new high
-finding of this kind. The released v0.8.2 has not had an independent rescore yet; that is next
-([release evidence](EVIDENCE.md#v082-release-2026-11-10)). The declared scope
+finding of this kind ([release evidence](EVIDENCE.md#v082-release-2026-11-10)). The independent
+rescore of the released v0.8.2 (2026-11-11) scored
+[70/100](docs/PRODUCTION_READINESS.md#assessment-2026-11-11-v082-fb5ffe1-independent-rescore)
+and found another: a `diff --git` line followed directly by a binary line left its name for
+the next section, so a change shown on one file was written to another. That, and a new
+file's mode overridden by a `new mode` line, are fixed on `main`; a binary body Git finds
+corrupt is still shown as applied ([CHANGELOG](CHANGELOG.md)). The declared scope
 is a local, single-user
 review tool on Linux and macOS ([the four targets](#supported-platforms)): CLI, Unix-socket
 daemon, `rpc`, MCP and SDKs, released as GitHub binaries. A scored assessment (2026-10-30, [83/100](docs/PRODUCTION_READINESS.md)) named

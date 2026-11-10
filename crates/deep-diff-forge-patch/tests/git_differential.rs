@@ -578,6 +578,94 @@ fn no_header_after_a_binary_line_or_control_in_a_move_name_is_read() {
     }
 }
 
+/// Independent rescore of v0.8.2 (F3 and F2). F3: a `diff --git` line with no extended header
+/// is no header to Git, so a binary line after it is no patch, but the line's name stays for the
+/// next section that brings no names of its own: DDF reviewed a text change to `second` where
+/// Git changed `first`. F2: `new file mode` and `new mode` set the same mode in Git and the
+/// later wins, so a "new file" was created as a symlink or an executable. Git applies every
+/// finding below; DDF must refuse each one.
+#[test]
+fn no_name_carries_over_from_a_bare_header_and_no_mode_overrides_a_new_file_mode() {
+    let scratch = Scratch::new("bare-header");
+    let root = scratch.0.path();
+    let second =
+        "diff --git a/second b/second\nindex 1111111..2222222 100644\n@@ -1 +1 @@\n-a\n+b\n";
+    let new_file = "--- /dev/null\n+++ b/docs/notes.txt\n@@ -0,0 +1 @@\n+a\n";
+    let findings = [
+        // F3: Git applies the hunk to `first`.
+        format!("diff --git a/first b/first\nBinary files a/first and b/first differ\n{second}"),
+        format!("diff --git a/first b/first\nGIT binary patch\n{second}"),
+        // F2: Git creates an executable, then a symlink.
+        format!(
+            "diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 100644\nnew mode 100755\n{new_file}"
+        ),
+        format!(
+            "diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 100644\nnew mode 120000\n{new_file}"
+        ),
+        format!(
+            "diff --git a/docs/notes.txt b/docs/notes.txt\nnew mode 120000\nnew file mode 100644\n{new_file}"
+        ),
+    ];
+    for patch in &findings {
+        assert!(
+            git_numstat(root, patch.as_bytes()).is_some(),
+            "git applies the finding: {patch:?}"
+        );
+        assert!(!reads_as_git_does(root, patch.as_bytes()), "ddf: {patch:?}");
+    }
+    // The F3 finding names `first`, not `second`, in Git's own reading.
+    assert_eq!(
+        git_numstat(root, findings[0].as_bytes()),
+        Some(vec![(Some((1, 1)), b"first".to_vec())]),
+    );
+    // Refused too, whatever Git makes of them: the bare header with a binary line and nothing
+    // after it, and a whole-file mode beside `old mode`.
+    for patch in [
+        "diff --git a/first b/first\nBinary files a/first and b/first differ\n".to_owned(),
+        format!("diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 100644\nold mode 100755\n{new_file}"),
+        "diff --git a/x b/x\ndeleted file mode 100644\nold mode 100755\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n".to_owned(),
+    ] {
+        assert!(!reads_as_git_does(root, patch.as_bytes()), "ddf: {patch:?}");
+    }
+    // Generated: a bare `diff --git a/first b/first`, one line of any kind, then each section,
+    // and a section with no `---`/`+++` of its own. Whatever the line is, the review must be
+    // refused or name the files Git names. The single-section mutants above never put one
+    // section's leftovers in front of another, which is how F3 went unseen.
+    let (mut accepted, mut refused, mut cases) = (0, 0, 0);
+    for section in GIT_SECTIONS.iter().copied().chain([second]) {
+        for between in EXTRA_HEADERS
+            .iter()
+            .copied()
+            .chain(BREAKS)
+            .chain(["literal 0", "HcmV?d00001"])
+        {
+            let patch = format!("diff --git a/first b/first\n{between}\n{section}");
+            cases += 1;
+            if reads_as_git_does(root, patch.as_bytes()) {
+                accepted += 1;
+            } else {
+                refused += 1;
+            }
+        }
+    }
+    assert!(
+        cases >= 100 && accepted >= 5 && refused >= 50,
+        "{cases} cases: {accepted} accepted, {refused} refused"
+    );
+    println!("bare-header cases: {cases}, accepted {accepted}, refused {refused}");
+    // Controls: the forms Git writes are still reviewed as Git reads them.
+    for patch in [
+        format!(
+            "diff --git a/first b/first\nindex 1111111..2222222 100644\nBinary files a/first and b/first differ\n{second}"
+        ),
+        format!("diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 100755\n{new_file}"),
+        format!("diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 120000\n{new_file}"),
+        "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n".to_owned(),
+    ] {
+        assert!(reads_as_git_does(root, patch.as_bytes()), "{patch:?}");
+    }
+}
+
 /// A file's hunks are one unbroken run, as Git reads them; Git's verdict is asked for each case.
 #[test]
 fn hunks_follow_their_file_header_or_the_previous_hunk() {

@@ -887,7 +887,7 @@ mod tests {
     #[test]
     fn binary_file_reports_no_textual_diff() {
         let files =
-            parse("diff --git a/x.bin b/x.bin\nBinary files a/x.bin and b/x.bin differ\n").unwrap();
+            parse("diff --git a/x.bin b/x.bin\nindex 1111111..2222222 100644\nBinary files a/x.bin and b/x.bin differ\n").unwrap();
         let a = ReviewApp::from_review(&files);
         assert!(render(&a, 80).contains("(no textual diff)"));
     }

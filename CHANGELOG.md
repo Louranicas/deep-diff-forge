@@ -6,6 +6,46 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Security
+
+- **No name carries over from a `diff --git` line Git reads no patch from** (independent
+  rescore of v0.8.2, F3, high). A `diff --git` line with no extended header after it is no
+  header to Git, so `Binary files … differ` or `GIT binary patch` straight after it is no
+  patch. But the line has already given Git's patch its names, and they stay for the next
+  section that has no `---`/`+++` or move names of its own. `diff --git a/first b/first`,
+  `Binary files a/first and b/first differ`, then `diff --git a/second b/second` with an
+  `index` line and a hunk was reviewed as a binary change to `first` and a text change to
+  `second` (exit 0), while `git apply` wrote the hunk to `first` and left `second` alone.
+  Measured on v0.8.2 with Git 2.56. A binary line straight after `diff --git` is now refused
+  (exit 4); Git writes an `index` line before it.
+- **A created or deleted file's mode is not overridden by `old mode` or `new mode`** (rescore
+  F2, medium). `new file mode` and `new mode` set the same mode in Git and the later line
+  wins, so `new file mode 100644` followed by `new mode 120000` created a symlink, and
+  `new mode 100755` an executable, where the review showed a plain new file with both lines
+  in its metadata. `new file mode` or `deleted file mode` beside `old mode` or `new mode` is
+  refused, in either order. Git never writes the pair.
+
+### Fixed
+
+- **The Git differential puts one section's leftovers in front of another.** Its generated
+  cases were single sections, so a name left by an earlier line was never in play. A bare
+  `diff --git` line, one line of every kind, then each section (115 cases) is now compared
+  with `git apply`, beside the findings themselves. Control: the new tests fail on the
+  v0.8.2 parser.
+- Test fixtures across the workspace used `diff --git` followed directly by `Binary files …
+  differ` as "a binary file". They now have the `index` line Git writes.
+
+### Known limits (from the same rescore; not fixed here)
+
+- **A binary body Git finds corrupt (F1, medium).** Git checks a `GIT binary patch` body by
+  inflating it; DDF checks its line grammar only. When the body does not inflate, Git prints
+  an error, applies the sections before it, drops that section and every later one, and
+  exits 0, while DDF shows them all as changed. Nothing unreviewed is written, but reviewed
+  changes do not land.
+- A mail-format patch whose message has a line beginning `-` or `+` is refused though Git
+  applies it (F4), and `--layout inline` does not show modes, symlinks or a rename's source
+  (F5).
+
 ## [0.8.2] - 2026-11-09
 
 Tagged `v0.8.2` at `fb5ffe1` (2026-11-10), signed.

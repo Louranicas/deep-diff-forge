@@ -685,6 +685,20 @@ impl Parser {
         {
             return Err(PatchParseError::InconsistentHeader { line_number });
         }
+        // `new file mode` and `new mode` write the one new mode Git keeps, and `deleted file mode`
+        // and `old mode` the one old mode, so the later line wins: `new file mode 100644` then
+        // `new mode 120000` creates a symlink, and `new mode 100755` an executable, where the
+        // review showed a plain new file (rescore of v0.8.2, F2). Git writes a created or
+        // deleted file's mode on that one line and never beside `old mode` or `new mode`, so the
+        // pair is refused in either order, not resolved.
+        let whole_file =
+            |m: &str| m.starts_with("new file mode ") || m.starts_with("deleted file mode ");
+        let change = |m: &str| m.starts_with("old mode ") || m.starts_with("new mode ");
+        if (whole_file(line) && file.metadata.iter().any(|m| change(m)))
+            || (change(line) && file.metadata.iter().any(|m| whole_file(m)))
+        {
+            return Err(PatchParseError::InconsistentHeader { line_number });
+        }
         if META_PREFIXES.iter().any(|p| line.starts_with(p)) {
             // `GIT binary patch` and `Binary files … differ` are not extended headers to Git:
             // `parse_git_diff_header` stops at them, and the section's patch ends there. Read on,
@@ -698,6 +712,20 @@ impl Parser {
                 return Err(PatchParseError::UnsupportedFormat { line_number });
             }
             let binary = literal || marker;
+            // A `diff --git` line with no extended header after it is no header to Git
+            // (`find_header`: `git_hdr_len <= len`), so Git reads no patch from a binary line
+            // straight after it. But the line has already given the patch its names, and they
+            // stay: the next section with no `---`/`+++` or move names of its own is applied to
+            // this file. `diff --git a/first b/first`, `Binary files … differ`, then a section
+            // for `second` with an `index` line and a hunk was reviewed as a change to `second`
+            // while Git changed `first` (rescore of v0.8.2, F3). The bare line with nothing
+            // after it is refused in `refuse_what_git_reads_nothing_from`; the binary line made
+            // it look like a section with a patch.
+            if binary && file.git && file.metadata.is_empty() {
+                return Err(PatchParseError::SectionWithoutPatch {
+                    line_number: file.first_line,
+                });
+            }
             file.in_binary_body |= line == "GIT binary patch";
             file.header_ended |= binary;
             file.metadata.push(line.to_string());
@@ -2076,6 +2104,7 @@ Binary files a/logo.png and b/logo.png differ
     fn binary_file_uses_line_strategy_exception() {
         let input = "\
 diff --git a/logo.png b/logo.png
+index 1111111..2222222 100644
 Binary files a/logo.png and b/logo.png differ
 ";
         let file = one(input);
@@ -2614,7 +2643,7 @@ diff --git a/x b/x
         // `---`/`+++` or hunk after it is out of place, and a marker after a hunk is too.
         for body in [
             "new file mode 100644\nBinary files /dev/null and b/x differ\n--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+a\n",
-            "Binary files a/x and b/x differ\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+            "index 1111111..2222222 100644\nBinary files a/x and b/x differ\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
             "index 1111111..2222222 100644\nBinary files a/x and b/x differ\n@@ -1 +1 @@\n-a\n+b\n",
             "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\nBinary files a/x and b/x differ\n",
         ] {
@@ -3638,5 +3667,77 @@ diff --git a/a b c.rs b/a b c.rs
             parse("@@ -1 +1 @@\n-a\n+b\n"),
             Err(PatchParseError::MisplacedHunk { line_number: 1 })
         );
+    }
+
+    /// A binary line straight after `diff --git` is no patch to Git, and it leaves that line's
+    /// name behind for the next section that has no names of its own (rescore of v0.8.2, F3).
+    /// Before, the two sections were reviewed as a binary change to `first` and a text change to
+    /// `second`, while Git wrote the text change to `first`.
+    #[test]
+    fn a_binary_line_straight_after_diff_git_is_refused() {
+        let second =
+            "diff --git a/second b/second\nindex 1111111..2222222 100644\n@@ -1 +1 @@\n-a\n+b\n";
+        for marker in [
+            "Binary files a/first and b/first differ\n",
+            "GIT binary patch\nliteral 0\nHcmV?d00001\n\n",
+        ] {
+            for patch in [
+                format!("diff --git a/first b/first\n{marker}{second}"),
+                format!("diff --git a/first b/first\n{marker}"),
+            ] {
+                let err = parse(&patch).unwrap_err();
+                assert!(
+                    matches!(err, PatchParseError::SectionWithoutPatch { line_number: 1 }),
+                    "{patch:?}: {err:?}"
+                );
+            }
+            // With the extended header Git writes before it, the same line is a binary change,
+            // and the next section is its own file.
+            let files = parse(&format!(
+                "diff --git a/first b/first\nindex 1111111..2222222 100644\n{marker}{second}"
+            ))
+            .unwrap();
+            let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+            assert_eq!(paths, ["first", "second"], "{marker:?}");
+        }
+    }
+
+    /// A created or deleted file's mode is on its `new file mode` or `deleted file mode` line.
+    /// An `old mode` or `new mode` beside it overwrote that mode in Git, so a "new file" was
+    /// created as a symlink or an executable (rescore of v0.8.2, F2). Either order is refused.
+    #[test]
+    fn a_whole_file_mode_beside_a_mode_change_is_refused() {
+        let new_file = "--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+a\n";
+        let deleted = "--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n";
+        for (headers, body) in [
+            ("new file mode 100644\nnew mode 100755\n", new_file),
+            ("new file mode 100644\nnew mode 120000\n", new_file),
+            ("new mode 120000\nnew file mode 100644\n", new_file),
+            ("new file mode 100644\nold mode 100755\n", new_file),
+            ("old mode 100755\nnew file mode 100644\n", new_file),
+            ("deleted file mode 100644\nold mode 100755\n", deleted),
+            ("old mode 100755\ndeleted file mode 100644\n", deleted),
+            ("deleted file mode 100644\nnew mode 100755\n", deleted),
+            ("new mode 100755\ndeleted file mode 100644\n", deleted),
+        ] {
+            let err = parse(&format!("diff --git a/x b/x\n{headers}{body}")).unwrap_err();
+            assert!(
+                matches!(err, PatchParseError::InconsistentHeader { line_number: 3 }),
+                "{headers:?}: {err:?}"
+            );
+        }
+        // Each header on its own is what Git writes, and is still read.
+        for (headers, body, status) in [
+            ("new file mode 100755\n", new_file, FileStatus::Added),
+            ("deleted file mode 100644\n", deleted, FileStatus::Deleted),
+            (
+                "old mode 100644\nnew mode 100755\n",
+                "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+                FileStatus::Modified,
+            ),
+        ] {
+            let file = one(&format!("diff --git a/x b/x\n{headers}{body}"));
+            assert_eq!(file.status, status, "{headers:?}");
+        }
     }
 }
