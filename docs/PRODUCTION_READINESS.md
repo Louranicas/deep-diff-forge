@@ -999,3 +999,108 @@ are fixed with it, and the oracle now breaks every extended-header position
 The low-severity items left open on 2026-11-04 are fixed on `main`: the council's results name
 their schema; a release is built only from a signed tag on `main`; a signal stops the daemon
 without its socket path, and a second signal ends the drain. A rescore follows 0.8.1.
+
+## Assessment 2026-11-09 (`v0.8.1`, `d290379`; independent rescore)
+
+**Score: 80 / 100**, level with v0.8.0. F1 to F3 are fixed in the release: their repros exit 4.
+But two new high findings of the same kind turned up, both present since v0.8.0. As before, the
+assessor was a fresh agent with the rubric and a read-only checkout of the tag, but not the
+previous conclusions. It read the code, ran `cargo test -p deep-diff-forge-patch` (249 passed)
+and drove the released binary. It wrote 191 probes and ran about 183,000 random line mutants,
+each compared against `git apply --numstat` and `--summary`. Each finding below was reproduced
+by hand against Git 2.56 with a real apply before it was acted on.
+
+| Facet | Weight | 2026-11-07 (v0.8.0) | 2026-11-09 (v0.8.1) |
+| --- | ---: | ---: | ---: |
+| Correctness and patch-truth integrity | 20 | 15 | 14 |
+| Security and trust boundary | 15 | 12 | 11 |
+| Supply chain and release integrity | 15 | 13 | 14 |
+| Reliability and operability | 15 | 13 | 14 |
+| Platform and portability | 10 | 8 | 8 |
+| Interfaces and integration contracts | 15 | 12 | 13 |
+| Documentation, governance and evidence | 10 | 7 | 6 |
+| **Total** | 100 | **80** | **80** |
+
+**Up (measured):**
+
+- A release is built only from a signed tag whose commit is on `main`.
+- A signal stops the daemon after its socket path is gone, a second signal ends the drain, and
+  an idle daemon uses no CPU.
+- Council results name their schema.
+
+**The new findings (measured; fixed on `main` after v0.8.1):**
+
+- **N1 (high).** DDF never read `copy to`, so a copy was reviewed under the `diff --git` or
+  `+++` name. `diff --git a/README.md b/docs/README-copy.md` with
+  `copy to .github/workflows/pwn.yml` and a hunk was reviewed as a docs copy (exit 0, CLI, `rpc`
+  and MCP) while `git apply` wrote the workflow with the hunk's content.
+- **N2 (high).** `diff --git a/.github/workflows/ci.yml …` with `--- README` / `+++ README`:
+  Git reads a name that `-p1` leaves nothing of as no name, and changed the workflow. DDF
+  reviewed `README`.
+- **N3 (medium).** Repeated mode headers, and an `index` line's mode: Git keeps the last, and
+  made a script executable that DDF, reading the first, showed unchanged.
+
+The oracle compared numstat only, never modes or copies, and its mutants never wrote `copy to`
+or a name without a `/`. It now compares `--summary` too and inserts each of those
+(`no_duplicated_or_copy_header_mutant_reads_differently_from_git`). Its first run on the fix
+found two further readings Git refuses, which are refused now as well: a second `---`/`+++`
+pair before a Git section's first hunk, and a new or deleted file whose `+++` or `---` differs
+from the `diff --git` name.
+
+**Down:** the README called 0.8.1 production-ready and its differential complete over "every
+extended-header position"; it compared numstat only. Both statements are corrected.
+
+**Open:**
+
+- crates.io `0.2.0` is still installable and not yanked (owner decision; F4).
+- Ten idle same-user connections block `health` and `stop` until they time out (F5).
+- The status lines inside a release archive still say "not yet tagged" (F6).
+- `Linux arm64 tests` and `macOS launchd agent` are not required checks (F7).
+- The differential is not in the fuzz harness.
+- **Low:** DDF accepts some inputs Git refuses, which it reviews as changes that never apply:
+  - empty or patch-free input (exit 0, no files);
+  - binary bodies it does not decode;
+  - a `diff --git` line with two different names and no other name, which is the form
+    `git diff --no-index` writes for the file-pair mode.
+
+  A traditional `@@ -0,0` hunk on `--- a/x` creates a file to Git and is labelled `modified`;
+  its content is shown in full.
+
+## Assessment 2026-11-09 (`main` `af5c3d1`, the untagged 0.8.2; independent rescore before the tag)
+
+**Score: 80 / 100**, level with v0.8.1. A fresh assessor scored the code to be tagged as v0.8.2, with the rubric and a read-only checkout, and read the previous section only after forming a view. N1 to N3 are fixed: the copy is read as Git reads it, and N2 and N3 exit 4. But one new high finding and one medium of the same kind turned up, so the tag waited for their fix. The facets are unchanged from v0.8.1 (14, 11, 14, 14, 8, 13, 6). There is no release yet, so supply chain was scored on the v0.8.1 pipeline and the green CI on `af5c3d1`.
+
+**Method (measured):** 34 hand probes, a random differential of 36,000 cases over six seeds (one or two sections, up to four random extended headers of every kind, names with directories, quotes, UTF-8, CR, tab and `a//b`, CRLF and an unterminated last line), each compared against `git apply --numstat -z` and `--summary` with Git 2.56. Workspace tests: 1,939 passed. Both findings were reproduced by hand against a real `git apply` before they were fixed.
+
+**The findings (fixed before the tag):**
+
+- **F1 (high).** Git ends a section's extended header at `Binary files … differ` or `GIT binary patch`; DDF read on. `diff --git a/.github/workflows/ci.yml …`, an `index` line, `Binary files … differ`, then `copy from docs/logo.png` / `copy to docs/logo-copy.png` was reviewed as a binary copy of a logo (exit 0, CLI and MCP), while `git apply` rewrote the workflow from the `index` blob. The blob only has to be in the object database, for example from any fetched branch. The rename form was already in v0.8.1. The N1 fix moved the copy form's reviewed path off the workflow entirely. Mode lines after the binary line showed a mode change Git never makes.
+- **F2 (medium).** Git reads an unquoted move name only up to a carriage return. `rename to build.rs\rdocs/notes.md` created `build.rs`; DDF showed the whole line with a control hazard but no build-script signal.
+
+**Fix:**
+- A binary line ends the header. Any header, `---`/`+++` or hunk after it is refused.
+- These are refused too:
+  - `GIT binary patch` with trailing text;
+  - `Binary files` without `differ`;
+  - a binary patch with no `literal` or `delta` line. The oracle's first run on the fix found this one.
+- An unquoted move name with CR, vertical tab or form feed is refused.
+- The differential inserts binary lines and control-character names at every position, plus `no_header_after_a_binary_line_or_control_in_a_move_name_is_read`. Both tests fail on `af5c3d1`.
+- The refusal for contradictory headers now names its causes (the assessor's L-e).
+
+**Open (unchanged unless noted):**
+
+- F4 (crates.io 0.2.0 not yanked).
+- F5: twelve idle connections make `health` and `stop` fail in about 3 ms with exit 6.
+- F6: the release-archive status lines.
+- F7: the arm64 and launchd checks are not required.
+- The differential is not in the fuzz harness.
+- **Lows:**
+  - empty input exits 0;
+  - binary bodies are not decoded;
+  - a nameless `diff --git`;
+  - a traditional `@@ -0,0` is labelled modified;
+  - `Binary files` straight after `diff --git` shows a file Git reads no patch for;
+  - `Files a/x and b/x differ` is binary to Git and shown as modified;
+  - `rename from dir//x` shows the unsquashed old path;
+  - a binary copy or rename keeps the `binary_changed` status, so whether the old path survives shows only in its metadata.
+- **Regressions:** none on input Git writes. 85 of 36,000 cases v0.8.1 read correctly are now refused on purpose: repeated or `index` modes, and nameless `---`/`+++` names, forms no Git writes.

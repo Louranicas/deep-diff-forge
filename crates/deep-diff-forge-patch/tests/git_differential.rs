@@ -1,3 +1,6 @@
+// DDF integration: R03, R07, R46. Differential oracle for the parser: every patch DDF accepts must read as `git apply` reads it (paths, operations and modes), which round-trip equality does not show.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_differential
 //! Differential oracle: a patch DDF accepts is the patch `git apply` reads. For every accepted
 //! input, Git's `--numstat` (each file Git would write, with its added and deleted line counts)
 //! must equal the same projection of DDF's review. A reading that differs shows a reviewer one
@@ -82,8 +85,124 @@ fn ddf_numstat(files: &[ReviewFile]) -> Vec<Numstat> {
         .collect()
 }
 
+/// One line of `git apply --summary` that numstat cannot show: a copy and the path it writes, a
+/// created or deleted file, or a mode change (`<move>` for a moved file's, which Git prints with
+/// no name). Paths are as Git prints them with `core.quotepath=false`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Summary {
+    Copy { from: String, to: String },
+    Create(String),
+    Delete(String),
+    Mode { old: u32, new: u32, path: String },
+}
+
+/// `pprint_rename`'s `pre{old => new}post`, or `old => new`, as the two whole paths.
+fn expand_move(text: &str) -> (String, String) {
+    if let (Some(open), Some(close)) = (text.find('{'), text.rfind('}'))
+        && let Some((old, new)) = text[open + 1..close].split_once(" => ")
+    {
+        let (pre, post) = (&text[..open], &text[close + 1..]);
+        let join = |mid: &str| format!("{pre}{mid}{post}").replace("//", "/");
+        return (join(old), join(new));
+    }
+    let (old, new) = text.split_once(" => ").unwrap_or((text, text));
+    (old.to_owned(), new.to_owned())
+}
+
+/// Git's summary of `patch`, or `None` when Git refuses it or quotes a path (whose quoting this
+/// projection does not reproduce; numstat still compares those).
+fn git_summary(root: &Path, patch: &[u8]) -> Option<Vec<Summary>> {
+    fs::write(root.join("probe.patch"), patch).unwrap();
+    let out = Command::new("git")
+        .current_dir(root)
+        .args([
+            "-c",
+            "core.quotepath=false",
+            "apply",
+            "--summary",
+            "probe.patch",
+        ])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).ok()?;
+    if !out.status.success() || text.contains('"') {
+        return None;
+    }
+    let mut lines = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("copy ") {
+            let rest = rest.rsplit_once(" (").map_or(rest, |(moved, _)| moved);
+            let (from, to) = expand_move(rest);
+            lines.push(Summary::Copy { from, to });
+        } else if let Some(rest) = line.strip_prefix("create mode ") {
+            lines.push(Summary::Create(rest.split_once(' ')?.1.to_owned()));
+        } else if let Some(rest) = line.strip_prefix("delete mode ") {
+            lines.push(Summary::Delete(rest.split_once(' ')?.1.to_owned()));
+        } else if let Some(rest) = line.strip_prefix("mode change ") {
+            let (old, rest) = rest.split_once(" => ")?;
+            let (new, named) = rest.split_once(' ').unwrap_or((rest, "<move>"));
+            let octal = |mode: &str| u32::from_str_radix(mode, 8).ok();
+            lines.push(Summary::Mode {
+                old: octal(old)?,
+                new: octal(new)?,
+                path: named.to_owned(),
+            });
+        }
+    }
+    lines.sort();
+    Some(lines)
+}
+
+/// DDF's review projected as Git's summary.
+fn ddf_summary(files: &[ReviewFile]) -> Vec<Summary> {
+    let mut lines = Vec::new();
+    for file in files {
+        let meta = &file.patch_twin.metadata;
+        let says = |prefix: &str| meta.iter().any(|m| m.starts_with(prefix));
+        let mode = |prefix: &str| {
+            meta.iter()
+                .find_map(|m| m.strip_prefix(prefix))
+                .and_then(|m| u32::from_str_radix(m.trim(), 8).ok())
+        };
+        // `summary_patch_list` names no path for a moved file's mode change, nor for one in a
+        // section with a similarity score (it prints a rewrite, then the mode change).
+        let moved = says("rename from ")
+            || says("copy from ")
+            || says("similarity index ")
+            || says("dissimilarity index ");
+        // A binary copy keeps the `binary_changed` status, with the copy in its metadata and
+        // `old_path`.
+        if file.status == FileStatus::Copied
+            || (file.status == FileStatus::BinaryChanged && says("copy from "))
+        {
+            lines.push(Summary::Copy {
+                from: deep_diff_forge_patch::old_path(file).unwrap_or_default(),
+                to: file.path.clone(),
+            });
+        }
+        if file.status == FileStatus::Added || says("new file mode ") {
+            lines.push(Summary::Create(file.path.clone()));
+        }
+        if file.status == FileStatus::Deleted || says("deleted file mode ") {
+            lines.push(Summary::Delete(file.path.clone()));
+        }
+        if let (Some(old), Some(new)) = (mode("old mode "), mode("new mode "))
+            && old != new
+        {
+            let path = if moved {
+                "<move>".to_owned()
+            } else {
+                file.path.clone()
+            };
+            lines.push(Summary::Mode { old, new, path });
+        }
+    }
+    lines.sort();
+    lines
+}
+
 /// The property. Returns whether DDF accepted `patch`; when it did, Git must read the same files
-/// with the same counts.
+/// with the same counts, and the same copies, creations, deletions and mode changes.
 fn reads_as_git_does(root: &Path, patch: &[u8]) -> bool {
     let decoded = decode(patch);
     let Ok(files) = parse_decoded(&decoded, ParseOptions::default()) else {
@@ -95,6 +214,14 @@ fn reads_as_git_does(root: &Path, patch: &[u8]) -> bool {
         "DDF accepted a patch that Git reads differently: {:?}",
         String::from_utf8_lossy(patch)
     );
+    if let Some(git) = git_summary(root, patch) {
+        assert_eq!(
+            git,
+            ddf_summary(&files),
+            "DDF accepted a patch whose copies, creations or modes Git reads differently: {:?}",
+            String::from_utf8_lossy(patch)
+        );
+    }
     true
 }
 
@@ -289,6 +416,166 @@ fn no_extended_header_mutant_reads_differently_from_git() {
         accepted > 0 && refused > 100,
         "accepted {accepted}, refused {refused}"
     );
+}
+
+/// Header lines a mutant adds to a Git section: each kind of extended header, `---`/`+++` names
+/// that `-p1` leaves nothing of, and names that differ from the section's own.
+const EXTRA_HEADERS: [&str; 18] = [
+    "Binary files a/x and b/x differ",
+    "GIT binary patch",
+    "rename to build.rs\rdocs/notes.md",
+    "copy to x\x0bdocs/y",
+    "copy to .github/workflows/pwn.yml",
+    "copy from elsewhere",
+    "rename to .github/workflows/pwn.yml",
+    "old mode 100644",
+    "old mode 100755",
+    "new mode 100755",
+    "new mode 100644",
+    "index 1111111..2222222 100644",
+    "index 1111111..2222222 100755",
+    "similarity index 100%",
+    "--- README\n+++ README",
+    "--- a/x\n+++ README",
+    "--- a/x\n+++ b/elsewhere",
+    "--- a/elsewhere\n+++ /dev/null",
+];
+
+/// Independent rescore of v0.8.1 (N1 to N3): Git takes a copy's new path from its last `copy to`
+/// line, a `---`/`+++` name with nothing left after `-p1` is no name to Git (it keeps the
+/// `diff --git` one), and Git keeps the last of each mode header, an `index` mode being an old
+/// mode. DDF read the `diff --git` name for the copy, the bare `README` for the file, and the
+/// first mode, so each showed a different file or no mode change while Git wrote the workflow or
+/// made the script executable. Every extra header at every position of every section must be
+/// refused or read exactly as Git reads it, copies and modes included.
+#[test]
+fn no_duplicated_or_copy_header_mutant_reads_differently_from_git() {
+    let scratch = Scratch::new("copy-mode");
+    let root = scratch.0.path();
+    let findings = [
+        // N1: the copy writes the workflow, with the content of the hunk.
+        "diff --git a/README.md b/docs/README-copy.md\nsimilarity index 50%\ncopy from README.md\ncopy to .github/workflows/pwn.yml\n@@ -1 +1,2 @@\n-hello\n+on: push\n+jobs: {}\n",
+        "diff --git a/x b/docs/a.md\nsimilarity index 100%\ncopy from x\ncopy to docs/a.md\ncopy to .github/workflows/pwn.yml\n",
+        // N2: Git changes the workflow named by `diff --git`.
+        "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n--- README\n+++ README\n@@ -1 +1 @@\n-jobs: {}\n+jobs: {pwn: 1}\n",
+        // N3: Git makes `run.sh` executable; the first mode lines say it already was.
+        "diff --git a/run.sh b/run.sh\nold mode 100755\nnew mode 100755\nindex 1111111..2222222 100644\n--- a/run.sh\n+++ b/run.sh\n@@ -1 +1 @@\n-echo hi\n+echo bye\n",
+        "diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100644\nnew mode 100755\n--- a/run.sh\n+++ b/run.sh\n@@ -1 +1 @@\n-echo hi\n+echo bye\n",
+    ];
+    // Each is read as Git reads it (the copies, whose last `copy to` is now the reviewed path)
+    // or refused (the nameless `---`/`+++` and the repeated modes, forms no Git writes). The
+    // v0.8.1 parser read every one differently, which `reads_as_git_does` fails on.
+    let mut copies = 0;
+    for patch in findings {
+        assert!(
+            git_numstat(root, patch.as_bytes()).is_some(),
+            "git applies the finding: {patch:?}"
+        );
+        let copy = patch.contains("copy to ");
+        assert_eq!(reads_as_git_does(root, patch.as_bytes()), copy, "{patch:?}");
+        if copy {
+            let files = parse_decoded(&decode(patch.as_bytes()), ParseOptions::default()).unwrap();
+            assert_eq!(files[0].path, ".github/workflows/pwn.yml");
+            copies += 1;
+        }
+    }
+    assert_eq!(copies, 2);
+    // Controls Git writes itself are still reviewed, copies and mode changes included, and so
+    // is a new file whose `diff --git` halves differ: Git has no `diff --git` name to hold the
+    // `+++` to, and creates `y`.
+    for patch in [
+        "diff --git a/x b/y\nsimilarity index 100%\ncopy from x\ncopy to y\n",
+        "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n",
+        "diff --git a/x b/x\nindex 1111111..2222222 100755\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+        "diff --git a/x b/y\nnew file mode 100644\n--- /dev/null\n+++ b/y\n@@ -0,0 +1 @@\n+a\n",
+    ] {
+        assert!(reads_as_git_does(root, patch.as_bytes()), "{patch:?}");
+    }
+    // Inconsistent headers Git refuses, each on its own: a rename (named by `rename to` alone)
+    // that is also a copy, a new file's `+++` and a deleted file's `---` other than the
+    // `diff --git` name.
+    for patch in [
+        "diff --git a/x b/z\nrename to z\ncopy from x\ncopy to z\n--- a/x\n+++ b/z\n@@ -1 +1 @@\n-a\n+b\n",
+        "diff --git a/x b/x\nnew file mode 100644\n--- /dev/null\n+++ b/y\n@@ -0,0 +1 @@\n+a\n",
+        "diff --git a/x b/x\ndeleted file mode 100644\n--- a/y\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n",
+    ] {
+        assert_eq!(git_numstat(root, patch.as_bytes()), None, "git: {patch:?}");
+        assert!(!reads_as_git_does(root, patch.as_bytes()), "ddf: {patch:?}");
+    }
+    let sections = GIT_SECTIONS
+        .iter()
+        .copied()
+        .chain(["diff --git a/x b/y\nsimilarity index 100%\ncopy from x\ncopy to y\n"]);
+    let (mut accepted, mut refused, mut cases) = (0, 0, 0);
+    for section in sections {
+        let lines: Vec<&str> = section.lines().collect();
+        for at in 1..=lines.len() {
+            for extra in EXTRA_HEADERS {
+                let mut mutant: Vec<&str> = lines[..at].to_vec();
+                mutant.push(extra);
+                mutant.extend(&lines[at..]);
+                let patch = mutant.join("\n") + "\n";
+                cases += 1;
+                if reads_as_git_does(root, patch.as_bytes()) {
+                    accepted += 1;
+                } else {
+                    refused += 1;
+                }
+            }
+        }
+    }
+    // Not vacuous: hundreds of cases, with Git-identical acceptances and refusals both seen.
+    assert!(cases > 250, "{cases}");
+    assert!(
+        accepted > 10 && refused > 100,
+        "accepted {accepted}, refused {refused}"
+    );
+}
+
+/// Independent rescore of `af5c3d1` (F1, F2): Git ends a section's extended header at a
+/// `Binary files … differ` or `GIT binary patch` line, and reads an unquoted move name only up
+/// to a carriage return (or other whitespace that is not a space or tab). DDF read headers after
+/// a binary line as the section's own, so a `copy to` or `rename to` there showed a harmless file
+/// while Git rewrote the `diff --git` file (the workflow) from its `index` blob; and it showed
+/// `build.rs\rdocs/notes.md` where Git wrote `build.rs`. Git applies every finding below; DDF
+/// must refuse each one.
+#[test]
+fn no_header_after_a_binary_line_or_control_in_a_move_name_is_read() {
+    let scratch = Scratch::new("binary-header");
+    let root = scratch.0.path();
+    let workflow = "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\nindex 1111111..2222222 100644\nBinary files a/.github/workflows/ci.yml and b/.github/workflows/ci.yml differ\n";
+    let findings = [
+        // F1: Git rewrites the workflow; DDF showed `docs/logo-copy.png` or `docs/logo-v2.png`.
+        format!("{workflow}copy from docs/logo.png\ncopy to docs/logo-copy.png\n"),
+        format!("{workflow}rename from docs/logo.png\nrename to docs/logo-v2.png\n"),
+        // F1, mode: DDF showed a mode change Git never makes.
+        format!("{workflow}old mode 100644\nnew mode 100755\n"),
+        // F2: Git writes `build.rs`, with the hunk's content.
+        "diff --git a/docs/a.md b/docs/a.md\nsimilarity index 50%\nrename from docs/a.md\nrename to build.rs\rdocs/notes.md\n@@ -1 +1 @@\n-hello\n+fn main() {}\n".to_owned(),
+        "diff --git a/docs/a.md b/docs/b.md\nsimilarity index 100%\ncopy from docs/a.md\ncopy to build.rs\rdocs/b.md\n".to_owned(),
+    ];
+    for patch in &findings {
+        assert!(
+            git_numstat(root, patch.as_bytes()).is_some(),
+            "git applies the finding: {patch:?}"
+        );
+        assert!(!reads_as_git_does(root, patch.as_bytes()), "ddf: {patch:?}");
+    }
+    // Lines Git would not take for a binary marker are refused too, not read as one.
+    for patch in [
+        "diff --git a/x b/x\nGIT binary patchX\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+        "diff --git a/x b/x\nindex 1111111..2222222 100644\nBinary files a/x and b/x\n",
+    ] {
+        assert!(!reads_as_git_does(root, patch.as_bytes()), "ddf: {patch:?}");
+    }
+    // Controls: the binary sections Git writes, and a quoted move name, are still reviewed.
+    for patch in [
+        workflow.to_owned(),
+        "diff --git a/x b/y\nsimilarity index 100%\nrename from x\nrename to y\n".to_owned(),
+        "diff --git a/x b/y\nsimilarity index 100%\nrename from x\nrename to \"y z\"\n".to_owned(),
+    ] {
+        assert!(reads_as_git_does(root, patch.as_bytes()), "{patch:?}");
+    }
 }
 
 /// A file's hunks are one unbroken run, as Git reads them; Git's verdict is asked for each case.

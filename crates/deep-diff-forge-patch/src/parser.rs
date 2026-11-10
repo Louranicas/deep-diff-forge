@@ -193,6 +193,11 @@ struct FileBuf {
     new_raw: Option<String>,
     rename_from: Option<String>,
     rename_to: Option<String>,
+    /// The last `copy to` name, which is the path a copy writes: `gitdiff_copydst` sets the new
+    /// name, and a later `copy to` overwrites an earlier one. The review took the `diff --git`
+    /// or `+++` name instead, so `copy to .github/workflows/pwn.yml` beside `b/docs/a.md` was
+    /// reviewed as a copy to the docs file while Git wrote the workflow (rescore of v0.8.1, N1).
+    copy_to: Option<String>,
     metadata: Vec<String>,
     binary_body: Vec<String>,
     /// After `GIT binary patch`: only lines of the body grammar are admitted (see
@@ -410,8 +415,9 @@ impl Parser {
         if self.try_metadata(line, line_number)? {
             // `parse_git_diff_header` reads extended headers until the first other line, and a
             // hunk may begin there; a `diff --git` line alone is no header to Git
-            // (`git_hdr_len <= len`), so the hunk needs one of these first.
-            self.hunk_may_open = true;
+            // (`git_hdr_len <= len`), so the hunk needs one of these first. A binary line ends
+            // the section's patch, so no hunk may follow it.
+            self.hunk_may_open = !self.file.as_ref().is_some_and(|f| f.header_ended);
             return Ok(LineUse::Interpreted);
         }
         // `git format-patch` writes a bare `---` before the diffstat and a `-- ` signature after
@@ -491,6 +497,17 @@ impl Parser {
         line_number: usize,
     ) -> Result<(), PatchParseError> {
         self.close_hunk(line_number)?;
+        // A Git section's header runs until its first hunk, so `parse_git_diff_header` reads a
+        // second `---`/`+++` pair as this file's names again, refusing names that differ
+        // ("inconsistent old filename"). DDF began a traditional section there, and reviewed a
+        // change Git refuses to apply (rescore of v0.8.1, oracle mutants).
+        if self
+            .file
+            .as_ref()
+            .is_some_and(|f| f.git && f.new_raw.is_some() && f.hunks.is_empty())
+        {
+            return Err(PatchParseError::MisplacedHeader { line_number });
+        }
         let needs_new = self
             .file
             .as_ref()
@@ -510,10 +527,12 @@ impl Parser {
                 return Err(PatchParseError::MisplacedHeader { line_number });
             }
             let traditional = !file.git;
-            file.old_raw = Some(
-                header_name(rest, traditional && !had_cr)
-                    .ok_or(PatchParseError::InvalidPath { line_number })?,
-            );
+            let name = header_name(rest, traditional && !had_cr)
+                .ok_or(PatchParseError::InvalidPath { line_number })?;
+            if file.git && names_nothing(&name, file.p0) {
+                return Err(PatchParseError::InvalidPath { line_number });
+            }
+            file.old_raw = Some(name);
             file.old_epoch = traditional && !had_cr && has_epoch_timestamp(rest);
             file.awaiting_new_header = true;
             file.past_headers = true;
@@ -537,6 +556,9 @@ impl Parser {
             let traditional = !file.git;
             let name = header_name(rest, traditional && !had_cr)
                 .ok_or(PatchParseError::InvalidPath { line_number })?;
+            if file.git && names_nothing(&name, file.p0) {
+                return Err(PatchParseError::InvalidPath { line_number });
+            }
             if traditional {
                 // `guess_p_value`: a new name with no `/` sets `-p0` for this file and every
                 // later one.
@@ -609,7 +631,15 @@ impl Parser {
         }
         // Git squashes the repeated slashes of a moved path (`find_name`), so `rename to
         // .github//workflows/ci.yml` writes `.github/workflows/ci.yml`.
+        //
+        // Git reads an unquoted move name up to the first whitespace other than a space or tab
+        // (`find_name` with no terminator), so `rename to build.rs\rdocs/notes.md` writes
+        // `build.rs` while the review showed the whole line (rescore of `af5c3d1`, F2). Git
+        // quotes a name with a control character, so an unquoted one is refused.
         let moved_path = |path: &str| {
+            if !path.starts_with('"') && path.contains(['\r', '\x0b', '\x0c']) {
+                return Err(PatchParseError::InvalidPath { line_number });
+            }
             super::paths::decode_path(path)
                 .filter(|p| !git_refuses_path(p))
                 .map(|p| squash_slashes(&p))
@@ -625,11 +655,11 @@ impl Parser {
             file.metadata.push(line.to_string());
             return Ok(true);
         }
-        if let Some(path) = line
-            .strip_prefix("copy from ")
-            .or_else(|| line.strip_prefix("copy to "))
-        {
+        if let Some(path) = line.strip_prefix("copy from ") {
             moved_path(path)?;
+        }
+        if let Some(path) = line.strip_prefix("copy to ") {
+            file.copy_to = Some(moved_path(path)?);
         }
         if MODE_PREFIXES
             .iter()
@@ -638,8 +668,38 @@ impl Parser {
         {
             return Err(PatchParseError::InvalidMode { line_number });
         }
+        // Git keeps the last of each mode header, and an `index` line's mode is an old mode too
+        // (`gitdiff_index` calls `gitdiff_oldmode`), so `old mode 100755` / `new mode 100755` /
+        // `index … 100644` made the file executable while the review, which reads the first,
+        // showed no mode change (rescore of v0.8.1, N3). Git never writes a mode header twice,
+        // nor an `index` mode beside another mode header: both are refused, not resolved.
+        let mode_header = MODE_PREFIXES.iter().find(|p| line.starts_with(**p));
+        let has_mode_header = |metadata: &[String]| {
+            metadata
+                .iter()
+                .any(|m| MODE_PREFIXES.iter().any(|p| m.starts_with(p)))
+        };
+        if mode_header.is_some_and(|p| file.metadata.iter().any(|m| m.starts_with(p)))
+            || (mode_header.is_some() && file.metadata.iter().any(|m| index_has_mode(m)))
+            || (index_has_mode(line) && has_mode_header(&file.metadata))
+        {
+            return Err(PatchParseError::InconsistentHeader { line_number });
+        }
         if META_PREFIXES.iter().any(|p| line.starts_with(p)) {
+            // `GIT binary patch` and `Binary files … differ` are not extended headers to Git:
+            // `parse_git_diff_header` stops at them, and the section's patch ends there. Read on,
+            // a later `copy to`, `rename to` or mode line named a file or mode Git never touched,
+            // while Git rewrote the `diff --git` file from the blob in the `index` line (rescore of
+            // `af5c3d1`, F1). They now end the header, so any header after them is refused, and
+            // so is a line Git would not take for either (`GIT binary patchX`, no `differ`).
+            let literal = line.starts_with("GIT binary patch");
+            let marker = line.starts_with("Binary files ");
+            if (literal && line != "GIT binary patch") || (marker && !line.ends_with(" differ")) {
+                return Err(PatchParseError::UnsupportedFormat { line_number });
+            }
+            let binary = literal || marker;
             file.in_binary_body |= line == "GIT binary patch";
+            file.header_ended |= binary;
             file.metadata.push(line.to_string());
             return Ok(true);
         }
@@ -690,6 +750,7 @@ impl Parser {
                 .any(|p| says(p));
             if (says("new file mode ") && says("deleted file mode "))
                 || ((says("new file mode ") || says("deleted file mode ")) && moved)
+                || file.renames_and_copies()
                 // A new file has no old lines and a deleted one no new lines; git refuses both
                 // ("new file depends on old contents"), and the model could not render them.
                 // A traditional diff's `/dev/null` side makes the same new or deleted file
@@ -727,11 +788,16 @@ impl Parser {
                     line_number: self.last_line,
                 });
             }
-            if !file.hunks.is_empty()
-                && file
-                    .metadata
-                    .iter()
-                    .any(|m| m == "GIT binary patch" || m.starts_with("Binary files "))
+            // A binary file has no text hunks: a binary line ends the header, after which `---`,
+            // `+++` and `@@` are refused (`try_metadata`), and after a hunk the binary line is.
+            // Git's `parse_binary` needs a `literal` or `delta` line first and refuses the patch
+            // without one ("unrecognized binary patch"); an empty body was reviewed as a binary
+            // change (the oracle's mutants, after F1).
+            if file.in_binary_body
+                && !file
+                    .binary_body
+                    .first()
+                    .is_some_and(|l| l.starts_with("literal ") || l.starts_with("delta "))
             {
                 return Err(PatchParseError::UnsupportedFormat {
                     line_number: self.last_line,
@@ -747,42 +813,10 @@ impl Parser {
                     line_number: self.last_line,
                 });
             }
-            // Contradictory rename/copy labels cannot be faithfully reconstructed.
-            // Reject them rather than choosing one path and silently changing truth.
-            let mut declared_old: Option<String> = None;
-            for meta in &file.metadata {
-                if let Some(from) = meta
-                    .strip_prefix("rename from ")
-                    .or_else(|| meta.strip_prefix("copy from "))
-                {
-                    let from = super::paths::decode_path(from)
-                        .map(|from| squash_slashes(&from))
-                        .ok_or(PatchParseError::InvalidPath {
-                            line_number: self.last_line,
-                        })?;
-                    if declared_old
-                        .as_ref()
-                        .is_some_and(|previous| previous != &from)
-                    {
-                        return Err(PatchParseError::InvalidPath {
-                            line_number: self.last_line,
-                        });
-                    }
-                    declared_old = Some(from.clone());
-                    if file
-                        .old_raw
-                        .as_deref()
-                        .is_some_and(|old| p_name(old, file.p0) != from)
-                        || file.new_raw.as_deref() == Some("/dev/null")
-                        || file.metadata.iter().any(|m| {
-                            m.starts_with("new file mode ") || m.starts_with("deleted file mode ")
-                        })
-                    {
-                        return Err(PatchParseError::InvalidPath {
-                            line_number: self.last_line,
-                        });
-                    }
-                }
+            if file.old_names_disagree() || file.names_disagree() {
+                return Err(PatchParseError::InvalidPath {
+                    line_number: self.last_line,
+                });
             }
             file.refuse_what_git_reads_nothing_from(self.last_line)?;
             self.files.push(file.into_review_file());
@@ -876,6 +910,73 @@ impl HunkBuf {
 }
 
 impl FileBuf {
+    /// Git refuses a section that is both a rename and a copy; reviewed, it showed a move that
+    /// never applies (rescore of v0.8.1, L2).
+    fn renames_and_copies(&self) -> bool {
+        let says = |prefix: &str| self.metadata.iter().any(|m| m.starts_with(prefix));
+        (says("rename from ") || says("rename to ")) && (says("copy from ") || says("copy to "))
+    }
+
+    /// Contradictory rename/copy labels cannot be faithfully reconstructed. Reject them rather
+    /// than choosing one path and silently changing truth: two different old paths, an old path
+    /// other than the `---` name, or a move to `/dev/null`. A path that does not decode counts as
+    /// a contradiction.
+    fn old_names_disagree(&self) -> bool {
+        let mut declared_old: Option<String> = None;
+        for meta in &self.metadata {
+            if let Some(from) = meta
+                .strip_prefix("rename from ")
+                .or_else(|| meta.strip_prefix("copy from "))
+            {
+                let Some(from) = super::paths::decode_path(from).map(|from| squash_slashes(&from))
+                else {
+                    return true;
+                };
+                if declared_old
+                    .as_ref()
+                    .is_some_and(|previous| previous != &from)
+                {
+                    return true;
+                }
+                declared_old = Some(from.clone());
+                // A move of a new or deleted file is refused before this, in `flush_file`.
+                if self
+                    .old_raw
+                    .as_deref()
+                    .is_some_and(|old| p_name(old, self.p0) != from)
+                    || self.new_raw.as_deref() == Some("/dev/null")
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// `gitdiff_verify_name`: once a move header named the new path, a `+++` naming another is
+    /// "inconsistent new filename" to Git. So is a new file's `+++`, or a deleted file's `---`,
+    /// that differs from the `diff --git` name: `gitdiff_newfile` and `gitdiff_delete` take that
+    /// name first when both halves give it. Accepted, each reviewed a file Git refuses to write
+    /// (rescore of v0.8.1, L2 and oracle mutants).
+    fn names_disagree(&self) -> bool {
+        let has = |prefix: &str| self.metadata.iter().any(|m| m.starts_with(prefix));
+        let def_name = self
+            .git_old
+            .as_ref()
+            .filter(|old| self.git_new.as_ref() == Some(*old));
+        let differs = |raw: Option<&str>, name: &String| {
+            raw.is_some_and(|raw| raw != "/dev/null" && p_name(raw, self.p0) != *name)
+        };
+        self.rename_to
+            .as_ref()
+            .or(self.copy_to.as_ref())
+            .is_some_and(|to| differs(self.new_raw.as_deref(), to))
+            || def_name.is_some_and(|def| {
+                (has("new file mode ") && differs(self.new_raw.as_deref(), def))
+                    || (has("deleted file mode ") && differs(self.old_raw.as_deref(), def))
+            })
+    }
+
     /// Refuse a section Git names no file or no change from. `last_line` is where the section
     /// ended.
     fn refuse_what_git_reads_nothing_from(&self, last_line: usize) -> Result<(), PatchParseError> {
@@ -1071,6 +1172,8 @@ impl FileBuf {
                 } else {
                     self.rename_to = Some(name);
                 }
+            } else if prefix.ends_with("to ") {
+                self.copy_to = Some(name);
             }
         }
         true
@@ -1154,7 +1257,7 @@ impl FileBuf {
     }
 
     fn resolve_path(&self) -> String {
-        if let Some(to) = self.rename_to.as_ref() {
+        if let Some(to) = self.rename_to.as_ref().or(self.copy_to.as_ref()) {
             return to.clone();
         }
         if let Some(path) = self.traditional_path.as_ref() {
@@ -1286,6 +1389,22 @@ fn header_half(path: &str, p0: bool) -> String {
     path.split_once('/')
         .map_or(path, |(_, rest)| rest)
         .to_owned()
+}
+
+/// A Git section's `---`/`+++` name that `find_name` reads as no name at all: nothing is left
+/// once `-p1` strips its first component (`--- README`, `+++ b/`). Git then takes the
+/// `diff --git` name, so `diff --git a/.github/workflows/ci.yml …` with `--- README` and
+/// `+++ README` changed the workflow while the review showed `README` (rescore of v0.8.1, N2).
+/// Refused rather than resolved, as no tool writes this form. `/dev/null` is a side, not a name.
+fn names_nothing(name: &str, p0: bool) -> bool {
+    name != "/dev/null" && strip_p(name, p0).is_none()
+}
+
+/// An `index <old>..<new> <mode>` line: `gitdiff_index` reads a mode after the hashes as the
+/// old mode. Git writes one only when the mode does not change.
+fn index_has_mode(line: &str) -> bool {
+    line.strip_prefix("index ")
+        .is_some_and(|rest| rest.trim_end_matches('\r').contains(' '))
 }
 
 /// `find_name_common`'s strip: the path after its first component (all of it under `-p0`), or
@@ -2484,10 +2603,6 @@ diff --git a/x b/x
                 "deleted from /dev/null",
                 "deleted file mode 100644\n--- /dev/null\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n",
             ),
-            (
-                "new and binary with a hunk",
-                "new file mode 100644\nBinary files /dev/null and b/x differ\n--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+a\n",
-            ),
         ] {
             let err = parse(&format!("{git}{body}")).unwrap_err();
             assert!(
@@ -2495,15 +2610,23 @@ diff --git a/x b/x
                 "{case}: {err:?}"
             );
         }
-        // Text hunks beside binary markers on an ordinary file are an unsupported format.
-        let err = parse(&format!(
-            "{git}Binary files a/x and b/x differ\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"
-        ))
-        .unwrap_err();
-        assert!(
-            matches!(err, PatchParseError::UnsupportedFormat { .. }),
-            "{err:?}"
-        );
+        // Text beside a binary marker: Git's patch for the section ends at the marker, so a
+        // `---`/`+++` or hunk after it is out of place, and a marker after a hunk is too.
+        for body in [
+            "new file mode 100644\nBinary files /dev/null and b/x differ\n--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+a\n",
+            "Binary files a/x and b/x differ\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+            "index 1111111..2222222 100644\nBinary files a/x and b/x differ\n@@ -1 +1 @@\n-a\n+b\n",
+            "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\nBinary files a/x and b/x differ\n",
+        ] {
+            let err = parse(&format!("{git}{body}")).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    PatchParseError::MisplacedHeader { .. } | PatchParseError::MisplacedHunk { .. }
+                ),
+                "{body:?}: {err:?}"
+            );
+        }
     }
 
     /// `git format-patch` output parses (bug hunt 2026-10-28, H1-07): the bare `---` before the
@@ -3385,8 +3508,8 @@ diff --git a/a b c.rs b/a b c.rs
         for (case, input, line_number) in [
             (
                 "two old paths",
-                "diff --git a/x b/z\nrename from x\nrename to z\ncopy from y\ncopy to z\n",
-                5,
+                "diff --git a/x b/z\nrename from x\nrename from y\nrename to z\n",
+                4,
             ),
             (
                 "another old header",
@@ -3405,6 +3528,12 @@ diff --git a/a b c.rs b/a b c.rs
                 "{case}"
             );
         }
+        // Both a rename and a copy: Git refuses the section whatever the paths say.
+        assert_eq!(
+            parse("diff --git a/x b/z\nrename from x\nrename to z\ncopy from x\ncopy to z\n")
+                .unwrap_err(),
+            PatchParseError::InconsistentHeader { line_number: 5 }
+        );
     }
 
     /// A traditional diff's `/dev/null` side makes a new or deleted file as a mode line does, and

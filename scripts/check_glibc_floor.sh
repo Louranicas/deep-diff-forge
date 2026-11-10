@@ -7,6 +7,12 @@
 # one "weak version `GLIBC_2.39' not found" line to stderr on each run. They are listed, not
 # refused.
 #
+# The WEAK flag is the linker's. LLD (the rustup toolchain's default on x86_64 Linux) sets it
+# when every reference to a version is weak. GNU ld leaves it unset, and the loader then treats
+# the version as required: a GNU ld build on glibc 2.39 or newer does not start on an older
+# glibc (measured 2026-11-10, GNU ld 2.46 on glibc 2.43, run on glibc 2.35). This script refuses
+# such a build, correctly. It is a property of that build, not of the source.
+#
 # Measured 2026-10-31: the v0.5.0 x86_64 release binary (built on ubuntu-24.04, glibc 2.39) and a
 # local build on Fedora 44 (glibc 2.43) both need at most GLIBC_2.34; the v0.5.0 binary ran on
 # glibc 2.34 (AlmaLinux 9), 2.35 (Ubuntu 22.04) and 2.36 (Debian 12), and the loader refused it on

@@ -6,7 +6,70 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-09
+
+Tagged `v0.8.2` at `fb5ffe1` (2026-11-10), signed.
+
+**Security release** ([GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp)). v0.8.1 and earlier could
+review a different file or mode than `git apply` writes: a copy under a name other than its
+`copy to`, a Git section whose `---`/`+++` name `-p1` leaves nothing of, repeated mode
+headers (independent rescore of v0.8.1, N1 and N2 high, N3 medium), a copy, rename or mode
+line after a binary line, and a move name with a carriage return in it (rescore of the
+untagged 0.8.2, F1 high, F2 medium). Upgrade from 0.8.1; every change below is a fix, and no
+interface changes.
+
+### Security
+
+- **A copy's reviewed destination is the one Git writes** (independent rescore of v0.8.1, N1,
+  high). Git takes a copy's new path from its last `copy to` line; DDF never read that line and
+  reviewed the `diff --git` or `+++` name instead. `diff --git a/README.md b/docs/README-copy.md`
+  with `copy to .github/workflows/pwn.yml` and a hunk was reviewed as a docs copy (exit 0, CLI,
+  `rpc` and MCP `review_outline`) while `git apply` wrote the workflow with the hunk's content.
+  Present since `copy` headers were first read; measured on v0.8.0 and v0.8.1 with Git 2.56.
+  The last `copy to` is now the reviewed path, as Git reads it.
+- **A Git section's `---`/`+++` name that `-p1` leaves nothing of is refused** (rescore N2,
+  high). Git reads `--- README` as no name and keeps the `diff --git` one, so
+  `diff --git a/.github/workflows/ci.yml …` with `--- README` / `+++ README` changed the
+  workflow while DDF reviewed `README`. No tool writes this form; it is refused (exit 4).
+- **A binary line ends a Git section's header** (independent rescore of `af5c3d1`, the
+  untagged 0.8.2, F1, high). Git stops reading extended headers at `Binary files … differ` and
+  `GIT binary patch`, and its patch for the section ends there. DDF read on, so
+  `diff --git a/.github/workflows/ci.yml …` with an `index` line, `Binary files … differ`, then
+  `copy from docs/logo.png` / `copy to docs/logo-copy.png` was reviewed as a binary copy of a
+  logo (exit 0, CLI and MCP `review_outline`) while `git apply` rewrote the workflow from the
+  `index` line's blob, which only has to be in the object database. A `rename` after the binary
+  line did the same in v0.8.1; the N1 fix above made the copy form hide the workflow path too.
+  A header, `---`/`+++` or hunk after a binary line is now refused, as are `GIT binary patch`
+  with trailing text, `Binary files` without `differ`, and a `GIT binary patch` with no
+  `literal` or `delta` line, which Git refuses.
+- **A move name with a carriage return in it is refused** (same rescore, F2, medium). Git reads
+  an unquoted `rename to`/`copy to` name only up to a carriage return (or vertical tab or form
+  feed), so `rename to build.rs\rdocs/notes.md` created `build.rs` while the review showed the
+  whole line with a control-character hazard but no build-script signal. Git quotes such names,
+  so an unquoted one is refused (exit 4).
+- **A repeated mode header, or an `index` mode beside a mode header, is refused** (rescore N3,
+  medium). Git keeps the last of each, and reads an `index` line's mode as the old mode, so
+  `old mode 100755` / `new mode 100755` / `index … 100644` made a script executable while DDF,
+  reading the first, showed no mode change. Git never writes either form.
+- **What Git refuses as inconsistent is refused**: a section that is both a rename and a copy, a
+  `+++` that differs from the `rename to` or `copy to` name, a new file's `+++` or a deleted
+  file's `---` that differs from the `diff --git` name, and a second `---`/`+++` pair before a
+  Git section's first hunk (rescore L2 and oracle mutants). Each was reviewed as a change that
+  never applies.
+- Test: `no_duplicated_or_copy_header_mutant_reads_differently_from_git`. The `git apply` oracle
+  now compares `--summary` as well as `--numstat`: copies and the paths they write, created and
+  deleted files, and mode changes. The test asserts the findings, then inserts each kind of
+  extended header, a duplicate mode, an `index` mode, `copy to`, a nameless `---`/`+++` and a
+  mismatched name at every position of five Git sections; each case must be refused or read
+  exactly as Git reads it. Control: it fails on the v0.8.1 parser at N1.
+- Test: `no_header_after_a_binary_line_or_control_in_a_move_name_is_read`, with binary lines and
+  control-character move names added to the inserted headers. Control: both tests fail on
+  `af5c3d1`. The refusal message for contradictory headers now names repeated modes and
+  rename-and-copy, not only a new or deleted file.
+
 ## [0.8.1] - 2026-11-07
+
+Tagged `v0.8.1` at `d290379` (2026-11-08), signed.
 
 **Security release.** v0.8.0 reviewed a rename to a different destination than `git apply`
 writes when a line Git does not read as a header (a blank line, any text) came between two
@@ -2117,7 +2180,8 @@ A supply-chain & fuzz hardening pass then raised the release/CI posture:
   `--json`/`--jsonl` stability tests. Corrected the daemon's `lib.rs` doc from
   "thread-per-connection" to the true single-threaded sequential accept loop.
 
-[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.2
 [0.8.1]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.1
 [0.8.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.0
 [0.7.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.7.0
