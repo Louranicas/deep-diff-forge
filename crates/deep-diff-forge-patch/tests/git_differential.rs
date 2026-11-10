@@ -1,3 +1,6 @@
+// DDF integration: R03, R07, R46. Differential oracle for the parser: every patch DDF accepts must read as `git apply` reads it (paths, operations and modes), which round-trip equality does not show.
+// Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
+// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_differential
 //! Differential oracle: a patch DDF accepts is the patch `git apply` reads. For every accepted
 //! input, Git's `--numstat` (each file Git would write, with its added and deleted line counts)
 //! must equal the same projection of DDF's review. A reading that differs shows a reviewer one

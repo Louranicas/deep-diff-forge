@@ -8,6 +8,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [0.8.2] - 2026-11-09
 
+Tagged `v0.8.2` at `fb5ffe1` (2026-11-10), signed.
+
 **Security release** ([GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp)). v0.8.1 and earlier could
 review a different file or mode than `git apply` writes: a copy under a name other than its
 `copy to`, a Git section whose `---`/`+++` name `-p1` leaves nothing of, repeated mode
