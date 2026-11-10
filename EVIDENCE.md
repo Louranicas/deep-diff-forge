@@ -1263,3 +1263,27 @@ Measured with `gh` on 2026-11-02.
   - For x86_64 Linux: `sha256sum -c` passed, and the binary prints `deep-diff-forge 0.8.1`.
   - `gh attestation verify` passed: predicate `https://slsa.dev/provenance/v1`, source ref `refs/tags/v0.8.1` at `d290379`, signer `release.yml@refs/tags/v0.8.1`.
 - **The headline fix, on the released binary.** The F1 patch has a rename from `docs/a.md`, then `rename to .github/workflows/pwn.yml`, then the line `note: reviewed`, then `rename to docs/harmless.md`. `git apply --summary` reports `rename docs/a.md => .github/workflows/pwn.yml`. v0.8.0's `review --probe` showed `harmless.md` as renamed and exited 0. v0.8.1 refuses the patch with exit 4: `file header out of place at line 6`.
+
+## v0.8.2 release (2026-11-10)
+
+- **Inputs.**
+  - The independent rescore of v0.8.1 (2026-11-09, 80/100) found N1 and N2 (high) and N3 (medium): a copy, a `---`/`+++` name with nothing after its first component, and repeated mode headers were each reviewed differently from what `git apply` writes. A private advisory, GHSA-gp5v-m67f-gmgp, was drafted first.
+  - PR #115 (the N1 to N3 fix and the 0.8.2 preparation) merged at `af5c3d1`. Release dry run [42548637368](https://github.com/Louranicas/deep-diff-forge/actions/runs/42548637368) on it passed.
+  - An independent rescore of `af5c3d1`, before any tag, found F1 (high: a copy, rename or mode header after a binary line) and F2 (medium: a carriage return in a move name). The tag waited. PR #116 fixed both and merged at `fb5ffe1`. Before its push, `scripts/ci_local.sh` reported `steps failed: 0` (1,944 tests).
+  - Release dry run [42591223342](https://github.com/Louranicas/deep-diff-forge/actions/runs/42591223342) on `fb5ffe1` passed: the quality gate and four builds.
+- **Tag.** `just release-tag 0.8.2` (through the owner's `release_tag.sh`) ran at `fb5ffe1`, after the release gate passed and gitleaks found no leaks. It pushed the signed annotated tag `v0.8.2` (object `e5e5364`) to GitHub and GitLab. `git tag -v v0.8.2` against `.github/allowed_signers` reports a good signature for ED25519 `SHA256:h4S5C3lX4poSYOx8ii8yezKBlp5pQf2jy168XgwWR8I`, and `scripts/verify_release_tag.sh` confirms the tag's commit is on `main`.
+- **Release run [42764361592](https://github.com/Louranicas/deep-diff-forge/actions/runs/42764361592).** Attempt 1 passed (05:47Z to 06:42Z on 2026-11-10): the supply chain gate, the quality gate, four builds and the GitHub Release. The crates.io publish was skipped (owner-gated).
+- **Immutable.** `gh release view v0.8.2` reports `isImmutable: true`.
+- **Artifacts** (measured again on 2026-11-10 from a fresh download).
+  - Nine assets: four archives, their `.sha256` files, and `sbom.spdx.json`.
+  - `sha256sum -c` passed for all four archives, and the x86_64 Linux binary prints `deep-diff-forge 0.8.2`.
+  - `gh attestation verify` passed for the four archives and the SBOM: predicate `https://slsa.dev/provenance/v1`, source ref `refs/tags/v0.8.2` at `fb5ffe1`, signer `release.yml@refs/tags/v0.8.2`.
+- **Advisory.** [GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp) was published at 2026-11-10T07:18:18Z, after the release: severity high, `deep-diff-forge-patch` and `deep-diff-forge-cli` up to 0.8.1 affected, 0.8.2 patched. A CVE was requested and is not assigned yet.
+- **The headline fixes, on the released binaries** (x86_64 Linux, `--stdin-patch --json`, Git 2.56.0). Twelve patches were given to v0.8.1 and v0.8.2. v0.8.2 read all twelve as expected; v0.8.1 read the ten finding patches wrongly, each with exit 0, and the two controls correctly.
+  - **N1.** `diff --git a/README.md b/docs/README-copy.md` with `copy to .github/workflows/pwn.yml` and a hunk: `git apply --summary` reports `copy README.md => .github/workflows/pwn.yml`. v0.8.1 showed a copy to `docs/README-copy.md`; v0.8.2 shows the copy to `.github/workflows/pwn.yml`. The same holds with two `copy to` lines.
+  - **N2.** A section for `.github/workflows/ci.yml` with `--- README` / `+++ README`: v0.8.1 showed `README`; v0.8.2 refuses it with exit 4 (`invalid, non-UTF-8 or unsafe Git path at line 2`).
+  - **N3.** A repeated `new mode`, or modes followed by an `index` line with a mode: v0.8.1 accepted both; v0.8.2 refuses both with exit 4 (`contradictory file headers`).
+  - **F1.** A binary change to `.github/workflows/ci.yml` followed by `rename from docs/logo.png` / `rename to docs/logo-v2.png`: `git apply --numstat` reports only `.github/workflows/ci.yml`. v0.8.1 showed `docs/logo-v2.png`; v0.8.2 refuses it with exit 4 (`file header out of place at line 4`). The copy and mode forms are refused the same way.
+  - **F2.** `rename to build.rs`, a carriage return, then `docs/notes.md`: v0.8.1 accepted the name; v0.8.2 refuses it with exit 4, and likewise for `copy to`.
+  - **Controls.** A plain binary change and a plain rename are accepted by both versions.
+- **Not measured here.** v0.8.2 as released has had no independent rescore; the macOS and arm64 archives were checked by checksum and attestation only, not run.

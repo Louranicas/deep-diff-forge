@@ -35,9 +35,9 @@ Underneath sits one rule. The apply-able patch is truth, and nothing may rewrite
   <sub>Real output, not a mock-up: <code>scripts/docs/render_terminal_svg.py</code> runs the binary on the crate changes of PR #23 and draws what it prints.</sub>
 </p>
 
-> **Status: 0.8.2 on `main` (2026-11-09), not yet tagged.** It fixes reviews of copies, nameless `---`/`+++` names and repeated mode headers in v0.8.1 that differed from `git apply` ([advisory](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp), [CHANGELOG](CHANGELOG.md)).
+> **Status: 0.8.2, released 2026-11-10 as the signed tag `v0.8.2`.** It fixes reviews of copies, nameless `---`/`+++` names and repeated mode headers in v0.8.1 that differed from `git apply` ([advisory](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp), [CHANGELOG](CHANGELOG.md)).
 > - **Declared scope:** a local, single-user review tool on Linux and macOS ([the exact targets](#supported-platforms)), covering the CLI, daemon, `rpc`, MCP and SDKs. All four targets are built and smoke-tested on current CI runners. The oldest OS versions listed are declared from the binaries, not run. The [verdict and its evidence](#project-status) are below.
-> - **Releases:** the latest release is [v0.8.1](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.1), with Linux (x86_64 and arm64) and macOS binaries, an SPDX SBOM and build provenance.
+> - **Releases:** the latest release is [v0.8.2](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.2), with Linux (x86_64 and arm64) and macOS binaries, an SPDX SBOM and build provenance.
 > - **crates.io:** publication is on hold by decision until the codebase is fully production-hardened.
 
 <p align="center">
@@ -178,15 +178,15 @@ Each fails with exit 4. None is quietly turned into a plausible-looking model.
 
 ## Install
 
-**Prebuilt binaries** (latest release: v0.8.1) for Linux (x86_64 and, since v0.6.0, arm64) and
+**Prebuilt binaries** (latest release: v0.8.2) for Linux (x86_64 and, since v0.6.0, arm64) and
 macOS (Apple silicon and Intel) are on the [releases page](https://github.com/Louranicas/deep-diff-forge/releases)
 ([supported platforms](#supported-platforms)).
 Each archive has a `.sha256` file, and the release carries an SPDX SBOM:
 
 ```bash
-curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.8.1/deep-diff-forge-v0.8.1-x86_64-unknown-linux-gnu.tar.gz
-curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.8.1/deep-diff-forge-v0.8.1-x86_64-unknown-linux-gnu.tar.gz.sha256
-sha256sum -c deep-diff-forge-v0.8.1-x86_64-unknown-linux-gnu.tar.gz.sha256
+curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.8.2/deep-diff-forge-v0.8.2-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.8.2/deep-diff-forge-v0.8.2-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c deep-diff-forge-v0.8.2-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
 **From source** (`main`: 0.8.2, everything in this README). This needs Rust **1.88+** (edition 2024):
@@ -639,7 +639,7 @@ checks every answer's version, id and error shape.
 
 **Python:** `sdk/python/deep_diff_forge.py` uses only the standard library, and installs as the
 package `deep-diff-forge` (`python3 -m pip install ./sdk/python`, or from GitHub with
-`"deep-diff-forge @ git+https://github.com/Louranicas/deep-diff-forge@v0.8.1#subdirectory=sdk/python"`;
+`"deep-diff-forge @ git+https://github.com/Louranicas/deep-diff-forge@v0.8.2#subdirectory=sdk/python"`;
 not on PyPI; the package metadata arrived in 0.6.0, so `@v0.5.0` and older tags have no `pyproject.toml` to install). It drives the `deep-diff-forge` binary, which it does not ship. It speaks the
 daemon protocol over two transports with the same calls:
 
@@ -983,13 +983,18 @@ per-round history. This section is a map, not a copy.
 
 ## Project status
 
-**0.8.1 is not production-ready.** Its independent rescore (2026-11-09) scored
+**0.8.2 is not production-ready yet (verdict of 2026-11-10).** The independent rescore of
+v0.8.1 (2026-11-09) scored
 [80/100](docs/PRODUCTION_READINESS.md#assessment-2026-11-09-v081-d290379-independent-rescore)
 and found two high findings, both present since 0.8.0: a copy, and a `---`/`+++` name with
 nothing after its first component, could each be reviewed as a different file than the one
-`git apply` writes ([GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp)). 0.8.2 fixes both, and two more
-of the kind that a rescore of the untagged 0.8.2 found (a header after a binary line, and a
-carriage return in a move name); it is rescored once released. The declared scope
+`git apply` writes ([GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp), published 2026-11-10). 0.8.2
+fixes both, and two more of the kind that a rescore of the code before its tag found
+([80/100](docs/PRODUCTION_READINESS.md#assessment-2026-11-09-main-af5c3d1-the-untagged-082-independent-rescore-before-the-tag):
+a header after a binary line, and a carriage return in a move name). The last three
+independent rescores (v0.8.0, v0.8.1 and that one) each scored 80 and each found a new high
+finding of this kind, and the released v0.8.2 has not had one yet; it is rescored next
+([release evidence](EVIDENCE.md#v082-release-2026-11-10)). The declared scope
 is a local, single-user
 review tool on Linux and macOS ([the four targets](#supported-platforms)): CLI, Unix-socket
 daemon, `rpc`, MCP and SDKs, released as GitHub binaries. A scored assessment (2026-10-30, [83/100](docs/PRODUCTION_READINESS.md)) named
