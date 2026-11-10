@@ -29,9 +29,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   for a submodule it makes or removes a directory and writes nothing from the hunks.
   `new file mode 644` (or `755`, `0`, `140000`) with a hunk, and `new file mode 160000` with
   a hunk of ordinary content, were reviewed as a new file holding that content, while
-  `git apply` created an empty directory. Measured on v0.8.2 with Git 2.56. A mode header
-  must now have the type of a regular file, a symlink or a submodule, and under a submodule
-  mode every hunk line must be Git's own `Subproject commit <id>`; anything else is refused.
+  `git apply` created an empty directory. A binary body under `160000` was shown as a binary
+  change and written as an empty directory too. Measured on v0.8.2 with Git 2.56. A mode on
+  a mode header or an `index` line must now have the type of a regular file, a symlink or a
+  submodule. Under a submodule mode every hunk line must be Git's own
+  `Subproject commit <id>`, and a binary line or body is refused.
 
 ### Fixed
 

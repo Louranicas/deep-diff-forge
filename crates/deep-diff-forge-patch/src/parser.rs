@@ -686,6 +686,13 @@ impl Parser {
         {
             return Err(PatchParseError::InvalidMode { line_number });
         }
+        // An `index` line's mode is an old mode to Git (`gitdiff_index`), canonicalised like the
+        // others, so `index 1111111..2222222 644` is a submodule too. It is held to the same
+        // types; before, only its presence was looked at.
+        if index_mode(line).is_some_and(|mode| parse_mode(mode).is_none_or(|m| !git_writes_type(m)))
+        {
+            return Err(PatchParseError::InvalidMode { line_number });
+        }
         // Git keeps the last of each mode header, and an `index` line's mode is an old mode too
         // (`gitdiff_index` calls `gitdiff_oldmode`), so `old mode 100755` / `new mode 100755` /
         // `index … 100644` made the file executable while the review, which reads the first,
@@ -835,7 +842,7 @@ impl Parser {
                 });
             }
             // A submodule is a commit id, not content: for a section whose mode is `160000` Git
-            // makes or removes a directory and writes nothing from its hunks, so `new file mode
+            // makes or removes a directory and writes nothing from the section, so `new file mode
             // 160000` with a hunk of code was reviewed as a new file with that code (review of
             // the 0.8.3 fix). Git writes one line per side for it, `Subproject commit <id>`;
             // any other hunk line under a submodule mode is refused.
@@ -843,20 +850,23 @@ impl Parser {
                 MODE_PREFIXES
                     .iter()
                     .filter_map(|p| m.strip_prefix(p))
-                    .chain(
-                        m.strip_prefix("index ")
-                            .and_then(|rest| rest.trim_end_matches('\r').split_once(' '))
-                            .map(|(_, mode)| mode),
-                    )
+                    .chain(index_mode(m))
                     .filter_map(parse_mode)
                     .any(|mode| object_type(mode) == 0o160_000)
             });
+            // A binary line or body under that mode is no different: Git made the directory and
+            // wrote none of the bytes, while the review showed a binary change.
+            let binary = file
+                .metadata
+                .iter()
+                .any(|m| m.starts_with("GIT binary patch") || m.starts_with("Binary files "));
             if submodule
-                && file
-                    .hunks
-                    .iter()
-                    .flat_map(|h| &h.lines)
-                    .any(|l| !is_subproject_line(&l.text))
+                && (binary
+                    || file
+                        .hunks
+                        .iter()
+                        .flat_map(|h| &h.lines)
+                        .any(|l| !is_subproject_line(&l.text)))
             {
                 return Err(PatchParseError::InvalidMode {
                     line_number: self.last_line,
@@ -1477,8 +1487,14 @@ fn names_nothing(name: &str, p0: bool) -> bool {
 /// An `index <old>..<new> <mode>` line: `gitdiff_index` reads a mode after the hashes as the
 /// old mode. Git writes one only when the mode does not change.
 fn index_has_mode(line: &str) -> bool {
+    index_mode(line).is_some()
+}
+
+/// The mode an `index <old>..<new> <mode>` line ends with, if it has one.
+fn index_mode(line: &str) -> Option<&str> {
     line.strip_prefix("index ")
-        .is_some_and(|rest| rest.trim_end_matches('\r').contains(' '))
+        .and_then(|rest| rest.trim_end_matches('\r').split_once(' '))
+        .map(|(_, mode)| mode)
 }
 
 /// `find_name_common`'s strip: the path after its first component (all of it under `-p0`), or
@@ -3818,6 +3834,28 @@ diff --git a/a b c.rs b/a b c.rs
             matches!(err, PatchParseError::InvalidMode { .. }),
             "{err:?}"
         );
+        // A binary line or body under a submodule mode, and an `index` mode Git reads as one.
+        for body in [
+            "new file mode 160000\nindex 0000000..1111111\nBinary files /dev/null and b/x differ\n",
+            "new file mode 160000\nindex 0000000..1111111\nGIT binary patch\nliteral 0\nHcmV?d00001\n\n",
+            "index 1111111..2222222 160000\nBinary files a/x and b/x differ\n",
+        ] {
+            let err = parse(&format!("diff --git a/x b/x\n{body}")).unwrap_err();
+            assert!(
+                matches!(err, PatchParseError::InvalidMode { .. }),
+                "{body:?}: {err:?}"
+            );
+        }
+        for mode in ["644", "0", "040000", "060000", "140000", "8", "1000000"] {
+            let err = parse(&format!(
+                "diff --git a/x b/x\nindex 1111111..2222222 {mode}\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"
+            ))
+            .unwrap_err();
+            assert!(
+                matches!(err, PatchParseError::InvalidMode { line_number: 2 }),
+                "index {mode}: {err:?}"
+            );
+        }
         // What Git writes for a submodule, with a SHA-1 or SHA-256 id and the `-dirty` mark.
         for id in [
             "1".repeat(40),
