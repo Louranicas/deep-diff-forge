@@ -25,7 +25,8 @@ hardware are under [open items for maintainers](#open-items-for-maintainers).
 Release and publication:
 
 - **0.8.2 is tagged** (`v0.8.2`, 2026-11-10, signed, owner decision; the v0.8.1 rescore's N1-N3 fix
-  and the pre-tag rescore's F1-F2 fix); 0.8.1 is `v0.8.1` (2026-11-08).
+  and the pre-tag rescore's F1-F2 fix); 0.8.1 is `v0.8.1` (2026-11-08). `main` is 0.8.3 (the
+  v0.8.2 rescore's F3 and F2 fix and the submodule-mode fix), a release once `v0.8.3` is tagged.
   Any later `v*` tag is the owner's decision. Published GitHub releases are v0.1.0, v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0, v0.8.0, v0.8.1 and v0.8.2; v0.2.1 was never tagged.
 - **crates.io is on hold** by owner decision until the codebase is production-hardened.
   `release.yml` publishes only when the repository variable `DDF_CRATES_IO` is `open`; a

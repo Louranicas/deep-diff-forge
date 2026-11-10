@@ -6,6 +6,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-11-11
+
+**Security release** ([GHSA-rq5r-p3g9-phff](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-rq5r-p3g9-phff)). v0.8.2 and earlier could review a
+change on a different file, or with a different mode or type, than `git apply` writes: a
+name left behind by a `diff --git` line that a binary line follows directly, a new file's
+mode overridden by a `new mode` line (independent rescore of v0.8.2, F3 high, F2 medium),
+and content under a mode Git reads as a submodule (found while the fix was reviewed, high).
+Upgrade from 0.8.2; the changes are fixes and no interface changes. Three findings of the
+same rescore are not fixed here and are listed under Known limits.
+
 ### Security
 
 - **No name carries over from a `diff --git` line Git reads no patch from** (independent
@@ -2232,7 +2242,8 @@ A supply-chain & fuzz hardening pass then raised the release/CI posture:
   `--json`/`--jsonl` stability tests. Corrected the daemon's `lib.rs` doc from
   "thread-per-connection" to the true single-threaded sequential accept loop.
 
-[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.8.3...HEAD
+[0.8.3]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.3
 [0.8.2]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.2
 [0.8.1]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.1
 [0.8.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.0

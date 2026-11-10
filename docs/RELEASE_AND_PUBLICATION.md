@@ -2,9 +2,12 @@
 
 This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
-## Status 2026-11-10 (0.8.2 released)
+## Status 2026-11-11 (0.8.3 prepared)
 
-- **0.8.2 is released** as the signed tag `v0.8.2` (2026-11-10), the latest tag: a security
+- `main` carries **0.8.3**, a security release for v0.8.2's review of bare `diff --git` lines
+  and of modes (rescore of v0.8.2, GHSA-rq5r-p3g9-phff). It is a release once the signed tag
+  `v0.8.3` exists; pushing that tag, or any later `v*` tag, is the owner's decision.
+- **0.8.2 was released** as the signed tag `v0.8.2` (2026-11-10): a security
   release for v0.8.1's copy, name, mode and binary-header review (N1-N3 of the v0.8.1 rescore and F1-F2 of the rescore before
   the v0.8.2 tag; GHSA-gp5v-m67f-gmgp, published 2026-11-10). Immutable Releases is on (since
   2026-11-05), so its assets and tag cannot change. Pushing any later `v*` tag is the owner's decision.
@@ -28,7 +31,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
 | Channel | Purpose | Today |
 | --- | --- | --- |
-| `main` | Current development branch. | 0.8.2, reached only through pull requests (branch ruleset). |
+| `main` | Current development branch. | 0.8.3, reached only through pull requests (branch ruleset). |
 | GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`. |
 | GitLab mirror | Secondary remote and redundancy. | Pushed to match GitHub. |
 | crates.io | Rust library and CLI distribution. | On hold (`DDF_CRATES_IO`). |
@@ -40,7 +43,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 Semantic versioning. The plan below is the original 2026-06 sequence, kept as
 written; the releases did not follow it (`v0.2.0` already held 12 crates,
 including the TUI, daemon and learning crates; the review and SDK crates came
-later; 0.8.2 is the current development line):
+later; 0.8.3 is the current development line):
 
 ```text
 0.1.0: model and CLI bootstrap
@@ -95,7 +98,7 @@ up-to-date branch, and allows no bypass. The tag is cut from that commit with
 the `justfile` recipe:
 
 ```bash
-just release-tag 0.8.2
+just release-tag 0.8.3
 ```
 
 `release-tag` refuses a version that differs from `[workspace.package].version`
