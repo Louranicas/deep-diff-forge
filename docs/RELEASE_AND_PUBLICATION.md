@@ -5,9 +5,9 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 ## Status 2026-11-10 (0.8.2 released)
 
 - **0.8.2 is released** as the signed tag `v0.8.2` (2026-11-10), the latest tag: a security
-  release for v0.8.1's copy, name, mode and binary-header review (rescores N1-N3 and F1-F2,
-  GHSA-gp5v-m67f-gmgp, published 2026-11-10). Immutable Releases is on (since 2026-11-05), so
-  its assets and tag cannot change. Pushing any later `v*` tag is the owner's decision.
+  release for v0.8.1's copy, name, mode and binary-header review (N1-N3 of the v0.8.1 rescore and F1-F2 of the rescore before
+  the v0.8.2 tag; GHSA-gp5v-m67f-gmgp, published 2026-11-10). Immutable Releases is on (since
+  2026-11-05), so its assets and tag cannot change. Pushing any later `v*` tag is the owner's decision.
 - Published GitHub releases: `v0.1.0` (2026-06-22), `v0.2.0` (2026-06-24) and
   `v0.3.0` (2026-10-29), `v0.4.0` (2026-10-30), `v0.5.0` (2026-10-31), `v0.6.0` (2026-11-02), `v0.7.0` (2026-11-03), `v0.8.0` (2026-11-07), `v0.8.1` (2026-11-08) and `v0.8.2` (2026-11-10). `0.2.1` was never tagged.
 - crates.io is on hold by owner decision until the codebase is

@@ -35,7 +35,7 @@ Underneath sits one rule. The apply-able patch is truth, and nothing may rewrite
   <sub>Real output, not a mock-up: <code>scripts/docs/render_terminal_svg.py</code> runs the binary on the crate changes of PR #23 and draws what it prints.</sub>
 </p>
 
-> **Status: 0.8.2, released 2026-11-10 as the signed tag `v0.8.2`.** It fixes reviews of copies, nameless `---`/`+++` names and repeated mode headers in v0.8.1 that differed from `git apply` ([advisory](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp), [CHANGELOG](CHANGELOG.md)).
+> **Status: 0.8.2, released 2026-11-10 as the signed tag `v0.8.2`.** It fixes reviews in v0.8.1 that differed from `git apply`: copies, nameless `---`/`+++` names, repeated mode headers, headers after a binary line, and a carriage return in a move name ([advisory](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp), [CHANGELOG](CHANGELOG.md)).
 > - **Declared scope:** a local, single-user review tool on Linux and macOS ([the exact targets](#supported-platforms)), covering the CLI, daemon, `rpc`, MCP and SDKs. All four targets are built and smoke-tested on current CI runners. The oldest OS versions listed are declared from the binaries, not run. The [verdict and its evidence](#project-status) are below.
 > - **Releases:** the latest release is [v0.8.2](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.2), with Linux (x86_64 and arm64) and macOS binaries, an SPDX SBOM and build provenance.
 > - **crates.io:** publication is on hold by decision until the codebase is fully production-hardened.
@@ -990,14 +990,14 @@ per-round history. This section is a map, not a copy.
 **0.8.2 is not production-ready yet (verdict of 2026-11-10).** The independent rescore of
 v0.8.1 (2026-11-09) scored
 [80/100](docs/PRODUCTION_READINESS.md#assessment-2026-11-09-v081-d290379-independent-rescore)
-and found two high findings, both present since 0.8.0: a copy, and a `---`/`+++` name with
+and found two high findings, both present in v0.8.1 and earlier: a copy, and a `---`/`+++` name with
 nothing after its first component, could each be reviewed as a different file than the one
 `git apply` writes ([GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp), published 2026-11-10). 0.8.2
 fixes both, and two more of the kind that a rescore of the code before its tag found
 ([80/100](docs/PRODUCTION_READINESS.md#assessment-2026-11-09-main-af5c3d1-the-untagged-082-independent-rescore-before-the-tag):
 a header after a binary line, and a carriage return in a move name). The last three
 independent rescores (v0.8.0, v0.8.1 and that one) each scored 80 and each found a new high
-finding of this kind, and the released v0.8.2 has not had one yet; it is rescored next
+finding of this kind. The released v0.8.2 has not had an independent rescore yet; that is next
 ([release evidence](EVIDENCE.md#v082-release-2026-11-10)). The declared scope
 is a local, single-user
 review tool on Linux and macOS ([the four targets](#supported-platforms)): CLI, Unix-socket
