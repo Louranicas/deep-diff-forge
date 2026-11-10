@@ -223,6 +223,10 @@ binary is run (`--version` and a review) before it ships.
   three systems above). Rust's standard library references `pidfd_spawnp` and `pidfd_getpid`
   (glibc 2.39) as optional symbols; glibc 2.39 or newer prints nothing. Building from source on
   such a system also avoids it.
+- **A source build is for the system that built it.** Linked with GNU ld on glibc 2.39 or newer
+  (a distribution's own Rust package, for example), the binary requires `GLIBC_2.39` outright
+  and does not start on an older glibc (measured 2026-11-10: built on Fedora 44, refused by the
+  loader on Ubuntu 22.04). The release smoke holds every Linux release binary to the floor.
 - **macOS minimums** are the ones the v0.5.0 binaries declare (`LC_BUILD_VERSION` minos 11.0 for
   arm64, `LC_VERSION_MIN_MACOSX` 10.12 for x86_64, read 2026-10-31). They are run only on the
   runner's current macOS, not on those versions.
