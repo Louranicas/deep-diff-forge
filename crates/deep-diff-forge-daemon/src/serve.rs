@@ -1427,6 +1427,24 @@ mod tests {
         Engine::new()
     }
 
+    /// Bind again after the test let go of the start lock. The lock is a `flock` on a
+    /// close-on-exec descriptor, so a child that a parallel test forks holds a copy of it from
+    /// its fork until its exec, and the lock outlives the drop for that moment (measured
+    /// 2026-11-10: 3 of 60 runs of this suite refused such a rebind with `AddrInUse`; none of
+    /// 300 runs of the test alone did). Wait for the lock with a 10 s cap: one that is still
+    /// held then fails the test, as one that was never released would.
+    fn rebind(bind: impl Fn() -> std::io::Result<BoundListener>) -> std::io::Result<BoundListener> {
+        for _ in 0..1000 {
+            match bind() {
+                Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
+                    thread::park_timeout(Duration::from_millis(10));
+                }
+                settled => return settled,
+            }
+        }
+        bind()
+    }
+
     #[test]
     fn read_capped_line_reads_one_line() {
         let mut cur = std::io::Cursor::new(b"hello\nworld\n".to_vec());
@@ -1875,7 +1893,7 @@ mod tests {
         let first = bind_secure(&sock).expect("first bind");
         drop(first);
         // Bind again over the now-stale socket file; must succeed.
-        let second = bind_secure(&sock).expect("rebind over stale");
+        let second = rebind(|| bind_secure(&sock)).expect("rebind over stale");
         drop(second);
     }
 
@@ -2386,7 +2404,7 @@ mod tests {
             assert!(waiter.join().unwrap().unwrap(), "released: stopped");
         });
         // The waiter has let go of its own shared lock when it reports: a start can bind now.
-        let rebound = location.bind();
+        let rebound = rebind(|| location.bind());
         assert!(rebound.is_ok(), "{rebound:?}");
         drop(rebound);
         assert!(
@@ -2592,7 +2610,7 @@ mod tests {
         assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
         // Legitimate nearby case: once that start is gone, the stale socket is replaced.
         drop(other_start);
-        drop(bind_explicit(&sock).expect("the lock is free"));
+        drop(rebind(|| bind_explicit(&sock)).expect("the lock is free"));
     }
 
     /// A second start while a daemon runs is refused, and the running daemon keeps its socket
@@ -2761,7 +2779,8 @@ mod tests {
         // The stale socket file remains.
         assert!(sock.exists(), "stale socket should still exist");
         // Second bind over the stale socket must succeed.
-        let second = bind_explicit(&sock).expect("second explicit bind over stale socket");
+        let second =
+            rebind(|| bind_explicit(&sock)).expect("second explicit bind over stale socket");
         drop(second);
     }
 
