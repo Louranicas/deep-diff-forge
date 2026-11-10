@@ -6,6 +6,21 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Dependencies
+
+- **unicode-width 0.2.3, rustix 1.1.6 and signal-hook 0.4.6** (Dependabot #112, applied as
+  #120 with `fuzz/Cargo.lock` and the SBOM in step; the fuzz lock's rustix moves from 1.1.4
+  to 1.1.6 too). Read from the crates' sources, not measured:
+  - unicode-width 0.2.3 gives U+FF9E and U+FF9F (the halfwidth katakana voiced and
+    semi-voiced sound marks) width 1, where 0.2.2 gave 0, and moves its tables to Unicode 18.
+    Padding and wrap points change for text with those two characters; no DDF test or fixture
+    has them. unicode-segmentation stays at 1.13.3 (Unicode 17).
+  - rustix 1.1.6 carries the fix for GHSA-jh2m-fhpj-3vr7 (extended-attribute calls, 1.0.0 to
+    1.1.5). DDF calls none of them.
+  - signal-hook 0.4 changes `low_level::pipe`, which DDF does not use; the daemon's
+    `iterator` use is unchanged. The TUI's crossterm still brings signal-hook 0.3.18, so the
+    CLI links both, over one signal-hook-registry.
+
 ## [0.8.2] - 2026-11-09
 
 Tagged `v0.8.2` at `fb5ffe1` (2026-11-10), signed.
