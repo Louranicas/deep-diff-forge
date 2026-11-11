@@ -22,11 +22,11 @@ The framework is designed for:
 
 ## Status 2026-10-28 (0.3.0), rechecked 2026-11-01
 
-- Workspace version 0.8.3, a release once the signed tag `v0.8.3` exists; the tag before it is `v0.8.2` (2026-11-10). 14 crates under `crates/`
+- Workspace version 0.8.3, released as the signed tag `v0.8.3` (2026-11-11 UTC), the latest tag. 14 crates under `crates/`
   (core, patch, projection, pipeline, syntax, graph, agent, tui, cluster,
   learning, daemon, review, sdk, cli); edition 2024, MSRV 1.88, toolchain
   1.99.1. Internal edges: [`crate-edges.txt`](crate-edges.txt).
-- GitHub releases published before 0.8.3: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1` and `v0.8.2`. crates.io is on hold by owner
+- Published GitHub releases: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2` and `v0.8.3`. crates.io is on hold by owner
   decision; `release.yml` publishes only when the repository variable
   `DDF_CRATES_IO` is `open`, never because a token exists.
 - `deploy status` reports maturity L9 (Learning). Its gate list is declared, not
@@ -145,7 +145,7 @@ flowchart TB
 The codebase is at L9 (learning): every engine layer L0-L8 is implemented plus
 the L9 local-only learning loop. `v0.1.0` and `v0.2.0` were tagged and released
 to GitHub (binary + checksums via `release.yml`) and both git remotes. `0.2.1`
-was never tagged; 0.8.2 is tagged `v0.8.2` (2026-11-10), the tag before `v0.8.3`. crates.io is on hold by owner
+was never tagged; 0.8.3 is tagged `v0.8.3` (2026-11-11 UTC), the latest tag. crates.io is on hold by owner
 decision: the `publish` job runs only when the repository variable
 `DDF_CRATES_IO` is `open`, and a configured `CARGO_REGISTRY_TOKEN` does not lift
 the hold (corrected 2026-10-28; the earlier text said a token alone would
