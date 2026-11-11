@@ -44,6 +44,24 @@ const fn object_type(mode: u32) -> u32 {
     mode & 0o170_000
 }
 
+/// Whether `mode` has the type bits of a mode Git writes in a patch: a regular file, a symlink
+/// or a submodule. Git reads any other mode as a submodule (`canon_mode`), so `new file mode
+/// 644` with a hunk was reviewed as a new file with that content, while `git apply` created an
+/// empty directory and wrote none of it (review of the 0.8.3 fix, 2026-11-11). Such a mode is
+/// refused, not canonicalised.
+const fn git_writes_type(mode: u32) -> bool {
+    matches!(object_type(mode), 0o100_000 | 0o120_000 | 0o160_000)
+}
+
+/// One side of a submodule's change, as Git writes it: `Subproject commit <object id>`, with
+/// `-dirty` after the id when the submodule's work tree is.
+fn is_subproject_line(text: &str) -> bool {
+    text.strip_prefix("Subproject commit ").is_some_and(|id| {
+        let id = id.strip_suffix("-dirty").unwrap_or(id);
+        matches!(id.len(), 40 | 64) && id.bytes().all(|b| b.is_ascii_hexdigit())
+    })
+}
+
 /// Git's `canon_mode`, which `parse_mode_line` applies to every `old mode`/`new mode`: a regular
 /// file is `100755` when its owner may execute it (`ce_permissions`) and `100644` otherwise, a
 /// symlink `120000`, a directory `040000`, and anything else a submodule `160000`. So
@@ -664,7 +682,14 @@ impl Parser {
         if MODE_PREFIXES
             .iter()
             .filter_map(|p| line.strip_prefix(p))
-            .any(|mode| parse_mode(mode).is_none())
+            .any(|mode| parse_mode(mode).is_none_or(|mode| !git_writes_type(mode)))
+        {
+            return Err(PatchParseError::InvalidMode { line_number });
+        }
+        // An `index` line's mode is an old mode to Git (`gitdiff_index`), canonicalised like the
+        // others, so `index 1111111..2222222 644` is a submodule too. It is held to the same
+        // types; before, only its presence was looked at.
+        if index_mode(line).is_some_and(|mode| parse_mode(mode).is_none_or(|m| !git_writes_type(m)))
         {
             return Err(PatchParseError::InvalidMode { line_number });
         }
@@ -685,6 +710,20 @@ impl Parser {
         {
             return Err(PatchParseError::InconsistentHeader { line_number });
         }
+        // `new file mode` and `new mode` write the one new mode Git keeps, and `deleted file mode`
+        // and `old mode` the one old mode, so the later line wins: `new file mode 100644` then
+        // `new mode 120000` creates a symlink, and `new mode 100755` an executable, where the
+        // review showed a plain new file (rescore of v0.8.2, F2). Git writes a created or
+        // deleted file's mode on that one line and never beside `old mode` or `new mode`, so the
+        // pair is refused in either order, not resolved.
+        let whole_file =
+            |m: &str| m.starts_with("new file mode ") || m.starts_with("deleted file mode ");
+        let change = |m: &str| m.starts_with("old mode ") || m.starts_with("new mode ");
+        if (whole_file(line) && file.metadata.iter().any(|m| change(m)))
+            || (change(line) && file.metadata.iter().any(|m| whole_file(m)))
+        {
+            return Err(PatchParseError::InconsistentHeader { line_number });
+        }
         if META_PREFIXES.iter().any(|p| line.starts_with(p)) {
             // `GIT binary patch` and `Binary files … differ` are not extended headers to Git:
             // `parse_git_diff_header` stops at them, and the section's patch ends there. Read on,
@@ -698,6 +737,20 @@ impl Parser {
                 return Err(PatchParseError::UnsupportedFormat { line_number });
             }
             let binary = literal || marker;
+            // A `diff --git` line with no extended header after it is no header to Git
+            // (`find_header`: `git_hdr_len <= len`), so Git reads no patch from a binary line
+            // straight after it. But the line has already given the patch its names, and they
+            // stay: the next section with no `---`/`+++` or move names of its own is applied to
+            // this file. `diff --git a/first b/first`, `Binary files … differ`, then a section
+            // for `second` with an `index` line and a hunk was reviewed as a change to `second`
+            // while Git changed `first` (rescore of v0.8.2, F3). The bare line with nothing
+            // after it is refused in `refuse_what_git_reads_nothing_from`; the binary line made
+            // it look like a section with a patch.
+            if binary && file.git && file.metadata.is_empty() {
+                return Err(PatchParseError::SectionWithoutPatch {
+                    line_number: file.first_line,
+                });
+            }
             file.in_binary_body |= line == "GIT binary patch";
             file.header_ended |= binary;
             file.metadata.push(line.to_string());
@@ -785,6 +838,37 @@ impl Parser {
                     && !says("new file mode "))
             {
                 return Err(PatchParseError::InconsistentHeader {
+                    line_number: self.last_line,
+                });
+            }
+            // A submodule is a commit id, not content: for a section whose mode is `160000` Git
+            // makes or removes a directory and writes nothing from the section, so `new file mode
+            // 160000` with a hunk of code was reviewed as a new file with that code (review of
+            // the 0.8.3 fix). Git writes one line per side for it, `Subproject commit <id>`;
+            // any other hunk line under a submodule mode is refused.
+            let submodule = file.metadata.iter().any(|m| {
+                MODE_PREFIXES
+                    .iter()
+                    .filter_map(|p| m.strip_prefix(p))
+                    .chain(index_mode(m))
+                    .filter_map(parse_mode)
+                    .any(|mode| object_type(mode) == 0o160_000)
+            });
+            // A binary line or body under that mode is no different: Git made the directory and
+            // wrote none of the bytes, while the review showed a binary change.
+            let binary = file
+                .metadata
+                .iter()
+                .any(|m| m.starts_with("GIT binary patch") || m.starts_with("Binary files "));
+            if submodule
+                && (binary
+                    || file
+                        .hunks
+                        .iter()
+                        .flat_map(|h| &h.lines)
+                        .any(|l| !is_subproject_line(&l.text)))
+            {
+                return Err(PatchParseError::InvalidMode {
                     line_number: self.last_line,
                 });
             }
@@ -1403,8 +1487,14 @@ fn names_nothing(name: &str, p0: bool) -> bool {
 /// An `index <old>..<new> <mode>` line: `gitdiff_index` reads a mode after the hashes as the
 /// old mode. Git writes one only when the mode does not change.
 fn index_has_mode(line: &str) -> bool {
+    index_mode(line).is_some()
+}
+
+/// The mode an `index <old>..<new> <mode>` line ends with, if it has one.
+fn index_mode(line: &str) -> Option<&str> {
     line.strip_prefix("index ")
-        .is_some_and(|rest| rest.trim_end_matches('\r').contains(' '))
+        .and_then(|rest| rest.trim_end_matches('\r').split_once(' '))
+        .map(|(_, mode)| mode)
 }
 
 /// `find_name_common`'s strip: the path after its first component (all of it under `-p0`), or
@@ -2076,6 +2166,7 @@ Binary files a/logo.png and b/logo.png differ
     fn binary_file_uses_line_strategy_exception() {
         let input = "\
 diff --git a/logo.png b/logo.png
+index 1111111..2222222 100644
 Binary files a/logo.png and b/logo.png differ
 ";
         let file = one(input);
@@ -2101,8 +2192,9 @@ Binary files a/logo.png and b/logo.png differ
         ] {
             assert_eq!(canon_mode(mode), canon, "{mode:o}");
         }
-        // A symlink or a directory that becomes a submodule is a type change, not "no change".
-        for old in ["120000", "040000"] {
+        // A symlink or a file that becomes a submodule is a type change, not "no change". (A
+        // directory mode, `040000`, is no longer read: Git writes none in a patch.)
+        for old in ["120000", "100644"] {
             let input = format!("diff --git a/l b/l\nold mode {old}\nnew mode 160000\n");
             assert_eq!(one(&input).status, FileStatus::TypeChanged, "{old}");
         }
@@ -2614,7 +2706,7 @@ diff --git a/x b/x
         // `---`/`+++` or hunk after it is out of place, and a marker after a hunk is too.
         for body in [
             "new file mode 100644\nBinary files /dev/null and b/x differ\n--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+a\n",
-            "Binary files a/x and b/x differ\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+            "index 1111111..2222222 100644\nBinary files a/x and b/x differ\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
             "index 1111111..2222222 100644\nBinary files a/x and b/x differ\n@@ -1 +1 @@\n-a\n+b\n",
             "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\nBinary files a/x and b/x differ\n",
         ] {
@@ -3638,5 +3730,158 @@ diff --git a/a b c.rs b/a b c.rs
             parse("@@ -1 +1 @@\n-a\n+b\n"),
             Err(PatchParseError::MisplacedHunk { line_number: 1 })
         );
+    }
+
+    /// A binary line straight after `diff --git` is no patch to Git, and it leaves that line's
+    /// name behind for the next section that has no names of its own (rescore of v0.8.2, F3).
+    /// Before, the two sections were reviewed as a binary change to `first` and a text change to
+    /// `second`, while Git wrote the text change to `first`.
+    #[test]
+    fn a_binary_line_straight_after_diff_git_is_refused() {
+        let second =
+            "diff --git a/second b/second\nindex 1111111..2222222 100644\n@@ -1 +1 @@\n-a\n+b\n";
+        for marker in [
+            "Binary files a/first and b/first differ\n",
+            "GIT binary patch\nliteral 0\nHcmV?d00001\n\n",
+        ] {
+            for patch in [
+                format!("diff --git a/first b/first\n{marker}{second}"),
+                format!("diff --git a/first b/first\n{marker}"),
+            ] {
+                let err = parse(&patch).unwrap_err();
+                assert!(
+                    matches!(err, PatchParseError::SectionWithoutPatch { line_number: 1 }),
+                    "{patch:?}: {err:?}"
+                );
+            }
+            // With the extended header Git writes before it, the same line is a binary change,
+            // and the next section is its own file.
+            let files = parse(&format!(
+                "diff --git a/first b/first\nindex 1111111..2222222 100644\n{marker}{second}"
+            ))
+            .unwrap();
+            let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+            assert_eq!(paths, ["first", "second"], "{marker:?}");
+        }
+    }
+
+    /// A created or deleted file's mode is on its `new file mode` or `deleted file mode` line.
+    /// An `old mode` or `new mode` beside it overwrote that mode in Git, so a "new file" was
+    /// created as a symlink or an executable (rescore of v0.8.2, F2). Either order is refused.
+    #[test]
+    fn a_whole_file_mode_beside_a_mode_change_is_refused() {
+        let new_file = "--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+a\n";
+        let deleted = "--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n";
+        for (headers, body) in [
+            ("new file mode 100644\nnew mode 100755\n", new_file),
+            ("new file mode 100644\nnew mode 120000\n", new_file),
+            ("new mode 120000\nnew file mode 100644\n", new_file),
+            ("new file mode 100644\nold mode 100755\n", new_file),
+            ("old mode 100755\nnew file mode 100644\n", new_file),
+            ("deleted file mode 100644\nold mode 100755\n", deleted),
+            ("old mode 100755\ndeleted file mode 100644\n", deleted),
+            ("deleted file mode 100644\nnew mode 100755\n", deleted),
+            ("new mode 100755\ndeleted file mode 100644\n", deleted),
+        ] {
+            let err = parse(&format!("diff --git a/x b/x\n{headers}{body}")).unwrap_err();
+            assert!(
+                matches!(err, PatchParseError::InconsistentHeader { line_number: 3 }),
+                "{headers:?}: {err:?}"
+            );
+        }
+        // Each header on its own is what Git writes, and is still read.
+        for (headers, body, status) in [
+            ("new file mode 100755\n", new_file, FileStatus::Added),
+            ("deleted file mode 100644\n", deleted, FileStatus::Deleted),
+            (
+                "old mode 100644\nnew mode 100755\n",
+                "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+                FileStatus::Modified,
+            ),
+        ] {
+            let file = one(&format!("diff --git a/x b/x\n{headers}{body}"));
+            assert_eq!(file.status, status, "{headers:?}");
+        }
+    }
+
+    /// A mode with no file-type bits is a submodule to Git, and a submodule's hunks are not
+    /// content: `new file mode 644` with a hunk made an empty directory in Git while the review
+    /// showed a new file holding the hunk (review of the 0.8.3 fix). Such a mode is refused,
+    /// and so is anything but `Subproject commit <id>` under a submodule mode.
+    #[test]
+    fn a_mode_git_reads_as_a_submodule_cannot_carry_content() {
+        let new_file = "--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+a\n";
+        for mode in ["644", "755", "0", "000644", "040000", "140000"] {
+            for header in ["new file mode", "deleted file mode", "old mode", "new mode"] {
+                let err =
+                    parse(&format!("diff --git a/x b/x\n{header} {mode}\n{new_file}")).unwrap_err();
+                assert!(
+                    matches!(err, PatchParseError::InvalidMode { line_number: 2 }),
+                    "{header} {mode}: {err:?}"
+                );
+            }
+        }
+        let err = parse(&format!(
+            "diff --git a/x b/x\nnew file mode 160000\n{new_file}"
+        ))
+        .unwrap_err();
+        assert!(
+            matches!(err, PatchParseError::InvalidMode { .. }),
+            "{err:?}"
+        );
+        let err = parse("diff --git a/x b/x\nindex 1111111..2222222 160000\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n").unwrap_err();
+        assert!(
+            matches!(err, PatchParseError::InvalidMode { .. }),
+            "{err:?}"
+        );
+        // A binary line or body under a submodule mode, and an `index` mode Git reads as one.
+        for body in [
+            "new file mode 160000\nindex 0000000..1111111\nBinary files /dev/null and b/x differ\n",
+            "new file mode 160000\nindex 0000000..1111111\nGIT binary patch\nliteral 0\nHcmV?d00001\n\n",
+            "index 1111111..2222222 160000\nBinary files a/x and b/x differ\n",
+        ] {
+            let err = parse(&format!("diff --git a/x b/x\n{body}")).unwrap_err();
+            assert!(
+                matches!(err, PatchParseError::InvalidMode { .. }),
+                "{body:?}: {err:?}"
+            );
+        }
+        for mode in ["644", "0", "040000", "060000", "140000", "8", "1000000"] {
+            let err = parse(&format!(
+                "diff --git a/x b/x\nindex 1111111..2222222 {mode}\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"
+            ))
+            .unwrap_err();
+            assert!(
+                matches!(err, PatchParseError::InvalidMode { line_number: 2 }),
+                "index {mode}: {err:?}"
+            );
+        }
+        // What Git writes for a submodule, with a SHA-1 or SHA-256 id and the `-dirty` mark.
+        for id in [
+            "1".repeat(40),
+            "2".repeat(64),
+            format!("{}-dirty", "3".repeat(40)),
+        ] {
+            let file = one(&format!(
+                "diff --git a/sub b/sub\nnew file mode 160000\nindex 0000000..1111111\n--- /dev/null\n+++ b/sub\n@@ -0,0 +1 @@\n+Subproject commit {id}\n"
+            ));
+            assert_eq!(file.status, FileStatus::Added, "{id}");
+        }
+        assert!(!is_subproject_line("Subproject commit 123"));
+        assert!(!is_subproject_line(&format!(
+            "Subproject commit {}x",
+            "1".repeat(39)
+        )));
+        assert!(!is_subproject_line(&format!(
+            "subproject commit {}",
+            "1".repeat(40)
+        )));
+        // The regular-file modes Git canonicalises are still read.
+        for mode in ["100644", "100755", "100664", "100600", "120000"] {
+            let file = one(&format!(
+                "diff --git a/x b/x\nnew file mode {mode}\n{new_file}"
+            ));
+            assert_eq!(file.status, FileStatus::Added, "{mode}");
+        }
     }
 }

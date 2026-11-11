@@ -23,7 +23,7 @@ import time
 __all__ = ["RpcError", "TransportError", "StdioClient", "SocketClient"]
 
 # The workspace version this client was released with (cli/tests/python_sdk.rs keeps it equal).
-__version__ = "0.8.2"
+__version__ = "0.8.3"
 
 # The daemon refuses a request line longer than this (deep_diff_forge_daemon::MAX_REQUEST_BYTES).
 MAX_REQUEST_BYTES = 80 * 1024 * 1024

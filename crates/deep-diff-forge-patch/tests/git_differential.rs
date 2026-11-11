@@ -86,13 +86,14 @@ fn ddf_numstat(files: &[ReviewFile]) -> Vec<Numstat> {
 }
 
 /// One line of `git apply --summary` that numstat cannot show: a copy and the path it writes, a
-/// created or deleted file, or a mode change (`<move>` for a moved file's, which Git prints with
+/// created or deleted file with its mode (a symlink or an executable is created by its mode
+/// alone), or a mode change (`<move>` for a moved file's, which Git prints with
 /// no name). Paths are as Git prints them with `core.quotepath=false`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Summary {
     Copy { from: String, to: String },
-    Create(String),
-    Delete(String),
+    Create { mode: u32, path: String },
+    Delete { mode: u32, path: String },
     Mode { old: u32, new: u32, path: String },
 }
 
@@ -135,9 +136,27 @@ fn git_summary(root: &Path, patch: &[u8]) -> Option<Vec<Summary>> {
             let (from, to) = expand_move(rest);
             lines.push(Summary::Copy { from, to });
         } else if let Some(rest) = line.strip_prefix("create mode ") {
-            lines.push(Summary::Create(rest.split_once(' ')?.1.to_owned()));
+            let (mode, name) = rest.split_once(' ')?;
+            lines.push(Summary::Create {
+                mode: u32::from_str_radix(mode, 8).ok()?,
+                path: name.to_owned(),
+            });
+        } else if let Some(name) = line.strip_prefix("create ") {
+            lines.push(Summary::Create {
+                mode: 0,
+                path: name.to_owned(),
+            });
         } else if let Some(rest) = line.strip_prefix("delete mode ") {
-            lines.push(Summary::Delete(rest.split_once(' ')?.1.to_owned()));
+            let (mode, name) = rest.split_once(' ')?;
+            lines.push(Summary::Delete {
+                mode: u32::from_str_radix(mode, 8).ok()?,
+                path: name.to_owned(),
+            });
+        } else if let Some(name) = line.strip_prefix("delete ") {
+            lines.push(Summary::Delete {
+                mode: 0,
+                path: name.to_owned(),
+            });
         } else if let Some(rest) = line.strip_prefix("mode change ") {
             let (old, rest) = rest.split_once(" => ")?;
             let (new, named) = rest.split_once(' ').unwrap_or((rest, "<move>"));
@@ -180,11 +199,27 @@ fn ddf_summary(files: &[ReviewFile]) -> Vec<Summary> {
                 to: file.path.clone(),
             });
         }
+        // The mode is the one on the file's own line, as Git canonicalises it (`canon_mode`:
+        // the owner's execute bit picks 755 or 644 for a regular file). A traditional diff has
+        // no mode line, and Git prints ` create x` with no mode; that is `0` on both sides.
+        let canon = |mode: u32| match mode & 0o170_000 {
+            0o100_000 if mode & 0o100 != 0 => 0o100_755,
+            0o100_000 => 0o100_644,
+            0o120_000 => 0o120_000,
+            0o040_000 => 0o040_000,
+            _ => 0o160_000,
+        };
         if file.status == FileStatus::Added || says("new file mode ") {
-            lines.push(Summary::Create(file.path.clone()));
+            lines.push(Summary::Create {
+                mode: mode("new file mode ").map_or(0, canon),
+                path: file.path.clone(),
+            });
         }
         if file.status == FileStatus::Deleted || says("deleted file mode ") {
-            lines.push(Summary::Delete(file.path.clone()));
+            lines.push(Summary::Delete {
+                mode: mode("deleted file mode ").map_or(0, canon),
+                path: file.path.clone(),
+            });
         }
         if let (Some(old), Some(new)) = (mode("old mode "), mode("new mode "))
             && old != new
@@ -573,6 +608,156 @@ fn no_header_after_a_binary_line_or_control_in_a_move_name_is_read() {
         workflow.to_owned(),
         "diff --git a/x b/y\nsimilarity index 100%\nrename from x\nrename to y\n".to_owned(),
         "diff --git a/x b/y\nsimilarity index 100%\nrename from x\nrename to \"y z\"\n".to_owned(),
+    ] {
+        assert!(reads_as_git_does(root, patch.as_bytes()), "{patch:?}");
+    }
+}
+
+/// Found while the 0.8.3 fix was reviewed. Git reads a mode with no file-type bits as a
+/// submodule (`canon_mode`), and for a submodule it makes a directory and writes nothing from
+/// the section: not a hunk's lines, not a binary body. DDF reviewed each as a new file or a
+/// binary change with that content. Git's own reading is asserted for each finding.
+#[test]
+fn no_content_is_reviewed_under_a_mode_git_reads_as_a_submodule() {
+    let scratch = Scratch::new("submodule-mode");
+    let root = scratch.0.path();
+    let new_file = "--- /dev/null\n+++ b/docs/notes.txt\n@@ -0,0 +1 @@\n+a\n";
+    // Each of these was reviewed as a new file holding `a`; Git says `create mode 160000`.
+    for mode in ["644", "755", "0", "000644", "140000", "160000"] {
+        let patch = format!(
+            "diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode {mode}\n{new_file}"
+        );
+        assert_eq!(
+            git_summary(root, patch.as_bytes()),
+            Some(vec![Summary::Create {
+                mode: 0o160_000,
+                path: "docs/notes.txt".to_owned()
+            }]),
+            "git: {patch:?}"
+        );
+        assert!(!reads_as_git_does(root, patch.as_bytes()), "ddf: {patch:?}");
+    }
+    // A binary body under a submodule mode: numstat and the summary agree with a review that
+    // says "binary change", yet Git makes the directory and writes none of the bytes. Only a
+    // refusal is right, so it is asserted here; the projection cannot show it.
+    let binary_submodule = "diff --git a/x b/x\nnew file mode 160000\nindex 0000000000000000000000000000000000000000..f00a2af6cdfe5a97ff6e2afb34c1dcb18b084c10\nGIT binary patch\nliteral 4\nLcmd1E<YE8-0`mae\n\nliteral 0\nHcmV?d00001\n\n";
+    assert_eq!(
+        git_summary(root, binary_submodule.as_bytes()),
+        Some(vec![Summary::Create {
+            mode: 0o160_000,
+            path: "x".to_owned()
+        }]),
+    );
+    assert!(!reads_as_git_does(root, binary_submodule.as_bytes()));
+    // An `index` mode Git canonicalises to a submodule's.
+    for mode in ["644", "140000", "160000"] {
+        let patch = format!(
+            "diff --git a/x b/x\nindex 1111111..2222222 {mode}\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"
+        );
+        assert!(!reads_as_git_does(root, patch.as_bytes()), "ddf: {patch:?}");
+    }
+    // A submodule as Git writes it is still reviewed, and so are the modes Git canonicalises.
+    let id = "1".repeat(40);
+    for patch in [
+        format!(
+            "diff --git a/sub b/sub\nnew file mode 160000\nindex 0000000..1111111\n--- /dev/null\n+++ b/sub\n@@ -0,0 +1 @@\n+Subproject commit {id}\n"
+        ),
+        format!(
+            "diff --git a/sub b/sub\ndeleted file mode 160000\nindex 1111111..0000000\n--- a/sub\n+++ /dev/null\n@@ -1 +0,0 @@\n-Subproject commit {id}\n"
+        ),
+        format!(
+            "diff --git a/sub b/sub\nindex 1111111..2222222 160000\n--- a/sub\n+++ b/sub\n@@ -1 +1 @@\n-Subproject commit {id}\n+Subproject commit {id}-dirty\n"
+        ),
+        format!("diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 100664\n{new_file}"),
+        format!("diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 100700\n{new_file}"),
+    ] {
+        assert!(reads_as_git_does(root, patch.as_bytes()), "{patch:?}");
+    }
+}
+
+/// Independent rescore of v0.8.2 (F3 and F2). F3: a `diff --git` line with no extended header
+/// is no header to Git, so a binary line after it is no patch, but the line's name stays for the
+/// next section that brings no names of its own: DDF reviewed a text change to `second` where
+/// Git changed `first`. F2: `new file mode` and `new mode` set the same mode in Git and the
+/// later wins, so a "new file" was created as a symlink or an executable. Git applies every
+/// finding below; DDF must refuse each one.
+#[test]
+fn no_name_carries_over_from_a_bare_header_and_no_mode_overrides_a_new_file_mode() {
+    let scratch = Scratch::new("bare-header");
+    let root = scratch.0.path();
+    let second =
+        "diff --git a/second b/second\nindex 1111111..2222222 100644\n@@ -1 +1 @@\n-a\n+b\n";
+    let new_file = "--- /dev/null\n+++ b/docs/notes.txt\n@@ -0,0 +1 @@\n+a\n";
+    let findings = [
+        // F3: Git applies the hunk to `first`.
+        format!("diff --git a/first b/first\nBinary files a/first and b/first differ\n{second}"),
+        format!("diff --git a/first b/first\nGIT binary patch\nliteral 0\nHcmV?d00001\n\n{second}"),
+        // F2: Git creates an executable, then a symlink.
+        format!(
+            "diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 100644\nnew mode 100755\n{new_file}"
+        ),
+        format!(
+            "diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 100644\nnew mode 120000\n{new_file}"
+        ),
+        format!(
+            "diff --git a/docs/notes.txt b/docs/notes.txt\nnew mode 120000\nnew file mode 100644\n{new_file}"
+        ),
+    ];
+    for patch in &findings {
+        assert!(
+            git_numstat(root, patch.as_bytes()).is_some(),
+            "git applies the finding: {patch:?}"
+        );
+        assert!(!reads_as_git_does(root, patch.as_bytes()), "ddf: {patch:?}");
+    }
+    // The F3 finding names `first`, not `second`, in Git's own reading.
+    assert_eq!(
+        git_numstat(root, findings[0].as_bytes()),
+        Some(vec![(Some((1, 1)), b"first".to_vec())]),
+    );
+    // Refused too, whatever Git makes of them: the bare header with a binary line and nothing
+    // after it, and a whole-file mode beside `old mode`.
+    for patch in [
+        "diff --git a/first b/first\nBinary files a/first and b/first differ\n".to_owned(),
+        format!("diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 100644\nold mode 100755\n{new_file}"),
+        "diff --git a/x b/x\ndeleted file mode 100644\nold mode 100755\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n".to_owned(),
+    ] {
+        assert!(!reads_as_git_does(root, patch.as_bytes()), "ddf: {patch:?}");
+    }
+    // Generated: a bare `diff --git a/first b/first`, one line of any kind, then each section,
+    // and a section with no `---`/`+++` of its own. Whatever the line is, the review must be
+    // refused or name the files Git names. The single-section mutants above never put one
+    // section's leftovers in front of another, which is how F3 went unseen.
+    let (mut accepted, mut refused, mut cases) = (0, 0, 0);
+    for section in GIT_SECTIONS.iter().copied().chain([second]) {
+        for between in EXTRA_HEADERS
+            .iter()
+            .copied()
+            .chain(BREAKS)
+            .chain(["literal 0", "HcmV?d00001"])
+        {
+            let patch = format!("diff --git a/first b/first\n{between}\n{section}");
+            cases += 1;
+            if reads_as_git_does(root, patch.as_bytes()) {
+                accepted += 1;
+            } else {
+                refused += 1;
+            }
+        }
+    }
+    assert!(
+        cases >= 100 && accepted >= 5 && refused >= 50,
+        "{cases} cases: {accepted} accepted, {refused} refused"
+    );
+    println!("bare-header cases: {cases}, accepted {accepted}, refused {refused}");
+    // Controls: the forms Git writes are still reviewed as Git reads them.
+    for patch in [
+        format!(
+            "diff --git a/first b/first\nindex 1111111..2222222 100644\nBinary files a/first and b/first differ\n{second}"
+        ),
+        format!("diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 100755\n{new_file}"),
+        format!("diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 120000\n{new_file}"),
+        "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n".to_owned(),
     ] {
         assert!(reads_as_git_does(root, patch.as_bytes()), "{patch:?}");
     }

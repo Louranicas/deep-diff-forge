@@ -685,7 +685,9 @@ mod tests {
 
     #[test]
     fn binary_change_signal_fires() {
-        let f = file("diff --git a/p.png b/p.png\nBinary files a/p.png and b/p.png differ\n");
+        let f = file(
+            "diff --git a/p.png b/p.png\nindex 1111111..2222222 100644\nBinary files a/p.png and b/p.png differ\n",
+        );
         let (_, signals) = score_file(&f);
         assert!(signals.contains(&RiskSignal::BinaryChange));
     }
@@ -766,7 +768,15 @@ mod tests {
             (6, vec![NewFile, ExecutableBit])
         );
         assert_eq!(scored(&new_file("run.sh", "100644")), (4, vec![NewFile]));
-        assert_eq!(scored(&new_file("sub", "160000")), (4, vec![NewFile]));
+        // A submodule's one line is its commit id; other content under that mode is refused.
+        let submodule = header(
+            "sub",
+            &format!(
+                "new file mode 160000\n--- /dev/null\n+++ b/sub\n@@ -0,0 +1 @@\n+Subproject commit {}\n",
+                "1".repeat(40)
+            ),
+        );
+        assert_eq!(scored(&submodule), (4, vec![NewFile]));
         for x in ["100100", "100010", "100001"] {
             assert_eq!(
                 scored(&new_file("run.sh", x)).1,
