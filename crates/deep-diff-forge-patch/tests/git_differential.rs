@@ -735,6 +735,10 @@ fn no_name_carries_over_from_a_bare_header_and_no_mode_overrides_a_new_file_mode
             .copied()
             .chain(BREAKS)
             .chain(["literal 0", "HcmV?d00001"])
+            // Headers that make the first section a patch of its own, so that some cases are
+            // accepted: an `index` or similarity line alone no longer does (rescore of v0.8.3,
+            // G1).
+            .chain(["old mode 100644\nnew mode 100755", "new file mode 100644"])
         {
             let patch = format!("diff --git a/first b/first\n{between}\n{section}");
             cases += 1;
@@ -810,8 +814,10 @@ fn hunks_follow_their_file_header_or_the_previous_hunk() {
     }
 }
 
-/// A section from which Git reads no patch is refused; the header-only sections Git does read
-/// (an extended header, or a Git section's `---`/`+++`) are reviewed as no change.
+/// A section from which Git reads no patch is refused. That includes a Git section whose only
+/// header is an `index` line: `git apply --numstat` lists it, but a real apply refuses it
+/// ("patch with only garbage", see `real_apply`), and it was reviewed as `modified` with nothing
+/// in it (rescore of v0.8.3, G1).
 #[test]
 fn a_section_git_reads_no_patch_from_is_refused() {
     let scratch = Scratch::new("sections");
@@ -848,9 +854,17 @@ fn a_section_git_reads_no_patch_from_is_refused() {
         // Accepted or refused, never read differently from Git.
         reads_as_git_does(scratch.0.path(), patch.as_bytes());
     }
+    assert!(matches!(
+        parse_decoded(
+            &decode(b"diff --git a/x b/x\nindex 1..2 100644\n"),
+            ParseOptions::default()
+        ),
+        Err(PatchParseError::SectionWithoutPatch { line_number: 1 })
+    ));
+    // The header-only section Git does apply, an empty file's creation, is still reviewed.
     assert!(reads_as_git_does(
         scratch.0.path(),
-        b"diff --git a/x b/x\nindex 1..2 100644\n"
+        b"diff --git a/e b/e\nnew file mode 100644\nindex 0000000..e69de29\n"
     ));
 }
 
@@ -903,4 +917,749 @@ fn a_header_that_is_not_utf8_is_refused_but_preamble_and_content_are_not() {
     // reads the same files.
     let mail = b"From: Ren\xe9\nSubject: caf\xe9\n\n---\ndiff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-caf\xe9\n+cafe\n";
     assert!(reads_as_git_does(scratch.0.path(), mail));
+}
+
+/// Rescore of v0.8.3 (G1, G2, L1). `git apply --numstat` and `--summary` only read a patch; they
+/// do not say what an apply writes. Two things a real apply does went unseen: Git takes a binary
+/// section's content from its object store, and it applies a patch as a set (every removal, then
+/// every creation). The tests here apply each patch for real, in a scratch repository whose
+/// object store holds the blobs the patch names, and compare the tree Git leaves with the tree
+/// the review's sections give when read in order.
+#[cfg(unix)]
+mod real_apply {
+    use super::Scratch;
+    use deep_diff_forge_core::{FileStatus, PatchLineKind, ReviewFile};
+    use deep_diff_forge_patch::{ParseOptions, PatchParseError, decode, old_path, parse_decoded};
+    use std::collections::BTreeMap;
+    use std::os::unix::fs::PermissionsExt;
+    use std::{fs, path::Path, process::Command};
+
+    /// One file of a tree. `content` is `None` where the review shows a binary change: it says
+    /// the file is rewritten and not with what, so any content agrees.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Entry {
+        executable: bool,
+        symlink: bool,
+        content: Option<Vec<u8>>,
+    }
+
+    type Tree = BTreeMap<String, Entry>;
+
+    fn regular(content: &str) -> Entry {
+        Entry {
+            executable: false,
+            symlink: false,
+            content: Some(content.as_bytes().to_vec()),
+        }
+    }
+
+    fn tree(files: &[(&str, &str)]) -> Tree {
+        files
+            .iter()
+            .map(|(path, content)| ((*path).to_owned(), regular(content)))
+            .collect()
+    }
+
+    /// Git with no user or system configuration (`apply.whitespace`, `core.autocrlf`).
+    fn git(root: &Path, args: &[&str]) -> std::process::Output {
+        Command::new("git")
+            .current_dir(root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(args)
+            .output()
+            .unwrap()
+    }
+
+    /// Stores `content` as a blob in the repository's object store and returns its id.
+    fn store(root: &Path, content: &str) -> String {
+        fs::write(root.join(".git/blob.tmp"), content).unwrap();
+        let out = git(root, &["hash-object", "-w", ".git/blob.tmp"]);
+        assert!(out.status.success(), "git hash-object failed");
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+
+    /// The work tree under `dir`, without `.git`.
+    fn read_tree(root: &Path, dir: &Path, into: &mut Tree) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let meta = fs::symlink_metadata(&path).unwrap();
+            let name = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned();
+            if name == ".git" {
+                continue;
+            }
+            if meta.is_dir() {
+                read_tree(root, &path, into);
+            } else if meta.file_type().is_symlink() {
+                let target = fs::read_link(&path).unwrap();
+                into.insert(
+                    name,
+                    Entry {
+                        executable: false,
+                        symlink: true,
+                        content: Some(target.to_str().unwrap().as_bytes().to_vec()),
+                    },
+                );
+            } else {
+                into.insert(
+                    name,
+                    Entry {
+                        executable: meta.permissions().mode() & 0o100 != 0,
+                        symlink: false,
+                        content: Some(fs::read(&path).unwrap()),
+                    },
+                );
+            }
+        }
+    }
+
+    /// A scratch repository holding `before`, with each of `blobs` in its object store. `@OLD@`
+    /// in `patch` becomes the id of the blob of `before`'s first file, `@NEW@` the id of the
+    /// first of `blobs`, and `@ZERO@` the null id.
+    struct Case {
+        scratch: Scratch,
+        patch: String,
+    }
+
+    impl Case {
+        fn new(tag: &str, before: &Tree, blobs: &[&str], patch: &str) -> Self {
+            let scratch = Scratch::new(tag);
+            let root = scratch.0.path();
+            let mut ids = Vec::new();
+            for (path, entry) in before {
+                let content = entry.content.as_deref().unwrap();
+                scratch.0.write(path, content);
+                ids.push(store(root, std::str::from_utf8(content).unwrap()));
+            }
+            let stored: Vec<String> = blobs.iter().map(|blob| store(root, blob)).collect();
+            let zero = "0".repeat(ids.first().or(stored.first()).map_or(40, String::len));
+            let patch = patch
+                .replace("@OLD@", ids.first().map_or("", String::as_str))
+                .replace("@NEW@", stored.first().map_or("", String::as_str))
+                .replace("@ZERO@", &zero);
+            Self { scratch, patch }
+        }
+
+        /// The tree a real `git apply` leaves, or `None` when Git refuses the patch (it then
+        /// writes nothing).
+        fn git_apply(&self) -> Option<Tree> {
+            let root = self.scratch.0.path();
+            fs::write(root.join(".git/probe.patch"), &self.patch).unwrap();
+            let applied = git(root, &["apply", ".git/probe.patch"]).status.success();
+            let mut after = Tree::new();
+            read_tree(root, root, &mut after);
+            applied.then_some(after)
+        }
+
+        fn review(&self) -> Result<Vec<ReviewFile>, PatchParseError> {
+            parse_decoded(&decode(self.patch.as_bytes()), ParseOptions::default())
+        }
+    }
+
+    /// `old` with the file's hunks applied at the lines they name.
+    fn patched(old: &[u8], file: &ReviewFile) -> Vec<u8> {
+        let old: Vec<&[u8]> = old.split_inclusive(|&b| b == b'\n').collect();
+        let (mut at, mut out) = (0, Vec::new());
+        for hunk in &file.patch_twin.hunks {
+            let start = (hunk.old_start.unwrap_or(0) as usize).saturating_sub(1);
+            while at < start && at < old.len() {
+                out.extend_from_slice(old[at]);
+                at += 1;
+            }
+            for line in &hunk.lines {
+                match line.kind {
+                    PatchLineKind::Context => {
+                        out.extend_from_slice(old.get(at).copied().unwrap_or_default());
+                        at += 1;
+                    }
+                    PatchLineKind::Removed => at += 1,
+                    PatchLineKind::Added => {
+                        out.extend_from_slice(line.text.as_bytes());
+                        if !line.no_newline {
+                            out.push(b'\n');
+                        }
+                    }
+                }
+            }
+        }
+        for line in old.iter().skip(at) {
+            out.extend_from_slice(line);
+        }
+        out
+    }
+
+    /// The tree the review describes: its sections carried out one after the other on `before`,
+    /// each as its status, paths, mode headers and hunks say. A rename or copy takes its source
+    /// from `before`, which is what its hunks are written against.
+    fn reviewed_tree(before: &Tree, files: &[ReviewFile]) -> Tree {
+        let mut after = before.clone();
+        for file in files {
+            let meta = &file.patch_twin.metadata;
+            let says = |prefix: &str| meta.iter().any(|m| m.starts_with(prefix));
+            let mode = ["new file mode ", "new mode "]
+                .iter()
+                .find_map(|p| meta.iter().find_map(|m| m.strip_prefix(p)));
+            if file.status == FileStatus::Deleted || says("deleted file mode ") {
+                after.remove(&file.path);
+                continue;
+            }
+            let moved_from = old_path(file);
+            let mut entry = match &moved_from {
+                Some(from) => before.get(from).cloned(),
+                None => after.get(&file.path).cloned(),
+            }
+            .unwrap_or_else(|| regular(""));
+            if says("rename from ") {
+                after.remove(moved_from.as_deref().unwrap());
+            }
+            if let Some(mode) = mode {
+                entry.executable = mode == "100755";
+                entry.symlink = mode == "120000";
+            }
+            entry.content = if file.status == FileStatus::BinaryChanged {
+                None
+            } else {
+                Some(patched(entry.content.as_deref().unwrap_or_default(), file))
+            };
+            after.insert(file.path.clone(), entry);
+        }
+        after
+    }
+
+    /// Whether Git's tree is the reviewed one: the same paths with the same type and mode, and
+    /// the same content wherever the review shows content.
+    fn agree(git: &Tree, reviewed: &Tree) -> bool {
+        git.len() == reviewed.len()
+            && git.iter().zip(reviewed).all(|((gp, g), (rp, r))| {
+                gp == rp
+                    && g.executable == r.executable
+                    && g.symlink == r.symlink
+                    && (r.content.is_none() || g.content == r.content)
+            })
+    }
+
+    /// The property: DDF refuses the patch, or Git refuses it (and writes nothing), or the tree
+    /// Git writes is the tree the review describes. Returns Git's tree and DDF's verdict.
+    fn applies_as_reviewed(
+        tag: &str,
+        before: &Tree,
+        blobs: &[&str],
+        patch: &str,
+    ) -> (Option<Tree>, Result<Vec<ReviewFile>, PatchParseError>) {
+        let case = Case::new(tag, before, blobs, patch);
+        let review = case.review();
+        let git = case.git_apply();
+        if let (Some(git), Ok(files)) = (&git, &review) {
+            let reviewed = reviewed_tree(before, files);
+            assert!(
+                agree(git, &reviewed),
+                "DDF accepted a patch that git apply writes differently: {:?}\n git: {git:?}\n ddf: {reviewed:?}",
+                case.patch
+            );
+        }
+        (git, review)
+    }
+
+    const POLICY: &str = "allow admin\ndeny all\n";
+    const STORED: &str = "allow all\n";
+
+    /// G1: `Files … differ` after a full `index` line. Git writes the blob the line names from
+    /// its object store, or empties the file for the null id. v0.8.3 showed `modified` (or
+    /// `renamed`, `added`) with no hunk and no binary flag.
+    #[test]
+    fn a_files_differ_section_is_reviewed_as_the_binary_change_git_applies() {
+        let before = tree(&[("x", POLICY)]);
+        let stored = Some(STORED.as_bytes().to_vec());
+        let findings = [
+            // G1a: the content is replaced.
+            (
+                "diff --git a/x b/x\nindex @OLD@..@NEW@ 100644\nFiles a/x and b/x differ\n",
+                "x",
+                stored.clone(),
+                false,
+            ),
+            (
+                "diff --git a/x b/x\nindex @OLD@..@NEW@ 100644\nFiles differ\n",
+                "x",
+                stored.clone(),
+                false,
+            ),
+            // G1b: the file is emptied; no stored blob is needed.
+            (
+                "diff --git a/x b/x\nindex @OLD@..@ZERO@ 100644\nFiles a/x and b/x differ\n",
+                "x",
+                Some(Vec::new()),
+                false,
+            ),
+            // G1c: a rename whose new file gets the stored blob.
+            (
+                "diff --git a/x b/y\nsimilarity index 100%\nrename from x\nrename to y\nindex @OLD@..@NEW@ 100644\nFiles a/x and b/y differ\n",
+                "y",
+                stored.clone(),
+                false,
+            ),
+            // G1d: a new executable holding the stored blob.
+            (
+                "diff --git a/n b/n\nnew file mode 100755\nindex @ZERO@..@NEW@\nFiles /dev/null and b/n differ\n",
+                "n",
+                stored.clone(),
+                true,
+            ),
+        ];
+        for (i, (patch, path, content, executable)) in findings.iter().enumerate() {
+            let (git, review) = applies_as_reviewed(&format!("g1-{i}"), &before, &[STORED], patch);
+            // Git's own result, measured: the path holds the stored blob (or nothing).
+            let git = git.unwrap_or_else(|| panic!("git applies the finding: {patch:?}"));
+            assert_eq!(git[*path].content, *content, "{patch:?}");
+            assert_eq!(git[*path].executable, *executable, "{patch:?}");
+            assert_eq!(git.contains_key("x"), *path != "y", "{patch:?}");
+            // The review says what Git does: a binary change of that path.
+            let files = review.unwrap_or_else(|e| panic!("{patch:?}: {e}"));
+            assert_eq!(files.len(), 1);
+            assert_eq!(
+                (files[0].path.as_str(), files[0].status),
+                (*path, FileStatus::BinaryChanged),
+                "{patch:?}"
+            );
+        }
+        // Git honours the line after the section's `---`/`+++` too; there DDF refuses it, as it
+        // refuses `Binary files … differ` there.
+        for marker in [
+            "Files a/x and b/x differ",
+            "Binary files a/x and b/x differ",
+        ] {
+            let patch = format!(
+                "diff --git a/x b/x\nindex @OLD@..@NEW@ 100644\n--- a/x\n+++ b/x\n{marker}\n"
+            );
+            let (git, review) = applies_as_reviewed("g1-pair", &before, &[STORED], &patch);
+            assert_eq!(git.unwrap()["x"].content, stored, "{marker}");
+            assert!(
+                matches!(
+                    review,
+                    Err(PatchParseError::MisplacedHeader { line_number: 5 })
+                ),
+                "{marker}"
+            );
+        }
+    }
+
+    /// Where Git does not read `Files … differ` as the marker, DDF does not either: after a
+    /// hunk the hunk is applied, and after a line that ended the header, or with a CR before the
+    /// line feed, the section is judged by its other headers. Under a submodule mode, and
+    /// straight after `diff --git`, the marker is refused as `Binary files … differ` is.
+    #[test]
+    fn a_files_differ_line_is_a_marker_only_where_git_reads_one() {
+        let before = tree(&[("x", POLICY)]);
+        let rename = "diff --git a/x b/y\nsimilarity index 100%\nrename from x\nrename to y\n";
+        let agreed = [
+            // After a hunk: Git applies the hunk and ignores the line.
+            "diff --git a/x b/x\nindex @OLD@..@NEW@ 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n allow admin\n-deny all\n+deny most\nFiles a/x and b/x differ\n".to_owned(),
+            // After a blank line, a note, or with a CR: Git renames and writes no blob.
+            format!("{rename}\nFiles a/x and b/y differ\n"),
+            format!("{rename}See notes\nFiles a/x and b/y differ\n"),
+            format!("{rename}Files a/x and b/y differ\r\n"),
+            // After `Binary files … differ` it is ignored text; the section is binary already.
+            "diff --git a/x b/x\nindex @OLD@..@NEW@ 100644\nBinary files a/x and b/x differ\nFiles a/x and b/x differ\n".to_owned(),
+        ];
+        for (i, patch) in agreed.iter().enumerate() {
+            let (git, review) =
+                applies_as_reviewed(&format!("g1-pos-{i}"), &before, &[STORED], patch);
+            assert!(git.is_some(), "git applies {patch:?}");
+            assert!(review.is_ok(), "ddf reads {patch:?}: {:?}", review.err());
+        }
+        // With the `index` line as the section's only header, the ignored line leaves a section
+        // Git refuses ("patch with only garbage"), and so does DDF.
+        for tail in [
+            "\nFiles a/x and b/x differ\n",
+            "note\nFiles a/x and b/x differ\n",
+            "Files a/x and b/x differ\r\n",
+            "Files a/x and b/x\n",
+            "",
+        ] {
+            let patch = format!("diff --git a/x b/x\nindex @OLD@..@NEW@ 100644\n{tail}");
+            let (git, review) = applies_as_reviewed("g1-garbage", &before, &[STORED], &patch);
+            assert_eq!(git, None, "git: {patch:?}");
+            assert!(
+                matches!(
+                    review,
+                    Err(PatchParseError::SectionWithoutPatch { line_number: 1 })
+                ),
+                "ddf: {patch:?}"
+            );
+        }
+        // Git makes an empty directory `s` and writes none of the blob: refused.
+        let submodule = "diff --git a/s b/s\nnew file mode 160000\nindex @ZERO@..@NEW@\nFiles /dev/null and b/s differ\n";
+        let (git, review) = applies_as_reviewed("g1-submodule", &before, &[STORED], submodule);
+        assert_eq!(git, Some(before.clone()), "git writes no file");
+        assert!(matches!(review, Err(PatchParseError::InvalidMode { .. })));
+        // No header to Git; refused so that no name carries over (F3).
+        let bare = "diff --git a/x b/x\nFiles a/x and b/x differ\n";
+        let (git, review) = applies_as_reviewed("g1-bare", &before, &[STORED], bare);
+        assert_eq!(git, None);
+        assert!(matches!(
+            review,
+            Err(PatchParseError::SectionWithoutPatch { .. })
+        ));
+    }
+
+    /// The sections with no hunk that Git writes itself are applied by Git and still reviewed;
+    /// the ones with no change in their headers are refused by both.
+    #[test]
+    fn a_section_with_no_hunk_is_reviewed_only_where_git_applies_it() {
+        let before = tree(&[("x", POLICY), ("z", "")]);
+        for (i, patch) in [
+            "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n",
+            "diff --git a/x b/y\nsimilarity index 100%\nrename from x\nrename to y\n",
+            "diff --git a/x b/y\nsimilarity index 100%\ncopy from x\ncopy to y\n",
+            "diff --git a/e b/e\nnew file mode 100644\nindex 0000000..e69de29\n",
+            "diff --git a/e b/e\nnew file mode 100755\n",
+            "diff --git a/z b/z\ndeleted file mode 100644\nindex e69de29..0000000\n",
+            "diff --git a/z b/z\ndeleted file mode 100644\n",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let (git, review) = applies_as_reviewed(&format!("nohunk-{i}"), &before, &[], patch);
+            assert!(
+                git.is_some_and(|after| after != before),
+                "git applies {patch:?}"
+            );
+            assert!(review.is_ok(), "ddf reads {patch:?}: {:?}", review.err());
+        }
+        for patch in [
+            "diff --git a/x b/x\nindex 1111111..2222222 100644\n",
+            "diff --git a/x b/x\nindex @OLD@..@OLD@ 100644\n",
+            "diff --git a/x b/x\nindex 1111111..2222222 100644\n--- a/x\n+++ b/x\n",
+            "diff --git a/x b/x\nsimilarity index 100%\n",
+            "diff --git a/x b/y\n--- a/x\n+++ b/y\n",
+        ] {
+            let (git, review) = applies_as_reviewed("nohunk-garbage", &before, &[], patch);
+            assert_eq!(git, None, "git: {patch:?}");
+            assert!(
+                matches!(
+                    review,
+                    Err(PatchParseError::SectionWithoutPatch { line_number: 1 })
+                ),
+                "ddf: {patch:?}"
+            );
+        }
+    }
+
+    const MODIFY_X: &str = "diff --git a/x b/x\nindex 1111111..2222222 100644\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n";
+    const MODIFY_X_AGAIN: &str = "diff --git a/x b/x\nindex 2222222..3333333 100644\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-b\n+c\n";
+    const DELETE_X: &str = "diff --git a/x b/x\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n";
+    const DELETE_X_B: &str = "diff --git a/x b/x\ndeleted file mode 100644\nindex 2222222..0000000\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-b\n";
+    const NEW_X: &str = "diff --git a/x b/x\nnew file mode 100755\nindex 0000000..1111111\n--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+payload\n";
+    const DELETE_X_PAYLOAD: &str = "diff --git a/x b/x\ndeleted file mode 100755\nindex 1111111..0000000\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-payload\n";
+    const MODIFY_X_PAYLOAD: &str = "diff --git a/x b/x\nindex 1111111..2222222 100755\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-payload\n+second\n";
+    const RENAME_X_Y: &str =
+        "diff --git a/x b/y\nsimilarity index 100%\nrename from x\nrename to y\n";
+    const RENAME_X_Z: &str =
+        "diff --git a/x b/z\nsimilarity index 100%\nrename from x\nrename to z\n";
+    const RENAME_Q_Z: &str =
+        "diff --git a/q b/z\nsimilarity index 100%\nrename from q\nrename to z\n";
+    const RENAME_Q_X: &str =
+        "diff --git a/q b/x\nsimilarity index 100%\nrename from q\nrename to x\n";
+    const COPY_X_Y: &str = "diff --git a/x b/y\nsimilarity index 100%\ncopy from x\ncopy to y\n";
+    const MODIFY_Y: &str = "diff --git a/y b/y\nindex 1111111..2222222 100644\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n";
+
+    /// Asserts DDF refuses `patch` for `path` in two sections, and returns Git's tree.
+    fn refused_for_path(tag: &str, before: &Tree, patch: &str, named: &str) -> Option<Tree> {
+        let (git, review) = applies_as_reviewed(tag, before, &[], patch);
+        assert!(
+            matches!(&review, Err(PatchParseError::PathInSeveralSections { path, .. }) if path == named),
+            "ddf: {patch:?}: {:?}",
+            review.map(|files| files.len())
+        );
+        git
+    }
+
+    /// G2: Git applies a patch as a set, removing first and creating after, and a rename reads
+    /// its source as it was before the patch. Each finding is applied by Git and leaves the tree
+    /// asserted here, which is not the tree its sections describe in order. v0.8.3 showed the
+    /// sequence.
+    #[test]
+    fn a_path_one_section_writes_and_another_removes_is_refused() {
+        let x = tree(&[("x", "a\n")]);
+        let exec = |content: &str| Entry {
+            executable: true,
+            ..regular(content)
+        };
+        let mut payload = Tree::new();
+        payload.insert("x".to_owned(), exec("payload\n"));
+        let cases = [
+            // G2e: "modified x", "deleted x"; `x` stays, holding `b`.
+            (
+                "g2e",
+                x.clone(),
+                format!("{MODIFY_X}{DELETE_X_B}"),
+                "x",
+                tree(&[("x", "b\n")]),
+            ),
+            // G2c: "added x", "deleted x"; the new executable stays.
+            (
+                "g2c",
+                Tree::new(),
+                format!("{NEW_X}{DELETE_X_PAYLOAD}"),
+                "x",
+                payload,
+            ),
+            // G2a: "modified x", "renamed x to y"; `x` stays modified, `y` gets the old content.
+            (
+                "g2a",
+                x.clone(),
+                format!("{MODIFY_X}{RENAME_X_Y}"),
+                "x",
+                tree(&[("x", "b\n"), ("y", "a\n")]),
+            ),
+            // G2d: "renamed q to x", "renamed x to z"; `x` gets the old `q`, `z` the old `x`.
+            (
+                "g2d",
+                tree(&[("q", "Q\n"), ("x", "a\n")]),
+                format!("{RENAME_Q_X}{RENAME_X_Z}"),
+                "x",
+                tree(&[("x", "Q\n"), ("z", "a\n")]),
+            ),
+        ];
+        for (tag, before, patch, path, written) in cases {
+            let git = refused_for_path(tag, &before, &patch, path);
+            assert_eq!(git, Some(written), "git: {patch:?}");
+        }
+        // The swap, which `git diff -B -M` can write, is two such renames and is refused too.
+        let swap = "diff --git a/y b/x\nsimilarity index 100%\nrename from y\nrename to x\n";
+        let both = tree(&[("x", "a\n"), ("y", "Y\n")]);
+        let git = refused_for_path("g2-swap", &both, &format!("{RENAME_X_Y}{swap}"), "y");
+        assert_eq!(git, Some(tree(&[("x", "Y\n"), ("y", "a\n")])));
+        // Refused whether Git applies them or not: a path removed and then written in place.
+        for (i, (patch, path)) in [
+            (format!("{DELETE_X}{MODIFY_X}"), "x"),
+            (format!("{RENAME_X_Y}{MODIFY_X}"), "x"),
+            (format!("{RENAME_X_Y}{NEW_X}"), "x"),
+            (
+                format!("{MODIFY_X}--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-b\n"),
+                "x",
+            ),
+        ]
+        .iter()
+        .enumerate()
+        {
+            refused_for_path(&format!("g2-rw-{i}"), &x, patch, path);
+        }
+    }
+
+    /// G2, the same root: a path two sections write other than in place, or two remove. Git
+    /// keeps the second of two creations, and gives both new names of two renames the old file.
+    #[test]
+    fn a_path_two_sections_create_or_remove_is_refused() {
+        let x = tree(&[("x", "a\n")]);
+        let new_plain = "diff --git a/x b/x\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+other\n";
+        let git = refused_for_path(
+            "g2-new-new",
+            &Tree::new(),
+            &format!("{NEW_X}{new_plain}"),
+            "x",
+        );
+        assert_eq!(git, Some(tree(&[("x", "other\n")])), "git keeps the second");
+        let git = refused_for_path("g2-ren-ren", &x, &format!("{RENAME_X_Y}{RENAME_X_Z}"), "x");
+        assert_eq!(
+            git,
+            Some(tree(&[("y", "a\n"), ("z", "a\n")])),
+            "git writes both"
+        );
+        let xy = tree(&[("x", "a\n"), ("y", "a\n")]);
+        for (i, (before, patch, path)) in [
+            (&x, format!("{DELETE_X}{DELETE_X}"), "x"),
+            (&x, format!("{DELETE_X}{RENAME_X_Y}"), "x"),
+            (&x, format!("{MODIFY_X}{NEW_X}"), "x"),
+            (&x, format!("{COPY_X_Y}{COPY_X_Y}"), "y"),
+            (&xy, format!("{MODIFY_Y}{RENAME_X_Y}"), "y"),
+            (&xy, format!("{MODIFY_Y}{COPY_X_Y}"), "y"),
+            (
+                &tree(&[("q", "Q\n"), ("x", "a\n")]),
+                format!("{RENAME_X_Z}{RENAME_Q_Z}"),
+                "z",
+            ),
+        ]
+        .iter()
+        .enumerate()
+        {
+            refused_for_path(&format!("g2-ww-{i}"), before, patch, path);
+        }
+    }
+
+    /// The shapes that stay reviewed, each applied for real: Git's tree is the tree the sections
+    /// describe in order. A change in place follows any section that wrote the path (Git patches
+    /// the earlier result), `new file` follows `deleted file` (a change of type), and a copy or
+    /// rename only reads its source, as it was before the patch.
+    #[test]
+    fn sections_git_applies_in_order_to_one_path_agree_with_a_real_apply() {
+        let x = tree(&[("x", "a\n")]);
+        let symlink = "diff --git a/x b/x\nnew file mode 120000\nindex 0000000..1111111\n--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+target\n\\ No newline at end of file\n";
+        let mode_only = "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n";
+        let copy_changed = "diff --git a/x b/y\nsimilarity index 50%\ncopy from x\ncopy to y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+c\n";
+        let traditional =
+            "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-b\n+c\n";
+        let cases = [
+            (
+                &x,
+                format!("{MODIFY_X}{MODIFY_X_AGAIN}"),
+                tree(&[("x", "c\n")]),
+            ),
+            (&x, traditional.to_owned(), tree(&[("x", "c\n")])),
+            (&x, format!("{RENAME_X_Y}{MODIFY_Y}"), tree(&[("y", "b\n")])),
+            (
+                &x,
+                format!("{COPY_X_Y}{MODIFY_Y}"),
+                tree(&[("x", "a\n"), ("y", "b\n")]),
+            ),
+            // A copy reads the source as it was: G2b's shape, which `git diff -C` writes.
+            (
+                &x,
+                format!("{MODIFY_X}{COPY_X_Y}"),
+                tree(&[("x", "b\n"), ("y", "a\n")]),
+            ),
+            (
+                &x,
+                format!("{COPY_X_Y}{MODIFY_X}"),
+                tree(&[("x", "b\n"), ("y", "a\n")]),
+            ),
+            (
+                &x,
+                format!("{MODIFY_X}{copy_changed}"),
+                tree(&[("x", "b\n"), ("y", "c\n")]),
+            ),
+            (
+                &x,
+                format!("{COPY_X_Y}{RENAME_X_Z}"),
+                tree(&[("y", "a\n"), ("z", "a\n")]),
+            ),
+        ];
+        for (i, (before, patch, written)) in cases.iter().enumerate() {
+            let (git, review) = applies_as_reviewed(&format!("g2-ok-{i}"), before, &[], patch);
+            assert_eq!(git.as_ref(), Some(written), "git: {patch:?}");
+            assert!(review.is_ok(), "ddf reads {patch:?}: {:?}", review.err());
+        }
+        // With a mode or a type in play, the tree is compared by `applies_as_reviewed` alone.
+        for (i, (before, patch)) in [
+            (&Tree::new(), format!("{NEW_X}{MODIFY_X_PAYLOAD}")),
+            (&x, format!("{MODIFY_X}{mode_only}")),
+            (&x, format!("{mode_only}{MODIFY_X}")),
+            (&x, format!("{DELETE_X}{symlink}")),
+            (&x, format!("{DELETE_X}{NEW_X}{MODIFY_X_PAYLOAD}")),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let (git, review) = applies_as_reviewed(&format!("g2-mode-{i}"), before, &[], patch);
+            assert!(
+                git.is_some_and(|after| after != **before),
+                "git applies {patch:?}"
+            );
+            assert!(review.is_ok(), "ddf reads {patch:?}: {:?}", review.err());
+        }
+    }
+
+    /// Runs Git in `root`, as a committer with a fixed identity, and returns its output.
+    fn git_ok(root: &Path, args: &[&str]) -> Vec<u8> {
+        let mut all = vec![
+            "-c",
+            "user.name=ddf",
+            "-c",
+            "user.email=ddf@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ];
+        all.extend(args);
+        let out = git(root, &all);
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
+    }
+
+    /// What Git itself writes when a patch names a path in more than one section, generated by
+    /// a real Git and applied by one: a change of type (`git diff`), a copy whose source also
+    /// changes (`git diff -C`), and a series that touches one file in three commits
+    /// (`git format-patch --stdout`). All stay reviewed, and agree with the apply.
+    #[test]
+    fn what_git_writes_for_one_path_in_several_sections_stays_reviewed() {
+        let origin = Scratch::new("g2-written");
+        let root = origin.0.path();
+        let body = "one line of thirty\n".repeat(30);
+        origin.0.write("kept", &body);
+        origin.0.write("typed", "a file\n");
+        git_ok(root, &["add", "-A"]);
+        git_ok(root, &["commit", "-q", "-m", "base"]);
+        let before = tree(&[("kept", body.as_str()), ("typed", "a file\n")]);
+        // A type change and a copy of a file that also changes.
+        fs::remove_file(root.join("typed")).unwrap();
+        std::os::unix::fs::symlink("kept", root.join("typed")).unwrap();
+        origin.0.write("copied", &body);
+        origin.0.write("kept", format!("{body}one more\n"));
+        git_ok(root, &["add", "-A"]);
+        let diff = String::from_utf8(git_ok(root, &["diff", "--cached", "-C"])).unwrap();
+        assert!(diff.contains("deleted file mode 100644") && diff.contains("new file mode 120000"));
+        assert!(diff.contains("copy from kept"), "{diff}");
+        git_ok(root, &["commit", "-q", "-m", "type and copy"]);
+        // Two more commits to `kept`, for the series.
+        origin.0.write("kept", format!("first\n{body}one more\n"));
+        git_ok(root, &["commit", "-q", "-a", "-m", "second"]);
+        origin
+            .0
+            .write("kept", format!("first\n{body}one more\nlast\n"));
+        git_ok(root, &["commit", "-q", "-a", "-m", "third"]);
+        let series =
+            String::from_utf8(git_ok(root, &["format-patch", "--stdout", "-C", "HEAD~3"])).unwrap();
+        assert_eq!(series.matches("diff --git a/kept b/kept\n").count(), 3);
+        let mut written = Tree::new();
+        read_tree(root, root, &mut written);
+        for (tag, patch) in [("g2-written-diff", &diff), ("g2-written-series", &series)] {
+            let (git, review) = applies_as_reviewed(tag, &before, &[], patch);
+            assert!(git.is_some(), "git applies what it wrote: {patch}");
+            assert!(review.is_ok(), "ddf reads {patch}: {:?}", review.err());
+            if tag == "g2-written-series" {
+                assert_eq!(
+                    git,
+                    Some(written.clone()),
+                    "the series gives the final commit"
+                );
+            }
+        }
+    }
+
+    /// L1: a traditional diff with `/dev/null` on both sides. Git creates a file named by the
+    /// whole second line; v0.8.3 showed `dev/null`.
+    #[test]
+    fn a_traditional_diff_with_dev_null_on_both_sides_is_refused() {
+        for (i, (second, name)) in [
+            ("/dev/null run.sh", "dev/null run.sh"),
+            ("/dev/null", "dev/null"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let patch = format!("--- /dev/null\n+++ {second}\n@@ -0,0 +1 @@\n+payload\n");
+            let (git, review) = applies_as_reviewed(&format!("l1-{i}"), &Tree::new(), &[], &patch);
+            assert_eq!(git, Some(tree(&[(*name, "payload\n")])), "git: {patch:?}");
+            assert!(
+                matches!(
+                    review,
+                    Err(PatchParseError::InconsistentHeader { line_number: 2 })
+                ),
+                "ddf: {patch:?}"
+            );
+        }
+        // Control: one `/dev/null` side is a creation, applied and reviewed alike.
+        let new_file = "--- /dev/null\n+++ b/run.sh\n@@ -0,0 +1 @@\n+payload\n";
+        let (git, review) = applies_as_reviewed("l1-control", &Tree::new(), &[], new_file);
+        assert_eq!(git, Some(tree(&[("run.sh", "payload\n")])));
+        assert!(review.is_ok());
+    }
 }

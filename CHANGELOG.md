@@ -6,6 +6,86 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Security
+
+- **`Files … differ` is the binary marker `Binary files … differ` is** (independent rescore of
+  v0.8.3, G1, high). Git takes a section with no hunk as binary when the first line after its
+  header ends ` differ` and begins `Binary files ` or `Files `; with a full
+  `index <old>..<new>` line it then writes blob `<new>` from its object store, or empties the
+  file when `<new>` is the null id. DDF knew only `Binary files `. `diff --git a/x b/x`, a
+  full `index` line, then `Files a/x and b/x differ` was reviewed as `modified` with no hunk
+  and no binary flag (exit 0), while `git apply` replaced the whole of `x` with a blob already
+  in the store; with `rename from`/`rename to` the review showed `renamed`, and with
+  `new file mode 100755` `added` with no content, where Git wrote the blob. Measured on v0.8.3
+  with Git 2.56; v0.8.2 is the same. The line is now read exactly as `Binary files … differ`
+  is (status `binary_changed`), under the same rules: it ends the header, it is refused
+  straight after `diff --git`, after the section's `---`/`+++` and under a submodule mode.
+  Where Git does not read it as the marker it stays ignored text, as measured: after a hunk,
+  after a line that already ended the header, and with a carriage return before its line
+  feed.
+- **A Git section with no hunk and no change in its headers is refused** (G1, the same
+  rescore). A `diff --git` section whose only header is an `index` line (or a similarity
+  line, or `---`/`+++` names that differ with no `rename` header) is "patch with only garbage"
+  to `git apply`, which writes nothing. v0.8.3 and earlier reviewed it as `modified` with
+  nothing in it, which is what let an unread line after it go unseen. It is now refused
+  (exit 4). The sections Git writes with no hunk are still read: a mode change, a pure rename
+  or copy, an empty file created or deleted (with or without its `index` line), and a binary
+  section.
+- **One path in several sections is refused unless Git applies the sections in order**
+  (rescore G2, high). Git applies a patch as a set: every removal first, every creation
+  after, and a rename or copy reads its source as it was before the patch. DDF showed the
+  sections as a sequence. Measured on v0.8.3 with Git 2.56, each exit 0 on both sides:
+  - "modified `x`", then "deleted `x`": Git leaves `x` in place holding the modified content;
+  - "added `x`" (executable), then "deleted `x`": Git leaves the new executable;
+  - "modified `.github/workflows/ci.yml`", then "renamed" it to `docs/ci-example.yml`: Git
+    leaves the workflow with the change and gives the docs file the old content;
+  - "renamed `x` to `y`", then "renamed `y` to `z`": `y` ends up holding the old `x`;
+  - two `new file` sections for one path: Git keeps the second.
+
+  A patch is now refused (exit 4, new error `PathInSeveralSections`, naming the path and the
+  line of the later section) when one path is written by two sections, removed by two, or
+  written by one and removed by another. Git sections, traditional sections and binary
+  sections are held to it alike. Two shapes stay reviewed, each shown by a real `git apply` to
+  give the tree the sections describe in order:
+  - a change in place (hunks, a mode change, a binary change) after a section that wrote the
+    path, whether that created it, changed it, or renamed or copied a file to it. Git patches
+    the earlier section's result, so a `git format-patch --stdout` series that touches a file
+    in several commits is still reviewed;
+  - a `new file` section after a `deleted file` section for one path, which is how Git writes
+    a change of type (a file that becomes a symlink).
+
+  Reading a path is no conflict: a copy or rename whose source another section changes or
+  renames away, as `git diff -C` writes it, is still reviewed, and its hunks are against the
+  source as it was before the patch, which is what Git copies. Refused, though Git writes
+  them: two renames in which one's new name is the other's old name (a swap or a chain, from
+  `git diff -B -M`), and a series in which a later commit deletes or renames away a file an
+  earlier commit of the same series created or changed (`git apply` of the whole series does
+  not give the series' result there either; `git am` applies it mail by mail).
+- **A traditional diff with `/dev/null` on both sides is refused** (rescore L1, low). Git
+  takes it for a new file and reads the name from the whole second line, so
+  `+++ /dev/null run.sh` created `dev/null run.sh` while the review showed `dev/null`. No
+  tool writes the pair.
+
+### Changed
+
+- `PatchParseError` has a new variant, `PathInSeveralSections { line_number, path }` (the
+  enum is `#[non_exhaustive]`). `SectionWithoutPatch` now also covers a Git section with
+  headers but no change in them, and `InconsistentHeader` a traditional diff with `/dev/null`
+  on both sides; their messages say so.
+
+### Fixed
+
+- **The Git differential applies patches for real.** `git apply --numstat` and `--summary`
+  read a patch but do not say what an apply writes, so content taken from the object store
+  and Git's order of removals and creations were never in play (`--numstat` even lists an
+  `index`-only section that a real apply refuses). `tests/git_differential.rs` now has a
+  `real_apply` module: each case is applied in a scratch repository whose object store holds
+  the blobs the patch names, and the tree Git leaves is compared with the tree the review's
+  sections describe (path, type, executable bit and content). It covers each finding above,
+  the shapes that stay reviewed, and patches written by Git itself (a change of type, a copy
+  of a changed file, a three-commit series on one file). Control: the tests of the findings
+  fail on the v0.8.3 parser.
+
 ## [0.8.3] - 2026-11-11
 
 **Security release** ([GHSA-rq5r-p3g9-phff](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-rq5r-p3g9-phff)). v0.8.2 and earlier could review a

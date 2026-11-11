@@ -40,9 +40,10 @@ impl InputGuards {
 }
 
 /// True when at least one hunk across all files carries an added or removed line (so "0 hunks"
-/// and "0 changed lines" are both refused). A header-only (`diff --git a/x b/x`) or rename-only
-/// diff parses to one file with no hunks; a hunk made only of context lines changes nothing.
-/// Neither is something a review can judge.
+/// and "0 changed lines" are both refused). A header-only diff (a mode change, a pure rename, an
+/// empty file created or deleted) parses to one file with no hunks, which is not something a
+/// review can judge. A hunk made only of context lines, and a section whose only header is an
+/// `index` line, no longer parse at all.
 #[must_use]
 pub fn has_reviewable_hunks(files: &[ReviewFile]) -> bool {
     files
@@ -83,7 +84,7 @@ mod tests {
             hunks: false,
         };
         assert_eq!(none.refusal(&[]), None);
-        let header_only = files("diff --git a/x b/x\nindex 1..2 100644\n");
+        let header_only = files("diff --git a/x b/x\nold mode 100644\nnew mode 100755\n");
         assert_eq!(
             both.refusal(&header_only),
             Some("0 hunks in input (--require-hunks)")

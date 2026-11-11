@@ -78,7 +78,7 @@ git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require
 | Guard | Refuses when | stderr line |
 | --- | --- | --- |
 | `--require-files` | the well-formed patch describes 0 files (empty or mis-piped input) | `refused: 0 files in input (--require-files)` |
-| `--require-hunks` | the patch has 0 hunks or 0 added+removed lines across all files (header-only `diff --git a/x b/x`, rename-only, context-only hunks) | `refused: 0 hunks in input (--require-hunks)` |
+| `--require-hunks` | the patch has 0 hunks or 0 added+removed lines across all files (a mode-only or rename-only change, an empty file created or deleted, a binary change; a section with an `index` line alone, or a hunk of context lines alone, is refused at parse with exit 4) | `refused: 0 hunks in input (--require-hunks)` |
 
 Rules:
 

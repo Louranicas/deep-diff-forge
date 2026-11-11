@@ -269,7 +269,7 @@ mod tests {
         assert!(super::review("", Guards::none().require_files()).is_err());
         assert!(
             super::review(
-                "diff --git a/x b/x\nindex 1..2 100644\n",
+                "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n",
                 Guards::none().require_files()
             )
             .is_ok()
