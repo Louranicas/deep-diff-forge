@@ -397,7 +397,7 @@ mod tests {
     fn file_lookup_matches_file_anchor_only() {
         // A binary file has no hunks, so its risk note is File-anchored.
         let files =
-            parse("diff --git a/lib.so b/lib.so\nBinary files a/lib.so and b/lib.so differ\n")
+            parse("diff --git a/lib.so b/lib.so\nindex 1111111..2222222 100644\nBinary files a/lib.so and b/lib.so differ\n")
                 .unwrap();
         let ranked = rank(&files);
         let a = engine_annotations(&files, &ranked);

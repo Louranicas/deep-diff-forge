@@ -379,7 +379,7 @@ mod tests {
 
     #[test]
     fn binary_file_has_empty_hunks_array() {
-        let input = "diff --git a/p.png b/p.png\nBinary files a/p.png and b/p.png differ\n";
+        let input = "diff --git a/p.png b/p.png\nindex 1111111..2222222 100644\nBinary files a/p.png and b/p.png differ\n";
         let files = parse(input).unwrap();
         let json = to_json(&files);
         assert!(json.contains("\"hunks\": []"));

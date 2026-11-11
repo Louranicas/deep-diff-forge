@@ -6,6 +6,68 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-11-11
+
+**Security release** ([GHSA-rq5r-p3g9-phff](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-rq5r-p3g9-phff)). v0.8.2 and earlier could review a
+change on a different file, or with a different mode or type, than `git apply` writes: a
+name left behind by a `diff --git` line that a binary line follows directly, a new file's
+mode overridden by a `new mode` line (independent rescore of v0.8.2, F3 high, F2 medium),
+and content under a mode Git reads as a submodule (found while the fix was reviewed, high).
+Upgrade from 0.8.2; the changes are fixes and no interface changes. Three findings of the
+same rescore are not fixed here and are listed under Known limits.
+
+### Security
+
+- **No name carries over from a `diff --git` line Git reads no patch from** (independent
+  rescore of v0.8.2, F3, high). A `diff --git` line with no extended header after it is no
+  header to Git, so `Binary files … differ` or `GIT binary patch` straight after it is no
+  patch. But the line has already given Git's patch its names, and they stay for the next
+  section that has no `---`/`+++` or move names of its own. `diff --git a/first b/first`,
+  `Binary files a/first and b/first differ`, then `diff --git a/second b/second` with an
+  `index` line and a hunk was reviewed as a binary change to `first` and a text change to
+  `second` (exit 0), while `git apply` wrote the hunk to `first` and left `second` alone.
+  Measured on v0.8.2 with Git 2.56. A binary line straight after `diff --git` is now refused
+  (exit 4); Git writes an `index` line before it.
+- **A created or deleted file's mode is not overridden by `old mode` or `new mode`** (rescore
+  F2, medium). `new file mode` and `new mode` set the same mode in Git and the later line
+  wins, so `new file mode 100644` followed by `new mode 120000` created a symlink, and
+  `new mode 100755` an executable, where the review showed a plain new file with both lines
+  in its metadata. `new file mode` or `deleted file mode` beside `old mode` or `new mode` is
+  refused, in either order. Git never writes the pair.
+- **A mode Git reads as a submodule cannot carry content** (found while this fix was
+  reviewed; high). Git reads a mode with no file-type bits as a submodule (`canon_mode`), and
+  for a submodule it makes or removes a directory and writes nothing from the hunks.
+  `new file mode 644` (or `755`, `0`, `140000`) with a hunk, and `new file mode 160000` with
+  a hunk of ordinary content, were reviewed as a new file holding that content, while
+  `git apply` created an empty directory. A binary body under `160000` was shown as a binary
+  change and written as an empty directory too. Measured on v0.8.2 with Git 2.56. A mode on
+  a mode header or an `index` line must now have the type of a regular file, a symlink or a
+  submodule. Under a submodule mode every hunk line must be Git's own
+  `Subproject commit <id>`, and a binary line or body is refused.
+
+### Fixed
+
+- **The Git differential puts one section's leftovers in front of another.** Its generated
+  cases were single sections, so a name left by an earlier line was never in play. A bare
+  `diff --git` line, one of 23 lines (the extended headers, header breaks and binary body
+  lines), then each of five sections (115 cases) is now compared with `git apply`, beside the
+  findings themselves. Its summary comparison now includes the mode a file is created or
+  deleted with, which it dropped before: a symlink or an executable is created by its mode
+  alone. Control: the new tests fail on the v0.8.2 parser.
+- Twelve test fixtures in eleven files used `diff --git` followed directly by `Binary files …
+  differ` as "a binary file". They now have the `index` line Git writes.
+
+### Known limits (from the same rescore; not fixed here)
+
+- **A binary body Git finds corrupt (F1, medium).** Git checks a `GIT binary patch` body by
+  inflating it; DDF checks its line grammar only. When the body does not inflate, Git prints
+  an error, applies the sections before it, drops that section and every later one, and
+  exits 0, while DDF shows them all as changed. Nothing unreviewed is written, but reviewed
+  changes do not land.
+- A mail-format patch whose message has a line beginning `-` or `+` is refused though Git
+  applies it (F4), and `--layout inline` does not show modes, symlinks or a rename's source
+  (F5).
+
 ## [0.8.2] - 2026-11-09
 
 Tagged `v0.8.2` at `fb5ffe1` (2026-11-10), signed.
@@ -2180,7 +2242,8 @@ A supply-chain & fuzz hardening pass then raised the release/CI posture:
   `--json`/`--jsonl` stability tests. Corrected the daemon's `lib.rs` doc from
   "thread-per-connection" to the true single-threaded sequential accept loop.
 
-[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.8.3...HEAD
+[0.8.3]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.3
 [0.8.2]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.2
 [0.8.1]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.1
 [0.8.0]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.0
