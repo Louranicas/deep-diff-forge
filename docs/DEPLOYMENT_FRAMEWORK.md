@@ -26,7 +26,7 @@ The framework is designed for:
   (core, patch, projection, pipeline, syntax, graph, agent, tui, cluster,
   learning, daemon, review, sdk, cli); edition 2024, MSRV 1.88, toolchain
   1.99.1. Internal edges: [`crate-edges.txt`](crate-edges.txt).
-- Published GitHub releases: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1` and `v0.8.2`. crates.io is on hold by owner
+- GitHub releases published before 0.8.3: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1` and `v0.8.2`. crates.io is on hold by owner
   decision; `release.yml` publishes only when the repository variable
   `DDF_CRATES_IO` is `open`, never because a token exists.
 - `deploy status` reports maturity L9 (Learning). Its gate list is declared, not

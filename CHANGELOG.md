@@ -70,8 +70,8 @@ limits.
   - rustix 1.1.6 carries the fix for GHSA-jh2m-fhpj-3vr7 (RUSTSEC-2026-0486: extended-attribute
     calls, 1.0.0 to 1.1.5). DDF calls none of them, so no DDF release was affected; the
     advisory entered the RustSec database on 2026-11-11, and from then the supply chain gate
-    of CI and of the release workflow refuses a lock file with rustix below 1.1.6 (the root
-    lock had 1.1.5, the fuzz lock 1.1.4). That is why a security release carries dependency
+    of CI and of the release workflow refuses a lock file with rustix 1.0.0 to 1.1.5 (the
+    root lock had 1.1.5, the fuzz lock 1.1.4). That is why a security release carries dependency
     updates.
   - signal-hook 0.4 changes `low_level::pipe`, which DDF does not use; the daemon's
     `iterator` use is unchanged. The TUI's crossterm still brings signal-hook 0.3.18, so the
