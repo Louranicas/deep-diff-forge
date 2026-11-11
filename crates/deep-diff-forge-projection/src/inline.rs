@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn empty_file_has_no_rows() {
         let files =
-            parse("diff --git a/p.png b/p.png\nBinary files a/p.png and b/p.png differ\n").unwrap();
+            parse("diff --git a/p.png b/p.png\nindex 1111111..2222222 100644\nBinary files a/p.png and b/p.png differ\n").unwrap();
         assert_eq!(inline_rows(&files[0]).len(), 0);
     }
 

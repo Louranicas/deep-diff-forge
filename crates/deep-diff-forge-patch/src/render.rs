@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn binary_file_renders_metadata_without_hunks() {
-        let input = "diff --git a/p.png b/p.png\nBinary files a/p.png and b/p.png differ\n";
+        let input = "diff --git a/p.png b/p.png\nindex 1111111..2222222 100644\nBinary files a/p.png and b/p.png differ\n";
         let files = parse(input).unwrap();
         let out = render_unified(&files);
         assert!(out.contains("Binary files a/p.png and b/p.png differ\n"));

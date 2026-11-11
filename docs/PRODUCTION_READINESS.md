@@ -1104,3 +1104,42 @@ extended-header position"; it compared numstat only. Both statements are correct
   - `rename from dir//x` shows the unsquashed old path;
   - a binary copy or rename keeps the `binary_changed` status, so whether the old path survives shows only in its metadata.
 - **Regressions:** none on input Git writes. 85 of 36,000 cases v0.8.1 read correctly are now refused on purpose: repeated or `index` modes, and nameless `---`/`+++` names, forms no Git writes.
+
+## Assessment 2026-11-11 (`v0.8.2`, `fb5ffe1`; independent rescore)
+
+**Score: 70 / 100**, ten below the last three. A fresh assessor scored the released v0.8.2 with the rubric, a read-only checkout of the tag and the released x86_64 Linux binary. It was told not to read this document, `EVIDENCE.md` or the 0.8.x changelog until its scores were written. It found one new high finding and two mediums in patch truth, each reproduced by hand with a real `git apply`, and two mediums outside it. The coordinating session then reproduced F3, F2 and F1 again on the released binary before acting.
+
+| Facet | Weight | 2026-11-09 (v0.8.1) | 2026-11-11 (v0.8.2) |
+| --- | ---: | ---: | ---: |
+| Correctness and patch-truth integrity | 20 | 14 | 12 |
+| Security and trust boundary | 15 | 11 | 10 |
+| Supply chain and release integrity | 15 | 14 | 13 |
+| Reliability and operability | 15 | 14 | 11 |
+| Platform and portability | 10 | 8 | 6 |
+| Interfaces and integration contracts | 15 | 13 | 10 |
+| Documentation, governance and evidence | 10 | 6 | 8 |
+| **Total** | 100 | **80** | **70** |
+
+The assessor is a different one each time, so part of the drop is probably a stricter reading of the same rubric (inferred, not measured): platform (only x86_64 Linux was run), interfaces (the JSON has no resolved mode or type field) and reliability (a mail-format patch refused) lost points for things earlier assessors saw and scored higher.
+
+**Method (measured):** the parser read in full; 135 hand probes; a random differential of 96,000 cases over twelve seeds (one to three sections, 26 section kinds, 42 names, 15 mutation operators), of which 28,173 were accepted by both DDF and Git and 21,742 agreed after a real apply of the tree DDF's reading implies; a systematic sweep of 70 header lines at every position of 14 base patches (10,780 cases). No crash, timeout or invalid JSON in 106,780 cases. Workspace tests: 1,940 passed, 0 failed. Release: signed tag, immutable, checksum and attestation verified.
+
+**The findings:**
+
+- **F3 (high), fixed on `main`.** A `diff --git` line with no extended header is no header to Git, so a binary line straight after it is no patch; but the line's names stay in Git's patch for the next section that brings none. `diff --git a/first b/first`, `Binary files … differ`, then a section for `second` with an `index` line and a hunk: DDF showed a text change to `second`; Git wrote it to `first` and left `second` alone, exit 0. The previous assessment listed "`Binary files` straight after `diff --git` shows a file Git reads no patch for" as a low; it was the first half of this.
+- **F2 (medium), fixed on `main`.** `new file mode 100644` followed by `new mode 100755` or `120000`: Git keeps the later mode and creates an executable or a symlink; DDF showed a plain new file. `--outline` and `--rank` did flag the mode; the JSON carried only the two raw lines, and inline output showed no mode at all. The N3 fix in 0.8.2 refused a repeated mode header and an `index` mode, not this pair.
+- **F1 (medium), open.** A `GIT binary patch` body that passes DDF's line grammar but does not inflate: Git prints "corrupt binary patch", applies the sections before it, drops that one and every later one, and exits 0. DDF shows all of them as changed. Nothing unreviewed lands; reviewed changes are silently missing. The previous assessment listed "binary bodies are not decoded" as a low.
+- **F4 (medium, reliability), open.** A mail-format patch whose commit message has a line beginning `-` or `+` (a bullet) is refused with exit 4; Git applies it.
+- **F5 (medium, display), open.** `--layout inline` shows no modes, no symlink type and no rename source.
+- **Lows:** empty input exits 0; a non-UTF-8 header line exits 3 ("may be transient") though it is deterministic; `copy from d//e` shows the unsquashed old path; twenty idle connections reset a `health` call; `daemon start` did not return within 180 s once when its output was captured (one observation, cause not investigated); the README inside the tag says "not yet tagged" (F6).
+
+**Fix (F3 and F2):**
+- A binary line straight after `diff --git` is refused.
+- `new file mode` or `deleted file mode` beside `old mode` or `new mode` is refused, in either order.
+- Found while the fix was reviewed, and fixed with it (high): Git reads a mode with no file-type bits as a submodule and writes nothing from a submodule's hunks, so `new file mode 644` (or `160000`) with a hunk was shown as a new file with that content while Git made an empty directory. A mode on a mode header or an `index` line must now have the type of a regular file, a symlink or a submodule; under a submodule mode only `Subproject commit <id>` lines are read, and a binary line or body is refused (the reviewer's next pass found the binary body still got through the first version of this rule).
+- The differential gains the findings, their controls and 115 generated two-section cases (a bare `diff --git` line, one of 23 lines, then each of five sections), and its summary comparison now includes the mode a file is created or deleted with. The existing generated cases were single sections and passed on the v0.8.2 parser; the new tests fail on it.
+
+**Open:** F1, F4 and F5 above; F4 to F7 of the earlier assessments (crates.io 0.2.0, idle connections, archive status lines, arm64 and launchd checks not required); the differential is not in the fuzz harness. 727 of the assessor's generated cases are the known class where Git refuses a section it can name no file for and DDF shows the `b/` name.
+
+**Pattern:** this is the fourth assessment in a row to find a new high in how the parser reads Git's headers, each in a shape the tests of the time did not generate. Refusing one more shape per release does not end that; the conformance table and the fail-closed default planned for 0.9.0 are what would.
+

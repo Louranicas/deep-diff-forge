@@ -156,7 +156,9 @@ mod tests {
         assert_eq!(gutter_width(&over[0]), 5, "the old side reaches 10000");
         let new_side = parse("--- a/x\n+++ b/x\n@@ -1 +99999,2 @@\n-a\n+b\n+c\n");
         assert_eq!(gutter_width(&new_side[0]), 6, "the new side reaches 100000");
-        let binary = parse("diff --git a/p.png b/p.png\nBinary files a/p.png and b/p.png differ\n");
+        let binary = parse(
+            "diff --git a/p.png b/p.png\nindex 1111111..2222222 100644\nBinary files a/p.png and b/p.png differ\n",
+        );
         assert_eq!(gutter_width(&binary[0]), 4);
     }
 }

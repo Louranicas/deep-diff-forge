@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn binary_file_event_has_zero_hunks() {
         let files =
-            parse("diff --git a/p.png b/p.png\nBinary files a/p.png and b/p.png differ\n").unwrap();
+            parse("diff --git a/p.png b/p.png\nindex 1111111..2222222 100644\nBinary files a/p.png and b/p.png differ\n").unwrap();
         let out = jsonl_events(&files);
         assert!(out.contains("\"status\":\"binary_changed\""));
         assert!(out.contains("\"hunks\":0"));

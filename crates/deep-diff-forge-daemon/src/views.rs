@@ -1299,7 +1299,7 @@ mod tests {
             let name = format!("assets/{}{i}.png", "p".repeat(60));
             let _ = writeln!(
                 text,
-                "diff --git a/{name} b/{name}\nBinary files a/{name} and b/{name} differ"
+                "diff --git a/{name} b/{name}\nindex 1111111..2222222 100644\nBinary files a/{name} and b/{name} differ"
             );
         }
         let review = review(&text);
