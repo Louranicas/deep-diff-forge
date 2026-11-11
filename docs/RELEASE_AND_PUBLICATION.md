@@ -5,7 +5,8 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 ## Status 2026-11-11 (0.8.3 prepared)
 
 - `main` carries **0.8.3**, a security release for v0.8.2's review of bare `diff --git` lines
-  and of modes (rescore of v0.8.2, GHSA-rq5r-p3g9-phff). It is a release once the signed tag
+  and of modes (rescore of v0.8.2, GHSA-rq5r-p3g9-phff), with three dependency updates that
+  the supply chain gate needs (rustix 1.1.6, RUSTSEC-2026-0486). It is a release once the signed tag
   `v0.8.3` exists; pushing that tag, or any later `v*` tag, is the owner's decision.
 - **0.8.2 was released** as the signed tag `v0.8.2` (2026-11-10): a security
   release for v0.8.1's copy, name, mode and binary-header review (N1-N3 of the v0.8.1 rescore and F1-F2 of the rescore before

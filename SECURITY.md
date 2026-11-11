@@ -11,7 +11,9 @@ for.
 - `main` carries 0.8.3, a security release: v0.8.2 and earlier can review a change on a
   different file, or with a different mode or type, than `git apply` writes (F3 and F2 of the
   v0.8.2 rescore and a case found in the fix's review, [GHSA-rq5r-p3g9-phff](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-rq5r-p3g9-phff)).
-  0.8.3 is a release once the signed tag `v0.8.3` exists; until then `v0.8.2` is the latest.
+  It also updates three dependencies, rustix among them (RUSTSEC-2026-0486; DDF calls none of
+  the affected functions). 0.8.3 is a release once the signed tag `v0.8.3` exists; until then
+  `v0.8.2` is the latest.
 - `v0.8.2` (2026-11-10, signed) was a security release: v0.8.1 and earlier
   can review a different file or mode than `git apply` writes (N1-N3 of the v0.8.1 rescore and F1-F2 of the rescore before the v0.8.2 tag,
   [GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp), published 2026-11-10); upgrade to 0.8.2. Cutting any later `v*` tag is

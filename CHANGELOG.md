@@ -13,8 +13,9 @@ change on a different file, or with a different mode or type, than `git apply` w
 name left behind by a `diff --git` line that a binary line follows directly, a new file's
 mode overridden by a `new mode` line (independent rescore of v0.8.2, F3 high, F2 medium),
 and content under a mode Git reads as a submodule (found while the fix was reviewed, high).
-Upgrade from 0.8.2; the changes are fixes and three dependency updates, and no interface changes. Three findings of the
-same rescore are not fixed here and are listed under Known limits.
+Upgrade from 0.8.2; the changes are fixes and three dependency updates, and no interface
+changes. Three findings of the same rescore are not fixed here and are listed under Known
+limits.
 
 ### Security
 
@@ -69,8 +70,9 @@ same rescore are not fixed here and are listed under Known limits.
   - rustix 1.1.6 carries the fix for GHSA-jh2m-fhpj-3vr7 (RUSTSEC-2026-0486: extended-attribute
     calls, 1.0.0 to 1.1.5). DDF calls none of them, so no DDF release was affected; the
     advisory entered the RustSec database on 2026-11-11, and from then the supply chain gate
-    of CI and of the release workflow refuses a lock file with rustix 1.1.5. That is why a
-    security release carries dependency updates.
+    of CI and of the release workflow refuses a lock file with rustix below 1.1.6 (the root
+    lock had 1.1.5, the fuzz lock 1.1.4). That is why a security release carries dependency
+    updates.
   - signal-hook 0.4 changes `low_level::pipe`, which DDF does not use; the daemon's
     `iterator` use is unchanged. The TUI's crossterm still brings signal-hook 0.3.18, so the
     CLI links both, over one signal-hook-registry.

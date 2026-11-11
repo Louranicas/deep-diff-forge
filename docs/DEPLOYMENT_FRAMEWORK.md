@@ -145,7 +145,7 @@ flowchart TB
 The codebase is at L9 (learning): every engine layer L0-L8 is implemented plus
 the L9 local-only learning loop. `v0.1.0` and `v0.2.0` were tagged and released
 to GitHub (binary + checksums via `release.yml`) and both git remotes. `0.2.1`
-was never tagged; 0.8.2 is tagged `v0.8.2` (2026-11-10), the latest tag. crates.io is on hold by owner
+was never tagged; 0.8.2 is tagged `v0.8.2` (2026-11-10), the tag before `v0.8.3`. crates.io is on hold by owner
 decision: the `publish` job runs only when the repository variable
 `DDF_CRATES_IO` is `open`, and a configured `CARGO_REGISTRY_TOKEN` does not lift
 the hold (corrected 2026-10-28; the earlier text said a token alone would
