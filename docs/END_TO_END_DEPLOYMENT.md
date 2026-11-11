@@ -26,7 +26,7 @@ The gate sequence below is the design. What runs today:
   `fixtures/council/` and, since 0.5.0, the labelled corpus `fixtures/eval/`
   (34 cases since 0.6.0); fuzz seeds live in `fuzz/seeds/`.
 - Gate 8 has no tooling; nothing writes `reports/releases/`.
-- 0.8.2 is tagged `v0.8.2` (2026-11-10), the release before 0.8.3. Releases published before 0.8.3: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`. crates.io
+- 0.8.3 is tagged `v0.8.3` (2026-11-11 UTC), the latest release. Published releases: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3`. crates.io
   is on hold (`DDF_CRATES_IO`).
 - The local remote-tracking refs (last fetch, 2026-10-28) show GitLab `main` at
   `2f03f40`, the same commit as GitHub `main`; the 2026-10-26 instruction not to

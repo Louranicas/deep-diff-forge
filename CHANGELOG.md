@@ -8,6 +8,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [0.8.3] - 2026-11-11
 
+Tagged `v0.8.3` at `a74bf91` (2026-11-11 UTC), signed.
+
 **Security release** ([GHSA-rq5r-p3g9-phff](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-rq5r-p3g9-phff)). v0.8.2 and earlier could review a
 change on a different file, or with a different mode or type, than `git apply` writes: a
 name left behind by a `diff --git` line that a binary line follows directly, a new file's
