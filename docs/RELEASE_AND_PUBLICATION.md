@@ -13,7 +13,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
   the v0.8.2 tag; GHSA-gp5v-m67f-gmgp, published 2026-11-10). Immutable Releases is on (since
   2026-11-05), so its assets and tag cannot change. Pushing any later `v*` tag is the owner's decision.
 - Published GitHub releases: `v0.1.0` (2026-06-22), `v0.2.0` (2026-06-24) and
-  `v0.3.0` (2026-10-29), `v0.4.0` (2026-10-30), `v0.5.0` (2026-10-31), `v0.6.0` (2026-11-02), `v0.7.0` (2026-11-03), `v0.8.0` (2026-11-07), `v0.8.1` (2026-11-08), `v0.8.2` (2026-11-10) and `v0.8.3` (2026-11-11). `0.2.1` was never tagged.
+  `v0.3.0` (2026-10-29), `v0.4.0` (2026-10-30), `v0.5.0` (2026-10-31), `v0.6.0` (2026-11-02), `v0.7.0` (2026-11-03), `v0.8.0` (2026-11-07), `v0.8.1` (2026-11-08), `v0.8.2` (2026-11-10) and `v0.8.3` (2026-11-11 UTC). `0.2.1` was never tagged.
 - crates.io is on hold by owner decision until the codebase is
   production-hardened. `release.yml` publishes only when the repository
   variable `DDF_CRATES_IO` is `open`.

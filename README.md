@@ -180,8 +180,8 @@ Each fails with exit 4. None is quietly turned into a plausible-looking model.
 
 **Prebuilt binaries** for Linux (x86_64 and, since v0.6.0, arm64) and macOS (Apple silicon and
 Intel) are on the [releases page](https://github.com/Louranicas/deep-diff-forge/releases)
-([supported platforms](#supported-platforms)). The commands below fetch v0.8.3, the latest
-release.
+([supported platforms](#supported-platforms)). The commands below fetch v0.8.3,
+the latest release.
 Each archive has a `.sha256` file, and the release carries an SPDX SBOM:
 
 ```bash
@@ -1007,7 +1007,7 @@ new file's mode overridden by a `new mode` line, and content under a mode Git re
 submodule ([GHSA-rq5r-p3g9-phff](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-rq5r-p3g9-phff)); a binary body Git finds corrupt is still shown
 as applied ([CHANGELOG](CHANGELOG.md)). The released v0.8.3 refuses the finding patches
 ([release evidence](EVIDENCE.md#v083-release-2026-11-11)); it has not had an independent
-rescore, and each of the last four found a new high finding. The
+rescore, and each of the last four independent rescores found a new high finding. The
 declared scope
 is a local, single-user
 review tool on Linux and macOS ([the four targets](#supported-platforms)): CLI, Unix-socket
