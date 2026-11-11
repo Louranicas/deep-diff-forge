@@ -1,13 +1,13 @@
 {
   "SPDXID": "SPDXRef-DOCUMENT",
   "creationInfo": {
-    "created": "2026-11-09T00:01:21Z",
+    "created": "2026-11-10T20:07:38Z",
     "creators": [
       "Tool: deep-diff-forge scripts/security/generate_spdx_sbom.py"
     ]
   },
   "dataLicense": "CC0-1.0",
-  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/02de2fe986f5b6f2ddd794fd8f872ae7",
+  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/140b847c5b86006087688a96984294a2",
   "name": "deep-diff-forge-cargo-lock-sbom",
   "packages": [
     {
@@ -1910,11 +1910,11 @@
       "versionInfo": "0.4.1"
     },
     {
-      "SPDXID": "SPDXRef-Package-rustix-e1cf91646ec4a10e",
+      "SPDXID": "SPDXRef-Package-rustix-14a74502c8eb0211",
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
+          "checksumValue": "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -1922,7 +1922,7 @@
       "externalRefs": [
         {
           "referenceCategory": "PACKAGE-MANAGER",
-          "referenceLocator": "pkg:cargo/rustix@1.1.5",
+          "referenceLocator": "pkg:cargo/rustix@1.1.6",
           "referenceType": "purl"
         }
       ],
@@ -1931,7 +1931,7 @@
       "licenseDeclared": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
       "name": "rustix",
       "primaryPackagePurpose": "LIBRARY",
-      "versionInfo": "1.1.5"
+      "versionInfo": "1.1.6"
     },
     {
       "SPDXID": "SPDXRef-Package-rustversion-54416425b1f3f930",
@@ -2172,6 +2172,30 @@
       "name": "signal-hook",
       "primaryPackagePurpose": "LIBRARY",
       "versionInfo": "0.3.18"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-signal-hook-90e1840f419317b3",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "49f7447afd772ca79ad17ae0a3972a6b0df0cb4b80990fd82707593e9e012a74"
+        }
+      ],
+      "copyrightText": "NOASSERTION",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:cargo/signal-hook@0.4.6",
+          "referenceType": "purl"
+        }
+      ],
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "name": "signal-hook",
+      "primaryPackagePurpose": "LIBRARY",
+      "versionInfo": "0.4.6"
     },
     {
       "SPDXID": "SPDXRef-Package-signal-hook-mio-e3622e740a3c76f1",
@@ -2702,11 +2726,11 @@
       "versionInfo": "2.0.1"
     },
     {
-      "SPDXID": "SPDXRef-Package-unicode-width-596faef6bd1433d2",
+      "SPDXID": "SPDXRef-Package-unicode-width-418fa349874c0d3b",
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+          "checksumValue": "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
         }
       ],
       "copyrightText": "NOASSERTION",
@@ -2714,7 +2738,7 @@
       "externalRefs": [
         {
           "referenceCategory": "PACKAGE-MANAGER",
-          "referenceLocator": "pkg:cargo/unicode-width@0.2.2",
+          "referenceLocator": "pkg:cargo/unicode-width@0.2.3",
           "referenceType": "purl"
         }
       ],
@@ -2723,7 +2747,7 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "unicode-width",
       "primaryPackagePurpose": "LIBRARY",
-      "versionInfo": "0.2.2"
+      "versionInfo": "0.2.3"
     },
     {
       "SPDXID": "SPDXRef-Package-wasi-6d9383bcdbe32a04",
@@ -3066,7 +3090,7 @@
       "spdxElementId": "SPDXRef-Package-crossterm-f09249501ce7359b"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-rustix-e1cf91646ec4a10e",
+      "relatedSpdxElement": "SPDXRef-Package-rustix-14a74502c8eb0211",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-crossterm-f09249501ce7359b"
     },
@@ -3276,7 +3300,7 @@
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-9e9fa246fda02496"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-rustix-e1cf91646ec4a10e",
+      "relatedSpdxElement": "SPDXRef-Package-rustix-14a74502c8eb0211",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-9e9fa246fda02496"
     },
@@ -3291,7 +3315,7 @@
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-9e9fa246fda02496"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-signal-hook-fd99a64769a9d396",
+      "relatedSpdxElement": "SPDXRef-Package-signal-hook-90e1840f419317b3",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-9e9fa246fda02496"
     },
@@ -3311,7 +3335,7 @@
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-learning-f7837c473359a856"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-rustix-e1cf91646ec4a10e",
+      "relatedSpdxElement": "SPDXRef-Package-rustix-14a74502c8eb0211",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-learning-f7837c473359a856"
     },
@@ -3376,7 +3400,7 @@
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-projection-e128d230bd5d41fe"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-unicode-width-596faef6bd1433d2",
+      "relatedSpdxElement": "SPDXRef-Package-unicode-width-418fa349874c0d3b",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-deep-diff-forge-projection-e128d230bd5d41fe"
     },
@@ -3911,7 +3935,7 @@
       "spdxElementId": "SPDXRef-Package-ratatui-core-8490c9bbe9afffbc"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-unicode-width-596faef6bd1433d2",
+      "relatedSpdxElement": "SPDXRef-Package-unicode-width-418fa349874c0d3b",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-ratatui-core-8490c9bbe9afffbc"
     },
@@ -3991,7 +4015,7 @@
       "spdxElementId": "SPDXRef-Package-ratatui-widgets-64690d873d8b0928"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-unicode-width-596faef6bd1433d2",
+      "relatedSpdxElement": "SPDXRef-Package-unicode-width-418fa349874c0d3b",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-ratatui-widgets-64690d873d8b0928"
     },
@@ -4043,27 +4067,27 @@
     {
       "relatedSpdxElement": "SPDXRef-Package-bitflags-d4d563d60049bd9b",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-rustix-e1cf91646ec4a10e"
+      "spdxElementId": "SPDXRef-Package-rustix-14a74502c8eb0211"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-errno-dc281f2416af1597",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-rustix-e1cf91646ec4a10e"
+      "spdxElementId": "SPDXRef-Package-rustix-14a74502c8eb0211"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-libc-06536456656c676c",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-rustix-e1cf91646ec4a10e"
+      "spdxElementId": "SPDXRef-Package-rustix-14a74502c8eb0211"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-linux-raw-sys-236465ada6f56de4",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-rustix-e1cf91646ec4a10e"
+      "spdxElementId": "SPDXRef-Package-rustix-14a74502c8eb0211"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-windows-sys-27c68f22007adecb",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-rustix-e1cf91646ec4a10e"
+      "spdxElementId": "SPDXRef-Package-rustix-14a74502c8eb0211"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-serde-core-0f54d2cfbc66115f",
@@ -4139,6 +4163,16 @@
       "relatedSpdxElement": "SPDXRef-Package-signal-hook-registry-3ccf5d3fc3571cb9",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-signal-hook-fd99a64769a9d396"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-libc-06536456656c676c",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-signal-hook-90e1840f419317b3"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-signal-hook-registry-3ccf5d3fc3571cb9",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-signal-hook-90e1840f419317b3"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-libc-06536456656c676c",
@@ -4346,7 +4380,7 @@
       "spdxElementId": "SPDXRef-Package-unicode-truncate-2d9332b42ffe214f"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-unicode-width-596faef6bd1433d2",
+      "relatedSpdxElement": "SPDXRef-Package-unicode-width-418fa349874c0d3b",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-unicode-truncate-2d9332b42ffe214f"
     },

@@ -13,8 +13,9 @@ change on a different file, or with a different mode or type, than `git apply` w
 name left behind by a `diff --git` line that a binary line follows directly, a new file's
 mode overridden by a `new mode` line (independent rescore of v0.8.2, F3 high, F2 medium),
 and content under a mode Git reads as a submodule (found while the fix was reviewed, high).
-Upgrade from 0.8.2; the changes are fixes and no interface changes. Three findings of the
-same rescore are not fixed here and are listed under Known limits.
+Upgrade from 0.8.2; the changes are fixes and three dependency updates, and no interface
+changes. Three findings of the same rescore are not fixed here and are listed under Known
+limits.
 
 ### Security
 
@@ -56,6 +57,25 @@ same rescore are not fixed here and are listed under Known limits.
   alone. Control: the new tests fail on the v0.8.2 parser.
 - Twelve test fixtures in eleven files used `diff --git` followed directly by `Binary files …
   differ` as "a binary file". They now have the `index` line Git writes.
+
+### Dependencies
+
+- **unicode-width 0.2.3, rustix 1.1.6 and signal-hook 0.4.6** (Dependabot #112, applied as
+  #120 with `fuzz/Cargo.lock` and the SBOM in step; the fuzz lock's rustix moves from 1.1.4
+  to 1.1.6 too). Read from the crates' sources, not measured:
+  - unicode-width 0.2.3 gives U+FF9E and U+FF9F (the halfwidth katakana voiced and
+    semi-voiced sound marks) width 1, where 0.2.2 gave 0, and moves its tables to Unicode 18.
+    Padding and wrap points change for text with those two characters; no DDF test or fixture
+    has them. unicode-segmentation stays at 1.13.3 (Unicode 17).
+  - rustix 1.1.6 carries the fix for GHSA-jh2m-fhpj-3vr7 (RUSTSEC-2026-0486: extended-attribute
+    calls, 1.0.0 to 1.1.5). DDF calls none of them, so no DDF release was affected; the
+    advisory entered the RustSec database on 2026-11-11, and from then the supply chain gate
+    of CI and of the release workflow refuses a lock file with rustix 1.0.0 to 1.1.5 (the
+    root lock had 1.1.5, the fuzz lock 1.1.4). That is why a security release carries dependency
+    updates.
+  - signal-hook 0.4 changes `low_level::pipe`, which DDF does not use; the daemon's
+    `iterator` use is unchanged. The TUI's crossterm still brings signal-hook 0.3.18, so the
+    CLI links both, over one signal-hook-registry.
 
 ### Known limits (from the same rescore; not fixed here)
 

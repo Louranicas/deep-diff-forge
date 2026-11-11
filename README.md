@@ -35,9 +35,9 @@ Underneath sits one rule. The apply-able patch is truth, and nothing may rewrite
   <sub>Real output, not a mock-up: <code>scripts/docs/render_terminal_svg.py</code> runs the binary on the crate changes of PR #23 and draws what it prints.</sub>
 </p>
 
-> **Status: 0.8.3, a security release prepared on `main` (2026-11-11); it is a release once the signed tag `v0.8.3` exists.** It fixes reviews in v0.8.2 that differed from `git apply`: a name left by a bare `diff --git` line, a new file's mode overridden by `new mode`, and content under a mode Git reads as a submodule ([advisory](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-rq5r-p3g9-phff), [CHANGELOG](CHANGELOG.md)).
+> **Status: 0.8.3, a security release prepared on `main` (2026-11-11); it is a release once the signed tag `v0.8.3` exists.** It fixes reviews in v0.8.2 that differed from `git apply`: a name left by a bare `diff --git` line, a new file's mode overridden by `new mode`, and content under a mode Git reads as a submodule ([advisory](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-rq5r-p3g9-phff)). It also carries three dependency updates ([CHANGELOG](CHANGELOG.md)).
 > - **Declared scope:** a local, single-user review tool on Linux and macOS ([the exact targets](#supported-platforms)), covering the CLI, daemon, `rpc`, MCP and SDKs. All four targets are built and smoke-tested on current CI runners. The oldest OS versions listed are declared from the binaries, not run. The [verdict and its evidence](#project-status) are below.
-> - **Releases:** the latest release is [v0.8.2](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.2), with Linux (x86_64 and arm64) and macOS binaries, an SPDX SBOM and build provenance.
+> - **Releases:** the release before 0.8.3 is [v0.8.2](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.2), with Linux (x86_64 and arm64) and macOS binaries, an SPDX SBOM and build provenance.
 > - **crates.io:** publication is on hold by decision until the codebase is fully production-hardened.
 
 <p align="center">
@@ -178,9 +178,11 @@ Each fails with exit 4. None is quietly turned into a plausible-looking model.
 
 ## Install
 
-**Prebuilt binaries** (latest release: v0.8.2) for Linux (x86_64 and, since v0.6.0, arm64) and
-macOS (Apple silicon and Intel) are on the [releases page](https://github.com/Louranicas/deep-diff-forge/releases)
-([supported platforms](#supported-platforms)).
+**Prebuilt binaries** for Linux (x86_64 and, since v0.6.0, arm64) and macOS (Apple silicon and
+Intel) are on the [releases page](https://github.com/Louranicas/deep-diff-forge/releases)
+([supported platforms](#supported-platforms)). The commands below fetch v0.8.2, the release
+before 0.8.3; once `v0.8.3` is tagged, use its archives instead (v0.8.2 is under the advisory
+in the status note above).
 Each archive has a `.sha256` file, and the release carries an SPDX SBOM:
 
 ```bash
@@ -643,7 +645,8 @@ checks every answer's version, id and error shape.
 
 **Python:** `sdk/python/deep_diff_forge.py` uses only the standard library, and installs as the
 package `deep-diff-forge` (`python3 -m pip install ./sdk/python`, or from GitHub with
-`"deep-diff-forge @ git+https://github.com/Louranicas/deep-diff-forge@v0.8.2#subdirectory=sdk/python"`;
+`"deep-diff-forge @ git+https://github.com/Louranicas/deep-diff-forge@v0.8.2#subdirectory=sdk/python"`,
+or `@v0.8.3` once that tag exists;
 not on PyPI; the package metadata arrived in 0.6.0, so `@v0.5.0` and older tags have no `pyproject.toml` to install). It drives the `deep-diff-forge` binary, which it does not ship. It speaks the
 daemon protocol over two transports with the same calls:
 
