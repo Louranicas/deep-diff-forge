@@ -487,6 +487,11 @@ Additive members, so the schema names stay `v0`. They are present only when foun
     parsed as a fragment of its language, and the construct read by the parser with no error
     above it; Rust only so far). The list of values grows: a client must accept a value it
     does not know and may treat it as at least `lexical`.
+  - `test_likely: true` is present on a `panic_path_added` item when the hunk shows a test
+    attribute around it (`#[test]`, a path ending in `::test`, `#[rstest]`, `#[cfg(test)]`). It is
+    a hint for a reader and never proof (an import can bind those names to anything, and a hunk
+    can sit under an open comment): the signal, the score and what a judge reads are the same
+    with and without it. The member is absent otherwise.
   - Items are ordered by hunk, then line, then signal. `evidence_truncated: true` follows when more
     were found; the score counts all of them. Each signal also appears in `signals`.
 - `review-outline.v0` and `review-hunks.v0` hunk heads: `evidence`, the distinct signal labels in

@@ -159,6 +159,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   - *Medium: an outer macro on the same row hid the unchecked mark.* `outer! { assert!(` with
     `true` and `);` below left nothing. A row counts as read only when the parser named a
     construct at the opener's own column, not when any macro starts on the row.
+- **`test_likely` on a panic path under a test attribute.** Since no test attribute is proof,
+  a `.unwrap()` in a `#[test]` function is reported like any other, and on Deep-Diff-Forge's
+  own last 40 commits the signal is on 49 of 188 files. Such an item now carries
+  `"test_likely": true` in `rank.v0` (and says so in the TUI's note) when the hunk shows
+  `#[test]`, a path ending in `::test`, `#[rstest]` or `#[cfg(test)]` around it. It is a hint
+  for a reader: the signal, the score and what a judge reads do not change, so nothing can be
+  hidden by dressing code as a test. The owner's decision, on the reviewer's suggestion.
 - **A `fragment_scan` fuzz target** holds the rule the five rounds converged on: for any text,
   as a new file or as a change, every item the token rules find alone is still there with the
   parser on, except `syntax_unchecked` and, in a new file only, `panic_path_added`; the

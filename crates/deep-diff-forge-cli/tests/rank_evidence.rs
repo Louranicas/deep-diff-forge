@@ -87,6 +87,31 @@ fn code_evidence_outranks_path_and_size() {
     assert!(ranked[1].get("evidence").is_none() && ranked[2].get("evidence").is_none());
 }
 
+/// A panic path under a test attribute is still reported, at the same score, with `test_likely`
+/// beside it; an item without the hint has no such member.
+#[test]
+fn a_panic_path_under_a_test_attribute_says_so() {
+    let patch = "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,1 +1,8 @@\n x\n+#[test]\n+fn a() {\n+    f().unwrap();\n+}\n+fn real() {\n+    g().unwrap();\n+}\n";
+    let rank: Value =
+        serde_json::from_str(&run(patch, &["--stdin-patch", "--rank", "--json"])).unwrap();
+    let items = rank["ranked"][0]["evidence"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{rank}");
+    assert_eq!(
+        (
+            items[0]["signal"].as_str(),
+            items[0]["line"].as_u64(),
+            items[0]["test_likely"].as_bool()
+        ),
+        (Some("panic_path_added"), Some(4), Some(true))
+    );
+    assert_eq!(items[1]["line"], 7);
+    assert!(items[1].get("test_likely").is_none(), "{rank}");
+    assert_eq!(
+        rank["ranked"][0]["signals"],
+        serde_json::json!(["panic_path_added"])
+    );
+}
+
 /// The address an evidence item names is the hunk the outline lists, and that hunk carries the
 /// same labels.
 #[test]

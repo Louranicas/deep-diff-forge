@@ -224,10 +224,15 @@ fn evidence_notes(file: &ReviewFile, ranked: &RankedFile) -> Vec<AgentAnnotation
                 hunk_id: item.hunk,
             },
             body: format!(
-                "{} ({} line {})",
+                "{} ({} line {}){}",
                 code_phrase(item.signal),
                 item.side.label(),
-                item.line
+                item.line,
+                if item.test_likely {
+                    " Under a test attribute: likely test code, which the patch does not prove."
+                } else {
+                    ""
+                }
             ),
             provenance: AnnotationProvenance {
                 agent: SYSTEM_AGENT_ID.to_string(),

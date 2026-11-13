@@ -76,6 +76,13 @@ pub struct FragmentScan {
     /// code, the inside of a macro included, where the parser names no construct. The same
     /// condition holds as for `in_test`: only for a fragment that is the beginning of its file.
     pub test_rows: Vec<(u32, u32)>,
+    /// Inclusive row ranges of the items (function, module, `impl`) that carry an attribute
+    /// which *spells* a test: `#[test]`, `#[rstest]`, any path ending in `::test`
+    /// (`#[tokio::test]`), or `#[cfg(test)]`, wherever the item stands in the fragment. This is
+    /// a hint for a reader and never proof: every one of these names but `cfg` can be bound to
+    /// something else, and a fragment from the middle of a file can sit under an open comment.
+    /// Nothing may be withdrawn on it; for what is proof see [`Self::test_rows`].
+    pub test_spelled: Vec<(u32, u32)>,
 }
 
 impl FragmentScan {
@@ -92,6 +99,15 @@ impl FragmentScan {
     #[must_use]
     pub fn inside_test(&self, row: u32) -> bool {
         self.test_rows
+            .iter()
+            .any(|(first, last)| (*first..=*last).contains(&row))
+    }
+
+    /// Whether `row` lies in an item whose attribute spells a test (see [`Self::test_spelled`]):
+    /// a hint, never proof.
+    #[must_use]
+    pub fn spells_test(&self, row: u32) -> bool {
+        self.test_spelled
             .iter()
             .any(|(first, last)| (*first..=*last).contains(&row))
     }
@@ -171,6 +187,9 @@ fn walk(root: Node, source: &str) -> FragmentScan {
             if last > first + 1 {
                 scan.test_rows.push((first + 1, last - 1));
             }
+        }
+        if spells_test(node, source) {
+            scan.test_spelled.push(rows_of(node));
         }
         let in_test = test_above || opens_test;
         if !unread && let Some(kind) = construct(node, source) {
@@ -350,6 +369,35 @@ fn opens_test_code(node: Node, source: &str) -> bool {
         .is_some_and(|(path, arguments)| path == "cfg" && arguments.as_deref() == Some("(test)"))
 }
 
+/// Whether `node` is an item with an attribute that spells a test: its path ends in `test`
+/// (`#[test]`, `#[tokio::test]`, `#[r#test]`) or is `rstest`, or it is exactly `#[cfg(test)]`.
+/// A hint for a reader, never proof: [`opens_test_code`] says what proof takes.
+fn spells_test(node: Node, source: &str) -> bool {
+    if !matches!(node.kind(), "function_item" | "mod_item" | "impl_item") {
+        return false;
+    }
+    let mut before = node.prev_sibling();
+    while let Some(sibling) = before {
+        match sibling.kind() {
+            "attribute_item" => {
+                let spelled = attribute_parts(sibling, source).is_some_and(|(path, arguments)| {
+                    let last = path.rsplit("::").next().unwrap_or(&path);
+                    let last = last.strip_prefix("r#").unwrap_or(last);
+                    matches!(last, "test" | "rstest")
+                        || (path == "cfg" && arguments.as_deref() == Some("(test)"))
+                });
+                if spelled {
+                    return true;
+                }
+            }
+            "line_comment" | "block_comment" => {}
+            _ => return false,
+        }
+        before = sibling.prev_sibling();
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,6 +549,44 @@ mod tests {
                 .unwrap_or_else(|| panic!("no call read: {source}"));
             assert!(!call.2, "believed to be test code: {source}");
         }
+    }
+
+    /// The hint beside the proof: an item whose attribute spells a test is listed, wherever it
+    /// stands, and nothing more is claimed for it.
+    #[test]
+    fn items_whose_attribute_spells_a_test_are_listed_as_a_hint() {
+        assert_eq!(
+            scan("#[test]\nfn a() {\n    b().unwrap();\n}\n").test_spelled,
+            [(1, 3)]
+        );
+        for attribute in [
+            "#[tokio::test]",
+            "#[tokio::test(flavor = \"x\")]",
+            "#[rstest]",
+            "#[r#test]",
+            "#[my_framework::test]",
+            "#[cfg(test)]",
+        ] {
+            let source = format!("fn real() {{}}\n{attribute}\nfn a() {{ b().unwrap(); }}\n");
+            let found = scan(&source);
+            assert_eq!(found.test_spelled, [(2, 2)], "{attribute}");
+            assert!(found.spells_test(2) && !found.spells_test(0), "{attribute}");
+            // a hint is not the proof: this item is not at the start of a file read whole
+            assert!(found.test_rows.is_empty(), "{attribute}");
+        }
+        for attribute in [
+            "#[inline]",
+            "#[cfg(not(test))]",
+            "#[cfg_attr(test, allow(x))]",
+            "#[testing]",
+            "#[doc = \"test\"]",
+        ] {
+            let source = format!("{attribute}\nfn a() {{ b().unwrap(); }}\n");
+            assert_eq!(scan(&source).test_spelled, [], "{attribute}");
+        }
+        let module =
+            "fn real() {}\n#[cfg(test)]\nmod tests {\n    fn helper() { a().unwrap(); }\n}\n";
+        assert_eq!(scan(module).test_spelled, [(2, 4)]);
     }
 
     /// Review V3 round 3, VD3R3-H-1. Every attribute name but `cfg` can be bound by an import

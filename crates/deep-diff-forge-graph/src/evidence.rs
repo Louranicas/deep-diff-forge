@@ -192,6 +192,12 @@ pub struct Evidence {
     pub side: Side,
     /// The line number on `side`.
     pub line: u32,
+    /// The hunk shows a test attribute around this panic path (`#[test]`, a path ending in
+    /// `::test`, `#[rstest]`, `#[cfg(test)]`). It is a hint for a reader and never proof: an
+    /// import can bind those names to anything, and a hunk can sit under an open comment. So
+    /// the item stands, the score does not change, and what a judge sees is the same; a reader
+    /// may weigh the item by it. Only ever true on [`EvidenceSignal::PanicPathAdded`].
+    pub test_likely: bool,
 }
 
 /// What part of a line a rule reads.
@@ -903,7 +909,8 @@ pub fn file_evidence_in(file: &ReviewFile, parse: &[Reading]) -> Vec<Evidence> {
         // `hunk_matches` yields each (side, signal, line) once and items from different hunks
         // differ in `hunk`, so there is nothing to deduplicate: a scan of `out` per item made a
         // patch of 160k matching lines take 4.8 s.
-        for (side, signal, line, basis) in hunk_matches(hunk, kind.language, &rules, parse) {
+        let found = hunk_matches(hunk, kind.language, &rules, parse);
+        for (side, signal, line, basis) in found.items {
             let address = address
                 .get_or_insert_with(|| hunk.address(&file.path))
                 .clone();
@@ -914,6 +921,9 @@ pub fn file_evidence_in(file: &ReviewFile, parse: &[Reading]) -> Vec<Evidence> {
                 address,
                 side,
                 line,
+                test_likely: signal == S::PanicPathAdded
+                    && side == Side::New
+                    && found.test_likely.binary_search(&line).is_ok(),
             });
         }
     }
@@ -940,7 +950,7 @@ pub fn hunk_signals(file: &ReviewFile, hunk: &PatchHunk) -> Vec<EvidenceSignal> 
 pub fn hunk_signals_in(file: &ReviewFile, hunk: &PatchHunk, parse: Reading) -> Vec<EvidenceSignal> {
     let kind = FileKind::of(file);
     let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
-    let found = hunk_matches(hunk, kind.language, &rules, parse);
+    let found = hunk_matches(hunk, kind.language, &rules, parse).items;
     EvidenceSignal::ALL
         .into_iter()
         .filter(|signal| found.iter().any(|(_, s, _, _)| s == signal))
@@ -957,7 +967,7 @@ fn hunk_matches(
     language: Option<Language>,
     rules: &[&Rule],
     reading: Reading,
-) -> Vec<(Side, EvidenceSignal, u32, Basis)> {
+) -> HunkFound {
     // First the code view of every line on each side it belongs to, so a rule that reads a
     // neighbour sees it as code, in the state the scanner reached there.
     let mut old_state = ScanState::default();
@@ -1064,7 +1074,10 @@ fn hunk_matches(
             }
         }
     }
-    found
+    HunkFound {
+        test_likely: Parsed::likely_lines(parsed.as_ref(), hunk),
+        items: found,
+    }
 }
 
 /// Whether `code` calls a method named `name`: `.name(`, with nothing but whitespace between the
@@ -1174,9 +1187,33 @@ struct Parsed {
     /// lines in a place the parser names no construct for (inside another macro's body, or
     /// under an error): neither the parser nor the token rules, which read one line, read it.
     unread: Option<usize>,
+    /// The added lines, by index and in order, that lie in an item whose attribute spells a
+    /// test: a hint, see [`Evidence::test_likely`].
+    test_likely: Vec<usize>,
+}
+
+/// What [`hunk_matches`] finds in one hunk.
+struct HunkFound {
+    /// `(side, signal, line, basis)`, in hunk order and then the order of
+    /// [`EvidenceSignal::ALL`].
+    items: Vec<(Side, EvidenceSignal, u32, Basis)>,
+    /// New-side line numbers, ascending, that lie in an item whose attribute spells a test.
+    test_likely: Vec<u32>,
 }
 
 impl Parsed {
+    /// The new-side line numbers, ascending, of the added lines in an item whose attribute
+    /// spells a test; none when the parser gave no answer.
+    fn likely_lines(parsed: Option<&Self>, hunk: &PatchHunk) -> Vec<u32> {
+        parsed.map_or_else(Vec::new, |parsed| {
+            parsed
+                .test_likely
+                .iter()
+                .filter_map(|index| hunk.lines[*index].new_line)
+                .collect()
+        })
+    }
+
     /// Whether `list` (sorted by line index) holds `signal` for line `at`.
     fn has(list: &[(usize, EvidenceSignal)], at: usize, signal: EvidenceSignal) -> bool {
         let from = list.partition_point(|pair| pair.0 < at);
@@ -1332,6 +1369,7 @@ fn fragment_evidence(
         found: Vec::new(),
         withdrawn: Vec::new(),
         unread: None,
+        test_likely: Vec::new(),
     };
     for construct in &new.scan.constructs {
         let Some(signal) = signal_of(&construct.kind) else {
@@ -1406,6 +1444,14 @@ fn fragment_evidence(
                 })
         })
         .map(|(_, index)| *index);
+    parsed.test_likely = (0u32..)
+        .zip(&new.lines)
+        .filter(|(row, index)| {
+            hunk.lines[**index].kind == PatchLineKind::Added
+                && new.scan.spells_test(row + new.offset)
+        })
+        .map(|(_, index)| *index)
+        .collect();
     parsed.found.sort_by_key(|pair| pair.0);
     parsed.withdrawn.sort_by_key(|pair| pair.0);
     Some(parsed)
@@ -1879,6 +1925,7 @@ mod tests {
                     address: hunk.address("src/lib.rs"),
                     side: Side::New,
                     line: 3,
+                    test_likely: false,
                 },
                 Evidence {
                     signal: S::ProcessSpawn,
@@ -1887,6 +1934,7 @@ mod tests {
                     address: hunk.address("src/lib.rs"),
                     side: Side::New,
                     line: 3,
+                    test_likely: false,
                 },
             ]
         );
@@ -3080,6 +3128,74 @@ mod tests {
         }
     }
 
+    /// The owner's decision of 2026-11-14, on the reviewer's suggestion: a panic path that the
+    /// hunk shows under a test attribute is not withdrawn (no test attribute is proof) and is
+    /// not scored differently (a hint must not weaken a judge); it is marked, so that a reader
+    /// can tell it from the same call in code that shows no sign of being a test.
+    #[test]
+    fn a_panic_path_under_a_test_attribute_stands_and_is_marked_test_likely() {
+        let marks = |file: &ReviewFile| -> Vec<(EvidenceSignal, u32, bool)> {
+            file_evidence(file)
+                .iter()
+                .map(|e| (e.signal, e.line, e.test_likely))
+                .collect()
+        };
+        // in a change to an existing file, with one call inside another macro's arguments
+        let test = hunk_of(
+            "src/a.rs",
+            &[
+                "+#[test]",
+                "+fn a() {",
+                "+    f().unwrap();",
+                "+    assert_eq!(g().unwrap(), 1);",
+                "+}",
+            ],
+        );
+        assert_eq!(
+            marks(&test),
+            [(S::PanicPathAdded, 4, true), (S::PanicPathAdded, 5, true)]
+        );
+        for attribute in ["+#[tokio::test]", "+#[rstest]", "+#[cfg(test)]"] {
+            let file = hunk_of(
+                "src/a.rs",
+                &[attribute, "+fn a() {", "+    f().unwrap();", "+}"],
+            );
+            assert_eq!(marks(&file), [(S::PanicPathAdded, 4, true)], "{attribute}");
+        }
+        // code that shows no sign of being a test, and the function after a test
+        let plain = hunk_of(
+            "src/a.rs",
+            &[
+                "+#[test]",
+                "+fn a() {}",
+                "+fn real() {",
+                "+    f().unwrap();",
+                "+}",
+            ],
+        );
+        assert_eq!(marks(&plain), [(S::PanicPathAdded, 5, false)]);
+        // only a panic path carries the mark
+        let other = hunk_of(
+            "tests/a.rs",
+            &["+#[test]", "+fn a() {", "+    todo!();", "+}"],
+        );
+        assert_eq!(marks(&other), [(S::StubAdded, 4, false)]);
+        // the parser did not read the hunk: nothing is known, so nothing is marked
+        let long = format!("+    f().unwrap(); // {}", "a".repeat(70_000));
+        let unread = hunk_of("src/a.rs", &["+#[test]", "+fn a() {", long.as_str(), "+}"]);
+        let items = file_evidence(&unread);
+        assert!(!items.is_empty() && items.iter().all(|e| !e.test_likely));
+        // a hint weakens nothing: the score is the score of the same call anywhere
+        let unmarked = hunk_of(
+            "src/a.rs",
+            &["+fn a() {", "+    f().unwrap();", "+}", "+// x", "+// y"],
+        );
+        assert_eq!(
+            crate::risk::score_file(&test).0,
+            crate::risk::score_file(&unmarked).0
+        );
+    }
+
     /// Review V3 round 5, VD3R5-H-1. One section creates a file whose `#[cfg(test)]` a line
     /// comment follows; a later section for the same path prepends `/*`. Git applies both, and
     /// the function is in the program. The plan sees the whole review, and a path named twice
@@ -3766,6 +3882,7 @@ mod tests {
                 &rules,
                 Reading::Hunk,
             )
+            .items
         };
         let items = matches(&hunk_of("src/a.rs", &added));
         assert_eq!(items.len(), LINES + 1);
