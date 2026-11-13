@@ -62,6 +62,11 @@ pub(crate) fn run(args: &[String]) {
         },
         USAGE,
     );
+    // The stop hook's own helper, started by it as a child (see [`sealed_rankers`]).
+    if words.first().copied() == Some(SEAL_WORD) {
+        seal_rankers(args);
+        return;
+    }
     let event = words.first().and_then(|word| Event::named(word));
     let client = crate::flag_value(args, "--client").unwrap_or_default();
     let (Some(event), "claude") = (event, client.as_str()) else {
@@ -620,10 +625,13 @@ fn judge(
         reason: "this binary's own path could not be found, so no ranker could be offered"
             .to_owned(),
     };
-    let seal_by = now() + RANKER_SEAL_LIMIT;
-    for ranker in rankers(args) {
+    let candidates = match sealed_rankers(args) {
+        Ok(candidates) => candidates,
+        Err(reason) => return unjudged(reason),
+    };
+    for (ranker, digest) in candidates {
         // The verdict must name the ranker it was given, by its digest.
-        let ranker_sha256 = match file_sha256(&ranker, seal_by) {
+        let ranker_sha256 = match digest {
             Ok(digest) => digest,
             Err(why) => {
                 last = Judged::Unjudged {
@@ -650,6 +658,88 @@ fn judge(
     Ok(Some(last))
 }
 
+/// The word that starts the stop hook's helper: `agent hook seal-rankers [--ranker-dir DIR]`.
+/// It is not an event of a client and is not in the usage text.
+const SEAL_WORD: &str = "seal-rankers";
+
+/// The helper's whole job: list the candidate rankers and hash each, and print one JSON list of
+/// `{"path", "sha256"}` or `{"path", "refused"}`. It runs as a child so that the stop hook can
+/// end it: listing a directory and reading a file can block for as long as a file system
+/// likes, and a deadline that is only looked at between two reads does not bound that (review
+/// V4 round 5, on VD4R4-M-2).
+fn seal_rankers(args: &[String]) {
+    let deadline = now() + RANKER_SEAL_LIMIT;
+    let list: Vec<Value> = rankers(args)
+        .iter()
+        .map(|ranker| {
+            let path = ranker.to_str();
+            match file_sha256(ranker, deadline) {
+                Ok(digest) => json!({"path": path, "sha256": digest}),
+                Err(why) => json!({"path": path, "refused": why}),
+            }
+        })
+        .collect();
+    emitln!("{}", Value::Array(list));
+}
+
+/// The candidate rankers with the SHA-256 of each, or why one has none, in the order they are
+/// offered. `Err` when there is no list at all.
+type Candidates = Vec<(PathBuf, Result<String, String>)>;
+
+/// Have the helper list and hash the rankers, as a child that is killed when
+/// [`RANKER_SEAL_LIMIT`] has passed.
+fn sealed_rankers(args: &[String]) -> Result<Candidates, String> {
+    let this = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .map_err(|_| {
+            "this binary's own path could not be found, so no ranker could be offered".to_owned()
+        })?;
+    sealed_rankers_by(&this, args, RANKER_SEAL_LIMIT)
+}
+
+/// [`sealed_rankers`] with the program and the limit given, for a test to stand in for both.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the seal door: the stop hook starts its own helper, under a deadline and output caps"
+)]
+fn sealed_rankers_by(
+    program: &Path,
+    args: &[String],
+    limit: Duration,
+) -> Result<Candidates, String> {
+    let mut command = std::process::Command::new(program);
+    command.args(["agent", "hook", SEAL_WORD]);
+    if let Some(dir) = crate::flag_value(args, "--ranker-dir") {
+        command.arg("--ranker-dir").arg(dir);
+    }
+    let limits = Limits {
+        time: limit,
+        stdout_bytes: 256 * 1024,
+        stderr_bytes: 4 * 1024,
+    };
+    let done = run_bounded(&mut command, b"", limits).map_err(|stopped| {
+        format!("the rankers could not be listed and hashed in the time a hook has ({stopped})")
+    })?;
+    let list: Value = serde_json::from_slice(&done.stdout).unwrap_or(Value::Null);
+    let entries = list
+        .as_array()
+        .ok_or_else(|| "the rankers could not be listed and hashed".to_owned())?;
+    Ok(entries
+        .iter()
+        .filter_map(|entry| {
+            let path = PathBuf::from(entry["path"].as_str()?);
+            let digest = match entry["sha256"].as_str() {
+                Some(digest) => Ok(digest.to_owned()),
+                None => Err(entry["refused"]
+                    .as_str()
+                    .unwrap_or("could not be hashed")
+                    .to_owned()),
+            };
+            Some((path, digest))
+        })
+        .collect())
+}
+
 /// The clock a seal deadline is read from.
 #[expect(
     clippy::disallowed_methods,
@@ -662,8 +752,9 @@ fn now() -> std::time::Instant {
 /// The largest ranker that is hashed. A release build of this binary is a few megabytes and a
 /// debug build under a hundred; forge-warden itself refuses an executable over 512 MiB.
 const RANKER_BYTES_CAP: u64 = 256 * 1024 * 1024;
-/// How long hashing rankers may take in one hook, all candidates together. It leaves the
-/// client's sixty seconds room for Git, the judge and the message.
+/// How long listing and hashing rankers may take in one hook, all candidates together: the
+/// helper that does it is killed when this has passed. It leaves the client's sixty seconds
+/// room for Git, the judge and the message.
 const RANKER_SEAL_LIMIT: Duration = Duration::from_secs(8);
 
 /// The SHA-256 of the regular file at `path`, as hex, or why there is none: the file is not a
@@ -1008,9 +1099,8 @@ fn probe(
     );
     let mut last =
         "this binary's own path could not be found, so no ranker could be offered".to_owned();
-    let seal_by = now() + RANKER_SEAL_LIMIT;
-    for ranker in rankers(args) {
-        let ranker_sha256 = match file_sha256(&ranker, seal_by) {
+    for (ranker, digest) in sealed_rankers(args)? {
+        let ranker_sha256 = match digest {
             Ok(digest) => digest,
             Err(why) => {
                 last = format!(
@@ -1140,6 +1230,65 @@ mod tests {
         ] {
             assert_eq!(probe_patch(name, policy), None, "{name:?}");
         }
+    }
+
+    /// Review V4 round 5: the deadline is the parent's, and it ends the helper. A helper that
+    /// does not come back (a stalled read, here a sleep) is killed when the limit has passed,
+    /// and the stop says so; one that prints a list is read; one that prints anything else
+    /// gives no list.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test: the stand-in helpers are written by a child process, as executables must be"
+    )]
+    fn the_helper_that_hashes_rankers_is_ended_at_the_deadline() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("seal-helper");
+        // written by a child process: a file this process had open can be busy at exec
+        let program = |name: &str, body: &str| {
+            let path = scratch.join(name);
+            let status = std::process::Command::new("sh")
+                .args([
+                    "-c",
+                    "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"",
+                    "sh",
+                ])
+                .arg(&path)
+                .arg(body)
+                .status()
+                .unwrap();
+            assert!(status.success());
+            path
+        };
+        let stalled = program("stalled", "#!/bin/sh\nsleep 30\n");
+        let started = now();
+        let ended = sealed_rankers_by(&stalled, &[], Duration::from_millis(300));
+        assert!(
+            ended
+                .as_ref()
+                .is_err_and(|why| why.contains("in the time a hook has")),
+            "{ended:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the helper was waited for"
+        );
+
+        let lists = program(
+            "lists",
+            "#!/bin/sh\necho '[{\"path\":\"/a\",\"sha256\":\"aa\"},{\"path\":\"/b\",\"refused\":\"is over 256 MiB\"},{\"path\":null,\"sha256\":\"cc\"}]'\n",
+        );
+        assert_eq!(
+            sealed_rankers_by(&lists, &[], Duration::from_secs(20)),
+            Ok(vec![
+                (PathBuf::from("/a"), Ok("aa".to_owned())),
+                (PathBuf::from("/b"), Err("is over 256 MiB".to_owned())),
+            ])
+        );
+        let other = program("other", "#!/bin/sh\necho not-a-list\n");
+        assert_eq!(
+            sealed_rankers_by(&other, &[], Duration::from_secs(20)),
+            Err("the rankers could not be listed and hashed".to_owned())
+        );
     }
 
     /// Review V4 round 4, VD4R4-M-2: a ranker is hashed in pieces, and one that is too large,

@@ -107,6 +107,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     candidates of a stop share 8 seconds; one that is refused is named with its reason. The
     hash crate is built optimized in debug builds too, so a debug binary hashes itself in a
     fraction of a second.
+- **Round 5 of the same review (NO-GO on one point).** The optional members were closed. The
+  hashing deadline was looked at only between two reads, so one stalled read ran past it. The
+  ranker directory is now listed and hashed by a helper the stop hook starts as a child
+  (`agent hook seal-rankers`) and kills at the deadline; a helper that does not come back
+  makes the stop UNJUDGED with that reason.
   `deep_diff_forge_patch::file_at_commit` reads a regular file from a commit, which is how
   the policy is read.
 

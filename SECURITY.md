@@ -326,9 +326,13 @@ every gate ran as root inside the container. Gates refuse to run unless
   date the judge evaluated on (a verdict for the same policy, patch and ranker is the same
   verdict tomorrow).
 - **A ranker is hashed under bounds.** To seal a verdict to the ranker it gave, the hook
-  hashes each candidate in pieces: a regular file of at most 256 MiB, and at most 8 seconds
-  for all candidates of one stop. One that is larger, slower or not a regular file is not
-  offered, and the stop says which and why. A code
+  hashes each candidate in pieces: a regular file of at most 256 MiB. Listing the ranker
+  directory and hashing are done by a helper the hook starts as a child (`agent hook
+  seal-rankers`, not an event of a client) and kills when 8 seconds have passed, since a
+  stalled file system can hold one read for as long as it likes. A candidate that is larger
+  or not a regular file is not offered and is named with its reason; a helper that does not
+  come back makes the stop UNJUDGED. A read the kernel will not interrupt even for a kill
+  (a hard-mounted network file system that has gone away) is beyond this bound. A code
   without that, a code that is not a verdict, a missing judge or policy, or a ranker the
   policy does not admit is UNJUDGED: never a pass, and never a block. The seals bind an
   answer to its inputs; they do not authenticate the program.

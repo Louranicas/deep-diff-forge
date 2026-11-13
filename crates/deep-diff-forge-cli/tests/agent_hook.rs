@@ -1309,3 +1309,35 @@ fn setup_names_the_judge_it_finds_by_its_path() {
     );
     assert!(run(&empty, false).contains("# forge-warden was not found on PATH"));
 }
+
+/// The stop hook's helper lists the candidate rankers and hashes each: this binary first, then
+/// the files of the ranker directory by name, with the reason for one that is not hashed.
+#[test]
+fn the_seal_helper_lists_each_ranker_with_its_digest_or_its_refusal() {
+    let scratch = Scratch::new("hook-seal-helper");
+    let dir = scratch.join("rankers");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("a-small"), "abc").unwrap();
+    std::fs::File::create(dir.join("b-huge"))
+        .unwrap()
+        .set_len(256 * 1024 * 1024 + 1)
+        .unwrap();
+    std::fs::create_dir(dir.join("c-directory")).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(["agent", "hook", "seal-rankers", "--ranker-dir"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let list: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let list = list.as_array().unwrap();
+    assert_eq!(list.len(), 3, "{list:?}");
+    assert_eq!(list[0]["path"], this_binary().to_str().unwrap());
+    assert_eq!(list[0]["sha256"].as_str().unwrap().len(), 64);
+    assert_eq!(
+        list[1]["sha256"],
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    assert_eq!(list[2]["refused"], "is over 256 MiB");
+    assert!(list[2].get("sha256").is_none());
+}
