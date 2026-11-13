@@ -1,15 +1,16 @@
 // Expert circle 2026-10-28, Tier 3: turnkey agent setup and a parity doctor.
 //! `agent setup` prints, never writes, the configuration that registers this binary's MCP server
-//! with Claude Code or Codex. `agent doctor` proves, in-process, that the surfaces an agent will
-//! use agree: the MCP handshake and tool list, and one sealed document across the CLI path, the
-//! daemon's dispatcher and MCP.
+//! with Claude Code or Codex, and with `--hooks` the Claude Code hooks that run it during a
+//! session. `agent doctor` proves, in-process, that the surfaces an agent will use agree: the MCP
+//! handshake and tool list, and one sealed document across the CLI path, the daemon's dispatcher
+//! and MCP. `agent hook` answers one hook event ([`crate::hook_run`]).
 
 use crate::{emit, mcp};
 use deep_diff_forge_core::{display_safe, exit, json_escape};
 use serde_json::{Value, json};
 
 const SETUP_USAGE: &str =
-    "deep-diff-forge agent setup --client claude|codex [--allow-repo PATH]... [--json]";
+    "deep-diff-forge agent setup --client claude|codex [--allow-repo PATH]... [--hooks] [--json]";
 const DOCTOR_USAGE: &str = "deep-diff-forge agent doctor [--json]";
 
 /// `agent setup` or `agent doctor`.
@@ -17,9 +18,11 @@ pub(crate) fn run(args: &[String]) {
     match args.first().map(String::as_str) {
         Some("setup") => setup(&args[1..]),
         Some("doctor") => doctor(&args[1..]),
+        Some("hook") => crate::hook_run::run(&args[1..]),
         _ => {
             eprintln!("usage: {SETUP_USAGE}");
             eprintln!("       {DOCTOR_USAGE}");
+            eprintln!("       {}", crate::hook_run::USAGE);
             std::process::exit(exit::USAGE);
         }
     }
@@ -42,7 +45,7 @@ fn setup(args: &[String]) {
     crate::args::admit_or_exit(
         args,
         &crate::args::Spec {
-            flags: &["--json"],
+            flags: &["--json", "--hooks"],
             valued: &["--client", "--allow-repo"],
             positionals: 0,
         },
@@ -51,6 +54,12 @@ fn setup(args: &[String]) {
     let client = crate::flag_value(args, "--client").unwrap_or_default();
     if !matches!(client.as_str(), "claude" | "codex") {
         eprintln!("error: --client must be claude or codex");
+        eprintln!("usage: {SETUP_USAGE}");
+        std::process::exit(exit::USAGE);
+    }
+    let hooks = args.iter().any(|a| a == "--hooks");
+    if hooks && client != "claude" {
+        eprintln!("error: --hooks is for --client claude; hooks for Codex are not designed yet");
         eprintln!("usage: {SETUP_USAGE}");
         std::process::exit(exit::USAGE);
     }
@@ -71,10 +80,11 @@ fn setup(args: &[String]) {
     }
     let command = binary.to_string_lossy().into_owned();
     if args.iter().any(|a| a == "--json") {
-        emitln!(
-            "{}",
-            json!({"schema": "deep-diff-forge.agent-setup.v0", "client": client, "name": "deep-diff-forge", "command": command, "args": server_args})
-        );
+        let mut document = json!({"schema": "deep-diff-forge.agent-setup.v0", "client": client, "name": "deep-diff-forge", "command": command, "args": server_args});
+        if hooks {
+            document["hooks"] = hook_settings(&command)["hooks"].clone();
+        }
+        emitln!("{document}");
         return;
     }
     if client == "claude" {
@@ -93,11 +103,36 @@ fn setup(args: &[String]) {
             toml_args.join(", ")
         );
     }
+    if hooks {
+        emitln!(
+            "\n# Claude Code hooks: merge into .claude/settings.json (one project) or ~/.claude/settings.json (every project).\n# Nothing is written for you. After a tool call the hook gives advice and never blocks; at a stop it\n# asks forge-warden for a verdict on the changes since HEAD, and only a fail holds the stop.\n{:#}",
+            hook_settings(&command)
+        );
+    }
     if server_args.len() == 1 {
         eprintln!(
             "note: no --allow-repo: review_change will read no repository; review_outline and review_hunks still work on a patch."
         );
     }
+}
+
+/// The `hooks` block of a Claude Code settings file that runs this binary: at the start of a
+/// session, after every tool call (no matcher: a shell command can write files too) and at a
+/// stop. Each timeout is in seconds; a hook that runs past it is dropped by the client and
+/// decides nothing.
+fn hook_settings(command: &str) -> Value {
+    let hook = |event: &str, timeout: u64| {
+        json!([{"hooks": [{
+            "type": "command",
+            "command": format!("{} agent hook {event} --client claude", sh_quote(command)),
+            "timeout": timeout,
+        }]}])
+    };
+    json!({"hooks": {
+        "SessionStart": hook("session-start", 10),
+        "PostToolUse": hook("post-tool", 5),
+        "Stop": hook("stop", 60),
+    }})
 }
 
 /// The patch every doctor check reviews: two files, one with a section heading.
@@ -298,6 +333,36 @@ mod tests {
         assert!(!views_ok("f", &outline, &address, &hunks));
         assert!(!views_ok("e", &outline, &json!("a2"), &hunks));
         assert!(!views_ok("e", &outline, &address, &big));
+    }
+
+    /// The printed hooks run this binary for the three events, with no matcher on the tool event
+    /// (a shell command writes files too) and a timeout on each.
+    #[test]
+    fn hook_settings_name_three_events_with_timeouts_and_a_quoted_command() {
+        let settings = hook_settings("/opt/my tools/deep-diff-forge");
+        let hooks = settings["hooks"].as_object().unwrap();
+        let events: std::collections::BTreeSet<&str> = hooks.keys().map(String::as_str).collect();
+        assert_eq!(
+            events,
+            ["PostToolUse", "SessionStart", "Stop"]
+                .into_iter()
+                .collect()
+        );
+        for (event, word, timeout) in [
+            ("SessionStart", "session-start", 10),
+            ("PostToolUse", "post-tool", 5),
+            ("Stop", "stop", 60),
+        ] {
+            let entry = &hooks[event][0];
+            assert!(entry.get("matcher").is_none(), "{event}");
+            let hook = &entry["hooks"][0];
+            assert_eq!(hook["type"], "command");
+            assert_eq!(hook["timeout"], timeout);
+            assert_eq!(
+                hook["command"],
+                format!("'/opt/my tools/deep-diff-forge' agent hook {word} --client claude")
+            );
+        }
     }
 
     #[test]

@@ -43,7 +43,8 @@ shipped command that does the job today.
 
 `council` subcommands use their own family (0 completed, 4 refused, 7 hold).
 `deep-diff-forge explain <code> [--family engine|council] [--json]` names one
-code.
+code. `deep-diff-forge explain signal <label> [--json]` explains one signal of a
+ranking instead (`deep-diff-forge schema signals` lists them).
 
 ## Stable Bootstrap Contract
 

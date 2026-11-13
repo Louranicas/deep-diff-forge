@@ -243,15 +243,15 @@ const DIFF_ARGS: &[&str] = &[
 /// Upper bound on retained Git standard-error text.
 const STDERR_CAP: u64 = 8 * 1024;
 
-struct Runner<'a> {
-    options: &'a GitAcquireOptions,
-    cwd: PathBuf,
+pub(crate) struct Runner<'a> {
+    pub(crate) options: &'a GitAcquireOptions,
+    pub(crate) cwd: PathBuf,
     /// When the whole acquisition must be done (see [`GitAcquireOptions::time_limit`]).
-    deadline: std::time::Instant,
+    pub(crate) deadline: std::time::Instant,
     /// Configuration passed to every call through `GIT_CONFIG_COUNT`/`KEY`/`VALUE`, which Git
     /// reads at command-line precedence (see [`neutral_filters`]), or [`diff_files`]'s
     /// `GIT_ATTR_NOSYSTEM`.
-    config_env: Vec<(OsString, OsString)>,
+    pub(crate) config_env: Vec<(OsString, OsString)>,
 }
 
 /// The configuration that turns off every content filter the repository's own configuration
@@ -345,7 +345,7 @@ const PROTECTED_SCOPES: &[&[u8]] = &[b"system", b"global", b"command"];
 /// a filter there still ran. Every key is listed and the `filter.` ones are picked here, not by
 /// `--get-regexp ^filter\.`: on macOS that regex did not match a key that is not UTF-8, so a
 /// `\xff` filter was never listed and ran (CI, PR #76).
-fn repository_filters_off(
+pub(crate) fn repository_filters_off(
     options: &GitAcquireOptions,
     root: &Path,
     deadline: std::time::Instant,
@@ -404,7 +404,7 @@ fn next_pause(pause: std::time::Duration) -> std::time::Duration {
     clippy::disallowed_methods,
     reason = "the git-acquisition clock door: one deadline bounds every Git call of an acquisition"
 )]
-fn deadline_after(limit: std::time::Duration) -> std::time::Instant {
+pub(crate) fn deadline_after(limit: std::time::Duration) -> std::time::Instant {
     std::time::Instant::now() + limit
 }
 
@@ -417,7 +417,7 @@ struct GitOutput {
 
 impl Runner<'_> {
     /// Run Git; accept only the listed exit codes; never buffer past `budget`.
-    fn run(
+    pub(crate) fn run(
         &self,
         command: &'static str,
         args: &[&OsStr],
@@ -541,7 +541,7 @@ impl Runner<'_> {
     }
 
     /// Resolve `rev` to a full commit ID.
-    fn commit_id(&self, rev: &str) -> Result<Option<String>, GitAcquireError> {
+    pub(crate) fn commit_id(&self, rev: &str) -> Result<Option<String>, GitAcquireError> {
         let spec = OsString::from(format!("{rev}^{{commit}}"));
         let out = self.run(
             "git rev-parse",
@@ -583,18 +583,18 @@ fn os_arg(path: &GitPath) -> Result<OsString, GitAcquireError> {
 }
 
 #[cfg(unix)]
-fn path_from_bytes(bytes: Vec<u8>) -> PathBuf {
+pub(crate) fn path_from_bytes(bytes: Vec<u8>) -> PathBuf {
     use std::os::unix::ffi::OsStringExt as _;
     PathBuf::from(OsString::from_vec(bytes))
 }
 
 #[cfg(not(unix))]
-use utf8_path_from_bytes as path_from_bytes;
+pub(crate) use utf8_path_from_bytes as path_from_bytes;
 
 /// Off Unix a path is text: valid UTF-8 (the usual case) is reused without a copy, and anything
 /// else is decoded lossily. Unix test builds compile it too, so its tests run on Unix CI.
 #[cfg(any(not(unix), test))]
-fn utf8_path_from_bytes(bytes: Vec<u8>) -> PathBuf {
+pub(crate) fn utf8_path_from_bytes(bytes: Vec<u8>) -> PathBuf {
     PathBuf::from(
         String::from_utf8(bytes)
             .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),

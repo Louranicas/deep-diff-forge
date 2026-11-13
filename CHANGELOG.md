@@ -6,6 +6,47 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Added
+
+- **The signal vocabulary as data: `deep-diff-forge schema signals`.** One
+  `deep-diff-forge.signals.v0` document lists every label a ranking can carry: `label`,
+  `class` (`security`, `integrity` or `shape`), `kind` (`direct`, or `heuristic` for a
+  guess; every signal of this version is direct), `weight`, `basis`, `sides`, `since` and
+  a one-line `summary`. The weights are read from the functions the scorer uses and the
+  sides from the rule table, so the document cannot disagree with a ranking. A reader that
+  judges rankings can take its vocabulary from the binary instead of from the source.
+- **`deep-diff-forge explain signal <label> [--json]`** says why a signal matters, which
+  changes answer it (`accept`), which only hide it (`not_accepted`: each names the signal
+  the substitute raises, or `null` where no signal sees it yet), and the compiler or linter
+  rules that stop the construct before a review does (`native_lints`). An agent that is
+  told a signal fired is told what counts as a repair and what does not. The exit-code
+  form of `explain` is unchanged.
+
+- **The agent loop: `deep-diff-forge agent hook session-start|post-tool|stop --client claude`.**
+  Claude Code hooks that run this binary during a session. After every tool call the agent
+  is told the evidence that is new in its changes since `HEAD` (label, path, line, what
+  answers the signal); this is advice and never blocks, and a finding is said once per
+  session. At a stop the changes are judged by forge-warden in authority mode against the
+  policy at the base commit; only a fail holds the stop, a hold is reported for a person,
+  and a missing judge, policy or admitted ranker is UNJUDGED, never a pass. The same failure
+  does not block twice. No line of the change is repeated to the agent, and a path is quoted,
+  escaped and cut. `agent setup --client claude --hooks` prints the settings and writes
+  nothing. README "For agents: told while it works, judged when it stops"; SECURITY.md "Agent
+  hooks".
+- **The patch a judge is given for a working tree** (`deep_diff_forge_patch::judge_patch`).
+  The working tree, with untracked files and without ignored ones, as `git diff --binary
+  --no-renames` against a base commit, made the way forge-warden's patch maker makes it for
+  two commits: in a new, empty repository that only borrows the object store, with no
+  configuration and no attributes. For a committed state the bytes are equal. The
+  repository's index, object store and configuration are only read.
+  `deep_diff_forge_patch::file_at_commit` reads a regular file from a commit, which is how
+  the policy is read.
+
+### Changed
+
+- Path and shape weights are stated once, in `RiskSignal::weight`, and the scorer reads
+  them there. No score changes: the ranking of every input is the same as before.
+
 ## [0.8.3] - 2026-11-11
 
 Tagged `v0.8.3` at `a74bf91` (2026-11-11 UTC), signed.

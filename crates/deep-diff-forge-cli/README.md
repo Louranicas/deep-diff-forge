@@ -65,7 +65,7 @@ deep-diff-forge --git-range main..HEAD --rank --json --require-files --require-h
 | Surface | Command | What it is |
 | --- | --- | --- |
 | CLI | `deep-diff-forge …` | Review, rank, cluster, Git selections, file pairs, `semantic`, `structural`, `highlight`, `analyze`, `findings verify`, `bench`, `eval`, `learn`, `council`, `agent setup\|doctor`. |
-| Machine contract | `envelope -- <command…>`, `schema [result\|exit-codes]`, `explain <code>` | Any command's result as one `ddf.result.v1` object; the exit-code registry. |
+| Machine contract | `envelope -- <command…>`, `schema [result\|exit-codes\|signals]`, `explain <code>`, `explain signal <label>` | Any command's result as one `ddf.result.v1` object; the exit-code registry; the signal vocabulary and, for one signal, why it matters and what answers it. |
 | MCP server | `deep-diff-forge mcp [--allow-repo PATH]...` | Eight read-only MCP tools over stdio: `review_outline`, `review_hunks`, `review_change`, `review_patch`, `rank_patch`, `verify_findings`, `explain_exit_code`, `exit_code_registry`. |
 | JSON-RPC over stdio | `deep-diff-forge rpc` | The daemon's protocol (JSON-RPC 2.0, protocol 2) with no daemon. |
 | Optional daemon | `deep-diff-forge daemon {path\|start\|health\|status\|metrics\|stop}` | The same protocol on an owner-private Unix socket; `metrics --format prometheus` writes a node_exporter textfile (since 0.6.0). |

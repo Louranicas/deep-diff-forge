@@ -269,6 +269,39 @@ every gate ran as root inside the container. Gates refuse to run unless
   confidentiality primitive. Confidentiality comes from local access controls.
   Learning data is not uploaded by the project.
 
+### Agent hooks
+
+`agent hook` runs inside an agent's session, on the agent's own change. Its boundaries:
+
+- **The change is attacker-controlled, and so is everything read from it.** A hook message
+  never repeats the text of a changed line. A path is shown quoted, with control characters
+  escaped, cut at 120 characters, and the message says that paths are data. Rule text comes
+  from the policy at the base commit and is escaped the same way.
+- **The repository's configuration is not trusted to shape the patch.** The patch given to
+  the judge is diffed in a new, empty repository that only borrows the object store, with
+  system and user configuration off, no configuration passed down by a parent Git, attributes
+  from the empty tree and fixed options. A filter the repository's own configuration defines
+  is switched off before the working tree is read, as for every acquisition, so making the
+  patch runs no program the repository chose. Tests plant a hostile configuration, an
+  attribute that hides source as binary and a filter, and require the same bytes and no run.
+- **Nothing in the repository is written.** The index that is filled and the objects that are
+  written are in a scratch directory under the Git common directory (`deep-diff-forge/`),
+  removed when the hook ends; the repository's index, object store and configuration are only
+  read. One state file per session is kept there; the session id is hashed and never chooses
+  a file name.
+- **The policy is read from the base commit**, never from the working tree, and only when it
+  is a regular file there.
+- **The judge decides, by its exit code.** DDF starts `forge-warden` under a deadline and
+  output caps and reads the verdict document only to name the rules. A code that is not a
+  verdict, a missing judge or policy, or a ranker the policy does not admit is UNJUDGED:
+  never a pass, and never a block.
+- **State cannot turn a fail into a pass.** The state file holds which findings were said and
+  which failure blocked the last stop. A lost or tampered file can make a finding be said
+  twice or a failure block once more; the stop is still decided by a fresh verdict.
+- **Not a boundary:** the agent runs as the user. It can edit the settings that install the
+  hooks, the state file, or the judge on `PATH`. The hooks guard against honest mistakes;
+  CI running the judge in authority mode is the authority.
+
 ### Supply chain and releases
 
 - Root and fuzz lockfiles are checked by strict `cargo audit --deny warnings`

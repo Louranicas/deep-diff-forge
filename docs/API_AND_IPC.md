@@ -129,12 +129,12 @@ deep-diff-forge learn {status|record --stdin} [--json]
 deep-diff-forge <old> <new> [<--stdin-patch output flags>]
 deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks]
 deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [--acquisition-json | <--stdin-patch output flags>]
-deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... | doctor} [--json]
+deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks] | doctor | hook session-start|post-tool|stop --client claude [--judge PATH] [--policy NAME] [--ranker-dir DIR]} [--json]
 deep-diff-forge mcp [--allow-repo PATH]...
 deep-diff-forge rpc [--allow-repo PATH]...
 deep-diff-forge envelope -- <command> [args…]
-deep-diff-forge schema [result|exit-codes]
-deep-diff-forge explain <code> [--family engine|council] [--json]
+deep-diff-forge schema [result|exit-codes|signals]
+deep-diff-forge explain {<code> [--family engine|council] | signal <label>} [--json]
 deep-diff-forge claude-code-contract
 deep-diff-forge chain-contract
 deep-diff-forge cluster-contract

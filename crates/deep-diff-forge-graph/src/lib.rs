@@ -14,14 +14,19 @@ pub mod evidence;
 pub mod lexical;
 mod rank;
 mod risk;
+mod vocabulary;
 
 pub use evidence::{
     EVIDENCE_BASIS, Evidence, EvidenceSignal, MAX_EVIDENCE_PER_FILE, Side, file_evidence,
-    hunk_signals,
+    hunk_signals, signal_sides,
 };
 pub use rank::{RankedFile, rank, sort_ranked};
 pub use risk::{
     Assessment, LARGE_CHANGE_LINES, MANY_HUNKS, RiskSignal, assess_file, change_counts, score_file,
+};
+pub use vocabulary::{
+    NativeLint, NotAccepted, PATH_BASIS, PATH_SIGNALS, Remedy, SignalClass, SignalFacts,
+    SignalKind, facts, remedy, signal_named, vocabulary,
 };
 
 #[cfg(test)]

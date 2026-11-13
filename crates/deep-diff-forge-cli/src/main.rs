@@ -56,6 +56,8 @@ fn emit_pretty_json(document: &serde_json::Value) {
 // Declared after `emitln!`, which it uses (a `macro_rules!` is visible only below it).
 mod agent;
 mod doctor;
+mod hook;
+mod hook_run;
 
 /// Read all of `reader` into a `String`, but never buffer more than the patch
 /// byte budget. `what` names the source for diagnostics.
@@ -215,9 +217,13 @@ fn refuse_arguments_to_bare_commands(command: Option<&str>, extra: Option<&Strin
     }
 }
 
-/// `schema [result|exit-codes]`: print a machine contract's JSON Schema.
+/// `schema [result|exit-codes|signals]`: print a machine contract.
 fn schema_cmd(opts: &[String]) {
-    args::admit_or_exit(opts, &SCHEMA, "deep-diff-forge schema [result|exit-codes]");
+    args::admit_or_exit(
+        opts,
+        &SCHEMA,
+        "deep-diff-forge schema [result|exit-codes|signals]",
+    );
     contract_output(contract::schema(opts));
 }
 
@@ -2062,8 +2068,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "agent",
-        "deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... | doctor} [--json]",
-        "Print the MCP setup for Claude Code or Codex (never written), or check that every agent surface agrees.",
+        "deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks] | doctor | hook session-start|post-tool|stop --client claude [--judge PATH] [--policy NAME] [--ranker-dir DIR]} [--json]",
+        "Print the MCP and hook setup for Claude Code or Codex (never written), check that every agent surface agrees, or answer a Claude Code hook: advice after a tool call, a judged stop.",
     ),
     (
         "mcp",
@@ -2082,13 +2088,13 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "schema",
-        "deep-diff-forge schema [result|exit-codes]",
-        "Print the envelope's JSON Schema, or the exit-code registry.",
+        "deep-diff-forge schema [result|exit-codes|signals]",
+        "Print the envelope's JSON Schema, the exit-code registry, or the signal vocabulary.",
     ),
     (
         "explain",
-        "deep-diff-forge explain <code> [--family engine|council] [--json]",
-        "Name one exit code and the action it asks for.",
+        "deep-diff-forge explain {<code> [--family engine|council] | signal <label>} [--json]",
+        "Name one exit code and the action it asks for, or say why a signal matters and what answers it.",
     ),
     (
         "claude-code-contract",
@@ -2163,8 +2169,10 @@ MATURITY:
 MACHINE CONTRACT:
   envelope -- <command…> wraps any command's result in one ddf.result.v1 JSON
   object (exit code, registry outcome, stdout, stderr) and exits with its code.
-  schema prints the envelope's JSON Schema or the exit-code registry; explain
-  names one exit code. mcp serves read-only MCP tools over stdio (review_outline,
+  schema prints the envelope's JSON Schema, the exit-code registry or the signal
+  vocabulary (every label a ranking can carry, with its class, weight and basis);
+  explain names one exit code, or says why a signal matters, what answers it and
+  what does not (explain signal <label>). mcp serves read-only MCP tools over stdio (review_outline,
   review_hunks, review_patch, rank_patch, review_change, verify_findings,
   explain_exit_code, exit_code_registry).
   rpc speaks the daemon's JSON-RPC protocol over stdio without a daemon.

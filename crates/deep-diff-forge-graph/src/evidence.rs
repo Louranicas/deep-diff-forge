@@ -673,6 +673,17 @@ fn looks_like_secret(text: &str) -> bool {
         || tail("sk_live_", 16, alnum)
 }
 
+/// The sides of a hunk on which some rule looks for `signal`: added lines ([`Side::New`]),
+/// removed lines ([`Side::Old`]), or both, in that order. Read from the rule table, so the
+/// vocabulary document cannot disagree with the scanner.
+#[must_use]
+pub fn signal_sides(signal: EvidenceSignal) -> Vec<Side> {
+    [Side::New, Side::Old]
+        .into_iter()
+        .filter(|side| RULES.iter().any(|r| r.signal == signal && r.side == *side))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

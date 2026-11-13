@@ -58,6 +58,22 @@ impl RiskSignal {
             Self::Code(signal) => signal.label(),
         }
     }
+
+    /// What the signal adds to a file's score, once per file. `test_only` and
+    /// `generated_or_vendored` add nothing: they are recorded because they withhold the bonuses
+    /// other paths earn. Code evidence carries its own weight ([`EvidenceSignal::weight`]), which
+    /// a test path can halve ([`assess_file`]).
+    #[must_use]
+    pub const fn weight(self) -> u32 {
+        match self {
+            Self::PublicApiSurface => 5,
+            Self::DeletedFile | Self::LargeChange | Self::HazardousText | Self::SymlinkChange => 3,
+            Self::NewFile | Self::ManyHunks | Self::ExecutableBit => 2,
+            Self::BinaryChange | Self::ConfigOrLockfile => 1,
+            Self::TestOnly | Self::GeneratedOrVendored => 0,
+            Self::Code(signal) => signal.weight(),
+        }
+    }
 }
 
 /// Lines (added+removed) at or above which a change counts as large.
@@ -140,13 +156,13 @@ fn score_path_and_shape(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
 
     if is_public_api(path) {
         signals.push(RiskSignal::PublicApiSurface);
-        score += 5;
+        score += RiskSignal::PublicApiSurface.weight();
     }
     if test {
         signals.push(RiskSignal::TestOnly);
     } else if config {
         signals.push(RiskSignal::ConfigOrLockfile);
-        score += 1;
+        score += RiskSignal::ConfigOrLockfile.weight();
     }
 
     score += status_weight(file, &mut signals);
@@ -157,11 +173,11 @@ fn score_path_and_shape(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     let hunks = file.patch_twin.hunks.len();
     if adds + dels >= LARGE_CHANGE_LINES {
         signals.push(RiskSignal::LargeChange);
-        score += 3;
+        score += RiskSignal::LargeChange.weight();
     }
     if hunks >= MANY_HUNKS {
         signals.push(RiskSignal::ManyHunks);
-        score += 2;
+        score += RiskSignal::ManyHunks.weight();
     }
 
     (score, signals)
@@ -192,7 +208,7 @@ fn hazard_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
         .any(|from| !deep_diff_forge_core::path_hazards(from).is_empty());
     if in_lines || from_hazardous || !deep_diff_forge_core::path_hazards(&file.path).is_empty() {
         signals.push(RiskSignal::HazardousText);
-        3
+        RiskSignal::HazardousText.weight()
     } else {
         0
     }
@@ -222,25 +238,25 @@ fn mode_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
         .any(|mode| mode & 0o170_000 == SYMLINK)
     {
         signals.push(RiskSignal::SymlinkChange);
-        weight += 3;
+        weight += RiskSignal::SymlinkChange.weight();
     }
     if new.iter().any(executable) && !old.iter().any(executable) {
         signals.push(RiskSignal::ExecutableBit);
-        weight += 2;
+        weight += RiskSignal::ExecutableBit.weight();
     }
     weight
 }
 
 /// The weight of a file's status (added, deleted, binary), recording its signal.
 fn status_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
-    let (signal, weight) = match file.status {
-        FileStatus::Added => (RiskSignal::NewFile, 2),
-        FileStatus::Deleted => (RiskSignal::DeletedFile, 3),
-        FileStatus::BinaryChanged => (RiskSignal::BinaryChange, 1),
+    let signal = match file.status {
+        FileStatus::Added => RiskSignal::NewFile,
+        FileStatus::Deleted => RiskSignal::DeletedFile,
+        FileStatus::BinaryChanged => RiskSignal::BinaryChange,
         _ => return 0,
     };
     signals.push(signal);
-    weight
+    signal.weight()
 }
 
 /// Count added and removed lines across a file's hunks.

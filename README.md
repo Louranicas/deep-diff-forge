@@ -294,6 +294,52 @@ For gates and orchestrators, refuse empty or hunkless input so it can't pass as 
 git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require-hunks
 ```
 
+### For agents: told while it works, judged when it stops
+
+A review at the end comes too late for an agent: it works one tool call at a time. With
+Claude Code's hooks, this binary tells the agent what its own change looks like while it is
+still working, and asks a judge before it stops. `agent setup --hooks` prints the settings and
+writes nothing:
+
+```bash
+deep-diff-forge agent setup --client claude --hooks   # the MCP registration, then a `hooks` block for .claude/settings.json
+```
+
+| Event | Command | What the agent gets |
+| --- | --- | --- |
+| `SessionStart` | `agent hook session-start` | What the hooks do, and whether a stop can be judged here (a judge and a policy at `HEAD`). |
+| `PostToolUse`, after every tool | `agent hook post-tool` | **Advice, never a block.** The evidence that is new in its changes since `HEAD`: label, path, line, how the line was read, and what answers the signal and what does not. A finding is said once per session, also when the line moves. |
+| `Stop` | `agent hook stop` | A verdict on the changes since `HEAD`. **Only a fail holds the stop**, with the rules that failed and what answers them. A hold is reported for a person. With no judge, no policy, or no ranker the policy admits, the result is **UNJUDGED**, said plainly, and never a pass. |
+
+- **The judge is [forge-warden](https://github.com/Louranicas/forge-warden)**, in its authority
+  mode: `forge-warden check --policy P --patch F --ranker R --json`. DDF does not judge. It is
+  found on `PATH`, or named with `--judge PATH`.
+- **The policy is the one at the base commit** (`warden.toml`, or `--policy NAME`), read from
+  Git, never from the working tree: a change cannot loosen the policy it is judged by.
+- **The patch is the one a judge would be given for the commit.** The working tree, with
+  untracked files and without ignored ones, is diffed against `HEAD` the way forge-warden's
+  patch maker diffs two commits: in a new, empty repository that only borrows the object
+  store, with no configuration and no attributes. For a committed state the bytes are equal (a
+  test holds this). Making it writes nothing in the repository: the index it fills and the
+  objects it writes are in a scratch directory under the Git directory, removed afterwards.
+- **The ranker is this binary first**, then every file in `--ranker-dir DIR`. forge-warden
+  admits a ranker only if the policy lists its SHA-256, so a newer DDF than the policy admits
+  can still have its stop judged by an older, admitted one.
+- **The same failure does not block twice.** When Claude Code is already continuing because of
+  a stop hook and the same rules fail on the same paths, the stop is allowed and the failure
+  is left for a person.
+- **No line of the change is repeated to the agent.** A message holds labels, line numbers
+  and remedy text; a path is quoted, escaped and cut at 120 characters, and the message says
+  that paths are data, not instructions.
+- **A hook never fails its client.** Outside a repository it says nothing. If it cannot run
+  (Git too slow, a state file that cannot be written), it exits 0 and tells the user that
+  nothing was judged.
+
+Limits, stated: the judged range is the changes since `HEAD`, so work committed during the
+session is outside it (a session selection from the merge base is planned). The hooks guard
+against honest mistakes: an agent that shares the user's account can edit the settings that
+install them, so CI in authority mode remains the authority. Hooks for Codex are not designed.
+
 ---
 
 ## Command reference
@@ -411,8 +457,8 @@ text passes through a control-character sanitiser, so the only raw escapes are f
 
 ```bash
 deep-diff-forge envelope -- <command…>          # any command as one ddf.result.v1 object
-deep-diff-forge schema [result|exit-codes]      # the envelope's JSON Schema, or the registry
-deep-diff-forge explain <code> [--family engine|council] [--json]
+deep-diff-forge schema [result|exit-codes|signals]  # the envelope's JSON Schema, the registry, or the signal vocabulary
+deep-diff-forge explain {<code> [--family engine|council] | signal <label>} [--json]
 deep-diff-forge mcp                             # read-only MCP server over stdio
 deep-diff-forge rpc                             # the daemon's JSON-RPC over stdio, no daemon
 deep-diff-forge daemon {path|start [--foreground] [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]
@@ -851,6 +897,8 @@ Whoever writes a patch also chooses its paths, so a path can lower a file's scor
 
 Languages come from the extension, or a shebang for a file with none: Rust, Python, JS/TS, Go, shell (with `Dockerfile` and `Makefile`) and YAML. The scan is **lexical** (`"basis": "lexical"`): it blanks comments and strings, following block comments and triple-quoted strings across a hunk's lines, and matches tokens with word boundaries. Code that runs inside a string stays code, so quoting a fetch or a spawn does not hide it: `$(…)` and backticks in shell double quotes, `${…}` in JS template literals, and `{…}` in one-line Python f-strings, each scanned as code with its own strings, escapes and comments. It finds tokens; it does not prove a change safe, and code assembled at run time hides from it. A path cannot hide code: token evidence keeps its weight under `generated/` or `vendor/` (a test path counts half, except `test_removed`); the path-scoped `build_hook` follows the generated rule like every path signal.
 `rank.v0` lists each file's `evidence` (`signal`, `address`, `side`, `line`, `basis`; at most 32, then `evidence_truncated: true`), and each outline hunk lists its `evidence` labels.
+
+**The vocabulary as data.** `deep-diff-forge schema signals` prints every label above as one `deep-diff-forge.signals.v0` document: `label`, `class` (`security`, `integrity` or `shape`), `kind` (`direct`, or `heuristic` for a guess), `weight`, `basis`, `sides`, `since` and a one-line `summary`. The weights are the ones the scorer uses and the sides come from the rule table, so the document cannot disagree with a ranking; a test holds the two tables above to it. `deep-diff-forge explain signal <label> [--json]` says why a signal matters, which changes answer it (`accept`), which only hide it (`not_accepted`, each naming the signal that substitute raises, or `null` where none sees it yet), and the compiler or linter rules that stop the construct before a review does (`native_lints`).
 
 Ties break on path, so the order is reproducible. Under `--cluster` the result is
 **identical for any worker count**: parallelism never changes the answer.
