@@ -37,7 +37,12 @@ pub fn run_risk_cluster(
     parallelism: Parallelism,
     join: JoinPolicy,
 ) -> ClusterRun {
-    let scored: Vec<RankedFile> = run_lane(files, parallelism, |_, file| RankedFile::scored(file));
+    // The parser's budget is the review's, decided before any lane runs: every worker count
+    // parses the same hunks.
+    let plan = deep_diff_forge_graph::FragmentPlan::of(files);
+    let scored: Vec<RankedFile> = run_lane(files, parallelism, |index, file| {
+        RankedFile::scored_in(file, plan.file(index))
+    });
     let ranked = apply_join(scored, join);
     let receipt = ClusterReceipt {
         dimensions: vec![ExecutionDimension::Patch, ExecutionDimension::Risk],

@@ -705,22 +705,107 @@ impl FileKind {
     }
 }
 
+/// The most bytes of Rust hunks the parser reads in one review, both sides of a hunk counted.
+/// Parsing costs time per byte, a review can hold tens of megabytes of hunks that are each
+/// under the fragment budget, and a consumer gives the whole ranking a fixed time (review V3
+/// round 2, VD3R2-H-2: a 61 MiB patch of a thousand 64 KB expressions ran past 15 s). Hunks
+/// beyond the budget keep what the token rules found.
+pub const REVIEW_FRAGMENT_BUDGET: usize = 2 * 1024 * 1024;
+
+/// Which hunks of a review the parser may read: hunks of Rust files, in the review's own order,
+/// until [`REVIEW_FRAGMENT_BUDGET`] is spent. It is made from the whole review before any file
+/// is scored, so the answer for a hunk does not depend on which files were scored first or on
+/// how many workers score them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FragmentPlan {
+    allowed: Vec<Vec<bool>>,
+}
+
+impl FragmentPlan {
+    /// The plan for `files`, the whole review in its order.
+    #[must_use]
+    pub fn of(files: &[ReviewFile]) -> Self {
+        let mut spent = 0usize;
+        let mut allowed = Vec::with_capacity(files.len());
+        for file in files {
+            let rust = FileKind::of(file).language == Some(Language::Rust);
+            let mut hunks = Vec::with_capacity(file.patch_twin.hunks.len());
+            for hunk in &file.patch_twin.hunks {
+                let cost = if rust { fragment_cost(hunk) } else { None };
+                let fits =
+                    cost.is_some_and(|cost| spent.saturating_add(cost) <= REVIEW_FRAGMENT_BUDGET);
+                if fits {
+                    spent += cost.unwrap_or(0);
+                }
+                hunks.push(fits);
+            }
+            allowed.push(hunks);
+        }
+        Self { allowed }
+    }
+
+    /// For each hunk of the file at `index`, whether the parser may read it. Empty for an index
+    /// the plan does not have: nothing is parsed.
+    #[must_use]
+    pub fn file(&self, index: usize) -> &[bool] {
+        self.allowed.get(index).map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether the parser may read hunk `hunk` of file `file`.
+    #[must_use]
+    pub fn allows(&self, file: usize, hunk: usize) -> bool {
+        self.file(file).get(hunk).copied().unwrap_or(false)
+    }
+}
+
+/// What parsing `hunk` costs against [`REVIEW_FRAGMENT_BUDGET`]: the bytes of its new side and,
+/// up to one fragment, of its old side. `None` when it is not parsed at all: nothing is added,
+/// or its new side is over the fragment budget.
+fn fragment_cost(hunk: &PatchHunk) -> Option<usize> {
+    let (mut new, mut old, mut added) = (0usize, 0usize, false);
+    for line in &hunk.lines {
+        let bytes = line.text.len() + 1;
+        match line.kind {
+            PatchLineKind::Context => {
+                new += bytes;
+                old += bytes;
+            }
+            PatchLineKind::Added => {
+                new += bytes;
+                added = true;
+            }
+            PatchLineKind::Removed => old += bytes,
+        }
+    }
+    (added && new <= deep_diff_forge_syntax::FRAGMENT_BYTE_BUDGET)
+        .then(|| new + old.min(deep_diff_forge_syntax::FRAGMENT_BYTE_BUDGET))
+}
+
 /// Every piece of evidence in `file`, in hunk order, then line order, then rule order, with no
-/// duplicates and no cap (callers cap what they print with [`MAX_EVIDENCE_PER_FILE`]).
+/// duplicates and no cap (callers cap what they print with [`MAX_EVIDENCE_PER_FILE`]). The file
+/// is planned on its own; a caller that holds the whole review uses [`file_evidence_in`].
 #[must_use]
 pub fn file_evidence(file: &ReviewFile) -> Vec<Evidence> {
+    file_evidence_in(file, FragmentPlan::of(std::slice::from_ref(file)).file(0))
+}
+
+/// [`file_evidence`] under a review's [`FragmentPlan`]: `parse` says, for each hunk of `file`,
+/// whether the parser may read it (a hunk it does not name is not parsed).
+#[must_use]
+pub fn file_evidence_in(file: &ReviewFile, parse: &[bool]) -> Vec<Evidence> {
     let kind = FileKind::of(file);
     let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
     let mut out: Vec<Evidence> = Vec::new();
     if rules.is_empty() {
         return out;
     }
-    for hunk in &file.patch_twin.hunks {
+    for (at, hunk) in file.patch_twin.hunks.iter().enumerate() {
+        let parse = parse.get(at).copied().unwrap_or(false);
         let mut address = None;
         // `hunk_matches` yields each (side, signal, line) once and items from different hunks
         // differ in `hunk`, so there is nothing to deduplicate: a scan of `out` per item made a
         // patch of 160k matching lines take 4.8 s.
-        for (side, signal, line, basis) in hunk_matches(hunk, kind.language, &rules) {
+        for (side, signal, line, basis) in hunk_matches(hunk, kind.language, &rules, parse) {
             let address = address
                 .get_or_insert_with(|| hunk.address(&file.path))
                 .clone();
@@ -739,12 +824,21 @@ pub fn file_evidence(file: &ReviewFile) -> Vec<Evidence> {
 
 /// The distinct signals in one hunk of `file`, in [`EvidenceSignal::ALL`] order: the labels the
 /// outline and hunk views show. The same scan as [`file_evidence`], so a view never disagrees
-/// with the rank.
+/// with the rank. The file is planned on its own; a caller that holds the whole review uses
+/// [`hunk_signals_in`].
 #[must_use]
 pub fn hunk_signals(file: &ReviewFile, hunk: &PatchHunk) -> Vec<EvidenceSignal> {
+    let plan = FragmentPlan::of(std::slice::from_ref(file));
+    let at = file.patch_twin.hunks.iter().position(|h| h.id == hunk.id);
+    hunk_signals_in(file, hunk, at.is_some_and(|at| plan.allows(0, at)))
+}
+
+/// [`hunk_signals`] under a review's [`FragmentPlan`]: `parse` is the plan's answer for `hunk`.
+#[must_use]
+pub fn hunk_signals_in(file: &ReviewFile, hunk: &PatchHunk, parse: bool) -> Vec<EvidenceSignal> {
     let kind = FileKind::of(file);
     let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
-    let found = hunk_matches(hunk, kind.language, &rules);
+    let found = hunk_matches(hunk, kind.language, &rules, parse);
     EvidenceSignal::ALL
         .into_iter()
         .filter(|signal| found.iter().any(|(_, s, _, _)| s == signal))
@@ -754,11 +848,13 @@ pub fn hunk_signals(file: &ReviewFile, hunk: &PatchHunk) -> Vec<EvidenceSignal> 
 /// `(side, signal, line, basis)` for every signal some rule finds on a changed line of `hunk`:
 /// once per signal and line however many rules or tokens match, in [`EvidenceSignal::ALL`] order,
 /// with the highest [`Basis`] among the rules that matched. Block comments and triple strings are
-/// followed through the hunk on each side (state starts fresh per hunk).
+/// followed through the hunk on each side (state starts fresh per hunk). `parse` lets the parser
+/// read a Rust hunk on top of that ([`FragmentPlan`]).
 fn hunk_matches(
     hunk: &PatchHunk,
     language: Option<Language>,
     rules: &[&Rule],
+    parse: bool,
 ) -> Vec<(Side, EvidenceSignal, u32, Basis)> {
     // First the code view of every line on each side it belongs to, so a rule that reads a
     // neighbour sees it as code, in the state the scanner reached there.
@@ -826,7 +922,7 @@ fn hunk_matches(
             }
         }
     }
-    if language == Some(Language::Rust) {
+    if parse && language == Some(Language::Rust) {
         confirm_by_parse(hunk, &views, &mut found);
     }
     found
@@ -885,31 +981,53 @@ fn confirm_by_parse(
     found.sort_by_key(place);
 }
 
-/// The new side of `hunk` (context and added lines) parsed as a fragment, after the braces the
-/// hunk leaves open are closed and the ones it closes without opening are opened. Up to three
-/// wrappings are tried and the one the parser reads most of is kept. `None` when there is no
-/// answer (over budget, or nothing added).
-fn fragment_evidence(
+/// One side of a hunk as the parser read it.
+struct SideScan {
+    scan: FragmentScan,
+    /// Rows the wrapping put before the first line of the side.
+    offset: u32,
+    /// The hunk lines of this side, in order: row `n` of the side is `hunk.lines[lines[n]]`.
+    lines: Vec<usize>,
+}
+
+impl SideScan {
+    /// The hunk line that tree row `row` is, when it is a line of this side.
+    fn line_of(&self, row: u32) -> Option<usize> {
+        let row = row.checked_sub(self.offset)?;
+        self.lines.get(row as usize).copied()
+    }
+}
+
+/// One side of `hunk` (its context lines and its added or removed lines) parsed as a fragment,
+/// after the braces the hunk leaves open are closed and the ones it closes without opening are
+/// opened. Up to three wrappings are tried and the one the parser reads most of is kept. `None`
+/// when there is no answer: the side is over the fragment budget, or the parser gave none.
+fn scan_side(
     hunk: &PatchHunk,
     views: &[(Option<String>, Option<String>)],
-) -> Option<Parsed> {
-    let side: Vec<usize> = (0..hunk.lines.len())
-        .filter(|at| hunk.lines[*at].kind != PatchLineKind::Removed)
+    side: Side,
+) -> Option<SideScan> {
+    let other = match side {
+        Side::New => PatchLineKind::Removed,
+        Side::Old => PatchLineKind::Added,
+    };
+    let lines: Vec<usize> = (0..hunk.lines.len())
+        .filter(|at| hunk.lines[*at].kind != other)
         .collect();
-    if !side
-        .iter()
-        .any(|at| hunk.lines[*at].kind == PatchLineKind::Added)
-    {
+    // The size is known before anything is built: a hunk over the budget used to be joined and
+    // wrapped first, and a 60 MiB line of `}` cost 900 MiB (review V3 round 2, VD3R2-H-2).
+    let bytes: usize = lines.iter().map(|at| hunk.lines[*at].text.len() + 1).sum();
+    if bytes > deep_diff_forge_syntax::FRAGMENT_BYTE_BUDGET {
         return None;
     }
     // Braces are counted on the code view, where a brace in a string or a comment is blank.
     let (mut unopened, mut open) = (0usize, 0usize);
-    for at in &side {
-        let code = views[*at]
-            .1
-            .as_deref()
-            .unwrap_or(hunk.lines[*at].text.as_str());
-        for byte in code.bytes() {
+    for at in &lines {
+        let view = match side {
+            Side::New => views[*at].1.as_deref(),
+            Side::Old => views[*at].0.as_deref(),
+        };
+        for byte in view.unwrap_or(hunk.lines[*at].text.as_str()).bytes() {
             match byte {
                 b'{' => open += 1,
                 b'}' if open == 0 => unopened += 1,
@@ -918,12 +1036,12 @@ fn fragment_evidence(
             }
         }
     }
-    let body: Vec<&str> = side
+    let body: Vec<&str> = lines
         .iter()
         .map(|at| hunk.lines[*at].text.as_str())
         .collect();
     let body = body.join("\n");
-    let rows = u32::try_from(side.len()).ok()?;
+    let rows = u32::try_from(lines.len()).ok()?;
     let closers = "}".repeat(open + unopened + 1);
     // Each wrapping puts its opening on one line of its own, so a body row is a tree row less one.
     let mut wrappings: Vec<(String, u32)> = Vec::new();
@@ -962,28 +1080,68 @@ fn fragment_evidence(
         }
     }
     let (_, scan, offset) = best?;
+    Some(SideScan {
+        scan,
+        offset,
+        lines,
+    })
+}
+
+/// What the parser finds on the added lines of `hunk`. `None` when there is no answer (nothing
+/// added, over budget, or no parse).
+///
+/// A construct that starts on an added line is new. A construct that starts on an unchanged
+/// line and reaches an added one (a macro invocation or an attribute over several lines) was
+/// there before, so it is evidence only when it did not carry the same signal before the
+/// change: `assert!(` over `computes()` becoming `assert!(` over `true` is a trivial assertion
+/// added, on the added line; a `todo!(…)` or an `assert!(true, …)` whose message alone changed
+/// is not (review V3 round 2, VD3R2-M-1). The old side is parsed only when such a construct is
+/// met, and if it cannot be read there is no proof of a change and no item.
+fn fragment_evidence(
+    hunk: &PatchHunk,
+    views: &[(Option<String>, Option<String>)],
+) -> Option<Parsed> {
+    fragment_cost(hunk)?;
+    let new = scan_side(hunk, views, Side::New)?;
+    let mut old: Option<Option<SideScan>> = None;
     let mut parsed = Parsed {
         found: Vec::new(),
         withdrawn: Vec::new(),
     };
-    for construct in &scan.constructs {
-        // The first added line the construct covers. An attribute or a macro invocation can
-        // span rows, and a change to any of them changes it: `assert!(` on a context line with
-        // `true` added under it is a trivial assertion added (review V3 round 1, VD3-M-1). A
-        // method call is one row.
-        let Some(index) = (construct.row..=construct.last_row)
-            .filter_map(|row| row.checked_sub(offset))
-            .filter_map(|row| side.get(row as usize).copied())
-            .find(|index| hunk.lines[*index].kind == PatchLineKind::Added)
-        else {
+    for construct in &new.scan.constructs {
+        let Some(signal) = signal_of(&construct.kind) else {
             continue;
         };
-        match signal_of(&construct.kind) {
-            Some(S::PanicPathAdded) if construct.in_test => {
-                parsed.withdrawn.push((index, S::PanicPathAdded));
+        let Some(start) = new.line_of(construct.row) else {
+            continue;
+        };
+        let index = if hunk.lines[start].kind == PatchLineKind::Added {
+            start
+        } else {
+            let Some(added) = (construct.row..=construct.last_row)
+                .filter_map(|row| new.line_of(row))
+                .find(|index| hunk.lines[*index].kind == PatchLineKind::Added)
+            else {
+                continue;
+            };
+            let Some(before) = old
+                .get_or_insert_with(|| scan_side(hunk, views, Side::Old))
+                .as_ref()
+            else {
+                continue;
+            };
+            let carried_it_before = before.scan.constructs.iter().any(|was| {
+                before.line_of(was.row) == Some(start) && signal_of(&was.kind) == Some(signal)
+            });
+            if carried_it_before {
+                continue;
             }
-            Some(signal) => parsed.found.push((index, signal)),
-            None => {}
+            added
+        };
+        if signal == S::PanicPathAdded && construct.in_test {
+            parsed.withdrawn.push((index, signal));
+        } else {
+            parsed.found.push((index, signal));
         }
     }
     Some(parsed)
@@ -1097,19 +1255,23 @@ fn empty_callback(after: &str) -> bool {
     let inner = inner.trim_start();
     let inner = inner.strip_prefix("async ").unwrap_or(inner).trim_start();
     let body = if let Some(rest) = inner.strip_prefix("function") {
-        let Some((_, rest)) = rest.split_once(')') else {
+        // An optional name, then the parameters.
+        let rest = rest.trim_start();
+        let name = rest.bytes().take_while(|b| is_ident(*b)).count();
+        let Some(rest) = rest
+            .get(name..)
+            .and_then(|rest| after_closing(rest.trim_start(), b'(', b')'))
+        else {
             return false;
         };
         rest
     } else {
-        let parameters = if inner.starts_with('(') {
-            inner.find(')').map(|close| close + 1)
+        let after_parameters = if inner.starts_with('(') {
+            after_closing(inner, b'(', b')')
         } else {
-            Some(inner.bytes().take_while(|b| is_ident(*b)).count())
+            inner.get(inner.bytes().take_while(|b| is_ident(*b)).count()..)
         };
-        let Some(rest) = parameters
-            .and_then(|end| inner.get(end..))
-            .and_then(|rest| rest.trim_start().strip_prefix("=>"))
+        let Some(rest) = after_parameters.and_then(|rest| rest.trim_start().strip_prefix("=>"))
         else {
             return false;
         };
@@ -1119,6 +1281,29 @@ fn empty_callback(after: &str) -> bool {
         .strip_prefix('{')
         .and_then(|rest| rest.trim_start().strip_prefix('}'))
         .is_some_and(|rest| rest.trim_start().starts_with(')'))
+}
+
+/// What follows the `close` that matches the `open` that `text` starts with, nesting counted:
+/// for `(a = f(), b) => {}` and parentheses, ` => {}`. `None` when `text` does not start with
+/// `open` or it is never closed. `text` is a code view, so a delimiter in a string is blank.
+/// Before, the first `)` ended the parameters, and a default value that calls a function hid an
+/// empty handler (review V3 round 2, VD3R2-L-1).
+fn after_closing(text: &str, open: u8, close: u8) -> Option<&str> {
+    if text.as_bytes().first() != Some(&open) {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (at, byte) in text.bytes().enumerate() {
+        if byte == open {
+            depth += 1;
+        } else if byte == close {
+            depth -= 1;
+            if depth == 0 {
+                return text.get(at + 1..);
+            }
+        }
+    }
+    None
 }
 
 /// Whether a JS line loads one of `modules` (`node:` optional) with `require(…)` (also
@@ -2685,6 +2870,13 @@ mod tests {
                 "+    load().unwrap();",
                 "+}",
             ],
+            // review V3 round 2, VD3R2-H-1: an unknown path that ends in `test`
+            &[
+                "+#[my_framework::test]",
+                "+pub fn production() {",
+                "+    load().unwrap();",
+                "+}",
+            ],
             &[
                 "+#[my_attribute(test)]",
                 "+pub fn production() {",
@@ -2715,12 +2907,14 @@ mod tests {
                 "{body:?}"
             );
         }
-        // the real thing is still withdrawn
-        let real = found(&hunk_of(
-            "src/a.rs",
-            &["+#[test]", "+fn a() {", "+    load().unwrap();", "+}"],
-        ));
-        assert_eq!(real, []);
+        // the real thing is still withdrawn, also written as a raw identifier
+        for attribute in ["+#[test]", "+#[r#test]", "+#[tokio::test]"] {
+            let real = found(&hunk_of(
+                "src/a.rs",
+                &[attribute, "+fn a() {", "+    load().unwrap();", "+}"],
+            ));
+            assert_eq!(real, [], "{attribute}");
+        }
     }
 
     /// Review V3 round 1, VD3-M-1: a change inside a construct that started on an unchanged
@@ -2738,9 +2932,47 @@ mod tests {
             ],
         ));
         assert_eq!(assertion, [(S::TrivialAssert, Basis::SyntaxFragment, 4)]);
+        // Review V3 round 2, VD3R2-M-1: a construct that was already what it is now is not
+        // added by a change to its message. Before, these three were reported.
+        for (path, body) in [
+            (
+                "src/m.rs",
+                &[" fn f() {", "     todo!(", "+        \"later\"", "     )"][..],
+            ),
+            (
+                "src/m.rs",
+                &[
+                    " fn later() {",
+                    "     todo!(",
+                    "-        \"old message\"",
+                    "+        \"new message\"",
+                    "     )",
+                ][..],
+            ),
+            (
+                "tests/m.rs",
+                &[
+                    " fn check() {",
+                    "     assert!(",
+                    "         true,",
+                    "-        \"old message\"",
+                    "+        \"new message\"",
+                    "     );",
+                ][..],
+            ),
+        ] {
+            assert_eq!(found(&hunk_of(path, body)), [], "{body:?}");
+        }
+        // a stub that replaces what was there is added, on the added line
         let stub = found(&hunk_of(
             "src/m.rs",
-            &[" fn f() {", "     todo!(", "+        \"later\"", "     )"],
+            &[
+                " fn f() -> u8 {",
+                "     compute(",
+                "-        1",
+                "+        todo!()",
+                "     )",
+            ],
         ));
         assert_eq!(stub, [(S::StubAdded, Basis::SyntaxFragment, 4)]);
         // an unchanged construct beside an added line is still not evidence
@@ -2802,6 +3034,11 @@ mod tests {
             "+p.catch(async (e) => {});",
             "+p.catch(function () {});",
             "+p.catch(function(e) { });",
+            // review V3 round 2, VD3R2-L-1: a default value that calls a function
+            "+run().catch((error = fallback()) => {});",
+            "+run().catch(function (error = fallback()) {});",
+            "+run().catch(async (error = fallback(a, (b))) => {});",
+            "+run().catch(function onError(error) {});",
         ] {
             assert_eq!(
                 found(&hunk_of("web/p.ts", &[line])),
@@ -2817,6 +3054,8 @@ mod tests {
             "+p.catch(() => ({}));",
             "+cache.catchUp(() => {});",
             "+p.catch();",
+            "+p.catch((error = fallback() => {});",
+            "+p.catch((error = fallback()) => { report(error); });",
         ] {
             assert_eq!(found(&hunk_of("web/p.ts", &[line])), [], "{line}");
         }
@@ -2831,5 +3070,62 @@ mod tests {
             .collect::<Vec<_>>(),
             [S::TestSkipped]
         );
+    }
+    /// Review V3 round 2, VD3R2-H-2: the parser reads at most a budget of hunk bytes per review,
+    /// in the review's order, and what lies beyond keeps the token rules' answer.
+    #[test]
+    fn the_parser_reads_a_review_only_up_to_its_budget() {
+        // each hunk: one added line of about 60 KB, then an added panic path
+        let filler = format!("+    let x = {};", "1 + ".repeat(15_000) + "1");
+        let files: Vec<ReviewFile> = (0..40)
+            .map(|n| hunk_of(&format!("src/f{n}.rs"), &[&filler, "+    y.unwrap();"]))
+            .collect();
+        let plan = FragmentPlan::of(&files);
+        let parsed = (0..files.len()).filter(|n| plan.allows(*n, 0)).count();
+        let cost = filler.len() + "+    y.unwrap();".len() + 2 + 2 * " x\n".len();
+        assert_eq!(parsed, REVIEW_FRAGMENT_BUDGET / cost, "cost {cost}");
+        assert!(parsed > 10 && parsed < files.len(), "{parsed}");
+        // the allowed hunks are the first ones, and an index the plan lacks is not parsed
+        assert!((0..parsed).all(|n| plan.allows(n, 0)));
+        assert!((parsed..files.len()).all(|n| !plan.allows(n, 0)));
+        assert!(!plan.allows(0, 1) && !plan.allows(files.len(), 0));
+        assert_eq!(plan.file(files.len()), &[] as &[bool]);
+        // inside the budget the parser confirms the item; beyond it the spelling stands
+        let basis = |n: usize| {
+            file_evidence_in(&files[n], plan.file(n))
+                .iter()
+                .map(|e| (e.signal, e.basis))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(basis(0), [(S::PanicPathAdded, Basis::SyntaxFragment)]);
+        assert_eq!(
+            basis(files.len() - 1),
+            [(S::PanicPathAdded, Basis::Lexical)]
+        );
+        // a file planned on its own is inside its own budget
+        assert_eq!(
+            file_evidence(&files[files.len() - 1])[0].basis,
+            Basis::SyntaxFragment
+        );
+        // only Rust hunks with an added line cost anything
+        let other = [
+            hunk_of("a.py", &[&filler]),
+            hunk_of("src/removed.rs", &["-    y.unwrap();"]),
+        ];
+        let plan = FragmentPlan::of(&other);
+        assert!(!plan.allows(0, 0) && !plan.allows(1, 0));
+    }
+
+    /// A hunk over the fragment budget is turned away before anything is built from it.
+    #[test]
+    fn a_hunk_over_the_fragment_budget_costs_nothing_and_keeps_the_spelling() {
+        let braces = format!(
+            "+{}",
+            "}".repeat(deep_diff_forge_syntax::FRAGMENT_BYTE_BUDGET)
+        );
+        let file = hunk_of("src/big.rs", &[&braces, "+    y.unwrap();"]);
+        assert_eq!(fragment_cost(&file.patch_twin.hunks[0]), None);
+        assert!(!FragmentPlan::of(std::slice::from_ref(&file)).allows(0, 0));
+        assert_eq!(found(&file), [(S::PanicPathAdded, Basis::Lexical, 3)]);
     }
 }

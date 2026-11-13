@@ -878,6 +878,47 @@
         }
       ],
       "sha256": "730f3cbb9107929c489dbfdf60d182990cda5b82d83d79c4fa7f3bc716611133"
+    },
+    {
+      "id": "evidence/review-v3-round2",
+      "kind": "evidence",
+      "patch": "evidence/review-v3-round2.patch",
+      "origin": "internal: an adversarial review by Vesper, V3 round 2, 2026-11-13 (docs/reviews/vesper-v3-round2-report-20261113.md), findings VD3R2-H-1, VD3R2-M-1 and VD3R2-L-1, each reproduced before it was counted. Expected: a panic path under an unknown attribute path that ends in test, and a promise catch whose empty handler has a default value that calls a function. Negatives: a real test written with a raw identifier, and a todo and an assertion whose message alone changed. Declared false positive: a panic path in a function that is only #[cfg(test)], which the hunk proves but the scanner does not read",
+      "expect": [
+        {
+          "path": "src/custom_test_attr.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "web/callbacks.ts",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 1
+        },
+        {
+          "path": "web/callbacks.ts",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "web/callbacks.ts",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/cfg_test_fn.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "sha256": "3f8f96734b500c69c8c20426d17d9b552b9a93fcc60a4fbf0347f14eb673a352"
     }
   ]
 }

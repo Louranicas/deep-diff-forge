@@ -151,6 +151,38 @@ pub fn long_line_patch() -> String {
     text
 }
 
+/// A patch of 64 new Rust files, each one line of about 60 KB that is a sum of thirty thousand
+/// terms: every hunk is just under the fragment budget and as dense in tree nodes as source
+/// gets, so this is the costliest input per byte for the parser (review V3 round 2, VD3R2-H-2).
+/// Together the hunks are over the review's parser budget, so the workload also holds the
+/// budget itself in view: without it this ranking takes several times as long.
+#[must_use]
+pub fn many_fragments_patch() -> String {
+    let line = format!("{}a;", "a+".repeat(30_000));
+    let mut text = String::new();
+    for n in 0..64 {
+        let _ = writeln!(
+            text,
+            "diff --git a/src/n{n}.rs b/src/n{n}.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/n{n}.rs\n@@ -0,0 +1 @@\n+{line}"
+        );
+    }
+    text
+}
+
+/// Ranking `patch`, parsed once outside the timing.
+fn rank_workload(name: &'static str, patch: String) -> Workload {
+    Workload {
+        name,
+        run: Box::new({
+            let files = review(&patch).files().to_vec();
+            move |_| {
+                let _ = deep_diff_forge_graph::rank(&files);
+            }
+        }),
+        input: patch,
+    }
+}
+
 /// Ranking [`long_line_patch`].
 fn long_line_workload() -> Workload {
     let long_line = long_line_patch();
@@ -194,6 +226,7 @@ fn workloads() -> Vec<Workload> {
             }),
         },
         long_line_workload(),
+        rank_workload("rank_many_fragments", many_fragments_patch()),
         Workload {
             name: "outline_page",
             input: patch.clone(),
@@ -401,6 +434,10 @@ mod tests {
                 "d309048c12e3e4b42890354620456ec296638424de2fa8fc2c2e61a21425d6fb",
             ),
             (
+                "rank_many_fragments",
+                "e6bffeb836bce2b041d40ba98ceeb8269c999a66ab0e41118373fbe57ba3a7e0",
+            ),
+            (
                 "outline_page",
                 "22da2a2e81a542149830dee499b67b90897ce7ba5cc0a46d509281a253032358",
             ),
@@ -496,6 +533,7 @@ mod tests {
                 "parse_seal",
                 "rank_with_evidence",
                 "rank_long_line",
+                "rank_many_fragments",
                 "outline_page",
                 "findings_verify",
                 "findings_by_address",

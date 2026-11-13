@@ -264,18 +264,45 @@ fn attribute_parts(item: Node, source: &str) -> Option<(String, Option<String>)>
     Some((compact(path), arguments))
 }
 
+/// The attribute paths that make the function under them a test, written without raw-identifier
+/// prefixes: the built-in attribute and a short list of test attributes of well-known crates.
+/// A path that is not here proves nothing, whatever its last segment is: any crate can export
+/// an attribute macro named `test` that leaves the function in the program (review V3 round 2,
+/// VD3R2-H-1: before, every path ending in `::test` was believed).
+const TEST_ATTRIBUTES: &[&str] = &[
+    "test",
+    "core::prelude::v1::test",
+    "std::prelude::v1::test",
+    "rstest",
+    "rstest::rstest",
+    "tokio::test",
+    "async_std::test",
+    "actix_rt::test",
+    "test_log::test",
+];
+
+/// A path as [`TEST_ATTRIBUTES`] writes it: no leading `::`, no `r#` on a segment.
+fn plain_path(path: &str) -> String {
+    let segments: Vec<&str> = path
+        .trim_start_matches("::")
+        .split("::")
+        .map(|segment| segment.strip_prefix("r#").unwrap_or(segment))
+        .collect();
+    segments.join("::")
+}
+
 /// Whether `node` is a function or a module that the fragment proves to be test code.
 ///
-/// - A function with a test attribute of its own: one whose path is `test` or `rstest`, or ends
-///   in `::test` (`#[tokio::test]`).
+/// - A function with a test attribute of its own, by its whole path ([`TEST_ATTRIBUTES`]).
 /// - A module with exactly `#[cfg(test)]`.
 ///
 /// Nothing weaker counts, because the answer withdraws evidence. `#[cfg_attr(any(), test)]`
 /// never applies `#[test]`, `#[cfg(not(test))]` is production code, and a module named `tests`
 /// with no `#[cfg(test)]` is compiled into the program (review V3 round 1, VD3-H-1: before, the
 /// last identifier anywhere in an attribute decided, so a false `cfg_attr` hid a panic path in
-/// production code). An attribute macro that is named `test` and makes no test would still be
-/// believed: names are not resolved here.
+/// production code). Names are not resolved here: a crate that is itself named `tokio`, or an
+/// import that shadows the built-in `test`, would be believed. `#[cfg(test)]` on a function or
+/// an `impl` is not read; what is under it is reported.
 fn opens_test_code(node: Node, source: &str) -> bool {
     let attributes = || {
         let mut found = Vec::new();
@@ -293,7 +320,7 @@ fn opens_test_code(node: Node, source: &str) -> bool {
     match node.kind() {
         "function_item" => attributes()
             .iter()
-            .any(|(path, _)| path == "test" || path == "rstest" || path.ends_with("::test")),
+            .any(|(path, _)| TEST_ATTRIBUTES.contains(&plain_path(path).as_str())),
         "mod_item" => attributes()
             .iter()
             .any(|(path, arguments)| path == "cfg" && arguments.as_deref() == Some("(test)")),
@@ -408,6 +435,20 @@ mod tests {
         assert_eq!(kinds(flavoured)[1], (method("unwrap"), 1, true));
         let rstest = "#[rstest]\nfn a() { b().unwrap(); }\n";
         assert_eq!(kinds(rstest)[1], (method("unwrap"), 1, true));
+        // the built-in attribute written with a raw identifier or a full path is the same one
+        for attribute in [
+            "#[r#test]",
+            "#[::core::prelude::v1::test]",
+            "#[r#tokio::r#test]",
+            "#[async_std::test]",
+        ] {
+            let source = format!("{attribute}\nfn a() {{ b().unwrap(); }}\n");
+            assert_eq!(
+                kinds(&source)[1],
+                (method("unwrap"), 1, true),
+                "{attribute}"
+            );
+        }
         // a cfg that only mentions test among other things, and an ordinary module, do not
         let other = "#[cfg(not(test))]\nmod real {\n    fn f() { a().unwrap(); }\n}\n";
         assert_eq!(kinds(other)[1], (method("unwrap"), 2, false));
@@ -425,6 +466,11 @@ mod tests {
             "#[allow(test)]\nfn f() {\n    load().unwrap();\n}\n",
             "#[doc(alias = \"x\", test)]\nfn f() {\n    load().unwrap();\n}\n",
             "#[my::tests]\nfn f() {\n    load().unwrap();\n}\n",
+            // review V3 round 2, VD3R2-H-1: a path that only ends in `test` is not the test
+            // attribute of anything known
+            "#[my_framework::test]\npub fn production() {\n    load().unwrap();\n}\n",
+            "#[tokio::testing::test]\npub fn production() {\n    load().unwrap();\n}\n",
+            "#[testing]\nfn f() {\n    load().unwrap();\n}\n",
             "#[cfg(any(test, feature = \"x\"))]\nmod m {\n    fn f() { load().unwrap(); }\n}\n",
             "#[cfg_attr(any(), cfg(test))]\nmod m {\n    fn f() { load().unwrap(); }\n}\n",
             "#[cfg(test = \"x\")]\nmod m {\n    fn f() { load().unwrap(); }\n}\n",

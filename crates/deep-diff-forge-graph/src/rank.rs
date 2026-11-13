@@ -1,5 +1,5 @@
-use crate::evidence::{Evidence, MAX_EVIDENCE_PER_FILE};
-use crate::risk::{RiskSignal, assess_file};
+use crate::evidence::{Evidence, FragmentPlan, MAX_EVIDENCE_PER_FILE};
+use crate::risk::{RiskSignal, assess_file_in};
 use deep_diff_forge_core::{FileStatus, ReviewFile};
 
 /// A file placed in the ranked review stream. Built only by [`RankedFile::scored`], so its
@@ -23,10 +23,18 @@ pub struct RankedFile {
 }
 
 impl RankedFile {
-    /// Assess `file` and place it.
+    /// Assess `file` and place it. The file is planned on its own; a caller that holds the whole
+    /// review uses [`Self::scored_in`].
     #[must_use]
     pub fn scored(file: &ReviewFile) -> Self {
-        let assessment = assess_file(file);
+        Self::scored_in(file, FragmentPlan::of(std::slice::from_ref(file)).file(0))
+    }
+
+    /// [`Self::scored`] under a review's [`FragmentPlan`]: `parse` says, for each hunk of
+    /// `file`, whether the parser may read it.
+    #[must_use]
+    pub fn scored_in(file: &ReviewFile, parse: &[bool]) -> Self {
+        let assessment = assess_file_in(file, parse);
         let mut evidence = assessment.evidence;
         let evidence_truncated = evidence.len() > MAX_EVIDENCE_PER_FILE;
         evidence.truncate(MAX_EVIDENCE_PER_FILE);
@@ -45,7 +53,14 @@ impl RankedFile {
 /// tie-break, so the same review always produces the same order.
 #[must_use]
 pub fn rank(files: &[ReviewFile]) -> Vec<RankedFile> {
-    let mut ranked: Vec<RankedFile> = files.iter().map(RankedFile::scored).collect();
+    // One plan for the whole review: which hunks the parser reads does not depend on the order
+    // files are scored in.
+    let plan = FragmentPlan::of(files);
+    let mut ranked: Vec<RankedFile> = files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| RankedFile::scored_in(file, plan.file(index)))
+        .collect();
     sort_ranked(&mut ranked);
     ranked
 }

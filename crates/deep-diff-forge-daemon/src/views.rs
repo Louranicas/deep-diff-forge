@@ -136,12 +136,15 @@ impl std::fmt::Display for ViewError {
 impl std::error::Error for ViewError {}
 
 /// Files in review-risk order (highest first, then by path), as `rank` orders them.
-fn risk_order(files: &[ReviewFile]) -> Vec<(usize, u32, Vec<&'static str>)> {
+fn risk_order(
+    files: &[ReviewFile],
+    plan: &deep_diff_forge_graph::FragmentPlan,
+) -> Vec<(usize, u32, Vec<&'static str>)> {
     let mut order: Vec<(usize, u32, Vec<&'static str>)> = files
         .iter()
         .enumerate()
         .map(|(i, file)| {
-            let (score, signals) = deep_diff_forge_graph::score_file(file);
+            let (score, signals) = deep_diff_forge_graph::score_file_in(file, plan.file(i));
             (i, score, signals.iter().map(|s| s.label()).collect())
         })
         .collect();
@@ -170,7 +173,7 @@ fn line_counts(hunk: &PatchHunk) -> (usize, usize) {
 }
 
 /// A hunk's header facts, without its lines.
-fn hunk_head(file: &ReviewFile, hunk: &PatchHunk) -> serde_json::Map<String, Value> {
+fn hunk_head(file: &ReviewFile, hunk: &PatchHunk, parse: bool) -> serde_json::Map<String, Value> {
     let (old_lines, new_lines) = hunk.counts();
     let (additions, deletions) = line_counts(hunk);
     let mut hazards: Vec<&str> = Vec::new();
@@ -206,7 +209,7 @@ fn hunk_head(file: &ReviewFile, hunk: &PatchHunk) -> serde_json::Map<String, Val
     if !hazards.is_empty() {
         map.insert("hazards".into(), json!(hazards));
     }
-    let evidence: Vec<&str> = deep_diff_forge_graph::hunk_signals(file, hunk)
+    let evidence: Vec<&str> = deep_diff_forge_graph::hunk_signals_in(file, hunk, parse)
         .into_iter()
         .map(deep_diff_forge_graph::EvidenceSignal::label)
         .collect();
@@ -316,7 +319,9 @@ fn position(text: &str) -> Option<usize> {
 /// [`ViewError::Budget`] or [`ViewError::Cursor`] for a bad page request.
 pub fn outline(review: &SealedReview, page: &Page) -> Result<Value, ViewError> {
     let (files, seal) = (review.files(), review.seal());
-    let order = risk_order(files);
+    // One plan for the review, as `rank` makes it, so a view never disagrees with the rank.
+    let plan = deep_diff_forge_graph::FragmentPlan::of(files);
+    let order = risk_order(files, &plan);
     let (start_file, start_hunk) = resume(page, seal, "outline", |item| {
         order
             .get(item)
@@ -352,7 +357,7 @@ pub fn outline(review: &SealedReview, page: &Page) -> Result<Value, ViewError> {
         });
         let mut used = size(&entry) + 1;
         for (h, hunk) in file.patch_twin.hunks.iter().enumerate().skip(first) {
-            let head = Value::Object(hunk_head(file, hunk));
+            let head = Value::Object(hunk_head(file, hunk, plan.allows(*index, h)));
             let cost = size(&head) + 1;
             // A page always makes progress: its first hunk is listed even when it is over.
             let first_on_page = entries.is_empty() && h == first;
@@ -406,6 +411,7 @@ pub fn hunks(
     page: &Page,
 ) -> Result<Value, ViewError> {
     let (files, seal) = (review.files(), review.seal());
+    let plan = deep_diff_forge_graph::FragmentPlan::of(files);
     let (units, key) = select(files, selection)?;
     let (start_unit, start_line) = resume(page, seal, &key, |item| {
         units
@@ -423,7 +429,7 @@ pub fn hunks(
         } else {
             0
         };
-        let mut entry = Value::Object(hunk_head(file, hunk));
+        let mut entry = Value::Object(hunk_head(file, hunk, plan.allows(f, h)));
         entry["path"] = json!(file.path);
         entry["line_offset"] = json!(offset);
         entry["complete"] = json!(true);
@@ -496,7 +502,7 @@ fn select_with(
     use std::collections::{HashMap, HashSet};
     match selection {
         Selection::All => {
-            let units = risk_order(files)
+            let units = risk_order(files, &deep_diff_forge_graph::FragmentPlan::of(files))
                 .into_iter()
                 .flat_map(|(f, _, _)| (0..files[f].patch_twin.hunks.len()).map(move |h| (f, h)))
                 .collect();
@@ -624,10 +630,10 @@ mod tests {
         let file = &r.files()[0];
         let hunks = &file.patch_twin.hunks;
         assert_eq!(
-            hunk_head(file, &hunks[0])["hazards"],
+            hunk_head(file, &hunks[0], true)["hazards"],
             json!(["bidi_control"])
         );
-        assert!(!hunk_head(file, &hunks[1]).contains_key("hazards"));
+        assert!(!hunk_head(file, &hunks[1], true).contains_key("hazards"));
         let lines: Vec<Value> = hunks[0].lines.iter().map(line_json).collect();
         assert_eq!(lines[0]["hazards"], json!(["bidi_control"]));
         assert_eq!(lines[1]["hazards"], json!(["bidi_control"]));
@@ -906,7 +912,7 @@ mod tests {
         let r = review(&format!(
             "--- a/x.rs\n+++ b/x.rs\n@@ -1,25 +1,25 @@ {long}\n{pairs}"
         ));
-        let head = hunk_head(&r.files()[0], &r.files()[0].patch_twin.hunks[0]);
+        let head = hunk_head(&r.files()[0], &r.files()[0].patch_twin.hunks[0], true);
         assert_eq!(head["section"], "S".repeat(SECTION_VIEW_BYTES - 1));
         assert_eq!(head["section_truncated"], true);
         for view in [
@@ -919,7 +925,7 @@ mod tests {
         let r = review(&format!(
             "--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@ {exact}\n-a\n+b\n"
         ));
-        let head = hunk_head(&r.files()[0], &r.files()[0].patch_twin.hunks[0]);
+        let head = hunk_head(&r.files()[0], &r.files()[0].patch_twin.hunks[0], true);
         assert_eq!(head["section"], exact);
         assert!(!head.contains_key("section_truncated"));
     }

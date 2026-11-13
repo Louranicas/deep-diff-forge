@@ -82,6 +82,30 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     line of near-matches), so a change that makes a long line costlier shows in the pull
     request's bench comparison.
   - The corpus has 39 cases; evidence precision 40 of 41, recall 40 of 67.
+- **Round 2 of the same review (verdict NO-GO again) and its fixes.**
+  - *High: any attribute path ending in `::test` was believed.* `#[my_framework::test]` on a
+    production function still hid its panic path. Test attributes are now a short list of
+    whole paths (`test`, `rstest`, `tokio::test`, `async_std::test`, `actix_rt::test`,
+    `test_log::test` and the prelude paths of `test`), read without raw-identifier prefixes,
+    so `#[r#test]` is the built-in attribute and an unknown path proves nothing.
+  - *High: many parser-heavy hunks ran past a consumer's 10 seconds.* A 61 MiB patch of a
+    thousand 64 KB expressions did not finish in 15 s on a release build. The parser now
+    reads at most 2 MiB of Rust hunks in one review (`REVIEW_FRAGMENT_BUDGET`), in the
+    review's own order; beyond that the token rules' answer stands. The plan is made from
+    the whole review before any file is scored (`FragmentPlan`), so the ranking is the same
+    for any worker count and the views agree with it. The same patch now ranks in 2.6 s. A
+    hunk over the fragment budget is turned away before anything is built from it: a 60 MiB
+    line of `}` took 925 MiB and now takes 249 MiB. The bench gains `rank_many_fragments`.
+  - *Medium: the fix of round 1 reported constructs that were not added.* A `todo!(…)` or an
+    `assert!(true, …)` whose message alone changed was reported. A construct that starts on
+    an unchanged line is now evidence only when it did not carry the same signal before the
+    change: the old side of the hunk is parsed too, when such a construct is met.
+  - *Low:* a promise's empty handler whose parameter has a default value that calls a
+    function (`.catch((error = fallback()) => {})`) is read: parameters are matched by
+    nesting, not by the first `)`.
+  - Still reported, and declared in the corpus: a panic path in a function or an `impl` that
+    is only `#[cfg(test)]`. The corpus has 40 cases; evidence precision 44 of 46, recall 44
+    of 71.
 
 ### Changed
 

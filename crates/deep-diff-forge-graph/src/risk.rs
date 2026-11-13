@@ -1,7 +1,7 @@
 // DDF review route: DDF-R12, DDF-R13. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-graph--src--risk
-use crate::evidence::{Evidence, EvidenceSignal, file_evidence};
+use crate::evidence::{Evidence, EvidenceSignal, FragmentPlan, file_evidence_in};
 use deep_diff_forge_core::{FileStatus, PatchLineKind, ReviewFile};
 
 /// A deterministic, explainable reason a file is ranked where it is.
@@ -80,6 +80,13 @@ pub fn score_file(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     (assessment.score, assessment.signals)
 }
 
+/// [`score_file`] under a review's [`FragmentPlan`] (see [`assess_file_in`]).
+#[must_use]
+pub fn score_file_in(file: &ReviewFile, parse: &[bool]) -> (u32, Vec<RiskSignal>) {
+    let assessment = assess_file_in(file, parse);
+    (assessment.score, assessment.signals)
+}
+
 /// A file's score, its signals, and the code evidence behind its [`RiskSignal::Code`] signals.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assessment {
@@ -95,10 +102,20 @@ pub struct Assessment {
 /// keeps its weight on a generated or vendored path, and on a test path it counts half
 /// (rounded up), except a signal that a test lost its force (removed, skipped, or asserting
 /// nothing), which counts in full.
+///
+/// The file is planned on its own; a caller that holds the whole review uses
+/// [`assess_file_in`], so that the parser's budget is the review's.
 #[must_use]
 pub fn assess_file(file: &ReviewFile) -> Assessment {
+    assess_file_in(file, FragmentPlan::of(std::slice::from_ref(file)).file(0))
+}
+
+/// [`assess_file`] under a review's [`FragmentPlan`]: `parse` says, for each hunk of `file`,
+/// whether the parser may read it.
+#[must_use]
+pub fn assess_file_in(file: &ReviewFile, parse: &[bool]) -> Assessment {
     let (path_score, mut signals) = score_path_and_shape(file);
-    let evidence = file_evidence(file);
+    let evidence = file_evidence_in(file, parse);
     let test = is_test(&file.path);
     let mut score = path_score;
     for signal in EvidenceSignal::ALL {
