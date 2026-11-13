@@ -40,11 +40,19 @@ pub enum EvidenceSignal {
     CheckSuppressed,
     /// A test is removed.
     TestRemoved,
+    /// A test is switched off where it stands (`#[ignore]`, `pytest.mark.skip`, `it.skip(`,
+    /// `t.Skip(`): it still reads as a test and checks nothing.
+    TestSkipped,
+    /// An assertion that cannot fail (`assert!(true)`, `assert True`, `expect(true).toBe(true)`).
+    TrivialAssert,
+    /// A placeholder where code should be (`todo!(`, `unimplemented!(`,
+    /// `raise NotImplementedError`).
+    StubAdded,
 }
 
 impl EvidenceSignal {
     /// Every signal, in the order scores and output list them.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 12] = [
         Self::UnsafeAdded,
         Self::ProcessSpawn,
         Self::NetworkFetch,
@@ -54,6 +62,9 @@ impl EvidenceSignal {
         Self::SecretLike,
         Self::CheckSuppressed,
         Self::TestRemoved,
+        Self::TestSkipped,
+        Self::TrivialAssert,
+        Self::StubAdded,
     ];
 
     /// Stable snake-case label for machine output.
@@ -69,6 +80,9 @@ impl EvidenceSignal {
             Self::SecretLike => "secret_like",
             Self::CheckSuppressed => "check_suppressed",
             Self::TestRemoved => "test_removed",
+            Self::TestSkipped => "test_skipped",
+            Self::TrivialAssert => "trivial_assert",
+            Self::StubAdded => "stub_added",
         }
     }
 
@@ -78,9 +92,24 @@ impl EvidenceSignal {
         match self {
             Self::SecretLike => 5,
             Self::UnsafeAdded | Self::ProcessSpawn | Self::DynamicEval | Self::CiPrivilege => 4,
-            Self::NetworkFetch | Self::BuildHook | Self::TestRemoved => 3,
+            Self::NetworkFetch
+            | Self::BuildHook
+            | Self::TestRemoved
+            | Self::TestSkipped
+            | Self::TrivialAssert
+            | Self::StubAdded => 3,
             Self::CheckSuppressed => 2,
         }
+    }
+
+    /// Whether the signal is about a test losing its force. Such a signal lives in test files, so
+    /// a test path does not halve its weight as it does every other signal's.
+    #[must_use]
+    pub const fn weakens_a_test(self) -> bool {
+        matches!(
+            self,
+            Self::TestRemoved | Self::TestSkipped | Self::TrivialAssert
+        )
     }
 }
 
@@ -419,6 +448,92 @@ const RULES: &[Rule] = &[
         View::Code,
         Scope::Languages(GO),
         Match::Tokens(&["func Test*"]),
+    ),
+    // An attribute or a decorator is code, so a skip named in a comment or a string is not one.
+    rule(
+        S::TestSkipped,
+        Side::New,
+        View::Code,
+        Scope::Languages(RUST),
+        Match::Tokens(&["#[ignore"]),
+    ),
+    rule(
+        S::TestSkipped,
+        Side::New,
+        View::Code,
+        Scope::Languages(PYTHON),
+        Match::Tokens(&[
+            "pytest.mark.skip*",
+            "pytest.mark.xfail",
+            "pytest.skip(",
+            "unittest.skip*",
+            "self.skipTest(",
+        ]),
+    ),
+    rule(
+        S::TestSkipped,
+        Side::New,
+        View::Code,
+        Scope::Languages(JS),
+        Match::Tokens(&[
+            "it.skip(",
+            "test.skip(",
+            "describe.skip(",
+            "it.todo(",
+            "test.todo(",
+            "xit(",
+            "xtest(",
+            "xdescribe(",
+        ]),
+    ),
+    rule(
+        S::TestSkipped,
+        Side::New,
+        View::Code,
+        Scope::Languages(GO),
+        Match::Tokens(&["t.Skip(", "t.Skipf(", "t.SkipNow("]),
+    ),
+    rule(
+        S::TrivialAssert,
+        Side::New,
+        View::Code,
+        Scope::Languages(RUST),
+        Match::Tokens(&["assert!(true)", "assert_eq!(true, true)"]),
+    ),
+    rule(
+        S::TrivialAssert,
+        Side::New,
+        View::Code,
+        Scope::Languages(PYTHON),
+        Match::Tokens(&["assert True", "self.assertTrue(True)"]),
+    ),
+    rule(
+        S::TrivialAssert,
+        Side::New,
+        View::Code,
+        Scope::Languages(JS),
+        Match::Tokens(&[
+            "expect(true).toBe(true)",
+            "expect(true).toEqual(true)",
+            "assert(true)",
+            "assert.ok(true)",
+        ]),
+    ),
+    // A placeholder named in a message string is blanked with the string, so only the forms
+    // that are code are read: JS and Go have none.
+    rule(
+        S::StubAdded,
+        Side::New,
+        View::Code,
+        Scope::Languages(RUST),
+        Match::Tokens(&["todo!(", "unimplemented!("]),
+    ),
+    rule(
+        S::StubAdded,
+        Side::New,
+        View::Code,
+        Scope::Languages(PYTHON),
+        Match::Tokens(&["raise NotImplementedError"]),
     ),
 ];
 
@@ -1637,6 +1752,124 @@ mod tests {
         assert_eq!(file_evidence(&file), file_evidence(&file.clone()));
     }
 
+    /// Batteries, phase 1: the ways a change makes a test stop testing, and unfinished work
+    /// presented as done. Each is read as code on an added line.
+    #[test]
+    fn a_skipped_test_a_trivial_assert_and_a_stub_are_evidence() {
+        let cases: &[(&str, &str, EvidenceSignal)] = &[
+            ("tests/a.rs", "#[ignore]", S::TestSkipped),
+            ("tests/a.rs", "#[ignore = \"slow\"]", S::TestSkipped),
+            (
+                "test_a.py",
+                "@pytest.mark.skip(reason=\"later\")",
+                S::TestSkipped,
+            ),
+            (
+                "test_a.py",
+                "@pytest.mark.skipif(sys.platform == \"win32\")",
+                S::TestSkipped,
+            ),
+            ("test_a.py", "@pytest.mark.xfail", S::TestSkipped),
+            ("test_a.py", "    pytest.skip(\"later\")", S::TestSkipped),
+            (
+                "test_a.py",
+                "@unittest.skipUnless(HAVE, \"x\")",
+                S::TestSkipped,
+            ),
+            (
+                "test_a.py",
+                "        self.skipTest(\"later\")",
+                S::TestSkipped,
+            ),
+            ("a.test.ts", "it.skip(\"adds\", () => {});", S::TestSkipped),
+            (
+                "a.test.ts",
+                "describe.skip(\"suite\", () => {});",
+                S::TestSkipped,
+            ),
+            ("a.test.ts", "test.todo(\"adds\");", S::TestSkipped),
+            ("a.test.ts", "xit(\"adds\", () => {});", S::TestSkipped),
+            ("a_test.go", "\tt.Skip(\"later\")", S::TestSkipped),
+            ("a_test.go", "\tt.SkipNow()", S::TestSkipped),
+            ("tests/a.rs", "    assert!(true);", S::TrivialAssert),
+            (
+                "tests/a.rs",
+                "    assert_eq!(true, true);",
+                S::TrivialAssert,
+            ),
+            ("test_a.py", "    assert True", S::TrivialAssert),
+            (
+                "test_a.py",
+                "        self.assertTrue(True)",
+                S::TrivialAssert,
+            ),
+            ("a.test.ts", "  expect(true).toBe(true);", S::TrivialAssert),
+            ("a.test.ts", "  assert.ok(true);", S::TrivialAssert),
+            ("src/a.rs", "    todo!()", S::StubAdded),
+            ("src/a.rs", "    unimplemented!(\"later\")", S::StubAdded),
+            ("a.py", "    raise NotImplementedError", S::StubAdded),
+            (
+                "a.py",
+                "    raise NotImplementedError(\"later\")",
+                S::StubAdded,
+            ),
+        ];
+        for (path, line, signal) in cases {
+            assert_eq!(signals(&added(path, &[line])), [*signal], "{path}: {line}");
+        }
+    }
+
+    /// The same words where they are not that code: no evidence.
+    #[test]
+    fn near_misses_of_the_integrity_tokens_are_not_evidence() {
+        let cases: &[(&str, &str)] = &[
+            (
+                "tests/a.rs",
+                "// #[ignore] was here; assert!(true) and todo!() too",
+            ),
+            ("tests/a.rs", "let s = \"#[ignore] assert!(true) todo!()\";"),
+            ("tests/a.rs", "#[ignored_by_default]"),
+            ("tests/a.rs", "    assert!(true_enough(x));"),
+            ("tests/a.rs", "    debug_assert!(truer);"),
+            ("src/a.rs", "    my_todo!(x)"),
+            (
+                "test_a.py",
+                "# pytest.mark.skip, assert True, raise NotImplementedError",
+            ),
+            ("test_a.py", "x = \"pytest.skip(\""),
+            ("test_a.py", "    assert True_value"),
+            ("test_a.py", "    assert Trueish is None"),
+            ("a.py", "    raise NotImplementedErrorSubclass()"),
+            ("a.py", "    x.raise_NotImplementedError()"),
+            ("a.test.ts", "exit(code);"),
+            ("a.test.ts", "submit.skip(1);"),
+            ("a.test.ts", "console.assert(true);"),
+            ("a.test.ts", "// it.skip(\"x\")"),
+            ("a_test.go", "\tctx.t.Skip(\"x\")"),
+            ("a_test.go", "\tit.Skip(\"x\")"),
+            // the tokens of another language are not this file's
+            ("a.go", "\ttodo!()"),
+            ("a.ts", "#[ignore]"),
+        ];
+        for (path, line) in cases {
+            assert_eq!(signals(&added(path, &[line])), [], "{path}: {line}");
+        }
+    }
+
+    /// These are read on added lines only: removing a skip or a stub is the repair.
+    #[test]
+    fn removing_a_skip_a_trivial_assert_or_a_stub_is_not_evidence() {
+        for (path, line) in [
+            ("tests/a.rs", "#[ignore]"),
+            ("tests/a.rs", "    assert!(true);"),
+            ("src/a.rs", "    todo!()"),
+            ("test_a.py", "@pytest.mark.skip"),
+            ("a.py", "    raise NotImplementedError"),
+        ] {
+            assert_eq!(signals(&removed(path, &[line])), [], "{path}: {line}");
+        }
+    }
+
     #[test]
     fn labels_and_weights_are_the_documented_table() {
         let table: Vec<(&str, u32)> = EvidenceSignal::ALL
@@ -1655,6 +1888,9 @@ mod tests {
                 ("secret_like", 5),
                 ("check_suppressed", 2),
                 ("test_removed", 3),
+                ("test_skipped", 3),
+                ("trivial_assert", 3),
+                ("stub_added", 3),
             ]
         );
         assert_eq!((Side::New.label(), Side::Old.label()), ("new", "old"));

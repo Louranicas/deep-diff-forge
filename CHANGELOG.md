@@ -6,6 +6,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Added
+
+- **Three evidence signals for a change that weakens its own checks** (agent batteries, phase
+  1). `test_skipped`: a test switched off where it stands (`#[ignore`, `pytest.mark.skip`,
+  `it.skip(`, `t.Skip(` and their kin). `trivial_assert`: an assertion that cannot fail
+  (`assert!(true)`, `assert True`, `expect(true).toBe(true)`). `stub_added`: a placeholder
+  where code should be (`todo!(`, `unimplemented!(`, `raise NotImplementedError`). Each is read
+  as code on an added line, with comments and strings blanked, and adds 3 to a file's score
+  once. On a test path the first two keep their full weight, as `test_removed` does; a stub is
+  halved like other evidence. Output is additive: the `signal` values of `rank.v0` evidence
+  and the hunk labels gain three members, and a file that carries one ranks higher than it
+  did.
+
 ## [0.8.3] - 2026-11-11
 
 Tagged `v0.8.3` at `a74bf91` (2026-11-11 UTC), signed.

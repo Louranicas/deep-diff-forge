@@ -194,6 +194,9 @@ fn code_phrase(signal: EvidenceSignal) -> &'static str {
         EvidenceSignal::SecretLike => "Looks like a credential.",
         EvidenceSignal::CheckSuppressed => "A lint, type or coverage check is switched off.",
         EvidenceSignal::TestRemoved => "A test is removed.",
+        EvidenceSignal::TestSkipped => "A test is switched off.",
+        EvidenceSignal::TrivialAssert => "An assertion that cannot fail.",
+        EvidenceSignal::StubAdded => "A placeholder where code should be.",
     }
 }
 
@@ -302,6 +305,9 @@ mod tests {
                 "Looks like a credential.",
                 "A lint, type or coverage check is switched off.",
                 "A test is removed.",
+                "A test is switched off.",
+                "An assertion that cannot fail.",
+                "A placeholder where code should be.",
             ]
         );
     }

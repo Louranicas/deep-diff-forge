@@ -93,7 +93,8 @@ pub struct Assessment {
 ///
 /// Code evidence adds each signal's weight once per file. A path cannot hide code: evidence
 /// keeps its weight on a generated or vendored path, and on a test path it counts half
-/// (rounded up), except a removed test, which counts in full.
+/// (rounded up), except a signal that a test lost its force (removed, skipped, or asserting
+/// nothing), which counts in full.
 #[must_use]
 pub fn assess_file(file: &ReviewFile) -> Assessment {
     let (path_score, mut signals) = score_path_and_shape(file);
@@ -103,7 +104,7 @@ pub fn assess_file(file: &ReviewFile) -> Assessment {
     for signal in EvidenceSignal::ALL {
         if evidence.iter().any(|e| e.signal == signal) {
             signals.push(RiskSignal::Code(signal));
-            score += if test && signal != EvidenceSignal::TestRemoved {
+            score += if test && !signal.weakens_a_test() {
                 signal.weight().div_ceil(2)
             } else {
                 signal.weight()
@@ -380,6 +381,27 @@ mod evidence_score_tests {
         assert_eq!(
             score("tests/it.rs", &["#[test]"], &["let a = 1;"]),
             plain + 3
+        );
+    }
+
+    /// A skipped test and an assertion that cannot fail live in test files: a test path does not
+    /// discount them. A stub is ordinary evidence and is halved there.
+    #[test]
+    fn a_test_path_does_not_discount_a_test_that_lost_its_force() {
+        let plain = score("tests/it.rs", &[], &["let a = 1;"]);
+        assert_eq!(score("tests/it.rs", &[], &["#[ignore]"]), plain + 3);
+        assert_eq!(score("tests/it.rs", &[], &["assert!(true);"]), plain + 3);
+        assert_eq!(score("tests/it.rs", &[], &["todo!()"]), plain + 2);
+        let source = score("src/x.rs", &[], &["let a = 1;"]);
+        assert_eq!(score("src/x.rs", &[], &["todo!()"]), source + 3);
+        // each once, however many lines carry it
+        assert_eq!(
+            score(
+                "tests/it.rs",
+                &[],
+                &["#[ignore]", "assert!(true);", "#[ignore]"]
+            ),
+            plain + 6
         );
     }
 
