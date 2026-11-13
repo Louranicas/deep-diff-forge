@@ -110,8 +110,9 @@ impl EvidenceSignal {
             | Self::TestSkipped
             | Self::TrivialAssert
             | Self::StubAdded
-            | Self::ErrorSwallowed => 3,
-            Self::CheckSuppressed | Self::PanicPathAdded => 2,
+            | Self::ErrorSwallowed
+            | Self::PanicPathAdded => 3,
+            Self::CheckSuppressed => 2,
         }
     }
 
@@ -2548,7 +2549,7 @@ mod tests {
                 ("trivial_assert", 3),
                 ("stub_added", 3),
                 ("error_swallowed", 3),
-                ("panic_path_added", 2),
+                ("panic_path_added", 3),
             ]
         );
         assert_eq!((Side::New.label(), Side::Old.label()), ("new", "old"));

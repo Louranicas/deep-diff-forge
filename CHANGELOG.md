@@ -31,7 +31,7 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   braces the hunk leaves open or closes without opening are balanced. What the parser reads
   with no error above it is evidence whatever its spelling: `assert!( true )`,
   `assert!(true, "msg")` and `#[cfg_attr(miri, ignore)]` are found, which no token matched.
-  `panic_path_added` (+2, once per file) is a `.unwrap()` or `.expect(` method call added
+  `panic_path_added` (+3, once per file) is a `.unwrap()` or `.expect(` method call added
   outside test code; inside a test function or test module that the hunk shows, it is not
   reported. Where the parser cannot read (an error, the inside of a macro, a hunk over 64 KiB
   or 50,000 nodes) the token rules' answer stands. The budgets are counts, so the same patch
