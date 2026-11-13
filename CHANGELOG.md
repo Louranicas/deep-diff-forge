@@ -95,6 +95,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     pass. The document is now checked member by member against the schema forge-warden ships
     (`verdict_v2.rs`), and a verdict must also name the ranker the hook gave, by its digest,
     and a Git the owner enrolled.
+- **Round 4 of the same review (verdict NO-GO, two medium findings) and its fixes.** Both
+  findings of round 3 were closed.
+  - *Medium: members the schema makes optional were not checked when present.* A claimed
+    commit that is not hex, evidence that is not a list of citations, `evidence_truncated:
+    false` and a negative `waived_by` passed beside a waived rule. Each has the schema's form
+    now, and a test holds the list of every member the schema names against the code.
+  - *Medium: sealing to the ranker read each candidate whole.* A 256 MiB file in the ranker
+    directory cost 270 MiB and half the client's timeout. A candidate is hashed in pieces
+    (`deep_diff_forge_core::Sha256`, new), must be a regular file of at most 256 MiB, and all
+    candidates of a stop share 8 seconds; one that is refused is named with its reason. The
+    hash crate is built optimized in debug builds too, so a debug binary hashes itself in a
+    fraction of a second.
   `deep_diff_forge_patch::file_at_commit` reads a regular file from a commit, which is how
   the policy is read.
 

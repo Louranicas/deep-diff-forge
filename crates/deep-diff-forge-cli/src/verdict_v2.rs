@@ -12,7 +12,9 @@
 //!
 //! Open on purpose, so that a later forge-warden under the same schema name is still read:
 //! a member this version does not know, a rule `kind` and a note `code` that are new (they must
-//! still be lowercase names). Everything else the schema fixes is fixed here.
+//! still be lowercase names). Everything else the schema fixes is fixed here, the members it
+//! makes optional included: when one is present it has the schema's form. The table of what
+//! the schema names is in the test `every_member_the_schema_names_is_read`.
 
 use serde_json::Value;
 
@@ -129,12 +131,48 @@ fn seals_defect(seals: &Value) -> Option<&'static str> {
         }
         _ => return Some("`seals.git` is missing"),
     }
-    if let Some(claims) = seals.get("claims")
-        && !(claims.is_object() && claims["verified"] == false)
-    {
-        return Some("`seals.claims` is not an unverified claim");
+    if let Some(claims) = seals.get("claims") {
+        let commit = |member: &str| claims.get(member).is_none_or(is_commit);
+        if !(claims.is_object() && claims["verified"] == false && commit("base") && commit("head"))
+        {
+            return Some("`seals.claims` is not an unverified claim of two commits");
+        }
     }
     None
+}
+
+/// A commit as a claim names one: 4 to 64 lowercase hex digits.
+fn is_commit(value: &Value) -> bool {
+    value.as_str().is_some_and(|text| {
+        (4..=64).contains(&text.len())
+            && text
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+/// Whether `violation` is whole: its message, and each member the schema names, when present,
+/// in the schema's form. `evidence` is a list of citations (a hunk address, a side, a line
+/// from 1); `evidence_truncated` is present only as `true`; `waived_by` is the index of a
+/// waiver. A malformed one of these beside a waived rule was a pass (review V4 round 4,
+/// VD4R4-M-1).
+fn violation_is_whole(violation: &Value) -> bool {
+    let citations = violation.get("evidence").is_none_or(|evidence| {
+        evidence.as_array().is_some_and(|citations| {
+            citations.iter().all(|citation| {
+                is_sha256(&citation["address"])
+                    && is_one_of(&citation["side"], &["new", "old"])
+                    && citation["line"].as_u64().is_some_and(|line| line >= 1)
+            })
+        })
+    });
+    violation["message"].is_string()
+        && optional_strings(violation, &["path", "signal"])
+        && citations
+        && violation
+            .get("evidence_truncated")
+            .is_none_or(|truncated| truncated == true)
+        && violation.get("waived_by").is_none_or(Value::is_u64)
 }
 
 fn rule_defect(rule: &Value) -> Option<&'static str> {
@@ -148,11 +186,9 @@ fn rule_defect(rule: &Value) -> Option<&'static str> {
             "a rule lacks its id, kind, severity, outcome or reason, or has one malformed",
         );
     }
-    let whole = rule["violations"].as_array().is_some_and(|violations| {
-        violations.iter().all(|violation| {
-            violation["message"].is_string() && optional_strings(violation, &["path", "signal"])
-        })
-    });
+    let whole = rule["violations"]
+        .as_array()
+        .is_some_and(|violations| violations.iter().all(violation_is_whole));
     (!whole).then_some("a rule's violations are missing or malformed")
 }
 
@@ -326,7 +362,16 @@ pub(crate) mod tests {
         open["seals"]["git"] = Value::Null;
         open["seals"]["patch_facts_sha256"] = json!("7".repeat(64));
         open["seals"]["ranked_by"]["sha256"] = Value::Null;
-        open["seals"]["claims"] = json!({"verified": false, "base": "abcd"});
+        open["seals"]["claims"] =
+            json!({"verified": false, "base": "abcd", "head": "0f".repeat(32)});
+        open["rules"][1]["outcome"] = json!("waived");
+        open["rules"][1]["violations"][0] = json!({
+            "message": "m", "path": "p", "signal": "s", "waived_by": 0, "evidence_truncated": true,
+            "evidence": [{"address": "8".repeat(64), "side": "old", "line": 1}],
+        });
+        open["verdict"] = json!("pass");
+        open["exit"] = json!({"code": 0, "name": "pass", "action": "proceed"});
+        recount(&mut open);
         open["rules"][0]["kind"] = json!("a_kind_of_a_later_version");
         open["notes"] = json!([{"code": "a_later_code", "detail": "d", "path": "p"}]);
         open["unused_waivers"] =
@@ -432,6 +477,130 @@ pub(crate) mod tests {
             let mut bent = sample("pass");
             bend(&mut bent);
             assert!(defect(&bent).is_some(), "{what} was accepted");
+        }
+    }
+
+    /// Review V4 round 4, VD4R4-M-1: a member the schema makes optional has the schema's form
+    /// when it is present. A document with four of these malformed, beside a waived rule, was a
+    /// pass.
+    #[test]
+    fn an_optional_member_that_is_present_has_the_schemas_form() {
+        type Bend = fn(&mut Value);
+        let bends: &[(&str, Bend)] = &[
+            ("a claimed base that is no commit", |d| {
+                d["seals"]["claims"] = json!({"verified": false, "base": "NOT-HEX"});
+            }),
+            ("a claimed head that is too short", |d| {
+                d["seals"]["claims"] = json!({"verified": false, "head": "abc"});
+            }),
+            ("evidence that is not a list", |d| {
+                d["rules"][0]["violations"] = json!([{"message": "m", "evidence": "x"}]);
+            }),
+            ("a citation with no address", |d| {
+                d["rules"][0]["violations"] =
+                    json!([{"message": "m", "evidence": [{"side": "new", "line": 1}]}]);
+            }),
+            ("a citation on no side", |d| {
+                d["rules"][0]["violations"] = json!([{"message": "m", "evidence": [
+                    {"address": "8".repeat(64), "side": "both", "line": 1}]}]);
+            }),
+            ("a citation of line 0", |d| {
+                d["rules"][0]["violations"] = json!([{"message": "m", "evidence": [
+                    {"address": "8".repeat(64), "side": "new", "line": 0}]}]);
+            }),
+            ("evidence_truncated that is false", |d| {
+                d["rules"][0]["violations"] =
+                    json!([{"message": "m", "evidence_truncated": false}]);
+            }),
+            ("a waiver index below zero", |d| {
+                d["rules"][0]["violations"] = json!([{"message": "m", "waived_by": -1}]);
+            }),
+        ];
+        for (what, bend) in bends {
+            let mut bent = sample("pass");
+            bend(&mut bent);
+            assert!(defect(&bent).is_some(), "{what} was accepted");
+        }
+    }
+
+    /// Every property the schema names, in every object, against the code that reads it. Kept
+    /// as a table so that a member has a place to be missed from: the list was taken from
+    /// `schemas/verdict.v2.schema.json` of forge-warden 0.2.0.
+    #[test]
+    fn every_member_the_schema_names_is_read() {
+        const NAMED: &[(&str, &[&str])] = &[
+            (
+                "verdict",
+                &[
+                    "schema",
+                    "tool",
+                    "evaluated_on",
+                    "seals",
+                    "verdict",
+                    "exit",
+                    "summary",
+                    "rules",
+                    "expired_waivers",
+                    "unused_waivers",
+                    "notes",
+                ],
+            ),
+            ("tool", &["name", "version"]),
+            (
+                "seals",
+                &[
+                    "policy_sha256",
+                    "rank_sha256",
+                    "patch_sha256",
+                    "patch_facts_sha256",
+                    "provenance",
+                    "ranked_by",
+                    "git",
+                    "claims",
+                ],
+            ),
+            ("ranked_by", &["version", "sha256"]),
+            (
+                "git",
+                &["path", "version", "sha256", "admission", "allowlist_sha256"],
+            ),
+            ("claims", &["base", "head", "verified"]),
+            ("exit", &["code", "name", "action"]),
+            (
+                "summary",
+                &["files", "rules", "passed", "waived", "held", "failed"],
+            ),
+            (
+                "rule",
+                &["id", "kind", "severity", "outcome", "why", "violations"],
+            ),
+            (
+                "violation",
+                &[
+                    "path",
+                    "message",
+                    "signal",
+                    "evidence",
+                    "evidence_truncated",
+                    "waived_by",
+                ],
+            ),
+            ("citation", &["address", "side", "line"]),
+            ("waiver_note", &["index", "rule", "owner", "expires"]),
+            ("note", &["code", "path", "detail"]),
+        ];
+        let source = include_str!("verdict_v2.rs");
+        let code = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the module has code before its tests");
+        for (object, members) in NAMED {
+            for member in *members {
+                assert!(
+                    code.contains(&format!("\"{member}\"")),
+                    "`{object}.{member}` is named by the schema and read nowhere"
+                );
+            }
         }
     }
 

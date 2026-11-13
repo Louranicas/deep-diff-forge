@@ -322,8 +322,13 @@ every gate ran as root inside the container. Gates refuse to run unless
   carry the SHA-256 of the policy, of the patch and of the ranker this hook gave, be on a
   ranking the judge produced, and be on a Git whose admission is `approved`. Open on purpose:
   members a later forge-warden adds, and a rule `kind` or note `code` this version does not
-  know. Not checked: the date the judge evaluated on (a verdict for the same policy, patch
-  and ranker is the same verdict tomorrow). A code
+  know. A member the schema makes optional is checked when it is present. Not checked: the
+  date the judge evaluated on (a verdict for the same policy, patch and ranker is the same
+  verdict tomorrow).
+- **A ranker is hashed under bounds.** To seal a verdict to the ranker it gave, the hook
+  hashes each candidate in pieces: a regular file of at most 256 MiB, and at most 8 seconds
+  for all candidates of one stop. One that is larger, slower or not a regular file is not
+  offered, and the stop says which and why. A code
   without that, a code that is not a verdict, a missing judge or policy, or a ranker the
   policy does not admit is UNJUDGED: never a pass, and never a block. The seals bind an
   answer to its inputs; they do not authenticate the program.

@@ -620,13 +620,20 @@ fn judge(
         reason: "this binary's own path could not be found, so no ranker could be offered"
             .to_owned(),
     };
+    let seal_by = now() + RANKER_SEAL_LIMIT;
     for ranker in rankers(args) {
         // The verdict must name the ranker it was given, by its digest.
-        let Some(ranker_sha256) = file_sha256(&ranker) else {
-            last = Judged::Unjudged {
-                reason: "a ranker could not be read to seal the verdict to it".to_owned(),
-            };
-            continue;
+        let ranker_sha256 = match file_sha256(&ranker, seal_by) {
+            Ok(digest) => digest,
+            Err(why) => {
+                last = Judged::Unjudged {
+                    reason: format!(
+                        "the ranker {} {why}, so no verdict could be sealed to it",
+                        hook::shown_path(&ranker.to_string_lossy())
+                    ),
+                };
+                continue;
+            }
         };
         let sealed = hook::Sealed {
             policy: &policy_sha256,
@@ -643,11 +650,59 @@ fn judge(
     Ok(Some(last))
 }
 
-/// The SHA-256 of the file at `path`, as hex; `None` when it cannot be read.
-fn file_sha256(path: &Path) -> Option<String> {
-    std::fs::read(path)
-        .ok()
-        .map(|bytes| deep_diff_forge_core::sha256_hex(&bytes))
+/// The clock a seal deadline is read from.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the seal clock door: hashing a ranker has a deadline, as the judge and Git have"
+)]
+fn now() -> std::time::Instant {
+    std::time::Instant::now()
+}
+
+/// The largest ranker that is hashed. A release build of this binary is a few megabytes and a
+/// debug build under a hundred; forge-warden itself refuses an executable over 512 MiB.
+const RANKER_BYTES_CAP: u64 = 256 * 1024 * 1024;
+/// How long hashing rankers may take in one hook, all candidates together. It leaves the
+/// client's sixty seconds room for Git, the judge and the message.
+const RANKER_SEAL_LIMIT: Duration = Duration::from_secs(8);
+
+/// The SHA-256 of the regular file at `path`, as hex, or why there is none: the file is not a
+/// regular file, is over [`RANKER_BYTES_CAP`], cannot be read, or `deadline` passed.
+///
+/// It is read in pieces and its size is checked first. Reading a candidate whole, with no
+/// bound, made a 256 MiB file in the ranker directory cost 270 MiB and half the client's
+/// timeout before the bounded judge was even started (review V4 round 4, VD4R4-M-2).
+fn file_sha256(path: &Path, deadline: std::time::Instant) -> Result<String, &'static str> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|_| "could not be opened")?;
+    let found = file.metadata().map_err(|_| "could not be read")?;
+    if !found.is_file() {
+        return Err("is not a regular file");
+    }
+    if found.len() > RANKER_BYTES_CAP {
+        return Err("is over 256 MiB");
+    }
+    let mut hasher = deep_diff_forge_core::Sha256::new();
+    let mut piece = vec![0u8; 64 * 1024];
+    let mut left = RANKER_BYTES_CAP;
+    loop {
+        if now() >= deadline {
+            return Err("could not be hashed in the time a hook has");
+        }
+        let read = file.read(&mut piece).map_err(|_| "could not be read")?;
+        if read == 0 {
+            return Ok(hasher.finish_hex());
+        }
+        // A file that grew past the cap while it was read.
+        left = left
+            .checked_sub(u64::try_from(read).unwrap_or(u64::MAX))
+            .ok_or("is over 256 MiB")?;
+        hasher.update(&piece[..read]);
+    }
 }
 
 /// When the agent wants to stop: have the change judged, and block only on a fail that is not
@@ -953,9 +1008,17 @@ fn probe(
     );
     let mut last =
         "this binary's own path could not be found, so no ranker could be offered".to_owned();
+    let seal_by = now() + RANKER_SEAL_LIMIT;
     for ranker in rankers(args) {
-        let Some(ranker_sha256) = file_sha256(&ranker) else {
-            continue;
+        let ranker_sha256 = match file_sha256(&ranker, seal_by) {
+            Ok(digest) => digest,
+            Err(why) => {
+                last = format!(
+                    "the ranker {} {why}, so no verdict could be sealed to it",
+                    hook::shown_path(&ranker.to_string_lossy())
+                );
+                continue;
+            }
         };
         let sealed = hook::Sealed {
             policy: &policy_sha256,
@@ -1077,6 +1140,53 @@ mod tests {
         ] {
             assert_eq!(probe_patch(name, policy), None, "{name:?}");
         }
+    }
+
+    /// Review V4 round 4, VD4R4-M-2: a ranker is hashed in pieces, and one that is too large,
+    /// not a regular file, or too slow to hash is refused with its reason instead of being
+    /// read whole.
+    #[test]
+    fn a_ranker_is_hashed_under_a_size_and_a_time_bound() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("ranker-seal");
+        let soon = || now() + Duration::from_secs(30);
+        let small = scratch.write("small", b"abc");
+        assert_eq!(
+            file_sha256(&small, soon()).as_deref(),
+            Ok("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        );
+        // larger than one piece, cut at a piece boundary and not
+        let bytes: Vec<u8> = (0..200_000u32)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        let larger = scratch.write("larger", &bytes);
+        assert_eq!(
+            file_sha256(&larger, soon()),
+            Ok(deep_diff_forge_core::sha256_hex(&bytes))
+        );
+        // over the cap by its size alone: refused before a byte is read (the file is sparse)
+        let huge = scratch.join("huge");
+        std::fs::File::create(&huge)
+            .unwrap()
+            .set_len(RANKER_BYTES_CAP + 1)
+            .unwrap();
+        assert_eq!(file_sha256(&huge, soon()), Err("is over 256 MiB"));
+        // exactly at the cap is allowed to start, and a deadline that has passed stops it
+        std::fs::File::create(&huge)
+            .unwrap()
+            .set_len(RANKER_BYTES_CAP)
+            .unwrap();
+        assert_eq!(
+            file_sha256(&huge, now()),
+            Err("could not be hashed in the time a hook has")
+        );
+        assert_eq!(
+            file_sha256(scratch.path(), soon()),
+            Err("is not a regular file")
+        );
+        assert_eq!(
+            file_sha256(&scratch.join("missing"), soon()),
+            Err("could not be opened")
+        );
     }
 
     #[test]
