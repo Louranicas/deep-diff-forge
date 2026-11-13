@@ -1341,3 +1341,38 @@ fn the_seal_helper_lists_each_ranker_with_its_digest_or_its_refusal() {
     assert_eq!(list[2]["refused"], "is over 256 MiB");
     assert!(list[2].get("sha256").is_none());
 }
+
+/// Review V4 round 7, VD4R7-L-1: a file whose name is not UTF-8 cannot be written in the helper's
+/// list, so it takes none of the seven places: the seven files after it are all offered. Before,
+/// it took the first place, came back as a null path, and the seventh file was never tried.
+/// (Linux only: other systems refuse to create such a name.)
+#[cfg(target_os = "linux")]
+#[test]
+fn a_name_the_helper_cannot_write_takes_no_place() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let scratch = Scratch::new("hook-seal-names");
+    let dir = scratch.join("rankers");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join(std::ffi::OsStr::from_bytes(b"a\xff")), "x").unwrap();
+    for index in 1..=8 {
+        std::fs::write(dir.join(format!("b{index}")), "abc").unwrap();
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(["agent", "hook", "seal-rankers", "--ranker-dir"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let list: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let names: Vec<String> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .skip(1)
+        .map(|entry| {
+            let path = entry["path"].as_str().expect("every path is a string");
+            path.rsplit('/').next().unwrap().to_owned()
+        })
+        .collect();
+    assert_eq!(names, ["b1", "b2", "b3", "b4", "b5", "b6", "b7"]);
+}

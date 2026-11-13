@@ -117,6 +117,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   ranker directory before it cut the list to eight, so 500,000 empty files cost 69 MiB. The
   files that come first by name are now chosen while the directory is read, seven paths held
   at most, and only a path that would be kept is asked whether it is a file.
+- **Round 7 of the same review (NO-GO on one low point).** The memory finding was closed
+  (500,000 entries: 9 MiB, was 69 MiB). New: a file whose name is not UTF-8 took one of the
+  seven places and could not be written in the helper's list, so a later ranker that could
+  have been offered was not. Such a name takes no place now.
   `deep_diff_forge_patch::file_at_commit` reads a regular file from a commit, which is how
   the policy is read.
 

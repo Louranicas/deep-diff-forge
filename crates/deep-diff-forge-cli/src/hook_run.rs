@@ -516,10 +516,18 @@ fn rankers(args: &[String]) -> Vec<PathBuf> {
         list.extend(first_by_name(
             entries.filter_map(Result::ok).map(|entry| entry.path()),
             RANKERS_TRIED.saturating_sub(list.len()),
-            Path::is_file,
+            offerable,
         ));
     }
     list
+}
+
+/// Whether `path` is a ranker the helper can offer: a regular file whose path it can write in
+/// its list, which is JSON, so the path is UTF-8. One that it cannot name must not take a
+/// place (review V4 round 7, VD4R7-L-1: a file named `a<0xff>` took one of the seven places
+/// and was dropped by the parent, so the seventh file that could be offered never was).
+fn offerable(path: &Path) -> bool {
+    path.to_str().is_some() && path.is_file()
 }
 
 /// The `keep` paths of `paths` that come first in order and that `wanted` accepts, in order.
