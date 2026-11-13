@@ -8,7 +8,9 @@
     reason = "integration test: drives real processes, the environment and wall-clock time"
 )]
 
-use deep_diff_forge_patch::{GitAcquireError, GitAcquireOptions, file_at_commit, judge_patch};
+use deep_diff_forge_patch::{
+    GitAcquireError, GitAcquireOptions, JudgePatchError, file_at_commit, judge_patch,
+};
 use deep_diff_forge_testkit::Scratch;
 use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt as _;
@@ -259,7 +261,7 @@ fn a_clean_tree_gives_an_empty_patch_and_a_bad_base_is_refused() {
         assert!(
             matches!(
                 judge_patch(&root, bad, &work, &options()),
-                Err(GitAcquireError::InvalidSelection { .. })
+                Err(JudgePatchError::NoBase)
             ),
             "{bad}"
         );
@@ -392,6 +394,68 @@ fn only_the_working_tree_and_the_ignore_rules_shape_the_patch() {
     );
 }
 
+/// Review V4 round 2, VD4R2-M-1. In a sparse checkout the files outside the pattern are absent
+/// on purpose. A tree staged from the working tree showed each of them as deleted. Such a
+/// working tree is refused by name, and so is one where a path was marked by hand; a failure
+/// is not the same answer as "no base".
+#[test]
+fn a_working_tree_with_skipped_paths_is_refused_by_name() {
+    let scratch = Scratch::new("judge-patch-sparse");
+    let root = scratch.join("repo");
+    std::fs::create_dir(&root).unwrap();
+    git(&root, &["init", "--quiet"]);
+    std::fs::write(root.join("kept.txt"), "kept base\n").unwrap();
+    std::fs::write(root.join("hidden.txt"), "hidden base\n").unwrap();
+    git(&root, &["add", "--all"]);
+    git(&root, &["commit", "--quiet", "-m", "base"]);
+    // control: an ordinary change is a patch of one file
+    std::fs::write(root.join("kept.txt"), "kept changed\n").unwrap();
+    let plain = judge_patch(&root, "HEAD", &fresh(&scratch, "plain"), &options()).unwrap();
+    let shown = String::from_utf8_lossy(&plain.bytes).into_owned();
+    assert!(
+        shown.contains("kept.txt") && !shown.contains("hidden.txt"),
+        "{shown}"
+    );
+
+    // Vesper's reproduction: a sparse checkout without `hidden.txt`
+    git(&root, &["sparse-checkout", "set", "--no-cone", "/kept.txt"]);
+    assert!(
+        !root.join("hidden.txt").exists(),
+        "the checkout is not sparse"
+    );
+    let before = untouched(&root);
+    assert!(matches!(
+        judge_patch(&root, "HEAD", &fresh(&scratch, "sparse"), &options()),
+        Err(JudgePatchError::SkipWorktree)
+    ));
+    assert_eq!(
+        untouched(&root),
+        before,
+        "the refusal changed the repository"
+    );
+    git(&root, &["sparse-checkout", "disable"]);
+    assert!(judge_patch(&root, "HEAD", &fresh(&scratch, "full"), &options()).is_ok());
+
+    // a path marked by hand
+    git(&root, &["update-index", "--skip-worktree", "hidden.txt"]);
+    assert!(matches!(
+        judge_patch(&root, "HEAD", &fresh(&scratch, "marked"), &options()),
+        Err(JudgePatchError::SkipWorktree)
+    ));
+    assert!(
+        JudgePatchError::SkipWorktree
+            .to_string()
+            .contains("skip-worktree"),
+        "the refusal does not name its reason"
+    );
+    assert!(matches!(
+        JudgePatchError::from(GitAcquireError::InvalidSelection {
+            detail: "x".to_owned()
+        }),
+        JudgePatchError::Failed(_)
+    ));
+}
+
 #[test]
 fn a_patch_over_the_byte_budget_is_refused_not_cut() {
     let scratch = Scratch::new("judge-patch-budget");
@@ -402,7 +466,9 @@ fn a_patch_over_the_byte_budget_is_refused_not_cut() {
     };
     assert!(matches!(
         judge_patch(&root, "HEAD", &fresh(&scratch, "work"), &small),
-        Err(GitAcquireError::BudgetExceeded { limit_bytes: 64 })
+        Err(JudgePatchError::Failed(GitAcquireError::BudgetExceeded {
+            limit_bytes: 64
+        }))
     ));
 }
 

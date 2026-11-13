@@ -66,6 +66,24 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     the repository's own Git directory. It is now staged in the scratch one, so neither that
     file nor the repository's configuration is read; a `.gitattributes` in the working tree
     still converts, and is in the patch.
+- **Round 2 of the same review (verdict NO-GO again) and its fixes.** The three findings of
+  round 1 were closed. Three were new, and a fourth was found while fixing.
+  - *High: `agent doctor --gate` called any text holding the words `agent hook stop` a
+    registered stop hook* (`true # agent hook stop` made the gate exit 0). A registered stop
+    hook is now read only as the command `agent setup --hooks` prints: one program with plain
+    or single-quoted arguments, this binary, and the judge, policy and rankers the gate
+    checked.
+  - *Medium: a sparse checkout was judged as if its absent files were deleted.* A working
+    tree whose index marks paths skip-worktree is refused by name
+    (`JudgePatchError::SkipWorktree`): advice stays silent and a stop is UNJUDGED.
+  - *Medium: a sealed document that contradicted itself was a pass* (`"verdict": "pass"`
+    beside `"exit": {"code": 7}`, half its members missing). The document must be whole, say
+    one thing in `verdict`, `exit.code` and the process exit, hold no rule stricter than its
+    verdict, and give no key twice.
+  - *Found while fixing: a patch that could not be made was "nothing to judge".* One error
+    stood for "no commit yet" and for several failures, so a failure let a stop pass in
+    silence. `judge_patch` now returns its own error (`NoBase`, `SkipWorktree`, `Failed`),
+    and only no base and no change are nothing to judge.
   `deep_diff_forge_patch::file_at_commit` reads a regular file from a commit, which is how
   the policy is read.
 

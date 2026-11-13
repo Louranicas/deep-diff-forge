@@ -301,10 +301,22 @@ every gate ran as root inside the container. Gates refuse to run unless
   account can.
 - **The policy is read from the base commit**, never from the working tree, and only when it
   is a regular file there.
+- **A failure is never "nothing to judge".** Only two things are: no commit yet, and no
+  change. A patch that cannot be made (Git fails, a file cannot be prepared, the working tree
+  has paths marked skip-worktree as in a sparse checkout) makes a stop UNJUDGED with the
+  reason. Before, several such failures let a stop pass in silence.
+- **`agent doctor --gate` reads a registered stop hook only in the form `agent setup --hooks`
+  prints.** One program and its arguments, written with plain characters and single quotes:
+  no comment, second command, pipe, redirection or substitution. The program must be this
+  binary, and the judge, policy and rankers it names must be the ones the gate checked.
 - **The judge decides, by its exit code and its document together.** DDF starts
   `forge-warden` under a deadline and output caps. Exit 0, 7 or 8 is a verdict only with a
-  `forge-warden.verdict.v2` document that says the same outcome, carries the SHA-256 of the
-  policy and of the patch this hook wrote, and is on a ranking the judge produced. A code
+  whole `forge-warden.verdict.v2` document: every member the schema requires, of its type; no
+  key given twice at any depth; the same outcome in `verdict`, in `exit.code` and in the
+  process exit; no rule stricter than the verdict; the SHA-256 of the policy and of the patch
+  this hook wrote; a ranking the judge produced. Members a later forge-warden adds are
+  accepted, and the date and the ranker's identity are not checked here (the policy pins the
+  ranker and the judge enforces it). A code
   without that, a code that is not a verdict, a missing judge or policy, or a ranker the
   policy does not admit is UNJUDGED: never a pass, and never a block. The seals bind an
   answer to its inputs; they do not authenticate the program.

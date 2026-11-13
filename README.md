@@ -319,9 +319,10 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   an absolute path. A judge inside the repository it would judge is not run, however it was
   named: the change could have written it.
 - **A verdict is an exit code and a document that agree.** Exit 0, 7 or 8 counts only with a
-  `forge-warden.verdict.v2` document that says the same outcome, is sealed to the policy and
-  the patch this hook wrote (their SHA-256), and is on a ranking the judge produced itself.
-  Anything else is UNJUDGED: a program that is merely named `forge-warden` and exits 0 does not
+  whole `forge-warden.verdict.v2` document (every member the schema requires, no key given
+  twice) that says the same outcome in `verdict` and in its own `exit.code`, holds no rule
+  stricter than that outcome, is sealed to the policy and the patch this hook wrote (their
+  SHA-256), and is on a ranking the judge produced itself. Anything else is UNJUDGED: a program that is merely named `forge-warden` and exits 0 does not
   pass a stop. The seals do not prove who wrote the document; they bind a real judge's answer
   to these inputs.
 - **The policy is the one at the base commit** (`warden.toml`, or `--policy NAME`), read from
@@ -337,7 +338,9 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   make a commit differ (`core.autocrlf`, `core.fileMode=false`, a filter), the judged tree is
   the working tree's bytes and modes. Making the patch writes nothing in the repository: the
   index and the objects are in a scratch directory under the Git directory, removed
-  afterwards.
+  afterwards. A working tree with paths marked skip-worktree (a sparse checkout) is not
+  judged: its absent files would read as deletions, so advice stays silent and a stop is
+  UNJUDGED with that reason.
 - **The ranker is this binary first**, then every file in `--ranker-dir DIR`. forge-warden
   admits a ranker only if the policy lists its SHA-256, so a newer DDF than the policy admits
   can still have its stop judged by an older, admitted one.
@@ -356,7 +359,9 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   judge is given a probe, a patch that adds one comment line to the policy, and must return a
   verdict with a ranker this machine has), whether the policy protects its own file (a policy
   that lets the probe pass can be loosened by any change), and whether a Claude Code settings
-  file registers the stop hook. A link that cannot be checked because an earlier one is
+  file registers the stop hook: the exact command `agent setup --hooks` prints, for this
+  binary, with the judge, the policy and the rankers that were checked (a command that only
+  holds the words, runs another program, or names another judge is not it). A link that cannot be checked because an earlier one is
   missing is reported as not ready, never as fine. Exit 0 only when every link is ready,
   otherwise 7 (the contract asked for is not met). In `--json` the checks are named `git`,
   `repository`, `policy`, `judge`, `chain`, `policy_protects_itself` and `hooks_registered`,

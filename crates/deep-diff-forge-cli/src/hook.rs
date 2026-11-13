@@ -258,22 +258,92 @@ pub(crate) struct Sealed<'a> {
 /// The schema of the document a judge prints.
 const VERDICT_SCHEMA: &str = "forge-warden.verdict.v2";
 
-/// Why `verdict` is not the judge's own verdict of `outcome` on these inputs; `None` when it
-/// is. The document has to say what the exit code says, and to be sealed to the policy and the
-/// patch this hook wrote, from a ranking the judge produced itself.
-fn not_a_verdict(verdict: Option<&Value>, outcome: &str, sealed: Sealed) -> Option<String> {
-    let Some(document) = verdict else {
-        return Some("it printed no verdict document".to_owned());
+/// Whether `value` is 64 lowercase hex digits: a SHA-256 as forge-warden writes one.
+fn is_seal(value: &Value) -> bool {
+    value.as_str().is_some_and(|text| {
+        text.len() == 64
+            && text
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+/// Why `verdict` is not the judge's own verdict of `outcome` (process exit `code`) on these
+/// inputs; `None` when it is.
+///
+/// The document has to be a whole `forge-warden.verdict.v2`: every member that schema requires,
+/// of its type. It has to say one thing: the process exit, `verdict` and the document's own
+/// `exit.code` agree, and no rule has an outcome stricter than the verdict (a pass with a
+/// failed rule is not a pass). And it has to be about this stop: sealed to the policy and the
+/// patch this hook wrote, on a ranking the judge produced itself. A sealed document that said
+/// `"verdict": "pass"` beside `"exit": {"code": 7}` and lacked half its members was taken for a
+/// pass (review V4 round 2, VD4R2-M-2).
+///
+/// Not checked, on purpose: members this version does not know (a later forge-warden may add
+/// some under the same schema name), the date the judge evaluated on, and which ranker it ran
+/// (the policy decides that, and the judge enforces it).
+fn not_a_verdict(
+    verdict: Option<&Value>,
+    outcome: &str,
+    code: i32,
+    sealed: Sealed,
+) -> Option<String> {
+    let Some(document) = verdict.filter(|document| document.is_object()) else {
+        return Some("it printed no verdict document that can be read".to_owned());
     };
     if document["schema"] != VERDICT_SCHEMA {
         return Some(format!("its document is not a {VERDICT_SCHEMA}"));
     }
-    if document["verdict"] != outcome {
+    let seals = &document["seals"];
+    let rules = document["rules"].as_array();
+    let whole = document["tool"]["name"] == "forge-warden"
+        && document["tool"]["version"].is_string()
+        && document["evaluated_on"].is_string()
+        && document["verdict"].is_string()
+        && document["exit"]["code"].is_u64()
+        && document["exit"]["name"].is_string()
+        && document["exit"]["action"].is_string()
+        && document["summary"].is_object()
+        && is_seal(&seals["policy_sha256"])
+        && is_seal(&seals["patch_sha256"])
+        && is_seal(&seals["rank_sha256"])
+        && seals["provenance"].is_string()
+        && seals["ranked_by"].is_object()
+        && ["expired_waivers", "unused_waivers", "notes"]
+            .iter()
+            .all(|member| document[*member].is_array())
+        && rules.is_some_and(|rules| {
+            rules.iter().all(|rule| {
+                rule["id"].is_string()
+                    && rule["outcome"].is_string()
+                    && rule["why"].is_string()
+                    && rule["violations"].is_array()
+            })
+        });
+    if !whole {
         return Some(format!(
-            "its document does not say {outcome}, which its exit code says"
+            "its document lacks a member a {VERDICT_SCHEMA} must have, or has one of another type"
         ));
     }
-    let seals = &document["seals"];
+    if document["verdict"] != outcome || document["exit"]["code"] != code {
+        return Some(format!(
+            "its document does not say {outcome} (exit {code}) as its exit code does"
+        ));
+    }
+    let stricter: &[&str] = match outcome {
+        "pass" => &["hold", "fail"],
+        "hold" => &["fail"],
+        _ => &[],
+    };
+    if rules.is_some_and(|rules| {
+        rules
+            .iter()
+            .any(|rule| stricter.iter().any(|worse| rule["outcome"] == *worse))
+    }) {
+        return Some(format!(
+            "its document says {outcome} and holds a rule with a stricter outcome"
+        ));
+    }
     if seals["policy_sha256"] != sealed.policy_sha256 {
         return Some("its verdict is not sealed to the policy it was given".to_owned());
     }
@@ -284,6 +354,162 @@ fn not_a_verdict(verdict: Option<&Value>, outcome: &str, sealed: Sealed) -> Opti
         return Some("its verdict is not on a ranking it produced itself".to_owned());
     }
     None
+}
+
+/// The deepest nesting [`has_duplicate_key`] follows; a JSON parser refuses text nested deeper.
+const DUPLICATE_KEY_DEPTH: usize = 128;
+
+/// Whether some object in the JSON `text` gives a key twice, or the text is nested too deep to
+/// say. A JSON reader keeps one of two equal keys and says nothing, so two readers of one
+/// document can disagree about what it says; such a document is not read at all. `text` is
+/// walked as JSON that a parser accepts; for other text the answer means nothing.
+pub(crate) fn has_duplicate_key(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    // For each open container: its keys so far if it is an object, `None` if it is an array.
+    let mut open: Vec<Option<BTreeSet<String>>> = Vec::new();
+    let mut key_next = false;
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'{' | b'[' => {
+                if open.len() == DUPLICATE_KEY_DEPTH {
+                    return true;
+                }
+                let object = bytes[at] == b'{';
+                open.push(object.then(BTreeSet::new));
+                key_next = object;
+                at += 1;
+            }
+            b'}' | b']' => {
+                open.pop();
+                key_next = false;
+                at += 1;
+            }
+            b',' => {
+                key_next = matches!(open.last(), Some(Some(_)));
+                at += 1;
+            }
+            b'"' => {
+                let start = at;
+                at += 1;
+                while at < bytes.len() && bytes[at] != b'"' {
+                    at += if bytes[at] == b'\\' { 2 } else { 1 };
+                }
+                at = (at + 1).min(bytes.len());
+                if key_next {
+                    // Two spellings of one key (`"a"` and `"a"`) are one key.
+                    let key = text
+                        .get(start..at)
+                        .and_then(|raw| serde_json::from_str::<String>(raw).ok())
+                        .unwrap_or_default();
+                    if let Some(Some(keys)) = open.last_mut()
+                        && !keys.insert(key)
+                    {
+                        return true;
+                    }
+                    key_next = false;
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    false
+}
+
+/// The characters `agent setup` writes without quotes in a command (its `sh_quote`).
+fn is_plain(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "_./-:@%+=,".contains(c)
+}
+
+/// The words of a command line written the way `agent setup --hooks` writes one: words
+/// separated by one space, each made of plain characters and of parts in single quotes, with
+/// `\'` for a quote. `None` for any other text: a comment, a second command, a pipe, a
+/// substitution, a double quote, a tab. What is read here is exactly what a shell runs as one
+/// program with these arguments.
+pub(crate) fn plain_words(command: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let (mut word, mut started) = (String::new(), false);
+    let mut rest = command.chars();
+    loop {
+        match rest.next() {
+            None => break,
+            Some(' ') => {
+                if !started {
+                    return None;
+                }
+                words.push(std::mem::take(&mut word));
+                started = false;
+            }
+            Some('\'') => {
+                started = true;
+                loop {
+                    match rest.next()? {
+                        '\'' => break,
+                        c => word.push(c),
+                    }
+                }
+            }
+            Some('\\') => {
+                if rest.next()? != '\'' {
+                    return None;
+                }
+                word.push('\'');
+                started = true;
+            }
+            Some(c) if is_plain(c) => {
+                word.push(c);
+                started = true;
+            }
+            Some(_) => return None,
+        }
+    }
+    if !started {
+        return None;
+    }
+    words.push(word);
+    Some(words)
+}
+
+/// A stop hook's command, read as the one `agent setup --hooks` prints.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct StopCommand {
+    /// The program it runs.
+    pub(crate) program: String,
+    pub(crate) judge: Option<String>,
+    pub(crate) policy: Option<String>,
+    pub(crate) ranker_dir: Option<String>,
+}
+
+/// Read `command` as `PROGRAM agent hook stop --client claude` followed only by `--judge`,
+/// `--policy` and `--ranker-dir`, each with its value and at most once. `None` for anything
+/// else. A command that merely holds the words `agent hook stop` (in a comment, as an argument
+/// of `echo`) used to count as a registered stop hook (review V4 round 2, VD4R2-H-1).
+pub(crate) fn stop_command(command: &str) -> Option<StopCommand> {
+    let words = plain_words(command)?;
+    let (program, rest) = words.split_first()?;
+    let fixed = ["agent", "hook", "stop", "--client", "claude"];
+    if rest.len() < fixed.len() || rest.iter().zip(fixed).any(|(word, fixed)| word != fixed) {
+        return None;
+    }
+    let mut found = StopCommand {
+        program: program.clone(),
+        ..StopCommand::default()
+    };
+    for option in rest[fixed.len()..].chunks(2) {
+        let [name, value] = option else {
+            return None;
+        };
+        let slot = match name.as_str() {
+            "--judge" => &mut found.judge,
+            "--policy" => &mut found.policy,
+            "--ranker-dir" => &mut found.ranker_dir,
+            _ => return None,
+        };
+        if slot.replace(value.clone()).is_some() {
+            return None;
+        }
+    }
+    Some(found)
 }
 
 /// Read a judge's exit code, its `forge-warden.verdict.v2` document and, when it gave no
@@ -331,7 +557,7 @@ pub(crate) fn judged(
             .collect()
     };
     let verdict_of = |code: i32, outcome: &str, judged: &dyn Fn() -> Judged| match not_a_verdict(
-        verdict, outcome, sealed,
+        verdict, outcome, code, sealed,
     ) {
         None => judged(),
         Some(why) => Judged::Unjudged {
@@ -725,21 +951,43 @@ mod tests {
         patch_sha256: "2222222222222222222222222222222222222222222222222222222222222222",
     };
 
-    /// A verdict document of `outcome`, sealed to [`SEALED`], with one rule of each outcome.
+    /// A whole verdict document of `outcome`, sealed to [`SEALED`], with the rules a verdict
+    /// of that outcome can hold: a passed one always, a held one unless it passes, a failed one
+    /// if it fails.
     fn document(outcome: &str) -> Value {
+        let code = match outcome {
+            "pass" => 0,
+            "fail" => 7,
+            _ => 8,
+        };
+        let mut rules =
+            vec![json!({"id": "size", "outcome": "pass", "why": "w3", "violations": []})];
+        if outcome != "pass" {
+            rules.push(json!({"id": "keep-the-tests", "outcome": "hold", "why": "w1", "violations": [{"signal": "test_removed", "path": "tests/a.rs", "message": "m"}]}));
+        }
+        if outcome == "fail" {
+            rules.push(json!({"id": "no-secrets", "outcome": "fail", "why": "w2", "violations": [{"signal": "secret_like", "path": "src/k.rs", "message": "m"}]}));
+        }
         json!({
             "schema": "forge-warden.verdict.v2",
-            "verdict": outcome,
+            "tool": {"name": "forge-warden", "version": "0.2.0"},
+            "evaluated_on": "2026-11-13",
             "seals": {
                 "policy_sha256": SEALED.policy_sha256,
+                "rank_sha256": SEALED.policy_sha256,
                 "patch_sha256": SEALED.patch_sha256,
+                "patch_facts_sha256": null,
                 "provenance": "produced",
+                "ranked_by": {},
+                "git": {},
             },
-            "rules": [
-                {"id": "keep-the-tests", "outcome": "hold", "why": "w1", "violations": [{"signal": "test_removed", "path": "tests/a.rs", "message": "m"}]},
-                {"id": "no-secrets", "outcome": "fail", "why": "w2", "violations": [{"signal": "secret_like", "path": "src/k.rs", "message": "m"}]},
-                {"id": "size", "outcome": "pass", "why": "w3", "violations": []},
-            ],
+            "verdict": outcome,
+            "exit": {"code": code, "name": "n", "action": "a"},
+            "summary": {},
+            "rules": rules,
+            "expired_waivers": [],
+            "unused_waivers": [],
+            "notes": [],
         })
     }
 
@@ -770,6 +1018,10 @@ mod tests {
             judged(Some(0), Some(&document("pass")), Some("noise"), SEALED),
             Judged::Pass
         );
+        // members this version does not know do not unmake a verdict
+        let mut later = document("pass");
+        later["a_member_of_a_later_version"] = json!({"x": 1});
+        assert_eq!(judged(Some(0), Some(&later), None, SEALED), Judged::Pass);
         // every other way a judge can end is unjudged, each with its own reason
         let reasons: Vec<String> = [Some(3), Some(4), Some(1), Some(101), None]
             .into_iter()
@@ -813,7 +1065,35 @@ mod tests {
     #[test]
     fn an_exit_code_without_the_judges_own_sealed_document_is_unjudged() {
         type Spoil = (&'static str, fn(&mut Value));
-        let spoil: [Spoil; 7] = [
+        let spoil: [Spoil; 16] = [
+            // review V4 round 2, VD4R2-M-2: a document that contradicts itself, or is not whole
+            ("another exit code inside", |d| {
+                d["exit"]["code"] = json!(1);
+            }),
+            ("no exit member", |d| {
+                d.as_object_mut().unwrap().remove("exit");
+            }),
+            ("no tool", |d| {
+                d.as_object_mut().unwrap().remove("tool");
+            }),
+            ("another tool", |d| {
+                d["tool"]["name"] = json!("other");
+            }),
+            ("no date", |d| {
+                d.as_object_mut().unwrap().remove("evaluated_on");
+            }),
+            ("no summary", |d| {
+                d.as_object_mut().unwrap().remove("summary");
+            }),
+            ("rules that are not a list", |d| {
+                d["rules"] = json!({});
+            }),
+            ("a rule with no outcome", |d| {
+                d["rules"][0].as_object_mut().unwrap().remove("outcome");
+            }),
+            ("no notes", |d| {
+                d.as_object_mut().unwrap().remove("notes");
+            }),
             ("not a verdict document", |d| {
                 d["schema"] = json!("other.v1");
             }),
@@ -861,6 +1141,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A document that says one thing with its verdict and another with a rule or with the
+    /// exit code is not a verdict.
+    #[test]
+    fn a_document_that_contradicts_itself_or_the_exit_code_is_unjudged() {
+        // a verdict with a rule stricter than itself
+        for (exit, outcome, worse) in [
+            (0, "pass", "fail"),
+            (0, "pass", "hold"),
+            (8, "hold", "fail"),
+        ] {
+            let mut contradicts = document(outcome);
+            contradicts["rules"][0]["outcome"] = json!(worse);
+            let Judged::Unjudged { reason } = judged(Some(exit), Some(&contradicts), None, SEALED)
+            else {
+                panic!("a {outcome} with a rule that is {worse} was believed")
+            };
+            assert!(
+                reason.ends_with("holds a rule with a stricter outcome"),
+                "{reason}"
+            );
+        }
         // the document of one outcome under the exit code of another
         for (exit, outcome) in [
             (0, "fail"),
@@ -877,6 +1180,93 @@ mod tests {
                 "exit {exit} with a {outcome} document"
             );
         }
+    }
+
+    /// A JSON reader keeps one of two equal keys in silence; such a document is not read.
+    #[test]
+    fn a_key_given_twice_is_found_at_any_depth_and_in_any_spelling() {
+        for text in [
+            r#"{"verdict":"fail","verdict":"pass"}"#,
+            r#"{"a":{"b":1,"c":[{"d":1,"d":2}]}}"#,
+            r#"{"a":1,"a":2}"#,
+            r#"[{"x":1},{"y":{"z":1,"z":1}}]"#,
+        ] {
+            assert!(has_duplicate_key(text), "{text}");
+        }
+        for text in [
+            r#"{"a":1,"b":{"a":1},"c":[{"a":1},{"a":2}]}"#,
+            r#"{"a":"a","b":"a,\"a\":1","c":"}{"}"#,
+            r#"{"a":["a","a"],"b":"\\"}"#,
+            "[]",
+            "",
+            "7",
+        ] {
+            assert!(!has_duplicate_key(text), "{text}");
+        }
+        // nested deeper than a parser reads: no answer is "cannot say", which is refused
+        assert!(has_duplicate_key(&"[".repeat(DUPLICATE_KEY_DEPTH + 1)));
+        assert!(!has_duplicate_key(&format!(
+            "{}{}",
+            "[".repeat(DUPLICATE_KEY_DEPTH),
+            "]".repeat(DUPLICATE_KEY_DEPTH)
+        )));
+    }
+
+    /// Review V4 round 2, VD4R2-H-1: a stop hook is the command `agent setup --hooks` prints,
+    /// not any text that holds its words.
+    #[test]
+    fn a_stop_command_is_read_only_in_the_form_setup_prints() {
+        assert_eq!(
+            stop_command("/usr/bin/deep-diff-forge agent hook stop --client claude"),
+            Some(StopCommand {
+                program: "/usr/bin/deep-diff-forge".to_owned(),
+                ..StopCommand::default()
+            })
+        );
+        assert_eq!(
+            stop_command(
+                r"'/opt/my tools/ddf' agent hook stop --client claude --judge '/opt/it'\''s/fw' --policy p.toml --ranker-dir /r"
+            ),
+            Some(StopCommand {
+                program: "/opt/my tools/ddf".to_owned(),
+                judge: Some("/opt/it's/fw".to_owned()),
+                policy: Some("p.toml".to_owned()),
+                ranker_dir: Some("/r".to_owned()),
+            })
+        );
+        for other in [
+            "true # agent hook stop",
+            "echo agent hook stop",
+            "true # /bin/ddf agent hook stop --client claude",
+            "/bin/ddf agent hook stop --client claude # --judge /x",
+            "/bin/ddf agent hook stop --client claude; true",
+            "/bin/ddf agent hook stop --client claude || true",
+            "/bin/ddf agent hook stop --client claude | cat",
+            "/bin/ddf agent hook stop --client claude > /dev/null",
+            "/bin/ddf agent hook stop --client claude &",
+            "/bin/ddf agent hook stop --client claude --judge $(which fw)",
+            "/bin/ddf agent hook stop --client claude --judge \"/x\"",
+            "/bin/ddf agent hook stop --client claude --judge",
+            "/bin/ddf agent hook stop --client claude --judge /a --judge /b",
+            "/bin/ddf agent hook stop --client claude --other x",
+            "/bin/ddf agent hook stop --client codex",
+            "/bin/ddf agent hook post-tool --client claude",
+            "/bin/ddf agent hook stop",
+            "env X=1 /bin/ddf agent hook stop --client claude",
+            "/bin/ddf  agent hook stop --client claude",
+            " /bin/ddf agent hook stop --client claude",
+            "/bin/ddf agent hook stop --client claude ",
+            "/bin/ddf\tagent hook stop --client claude",
+            "/bin/ddf agent hook stop --client claude\ntrue",
+            "'/bin/ddf agent hook stop --client claude",
+            "",
+        ] {
+            assert_eq!(stop_command(other), None, "{other:?}");
+        }
+        assert_eq!(
+            plain_words(r"a 'b c' d'e'\''f'"),
+            Some(vec!["a".to_owned(), "b c".to_owned(), "de'f".to_owned()])
+        );
     }
 
     #[test]

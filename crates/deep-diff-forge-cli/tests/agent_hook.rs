@@ -99,8 +99,8 @@ fn repository(scratch: &Scratch) -> PathBuf {
 /// It appends its arguments and the policy it was given to `log`, prints `verdict` and exits
 /// with the code in `exit_file` (so a test can change the answer between runs). Like the real
 /// judge it seals its document to the policy and the patch it was given, and the document says
-/// what the exit code says: `"@VERDICT@"` becomes `pass`, `fail` or `hold` for 0, 7 or 8, and
-/// `"@SEALS@"` the seals.
+/// what the exit code says: `"@VERDICT@"` becomes `pass`, `fail` or `hold` for 0, 7 or 8,
+/// `"@CODE@"` the exit code, and `"@SEALS@"` the seals.
 fn judge(scratch: &Scratch, verdict: &Value) -> (PathBuf, PathBuf, PathBuf) {
     let (script, log, exit_file) = (
         scratch.join("judge"),
@@ -127,8 +127,8 @@ fn judge_script(log: &Path, exit_file: &Path, verdict: &Value) -> String {
          sum() {{ if command -v sha256sum >/dev/null 2>&1; then sha256sum < \"$1\"; else shasum -a 256 < \"$1\"; fi | cut -d' ' -f1; }}\n\
          code=\"$(cat '{exit}')\"\n\
          case \"$code\" in 0) said=pass;; 7) said=fail;; 8) said=hold;; *) said=none;; esac\n\
-         seals=\"{{\\\"policy_sha256\\\":\\\"$(sum \"$policy\")\\\",\\\"patch_sha256\\\":\\\"$(sum \"$patch\")\\\",\\\"provenance\\\":\\\"produced\\\"}}\"\n\
-         sed -e \"s/\\\"@VERDICT@\\\"/\\\"$said\\\"/\" -e \"s/\\\"@SEALS@\\\"/$seals/\" <<'VERDICT'\n{verdict}\nVERDICT\n\
+         seals=\"{{\\\"policy_sha256\\\":\\\"$(sum \"$policy\")\\\",\\\"rank_sha256\\\":\\\"$(sum \"$patch\")\\\",\\\"patch_sha256\\\":\\\"$(sum \"$patch\")\\\",\\\"provenance\\\":\\\"produced\\\",\\\"ranked_by\\\":{{}}}}\"\n\
+         sed -e \"s/\\\"@VERDICT@\\\"/\\\"$said\\\"/g\" -e \"s/\\\"@CODE@\\\"/$code/\" -e \"s/\\\"@SEALS@\\\"/$seals/\" <<'VERDICT'\n{verdict}\nVERDICT\n\
          exit \"$code\"\n",
         log = log.display(),
         exit = exit_file.display(),
@@ -152,14 +152,27 @@ fn write_program(path: &Path, body: &str) {
     assert!(writer.wait().unwrap().success());
 }
 
-/// A verdict document for the stand-in judge: one rule of `outcome`. The document's own
-/// outcome and its seals are filled in by the judge when it runs.
+/// A verdict document for the stand-in judge, with one rule. The document's outcome, its
+/// rule's outcome, its exit code and its seals are filled in by the judge when it runs, from
+/// the exit code it is told to give: like the real judge, it never contradicts itself.
 fn verdict(outcome: &str, rule: &str, signal: &str, path: &str) -> Value {
-    json!({"schema": "forge-warden.verdict.v2", "verdict": "@VERDICT@", "seals": "@SEALS@", "rules": [
-        {"id": rule, "kind": "forbid_signal", "severity": outcome, "outcome": outcome,
-         "why": "A silenced check hides the next real bug.",
-         "violations": [{"signal": signal, "path": path, "message": "m"}]}
-    ]})
+    json!({
+        "schema": "forge-warden.verdict.v2",
+        "tool": {"name": "forge-warden", "version": "0.2.0"},
+        "evaluated_on": "2026-11-13",
+        "seals": "@SEALS@",
+        "verdict": "@VERDICT@",
+        "exit": {"code": "@CODE@", "name": "n", "action": "a"},
+        "summary": {},
+        "rules": [
+            {"id": rule, "kind": "forbid_signal", "severity": outcome, "outcome": "@VERDICT@",
+             "why": "A silenced check hides the next real bug.",
+             "violations": [{"signal": signal, "path": path, "message": "m"}]}
+        ],
+        "expired_waivers": [],
+        "unused_waivers": [],
+        "notes": [],
+    })
 }
 
 #[test]
@@ -731,12 +744,23 @@ fn gate_fixture(name: &str) -> (Scratch, PathBuf, PathBuf, PathBuf, PathBuf, Pat
     (scratch, root, home, script, log, exit_file)
 }
 
-/// A settings document that registers the stop hook.
-fn stop_hook_settings() -> String {
-    json!({"hooks": {"Stop": [{"hooks": [
-        {"type": "command", "command": "deep-diff-forge agent hook stop --client claude"}
-    ]}]}})
-    .to_string()
+/// A settings document whose stop hook is `command`.
+fn settings_with(command: &str) -> String {
+    json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}}).to_string()
+}
+
+/// The stop command `agent setup --hooks` prints for this binary and `judge`.
+fn stop_command(judge: &Path) -> String {
+    format!(
+        "'{}' agent hook stop --client claude --judge '{}'",
+        env!("CARGO_BIN_EXE_deep-diff-forge"),
+        judge.display()
+    )
+}
+
+/// A settings document that registers the stop hook with `judge`.
+fn stop_hook_settings(judge: &Path) -> String {
+    settings_with(&stop_command(judge))
 }
 
 fn detail(doc: &Value, name: &str) -> String {
@@ -783,11 +807,41 @@ fn doctor_gate_checks_every_link_of_a_judged_stop() {
 
     // registered in the project's settings: the chain is ready
     std::fs::create_dir(root.join(".claude")).unwrap();
-    std::fs::write(
-        root.join(".claude/settings.local.json"),
-        stop_hook_settings(),
-    )
-    .unwrap();
+    let local = root.join(".claude/settings.local.json");
+    // Review V4 round 2, VD4R2-H-1: text that only holds the words is no stop hook, and
+    // neither is the right command for another program, another judge or another policy.
+    let other_judge = root.parent().unwrap().join("other-judge");
+    write_program(&other_judge, "#!/bin/sh\nexit 0\n");
+    let right = stop_command(&script);
+    for (command, why) in [
+        ("true # agent hook stop".to_owned(), "is not the command"),
+        ("echo agent hook stop".to_owned(), "is not the command"),
+        (format!("{right} || true"), "is not the command"),
+        (format!("true # {right}"), "is not the command"),
+        (
+            "/bin/sh agent hook stop --client claude".to_owned(),
+            "runs another program than this one",
+        ),
+        (stop_command(&other_judge), "would run another judge"),
+        (
+            format!("{right} --policy other.toml"),
+            "another policy file",
+        ),
+        (format!("{right} --ranker-dir /tmp"), "offers other rankers"),
+    ] {
+        std::fs::write(&local, settings_with(&command)).unwrap();
+        let (code, doc, _) = doctor_gate(&root, &home, &judge_arg);
+        assert_eq!(
+            (code, gate_checks(&doc)),
+            (7, gate_names([true, true, true, true, true, true, false])),
+            "{command}"
+        );
+        assert!(
+            detail(&doc, "hooks_registered").contains(why),
+            "{command}: {doc:#}"
+        );
+    }
+    std::fs::write(&local, stop_hook_settings(&script)).unwrap();
     let (code, doc, stderr) = doctor_gate(&root, &home, &judge_arg);
     assert_eq!(gate_checks(&doc), gate_names([true; 7]));
     assert_eq!(
@@ -795,9 +849,13 @@ fn doctor_gate_checks_every_link_of_a_judged_stop() {
         (0, Some(true), "")
     );
     // or in the user's
-    std::fs::remove_file(root.join(".claude/settings.local.json")).unwrap();
+    std::fs::remove_file(&local).unwrap();
     std::fs::create_dir(home.join(".claude")).unwrap();
-    std::fs::write(home.join(".claude/settings.json"), stop_hook_settings()).unwrap();
+    std::fs::write(
+        home.join(".claude/settings.json"),
+        stop_hook_settings(&script),
+    )
+    .unwrap();
     let (code, doc, _) = doctor_gate(&root, &home, &judge_arg);
     assert_eq!((code, gate_checks(&doc)), (0, gate_names([true; 7])));
 
@@ -819,7 +877,11 @@ fn doctor_gate_names_the_link_that_is_missing() {
     let (scratch, root, home, script, _log, exit_file) = gate_fixture("doctor-gate-broken");
     let judge_arg = ["--judge", script.to_str().unwrap()];
     std::fs::create_dir(home.join(".claude")).unwrap();
-    std::fs::write(home.join(".claude/settings.json"), stop_hook_settings()).unwrap();
+    std::fs::write(
+        home.join(".claude/settings.json"),
+        stop_hook_settings(&script),
+    )
+    .unwrap();
     let (code, doc, _) = doctor_gate(&root, &home, &judge_arg);
     assert_eq!((code, gate_checks(&doc)), (0, gate_names([true; 7])));
 
@@ -853,7 +915,10 @@ fn doctor_gate_names_the_link_that_is_missing() {
     let (code, doc, _) = doctor_gate(&root, &home, &["--judge", missing.to_str().unwrap()]);
     assert_eq!(
         (code, gate_checks(&doc)),
-        (7, gate_names([true, true, true, false, false, false, true]))
+        (
+            7,
+            gate_names([true, true, true, false, false, false, false])
+        )
     );
     let (code, doc, _) = doctor_gate(
         &root,
@@ -862,7 +927,10 @@ fn doctor_gate_names_the_link_that_is_missing() {
     );
     assert_eq!(
         (code, gate_checks(&doc)),
-        (7, gate_names([true, true, false, true, false, false, true]))
+        (
+            7,
+            gate_names([true, true, false, true, false, false, false])
+        )
     );
     assert!(
         detail(&doc, "chain").starts_with("not checked: "),
@@ -944,10 +1012,25 @@ fn a_program_that_is_only_named_like_the_judge_cannot_pass_a_stop() {
         "{said}"
     );
 
-    // one that prints a pass document, but not one sealed to this policy and this patch
+    // one that prints a whole pass document, but not one sealed to this policy and this patch
+    let zeros = "0".repeat(64);
+    let unsealed = json!({
+        "schema": "forge-warden.verdict.v2",
+        "tool": {"name": "forge-warden", "version": "0.2.0"},
+        "evaluated_on": "2026-11-13",
+        "seals": {"policy_sha256": zeros, "rank_sha256": zeros, "patch_sha256": zeros,
+                  "provenance": "produced", "ranked_by": {}},
+        "verdict": "pass",
+        "exit": {"code": 0, "name": "n", "action": "a"},
+        "summary": {},
+        "rules": [],
+        "expired_waivers": [],
+        "unused_waivers": [],
+        "notes": [],
+    });
     write_program(
         &bin.join("forge-warden"),
-        "#!/bin/sh\nprintf '%s\\n' '{\"schema\":\"forge-warden.verdict.v2\",\"verdict\":\"pass\",\"seals\":{\"policy_sha256\":\"00\",\"patch_sha256\":\"00\",\"provenance\":\"produced\"},\"rules\":[]}'\nexit 0\n",
+        &format!("#!/bin/sh\ncat <<'VERDICT'\n{unsealed}\nVERDICT\nexit 0\n"),
     );
     let (_, stdout, _) = hook_on_path("stop", &[&bin], &event);
     let said = system_message(&stdout);
@@ -955,6 +1038,32 @@ fn a_program_that_is_only_named_like_the_judge_cannot_pass_a_stop() {
         said.contains("its verdict is not sealed to the policy it was given"),
         "{said}"
     );
+    // review V4 round 2, VD4R2-M-2: the same sealed to nothing, with half its members, or
+    // saying two things, is not a verdict either
+    for (text, why) in [
+        (
+            r#"{"schema":"forge-warden.verdict.v2","verdict":"pass","seals":{"provenance":"produced"},"rules":[]}"#.to_owned(),
+            "lacks a member",
+        ),
+        (
+            unsealed.to_string().replace(r#""code":0"#, r#""code":7"#),
+            "does not say pass (exit 0)",
+        ),
+        (
+            unsealed
+                .to_string()
+                .replacen(r#""verdict":"pass""#, r#""verdict":"fail","verdict":"pass""#, 1),
+            "no verdict document that can be read",
+        ),
+    ] {
+        write_program(
+            &bin.join("forge-warden"),
+            &format!("#!/bin/sh\ncat <<'VERDICT'\n{text}\nVERDICT\nexit 0\n"),
+        );
+        let (_, stdout, _) = hook_on_path("stop", &[&bin], &event);
+        let said = system_message(&stdout);
+        assert!(said.contains("UNJUDGED") && said.contains(why), "{why}: {said}");
+    }
 
     // a real verdict from the same place passes in silence: the control
     let (script, _, _) = judge(&scratch, &verdict("pass", "size", "", ""));
@@ -964,8 +1073,21 @@ fn a_program_that_is_only_named_like_the_judge_cannot_pass_a_stop() {
         hook_on_path("stop", &[&bin], &event),
         (0, String::new(), String::new())
     );
+}
 
-    // the same judge inside the repository is not run, on PATH or by name
+/// The other control of VD4-H-1: a judge inside the repository it would judge is not run, on
+/// `PATH` or by name, and a `PATH` entry that is not absolute is not searched.
+#[test]
+fn a_judge_inside_the_repository_it_would_judge_is_not_run() {
+    let scratch = Scratch::new("hook-judge-inside");
+    let root = repository(&scratch);
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\n#[allow(dead_code)]\nfn b() {}\n",
+    )
+    .unwrap();
+    let event = input("Stop", &root, "s", false);
+    let (script, _, _) = judge(&scratch, &verdict("pass", "size", "", ""));
     let inside = root.join("tools");
     std::fs::create_dir(&inside).unwrap();
     std::fs::copy(&script, inside.join("forge-warden")).unwrap();

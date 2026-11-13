@@ -20,7 +20,7 @@ use deep_diff_forge_core::process::{Limits, run_bounded};
 use deep_diff_forge_core::{PatchLineKind, exit};
 use deep_diff_forge_graph::Side;
 use deep_diff_forge_patch::{
-    GitAcquireError, GitAcquireOptions, InputGuards, SealedReview, file_at_commit, judge_patch,
+    GitAcquireOptions, InputGuards, JudgePatchError, SealedReview, file_at_commit, judge_patch,
     repository_dirs,
 };
 use serde_json::{Value, json};
@@ -343,13 +343,32 @@ fn findings(patch: &[u8]) -> Result<Vec<Finding>, String> {
     Ok(out)
 }
 
-/// The working tree as the patch a judge would be given, or `None` when there is none to make:
-/// no commit yet, or nothing changed.
+/// Why there is no patch of the working tree although there may be a change.
+enum NoPatch {
+    /// A working tree the patch cannot be made from truly (a sparse checkout). Advice stays
+    /// silent about it; a stop says that nothing was judged, and why.
+    Unsupported(String),
+    /// Git or the file system failed.
+    Failed(String),
+}
+
+impl NoPatch {
+    fn reason(self) -> String {
+        match self {
+            Self::Unsupported(reason) | Self::Failed(reason) => reason,
+        }
+    }
+}
+
+/// The working tree as the patch a judge would be given, or `None` when there is nothing to
+/// judge: no commit yet, or nothing changed. Only those two are `None`. Every failure is an
+/// error: when one error stood for "no base" and for failures alike, a patch that could not be
+/// made let a stop pass in silence.
 fn change(
     place: &Place,
     work: &Path,
     options: &GitAcquireOptions,
-) -> Result<Option<Change>, String> {
+) -> Result<Option<Change>, NoPatch> {
     match judge_patch(&place.top, "HEAD", work, options) {
         Ok(patch) if patch.bytes.is_empty() => Ok(None),
         Ok(patch) => Ok(Some(Change {
@@ -357,8 +376,13 @@ fn change(
             base: patch.base,
         })),
         // A repository with no commit has no base to judge against.
-        Err(GitAcquireError::InvalidSelection { .. }) => Ok(None),
-        Err(error) => Err(format!("the change could not be read from Git: {error}")),
+        Err(JudgePatchError::NoBase) => Ok(None),
+        Err(error @ JudgePatchError::SkipWorktree) => Err(NoPatch::Unsupported(format!(
+            "the change could not be read from Git: {error}"
+        ))),
+        Err(error @ JudgePatchError::Failed(_)) => Err(NoPatch::Failed(format!(
+            "the change could not be read from Git: {error}"
+        ))),
     }
 }
 
@@ -374,8 +398,12 @@ fn post_tool(input: &Input) -> Result<Option<String>, String> {
         return Ok(None);
     };
     let scratch = Scratch::new(&place.own)?;
-    let Some(change) = change(&place, &scratch.sub("work")?, &options)? else {
-        return Ok(None);
+    let change = match change(&place, &scratch.sub("work")?, &options) {
+        Ok(Some(change)) => change,
+        // Nothing to say, or a working tree advice cannot be given for: a stop says so once,
+        // advice after every tool call would say it for ever.
+        Ok(None) | Err(NoPatch::Unsupported(_)) => return Ok(None),
+        Err(NoPatch::Failed(reason)) => return Err(reason),
     };
     let all = findings(&change.bytes)?;
     let file = state_file(&place.own, &input.session);
@@ -536,11 +564,14 @@ fn run_judge(
         .arg(ranker)
         .arg("--json");
     match run_bounded(&mut command, b"", JUDGE_LIMITS) {
-        Ok(done) => (
-            done.status.code(),
-            serde_json::from_slice(&done.stdout).ok(),
-            judge_words(&done.stderr),
-        ),
+        Ok(done) => {
+            // A document that gives a key twice is not read: two readers of it can disagree.
+            let verdict = std::str::from_utf8(&done.stdout)
+                .ok()
+                .filter(|text| !hook::has_duplicate_key(text))
+                .and_then(|text| serde_json::from_str(text).ok());
+            (done.status.code(), verdict, judge_words(&done.stderr))
+        }
         Err(stopped) => (None, None, Some(stopped.to_string())),
     }
 }
@@ -556,7 +587,7 @@ fn judge(
     let change = match change(place, &scratch.sub("work")?, options) {
         Ok(Some(change)) => change,
         Ok(None) => return Ok(None),
-        Err(reason) => return unjudged(reason),
+        Err(none) => return unjudged(none.reason()),
     };
     // The policy is the one at the base commit: a change cannot loosen the policy it is judged by.
     let name = policy_name(args);
@@ -669,20 +700,94 @@ fn probe_patch(name: &str, policy: &[u8]) -> Option<String> {
     })
 }
 
-/// Whether a Claude Code settings document registers this binary's stop hook.
-fn registers_stop_hook(settings: &Value) -> bool {
-    let commands = |entry: &Value| -> bool {
-        entry["hooks"].as_array().is_some_and(|hooks| {
-            hooks.iter().any(|hook| {
-                hook["command"]
-                    .as_str()
-                    .is_some_and(|command| command.contains("agent hook stop"))
-            })
-        })
+/// The commands of every `Stop` hook a Claude Code settings document registers.
+fn stop_commands(settings: &Value) -> Vec<String> {
+    let entries = settings["hooks"]["Stop"].as_array();
+    entries
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry["hooks"].as_array())
+        .flatten()
+        .filter_map(|hook| hook["command"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// Why the stop hook `command` is not the chain this gate checked; `None` when it is: the
+/// command `agent setup --hooks` prints, for this binary, with the judge, the policy and the
+/// rankers that were checked. Text that merely holds the words `agent hook stop` used to count
+/// (review V4 round 2, VD4R2-H-1).
+fn not_this_chain(
+    command: &str,
+    place: &Place,
+    judge: Option<&Path>,
+    policy: &str,
+    args: &[String],
+) -> Option<String> {
+    let Some(read) = hook::stop_command(command) else {
+        return Some(
+            "is not the command `agent setup --hooks` prints (one program, `agent hook stop --client claude`, then only --judge, --policy and --ranker-dir)"
+                .to_owned(),
+        );
     };
-    settings["hooks"]["Stop"]
-        .as_array()
-        .is_some_and(|entries| entries.iter().any(commands))
+    let this = std::env::current_exe().and_then(std::fs::canonicalize).ok();
+    if this.is_none() || std::fs::canonicalize(&read.program).ok() != this {
+        return Some(format!(
+            "runs another program than this one ({})",
+            hook::shown_path(&read.program)
+        ));
+    }
+    let Some(judge) = judge else {
+        return Some("cannot be checked: no judge was found to check it against".to_owned());
+    };
+    let named: Vec<String> = read
+        .judge
+        .iter()
+        .flat_map(|judge| ["--judge".to_owned(), judge.clone()])
+        .collect();
+    if judge_program(&named, &place.writable()).ok().as_deref() != Some(judge) {
+        return Some(
+            "would run another judge than the one checked here (check with the same --judge)"
+                .to_owned(),
+        );
+    }
+    if read.policy.as_deref().unwrap_or(DEFAULT_POLICY) != policy {
+        return Some("judges by another policy file than the one checked here".to_owned());
+    }
+    if read.ranker_dir != crate::flag_value(args, "--ranker-dir") {
+        return Some("offers other rankers than the ones checked here (--ranker-dir)".to_owned());
+    }
+    None
+}
+
+/// The settings file that registers the stop hook this gate checked, or why none does: the
+/// first hook that is close but not it, else that there is none.
+fn registered(
+    place: &Place,
+    judge: Option<&Path>,
+    policy: &str,
+    args: &[String],
+) -> Result<PathBuf, String> {
+    let mut close: Option<String> = None;
+    for file in settings_files(&place.top) {
+        let Some(settings) = std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        else {
+            continue;
+        };
+        for command in stop_commands(&settings) {
+            match not_this_chain(&command, place, judge, policy, args) {
+                None => return Ok(file),
+                Some(why) => {
+                    close.get_or_insert(format!("{}: a Stop hook {why}", file.display()));
+                }
+            }
+        }
+    }
+    Err(close.unwrap_or_else(|| {
+        "no Claude Code settings file registers a stop hook (agent setup --client claude --hooks prints the block)"
+            .to_owned()
+    }))
 }
 
 /// The settings files Claude Code reads for a project at `top`: the project's two, then the
@@ -796,21 +901,17 @@ pub(crate) fn gate(cwd: &Path, args: &[String]) -> Vec<GateCheck> {
         },
     );
 
-    let registered = place.as_ref().and_then(|place| {
-        settings_files(&place.top).into_iter().find(|file| {
-            std::fs::read_to_string(file)
-                .ok()
-                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-                .is_some_and(|settings| registers_stop_hook(&settings))
-        })
-    });
+    let registered = match &place {
+        Some(place) => registered(place, program.as_deref(), &name, args),
+        None => Err(not_checked("it needs the repository")),
+    };
     say(
         "hooks_registered",
-        registered.is_some(),
-        registered.map_or_else(
-            || "no Claude Code settings file registers `agent hook stop` (agent setup --client claude --hooks prints the block)".to_owned(),
-            |file| format!("{}", file.display()),
-        ),
+        registered.is_ok(),
+        match registered {
+            Ok(file) => format!("{}", file.display()),
+            Err(why) => why,
+        },
     );
     checks
 }
@@ -928,18 +1029,18 @@ mod tests {
         assert_eq!(git_release("git version two"), None);
         assert_eq!(git_release("version 2.56.0"), None);
 
-        let registered = json!({"hooks": {"Stop": [{"hooks": [
-            {"type": "command", "command": "/usr/bin/deep-diff-forge agent hook stop --client claude"}
-        ]}]}});
-        assert!(registers_stop_hook(&registered));
+        let registered = json!({"hooks": {"Stop": [
+            {"hooks": [{"type": "command", "command": "one"}, {"type": "prompt"}]},
+            {"matcher": "x", "hooks": [{"type": "command", "command": "two"}]},
+            {"hooks": "three"},
+        ], "PostToolUse": [{"hooks": [{"command": "four"}]}]}});
+        assert_eq!(stop_commands(&registered), ["one", "two"]);
         for other in [
             json!({}),
             json!({"hooks": {"Stop": []}}),
-            json!({"hooks": {"PostToolUse": [{"hooks": [{"command": "x agent hook stop"}]}]}}),
-            json!({"hooks": {"Stop": [{"hooks": [{"command": "x agent hook post-tool"}]}]}}),
             json!({"hooks": {"Stop": "agent hook stop"}}),
         ] {
-            assert!(!registers_stop_hook(&other), "{other}");
+            assert_eq!(stop_commands(&other), Vec::<String>::new(), "{other}");
         }
 
         assert_eq!(

@@ -46,6 +46,46 @@ pub struct JudgePatch {
     pub tree: String,
 }
 
+/// Why [`judge_patch`] made no patch. The three are kept apart because a caller answers each
+/// differently: no base is nothing to judge, a working tree this cannot read truly is a change
+/// that was not judged, and a failure is a failure. One error for all of them once made a
+/// failure look like nothing to judge.
+#[derive(Debug)]
+pub enum JudgePatchError {
+    /// `base` names no commit: a repository with no commit yet, or a name that is not one.
+    NoBase,
+    /// The index marks paths skip-worktree (a sparse checkout, or `git update-index
+    /// --skip-worktree`). Their files are absent on purpose, and a tree staged from the working
+    /// tree would show every one of them as deleted (review V4 round 2, VD4R2-M-1). Refused
+    /// until the scratch index can carry those marks.
+    SkipWorktree,
+    /// Git failed or ran out of time or budget, or a file this needs could not be prepared.
+    Failed(GitAcquireError),
+}
+
+impl std::fmt::Display for JudgePatchError {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoBase => out.write_str("the base names no commit"),
+            Self::SkipWorktree => out.write_str(
+                "the index marks paths skip-worktree (a sparse checkout): the working tree is not the whole change, and no patch is made from it",
+            ),
+            Self::Failed(error) => write!(out, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for JudgePatchError {}
+
+impl From<GitAcquireError> for JudgePatchError {
+    fn from(error: GitAcquireError) -> Self {
+        Self::Failed(error)
+    }
+}
+
+/// The most bytes of `git ls-files -t` that are read to look for skip-worktree marks.
+const INDEX_LISTING_CAP: usize = 64 * 1024 * 1024;
+
 /// The diff options of forge-warden's patch maker (`scripts/make_patch.sh`), in its order.
 const DIFF_ARGS: &[&str] = &[
     "diff",
@@ -124,7 +164,7 @@ fn source(
     base: &str,
     options: &GitAcquireOptions,
     deadline: std::time::Instant,
-) -> Result<Source, GitAcquireError> {
+) -> Result<Source, JudgePatchError> {
     let probe = Runner {
         options,
         cwd: repo.to_path_buf(),
@@ -148,9 +188,31 @@ fn source(
         deadline,
         config_env: filters.clone(),
     };
-    let base = inside
-        .commit_id(base)?
-        .ok_or_else(|| refused(format!("`{base}` does not name a commit")))?;
+    let base = match inside.commit_id(base) {
+        Ok(Some(id)) => id,
+        Ok(None) | Err(GitAcquireError::InvalidSelection { .. }) => {
+            return Err(JudgePatchError::NoBase);
+        }
+        Err(other) => return Err(other.into()),
+    };
+    // `-t` tags each path; `S` is skip-worktree. `--sparse` keeps a sparse index as it is.
+    let listing = inside.run(
+        "git ls-files",
+        &[
+            OsStr::new("ls-files"),
+            OsStr::new("-t"),
+            OsStr::new("-z"),
+            OsStr::new("--sparse"),
+        ],
+        &[0],
+        INDEX_LISTING_CAP,
+    )?;
+    if listing
+        .split(|byte| *byte == 0)
+        .any(|entry| entry.starts_with(b"S "))
+    {
+        return Err(JudgePatchError::SkipWorktree);
+    }
     let mut objects = inside.run(
         "git rev-parse",
         &[
@@ -362,14 +424,14 @@ fn diff_outside(
 /// configuration.
 ///
 /// # Errors
-/// Any [`GitAcquireError`]: `base` names no commit, Git failed or ran out of time or budget, or
-/// a path cannot be used. Nothing partial is returned.
+/// [`JudgePatchError`]: `base` names no commit, the index marks paths skip-worktree, or Git
+/// failed, ran out of time or budget, or a path cannot be used. Nothing partial is returned.
 pub fn judge_patch(
     repo: &Path,
     base: &str,
     scratch: &Path,
     options: &GitAcquireOptions,
-) -> Result<JudgePatch, GitAcquireError> {
+) -> Result<JudgePatch, JudgePatchError> {
     let deadline = deadline_after(options.time_limit);
     let from = source(repo, base, options, deadline)?;
     let repository = empty_repository(&from, scratch, options, deadline)?;
