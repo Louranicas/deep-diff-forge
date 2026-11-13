@@ -135,6 +135,20 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     suppressed the item. Constructs are now paired by line and column, and when the old side
     cannot be read the item stands.
   - The corpus has 41 cases; evidence precision 50 of 53, recall 50 of 77.
+- **Round 4 of the same review (verdict NO-GO a fourth time) and its fixes.** The three
+  findings of round 3 were closed, one of them only as written. Two were new.
+  - *High: a hunk that only says it starts the file.* Round 3's proof of test code believed a
+    hunk of an existing file whose header says line 1. The header is the patch writer's word:
+    `git apply --unidiff-zero` and `-C0` apply such a hunk further down, under a comment
+    opened above it, and the function under its `#[cfg(test)]` is then in the program. A
+    panic path is now withdrawn only in the one hunk of a file the patch creates, every line
+    added: the whole file. A patch that creates a file is refused when the file exists.
+  - *Medium: a construct opened inside another macro's body and closed on another line left
+    no trace.* The parser does not expand macros, and a rule that reads one line cannot follow
+    `assert!(` / `true` / `);`. The line that opens an assertion or a `cfg_attr` there (or
+    under a parse error) now carries `syntax_unchecked`. That the assertion is trivial is
+    still not said: a declared miss in the corpus.
+  - The corpus has 42 cases; evidence precision 53 of 56, recall 53 of 81.
 
 ### Changed
 

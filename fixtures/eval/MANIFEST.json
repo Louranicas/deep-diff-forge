@@ -972,6 +972,41 @@
         }
       ],
       "sha256": "30688c82e81f09a7e0388cf12e60cdd5064f1c504ee05879a0467b0b9b798b10"
+    },
+    {
+      "id": "evidence/review-v3-round4",
+      "kind": "evidence",
+      "patch": "evidence/review-v3-round4.patch",
+      "origin": "internal: an adversarial review by Vesper, V3 round 4, 2026-11-13 (docs/reviews/vesper-v3-round4-report-20261113.md), findings VD3R4-H-1 and VD3R4-M-1, each reproduced before it was counted. Expected: a panic path under a cfg(test) in a hunk of an existing file that only says it starts at line 1 (git apply --unidiff-zero or -C0 applies it further down, under a comment opened above), with context and with every line added; and syntax_unchecked on the line that opens an assertion over three lines inside another macro's body, where neither the parser nor a one-line rule reads it. Negative: a panic path in the cfg(test) module of a file that the patch creates whole. Declared miss: the assertion in the macro body is trivial, and nothing says so",
+      "expect": [
+        {
+          "path": "src/forged_first_line.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/inserted_at_top.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/forwarded.rs",
+          "signal": "syntax_unchecked",
+          "side": "new",
+          "line": 5
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "tests/forwarded.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 5
+        }
+      ],
+      "sha256": "2f6f783d2ca0f569eb3cb97724c79d334170bcdfe6dd5d129864e6aa49ca737c"
     }
   ]
 }

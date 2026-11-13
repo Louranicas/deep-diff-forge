@@ -57,7 +57,8 @@ pub struct Construct {
     /// reasons are on the private `opens_test_code`). A fragment from
     /// the middle of a file proves nothing, because what stands above it can make the attribute
     /// text a comment, a string or the input of a macro; the caller knows where the fragment
-    /// begins and must not use this otherwise. False says only that there is no proof, not that
+    /// begins (not from a hunk's header, which is the patch writer's word: only a file the
+    /// patch creates whole is known) and must not use this otherwise. False says only that there is no proof, not that
     /// the code is production code.
     pub in_test: bool,
 }

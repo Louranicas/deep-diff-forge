@@ -10,7 +10,7 @@
 //! is safe, and a construct split across lines or built at run time can hide from it.
 
 use crate::lexical::{Language, ScanState, code_view, has_token, is_boundary_blocker, is_ident};
-use deep_diff_forge_core::{HunkId, PatchHunk, PatchLine, PatchLineKind, ReviewFile};
+use deep_diff_forge_core::{FileStatus, HunkId, PatchHunk, PatchLine, PatchLineKind, ReviewFile};
 use deep_diff_forge_syntax::{ConstructKind, FragmentScan, scan_fragment};
 
 /// The basis of the first rung: what every item carried before [`Basis`] existed, and what an
@@ -869,7 +869,9 @@ pub fn file_evidence_in(file: &ReviewFile, parse: &[bool]) -> Vec<Evidence> {
         // `hunk_matches` yields each (side, signal, line) once and items from different hunks
         // differ in `hunk`, so there is nothing to deduplicate: a scan of `out` per item made a
         // patch of 160k matching lines take 4.8 s.
-        for (side, signal, line, basis) in hunk_matches(hunk, kind.language, &rules, parse) {
+        for (side, signal, line, basis) in
+            hunk_matches(hunk, kind.language, &rules, parse, creates_whole_file(file))
+        {
             let address = address
                 .get_or_insert_with(|| hunk.address(&file.path))
                 .clone();
@@ -902,7 +904,7 @@ pub fn hunk_signals(file: &ReviewFile, hunk: &PatchHunk) -> Vec<EvidenceSignal> 
 pub fn hunk_signals_in(file: &ReviewFile, hunk: &PatchHunk, parse: bool) -> Vec<EvidenceSignal> {
     let kind = FileKind::of(file);
     let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
-    let found = hunk_matches(hunk, kind.language, &rules, parse);
+    let found = hunk_matches(hunk, kind.language, &rules, parse, creates_whole_file(file));
     EvidenceSignal::ALL
         .into_iter()
         .filter(|signal| found.iter().any(|(_, s, _, _)| s == signal))
@@ -914,11 +916,18 @@ pub fn hunk_signals_in(file: &ReviewFile, hunk: &PatchHunk, parse: bool) -> Vec<
 /// with the highest [`Basis`] among the rules that matched. Block comments and triple strings are
 /// followed through the hunk on each side (state starts fresh per hunk). `parse` lets the parser
 /// read a Rust hunk on top of that ([`FragmentPlan`]).
+/// Whether `file` is a new file whose whole content is one hunk: the only patch whose hunk is
+/// certain to be the file. See [`fragment_evidence`].
+fn creates_whole_file(file: &ReviewFile) -> bool {
+    file.status == FileStatus::Added && file.patch_twin.hunks.len() == 1
+}
+
 fn hunk_matches(
     hunk: &PatchHunk,
     language: Option<Language>,
     rules: &[&Rule],
     parse: bool,
+    whole_file: bool,
 ) -> Vec<(Side, EvidenceSignal, u32, Basis)> {
     // First the code view of every line on each side it belongs to, so a rule that reads a
     // neighbour sees it as code, in the state the scanner reached there.
@@ -963,10 +972,13 @@ fn hunk_matches(
         None
     };
     let parsed = match word {
-        Some(_) if parse => fragment_evidence(hunk, &views),
+        Some(_) if parse => fragment_evidence(hunk, &views, whole_file),
         _ => None,
     };
-    let unchecked = word.filter(|_| parsed.is_none());
+    let unchecked = match &parsed {
+        None => word,
+        Some(parsed) => parsed.unread,
+    };
     let mut found = Vec::new();
     for (at, line) in hunk.lines.iter().enumerate() {
         let (side, number, view) = match line.kind {
@@ -1127,6 +1139,10 @@ fn ignore_rust(text: &str) -> bool {
 struct Parsed {
     found: Vec<(usize, EvidenceSignal)>,
     withdrawn: Vec<(usize, EvidenceSignal)>,
+    /// The first added line that opens an assertion or a conditional attribute over several
+    /// lines in a place the parser names no construct for (inside another macro's body, or
+    /// under an error): neither the parser nor the token rules, which read one line, read it.
+    unread: Option<usize>,
 }
 
 impl Parsed {
@@ -1262,20 +1278,29 @@ fn scan_side(
 fn fragment_evidence(
     hunk: &PatchHunk,
     views: &[(Option<String>, Option<String>)],
+    whole_file: bool,
 ) -> Option<Parsed> {
     fragment_cost(hunk)?;
     let new = scan_side(hunk, views, Side::New)?;
-    // The parser's proof of test code holds only for a fragment that is the beginning of its
-    // file, read as it stands: a hunk from the middle of a file can show a `#[cfg(test)]` that
-    // a comment or a string opened above it holds (`/*` above, then `#[cfg(test)] // */`), and
-    // then the function under it is in the program. Git applies a hunk that says it starts at
-    // line 1 only at the beginning of the file.
-    let from_first_line =
-        new.offset == 0 && hunk.new_start == Some(1) && hunk.old_start.is_none_or(|old| old <= 1);
+    // The parser's proof of test code holds only for a fragment that is its whole file, read
+    // as it stands: the one hunk of a new file, every line added. Any other hunk can show a
+    // `#[cfg(test)]` that a comment or a string opened above it holds (`/*` above, then
+    // `#[cfg(test)] // */`), and then the function under it is in the program. A hunk of an
+    // existing file that says it starts at line 1 is no better: its header is the patch
+    // writer's word, and `git apply --unidiff-zero` or `-C0` applies it further down (review
+    // V3 round 4, VD3R4-H-1). A patch that creates a file is refused when the file exists.
+    let whole_file = whole_file
+        && new.offset == 0
+        && hunk.new_start == Some(1)
+        && hunk
+            .lines
+            .iter()
+            .all(|line| line.kind == PatchLineKind::Added);
     let mut old: Option<Option<SideScan>> = None;
     let mut parsed = Parsed {
         found: Vec::new(),
         withdrawn: Vec::new(),
+        unread: None,
     };
     for construct in &new.scan.constructs {
         let Some(signal) = signal_of(&construct.kind) else {
@@ -1308,7 +1333,7 @@ fn fragment_evidence(
             }
             added
         };
-        if signal == S::PanicPathAdded && construct.in_test && from_first_line {
+        if signal == S::PanicPathAdded && construct.in_test && whole_file {
             parsed.withdrawn.push((index, signal));
         } else {
             parsed.found.push((index, signal));
@@ -1316,16 +1341,77 @@ fn fragment_evidence(
     }
     // What the token rules found inside a macro's body (`assert_eq!(f().unwrap(), 1)`) has no
     // construct, and is test code all the same when its whole row is inside a proved item.
-    if from_first_line {
+    if whole_file {
         for (row, index) in (0u32..).zip(&new.lines) {
             if hunk.lines[*index].kind == PatchLineKind::Added && new.scan.inside_test(row) {
                 parsed.withdrawn.push((*index, S::PanicPathAdded));
             }
         }
     }
+    // The parser read the hunk, and still there are places in it where it names no construct:
+    // inside another macro's body, which it does not expand, and under an error. A construct
+    // on one line there is the token rules' to find. One that is opened on a line and closed on
+    // another is nobody's: `outer! {` … `assert!(` / `true` / `);` … `}` left no trace (review
+    // V3 round 4, VD3R4-M-1). The line that opens it says that it was not checked.
+    parsed.unread = (0u32..)
+        .zip(&new.lines)
+        .find(|(row, index)| {
+            let tree_row = row + new.offset;
+            hunk.lines[**index].kind == PatchLineKind::Added
+                && !new.scan.readable(tree_row)
+                && !new.scan.constructs.iter().any(|read| {
+                    read.row == tree_row && !matches!(read.kind, ConstructKind::MethodCall { .. })
+                })
+                && opens_across_lines(
+                    views[**index]
+                        .1
+                        .as_deref()
+                        .unwrap_or(hunk.lines[**index].text.as_str()),
+                )
+        })
+        .map(|(_, index)| *index);
     parsed.found.sort_by_key(|pair| pair.0);
     parsed.withdrawn.sort_by_key(|pair| pair.0);
     Some(parsed)
+}
+
+/// Whether a line of Rust code opens an assertion macro, or a `cfg_attr` attribute, that it
+/// does not close: the rest is on other lines, where a rule that reads one line cannot follow.
+fn opens_across_lines(code: &str) -> bool {
+    const WORD: &str = "assert";
+    let bytes = code.as_bytes();
+    let unclosed = |rest: &[u8]| {
+        let mut depth = 1usize;
+        for byte in rest {
+            match byte {
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            if depth == 0 {
+                return false;
+            }
+        }
+        true
+    };
+    let assertion = code.match_indices(WORD).any(|(at, _)| {
+        let start = if code[..at].ends_with("debug_") {
+            at - "debug_".len()
+        } else {
+            at
+        };
+        if start > 0 && is_boundary_blocker(bytes[start - 1]) {
+            return false;
+        }
+        let rest = &bytes[at + WORD.len()..];
+        let rest = rest.strip_prefix(b"_eq").unwrap_or(rest);
+        follows(rest, b"!(").is_some_and(|end| unclosed(&rest[end..]))
+    });
+    assertion
+        || code.match_indices('#').any(|(at, _)| {
+            let rest = &bytes[at + 1..];
+            follows(rest, b"[cfg_attr(").is_some_and(|end| unclosed(&rest[end..]))
+        })
 }
 
 /// The signal a Rust construct is evidence of, if any.
@@ -2904,14 +2990,118 @@ mod tests {
         for body in proved {
             assert_eq!(found(&new_file("src/a.rs", body)), [], "{body:?}");
         }
-        // the same at the beginning of a file that exists: Git applies a hunk that says line 1
-        // only there
-        let existing = parse(
-            "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,3 +1,4 @@\n #[cfg(test)]\n fn helper() {\n+    f().unwrap();\n }\n",
+    }
+
+    /// Review V3 round 4, VD3R4-H-1. A hunk of an existing file that says it starts at line 1
+    /// is not the beginning of the file: the header is the patch writer's word, and `git apply
+    /// --unidiff-zero` or `-C0` applies the hunk further down, under a comment opened above
+    /// it. Only the one hunk of a new file is certain to be the file. Before, this production
+    /// panic path was withdrawn.
+    #[test]
+    fn a_hunk_that_only_says_it_starts_the_file_proves_no_test_code() {
+        let forged = parse(
+            "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,4 +1,4 @@\n #[cfg(test)] // */\n fn production() {\n-    safe();\n+    load().unwrap();\n }\n",
         )
         .unwrap()
         .remove(0);
-        assert_eq!(found(&existing), []);
+        assert_eq!(
+            found(&forged),
+            [(S::PanicPathAdded, Basis::SyntaxFragment, 3)]
+        );
+        // every line added and line 1 claimed, but the file is not new
+        let inserted = parse(
+            "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -0,0 +1,4 @@\n+#[cfg(test)]\n+fn helper() {\n+    load().unwrap();\n+}\n",
+        )
+        .unwrap()
+        .remove(0);
+        assert_eq!(
+            found(&inserted),
+            [(S::PanicPathAdded, Basis::SyntaxFragment, 3)]
+        );
+        // a new file in two hunks: neither is the whole file
+        let two = parse(
+            "diff --git a/src/a.rs b/src/a.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/a.rs\n@@ -0,0 +1,4 @@\n+#[cfg(test)]\n+fn helper() {\n+    load().unwrap();\n+}\n@@ -0,0 +5,1 @@\n+fn more() {}\n",
+        );
+        if let Ok(mut files) = two {
+            let file = files.remove(0);
+            assert!(
+                found(&file).iter().any(|item| item.0 == S::PanicPathAdded),
+                "a new file in two hunks was believed"
+            );
+        }
+    }
+
+    /// Review V3 round 4, VD3R4-M-1: inside another macro's body the parser names no
+    /// construct, and a rule that reads one line cannot follow an assertion over three. The
+    /// line that opens it says that it was not checked. Before, there was nothing.
+    #[test]
+    fn a_construct_opened_inside_a_macro_body_and_closed_on_another_line_is_unchecked() {
+        type Item = (EvidenceSignal, Basis, u32);
+        let forwarded = found(&new_file(
+            "tests/m.rs",
+            &[
+                "macro_rules! outer {",
+                "    ($($tt:tt)*) => { $($tt)* };",
+                "}",
+                "outer! {",
+                "    assert!(",
+                "        true",
+                "    );",
+                "}",
+            ],
+        ));
+        assert_eq!(forwarded, [(S::SyntaxUnchecked, Basis::Lexical, 5)]);
+        let attribute = found(&new_file(
+            "tests/m.rs",
+            &[
+                "outer! {",
+                "    #[cfg_attr(",
+                "        miri,",
+                "        ignore",
+                "    )]",
+                "    #[test]",
+                "    fn a() {}",
+                "}",
+            ],
+        ));
+        assert_eq!(attribute, [(S::SyntaxUnchecked, Basis::Lexical, 2)]);
+        // On one line the token rules read it, and there is nothing unchecked. So too for an
+        // assertion over several lines that the parser reads itself, and for one that is not
+        // an assertion at all.
+        let cases: &[(&[&str], &[Item])] = &[
+            (
+                &["outer! {", "    assert!(true);", "}"],
+                &[(S::TrivialAssert, Basis::Lexical, 2)],
+            ),
+            (
+                &["fn a() {", "    assert!(", "        true", "    );", "}"],
+                &[(S::TrivialAssert, Basis::SyntaxFragment, 2)],
+            ),
+            (
+                &["fn a() {", "    assert!(", "        b()", "    );", "}"],
+                &[],
+            ),
+            (
+                &["outer! {", "    my_assert!(", "        true", "    );", "}"],
+                &[],
+            ),
+            (
+                &[
+                    "outer! {",
+                    "    assert!(b(), \"{}\", c(",
+                    "        d",
+                    "    ));",
+                    "}",
+                ],
+                &[(S::SyntaxUnchecked, Basis::Lexical, 2)],
+            ),
+        ];
+        for (body, expected) in cases {
+            assert_eq!(found(&new_file("tests/m.rs", body)), *expected, "{body:?}");
+        }
+        assert!(opens_across_lines("    debug_assert_eq ! ( a,"));
+        assert!(!opens_across_lines("    assert!(a(b), c);"));
+        assert!(!opens_across_lines("    x.assert!(") && !opens_across_lines("    #[derive("));
     }
 
     /// The other half: in a new file, what is not that proof leaves the item standing, and a
@@ -3461,7 +3651,13 @@ mod tests {
         let matches = |file: &ReviewFile| {
             let kind = FileKind::of(file);
             let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
-            hunk_matches(&file.patch_twin.hunks[0], kind.language, &rules, true)
+            hunk_matches(
+                &file.patch_twin.hunks[0],
+                kind.language,
+                &rules,
+                true,
+                false,
+            )
         };
         let items = matches(&hunk_of("src/a.rs", &added));
         assert_eq!(items.len(), LINES + 1);
