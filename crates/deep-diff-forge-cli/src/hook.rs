@@ -247,82 +247,37 @@ pub(crate) struct RuleOutcome {
     pub(crate) violations: Vec<(String, String)>,
 }
 
-/// What a verdict must be sealed to: the SHA-256 of the policy and of the patch the judge was
-/// given, as 64 lowercase hex digits.
+/// What a verdict must be sealed to: the SHA-256 of the policy, of the patch and of the ranker
+/// the judge was given, as 64 lowercase hex digits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Sealed<'a> {
-    pub(crate) policy_sha256: &'a str,
-    pub(crate) patch_sha256: &'a str,
-}
-
-/// The schema of the document a judge prints.
-const VERDICT_SCHEMA: &str = "forge-warden.verdict.v2";
-
-/// Whether `value` is 64 lowercase hex digits: a SHA-256 as forge-warden writes one.
-fn is_seal(value: &Value) -> bool {
-    value.as_str().is_some_and(|text| {
-        text.len() == 64
-            && text
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    })
+    pub(crate) policy: &'a str,
+    pub(crate) patch: &'a str,
+    pub(crate) ranker: &'a str,
 }
 
 /// Why `verdict` is not the judge's own verdict of `outcome` (process exit `code`) on these
 /// inputs; `None` when it is.
 ///
-/// The document has to be a whole `forge-warden.verdict.v2`: every member that schema requires,
-/// of its type. It has to say one thing: the process exit, `verdict` and the document's own
-/// `exit.code` agree, and no rule has an outcome stricter than the verdict (a pass with a
-/// failed rule is not a pass). And it has to be about this stop: sealed to the policy and the
-/// patch this hook wrote, on a ranking the judge produced itself. A sealed document that said
-/// `"verdict": "pass"` beside `"exit": {"code": 7}` and lacked half its members was taken for a
-/// pass (review V4 round 2, VD4R2-M-2).
-///
-/// Not checked, on purpose: members this version does not know (a later forge-warden may add
-/// some under the same schema name), the date the judge evaluated on, and which ranker it ran
-/// (the policy decides that, and the judge enforces it).
+/// Three things, in order. The document is a whole `forge-warden.verdict.v2`
+/// ([`crate::verdict_v2::defect`]: every member the schema fixes, the exit triple that belongs
+/// to the verdict, a summary that counts the rules). It says what the process said: the same
+/// outcome and exit code, and no rule stricter than the verdict. And it is an authority verdict
+/// about this stop: sealed to the policy, the patch and the ranker this hook gave, on a ranking
+/// the judge produced itself, with a Git the machine's owner enrolled.
 fn not_a_verdict(
     verdict: Option<&Value>,
     outcome: &str,
     code: i32,
     sealed: Sealed,
 ) -> Option<String> {
-    let Some(document) = verdict.filter(|document| document.is_object()) else {
+    let Some(document) = verdict else {
         return Some("it printed no verdict document that can be read".to_owned());
     };
-    if document["schema"] != VERDICT_SCHEMA {
-        return Some(format!("its document is not a {VERDICT_SCHEMA}"));
-    }
-    let seals = &document["seals"];
-    let rules = document["rules"].as_array();
-    let whole = document["tool"]["name"] == "forge-warden"
-        && document["tool"]["version"].is_string()
-        && document["evaluated_on"].is_string()
-        && document["verdict"].is_string()
-        && document["exit"]["code"].is_u64()
-        && document["exit"]["name"].is_string()
-        && document["exit"]["action"].is_string()
-        && document["summary"].is_object()
-        && is_seal(&seals["policy_sha256"])
-        && is_seal(&seals["patch_sha256"])
-        && is_seal(&seals["rank_sha256"])
-        && seals["provenance"].is_string()
-        && seals["ranked_by"].is_object()
-        && ["expired_waivers", "unused_waivers", "notes"]
-            .iter()
-            .all(|member| document[*member].is_array())
-        && rules.is_some_and(|rules| {
-            rules.iter().all(|rule| {
-                rule["id"].is_string()
-                    && rule["outcome"].is_string()
-                    && rule["why"].is_string()
-                    && rule["violations"].is_array()
-            })
-        });
-    if !whole {
+    if let Some(defect) = crate::verdict_v2::defect(document) {
         return Some(format!(
-            "its document lacks a member a {VERDICT_SCHEMA} must have, or has one of another type"
+            "its document is not a whole {}: {defect}",
+            crate::verdict_v2::SCHEMA
         ));
     }
     if document["verdict"] != outcome || document["exit"]["code"] != code {
@@ -335,7 +290,7 @@ fn not_a_verdict(
         "hold" => &["fail"],
         _ => &[],
     };
-    if rules.is_some_and(|rules| {
+    if document["rules"].as_array().is_some_and(|rules| {
         rules
             .iter()
             .any(|rule| stricter.iter().any(|worse| rule["outcome"] == *worse))
@@ -344,14 +299,21 @@ fn not_a_verdict(
             "its document says {outcome} and holds a rule with a stricter outcome"
         ));
     }
-    if seals["policy_sha256"] != sealed.policy_sha256 {
+    let seals = &document["seals"];
+    if seals["policy_sha256"] != sealed.policy {
         return Some("its verdict is not sealed to the policy it was given".to_owned());
     }
-    if seals["patch_sha256"] != sealed.patch_sha256 {
+    if seals["patch_sha256"] != sealed.patch {
         return Some("its verdict is not sealed to the patch it was given".to_owned());
     }
     if seals["provenance"] != "produced" {
         return Some("its verdict is not on a ranking it produced itself".to_owned());
+    }
+    if seals["ranked_by"]["sha256"] != sealed.ranker {
+        return Some("its verdict is not on a ranking by the ranker it was given".to_owned());
+    }
+    if seals["git"]["admission"] != "approved" {
+        return Some("its verdict is not on a Git the machine's owner enrolled".to_owned());
     }
     None
 }
@@ -947,48 +909,14 @@ mod tests {
     }
 
     const SEALED: Sealed = Sealed {
-        policy_sha256: "1111111111111111111111111111111111111111111111111111111111111111",
-        patch_sha256: "2222222222222222222222222222222222222222222222222222222222222222",
+        policy: "1111111111111111111111111111111111111111111111111111111111111111",
+        patch: "2222222222222222222222222222222222222222222222222222222222222222",
+        ranker: "6666666666666666666666666666666666666666666666666666666666666666",
     };
 
-    /// A whole verdict document of `outcome`, sealed to [`SEALED`], with the rules a verdict
-    /// of that outcome can hold: a passed one always, a held one unless it passes, a failed one
-    /// if it fails.
+    /// A whole verdict document of `outcome`, sealed to [`SEALED`].
     fn document(outcome: &str) -> Value {
-        let code = match outcome {
-            "pass" => 0,
-            "fail" => 7,
-            _ => 8,
-        };
-        let mut rules =
-            vec![json!({"id": "size", "outcome": "pass", "why": "w3", "violations": []})];
-        if outcome != "pass" {
-            rules.push(json!({"id": "keep-the-tests", "outcome": "hold", "why": "w1", "violations": [{"signal": "test_removed", "path": "tests/a.rs", "message": "m"}]}));
-        }
-        if outcome == "fail" {
-            rules.push(json!({"id": "no-secrets", "outcome": "fail", "why": "w2", "violations": [{"signal": "secret_like", "path": "src/k.rs", "message": "m"}]}));
-        }
-        json!({
-            "schema": "forge-warden.verdict.v2",
-            "tool": {"name": "forge-warden", "version": "0.2.0"},
-            "evaluated_on": "2026-11-13",
-            "seals": {
-                "policy_sha256": SEALED.policy_sha256,
-                "rank_sha256": SEALED.policy_sha256,
-                "patch_sha256": SEALED.patch_sha256,
-                "patch_facts_sha256": null,
-                "provenance": "produced",
-                "ranked_by": {},
-                "git": {},
-            },
-            "verdict": outcome,
-            "exit": {"code": code, "name": "n", "action": "a"},
-            "summary": {},
-            "rules": rules,
-            "expired_waivers": [],
-            "unused_waivers": [],
-            "notes": [],
-        })
+        crate::verdict_v2::tests::whole(outcome, SEALED.policy, SEALED.patch, SEALED.ranker)
     }
 
     #[test]
@@ -1003,7 +931,7 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert_eq!(
             (rules[0].id.as_str(), rules[0].why.as_str()),
-            ("keep-the-tests", "w1")
+            ("keep-the-tests", "why keep-the-tests")
         );
         assert_eq!(
             rules[0].violations,
@@ -1065,7 +993,15 @@ mod tests {
     #[test]
     fn an_exit_code_without_the_judges_own_sealed_document_is_unjudged() {
         type Spoil = (&'static str, fn(&mut Value));
-        let spoil: [Spoil; 16] = [
+        let spoil: [Spoil; 18] = [
+            // review V4 round 3: a verdict on another ranker, or on a Git nobody enrolled
+            ("another ranker", |d| {
+                d["seals"]["ranked_by"]["sha256"] = json!(SEALED.patch);
+            }),
+            ("a Git that is not enrolled", |d| {
+                d["seals"]["git"]["admission"] = json!("unpinned");
+                d["seals"]["git"]["allowlist_sha256"] = Value::Null;
+            }),
             // review V4 round 2, VD4R2-M-2: a document that contradicts itself, or is not whole
             ("another exit code inside", |d| {
                 d["exit"]["code"] = json!(1);
@@ -1104,10 +1040,10 @@ mod tests {
                 d["verdict"] = json!("other");
             }),
             ("another policy", |d| {
-                d["seals"]["policy_sha256"] = json!(SEALED.patch_sha256);
+                d["seals"]["policy_sha256"] = json!(SEALED.patch);
             }),
             ("another patch", |d| {
-                d["seals"]["patch_sha256"] = json!(SEALED.policy_sha256);
+                d["seals"]["patch_sha256"] = json!(SEALED.policy);
             }),
             ("a supplied ranking", |d| {
                 d["seals"]["provenance"] = json!("supplied");
@@ -1155,6 +1091,7 @@ mod tests {
         ] {
             let mut contradicts = document(outcome);
             contradicts["rules"][0]["outcome"] = json!(worse);
+            crate::verdict_v2::tests::recount(&mut contradicts);
             let Judged::Unjudged { reason } = judged(Some(exit), Some(&contradicts), None, SEALED)
             else {
                 panic!("a {outcome} with a rule that is {worse} was believed")

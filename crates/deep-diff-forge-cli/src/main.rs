@@ -58,6 +58,7 @@ mod agent;
 mod doctor;
 mod hook;
 mod hook_run;
+mod verdict_v2;
 
 /// Read all of `reader` into a `String`, but never buffer more than the patch
 /// byte budget. `what` names the source for diagnostics.

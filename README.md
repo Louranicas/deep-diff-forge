@@ -319,10 +319,13 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   an absolute path. A judge inside the repository it would judge is not run, however it was
   named: the change could have written it.
 - **A verdict is an exit code and a document that agree.** Exit 0, 7 or 8 counts only with a
-  whole `forge-warden.verdict.v2` document (every member the schema requires, no key given
-  twice) that says the same outcome in `verdict` and in its own `exit.code`, holds no rule
-  stricter than that outcome, is sealed to the policy and the patch this hook wrote (their
-  SHA-256), and is on a ranking the judge produced itself. Anything else is UNJUDGED: a program that is merely named `forge-warden` and exits 0 does not
+  whole `forge-warden.verdict.v2` document, checked member by member against the schema
+  forge-warden ships (required members and their nested members, patterns, closed sets of
+  values, the exit triple that belongs to the verdict, a summary that counts the rules, no
+  key given twice). It must say the same outcome as the exit code, hold no rule stricter
+  than that outcome, be sealed to the policy, the patch and the ranker this hook gave (their
+  SHA-256), be on a ranking the judge produced itself, and be on a Git the machine's owner
+  enrolled. Anything else is UNJUDGED: a program that is merely named `forge-warden` and exits 0 does not
   pass a stop. The seals do not prove who wrote the document; they bind a real judge's answer
   to these inputs.
 - **The policy is the one at the base commit** (`warden.toml`, or `--policy NAME`), read from
@@ -359,9 +362,10 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   judge is given a probe, a patch that adds one comment line to the policy, and must return a
   verdict with a ranker this machine has), whether the policy protects its own file (a policy
   that lets the probe pass can be loosened by any change), and whether a Claude Code settings
-  file registers the stop hook: the exact command `agent setup --hooks` prints, for this
-  binary, with the judge, the policy and the rankers that were checked (a command that only
-  holds the words, runs another program, or names another judge is not it). A link that cannot be checked because an earlier one is
+  file registers the stop hook: the exact command `agent setup --hooks` prints, with this
+  binary and the judge each named by its own absolute path, and the policy and the rankers
+  that were checked (a command that only holds the words, starts with an assignment, names
+  this binary through a link or a relative path, or names no judge is not it). A link that cannot be checked because an earlier one is
   missing is reported as not ready, never as fine. Exit 0 only when every link is ready,
   otherwise 7 (the contract asked for is not met). In `--json` the checks are named `git`,
   `repository`, `policy`, `judge`, `chain`, `policy_protects_itself` and `hooks_registered`,

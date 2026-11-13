@@ -307,16 +307,23 @@ every gate ran as root inside the container. Gates refuse to run unless
   reason. Before, several such failures let a stop pass in silence.
 - **`agent doctor --gate` reads a registered stop hook only in the form `agent setup --hooks`
   prints.** One program and its arguments, written with plain characters and single quotes:
-  no comment, second command, pipe, redirection or substitution. The program must be this
-  binary, and the judge, policy and rankers it names must be the ones the gate checked.
+  no comment, second command, pipe, redirection or substitution. The program word must be
+  this binary's own absolute path, the word itself and not what it leads to: a shell runs
+  `A=ddf agent …` as the program `agent`, and a link can be pointed elsewhere later. The
+  judge must be named, by the absolute path the gate checked; the policy and the rankers
+  must be the gate's.
 - **The judge decides, by its exit code and its document together.** DDF starts
   `forge-warden` under a deadline and output caps. Exit 0, 7 or 8 is a verdict only with a
-  whole `forge-warden.verdict.v2` document: every member the schema requires, of its type; no
-  key given twice at any depth; the same outcome in `verdict`, in `exit.code` and in the
-  process exit; no rule stricter than the verdict; the SHA-256 of the policy and of the patch
-  this hook wrote; a ranking the judge produced. Members a later forge-warden adds are
-  accepted, and the date and the ranker's identity are not checked here (the policy pins the
-  ranker and the judge enforces it). A code
+  whole `forge-warden.verdict.v2` document, checked member by member against the schema
+  forge-warden ships (`cli/src/verdict_v2.rs`): every required member and nested member, its
+  pattern or closed set of values, lists the schema says are never empty, the `exit` triple
+  that belongs to the `verdict`, a `summary` that counts the `rules`; no key given twice at
+  any depth. It must agree with the process exit, hold no rule stricter than the verdict,
+  carry the SHA-256 of the policy, of the patch and of the ranker this hook gave, be on a
+  ranking the judge produced, and be on a Git whose admission is `approved`. Open on purpose:
+  members a later forge-warden adds, and a rule `kind` or note `code` this version does not
+  know. Not checked: the date the judge evaluated on (a verdict for the same policy, patch
+  and ranker is the same verdict tomorrow). A code
   without that, a code that is not a verdict, a missing judge or policy, or a ranker the
   policy does not admit is UNJUDGED: never a pass, and never a block. The seals bind an
   answer to its inputs; they do not authenticate the program.

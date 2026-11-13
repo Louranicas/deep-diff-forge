@@ -609,10 +609,6 @@ fn judge(
         deep_diff_forge_core::sha256_hex(&policy),
         deep_diff_forge_core::sha256_hex(&change.bytes),
     );
-    let sealed = hook::Sealed {
-        policy_sha256: &policy_sha256,
-        patch_sha256: &patch_sha256,
-    };
     let (policy_file, patch_file) = (
         scratch.0.join("policy.toml"),
         scratch.0.join("change.patch"),
@@ -625,6 +621,18 @@ fn judge(
             .to_owned(),
     };
     for ranker in rankers(args) {
+        // The verdict must name the ranker it was given, by its digest.
+        let Some(ranker_sha256) = file_sha256(&ranker) else {
+            last = Judged::Unjudged {
+                reason: "a ranker could not be read to seal the verdict to it".to_owned(),
+            };
+            continue;
+        };
+        let sealed = hook::Sealed {
+            policy: &policy_sha256,
+            patch: &patch_sha256,
+            ranker: &ranker_sha256,
+        };
         let (code, verdict, said) = run_judge(&program, &policy_file, &patch_file, &ranker);
         last = hook::judged(code, verdict.as_ref(), said.as_deref(), sealed);
         // Exit 4: the policy does not admit this ranker. Another may be admitted.
@@ -633,6 +641,13 @@ fn judge(
         }
     }
     Ok(Some(last))
+}
+
+/// The SHA-256 of the file at `path`, as hex; `None` when it cannot be read.
+fn file_sha256(path: &Path) -> Option<String> {
+    std::fs::read(path)
+        .ok()
+        .map(|bytes| deep_diff_forge_core::sha256_hex(&bytes))
 }
 
 /// When the agent wants to stop: have the change judged, and block only on a fail that is not
@@ -718,7 +733,6 @@ fn stop_commands(settings: &Value) -> Vec<String> {
 /// (review V4 round 2, VD4R2-H-1).
 fn not_this_chain(
     command: &str,
-    place: &Place,
     judge: Option<&Path>,
     policy: &str,
     args: &[String],
@@ -729,25 +743,25 @@ fn not_this_chain(
                 .to_owned(),
         );
     };
+    // The word itself, not what it leads to: a shell runs `A=ddf agent …` as the program
+    // `agent` with a variable set, and a link that leads to this binary today can lead
+    // elsewhere tomorrow. Only this binary's own absolute path, as `agent setup --hooks`
+    // prints it, is this program (review V4 round 3, VD4R3-H-1).
     let this = std::env::current_exe().and_then(std::fs::canonicalize).ok();
-    if this.is_none() || std::fs::canonicalize(&read.program).ok() != this {
+    if this.as_deref().and_then(Path::to_str) != Some(read.program.as_str()) {
         return Some(format!(
-            "runs another program than this one ({})",
+            "does not run this program by its own absolute path ({})",
             hook::shown_path(&read.program)
         ));
     }
     let Some(judge) = judge else {
         return Some("cannot be checked: no judge was found to check it against".to_owned());
     };
-    let named: Vec<String> = read
-        .judge
-        .iter()
-        .flat_map(|judge| ["--judge".to_owned(), judge.clone()])
-        .collect();
-    if judge_program(&named, &place.writable()).ok().as_deref() != Some(judge) {
+    // Likewise the judge: named, by the absolute path that was checked. A command that names
+    // none leaves the choice to whatever `PATH` holds when the hook runs.
+    if read.judge.as_deref() != judge.to_str() {
         return Some(
-            "would run another judge than the one checked here (check with the same --judge)"
-                .to_owned(),
+            "does not name, by its own absolute path, the judge checked here (--judge)".to_owned(),
         );
     }
     if read.policy.as_deref().unwrap_or(DEFAULT_POLICY) != policy {
@@ -776,7 +790,7 @@ fn registered(
             continue;
         };
         for command in stop_commands(&settings) {
-            match not_this_chain(&command, place, judge, policy, args) {
+            match not_this_chain(&command, judge, policy, args) {
                 None => return Ok(file),
                 Some(why) => {
                     close.get_or_insert(format!("{}: a Stop hook {why}", file.display()));
@@ -937,13 +951,17 @@ fn probe(
         deep_diff_forge_core::sha256_hex(policy),
         deep_diff_forge_core::sha256_hex(patch.as_bytes()),
     );
-    let sealed = hook::Sealed {
-        policy_sha256: &policy_sha256,
-        patch_sha256: &patch_sha256,
-    };
     let mut last =
         "this binary's own path could not be found, so no ranker could be offered".to_owned();
     for ranker in rankers(args) {
+        let Some(ranker_sha256) = file_sha256(&ranker) else {
+            continue;
+        };
+        let sealed = hook::Sealed {
+            policy: &policy_sha256,
+            patch: &patch_sha256,
+            ranker: &ranker_sha256,
+        };
         let (code, verdict, said) = run_judge(program, &policy_file, &patch_file, &ranker);
         match (
             code,

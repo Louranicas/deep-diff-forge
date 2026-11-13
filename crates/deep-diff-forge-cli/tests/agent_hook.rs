@@ -98,9 +98,9 @@ fn repository(scratch: &Scratch) -> PathBuf {
 ///
 /// It appends its arguments and the policy it was given to `log`, prints `verdict` and exits
 /// with the code in `exit_file` (so a test can change the answer between runs). Like the real
-/// judge it seals its document to the policy and the patch it was given, and the document says
-/// what the exit code says: `"@VERDICT@"` becomes `pass`, `fail` or `hold` for 0, 7 or 8,
-/// `"@CODE@"` the exit code, and `"@SEALS@"` the seals.
+/// judge it prints a whole document that says one thing: sealed to the policy, the patch and
+/// the ranker it was given, with the outcome, the exit triple and the summary that belong to
+/// the exit code (0 pass, 7 fail, 8 hold).
 fn judge(scratch: &Scratch, verdict: &Value) -> (PathBuf, PathBuf, PathBuf) {
     let (script, log, exit_file) = (
         scratch.join("judge"),
@@ -112,27 +112,40 @@ fn judge(scratch: &Scratch, verdict: &Value) -> (PathBuf, PathBuf, PathBuf) {
     (script, log, exit_file)
 }
 
+/// The stand-in judge's script. The placeholders in `verdict` (see [`verdict`]) are filled in
+/// when it runs.
 fn judge_script(log: &Path, exit_file: &Path, verdict: &Value) -> String {
-    format!(
-        "#!/bin/sh\n\
-         printf 'ARGS %s\\n' \"$*\" >> '{log}'\n\
-         policy=; patch=\n\
-         while [ $# -gt 0 ]; do\n\
-           case \"$1\" in\n\
-             --policy) policy=\"$2\"; printf 'POLICY %s' \"$(cat \"$2\")\" >> '{log}'; printf '\\n' >> '{log}';;\n\
-             --patch) patch=\"$2\"; printf 'PATCH-FILES %s\\n' \"$(grep -c '^diff --git' \"$2\")\" >> '{log}';;\n\
-           esac\n\
-           shift\n\
-         done\n\
-         sum() {{ if command -v sha256sum >/dev/null 2>&1; then sha256sum < \"$1\"; else shasum -a 256 < \"$1\"; fi | cut -d' ' -f1; }}\n\
-         code=\"$(cat '{exit}')\"\n\
-         case \"$code\" in 0) said=pass;; 7) said=fail;; 8) said=hold;; *) said=none;; esac\n\
-         seals=\"{{\\\"policy_sha256\\\":\\\"$(sum \"$policy\")\\\",\\\"rank_sha256\\\":\\\"$(sum \"$patch\")\\\",\\\"patch_sha256\\\":\\\"$(sum \"$patch\")\\\",\\\"provenance\\\":\\\"produced\\\",\\\"ranked_by\\\":{{}}}}\"\n\
-         sed -e \"s/\\\"@VERDICT@\\\"/\\\"$said\\\"/g\" -e \"s/\\\"@CODE@\\\"/$code/\" -e \"s/\\\"@SEALS@\\\"/$seals/\" <<'VERDICT'\n{verdict}\nVERDICT\n\
-         exit \"$code\"\n",
-        log = log.display(),
-        exit = exit_file.display(),
-    )
+    const SCRIPT: &str = r#"#!/bin/sh
+printf 'ARGS %s\n' "$*" >> '@LOG@'
+policy=; patch=; ranker=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --policy) policy="$2"; printf 'POLICY %s' "$(cat "$2")" >> '@LOG@'; printf '\n' >> '@LOG@';;
+    --patch) patch="$2"; printf 'PATCH-FILES %s\n' "$(grep -c '^diff --git' "$2")" >> '@LOG@';;
+    --ranker) ranker="$2";;
+  esac
+  shift
+done
+sum() { if command -v sha256sum >/dev/null 2>&1; then sha256sum < "$1"; else shasum -a 256 < "$1"; fi | cut -d' ' -f1; }
+code="$(cat '@EXIT@')"
+case "$code" in
+  0) said=pass; name=pass; action=proceed; counts='"passed":1,"waived":0,"held":0,"failed":0';;
+  7) said=fail; name=policy_fail; action=change_input; counts='"passed":0,"waived":0,"held":0,"failed":1';;
+  8) said=hold; name=policy_hold; action=review_evidence; counts='"passed":0,"waived":0,"held":1,"failed":0';;
+  *) said=none; name=none; action=none; counts='"passed":0,"waived":0,"held":0,"failed":0';;
+esac
+p="$(sum "$policy")"; f="$(sum "$patch")"; r="$(sum "$ranker")"
+seals="{\"policy_sha256\":\"$p\",\"rank_sha256\":\"$f\",\"patch_sha256\":\"$f\",\"patch_facts_sha256\":null,\"provenance\":\"produced\",\"ranked_by\":{\"version\":\"stand-in\",\"sha256\":\"$r\"},\"git\":{\"path\":\"/usr/bin/git\",\"version\":\"git version 2.56.0\",\"sha256\":\"$p\",\"admission\":\"approved\",\"allowlist_sha256\":\"$f\"}}"
+sed -e "s/\"@VERDICT@\"/\"$said\"/g" -e "s/\"@CODE@\"/$code/" -e "s/\"@NAME@\"/\"$name\"/" \
+    -e "s/\"@ACTION@\"/\"$action\"/" -e "s|\"@SEALS@\"|$seals|" -e "s/\"@COUNTS@\":0/$counts/" <<'VERDICT'
+@VERDICT_DOCUMENT@
+VERDICT
+exit "$code"
+"#;
+    SCRIPT
+        .replace("@LOG@", &log.display().to_string())
+        .replace("@EXIT@", &exit_file.display().to_string())
+        .replace("@VERDICT_DOCUMENT@", &verdict.to_string())
 }
 
 /// Write an executable script through a child process (see [`judge`]).
@@ -153,19 +166,22 @@ fn write_program(path: &Path, body: &str) {
 }
 
 /// A verdict document for the stand-in judge, with one rule. The document's outcome, its
-/// rule's outcome, its exit code and its seals are filled in by the judge when it runs, from
-/// the exit code it is told to give: like the real judge, it never contradicts itself.
+/// rule's outcome, its exit triple, its summary and its seals are filled in by the judge when
+/// it runs, from the exit code it is told to give: like the real judge, it never contradicts
+/// itself.
 fn verdict(outcome: &str, rule: &str, signal: &str, path: &str) -> Value {
     json!({
         "schema": "forge-warden.verdict.v2",
         "tool": {"name": "forge-warden", "version": "0.2.0"},
-        "evaluated_on": "2026-11-13",
+        "evaluated_on": "2026-11-14",
         "seals": "@SEALS@",
         "verdict": "@VERDICT@",
-        "exit": {"code": "@CODE@", "name": "n", "action": "a"},
-        "summary": {},
+        "exit": {"code": "@CODE@", "name": "@NAME@", "action": "@ACTION@"},
+        "summary": {"files": 1, "rules": 1, "@COUNTS@": 0},
         "rules": [
-            {"id": rule, "kind": "forbid_signal", "severity": outcome, "outcome": "@VERDICT@",
+            {"id": rule, "kind": "forbid_signal",
+             "severity": if outcome == "fail" { "fail" } else { "hold" },
+             "outcome": "@VERDICT@",
              "why": "A silenced check hides the next real bug.",
              "violations": [{"signal": signal, "path": path, "message": "m"}]}
         ],
@@ -753,9 +769,14 @@ fn settings_with(command: &str) -> String {
 fn stop_command(judge: &Path) -> String {
     format!(
         "'{}' agent hook stop --client claude --judge '{}'",
-        env!("CARGO_BIN_EXE_deep-diff-forge"),
-        judge.display()
+        this_binary().display(),
+        std::fs::canonicalize(judge).unwrap().display()
     )
+}
+
+/// This binary by its own absolute path, as `agent setup --hooks` prints it.
+fn this_binary() -> PathBuf {
+    std::fs::canonicalize(env!("CARGO_BIN_EXE_deep-diff-forge")).unwrap()
 }
 
 /// A settings document that registers the stop hook with `judge`.
@@ -813,16 +834,39 @@ fn doctor_gate_checks_every_link_of_a_judged_stop() {
     let other_judge = root.parent().unwrap().join("other-judge");
     write_program(&other_judge, "#!/bin/sh\nexit 0\n");
     let right = stop_command(&script);
+    // Review V4 round 3, VD4R3-H-1: a shell runs `A=ddf agent …` as the program `agent`, and a
+    // link to this binary can be pointed elsewhere later. Both stand in the repository.
+    std::os::unix::fs::symlink(this_binary(), root.join("A=ddf")).unwrap();
+    std::os::unix::fs::symlink(this_binary(), root.join("ddf-link")).unwrap();
+    let judge_path = std::fs::canonicalize(&script).unwrap();
+    let by = |program: &str| {
+        format!(
+            "{program} agent hook stop --client claude --judge '{}'",
+            judge_path.display()
+        )
+    };
+    let not_by_its_path = "does not run this program by its own absolute path";
     for (command, why) in [
         ("true # agent hook stop".to_owned(), "is not the command"),
         ("echo agent hook stop".to_owned(), "is not the command"),
         (format!("{right} || true"), "is not the command"),
         (format!("true # {right}"), "is not the command"),
+        (by("/bin/sh"), not_by_its_path),
+        (by("A=ddf"), not_by_its_path),
+        (by("./ddf-link"), not_by_its_path),
         (
-            "/bin/sh agent hook stop --client claude".to_owned(),
-            "runs another program than this one",
+            by(&format!("'{}'", root.join("ddf-link").display())),
+            not_by_its_path,
         ),
-        (stop_command(&other_judge), "would run another judge"),
+        (by("deep-diff-forge"), not_by_its_path),
+        (stop_command(&other_judge), "the judge checked here"),
+        (
+            format!(
+                "'{}' agent hook stop --client claude",
+                this_binary().display()
+            ),
+            "the judge checked here",
+        ),
         (
             format!("{right} --policy other.toml"),
             "another policy file",
@@ -1017,13 +1061,17 @@ fn a_program_that_is_only_named_like_the_judge_cannot_pass_a_stop() {
     let unsealed = json!({
         "schema": "forge-warden.verdict.v2",
         "tool": {"name": "forge-warden", "version": "0.2.0"},
-        "evaluated_on": "2026-11-13",
+        "evaluated_on": "2026-11-14",
         "seals": {"policy_sha256": zeros, "rank_sha256": zeros, "patch_sha256": zeros,
-                  "provenance": "produced", "ranked_by": {}},
+                  "patch_facts_sha256": null, "provenance": "produced",
+                  "ranked_by": {"version": "x", "sha256": zeros},
+                  "git": {"path": "/usr/bin/git", "version": "v", "sha256": zeros,
+                          "admission": "approved", "allowlist_sha256": zeros}},
         "verdict": "pass",
-        "exit": {"code": 0, "name": "n", "action": "a"},
-        "summary": {},
-        "rules": [],
+        "exit": {"code": 0, "name": "pass", "action": "proceed"},
+        "summary": {"files": 1, "rules": 1, "passed": 1, "waived": 0, "held": 0, "failed": 0},
+        "rules": [{"id": "size", "kind": "max_score", "severity": "hold", "outcome": "pass",
+                   "why": "w", "violations": []}],
         "expired_waivers": [],
         "unused_waivers": [],
         "notes": [],
@@ -1038,16 +1086,31 @@ fn a_program_that_is_only_named_like_the_judge_cannot_pass_a_stop() {
         said.contains("its verdict is not sealed to the policy it was given"),
         "{said}"
     );
-    // review V4 round 2, VD4R2-M-2: the same sealed to nothing, with half its members, or
-    // saying two things, is not a verdict either
+    // review V4 rounds 2 and 3: the same sealed to nothing, with half its members, saying two
+    // things, or as the reviewer wrote it (a wrong date, no Git, an empty summary and no
+    // rules, under the exit name of a fail) is not a verdict either
+    let theirs = {
+        let mut theirs = unsealed.clone();
+        theirs["evaluated_on"] = json!("not-a-date");
+        theirs["seals"].as_object_mut().unwrap().remove("git");
+        theirs["seals"]["ranked_by"] = json!({});
+        theirs["summary"] = json!({});
+        theirs["rules"] = json!([]);
+        theirs["exit"]["name"] = json!("policy_fail");
+        theirs
+    };
     for (text, why) in [
         (
+            theirs.to_string(),
+            "is not a whole forge-warden.verdict.v2",
+        ),
+        (
             r#"{"schema":"forge-warden.verdict.v2","verdict":"pass","seals":{"provenance":"produced"},"rules":[]}"#.to_owned(),
-            "lacks a member",
+            "is not a whole forge-warden.verdict.v2",
         ),
         (
             unsealed.to_string().replace(r#""code":0"#, r#""code":7"#),
-            "does not say pass (exit 0)",
+            "`verdict` and `exit` are missing or do not belong together",
         ),
         (
             unsealed

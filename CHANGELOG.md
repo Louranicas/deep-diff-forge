@@ -84,6 +84,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     stood for "no commit yet" and for several failures, so a failure let a stop pass in
     silence. `judge_patch` now returns its own error (`NoBase`, `SkipWorktree`, `Failed`),
     and only no base and no change are nothing to judge.
+- **Round 3 of the same review (verdict NO-GO a third time) and its fixes.** The sparse
+  working tree and the silent failure were closed. Two findings stood.
+  - *High: a shell assignment stood in for the checked program.* `A=ddf agent hook stop …`
+    passed the gate when a file named `A=ddf` led to this binary, and a shell runs that line
+    as the program `agent`. The gate now compares the program word itself with this binary's
+    own absolute path, and requires the judge to be named by the absolute path it checked.
+  - *Medium: the verdict check was still shallower than the schema.* A document with a date
+    that is not one, no Git, an empty summary, no rules and the exit name of a fail was a
+    pass. The document is now checked member by member against the schema forge-warden ships
+    (`verdict_v2.rs`), and a verdict must also name the ranker the hook gave, by its digest,
+    and a Git the owner enrolled.
   `deep_diff_forge_patch::file_at_commit` reads a regular file from a commit, which is how
   the policy is read.
 
