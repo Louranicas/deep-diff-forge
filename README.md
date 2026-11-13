@@ -763,9 +763,11 @@ scripts/bench_compare.py --base before*.json --head after*.json   # same machine
 deep-diff-forge eval                          # score the labelled corpus in fixtures/eval
 ```
 
-- **`bench`** runs seven workloads on inputs generated from fixed parameters, so every run
+- **`bench`** runs eight workloads on inputs generated from fixed parameters, so every run
   measures the same bytes:
   - `parse_seal`, `rank_with_evidence` and `outline_page` on a 200-file patch;
+  - `rank_long_line`: one added line of 4 MiB made of near-matches of the evidence rules'
+    words, the costliest input per byte to rank;
   - `findings_verify` and `findings_by_address`;
   - `structural_rust`;
   - `daemon_parallel` (four clients through the daemon's own request path).
@@ -796,15 +798,21 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   repeated id or a field its kind does not read, or a ranking pair is not two distinct paths. `eval` prints `deep-diff-forge.eval.v0` and exits 7 when a case
   fails.
 
-  **Measured 2026-11-13, 37 cases** (14 ranking, 20 evidence, 3 findings; 12 declared misses).
-  Three evidence cases were added for the integrity signals, one of them a declared miss; the
+  **Measured 2026-11-13, 39 cases** (14 ranking, 22 evidence, 3 findings; 31 declared misses).
+  Three evidence cases were added for the integrity signals, one of them a declared miss, and
+  one case of twelve declared misses: ways an agent makes a gate pass without doing the work
+  (a tautological assertion, a deleted assertion, an early `return` in a test, an error
+  replaced by a default, a special-cased input, an edited snapshot, a mocked subject), which
+  no rule sees yet, and one case from an adversarial review of these signals (six items its
+  fixes now catch, seven declared misses). Declared misses lower recall on purpose until rules
+  catch them; the
   2026-10-31 measurement on 34 cases was precision 21 / 22 and recall 21 / 28:
 
   | Metric | Right / total | Floor |
   | --- | ---: | ---: |
   | ranking pairs | 12 / 15 | 80.0% |
-  | evidence precision | 33 / 34 | 97.0% |
-  | evidence recall | 33 / 41 | 80.4% |
+  | evidence precision | 40 / 41 | 97.5% |
+  | evidence recall | 40 / 67 | 59.7% |
   | findings verdicts | 33 / 33 | 100% |
 
   `crates/deep-diff-forge-cli/tests/eval.rs` holds these floors (the measured values) and fails

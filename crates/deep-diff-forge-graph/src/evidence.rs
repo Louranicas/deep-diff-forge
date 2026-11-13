@@ -537,6 +537,9 @@ const RULES: &[Rule] = &[
             "it.skip(",
             "test.skip(",
             "describe.skip(",
+            "it.skipIf(",
+            "test.skipIf(",
+            "describe.skipIf(",
             "it.todo(",
             "test.todo(",
             "xit(",
@@ -607,6 +610,20 @@ const RULES: &[Rule] = &[
         View::Code,
         Scope::Languages(GO),
         Match::Tokens(&["_ = err"]),
+    ),
+    // The same calls written as functions (`Result::unwrap(x)`): no method call, so the parser's
+    // construct does not cover them and the spelling is all there is.
+    rule(
+        S::PanicPathAdded,
+        Side::New,
+        View::Code,
+        Scope::Languages(RUST),
+        Match::Tokens(&[
+            "Result::unwrap(",
+            "Option::unwrap(",
+            "Result::expect(",
+            "Option::expect(",
+        ]),
     ),
     // By spelling this cannot tell a test from other code: the path halves it on a test path,
     // and the parser withdraws it where the hunk shows a test around it ([`fragment_evidence`]).
@@ -950,15 +967,17 @@ fn fragment_evidence(
         withdrawn: Vec::new(),
     };
     for construct in &scan.constructs {
-        let Some(row) = construct.row.checked_sub(offset) else {
+        // The first added line the construct covers. An attribute or a macro invocation can
+        // span rows, and a change to any of them changes it: `assert!(` on a context line with
+        // `true` added under it is a trivial assertion added (review V3 round 1, VD3-M-1). A
+        // method call is one row.
+        let Some(index) = (construct.row..=construct.last_row)
+            .filter_map(|row| row.checked_sub(offset))
+            .filter_map(|row| side.get(row as usize).copied())
+            .find(|index| hunk.lines[*index].kind == PatchLineKind::Added)
+        else {
             continue;
         };
-        let Some(index) = side.get(row as usize).copied() else {
-            continue;
-        };
-        if hunk.lines[index].kind != PatchLineKind::Added {
-            continue;
-        }
         match signal_of(&construct.kind) {
             Some(S::PanicPathAdded) if construct.in_test => {
                 parsed.withdrawn.push((index, S::PanicPathAdded));
@@ -999,8 +1018,9 @@ fn signal_of(kind: &ConstructKind) -> Option<EvidenceSignal> {
 /// of the line after it on the same side (`None` when the hunk ends there).
 ///
 /// - Python: `except …:` whose body is `pass` or `...`, on the same line or the next.
-/// - JS and TS: `catch`, with or without a binding, whose block is empty: `{}` on the line, or
-///   `{` ending the line and `}` starting the next.
+/// - JS and TS: `catch`, with or without a binding, whose block is empty: `{}` on the line, `{`
+///   ending the line and `}` starting the next, or the whole empty block on the next line. Also
+///   a promise's `.catch(…)` whose handler is a function with an empty body, on one line.
 /// - Go: `if err != nil {`, with or without a statement before the test, closed at once, on the
 ///   line or the next.
 ///
@@ -1015,7 +1035,14 @@ fn empty_handler(language: Language, code: &str, next: Option<&str>) -> bool {
         let closed_here = after
             .strip_prefix('{')
             .is_some_and(|rest| rest.trim_start().starts_with('}'));
-        closed_here || (after == "{" && next.is_some_and(|n| n.starts_with('}')))
+        let block_on_next_line = after.is_empty()
+            && next.is_some_and(|n| {
+                n.strip_prefix('{')
+                    .is_some_and(|rest| rest.trim_start().starts_with('}'))
+            });
+        closed_here
+            || (after == "{" && next.is_some_and(|n| n.starts_with('}')))
+            || block_on_next_line
     };
     match language {
         Language::Python => {
@@ -1032,6 +1059,10 @@ fn empty_handler(language: Language, code: &str, next: Option<&str>) -> bool {
             nothing(body) || (body.is_empty() && next.is_some_and(nothing))
         }
         Language::JavaScript => line.match_indices("catch").any(|(at, word)| {
+            // A promise's `.catch(…)` swallows when its handler is a function with an empty body.
+            if at > 0 && line.as_bytes()[at - 1] == b'.' {
+                return empty_callback(&line[at + word.len()..]);
+            }
             let before_ok = at == 0 || !is_boundary_blocker(line.as_bytes()[at - 1]);
             let after = line[at + word.len()..].trim_start();
             if !before_ok || after.as_bytes().first().is_some_and(|b| is_ident(*b)) {
@@ -1054,6 +1085,40 @@ fn empty_handler(language: Language, code: &str, next: Option<&str>) -> bool {
         }),
         Language::Rust | Language::Shell | Language::Yaml => false,
     }
+}
+
+/// Whether `after` (what follows `.catch` on a line of code) is a call whose argument is a
+/// function with an empty body: `(() => {})`, `(e => {})`, `(async (e) => { })`,
+/// `(function () {})`. Anything else, including a handler that names a function, is not.
+fn empty_callback(after: &str) -> bool {
+    let Some(inner) = after.trim_start().strip_prefix('(') else {
+        return false;
+    };
+    let inner = inner.trim_start();
+    let inner = inner.strip_prefix("async ").unwrap_or(inner).trim_start();
+    let body = if let Some(rest) = inner.strip_prefix("function") {
+        let Some((_, rest)) = rest.split_once(')') else {
+            return false;
+        };
+        rest
+    } else {
+        let parameters = if inner.starts_with('(') {
+            inner.find(')').map(|close| close + 1)
+        } else {
+            Some(inner.bytes().take_while(|b| is_ident(*b)).count())
+        };
+        let Some(rest) = parameters
+            .and_then(|end| inner.get(end..))
+            .and_then(|rest| rest.trim_start().strip_prefix("=>"))
+        else {
+            return false;
+        };
+        rest
+    };
+    body.trim_start()
+        .strip_prefix('{')
+        .and_then(|rest| rest.trim_start().strip_prefix('}'))
+        .is_some_and(|rest| rest.trim_start().starts_with(')'))
 }
 
 /// Whether a JS line loads one of `modules` (`node:` optional) with `require(…)` (also
@@ -2314,7 +2379,9 @@ mod tests {
             ("a.ts", &["+} catch (e) { log(e); }"]),
             ("a.ts", &["+} catch (e) {", "+  log(e);"]),
             ("a.ts", &["+} catch (e) {"]),
-            ("a.ts", &["+p.catch(() => {});"]),
+            // a promise handler that does something (an empty one is evidence since review V3
+            // round 1; before, no `.catch(…)` was read at all)
+            ("a.ts", &["+p.catch((e) => { log(e); });"]),
             ("a.ts", &["+const catcher = {};"]),
             ("a.ts", &["+// } catch (e) {}"]),
             ("a.go", &["+\tif err != nil {", "+\t\treturn err"]),
@@ -2599,5 +2666,170 @@ mod tests {
         assert!(!token_in("x = $os.execvp(a)", "os.exec*"));
         assert!(!token_in("x = _os.execvp(a)", "os.exec*"));
         assert!(token_in("a unsafe b", "unsafe"));
+    }
+    /// Review V3 round 1, VD3-H-1: an attribute that only mentions `test` proves no test, so the
+    /// panic path under it stands. Before, `#[cfg_attr(any(), test)]` on a production function
+    /// made the item disappear.
+    #[test]
+    fn a_false_test_context_does_not_withdraw_a_panic_path() {
+        let stands: &[&[&str]] = &[
+            &[
+                "+#[cfg_attr(any(), test)]",
+                "+pub fn production() {",
+                "+    load().unwrap();",
+                "+}",
+            ],
+            &[
+                "+#[cfg_attr(feature = \"x\", test)]",
+                "+pub fn production() {",
+                "+    load().unwrap();",
+                "+}",
+            ],
+            &[
+                "+#[my_attribute(test)]",
+                "+pub fn production() {",
+                "+    load().unwrap();",
+                "+}",
+            ],
+            &[
+                "+#[cfg(not(test))]",
+                "+mod real {",
+                "+    pub fn production() {",
+                "+        load().unwrap();",
+                "+    }",
+                "+}",
+            ],
+            &[
+                "+mod tests {",
+                "+    pub fn production() {",
+                "+        load().unwrap();",
+                "+    }",
+                "+}",
+            ],
+        ];
+        for body in stands {
+            let items = found(&hunk_of("src/a.rs", body));
+            assert_eq!(
+                items.iter().map(|i| (i.0, i.1)).collect::<Vec<_>>(),
+                [(S::PanicPathAdded, Basis::SyntaxFragment)],
+                "{body:?}"
+            );
+        }
+        // the real thing is still withdrawn
+        let real = found(&hunk_of(
+            "src/a.rs",
+            &["+#[test]", "+fn a() {", "+    load().unwrap();", "+}"],
+        ));
+        assert_eq!(real, []);
+    }
+
+    /// Review V3 round 1, VD3-M-1: a change inside a construct that started on an unchanged
+    /// line is a change to the construct, reported on the added line.
+    #[test]
+    fn an_added_line_inside_a_construct_that_spans_lines_is_evidence() {
+        let assertion = found(&hunk_of(
+            "tests/m.rs",
+            &[
+                " fn checks() {",
+                "     assert!(",
+                "-        computes_answer()",
+                "+        true",
+                "     );",
+            ],
+        ));
+        assert_eq!(assertion, [(S::TrivialAssert, Basis::SyntaxFragment, 4)]);
+        let stub = found(&hunk_of(
+            "src/m.rs",
+            &[" fn f() {", "     todo!(", "+        \"later\"", "     )"],
+        ));
+        assert_eq!(stub, [(S::StubAdded, Basis::SyntaxFragment, 4)]);
+        // an unchanged construct beside an added line is still not evidence
+        let beside = found(&hunk_of(
+            "tests/m.rs",
+            &[" fn checks() {", "     assert!(true);", "+    let a = 1;"],
+        ));
+        assert_eq!(beside, []);
+        // a `catch` whose empty block is on the next line
+        let catch = found(&hunk_of(
+            "web/a.ts",
+            &[
+                " try { work(); }",
+                "-catch (e) { report(e); }",
+                "+catch",
+                "+{ }",
+            ],
+        ));
+        assert_eq!(catch, [(S::ErrorSwallowed, Basis::Hunk, 3)]);
+        let bound = found(&hunk_of(
+            "web/a.ts",
+            &[" try { work(); }", "+catch (e)", "+{}"],
+        ));
+        assert_eq!(bound, [(S::ErrorSwallowed, Basis::Hunk, 3)]);
+        // a block with something in it is not
+        let handled = found(&hunk_of(
+            "web/a.ts",
+            &[" try { work(); }", "+catch (e)", "+{ report(e); }"],
+        ));
+        assert_eq!(handled, []);
+    }
+
+    /// Review V3 round 1, VD3-L-1: more spellings of the same things.
+    #[test]
+    fn other_spellings_of_a_skip_a_swallowed_rejection_and_a_panic_path_are_evidence() {
+        let lexical = |signal| vec![(signal, Basis::Lexical, 2)];
+        assert_eq!(
+            found(&hunk_of(
+                "web/a.test.ts",
+                &["+test.skipIf(isCI)(\"adds\", () => {});"]
+            )),
+            lexical(S::TestSkipped)
+        );
+        for line in [
+            "+let v = Result::unwrap(read());",
+            "+let v = Option::expect(first(), \"one\");",
+        ] {
+            assert_eq!(
+                found(&hunk_of("src/u.rs", &[line])),
+                lexical(S::PanicPathAdded),
+                "{line}"
+            );
+        }
+        for line in [
+            "+run().catch(() => {});",
+            "+p.catch(()=>{});",
+            "+p.catch(e => {});",
+            "+p.catch((e) => { });",
+            "+p.catch(async (e) => {});",
+            "+p.catch(function () {});",
+            "+p.catch(function(e) { });",
+        ] {
+            assert_eq!(
+                found(&hunk_of("web/p.ts", &[line])),
+                [(S::ErrorSwallowed, Basis::Hunk, 2)],
+                "{line}"
+            );
+        }
+        // a handler that does something, a named handler, and other calls named catch are not
+        for line in [
+            "+p.catch((e) => { report(e); });",
+            "+p.catch(report);",
+            "+p.catch(() => report());",
+            "+p.catch(() => ({}));",
+            "+cache.catchUp(() => {});",
+            "+p.catch();",
+        ] {
+            assert_eq!(found(&hunk_of("web/p.ts", &[line])), [], "{line}");
+        }
+        // a conditional skip is still reported: under some configuration the test does not run
+        assert_eq!(
+            found(&hunk_of(
+                "tests/t.rs",
+                &["+#[cfg_attr(miri, ignore)]", "+#[test]", "+fn a() {}"]
+            ))
+            .iter()
+            .map(|i| i.0)
+            .collect::<Vec<_>>(),
+            [S::TestSkipped]
+        );
     }
 }

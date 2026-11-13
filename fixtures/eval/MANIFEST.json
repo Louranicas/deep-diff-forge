@@ -585,7 +585,7 @@
       "id": "evidence/error-swallowed-multilang",
       "kind": "evidence",
       "patch": "evidence/error-swallowed-multilang.patch",
-      "origin": "synthetic: agent batteries 2026-11-13: an empty handler in Python (two lines), TypeScript (one line and two) and Go (an if with an init statement, and _ = err). Negatives: a handler that logs, and a promise's catch method",
+      "origin": "synthetic: agent batteries 2026-11-13: an empty handler in Python (two lines), TypeScript (one line and two) and Go (an if with an init statement, and _ = err). Negative: a handler that logs. A promise's catch with an empty function was a negative here until review V3 round 1 (VD3-L-1) and is expected since",
       "expect": [
         {
           "path": "a.py",
@@ -616,6 +616,12 @@
           "signal": "error_swallowed",
           "side": "new",
           "line": 5
+        },
+        {
+          "path": "web/a.ts",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 7
         }
       ],
       "sha256": "b13245c86fe887729851d318094ee7dc1ae344474d841f3f924b00adfd358b62"
@@ -701,6 +707,177 @@
       ],
       "sha256": "6d4d75d0a4d0663b9f573094f57e2fd53bea3ae9e9a3edb1450bb14173cd6662",
       "findings_sha256": "b21611a2708dafab22abba2a68280c22783907ecdb075302271c29e7e236d8d6"
+    },
+    {
+      "id": "evidence/agent-evasions",
+      "kind": "evidence",
+      "patch": "evidence/agent-evasions.patch",
+      "origin": "synthetic: agent batteries 2026-11-13, gap analysis probes written by Claude (a sample, not a measurement): twelve ways an agent makes a gate pass without doing the work, each a declared miss until a rule sees it. Eight name labels that do not exist yet (assertions_removed, input_special_cased, error_defaulted, expectations_changed, module_mocked); a declared miss that is later found fails the run until it is moved to expect",
+      "expect": [],
+      "known_miss": [
+        {
+          "path": "tests/tautology.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/assertion_dropped.rs",
+          "signal": "assertions_removed",
+          "side": "old",
+          "line": 3
+        },
+        {
+          "path": "src/special.rs",
+          "signal": "input_special_cased",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/defaulted.rs",
+          "signal": "error_defaulted",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/discarded.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/ok_discard.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "app/handler.py",
+          "signal": "error_defaulted",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "tests/test_early_return.py",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/snapshots/total.snap",
+          "signal": "expectations_changed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "web/pay.test.ts",
+          "signal": "module_mocked",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/indexed.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/ci_return.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "sha256": "c69c7d48c496f64f48776967700c6002a40e80a09d28e865e80607f98874381d"
+    },
+    {
+      "id": "evidence/review-v3-round1",
+      "kind": "evidence",
+      "patch": "evidence/review-v3-round1.patch",
+      "origin": "internal: an adversarial review by Vesper V3 round 1, 2026-11-13 (docs/reviews/vesper-v3-round1-report-20261113.md), findings VD3-H-1, VD3-M-1 and VD3-L-1, each reproduced before it was counted. Caught since the fixes: a panic path under a false cfg_attr that only mentions test, a change inside an assertion that spans lines (Rust), a catch whose empty block is on the next line, a promise catch with an empty function, test.skipIf, and Result::unwrap written as a function. Declared misses: the multi-line assertion in Python and TypeScript, a Go skip through a receiver not named t, Python assertions on a constant, and a Python body that is only an ellipsis",
+      "expect": [
+        {
+          "path": "src/false_cfg_attr.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/multiline.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "web/next_line_block.ts",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "web/promise.ts",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "web/skipif.test.ts",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/ufcs.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "tests/test_multiline.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "web/multiline.test.ts",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "go/other_receiver_test.go",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_constants.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_constants.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/test_constants.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "app/ellipsis.py",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "730f3cbb9107929c489dbfdf60d182990cda5b82d83d79c4fa7f3bc716611133"
     }
   ]
 }

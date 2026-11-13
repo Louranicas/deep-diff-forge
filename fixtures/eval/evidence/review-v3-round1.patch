@@ -1,0 +1,83 @@
+diff --git a/src/false_cfg_attr.rs b/src/false_cfg_attr.rs
+new file mode 100644
+--- /dev/null
++++ b/src/false_cfg_attr.rs
+@@ -0,0 +1,4 @@
++#[cfg_attr(any(), test)]
++pub fn production() {
++    load().unwrap();
++}
+diff --git a/tests/multiline.rs b/tests/multiline.rs
+--- a/tests/multiline.rs
++++ b/tests/multiline.rs
+@@ -1,4 +1,4 @@
+ fn checks() {
+     assert!(
+-        computes_answer()
++        true
+     );
+diff --git a/web/next_line_block.ts b/web/next_line_block.ts
+--- a/web/next_line_block.ts
++++ b/web/next_line_block.ts
+@@ -1,2 +1,3 @@
+ try { work(); }
+-catch (e) { report(e); }
++catch
++{ }
+diff --git a/web/promise.ts b/web/promise.ts
+--- a/web/promise.ts
++++ b/web/promise.ts
+@@ -1,1 +1,2 @@
+ const p = run();
++p.catch(() => {});
+diff --git a/web/skipif.test.ts b/web/skipif.test.ts
+--- a/web/skipif.test.ts
++++ b/web/skipif.test.ts
+@@ -1,1 +1,2 @@
+ import { test } from "vitest";
++test.skipIf(isCI)("adds", () => {});
+diff --git a/src/ufcs.rs b/src/ufcs.rs
+--- a/src/ufcs.rs
++++ b/src/ufcs.rs
+@@ -1,1 +1,2 @@
+ fn f() -> u8 {
++    Result::unwrap(read())
+diff --git a/tests/test_multiline.py b/tests/test_multiline.py
+--- a/tests/test_multiline.py
++++ b/tests/test_multiline.py
+@@ -1,4 +1,4 @@
+ def test_answer():
+     assert (
+-        computes_answer()
++        True
+     )
+diff --git a/web/multiline.test.ts b/web/multiline.test.ts
+--- a/web/multiline.test.ts
++++ b/web/multiline.test.ts
+@@ -1,5 +1,5 @@
+ test("answer", () => {
+   expect(
+-    computesAnswer()
++    true
+   ).toBe(true);
+ });
+diff --git a/go/other_receiver_test.go b/go/other_receiver_test.go
+--- a/go/other_receiver_test.go
++++ b/go/other_receiver_test.go
+@@ -1,1 +1,2 @@
+ func TestAdds(tt *testing.T) {
++	tt.Skip("later")
+diff --git a/tests/test_constants.py b/tests/test_constants.py
+--- a/tests/test_constants.py
++++ b/tests/test_constants.py
+@@ -1,1 +1,4 @@
+ def test_constants():
++    assert 1
++    assert not False
++    self.assertEqual(1, 1)
+diff --git a/app/ellipsis.py b/app/ellipsis.py
+--- a/app/ellipsis.py
++++ b/app/ellipsis.py
+@@ -1,1 +1,2 @@
+ def pay(order):
++    ...

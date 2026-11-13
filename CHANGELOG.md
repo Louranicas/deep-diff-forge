@@ -47,6 +47,41 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   placeholder that exists only as a message string). The Go case found that
   `if err := f(); err != nil {}` was not read; it is now. Measured: evidence precision 33 of
   34, recall 33 of 41; the floors are raised to those values.
+- **Twelve declared misses: how an agent makes a gate pass without doing the work.** The
+  case `evidence/agent-evasions` (38 cases now) records twelve small changes no rule sees
+  yet: an assertion compared with itself, the only assertion of a test deleted, a `return`
+  added at the top of a test (bare, or when `CI` is set), `?` replaced by
+  `unwrap_or_default()`, by `let _ =` and by `.ok();`, a broad `except` that returns
+  `None`, an input special-cased in the function under test, a snapshot edited with the
+  source, the module under test mocked, and a checked read replaced by an index. A declared
+  miss counts as wrong, so evidence recall is now 33 of 53 and its floor is set there; a
+  miss that a later rule catches fails the run until it is moved to `expect`. A new signal
+  starts here, as a case the engine misses.
+- **An adversarial review of the integrity signals (Vesper, V3 round 1; `docs/reviews/`),
+  verdict NO-GO, and its fixes.** Each finding was reproduced before it was counted.
+  - *High: a false test context hid a panic path.* `#[cfg_attr(any(), test)]` on a production
+    function made its `panic_path_added` item disappear: the last identifier anywhere in an
+    attribute decided what test code was. Now only a function's own test attribute (`#[test]`,
+    `#[rstest]`, a path ending in `::test`) or a module that is exactly `#[cfg(test)]` is test
+    code. A module merely named `tests` no longer counts either: without `#[cfg(test)]` it is
+    compiled into the program. A conditional skip (`#[cfg_attr(…, ignore)]`) is still reported:
+    under some configuration the test does not run.
+  - *Medium: a change inside a construct that spans lines was not seen.* `assert!(` on an
+    unchanged line with `true` added under it is now `trivial_assert`, on the added line: a
+    change to any line of an attribute or a macro invocation is a change to it. A `catch`
+    whose empty block is on the next line is `error_swallowed`.
+  - *Low: other spellings.* `test.skipIf(…)`, a promise's `.catch(…)` whose handler is a
+    function with an empty body, and `Result::unwrap(x)` / `Option::expect(x, …)` written as
+    functions are evidence. Still missed, and declared in the corpus: the multi-line
+    assertion in Python and TypeScript, a Go skip through a receiver not named `t`, Python
+    assertions on a constant, a Python body that is only `...`.
+  - *High as reported, not reproduced on a release build: a 60 MiB line and a consumer's
+    10 second limit.* The review timed 17.26 s on the debug build it was given. On a release
+    build of the same commit the same patch ranks in 1.9 s (v0.8.3: 1.5 s), and a line of
+    near-matches of every rule's words in 1.4 s. The bench gains `rank_long_line` (one 4 MiB
+    line of near-matches), so a change that makes a long line costlier shows in the pull
+    request's bench comparison.
+  - The corpus has 39 cases; evidence precision 40 of 41, recall 40 of 67.
 
 ### Changed
 

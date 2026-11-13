@@ -45,9 +45,15 @@ pub struct Construct {
     /// The row (0-based line of the fragment) it starts on; for a method call, the row of the
     /// method's name.
     pub row: u32,
-    /// Whether it sits inside test code that the fragment itself shows: a function carrying a
-    /// test attribute, or a module that is `#[cfg(test)]` or named `tests`. False says only
-    /// that the fragment does not show it, not that the code is production code.
+    /// The last row it reaches: an attribute or a macro invocation can span several rows, and a
+    /// change to any of them changes the construct. For a method call, equal to `row`.
+    pub last_row: u32,
+    /// Whether it sits inside test code that the fragment itself proves: a function that
+    /// carries a test attribute directly (`#[test]`, `#[tokio::test]`, `#[rstest]`), or a module
+    /// that is exactly `#[cfg(test)]`. An attribute that only mentions `test` inside another
+    /// one (`#[cfg_attr(any(), test)]`, `#[cfg(not(test))]`) proves nothing and is false, and so
+    /// is a module that is merely named `tests`. False says only that the fragment does not
+    /// prove it, not that the code is production code.
     pub in_test: bool,
 }
 
@@ -140,9 +146,15 @@ fn walk(root: Node, source: &str) -> FragmentScan {
                     .and_then(|function| function.child_by_field_name("field")),
                 ConstructKind::Attribute { .. } | ConstructKind::MacroCall { .. } => None,
             };
+            let row = row_of(named_at.unwrap_or(node));
             scan.constructs.push(Construct {
                 kind,
-                row: row_of(named_at.unwrap_or(node)),
+                row,
+                last_row: if named_at.is_some() {
+                    row
+                } else {
+                    rows_of(node).1
+                },
                 in_test,
             });
         }
@@ -232,16 +244,45 @@ fn identifiers(node: Node, source: &str) -> Vec<String> {
     }
 }
 
-/// Whether `node` is a function or a module that the fragment shows to be test code: a function
-/// with an attribute whose last word is `test` or `rstest` (`#[test]`, `#[tokio::test]`), or a
-/// module named `tests` or carrying `#[cfg(test)]`.
+/// An attribute's own path and its arguments, both with whitespace removed: `#[tokio::test(
+/// flavor = "x")]` gives `tokio::test` and `(flavor="x")`; `#[test]` gives `test` and nothing.
+/// What an attribute holds inside its arguments is not its path: `#[cfg_attr(any(), test)]` has
+/// the path `cfg_attr`.
+fn attribute_parts(item: Node, source: &str) -> Option<(String, Option<String>)> {
+    let compact = |node: Node| -> String {
+        text(node, source)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    };
+    let mut walker = item.walk();
+    let attribute = item
+        .children(&mut walker)
+        .find(|child| child.kind() == "attribute")?;
+    let path = attribute.named_child(0)?;
+    let arguments = attribute.child_by_field_name("arguments").map(compact);
+    Some((compact(path), arguments))
+}
+
+/// Whether `node` is a function or a module that the fragment proves to be test code.
+///
+/// - A function with a test attribute of its own: one whose path is `test` or `rstest`, or ends
+///   in `::test` (`#[tokio::test]`).
+/// - A module with exactly `#[cfg(test)]`.
+///
+/// Nothing weaker counts, because the answer withdraws evidence. `#[cfg_attr(any(), test)]`
+/// never applies `#[test]`, `#[cfg(not(test))]` is production code, and a module named `tests`
+/// with no `#[cfg(test)]` is compiled into the program (review V3 round 1, VD3-H-1: before, the
+/// last identifier anywhere in an attribute decided, so a false `cfg_attr` hid a panic path in
+/// production code). An attribute macro that is named `test` and makes no test would still be
+/// believed: names are not resolved here.
 fn opens_test_code(node: Node, source: &str) -> bool {
     let attributes = || {
         let mut found = Vec::new();
         let mut before = node.prev_sibling();
         while let Some(sibling) = before {
             match sibling.kind() {
-                "attribute_item" => found.push(identifiers(sibling, source)),
+                "attribute_item" => found.extend(attribute_parts(sibling, source)),
                 "line_comment" | "block_comment" => {}
                 _ => break,
             }
@@ -250,20 +291,12 @@ fn opens_test_code(node: Node, source: &str) -> bool {
         found
     };
     match node.kind() {
-        "function_item" => attributes().iter().any(|words| {
-            words
-                .last()
-                .is_some_and(|word| word == "test" || word == "rstest")
-        }),
-        "mod_item" => {
-            let named_tests = node
-                .child_by_field_name("name")
-                .is_some_and(|name| text(name, source) == "tests");
-            named_tests
-                || attributes()
-                    .iter()
-                    .any(|words| words.len() == 2 && words[0] == "cfg" && words[1] == "test")
-        }
+        "function_item" => attributes()
+            .iter()
+            .any(|(path, _)| path == "test" || path == "rstest" || path.ends_with("::test")),
+        "mod_item" => attributes()
+            .iter()
+            .any(|(path, arguments)| path == "cfg" && arguments.as_deref() == Some("(test)")),
         _ => false,
     }
 }
@@ -366,13 +399,71 @@ mod tests {
     fn test_modules_and_test_attributes_mark_what_is_inside_them() {
         let module = "#[cfg(test)]\nmod checks {\n    fn helper() { a().unwrap(); }\n}\n";
         assert_eq!(kinds(module)[1], (method("unwrap"), 2, true));
-        let named = "mod tests {\n    fn helper() { a().expect(\"x\"); }\n}\n";
-        assert_eq!(kinds(named)[0], (method("expect"), 1, true));
+        let spaced = "#[ cfg( test ) ]\nmod checks {\n    fn helper() { a().unwrap(); }\n}\n";
+        assert_eq!(kinds(spaced)[1], (method("unwrap"), 2, true));
         let tokio = "#[tokio::test]\nasync fn a() { b().await.unwrap(); }\n";
         assert_eq!(kinds(tokio)[1], (method("unwrap"), 1, true));
+        let flavoured =
+            "#[tokio::test(flavor = \"multi_thread\")]\nasync fn a() { b().await.unwrap(); }\n";
+        assert_eq!(kinds(flavoured)[1], (method("unwrap"), 1, true));
+        let rstest = "#[rstest]\nfn a() { b().unwrap(); }\n";
+        assert_eq!(kinds(rstest)[1], (method("unwrap"), 1, true));
         // a cfg that only mentions test among other things, and an ordinary module, do not
         let other = "#[cfg(not(test))]\nmod real {\n    fn f() { a().unwrap(); }\n}\n";
         assert_eq!(kinds(other)[1], (method("unwrap"), 2, false));
+    }
+
+    /// Review V3 round 1, VD3-H-1. What withdraws evidence must be proved, not mentioned: an
+    /// attribute that only names `test` inside another attribute applies no `#[test]`, and a
+    /// module named `tests` without `#[cfg(test)]` is compiled into the program.
+    #[test]
+    fn an_attribute_that_only_mentions_test_proves_no_test_code() {
+        for source in [
+            "#[cfg_attr(any(), test)]\npub fn production() {\n    load().unwrap();\n}\n",
+            "#[cfg_attr(feature = \"x\", test)]\nfn f() {\n    load().unwrap();\n}\n",
+            "#[cfg_attr(test, allow(dead_code))]\nfn f() {\n    load().unwrap();\n}\n",
+            "#[allow(test)]\nfn f() {\n    load().unwrap();\n}\n",
+            "#[doc(alias = \"x\", test)]\nfn f() {\n    load().unwrap();\n}\n",
+            "#[my::tests]\nfn f() {\n    load().unwrap();\n}\n",
+            "#[cfg(any(test, feature = \"x\"))]\nmod m {\n    fn f() { load().unwrap(); }\n}\n",
+            "#[cfg_attr(any(), cfg(test))]\nmod m {\n    fn f() { load().unwrap(); }\n}\n",
+            "#[cfg(test = \"x\")]\nmod m {\n    fn f() { load().unwrap(); }\n}\n",
+            "mod tests {\n    pub fn production() { load().unwrap(); }\n}\n",
+        ] {
+            let found = kinds(source);
+            let (kind, _, in_test) = found.last().unwrap();
+            assert_eq!(*kind, method("unwrap"), "{source}");
+            assert!(!in_test, "believed to be test code: {source}");
+        }
+    }
+
+    /// Review V3 round 1, VD3-M-1: a construct that spans rows says where it ends, so a change
+    /// to its second or third row is a change to it.
+    #[test]
+    fn a_construct_says_which_rows_it_spans() {
+        let spans = |source: &str| -> Vec<(u32, u32)> {
+            let mut rows: Vec<(u32, u32)> = scan(source)
+                .constructs
+                .iter()
+                .map(|c| (c.row, c.last_row))
+                .collect();
+            rows.sort_unstable();
+            rows
+        };
+        assert_eq!(
+            spans("fn a() {\n    assert!(\n        true\n    );\n}\n"),
+            [(1, 3)]
+        );
+        assert_eq!(
+            spans("#[cfg_attr(\n    miri,\n    ignore\n)]\nfn a() {}\n"),
+            [(0, 3)]
+        );
+        assert_eq!(spans("fn a() { todo!() }\n"), [(0, 0)]);
+        // a method call is one row: the row of its name, however long the chain is
+        assert_eq!(
+            spans("fn a() {\n    b()\n        .c()\n        .unwrap();\n}\n"),
+            [(2, 2), (3, 3)]
+        );
     }
 
     #[test]

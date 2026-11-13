@@ -44,9 +44,9 @@ era) no longer holds. How the standard is enforced today:
   `fuzz_target.sh` lists targets with a TOML parser and fuzzes a new private
   corpus each run, under a root it makes if missing.
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
-  `fixtures/eval` (37 cases, measured 2026-11-13) must score at least its floors,
-  which are the measured values: ranking pairs 12/15, evidence precision 33/34,
-  evidence recall 33/41, findings 33/33. Any undeclared miss fails. The 12
+  `fixtures/eval` (39 cases, measured 2026-11-13) must score at least its floors,
+  which are the measured values: ranking pairs 12/15, evidence precision 40/41,
+  evidence recall 40/67, findings 33/33. Any undeclared miss fails. The 31
   declared misses (`known_miss`, `known_false_positive`) count as wrong in their
   metric rather than being excluded, and each fails once the engine gets it
   right. Planted controls prove a wrong label fails with exit 7, a changed file,
