@@ -1444,17 +1444,40 @@ fn fragment_evidence(
                 })
         })
         .map(|(_, index)| *index);
-    parsed.test_likely = (0u32..)
-        .zip(&new.lines)
-        .filter(|(row, index)| {
-            hunk.lines[**index].kind == PatchLineKind::Added
-                && new.scan.spells_test(row + new.offset)
-        })
-        .map(|(_, index)| *index)
-        .collect();
+    parsed.test_likely = likely_test_lines(hunk, &new);
     parsed.found.sort_by_key(|pair| pair.0);
     parsed.withdrawn.sort_by_key(|pair| pair.0);
     Some(parsed)
+}
+
+/// The added lines of `hunk`, by index and in order, whose panic paths are likely test code: a
+/// hint, see [`Evidence::test_likely`].
+///
+/// The hint goes by the item a panic path is inside, not by its row: a production function that
+/// shares a line with a test function is not a test (review V3 round 7, VD3R7-L-1). Where the
+/// parser names the call, every such call on the line must be inside an item that spells a
+/// test; where it names none (a call inside a macro's arguments), the whole row must be.
+fn likely_test_lines(hunk: &PatchHunk, new: &SideScan) -> Vec<usize> {
+    let mut named: std::collections::BTreeMap<usize, bool> = std::collections::BTreeMap::new();
+    for construct in &new.scan.constructs {
+        if signal_of(&construct.kind) == Some(S::PanicPathAdded)
+            && let Some(index) = new.line_of(construct.row)
+        {
+            let all = named.entry(index).or_insert(true);
+            *all = *all && construct.test_spelled;
+        }
+    }
+    (0u32..)
+        .zip(&new.lines)
+        .filter(|(row, index)| {
+            hunk.lines[**index].kind == PatchLineKind::Added
+                && named
+                    .get(*index)
+                    .copied()
+                    .unwrap_or_else(|| new.scan.spells_test(row + new.offset))
+        })
+        .map(|(_, index)| *index)
+        .collect()
 }
 
 /// Where a line of Rust code opens an assertion macro, or a `cfg_attr` attribute, that it does
@@ -3174,6 +3197,38 @@ mod tests {
             ],
         );
         assert_eq!(marks(&plain), [(S::PanicPathAdded, 5, false)]);
+        // Review V3 round 7, VD3R7-L-1: a production function on the same line as a test, and
+        // one line that holds a call of each
+        for (line, marked) in [
+            (
+                "+#[test] fn check() {} fn production() { b().unwrap(); }",
+                false,
+            ),
+            (
+                "+#[test] fn check() { a().unwrap(); } fn production() { b().unwrap(); }",
+                false,
+            ),
+            ("+#[test] fn check() { a().unwrap(); }", true),
+        ] {
+            assert_eq!(
+                marks(&hunk_of("src/a.rs", &[line])),
+                [(S::PanicPathAdded, 2, marked)],
+                "{line}"
+            );
+        }
+        // a test inside another macro's body is not read, and gets no hint (declared)
+        let in_macro = hunk_of(
+            "src/a.rs",
+            &[
+                "+outer! {",
+                "+    #[test]",
+                "+    fn check() {",
+                "+        f().unwrap();",
+                "+    }",
+                "+}",
+            ],
+        );
+        assert_eq!(marks(&in_macro), [(S::PanicPathAdded, 5, false)]);
         // only a panic path carries the mark
         let other = hunk_of(
             "tests/a.rs",

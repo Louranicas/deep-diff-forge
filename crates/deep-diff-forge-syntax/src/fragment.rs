@@ -61,6 +61,11 @@ pub struct Construct {
     /// patch creates whole is known) and must not use this otherwise. False says only that there is no proof, not that
     /// the code is production code.
     pub in_test: bool,
+    /// Whether an item around it carries an attribute that *spells* a test (`#[test]`, a path
+    /// ending in `::test`, `#[rstest]`, `#[cfg(test)]`). A hint for a reader, never proof: see
+    /// [`FragmentScan::test_spelled`]. It follows the items the construct is inside, so a
+    /// function that only shares a row with a test function is not taken for it.
+    pub test_spelled: bool,
 }
 
 /// What the parser could and could not read in a fragment.
@@ -76,12 +81,17 @@ pub struct FragmentScan {
     /// code, the inside of a macro included, where the parser names no construct. The same
     /// condition holds as for `in_test`: only for a fragment that is the beginning of its file.
     pub test_rows: Vec<(u32, u32)>,
-    /// Inclusive row ranges of the items (function, module, `impl`) that carry an attribute
-    /// which *spells* a test: `#[test]`, `#[rstest]`, any path ending in `::test`
-    /// (`#[tokio::test]`), or `#[cfg(test)]`, wherever the item stands in the fragment. This is
-    /// a hint for a reader and never proof: every one of these names but `cfg` can be bound to
-    /// something else, and a fragment from the middle of a file can sit under an open comment.
-    /// Nothing may be withdrawn on it; for what is proof see [`Self::test_rows`].
+    /// Inclusive row ranges that lie wholly inside an item (function, module, `impl`) which
+    /// carries an attribute that *spells* a test: `#[test]`, `#[rstest]`, any path ending in
+    /// `::test` (`#[tokio::test]`), or `#[cfg(test)]`, wherever the item stands in the
+    /// fragment: the rows after the item's first and before its last, as for
+    /// [`Self::test_rows`], so a row an item shares with its neighbour is not claimed. It
+    /// serves where the parser names no construct (the inside of a macro); a construct says
+    /// the same of itself, exactly ([`Construct::test_spelled`]). This is a hint for a reader
+    /// and never proof: every one of these names but `cfg` can be bound to something else, and
+    /// a fragment from the middle of a file can sit under an open comment. Nothing may be
+    /// withdrawn on it; for what is proof see [`Self::test_rows`]. An item inside another
+    /// macro's body is not read and gets no hint.
     pub test_spelled: Vec<(u32, u32)>,
 }
 
@@ -103,8 +113,8 @@ impl FragmentScan {
             .any(|(first, last)| (*first..=*last).contains(&row))
     }
 
-    /// Whether `row` lies in an item whose attribute spells a test (see [`Self::test_spelled`]):
-    /// a hint, never proof.
+    /// Whether `row` lies wholly inside an item whose attribute spells a test (see
+    /// [`Self::test_spelled`]): a hint, never proof.
     #[must_use]
     pub fn spells_test(&self, row: u32) -> bool {
         self.test_spelled
@@ -167,11 +177,12 @@ fn text<'a>(node: Node, source: &'a str) -> &'a str {
 /// and whether test code does.
 fn walk(root: Node, source: &str) -> FragmentScan {
     let mut scan = FragmentScan::default();
-    let mut above: Vec<(bool, bool)> = Vec::new();
+    let mut above: Vec<(bool, bool, bool)> = Vec::new();
     let mut cursor = root.walk();
     loop {
         let node = cursor.node();
-        let (error_above, test_above) = above.last().copied().unwrap_or((false, false));
+        let (error_above, test_above, spelled_above) =
+            above.last().copied().unwrap_or((false, false, false));
         let error_here = node.is_error() || node.is_missing();
         let macro_body = node.kind() == "token_tree"
             && node
@@ -188,9 +199,14 @@ fn walk(root: Node, source: &str) -> FragmentScan {
                 scan.test_rows.push((first + 1, last - 1));
             }
         }
-        if spells_test(node, source) {
-            scan.test_spelled.push(rows_of(node));
+        let spells = spells_test(node, source);
+        if spells {
+            let (first, last) = rows_of(node);
+            if last > first + 1 {
+                scan.test_spelled.push((first + 1, last - 1));
+            }
         }
+        let test_spelled = spelled_above || spells;
         let in_test = test_above || opens_test;
         if !unread && let Some(kind) = construct(node, source) {
             // A method call is where its name is: a chain often starts lines above it.
@@ -212,12 +228,13 @@ fn walk(root: Node, source: &str) -> FragmentScan {
                     rows_of(node).1
                 },
                 in_test,
+                test_spelled,
             });
         }
         // Nothing under an attribute or a macro body is a construct of its own.
         let closed = macro_body || node.kind() == "attribute_item";
         if !closed && cursor.goto_first_child() {
-            above.push((unread, in_test));
+            above.push((unread, in_test, test_spelled));
             continue;
         }
         loop {
@@ -551,15 +568,20 @@ mod tests {
         }
     }
 
-    /// The hint beside the proof: an item whose attribute spells a test is listed, wherever it
-    /// stands, and nothing more is claimed for it.
+    /// The hint beside the proof: a construct inside an item whose attribute spells a test
+    /// says so, wherever the item stands, and nothing more is claimed for it.
     #[test]
-    fn items_whose_attribute_spells_a_test_are_listed_as_a_hint() {
-        assert_eq!(
-            scan("#[test]\nfn a() {\n    b().unwrap();\n}\n").test_spelled,
-            [(1, 3)]
-        );
+    fn a_construct_inside_an_item_that_spells_a_test_carries_the_hint() {
+        let hinted = |source: &str| -> Vec<bool> {
+            scan(source)
+                .constructs
+                .iter()
+                .filter(|c| c.kind == method("unwrap"))
+                .map(|c| c.test_spelled)
+                .collect()
+        };
         for attribute in [
+            "#[test]",
             "#[tokio::test]",
             "#[tokio::test(flavor = \"x\")]",
             "#[rstest]",
@@ -568,11 +590,9 @@ mod tests {
             "#[cfg(test)]",
         ] {
             let source = format!("fn real() {{}}\n{attribute}\nfn a() {{ b().unwrap(); }}\n");
-            let found = scan(&source);
-            assert_eq!(found.test_spelled, [(2, 2)], "{attribute}");
-            assert!(found.spells_test(2) && !found.spells_test(0), "{attribute}");
+            assert_eq!(hinted(&source), [true], "{attribute}");
             // a hint is not the proof: this item is not at the start of a file read whole
-            assert!(found.test_rows.is_empty(), "{attribute}");
+            assert!(scan(&source).test_rows.is_empty(), "{attribute}");
         }
         for attribute in [
             "#[inline]",
@@ -582,11 +602,36 @@ mod tests {
             "#[doc = \"test\"]",
         ] {
             let source = format!("{attribute}\nfn a() {{ b().unwrap(); }}\n");
-            assert_eq!(scan(&source).test_spelled, [], "{attribute}");
+            assert_eq!(hinted(&source), [false], "{attribute}");
         }
+        // nested: a closure in a test, a function in a test module, a method of a test impl
+        assert_eq!(
+            hinted("#[test]\nfn a() { run(|| b().unwrap()); }\n"),
+            [true]
+        );
+        assert_eq!(
+            hinted(
+                "#[cfg(test)]\nmod t {\n    fn h() { b().unwrap(); }\n}\nfn real() { c().unwrap(); }\n"
+            ),
+            [true, false]
+        );
+        // Review V3 round 7, VD3R7-L-1: a function that only shares a row with a test is not
+        // one. Before, the hint went by rows and this production call carried it.
+        assert_eq!(
+            hinted("#[test] fn check() {} fn production() { b().unwrap(); }\n"),
+            [false]
+        );
+        assert_eq!(
+            hinted("#[test] fn check() { a().unwrap(); } fn production() { b().unwrap(); }\n"),
+            [true, false]
+        );
+        // the rows wholly inside such an item, for what the parser names no construct for
         let module =
             "fn real() {}\n#[cfg(test)]\nmod tests {\n    fn helper() { a().unwrap(); }\n}\n";
-        assert_eq!(scan(module).test_spelled, [(2, 4)]);
+        let found = scan(module);
+        assert_eq!(found.test_spelled, [(3, 3)]);
+        assert!(found.spells_test(3) && !found.spells_test(2) && !found.spells_test(4));
+        assert_eq!(scan("#[test] fn a() {} fn b() {}\n").test_spelled, []);
     }
 
     /// Review V3 round 3, VD3R3-H-1. Every attribute name but `cfg` can be bound by an import

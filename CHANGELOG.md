@@ -165,7 +165,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `"test_likely": true` in `rank.v0` (and says so in the TUI's note) when the hunk shows
   `#[test]`, a path ending in `::test`, `#[rstest]` or `#[cfg(test)]` around it. It is a hint
   for a reader: the signal, the score and what a judge reads do not change, so nothing can be
-  hidden by dressing code as a test. The owner's decision, on the reviewer's suggestion.
+  hidden by dressing code as a test. The owner's decision, on the reviewer's suggestion. The
+  hint follows the item a call is inside, not its row (review V3 round 7, low: a production
+  function on the same line as a test function carried it).
 - **A `fragment_scan` fuzz target** holds the rule the five rounds converged on: for any text,
   as a new file or as a change, every item the token rules find alone is still there with the
   parser on, except `syntax_unchecked` and, in a new file only, `panic_path_added`; the

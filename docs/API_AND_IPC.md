@@ -491,7 +491,9 @@ Additive members, so the schema names stay `v0`. They are present only when foun
     attribute around it (`#[test]`, a path ending in `::test`, `#[rstest]`, `#[cfg(test)]`). It is
     a hint for a reader and never proof (an import can bind those names to anything, and a hunk
     can sit under an open comment): the signal, the score and what a judge reads are the same
-    with and without it. The member is absent otherwise.
+    with and without it. The hint follows the item the call is inside, so a function that only
+    shares a line with a test is not marked; an item inside another macro's body is not read
+    and gets no hint. The member is absent otherwise.
   - Items are ordered by hunk, then line, then signal. `evidence_truncated: true` follows when more
     were found; the score counts all of them. Each signal also appears in `signals`.
 - `review-outline.v0` and `review-hunks.v0` hunk heads: `evidence`, the distinct signal labels in
