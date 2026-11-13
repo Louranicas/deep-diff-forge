@@ -1007,6 +1007,175 @@
         }
       ],
       "sha256": "2f6f783d2ca0f569eb3cb97724c79d334170bcdfe6dd5d129864e6aa49ca737c"
+    },
+    {
+      "id": "evidence/independent-review-20261114",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-20261114.patch",
+      "origin": "internal: an independent review by a Claude subagent, 2026-11-14 (docs/reviews/claude-independent-review-20261114.md), findings IR-H-1, IR-H-2, IR-M-2, IR-M-3, IR-L-2 and IR-L-3, each reproduced before it was counted. Expected: a production panic path on the line of a proved test function (named as a function, and inside a macro's arguments); a panic path in a new file whose first line the grammar reads as a shebang and the compiler as an attribute and an opened comment, so that the cfg(test) under it is comment text; syntax_unchecked for a parser's word inside another macro's body that no rule read; a conditional skip whose condition changed from miri to all(); unwrap and expect passed as functions or called by a path; a spaced allow attribute. Negatives: a panic path in the cfg(test) module of a file created whole, read inside a macro's arguments; an ignore that belongs to a serde attribute; a conditional skip of which only the reason changed; unwrap_or_default passed as a function. Declared false positives: a method named expect on a hand-written parser and on a mock, and a Python name that begins with unittest.skip. Declared misses: the trivial assertion and the placeholder inside the macro body (marked unchecked, not named); cfg(any()) on a test; and respellings in Python, JavaScript and Go, where no parser backs the token rules (a skip raised as an exception, assertions with a message, with parentheses or with inner spaces, chained skip modifiers, a spaced call, an empty error check with the operands reversed)",
+      "expect": [
+        {
+          "path": "src/shared_line.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/shared_line.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/shebang.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "tests/macro_body.rs",
+          "signal": "syntax_unchecked",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "tests/slow.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/passed.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/passed.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/passed.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/passed.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/model.rs",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "tests/macro_body.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "tests/macro_body.rs",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "tests/any.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_respelled.py",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_respelled.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/test_respelled.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "web/respelled.test.ts",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "web/respelled.test.ts",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "web/respelled.test.ts",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "web/respelled.test.ts",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "web/respelled.test.ts",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "go/respelled_test.go",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "go/respelled_test.go",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/parser.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/parser.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/test_respelled.py",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 5
+        }
+      ],
+      "sha256": "68186172b62d5d7fb5d62562a81cd97b95a314737e2ebdc76cef372ff58e48ea"
     }
   ]
 }

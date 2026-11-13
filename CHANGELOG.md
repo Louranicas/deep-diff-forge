@@ -172,6 +172,57 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   as a new file or as a change, every item the token rules find alone is still there with the
   parser on, except `syntax_unchecked` and, in a new file only, `panic_path_added`; the
   scanner gives the same answer twice, and its rows are inside the fragment.
+- **An independent review of the integrity signals (a Claude reviewer with no part in the
+  work; `docs/reviews/claude-independent-review-20261114.md`), verdict NO-GO, and its fixes.**
+  Vesper's rounds 6 and 7 had passed the branch; this reviewer found three high findings they
+  had not. Each was reproduced on a release build before it was counted.
+  - *High: test code was withdrawn by line.* A production function on the same line as a
+    proved test function lost its panic path whenever the parser named no construct for it:
+    `Result::unwrap(x)` as a function, or a call inside a macro's arguments. Compiled and run,
+    it panicked. The parser now gives each proved item as a span of text, and a panic path is
+    withdrawn only on a line all of whose code lies inside one such item. The `test_likely`
+    hint goes the same way.
+  - *High: a first line the grammar and the compiler read differently.* `#! /**/
+    [allow(unused)] /*` is a shebang line to the grammar; to the compiler it is an attribute
+    and an opened comment, which makes the `#[cfg(test)]` on the next line comment text. The
+    tree has no error and the function is in the program. A file now proves test code only
+    when its top level holds nothing but items and comments: no shebang line, no statement,
+    no frontmatter.
+  - *High: 2 MiB of the slowest text took 27 seconds.* Text that is all error recovery parses
+    at about forty times the cost of ordinary code. The review's parser budget is now 256 KiB
+    (measured: each of this repository's last 60 commits is under 160 KiB), and the same
+    patch ranks in 3.7 s. A second cost was quadratic in the reviewer's own words: which rows
+    the parser read was searched range by range for every line. It is a binary search now:
+    3 MiB of `m!{}` lines went from 10.8 s to 0.9 s.
+  - *Medium: a parser's word inside another macro's body left nothing.* `assert!` and
+    `(true)` on two lines, `assert!{true}`, `todo![]`, `x.unwrap` and `()` on two lines:
+    inside `outer! { … }` the parser names no construct and no token rule reads them. Any of
+    the parser's words that neither read now marks its hunk `syntax_unchecked`. That replaces
+    the two special cases of rounds 4 and 5.
+  - *Medium: a conditional skip whose condition changed was "the same construct".*
+    `#[cfg_attr(miri, ignore)]` rewritten over several lines to `#[cfg_attr(all(), ignore)]`
+    skips the test everywhere and was not evidence, because the attribute carried the same
+    signal before. An attribute or a macro that starts on an unchanged line is now compared
+    with its old text by kind and content.
+  - *Low.* No longer reported: an `ignore` that belongs to another attribute
+    (`#[cfg_attr(feature = "serde", serde(skip, ignore))]`). Now read: `unwrap` and `expect`
+    passed as functions (`.map(Result::unwrap)`) or called by any path
+    (`<Option<u32>>::unwrap(x)`), and `#[allow(` whatever its spacing. Declared in the corpus
+    and not fixed: a method named `expect` on another type (`self.expect(Token::LBrace)?`),
+    `#[cfg(any())]` on a test, and respellings in Python, JavaScript and Go.
+  - *Medium, not fixed: the parse time limit is a clock.* A hunk that parses in a few tenths
+    of a second on an idle machine can pass its limit (one second and five milliseconds a
+    KiB) on a loaded one, and then carries `syntax_unchecked` where the parser's item would
+    have been: the same patch, two answers. tree-sitter gives no count of work that follows
+    its cost (its progress calls are rarer on slow text than on ordinary code). Only text
+    that is nearly all error recovery is within reach of the limit, either answer is marked,
+    and the unchecked answer is one a patch can already choose by being larger than the
+    budget. A judge that needs one answer for one input should treat `syntax_unchecked` as a
+    reason to hold.
+  - Tests: the fuzz target's rule is tightened (a panic path may go only inside a proved
+    item, and never from a line that holds code outside it); the two-section test no longer
+    returns early when the patch parser refuses a path named twice. The corpus has 43 cases;
+    evidence precision 63 of 69, recall 63 of 104.
 
 ### Changed
 

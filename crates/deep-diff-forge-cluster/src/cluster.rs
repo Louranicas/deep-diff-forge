@@ -323,6 +323,67 @@ mod tests {
         }
     }
 
+    /// Independent review 2026-11-14, weak tests: every fixture here was `-a` / `+b`, so scoring
+    /// each file under a plan of its own (`RankedFile::scored`) passed every test. In these two
+    /// reviews the plan of the whole review and a plan of one file give different answers, and
+    /// the cluster must give the review's, for every worker count.
+    #[test]
+    fn the_cluster_scores_under_the_plan_of_the_whole_review() {
+        use deep_diff_forge_graph::{EvidenceSignal, FragmentPlan};
+        let evidence = |ranked: &RankedFile| -> Vec<EvidenceSignal> {
+            ranked.evidence.iter().map(|item| item.signal).collect()
+        };
+        let check = |files: &[ReviewFile], at: usize, expected: &[EvidenceSignal]| {
+            let plan = FragmentPlan::of(files);
+            let alone = RankedFile::scored(&files[at]);
+            assert_ne!(evidence(&alone), expected, "the two plans must differ here");
+            for parallelism in [
+                Parallelism::Serial,
+                Parallelism::Fixed(1),
+                Parallelism::Fixed(2),
+                Parallelism::Fixed(8),
+                Parallelism::Auto,
+            ] {
+                let run = run_risk_cluster(files, parallelism, JoinPolicy::DeterministicInputOrder);
+                assert_eq!(evidence(&run.ranked[at]), expected, "{parallelism:?}");
+                for (index, file) in files.iter().enumerate() {
+                    assert_eq!(
+                        run.ranked[index],
+                        RankedFile::scored_in(file, plan.file(index)),
+                        "{parallelism:?}, file {index}"
+                    );
+                }
+            }
+        };
+
+        // A path named by two sections: the created file is not the whole file, so the panic
+        // path under its `#[cfg(test)]` stands. Alone, the same section proves test code.
+        let created = "diff --git a/src/d.rs b/src/d.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/d.rs\n@@ -0,0 +1,4 @@\n+#[cfg(test)] // */\n+fn production() {\n+    load().unwrap();\n+}\n";
+        let prepended = "diff --git a/src/d.rs b/src/d.rs\n--- a/src/d.rs\n+++ b/src/d.rs\n@@ -1,1 +1,2 @@\n+/*\n #[cfg(test)] // */\n";
+        let mut twice = parse(created).unwrap();
+        twice.extend(parse(prepended).unwrap());
+        check(&twice, 0, &[EvidenceSignal::PanicPathAdded]);
+
+        // A spent budget: five hunks of 60 KB that each hold a word the parser reads are over
+        // the review's 256 KiB, so the assertion over three lines in the last file is not read
+        // and the file says so. Alone, the parser reads it.
+        let pad = "a".repeat(60_000);
+        let mut spent = Vec::new();
+        for index in 0..5 {
+            let text = format!(
+                "--- a/tests/t{index}.rs\n+++ b/tests/t{index}.rs\n@@ -1,1 +1,5 @@\n fn t() {{\n+    assert!(\n+        true\n+    );\n+    // {pad}\n"
+            );
+            spent.extend(parse(&text).unwrap());
+        }
+        check(&spent, 4, &[EvidenceSignal::SyntaxUnchecked]);
+        let first = run_risk_cluster(
+            &spent,
+            Parallelism::Fixed(2),
+            JoinPolicy::DeterministicInputOrder,
+        );
+        assert_eq!(evidence(&first.ranked[0]), [EvidenceSignal::TrivialAssert]);
+    }
+
     #[test]
     fn fixed_one_matches_serial() {
         let files = many(20);

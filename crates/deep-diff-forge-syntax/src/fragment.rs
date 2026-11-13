@@ -38,6 +38,13 @@ pub enum ConstructKind {
     MethodCall { name: String },
 }
 
+/// A place in a fragment: its row and its byte column, both from 0. Places compare in source
+/// order.
+pub type Place = (u32, u32);
+
+/// A stretch of a fragment: from a place up to, not including, another.
+pub type Span = (Place, Place);
+
 /// One construct the parser read with no error above it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Construct {
@@ -51,6 +58,10 @@ pub struct Construct {
     /// The last row it reaches: an attribute or a macro invocation can span several rows, and a
     /// change to any of them changes the construct. For a method call, equal to `row`.
     pub last_row: u32,
+    /// The place just past the part the parser read as this construct itself: the end of an
+    /// attribute, the end of a macro's path (before its `!`: its arguments are not read), the
+    /// end of a method's name. A word between the construct's start and here is its own.
+    pub end: Place,
     /// Whether it sits inside an item that carries `#[cfg(test)]` in a way that is proof **if
     /// the fragment is the beginning of its file**: a module, a function or an `impl` at the
     /// top level whose first attribute is exactly `#[cfg(test)]`, in a tree with no error (the
@@ -63,7 +74,7 @@ pub struct Construct {
     pub in_test: bool,
     /// Whether an item around it carries an attribute that *spells* a test (`#[test]`, a path
     /// ending in `::test`, `#[rstest]`, `#[cfg(test)]`). A hint for a reader, never proof: see
-    /// [`FragmentScan::test_spelled`]. It follows the items the construct is inside, so a
+    /// [`FragmentScan::spelled_items`]. It follows the items the construct is inside, so a
     /// function that only shares a row with a test function is not taken for it.
     pub test_spelled: bool,
 }
@@ -74,60 +85,97 @@ pub struct FragmentScan {
     /// Constructs in source order.
     pub constructs: Vec<Construct>,
     /// Inclusive row ranges the parse says nothing reliable about: error nodes and the insides
-    /// of macro invocations. Ranges may overlap.
+    /// of macro invocations. Sorted, and merged so that no two overlap or touch.
     pub unreadable: Vec<(u32, u32)>,
-    /// Inclusive row ranges that lie wholly inside an item [`Construct::in_test`] would mark:
-    /// the rows after the item's first and before its last. Everything on such a row is test
-    /// code, the inside of a macro included, where the parser names no construct. The same
-    /// condition holds as for `in_test`: only for a fragment that is the beginning of its file.
-    pub test_rows: Vec<(u32, u32)>,
-    /// Inclusive row ranges that lie wholly inside an item (function, module, `impl`) which
-    /// carries an attribute that *spells* a test: `#[test]`, `#[rstest]`, any path ending in
-    /// `::test` (`#[tokio::test]`), or `#[cfg(test)]`, wherever the item stands in the
-    /// fragment: the rows after the item's first and before its last, as for
-    /// [`Self::test_rows`], so a row an item shares with its neighbour is not claimed. It
-    /// serves where the parser names no construct (the inside of a macro); a construct says
-    /// the same of itself, exactly ([`Construct::test_spelled`]). This is a hint for a reader
-    /// and never proof: every one of these names but `cfg` can be bound to something else, and
-    /// a fragment from the middle of a file can sit under an open comment. Nothing may be
-    /// withdrawn on it; for what is proof see [`Self::test_rows`]. An item inside another
-    /// macro's body is not read and gets no hint.
-    pub test_spelled: Vec<(u32, u32)>,
+    /// The items proved to be test code **if the fragment is its whole file**: each from the
+    /// start of its first attribute to its end. Proof is by the stretch an item covers, not by
+    /// rows or lines: a function that only shares a line with a test item is outside it, and
+    /// so is a call the parser names no construct for (review, IR-H-1: by line, a production
+    /// call inside a macro's arguments was withdrawn with the test call beside it). See
+    /// [`Construct::in_test`] for the conditions.
+    pub test_items: Vec<Span>,
+    /// The items (function, module, `impl`) that carry an attribute which *spells* a test:
+    /// `#[test]`, `#[rstest]`, any path ending in `::test` (`#[tokio::test]`), or
+    /// `#[cfg(test)]`, wherever the item stands in the fragment; each from the start of its
+    /// first attribute to its end. This is a hint for a reader and never proof: every one of
+    /// these names but `cfg` can be bound to something else, and a fragment from the middle of
+    /// a file can sit under an open comment. Nothing may be withdrawn on it; for what is proof
+    /// see [`Self::test_items`]. An item inside another macro's body is not read and gets no
+    /// hint.
+    pub spelled_items: Vec<Span>,
 }
 
 impl FragmentScan {
     /// Whether the parser read `row` with no error and no macro body on it.
     #[must_use]
     pub fn readable(&self, row: u32) -> bool {
-        !self
-            .unreadable
-            .iter()
-            .any(|(first, last)| (*first..=*last).contains(&row))
+        // The ranges are sorted and disjoint: the first that ends at or after `row` is the only
+        // one that can hold it. A search of every range for every row made a hunk of 8,000
+        // macro lines cost a third of a second (review, IR-H-3).
+        let at = self.unreadable.partition_point(|(_, last)| *last < row);
+        self.unreadable
+            .get(at)
+            .is_none_or(|(first, _)| *first > row)
     }
 
-    /// Whether `row` lies wholly inside an item that is test code (see [`Self::test_rows`]).
+    /// Whether everything from `first` up to `last` lies inside one item that is test code
+    /// (see [`Self::test_items`]).
     #[must_use]
-    pub fn inside_test(&self, row: u32) -> bool {
-        self.test_rows
+    pub fn inside_test(&self, first: Place, last: Place) -> bool {
+        self.test_items
             .iter()
-            .any(|(first, last)| (*first..=*last).contains(&row))
+            .any(|(start, end)| *start <= first && last <= *end)
     }
 
-    /// Whether `row` lies wholly inside an item whose attribute spells a test (see
-    /// [`Self::test_spelled`]): a hint, never proof.
+    /// Whether everything from `first` up to `last` lies inside one item whose attribute
+    /// spells a test (see [`Self::spelled_items`]): a hint, never proof.
     #[must_use]
-    pub fn spells_test(&self, row: u32) -> bool {
-        self.test_spelled
+    pub fn spells_test(&self, first: Place, last: Place) -> bool {
+        self.spelled_items
             .iter()
-            .any(|(first, last)| (*first..=*last).contains(&row))
+            .any(|(start, end)| *start <= first && last <= *end)
+    }
+
+    /// Whether `place` is inside a construct's own part: its name, its path or its attribute.
+    #[must_use]
+    pub fn names(&self, place: Place) -> bool {
+        self.constructs
+            .iter()
+            .any(|read| (read.row, read.column) <= place && place < read.end)
+    }
+
+    /// How many of the `rows` rows from `first` on the parser could not read.
+    #[must_use]
+    pub fn unreadable_in(&self, first: u32, rows: u32) -> u32 {
+        let end = first.saturating_add(rows);
+        self.unreadable
+            .iter()
+            .map(|(from, to)| {
+                let from = (*from).max(first);
+                let to = to.saturating_add(1).min(end);
+                to.saturating_sub(from)
+            })
+            .sum()
     }
 
     /// How many rows of `0..rows` the parser could not read.
     #[must_use]
     pub fn unreadable_rows(&self, rows: u32) -> u32 {
-        let count = (0..rows).filter(|row| !self.readable(*row)).count();
-        u32::try_from(count).unwrap_or(u32::MAX)
+        self.unreadable_in(0, rows)
     }
+}
+
+/// Sort `ranges` and merge those that overlap or touch.
+fn merged(mut ranges: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+    ranges.sort_unstable();
+    let mut out: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
+    for (first, last) in ranges {
+        match out.last_mut() {
+            Some(open) if first <= open.1.saturating_add(1) => open.1 = open.1.max(last),
+            _ => out.push((first, last)),
+        }
+    }
+    out
 }
 
 /// Scan `source` as a fragment of `language`. `None` when the language has no grammar, the
@@ -148,15 +196,80 @@ pub fn scan_fragment(language: Language, source: &str) -> Option<FragmentScan> {
         return None;
     }
     let mut scan = walk(root, source);
+    scan.unreadable = merged(std::mem::take(&mut scan.unreadable));
     // A tree with an error anywhere is not a reading of the file that the compiler shares, so
-    // it proves nothing about what is test code.
-    if root.has_error() {
-        scan.test_rows.clear();
+    // it proves nothing about what is test code. Neither is one whose top level holds anything
+    // but items, attributes and comments: the grammar accepts there what the compiler never
+    // does (a shebang line that the compiler reads as an attribute and an opened comment,
+    // an expression), and each is a place where the two readers of one file part ways.
+    if root.has_error() || !top_level_is_items(root) {
+        scan.test_items.clear();
         for construct in &mut scan.constructs {
             construct.in_test = false;
         }
     }
     Some(scan)
+}
+
+/// Whether every child of the file's root is an item, an attribute or a comment.
+///
+/// tree-sitter-rust reads a first line `#! /**/ [allow(unused)] /*` as a shebang, one ignored
+/// line; the compiler skips the comment after `#!`, finds `[`, reads an inner attribute and then
+/// an opened block comment. A `#[cfg(test)] // */` on the next line is then comment text for
+/// the compiler and an attribute for the grammar, with no error in the tree (review, IR-H-2).
+/// So a shebang proves nothing here, and neither does any top-level statement.
+fn top_level_is_items(root: Node) -> bool {
+    let mut walker = root.walk();
+    root.children(&mut walker).all(|child| {
+        matches!(
+            child.kind(),
+            "function_item"
+                | "mod_item"
+                | "impl_item"
+                | "struct_item"
+                | "enum_item"
+                | "union_item"
+                | "trait_item"
+                | "type_item"
+                | "const_item"
+                | "static_item"
+                | "use_declaration"
+                | "extern_crate_declaration"
+                | "foreign_mod_item"
+                | "macro_definition"
+                | "macro_invocation"
+                | "attribute_item"
+                | "inner_attribute_item"
+                | "line_comment"
+                | "block_comment"
+        )
+    })
+}
+
+fn place_of(point: tree_sitter::Point) -> Place {
+    (
+        u32::try_from(point.row).unwrap_or(u32::MAX),
+        u32::try_from(point.column).unwrap_or(u32::MAX),
+    )
+}
+
+/// The stretch an item covers with its attributes: from the first attribute or comment of the
+/// run before it to its end.
+fn item_span(node: Node) -> Span {
+    let mut first = node;
+    let mut before = node.prev_sibling();
+    while let Some(sibling) = before {
+        match sibling.kind() {
+            "attribute_item" => first = sibling,
+            "line_comment" | "block_comment" => {}
+            _ => break,
+        }
+        before = sibling.prev_sibling();
+    }
+    (
+        place_of(first.start_position()),
+        place_of(node.end_position()),
+    )
 }
 
 fn row_of(node: Node) -> u32 {
@@ -194,17 +307,11 @@ fn walk(root: Node, source: &str) -> FragmentScan {
         let unread = error_above || error_here;
         let opens_test = opens_test_code(node, source);
         if opens_test {
-            let (first, last) = rows_of(node);
-            if last > first + 1 {
-                scan.test_rows.push((first + 1, last - 1));
-            }
+            scan.test_items.push(item_span(node));
         }
         let spells = spells_test(node, source);
         if spells {
-            let (first, last) = rows_of(node);
-            if last > first + 1 {
-                scan.test_spelled.push((first + 1, last - 1));
-            }
+            scan.spelled_items.push(item_span(node));
         }
         let test_spelled = spelled_above || spells;
         let in_test = test_above || opens_test;
@@ -218,9 +325,16 @@ fn walk(root: Node, source: &str) -> FragmentScan {
             };
             let placed = named_at.unwrap_or(node);
             let row = row_of(placed);
+            // Its own part ends with the method's name, the macro's path, or the attribute.
+            let own = match kind {
+                ConstructKind::MacroCall { .. } => node.child_by_field_name("macro"),
+                ConstructKind::MethodCall { .. } | ConstructKind::Attribute { .. } => None,
+            }
+            .unwrap_or(placed);
             scan.constructs.push(Construct {
                 kind,
                 row,
+                end: place_of(own.end_position()),
                 column: u32::try_from(placed.start_position().column).unwrap_or(u32::MAX),
                 last_row: if named_at.is_some() {
                     row
@@ -252,7 +366,7 @@ fn walk(root: Node, source: &str) -> FragmentScan {
 fn construct(node: Node, source: &str) -> Option<ConstructKind> {
     match node.kind() {
         "attribute_item" | "inner_attribute_item" => Some(ConstructKind::Attribute {
-            words: identifiers(node, source),
+            words: attribute_words(node, source),
         }),
         "macro_invocation" => {
             let path = text(node.child_by_field_name("macro")?, source);
@@ -289,6 +403,34 @@ fn construct(node: Node, source: &str) -> Option<ConstructKind> {
         }
         _ => None,
     }
+}
+
+/// An attribute's words: the identifiers of its path, then the identifiers that stand directly
+/// in its argument list. What is nested deeper belongs to something else:
+/// `#[cfg_attr(feature = "serde", serde(skip, ignore))]` gives `cfg_attr`, `feature`, `serde`,
+/// and the `ignore` there is serde's, not a skipped test (review, IR-L-2).
+fn attribute_words(item: Node, source: &str) -> Vec<String> {
+    let mut walker = item.walk();
+    let Some(attribute) = item
+        .children(&mut walker)
+        .find(|child| child.kind() == "attribute")
+    else {
+        return identifiers(item, source);
+    };
+    let mut words = attribute
+        .named_child(0)
+        .map(|path| identifiers(path, source))
+        .unwrap_or_default();
+    if let Some(arguments) = attribute.child_by_field_name("arguments") {
+        let mut walker = arguments.walk();
+        words.extend(
+            arguments
+                .children(&mut walker)
+                .filter(|child| child.kind() == "identifier")
+                .map(|child| text(child, source).to_owned()),
+        );
+    }
+    words
 }
 
 /// The identifiers under `node`, in order, without recursion.
@@ -533,16 +675,21 @@ mod tests {
         assert_eq!(kinds(nested).last().unwrap(), &(method("unwrap"), 3, true));
         // the rows wholly inside the item are test code, a macro's body included; the rows the
         // item shares with what is before and after it are not claimed
+        // the item is a stretch, from its first attribute to its end: what lies in it is test
+        // code, a macro's body included, and what only shares a row with it is not
         let found = scan(nested);
-        assert_eq!(found.test_rows, [(2, 3)]);
-        assert!(found.inside_test(2) && found.inside_test(3));
-        assert!(!found.inside_test(1) && !found.inside_test(4));
-        assert_eq!(
-            scan("#[cfg(test)]\nfn a() { b().unwrap(); }\n").test_rows,
-            []
+        assert_eq!(found.test_items, [((0, 0), (4, 1))]);
+        assert!(found.inside_test((3, 4), (3, 36)) && found.inside_test((0, 0), (4, 1)));
+        assert!(!found.inside_test((3, 4), (4, 2)) && !found.inside_test((5, 0), (5, 1)));
+        let shared = scan("#[cfg(test)]\nfn t() { a().unwrap(); } pub fn p() { b().unwrap(); }\n");
+        assert_eq!(shared.test_items, [((0, 0), (1, 24))]);
+        assert!(shared.inside_test((1, 0), (1, 24)));
+        assert!(
+            !shared.inside_test((1, 0), (1, 52)),
+            "the row holds another function"
         );
         let broken = scan("#[cfg(test)]\nmod t {\n    fn a() {}\n}\nfn broken( {\n");
-        assert_eq!(broken.test_rows, []);
+        assert_eq!(broken.test_items, []);
         let unproved = [
             // a cfg that only mentions test among other things
             "#[cfg(not(test))]\nmod real {\n    fn f() { a().unwrap(); }\n}\n",
@@ -591,8 +738,13 @@ mod tests {
         ] {
             let source = format!("fn real() {{}}\n{attribute}\nfn a() {{ b().unwrap(); }}\n");
             assert_eq!(hinted(&source), [true], "{attribute}");
-            // a hint is not the proof: this item is not at the start of a file read whole
-            assert!(scan(&source).test_rows.is_empty(), "{attribute}");
+            // a hint is not the proof: only the exact `cfg(test)` is, and then only for a
+            // fragment that is its whole file, which the caller knows
+            assert_eq!(
+                scan(&source).test_items.is_empty(),
+                attribute != "#[cfg(test)]",
+                "{attribute}"
+            );
         }
         for attribute in [
             "#[inline]",
@@ -629,9 +781,84 @@ mod tests {
         let module =
             "fn real() {}\n#[cfg(test)]\nmod tests {\n    fn helper() { a().unwrap(); }\n}\n";
         let found = scan(module);
-        assert_eq!(found.test_spelled, [(3, 3)]);
-        assert!(found.spells_test(3) && !found.spells_test(2) && !found.spells_test(4));
-        assert_eq!(scan("#[test] fn a() {} fn b() {}\n").test_spelled, []);
+        assert_eq!(found.spelled_items, [((1, 0), (4, 1))]);
+        assert!(found.spells_test((3, 4), (3, 33)) && !found.spells_test((0, 0), (0, 12)));
+        // one row, two functions: the test is a stretch of it and the row as a whole is not
+        let shared = scan("#[test] fn a() {} fn b() {}\n");
+        assert_eq!(shared.spelled_items, [((0, 0), (0, 17))]);
+        assert!(shared.spells_test((0, 0), (0, 17)) && !shared.spells_test((0, 0), (0, 27)));
+    }
+
+    /// Review, IR-H-2 and IR-L-1: the grammar and the compiler part ways on a first line that
+    /// starts `#!`, and the grammar takes a statement at the top level. Either way the tree has
+    /// no error and the `#[cfg(test)]` under it is not one for the compiler. Only a top level of
+    /// items, attributes and comments proves anything.
+    #[test]
+    fn a_top_level_the_compiler_would_read_otherwise_proves_no_test_code() {
+        for source in [
+            // for the compiler: `#![allow(unused)]`, then a comment that ends on line 2
+            "#! /**/ [allow(unused)] /*\n#[cfg(test)] // */\npub mod t {\n    pub fn production() -> u32 { b().unwrap() }\n}\n",
+            "#!/usr/bin/env run\n#[cfg(test)]\nmod t {\n    fn f() { b().unwrap(); }\n}\n",
+            // an expression where only items may stand
+            "x;\n#[cfg(test)]\nmod t {\n    fn f() { b().unwrap(); }\n}\n",
+            "---x\n;#[cfg(test)] /*\n---\n// */\nmod t {\n    pub fn production() -> u32 { b().unwrap() }\n}\n",
+        ] {
+            let found = scan(source);
+            assert_eq!(found.test_items, [], "{source}");
+            assert!(found.constructs.iter().all(|c| !c.in_test), "{source}");
+        }
+        // the control: an inner attribute and a comment first are an ordinary file
+        let plain = scan(
+            "#![allow(unused)]\n// a file\nuse a::b;\n#[cfg(test)]\nmod t {\n    fn f() { b().unwrap(); }\n}\n",
+        );
+        assert_eq!(plain.test_items, [((3, 0), (6, 1))]);
+    }
+
+    /// The part of a construct that is its own, and the rows the parser could not read: sorted,
+    /// merged, and counted without visiting every row.
+    #[test]
+    fn a_construct_has_its_own_part_and_unreadable_rows_are_merged() {
+        let found = scan(
+            "    std::assert!(a); b.unwrap(); #[x]\n    outer! {\n        inner!(1);\n    }\n",
+        );
+        // `std::assert`, `unwrap` and `outer` are named; what follows each is not
+        assert!(found.names((0, 4)) && found.names((0, 14)) && !found.names((0, 15)));
+        assert!(found.names((0, 23)) && !found.names((0, 29)));
+        assert!(
+            found.names((1, 4)) && !found.names((2, 8)),
+            "inside a macro's body"
+        );
+        assert_eq!(found.unreadable, [(0, 3)]);
+        assert_eq!(
+            merged(vec![(5, 6), (0, 1), (2, 2), (6, 9), (20, 21)]),
+            [(0, 2), (5, 9), (20, 21)]
+        );
+        assert_eq!(
+            (found.unreadable_in(0, 4), found.unreadable_in(2, 10)),
+            (4, 2)
+        );
+        assert_eq!(found.unreadable_rows(2), 2);
+        let none = scan("fn a() {}\nfn b() {}\n");
+        assert!(none.readable(0) && none.readable(1) && none.unreadable_rows(2) == 0);
+    }
+
+    /// Review, IR-L-2: an attribute's words are its path and what stands directly in its own
+    /// argument list.
+    #[test]
+    fn an_attribute_lists_only_the_words_of_its_own_argument_list() {
+        assert_eq!(
+            kinds("#[cfg_attr(feature = \"serde\", serde(skip, ignore, default))]\nstruct A;\n")[0]
+                .0,
+            attribute(&["cfg_attr", "feature", "serde"])
+        );
+        assert_eq!(
+            kinds("#[cfg_attr(all(a, b), ignore = \"slow\")]\nfn a() {}\n")[0].0,
+            attribute(&["cfg_attr", "all", "ignore"])
+        );
+        assert_eq!(
+            kinds("#[tokio::test(flavor = \"x\")]\nasync fn a() {}\n")[0].0,
+            attribute(&["tokio", "test", "flavor"])
+        );
     }
 
     /// Review V3 round 3, VD3R3-H-1. Every attribute name but `cfg` can be bound by an import
@@ -769,5 +996,34 @@ mod tests {
         let depth = 3000;
         let source = format!("fn f() {{ {}1{} }}", "(".repeat(depth), ")".repeat(depth));
         assert!(scan_fragment(Language::Rust, &source).is_some());
+    }
+
+    /// Independent review, IR-H-3 (b): `readable` searched every range for every row, so a
+    /// hunk of macro lines with blank lines between them cost the square of its length (3 MiB
+    /// ranked in 10.8 s), and no test had a scan with many ranges. Here 600,000 rows are
+    /// looked up among 200,000 ranges: at once by a binary search, and not within the half
+    /// minute by a search of them all (a planted linear search was stopped by this bound).
+    #[test]
+    fn a_row_is_found_among_many_ranges_without_reading_them_all() {
+        const RANGES: u32 = 200_000;
+        let found = FragmentScan {
+            unreadable: (0..RANGES).map(|i| (i * 3, i * 3 + 1)).collect(),
+            ..FragmentScan::default()
+        };
+        let (done, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rows = RANGES * 3;
+            let unread = (0..rows).filter(|row| !found.readable(*row)).count();
+            let _ = done.send((
+                unread,
+                found.unreadable_rows(rows),
+                found.readable(2),
+                found.readable(rows),
+            ));
+        });
+        let answer = wait
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("600,000 rows were looked up within half a minute");
+        assert_eq!(answer, (400_000, 400_000, true, true));
     }
 }

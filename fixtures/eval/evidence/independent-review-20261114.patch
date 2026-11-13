@@ -1,0 +1,132 @@
+diff --git a/src/shared_line.rs b/src/shared_line.rs
+new file mode 100644
+--- /dev/null
++++ b/src/shared_line.rs
+@@ -0,0 +1,3 @@
++#[cfg(test)]
++fn t() { a().unwrap(); } pub fn production() -> u32 { Result::unwrap(crate::b()) }
++pub fn production2() -> u32 { vec![crate::b().unwrap()][0] } #[cfg(test)] fn t2() { a().unwrap(); }
+diff --git a/src/shebang.rs b/src/shebang.rs
+new file mode 100644
+--- /dev/null
++++ b/src/shebang.rs
+@@ -0,0 +1,5 @@
++#! /**/ [allow(unused)] /*
++#[cfg(test)] // */
++pub mod t {
++    pub fn production() -> u32 { crate::b().unwrap() }
++}
+diff --git a/src/whole_test_module.rs b/src/whole_test_module.rs
+new file mode 100644
+--- /dev/null
++++ b/src/whole_test_module.rs
+@@ -0,0 +1,8 @@
++pub fn real() -> u32 {
++    7
++}
++
++#[cfg(test)]
++mod tests {
++    fn helper() -> u32 { vec![load().unwrap()][0] }
++}
+diff --git a/tests/macro_body.rs b/tests/macro_body.rs
+--- a/tests/macro_body.rs
++++ b/tests/macro_body.rs
+@@ -3,2 +3,9 @@
+ // cases
++outer! {
++    assert!
++    (true);
++    todo
++    !();
++    it.map(assert);
++}
+ // end
+diff --git a/tests/slow.rs b/tests/slow.rs
+--- a/tests/slow.rs
++++ b/tests/slow.rs
+@@ -1,6 +1,6 @@
+ #[test]
+ #[cfg_attr(
+-    miri,
++    all(),
+     ignore
+ )]
+ fn slow() {
+diff --git a/tests/reason.rs b/tests/reason.rs
+--- a/tests/reason.rs
++++ b/tests/reason.rs
+@@ -1,6 +1,6 @@
+ #[test]
+ #[cfg_attr(
+     miri,
+-    ignore = "slow"
++    ignore = "very slow"
+ )]
+ fn slow() {
+diff --git a/src/passed.rs b/src/passed.rs
+--- a/src/passed.rs
++++ b/src/passed.rs
+@@ -1,2 +1,7 @@
+ fn all(it: I) -> Vec<u32> {
++    let a = it.map(Result::unwrap);
++    let b = it.map(Option::expect);
++    let c = <Option<u32>>::unwrap(x);
++    let d = Result::<u32, E>::unwrap(r);
++    let e = it.map(Result::unwrap_or_default);
+ }
+diff --git a/src/model.rs b/src/model.rs
+--- a/src/model.rs
++++ b/src/model.rs
+@@ -1,2 +1,5 @@
+ // model
++#[cfg_attr(feature = "serde", serde(skip, ignore, default))]
++# [allow(dead_code)]
++struct Model;
+ // end
+diff --git a/src/parser.rs b/src/parser.rs
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -1,2 +1,4 @@
+ fn block(&mut self) -> Result<(), E> {
++    self.expect(Token::LBrace)?;
++    mock.expect().times(1);
+ }
+diff --git a/tests/any.rs b/tests/any.rs
+--- a/tests/any.rs
++++ b/tests/any.rs
+@@ -1,2 +1,4 @@
+ // any
++#[cfg(any())]
++#[test]
+ fn never() {}
+diff --git a/tests/test_respelled.py b/tests/test_respelled.py
+--- a/tests/test_respelled.py
++++ b/tests/test_respelled.py
+@@ -1,2 +1,7 @@
+ def test_a(self):
++    raise unittest.SkipTest("no")
++    self.assertTrue(True, "m")
++    assert(True)
++    unittest.skipper(x)
++    self.assertTrue(result)
+ # end
+diff --git a/web/respelled.test.ts b/web/respelled.test.ts
+--- a/web/respelled.test.ts
++++ b/web/respelled.test.ts
+@@ -1,2 +1,7 @@
+ // cases
++test.skip.each([1, 2])("n", () => {});
++it.concurrent.skip("n", () => {});
++expect( true ).toBe( true );
++assert.ok( true );
++expect(true).toBeTruthy();
+ // end
+diff --git a/go/respelled_test.go b/go/respelled_test.go
+--- a/go/respelled_test.go
++++ b/go/respelled_test.go
+@@ -1,2 +1,4 @@
+ func TestA(t *testing.T) {
++	t.Skip ("x")
++	if nil != err {}
+ }

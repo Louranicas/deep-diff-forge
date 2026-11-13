@@ -769,7 +769,7 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   - `rank_long_line`: one added line of 4 MiB made of near-matches of the evidence rules'
     words, the costliest input per byte to rank;
   - `rank_many_fragments`: 64 hunks, each just under the parser's 64 KiB budget and dense in
-    tree nodes, together over its 2 MiB budget for a review;
+    tree nodes, together over its 256 KiB budget for a review;
   - `findings_verify` and `findings_by_address`;
   - `structural_rust`;
   - `daemon_parallel` (four clients through the daemon's own request path).
@@ -800,7 +800,7 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   repeated id or a field its kind does not read, or a ranking pair is not two distinct paths. `eval` prints `deep-diff-forge.eval.v0` and exits 7 when a case
   fails.
 
-  **Measured 2026-11-13, 42 cases** (14 ranking, 25 evidence, 3 findings; 34 declared misses).
+  **Measured 2026-11-14, 43 cases** (14 ranking, 26 evidence, 3 findings; 50 declared misses).
   Three evidence cases were added for the integrity signals, one of them a declared miss, and
   one case of twelve declared misses: ways an agent makes a gate pass without doing the work
   (a tautological assertion, a deleted assertion, an early `return` in a test, an error
@@ -808,15 +808,19 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   no rule sees yet, and four cases from an adversarial review of these signals (nineteen items
   its fixes now catch, eight declared misses and one declared false positive; a second false
   positive, a panic path in a `#[test]` function, is declared because a test attribute is not
-  proof of test code). Declared misses lower recall on purpose until rules
+  proof of test code), and one case from an independent review (ten items its fixes now
+  catch, thirteen declared misses, most of them respellings in Python, JavaScript and Go,
+  where no parser backs the token rules, and three declared false positives: a method named
+  `expect` that is not `Result`'s, twice, and a Python name that begins with
+  `unittest.skip`). Declared misses lower recall on purpose until rules
   catch them; the
   2026-10-31 measurement on 34 cases was precision 21 / 22 and recall 21 / 28:
 
   | Metric | Right / total | Floor |
   | --- | ---: | ---: |
   | ranking pairs | 12 / 15 | 80.0% |
-  | evidence precision | 44 / 46 | 95.6% |
-  | evidence recall | 44 / 71 | 61.9% |
+  | evidence precision | 63 / 69 | 91.3% |
+  | evidence recall | 63 / 104 | 60.5% |
   | findings verdicts | 33 / 33 | 100% |
 
   `crates/deep-diff-forge-cli/tests/eval.rs` holds these floors (the measured values) and fails
@@ -866,11 +870,11 @@ Whoever writes a patch also chooses its paths, so a path can lower a file's scor
 | `trivial_assert` | added | `assert!(true)`, `assert_eq!(true, true)`; `assert True`, `self.assertTrue(True)`; `expect(true).toBe(true)`, `expect(true).toEqual(true)`, `assert(true)`, `assert.ok(true)` | +3 |
 | `stub_added` | added | `todo!(`, `unimplemented!(`; `raise NotImplementedError` (a placeholder named only in a message string, as in JS and Go, is not read) | +3 |
 | `error_swallowed` | added | an `except` whose body is `pass` or `...`; an empty `catch` block; an empty `if err != nil` block, `_ = err`; `Err(_) => {}`, `Err(_) => ()`. A handler and its body on two lines are read together (`"basis": "hunk"`); a handler whose body the hunk does not show is not reported | +3 |
-| `panic_path_added` | added | Rust `.unwrap()` and `.expect(` as method calls, with or without a space before the parenthesis. Withdrawn only where the patch proves the code is compiled for tests alone: under an exact `#[cfg(test)]` that is the first attribute of a top-level module, function or `impl`, in the one hunk of a new file whose path no other section of the patch names, which is the whole file, parsed with no error. `#[test]`, `#[tokio::test]` and `#[rstest]` are not proof (an import or a renamed dependency can bind any attribute name but `cfg` to a macro that leaves the function in the program), and neither is anything a hunk of an existing file shows, whatever line it says it starts at (a comment or a string can be open above it, and the header is the patch writer's word); there the item stands, and a test path halves its weight. Where the hunk shows a test attribute around it, the item carries `"test_likely": true`: a hint for a reader, which changes neither the signal nor the score | +3 |
-| `syntax_unchecked` | added | a Rust hunk that holds a word the parser reads (`unwrap`, `expect`, `assert`, `todo`, `unimplemented`, `ignore`) and that the parser did not read: the hunk is over 64 KiB or 50,000 nodes, or the review's 2 MiB was spent before it; or the parser read the hunk and an assertion or a `cfg_attr` is opened on one line and closed on another inside another macro's body or under a parse error, where it names no construct. It says "not checked", not "bad": the token rules' findings stand, and a construct only the parser finds (one written over several lines) may be there unseen | +1 |
-| `check_suppressed` | added | `#[allow(`; `# noqa`, `# type: ignore`; `eslint-disable`, `@ts-ignore`; `//nolint` (read in comments) | +2 |
+| `panic_path_added` | added | Rust `.unwrap()` and `.expect(` as method calls, with or without a space before the parenthesis, the same two called by a path (`Result::unwrap(x)`, `<Option<u32>>::unwrap(x)`), and `Result::unwrap`, `Option::unwrap`, `Result::expect`, `Option::expect` passed as functions. A method of another type that has one of the two names is reported too (a declared false positive). Withdrawn only where the patch proves the code is compiled for tests alone: under an exact `#[cfg(test)]` that is the first attribute of a top-level module, function or `impl`, in the one hunk of a new file whose path no other section of the patch names, which is the whole file, parsed with no error and holding nothing at its top level but items and comments (no shebang line, no statement, no frontmatter); and then only on a line all of whose code lies inside that one item, so a production function on the line of a test function keeps its item. `#[test]`, `#[tokio::test]` and `#[rstest]` are not proof (an import or a renamed dependency can bind any attribute name but `cfg` to a macro that leaves the function in the program), and neither is anything a hunk of an existing file shows, whatever line it says it starts at (a comment or a string can be open above it, and the header is the patch writer's word); there the item stands, and a test path halves its weight. Where the hunk shows a test attribute around it, the item carries `"test_likely": true`: a hint for a reader, which changes neither the signal nor the score | +3 |
+| `syntax_unchecked` | added | a Rust hunk that holds a word the parser reads (`unwrap`, `expect`, `assert`, `todo`, `unimplemented`, `ignore`) and that the parser did not read: the hunk is over 64 KiB or 50,000 nodes, or the review's 256 KiB was spent before it, or the parse was cut by its time limit; or the parser read the hunk and one of those words stands inside another macro's body or under a parse error, where the parser names no construct, and no token rule read it whole either (an assertion over several lines, `assert!{…}`, `todo![]`, a word and its `!` or `(` on different lines). It says "not checked", not "bad": the token rules' findings stand, and a construct only the parser finds (one written over several lines) may be there unseen | +1 |
+| `check_suppressed` | added | `#[allow(` and `#![allow(`, whatever the spacing; `# noqa`, `# type: ignore`; `eslint-disable`, `@ts-ignore`; `//nolint` (read in comments) | +2 |
 
-Languages come from the extension, or a shebang for a file with none: Rust, Python, JS/TS, Go, shell (with `Dockerfile` and `Makefile`) and YAML. The scan is **lexical** (`"basis": "lexical"`; `"hunk"` where a rule also read the next line; `"syntax_fragment"` where the parser read the construct in a Rust hunk, which also finds a construct written over several lines; the parser reads hunks of up to 64 KiB and 50,000 nodes, and at most 2 MiB of hunks in one review, in the review's order; only a hunk whose new side holds a word the parser reads is parsed or counted, so harmless hunks spend nothing; beyond the budgets the token rules' answer stands, they read the same spellings whatever the spacing (`assert! ( true )`, `value.unwrap ()`, `# [ ignore ]`), and the hunk carries `syntax_unchecked`): it blanks comments and strings, following block comments and triple-quoted strings across a hunk's lines, and matches tokens with word boundaries. Code that runs inside a string stays code, so quoting a fetch or a spawn does not hide it: `$(…)` and backticks in shell double quotes, `${…}` in JS template literals, and `{…}` in one-line Python f-strings, each scanned as code with its own strings, escapes and comments. It finds tokens; it does not prove a change safe, and code assembled at run time hides from it. A path cannot hide code: token evidence keeps its weight under `generated/` or `vendor/` (a test path counts half, except `test_removed`); the path-scoped `build_hook` follows the generated rule like every path signal.
+Languages come from the extension, or a shebang for a file with none: Rust, Python, JS/TS, Go, shell (with `Dockerfile` and `Makefile`) and YAML. The scan is **lexical** (`"basis": "lexical"`; `"hunk"` where a rule also read the next line; `"syntax_fragment"` where the parser read the construct in a Rust hunk, which also finds a construct written over several lines; the parser reads hunks of up to 64 KiB and 50,000 nodes, and at most 256 KiB of hunks in one review, in the review's order; only a hunk whose new side holds a word the parser reads is parsed or counted, so harmless hunks spend nothing; beyond the budgets the token rules' answer stands, they read the same spellings whatever the spacing (`assert! ( true )`, `value.unwrap ()`, `# [ ignore ]`), and the hunk carries `syntax_unchecked`): it blanks comments and strings, following block comments and triple-quoted strings across a hunk's lines, and matches tokens with word boundaries. Code that runs inside a string stays code, so quoting a fetch or a spawn does not hide it: `$(…)` and backticks in shell double quotes, `${…}` in JS template literals, and `{…}` in one-line Python f-strings, each scanned as code with its own strings, escapes and comments. It finds tokens; it does not prove a change safe, and code assembled at run time hides from it. A path cannot hide code: token evidence keeps its weight under `generated/` or `vendor/` (a test path counts half, except `test_removed`); the path-scoped `build_hook` follows the generated rule like every path signal.
 `rank.v0` lists each file's `evidence` (`signal`, `address`, `side`, `line`, `basis`; at most 32, then `evidence_truncated: true`), and each outline hunk lists its `evidence` labels.
 
 Ties break on path, so the order is reproducible. Under `--cluster` the result is
