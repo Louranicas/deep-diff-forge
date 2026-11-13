@@ -394,6 +394,15 @@ mod evidence_score_tests {
         assert_eq!(score("tests/it.rs", &[], &["todo!()"]), plain + 2);
         let source = score("src/x.rs", &[], &["let a = 1;"]);
         assert_eq!(score("src/x.rs", &[], &["todo!()"]), source + 3);
+        // a panic path: 2 in source, halved on a test path
+        assert_eq!(
+            score("src/x.rs", &[], &["let v = f().unwrap();"]),
+            source + 2
+        );
+        assert_eq!(
+            score("tests/it.rs", &[], &["let v = f().unwrap();"]),
+            plain + 1
+        );
         // each once, however many lines carry it
         assert_eq!(
             score(

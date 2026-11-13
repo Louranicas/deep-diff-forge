@@ -474,16 +474,17 @@ Additive members, so the schema names stay `v0`. They are present only when foun
 - `rank.v0` `ranked[i].evidence`: up to 32 items `{"signal", "address", "side", "line", "basis"}`.
   - `signal` is one of `unsafe_added`, `process_spawn`, `network_fetch`, `dynamic_eval`,
     `ci_privilege`, `build_hook`, `secret_like`, `check_suppressed`, `test_removed`,
-    `test_skipped`, `trivial_assert`, `stub_added` and `error_swallowed`. The list grows: a client must accept a
+    `test_skipped`, `trivial_assert`, `stub_added`, `error_swallowed` and `panic_path_added`. The list grows: a client must accept a
     label it does not know.
   - `address` is the hunk's address: the same value the outline and `review.hunks` use.
   - `side` is `new` (an added line) or `old` (a removed line), and `line` is that line's number on
     that side.
-  - `basis` says how the item was found: `lexical` (a token on the one changed line) or `hunk`
-    (the line read with the next line on the same side of the hunk; so far only
-    `error_swallowed`). The list of values grows as evidence is confirmed by more than a
-    token: a client must accept a value it does not know and may treat it as at least
-    `lexical`.
+  - `basis` says how the item was found, as the highest rung that found it: `lexical` (a
+    token on the one changed line), `hunk` (the line read with the next line on the same side
+    of the hunk; so far only `error_swallowed`), or `syntax_fragment` (the new side of the hunk
+    parsed as a fragment of its language, and the construct read by the parser with no error
+    above it; Rust only so far). The list of values grows: a client must accept a value it
+    does not know and may treat it as at least `lexical`.
   - Items are ordered by hunk, then line, then signal. `evidence_truncated: true` follows when more
     were found; the score counts all of them. Each signal also appears in `signals`.
 - `review-outline.v0` and `review-hunks.v0` hunk heads: `evidence`, the distinct signal labels in

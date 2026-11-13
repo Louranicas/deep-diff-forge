@@ -81,6 +81,7 @@ flowchart TB
     daemon --> patch
     agent --> core
     graph --> core
+    graph --> syntax
     patch --> core
     projection --> core
     syntax --> core

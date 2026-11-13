@@ -35,6 +35,7 @@ normal daemon -> core
 normal daemon -> graph
 normal daemon -> patch
 normal graph -> core
+normal graph -> syntax
 normal patch -> core
 normal pipeline -> core
 normal pipeline -> graph

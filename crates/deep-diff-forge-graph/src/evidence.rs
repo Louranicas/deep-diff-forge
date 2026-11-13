@@ -11,6 +11,7 @@
 
 use crate::lexical::{Language, ScanState, code_view, has_token, is_boundary_blocker, is_ident};
 use deep_diff_forge_core::{HunkId, PatchHunk, PatchLineKind, ReviewFile};
+use deep_diff_forge_syntax::{ConstructKind, FragmentScan, scan_fragment};
 
 /// The basis of the first rung: what every item carried before [`Basis`] existed, and what an
 /// item found by a token on one line still carries.
@@ -52,11 +53,14 @@ pub enum EvidenceSignal {
     /// An error is caught and dropped: an `except` whose body is `pass`, an empty `catch` block,
     /// an empty `if err != nil` block, `_ = err`, an `Err(_)` arm that does nothing.
     ErrorSwallowed,
+    /// A call that panics on failure is added to code that is not a test (Rust `.unwrap()`,
+    /// `.expect(`).
+    PanicPathAdded,
 }
 
 impl EvidenceSignal {
     /// Every signal, in the order scores and output list them.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::UnsafeAdded,
         Self::ProcessSpawn,
         Self::NetworkFetch,
@@ -70,6 +74,7 @@ impl EvidenceSignal {
         Self::TrivialAssert,
         Self::StubAdded,
         Self::ErrorSwallowed,
+        Self::PanicPathAdded,
     ];
 
     /// Stable snake-case label for machine output.
@@ -89,6 +94,7 @@ impl EvidenceSignal {
             Self::TrivialAssert => "trivial_assert",
             Self::StubAdded => "stub_added",
             Self::ErrorSwallowed => "error_swallowed",
+            Self::PanicPathAdded => "panic_path_added",
         }
     }
 
@@ -105,7 +111,7 @@ impl EvidenceSignal {
             | Self::TrivialAssert
             | Self::StubAdded
             | Self::ErrorSwallowed => 3,
-            Self::CheckSuppressed => 2,
+            Self::CheckSuppressed | Self::PanicPathAdded => 2,
         }
     }
 
@@ -148,6 +154,9 @@ pub enum Basis {
     Lexical,
     /// A changed line read with its neighbours on the same side of the hunk.
     Hunk,
+    /// The side of the hunk parsed as a fragment of its language: the construct itself, read
+    /// by the parser, with no error above it.
+    SyntaxFragment,
 }
 
 impl Basis {
@@ -157,6 +166,7 @@ impl Basis {
         match self {
             Self::Lexical => "lexical",
             Self::Hunk => "hunk",
+            Self::SyntaxFragment => "syntax_fragment",
         }
     }
 }
@@ -213,6 +223,8 @@ enum Match {
     /// An error handler with nothing in it ([`empty_handler`]). It reads the line and the next
     /// line on the same side of the hunk, so what it finds has [`Basis::Hunk`].
     EmptyHandler,
+    /// A call of a method with one of these names: `.name(` in the code view.
+    Method(&'static [&'static str]),
 }
 
 impl Match {
@@ -220,7 +232,9 @@ impl Match {
     const fn basis(self) -> Basis {
         match self {
             Self::EmptyHandler => Basis::Hunk,
-            Self::Tokens(_) | Self::AnyCode | Self::Secret | Self::Imports(_) => Basis::Lexical,
+            Self::Tokens(_) | Self::AnyCode | Self::Secret | Self::Imports(_) | Self::Method(_) => {
+                Basis::Lexical
+            }
         }
     }
 }
@@ -593,6 +607,15 @@ const RULES: &[Rule] = &[
         Scope::Languages(GO),
         Match::Tokens(&["_ = err"]),
     ),
+    // By spelling this cannot tell a test from other code: the path halves it on a test path,
+    // and the parser withdraws it where the hunk shows a test around it ([`fragment_evidence`]).
+    rule(
+        S::PanicPathAdded,
+        Side::New,
+        View::Code,
+        Scope::Languages(RUST),
+        Match::Method(&["unwrap", "expect"]),
+    ),
     // A handler and its empty body are often two lines: these read the next line too.
     rule(
         S::ErrorSwallowed,
@@ -771,6 +794,7 @@ fn hunk_matches(
                 Match::EmptyHandler => {
                     language.is_some_and(|l| empty_handler(l, text, next_on(side, at)))
                 }
+                Match::Method(names) => names.iter().any(|name| calls_method(text, name)),
             }
         };
         for signal in EvidenceSignal::ALL {
@@ -784,7 +808,190 @@ fn hunk_matches(
             }
         }
     }
+    if language == Some(Language::Rust) {
+        confirm_by_parse(hunk, &views, &mut found);
+    }
     found
+}
+
+/// Whether `code` calls a method named `name`: `.name(`, with nothing of an identifier between.
+fn calls_method(code: &str, name: &str) -> bool {
+    code.match_indices(name)
+        .any(|(at, _)| code[..at].ends_with('.') && code[at + name.len()..].starts_with('('))
+}
+
+/// What the parser says about the added lines of a Rust hunk: `(line index, signal)` pairs it
+/// found, and pairs it withdraws because the hunk shows test code around them.
+struct Parsed {
+    found: Vec<(usize, EvidenceSignal)>,
+    withdrawn: Vec<(usize, EvidenceSignal)>,
+}
+
+/// Rung 2: parse the new side of a Rust hunk and bring `found` into line with it. A signal the
+/// parser finds on an added line is added, or its basis raised to [`Basis::SyntaxFragment`]; a
+/// panic path inside a test the hunk shows is withdrawn. Where the parser could not read, and
+/// when it gives no answer at all, `found` is left as the lower rungs made it.
+fn confirm_by_parse(
+    hunk: &PatchHunk,
+    views: &[(Option<String>, Option<String>)],
+    found: &mut Vec<(Side, EvidenceSignal, u32, Basis)>,
+) {
+    let Some(parsed) = fragment_evidence(hunk, views) else {
+        return;
+    };
+    for (index, signal) in parsed.withdrawn {
+        if let Some(number) = hunk.lines[index].new_line {
+            found.retain(|item| (item.0, item.1, item.2) != (Side::New, signal, number));
+        }
+    }
+    for (index, signal) in parsed.found {
+        let Some(number) = hunk.lines[index].new_line else {
+            continue;
+        };
+        match found
+            .iter_mut()
+            .find(|item| (item.0, item.1, item.2) == (Side::New, signal, number))
+        {
+            Some(item) => item.3 = item.3.max(Basis::SyntaxFragment),
+            None => found.push((Side::New, signal, number, Basis::SyntaxFragment)),
+        }
+    }
+    // Hunk order, then the order of `EvidenceSignal::ALL`, as before the parse.
+    let place = |line: &(Side, EvidenceSignal, u32, Basis)| {
+        let at = hunk.lines.iter().position(|l| match line.0 {
+            Side::New => l.kind == PatchLineKind::Added && l.new_line == Some(line.2),
+            Side::Old => l.kind == PatchLineKind::Removed && l.old_line == Some(line.2),
+        });
+        (at, EvidenceSignal::ALL.iter().position(|s| *s == line.1))
+    };
+    found.sort_by_key(place);
+}
+
+/// The new side of `hunk` (context and added lines) parsed as a fragment, after the braces the
+/// hunk leaves open are closed and the ones it closes without opening are opened. Up to three
+/// wrappings are tried and the one the parser reads most of is kept. `None` when there is no
+/// answer (over budget, or nothing added).
+fn fragment_evidence(
+    hunk: &PatchHunk,
+    views: &[(Option<String>, Option<String>)],
+) -> Option<Parsed> {
+    let side: Vec<usize> = (0..hunk.lines.len())
+        .filter(|at| hunk.lines[*at].kind != PatchLineKind::Removed)
+        .collect();
+    if !side
+        .iter()
+        .any(|at| hunk.lines[*at].kind == PatchLineKind::Added)
+    {
+        return None;
+    }
+    // Braces are counted on the code view, where a brace in a string or a comment is blank.
+    let (mut unopened, mut open) = (0usize, 0usize);
+    for at in &side {
+        let code = views[*at]
+            .1
+            .as_deref()
+            .unwrap_or(hunk.lines[*at].text.as_str());
+        for byte in code.bytes() {
+            match byte {
+                b'{' => open += 1,
+                b'}' if open == 0 => unopened += 1,
+                b'}' => open -= 1,
+                _ => {}
+            }
+        }
+    }
+    let body: Vec<&str> = side
+        .iter()
+        .map(|at| hunk.lines[*at].text.as_str())
+        .collect();
+    let body = body.join("\n");
+    let rows = u32::try_from(side.len()).ok()?;
+    let closers = "}".repeat(open + unopened + 1);
+    // Each wrapping puts its opening on one line of its own, so a body row is a tree row less one.
+    let mut wrappings: Vec<(String, u32)> = Vec::new();
+    if unopened == 0 && open == 0 {
+        wrappings.push((body.clone(), 0));
+    }
+    wrappings.push((
+        format!(
+            "fn ddf_fragment() {{{}\n{body}\n{closers}",
+            " {".repeat(unopened)
+        ),
+        1,
+    ));
+    if unopened > 0 {
+        // The innermost block the hunk closes may be a `match`.
+        wrappings.push((
+            format!(
+                "fn ddf_fragment() {{{} match ddf_fragment {{\n{body}\n{closers}",
+                " {".repeat(unopened - 1)
+            ),
+            1,
+        ));
+    }
+    let mut best: Option<(u32, FragmentScan, u32)> = None;
+    for (source, offset) in wrappings {
+        let Some(scan) = scan_fragment(deep_diff_forge_syntax::Language::Rust, &source) else {
+            continue;
+        };
+        let unread = (0..rows).filter(|row| !scan.readable(row + offset)).count();
+        let unread = u32::try_from(unread).unwrap_or(u32::MAX);
+        if best.as_ref().is_none_or(|(least, _, _)| unread < *least) {
+            best = Some((unread, scan, offset));
+        }
+        if unread == 0 {
+            break;
+        }
+    }
+    let (_, scan, offset) = best?;
+    let mut parsed = Parsed {
+        found: Vec::new(),
+        withdrawn: Vec::new(),
+    };
+    for construct in &scan.constructs {
+        let Some(row) = construct.row.checked_sub(offset) else {
+            continue;
+        };
+        let Some(index) = side.get(row as usize).copied() else {
+            continue;
+        };
+        if hunk.lines[index].kind != PatchLineKind::Added {
+            continue;
+        }
+        match signal_of(&construct.kind) {
+            Some(S::PanicPathAdded) if construct.in_test => {
+                parsed.withdrawn.push((index, S::PanicPathAdded));
+            }
+            Some(signal) => parsed.found.push((index, signal)),
+            None => {}
+        }
+    }
+    Some(parsed)
+}
+
+/// The signal a Rust construct is evidence of, if any.
+fn signal_of(kind: &ConstructKind) -> Option<EvidenceSignal> {
+    match kind {
+        ConstructKind::Attribute { words } => {
+            let first = words.first().map(String::as_str);
+            let ignored = first == Some("ignore")
+                || (first == Some("cfg_attr") && words.iter().skip(1).any(|w| w == "ignore"));
+            ignored.then_some(S::TestSkipped)
+        }
+        ConstructKind::MacroCall { name, arguments } => match name.as_str() {
+            "assert" | "debug_assert" => {
+                (arguments == "true" || arguments.starts_with("true,")).then_some(S::TrivialAssert)
+            }
+            "assert_eq" | "debug_assert_eq" => (arguments == "true,true"
+                || arguments.starts_with("true,true,"))
+            .then_some(S::TrivialAssert),
+            "todo" | "unimplemented" => Some(S::StubAdded),
+            _ => None,
+        },
+        ConstructKind::MethodCall { name } => {
+            matches!(name.as_str(), "unwrap" | "expect").then_some(S::PanicPathAdded)
+        }
+    }
 }
 
 /// Whether `code` (a line's code view) opens an error handler that does nothing, given the code
@@ -2143,6 +2350,160 @@ mod tests {
         assert!(Basis::Hunk > Basis::Lexical);
     }
 
+    /// Rung 2: the new side of a Rust hunk is parsed, and what the parser reads is evidence
+    /// whatever its spelling. An item it confirms says so.
+    #[test]
+    fn the_parser_finds_rust_constructs_whatever_their_spelling() {
+        let cases: &[(&str, &[&str], EvidenceSignal)] = &[
+            (
+                "src/a.rs",
+                &["+    let v = f().unwrap();"],
+                S::PanicPathAdded,
+            ),
+            (
+                "src/a.rs",
+                &["+    let v = f()", "+        .expect(\"set\");"],
+                S::PanicPathAdded,
+            ),
+            ("tests/a.rs", &["+    assert!( true );"], S::TrivialAssert),
+            (
+                "tests/a.rs",
+                &["+    assert!(true, \"always\");"],
+                S::TrivialAssert,
+            ),
+            (
+                "tests/a.rs",
+                &["+    assert_eq!(true , true);"],
+                S::TrivialAssert,
+            ),
+            (
+                "tests/a.rs",
+                &["+#[cfg_attr(miri, ignore)]", "+fn slow() {}"],
+                S::TestSkipped,
+            ),
+            (
+                "tests/a.rs",
+                &["+#[ignore]", "+fn slow() {}"],
+                S::TestSkipped,
+            ),
+            ("src/a.rs", &["+    todo!( )"], S::StubAdded),
+            // the hunk closes a block it did not open, and opens one it does not close
+            (
+                "src/a.rs",
+                &[
+                    "     y",
+                    " }",
+                    "+fn b() {",
+                    "+    if c {",
+                    "+        h().unwrap();",
+                ],
+                S::PanicPathAdded,
+            ),
+        ];
+        for (path, body, signal) in cases {
+            let items = found(&hunk_of(path, body));
+            assert_eq!(items.len(), 1, "{path}: {body:?}: {items:?}");
+            assert_eq!(
+                (items[0].0, items[0].1),
+                (*signal, Basis::SyntaxFragment),
+                "{path}: {body:?}"
+            );
+        }
+        assert_eq!(Basis::SyntaxFragment.label(), "syntax_fragment");
+        assert!(Basis::SyntaxFragment > Basis::Hunk);
+    }
+
+    /// A panic path inside a test the hunk shows is no evidence: the parser withdraws what the
+    /// spelling found. A test the hunk does not show cannot be known, and the item stands.
+    #[test]
+    fn a_panic_path_in_a_test_the_hunk_shows_is_withdrawn() {
+        let shown: &[&[&str]] = &[
+            &["+#[test]", "+fn a() {", "+    f().unwrap();", "+}"],
+            &[
+                "+#[tokio::test]",
+                "+async fn a() {",
+                "+    f().await.expect(\"x\");",
+                "+}",
+            ],
+            &[
+                " #[cfg(test)]",
+                " mod checks {",
+                "+    fn helper() { f().unwrap(); }",
+                " }",
+            ],
+            &[
+                "     y",
+                " }",
+                "",
+                "+#[test]",
+                "+fn b() {",
+                "+    h().unwrap();",
+                "+}",
+            ],
+        ];
+        for body in shown {
+            assert_eq!(found(&hunk_of("src/a.rs", body)), [], "{body:?}");
+        }
+        let unseen = found(&hunk_of("tests/a.rs", &["+    f().unwrap();"]));
+        assert_eq!(unseen, [(S::PanicPathAdded, Basis::SyntaxFragment, 2)]);
+        // a function that is not a test, between tests
+        let other = found(&hunk_of(
+            "src/a.rs",
+            &["+fn helper() {", "+    f().unwrap();", "+}"],
+        ));
+        assert_eq!(other, [(S::PanicPathAdded, Basis::SyntaxFragment, 3)]);
+    }
+
+    /// Where the parser cannot read, the lower rung's answer stands with its own basis; where
+    /// neither finds anything there is nothing.
+    #[test]
+    fn what_the_parser_cannot_read_keeps_the_lower_rungs_answer() {
+        // inside a macro's body the parser reads nothing
+        assert_eq!(
+            found(&hunk_of("src/a.rs", &["+    outer! { x.unwrap(); }"])),
+            [(S::PanicPathAdded, Basis::Lexical, 2)]
+        );
+        // a hunk over the fragment budget is not parsed at all
+        let long = format!("+    f().unwrap(); // {}", "a".repeat(70_000));
+        assert_eq!(
+            found(&hunk_of("src/a.rs", &[long.as_str()])),
+            [(S::PanicPathAdded, Basis::Lexical, 2)]
+        );
+        for line in [
+            "+    x.unwrap_or(1);",
+            "+    x.expect_err(\"e\");",
+            "+    let s = \"a.unwrap()\"; // b.unwrap()",
+            "+    unwrap(x);",
+            "-    f().unwrap();",
+        ] {
+            assert_eq!(found(&hunk_of("src/a.rs", &[line])), [], "{line}");
+        }
+        // another language has no grammar here and no such rule
+        assert_eq!(found(&hunk_of("a.py", &["+x.unwrap()"])), []);
+    }
+
+    /// The parse changes nothing it has no construct for: the same items, in the same order.
+    #[test]
+    fn items_the_parser_has_no_view_on_keep_their_place() {
+        let file = hunk_of(
+            "src/a.rs",
+            &[
+                "+    let c = std::process::Command::new(\"x\");",
+                "+    let v = unsafe { f() }.unwrap();",
+                "+    todo!()",
+            ],
+        );
+        assert_eq!(
+            found(&file),
+            [
+                (S::ProcessSpawn, Basis::Lexical, 2),
+                (S::UnsafeAdded, Basis::Lexical, 3),
+                (S::PanicPathAdded, Basis::SyntaxFragment, 3),
+                (S::StubAdded, Basis::SyntaxFragment, 4),
+            ]
+        );
+    }
+
     /// These are read on added lines only: removing a skip or a stub is the repair.
     #[test]
     fn removing_a_skip_a_trivial_assert_or_a_stub_is_not_evidence() {
@@ -2179,6 +2540,7 @@ mod tests {
                 ("trivial_assert", 3),
                 ("stub_added", 3),
                 ("error_swallowed", 3),
+                ("panic_path_added", 2),
             ]
         );
         assert_eq!((Side::New.label(), Side::Old.label()), ("new", "old"));

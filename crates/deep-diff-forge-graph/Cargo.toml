@@ -12,6 +12,8 @@ description = "Review Intelligence Graph: deterministic, explainable risk rankin
 
 [dependencies]
 deep-diff-forge-core.workspace = true
+# The evidence ladder's second rung reads a hunk with the parser (docs/crate-edges.txt).
+deep-diff-forge-syntax.workspace = true
 
 [dev-dependencies]
 deep-diff-forge-patch.workspace = true

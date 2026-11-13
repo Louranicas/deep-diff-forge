@@ -198,6 +198,7 @@ fn code_phrase(signal: EvidenceSignal) -> &'static str {
         EvidenceSignal::TrivialAssert => "An assertion that cannot fail.",
         EvidenceSignal::StubAdded => "A placeholder where code should be.",
         EvidenceSignal::ErrorSwallowed => "An error is caught and dropped.",
+        EvidenceSignal::PanicPathAdded => "A call that panics on failure is added.",
     }
 }
 
@@ -310,6 +311,7 @@ mod tests {
                 "An assertion that cannot fail.",
                 "A placeholder where code should be.",
                 "An error is caught and dropped.",
+                "A call that panics on failure is added.",
             ]
         );
     }

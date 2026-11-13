@@ -26,12 +26,27 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   of rule that reads the next line on the same side of the hunk. A handler whose body the hunk
   does not show is not reported.
 
+- **Rust hunks are read by the parser, and `panic_path_added`** (agent batteries, phase 1,
+  slice 3). The new side of each Rust hunk is parsed as a fragment with tree-sitter, after the
+  braces the hunk leaves open or closes without opening are balanced. What the parser reads
+  with no error above it is evidence whatever its spelling: `assert!( true )`,
+  `assert!(true, "msg")` and `#[cfg_attr(miri, ignore)]` are found, which no token matched.
+  `panic_path_added` (+2, once per file) is a `.unwrap()` or `.expect(` method call added
+  outside test code; inside a test function or test module that the hunk shows, it is not
+  reported. Where the parser cannot read (an error, the inside of a macro, a hunk over 64 KiB
+  or 50,000 nodes) the token rules' answer stands. The budgets are counts, so the same patch
+  gives the same ranking. The graph crate now depends on the syntax crate
+  (`docs/crate-edges.txt`).
+
 ### Changed
 
-- **`basis` in `rank.v0` evidence is no longer always `lexical`.** An item found by reading a
-  neighbouring line carries `"basis": "hunk"`; every item a token finds is unchanged. The
-  member and its meaning are as documented, and the set of values grows: a client that
-  compared it with `lexical` should accept other values.
+- **`basis` in `rank.v0` evidence is no longer always `lexical`.** An item carries the highest
+  rung that found it: `"hunk"` when a rule read a neighbouring line, `"syntax_fragment"` when
+  the parser read the construct. An item only a token finds is unchanged. The set of values
+  grows: a client that compared it with `lexical` should accept other values.
+- **Existing Rust signals can be found where they were not before.** `test_skipped`,
+  `trivial_assert` and `stub_added` in a Rust hunk are now also found by the parser, so a
+  spelling the tokens missed is reported and raises the file's score.
 
 ## [0.8.3] - 2026-11-11
 
