@@ -372,7 +372,27 @@ fn rankers(args: &[String]) -> Vec<PathBuf> {
     list
 }
 
-/// Run the judge once: its exit code and its verdict document, when it gave either.
+/// The most characters of the judge's own error message a reason repeats.
+const JUDGE_WORDS: usize = 300;
+
+/// What the judge said when it gave no verdict: the `name` and `message` of the last JSON line
+/// on its error stream (`forge-warden.error.v1`), or that line as text.
+fn judge_words(stderr: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(stderr);
+    let last = text.lines().rev().find(|line| !line.trim().is_empty())?;
+    let words = match serde_json::from_str::<Value>(last) {
+        Ok(error) => match (error["name"].as_str(), error["message"].as_str()) {
+            (Some(name), Some(message)) => format!("{name}: {message}"),
+            (None, Some(message)) => message.to_owned(),
+            _ => last.trim().to_owned(),
+        },
+        Err(_) => last.trim().to_owned(),
+    };
+    Some(words.chars().take(JUDGE_WORDS).collect())
+}
+
+/// Run the judge once: its exit code, its verdict document and what it said on its error
+/// stream, when it gave any of them.
 #[expect(
     clippy::disallowed_methods,
     reason = "the judge door: the stop hook starts forge-warden, under a deadline and output caps"
@@ -382,7 +402,7 @@ fn run_judge(
     policy: &Path,
     patch: &Path,
     ranker: &Path,
-) -> (Option<i32>, Option<Value>) {
+) -> (Option<i32>, Option<Value>, Option<String>) {
     let mut command = std::process::Command::new(judge);
     command
         .arg("check")
@@ -397,8 +417,9 @@ fn run_judge(
         Ok(done) => (
             done.status.code(),
             serde_json::from_slice(&done.stdout).ok(),
+            judge_words(&done.stderr),
         ),
-        Err(_) => (None, None),
+        Err(stopped) => (None, None, Some(stopped.to_string())),
     }
 }
 
@@ -444,8 +465,8 @@ fn judge(
             .to_owned(),
     };
     for ranker in rankers(args) {
-        let (code, verdict) = run_judge(&program, &policy_file, &patch_file, &ranker);
-        last = hook::judged(code, verdict.as_ref());
+        let (code, verdict, said) = run_judge(&program, &policy_file, &patch_file, &ranker);
+        last = hook::judged(code, verdict.as_ref(), said.as_deref());
         // Exit 4: the policy does not admit this ranker. Another may be admitted.
         if code != Some(4) {
             break;
@@ -512,6 +533,34 @@ mod tests {
         let odd =
             r#"{"schema":"deep-diff-forge.hook-state.v0","reported":["a",1],"last_block":"x"}"#;
         assert_eq!(state_from(odd), State::default());
+    }
+
+    #[test]
+    fn the_judges_own_words_are_read_from_its_last_error_line() {
+        let json = br#"{"exit":3,"name":"io","message":"Git admission: no Git allowlist enrolled","next":"check_environment"}"#;
+        assert_eq!(
+            judge_words(json).as_deref(),
+            Some("io: Git admission: no Git allowlist enrolled")
+        );
+        assert_eq!(
+            judge_words(b"warning: x\n{\"message\":\"only this\"}\n\n").as_deref(),
+            Some("only this")
+        );
+        assert_eq!(
+            judge_words(b"plain words\n").as_deref(),
+            Some("plain words")
+        );
+        assert_eq!(
+            judge_words(b"{\"other\":1}").as_deref(),
+            Some("{\"other\":1}")
+        );
+        assert_eq!(judge_words(b""), None);
+        assert_eq!(judge_words(b"\n  \n"), None);
+        let long = format!("{{\"message\":\"{}\"}}", "m".repeat(1000));
+        assert_eq!(
+            judge_words(long.as_bytes()).map(|w| w.chars().count()),
+            Some(JUDGE_WORDS)
+        );
     }
 
     #[test]

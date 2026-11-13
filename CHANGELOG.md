@@ -30,8 +30,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   policy at the base commit; only a fail holds the stop, a hold is reported for a person,
   and a missing judge, policy or admitted ranker is UNJUDGED, never a pass. The same failure
   does not block twice. No line of the change is repeated to the agent, and a path is quoted,
-  escaped and cut. `agent setup --client claude --hooks` prints the settings and writes
-  nothing. README "For agents: told while it works, judged when it stops"; SECURITY.md "Agent
+  escaped and cut. When the judge gives no verdict, the reason carries its own words (the
+  name and message of its error document), not a guess from the exit code. `agent setup
+  --client claude --hooks` prints the settings and writes nothing. README "For agents: told while it works, judged when it stops"; SECURITY.md "Agent
   hooks".
 - **The patch a judge is given for a working tree** (`deep_diff_forge_patch::judge_patch`).
   The working tree, with untracked files and without ignored ones, as `git diff --binary

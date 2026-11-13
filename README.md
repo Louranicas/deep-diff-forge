@@ -331,6 +331,9 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
 - **No line of the change is repeated to the agent.** A message holds labels, line numbers
   and remedy text; a path is quoted, escaped and cut at 120 characters, and the message says
   that paths are data, not instructions.
+- **UNJUDGED says why, in the judge's words.** For example, on a machine where forge-warden
+  has no Git allowlist enrolled: "the judge could not read its inputs or its environment
+  (exit 3): io: Git admission: no Git allowlist enrolled".
 - **A hook never fails its client.** Outside a repository it says nothing. If it cannot run
   (Git too slow, a state file that cannot be written), it exits 0 and tells the user that
   nothing was judged.

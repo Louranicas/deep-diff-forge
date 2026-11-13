@@ -247,11 +247,16 @@ pub(crate) struct RuleOutcome {
     pub(crate) violations: Vec<(String, String)>,
 }
 
-/// Read a judge's exit code and its `forge-warden.verdict.v2` document.
+/// Read a judge's exit code, its `forge-warden.verdict.v2` document and, when it gave no
+/// verdict, what it said on its error stream (`said`).
 ///
 /// The exit code decides; the document only says which rules. An exit code with no readable
-/// document, or one the registry of exits does not give a verdict for, is unjudged.
-pub(crate) fn judged(exit: Option<i32>, verdict: Option<&Value>) -> Judged {
+/// document, or one the registry of exits does not give a verdict for, is unjudged, and the
+/// reason carries the judge's own words: it knows why it could not judge (a live run found a
+/// host with no Git allowlist enrolled, which a guess from the exit code alone called a
+/// ranker failure).
+pub(crate) fn judged(exit: Option<i32>, verdict: Option<&Value>, said: Option<&str>) -> Judged {
+    let said = said.map(|words| format!(": {words}")).unwrap_or_default();
     let rules = |outcome: &str| -> Option<Vec<RuleOutcome>> {
         let list = verdict?.get("rules")?.as_array()?;
         Some(
@@ -289,13 +294,17 @@ pub(crate) fn judged(exit: Option<i32>, verdict: Option<&Value>) -> Judged {
             rules("fail").map_or_else(|| unreadable("a fail"), |rules| Judged::Fail { rules })
         }
         Some(4) => Judged::Unjudged {
-            reason: "the policy at the base commit admits no ranker this machine has".to_owned(),
+            reason: format!(
+                "the judge refused the policy, the ranking or the ranker (exit 4){said}"
+            ),
         },
         Some(3) => Judged::Unjudged {
-            reason: "the ranker did not produce a ranking of this change".to_owned(),
+            reason: format!(
+                "the judge could not read its inputs or its environment (exit 3){said}"
+            ),
         },
         Some(code) => Judged::Unjudged {
-            reason: format!("the judge exited {code}, which is not a verdict"),
+            reason: format!("the judge exited {code}, which is not a verdict{said}"),
         },
         None => Judged::Unjudged {
             reason: "the judge was stopped before it gave a verdict".to_owned(),
@@ -665,9 +674,9 @@ mod tests {
             {"id": "no-secrets", "outcome": "fail", "why": "w2", "violations": [{"signal": "secret_like", "path": "src/k.rs", "message": "m"}]},
             {"id": "size", "outcome": "pass", "why": "w3", "violations": []},
         ]});
-        assert_eq!(judged(Some(0), Some(&verdict)), Judged::Pass);
-        assert_eq!(judged(Some(0), None), Judged::Pass);
-        let Judged::Hold { rules } = judged(Some(8), Some(&verdict)) else {
+        assert_eq!(judged(Some(0), Some(&verdict), None), Judged::Pass);
+        assert_eq!(judged(Some(0), None, None), Judged::Pass);
+        let Judged::Hold { rules } = judged(Some(8), Some(&verdict), None) else {
             panic!("exit 8 is a hold")
         };
         assert_eq!(rules.len(), 1);
@@ -679,7 +688,7 @@ mod tests {
             rules[0].violations,
             [("test_removed".to_owned(), "tests/a.rs".to_owned())]
         );
-        let Judged::Fail { rules } = judged(Some(7), Some(&verdict)) else {
+        let Judged::Fail { rules } = judged(Some(7), Some(&verdict), None) else {
             panic!("exit 7 is a fail")
         };
         assert_eq!(rules[0].id, "no-secrets");
@@ -687,7 +696,7 @@ mod tests {
         for exit in [7, 8] {
             for doc in [None, Some(&json!({})), Some(&json!({"rules": "x"}))] {
                 assert!(
-                    matches!(judged(Some(exit), doc), Judged::Unjudged { .. }),
+                    matches!(judged(Some(exit), doc, None), Judged::Unjudged { .. }),
                     "{exit} {doc:?}"
                 );
             }
@@ -695,7 +704,7 @@ mod tests {
         // every other way a judge can end is unjudged, each with its own reason
         let reasons: Vec<String> = [Some(3), Some(4), Some(1), Some(101), None]
             .into_iter()
-            .map(|exit| match judged(exit, Some(&verdict)) {
+            .map(|exit| match judged(exit, Some(&verdict), None) {
                 Judged::Unjudged { reason } => reason,
                 other => panic!("{exit:?} gave {other:?}"),
             })
@@ -703,6 +712,27 @@ mod tests {
         let unique: BTreeSet<&String> = reasons.iter().collect();
         // 3, 4 and a stopped judge each have their own reason; any other code names itself
         assert_eq!(unique.len(), 5, "{reasons:?}");
+        // what the judge itself said is passed on, after the code
+        for (exit, start) in [
+            (
+                3,
+                "the judge could not read its inputs or its environment (exit 3): ",
+            ),
+            (
+                4,
+                "the judge refused the policy, the ranking or the ranker (exit 4): ",
+            ),
+            (101, "the judge exited 101, which is not a verdict: "),
+        ] {
+            let Judged::Unjudged { reason } =
+                judged(Some(exit), None, Some("io: no Git allowlist enrolled"))
+            else {
+                panic!("{exit} is not a verdict")
+            };
+            assert_eq!(reason, format!("{start}io: no Git allowlist enrolled"));
+        }
+        // a verdict is not changed by anything the judge also wrote
+        assert_eq!(judged(Some(0), None, Some("noise")), Judged::Pass);
     }
 
     #[test]

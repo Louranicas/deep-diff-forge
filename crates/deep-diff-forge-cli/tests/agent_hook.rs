@@ -455,6 +455,51 @@ fn a_stop_with_no_judge_or_no_policy_is_unjudged_and_never_blocks() {
     );
 }
 
+/// When the judge gives no verdict, what it said about why reaches the user. A live run with a
+/// real forge-warden found this: a host with no Git allowlist enrolled was reported as a ranker
+/// failure, because only the exit code was read.
+#[test]
+fn an_unjudged_stop_passes_on_what_the_judge_said() {
+    let scratch = Scratch::new("hook-judge-words");
+    let root = repository(&scratch);
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\n#[allow(dead_code)]\nfn b() {}\n",
+    )
+    .unwrap();
+    let script = scratch.join("judge");
+    let body = "#!/bin/sh\necho '{\"exit\":3,\"name\":\"io\",\"message\":\"Git admission: no Git allowlist enrolled\",\"next\":\"check_environment\"}' >&2\nexit 3\n";
+    let mut writer = Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(&script)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writer
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(body.as_bytes())
+        .unwrap();
+    assert!(writer.wait().unwrap().success());
+    let (code, stdout, _) = hook(
+        "stop",
+        &["--judge", script.to_str().unwrap()],
+        &input("Stop", &root, "s", false),
+    );
+    assert_eq!(code, 0);
+    let out: Value = serde_json::from_str(&stdout).unwrap();
+    assert!(out.get("decision").is_none(), "{out}");
+    let message = out["systemMessage"].as_str().unwrap();
+    assert!(
+        message.contains(
+            "the judge could not read its inputs or its environment (exit 3): io: Git admission: no Git allowlist enrolled"
+        ),
+        "{message}"
+    );
+    assert!(message.ends_with("That is not a pass."), "{message}");
+}
+
 /// The judge refuses this binary as a ranker (exit 4) and admits one from `--ranker-dir`.
 #[test]
 fn a_stop_offers_other_rankers_when_the_policy_does_not_admit_this_one() {
@@ -516,7 +561,7 @@ fn a_stop_offers_other_rankers_when_the_policy_does_not_admit_this_one() {
         out["systemMessage"]
             .as_str()
             .unwrap()
-            .contains("admits no ranker this machine has"),
+            .contains("the judge refused the policy, the ranking or the ranker (exit 4)"),
         "{out}"
     );
 }
