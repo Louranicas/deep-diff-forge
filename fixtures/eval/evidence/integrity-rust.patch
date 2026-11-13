@@ -1,0 +1,33 @@
+diff --git a/tests/it.rs b/tests/it.rs
+--- a/tests/it.rs
++++ b/tests/it.rs
+@@ -1,1 +1,14 @@
+ use super::*;
++#[test]
++#[ignore = "slow"]
++fn skipped() {
++    assert!( true );
++    let v = parse("x").unwrap();
++}
++#[cfg_attr(miri, ignore)]
++#[test]
++fn stubbed() {
++    todo!()
++}
++// #[ignore] and assert!(true) in a comment
++const TEXT: &str = "todo!() #[ignore] x.unwrap()";
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,1 +1,11 @@
+ pub fn load(p: &Path) -> Config {
++    let text = std::fs::read_to_string(p).unwrap();
++    let port = text
++        .parse::<u16>()
++        .expect("a port");
++    let fallback = text.parse().unwrap_or(80);
++    match check(port) {
++        Ok(()) => {}
++        Err(_) => {}
++    }
++    Config { port, fallback }

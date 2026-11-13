@@ -38,6 +38,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   gives the same ranking. The graph crate now depends on the syntax crate
   (`docs/crate-edges.txt`).
 
+### Testing
+
+- **Three evaluation cases for the integrity signals.** `fixtures/eval` has 37 cases: a Rust
+  case (a skipped test, an assertion written with spaces, a stub, a `cfg_attr` skip, panic
+  paths, a dropped error, and negatives including an `unwrap` inside a test the hunk shows),
+  an empty-handler case in Python, TypeScript and Go, and a declared miss (a JavaScript
+  placeholder that exists only as a message string). The Go case found that
+  `if err := f(); err != nil {}` was not read; it is now. Measured: evidence precision 33 of
+  34, recall 33 of 41; the floors are raised to those values.
+
 ### Changed
 
 - **`basis` in `rank.v0` evidence is no longer always `lexical`.** An item carries the highest

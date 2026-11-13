@@ -796,13 +796,15 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   repeated id or a field its kind does not read, or a ranking pair is not two distinct paths. `eval` prints `deep-diff-forge.eval.v0` and exits 7 when a case
   fails.
 
-  **Measured 2026-10-31, 34 cases** (14 ranking, 17 evidence, 3 findings; 11 declared misses):
+  **Measured 2026-11-13, 37 cases** (14 ranking, 20 evidence, 3 findings; 12 declared misses).
+  Three evidence cases were added for the integrity signals, one of them a declared miss; the
+  2026-10-31 measurement on 34 cases was precision 21 / 22 and recall 21 / 28:
 
   | Metric | Right / total | Floor |
   | --- | ---: | ---: |
   | ranking pairs | 12 / 15 | 80.0% |
-  | evidence precision | 21 / 22 | 95.4% |
-  | evidence recall | 21 / 28 | 75.0% |
+  | evidence precision | 33 / 34 | 97.0% |
+  | evidence recall | 33 / 41 | 80.4% |
   | findings verdicts | 33 / 33 | 100% |
 
   `crates/deep-diff-forge-cli/tests/eval.rs` holds these floors (the measured values) and fails
@@ -810,8 +812,9 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   regression gate and an honest list of known limits, not a measure of review quality on
   real-world code. The declared misses are a removed authorization check, a GitHub Actions
   script injection and a lockfile registry swap (ranking), and aliased imports, `window.fetch`,
-  a fullwidth `ｅval`, a triple-quoted f-string, bash `/dev/tcp` and an assembled call
-  (evidence), plus one false positive (a heredoc read as code).
+  a fullwidth `ｅval`, a triple-quoted f-string, bash `/dev/tcp`, an assembled call and a
+  JavaScript placeholder that exists only as a message string (evidence), plus one false
+  positive (a heredoc read as code).
 
 ## Risk ranking
 

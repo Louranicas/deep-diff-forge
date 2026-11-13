@@ -531,6 +531,112 @@
       "sha256": "12aad991e95568580821af934a2b034064898b4f66a78c17e79afb1ceee87c98"
     },
     {
+      "id": "evidence/integrity-rust",
+      "kind": "evidence",
+      "patch": "evidence/integrity-rust.patch",
+      "origin": "synthetic: agent batteries 2026-11-13: a skipped test, an assertion that cannot fail written with spaces, a stub and a cfg_attr skip in tests; panic paths and a dropped error in source. Negatives: an unwrap inside a test the hunk shows, unwrap_or, and the same words in a comment and a string",
+      "expect": [
+        {
+          "path": "tests/it.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/it.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "tests/it.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 8
+        },
+        {
+          "path": "tests/it.rs",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 11
+        },
+        {
+          "path": "src/lib.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/lib.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/lib.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 9
+        }
+      ],
+      "sha256": "2fd175eaee1fc9ecd90fb81a1e987b26373323a9f258cb323a71aceb8047dae8"
+    },
+    {
+      "id": "evidence/error-swallowed-multilang",
+      "kind": "evidence",
+      "patch": "evidence/error-swallowed-multilang.patch",
+      "origin": "synthetic: agent batteries 2026-11-13: an empty handler in Python (two lines), TypeScript (one line and two) and Go (an if with an init statement, and _ = err). Negatives: a handler that logs, and a promise's catch method",
+      "expect": [
+        {
+          "path": "a.py",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "web/a.ts",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "web/a.ts",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "srv/a.go",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "srv/a.go",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 5
+        }
+      ],
+      "sha256": "b13245c86fe887729851d318094ee7dc1ae344474d841f3f924b00adfd358b62"
+    },
+    {
+      "id": "evidence/known-miss-stub-message",
+      "kind": "evidence",
+      "patch": "evidence/known-miss-stub-message.patch",
+      "origin": "synthetic: agent batteries 2026-11-13: a documented limit: a JavaScript placeholder that exists only as a message string",
+      "expect": [],
+      "known_miss": [
+        {
+          "path": "web/stub.js",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "a1f5293e5f6d5833dc634b90b32c98fe1c8b4331c3d3f8b4a81f7da99e3a3bd4"
+    },
+    {
       "id": "findings/mixed",
       "kind": "findings",
       "patch": "findings/mixed.patch",

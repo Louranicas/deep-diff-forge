@@ -1000,7 +1000,8 @@ fn signal_of(kind: &ConstructKind) -> Option<EvidenceSignal> {
 /// - Python: `except …:` whose body is `pass` or `...`, on the same line or the next.
 /// - JS and TS: `catch`, with or without a binding, whose block is empty: `{}` on the line, or
 ///   `{` ending the line and `}` starting the next.
-/// - Go: `if err != nil {` closed at once, on the line or the next.
+/// - Go: `if err != nil {`, with or without a statement before the test, closed at once, on the
+///   line or the next.
 ///
 /// A handler whose body the hunk does not show is not evidence: the next line must be there.
 fn empty_handler(language: Language, code: &str, next: Option<&str>) -> bool {
@@ -1045,7 +1046,11 @@ fn empty_handler(language: Language, code: &str, next: Option<&str>) -> bool {
             };
             empty_block(after)
         }),
-        Language::Go => line.strip_prefix("if err != nil").is_some_and(empty_block),
+        // `if err != nil {` and `if err := f(); err != nil {`: the test comes last in the head.
+        Language::Go => line.strip_prefix("if ").is_some_and(|head| {
+            head.rsplit_once("err != nil")
+                .is_some_and(|(_, after)| empty_block(after))
+        }),
         Language::Rust | Language::Shell | Language::Yaml => false,
     }
 }
@@ -2262,6 +2267,7 @@ mod tests {
             ("a.ts", &["+try { f(); } catch ({ message }) {", "+}"]),
             ("a.go", &["+\tif err != nil {", "+\t}"]),
             ("a.go", &["+\tif err != nil {}"]),
+            ("a.go", &["+\tif err := f(); err != nil {", "+\t}"]),
             // the body is the next line of the new file: a removed line between is not it,
             // and an unchanged line is
             (
@@ -2312,6 +2318,8 @@ mod tests {
             ("a.ts", &["+// } catch (e) {}"]),
             ("a.go", &["+\tif err != nil {", "+\t\treturn err"]),
             ("a.go", &["+\tif err == nil {", "+\t}"]),
+            ("a.go", &["+\tif err != nil && retry {", "+\t}"]),
+            ("a.go", &["+\tfor err != nil {", "+\t}"]),
             ("a.go", &["+\t_ = errors.New(\"x\")"]),
             ("src/a.rs", &["+        Err(e) => {}"]),
             ("src/a.rs", &["+        Err(_) => { log(); }"]),
