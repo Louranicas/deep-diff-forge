@@ -247,52 +247,105 @@ pub(crate) struct RuleOutcome {
     pub(crate) violations: Vec<(String, String)>,
 }
 
+/// What a verdict must be sealed to: the SHA-256 of the policy and of the patch the judge was
+/// given, as 64 lowercase hex digits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Sealed<'a> {
+    pub(crate) policy_sha256: &'a str,
+    pub(crate) patch_sha256: &'a str,
+}
+
+/// The schema of the document a judge prints.
+const VERDICT_SCHEMA: &str = "forge-warden.verdict.v2";
+
+/// Why `verdict` is not the judge's own verdict of `outcome` on these inputs; `None` when it
+/// is. The document has to say what the exit code says, and to be sealed to the policy and the
+/// patch this hook wrote, from a ranking the judge produced itself.
+fn not_a_verdict(verdict: Option<&Value>, outcome: &str, sealed: Sealed) -> Option<String> {
+    let Some(document) = verdict else {
+        return Some("it printed no verdict document".to_owned());
+    };
+    if document["schema"] != VERDICT_SCHEMA {
+        return Some(format!("its document is not a {VERDICT_SCHEMA}"));
+    }
+    if document["verdict"] != outcome {
+        return Some(format!(
+            "its document does not say {outcome}, which its exit code says"
+        ));
+    }
+    let seals = &document["seals"];
+    if seals["policy_sha256"] != sealed.policy_sha256 {
+        return Some("its verdict is not sealed to the policy it was given".to_owned());
+    }
+    if seals["patch_sha256"] != sealed.patch_sha256 {
+        return Some("its verdict is not sealed to the patch it was given".to_owned());
+    }
+    if seals["provenance"] != "produced" {
+        return Some("its verdict is not on a ranking it produced itself".to_owned());
+    }
+    None
+}
+
 /// Read a judge's exit code, its `forge-warden.verdict.v2` document and, when it gave no
 /// verdict, what it said on its error stream (`said`).
 ///
-/// The exit code decides; the document only says which rules. An exit code with no readable
-/// document, or one the registry of exits does not give a verdict for, is unjudged, and the
-/// reason carries the judge's own words: it knows why it could not judge (a live run found a
-/// host with no Git allowlist enrolled, which a guess from the exit code alone called a
-/// ranker failure).
-pub(crate) fn judged(exit: Option<i32>, verdict: Option<&Value>, said: Option<&str>) -> Judged {
+/// A verdict needs both: an exit code that is one (0, 7, 8) and a document that says the same
+/// and is sealed to the inputs ([`Sealed`]). An exit code alone is not a verdict: a program
+/// that is merely named `forge-warden` and exits 0 used to pass a stop in silence (review V4,
+/// VD4-H-1). The seals do not prove who wrote the document, since a program that means to
+/// deceive can compute them; they do bind a real judge's answer to this policy and this patch
+/// and turn every accident into UNJUDGED. Anything else is unjudged too, and the reason
+/// carries the judge's own words: it knows why it could not judge (a live run found a host
+/// with no Git allowlist enrolled, which a guess from the exit code alone called a ranker
+/// failure).
+pub(crate) fn judged(
+    exit: Option<i32>,
+    verdict: Option<&Value>,
+    said: Option<&str>,
+    sealed: Sealed,
+) -> Judged {
     let said = said.map(|words| format!(": {words}")).unwrap_or_default();
-    let rules = |outcome: &str| -> Option<Vec<RuleOutcome>> {
-        let list = verdict?.get("rules")?.as_array()?;
-        Some(
-            list.iter()
-                .filter(|r| r["outcome"] == outcome)
-                .map(|r| RuleOutcome {
-                    id: r["id"].as_str().unwrap_or_default().to_owned(),
-                    why: r["why"].as_str().unwrap_or_default().to_owned(),
-                    violations: r["violations"]
-                        .as_array()
-                        .map(|v| {
-                            v.iter()
-                                .map(|v| {
-                                    (
-                                        v["signal"].as_str().unwrap_or_default().to_owned(),
-                                        v["path"].as_str().unwrap_or_default().to_owned(),
-                                    )
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                })
-                .collect(),
-        )
+    let rules = |outcome: &str| -> Vec<RuleOutcome> {
+        let list = verdict
+            .and_then(|document| document["rules"].as_array())
+            .map_or(&[][..], Vec::as_slice);
+        list.iter()
+            .filter(|r| r["outcome"] == outcome)
+            .map(|r| RuleOutcome {
+                id: r["id"].as_str().unwrap_or_default().to_owned(),
+                why: r["why"].as_str().unwrap_or_default().to_owned(),
+                violations: r["violations"]
+                    .as_array()
+                    .map(|v| {
+                        v.iter()
+                            .map(|v| {
+                                (
+                                    v["signal"].as_str().unwrap_or_default().to_owned(),
+                                    v["path"].as_str().unwrap_or_default().to_owned(),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            })
+            .collect()
     };
-    let unreadable = |what: &str| Judged::Unjudged {
-        reason: format!("the judge reported {what} but its verdict could not be read"),
+    let verdict_of = |code: i32, outcome: &str, judged: &dyn Fn() -> Judged| match not_a_verdict(
+        verdict, outcome, sealed,
+    ) {
+        None => judged(),
+        Some(why) => Judged::Unjudged {
+            reason: format!("the judge exited {code} ({outcome}) but that is not a verdict: {why}"),
+        },
     };
     match exit {
-        Some(0) => Judged::Pass,
-        Some(8) => {
-            rules("hold").map_or_else(|| unreadable("a hold"), |rules| Judged::Hold { rules })
-        }
-        Some(7) => {
-            rules("fail").map_or_else(|| unreadable("a fail"), |rules| Judged::Fail { rules })
-        }
+        Some(0) => verdict_of(0, "pass", &|| Judged::Pass),
+        Some(8) => verdict_of(8, "hold", &|| Judged::Hold {
+            rules: rules("hold"),
+        }),
+        Some(7) => verdict_of(7, "fail", &|| Judged::Fail {
+            rules: rules("fail"),
+        }),
         Some(4) => Judged::Unjudged {
             reason: format!(
                 "the judge refused the policy, the ranking or the ranker (exit 4){said}"
@@ -667,17 +720,37 @@ mod tests {
         }
     }
 
+    const SEALED: Sealed = Sealed {
+        policy_sha256: "1111111111111111111111111111111111111111111111111111111111111111",
+        patch_sha256: "2222222222222222222222222222222222222222222222222222222222222222",
+    };
+
+    /// A verdict document of `outcome`, sealed to [`SEALED`], with one rule of each outcome.
+    fn document(outcome: &str) -> Value {
+        json!({
+            "schema": "forge-warden.verdict.v2",
+            "verdict": outcome,
+            "seals": {
+                "policy_sha256": SEALED.policy_sha256,
+                "patch_sha256": SEALED.patch_sha256,
+                "provenance": "produced",
+            },
+            "rules": [
+                {"id": "keep-the-tests", "outcome": "hold", "why": "w1", "violations": [{"signal": "test_removed", "path": "tests/a.rs", "message": "m"}]},
+                {"id": "no-secrets", "outcome": "fail", "why": "w2", "violations": [{"signal": "secret_like", "path": "src/k.rs", "message": "m"}]},
+                {"id": "size", "outcome": "pass", "why": "w3", "violations": []},
+            ],
+        })
+    }
+
     #[test]
-    fn the_exit_code_decides_and_the_document_names_the_rules() {
-        let verdict = json!({"rules": [
-            {"id": "keep-the-tests", "outcome": "hold", "why": "w1", "violations": [{"signal": "test_removed", "path": "tests/a.rs", "message": "m"}]},
-            {"id": "no-secrets", "outcome": "fail", "why": "w2", "violations": [{"signal": "secret_like", "path": "src/k.rs", "message": "m"}]},
-            {"id": "size", "outcome": "pass", "why": "w3", "violations": []},
-        ]});
-        assert_eq!(judged(Some(0), Some(&verdict), None), Judged::Pass);
-        assert_eq!(judged(Some(0), None, None), Judged::Pass);
-        let Judged::Hold { rules } = judged(Some(8), Some(&verdict), None) else {
-            panic!("exit 8 is a hold")
+    fn the_exit_code_and_the_document_together_are_a_verdict() {
+        assert_eq!(
+            judged(Some(0), Some(&document("pass")), None, SEALED),
+            Judged::Pass
+        );
+        let Judged::Hold { rules } = judged(Some(8), Some(&document("hold")), None, SEALED) else {
+            panic!("exit 8 with a hold document is a hold")
         };
         assert_eq!(rules.len(), 1);
         assert_eq!(
@@ -688,26 +761,24 @@ mod tests {
             rules[0].violations,
             [("test_removed".to_owned(), "tests/a.rs".to_owned())]
         );
-        let Judged::Fail { rules } = judged(Some(7), Some(&verdict), None) else {
-            panic!("exit 7 is a fail")
+        let Judged::Fail { rules } = judged(Some(7), Some(&document("fail")), None, SEALED) else {
+            panic!("exit 7 with a fail document is a fail")
         };
         assert_eq!(rules[0].id, "no-secrets");
-        // no document, or one that is not a verdict: unjudged, never a pass and never a block
-        for exit in [7, 8] {
-            for doc in [None, Some(&json!({})), Some(&json!({"rules": "x"}))] {
-                assert!(
-                    matches!(judged(Some(exit), doc, None), Judged::Unjudged { .. }),
-                    "{exit} {doc:?}"
-                );
-            }
-        }
+        // a verdict is not changed by anything the judge also wrote
+        assert_eq!(
+            judged(Some(0), Some(&document("pass")), Some("noise"), SEALED),
+            Judged::Pass
+        );
         // every other way a judge can end is unjudged, each with its own reason
         let reasons: Vec<String> = [Some(3), Some(4), Some(1), Some(101), None]
             .into_iter()
-            .map(|exit| match judged(exit, Some(&verdict), None) {
-                Judged::Unjudged { reason } => reason,
-                other => panic!("{exit:?} gave {other:?}"),
-            })
+            .map(
+                |exit| match judged(exit, Some(&document("pass")), None, SEALED) {
+                    Judged::Unjudged { reason } => reason,
+                    other => panic!("{exit:?} gave {other:?}"),
+                },
+            )
             .collect();
         let unique: BTreeSet<&String> = reasons.iter().collect();
         // 3, 4 and a stopped judge each have their own reason; any other code names itself
@@ -724,15 +795,88 @@ mod tests {
             ),
             (101, "the judge exited 101, which is not a verdict: "),
         ] {
-            let Judged::Unjudged { reason } =
-                judged(Some(exit), None, Some("io: no Git allowlist enrolled"))
-            else {
+            let Judged::Unjudged { reason } = judged(
+                Some(exit),
+                None,
+                Some("io: no Git allowlist enrolled"),
+                SEALED,
+            ) else {
                 panic!("{exit} is not a verdict")
             };
             assert_eq!(reason, format!("{start}io: no Git allowlist enrolled"));
         }
-        // a verdict is not changed by anything the judge also wrote
-        assert_eq!(judged(Some(0), None, Some("noise")), Judged::Pass);
+    }
+
+    /// Review V4, VD4-H-1: an exit code alone is not a verdict. A program that is merely named
+    /// `forge-warden` and exits 0 passed a stop in silence; so did any document. Each thing a
+    /// verdict must hold is taken away on its own, for each exit code that is one.
+    #[test]
+    fn an_exit_code_without_the_judges_own_sealed_document_is_unjudged() {
+        type Spoil = (&'static str, fn(&mut Value));
+        let spoil: [Spoil; 7] = [
+            ("not a verdict document", |d| {
+                d["schema"] = json!("other.v1");
+            }),
+            ("no schema", |d| {
+                d.as_object_mut().unwrap().remove("schema");
+            }),
+            ("another outcome", |d| {
+                d["verdict"] = json!("other");
+            }),
+            ("another policy", |d| {
+                d["seals"]["policy_sha256"] = json!(SEALED.patch_sha256);
+            }),
+            ("another patch", |d| {
+                d["seals"]["patch_sha256"] = json!(SEALED.policy_sha256);
+            }),
+            ("a supplied ranking", |d| {
+                d["seals"]["provenance"] = json!("supplied");
+            }),
+            ("no seals", |d| {
+                d.as_object_mut().unwrap().remove("seals");
+            }),
+        ];
+        for (exit, outcome) in [(0, "pass"), (7, "fail"), (8, "hold")] {
+            for (what, change) in spoil {
+                let mut spoiled = document(outcome);
+                change(&mut spoiled);
+                let Judged::Unjudged { reason } = judged(Some(exit), Some(&spoiled), None, SEALED)
+                else {
+                    panic!("exit {exit} with {what} was believed")
+                };
+                assert!(
+                    reason.starts_with(&format!(
+                        "the judge exited {exit} ({outcome}) but that is not a verdict: "
+                    )),
+                    "{reason}"
+                );
+            }
+            for nothing in [None, Some(&json!({})), Some(&json!("pass"))] {
+                assert!(
+                    matches!(
+                        judged(Some(exit), nothing, None, SEALED),
+                        Judged::Unjudged { .. }
+                    ),
+                    "{exit} {nothing:?}"
+                );
+            }
+        }
+        // the document of one outcome under the exit code of another
+        for (exit, outcome) in [
+            (0, "fail"),
+            (0, "hold"),
+            (7, "pass"),
+            (8, "pass"),
+            (8, "fail"),
+        ] {
+            assert!(
+                matches!(
+                    judged(Some(exit), Some(&document(outcome)), None, SEALED),
+                    Judged::Unjudged { .. }
+                ),
+                "exit {exit} with a {outcome} document"
+            );
+        }
     }
 
     #[test]

@@ -312,16 +312,32 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
 | `Stop` | `agent hook stop` | A verdict on the changes since `HEAD`. **Only a fail holds the stop**, with the rules that failed and what answers them. A hold is reported for a person. With no judge, no policy, or no ranker the policy admits, the result is **UNJUDGED**, said plainly, and never a pass. |
 
 - **The judge is [forge-warden](https://github.com/Louranicas/forge-warden)**, in its authority
-  mode: `forge-warden check --policy P --patch F --ranker R --json`. DDF does not judge. It is
-  found on `PATH`, or named with `--judge PATH`.
+  mode: `forge-warden check --policy P --patch F --ranker R --json`. DDF does not judge.
+  `agent setup --hooks` finds it once and writes its absolute path into the commands as
+  `--judge PATH`, so the program is chosen by whoever installs the hooks and not at every stop
+  by `PATH`. Without `--judge` it is looked up in the directories of `PATH` that are named by
+  an absolute path. A judge inside the repository it would judge is not run, however it was
+  named: the change could have written it.
+- **A verdict is an exit code and a document that agree.** Exit 0, 7 or 8 counts only with a
+  `forge-warden.verdict.v2` document that says the same outcome, is sealed to the policy and
+  the patch this hook wrote (their SHA-256), and is on a ranking the judge produced itself.
+  Anything else is UNJUDGED: a program that is merely named `forge-warden` and exits 0 does not
+  pass a stop. The seals do not prove who wrote the document; they bind a real judge's answer
+  to these inputs.
 - **The policy is the one at the base commit** (`warden.toml`, or `--policy NAME`), read from
   Git, never from the working tree: a change cannot loosen the policy it is judged by.
 - **The patch is the one a judge would be given for the commit.** The working tree, with
-  untracked files and without ignored ones, is diffed against `HEAD` the way forge-warden's
-  patch maker diffs two commits: in a new, empty repository that only borrows the object
-  store, with no configuration and no attributes. For a committed state the bytes are equal (a
-  test holds this). Making it writes nothing in the repository: the index it fills and the
-  objects it writes are in a scratch directory under the Git directory, removed afterwards.
+  untracked files and without ignored ones, is staged and diffed against `HEAD` in a new,
+  empty Git directory that only borrows the object store, the way forge-warden's patch maker
+  diffs two commits: with no configuration and, for the diff, no attributes. For a state that
+  is committed with no conversion the bytes are equal (a test holds this). Nothing under the
+  repository's Git directory but the object store and `info/exclude` shapes the bytes: not
+  its configuration, not `info/attributes`. A `.gitattributes` file in the working tree does
+  convert content, and is itself in the patch. Where the repository's own configuration would
+  make a commit differ (`core.autocrlf`, `core.fileMode=false`, a filter), the judged tree is
+  the working tree's bytes and modes. Making the patch writes nothing in the repository: the
+  index and the objects are in a scratch directory under the Git directory, removed
+  afterwards.
 - **The ranker is this binary first**, then every file in `--ranker-dir DIR`. forge-warden
   admits a ranker only if the policy lists its SHA-256, so a newer DDF than the policy admits
   can still have its stop judged by an older, admitted one.
@@ -334,6 +350,18 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
 - **UNJUDGED says why, in the judge's words.** For example, on a machine where forge-warden
   has no Git allowlist enrolled: "the judge could not read its inputs or its environment
   (exit 3): io: Git admission: no Git allowlist enrolled".
+- **`agent doctor --gate` says whether a stop here would be judged**, before a session
+  depends on it. In the repository of the current directory it checks each link and says what
+  it found: Git 2.40 or later, the repository, the policy at `HEAD`, the judge, the chain (the
+  judge is given a probe, a patch that adds one comment line to the policy, and must return a
+  verdict with a ranker this machine has), whether the policy protects its own file (a policy
+  that lets the probe pass can be loosened by any change), and whether a Claude Code settings
+  file registers the stop hook. A link that cannot be checked because an earlier one is
+  missing is reported as not ready, never as fine. Exit 0 only when every link is ready,
+  otherwise 7 (the contract asked for is not met). In `--json` the checks are named `git`,
+  `repository`, `policy`, `judge`, `chain`, `policy_protects_itself` and `hooks_registered`,
+  after the checks `agent doctor` always makes. It takes the same `--judge`, `--policy` and
+  `--ranker-dir` as the stop hook.
 - **A hook never fails its client.** Outside a repository it says nothing. If it cannot run
   (Git too slow, a state file that cannot be written), it exits 0 and tells the user that
   nothing was judged.

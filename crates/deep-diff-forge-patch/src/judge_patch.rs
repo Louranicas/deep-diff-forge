@@ -7,16 +7,27 @@
 //! commits by diffing them in a new, empty repository that only borrows the object store, so no
 //! configuration of the user, the system or the repository is read.
 //!
-//! [`judge_patch`] does the same for a working tree. It writes the tree a commit of everything
-//! (`git add --all`) would record, without touching the repository: the index it fills and the
-//! objects it writes are in a scratch directory the caller owns, and the repository's own object
-//! store is only read. Then it diffs the base commit against that tree the way the patch maker
-//! does. For a state that is committed, the bytes equal the patch maker's (a test holds this).
+//! [`judge_patch`] does the same for a working tree. It writes the tree of everything in the
+//! working tree (`git add --all`), without touching the repository: the Git directory that is
+//! used is a new, empty one in a scratch directory the caller owns, with the working tree as its
+//! work tree, and the repository's own object store is only read. Then it diffs the base commit
+//! against that tree the way the patch maker does. For a state that is committed with no
+//! conversion, the bytes equal the patch maker's (a test holds this).
 //!
 //! What the tree holds is what `git add --all` holds: tracked changes, deletions and untracked
-//! files, without ignored files. A content filter the repository's own configuration defines is
-//! switched off first, as for every acquisition, so making the patch runs no program the
-//! repository chose.
+//! files, without ignored files (`.gitignore` files, the repository's `info/exclude`, which is
+//! copied, and the user's ignore file).
+//!
+//! **Nothing under the repository's Git directory but its object store and `info/exclude`
+//! shapes the bytes.** Staging in the repository's own Git directory read its
+//! `info/attributes`, so a line there (`*.txt text eol=lf`) changed what the judge was given
+//! although no file of the change said so (review V4, VD4-M-2). In the scratch Git directory
+//! there is no such file and no configuration of the repository: no filter it defines exists,
+//! so making the patch runs no program the repository chose. What does convert content is in
+//! the change itself, where a judge can see it: a `.gitattributes` file in the working tree.
+//! The cost is stated: where the repository's own configuration would make a commit differ
+//! (`core.autocrlf`, `core.fileMode=false`, a filter), this tree is the working tree's bytes
+//! and modes, not that commit's.
 
 use crate::git_acquire::{Runner, deadline_after, path_from_bytes, repository_filters_off};
 use crate::{GitAcquireError, GitAcquireOptions};
@@ -48,8 +59,9 @@ const DIFF_ARGS: &[&str] = &[
     "--dst-prefix=b/",
 ];
 
-/// The environment of the diff itself: no system or user configuration, no system attributes,
-/// and no configuration passed down by a parent Git (`git -c …` and `GIT_CONFIG_COUNT`).
+/// The environment of what runs outside the reviewed repository (making the scratch repository,
+/// the diff itself): no system or user configuration, no system attributes, and no
+/// configuration passed down by a parent Git (`git -c …` and `GIT_CONFIG_COUNT`).
 const ISOLATED: &[(&str, &str)] = &[
     ("GIT_CONFIG_NOSYSTEM", "1"),
     ("GIT_CONFIG_GLOBAL", "/dev/null"),
@@ -101,6 +113,8 @@ struct Source {
     base: String,
     /// The repository's object directory.
     objects: std::path::PathBuf,
+    /// The repository's `info/exclude`: paths it ignores without a `.gitignore` saying so.
+    exclude: std::path::PathBuf,
     /// `sha1` or `sha256`.
     object_format: String,
 }
@@ -151,6 +165,20 @@ fn source(
     if objects.last() == Some(&b'\n') {
         objects.pop();
     }
+    let mut exclude = inside.run(
+        "git rev-parse",
+        &[
+            OsStr::new("rev-parse"),
+            OsStr::new("--path-format=absolute"),
+            OsStr::new("--git-path"),
+            OsStr::new("info/exclude"),
+        ],
+        &[0],
+        64 * 1024,
+    )?;
+    if exclude.last() == Some(&b'\n') {
+        exclude.pop();
+    }
     let object_format = line(inside.run(
         "git rev-parse",
         &[OsStr::new("rev-parse"), OsStr::new("--show-object-format")],
@@ -162,26 +190,95 @@ fn source(
         filters,
         base,
         objects: path_from_bytes(objects),
+        exclude: path_from_bytes(exclude),
         object_format,
     })
 }
 
-/// The tree of the working state, written into `own_objects` beside the repository, not into
-/// it: the index that is filled is in `scratch` too.
-fn working_tree(
+/// The most bytes of the repository's `info/exclude` that are copied.
+const EXCLUDE_CAP: u64 = 1024 * 1024;
+
+/// The environment of a command that runs outside the reviewed repository.
+fn isolated() -> Vec<(OsString, OsString)> {
+    ISOLATED.iter().map(|(k, v)| pair(k, *v)).collect()
+}
+
+/// A new, empty bare repository in `scratch` that borrows the reviewed repository's object
+/// store and ignores what its `info/exclude` ignores. Everything this module writes goes into
+/// it. It has no configuration but what `git init` writes, no attributes and no hooks.
+fn empty_repository(
     from: &Source,
     scratch: &Path,
-    own_objects: &Path,
+    options: &GitAcquireOptions,
+    deadline: std::time::Instant,
+) -> Result<std::path::PathBuf, GitAcquireError> {
+    use std::io::Read as _;
+    let repository = scratch.join("judge.git");
+    let outside = Runner {
+        options,
+        cwd: scratch.to_path_buf(),
+        deadline,
+        config_env: isolated(),
+    };
+    let object_format = OsString::from(format!("--object-format={}", from.object_format));
+    outside.run(
+        "git init",
+        &[
+            OsStr::new("init"),
+            OsStr::new("--quiet"),
+            OsStr::new("--template="),
+            object_format.as_os_str(),
+            OsStr::new("--bare"),
+            repository.as_os_str(),
+        ],
+        &[0],
+        4096,
+    )?;
+    std::fs::write(
+        repository.join("objects/info/alternates"),
+        format!("{}\n", alternate_line(&from.objects)?),
+    )
+    .map_err(|e| refused(format!("cannot write the alternates file: {e}")))?;
+    // What the repository ignores without a `.gitignore` saying so stays ignored. A missing
+    // file is no rule; one that cannot be read, or is over the cap, is refused rather than
+    // dropped, since dropping it would put files in the patch that a commit leaves out.
+    match std::fs::File::open(&from.exclude) {
+        Ok(file) => {
+            let mut rules = Vec::new();
+            file.take(EXCLUDE_CAP + 1)
+                .read_to_end(&mut rules)
+                .map_err(|e| refused(format!("cannot read the repository's info/exclude: {e}")))?;
+            if rules.len() as u64 > EXCLUDE_CAP {
+                return Err(refused("the repository's info/exclude is over 1 MiB"));
+            }
+            std::fs::create_dir_all(repository.join("info"))
+                .and_then(|()| std::fs::write(repository.join("info/exclude"), rules))
+                .map_err(|e| refused(format!("cannot prepare the scratch directory: {e}")))?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(refused(format!(
+                "cannot read the repository's info/exclude: {error}"
+            )));
+        }
+    }
+    Ok(repository)
+}
+
+/// The tree of the working state, written into `repository` (the scratch one), with the
+/// reviewed repository's top level as its work tree: its index and the objects it writes are in
+/// the scratch directory, and nothing of the reviewed repository's Git directory is read but
+/// its object store.
+fn working_tree(
+    from: &Source,
+    repository: &Path,
     options: &GitAcquireOptions,
     deadline: std::time::Instant,
 ) -> Result<String, GitAcquireError> {
-    std::fs::create_dir_all(own_objects)
-        .map_err(|e| refused(format!("cannot prepare the scratch directory: {e}")))?;
     let mut staging_env = from.filters.clone();
     staging_env.extend([
-        pair("GIT_INDEX_FILE", scratch.join("index")),
-        pair("GIT_OBJECT_DIRECTORY", own_objects.to_path_buf()),
-        pair("GIT_ALTERNATE_OBJECT_DIRECTORIES", from.objects.clone()),
+        pair("GIT_DIR", repository.to_path_buf()),
+        pair("GIT_WORK_TREE", from.root.clone()),
     ]);
     let staging = Runner {
         options,
@@ -209,47 +306,25 @@ fn working_tree(
     line(staging.run("git write-tree", &[OsStr::new("write-tree")], &[0], 4096)?)
 }
 
-/// The diff of the base commit against `tree`, made in a new, empty repository in `scratch`
-/// that only borrows the two object stores: no configuration of the user, the system or the
-/// reviewed repository is read for it.
+/// The diff of the base commit against `tree`, made in the scratch repository from outside any
+/// work tree: no configuration of the user, the system or the reviewed repository is read for
+/// it.
 fn diff_outside(
     from: &Source,
     tree: &str,
     scratch: &Path,
-    own_objects: &Path,
+    repository: &Path,
     options: &GitAcquireOptions,
     deadline: std::time::Instant,
 ) -> Result<Vec<u8>, GitAcquireError> {
-    let empty_repository = scratch.join("diff.git");
     let outside = Runner {
         options,
         cwd: scratch.to_path_buf(),
         deadline,
-        config_env: ISOLATED.iter().map(|(k, v)| pair(k, *v)).collect(),
+        config_env: isolated(),
     };
-    let object_format = OsString::from(format!("--object-format={}", from.object_format));
-    outside.run(
-        "git init",
-        &[
-            OsStr::new("init"),
-            OsStr::new("--quiet"),
-            OsStr::new("--template="),
-            object_format.as_os_str(),
-            OsStr::new("--bare"),
-            empty_repository.as_os_str(),
-        ],
-        &[0],
-        4096,
-    )?;
-    let alternates = format!(
-        "{}\n{}\n",
-        alternate_line(&from.objects)?,
-        alternate_line(own_objects)?
-    );
-    std::fs::write(empty_repository.join("objects/info/alternates"), alternates)
-        .map_err(|e| refused(format!("cannot write the alternates file: {e}")))?;
     let mut git_dir = OsString::from("--git-dir=");
-    git_dir.push(empty_repository.as_os_str());
+    git_dir.push(repository.as_os_str());
     // Attributes come from the empty tree, not from any work tree: a `.gitattributes` saying
     // `-diff` or `binary` would otherwise turn added text into a binary patch a judge cannot read.
     let empty_tree = line(outside.run(
@@ -281,9 +356,10 @@ fn diff_outside(
 
 /// The working tree of the repository containing `repo`, as one patch against `base`.
 ///
-/// `scratch` is an existing, empty directory the caller owns and removes afterwards; the index,
-/// the objects and the bare repository this needs are made inside it. Nothing in the repository
-/// is written: not its index, not its object store, not its configuration.
+/// `scratch` is an existing, empty directory the caller owns and removes afterwards; the bare
+/// repository this needs, with its index and the objects it writes, is made inside it. Nothing
+/// in the reviewed repository is written: not its index, not its object store, not its
+/// configuration.
 ///
 /// # Errors
 /// Any [`GitAcquireError`]: `base` names no commit, Git failed or ran out of time or budget, or
@@ -296,9 +372,9 @@ pub fn judge_patch(
 ) -> Result<JudgePatch, GitAcquireError> {
     let deadline = deadline_after(options.time_limit);
     let from = source(repo, base, options, deadline)?;
-    let own_objects = scratch.join("objects");
-    let tree = working_tree(&from, scratch, &own_objects, options, deadline)?;
-    let bytes = diff_outside(&from, &tree, scratch, &own_objects, options, deadline)?;
+    let repository = empty_repository(&from, scratch, options, deadline)?;
+    let tree = working_tree(&from, &repository, options, deadline)?;
+    let bytes = diff_outside(&from, &tree, scratch, &repository, options, deadline)?;
     Ok(JudgePatch {
         bytes,
         base: from.base,

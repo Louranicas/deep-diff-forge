@@ -314,6 +314,84 @@ fn repository_configuration_attributes_and_filters_cannot_change_the_patch() {
     assert_eq!(sub.bytes, plain.bytes);
 }
 
+/// Review V4, VD4-M-2. Staging in the repository's own Git directory read its
+/// `info/attributes`: one line there changed the bytes a judge was given, though nothing in the
+/// change said so. Nothing under the Git directory but the object store and `info/exclude`
+/// shapes the patch now; a `.gitattributes` in the working tree still does, and is in the patch.
+#[test]
+fn only_the_working_tree_and_the_ignore_rules_shape_the_patch() {
+    let scratch = Scratch::new("judge-patch-local-state");
+    let root = scratch.join("repo");
+    std::fs::create_dir(&root).unwrap();
+    git(&root, &["init", "--quiet"]);
+    std::fs::write(root.join("file.txt"), "base\n").unwrap();
+    std::fs::write(root.join("notes.md"), "a\n").unwrap();
+    git(&root, &["add", "--all"]);
+    git(&root, &["commit", "--quiet", "-m", "base"]);
+    std::fs::write(root.join("file.txt"), "changed\r\n").unwrap();
+    std::fs::write(root.join("notes.md"), "b\r\n").unwrap();
+    std::fs::write(root.join("local.txt"), "kept out by info/exclude\n").unwrap();
+    std::fs::write(root.join(".git/info/exclude"), "local.txt\n").unwrap();
+    let before = untouched(&root);
+    let plain = judge_patch(&root, "HEAD", &fresh(&scratch, "plain"), &options()).unwrap();
+    let shown = String::from_utf8_lossy(&plain.bytes).into_owned();
+    assert!(
+        shown.contains("+changed\r\n") && shown.contains("+b\r\n"),
+        "{shown}"
+    );
+    assert!(
+        !shown.contains("local.txt"),
+        "info/exclude was not honoured: {shown}"
+    );
+
+    // Vesper's reproduction, and the configuration that does the same to every text file
+    std::fs::write(root.join(".git/info/attributes"), "*.txt text eol=lf\n").unwrap();
+    git(&root, &["config", "--local", "core.autocrlf", "input"]);
+    let local = judge_patch(&root, "HEAD", &fresh(&scratch, "local"), &options()).unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&local.bytes),
+        shown,
+        "state under the Git directory changed the patch"
+    );
+    assert_eq!(local.tree, plain.tree);
+    std::fs::remove_file(root.join(".git/info/attributes")).unwrap();
+    git(&root, &["config", "--local", "--unset", "core.autocrlf"]);
+    assert_eq!(
+        untouched(&root),
+        before,
+        "making the patch changed the repository"
+    );
+
+    // The same rule in the working tree is part of the change: it converts, and the patch
+    // shows the file that says so.
+    std::fs::write(root.join(".gitattributes"), "*.txt text eol=lf\n").unwrap();
+    let in_tree = judge_patch(&root, "HEAD", &fresh(&scratch, "in-tree"), &options()).unwrap();
+    let shown = String::from_utf8_lossy(&in_tree.bytes).into_owned();
+    assert!(
+        shown.contains("+changed\n") && !shown.contains("+changed\r"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("+b\r\n"),
+        "a file the rule does not name was converted: {shown}"
+    );
+    assert!(
+        shown.contains("diff --git a/.gitattributes b/.gitattributes\n"),
+        "{shown}"
+    );
+    // and that is the commit: with the rule in the tree, a commit records the same
+    git(&root, &["add", "--all"]);
+    git(&root, &["commit", "--quiet", "-m", "change"]);
+    assert_eq!(
+        in_tree.tree,
+        text(git(&root, &["rev-parse", "HEAD^{tree}"]))
+    );
+    assert_eq!(
+        in_tree.bytes,
+        patch_maker(&root, &scratch, "HEAD~1", "HEAD")
+    );
+}
+
 #[test]
 fn a_patch_over_the_byte_budget_is_refused_not_cut() {
     let scratch = Scratch::new("judge-patch-budget");

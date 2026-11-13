@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 const SETUP_USAGE: &str =
     "deep-diff-forge agent setup --client claude|codex [--allow-repo PATH]... [--hooks] [--json]";
-const DOCTOR_USAGE: &str = "deep-diff-forge agent doctor [--json]";
+const DOCTOR_USAGE: &str = "deep-diff-forge agent doctor [--gate [--judge PATH] [--policy NAME] [--ranker-dir DIR]] [--json]";
 
 /// `agent setup` or `agent doctor`.
 pub(crate) fn run(args: &[String]) {
@@ -79,10 +79,15 @@ fn setup(args: &[String]) {
         server_args.push(canonical.to_string_lossy().into_owned());
     }
     let command = binary.to_string_lossy().into_owned();
+    // The judge the hooks will run, found now and named by its absolute path.
+    let judge = crate::hook_run::judge_program(&[], &[])
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned());
     if args.iter().any(|a| a == "--json") {
         let mut document = json!({"schema": "deep-diff-forge.agent-setup.v0", "client": client, "name": "deep-diff-forge", "command": command, "args": server_args});
         if hooks {
-            document["hooks"] = hook_settings(&command)["hooks"].clone();
+            document["hooks"] = hook_settings(&command, judge.as_deref())["hooks"].clone();
+            document["judge"] = json!(judge);
         }
         emitln!("{document}");
         return;
@@ -105,8 +110,15 @@ fn setup(args: &[String]) {
     }
     if hooks {
         emitln!(
-            "\n# Claude Code hooks: merge into .claude/settings.json (one project) or ~/.claude/settings.json (every project).\n# Nothing is written for you. After a tool call the hook gives advice and never blocks; at a stop it\n# asks forge-warden for a verdict on the changes since HEAD, and only a fail holds the stop.\n{:#}",
-            hook_settings(&command)
+            "\n# Claude Code hooks: merge into .claude/settings.json (one project) or ~/.claude/settings.json (every project).\n# Nothing is written for you. After a tool call the hook gives advice and never blocks; at a stop it\n# asks forge-warden for a verdict on the changes since HEAD, and only a fail holds the stop.\n# {}\n{:#}",
+            match &judge {
+                Some(judge) => format!(
+                    "The judge is named by its path as found now: {}",
+                    display_safe(judge)
+                ),
+                None => "forge-warden was not found on PATH: install it and print these settings again, or add --judge /absolute/path to the session-start and stop commands. Until then a stop is UNJUDGED.".to_owned(),
+            },
+            hook_settings(&command, judge.as_deref())
         );
     }
     if server_args.len() == 1 {
@@ -120,18 +132,26 @@ fn setup(args: &[String]) {
 /// session, after every tool call (no matcher: a shell command can write files too) and at a
 /// stop. Each timeout is in seconds; a hook that runs past it is dropped by the client and
 /// decides nothing.
-fn hook_settings(command: &str) -> Value {
-    let hook = |event: &str, timeout: u64| {
+///
+/// `judge` is the judge found when the settings are printed, by its absolute path. It goes into
+/// the commands that use one, so that the program is chosen once by the person who installs the
+/// hooks and not at every stop by whatever `PATH` holds then (review V4, VD4-H-1).
+fn hook_settings(command: &str, judge: Option<&str>) -> Value {
+    let hook = |event: &str, timeout: u64, judged: bool| {
+        let judge = match judge {
+            Some(judge) if judged => format!(" --judge {}", sh_quote(judge)),
+            _ => String::new(),
+        };
         json!([{"hooks": [{
             "type": "command",
-            "command": format!("{} agent hook {event} --client claude", sh_quote(command)),
+            "command": format!("{} agent hook {event} --client claude{judge}", sh_quote(command)),
             "timeout": timeout,
         }]}])
     };
     json!({"hooks": {
-        "SessionStart": hook("session-start", 10),
-        "PostToolUse": hook("post-tool", 5),
-        "Stop": hook("stop", 60),
+        "SessionStart": hook("session-start", 10, true),
+        "PostToolUse": hook("post-tool", 5, false),
+        "Stop": hook("stop", 60, true),
     }})
 }
 
@@ -255,13 +275,30 @@ fn doctor(args: &[String]) {
     crate::args::admit_or_exit(
         args,
         &crate::args::Spec {
-            flags: &["--json"],
-            valued: &[],
+            flags: &["--json", "--gate"],
+            valued: &["--judge", "--policy", "--ranker-dir"],
             positionals: 0,
         },
         DOCTOR_USAGE,
     );
-    let checks = checks();
+    let mut checks = checks();
+    let surfaces_agree = checks.iter().all(|c| c.ok);
+    // `--gate`: also every link a judged stop depends on, in this directory's repository.
+    if args.iter().any(|a| a == "--gate") {
+        let cwd = std::env::current_dir().unwrap_or_else(|e| {
+            eprintln!("error: cannot find the current directory: {e}");
+            std::process::exit(exit::IO);
+        });
+        checks.extend(
+            crate::hook_run::gate(&cwd, args)
+                .into_iter()
+                .map(|c| Check {
+                    name: c.name,
+                    ok: c.ok,
+                    detail: c.detail,
+                }),
+        );
+    }
     let ok = checks.iter().all(|c| c.ok);
     if args.iter().any(|a| a == "--json") {
         let list: Vec<Value> = checks
@@ -275,16 +312,22 @@ fn doctor(args: &[String]) {
     } else {
         for c in &checks {
             emitln!(
-                "{}  {:<14} {}",
+                "{}  {:<22} {}",
                 if c.ok { "ok  " } else { "FAIL" },
                 c.name,
                 c.detail
             );
         }
     }
-    if !ok {
+    if !surfaces_agree {
         eprintln!("error: the agent surfaces disagree; report this as a bug");
         std::process::exit(exit::PANIC);
+    }
+    if !ok {
+        eprintln!(
+            "error: the chain is not ready: a stop here would not be judged, or the policy would not hold"
+        );
+        std::process::exit(exit::INPUT_CONTRACT_REFUSED);
     }
 }
 
@@ -339,7 +382,7 @@ mod tests {
     /// (a shell command writes files too) and a timeout on each.
     #[test]
     fn hook_settings_name_three_events_with_timeouts_and_a_quoted_command() {
-        let settings = hook_settings("/opt/my tools/deep-diff-forge");
+        let settings = hook_settings("/opt/my tools/deep-diff-forge", None);
         let hooks = settings["hooks"].as_object().unwrap();
         let events: std::collections::BTreeSet<&str> = hooks.keys().map(String::as_str).collect();
         assert_eq!(
@@ -363,6 +406,26 @@ mod tests {
                 format!("'/opt/my tools/deep-diff-forge' agent hook {word} --client claude")
             );
         }
+        // a judge found at setup is named by its path in the commands that use one
+        let settings = hook_settings("/bin/ddf", Some("/opt/my tools/forge-warden"));
+        let command = |event: &str| {
+            settings["hooks"][event][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        for (event, word) in [("SessionStart", "session-start"), ("Stop", "stop")] {
+            assert_eq!(
+                command(event),
+                format!(
+                    "/bin/ddf agent hook {word} --client claude --judge '/opt/my tools/forge-warden'"
+                )
+            );
+        }
+        assert_eq!(
+            command("PostToolUse"),
+            "/bin/ddf agent hook post-tool --client claude"
+        );
     }
 
     #[test]

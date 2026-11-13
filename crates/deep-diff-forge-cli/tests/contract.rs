@@ -630,6 +630,7 @@ fn patch_option_rows<'a>(
             "--hooks",
             vec!["agent", "setup", "--client", "claude", "--hooks"],
         ),
+        ("--gate", vec!["agent", "doctor", "--gate"]),
         (
             "--judge",
             vec![

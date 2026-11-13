@@ -277,24 +277,42 @@ every gate ran as root inside the container. Gates refuse to run unless
   never repeats the text of a changed line. A path is shown quoted, with control characters
   escaped, cut at 120 characters, and the message says that paths are data. Rule text comes
   from the policy at the base commit and is escaped the same way.
-- **The repository's configuration is not trusted to shape the patch.** The patch given to
-  the judge is diffed in a new, empty repository that only borrows the object store, with
-  system and user configuration off, no configuration passed down by a parent Git, attributes
-  from the empty tree and fixed options. A filter the repository's own configuration defines
-  is switched off before the working tree is read, as for every acquisition, so making the
-  patch runs no program the repository chose. Tests plant a hostile configuration, an
-  attribute that hides source as binary and a filter, and require the same bytes and no run.
+- **The repository's configuration is not trusted to shape the patch.** The working tree is
+  staged, and the patch diffed, in a new, empty Git directory that only borrows the object
+  store: the repository's own configuration and its `info/attributes` are never read, so no
+  filter it defines exists and making the patch runs no program the repository chose. The
+  diff is made with system and user configuration off, no configuration passed down by a
+  parent Git, attributes from the empty tree and fixed options. What is read from under the
+  Git directory is the object store and `info/exclude` (which files are left out, copied up
+  to 1 MiB). A `.gitattributes` in the working tree converts content as Git's built-in rules
+  say, and is in the patch the judge reads. Tests plant a hostile configuration, an attribute
+  that hides source as binary, a filter, an `info/attributes` line and `core.autocrlf`, and
+  require the same bytes and no run.
 - **Nothing in the repository is written.** The index that is filled and the objects that are
   written are in a scratch directory under the Git common directory (`deep-diff-forge/`),
   removed when the hook ends; the repository's index, object store and configuration are only
   read. One state file per session is kept there; the session id is hashed and never chooses
   a file name.
+- **The hook's directory is a directory of its own.** `deep-diff-forge/` is made with mode
+  0700; when a symbolic link or a file stands there the hook does not run and says so. A state
+  file is opened without following a link, must be a regular file of at most 1 MiB, and is
+  written to a new file of mode 0600 that is moved into place. These are checks by path:
+  whoever can swap the directory between a check and a use can already write wherever this
+  account can.
 - **The policy is read from the base commit**, never from the working tree, and only when it
   is a regular file there.
-- **The judge decides, by its exit code.** DDF starts `forge-warden` under a deadline and
-  output caps and reads the verdict document only to name the rules. A code that is not a
-  verdict, a missing judge or policy, or a ranker the policy does not admit is UNJUDGED:
-  never a pass, and never a block.
+- **The judge decides, by its exit code and its document together.** DDF starts
+  `forge-warden` under a deadline and output caps. Exit 0, 7 or 8 is a verdict only with a
+  `forge-warden.verdict.v2` document that says the same outcome, carries the SHA-256 of the
+  policy and of the patch this hook wrote, and is on a ranking the judge produced. A code
+  without that, a code that is not a verdict, a missing judge or policy, or a ranker the
+  policy does not admit is UNJUDGED: never a pass, and never a block. The seals bind an
+  answer to its inputs; they do not authenticate the program.
+- **Which program is the judge is decided at setup.** `agent setup --hooks` prints the judge
+  it finds as an absolute `--judge PATH`. Without `--judge`, only directories of `PATH` named
+  by an absolute path are searched. A judge inside the repository it would judge is refused.
+  A directory outside the repository that a change can also write to is not detected: keep
+  the judge where the session's tools cannot write.
 - **State cannot turn a fail into a pass.** The state file holds which findings were said and
   which failure blocked the last stop. A lost or tampered file can make a finding be said
   twice or a failure block once more; the stop is still decided by a fresh verdict.

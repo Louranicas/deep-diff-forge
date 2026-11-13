@@ -2068,7 +2068,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "agent",
-        "deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks] | doctor | hook session-start|post-tool|stop --client claude [--judge PATH] [--policy NAME] [--ranker-dir DIR]} [--json]",
+        "deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks] | doctor [--gate] | hook session-start|post-tool|stop --client claude} [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]",
         "Print the MCP and hook setup for Claude Code or Codex (never written), check that every agent surface agrees, or answer a Claude Code hook: advice after a tool call, a judged stop.",
     ),
     (

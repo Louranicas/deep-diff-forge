@@ -97,7 +97,10 @@ fn repository(scratch: &Scratch) -> PathBuf {
 /// writing can still be busy when another test thread forks (ETXTBSY).
 ///
 /// It appends its arguments and the policy it was given to `log`, prints `verdict` and exits
-/// with the code in `exit_file` (so a test can change the answer between runs).
+/// with the code in `exit_file` (so a test can change the answer between runs). Like the real
+/// judge it seals its document to the policy and the patch it was given, and the document says
+/// what the exit code says: `"@VERDICT@"` becomes `pass`, `fail` or `hold` for 0, 7 or 8, and
+/// `"@SEALS@"` the seals.
 fn judge(scratch: &Scratch, verdict: &Value) -> (PathBuf, PathBuf, PathBuf) {
     let (script, log, exit_file) = (
         scratch.join("judge"),
@@ -105,24 +108,38 @@ fn judge(scratch: &Scratch, verdict: &Value) -> (PathBuf, PathBuf, PathBuf) {
         scratch.join("judge.exit"),
     );
     std::fs::write(&exit_file, "0").unwrap();
-    let body = format!(
+    write_program(&script, &judge_script(&log, &exit_file, verdict));
+    (script, log, exit_file)
+}
+
+fn judge_script(log: &Path, exit_file: &Path, verdict: &Value) -> String {
+    format!(
         "#!/bin/sh\n\
          printf 'ARGS %s\\n' \"$*\" >> '{log}'\n\
+         policy=; patch=\n\
          while [ $# -gt 0 ]; do\n\
            case \"$1\" in\n\
-             --policy) printf 'POLICY %s' \"$(cat \"$2\")\" >> '{log}'; printf '\\n' >> '{log}';;\n\
-             --patch) printf 'PATCH-FILES %s\\n' \"$(grep -c '^diff --git' \"$2\")\" >> '{log}';;\n\
+             --policy) policy=\"$2\"; printf 'POLICY %s' \"$(cat \"$2\")\" >> '{log}'; printf '\\n' >> '{log}';;\n\
+             --patch) patch=\"$2\"; printf 'PATCH-FILES %s\\n' \"$(grep -c '^diff --git' \"$2\")\" >> '{log}';;\n\
            esac\n\
            shift\n\
          done\n\
-         cat <<'VERDICT'\n{verdict}\nVERDICT\n\
-         exit \"$(cat '{exit}')\"\n",
+         sum() {{ if command -v sha256sum >/dev/null 2>&1; then sha256sum < \"$1\"; else shasum -a 256 < \"$1\"; fi | cut -d' ' -f1; }}\n\
+         code=\"$(cat '{exit}')\"\n\
+         case \"$code\" in 0) said=pass;; 7) said=fail;; 8) said=hold;; *) said=none;; esac\n\
+         seals=\"{{\\\"policy_sha256\\\":\\\"$(sum \"$policy\")\\\",\\\"patch_sha256\\\":\\\"$(sum \"$patch\")\\\",\\\"provenance\\\":\\\"produced\\\"}}\"\n\
+         sed -e \"s/\\\"@VERDICT@\\\"/\\\"$said\\\"/\" -e \"s/\\\"@SEALS@\\\"/$seals/\" <<'VERDICT'\n{verdict}\nVERDICT\n\
+         exit \"$code\"\n",
         log = log.display(),
         exit = exit_file.display(),
-    );
+    )
+}
+
+/// Write an executable script through a child process (see [`judge`]).
+fn write_program(path: &Path, body: &str) {
     let mut writer = Command::new("sh")
         .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
-        .arg(&script)
+        .arg(path)
         .stdin(Stdio::piped())
         .spawn()
         .unwrap();
@@ -133,11 +150,12 @@ fn judge(scratch: &Scratch, verdict: &Value) -> (PathBuf, PathBuf, PathBuf) {
         .write_all(body.as_bytes())
         .unwrap();
     assert!(writer.wait().unwrap().success());
-    (script, log, exit_file)
 }
 
+/// A verdict document for the stand-in judge: one rule of `outcome`. The document's own
+/// outcome and its seals are filled in by the judge when it runs.
 fn verdict(outcome: &str, rule: &str, signal: &str, path: &str) -> Value {
-    json!({"schema": "forge-warden.verdict.v2", "verdict": outcome, "rules": [
+    json!({"schema": "forge-warden.verdict.v2", "verdict": "@VERDICT@", "seals": "@SEALS@", "rules": [
         {"id": rule, "kind": "forbid_signal", "severity": outcome, "outcome": outcome,
          "why": "A silenced check hides the next real bug.",
          "violations": [{"signal": signal, "path": path, "message": "m"}]}
@@ -513,26 +531,18 @@ fn a_stop_offers_other_rankers_when_the_policy_does_not_admit_this_one() {
     let rankers = scratch.join("rankers");
     std::fs::create_dir(&rankers).unwrap();
     std::fs::write(rankers.join("ddf-0.8.4"), "stand-in ranker\n").unwrap();
-    let log = scratch.join("judge.log");
-    let script = scratch.join("judge");
-    // exit 4 unless the ranker is the admitted one, then pass
-    let body = format!(
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$*\" in *ddf-0.8.4*) exit 0;; *) exit 4;; esac\n",
-        log.display()
+    // exit 4 unless the ranker is the admitted one; then the stand-in judge passes
+    let (passing, _, _) = judge(&scratch, &verdict("pass", "size", "", ""));
+    let log = scratch.join("calls.log");
+    let script = scratch.join("admits-one-ranker");
+    write_program(
+        &script,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$*\" in *ddf-0.8.4*) exec '{}' \"$@\";; *) exit 4;; esac\n",
+            log.display(),
+            passing.display()
+        ),
     );
-    let mut writer = Command::new("sh")
-        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
-        .arg(&script)
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap();
-    writer
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(body.as_bytes())
-        .unwrap();
-    assert!(writer.wait().unwrap().success());
 
     let event = input("Stop", &root, "s", false);
     let with_dir = hook(
@@ -647,4 +657,470 @@ fn setup_prints_the_hook_settings_and_writes_nothing() {
         stderr.contains("--hooks is for --client claude"),
         "{stderr}"
     );
+}
+
+/// `agent doctor --gate` in a repository, with `home` as the user's home.
+fn doctor_gate(root: &Path, home: &Path, extra: &[&str]) -> (i32, Value, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .current_dir(root)
+        .envs(ISOLATE)
+        .env("HOME", home)
+        .args(["agent", "doctor", "--gate", "--json"])
+        .args(extra)
+        .output()
+        .unwrap();
+    (
+        out.status.code().unwrap(),
+        serde_json::from_slice(&out.stdout).unwrap(),
+        String::from_utf8(out.stderr).unwrap(),
+    )
+}
+
+const GATE: [&str; 7] = [
+    "git",
+    "repository",
+    "policy",
+    "judge",
+    "chain",
+    "policy_protects_itself",
+    "hooks_registered",
+];
+
+/// The gate checks of a doctor document, as `(name, ok)`.
+fn gate_checks(doc: &Value) -> Vec<(String, bool)> {
+    doc["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| GATE.contains(&c["name"].as_str().unwrap()))
+        .map(|c| {
+            (
+                c["name"].as_str().unwrap().to_owned(),
+                c["ok"].as_bool().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// The seven gate checks with these answers, in order.
+fn gate_names(ok: [bool; 7]) -> Vec<(String, bool)> {
+    GATE.iter()
+        .zip(ok)
+        .map(|(name, ok)| ((*name).to_owned(), ok))
+        .collect()
+}
+
+/// A repository, an empty home, and a judge that holds the probe (exit 8): the policy protects
+/// its own file. Returns the scratch (kept alive), the repository, the home, the judge, its log
+/// and the file that sets its exit code.
+fn gate_fixture(name: &str) -> (Scratch, PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
+    let scratch = Scratch::new(name);
+    let root = repository(&scratch);
+    let home = scratch.join("home");
+    std::fs::create_dir(&home).unwrap();
+    let (script, log, exit_file) = judge(
+        &scratch,
+        &verdict(
+            "hold",
+            "policy-is-protected",
+            "protected_path",
+            "warden.toml",
+        ),
+    );
+    std::fs::write(&exit_file, "8").unwrap();
+    (scratch, root, home, script, log, exit_file)
+}
+
+/// A settings document that registers the stop hook.
+fn stop_hook_settings() -> String {
+    json!({"hooks": {"Stop": [{"hooks": [
+        {"type": "command", "command": "deep-diff-forge agent hook stop --client claude"}
+    ]}]}})
+    .to_string()
+}
+
+fn detail(doc: &Value, name: &str) -> String {
+    doc["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == name)
+        .unwrap()["detail"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// `agent doctor --gate` says, link by link, whether a stop here would be judged, and exits 7
+/// unless every link is ready.
+#[test]
+fn doctor_gate_checks_every_link_of_a_judged_stop() {
+    let (_scratch, root, home, script, log, _exit_file) = gate_fixture("doctor-gate");
+    let judge_arg = ["--judge", script.to_str().unwrap()];
+
+    // everything but the registration
+    let (code, doc, stderr) = doctor_gate(&root, &home, &judge_arg);
+    assert_eq!(doc["schema"], "deep-diff-forge.agent-doctor.v0");
+    assert_eq!(
+        gate_checks(&doc),
+        gate_names([true, true, true, true, true, true, false])
+    );
+    assert_eq!((code, doc["ok"].as_bool()), (7, Some(false)), "{stderr}");
+    assert!(stderr.contains("the chain is not ready"), "{stderr}");
+    assert!(
+        detail(&doc, "chain").starts_with("the judge gave a verdict (exit 8) with ranker "),
+        "{doc:#}"
+    );
+    // the judge was given the committed policy and a patch of one file: the probe
+    let seen = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        seen.contains("POLICY # the policy at the base commit\n")
+            && seen.contains("PATCH-FILES 1\n"),
+        "{seen}"
+    );
+    // the probe changed nothing in the repository
+    assert_eq!(git(&root, &["status", "--porcelain"]), "");
+
+    // registered in the project's settings: the chain is ready
+    std::fs::create_dir(root.join(".claude")).unwrap();
+    std::fs::write(
+        root.join(".claude/settings.local.json"),
+        stop_hook_settings(),
+    )
+    .unwrap();
+    let (code, doc, stderr) = doctor_gate(&root, &home, &judge_arg);
+    assert_eq!(gate_checks(&doc), gate_names([true; 7]));
+    assert_eq!(
+        (code, doc["ok"].as_bool(), stderr.as_str()),
+        (0, Some(true), "")
+    );
+    // or in the user's
+    std::fs::remove_file(root.join(".claude/settings.local.json")).unwrap();
+    std::fs::create_dir(home.join(".claude")).unwrap();
+    std::fs::write(home.join(".claude/settings.json"), stop_hook_settings()).unwrap();
+    let (code, doc, _) = doctor_gate(&root, &home, &judge_arg);
+    assert_eq!((code, gate_checks(&doc)), (0, gate_names([true; 7])));
+
+    // without --gate the document has none of these checks and the exit is as before
+    let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .current_dir(&root)
+        .args(["agent", "doctor", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(gate_checks(&doc), []);
+}
+
+/// Each link of the chain is broken on its own: the gate names it, exits 7, and reports what
+/// depends on a missing link as not checked, never as fine.
+#[test]
+fn doctor_gate_names_the_link_that_is_missing() {
+    let (scratch, root, home, script, _log, exit_file) = gate_fixture("doctor-gate-broken");
+    let judge_arg = ["--judge", script.to_str().unwrap()];
+    std::fs::create_dir(home.join(".claude")).unwrap();
+    std::fs::write(home.join(".claude/settings.json"), stop_hook_settings()).unwrap();
+    let (code, doc, _) = doctor_gate(&root, &home, &judge_arg);
+    assert_eq!((code, gate_checks(&doc)), (0, gate_names([true; 7])));
+
+    // a policy that lets a change to itself pass is not ready
+    std::fs::write(&exit_file, "0").unwrap();
+    let (code, doc, _) = doctor_gate(&root, &home, &judge_arg);
+    assert_eq!(
+        (code, gate_checks(&doc)),
+        (7, gate_names([true, true, true, true, true, false, true]))
+    );
+    assert!(
+        detail(&doc, "policy_protects_itself").contains("any change could loosen the policy"),
+        "{doc:#}"
+    );
+
+    // a judge that gives no verdict
+    std::fs::write(&exit_file, "3").unwrap();
+    let (code, doc, _) = doctor_gate(&root, &home, &judge_arg);
+    assert_eq!(
+        (code, gate_checks(&doc)),
+        (7, gate_names([true, true, true, true, false, false, true]))
+    );
+    assert!(
+        detail(&doc, "policy_protects_itself").starts_with("not checked: "),
+        "{doc:#}"
+    );
+
+    // no judge, and no policy under the name asked for
+    std::fs::write(&exit_file, "8").unwrap();
+    let missing = scratch.join("no-such-judge");
+    let (code, doc, _) = doctor_gate(&root, &home, &["--judge", missing.to_str().unwrap()]);
+    assert_eq!(
+        (code, gate_checks(&doc)),
+        (7, gate_names([true, true, true, false, false, false, true]))
+    );
+    let (code, doc, _) = doctor_gate(
+        &root,
+        &home,
+        &[judge_arg[0], judge_arg[1], "--policy", "other.toml"],
+    );
+    assert_eq!(
+        (code, gate_checks(&doc)),
+        (7, gate_names([true, true, false, true, false, false, true]))
+    );
+    assert!(
+        detail(&doc, "chain").starts_with("not checked: "),
+        "{doc:#}"
+    );
+
+    // outside a repository
+    let outside = scratch.join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    let (code, doc, _) = doctor_gate(&outside, &home, &judge_arg);
+    assert_eq!(
+        (code, gate_checks(&doc)),
+        (
+            7,
+            gate_names([true, false, false, true, false, false, false])
+        )
+    );
+}
+
+/// Run a hook with `path` as the whole `PATH` (plus the system's, so `git` and `sh` are found).
+fn hook_on_path(event: &str, path: &[&Path], input: &Value) -> (i32, String, String) {
+    let mut dirs: Vec<PathBuf> = path.iter().map(|dir| dir.to_path_buf()).collect();
+    dirs.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .envs(ISOLATE)
+        .env("PATH", std::env::join_paths(dirs).unwrap())
+        .args(["agent", "hook", event, "--client", "claude"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.code().unwrap(),
+        String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stderr).unwrap(),
+    )
+}
+
+fn system_message(stdout: &str) -> String {
+    let out: Value = serde_json::from_str(stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"));
+    assert!(out.get("decision").is_none(), "{out}");
+    out["systemMessage"].as_str().unwrap().to_owned()
+}
+
+/// Review V4, VD4-H-1: a program that is merely named `forge-warden` and exits 0 passed a stop
+/// in silence. An exit code alone is no verdict now, and a judge inside the repository it would
+/// judge is not run at all.
+#[test]
+fn a_program_that_is_only_named_like_the_judge_cannot_pass_a_stop() {
+    let scratch = Scratch::new("hook-fake-judge");
+    let root = repository(&scratch);
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\n#[allow(dead_code)]\nfn b() {}\n",
+    )
+    .unwrap();
+    let event = input("Stop", &root, "s", false);
+
+    // Vesper's reproduction: first on PATH, exits 0, prints nothing
+    let bin = scratch.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    write_program(&bin.join("forge-warden"), "#!/bin/sh\nexit 0\n");
+    let (code, stdout, _) = hook_on_path("stop", &[&bin], &event);
+    assert_eq!(code, 0);
+    let said = system_message(&stdout);
+    assert!(
+        said.contains("UNJUDGED")
+            && said.contains("the judge exited 0 (pass) but that is not a verdict: it printed no verdict document"),
+        "{said}"
+    );
+
+    // one that prints a pass document, but not one sealed to this policy and this patch
+    write_program(
+        &bin.join("forge-warden"),
+        "#!/bin/sh\nprintf '%s\\n' '{\"schema\":\"forge-warden.verdict.v2\",\"verdict\":\"pass\",\"seals\":{\"policy_sha256\":\"00\",\"patch_sha256\":\"00\",\"provenance\":\"produced\"},\"rules\":[]}'\nexit 0\n",
+    );
+    let (_, stdout, _) = hook_on_path("stop", &[&bin], &event);
+    let said = system_message(&stdout);
+    assert!(
+        said.contains("its verdict is not sealed to the policy it was given"),
+        "{said}"
+    );
+
+    // a real verdict from the same place passes in silence: the control
+    let (script, _, _) = judge(&scratch, &verdict("pass", "size", "", ""));
+    std::fs::copy(&script, bin.join("forge-warden.new")).unwrap();
+    std::fs::rename(bin.join("forge-warden.new"), bin.join("forge-warden")).unwrap();
+    assert_eq!(
+        hook_on_path("stop", &[&bin], &event),
+        (0, String::new(), String::new())
+    );
+
+    // the same judge inside the repository is not run, on PATH or by name
+    let inside = root.join("tools");
+    std::fs::create_dir(&inside).unwrap();
+    std::fs::copy(&script, inside.join("forge-warden")).unwrap();
+    let (_, stdout, _) = hook_on_path("stop", &[&inside], &event);
+    let said = system_message(&stdout);
+    assert!(
+        said.contains("is inside the repository it would judge"),
+        "{said}"
+    );
+    let named = inside.join("forge-warden");
+    let (_, stdout, _) = hook("stop", &["--judge", named.to_str().unwrap()], &event);
+    assert!(
+        system_message(&stdout).contains("is inside the repository it would judge"),
+        "{stdout}"
+    );
+    // nor one inside the Git directory
+    let hidden = root.join(".git/forge-warden");
+    std::fs::copy(&script, &hidden).unwrap();
+    let (_, stdout, _) = hook("stop", &["--judge", hidden.to_str().unwrap()], &event);
+    assert!(
+        system_message(&stdout).contains("is inside the repository it would judge"),
+        "{stdout}"
+    );
+    // a PATH entry that is not absolute is not searched: here it would be the repository
+    let (_, stdout, _) = hook_on_path("stop", &[Path::new("tools")], &event);
+    let said = system_message(&stdout);
+    assert!(
+        said.contains("forge-warden was not found") || said.contains("is not a verdict"),
+        "{said}"
+    );
+    assert!(!said.contains("inside the repository"), "{said}");
+}
+
+/// Review V4, VD4-M-1: the hook's directory under the Git directory must be a directory of its
+/// own, and a state file is read only if it is a small regular file.
+#[test]
+fn the_state_is_kept_in_a_directory_of_its_own_and_read_with_a_bound() {
+    let scratch = Scratch::new("hook-state-dir");
+    let root = repository(&scratch);
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\n#[allow(dead_code)]\nfn b() {}\n",
+    )
+    .unwrap();
+    let event = input("PostToolUse", &root, "s", false);
+    let own = root.join(".git/deep-diff-forge");
+
+    // a symbolic link where the directory should be: nothing is written through it
+    let elsewhere = scratch.join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &own).unwrap();
+    let (code, stdout, _) = hook("post-tool", &[], &event);
+    assert_eq!(code, 0);
+    let said = system_message(&stdout);
+    assert!(
+        said.contains("the hook did not run") && said.contains("is not a directory of its own"),
+        "{said}"
+    );
+    assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+    std::fs::remove_file(&own).unwrap();
+
+    // the directory is made for this user only, and the state file too
+    let (_, stdout, _) = hook("post-tool", &[], &event);
+    assert!(stdout.contains("check_suppressed"), "{stdout}");
+    let mode = |path: &Path| {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode(&own), 0o700);
+    let state: Vec<PathBuf> = std::fs::read_dir(&own)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(state.len(), 1, "{state:?}");
+    assert_eq!(mode(&state[0]), 0o600);
+    // said once: the state was read back
+    assert_eq!(hook("post-tool", &[], &event).1, "");
+
+    // a state file that is a link is not followed: the finding is said again, and the link is
+    // replaced by a file, its target untouched
+    let target = scratch.join("target.json");
+    std::fs::copy(&state[0], &target).unwrap();
+    let before = std::fs::read(&target).unwrap();
+    std::fs::remove_file(&state[0]).unwrap();
+    std::os::unix::fs::symlink(&target, &state[0]).unwrap();
+    let (_, stdout, _) = hook("post-tool", &[], &event);
+    assert!(stdout.contains("check_suppressed"), "{stdout}");
+    assert!(std::fs::symlink_metadata(&state[0]).unwrap().is_file());
+    assert_eq!(std::fs::read(&target).unwrap(), before);
+
+    // a state file over the bound is not read: the same as no state
+    let huge = std::fs::File::create(&state[0]).unwrap();
+    huge.set_len(64 * 1024 * 1024).unwrap();
+    drop(huge);
+    let (_, stdout, _) = hook("post-tool", &[], &event);
+    assert!(stdout.contains("check_suppressed"), "{stdout}");
+    assert!(std::fs::metadata(&state[0]).unwrap().len() < 4096);
+}
+
+/// `agent setup --hooks` names the judge it finds by its absolute path, in the commands that
+/// use one, and says so when there is none.
+#[test]
+fn setup_names_the_judge_it_finds_by_its_path() {
+    let scratch = Scratch::new("hook-setup-judge");
+    let bin = scratch.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    write_program(&bin.join("forge-warden"), "#!/bin/sh\nexit 0\n");
+    let run = |path: &Path, json: bool| {
+        let mut args = vec!["agent", "setup", "--client", "claude", "--hooks"];
+        if json {
+            args.push("--json");
+        }
+        let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .env("PATH", path)
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0));
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let found = std::fs::canonicalize(bin.join("forge-warden")).unwrap();
+    let doc: Value = serde_json::from_str(&run(&bin, true)).unwrap();
+    assert_eq!(doc["judge"], found.to_str().unwrap());
+    for (event, judged) in [
+        ("SessionStart", true),
+        ("Stop", true),
+        ("PostToolUse", false),
+    ] {
+        let command = doc["hooks"][event][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            command.ends_with(&format!(" --judge {}", found.display())),
+            judged,
+            "{event}: {command}"
+        );
+    }
+    assert!(
+        run(&bin, false).contains("# The judge is named by its path as found now: "),
+        "the text form names the judge"
+    );
+    // none on PATH: no --judge, and the text says what follows
+    let empty = scratch.join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    let doc: Value = serde_json::from_str(&run(&empty, true)).unwrap();
+    assert!(doc["judge"].is_null());
+    assert!(
+        !doc["hooks"]["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("--judge")
+    );
+    assert!(run(&empty, false).contains("# forge-warden was not found on PATH"));
 }

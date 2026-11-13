@@ -34,12 +34,38 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   name and message of its error document), not a guess from the exit code. `agent setup
   --client claude --hooks` prints the settings and writes nothing. README "For agents: told while it works, judged when it stops"; SECURITY.md "Agent
   hooks".
+- **`deep-diff-forge agent doctor --gate`** checks every link a judged stop depends on, in the
+  repository of the current directory: Git 2.40 or later, the repository, the policy at
+  `HEAD`, the judge, the whole chain by a real verdict on a probe (a patch that adds one
+  comment line to the policy), whether the policy protects its own file, and whether a
+  Claude Code settings file registers the stop hook. Each check says what it found; one that
+  cannot be made because an earlier link is missing is not ready, never fine. Exit 7 when
+  the chain is not ready. Without `--gate`, `agent doctor` is unchanged.
 - **The patch a judge is given for a working tree** (`deep_diff_forge_patch::judge_patch`).
   The working tree, with untracked files and without ignored ones, as `git diff --binary
   --no-renames` against a base commit, made the way forge-warden's patch maker makes it for
-  two commits: in a new, empty repository that only borrows the object store, with no
-  configuration and no attributes. For a committed state the bytes are equal. The
-  repository's index, object store and configuration are only read.
+  two commits: staged and diffed in a new, empty Git directory that only borrows the object
+  store, with no configuration and, for the diff, no attributes. For a state committed with
+  no conversion the bytes are equal. The repository's index, object store and configuration
+  are only read, and nothing under its Git directory but the object store and `info/exclude`
+  shapes the bytes.
+- **An adversarial review of the agent hooks (Vesper, V4 round 1; `docs/reviews/`), verdict
+  NO-GO, and its fixes.** Each finding was reproduced before it was counted.
+  - *High: a program merely named `forge-warden` passed a failing stop in silence.* The hook
+    took the first `forge-warden` on `PATH` and read exit 0 as a pass with no document. A
+    verdict is now an exit code and a `forge-warden.verdict.v2` document that agree, sealed
+    to the policy and the patch the hook wrote and on a ranking the judge produced; anything
+    else is UNJUDGED. A judge inside the repository it would judge is refused, a `PATH` entry
+    that is not absolute is not searched, and `agent setup --hooks` writes the judge it finds
+    into the commands as an absolute `--judge` (`"judge"` in the JSON form).
+  - *Medium: the state directory followed a symbolic link, and a state file was read whole.*
+    The hook's directory must be a directory of its own (made 0700; a link or a file there
+    stops the hook with a message). A state file is opened without following a link, must be
+    a regular file of at most 1 MiB, and is written 0600.
+  - *Medium: `.git/info/attributes` changed the judged bytes.* The working tree was staged in
+    the repository's own Git directory. It is now staged in the scratch one, so neither that
+    file nor the repository's configuration is read; a `.gitattributes` in the working tree
+    still converts, and is in the patch.
   `deep_diff_forge_patch::file_at_commit` reads a regular file from a commit, which is how
   the policy is read.
 
