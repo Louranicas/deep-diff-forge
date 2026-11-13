@@ -12,8 +12,9 @@
 use crate::lexical::{Language, ScanState, code_view, has_token, is_boundary_blocker, is_ident};
 use deep_diff_forge_core::{HunkId, PatchHunk, PatchLineKind, ReviewFile};
 
-/// How every evidence item was found.
-pub const EVIDENCE_BASIS: &str = "lexical";
+/// The basis of the first rung: what every item carried before [`Basis`] existed, and what an
+/// item found by a token on one line still carries.
+pub const EVIDENCE_BASIS: &str = Basis::Lexical.label();
 
 /// The most evidence items a file reports; the score still counts every signal found.
 pub const MAX_EVIDENCE_PER_FILE: usize = 32;
@@ -48,11 +49,14 @@ pub enum EvidenceSignal {
     /// A placeholder where code should be (`todo!(`, `unimplemented!(`,
     /// `raise NotImplementedError`).
     StubAdded,
+    /// An error is caught and dropped: an `except` whose body is `pass`, an empty `catch` block,
+    /// an empty `if err != nil` block, `_ = err`, an `Err(_)` arm that does nothing.
+    ErrorSwallowed,
 }
 
 impl EvidenceSignal {
     /// Every signal, in the order scores and output list them.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::UnsafeAdded,
         Self::ProcessSpawn,
         Self::NetworkFetch,
@@ -65,6 +69,7 @@ impl EvidenceSignal {
         Self::TestSkipped,
         Self::TrivialAssert,
         Self::StubAdded,
+        Self::ErrorSwallowed,
     ];
 
     /// Stable snake-case label for machine output.
@@ -83,6 +88,7 @@ impl EvidenceSignal {
             Self::TestSkipped => "test_skipped",
             Self::TrivialAssert => "trivial_assert",
             Self::StubAdded => "stub_added",
+            Self::ErrorSwallowed => "error_swallowed",
         }
     }
 
@@ -97,7 +103,8 @@ impl EvidenceSignal {
             | Self::TestRemoved
             | Self::TestSkipped
             | Self::TrivialAssert
-            | Self::StubAdded => 3,
+            | Self::StubAdded
+            | Self::ErrorSwallowed => 3,
             Self::CheckSuppressed => 2,
         }
     }
@@ -133,10 +140,33 @@ impl Side {
     }
 }
 
+/// How an evidence item was found: the rung of the evidence ladder that confirmed it. A higher
+/// rung sees more than a lower one, and an item states the highest that found it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Basis {
+    /// One changed line, comments and strings blanked, matched by token.
+    Lexical,
+    /// A changed line read with its neighbours on the same side of the hunk.
+    Hunk,
+}
+
+impl Basis {
+    /// Stable label for machine output.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Lexical => "lexical",
+            Self::Hunk => "hunk",
+        }
+    }
+}
+
 /// One piece of evidence: a signal at a line of a hunk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Evidence {
     pub signal: EvidenceSignal,
+    /// The rung that found it ([`Basis`]).
+    pub basis: Basis,
     /// The hunk, by id (for anchors) and by address (for machines).
     pub hunk: HunkId,
     pub address: String,
@@ -180,6 +210,19 @@ enum Match {
     Secret,
     /// A JS import of one of these modules ([`imports_module`]).
     Imports(&'static [&'static str]),
+    /// An error handler with nothing in it ([`empty_handler`]). It reads the line and the next
+    /// line on the same side of the hunk, so what it finds has [`Basis::Hunk`].
+    EmptyHandler,
+}
+
+impl Match {
+    /// The rung a match of this kind stands on.
+    const fn basis(self) -> Basis {
+        match self {
+            Self::EmptyHandler => Basis::Hunk,
+            Self::Tokens(_) | Self::AnyCode | Self::Secret | Self::Imports(_) => Basis::Lexical,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -535,6 +578,43 @@ const RULES: &[Rule] = &[
         Scope::Languages(PYTHON),
         Match::Tokens(&["raise NotImplementedError"]),
     ),
+    // An arm that names no error and does nothing is on one line: a token finds it.
+    rule(
+        S::ErrorSwallowed,
+        Side::New,
+        View::Code,
+        Scope::Languages(RUST),
+        Match::Tokens(&["Err(_) => {}", "Err(_) => ()"]),
+    ),
+    rule(
+        S::ErrorSwallowed,
+        Side::New,
+        View::Code,
+        Scope::Languages(GO),
+        Match::Tokens(&["_ = err"]),
+    ),
+    // A handler and its empty body are often two lines: these read the next line too.
+    rule(
+        S::ErrorSwallowed,
+        Side::New,
+        View::Code,
+        Scope::Languages(PYTHON),
+        Match::EmptyHandler,
+    ),
+    rule(
+        S::ErrorSwallowed,
+        Side::New,
+        View::Code,
+        Scope::Languages(JS),
+        Match::EmptyHandler,
+    ),
+    rule(
+        S::ErrorSwallowed,
+        Side::New,
+        View::Code,
+        Scope::Languages(GO),
+        Match::EmptyHandler,
+    ),
 ];
 
 /// What a file is, for rule scopes.
@@ -599,12 +679,13 @@ pub fn file_evidence(file: &ReviewFile) -> Vec<Evidence> {
         // `hunk_matches` yields each (side, signal, line) once and items from different hunks
         // differ in `hunk`, so there is nothing to deduplicate: a scan of `out` per item made a
         // patch of 160k matching lines take 4.8 s.
-        for (side, signal, line) in hunk_matches(hunk, kind.language, &rules) {
+        for (side, signal, line, basis) in hunk_matches(hunk, kind.language, &rules) {
             let address = address
                 .get_or_insert_with(|| hunk.address(&file.path))
                 .clone();
             out.push(Evidence {
                 signal,
+                basis,
                 hunk: hunk.id,
                 address,
                 side,
@@ -625,67 +706,141 @@ pub fn hunk_signals(file: &ReviewFile, hunk: &PatchHunk) -> Vec<EvidenceSignal> 
     let found = hunk_matches(hunk, kind.language, &rules);
     EvidenceSignal::ALL
         .into_iter()
-        .filter(|signal| found.iter().any(|(_, s, _)| s == signal))
+        .filter(|signal| found.iter().any(|(_, s, _, _)| s == signal))
         .collect()
 }
 
-/// `(side, signal, line)` for every signal some rule finds on a changed line of `hunk`: once per
-/// signal and line however many rules or tokens match, in [`EvidenceSignal::ALL`] order. Block
-/// comments and triple strings are followed through the hunk on each side (state starts fresh
-/// per hunk).
+/// `(side, signal, line, basis)` for every signal some rule finds on a changed line of `hunk`:
+/// once per signal and line however many rules or tokens match, in [`EvidenceSignal::ALL`] order,
+/// with the highest [`Basis`] among the rules that matched. Block comments and triple strings are
+/// followed through the hunk on each side (state starts fresh per hunk).
 fn hunk_matches(
     hunk: &PatchHunk,
     language: Option<Language>,
     rules: &[&Rule],
-) -> Vec<(Side, EvidenceSignal, u32)> {
+) -> Vec<(Side, EvidenceSignal, u32, Basis)> {
+    // First the code view of every line on each side it belongs to, so a rule that reads a
+    // neighbour sees it as code, in the state the scanner reached there.
     let mut old_state = ScanState::default();
     let mut new_state = ScanState::default();
-    let mut found = Vec::new();
-    for line in &hunk.lines {
-        let (side, number, view) = match line.kind {
-            PatchLineKind::Context => {
-                if let Some(language) = language {
-                    let _ = code_view(language, &line.text, &mut old_state);
-                    let _ = code_view(language, &line.text, &mut new_state);
-                }
-                continue;
+    let views: Vec<(Option<String>, Option<String>)> = hunk
+        .lines
+        .iter()
+        .map(|line| {
+            let view = |state: &mut ScanState| language.map(|l| code_view(l, &line.text, state));
+            match line.kind {
+                PatchLineKind::Context => (view(&mut old_state), view(&mut new_state)),
+                PatchLineKind::Added => (None, view(&mut new_state)),
+                PatchLineKind::Removed => (view(&mut old_state), None),
             }
-            PatchLineKind::Added => (
-                Side::New,
-                line.new_line,
-                language.map(|l| code_view(l, &line.text, &mut new_state)),
-            ),
-            PatchLineKind::Removed => (
-                Side::Old,
-                line.old_line,
-                language.map(|l| code_view(l, &line.text, &mut old_state)),
-            ),
+        })
+        .collect();
+    // The code of the next line on `side` after line `at`: the line that follows it in that
+    // version of the file, when the hunk holds it.
+    let next_on = |side: Side, at: usize| -> Option<&str> {
+        let other = match side {
+            Side::New => PatchLineKind::Removed,
+            Side::Old => PatchLineKind::Added,
+        };
+        let next = at + 1 + hunk.lines[at + 1..].iter().position(|l| l.kind != other)?;
+        let view = match side {
+            Side::New => views[next].1.as_deref(),
+            Side::Old => views[next].0.as_deref(),
+        };
+        Some(view.unwrap_or(hunk.lines[next].text.as_str()))
+    };
+    let mut found = Vec::new();
+    for (at, line) in hunk.lines.iter().enumerate() {
+        let (side, number, view) = match line.kind {
+            PatchLineKind::Context => continue,
+            PatchLineKind::Added => (Side::New, line.new_line, views[at].1.as_deref()),
+            PatchLineKind::Removed => (Side::Old, line.old_line, views[at].0.as_deref()),
         };
         let Some(number) = number else { continue };
         let hits = |rule: &Rule| {
             let text = match rule.view {
                 View::Raw => line.text.as_str(),
                 // A rule that reads code needs a language; `Scope::Any` code rules have none.
-                View::Code => view.as_deref().unwrap_or(line.text.as_str()),
+                View::Code => view.unwrap_or(line.text.as_str()),
             };
             match rule.matches {
                 Match::Tokens(tokens) => tokens.iter().any(|t| token_in(text, t)),
                 Match::AnyCode => !text.trim().is_empty(),
                 Match::Secret => looks_like_secret(text),
                 Match::Imports(modules) => imports_module(text, &line.text, modules),
+                Match::EmptyHandler => {
+                    language.is_some_and(|l| empty_handler(l, text, next_on(side, at)))
+                }
             }
         };
         for signal in EvidenceSignal::ALL {
-            if rules
+            let basis = rules
                 .iter()
-                .filter(|r| r.signal == signal && r.side == side)
-                .any(|r| hits(r))
-            {
-                found.push((side, signal, number));
+                .filter(|r| r.signal == signal && r.side == side && hits(r))
+                .map(|r| r.matches.basis())
+                .max();
+            if let Some(basis) = basis {
+                found.push((side, signal, number, basis));
             }
         }
     }
     found
+}
+
+/// Whether `code` (a line's code view) opens an error handler that does nothing, given the code
+/// of the line after it on the same side (`None` when the hunk ends there).
+///
+/// - Python: `except …:` whose body is `pass` or `...`, on the same line or the next.
+/// - JS and TS: `catch`, with or without a binding, whose block is empty: `{}` on the line, or
+///   `{` ending the line and `}` starting the next.
+/// - Go: `if err != nil {` closed at once, on the line or the next.
+///
+/// A handler whose body the hunk does not show is not evidence: the next line must be there.
+fn empty_handler(language: Language, code: &str, next: Option<&str>) -> bool {
+    let line = code.trim();
+    let next = next.map(str::trim);
+    let nothing = |body: &str| matches!(body, "pass" | "...");
+    // The block after `head` is empty: `{}` here, or `{` here and `}` first on the next line.
+    let empty_block = |after: &str| {
+        let after = after.trim();
+        let closed_here = after
+            .strip_prefix('{')
+            .is_some_and(|rest| rest.trim_start().starts_with('}'));
+        closed_here || (after == "{" && next.is_some_and(|n| n.starts_with('}')))
+    };
+    match language {
+        Language::Python => {
+            let Some(rest) = line.strip_prefix("except") else {
+                return false;
+            };
+            if rest.as_bytes().first().is_some_and(|b| is_ident(*b)) {
+                return false;
+            }
+            let Some((_, body)) = rest.rsplit_once(':') else {
+                return false;
+            };
+            let body = body.trim();
+            nothing(body) || (body.is_empty() && next.is_some_and(nothing))
+        }
+        Language::JavaScript => line.match_indices("catch").any(|(at, word)| {
+            let before_ok = at == 0 || !is_boundary_blocker(line.as_bytes()[at - 1]);
+            let after = line[at + word.len()..].trim_start();
+            if !before_ok || after.as_bytes().first().is_some_and(|b| is_ident(*b)) {
+                return false;
+            }
+            // An optional binding in parentheses, then the block.
+            let after = match after.strip_prefix('(') {
+                Some(binding) => match binding.split_once(')') {
+                    Some((_, block)) => block,
+                    None => return false,
+                },
+                None => after,
+            };
+            empty_block(after)
+        }),
+        Language::Go => line.strip_prefix("if err != nil").is_some_and(empty_block),
+        Language::Rust | Language::Shell | Language::Yaml => false,
+    }
 }
 
 /// Whether a JS line loads one of `modules` (`node:` optional) with `require(…)` (also
@@ -940,6 +1095,7 @@ mod tests {
             [
                 Evidence {
                     signal: S::UnsafeAdded,
+                    basis: Basis::Lexical,
                     hunk: hunk.id,
                     address: hunk.address("src/lib.rs"),
                     side: Side::New,
@@ -947,6 +1103,7 @@ mod tests {
                 },
                 Evidence {
                     signal: S::ProcessSpawn,
+                    basis: Basis::Lexical,
                     hunk: hunk.id,
                     address: hunk.address("src/lib.rs"),
                     side: Side::New,
@@ -1856,6 +2013,136 @@ mod tests {
         }
     }
 
+    /// A file from hunk body lines written as in a patch (`+`, `-` or a space first), after one
+    /// context line `x`.
+    fn hunk_of(path: &str, body: &[&str]) -> ReviewFile {
+        let old = 1 + body.iter().filter(|l| !l.starts_with('+')).count();
+        let new = 1 + body.iter().filter(|l| !l.starts_with('-')).count();
+        let mut text = format!("--- a/{path}\n+++ b/{path}\n@@ -1,{old} +1,{new} @@\n x\n");
+        for line in body {
+            text.push_str(line);
+            text.push('\n');
+        }
+        parse(&text).unwrap().remove(0)
+    }
+
+    fn found(file: &ReviewFile) -> Vec<(EvidenceSignal, Basis, u32)> {
+        file_evidence(file)
+            .iter()
+            .map(|e| (e.signal, e.basis, e.line))
+            .collect()
+    }
+
+    /// Batteries, slice 2: a handler and its empty body are read together, on the line that
+    /// opens the handler, and say that they were (`hunk`).
+    #[test]
+    fn an_error_handler_with_nothing_in_it_is_evidence_read_across_two_lines() {
+        let swallowed = [(S::ErrorSwallowed, Basis::Hunk, 2)];
+        let cases: &[(&str, &[&str])] = &[
+            ("a.py", &["+except ValueError:", "+    pass"]),
+            (
+                "a.py",
+                &["+    except (KeyError, OSError) as e:", "+        ..."],
+            ),
+            ("a.py", &["+except Exception: pass"]),
+            (
+                "a.py",
+                &["+except:  # nothing to do", "+    pass  # really"],
+            ),
+            ("a.ts", &["+} catch (e) {}"]),
+            ("a.ts", &["+} catch { }"]),
+            ("a.ts", &["+} catch (err) {", "+}"]),
+            ("a.ts", &["+try { f(); } catch ({ message }) {", "+}"]),
+            ("a.go", &["+\tif err != nil {", "+\t}"]),
+            ("a.go", &["+\tif err != nil {}"]),
+            // the body is the next line of the new file: a removed line between is not it,
+            // and an unchanged line is
+            (
+                "a.py",
+                &["+except ValueError:", "-    handle()", "+    pass"],
+            ),
+            ("a.py", &["+except ValueError:", "     pass"]),
+        ];
+        for (path, body) in cases {
+            assert_eq!(found(&hunk_of(path, body)), swallowed, "{path}: {body:?}");
+        }
+    }
+
+    /// An arm or an assignment that drops the error on one line is found by its token.
+    #[test]
+    fn an_error_dropped_on_one_line_is_lexical_evidence() {
+        for (path, line) in [
+            ("src/a.rs", "        Err(_) => {}"),
+            ("src/a.rs", "        Err(_) => (),"),
+            ("a.go", "\t_ = err"),
+        ] {
+            assert_eq!(
+                found(&added(path, &[line])),
+                [(S::ErrorSwallowed, Basis::Lexical, 2)],
+                "{path}: {line}"
+            );
+        }
+    }
+
+    /// A handler that does something, one whose body the hunk does not show, and the same
+    /// words elsewhere: no evidence.
+    #[test]
+    fn a_handler_that_handles_or_whose_body_is_unseen_is_not_evidence() {
+        let cases: &[(&str, &[&str])] = &[
+            ("a.py", &["+except ValueError:", "+    log(e)"]),
+            ("a.py", &["+except ValueError:"]),
+            ("a.py", &["+except ValueError:", "-    pass"]),
+            ("a.py", &["+except ValueError: return None"]),
+            ("a.py", &["+exceptional = 1", "+pass"]),
+            ("a.py", &["+# except ValueError: pass"]),
+            ("a.py", &["+s = \"except ValueError: pass\""]),
+            ("a.py", &["+else:", "+    pass"]),
+            ("a.ts", &["+} catch (e) { log(e); }"]),
+            ("a.ts", &["+} catch (e) {", "+  log(e);"]),
+            ("a.ts", &["+} catch (e) {"]),
+            ("a.ts", &["+p.catch(() => {});"]),
+            ("a.ts", &["+const catcher = {};"]),
+            ("a.ts", &["+// } catch (e) {}"]),
+            ("a.go", &["+\tif err != nil {", "+\t\treturn err"]),
+            ("a.go", &["+\tif err == nil {", "+\t}"]),
+            ("a.go", &["+\t_ = errors.New(\"x\")"]),
+            ("src/a.rs", &["+        Err(e) => {}"]),
+            ("src/a.rs", &["+        Err(_) => { log(); }"]),
+            // another language's form
+            ("a.go", &["+except ValueError:", "+    pass"]),
+            ("a.py", &["+} catch (e) {}"]),
+        ];
+        for (path, body) in cases {
+            assert_eq!(found(&hunk_of(path, body)), [], "{path}: {body:?}");
+        }
+    }
+
+    /// A removed empty handler is the repair, and reading neighbours changes nothing a token
+    /// rule finds: the same line, the same signals, the first rung.
+    #[test]
+    fn the_neighbour_reading_rule_leaves_token_evidence_as_it_was() {
+        assert_eq!(
+            found(&hunk_of("a.py", &["-except ValueError:", "-    pass"])),
+            []
+        );
+        let file = hunk_of(
+            "a.py",
+            &["+import subprocess", "+subprocess.run(x)", "+eval(y)"],
+        );
+        assert_eq!(
+            found(&file),
+            [
+                (S::ProcessSpawn, Basis::Lexical, 3),
+                (S::DynamicEval, Basis::Lexical, 4),
+            ]
+        );
+        assert_eq!(
+            (Basis::Lexical.label(), Basis::Hunk.label()),
+            ("lexical", "hunk")
+        );
+        assert!(Basis::Hunk > Basis::Lexical);
+    }
+
     /// These are read on added lines only: removing a skip or a stub is the repair.
     #[test]
     fn removing_a_skip_a_trivial_assert_or_a_stub_is_not_evidence() {
@@ -1891,6 +2178,7 @@ mod tests {
                 ("test_skipped", 3),
                 ("trivial_assert", 3),
                 ("stub_added", 3),
+                ("error_swallowed", 3),
             ]
         );
         assert_eq!((Side::New.label(), Side::Old.label()), ("new", "old"));

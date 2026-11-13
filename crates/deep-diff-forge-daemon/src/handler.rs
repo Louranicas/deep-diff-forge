@@ -1143,7 +1143,7 @@ fn ranked_json(ranked: &[RankedFile]) -> Value {
                                 "address": e.address,
                                 "side": e.side.label(),
                                 "line": e.line,
-                                "basis": deep_diff_forge_graph::EVIDENCE_BASIS,
+                                "basis": e.basis.label(),
                             })
                         })
                         .collect();

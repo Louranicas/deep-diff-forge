@@ -18,6 +18,20 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   halved like other evidence. Output is additive: the `signal` values of `rank.v0` evidence
   and the hunk labels gain three members, and a file that carries one ranks higher than it
   did.
+- **`error_swallowed`, and evidence that says how it was found** (agent batteries, phase 1,
+  slice 2). An error caught and dropped is evidence: a Python `except` whose body is `pass` or
+  `...`, an empty JS or TS `catch` block, an empty Go `if err != nil` block or `_ = err`, a
+  Rust `Err(_)` arm that does nothing. It adds 3 to a file's score once. A handler and its
+  body are usually two lines, which no one-line rule can see, so the scanner has a second kind
+  of rule that reads the next line on the same side of the hunk. A handler whose body the hunk
+  does not show is not reported.
+
+### Changed
+
+- **`basis` in `rank.v0` evidence is no longer always `lexical`.** An item found by reading a
+  neighbouring line carries `"basis": "hunk"`; every item a token finds is unchanged. The
+  member and its meaning are as documented, and the set of values grows: a client that
+  compared it with `lexical` should accept other values.
 
 ## [0.8.3] - 2026-11-11
 

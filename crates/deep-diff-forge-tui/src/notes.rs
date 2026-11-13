@@ -197,6 +197,7 @@ fn code_phrase(signal: EvidenceSignal) -> &'static str {
         EvidenceSignal::TestSkipped => "A test is switched off.",
         EvidenceSignal::TrivialAssert => "An assertion that cannot fail.",
         EvidenceSignal::StubAdded => "A placeholder where code should be.",
+        EvidenceSignal::ErrorSwallowed => "An error is caught and dropped.",
     }
 }
 
@@ -229,7 +230,7 @@ fn evidence_notes(file: &ReviewFile, ranked: &RankedFile) -> Vec<AgentAnnotation
                 model: None,
                 evidence: vec![
                     item.signal.label().to_string(),
-                    format!("basis:{}", deep_diff_forge_graph::EVIDENCE_BASIS),
+                    format!("basis:{}", item.basis.label()),
                 ],
             },
             grounded: true,
@@ -308,6 +309,7 @@ mod tests {
                 "A test is switched off.",
                 "An assertion that cannot fail.",
                 "A placeholder where code should be.",
+                "An error is caught and dropped.",
             ]
         );
     }

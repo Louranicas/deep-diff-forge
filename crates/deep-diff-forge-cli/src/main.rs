@@ -1853,7 +1853,7 @@ fn print_rank_json(ranked: &[deep_diff_forge_graph::RankedFile], seal: &InputSea
                         json_escape(&e.address),
                         json_escape(e.side.label()),
                         e.line,
-                        json_escape(deep_diff_forge_graph::EVIDENCE_BASIS)
+                        json_escape(e.basis.label())
                     )
                 })
                 .collect();
