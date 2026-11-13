@@ -112,6 +112,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   ranker directory is now listed and hashed by a helper the stop hook starts as a child
   (`agent hook seal-rankers`) and kills at the deadline; a helper that does not come back
   makes the stop UNJUDGED with that reason.
+- **Round 6 of the same review (NO-GO on one new point).** The deadline was closed: a read
+  delayed by ten seconds ended the stop after 8.03 s. New: the helper collected the whole
+  ranker directory before it cut the list to eight, so 500,000 empty files cost 69 MiB. The
+  files that come first by name are now chosen while the directory is read, seven paths held
+  at most, and only a path that would be kept is asked whether it is a file.
   `deep_diff_forge_patch::file_at_commit` reads a regular file from a commit, which is how
   the policy is read.
 

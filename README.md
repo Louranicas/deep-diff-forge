@@ -344,7 +344,8 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   afterwards. A working tree with paths marked skip-worktree (a sparse checkout) is not
   judged: its absent files would read as deletions, so advice stays silent and a stop is
   UNJUDGED with that reason.
-- **The ranker is this binary first**, then every file in `--ranker-dir DIR`. forge-warden
+- **The ranker is this binary first**, then the files in `--ranker-dir DIR` that come first
+  by name, eight candidates in all. forge-warden
   admits a ranker only if the policy lists its SHA-256, so a newer DDF than the policy admits
   can still have its stop judged by an older, admitted one.
 - **The same failure does not block twice.** When Claude Code is already continuing because of

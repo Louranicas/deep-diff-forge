@@ -502,29 +502,49 @@ fn judge_for(args: &[String], place: Option<&Place>) -> Result<PathBuf, String> 
     }
 }
 
-/// The rankers a stop may offer the judge, in order: this binary, then every file in
-/// `--ranker-dir` by name. The judge checks each one's hash against the policy itself, so
-/// nothing here has to read the policy.
+/// The rankers a stop may offer the judge, in order: this binary, then the files in
+/// `--ranker-dir` that come first by name, [`RANKERS_TRIED`] in all. The judge checks each
+/// one's hash against the policy itself, so nothing here has to read the policy.
 fn rankers(args: &[String]) -> Vec<PathBuf> {
     let mut list: Vec<PathBuf> = std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .into_iter()
         .collect();
-    if let Some(dir) = crate::flag_value(args, "--ranker-dir") {
-        let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
-            .map(|entries| {
-                entries
-                    .filter_map(Result::ok)
-                    .map(|entry| entry.path())
-                    .filter(|path| path.is_file())
-                    .collect()
-            })
-            .unwrap_or_default();
-        found.sort();
-        list.extend(found);
+    if let Some(dir) = crate::flag_value(args, "--ranker-dir")
+        && let Ok(entries) = std::fs::read_dir(dir)
+    {
+        list.extend(first_by_name(
+            entries.filter_map(Result::ok).map(|entry| entry.path()),
+            RANKERS_TRIED.saturating_sub(list.len()),
+            Path::is_file,
+        ));
     }
-    list.truncate(RANKERS_TRIED);
     list
+}
+
+/// The `keep` paths of `paths` that come first in order and that `wanted` accepts, in order.
+///
+/// It holds no more than `keep` paths at any moment, and asks `wanted` only of a path that
+/// would be kept (review V4 round 6, VD4R6-M-1: the directory was collected whole and cut to
+/// eight afterwards, so a directory of 500,000 empty files cost 69 MiB and as many `stat`
+/// calls for the seven it could ever offer).
+fn first_by_name(
+    paths: impl Iterator<Item = PathBuf>,
+    keep: usize,
+    wanted: impl Fn(&Path) -> bool,
+) -> Vec<PathBuf> {
+    let mut kept = std::collections::BinaryHeap::with_capacity(keep.saturating_add(1));
+    for path in paths {
+        let later = kept.len() >= keep && kept.peek().is_none_or(|last| path >= *last);
+        if later || !wanted(&path) {
+            continue;
+        }
+        kept.push(path);
+        if kept.len() > keep {
+            kept.pop();
+        }
+    }
+    kept.into_sorted_vec()
 }
 
 /// The most characters of the judge's own error message a reason repeats.
@@ -1136,6 +1156,39 @@ fn probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review V4 round 6, VD4R6-M-1: the first files by name are chosen while the directory is
+    /// read, and only a path that would be kept is asked whether it is a file. The answer is
+    /// the one sorting everything and cutting gave.
+    #[test]
+    fn the_first_files_by_name_are_chosen_without_holding_the_directory() {
+        // 20,000 names in an order that is not sorted (a multiplier coprime to the count)
+        let names: Vec<PathBuf> = (0..20_000u32)
+            .map(|i| PathBuf::from(format!("/r/{:05}", (i * 7_919) % 20_000)))
+            .collect();
+        let is_file = |path: &Path| !path.to_string_lossy().ends_with('3');
+        let asked = std::cell::Cell::new(0usize);
+        let chosen = first_by_name(names.iter().cloned(), 7, |path| {
+            asked.set(asked.get() + 1);
+            is_file(path)
+        });
+        let mut all: Vec<PathBuf> = names.iter().filter(|p| is_file(p)).cloned().collect();
+        all.sort();
+        all.truncate(7);
+        assert_eq!(chosen, all);
+        assert_eq!(chosen[0], PathBuf::from("/r/00000"));
+        assert!(!chosen.contains(&PathBuf::from("/r/00003")));
+        // far fewer questions than names: a later name is passed over unasked
+        assert!(asked.get() < 500, "{}", asked.get());
+        // fewer names than places, and no place at all
+        let few = first_by_name(names.iter().take(3).cloned(), 7, |_| true);
+        assert_eq!(few.len(), 3);
+        assert!(few.is_sorted());
+        assert_eq!(
+            first_by_name(names.iter().cloned(), 0, |_| true),
+            Vec::<PathBuf>::new()
+        );
+    }
 
     #[test]
     fn a_state_round_trips_and_anything_else_is_an_empty_state() {
