@@ -866,7 +866,7 @@ Whoever writes a patch also chooses its paths, so a path can lower a file's scor
 | `trivial_assert` | added | `assert!(true)`, `assert_eq!(true, true)`; `assert True`, `self.assertTrue(True)`; `expect(true).toBe(true)`, `expect(true).toEqual(true)`, `assert(true)`, `assert.ok(true)` | +3 |
 | `stub_added` | added | `todo!(`, `unimplemented!(`; `raise NotImplementedError` (a placeholder named only in a message string, as in JS and Go, is not read) | +3 |
 | `error_swallowed` | added | an `except` whose body is `pass` or `...`; an empty `catch` block; an empty `if err != nil` block, `_ = err`; `Err(_) => {}`, `Err(_) => ()`. A handler and its body on two lines are read together (`"basis": "hunk"`); a handler whose body the hunk does not show is not reported | +3 |
-| `panic_path_added` | added | Rust `.unwrap()` and `.expect(` as method calls, with or without a space before the parenthesis. Withdrawn only where the patch proves the code is compiled for tests alone: under an exact `#[cfg(test)]` that is the first attribute of a top-level module, function or `impl`, in the one hunk of a new file, which is the whole file, parsed with no error. `#[test]`, `#[tokio::test]` and `#[rstest]` are not proof (an import or a renamed dependency can bind any attribute name but `cfg` to a macro that leaves the function in the program), and neither is anything a hunk of an existing file shows, whatever line it says it starts at (a comment or a string can be open above it, and the header is the patch writer's word); there the item stands, and a test path halves its weight | +3 |
+| `panic_path_added` | added | Rust `.unwrap()` and `.expect(` as method calls, with or without a space before the parenthesis. Withdrawn only where the patch proves the code is compiled for tests alone: under an exact `#[cfg(test)]` that is the first attribute of a top-level module, function or `impl`, in the one hunk of a new file whose path no other section of the patch names, which is the whole file, parsed with no error. `#[test]`, `#[tokio::test]` and `#[rstest]` are not proof (an import or a renamed dependency can bind any attribute name but `cfg` to a macro that leaves the function in the program), and neither is anything a hunk of an existing file shows, whatever line it says it starts at (a comment or a string can be open above it, and the header is the patch writer's word); there the item stands, and a test path halves its weight | +3 |
 | `syntax_unchecked` | added | a Rust hunk that holds a word the parser reads (`unwrap`, `expect`, `assert`, `todo`, `unimplemented`, `ignore`) and that the parser did not read: the hunk is over 64 KiB or 50,000 nodes, or the review's 2 MiB was spent before it; or the parser read the hunk and an assertion or a `cfg_attr` is opened on one line and closed on another inside another macro's body or under a parse error, where it names no construct. It says "not checked", not "bad": the token rules' findings stand, and a construct only the parser finds (one written over several lines) may be there unseen | +1 |
 | `check_suppressed` | added | `#[allow(`; `# noqa`, `# type: ignore`; `eslint-disable`, `@ts-ignore`; `//nolint` (read in comments) | +2 |
 
@@ -969,9 +969,11 @@ The engine is hardened against:
 - hidden-content patches;
 - attacks on the daemon's transport and filesystem.
 
-Ten fuzz targets cover the parser, review JSON, daemon protocol, agent annotations, council
+Eleven fuzz targets cover the parser, review JSON, daemon protocol, agent annotations, council
 reports, the MCP and `rpc` stdio servers, the soundness of the structural diff's
-"formatting only" verdict, agent-findings verification and the code-evidence scanner. See
+"formatting only" verdict, agent-findings verification, the code-evidence scanner, and the
+rule that the Rust parser may add evidence but remove only a panic path in a file the patch
+creates whole. See
 [`SECURITY.md`](SECURITY.md) for the threat model.
 
 ## Review council and evidence gates

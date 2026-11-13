@@ -1,4 +1,4 @@
-use crate::evidence::{Evidence, FragmentPlan, MAX_EVIDENCE_PER_FILE};
+use crate::evidence::{Evidence, FragmentPlan, MAX_EVIDENCE_PER_FILE, Reading};
 use crate::risk::{RiskSignal, assess_file_in};
 use deep_diff_forge_core::{FileStatus, ReviewFile};
 
@@ -33,7 +33,7 @@ impl RankedFile {
     /// [`Self::scored`] under a review's [`FragmentPlan`]: `parse` says, for each hunk of
     /// `file`, whether the parser may read it.
     #[must_use]
-    pub fn scored_in(file: &ReviewFile, parse: &[bool]) -> Self {
+    pub fn scored_in(file: &ReviewFile, parse: &[Reading]) -> Self {
         let assessment = assess_file_in(file, parse);
         let mut evidence = assessment.evidence;
         let evidence_truncated = evidence.len() > MAX_EVIDENCE_PER_FILE;

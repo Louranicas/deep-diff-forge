@@ -1,7 +1,7 @@
 // DDF review route: DDF-R12, DDF-R13. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-graph--src--risk
-use crate::evidence::{Evidence, EvidenceSignal, FragmentPlan, file_evidence_in};
+use crate::evidence::{Evidence, EvidenceSignal, FragmentPlan, Reading, file_evidence_in};
 use deep_diff_forge_core::{FileStatus, PatchLineKind, ReviewFile};
 
 /// A deterministic, explainable reason a file is ranked where it is.
@@ -82,7 +82,7 @@ pub fn score_file(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
 
 /// [`score_file`] under a review's [`FragmentPlan`] (see [`assess_file_in`]).
 #[must_use]
-pub fn score_file_in(file: &ReviewFile, parse: &[bool]) -> (u32, Vec<RiskSignal>) {
+pub fn score_file_in(file: &ReviewFile, parse: &[Reading]) -> (u32, Vec<RiskSignal>) {
     let assessment = assess_file_in(file, parse);
     (assessment.score, assessment.signals)
 }
@@ -113,7 +113,7 @@ pub fn assess_file(file: &ReviewFile) -> Assessment {
 /// [`assess_file`] under a review's [`FragmentPlan`]: `parse` says, for each hunk of `file`,
 /// whether the parser may read it.
 #[must_use]
-pub fn assess_file_in(file: &ReviewFile, parse: &[bool]) -> Assessment {
+pub fn assess_file_in(file: &ReviewFile, parse: &[Reading]) -> Assessment {
     let (path_score, mut signals) = score_path_and_shape(file);
     let evidence = file_evidence_in(file, parse);
     let test = is_test(&file.path);

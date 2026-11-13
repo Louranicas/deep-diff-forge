@@ -149,6 +149,20 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     under a parse error) now carries `syntax_unchecked`. That the assertion is trivial is
     still not said: a declared miss in the corpus.
   - The corpus has 42 cases; evidence precision 53 of 56, recall 53 of 81.
+- **Round 5 of the same review (verdict NO-GO a fifth time) and its fixes.**
+  - *High: a later section for the same path undid the whole-file proof.* One section creates
+    a file whose `#[cfg(test)]` a line comment follows; a second section for the same path
+    prepends `/*`. Git applies both, and the function is in the program. Whether a hunk is
+    its whole file is now the review plan's answer (`Reading::WholeFile`): the patch creates
+    the file, in one hunk, and no other file of the review has its path. The plan's answer
+    for a hunk is one of three (`Off`, `Hunk`, `WholeFile`) where it was a yes or no.
+  - *Medium: an outer macro on the same row hid the unchecked mark.* `outer! { assert!(` with
+    `true` and `);` below left nothing. A row counts as read only when the parser named a
+    construct at the opener's own column, not when any macro starts on the row.
+- **A `fragment_scan` fuzz target** holds the rule the five rounds converged on: for any text,
+  as a new file or as a change, every item the token rules find alone is still there with the
+  parser on, except `syntax_unchecked` and, in a new file only, `panic_path_added`; the
+  scanner gives the same answer twice, and its rows are inside the fragment.
 
 ### Changed
 

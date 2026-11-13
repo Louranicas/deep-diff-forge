@@ -27,7 +27,7 @@ era) no longer holds. How the standard is enforced today:
 - **Fuzz smoke:** every target in `fuzz/Cargo.toml`
   (`patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
   `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness`,
-  `findings_verify`, `evidence_scan`; `stdio_invariants.rs` is a shared module)
+  `findings_verify`, `evidence_scan`, `fragment_scan`; `stdio_invariants.rs` is a shared module)
   runs for 10 s per pull request; CI fails if a declared target is not in the
   run list. Crash inputs become fixtures under
   `fixtures/patch/regressions/`.

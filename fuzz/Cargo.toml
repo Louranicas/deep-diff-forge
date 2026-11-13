@@ -96,3 +96,10 @@ path = "fuzz_targets/evidence_scan.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fragment_scan"
+path = "fuzz_targets/fragment_scan.rs"
+test = false
+doc = false
+bench = false

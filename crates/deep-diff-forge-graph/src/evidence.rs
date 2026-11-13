@@ -749,17 +749,41 @@ pub const REVIEW_FRAGMENT_BUDGET: usize = 2 * 1024 * 1024;
 /// how many workers score them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FragmentPlan {
-    allowed: Vec<Vec<bool>>,
+    allowed: Vec<Vec<Reading>>,
+}
+
+/// What a [`FragmentPlan`] allows the parser for one hunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Reading {
+    /// Not parsed: the token rules' answer stands.
+    #[default]
+    Off,
+    /// Parsed. The hunk proves nothing about the rest of its file.
+    Hunk,
+    /// Parsed, and the hunk is its whole file: the patch creates the file, this is its one
+    /// hunk, and no other file of the review has its path. Only the plan can say the last,
+    /// since Git applies every section of a patch that names a path: a later section that
+    /// prepends `/*` turns the `#[cfg(test)] // */` of the created file into a comment
+    /// (review V3 round 5, VD3R5-H-1). Only this reading lets the parser withdraw evidence.
+    WholeFile,
 }
 
 impl FragmentPlan {
     /// The plan for `files`, the whole review in its order.
     #[must_use]
     pub fn of(files: &[ReviewFile]) -> Self {
+        // How often each path is named: a path named twice is two sections of one file.
+        let mut named: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for file in files {
+            *named.entry(file.path.as_str()).or_default() += 1;
+        }
         let mut spent = 0usize;
         let mut allowed = Vec::with_capacity(files.len());
         for file in files {
             let rust = FileKind::of(file).language == Some(Language::Rust);
+            let whole = file.status == FileStatus::Added
+                && file.patch_twin.hunks.len() == 1
+                && named.get(file.path.as_str()) == Some(&1);
             let mut hunks = Vec::with_capacity(file.patch_twin.hunks.len());
             for hunk in &file.patch_twin.hunks {
                 let cost = if rust { fragment_cost(hunk) } else { None };
@@ -768,7 +792,11 @@ impl FragmentPlan {
                 if fits {
                     spent += cost.unwrap_or(0);
                 }
-                hunks.push(fits);
+                hunks.push(match (fits, whole) {
+                    (false, _) => Reading::Off,
+                    (true, false) => Reading::Hunk,
+                    (true, true) => Reading::WholeFile,
+                });
             }
             allowed.push(hunks);
         }
@@ -778,14 +806,20 @@ impl FragmentPlan {
     /// For each hunk of the file at `index`, whether the parser may read it. Empty for an index
     /// the plan does not have: nothing is parsed.
     #[must_use]
-    pub fn file(&self, index: usize) -> &[bool] {
+    pub fn file(&self, index: usize) -> &[Reading] {
         self.allowed.get(index).map_or(&[], Vec::as_slice)
+    }
+
+    /// What the parser may do with hunk `hunk` of file `file`.
+    #[must_use]
+    pub fn reading(&self, file: usize, hunk: usize) -> Reading {
+        self.file(file).get(hunk).copied().unwrap_or_default()
     }
 
     /// Whether the parser may read hunk `hunk` of file `file`.
     #[must_use]
     pub fn allows(&self, file: usize, hunk: usize) -> bool {
-        self.file(file).get(hunk).copied().unwrap_or(false)
+        self.reading(file, hunk) != Reading::Off
     }
 }
 
@@ -856,7 +890,7 @@ pub fn file_evidence(file: &ReviewFile) -> Vec<Evidence> {
 /// [`file_evidence`] under a review's [`FragmentPlan`]: `parse` says, for each hunk of `file`,
 /// whether the parser may read it (a hunk it does not name is not parsed).
 #[must_use]
-pub fn file_evidence_in(file: &ReviewFile, parse: &[bool]) -> Vec<Evidence> {
+pub fn file_evidence_in(file: &ReviewFile, parse: &[Reading]) -> Vec<Evidence> {
     let kind = FileKind::of(file);
     let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
     let mut out: Vec<Evidence> = Vec::new();
@@ -864,14 +898,12 @@ pub fn file_evidence_in(file: &ReviewFile, parse: &[bool]) -> Vec<Evidence> {
         return out;
     }
     for (at, hunk) in file.patch_twin.hunks.iter().enumerate() {
-        let parse = parse.get(at).copied().unwrap_or(false);
+        let parse = parse.get(at).copied().unwrap_or_default();
         let mut address = None;
         // `hunk_matches` yields each (side, signal, line) once and items from different hunks
         // differ in `hunk`, so there is nothing to deduplicate: a scan of `out` per item made a
         // patch of 160k matching lines take 4.8 s.
-        for (side, signal, line, basis) in
-            hunk_matches(hunk, kind.language, &rules, parse, creates_whole_file(file))
-        {
+        for (side, signal, line, basis) in hunk_matches(hunk, kind.language, &rules, parse) {
             let address = address
                 .get_or_insert_with(|| hunk.address(&file.path))
                 .clone();
@@ -896,15 +928,19 @@ pub fn file_evidence_in(file: &ReviewFile, parse: &[bool]) -> Vec<Evidence> {
 pub fn hunk_signals(file: &ReviewFile, hunk: &PatchHunk) -> Vec<EvidenceSignal> {
     let plan = FragmentPlan::of(std::slice::from_ref(file));
     let at = file.patch_twin.hunks.iter().position(|h| h.id == hunk.id);
-    hunk_signals_in(file, hunk, at.is_some_and(|at| plan.allows(0, at)))
+    hunk_signals_in(
+        file,
+        hunk,
+        at.map_or(Reading::Off, |at| plan.reading(0, at)),
+    )
 }
 
 /// [`hunk_signals`] under a review's [`FragmentPlan`]: `parse` is the plan's answer for `hunk`.
 #[must_use]
-pub fn hunk_signals_in(file: &ReviewFile, hunk: &PatchHunk, parse: bool) -> Vec<EvidenceSignal> {
+pub fn hunk_signals_in(file: &ReviewFile, hunk: &PatchHunk, parse: Reading) -> Vec<EvidenceSignal> {
     let kind = FileKind::of(file);
     let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
-    let found = hunk_matches(hunk, kind.language, &rules, parse, creates_whole_file(file));
+    let found = hunk_matches(hunk, kind.language, &rules, parse);
     EvidenceSignal::ALL
         .into_iter()
         .filter(|signal| found.iter().any(|(_, s, _, _)| s == signal))
@@ -916,18 +952,11 @@ pub fn hunk_signals_in(file: &ReviewFile, hunk: &PatchHunk, parse: bool) -> Vec<
 /// with the highest [`Basis`] among the rules that matched. Block comments and triple strings are
 /// followed through the hunk on each side (state starts fresh per hunk). `parse` lets the parser
 /// read a Rust hunk on top of that ([`FragmentPlan`]).
-/// Whether `file` is a new file whose whole content is one hunk: the only patch whose hunk is
-/// certain to be the file. See [`fragment_evidence`].
-fn creates_whole_file(file: &ReviewFile) -> bool {
-    file.status == FileStatus::Added && file.patch_twin.hunks.len() == 1
-}
-
 fn hunk_matches(
     hunk: &PatchHunk,
     language: Option<Language>,
     rules: &[&Rule],
-    parse: bool,
-    whole_file: bool,
+    reading: Reading,
 ) -> Vec<(Side, EvidenceSignal, u32, Basis)> {
     // First the code view of every line on each side it belongs to, so a rule that reads a
     // neighbour sees it as code, in the state the scanner reached there.
@@ -972,7 +1001,9 @@ fn hunk_matches(
         None
     };
     let parsed = match word {
-        Some(_) if parse => fragment_evidence(hunk, &views, whole_file),
+        Some(_) if reading != Reading::Off => {
+            fragment_evidence(hunk, &views, reading == Reading::WholeFile)
+        }
         _ => None,
     };
     let unchecked = match &parsed {
@@ -1357,17 +1388,22 @@ fn fragment_evidence(
         .zip(&new.lines)
         .find(|(row, index)| {
             let tree_row = row + new.offset;
+            let code = views[**index]
+                .1
+                .as_deref()
+                .unwrap_or(hunk.lines[**index].text.as_str());
             hunk.lines[**index].kind == PatchLineKind::Added
                 && !new.scan.readable(tree_row)
-                && !new.scan.constructs.iter().any(|read| {
-                    read.row == tree_row && !matches!(read.kind, ConstructKind::MethodCall { .. })
+                // It is read when the parser named a construct at the opener's own place. Any
+                // other construct on the row, such as the outer macro whose body this is, says
+                // nothing about it (review V3 round 5, VD3R5-M-1).
+                && opens_across_lines(code).into_iter().any(|column| {
+                    !new.scan.constructs.iter().any(|read| {
+                        read.row == tree_row
+                            && usize::try_from(read.column).ok() == Some(column)
+                            && !matches!(read.kind, ConstructKind::MethodCall { .. })
+                    })
                 })
-                && opens_across_lines(
-                    views[**index]
-                        .1
-                        .as_deref()
-                        .unwrap_or(hunk.lines[**index].text.as_str()),
-                )
         })
         .map(|(_, index)| *index);
     parsed.found.sort_by_key(|pair| pair.0);
@@ -1375,9 +1411,11 @@ fn fragment_evidence(
     Some(parsed)
 }
 
-/// Whether a line of Rust code opens an assertion macro, or a `cfg_attr` attribute, that it
-/// does not close: the rest is on other lines, where a rule that reads one line cannot follow.
-fn opens_across_lines(code: &str) -> bool {
+/// Where a line of Rust code opens an assertion macro, or a `cfg_attr` attribute, that it does
+/// not close: the rest is on other lines, where a rule that reads one line cannot follow. Each
+/// place is the byte column where the construct starts (for a macro, where its path starts:
+/// `std` of `std::assert!(`), which is where the parser places the construct when it reads it.
+fn opens_across_lines(code: &str) -> Vec<usize> {
     const WORD: &str = "assert";
     let bytes = code.as_bytes();
     let unclosed = |rest: &[u8]| {
@@ -1394,24 +1432,35 @@ fn opens_across_lines(code: &str) -> bool {
         }
         true
     };
-    let assertion = code.match_indices(WORD).any(|(at, _)| {
-        let start = if code[..at].ends_with("debug_") {
-            at - "debug_".len()
-        } else {
-            at
-        };
-        if start > 0 && is_boundary_blocker(bytes[start - 1]) {
-            return false;
-        }
-        let rest = &bytes[at + WORD.len()..];
-        let rest = rest.strip_prefix(b"_eq").unwrap_or(rest);
-        follows(rest, b"!(").is_some_and(|end| unclosed(&rest[end..]))
-    });
-    assertion
-        || code.match_indices('#').any(|(at, _)| {
-            let rest = &bytes[at + 1..];
-            follows(rest, b"[cfg_attr(").is_some_and(|end| unclosed(&rest[end..]))
+    let mut places: Vec<usize> = code
+        .match_indices(WORD)
+        .filter_map(|(at, _)| {
+            let start = if code[..at].ends_with("debug_") {
+                at - "debug_".len()
+            } else {
+                at
+            };
+            if start > 0 && is_boundary_blocker(bytes[start - 1]) {
+                return None;
+            }
+            let rest = &bytes[at + WORD.len()..];
+            let rest = rest.strip_prefix(b"_eq").unwrap_or(rest);
+            let end = follows(rest, b"!(")?;
+            // The path the macro is named by: `std::assert` starts at `std`.
+            let path = bytes[..start]
+                .iter()
+                .rev()
+                .take_while(|b| b.is_ascii_alphanumeric() || matches!(**b, b'_' | b':'))
+                .count();
+            unclosed(&rest[end..]).then_some(start - path)
         })
+        .collect();
+    places.extend(code.match_indices('#').filter_map(|(at, _)| {
+        let rest = &bytes[at + 1..];
+        let end = follows(rest, b"[cfg_attr(")?;
+        unclosed(&rest[end..]).then_some(at)
+    }));
+    places
 }
 
 /// The signal a Rust construct is evidence of, if any.
@@ -3031,6 +3080,43 @@ mod tests {
         }
     }
 
+    /// Review V3 round 5, VD3R5-H-1. One section creates a file whose `#[cfg(test)]` a line
+    /// comment follows; a later section for the same path prepends `/*`. Git applies both, and
+    /// the function is in the program. The plan sees the whole review, and a path named twice
+    /// is no whole file. Before, the panic path was withdrawn.
+    #[test]
+    fn a_path_named_by_two_sections_is_no_whole_file() {
+        let created = "diff --git a/src/d.rs b/src/d.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/d.rs\n@@ -0,0 +1,4 @@\n+#[cfg(test)] // */\n+fn production() {\n+    load().unwrap();\n+}\n";
+        let prepended = "diff --git a/src/d.rs b/src/d.rs\n--- a/src/d.rs\n+++ b/src/d.rs\n@@ -1,1 +1,2 @@\n+/*\n #[cfg(test)] // */\n";
+        let alone = parse(created).unwrap();
+        assert_eq!(FragmentPlan::of(&alone).reading(0, 0), Reading::WholeFile);
+        assert_eq!(found(&alone[0]), []);
+        let Ok(both) = parse(&format!("{created}{prepended}")) else {
+            // a parser that refuses a path named twice has answered the question
+            return;
+        };
+        let plan = FragmentPlan::of(&both);
+        assert_eq!(plan.reading(0, 0), Reading::Hunk);
+        let items: Vec<(EvidenceSignal, Basis, u32)> = file_evidence_in(&both[0], plan.file(0))
+            .iter()
+            .map(|e| (e.signal, e.basis, e.line))
+            .collect();
+        assert_eq!(items, [(S::PanicPathAdded, Basis::SyntaxFragment, 3)]);
+        // in either order
+        let reversed = parse(&format!("{prepended}{created}")).unwrap();
+        let at = reversed
+            .iter()
+            .position(|file| file.status == FileStatus::Added)
+            .unwrap();
+        assert_eq!(FragmentPlan::of(&reversed).reading(at, 0), Reading::Hunk);
+        // a file that is not created, or has two hunks, is no whole file either
+        let modified = hunk_of("src/a.rs", &["+#[cfg(test)]", "+fn h() { a().unwrap(); }"]);
+        assert_eq!(
+            FragmentPlan::of(std::slice::from_ref(&modified)).reading(0, 0),
+            Reading::Hunk
+        );
+    }
+
     /// Review V3 round 4, VD3R4-M-1: inside another macro's body the parser names no
     /// construct, and a rule that reads one line cannot follow an assertion over three. The
     /// line that opens it says that it was not checked. Before, there was nothing.
@@ -3051,6 +3137,24 @@ mod tests {
             ],
         ));
         assert_eq!(forwarded, [(S::SyntaxUnchecked, Basis::Lexical, 5)]);
+        // Review V3 round 5, VD3R5-M-1: the outer macro on the same row is not the assertion,
+        // and does not account for it.
+        for body in [
+            &["outer! { assert!(", "    true", "); }"][..],
+            &[
+                "outer! { #[cfg_attr(",
+                "    miri,",
+                "    ignore",
+                ")] fn a() {} }",
+            ][..],
+            &["a!(); outer! { std::assert!(", "    true", "); }"][..],
+        ] {
+            assert_eq!(
+                found(&new_file("tests/m.rs", body)),
+                [(S::SyntaxUnchecked, Basis::Lexical, 1)],
+                "{body:?}"
+            );
+        }
         let attribute = found(&new_file(
             "tests/m.rs",
             &[
@@ -3099,9 +3203,14 @@ mod tests {
         for (body, expected) in cases {
             assert_eq!(found(&new_file("tests/m.rs", body)), *expected, "{body:?}");
         }
-        assert!(opens_across_lines("    debug_assert_eq ! ( a,"));
-        assert!(!opens_across_lines("    assert!(a(b), c);"));
-        assert!(!opens_across_lines("    x.assert!(") && !opens_across_lines("    #[derive("));
+        assert_eq!(opens_across_lines("    debug_assert_eq ! ( a,"), [4]);
+        assert_eq!(
+            opens_across_lines("x(); std::assert!(a, #[cfg_attr("),
+            [5, 21]
+        );
+        assert_eq!(opens_across_lines("    assert!(a(b), c);"), []);
+        assert_eq!(opens_across_lines("    x.assert!("), []);
+        assert_eq!(opens_across_lines("    #[derive("), []);
     }
 
     /// The other half: in a new file, what is not that proof leaves the item standing, and a
@@ -3600,7 +3709,7 @@ mod tests {
         assert!((0..parsed).all(|n| plan.allows(n, 0)));
         assert!((parsed..files.len()).all(|n| !plan.allows(n, 0)));
         assert!(!plan.allows(0, 1) && !plan.allows(files.len(), 0));
-        assert_eq!(plan.file(files.len()), &[] as &[bool]);
+        assert_eq!(plan.file(files.len()), &[] as &[Reading]);
         // inside the budget the parser confirms the item; beyond it the spelling stands
         let basis = |n: usize| {
             file_evidence_in(&files[n], plan.file(n))
@@ -3655,8 +3764,7 @@ mod tests {
                 &file.patch_twin.hunks[0],
                 kind.language,
                 &rules,
-                true,
-                false,
+                Reading::Hunk,
             )
         };
         let items = matches(&hunk_of("src/a.rs", &added));
