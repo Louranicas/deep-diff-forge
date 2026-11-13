@@ -106,6 +106,35 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   - Still reported, and declared in the corpus: a panic path in a function or an `impl` that
     is only `#[cfg(test)]`. The corpus has 40 cases; evidence precision 44 of 46, recall 44
     of 71.
+- **Round 3 of the same review (verdict NO-GO a third time) and its fixes.** The time, memory,
+  message-only and callback findings of round 2 were closed. Three were new.
+  - *High: a list of test attribute names is not proof either.* `use tracing::instrument as
+    rstest;` makes `#[rstest]` leave the function in the program, and a dependency renamed to
+    `tokio` does the same to `#[tokio::test]`. Checked with the compiler: the same holds for
+    `#[test]` itself; only `cfg` is reserved. So no test attribute withdraws a panic path any
+    more. What does is an exact `#[cfg(test)]` that is the first attribute of a top-level
+    module, function or `impl`, in a hunk that is the beginning of its file and parses with
+    no error: an attribute macro before it or around it may drop the `cfg`, and above a hunk
+    from the middle of a file a comment or a string can be open that ends on the attribute's
+    own line. Inside such an item a panic path in a macro's arguments
+    (`assert_eq!(f().unwrap(), 1)`) is withdrawn too. The cost is stated: a panic path in a
+    `#[test]` function is reported again (a test path halves it), and two such items are
+    declared false positives in the corpus.
+  - *High: harmless early hunks spent the parser's budget, and a later construct that only
+    the parser finds left no trace.* Three changes. Only a hunk whose new side holds a word
+    the parser reads (`unwrap`, `expect`, `assert`, `todo`, `unimplemented`, `ignore`) is
+    parsed or counted, so filler spends nothing. The token rules now read the same spellings
+    whatever the spacing (`value.unwrap ()`, `assert! ( true )`, `todo ! ()`, `# [ ignore ]`,
+    `#[ cfg_attr( miri , ignore ) ]`), so a hunk the parser does not read loses only what
+    is written over several lines. And such a hunk says so: the new signal
+    **`syntax_unchecked`** (+1, once per file) marks a Rust hunk that holds one of those words
+    and was not parsed (over 64 KiB or 50,000 nodes, or past the review's 2 MiB). It means
+    "not checked", not "bad".
+  - *Medium: the old-side comparison of round 2 could be turned against the evidence.* Two
+    assertions on one line were taken for one another, and an old side too large to parse
+    suppressed the item. Constructs are now paired by line and column, and when the old side
+    cannot be read the item stands.
+  - The corpus has 41 cases; evidence precision 50 of 53, recall 50 of 77.
 
 ### Changed
 

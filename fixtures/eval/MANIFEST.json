@@ -534,7 +534,7 @@
       "id": "evidence/integrity-rust",
       "kind": "evidence",
       "patch": "evidence/integrity-rust.patch",
-      "origin": "synthetic: agent batteries 2026-11-13: a skipped test, an assertion that cannot fail written with spaces, a stub and a cfg_attr skip in tests; panic paths and a dropped error in source. Negatives: an unwrap inside a test the hunk shows, unwrap_or, and the same words in a comment and a string",
+      "origin": "synthetic: agent batteries 2026-11-13: a skipped test, an assertion that cannot fail written with spaces, a stub and a cfg_attr skip in tests; panic paths and a dropped error in source. Negatives: unwrap_or, and the same words in a comment and a string. Declared false positive since review V3 round 3: an unwrap inside a #[test] function the hunk shows, because a test attribute is not proof of test code (any attribute name but cfg can be bound to a macro that leaves the function in the program)",
       "expect": [
         {
           "path": "tests/it.rs",
@@ -579,7 +579,15 @@
           "line": 9
         }
       ],
-      "sha256": "2fd175eaee1fc9ecd90fb81a1e987b26373323a9f258cb323a71aceb8047dae8"
+      "sha256": "2fd175eaee1fc9ecd90fb81a1e987b26373323a9f258cb323a71aceb8047dae8",
+      "known_false_positive": [
+        {
+          "path": "tests/it.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 6
+        }
+      ]
     },
     {
       "id": "evidence/error-swallowed-multilang",
@@ -883,7 +891,7 @@
       "id": "evidence/review-v3-round2",
       "kind": "evidence",
       "patch": "evidence/review-v3-round2.patch",
-      "origin": "internal: an adversarial review by Vesper, V3 round 2, 2026-11-13 (docs/reviews/vesper-v3-round2-report-20261113.md), findings VD3R2-H-1, VD3R2-M-1 and VD3R2-L-1, each reproduced before it was counted. Expected: a panic path under an unknown attribute path that ends in test, and a promise catch whose empty handler has a default value that calls a function. Negatives: a real test written with a raw identifier, and a todo and an assertion whose message alone changed. Declared false positive: a panic path in a function that is only #[cfg(test)], which the hunk proves but the scanner does not read",
+      "origin": "internal: an adversarial review by Vesper, V3 round 2, 2026-11-13 (docs/reviews/vesper-v3-round2-report-20261113.md), findings VD3R2-H-1, VD3R2-M-1 and VD3R2-L-1, each reproduced before it was counted. Expected: a panic path under an unknown attribute path that ends in test, and a promise catch whose empty handler has a default value that calls a function. Negatives: a todo and an assertion whose message alone changed, and (since round 3) a panic path in a top-level function under #[cfg(test)] in a new file. Declared false positive since round 3: a panic path in a real test written #[r#test], because no test attribute is proof",
       "expect": [
         {
           "path": "src/custom_test_attr.rs",
@@ -912,13 +920,58 @@
       ],
       "known_false_positive": [
         {
-          "path": "src/cfg_test_fn.rs",
+          "path": "src/raw_test_attr.rs",
           "signal": "panic_path_added",
           "side": "new",
           "line": 3
         }
       ],
       "sha256": "3f8f96734b500c69c8c20426d17d9b552b9a93fcc60a4fbf0347f14eb673a352"
+    },
+    {
+      "id": "evidence/review-v3-round3",
+      "kind": "evidence",
+      "patch": "evidence/review-v3-round3.patch",
+      "origin": "internal: an adversarial review by Vesper, V3 round 3, 2026-11-13 (docs/reviews/vesper-v3-round3-report-20261113.md), findings VD3R3-H-1, VD3R3-H-2 and VD3R3-M-1, each reproduced before it was counted. Expected: a panic path under a test framework's attribute name that an import or a renamed dependency can bind to anything, under a cfg(test) that an attribute macro before it may drop, and under a cfg(test) in a hunk from the middle of a file where a comment opened above ends on the attribute's line; a method call with a space before its parenthesis; and an assertion that becomes trivial on a line that already holds a trivial one. Negatives: panic paths inside a top-level #[cfg(test)] module of a new file, one of them inside a macro's arguments",
+      "expect": [
+        {
+          "path": "src/aliased.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/renamed_crate.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/stripped.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/comment_above.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 43
+        },
+        {
+          "path": "src/spaced.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/same_row.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "sha256": "30688c82e81f09a7e0388cf12e60cdd5064f1c504ee05879a0467b0b9b798b10"
     }
   ]
 }
