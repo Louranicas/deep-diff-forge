@@ -704,6 +704,40 @@ pub fn staged_patch(
         &[0],
         INDEX_LISTING_CAP,
     )?;
+    // An entry made with `git add -N` says that a path will be added and holds no content:
+    // a commit leaves it out, so it is no staged content. It was read as a staged empty
+    // file (fifth independent review of the hooks, HR5-L-1). Git shows such a path, and
+    // nothing else, as added when the index is compared with the working tree.
+    let intended = inside.run(
+        "git diff",
+        &[
+            OsStr::new("diff"),
+            OsStr::new("--no-ext-diff"),
+            OsStr::new("--no-textconv"),
+            OsStr::new("--no-renames"),
+            OsStr::new("--name-only"),
+            OsStr::new("--diff-filter=A"),
+            OsStr::new("-z"),
+        ],
+        &[0],
+        INDEX_LISTING_CAP,
+    )?;
+    let intended: std::collections::BTreeSet<&[u8]> = intended
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .collect();
+    let entries: Vec<u8> = entries
+        .split_inclusive(|byte| *byte == 0)
+        .filter(|entry| {
+            let path = entry
+                .iter()
+                .position(|byte| *byte == b'\t')
+                .map_or(&entry[..0], |tab| &entry[tab + 1..entry.len() - 1]);
+            !intended.contains(path)
+        })
+        .flatten()
+        .copied()
+        .collect();
     let list = scratch.join("index-entries");
     std::fs::write(&list, entries)
         .map_err(|e| refused(format!("cannot prepare the scratch directory: {e}")))?;
@@ -896,6 +930,8 @@ pub struct Worktree {
     /// by hand, with or without another directory put at its path, until
     /// `git worktree prune` forgets it.
     pub usable: bool,
+    /// The entry of a bare repository itself: it has refs and reflogs and no working tree.
+    pub bare: bool,
 }
 
 /// The working trees of the repository containing `repo`, the main one first.
@@ -933,9 +969,11 @@ pub fn worktrees(
                 path,
                 head: None,
                 usable,
+                bare: false,
             });
         } else if let Some(last) = found.last_mut() {
             if record == b"bare" {
+                last.bare = true;
                 last.usable = last.path.is_dir();
             } else if let Some(id) = record.strip_prefix(b"HEAD ")
                 && let Ok(id) = std::str::from_utf8(id)

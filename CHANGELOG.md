@@ -325,6 +325,41 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     out says how much.
   - *State.* Schema `deep-diff-forge.hook-state.v4`; a state of an earlier schema is not
     read. *New in the patch crate:* `staged_patch`, `worktrees`, `has_uncommitted_changes`.
+- **Round 13 of Vesper's review and a fifth independent review of the hooks (both NO-GO): a
+  stop is silent only when everything has a pass.** Both found one thing from two sides
+  (`docs/reviews/vesper-v4-round13-report-20261114.md`,
+  `docs/reviews/claude-independent-review-hooks-5-20261114.md`): a commit that got no
+  verdict was written down as done, said once, and never asked about or named again. The
+  rule every part obeys now: a stop prints nothing only when every unit has a pass;
+  anything else is said at that stop, every time, in a bounded form.
+  - *No verdict is never done* (VD4R13-M-1, HR5-H-1): such a commit is named at every stop
+    and asked about again (never-asked commits first), up to five attempts that count;
+    after that it is still named. Final at once only what the hook proves from the
+    repository (a shallow clone's edge, a patch over the builder's size).
+  - *Holds and standing failures are a line of every stop* (HR5-M-4).
+  - *One message budget* (HR5-M-1, HR5-M-2): under 9,000 characters; what blocks is shown
+    the newest first and never without the names of its rules; a path that is cut keeps
+    its file name.
+  - *A staged failure is its own* (HR5-M-3): it blocks after the working tree was repaired
+    and says what clears it.
+  - *What a stop names beside its verdict is under the same rule.* A nested repository
+    that was left out, another repository the session is in, a submodule with changes,
+    another working tree with changes or gone, and a start that was not recorded were each
+    said once in a session (the entries above say "once"); a later stop where every unit
+    passed was silent beside them. Each is now said at every stop while it is true: in
+    full the first time, then in one line that counts such things and names the first
+    three. Working trees beyond the sixteen a stop looks at are counted, where they were
+    passed over, and the files of a repository that has no commit yet are said to be not
+    judged, where such a stop was silent. The members `start_said` and `more_said` left the state.
+  - *Lows.* `git add -N` is no staged content (HR5-L-1); the gate's probe is made for any
+    policy name (HR5-L-2); the words for a state that cannot be kept say what happened
+    (HR5-L-3); a reason from Git is its `fatal:` or `error:` line (HR5-L-4); a bare
+    repository's own entry is no working tree (HR5-L-5); the gate reads what is staged, and
+    a resumed start says when its lists are gone (HR5-L-6); README and SECURITY.md say when
+    a stop is silent (HR5-L-7).
+  - *State.* Schema `deep-diff-forge.hook-state.v5`; the file of judged commits holds
+    `id:n<attempts>:reason` and `id:x:reason` lines beside `p`, `h`, `f`.
+
 ### Changed
 
 - Path and shape weights are stated once, in `RiskSignal::weight`, and the scorer reads

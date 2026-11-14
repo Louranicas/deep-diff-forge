@@ -279,7 +279,10 @@ rule for every case below: an ordinary workflow must never end in a silent stop 
 work; a deliberate evasion is made visible where that is cheap, and is otherwise a stated
 limit.
 
-`agent hook` runs inside an agent's session, on the agent's own change. What it holds to:
+`agent hook` runs inside an agent's session, on the agent's own change. **A stop prints nothing
+only when every unit of the session (the uncommitted change, the staged change, each commit)
+has a pass; everything else that is true at a stop is said at that stop, every time, in a
+bounded form.** What it holds to:
 
 - **The change is attacker-controlled, and so is everything read from it.** A hook message
   never repeats the text of a changed line. A path is shown quoted, with control characters
@@ -332,6 +335,23 @@ limit.
   with twelve failures standing, a commit that failed blocked the stop without being named,
   and one that got no verdict was not said. The last two parts give way first when the
   message is full, and it says how many it left out.
+- **No verdict is never "done".** A commit that got no verdict was written down as not
+  judgeable, said once, and then neither asked about nor named again: one transient failure
+  of the judge on a commit with a credential made every later stop silent. Now only a
+  verdict is an answer. A commit without one is named at every stop and asked about again,
+  the commits never asked about first; after five attempts that count it is asked about no
+  more and is still named. Only what the hook proves from the repository is final at once
+  (a shallow clone's edge, a patch over the builder's size), and is named at every stop
+  too. What the judge holds and what stands are a line of every stop as well: a hold first
+  seen at a stop that blocked for something else was never shown again.
+- **A message is bounded and what blocks keeps its rule.** Under 9,000 characters; what
+  blocks is shown the staged change first, then the uncommitted one, then the commits the
+  newest first; a unit that does not fit whole is shown with each rule's name and first
+  path, then with its rules' names alone, then counted. Before, a unit whose rules were
+  longer than the room was shown with no rule, and 150 failing commits put the session's
+  own past where the client cuts the message.
+- **A staged failure is its own.** The identity of a working tree's failure holds which
+  unit it is in, so what is staged blocks for itself after the working tree was repaired.
 - **A commit with no verdict never stops the judging of others.** When the chain gives
   verdicts and one patch is refused (a name that is not UTF-8, a size, a shallow clone's
   edge), that commit is said once by its id, remembered as not judgeable, and the next is
@@ -362,22 +382,27 @@ limit.
 - **The first stop of a session whose start was not recorded says so.** When no
   session-start hook recorded the project and the base, they were recorded by the first stop
   or by an advice hook before it (the hook after the tool call that commits always runs
-  first), and nothing is known of what the session did before. That stop says, once, that
+  first), and nothing is known of what the session did before. That stop says that
   the session's start was not recorded and that work committed before was not judged,
   whatever the judge says of what is left (a pass or an empty change is allowed with that
-  message; a fail, a hold and UNJUDGED carry it too). It stays
+  message; a fail, a hold and UNJUDGED carry it too), and every later stop of the session
+  says it again, in one line: it stays true. A stop stays
   silent only where no project can be found at all: Git says there is no repository around
   the session's directory, the client names none, and none is recorded.
 - **What the hooks do not judge, and what they name.** They judge the uncommitted and the
   staged change of the project's working tree and of a linked working tree the session's
   directory is in, and the session's commits. Another working tree of the project that has
-  changes which are not committed is named once as not judged, and so is one that was
-  removed by hand (up to sixteen are looked at). Named once in a session as not judged: another repository the
+  changes which are not committed is named as not judged, and so is one that was
+  removed by hand (sixteen are looked at; how many more there are is said). Named the same way: another repository the
   session's directory is in at a stop, a submodule with changes that are not committed in
   it, a nested repository in the project's tree, which is left out of the patch (Git cannot
   even stage one that has no commit), and another working tree of the project that lies
-  inside its tree (named as that). When a session has more such things than it remembers
-  as said (32), it says once that there is more. Not judged and not named, for the judge on
+  inside its tree (named as that). Each of these is said at every stop while it is true:
+  in full the first time, afterwards in one line that counts such things and names the
+  first three (five are said in full at one stop and a session remembers 32 as said in
+  full; the others are in that line). Before, each was said once in a session, and a stop
+  where every unit passed was then silent beside something known and not judged. None of
+  them blocks. Not judged and not named, for the judge on
   the pull request: a commit that only a remote-tracking ref names; a commit that is gone
   from every ref and from the reflogs that are read (those of each working tree's `HEAD`
   and of the stash); a commit that was in the repository when the session began;
@@ -451,7 +476,8 @@ limit.
 - **The policy is read from the commit the session began from**, never from the working tree
   and never from a later commit, and only when it is a regular file there.
 - **A failure is never "nothing to judge".** Only two things are: no commit when the session
-  began (and none since), and no change. One more is silent because there is nothing to
+  began (and none since: nothing is judged then, and while the repository holds files
+  every stop says that they are not judged), and no change. One more is silent because there is nothing to
   look at: Git ran and found no repository around a session that has no project recorded.
   Everything else is said. Git missing from `PATH`, Git refusing the repository for its
   owner, a session directory inside `.git` or gone with nothing recorded, a base commit that

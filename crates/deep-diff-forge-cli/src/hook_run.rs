@@ -144,6 +144,23 @@ fn git_words(error: &GitAcquireError) -> String {
         GitAcquireError::TimedOut { command, .. } => {
             format!("`{command}` did not finish in the time a hook has and was stopped")
         }
+        // Git's reason is its `fatal:` or `error:` line; a hint it prints first used to be all
+        // that a message had room for (fifth independent review of the hooks, HR5-L-4).
+        GitAcquireError::CommandFailed {
+            command, stderr, ..
+        } => {
+            let lines = || {
+                stderr
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+            };
+            let reason = lines()
+                .rfind(|line| line.starts_with("fatal:") || line.starts_with("error:"))
+                .or_else(|| lines().next_back())
+                .unwrap_or("it wrote no reason");
+            format!("`{command}` failed: {reason}")
+        }
         other => other.to_string(),
     }
 }
@@ -442,15 +459,11 @@ struct Project {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct State {
     project: Option<Project>,
-    /// A stop has said that the session's start was not recorded ([`hook::FIRST_STOP`]).
-    start_said: bool,
     /// The keys of findings already said in this session ([`Finding::key`]).
     reported: BTreeSet<String>,
     /// What was already said once in this session, hashed: the reasons an advice hook gave for
     /// not running ([`notice`]) and the things a stop named as not judged.
     noticed: BTreeSet<String>,
-    /// A stop has said that there is more to name than [`NOTICED_CAP`] things.
-    more_said: bool,
     /// The failures of uncommitted and staged changes that have blocked a stop and were found
     /// again at every stop since, each as [`hook::failure_digest`] gives it: its rules,
     /// signals, paths and numbers of items. One that a stop no longer finds is taken out, so it
@@ -465,7 +478,7 @@ struct State {
     judged_count: usize,
 }
 
-const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v4";
+const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v5";
 
 /// A session's state file. The session id is hashed: it is the client's string and must not
 /// choose a file name.
@@ -531,10 +544,9 @@ fn is_identity(text: &str) -> bool {
     !text.is_empty() && text.len() <= 20 && text.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// A judged commit as its file writes it: its id, a colon and `p`, `h`, `f` or `u`.
+/// A line of the file of judged commits ([`answer`]).
 fn is_judged_entry(text: &str) -> bool {
-    text.split_once(':')
-        .is_some_and(|(id, outcome)| is_commit_id(id) && matches!(outcome, "p" | "h" | "f" | "u"))
+    answer(text).is_some()
 }
 
 /// A SHA-256 as the state writes one.
@@ -600,10 +612,8 @@ fn state_from(text: &str) -> Result<State, &'static str> {
     }
     Ok(State {
         project,
-        start_said: value["start_said"].as_bool().ok_or(MEMBER)?,
         reported: list("reported", REPORTED_CAP)?.into_iter().collect(),
         noticed: list("noticed", NOTICED_CAP)?.into_iter().collect(),
-        more_said: value["more_said"].as_bool().ok_or(MEMBER)?,
         blocked: list("blocked", BLOCKED_CAP)?,
         judged_sha256: judged_sha256.to_owned(),
         judged_count,
@@ -621,10 +631,8 @@ fn state_text(state: &State) -> String {
             "tips_count": project.tips_count,
             "by_start": project.by_start,
         })),
-        "start_said": state.start_said,
         "reported": state.reported,
         "noticed": state.noticed,
-        "more_said": state.more_said,
         "blocked": state.blocked,
         "judged_sha256": state.judged_sha256,
         "judged_count": state.judged_count,
@@ -1412,6 +1420,14 @@ fn session_start(input: &Input, args: &[String]) -> Option<String> {
     if let Some(why) = session.inside(&work.place.top) {
         return Some(hook::contract_trouble(&why));
     }
+    // A session that is resumed with its list of commits gone, or its list of judged commits,
+    // is not one whose stops will be judged: say so now, not only at the stop (fifth
+    // independent review of the hooks, HR5-L-6).
+    if !work.fresh
+        && let Err(why) = session.tips(&work.project).and_then(|_| session.judged())
+    {
+        return Some(hook::contract_trouble(&why));
+    }
     if work.fresh
         && let Some(project) = &mut session.state.project
     {
@@ -1635,7 +1651,7 @@ struct Bench<'a> {
     program: PathBuf,
     policy_file: PathBuf,
     policy_sha256: String,
-    /// The probe `agent doctor --gate` uses, for this policy ([`Judge::chain_works`]).
+    /// The probe `agent doctor --gate` uses, for this policy ([`Judge::chain_answers`]).
     probe: Option<String>,
     candidates: Candidates,
     deadline: Deadline,
@@ -1777,6 +1793,11 @@ const STOP_RESERVE: Duration = Duration::from_secs(4);
 /// The least time that must be left for another commit to be judged at this stop.
 const COMMIT_FLOOR: Duration = Duration::from_secs(3);
 /// Why commits wait for a later stop when this one ran out of time.
+/// After this many attempts that count, a commit with no verdict is asked about no more.
+const ATTEMPTS: u32 = 5;
+/// When no patch has got a verdict at a stop and this many asks about commits have failed,
+/// the stop asks no more.
+const FIRST_ASKS: usize = 3;
 const NOT_YET: &str = "they were not judged yet: one stop judges as many commits as its time allows, the oldest first; they are judged at the next stop";
 /// The most other working trees of the project that one stop looks at for changes.
 const OTHER_TREES: usize = 16;
@@ -1799,10 +1820,10 @@ struct Judging {
     /// The uncommitted and the staged change of each working tree first, then the session's
     /// commits that did not pass, the oldest first.
     units: Vec<TreeJudged>,
-    /// What must be said beside the verdict, each thing once in a session.
-    beside: Vec<String>,
+    /// What must be said beside the verdict, at every stop while it is true.
+    beside: Vec<Note>,
     /// The commits this stop has an answer for, each with it as the session's file writes it.
-    commits: Vec<(String, char)>,
+    commits: Vec<(String, String)>,
 }
 
 /// The judge of one stop, looked for when the first patch needs it: a stop with nothing to
@@ -1814,7 +1835,8 @@ struct Judge<'a> {
     bench: Option<Result<Bench<'a>, String>>,
     /// What was said about each patch, by its SHA-256: the same patch is judged once.
     answers: std::collections::BTreeMap<String, Judged>,
-    /// Whether the chain gives verdicts at this stop, once that is known ([`Self::chain_works`]).
+    /// `Some(true)` once a patch, or the probe, has got a verdict at this stop: the chain works.
+    /// `Some(false)` when the probe was asked and got none.
     chain: Option<bool>,
 }
 
@@ -1855,21 +1877,12 @@ impl<'a> Judge<'a> {
         answer
     }
 
-    /// Why no patch can be judged at this stop, when the judge could not be prepared.
-    fn broken(&self) -> Option<&str> {
-        match &self.bench {
-            Some(Err(reason)) => Some(reason),
-            _ => None,
-        }
-    }
-
-    /// Whether the chain gives verdicts at this stop: the judge, the policy and a ranker the
-    /// policy admits. Known from the first verdict any patch got; when none has got one, the
-    /// judge is asked about the probe `agent doctor --gate` uses (one comment line added to
-    /// the policy). With a chain that works, a patch that gets no verdict is refused for what
-    /// it is, and asking again will not help; with one that does not, nothing was said about
-    /// the patch at all.
-    fn chain_works(&mut self) -> bool {
+    /// Whether the chain gives verdicts at this stop: known from the first verdict any patch
+    /// got; else the judge is asked, once, about the probe `agent doctor --gate` uses (one
+    /// comment line added to the policy). This says only whether asking about more commits
+    /// at this stop can lead anywhere. It does not say what a missing verdict means: a commit
+    /// with no verdict is not done whatever this answers.
+    fn chain_answers(&mut self) -> bool {
         if let Some(known) = self.chain {
             return known;
         }
@@ -1885,29 +1898,56 @@ impl<'a> Judge<'a> {
         self.chain = Some(works);
         works
     }
+
+    /// Why no patch can be judged at this stop, when the judge could not be prepared.
+    fn broken(&self) -> Option<&str> {
+        match &self.bench {
+            Some(Err(reason)) => Some(reason),
+            _ => None,
+        }
+    }
+}
+
+/// Something in the project that a stop knows of and has not judged: said at every stop
+/// while it is true. In full the first time; after that under its `name`, on one line with
+/// the others. These were said once in a session and then never again: a "said once" that
+/// turned into silence, like the commit with no verdict (review V4 round 13 and the fifth
+/// independent review of the hooks: the rule is that a stop is silent only when everything
+/// has a pass and nothing else is open).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Note {
+    /// What it is, in a few words, for the line that counts the notes said before.
+    name: String,
+    text: String,
 }
 
 /// What to say of the directory `nested` that was left out of the patch of the tree at `top`.
 /// Another working tree of this project that lies inside it is said to be that: it was called
 /// "a Git repository of its own" (third independent review of the hooks, HR3-L-3).
-fn left_out(stopping: &Stopping<'_>, top: &Path, nested: &str) -> String {
+fn left_out(stopping: &Stopping<'_>, top: &Path, nested: &str) -> Note {
     let linked = matches!(
         find(&top.join(nested), stopping.deadline),
         Found::Tree(found) if found.id == stopping.work.place.id
     );
     if linked {
-        format!(
-            "The directory {} in {} is another working tree of this project (a linked worktree): its files are no part of what {} would commit, and were left out. The commits made in it are judged with the session's; its uncommitted changes are judged at a stop made from inside it.",
-            hook::shown_path(nested),
-            shown_tree(top),
-            shown_tree(top)
-        )
+        Note {
+            name: format!("the working tree {} inside it", hook::shown_path(nested)),
+            text: format!(
+                "The directory {} in {} is another working tree of this project (a linked worktree): its files are no part of what {} would commit, and were left out. The commits made in it are judged with the session's; its uncommitted changes are judged at a stop made from inside it.",
+                hook::shown_path(nested),
+                shown_tree(top),
+                shown_tree(top)
+            ),
+        }
     } else {
-        format!(
-            "The directory {} in {} is a Git repository of its own and no part of what this project would commit: it was left out and not judged.",
-            hook::shown_path(nested),
-            shown_tree(top)
-        )
+        Note {
+            name: format!("the nested repository {}", hook::shown_path(nested)),
+            text: format!(
+                "The directory {} in {} is a Git repository of its own and no part of what this project would commit: it was left out and not judged.",
+                hook::shown_path(nested),
+                shown_tree(top)
+            ),
+        }
     }
 }
 
@@ -1935,7 +1975,7 @@ fn uncommitted(
     stopping: &Stopping<'_>,
     top: &Path,
     name: &str,
-    beside: &mut Vec<String>,
+    beside: &mut Vec<Note>,
 ) -> Result<Uncommitted, String> {
     let from = match head_state(top, &stopping.deadline.git()) {
         Ok(HeadState::Commit(id)) => id,
@@ -2035,13 +2075,15 @@ fn commits_label(count: usize) -> String {
 
 /// One commit of the session judged by its own change: the patch from its first parent to
 /// itself (for a commit with no parent, from nothing). A commit that changes nothing against
-/// its first parent has nothing to judge, and passes.
+/// its first parent has nothing to judge, and passes. With the answer comes whether a
+/// missing verdict is one the hook itself proves from the repository, and so final: the
+/// patch is over the size the builder makes.
 fn judge_commit(
     stopping: &Stopping<'_>,
     tribunal: &mut Judge<'_>,
     at: usize,
     (id, parent): &CommitAndParent,
-) -> Result<Judged, String> {
+) -> Result<(Judged, bool), String> {
     let patch = commit_patch(
         &stopping.work.place.top,
         parent.as_deref(),
@@ -2050,17 +2092,23 @@ fn judge_commit(
         &stopping.deadline.git(),
     );
     Ok(match patch {
-        Ok(bytes) if bytes.is_empty() => Judged::Pass,
-        Ok(bytes) => tribunal.judge(&bytes),
-        Err(JudgePatchError::Failed(error)) => Judged::Unjudged {
-            reason: format!(
-                "the commit could not be read from Git: {}",
-                git_words(&error)
-            ),
-        },
-        Err(other) => Judged::Unjudged {
-            reason: format!("the commit could not be read from Git: {other}"),
-        },
+        Ok(bytes) if bytes.is_empty() => (Judged::Pass, false),
+        Ok(bytes) => (tribunal.judge(&bytes), false),
+        Err(JudgePatchError::Failed(error)) => (
+            Judged::Unjudged {
+                reason: format!(
+                    "the commit could not be read from Git: {}",
+                    git_words(&error)
+                ),
+            },
+            matches!(error, GitAcquireError::BudgetExceeded { .. }),
+        ),
+        Err(other) => (
+            Judged::Unjudged {
+                reason: format!("the commit could not be read from Git: {other}"),
+            },
+            false,
+        ),
     })
 }
 
@@ -2076,17 +2124,66 @@ fn commit_unit(id: &str, judged: Judged) -> TreeJudged {
     }
 }
 
-/// A commit whose failure an earlier stop of the session found: it stands. Its rules were
-/// said then and are not kept.
-fn standing(id: &str) -> TreeJudged {
+/// A commit as an earlier stop of the session left it: its failure stands, the judge holds
+/// it, or it has no verdict. Its rules were said then and are not kept. It is a unit of every
+/// stop: what is not a pass is said at each one.
+fn from_before(id: &str, judged: Judged) -> TreeJudged {
     TreeJudged {
         what: hook::commit_label(id),
-        judged: Some(Judged::Fail {
-            rules: Vec::new(),
-            said: Vec::new(),
-        }),
+        judged: Some(judged),
         holds: Holds::Never,
     }
+}
+
+/// What the session's file of judged commits says of one commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Answer<'a> {
+    Pass,
+    Hold,
+    Fail,
+    /// No verdict yet, after so many attempts that count, with the latest reason. It is asked
+    /// about again, up to [`ATTEMPTS`] attempts.
+    NoVerdict {
+        attempts: u32,
+        reason: &'a str,
+    },
+    /// No verdict, and none to come: the hook itself proves it from the repository.
+    Final(&'a str),
+}
+
+/// Read one line of the file of judged commits: `ID:p`, `ID:h`, `ID:f`, `ID:n<attempts>:reason`
+/// or `ID:x:reason`.
+fn answer(entry: &str) -> Option<(&str, Answer<'_>)> {
+    let (id, rest) = entry.split_once(':')?;
+    if !is_commit_id(id) {
+        return None;
+    }
+    let said = match rest {
+        "p" => Answer::Pass,
+        "h" => Answer::Hold,
+        "f" => Answer::Fail,
+        _ => {
+            let (kind, reason) = rest.split_once(':')?;
+            match kind.strip_prefix('n') {
+                Some(attempts) => Answer::NoVerdict {
+                    attempts: attempts.parse().ok().filter(|count| *count <= ATTEMPTS)?,
+                    reason,
+                },
+                None if kind == "x" => Answer::Final(reason),
+                None => return None,
+            }
+        }
+    };
+    Some((id, said))
+}
+
+/// A reason as one line of the file of judged commits holds it.
+fn one_line(reason: &str) -> String {
+    reason
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(200)
+        .collect()
 }
 
 /// The commits at the edge of a shallow clone: the repository does not have their parents
@@ -2097,21 +2194,81 @@ fn shallow_commits(common: &Path) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// Have the session's commits judged, each once in a session and each by its own change
-/// ([`judge_commit`]).
+/// The session's commits by what its file of judged commits says of each: the unit of every
+/// commit that has an answer which is not a pass (`None` for the others), and the commits to
+/// ask about, in the order of asking, each with its rank (0 for one never asked about, else
+/// its attempts and one).
+fn sorted_commits(
+    listed: &[CommitAndParent],
+    known: &[String],
+) -> (Vec<Option<TreeJudged>>, Vec<(u32, usize)>) {
+    let known: std::collections::BTreeMap<&str, Answer<'_>> =
+        known.iter().filter_map(|entry| answer(entry)).collect();
+    let no_verdict = |reason: &str| Judged::Unjudged {
+        reason: reason.to_owned(),
+    };
+    let none = || Judged::Fail {
+        rules: Vec::new(),
+        said: Vec::new(),
+    };
+    let mut units: Vec<Option<TreeJudged>> = vec![None; listed.len()];
+    let mut ask: Vec<(u32, usize)> = Vec::new();
+    for (at, (id, _)) in listed.iter().enumerate() {
+        match known.get(id.as_str()) {
+            Some(Answer::Pass) => {}
+            Some(Answer::Fail) => units[at] = Some(from_before(id, none())),
+            Some(Answer::Hold) => {
+                units[at] = Some(from_before(
+                    id,
+                    Judged::Hold {
+                        rules: Vec::new(),
+                        said: Vec::new(),
+                    },
+                ));
+            }
+            Some(Answer::Final(reason)) => units[at] = Some(from_before(id, no_verdict(reason))),
+            Some(Answer::NoVerdict { attempts, reason }) => {
+                let spent = *attempts >= ATTEMPTS;
+                let reason = if spent {
+                    format!("could not be judged in {ATTEMPTS} attempts; the last reason: {reason}")
+                } else {
+                    (*reason).to_owned()
+                };
+                units[at] = Some(from_before(id, no_verdict(&reason)));
+                if !spent {
+                    // after every commit that was never asked about
+                    ask.push((*attempts + 1, at));
+                }
+            }
+            None => ask.push((0, at)),
+        }
+    }
+    ask.sort_unstable();
+    (units, ask)
+}
+
+/// Have the session's commits judged, each by its own change ([`judge_commit`]), and make a
+/// unit of every commit that has no pass: at every stop, not only at the one that first
+/// finds it.
 ///
-/// A commit `known` has its answer is not asked about again: one that failed is named as
-/// standing, the others are passed over. The rest are asked about the oldest first, while the
-/// stop has time; those that did not fit are counted and said, and wait for the next stop.
-///
-/// A commit that gets no verdict is one of two things (fourth independent review of the
-/// hooks, HR4-M-2: three such commits ended the judging of every later commit, at every
-/// stop). When the chain gives verdicts ([`Judge::chain_works`]), the judge or the patch
-/// builder refuses this patch for what it is (a name that is not UTF-8, a size over a limit,
-/// a commit at the edge of a shallow clone): it is said once, by its id and with the reason,
-/// remembered as not judgeable, and the next commit is asked about. When the chain gives no
-/// verdict, or the stop's time is up, nothing was said about the patch: nothing more is
-/// asked at this stop, nothing is remembered, and the commits not reached are counted.
+/// - A commit that passed is done. One that failed stands; one the judge held is held: both
+///   are units of every later stop.
+/// - A commit with no verdict is not done. It was written down as done, said once, and then
+///   never asked about and never named again: a transient failure of the judge on a commit
+///   with a credential made that commit pass in silence from the next stop on (review V4
+///   round 13, VD4R13-M-1; fifth independent review of the hooks, HR5-H-1). It is asked about
+///   again at later stops and is a unit of every stop while it has no verdict.
+/// - The order of asking: the commits never asked about, the oldest first; then those that
+///   had no verdict, the fewest attempts first; all while the stop has time. After
+///   [`ATTEMPTS`] attempts a commit is asked about no more, and is still a unit.
+/// - An attempt counts at a stop where some patch got a verdict. Where none did, nothing can
+///   be said of the patch: the commit is written down as asked, so that others come before
+///   it next time, and its attempts stay as they were. And when the first [`FIRST_ASKS`]
+///   asks of such a stop all fail, the judge is asked about its probe
+///   ([`Judge::chain_answers`]): with no verdict on that either, the stop asks no more and
+///   the rest are counted.
+/// - Only what the hook proves from the repository is final at once: a commit at the edge of
+///   a shallow clone, a patch over the builder's size. It is a unit of every stop too.
 fn judge_commits(
     stopping: &Stopping<'_>,
     tribunal: &mut Judge<'_>,
@@ -2119,67 +2276,77 @@ fn judge_commits(
     known: &[String],
     out: &mut Judging,
 ) -> Result<(), String> {
-    let known: std::collections::BTreeMap<&str, &str> = known
-        .iter()
-        .filter_map(|entry| entry.split_once(':'))
-        .collect();
     let shallow = shallow_commits(&stopping.work.place.common);
+    let no_verdict = |reason: &str| Judged::Unjudged {
+        reason: reason.to_owned(),
+    };
+    let (mut units, ask) = sorted_commits(listed, known);
     // Why the commits from here on wait, once one has to.
     let mut waits: Option<String> = tribunal.broken().map(str::to_owned);
-    let mut waiting = 0_usize;
-    for (at, commit) in listed.iter().enumerate() {
+    let (mut waiting, mut failed) = (0_usize, 0_usize);
+    let mut tried: Vec<(usize, u32, String)> = Vec::new();
+    for (rank, at) in ask {
+        let commit = &listed[at];
         let id = &commit.0;
-        match known.get(id.as_str()) {
-            Some(&"f") => {
-                out.units.push(standing(id));
-                continue;
-            }
-            Some(_) => continue,
-            None => {}
-        }
         if waits.is_none() && stopping.deadline.left() < COMMIT_FLOOR {
             waits = Some(NOT_YET.to_owned());
         }
         if waits.is_some() {
-            waiting += 1;
+            // one that had no verdict before is a unit already, with its reason
+            waiting += usize::from(rank == 0);
             continue;
         }
         // The repository does not have this commit's parent, so "from its parent" would be
         // "from nothing": the whole tree as an addition (HR4-L-2).
-        let cut_off = commit.1.is_none() && shallow.contains(id);
-        let judged = if cut_off {
-            Judged::Unjudged {
-                reason: "this clone is shallow and does not have the commit's parent, so the commit's own change cannot be read (`git fetch --unshallow` gets the history)".to_owned(),
-            }
+        let (judged, proven) = if commit.1.is_none() && shallow.contains(id) {
+            (
+                no_verdict(
+                    "this clone is shallow and does not have the commit's parent, so the commit's own change cannot be read (`git fetch --unshallow` gets the history)",
+                ),
+                true,
+            )
         } else {
             judge_commit(stopping, tribunal, at, commit)?
         };
-        let outcome = match &judged {
-            Judged::Pass => 'p',
-            Judged::Hold { .. } => 'h',
-            Judged::Fail { .. } => 'f',
-            Judged::Unjudged { .. }
-                if cut_off
-                    || (stopping.deadline.left() >= COMMIT_FLOOR && tribunal.chain_works()) =>
-            {
-                'u'
+        if let Some(reason) = tribunal.broken() {
+            waits = Some(reason.to_owned());
+            waiting += usize::from(rank == 0);
+            continue;
+        }
+        let said = match &judged {
+            Judged::Pass => "p".to_owned(),
+            Judged::Hold { .. } => "h".to_owned(),
+            Judged::Fail { .. } => "f".to_owned(),
+            Judged::Unjudged { reason } if proven => format!("x:{}", one_line(reason)),
+            Judged::Unjudged { .. } if stopping.deadline.left() < COMMIT_FLOOR => {
+                // the stop's time ended the asking: not an attempt
+                waits = Some(NOT_YET.to_owned());
+                waiting += usize::from(rank == 0);
+                continue;
             }
             Judged::Unjudged { reason } => {
-                let out_of_time = stopping.deadline.left() < COMMIT_FLOOR;
-                waits = Some(if out_of_time {
-                    NOT_YET.to_owned()
-                } else {
-                    reason.clone()
-                });
-                waiting += 1;
+                failed += 1;
+                tried.push((at, rank.saturating_sub(1), reason.clone()));
+                if tribunal.chain != Some(true) && failed >= FIRST_ASKS && !tribunal.chain_answers()
+                {
+                    waits = Some(reason.clone());
+                }
+                units[at] = Some(commit_unit(id, judged));
                 continue;
             }
         };
-        out.commits.push((id.clone(), outcome));
-        if outcome != 'p' {
-            out.units.push(commit_unit(id, judged));
-        }
+        units[at] = (said != "p").then(|| commit_unit(id, judged));
+        out.commits.push((id.clone(), said));
     }
+    // An attempt counts where the chain gave a verdict at this stop.
+    let counts = u32::from(tribunal.chain == Some(true));
+    for (at, attempts, reason) in tried {
+        out.commits.push((
+            listed[at].0.clone(),
+            format!("n{}:{}", attempts + counts, one_line(&reason)),
+        ));
+    }
+    out.units.extend(units.into_iter().flatten());
     if waiting > 0 {
         out.units.push(TreeJudged {
             what: commits_label(waiting),
@@ -2194,42 +2361,55 @@ fn judge_commits(
 
 /// What to say of the project's other working trees: one that is gone, and one the session
 /// is not in that has changes which are not committed (they are in no patch of this stop; the
-/// commits made there are judged). At most [`OTHER_TREES`] are looked at. An agent that makes
-/// a working tree and edits it by path is never "in" it (fourth independent review of the
-/// hooks, HR4-L-5).
-fn other_trees(stopping: &Stopping<'_>, judged: &[PathBuf]) -> Vec<String> {
+/// commits made there are judged). [`OTHER_TREES`] are looked at; the ones beyond are
+/// counted, not passed over in silence. An agent that makes a working tree and edits it by
+/// path is never "in" it (fourth independent review of the hooks, HR4-L-5).
+fn other_trees(stopping: &Stopping<'_>, judged: &[PathBuf]) -> Vec<Note> {
     let Ok(trees) = worktrees(&stopping.work.place.top, &stopping.deadline.git()) else {
         return Vec::new();
     };
     let mut said = Vec::new();
-    let mut looked_at = 0;
+    let (mut looked_at, mut beyond) = (0, 0_usize);
     for tree in trees {
-        if judged.contains(&tree.path) {
+        // a bare repository's own entry is no working tree: there is nothing uncommitted in it
+        if tree.bare || judged.contains(&tree.path) {
             continue;
         }
         if !tree.usable {
-            said.push(format!(
-                "The working tree {} of this project is gone or is no working tree any more: what only its own history names is not judged (`git worktree prune` forgets it).",
-                shown_tree(&tree.path)
-            ));
+            said.push(Note {
+                name: format!("the working tree {} (gone)", shown_tree(&tree.path)),
+                text: format!(
+                    "The working tree {} of this project is gone or is no working tree any more: what only its own history names is not judged (`git worktree prune` forgets it).",
+                    shown_tree(&tree.path)
+                ),
+            });
             continue;
         }
         looked_at += 1;
         if looked_at > OTHER_TREES {
-            said.push(format!(
-                "This project has more than {OTHER_TREES} other working trees: the rest were not looked at for changes that are not committed."
-            ));
-            break;
+            beyond += 1;
+            continue;
         }
         if !matches!(
             has_uncommitted_changes(&tree.path, &stopping.deadline.git()),
             Ok(false)
         ) {
-            said.push(format!(
-                "The working tree {} of this project has changes that are not committed, and the session's directory is not in it: they were not judged (a stop made from inside it judges them; its commits are judged from anywhere).",
-                shown_tree(&tree.path)
-            ));
+            said.push(Note {
+                name: format!("the working tree {}", shown_tree(&tree.path)),
+                text: format!(
+                    "The working tree {} of this project has changes that are not committed, and the session's directory is not in it: they were not judged (a stop made from inside it judges them; its commits are judged from anywhere).",
+                    shown_tree(&tree.path)
+                ),
+            });
         }
+    }
+    if beyond > 0 {
+        said.push(Note {
+            name: format!("{beyond} more working trees that were not looked at"),
+            text: format!(
+                "This project has {beyond} more working trees than the {OTHER_TREES} a stop looks at: they were not looked at for changes that are not committed."
+            ),
+        });
     }
     said
 }
@@ -2264,11 +2444,14 @@ fn judge_units(
             ));
             writable.push(top);
         }
-        Elsewhere::Foreign(top) => out.beside.push(format!(
-            "The session's directory is in another repository, {}, which is not this session's project ({}): nothing in it was judged.",
-            shown_tree(&top),
-            shown_tree(&place.top)
-        )),
+        Elsewhere::Foreign(top) => out.beside.push(Note {
+            name: format!("the repository {} the session is in", shown_tree(&top)),
+            text: format!(
+                "The session's directory is in another repository, {}, which is not this session's project ({}): nothing in it was judged.",
+                shown_tree(&top),
+                shown_tree(&place.top)
+            ),
+        }),
         Elsewhere::Failed(reason) => trees.push((
             PathBuf::from(stopping.cwd),
             Uncommitted {
@@ -2362,26 +2545,30 @@ fn shown_tree(top: &Path) -> String {
 /// project's patch shows a submodule only as the commit it is at, so those changes are in no
 /// patch (second independent review of the hooks, HR2-M-3). Nothing is asked of Git when the
 /// project has no `.gitmodules` file.
-fn submodules_with_changes(place: &Place, deadline: Deadline) -> Vec<String> {
+fn submodules_with_changes(place: &Place, deadline: Deadline) -> Vec<Note> {
     if !place.top.join(".gitmodules").exists() {
         return Vec::new();
     }
     match dirty_submodules(&place.top, &deadline.git()) {
         Ok(paths) => paths
             .iter()
-            .map(|path| {
-                format!(
+            .map(|path| Note {
+                name: format!("the submodule {}", hook::shown_path(path)),
+                text: format!(
                     "The submodule {} of {} has changes that are not committed in it: they were not judged (the project's patch shows a submodule only as the commit it is at).",
                     hook::shown_path(path),
                     shown_tree(&place.top)
-                )
+                ),
             })
             .collect(),
-        Err(error) => vec![format!(
-            "Whether a submodule of {} has changes that are not committed in it could not be found out ({}): such changes are not judged.",
-            shown_tree(&place.top),
-            git_words(&error)
-        )],
+        Err(error) => vec![Note {
+            name: "the submodules, which could not be looked at".to_owned(),
+            text: format!(
+                "Whether a submodule of {} has changes that are not committed in it could not be found out ({}): such changes are not judged.",
+                shown_tree(&place.top),
+                git_words(&error)
+            ),
+        }],
     }
 }
 
@@ -2523,8 +2710,64 @@ fn file_sha256(path: &Path, deadline: std::time::Instant) -> Result<String, &'st
     }
 }
 
-/// What a stop says once when it has more to name than [`NOTICED_CAP`] things.
-const MORE_UNNAMED: &str = "More things were left out or not judged than this session's hooks name one by one: the others are not named from here on.";
+/// The most notes one stop says in full; the others are on the line that counts them.
+const NOTES_IN_FULL: usize = 5;
+
+/// What a stop says beside its verdict: every note at every stop while it is true ([`Note`]),
+/// with the one for a session whose start was not recorded. A note that is new to the
+/// session is said in full, up to [`NOTES_IN_FULL`] at one stop; the others are one line,
+/// their number and the first three of them. Nothing is left out for a cap: what is not
+/// said in full is counted.
+fn notes_of(state: &mut State, mut beside: Vec<Note>) -> Vec<String> {
+    // A session whose start no session-start hook recorded says so, whether this stop or an
+    // advice hook before it did the recording (second independent review of the hooks,
+    // HR2-M-2): what it committed before that hook is in the project and was not judged.
+    if state.project.as_ref().is_some_and(|p| !p.by_start) {
+        beside.insert(
+            0,
+            Note {
+                name: "what was committed before this session's first hook".to_owned(),
+                text: hook::FIRST_STOP.to_owned(),
+            },
+        );
+    }
+    // Every note at every stop while it is true. In full when it is new to the session, a few
+    // at one stop; the others on one line, by their number and the first of them.
+    let mut notes = Vec::new();
+    let mut before: Vec<String> = Vec::new();
+    for note in beside {
+        let key = deep_diff_forge_core::sha256_hex(note.text.as_bytes());
+        // (a session that cannot remember more counts a new one with the others: the line
+        // that counts them is at every stop, so nothing true at a stop goes unsaid)
+        if state.noticed.contains(&key)
+            || notes.len() >= NOTES_IN_FULL
+            || state.noticed.len() >= NOTICED_CAP
+        {
+            before.push(note.name);
+            continue;
+        }
+        state.noticed.insert(key);
+        notes.push(note.text);
+    }
+    if !before.is_empty() {
+        let first: Vec<&str> = before.iter().take(3).map(String::as_str).collect();
+        let more = if before.len() > first.len() {
+            format!(", and {} more", before.len() - first.len())
+        } else {
+            String::new()
+        };
+        let (count, are) = if before.len() == 1 {
+            ("1 thing".to_owned(), "is")
+        } else {
+            (format!("{} things", before.len()), "are")
+        };
+        notes.push(format!(
+            "{count} in this project {are} not judged: {}{more}.",
+            first.join(", ")
+        ));
+    }
+    notes
+}
 
 /// When the agent wants to stop: have the session's work judged, unit by unit
 /// ([`judge_units`]), and block on a fail that holds this stop.
@@ -2541,9 +2784,26 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
     }
     // The project and the base are recorded before anything else can fail.
     let mut unsaved = session.keep().err();
-    let mut beside = Vec::new();
+    let mut beside: Vec<Note> = Vec::new();
     let mut decision = match subject(&work, deadline) {
-        Subject::Nothing => StopDecision::Allow { message: None },
+        Subject::Nothing => {
+            // A repository with no commit has no base, so nothing in it is judged. Its files
+            // are in the project all the same: they are said, as everything is that is known
+            // and not judged. (A status that cannot be read is a tree with files.)
+            if !matches!(
+                has_uncommitted_changes(&work.place.top, &deadline.git()),
+                Ok(false)
+            ) {
+                beside.push(Note {
+                    name: "the files of this repository, which has no commit yet".to_owned(),
+                    text: format!(
+                        "The repository {} has no commit yet, so there is no commit to measure this session's changes from: its files were not judged. A session that begins after the first commit is judged.",
+                        shown_tree(&work.place.top)
+                    ),
+                });
+            }
+            StopDecision::Allow { message: None }
+        }
         Subject::Unjudged(reason) => StopDecision::Allow {
             message: Some(hook::unjudged_message(&reason)),
         },
@@ -2585,28 +2845,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
             }
         }
     };
-    let state = &mut session.state;
-    let mut notes = Vec::new();
-    // A session whose start no session-start hook recorded says so at its first stop, whether
-    // this stop or an advice hook before it did the recording. An advice hook runs after the
-    // tool call that commits, so with the three printed hooks it was always the one, and it
-    // said nothing (second independent review of the hooks, HR2-M-2).
-    if !state.start_said && state.project.as_ref().is_some_and(|p| !p.by_start) {
-        state.start_said = true;
-        notes.push(hook::FIRST_STOP.to_owned());
-    }
-    for said in beside {
-        match say_once(state, &said) {
-            Said::Now => notes.push(said),
-            // The list of what was said is full: that there is more is said, once (third
-            // independent review of the hooks, HR3-L-2).
-            Said::Full if !state.more_said => {
-                state.more_said = true;
-                notes.push(MORE_UNNAMED.to_owned());
-            }
-            Said::Before | Said::Full => {}
-        }
-    }
+    let mut notes = notes_of(&mut session.state, beside);
     if let Err(why) = session.keep() {
         unsaved = Some(why);
     }
@@ -2623,7 +2862,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
         {
             decision = StopDecision::Allow {
                 message: Some(format!(
-                    "deep-diff-forge: FAIL STANDS. The hook cannot keep its state, so it cannot remember that this failure has blocked a stop. The client says that a stop hook has just blocked, so this stop is not blocked again; the failure is left for a person. What was said when it blocked:\n{reason}"
+                    "deep-diff-forge: FAIL STANDS. This failure is not blocked because the client says this stop already follows a block and the hook cannot keep its own record of what has blocked; it is left for a person. The judge's answer:\n{reason}"
                 )),
             };
         }
@@ -2660,16 +2899,46 @@ fn git_release(line: &str) -> Option<(u32, u32)> {
 /// protects its own file holds or fails it; one that does not lets it pass. `None` for a policy
 /// with no first line, or a name that cannot stand in a patch header as it is.
 fn probe_patch(name: &str, policy: &[u8]) -> Option<String> {
-    let plain = !name.is_empty()
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._/-".contains(&b));
     let first = std::str::from_utf8(policy).ok()?.lines().next()?;
-    plain.then(|| {
-        format!(
-            "diff --git a/{name} b/{name}\n--- a/{name}\n+++ b/{name}\n@@ -1,1 +1,2 @@\n+# deep-diff-forge doctor probe\n {first}\n"
-        )
-    })
+    if name.is_empty() {
+        return None;
+    }
+    let (old, new) = (
+        patch_path(&format!("a/{name}")),
+        patch_path(&format!("b/{name}")),
+    );
+    Some(format!(
+        "diff --git {old} {new}\n--- {old}\n+++ {new}\n@@ -1,1 +1,2 @@\n+# deep-diff-forge doctor probe\n {first}\n"
+    ))
+}
+
+/// A path as a patch header writes it: as it is when it is made of printable ASCII without
+/// `"` and `\`, else in Git's quoted form (octal for every other byte). The probe used to be
+/// made only for a policy named in letters, digits and `._/-`, so the gate could not say of
+/// another name what a stop would do (fifth independent review of the hooks, HR5-L-2).
+fn patch_path(path: &str) -> String {
+    use std::fmt::Write as _;
+    let plain = path
+        .bytes()
+        .all(|b| (0x20..0x7f).contains(&b) && b != b'"' && b != b'\\');
+    if plain && !path.ends_with(' ') {
+        return path.to_owned();
+    }
+    let mut quoted = String::from("\"");
+    for byte in path.bytes() {
+        match byte {
+            b'"' => quoted.push_str("\\\""),
+            b'\\' => quoted.push_str("\\\\"),
+            b'\t' => quoted.push_str("\\t"),
+            b'\n' => quoted.push_str("\\n"),
+            0x20..=0x7e => quoted.push(char::from(byte)),
+            other => {
+                let _ = write!(quoted, "\\{other:03o}");
+            }
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 /// A `Stop` hook a Claude Code settings document registers: its command, and its timeout as
@@ -2990,6 +3259,21 @@ fn patch_check(
                     JudgePatchError::Failed(error) => unjudged(git_words(&error)),
                     error @ JudgePatchError::SkipWorktree => unjudged(error.to_string()),
                 })
+            })
+            // what is staged is a unit of a stop too: an index with unmerged paths has no
+            // tree, and a stop then has no verdict on it (HR5-L-6)
+            .and_then(|patch| {
+                let index = scratch.sub("index")?;
+                staged_patch(&place.top, rev, &index, &deadline.git()).map_err(|error| {
+                    format!(
+                        "a stop here would be UNJUDGED for what is staged: it could not be read from Git: {}",
+                        match &error {
+                            JudgePatchError::Failed(error) => git_words(error),
+                            other => other.to_string(),
+                        }
+                    )
+                })?;
+                Ok(patch)
             })
             .map(|patch| patch.bytes.len()),
         (Some(_), Some(Err(why))) => Err(why.clone()),
@@ -3341,10 +3625,8 @@ mod tests {
     fn a_state_round_trips_and_anything_else_is_not_a_state() {
         let state = State {
             project: Some(project(Base::Commit(COMMIT.to_owned()))),
-            start_said: true,
             reported: ["b".to_owned(), "a".to_owned()].into(),
             noticed: ["n".to_owned()].into(),
-            more_said: true,
             blocked: vec![format!("{}:3", "f".repeat(64))],
             judged_sha256: "d".repeat(64),
             judged_count: 2,
@@ -3371,8 +3653,8 @@ mod tests {
         let whole = json!({"top": "/r", "id": "2", "base": "none",
                            "tips_sha256": "0".repeat(64), "tips_count": 0, "by_start": true});
         let with = |project: &Value| {
-            json!({"schema": STATE_SCHEMA, "project": project, "start_said": false,
-                   "reported": ["a"], "noticed": [], "more_said": false, "blocked": [],
+            json!({"schema": STATE_SCHEMA, "project": project,
+                   "reported": ["a"], "noticed": [], "blocked": [],
                    "judged_sha256": "", "judged_count": 0})
             .to_string()
         };
@@ -3447,10 +3729,8 @@ mod tests {
                 tips_count: usize::MAX,
                 by_start: false,
             }),
-            start_said: true,
             reported: (0..REPORTED_CAP).map(|n| hex(n, 64)).collect(),
             noticed: (0..NOTICED_CAP).map(|n| hex(n, 64)).collect(),
-            more_said: true,
             blocked: (0..BLOCKED_CAP)
                 .map(|n| format!("{}:{}", hex(n, 64), usize::MAX))
                 .collect(),
@@ -3507,6 +3787,91 @@ mod tests {
             load(&file).is_err_and(|why| why.starts_with("it cannot be opened (")),
             "a link was followed or read as no state"
         );
+    }
+
+    /// The rule of the hooks for what a stop names beside its verdict: each kind of thing in
+    /// the project that is not judged is said at the first stop in full, at the second and
+    /// the third in the line that counts such things, for as long as it is true, and no more
+    /// when it is no longer true. Each was said once in a session and then never again.
+    #[test]
+    fn what_is_not_judged_is_said_at_every_stop_while_it_is_true() {
+        let kinds = [
+            "the nested repository \"vendor\"",
+            "the working tree \"inner\" inside it",
+            "the repository \"/other\" the session is in",
+            "the submodule \"sub\"",
+            "the working tree \"/wt\"",
+            "the working tree \"/gone\" (gone)",
+            "2 more working trees that were not looked at",
+            "the files of this repository, which has no commit yet",
+        ];
+        for name in kinds {
+            let note = || Note {
+                name: name.to_owned(),
+                text: format!("In full: {name}."),
+            };
+            let mut state = State {
+                project: Some(project(Base::Commit(COMMIT.to_owned()))),
+                ..State::default()
+            };
+            assert_eq!(
+                notes_of(&mut state, vec![note()]),
+                [format!("In full: {name}.")]
+            );
+            for stop in 2..=3 {
+                assert_eq!(
+                    notes_of(&mut state, vec![note()]),
+                    [format!("1 thing in this project is not judged: {name}.")],
+                    "stop {stop}"
+                );
+            }
+            assert_eq!(notes_of(&mut state, Vec::new()), Vec::<String>::new());
+        }
+        // a start that no session-start hook recorded is true of the whole session
+        let mut late = State {
+            project: Some(Project {
+                by_start: false,
+                ..project(Base::Commit(COMMIT.to_owned()))
+            }),
+            ..State::default()
+        };
+        assert_eq!(notes_of(&mut late, Vec::new()), [hook::FIRST_STOP]);
+        for _ in 2..=3 {
+            assert_eq!(
+                notes_of(&mut late, Vec::new()),
+                [
+                    "1 thing in this project is not judged: what was committed before this session's first hook."
+                ]
+            );
+        }
+        // many at once: a few in full, the others counted, and the count is of all of them
+        let many = || -> Vec<Note> {
+            (0..40)
+                .map(|n| Note {
+                    name: format!("n{n:02}"),
+                    text: format!("In full: n{n:02}."),
+                })
+                .collect()
+        };
+        let mut state = State::default();
+        for stop in 0..10 {
+            let said = notes_of(&mut state, many());
+            let full = said
+                .iter()
+                .filter(|line| line.starts_with("In full: "))
+                .count();
+            // (what a session remembers is bounded: past the bound a thing is counted)
+            let room = NOTICED_CAP.saturating_sub(NOTES_IN_FULL * stop);
+            assert_eq!(full, room.min(NOTES_IN_FULL), "stop {stop}");
+            let counted = 40 - full;
+            assert!(
+                said.last().is_some_and(|line| line.starts_with(&format!(
+                    "{counted} things in this project are not judged: "
+                )) && line
+                    .ends_with(&format!(", and {} more.", counted - 3))),
+                "stop {stop}: {said:?}"
+            );
+        }
     }
 
     /// A mutation run left the bound of what is saved alive at the byte. A state whose text is
@@ -3680,8 +4045,57 @@ mod tests {
             ..named.clone()
         };
         assert!(load_tips(&file, &miscounted).is_err());
-        // a link is not followed
+        // A mutation run left the bounds of a list file alive. A list of 30,000 commits (over
+        // a mebibyte) is read whole; a file of exactly the cap is read (and is then not the
+        // list); one byte more, or what is no regular file, is not a file the hooks wrote.
+        let many: Vec<String> = (0..30_000).map(|n| format!("{n:040x}")).collect();
+        let (long, digest) = tips_text(&many);
+        assert!(long.len() > 1024 * 1024 + 67);
+        write_private(&file, &long).unwrap();
+        let big = Project {
+            tips_sha256: digest,
+            tips_count: many.len(),
+            ..project(Base::NoCommit)
+        };
+        assert_eq!(load_tips(&file, &big).map(|tips| tips.len()), Ok(30_000));
+        let sized = |len: u64| {
+            std::fs::File::create(&file).unwrap().set_len(len).unwrap();
+            load_tips(&file, &named).unwrap_err()
+        };
+        assert!(sized(TIPS_CAP).contains("is not the list this session recorded"));
+        assert!(sized(TIPS_CAP + 1).contains("is not a file the hooks wrote"));
         std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        assert!(
+            load_tips(&file, &named)
+                .is_err_and(|why| why.contains("is not a file the hooks wrote")),
+        );
+        std::fs::remove_dir(&file).unwrap();
+        // the lines of the file of judged commits: an id, and an answer in one of five forms
+        let id = "a".repeat(40);
+        for line in [
+            "p",
+            "h",
+            "f",
+            "n0:r",
+            "n5:the ranker: timed out",
+            "x:shallow",
+        ] {
+            assert!(is_judged_entry(&format!("{id}:{line}")), "{line}");
+        }
+        for line in [
+            format!("{id}:u"),
+            format!("{id}:n6:r"),
+            format!("{id}:n1"),
+            format!("{id}:nx:r"),
+            format!("{id}:y:r"),
+            id.clone(),
+            "HEAD:p".to_owned(),
+            format!("{}:p", &id[..39]),
+        ] {
+            assert!(!is_judged_entry(&line), "{line}");
+        }
+        // a link is not followed
         std::fs::write(scratch.join("elsewhere"), text).unwrap();
         std::os::unix::fs::symlink(scratch.join("elsewhere"), &file).unwrap();
         assert!(
@@ -3739,7 +4153,10 @@ mod tests {
                 unit(Holds::WhileNew, None),
                 unit(Holds::Now, Some(fail("c"))),
             ],
-            commits: vec![("c".repeat(40), 'f'), ("d".repeat(40), 'u')],
+            commits: vec![
+                ("c".repeat(40), "f".to_owned()),
+                ("d".repeat(40), "n1:the ranker did not answer".to_owned()),
+            ],
             ..Judging::default()
         };
         remember(&mut state, &gone, &mut judged);
@@ -3748,13 +4165,15 @@ mod tests {
             judged,
             [
                 format!("{}:f", "c".repeat(40)),
-                format!("{}:u", "d".repeat(40))
+                format!("{}:n1:the ranker did not answer", "d".repeat(40))
             ]
         );
         assert!(judged.iter().all(|entry| is_judged_entry(entry)));
         // many answers: none is forgotten
         let many = Judging {
-            commits: (0..5_000).map(|n| (format!("{n:040x}"), 'p')).collect(),
+            commits: (0..5_000)
+                .map(|n| (format!("{n:040x}"), "p".to_owned()))
+                .collect(),
             ..Judging::default()
         };
         remember(&mut state, &many, &mut judged);
@@ -3924,11 +4343,20 @@ mod tests {
             )
         );
         assert!(probe_patch("policy/warden.toml", b"x").is_some());
+        // HR5-L-2: any name a hook accepts has a probe; one that a patch header cannot hold
+        // as it is stands in Git's quoted form
+        assert!(
+            probe_patch("a b.toml", b"x\n")
+                .is_some_and(|probe| probe.starts_with("diff --git a/a b.toml b/a b.toml\n"))
+        );
+        assert_eq!(
+            patch_path("a/caf\u{e9}\t\"q\"\\.toml"),
+            "\"a/caf\\303\\251\\t\\\"q\\\"\\\\.toml\""
+        );
+        assert_eq!(patch_path("a/x "), "\"a/x \"");
         for (name, policy) in [
             ("warden.toml", &b""[..]),
             ("warden.toml", &[0xff, b'\n'][..]),
-            ("a b.toml", &b"x\n"[..]),
-            ("a\nb", &b"x\n"[..]),
             ("", &b"x\n"[..]),
         ] {
             assert_eq!(probe_patch(name, policy), None, "{name:?}");
