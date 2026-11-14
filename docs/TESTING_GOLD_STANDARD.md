@@ -34,8 +34,12 @@ era) no longer holds. How the standard is enforced today:
   `fixtures/patch/regressions/`. `rust_code_view` has an oracle: the compiler's own lexer
   (`ra-ap-rustc_lexer`, a dependency of the fuzz crate only). For any text read as a Rust
   file from its first line, no byte of a token that is code may be blank in the code view,
-  and where the view has one reading, every byte of a comment and of a literal's text must
-  be.
+  and every byte of a comment and of a literal's text must be. The other starts a side of a
+  hunk is read from are held to the same reading: from inside a block comment the views are
+  those of `/*` and the text, from inside a string those of `"` and the text, and from line 1
+  of a file a shebang line by the compiler's rule is blank. `rust_tokens` holds, among its
+  rules, that a comment between two tokens of a construct and complete strings on the lines
+  before it do not change the reader's signals.
 - **Sandbox refusal controls:** the rootless-Podman planted-breach suite
   (`crates/deep-diff-forge-cli/tests/council_sandbox.rs`, 12 probes) runs on
   every pull request.
@@ -49,9 +53,9 @@ era) no longer holds. How the standard is enforced today:
   `fuzz_target.sh` lists targets with a TOML parser and fuzzes a new private
   corpus each run, under a root it makes if missing.
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
-  `fixtures/eval` (47 cases, measured 2026-11-14) must score at least its floors,
-  which are the measured values: ranking pairs 12/15, evidence precision 97/111,
-  evidence recall 97/139, findings 33/33. Any undeclared miss fails. The 59
+  `fixtures/eval` (48 cases, measured 2026-11-14) must score at least its floors,
+  which are the measured values: ranking pairs 12/15, evidence precision 116/132,
+  evidence recall 116/162, findings 33/33. Any undeclared miss fails. The 65
   declared misses (`known_miss`, `known_false_positive`) count as wrong in their
   metric rather than being excluded, and each fails once the engine gets it
   right. Planted controls prove a wrong label fails with exit 7, a changed file,

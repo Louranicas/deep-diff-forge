@@ -1478,6 +1478,169 @@
         }
       ],
       "sha256": "170eccbcb87e8fbfd1e3285aa88a2223b61188a97dfb47152b2787cc75307614"
+    },
+    {
+      "id": "evidence/independent-review-5-20261114",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-5-20261114.patch",
+      "origin": "internal: a fifth independent review by a Claude subagent (docs/reviews/claude-independent-review-5-20261114.md, IR5-H-1, IR5-M-1, IR5-M-2) and round 12 of Vesper's review (docs/reviews/vesper-v3-round12-report-20261114.md, VD3R12-M-1, VD3R12-M-2), 2026-11-14, each reproduced before it was counted. Expected: after a string over a line end, an unwrap, a todo, an ignored test and a trivial assertion with the comment /*\"\"*/ between two of their tokens (src/union.rs), a conditional skip with a closing bracket inside a string of its condition (src/skip.rs), and the unwrap in a hunk of an existing file (src/cli.rs): the bytes of two readings were united and the union showed the comment's quotes between the tokens; raw identifiers after the left-to-right mark U+200E, which the compiler takes for white space (src/marks.rs); a spawn on a line added inside an existing block comment, // */ ... /*, and the same with the opener added by an earlier hunk (src/net.rs, src/lib.rs): a side below line 1 is also read as beginning inside a block comment; a spawn under a shebang line that holds /* (src/bin/tool.rs); every item under m!(k#r\"\\\"); m!(\" /* \"); (src/kraw.rs), which rustc 1.99.1 reads as k, # and a raw string in editions 2015 and 2018 and refuses in 2021 and 2024; and the unwrap on the line that closes a string opened above the hunk (src/db.rs, the review's honest case): a side that, read from code, ends inside a string is also read as beginning inside one. Declared false positives, the cost of those two further readings: a call in the text of a string after **/ in a hunk below line 1 (src/glob.rs), and a call in the text of a string in a hunk that ends inside another string (src/log.rs). Declared misses: the spawn, the ignored test and the trivial assertion under m!('r#r\"\\\"); m!(\" /* \"); (src/rawlt.rs), which editions 2015 and 2018 read as 'r, # and a raw string where 2021 and 2024, which the code view follows, read one raw lifetime and an ordinary string; and a spawn after // \"; in a hunk whose string was opened by an earlier hunk (src/store.rs): read from code that side ends in code, so nothing says it began inside a string",
+      "expect": [
+        {
+          "path": "src/union.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/union.rs",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 9
+        },
+        {
+          "path": "src/union.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 15
+        },
+        {
+          "path": "src/union.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 22
+        },
+        {
+          "path": "src/skip.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "src/cli.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 8
+        },
+        {
+          "path": "src/marks.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/marks.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/marks.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 10
+        },
+        {
+          "path": "src/net.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/lib.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 12
+        },
+        {
+          "path": "src/bin/tool.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/kraw.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/kraw.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/kraw.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 9
+        },
+        {
+          "path": "src/kraw.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 10
+        },
+        {
+          "path": "src/kraw.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 11
+        },
+        {
+          "path": "src/kraw.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 11
+        },
+        {
+          "path": "src/db.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 15
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/rawlt.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/rawlt.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 8
+        },
+        {
+          "path": "src/rawlt.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 9
+        },
+        {
+          "path": "src/store.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 12
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/glob.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 8
+        },
+        {
+          "path": "src/log.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 41
+        }
+      ],
+      "sha256": "6b02a3ae82b0bfc5236d7a071e3598f14713694afa6676e00e4953490f424026"
     }
   ]
 }

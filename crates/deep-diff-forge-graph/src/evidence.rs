@@ -12,9 +12,12 @@
 //! finds tokens, it never proves a change is safe, and a construct built at run time, or one
 //! the hunk shows only a part of, can hide from it.
 
-use crate::lexical::{Language, ScanState, code_view, has_token, is_boundary_blocker, is_ident};
+use crate::lexical::{
+    Language, RustStart, ScanState, code_view, has_token, is_boundary_blocker, is_ident, rust_side,
+    rust_white,
+};
 use crate::rust_tokens;
-use deep_diff_forge_core::{HunkId, PatchHunk, PatchLineKind, ReviewFile};
+use deep_diff_forge_core::{HunkId, PatchHunk, PatchLine, PatchLineKind, ReviewFile};
 
 /// The basis of the first rung: what every item carried before [`Basis`] existed, and what an
 /// item found by a token on one line still carries.
@@ -738,35 +741,149 @@ pub fn hunk_signals(file: &ReviewFile, hunk: &PatchHunk) -> Vec<EvidenceSignal> 
         .collect()
 }
 
-/// The code view of each line of `hunk` on the old and on the new side: comments and strings
-/// blank, in the state the scanner reached on that side. In Rust a raw identifier reads as the
-/// identifier it is ([`without_raw_prefixes`]).
-fn hunk_views(
-    hunk: &PatchHunk,
-    language: Option<Language>,
-) -> Vec<(Option<String>, Option<String>)> {
+/// One reading of a hunk: the code view of each of its lines on the old and on the new side
+/// (comments and strings blank), `None` on a side the line is not on or this reading does not
+/// cover.
+struct Views {
+    lines: Vec<(Option<String>, Option<String>)>,
+    /// Whether this reading covers the old side.
+    old: bool,
+    /// Whether this reading covers the new side.
+    new: bool,
+}
+
+/// The readings of `hunk`. A language the shared scanner reads has one, of both sides, in the
+/// state that scanner reached on each. A Rust hunk has one to three ([`rust_hunk_views`]).
+fn hunk_views(hunk: &PatchHunk, language: Option<Language>) -> Vec<Views> {
+    if language == Some(Language::Rust) {
+        return rust_hunk_views(hunk);
+    }
     let mut old_state = ScanState::default();
     let mut new_state = ScanState::default();
-    hunk.lines
+    let lines = hunk
+        .lines
         .iter()
         .map(|line| {
-            let view = |state: &mut ScanState| {
-                language.map(|l| {
-                    let code = code_view(l, &line.text, state);
-                    if l == Language::Rust {
-                        without_raw_prefixes(&code).unwrap_or(code)
-                    } else {
-                        code
-                    }
-                })
-            };
+            let view = |state: &mut ScanState| language.map(|l| code_view(l, &line.text, state));
             match line.kind {
                 PatchLineKind::Context => (view(&mut old_state), view(&mut new_state)),
                 PatchLineKind::Added => (None, view(&mut new_state)),
                 PatchLineKind::Removed => (view(&mut old_state), None),
             }
         })
-        .collect()
+        .collect();
+    vec![Views {
+        lines,
+        old: true,
+        new: true,
+    }]
+}
+
+/// The readings of a Rust hunk. Each is whole: every line of a side read in order from one
+/// stated start, exactly as the compiler would read that text from there, and never mixed
+/// with another reading. A raw identifier reads as the identifier it is
+/// ([`without_raw_prefixes`]).
+///
+/// - The first reading starts each side in code. A side whose first line is line 1 of its
+///   file is the top of the file, and a shebang line there is passed over as the compiler
+///   passes over it.
+/// - The second starts a side inside one block comment. A hunk does not say what the lines
+///   above it left open, and inside a comment a line `// */ call(); /*` is a call. It is read
+///   only for a side that can begin so: one that does not start at line 1, and that the
+///   change touches (the rules read changed lines only).
+/// - The third starts a side inside an ordinary string. It is read for such a side only when
+///   the first reading ends inside a string or a raw string. That is the mark of a side that
+///   began in one: its closing quote was taken for an opener, and from there to the end the
+///   first reading has each string's text for code and the code between for strings. (A side
+///   that began in a string and holds another unbalanced quote is not told this way, and one
+///   that began in a raw string is read as if the string were an ordinary one: the limits in
+///   the module `rust_tokens`.)
+///
+/// The rules read each reading, and what any finds is found ([`hunk_matches`]).
+fn rust_hunk_views(hunk: &PatchHunk) -> Vec<Views> {
+    /// One side of the hunk.
+    #[derive(Clone, Copy)]
+    struct Side {
+        /// The kind of line that is not on it.
+        other: PatchLineKind,
+        /// Its first line is line 1 of its file.
+        at_top: bool,
+        /// The change touches it.
+        changed: bool,
+    }
+    let side = |other: PatchLineKind, number: fn(&PatchLine) -> Option<u32>| {
+        let mut lines = hunk.lines.iter().filter(|l| l.kind != other);
+        Side {
+            other,
+            at_top: lines.clone().next().and_then(number) == Some(1),
+            changed: lines.any(|l| l.kind != PatchLineKind::Context),
+        }
+    };
+    let old = side(PatchLineKind::Added, |l| l.old_line);
+    let new = side(PatchLineKind::Removed, |l| l.new_line);
+    // One side read from `start`: the view of each line at its place in the hunk, and
+    // whether the side ends inside a string.
+    let read = |side: Side, start: RustStart| {
+        let (places, texts): (Vec<usize>, Vec<&str>) = hunk
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.kind != side.other)
+            .map(|(at, l)| (at, l.text.as_str()))
+            .unzip();
+        let read = rust_side(&texts, start);
+        let views = read
+            .views
+            .into_iter()
+            .map(|code| without_raw_prefixes(&code).unwrap_or(code));
+        (
+            places.into_iter().zip(views).collect::<Vec<_>>(),
+            read.ends_in_string,
+        )
+    };
+    // A reading of the sides that have a start in it; and whether each ends inside a string.
+    let reading = |old_start: Option<RustStart>, new_start: Option<RustStart>| {
+        let mut lines = vec![(None, None); hunk.lines.len()];
+        let (old_views, old_open) = old_start.map(|start| read(old, start)).unwrap_or_default();
+        let (new_views, new_open) = new_start.map(|start| read(new, start)).unwrap_or_default();
+        for (at, view) in old_views {
+            lines[at].0 = Some(view);
+        }
+        for (at, view) in new_views {
+            lines[at].1 = Some(view);
+        }
+        let views = Views {
+            lines,
+            old: old_start.is_some(),
+            new: new_start.is_some(),
+        };
+        (views, old_open, new_open)
+    };
+    let in_code = |side: Side| {
+        Some(if side.at_top {
+            RustStart::FileStart
+        } else {
+            RustStart::Code
+        })
+    };
+    // A side that can begin inside something the lines above it opened.
+    let fragment = |side: Side| side.changed && !side.at_top;
+    let (from_code, old_open, new_open) = reading(in_code(old), in_code(new));
+    let mut readings = vec![from_code];
+    let mut also = |old_start: Option<RustStart>, new_start: Option<RustStart>| {
+        if old_start.is_some() || new_start.is_some() {
+            readings.push(reading(old_start, new_start).0);
+        }
+    };
+    also(
+        fragment(old).then_some(RustStart::Comment),
+        fragment(new).then_some(RustStart::Comment),
+    );
+    also(
+        (fragment(old) && old_open).then_some(RustStart::Str),
+        (fragment(new) && new_open).then_some(RustStart::Str),
+    );
+    readings
 }
 
 /// What [`hunk_matches`] finds in one hunk.
@@ -779,44 +896,136 @@ struct HunkFound {
     test_likely: Vec<u32>,
 }
 
+/// One item one reading of a hunk found: on the line at `at` of the hunk.
+#[derive(Debug, Clone, Copy)]
+struct Hit {
+    at: usize,
+    side: Side,
+    signal: EvidenceSignal,
+    /// The line's number on `side`.
+    number: u32,
+    basis: Basis,
+    /// The reader of tokens gives this panic path the hint `test_likely`.
+    likely: bool,
+    /// The reading from code found it (the first reading of a hunk).
+    from_code: bool,
+}
+
 /// `(side, signal, line, basis)` for every signal found on a changed line of `hunk`: once per
-/// signal and line however many rules or tokens match, in [`EvidenceSignal::ALL`] order, with the
-/// highest [`Basis`] among what matched. Block comments and triple strings are followed through
-/// the hunk on each side (state starts fresh per hunk). In a Rust hunk the integrity signals
-/// come from the tokens of each side ([`rust_tokens::read_hunk`]), merged in line by line: the
-/// reader gives them in hunk order, so nothing is sorted or searched here (a hunk can hold a
-/// million of them).
+/// signal and line however many rules, tokens or readings find it, in [`EvidenceSignal::ALL`]
+/// order, with the highest [`Basis`] among what matched. Each reading of the hunk
+/// ([`hunk_views`]) is read by every rule on its own ([`view_matches`]), and what the readings
+/// find is united here: an item any of them finds is an item. The bytes of two readings are
+/// never united (fifth independent review, IR5-H-1: united bytes showed a comment's text
+/// between the tokens of a call, and the call was not found). The hint `test_likely` of a
+/// panic path is the one the reading from code gives when that reading finds it; when only
+/// other readings find it, it has the hint only if each of them gives it.
 fn hunk_matches(hunk: &PatchHunk, language: Option<Language>, rules: &[&Rule]) -> HunkFound {
-    // First the code view of every line on each side it belongs to, so a rule that reads a
-    // neighbour sees it as code, in the state the scanner reached there.
-    let views = hunk_views(hunk, language);
-    // The code of the next line on `side` after line `at`: the line that follows it in that
-    // version of the file, when the hunk holds it.
-    let next_on = |side: Side, at: usize| -> Option<&str> {
-        let other = match side {
-            Side::New => PatchLineKind::Removed,
-            Side::Old => PatchLineKind::Added,
+    let mut united: Vec<Hit> = Vec::new();
+    for (place, views) in hunk_views(hunk, language).iter().enumerate() {
+        let found = view_matches(hunk, language, rules, views, place == 0);
+        united = if united.is_empty() {
+            found
+        } else {
+            unite(&united, &found)
         };
-        let next = at + 1 + hunk.lines[at + 1..].iter().position(|l| l.kind != other)?;
-        let view = match side {
-            Side::New => views[next].1.as_deref(),
-            Side::Old => views[next].0.as_deref(),
+    }
+    HunkFound {
+        test_likely: united
+            .iter()
+            .filter(|hit| hit.likely)
+            .map(|hit| hit.number)
+            .collect(),
+        items: united
+            .iter()
+            .map(|hit| (hit.side, hit.signal, hit.number, hit.basis))
+            .collect(),
+    }
+}
+
+/// What two readings found, each in hunk order and then signal order, as one list in that
+/// order: an item of both once, with the higher basis. Its hint is that of the reading from
+/// code if one of the two is that (it sees the attribute above the call where another
+/// reading, begun inside a comment or a string, may not), and else the hint only if both
+/// give it.
+fn unite(one: &[Hit], other: &[Hit]) -> Vec<Hit> {
+    let mut united = Vec::with_capacity(one.len().max(other.len()));
+    let (mut a, mut b) = (one.iter().peekable(), other.iter().peekable());
+    loop {
+        let order = match (a.peek(), b.peek()) {
+            (Some(x), Some(y)) => (x.at, x.signal).cmp(&(y.at, y.signal)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => return united,
         };
-        Some(view.unwrap_or(hunk.lines[next].text.as_str()))
+        let next = match order {
+            std::cmp::Ordering::Less => a.next().copied(),
+            std::cmp::Ordering::Greater => b.next().copied(),
+            std::cmp::Ordering::Equal => a.next().zip(b.next()).map(|(x, y)| Hit {
+                basis: x.basis.max(y.basis),
+                likely: match (x.from_code, y.from_code) {
+                    (true, _) => x.likely,
+                    (false, true) => y.likely,
+                    (false, false) => x.likely && y.likely,
+                },
+                from_code: x.from_code || y.from_code,
+                ..*x
+            }),
+        };
+        united.extend(next);
+    }
+}
+
+/// The code of the next line on `side` after line `at` of `hunk`, in the reading `views`: the
+/// line that follows it in that version of the file, when the hunk holds it.
+fn next_line_on<'a>(
+    hunk: &'a PatchHunk,
+    views: &'a [(Option<String>, Option<String>)],
+    side: Side,
+    at: usize,
+) -> Option<&'a str> {
+    let other = match side {
+        Side::New => PatchLineKind::Removed,
+        Side::Old => PatchLineKind::Added,
     };
+    let next = at + 1 + hunk.lines[at + 1..].iter().position(|l| l.kind != other)?;
+    let view = match side {
+        Side::New => views[next].1.as_deref(),
+        Side::Old => views[next].0.as_deref(),
+    };
+    Some(view.unwrap_or(hunk.lines[next].text.as_str()))
+}
+
+/// What every rule finds in one reading of `hunk` (`from_code`: the first, which starts every
+/// side in code), on the changed lines of the sides the
+/// reading covers, in hunk order and then the order of [`EvidenceSignal::ALL`]. Block comments
+/// and strings are followed through the hunk on each side as the reading follows them. In a
+/// Rust hunk the integrity signals come from the tokens of each side
+/// ([`rust_tokens::read_hunk`]), merged in line by line: the reader gives them in hunk order,
+/// so nothing is sorted or searched here (a hunk can hold a million of them).
+fn view_matches(
+    hunk: &PatchHunk,
+    language: Option<Language>,
+    rules: &[&Rule],
+    reading: &Views,
+    from_code: bool,
+) -> Vec<Hit> {
+    let views = &reading.lines;
+    let next_on = |side: Side, at: usize| next_line_on(hunk, views, side, at);
     let tokens = if language == Some(Language::Rust) {
-        rust_tokens::read_hunk(hunk, &views)
+        rust_tokens::read_hunk(hunk, views, reading.old, reading.new)
     } else {
         rust_tokens::HunkItems::default()
     };
     // How far into each side's token items the lines have come.
     let (mut new_read, mut old_read) = (0usize, 0usize);
-    let mut found: Vec<(Side, EvidenceSignal, u32, Basis)> = Vec::new();
+    let mut found: Vec<Hit> = Vec::new();
     for (at, line) in hunk.lines.iter().enumerate() {
-        let (side, number, view, read, read_to) = match line.kind {
+        let (side, covered, number, view, read, read_to) = match line.kind {
             PatchLineKind::Context => continue,
             PatchLineKind::Added => (
                 Side::New,
+                reading.new,
                 line.new_line,
                 views[at].1.as_deref(),
                 &tokens.new,
@@ -824,14 +1033,26 @@ fn hunk_matches(hunk: &PatchHunk, language: Option<Language>, rules: &[&Rule]) -
             ),
             PatchLineKind::Removed => (
                 Side::Old,
+                reading.old,
                 line.old_line,
                 views[at].0.as_deref(),
                 &tokens.old,
                 &mut old_read,
             ),
         };
+        if !covered {
+            continue;
+        }
+        // A further reading of a hunk repeats nothing the first one did. The rules that read
+        // the raw line gave their answer there, and a line that is blank in this reading
+        // (as most are in the reading from inside a comment, to its first `*/`) holds no
+        // token for a rule or for the reader. So a second or third reading costs little
+        // beyond the scan itself, where it shows nothing.
+        if !from_code && view.is_some_and(|code| code.trim().is_empty()) {
+            continue;
+        }
         let Some(number) = number else { continue };
-        let raw = if language == Some(Language::Rust) {
+        let raw = if from_code && language == Some(Language::Rust) {
             without_raw_prefixes(&line.text)
         } else {
             None
@@ -857,9 +1078,12 @@ fn hunk_matches(hunk: &PatchHunk, language: Option<Language>, rules: &[&Rule]) -
         for signal in EvidenceSignal::ALL {
             let mut basis = rules
                 .iter()
-                .filter(|r| r.signal == signal && r.side == side && hits(r))
+                .filter(|r| r.signal == signal && r.side == side)
+                .filter(|r| from_code || matches!(r.view, View::Code))
+                .filter(|r| hits(r))
                 .map(|r| r.matches.basis())
                 .max();
+            let mut likely = false;
             // The reader's items are in the order this loop goes in: by line, then by signal.
             while read
                 .get(*read_to)
@@ -871,21 +1095,22 @@ fn hunk_matches(hunk: &PatchHunk, language: Option<Language>, rules: &[&Rule]) -
                 && (item.line, item.signal) == (at, signal)
             {
                 basis = basis.max(Some(item.basis));
+                likely = item.test_likely && side == Side::New;
             }
             if let Some(basis) = basis {
-                found.push((side, signal, number, basis));
+                found.push(Hit {
+                    at,
+                    side,
+                    signal,
+                    number,
+                    basis,
+                    likely,
+                    from_code,
+                });
             }
         }
     }
-    HunkFound {
-        test_likely: tokens
-            .new
-            .iter()
-            .filter(|item| item.test_likely)
-            .filter_map(|item| hunk.lines[item.line].new_line)
-            .collect(),
-        items: found,
-    }
+    found
 }
 
 /// `text` with the prefix of each raw identifier blanked (`x.r#unwrap()` reads `x.  unwrap()`),
@@ -894,12 +1119,22 @@ fn hunk_matches(hunk: &PatchHunk, language: Option<Language>, rules: &[&Rule]) -
 /// columns stay where they were (review V3 round 8, VD3R8-M-1: `x.r#unwrap()` and
 /// `X::r#unwrap(x)` left no item). The opener of a raw string (`r#"`) is not an identifier and
 /// is left alone.
+///
+/// The `r` starts a name unless what stands before it belongs to one: an ASCII letter, digit or
+/// `_`, or a character past ASCII that is not white space. The compiler has five white space
+/// characters past ASCII (U+200E and its kin, [`rust_white`]), and after one of them
+/// `r#unwrap` is the name as after a blank (fifth independent review, IR5-M-2: taken for part
+/// of a name, the mark left `x.<U+200E>r#unwrap()` and `#[<U+200E>r#ignore]` unread).
 fn without_raw_prefixes(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let in_name = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || !b.is_ascii();
+    // Whether `before` ends in a white space character past ASCII (they are 2 or 3 bytes).
+    let after_white = |before: &[u8]| {
+        (2..=3).any(|n| before.len() >= n && rust_white(&before[before.len() - n..]) == n)
+    };
     let mut out: Option<Vec<u8>> = None;
     for (at, _) in text.match_indices("r#") {
-        let starts = at == 0 || !in_name(bytes[at - 1]);
+        let starts = at == 0 || !in_name(bytes[at - 1]) || after_white(&bytes[..at]);
         let names = bytes
             .get(at + 2)
             .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_' || !b.is_ascii());
@@ -4950,6 +5185,573 @@ mod tests {
         assert_eq!(
             (follows(b"  ", b"!"), follows(b" ! (", b"!(")),
             (None, Some(4))
+        );
+    }
+
+    /// Fifth independent review, IR5-H-1. After a string that runs over a line end, a comment
+    /// with two quotes in it between the tokens of a construct hid the construct, and so did
+    /// a closing bracket inside a later string. Each line after the open string was read two
+    /// ways and the bytes of both readings were united; the two were out of step to the end
+    /// of the hunk, and the union showed `""` between `unwrap` and `(`. rustc 1.99.1 compiles
+    /// every text here, and the programs panic and skip as written. A view is one whole
+    /// reading now; what readings find is united, their bytes are not.
+    #[test]
+    fn after_a_string_over_lines_a_comment_between_tokens_hides_nothing() {
+        // the review's `union-hide.rs`: a file the patch creates
+        let hide = [
+            "pub const HELP: &str = \"usage: tool",
+            "  --all   run everything\";",
+            "",
+            "pub fn first(v: &[u8]) -> u8 {",
+            "    *v.first().unwrap/*\"\"*/()",
+            "}",
+            "",
+            "pub fn later() -> u32 {",
+            "    todo/*\"\"*/!()",
+            "}",
+            "",
+            "#[cfg(test)]",
+            "mod tests {",
+            "    #[test]",
+            "    #[/*\"\"*/ignore]",
+            "    fn skipped() {",
+            "        assert_eq!(1 + 1, 3);",
+            "    }",
+            "",
+            "    #[test]",
+            "    fn checks_nothing() {",
+            "        assert!(/*\"\"*/true);",
+            "    }",
+            "}",
+        ];
+        assert_eq!(
+            found(&new_file("src/lib.rs", &hide)),
+            [
+                (S::PanicPathAdded, Basis::Lexical, 5),
+                (S::StubAdded, Basis::Lexical, 9),
+                (S::TestSkipped, Basis::Lexical, 15),
+                (S::TrivialAssert, Basis::Lexical, 22),
+            ]
+        );
+        // `skip-hide.rs`: no comment, a `)` inside a string of the condition
+        assert_eq!(
+            found(&new_file(
+                "src/lib.rs",
+                &[
+                    "pub const HELP: &str = \"usage: tool",
+                    "  --all   run everything\";",
+                    "",
+                    "#[cfg(test)]",
+                    "mod tests {",
+                    "    #[test]",
+                    "    #[cfg_attr(not(feature = \"never)\"), ignore)]",
+                    "    fn the_check_that_matters() {",
+                    "        assert_eq!(1 + 1, 3);",
+                    "    }",
+                    "}",
+                ]
+            )),
+            [(S::TestSkipped, Basis::Lexical, 7)]
+        );
+        // `mod-union.patch`: a hunk of an existing file, the string in its unchanged lines
+        let file = parse(
+            "--- a/src/cli.rs\n+++ b/src/cli.rs\n@@ -3,8 +3,8 @@ use std::fmt;\n \n pub const HELP: &str = \"usage: tool\n   --all   run everything\";\n \n pub fn first(v: &[u8]) -> u8 {\n-    v.first().copied().unwrap_or(0)\n+    *v.first().unwrap/*\"\"*/()\n }\n \n",
+        )
+        .unwrap()
+        .remove(0);
+        assert_eq!(found(&file), [(S::PanicPathAdded, Basis::Lexical, 8)]);
+        // The same cause gave false items, in released versions too (`union-fp.rs`): after
+        // the string over lines, the text of a comment and of a later string was read as
+        // code. Four items then, none now.
+        assert_eq!(
+            found(&new_file(
+                "src/lib.rs",
+                &[
+                    "pub const HELP: &str = \"usage: tool",
+                    "  --all   run everything\";",
+                    "",
+                    "pub fn notes() -> &'static str {",
+                    "    // the old code said \"x.unwrap()\" here",
+                    "    \"never call std::process::Command::new(sh) or todo!() or unsafe { } in a handler\"",
+                    "}",
+                ]
+            )),
+            []
+        );
+    }
+
+    /// Round 12 of Vesper's review, VD3R12-M-1. A hunk of an existing file does not say what
+    /// the lines above it left open. Read from code only, a line added inside an existing
+    /// block comment, `// */ pub fn evil() { … } /*`, was a line comment, and the spawn the
+    /// compiler compiles left nothing. A side that does not start at line 1 is now also read
+    /// as beginning inside one block comment, and what either reading finds is found.
+    #[test]
+    fn a_hunk_that_may_begin_inside_a_block_comment_is_read_that_way_too() {
+        let spawn = [(S::ProcessSpawn, Basis::Lexical)];
+        let signals = |text: &str| -> Vec<(S, Basis)> {
+            found(&parse(text).unwrap().remove(0))
+                .iter()
+                .map(|(signal, basis, _)| (*signal, *basis))
+                .collect()
+        };
+        // `inside-existing-comment.patch`
+        assert_eq!(
+            signals(
+                "--- a/src/net.rs\n+++ b/src/net.rs\n@@ -3,5 +3,6 @@\n    The sync step is described here at length,\n    over several lines of an existing block comment.\n+   // */ pub fn evil(u: &str) { std::process::Command::new(\"sh\").arg(\"-c\").arg(u).status().ok(); } /*\n    More prose of the same comment follows,\n    and it ends further down.\n    Still prose.\n"
+            ),
+            spawn
+        );
+        // `two-hunk-comment.patch`: the opener is added by an earlier hunk of the same file
+        assert_eq!(
+            signals(
+                "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n pub fn a() {}\n+/*\n pub fn b() {}\n pub fn c() {}\n@@ -9,3 +10,4 @@\n pub fn i() {}\n pub fn j() {}\n+// */ pub fn evil() { std::process::Command::new(\"sh\").status().ok(); }\n pub fn k() {}\n"
+            ),
+            spawn
+        );
+        // The same line at the top of a file is a line comment and nothing else: a side that
+        // starts at line 1 cannot begin inside a comment, and is not read as if it did.
+        assert_eq!(
+            signals(
+                "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,3 @@\n pub fn i() {}\n+// */ pub fn evil() { std::process::Command::new(\"sh\").status().ok(); }\n pub fn k() {}\n"
+            ),
+            []
+        );
+        assert_eq!(
+            found(&new_file(
+                "src/lib.rs",
+                &["// */ pub fn evil() { std::process::Command::new(\"sh\").status().ok(); }"]
+            )),
+            []
+        );
+        // The cost, accepted with the finding: in that second reading, a `*/` inside a string
+        // near the start of a fragment ends the supposed comment, and the text after it is
+        // read as code. This call stands in a string, and is reported. (`/**/` in a path is
+        // an opener and a closer to that reading, and ends nothing.)
+        let in_string = |pattern: &str| {
+            signals(&format!(
+                "--- a/src/glob.rs\n+++ b/src/glob.rs\n@@ -7,1 +7,2 @@\n x\n+    let pattern = \"{pattern}\";\n"
+            ))
+        };
+        assert_eq!(
+            in_string("**/x.unwrap()"),
+            [(S::PanicPathAdded, Basis::Lexical)]
+        );
+        assert_eq!(in_string("src/**/x.unwrap()"), []);
+        // The old side is read the same way: a test removed from inside such a comment.
+        let file = parse(
+            "--- a/src/t.rs\n+++ b/src/t.rs\n@@ -5,3 +5,2 @@\n  prose\n-  // */ #[test] fn gone() {} /*\n  prose\n",
+        )
+        .unwrap()
+        .remove(0);
+        assert_eq!(found(&file), [(S::TestRemoved, Basis::Lexical, 6)]);
+    }
+
+    /// The readings of a Rust hunk: one from code for every side; one from inside a block
+    /// comment for a side that starts below line 1 and holds a changed line; and one from
+    /// inside a string for such a side when, read from code, it ends inside a string. Each
+    /// covers the sides it reads and no other.
+    #[test]
+    fn a_rust_hunk_has_one_reading_two_or_three() {
+        let readings = |text: &str| -> Vec<(bool, bool)> {
+            let file = parse(text).unwrap().remove(0);
+            hunk_views(&file.patch_twin.hunks[0], Some(Language::Rust))
+                .iter()
+                .map(|views| (views.old, views.new))
+                .collect()
+        };
+        // a file the patch creates; a hunk at line 1
+        assert_eq!(
+            readings("--- /dev/null\n+++ b/src/a.rs\n@@ -0,0 +1,1 @@\n+fn a() {}\n"),
+            [(true, true)]
+        );
+        assert_eq!(
+            readings(
+                "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +1,2 @@\n-fn a() {}\n+fn b() {}\n x\n"
+            ),
+            [(true, true)]
+        );
+        // below line 1: both sides changed, only the new side, only the old side
+        assert_eq!(
+            readings(
+                "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -5,2 +5,2 @@\n-fn a() {}\n+fn b() {}\n x\n"
+            ),
+            [(true, true), (true, true)]
+        );
+        assert_eq!(
+            readings("--- a/src/a.rs\n+++ b/src/a.rs\n@@ -5,1 +5,2 @@\n+fn b() {}\n x\n"),
+            [(true, true), (false, true)]
+        );
+        assert_eq!(
+            readings("--- a/src/a.rs\n+++ b/src/a.rs\n@@ -5,2 +5,1 @@\n-fn a() {}\n x\n"),
+            [(true, true), (true, false)]
+        );
+        // the old side at line 1 and the new side below it
+        assert_eq!(
+            readings(
+                "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +4,2 @@\n-fn a() {}\n+fn b() {}\n x\n"
+            ),
+            [(true, true), (false, true)]
+        );
+        // A side that ends inside a string when read from code is read from inside one too:
+        // the new side here (its one quote is odd), not the old side.
+        assert_eq!(
+            readings(
+                "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -5,2 +5,2 @@\n-fn a() {}\n+text\"; fn b() {}\n x\n"
+            ),
+            [(true, true), (true, true), (false, true)]
+        );
+        // and the same for a raw string left open at the end
+        assert_eq!(
+            readings(
+                "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -5,2 +5,2 @@\n-fn a() { r#\"\n+fn b() {}\n x\n"
+            ),
+            [(true, true), (true, true), (true, false)]
+        );
+        // Not at line 1, whatever the quotes; and not for a side the change does not touch.
+        assert_eq!(
+            readings("--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,1 +1,2 @@\n+text\"; fn b() {}\n x\n"),
+            [(true, true)]
+        );
+        assert_eq!(
+            readings("--- a/src/a.rs\n+++ b/src/a.rs\n@@ -5,2 +5,1 @@\n-fn a() {}\n x \"\n"),
+            [(true, true), (true, false), (true, false)]
+        );
+        // A later reading holds a view only for the sides it covers, and there the view of
+        // a side read from its start.
+        let file = parse("--- a/src/a.rs\n+++ b/src/a.rs\n@@ -5,1 +5,2 @@\n+b */ c \" d\n x\n")
+            .unwrap()
+            .remove(0);
+        let views = hunk_views(&file.patch_twin.hunks[0], Some(Language::Rust));
+        assert_eq!(
+            views[0].lines,
+            [
+                (None, Some("b */ c \"  ".to_owned())),
+                (Some("x".to_owned()), Some(" ".to_owned()))
+            ]
+        );
+        assert_eq!(
+            views[1].lines,
+            [
+                (None, Some("     c \"  ".to_owned())),
+                (None, Some(" ".to_owned()))
+            ]
+        );
+        assert_eq!(
+            views[2].lines,
+            [
+                (None, Some("       \" d".to_owned())),
+                (None, Some("x".to_owned()))
+            ]
+        );
+        // Another language has one reading, whatever the hunk.
+        let views = hunk_views(&file.patch_twin.hunks[0], Some(Language::Go));
+        assert_eq!(views.len(), 1);
+        assert!(views[0].old && views[0].new);
+    }
+
+    /// A side of a hunk that begins inside a string is read as beginning there when its quotes
+    /// say so: read from code it ends inside a string. The fifth independent review's honest
+    /// case (`honest-string.patch`): three unchanged lines of a multi-line SQL string, and a
+    /// changed line that closes it and turns `.ok()` into `.unwrap()`. Read from code only,
+    /// the closing quote opens a string and the call is its text. Rounds 11 and 12 missed the
+    /// call on that line; and without this reading, whole views would also have lost the code
+    /// on every line after such a string, which round 12 found (measured on 177,957 fragments
+    /// of real crate files: 470 real items).
+    #[test]
+    fn a_side_that_begins_inside_a_string_is_read_that_way_when_its_quotes_say_so() {
+        let honest = parse(
+            "--- a/src/db.rs\n+++ b/src/db.rs\n@@ -12,7 +12,7 @@ pub fn insert(conn: &Connection, name: &str, age: u32) {\n         INSERT INTO people\n             (name, age, created)\n         VALUES\n-            (?1, ?2, now())\", params![name, age]).ok();\n+            (?1, ?2, now())\", params![name, age]).unwrap();\n }\n \n pub fn count(conn: &Connection) -> u64 {\n",
+        )
+        .unwrap()
+        .remove(0);
+        assert_eq!(found(&honest), [(S::PanicPathAdded, Basis::Lexical, 15)]);
+        // The code on the lines after the string is found too.
+        let after = parse(
+            "--- a/src/t.rs\n+++ b/src/t.rs\n@@ -40,3 +40,5 @@\n   the last line of a long string\";\n+    let n = load().unwrap();\n+    unsafe { run(n) }\n }\n \n",
+        )
+        .unwrap()
+        .remove(0);
+        assert_eq!(
+            found(&after),
+            [
+                (S::PanicPathAdded, Basis::Lexical, 41),
+                (S::UnsafeAdded, Basis::Lexical, 42),
+            ]
+        );
+        // Declared: a side whose quotes do not say so is read from code and from inside a
+        // comment only. Here the string that began above ends on line 1 of the hunk and
+        // another opens and stays open on its last line, so read from code the side ends in
+        // code, and the call between them is taken for the text of a string.
+        let even = parse(
+            "--- a/src/t.rs\n+++ b/src/t.rs\n@@ -40,3 +40,4 @@\n   the last line of a long string\";\n+    let n = load().unwrap();\n     let s = \"another string that the hunk does not close\n     and goes on\n",
+        )
+        .unwrap()
+        .remove(0);
+        assert_eq!(found(&even), []);
+        // The cost: a side that begins in code and ends inside a string it opens is read
+        // from inside a string too, and there the text of its strings is code.
+        let cost = parse(
+            "--- a/src/t.rs\n+++ b/src/t.rs\n@@ -40,2 +40,4 @@\n fn f() {\n+    log(\"never call x.unwrap() here\");\n+    let s = \"a string that the hunk does not close\n     and goes on\n",
+        )
+        .unwrap()
+        .remove(0);
+        assert_eq!(found(&cost), [(S::PanicPathAdded, Basis::Lexical, 41)]);
+    }
+
+    /// What two readings find is one list in hunk order: an item of both once, with the higher
+    /// basis. The hint `test_likely` is the reading from code's when that reading finds the
+    /// item, and otherwise the hint only when both give it.
+    #[test]
+    fn findings_of_two_readings_are_united() {
+        let hit = |at: usize, signal: S, basis: Basis, likely: bool, from_code: bool| Hit {
+            at,
+            side: Side::New,
+            signal,
+            number: 10 + u32::try_from(at).unwrap(),
+            basis,
+            likely,
+            from_code,
+        };
+        let key = |hits: &[Hit]| -> Vec<(usize, S, Basis, bool)> {
+            hits.iter()
+                .map(|h| (h.at, h.signal, h.basis, h.likely))
+                .collect()
+        };
+        let code = [
+            hit(1, S::PanicPathAdded, Basis::Lexical, true, true),
+            hit(2, S::UnsafeAdded, Basis::Lexical, false, true),
+            hit(2, S::PanicPathAdded, Basis::Lexical, false, true),
+            hit(5, S::StubAdded, Basis::Hunk, false, true),
+        ];
+        let comment = [
+            hit(0, S::StubAdded, Basis::Lexical, false, false),
+            hit(1, S::PanicPathAdded, Basis::Hunk, false, false),
+            hit(2, S::PanicPathAdded, Basis::Lexical, true, false),
+            hit(5, S::StubAdded, Basis::Lexical, false, false),
+            hit(7, S::PanicPathAdded, Basis::Lexical, true, false),
+            hit(8, S::PanicPathAdded, Basis::Lexical, true, false),
+        ];
+        let string = [
+            hit(7, S::PanicPathAdded, Basis::Lexical, true, false),
+            hit(8, S::PanicPathAdded, Basis::Lexical, false, false),
+        ];
+        let expected = vec![
+            (0, S::StubAdded, Basis::Lexical, false),
+            // the hint of the reading from code, whatever the other says
+            (1, S::PanicPathAdded, Basis::Hunk, true),
+            (2, S::UnsafeAdded, Basis::Lexical, false),
+            (2, S::PanicPathAdded, Basis::Lexical, false),
+            (5, S::StubAdded, Basis::Hunk, false),
+            (7, S::PanicPathAdded, Basis::Lexical, true),
+            (8, S::PanicPathAdded, Basis::Lexical, true),
+        ];
+        assert_eq!(key(&unite(&code, &comment)), expected);
+        assert_eq!(key(&unite(&comment, &code)), expected);
+        assert_eq!(key(&unite(&code, &[])), key(&code));
+        assert_eq!(key(&unite(&[], &comment)), key(&comment));
+        // Found only by readings that are not the one from code: the hint if all give it.
+        let all = unite(&unite(&code, &comment), &string);
+        assert_eq!(
+            key(&all)[5..],
+            [
+                (7, S::PanicPathAdded, Basis::Lexical, true),
+                (8, S::PanicPathAdded, Basis::Lexical, false),
+            ]
+        );
+        assert_eq!(key(&unite(&unite(&code, &string), &comment)), key(&all));
+        // In a hunk: the panic path of a test function keeps the hint the reading from code
+        // gives it, also when the reading from inside a comment finds the call after a `*/`
+        // and does not see the attribute above it. (On this repository's history 49 hints
+        // were lost that way before the rule was this one.) A call that only that reading
+        // finds has the hint that reading gives.
+        let hints = |line: &str| -> Vec<(u32, bool)> {
+            let text =
+                format!("--- a/src/h.rs\n+++ b/src/h.rs\n@@ -7,1 +7,3 @@\n x\n+#[test]\n+{line}\n");
+            file_evidence(&parse(&text).unwrap().remove(0))
+                .iter()
+                .filter(|e| e.signal == S::PanicPathAdded)
+                .map(|e| (e.line, e.test_likely))
+                .collect()
+        };
+        assert_eq!(hints("fn t() { a().unwrap(); }"), [(9, true)]);
+        assert_eq!(hints("fn t() { 2 */ a().unwrap(); }"), [(9, true)]);
+        assert_eq!(hints("// */ #[test] fn t() { a().unwrap(); }"), [(9, true)]);
+        assert_eq!(hints("// */ fn t() { a().unwrap(); }"), [(9, false)]);
+    }
+
+    /// Round 12 of Vesper's review, VD3R12-M-2. The first line of a file can be a shebang,
+    /// which the compiler passes over; read as Rust, `#!/usr/bin/env -S cargo run /*` opened a
+    /// comment over the file and the spawn on line 2 left nothing (rustc 1.99.1 compiles the
+    /// file). The compiler's rule is applied to a side that starts at line 1.
+    #[test]
+    fn a_shebang_line_opens_nothing() {
+        let body = [
+            "#!/usr/bin/env -S cargo run /*",
+            "fn main() { std::process::Command::new(\"sh\").status().ok(); }",
+            "// */",
+        ];
+        assert_eq!(
+            found(&new_file("src/main.rs", &body)),
+            [(S::ProcessSpawn, Basis::Lexical, 2)]
+        );
+        // a hunk of an existing file that starts at line 1
+        let file = parse(
+            "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,2 +1,3 @@\n #!/usr/bin/env -S cargo run /*\n+fn main() { std::process::Command::new(\"sh\").status().ok(); }\n // */\n",
+        )
+        .unwrap()
+        .remove(0);
+        assert_eq!(found(&file), [(S::ProcessSpawn, Basis::Lexical, 2)]);
+        // `#![…]` is an inner attribute and Rust: the comment it opens is a comment.
+        assert_eq!(
+            found(&new_file(
+                "src/main.rs",
+                &[
+                    "#![allow(dead_code)] /*",
+                    "fn main() { std::process::Command::new(\"sh\").status().ok(); }",
+                    "*/",
+                ]
+            )),
+            [(S::CheckSuppressed, Basis::Lexical, 1)]
+        );
+    }
+
+    /// Fifth independent review, IR5-M-1. `k#r"\"` holds a raw string in every edition in
+    /// which rustc 1.99.1 accepts it (2015 and 2018; 2021 and 2024 refuse the prefix). Round
+    /// 12 read `k#r` as one name, the quote after it as an ordinary string, and one such line
+    /// hid the rest of the hunk. The review's `kraw-rest.rs`: every item is found.
+    #[test]
+    fn a_k_and_a_hash_before_a_raw_string_hide_nothing() {
+        let body = [
+            "macro_rules! m { ($($t:tt)*) => {}; }",
+            "m!(k#r\"\\\"); m!(\" /* \");",
+            "pub fn run() -> bool {",
+            "    let s = std::process::Command::new(\"sh\").arg(\"-c\").arg(\"id\").status();",
+            "    let p = unsafe { *std::ptr::null::<u8>() };",
+            "    s.is_ok() && p == 0",
+            "}",
+            "#[test]",
+            "#[ignore]",
+            "fn never_runs() { assert!(true); }",
+            "fn main() { println!(\"{}\", std::process::Command::new(\"true\").status().unwrap().success()); }",
+        ];
+        assert_eq!(
+            found(&new_file("src/main.rs", &body)),
+            [
+                (S::ProcessSpawn, Basis::Lexical, 4),
+                (S::UnsafeAdded, Basis::Lexical, 5),
+                (S::TestSkipped, Basis::Lexical, 9),
+                (S::TrivialAssert, Basis::Lexical, 10),
+                (S::ProcessSpawn, Basis::Lexical, 11),
+                (S::PanicPathAdded, Basis::Lexical, 11),
+            ]
+        );
+        // A raw lifetime is read as editions 2021 and 2024 read it (`rawlt21.rs`: after
+        // `'r#r` the quote opens an ordinary string, and the spawn after it is found).
+        assert_eq!(
+            found(&new_file(
+                "src/main.rs",
+                &[
+                    "macro_rules! m { ($($t:tt)*) => {}; }",
+                    "pub fn run() -> bool {",
+                    "    m!('r#r\"\\\" /* \"); let s = std::process::Command::new(\"sh\").status(); m!(\" */ \");",
+                    "    s.is_ok()",
+                    "}",
+                ]
+            )),
+            [(S::ProcessSpawn, Basis::Lexical, 3)]
+        );
+        // Declared: before edition 2021 `'r#r"\"` is `'r`, `#` and a raw string, and this
+        // text (`rawlt-rest.rs`, which editions 2015 and 2018 compile) reads otherwise there:
+        // the spawn on line 4 is not found.
+        assert_eq!(
+            found(&new_file(
+                "src/main.rs",
+                &[
+                    "macro_rules! m { ($($t:tt)*) => {}; }",
+                    "m!('r#r\"\\\"); m!(\" /* \");",
+                    "pub fn run() -> bool {",
+                    "    let s = std::process::Command::new(\"sh\").arg(\"-c\").arg(\"id\").status();",
+                    "    s.is_ok()",
+                    "}",
+                ]
+            )),
+            []
+        );
+    }
+
+    /// Fifth independent review, IR5-M-2. A raw identifier written after one of the compiler's
+    /// five white space characters past ASCII (U+0085, U+200E, U+200F, U+2028, U+2029) is the
+    /// name it spells: `x.<U+200E>r#unwrap()` calls `unwrap`. The rule that reads `r#name` as
+    /// `name` took every character past ASCII before the `r` for part of a longer name, so
+    /// the four constructs below left nothing (rustc 1.99.1 compiles the file; it panics and
+    /// skips as written).
+    #[test]
+    fn a_raw_identifier_after_white_space_past_ascii_is_its_name() {
+        for white in ['\u{85}', '\u{200e}', '\u{200f}', '\u{2028}', '\u{2029}'] {
+            let body = [
+                "pub fn first(v: &[u8]) -> u8 {".to_owned(),
+                format!("    *v.first().{white}r#unwrap()"),
+                "}".to_owned(),
+                "pub fn second(v: &[u8]) -> u8 {".to_owned(),
+                format!("    *Option::{white}r#unwrap(v.first())"),
+                "}".to_owned(),
+                "#[cfg(test)]".to_owned(),
+                "mod tests {".to_owned(),
+                "    #[test]".to_owned(),
+                format!("    #[{white}r#ignore]"),
+                "    fn skipped() {".to_owned(),
+                format!("        {white}r#assert!(true);"),
+                "    }".to_owned(),
+                "}".to_owned(),
+            ];
+            let body: Vec<&str> = body.iter().map(String::as_str).collect();
+            assert_eq!(
+                found(&new_file("src/main.rs", &body)),
+                [
+                    (S::PanicPathAdded, Basis::Lexical, 2),
+                    (S::PanicPathAdded, Basis::Lexical, 5),
+                    (S::TestSkipped, Basis::Lexical, 10),
+                    (S::TrivialAssert, Basis::Lexical, 12),
+                ],
+                "U+{:04X}",
+                u32::from(white)
+            );
+        }
+        assert_eq!(
+            without_raw_prefixes("x.\u{200e}r#unwrap()").as_deref(),
+            Some("x.\u{200e}  unwrap()")
+        );
+        assert_eq!(
+            without_raw_prefixes("\u{85}r#ignore").as_deref(),
+            Some("\u{85}  ignore")
+        );
+        // A character past ASCII that is no white space is part of a name, as before, and so
+        // is one that only shares bytes with a white space character.
+        assert_eq!(without_raw_prefixes("x.\u{e9}r#unwrap()"), None);
+        assert_eq!(without_raw_prefixes("x.\u{200d}r#unwrap()"), None);
+        assert_eq!(without_raw_prefixes("x.\u{2027}r#unwrap()"), None);
+        assert_eq!(without_raw_prefixes("x.\u{84}r#unwrap()"), None);
+    }
+
+    /// Fifth independent review, IR5-L-3 (`late2.rs`): a path call that reaches back over
+    /// generic arguments on an earlier line is an item for that earlier line, found after
+    /// the item of the line it ends on. Both are reported, in line order.
+    #[test]
+    fn a_path_call_that_reaches_back_a_line_is_reported_in_line_order() {
+        assert_eq!(
+            found(&new_file(
+                "src/lib.rs",
+                &[
+                    "fn f(x: Option<usize>) {",
+                    "    let a = Result::<[u8; {",
+                    "        x.unwrap() }], ()>::unwrap;",
+                    "}",
+                ]
+            )),
+            [
+                (S::PanicPathAdded, Basis::Hunk, 2),
+                (S::PanicPathAdded, Basis::Lexical, 3),
+            ]
         );
     }
 }

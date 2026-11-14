@@ -428,6 +428,107 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `evidence/independent-review-3-20261114`, five items and three declared misses): evidence
   precision 81 of 95 (was 77 of 90), recall 81 of 125 (was 77 of 119).
 
+- **Round 12 of Vesper's review and a fifth independent review (both NO-GO): findings are
+  united, bytes are not.** Both reviews (`docs/reviews/vesper-v3-round12-report-20261114.md`,
+  `docs/reviews/claude-independent-review-5-20261114.md`) confirmed that, read from a file's
+  first line, the Rust code view agrees with the compiler, that the other languages are
+  unchanged and that the cost is linear. Both found ways to hide a construct that the lexer
+  oracle could not see, all in how a hunk is read.
+  - *The root (IR5-H-1, high).* A line after an open string was read two ways, as code and
+    as going on in the string, and the bytes of both readings were united. After any string
+    that ran over a line end the two readings were out of step to the end of the hunk, and
+    the union showed the text of later comments and strings between the tokens of real code:
+    in `x.unwrap/*""*/()`, `todo/*""*/!()`, `#[/*""*/ignore]` and `assert!(/*""*/true)` two
+    quotes stood between the tokens, and in `#[cfg_attr(not(feature = "never)"), ignore)]` a
+    bracket closed the list early. Nothing was found, in a new file or in a hunk of an
+    existing one; 6.9% of real Rust files hold such a string. The same cause made false
+    items of string and comment text, in released versions too.
+  - *The decision.* For Rust a side of a hunk is read as a small set of whole views. Each is
+    the exact reading of the side from one stated start, a string or a comment that runs
+    over lines carried as the compiler carries it, with nothing read twice and no reading
+    mixed with another. Every Rust rule reads each view (the reader of tokens over the whole
+    side, the one-line rules line by line), and an item any view gives is reported once,
+    with the highest basis. The other languages keep the shared scanner and its readings,
+    byte for byte.
+  - *The starts.* From code: always. At line 1 of a file with the compiler's shebang rule:
+    a first line `#!` whose next token, after white space and comments that are no doc
+    comments, on that line or a later one, is not `[`, is blank and opens nothing (VD3R12-M-2:
+    `#!/usr/bin/env -S cargo run /*` had opened a comment over the file). From inside one
+    block comment: for a side that starts below line 1 and holds a changed line (VD3R12-M-1:
+    a line `// */ pub fn evil() { … } /*` added inside an existing comment, or after a `/*`
+    that an earlier hunk added, is a function the compiler compiles and was a line comment
+    to the view). From inside an ordinary string: for such a side when, read from code, it
+    ends inside a string or a raw string, which is the mark of a side whose first quote
+    closed a string opened above it. That reading finds the call on the line that closes a
+    long string (the fifth review's honest case, missed since round 11) and keeps what
+    round 12 found on the lines after such a string.
+  - *`test_likely`.* The hint of a panic path is the one the reading from code gives when
+    that reading finds it; when only other readings find it, it has the hint only if each
+    gives it. The hint still reaches nothing but its member.
+  - *`k#` (IR5-M-1).* The scanner had taken `k#name` for one token, as the newest lexer does.
+    rustc 1.99.1 has that token in no edition: 2015 and 2018 read `k`, `#` and the rest,
+    2021 and 2024 refuse the prefix. So `k#r"\"` opened an ordinary string where the
+    compiler reads a raw one, and one such line hid the rest of a hunk that editions 2015
+    and 2018 compile. A name and a `#` are now a name and a `#`; the fuzz oracle reads that
+    token again as the compiler does. A raw lifetime (`'r#name`) is still read as 2021 and
+    2024 read it.
+  - *Raw identifiers after white space past ASCII (IR5-M-2).* `x.<U+200E>r#unwrap()`,
+    `#[<U+200E>r#ignore]` and their kin with U+0085, U+200F, U+2028 and U+2029 are the names
+    they spell: the rule that reads `r#name` as `name` took every character past ASCII
+    before the `r` for part of a longer name. It now uses the one definition of the
+    compiler's white space that the reader of tokens and the shebang rule use.
+  - *Measured, against the round 12 binary.* On this repository's history (481 commits that
+    touch Rust, 5,985 hunks, 5,587 items before): 36 items are no longer reported, of which
+    35 stood in strings or comments and 1 is real code (in a hunk that begins inside a
+    string its quotes do not betray); 11 items are new, all text of strings (8 from the
+    reading that begins inside a comment, in test fixtures that hold patch text with `*/`,
+    3 from the reading that begins inside a string); 2 panic paths change their hint. On
+    177,957 fragments of 40 added lines cut from 13,779 real crate files (107,720 items
+    before): 111 items are no longer reported, 18 of them string or comment text and 93
+    real code; 5 are new, 1 of them real; 96 panic paths change their hint, 87 of them
+    gaining it where string text had broken the test's braces. Each further reading by
+    itself: the one from inside a comment adds 1 item on the fragments and 8 on the history,
+    all false; the one from inside a string adds 414 and 6, of which 378 and 3 are real code
+    that the reading from code alone does not find, and 36 and 3 are false.
+  - *Cost.* A side has at most three readings, and a further reading does no work on a line
+    it shows nothing of (the raw-line rules have answered in the first). Two megabytes of
+    each hostile unit, as a new file and as a fragment below line 1, on one line and a unit
+    to a line, rank in the time they took before (0.03 to 1.0 s of CPU on a loaded machine,
+    both binaries).
+  - *Limits that remain, declared.* A side that began inside a string but, read from code,
+    ends in code (another string opens on it and stays open, or the string was opened by an
+    earlier hunk and is closed after `//`) is read from code: the 93 and the 1 above. A side
+    that began inside a raw string is read as if the string were an ordinary one. A side
+    that began two or more block comments deep is read as one deep, which shows code
+    earlier than the compiler does and never later. The false items of the two further
+    readings, counted above. Editions before 2021: `cr"…"` is there the name `cr` and an
+    ordinary string, and `'r#name` is `'r`, `#` and what follows, so `cr"\"` and `'r#r"\"`
+    end a string elsewhere than the view does and a text written for those editions can
+    hide what follows (`c"…"` blanks the same bytes either way; `k#…` is read as those
+    editions read it). Frontmatter, which the compiler refuses as experimental. Characters
+    assigned after Unicode 18.0.0. A side whose first line says it is line 1 is taken for
+    the top of its file, which is where `git apply` puts such a hunk unless it is run with
+    `--unidiff-zero` or `-C0`; a tool that places hunks more loosely could put it lower,
+    and then the readings from inside a comment and a string are not made for it.
+  - *Tests.* Unit tests hold each start of a view, the shebang rule in twenty-four forms
+    (each checked with rustc 1.99.1), `k#`, the white space, and the eleven scanner rules
+    that the review's mutation run found no test for (IR5-L-1; one of the eleven, a rule
+    for `c"`, did nothing a name and a string do not do, and is gone); every reproduction of
+    both reviews is an assertion in the tests or the corpus. The fuzz target
+    `rust_code_view` now holds the exact view on every line (precision was not checked
+    after a string over a line end, which is where IR5-H-1 lived), and holds the other
+    starts to it: read from inside a comment a text has the views of `/*` and the text,
+    from inside a string those of `"` and the text, and from line 1 a shebang line by the
+    compiler's own rule is blank. `rust_tokens` has a fifth rule: constructs the target
+    writes itself give the same signals with a block comment of any text between two of
+    their tokens and complete strings of any text on the lines before them. The corpus has
+    48 cases (new: `evidence/independent-review-5-20261114`, nineteen items, two declared
+    false positives and four declared misses): evidence precision 116 of 132 (was 97 of
+    111), recall 116 of 162 (was 97 of 139), 65 declared (was 59). The head of
+    `rust_tokens.rs` no longer says the view ends a block comment at the first `*/`
+    (VD3R12-L-1, IR5-L-2), and the comment on `Found` names both kinds of item that can
+    come late (IR5-L-3).
+
 ### Changed
 
 - **`basis` in `rank.v0` evidence is no longer always `lexical`.** An item carries the highest
@@ -508,6 +609,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     newer form. These known limits of the entries above are closed: the call after
     `/* /* */ // */` (in plain code and in another macro's body) and the wrong `test_likely`
     after `/* /* */ " */`.
+  - *Changed since (round 13, the last entry under Testing above).* A view is no longer a
+    union of readings: a side of a hunk is read as whole views, each from one stated start,
+    and their findings are united. The first two limits above are closed or narrowed there
+    (a hunk that starts inside a block comment, or inside a string its quotes betray; a
+    shebang line), and the limits that remain are listed there with their measured counts.
 
 ## [0.8.3] - 2026-11-11
 

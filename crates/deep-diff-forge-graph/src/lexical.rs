@@ -23,9 +23,12 @@
 //!   by token, with nested block comments, character and byte literals with any escape,
 //!   lifetimes and labels, raw strings with any number of `#`, raw identifiers, and numbers
 //!   and literal suffixes (which decide whether an `r` or a `b` before a quote is a prefix).
-//!   A fuzz target (`rust_code_view`) holds the view to that lexer: no byte of a token that
-//!   is code is ever blank. The reading that resumes every literal a line left open, which is
-//!   the compiler's reading of text that starts in code, is never dropped.
+//!   A Rust view is one exact reading from a stated start ([`RustStart`]): nothing is read
+//!   twice and no two readings are mixed, so a view never shows a byte its own reading takes
+//!   for a comment or a literal. Where the start of a hunk is not known, its side is read as
+//!   more than one whole view ([`rust_views`]: from code, from inside a block comment, from
+//!   inside a string) and the rules read each; what they find is united, the bytes never
+//!   are. A fuzz target (`rust_code_view`) holds the view to the compiler's lexer.
 //! - An interpolation is scanned as code with its own strings, escapes and comments, and ends
 //!   at its matching closer on the same line. Shell `case` patterns, ANSI-C `$'…'` strings,
 //!   word-start `#` comments, JS regex literals (also on a line that continues an
@@ -135,10 +138,6 @@ pub struct ScanState {
     /// Up to [`MORE_READINGS`] other readings, distinct from `plain` and from each other: the
     /// lines read as resuming inside a string a reading left open, and what followed them.
     more: [Option<Reading>; MORE_READINGS],
-    /// Rust only: which of [`Self::readings`] (by its place there, 0 or 1) is the exact
-    /// reading, the one that resumed every literal a line left open since the scan began. For
-    /// text that starts in code it is the compiler's reading, so it is never dropped either.
-    exact: usize,
 }
 
 /// How many readings besides the plain one a [`ScanState`] carries. Each carried string doubles
@@ -156,7 +155,6 @@ impl ScanState {
         let mut state = Self {
             plain: readings.first().copied().unwrap_or_default(),
             more: [None; MORE_READINGS],
-            exact: 0,
         };
         let mut slots = state.more.iter_mut();
         for (i, reading) in readings.iter().enumerate().skip(1) {
@@ -182,8 +180,8 @@ struct Reading {
     /// A string the previous line left open at the top level (a [`Frame::Str`] with `start` 0),
     /// which the next line may resume inside.
     in_string: Option<Frame>,
-    /// Rust only, and all a Rust reading uses: what the previous line left open, as the
-    /// compiler's lexer counts it.
+    /// Rust only, and all a Rust scan uses (it has one reading, the plain one): what the
+    /// previous line left open, as the compiler's lexer counts it.
     rust: rust::Open,
 }
 
@@ -422,9 +420,10 @@ fn regex_len(rest: &[u8]) -> Option<usize> {
 /// which resumes no string, always goes on, so a quote misread as an opener cannot hide a later
 /// line of the hunk that a scan carrying no string would keep.
 ///
-/// A Rust line is read as the compiler's lexer reads it (the `rust` module of this file), under
-/// the same rule of several readings. Its view is as long as the line, or ends where a line
-/// comment starts.
+/// A Rust line is read as the compiler's lexer reads it (the `rust` module of this file), in one
+/// exact reading: `state` carries the one thing the lines so far left open, a fresh state
+/// starts in code, and nothing is read twice. Its view is as long as the line, or ends where a
+/// line comment starts. A whole side of a hunk is read with [`rust_views`].
 #[must_use]
 pub fn code_view(language: Language, line: &str, state: &mut ScanState) -> String {
     if language == Language::Rust {
@@ -859,6 +858,69 @@ pub fn has_token(text: &str, token: &str) -> bool {
     })
 }
 
+/// Where one side of a Rust hunk starts: what [`rust_views`] is told about the lines above it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RustStart {
+    /// In code, at line 1 of its file. A shebang line there is passed over as the compiler
+    /// passes over it: it is no Rust, and leaves nothing open.
+    FileStart,
+    /// In code, below line 1.
+    Code,
+    /// Inside one block comment that the lines above opened. (Inside two or more, the first
+    /// `*/` would not yet end the comment: this start shows what follows it as code earlier
+    /// than the compiler does, never later.)
+    Comment,
+    /// Inside an ordinary string (`"…"`, `b"…"`, `c"…"`) that the lines above opened.
+    Str,
+}
+
+/// One side of a Rust hunk, read whole from a start: [`rust_side`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustSide {
+    /// The code view of each line, in order.
+    pub views: Vec<String>,
+    /// The last line leaves a string or a raw string open. Read from code, that is the mark of
+    /// a side that may have begun inside a string: its closing quote was taken for an opener,
+    /// and so on to the end, each string's text read as code and the code between as strings.
+    pub ends_in_string: bool,
+}
+
+/// The code view of every line of one side of a Rust hunk (`lines`, in order), read whole from
+/// `start`: one exact reading, each line in the state the lines before it left. A string, a raw
+/// string or a comment that runs over lines is carried as the compiler carries it.
+///
+/// A hunk does not say what the lines above it left open. So its side is read once for each
+/// start it is given (from code, from inside a block comment, from inside a string), each a
+/// whole view of its own, and the rules read every view: what any
+/// of them finds is found, but no view is ever mixed with another, byte by byte. (Until
+/// 2026-11-14 a line after an open string was read twice and the bytes of both readings were
+/// united. After a string over a line end the two were out of step to the end of the hunk, and
+/// the union showed the text of later strings and comments between the tokens of real code:
+/// `x.unwrap/*""*/()` was no call any more. Fifth independent review, IR5-H-1.)
+#[must_use]
+pub fn rust_views(lines: &[&str], start: RustStart) -> Vec<String> {
+    rust::side(lines, start).views
+}
+
+/// [`rust_views`], and whether the side ends inside a string.
+#[must_use]
+pub fn rust_side(lines: &[&str], start: RustStart) -> RustSide {
+    rust::side(lines, start)
+}
+
+/// The length in bytes of the white space character `rest` starts with, or 0 when it starts
+/// with none. These are the characters the Rust compiler takes for white space, the six ASCII
+/// ones and U+0085, U+200E, U+200F, U+2028 and U+2029. The one definition: the reader of
+/// tokens separates tokens by it, a raw identifier is told by it, and so is a shebang.
+pub(crate) const fn rust_white(rest: &[u8]) -> usize {
+    match rest {
+        [b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' ', ..] => 1,
+        [0xC2, 0x85, ..] => 2,
+        [0xE2, 0x80, 0x8E | 0x8F | 0xA8 | 0xA9, ..] => 3,
+        _ => 0,
+    }
+}
+
 /// Rust, read as the compiler's lexer reads it.
 ///
 /// The rules are those of `rustc_lexer` (the lexer the compiler and rust-analyzer share), taken
@@ -872,26 +934,31 @@ pub fn has_token(text: &str, token: &str) -> bool {
 /// the lexer also takes for a character literal and the compiler never accepts: several
 /// characters or none between the quotes (`'ab'`, `''`), one the lexer calls unterminated, and
 /// one that runs over a line end. Such a token is passed over whole, so that what follows it
-/// is read as the lexer reads it, and kept as text: a hunk can start inside a string or a
-/// comment, where an apostrophe is no quote, and then nothing between two of them is lost.
+/// is read as the lexer reads it, and kept as text.
 ///
-/// Where the compiler's reading depends on the edition, the view takes that of edition 2021 and
-/// later: `c"…"` and `cr"…"` are C strings. (Before 2021 `c"…"` is the name `c` and a string,
-/// with the same bytes between the quotes; `cr"\"` is the name `cr` and a string in which `\"`
-/// is an escape, where the raw reading ends the string at the second quote and so keeps more
-/// as code.) A `#` before a quote is punctuation and the quote opens a string, as in every
-/// edition in which `#"…"#` compiles; edition 2024 reserves that form and refuses it.
+/// Where the compiler's reading depends on the edition, the view takes that of editions 2021
+/// and 2024, as rustc 1.99.1 reads them. Three forms read otherwise before 2021, and there the
+/// view can take the end of a string for another place than the compiler does:
+/// - `c"…"` and `cr"…"` are C strings. Before 2021 `c"…"` is the name `c` and a string, with
+///   the same bytes between the quotes; `cr"\"` is the name `cr` and a string in which `\"` is
+///   an escape, where the raw reading ends the string at the second quote.
+/// - `'r#name` is one raw lifetime, so in `'r#r"\"` the quote opens an ordinary string. Before
+///   2021 it is `'r`, `#` and what follows, here the raw string `r"\"`.
+/// - A name with `#` or a quote right after it (`k#fn`, `x"…"`) is the name and then the rest,
+///   which is how editions before 2021 read it; 2021 and 2024 refuse an unknown prefix, so
+///   no text they accept is read otherwise. (The lexer's newer `k#name` token is in no edition
+///   of this compiler.)
 ///
-/// One line is scanned at a time. What a line leaves open is a [`rust::Open`]: block comments
-/// and their depth, a string, a raw string and its count of `#`, or a character literal (the
-/// lexer lets one run over a line end in two ways, both errors later). A comment is carried by
-/// every reading. A literal is what a hunk can be wrong about (it may start inside a string),
-/// so the next line is read both ways, as code and as resuming the literal, like every language
-/// here. The exact reading, which always resumes, is kept apart from the others
-/// (`ScanState::exact`) and is never dropped: for text that starts in code it is the compiler's
-/// reading, and the view keeps at least what it keeps.
+/// A `#` before a quote is punctuation and the quote opens a string, as in every edition in
+/// which `#"…"#` compiles; edition 2024 reserves that form and refuses it.
+///
+/// One line is scanned at a time, in one reading. What a line leaves open is a [`rust::Open`]:
+/// block comments and their depth, a string, a raw string and its count of `#`, or a character
+/// literal (the lexer lets one run over a line end in two ways, both errors later). The next
+/// line goes on from it, as the compiler does. What is not known is how a hunk's first line
+/// starts, and that is said from outside ([`RustStart`]).
 mod rust {
-    use super::{MORE_READINGS, Reading, ScanState, union_views};
+    use super::{RustSide, RustStart, ScanState, rust_white};
 
     /// What a line left open for the next one.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -914,78 +981,128 @@ mod rust {
         CharEnd,
     }
 
-    impl Open {
-        /// Whether a literal is open, which the next line is read both as resuming and as not
-        /// resuming. A comment, like nothing, is carried as it is.
-        pub(super) const fn is_literal(self) -> bool {
-            !matches!(self, Self::Nothing | Self::Comment(_))
-        }
-    }
-
     /// The view of `line` and the state after it: `code_view` for Rust.
     pub(super) fn code_view(line: &str, state: &mut ScanState) -> String {
-        let mut views = Vec::with_capacity(2 * (1 + MORE_READINGS));
-        let mut ends = Vec::with_capacity(views.capacity());
-        let mut exact = None;
-        for (place, start) in state.readings().enumerate() {
-            let open = start.rust;
-            // As code, or in the comment every reading carries: resuming no literal.
-            let (view, mut end) = scan(
-                line,
-                if open.is_literal() {
-                    Open::Nothing
-                } else {
-                    open
-                },
-            );
-            views.push(view);
-            ends.push(end);
-            if open.is_literal() {
-                let view;
-                (view, end) = scan(line, open);
-                views.push(view);
-                ends.push(end);
-            }
-            if place == state.exact {
-                exact = Some(end);
-            }
-        }
-        *state = after(&ends, exact);
-        union_views(line, &views)
+        let (view, end) = scan(line, state.plain.rust);
+        state.plain.rust = end;
+        view
     }
 
-    /// The state after a line whose readings ended as `ends` (the plain one first): the plain
-    /// reading, then the exact one when it differs, then the others without repeats, as many as
-    /// there is room for.
-    pub(super) fn after(ends: &[Open], exact: Option<Open>) -> ScanState {
-        let plain = ends.first().copied().unwrap_or_default();
-        let exact = exact.unwrap_or(plain);
-        let mut kept = Vec::with_capacity(1 + MORE_READINGS);
-        kept.push(plain);
-        if exact != plain {
-            kept.push(exact);
-        }
-        for end in ends {
-            if kept.len() > MORE_READINGS {
-                break;
-            }
-            if !kept.contains(end) {
-                kept.push(*end);
-            }
-        }
-        let reading = |rust| Reading {
-            rust,
-            ..Reading::default()
+    /// `lines`, one side of a hunk, read whole from `start`: `rust_side`.
+    pub(super) fn side(lines: &[&str], start: RustStart) -> RustSide {
+        let shebang = start == RustStart::FileStart && is_shebang(lines);
+        let mut open = match start {
+            RustStart::Comment => Open::Comment(1),
+            RustStart::Str => Open::Str,
+            RustStart::FileStart | RustStart::Code => Open::Nothing,
         };
-        let mut state = ScanState {
-            plain: reading(plain),
-            more: [None; MORE_READINGS],
-            exact: usize::from(exact != plain),
-        };
-        for (slot, open) in state.more.iter_mut().zip(&kept[1..]) {
-            *slot = Some(reading(*open));
+        let views = lines
+            .iter()
+            .enumerate()
+            .map(|(number, line)| {
+                if shebang && number == 0 {
+                    return " ".repeat(line.len());
+                }
+                let (view, end) = scan(line, open);
+                open = end;
+                view
+            })
+            .collect();
+        RustSide {
+            views,
+            ends_in_string: matches!(open, Open::Str | Open::RawStr(_)),
         }
-        state
+    }
+
+    /// Whether the first of `lines`, line 1 of a file, is a shebang by the compiler's rule
+    /// (`rustc_lexer::strip_shebang`; a byte order mark before it is dropped first). It starts
+    /// with `#!`, and the first token after that, on this line or a later one, which is
+    /// neither white space nor a comment (a doc comment is a token here) is not `[`: with a
+    /// `[` it is the start of an inner attribute, `#![…]`, and Rust. When the lines end before
+    /// any such token it is a shebang, as it is in a file that ends there; for a hunk that
+    /// shows only the top of its file this is the reading that shows more, since all the
+    /// other one has to show is white space and comments.
+    ///
+    /// Checked with rustc 1.99.1: `#!… /*` on line 1 hides nothing below it; `#!` with `[` on
+    /// the next line, after `// plain` or after a block comment over two lines, is an
+    /// attribute; `#!/** doc */ [` is a shebang; a shebang is line 1 only.
+    fn is_shebang(lines: &[&str]) -> bool {
+        let Some(first) = lines.first() else {
+            return false;
+        };
+        let Some(after) = first
+            .strip_prefix('\u{feff}')
+            .unwrap_or(first)
+            .strip_prefix("#!")
+        else {
+            return false;
+        };
+        let mut depth = 0;
+        std::iter::once(after)
+            .chain(lines[1..].iter().copied())
+            .find_map(|line| first_token(line, &mut depth))
+            .is_none_or(|bracket| !bracket)
+    }
+
+    /// The first token of `line` that is neither white space nor a comment other than a doc
+    /// comment: whether it is `[`, or `None` when the line holds no such token. The line
+    /// starts inside `depth` block comments (none when 0), and `depth` is how many it ends in.
+    fn first_token(line: &str, depth: &mut usize) -> Option<bool> {
+        let mut scan = Scan {
+            line,
+            bytes: line.as_bytes(),
+            out: line.as_bytes().to_vec(),
+        };
+        let inside = std::mem::take(depth);
+        // Where the line goes on after a comment that began at `start` and is read on from
+        // `from` with `open` of them open; `None`, and the depth kept, when it does not end.
+        let mut past =
+            |start: usize, from: usize, open: usize| match scan.comment(start, from, open) {
+                Next::At(end) => Some(end),
+                Next::End(Open::Comment(still)) => {
+                    *depth = still;
+                    None
+                }
+                Next::End(_) => None,
+            };
+        let bytes = line.as_bytes();
+        let mut at = if inside == 0 { 0 } else { past(0, 0, inside)? };
+        loop {
+            let rest = &bytes[at..];
+            let space = rust_white(rest);
+            if space > 0 {
+                at += space;
+                continue;
+            }
+            return match rest {
+                [] => None,
+                // A line comment: a token when it is a doc comment, `//!` or `///` (but not
+                // `////`), and else passed over with the rest of the line.
+                [b'/', b'/', after @ ..] => {
+                    let doc = match after {
+                        [b'!', ..] => true,
+                        [b'/', then @ ..] => then.first() != Some(&b'/'),
+                        _ => false,
+                    };
+                    doc.then_some(false)
+                }
+                // A block comment: a token when it is a doc comment, `/*!` or `/**` (but not
+                // `/***` or `/**/`), and else passed over to where it ends.
+                [b'/', b'*', after @ ..] => {
+                    let doc = match after {
+                        [b'!', ..] => true,
+                        [b'*', then @ ..] => !matches!(then.first(), Some(b'*' | b'/')),
+                        _ => false,
+                    };
+                    if doc {
+                        return Some(false);
+                    }
+                    at = past(at, at + 2, 1)?;
+                    continue;
+                }
+                [first, ..] => Some(*first == b'['),
+            };
+        }
     }
 
     /// One reading of `line`, which starts with `start` open: its view, and what it leaves open.
@@ -1059,13 +1176,13 @@ mod rust {
                     Next::End(Open::Nothing)
                 }
                 b'/' if next == Some(b'*') => self.comment(at, at + 2, 1),
-                // A raw identifier (`r#fn`) or a forced keyword (`k#fn`): `#` and a name.
-                b'r' | b'k' if next == Some(b'#') && names(self) => {
-                    Next::At(self.identifier(at + 2))
-                }
+                // A raw identifier (`r#fn`): `#` and a name. (No other letter does this. The
+                // lexer has a newer token `k#name`, but in no edition of rustc 1.99.1: before
+                // 2021 `k#r"\\"` is `k`, `#` and a raw string, and 2021 and 2024 refuse it.)
+                b'r' if next == Some(b'#') && names(self) => Next::At(self.identifier(at + 2)),
                 b'r' if matches!(next, Some(b'#' | b'"')) => self.raw_string(at),
                 b'b' if next == Some(b'\'') => self.quoted(at + 1),
-                b'b' | b'c' if next == Some(b'"') => self.string_text(at + 2),
+                // (`b"…"` and `c"…"` need no rule: a name and then a string are the same bytes.)
                 b'b' | b'c'
                     if next == Some(b'r')
                         && matches!(self.bytes.get(at + 2), Some(b'"' | b'#')) =>
@@ -2297,7 +2414,7 @@ mod tests {
             assert!(
                 state
                     .readings()
-                    .any(|r| r.in_string.is_none() && !r.rust.is_literal()),
+                    .any(|r| r.in_string.is_none() && r.rust == rust::Open::Nothing),
                 "{language:?}: {lines:?}"
             );
         }
@@ -2311,9 +2428,11 @@ mod tests {
         // A string open inside an interpolation ends with the line.
         let (_, state) = views(Language::Shell, &[r#"V="$(echo "a"#]);
         assert_eq!(state, ScanState::default());
-        // A carried string closes, and the resumed reading's comment is the line's comment.
+        // A carried Rust string closes where the compiler closes it: its text on the line is
+        // blank and the line's comment ends the view. (Until 2026-11-14 the line was also read
+        // as code and the bytes of both readings were united: `a"; f();` and ten blanks.)
         let (out, _) = views(Language::Rust, &[r#"let s = ""#, r#"a"; f(); // unsafe"#]);
-        assert_eq!(out[1], format!(r#"a"; f();{}"#, " ".repeat(10)));
+        assert_eq!(out[1], r#" "; f(); "#);
     }
 
     /// Review 2026-11-01: only the reading that resumed a carried string went on to the next
@@ -2342,11 +2461,6 @@ mod tests {
                 Language::JavaScript,
                 &["  Say 'hi", "`; const p = \"'/*\";", "eval(payload);"],
                 &["eval"],
-            ),
-            (
-                Language::Rust,
-                &["  he said \"hi", "let p = \"/*\";", "unsafe { *p }"],
-                &["unsafe"],
             ),
             (
                 Language::Python,
@@ -2481,7 +2595,7 @@ mod tests {
     }
 
     /// The views of Rust `lines`, read in order from a fresh state, and the state after them.
-    fn rust_views(lines: &[&str]) -> (Vec<String>, ScanState) {
+    fn rust_lines(lines: &[&str]) -> (Vec<String>, ScanState) {
         let mut state = ScanState::default();
         let views = lines
             .iter()
@@ -2526,10 +2640,10 @@ mod tests {
         blank_before("/* //* */ #[cfg(test)] // */ unsafe", " unsafe");
         // A comment that closes leaves nothing; one that does not is carried at its depth,
         // by every reading.
-        let (views, state) = rust_views(&["a /* one /* two", "still */ comment // */ unsafe"]);
+        let (views, state) = rust_lines(&["a /* one /* two", "still */ comment // */ unsafe"]);
         assert_eq!(views, ["a              ", "                       unsafe"]);
         assert_eq!(state, ScanState::default());
-        let (views, state) = rust_views(&["/* /* */ unsafe", "unsafe /* */", "*/ unsafe"]);
+        let (views, state) = rust_lines(&["/* /* */ unsafe", "unsafe /* */", "*/ unsafe"]);
         assert_eq!(
             views,
             [" ".repeat(15), " ".repeat(12), "   unsafe".to_owned()]
@@ -2537,7 +2651,7 @@ mod tests {
         assert_eq!(state, ScanState::default());
         // A `*/` after the comment has ended is two operators.
         blank_before("/* */ */ unsafe", " */ unsafe");
-        let (_, state) = rust_views(&["/* /* /*", "*/"]);
+        let (_, state) = rust_lines(&["/* /* /*", "*/"]);
         assert!(state.readings().all(|r| r.rust == rust::Open::Comment(2)));
         assert_eq!(state.more, [None; MORE_READINGS]);
     }
@@ -2585,7 +2699,7 @@ mod tests {
             );
         }
         // The line of the finding, and what stands after it in the hunk.
-        let (views, state) = rust_views(&[
+        let (views, state) = rust_lines(&[
             r#"pub const TABLE: (char, char, &str) = ('\x41','"', "/*");"#,
             "let unchecked = unsafe { *v.as_ptr() };",
         ]);
@@ -2673,37 +2787,37 @@ mod tests {
                 r#"f("", "  ", "  "); unsafe"#,
             ),
         ] {
-            let (views, state) = rust_views(&[line]);
+            let (views, state) = rust_lines(&[line]);
             assert_eq!(views, [expected], "{line}");
             assert_eq!(state, ScanState::default(), "{line}");
         }
-        // Over lines: the reading that resumes the string ends it where the compiler does, and
-        // keeps the code after it. (The line is also read as code, as a hunk that starts
-        // inside a string needs, so the text of the string on it is kept too.)
+        // Over lines: the string is carried, its text on the later lines is blank, it ends
+        // where the compiler ends it and the code after it is kept. (Until 2026-11-14 each
+        // later line was also read as code and the bytes of both readings were united, so
+        // the text of the string stood in the view: `  cd"; unsafe { g() }`.)
         for (lines, last) in [
             (
                 &[r#"let s = "ab\"#, r#"  cd"; unsafe { g() }"#][..],
-                r#"  cd"; unsafe { g() }"#,
+                r#"    "; unsafe { g() }"#,
             ),
             (
                 &[
                     r##"let s = r##"one "# still"##,
                     r###"two"## ; unsafe { g() }"###,
                 ][..],
-                r###"two"## ; unsafe { g() }"###,
+                r###"   "## ; unsafe { g() }"###,
             ),
             (
                 &[r#"let s = b"one"#, "/* two", r#"*/ three"; unsafe { g() }"#][..],
-                r#"*/ three"; unsafe { g() }"#,
+                r#"        "; unsafe { g() }"#,
             ),
         ] {
-            let (views, state) = rust_views(lines);
+            let (views, state) = rust_lines(lines);
             assert_eq!(views.last().map(String::as_str), Some(last), "{lines:?}");
-            let exact = state.readings().nth(state.exact).unwrap();
-            assert_eq!(exact.rust, rust::Open::Nothing, "{lines:?}");
+            assert_eq!(state, ScanState::default(), "{lines:?}");
         }
         // A raw string with too few `#` after its quote is still open, and says how many.
-        let (views, state) = rust_views(&[r##"let s = r##"a"# unsafe"##]);
+        let (views, state) = rust_lines(&[r##"let s = r##"a"# unsafe"##]);
         assert_eq!(views, [r#"let s = r##"          "#]);
         assert_eq!(state.plain.rust, rust::Open::RawStr(2));
     }
@@ -2836,20 +2950,21 @@ mod tests {
         );
         // A quote in such a literal is no string start.
         assert_eq!(view(Language::Rust, r#"m!('(" unsafe"#), r#"m!('(" unsafe"#);
-        let (views, state) = rust_views(&["m!('(", "'); unsafe { g() }"]);
+        let (views, state) = rust_lines(&["m!('(", "'); unsafe { g() }"]);
         assert_eq!(views, ["m!('(", "'); unsafe { g() }"]);
-        let exact = state.readings().nth(state.exact).unwrap();
-        assert_eq!(exact.rust, rust::Open::Nothing);
-        let (views, state) = rust_views(&[r"m!('(\", "x'); unsafe { g() }"]);
+        assert_eq!(state, ScanState::default());
+        let (views, state) = rust_lines(&[r"m!('(\", "x'); unsafe { g() }"]);
         assert_eq!(views, [r"m!('(\", "x'); unsafe { g() }"]);
-        let exact = state.readings().nth(state.exact).unwrap();
-        assert_eq!(exact.rust, rust::Open::Nothing);
+        assert_eq!(state, ScanState::default());
         // Not continued: the next line is read from its start.
-        let (views, state) = rust_views(&["m!('(", "unsafe { g('x') }"]);
+        let (views, state) = rust_lines(&["m!('(", "unsafe { g('x') }"]);
         assert_eq!(views, ["m!('(", "unsafe { g(   ) }"]);
         assert_eq!(state, ScanState::default());
-        let (views, _) = rust_views(&[r#"let s = "abc unsafe"#, "unsafe { g() }"]);
-        assert_eq!(views, [r#"let s = "          "#, "unsafe { g() }"]);
+        // An unterminated string is a string to the end of the text, as it is for the lexer.
+        // (Until 2026-11-14 the next line was also read as code: `unsafe { g() }`.)
+        let (views, state) = rust_lines(&[r#"let s = "abc unsafe"#, "unsafe { g() }"]);
+        assert_eq!(views, [r#"let s = "          "#, "              "]);
+        assert_eq!(state.plain.rust, rust::Open::Str);
     }
 
     /// Names past ASCII are read as the compiler reads them: a character that may start a
@@ -2942,18 +3057,16 @@ mod tests {
         assert!(rust::tables_ascend());
     }
 
-    /// A text on which the readings pile up: a string, then a raw string that holds three
-    /// comment openers on three lines. The plain reading, which resumes no string, takes each
-    /// opener for a comment and goes one deeper on every line, and each depth it passes
-    /// through is a reading of its own. With room for four, the one reading that resumed both
-    /// strings, the compiler's, was the fifth: it was dropped, and the code after the raw
-    /// string was blank. (Found by the fuzz oracle while this scanner was written; rustc
-    /// 1.99.1 compiles the text, with `A` of 3 bytes and `B` of 11.) The exact reading is now
-    /// kept before the others.
+    /// A string, then a raw string that holds three comment openers on three lines, then code:
+    /// one reading, in the state the compiler is in on every line. (While a line after an open
+    /// string was read more than one way, each depth of comment that the reading without the
+    /// string passed through was a reading of its own, and with room for four the compiler's
+    /// was once the fifth and was dropped: the code after the raw string was blank. Found by
+    /// the fuzz oracle in round 12; rustc 1.99.1 compiles the text, with `A` of 3 bytes and `B`
+    /// of 11. There is nothing to drop any more.)
     #[test]
-    fn the_exact_rust_reading_is_never_dropped() {
-        use rust::Open::{CharEnd, Comment, Nothing, RawStr, Str};
-        let (views, state) = rust_views(&[
+    fn a_rust_view_is_one_reading_however_its_literals_pile_up() {
+        let (views, state) = rust_lines(&[
             r#"pub const A: &str = ""#,
             r#"/*"; pub const B: &str = r##""#,
             "/*",
@@ -2961,22 +3074,19 @@ mod tests {
             "/*",
             r###""##; pub fn f() { unsafe { run() } }"###,
         ]);
-        assert_eq!(views[5], r###""##; pub fn f() { unsafe { run() } }"###);
-        assert_eq!(state.exact, 1);
-        assert_eq!(state.more[0].map(|r| r.rust), Some(rust::Open::Nothing));
-        // The order of the readings a line leaves: plain, exact, then the rest while there
-        // is room, each once.
-        let state = rust::after(
-            &[Comment(1), Str, Str, RawStr(1), RawStr(2), CharEnd],
-            Some(CharEnd),
+        assert_eq!(
+            views,
+            [
+                r#"pub const A: &str = ""#,
+                r#"  "; pub const B: &str = r##""#,
+                "  ",
+                "   ",
+                "  ",
+                r###""##; pub fn f() { unsafe { run() } }"###,
+            ]
         );
-        let readings: Vec<rust::Open> = state.readings().map(|r| r.rust).collect();
-        assert_eq!(readings, [Comment(1), CharEnd, Str, RawStr(1)]);
-        assert_eq!(state.exact, 1);
-        // The exact reading that ends as the plain one is the plain one.
-        let state = rust::after(&[Nothing, Str, Nothing], Some(Nothing));
-        let readings: Vec<rust::Open> = state.readings().map(|r| r.rust).collect();
-        assert_eq!((readings, state.exact), (vec![Nothing, Str], 0));
+        assert_eq!(state, ScanState::default());
+        assert_eq!(state.more, [None; MORE_READINGS]);
     }
 
     /// Two megabytes of each opener the Rust scanner knows, on one line and one to a line,
@@ -2996,5 +3106,328 @@ mod tests {
                 }
             });
         }
+    }
+
+    /// A side of a hunk is read whole from a stated start (fifth independent review, IR5-H-1,
+    /// and round 12 of Vesper's, VD3R12-M-1). From code it is the compiler's reading of that
+    /// text. From inside one block comment it is the compiler's reading of the same text with
+    /// `/*` put before it: a line `// */ call(); /*` inside a comment is a call, which the
+    /// reading from code takes for a line comment. Until 2026-11-14 a hunk was read from code
+    /// only, and the call was hidden (rustc 1.99.1 compiles and runs it).
+    #[test]
+    fn a_rust_side_is_read_whole_from_its_start() {
+        let lines = [
+            "   over several lines of an existing block comment.",
+            r#"   // */ pub fn evil(u: &str) { spawn("sh"); } /*"#,
+            "   More prose of the same comment follows,",
+            "   and it ends here. */ fn after() {}",
+        ];
+        assert_eq!(
+            rust_views(&lines, RustStart::Comment),
+            [
+                "                                                   ",
+                r#"         pub fn evil(u: &str) { spawn("  "); }   "#,
+                "                                          ",
+                "                        fn after() {}",
+            ]
+        );
+        assert_eq!(
+            rust_views(&lines, RustStart::Code),
+            [
+                "   over several lines of an existing block comment.",
+                "   ",
+                "   More prose of the same comment follows,",
+                "   and it ends here. */ fn after() {}",
+            ]
+        );
+        // What "inside one block comment" means: `/*` before the text, read from code.
+        let mut opened: Vec<String> = lines.iter().map(ToString::to_string).collect();
+        opened[0].insert_str(0, "/*");
+        let opened: Vec<&str> = opened.iter().map(String::as_str).collect();
+        let mut from_code = rust_views(&opened, RustStart::Code);
+        from_code[0].drain(..2);
+        assert_eq!(rust_views(&lines, RustStart::Comment), from_code);
+        // Inside two comments the first `*/` ends only one of them. Read as inside one, what
+        // follows it is shown as code: earlier than the compiler shows it, never later.
+        assert_eq!(
+            rust_views(&["a /* b */ c */ d", "e */ f"], RustStart::Comment),
+            ["               d", "e */ f"]
+        );
+        // From line 1 and from below it, text with no shebang reads the same; and line by
+        // line through `code_view` it is the reading from code.
+        assert_eq!(
+            rust_views(&lines, RustStart::FileStart),
+            rust_views(&lines, RustStart::Code)
+        );
+        assert_eq!(rust_lines(&lines).0, rust_views(&lines, RustStart::Code));
+        assert_eq!(rust_views(&[], RustStart::Comment), Vec::<String>::new());
+    }
+
+    /// A side read from inside an ordinary string is the same text with `"` put before it,
+    /// read from code: its first quote closes the string. And a side read from code says
+    /// whether it ends inside a string or a raw string, which is the mark of one that began
+    /// in a string (its closing quote was taken for an opener). Before 2026-11-14 a line
+    /// after an open string was read both ways and the bytes united; with whole views a
+    /// side that began inside a string would be read wrongly to its end, so it gets a view
+    /// of its own when its quotes say so.
+    #[test]
+    fn a_rust_side_is_read_from_inside_a_string_and_says_how_it_ends() {
+        let lines = [
+            "        VALUES",
+            r#"            (?1, ?2, now())", params![name, age]).unwrap();"#,
+            "}",
+            r#"pub fn count() -> u64 { query("SELECT 1 /* one */") }"#,
+        ];
+        assert_eq!(
+            rust_views(&lines, RustStart::Str),
+            [
+                "              ",
+                r#"                           ", params![name, age]).unwrap();"#,
+                "}",
+                r#"pub fn count() -> u64 { query("                  ") }"#,
+            ]
+        );
+        let mut opened: Vec<String> = lines.iter().map(ToString::to_string).collect();
+        opened[0].insert(0, '"');
+        let opened: Vec<&str> = opened.iter().map(String::as_str).collect();
+        let mut from_code = rust_views(&opened, RustStart::Code);
+        from_code[0].remove(0);
+        assert_eq!(rust_views(&lines, RustStart::Str), from_code);
+        // Read from code this side ends inside a string (the last quote of line 4 opens
+        // one); read from inside a string it does not.
+        assert!(rust_side(&lines, RustStart::Code).ends_in_string);
+        assert!(!rust_side(&lines, RustStart::Str).ends_in_string);
+        assert_eq!(
+            rust_side(&lines, RustStart::Code).views,
+            rust_views(&lines, RustStart::Code)
+        );
+        for (text, ends) in [
+            (&[r#"let s = "open"#][..], true),
+            (&[r#"let s = r#"open""#], true),
+            (&[r#"let s = b"open"#, "still"], true),
+            (&[r#"let s = "closed";"#], false),
+            (&[r#"/* a comment " left open"#], false),
+            (&["let c = '("], false),
+            (&[r"m!('(\"], false),
+            (&[], false),
+        ] {
+            assert_eq!(
+                rust_side(text, RustStart::Code).ends_in_string,
+                ends,
+                "{text:?}"
+            );
+        }
+        // Inside a string a backslash takes a quote or a backslash with it, as from code.
+        assert_eq!(
+            rust_views(&[r#"a \" b \\" unsafe"#], RustStart::Str),
+            [r#"         " unsafe"#]
+        );
+    }
+
+    /// The compiler passes over a shebang: line 1 of a file, when it starts with `#!` and the
+    /// first token after that which is neither white space nor a comment is not `[`. (With
+    /// `[` it is the inner attribute `#![…]`, also over lines.) A doc comment is a token
+    /// there; a byte order mark before the `#!` is dropped first. Checked with rustc 1.99.1:
+    /// each text below compiles with the reading the test asserts and not with the other
+    /// one. Until 2026-11-14 a shebang was read as Rust, and `#!/usr/bin/env -S cargo run /*`
+    /// opened a comment over the file (round 12 of Vesper's review, VD3R12-M-2).
+    #[test]
+    fn a_rust_shebang_line_is_passed_over_as_the_compiler_passes_over_it() {
+        let top = |lines: &[&str]| rust_views(lines, RustStart::FileStart);
+        let blank = |line: &str| " ".repeat(line.len());
+        // Shebangs: the line is blank and leaves nothing open.
+        for lines in [
+            &["#!/usr/bin/env -S cargo run /*", "fn main() { spawn(); }"][..],
+            &["#! /* a */ // b", "fn main() { spawn(); }"],
+            &[
+                "#!/** doc */ [allow(dead_code)] \"",
+                "fn main() { spawn(); }",
+            ],
+            &["#!//! doc [", "fn main() { spawn(); }"],
+            &["#!//! doc", "[allow(dead_code)]"],
+            &["#!/// doc", "[allow(dead_code)]"],
+            &["#!/*! doc */", "[allow(dead_code)]"],
+            &["\u{feff}#!/usr/bin/env run /* \"", "fn main() { spawn(); }"],
+            &[
+                "#!/* open",
+                "   still */ x \"",
+                "fn main() { spawn(); } // \"",
+            ],
+            &["#!"],
+            &["#!", "   ", "// only a comment"],
+            &["#! /* a comment that the lines shown do not end"],
+        ] {
+            let views = top(lines);
+            assert_eq!(views[0], blank(lines[0]), "{lines:?}");
+            assert_eq!(
+                views[1..],
+                rust_views(&lines[1..], RustStart::Code),
+                "{lines:?}"
+            );
+        }
+        assert_eq!(
+            top(&["#!/usr/bin/env -S cargo run /*", "fn main() { spawn(); }"])[1],
+            "fn main() { spawn(); }"
+        );
+        // Not shebangs: read as the Rust they are.
+        for lines in [
+            &["#![allow(dead_code)]", "fn main() {}"][..],
+            &["#! [allow(dead_code)] /*", "*/ fn main() {}"],
+            &["#!", "[allow(dead_code)]"],
+            &["#! /* c */ [allow(dead_code)]"],
+            &["#!// plain comment \"", "[allow(dead_code)]"],
+            &[
+                "#!//// four slashes are a plain comment",
+                "[allow(dead_code)]",
+            ],
+            &["#!/* open", "   still */ [allow(dead_code)]"],
+            &["#!/* a /* b", "*/ still */ [allow(dead_code)]"],
+            &["#!/**/ [allow(dead_code)]"],
+            &["#!/*** three stars are a plain comment */ [allow(dead_code)]"],
+            &[" #!/usr/bin/env run /*", "fn main() {}"],
+            &["// first", "#!/usr/bin/env run /*", "fn main() {}"],
+        ] {
+            assert_eq!(top(lines), rust_views(lines, RustStart::Code), "{lines:?}");
+        }
+        assert_eq!(
+            top(&["#!", "[allow(dead_code)] fn main() {}"]),
+            ["#!", "[allow(dead_code)] fn main() {}"]
+        );
+        // The rule is for line 1 of a file: a side that starts below it is not asked.
+        assert_eq!(
+            rust_views(&["#!/usr/bin/env run /*", "fn main() {}"], RustStart::Code),
+            ["#!/usr/bin/env run   ", "            "]
+        );
+    }
+
+    /// A name with a `#` after it is the name, a `#`, and what follows: `k#r"\"` holds a raw
+    /// string. rustc 1.99.1 reads it so in editions 2015 and 2018 (a macro counts `k#fn` and
+    /// `k#r"\"` as three tokens each) and refuses it in 2021 and 2024 ("prefix `k` is
+    /// unknown"). The lexer this scanner follows has a newer token, `k#name`, that is in no
+    /// edition of this compiler; the scanner took it in round 12, so that `k#r"\"` opened an
+    /// ordinary string, one line of it put the view a quote out of step, and code that
+    /// editions 2015 and 2018 compile was hidden (fifth independent review, IR5-M-1).
+    #[test]
+    fn rust_k_and_a_hash_are_a_name_and_a_hash() {
+        for (line, expected) in [
+            (r#"m!(k#r"\"); unsafe"#, r#"m!(k#r" "); unsafe"#),
+            (
+                r#"m!(k#r"\"); m!(" /* "); unsafe"#,
+                r#"m!(k#r" "); m!("    "); unsafe"#,
+            ),
+            ("m!(k#fn k#unsafe); unsafe", "m!(k#fn k#unsafe); unsafe"),
+            (r##"m!(k#"x"#); unsafe"##, r##"m!(k#" "#); unsafe"##),
+        ] {
+            assert_eq!(view(Language::Rust, line), expected, "{line}");
+        }
+    }
+
+    /// Rules of the scanner that no unit test held (fifth independent review, IR5-L-1: each was
+    /// removed in turn and the tests still passed; only the fuzz target would have noticed).
+    /// Each line below reads otherwise without its rule. What the compiler does with each is
+    /// the lexer's reading; rustc 1.99.1 refuses most of them later, as noted.
+    #[test]
+    fn rust_scanner_rules_the_mutation_run_found_unheld() {
+        for (line, expected, rule) in [
+            // rustc: `r#abr` is one raw identifier (a macro counts `r#abr"x"` as two tokens)
+            (
+                r#"m!(r#abr"\" unsafe "); unsafe"#,
+                r#"m!(r#abr"          "); unsafe"#,
+                "a raw identifier is a name to its end, so its last letters are no prefix",
+            ),
+            // rustc, editions 2021 and 2024: `'r#r` is one raw lifetime, then a string
+            (
+                r#"m!('r#r"\" unsafe "); unsafe"#,
+                r#"m!('r#r"          "); unsafe"#,
+                "a raw lifetime takes the name after its `#`",
+            ),
+            // rustc: "lifetimes cannot start with a number", and reads on after it
+            (
+                r#"m!('1 "x"); unsafe"#,
+                r#"m!('1 " "); unsafe"#,
+                "a digit after a quote starts a lifetime, as a letter does",
+            ),
+            // rustc: "identifiers cannot contain emoji"
+            (
+                r#"m!('😀 "x"); unsafe"#,
+                r#"m!('😀 " "); unsafe"#,
+                "an emoji after a quote starts a lifetime",
+            ),
+            (
+                r#"m!('a😀' "x"); unsafe"#,
+                r#"m!('a😀' " "); unsafe"#,
+                "an emoji goes on in a name, so the quote after it closes what the first opened",
+            ),
+            // rustc: "character literal may only contain one codepoint"; kept as text
+            (
+                r#"m!(b'a "x"'); unsafe"#,
+                r#"m!(b'a "x"'); unsafe"#,
+                "`b'` opens a byte literal and never a lifetime",
+            ),
+            // rustc: "found invalid character; only `#` is allowed in raw string delimitation"
+            (
+                r#"m!(r#→"x"); unsafe"#,
+                r#"m!(r#→" "); unsafe"#,
+                "`r#` and a character that is no quote take that whole character",
+            ),
+            (
+                r#"m!(r#'x' "y"); unsafe"#,
+                r#"m!(r#'x' "y"); unsafe"#,
+                "the character after `r#` is taken into that token: this quote opens nothing",
+            ),
+            (
+                "m!(r#/* unsafe */); unsafe",
+                "m!(r#/* unsafe */); unsafe",
+                "the character after `r#` is taken into that token: this `/` opens no comment",
+            ),
+            // rustc: "expected at least one digit in exponent"; the `r` is its suffix
+            (
+                r#"m!(0_1e+r"\" unsafe "); unsafe"#,
+                r#"m!(0_1e+r"          "); unsafe"#,
+                "after a first `0`, `_` goes on with the digits",
+            ),
+        ] {
+            assert_eq!(view(Language::Rust, line), expected, "{rule}: {line}");
+        }
+        // A raw string takes a suffix, so an `r` right after it is no prefix; but not one
+        // with more than 255 `#` (rustc: "too many `#` symbols"), after which the `r` opens
+        // a raw string, ` unsafe ` is code, and the last quote opens a string.
+        for (hashes, after) in [
+            (255, r#"r"          "); unsafe"#),
+            (256, r#"r" " unsafe "         "#),
+        ] {
+            let fence = "#".repeat(hashes);
+            let line = format!(r#"m!(r{fence}"x"{fence}r"\" unsafe "); unsafe"#);
+            let expected = format!(r#"m!(r{fence}" "{fence}{after}"#);
+            assert_eq!(view(Language::Rust, &line), expected, "{hashes} hashes");
+        }
+    }
+
+    /// The compiler's white space: six ASCII characters and five past ASCII, each by its
+    /// length in bytes. One definition, used by the reader of tokens, by the raw-identifier
+    /// rule and by the shebang rule (fifth independent review, IR5-M-2).
+    #[test]
+    fn rust_white_space_is_the_compilers() {
+        for c in ['\t', '\n', '\u{b}', '\u{c}', '\r', ' '] {
+            assert_eq!(rust_white(format!("{c}x").as_bytes()), 1, "{c:?}");
+        }
+        for (c, length) in [
+            ('\u{85}', 2),
+            ('\u{200e}', 3),
+            ('\u{200f}', 3),
+            ('\u{2028}', 3),
+            ('\u{2029}', 3),
+        ] {
+            assert_eq!(rust_white(format!("{c}x").as_bytes()), length, "{c:?}");
+            assert_eq!(rust_white(c.to_string().as_bytes()), length, "{c:?}");
+        }
+        // Other space-like characters are not white space to the compiler.
+        for c in [
+            'x', '\u{a0}', '\u{84}', '\u{86}', '\u{200d}', '\u{2027}', '\u{202a}', '\u{feff}',
+        ] {
+            assert_eq!(rust_white(c.to_string().as_bytes()), 0, "{c:?}");
+        }
+        assert_eq!(rust_white(b""), 0);
+        assert_eq!(rust_white(&[0xE2, 0x80]), 0);
     }
 }

@@ -1,0 +1,4 @@
+#!// plain "
+/* a /* b
+*/ still */ [allow(dead_code)]
+fn main() { unsafe { g() } }

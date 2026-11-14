@@ -5,7 +5,10 @@
 //!
 //! A side of a hunk is its unchanged lines and its added lines (the new side) or its removed
 //! lines (the old side), each as its code view: comments and strings blank, raw identifier
-//! prefixes blank. This module cuts that text into tokens and looks at each token once. A token
+//! prefixes blank. A view is one whole reading of the side from a stated start, and a side can
+//! have up to three (from code; from inside a block comment; from inside a string): the reader
+//! reads each on its own and what it finds in any is found. No view is a mixture of two
+//! readings. This module cuts a view's text into tokens and looks at each token once. A token
 //! is an identifier (ASCII letters, digits, `_` and any byte that is not ASCII) or one byte of
 //! punctuation, and it knows the hunk line and the byte column it stands at. White space and
 //! line ends only separate tokens, so a construct reads the same on one line and over ten.
@@ -27,9 +30,33 @@
 //! length of the side, and the memory is the window and the answer, whatever the text.
 //!
 //! What it cannot see, by its design:
-//! - The code view decides what is a comment or a string. It ends a Rust block comment at the
-//!   first `*/`, where the compiler nests them, so after `/* /* */` it can take code for a
-//!   comment (or the reverse) to the end of that line.
+//! - The code view decides what is a comment or a string. Read from where a file starts it
+//!   agrees with the compiler's lexer (editions 2021 and 2024; a fuzz target holds it to that
+//!   lexer). What it cannot know is what the lines above a hunk left open. So a side that
+//!   starts below line 1 and holds a changed line is read from code and also as beginning
+//!   inside one block comment; and when, read from code, it ends inside a string, also as
+//!   beginning inside an ordinary string. What remains:
+//!   - A side that began inside a string, but whose quotes do not say so (read from code it
+//!     ends in code: another string opens on it and stays open, or a later hunk closes the
+//!     string after `//`), is read from code: from the closing quote on, each string's text is
+//!     taken for code and the code between for strings. On 177,957 fragments cut from 13,779
+//!     real crate files 93 real items are missed this way; on this repository's history, 1.
+//!   - A side that began inside a raw string is read as if the string were an ordinary one:
+//!     it ends at the first quote, whatever `#` the raw string needs after it.
+//!   - A side that began two or more block comments deep is read as one deep. That shows what
+//!     follows the first `*/` as code earlier than the compiler does, never later.
+//!   - The further readings have a cost in false items. In the reading from inside a comment,
+//!     a `*/` in a string near the start of a fragment ends the supposed comment and the text
+//!     after it is read as code (measured: 1 item on those fragments, 8 on this repository's
+//!     history, all in strings that hold patch text). In the reading from inside a string,
+//!     the text of the side's strings is code (36 items on those fragments, 3 on the history).
+//!   - Editions before 2021 read three forms otherwise, and there a string can be taken to
+//!     end at another place than the compiler ends it: `cr"…"` (the name `cr` and an ordinary
+//!     string), `c"…"` (the name `c` and a string: the same bytes are blank), and `'r#name`
+//!     (`'r`, `#` and what follows, so `'r#r"\"` holds a raw string).
+//!   - Frontmatter (`---` blocks at the top of a file, which rustc 1.99.1 refuses as
+//!     experimental) is read as Rust, and so is a character that Unicode assigned after
+//!     version 18.0.0.
 //! - A name a macro builds, or one bound to another name (`use Option::unwrap as take;`), is
 //!   not the word.
 //! - A construct longer than its bound, and one the hunk shows only a part of, is not read.
@@ -95,9 +122,17 @@ pub(crate) struct HunkItems {
     pub old: Vec<Item>,
 }
 
-/// Read both sides of `hunk`. `views` holds, for each line, its code view on the old and on the
-/// new side (`None` on the side the line is not on).
-pub(crate) fn read_hunk(hunk: &PatchHunk, views: &[(Option<String>, Option<String>)]) -> HunkItems {
+/// Read the sides of `hunk` in one reading of it. `views` holds, for each line, its code view on
+/// the old and on the new side (`None` on the side the line is not on); `old` and `new` say
+/// which sides this reading covers. A Rust hunk can have two readings (a side read from code,
+/// and read as if it began inside a block comment): each is read here on its own, whole, and
+/// what they find is united by the caller. No view is ever a mixture of two readings.
+pub(crate) fn read_hunk(
+    hunk: &PatchHunk,
+    views: &[(Option<String>, Option<String>)],
+    old: bool,
+    new: bool,
+) -> HunkItems {
     let side = |new: bool| {
         hunk.lines
             .iter()
@@ -116,15 +151,16 @@ pub(crate) fn read_hunk(hunk: &PatchHunk, views: &[(Option<String>, Option<Strin
                 })
             })
     };
-    // A side with no changed line has nothing to report, and is not read.
+    // A side with no changed line has nothing to report, and is not read; nor is a side that
+    // `views` does not cover.
     let has = |kind: PatchLineKind| hunk.lines.iter().any(|line| line.kind == kind);
     HunkItems {
-        new: if has(PatchLineKind::Added) {
+        new: if new && has(PatchLineKind::Added) {
             read_new(side(true))
         } else {
             Vec::new()
         },
-        old: if has(PatchLineKind::Removed) {
+        old: if old && has(PatchLineKind::Removed) {
             read_old(side(false))
         } else {
             Vec::new()
@@ -208,18 +244,10 @@ const fn names(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || !byte.is_ascii()
 }
 
-/// The length in bytes of the white space character `rest` starts with, or 0 when it starts
-/// with none. These are the characters the compiler takes for white space, the six ASCII ones
-/// and U+0085, U+200E, U+200F, U+2028 and U+2029: read as part of a name, a left-to-right mark
-/// between `unwrap` and its parenthesis would make another word of it.
-const fn white(rest: &[u8]) -> usize {
-    match rest {
-        [b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b' ', ..] => 1,
-        [0xC2, 0x85, ..] => 2,
-        [0xE2, 0x80, 0x8E | 0x8F | 0xA8 | 0xA9, ..] => 3,
-        _ => 0,
-    }
-}
+// The compiler's white space, the six ASCII characters and U+0085, U+200E, U+200F, U+2028 and
+// U+2029, separates tokens: read as part of a name, a left-to-right mark between `unwrap` and
+// its parenthesis would make another word of it. The one definition is the code view's.
+use crate::lexical::rust_white as white;
 
 /// The tokens of a side, line after line.
 struct Tokens<'a, I> {
@@ -584,10 +612,14 @@ type OnLine = [Option<(Basis, bool)>; READ.len()];
 /// So what is kept is the answer and never the matches: before, every match that did not
 /// directly follow one like it was kept to the end and the whole list was sorted, and a line
 /// of `x.unwrap(); todo!();` repeated over 16 MiB held 97 MiB for an answer of two items
-/// (review V3 round 11, VD3R11-M-1). Nothing is sorted here. Constructs come in the order of
-/// the lines they are reported on; the one that can come late is a `cfg_attr` list, which is
-/// noted where it ends for the line its first changed token is on, and such an item goes into
-/// `late`, a map by line, which is joined with `lines` at the end, both being in order.
+/// (review V3 round 11, VD3R11-M-1). Nothing is sorted here. Constructs mostly come in the
+/// order of the lines they are reported on. Two kinds can come late, for a line before the
+/// last one reported on: a `cfg_attr` list, which is noted where it ends for the line its
+/// first changed token is on; and a path call that reaches back over generic arguments
+/// (`Result::<[u8; { x.unwrap() }]>::unwrap` over two lines is an item for its first line,
+/// found after the `x.unwrap()` of its second: fifth independent review, IR5-L-3). Any such
+/// item goes into `late`, a map by line, which is joined with `lines` at the end, both being
+/// in order.
 #[derive(Default)]
 struct Found {
     /// The lines in the order they were first reported on, which is their order in the hunk.
@@ -2061,7 +2093,7 @@ mod tests {
                     }
                 })
                 .collect();
-            read_hunk(hunk, &views)
+            read_hunk(hunk, &views, true, true)
         };
         // the removed line between the dot and the name is not on the new side
         let found = read(" x.\n-#[test]\n+unwrap()\n");

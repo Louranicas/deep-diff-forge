@@ -22,8 +22,25 @@
 //    attribute signals, which need a `#`, are held by rules 1 to 3 and by the unit tests,
 //    not by rule 4.)
 //
+// 5. A comment between two tokens of a construct, and complete string literals on the lines
+//    before it, change nothing (fifth independent review, IR5-H-1). The target writes
+//    constructs it knows (`x.unwrap()`, `todo!()`, `#[ignore]`, `assert!(true)` and their
+//    kin), each on a line of its own. Then it writes them again with a block comment between
+//    two tokens of each, holding any text that does not end the comment (quotes included,
+//    over lines too), and with string literals of any text on the lines before them, one line
+//    or several. The reader's signals must be the same set. Until 2026-11-14 a line after a
+//    string over a line end was read two ways and the bytes of both readings were united:
+//    `x.unwrap/*""*/()` then had `""` between `unwrap` and `(`, and nothing was found.
+//    Checked as a file the patch creates and as a hunk below line 1 of an existing file (the
+//    literals unchanged lines, the constructs added). In the hunk the literals hold no `*`:
+//    such a hunk is also read as if it began inside a block comment, and a `*/` in a string
+//    there shows what follows it as code, which is that reading's declared cost.
+//
 // Input: the first byte picks the shape (bit 0: a new file, or a change), a path (bits 1 and
-// 2) and the place of the one respacing (the bits above); the rest is the text.
+// 2) and the place of the one respacing (the bits above); the rest is the text. For rule 5
+// the first line of the text picks constructs and places (a letter `a` to `l` and a digit,
+// again and again), the lines up to a line `--` are the comment's text, and the lines after
+// it the strings' text.
 
 use deep_diff_forge_core::PatchLineKind;
 use deep_diff_forge_graph::{EvidenceSignal, Side, file_evidence, hunk_signals};
@@ -133,6 +150,138 @@ fn checked(text: &str) -> Option<Vec<EvidenceSignal>> {
     Some(read)
 }
 
+/// The constructs of rule 5: the tokens of one line, and the signal they are.
+const CONSTRUCTS: &[(&[&str], EvidenceSignal)] = &[
+    (&["x", ".", "unwrap", "(", ")", ";"], EvidenceSignal::PanicPathAdded),
+    (&["x", ".", "expect", "(", "0", ")", ";"], EvidenceSignal::PanicPathAdded),
+    (&["Option", "::", "unwrap", "(", "x", ")", ";"], EvidenceSignal::PanicPathAdded),
+    (&["Result", "::", "<", "u8", ",", "u8", ">", "::", "unwrap", "(", "x", ")", ";"], EvidenceSignal::PanicPathAdded),
+    (&["todo", "!", "(", ")", ";"], EvidenceSignal::StubAdded),
+    (&["unimplemented", "!", "(", ")", ";"], EvidenceSignal::StubAdded),
+    (&["assert", "!", "(", "true", ")", ";"], EvidenceSignal::TrivialAssert),
+    (&["assert_eq", "!", "(", "true", ",", "true", ")", ";"], EvidenceSignal::TrivialAssert),
+    (&["debug_assert", "!", "(", "true", ")", ";"], EvidenceSignal::TrivialAssert),
+    (&["#", "[", "ignore", "]", "fn", "t", "(", ")", "{", "}"], EvidenceSignal::TestSkipped),
+    (&["#", "[", "cfg_attr", "(", "all", "(", ")", ",", "ignore", ")", "]", "fn", "t", "(", ")", "{", "}"], EvidenceSignal::TestSkipped),
+    (&["#", "[", "cfg_attr", "(", "not", "(", "feature", "=", "\"never)\"", ")", ",", "ignore", ")", "]", "fn", "t", "(", ")", "{", "}"], EvidenceSignal::TestSkipped),
+];
+
+/// Rule 5 for one shape (a new file, or a hunk below line 1 of an existing one): the lines of
+/// `picked` constructs alone, and the same with `comment` between two tokens of each and
+/// `literals` on the lines before them, give the same signals of the reader.
+fn comments_and_earlier_strings_change_nothing(
+    path: &str,
+    new_file: bool,
+    picked: &[(usize, usize)],
+    comment: &str,
+    literals: &[String],
+) {
+    let plain: Vec<String> = picked
+        .iter()
+        .map(|(which, _)| CONSTRUCTS[*which].0.join(" "))
+        .collect();
+    let commented: Vec<String> = picked
+        .iter()
+        .map(|(which, gap)| {
+            let tokens = CONSTRUCTS[*which].0;
+            let gap = 1 + gap % (tokens.len() - 1);
+            format!("{}/*{comment}*/{}", tokens[..gap].join(" "), tokens[gap..].join(" "))
+        })
+        .collect();
+    // One hunk: `before` unchanged (or added, in a new file), then `added`.
+    let hunk = |before: &[String], added: &[String]| {
+        let mut body = String::new();
+        let (mut old, mut new) = (0u32, 0u32);
+        // a line of text can hold line ends: each is a line of the patch
+        for (sign, text) in before
+            .iter()
+            .map(|text| (if new_file { '+' } else { ' ' }, text))
+            .chain(added.iter().map(|text| ('+', text)))
+        {
+            for line in text.split('\n') {
+                body.push(sign);
+                body.push_str(line);
+                body.push('\n');
+                old += u32::from(sign == ' ');
+                new += 1;
+            }
+        }
+        if new_file {
+            format!(
+                "diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{new} @@\n{body}"
+            )
+        } else {
+            // below line 1, after one unchanged line
+            format!("--- a/{path}\n+++ b/{path}\n@@ -7,{} +7,{} @@\n fn above() {{}}\n{body}", old + 1, new + 1)
+        }
+    };
+    let base = checked(&hunk(&[], &plain)).expect("the constructs are a patch");
+    if path == PATHS[0] {
+        for (which, _) in picked {
+            assert!(
+                base.contains(&CONSTRUCTS[*which].1),
+                "`{}` is not read as {}",
+                plain.join("\n"),
+                CONSTRUCTS[*which].1.label()
+            );
+        }
+    }
+    let with = checked(&hunk(literals, &commented)).expect("the constructs are a patch");
+    assert_eq!(
+        with.iter().map(|signal| signal.label()).collect::<Vec<_>>(),
+        base.iter().map(|signal| signal.label()).collect::<Vec<_>>(),
+        "a comment between tokens or strings on earlier lines changed the signals of {path} ({}):\n{}\n{}",
+        if new_file { "a new file" } else { "a hunk below line 1" },
+        literals.join("\n"),
+        commented.join("\n")
+    );
+}
+
+/// Rule 5, from the text of an input: its first line picks the constructs and the place of the
+/// comment in each, the lines up to a line `--` are the comment's text, the rest the strings'.
+fn rule_five(path: &str, text: &str) {
+    let (first, rest) = text.split_once('\n').unwrap_or((text, ""));
+    let picked: Vec<(usize, usize)> = first
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .take(6)
+        .filter(|[letter, digit]| letter.is_ascii_lowercase() && digit.is_ascii_digit())
+        .map(|[letter, digit]| {
+            (
+                usize::from(letter - b'a') % CONSTRUCTS.len(),
+                usize::from(digit - b'0'),
+            )
+        })
+        .collect();
+    if picked.is_empty() {
+        return;
+    }
+    let (comment, strings) = rest.split_once("\n--\n").unwrap_or((rest, ""));
+    // Any text that does not end the comment: no `*` (so no `*/` and no `/*` in it), and no
+    // `/` last, which with the closing `*` would open another.
+    let comment: String = comment.chars().filter(|c| *c != '*').collect();
+    let comment = comment.trim_end_matches('/');
+    for new_file in [true, false] {
+        // Complete literals of the strings' text, a few kinds: what would end one is taken
+        // out. In a hunk below line 1 a `*` is taken out too (see rule 5 above).
+        let body: String = strings
+            .chars()
+            .filter(|c| *c != '"' && *c != '\\' && (new_file || *c != '*'))
+            .collect();
+        let literals = if strings.is_empty() {
+            Vec::new()
+        } else {
+            vec![
+                format!("const A: &str = \"{body}\";"),
+                format!("const B: &[u8] = br#\"{body}\"#; const C: &str = r\"{body}\";"),
+            ]
+        };
+        comments_and_earlier_strings_change_nothing(path, new_file, &picked, comment, &literals);
+    }
+}
+
 /// The places in `line` where white space stands between two tokens: the byte ranges of each
 /// run of spaces and tabs that has something before it and something after it.
 fn gaps(line: &str) -> Vec<(usize, usize)> {
@@ -169,6 +318,7 @@ fuzz_target!(|data: &[u8]| {
         .collect();
     let path = PATHS[usize::from(pick >> 1) % PATHS.len()];
     let new_file = pick & 1 == 1;
+    rule_five(path, &text);
     let lines: Vec<(char, String)> = text
         .lines()
         .enumerate()

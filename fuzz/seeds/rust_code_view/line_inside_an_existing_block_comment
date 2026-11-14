@@ -1,0 +1,4 @@
+   over several lines of an existing block comment.
+   // */ pub fn evil(u: &str) { std::process::Command::new("sh").arg(u).status().ok(); } /*
+   More prose of the same comment follows, */ fn after() {}
+   and " a quote */ unsafe { g() }
