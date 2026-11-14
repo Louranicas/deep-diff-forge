@@ -1,4 +1,4 @@
-// IR4-H-1: one line hides every signal in the rest of the hunk.
+// One line hid every signal in the rest of the hunk from 0.8.3.
 // The closing quote of '\x41' is taken for the opening quote of a char literal ',' ;
 // the next byte is the quote of the char literal '"', read as a string start; that
 // "string" ends at the quote that really opens "/*"; the slash-star is then read as code

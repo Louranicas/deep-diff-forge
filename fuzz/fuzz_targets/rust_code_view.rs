@@ -1,20 +1,20 @@
 #![no_main]
-// The Rust code view against the compiler's own lexer (review round 12, 2026-11-14).
+// The lexer reading of Rust against the compiler's own lexer.
 //
-// Every Rust rule reads a view of each line in which comments and literals are blank
-// (`lexical::code_view`). Twice the view blanked text the compiler compiles: after a nested
-// block comment, and after a character literal with a long escape. Both hid code from every
-// rule, in released versions. This target holds the view to the lexer the compiler uses
+// Every Rust rule reads views of each line in which comments and literals are blank. Up to
+// 0.8.3 there was one view (`lexical::code_view`), and twice it blanked text the compiler
+// compiles: after a nested block comment, and after a character literal with a long escape.
+// Both hid code from every rule. The rules now also read a second view,
+// `lexical::rust_lexer_view`, and this target holds that view to the lexer the compiler uses
 // (`rustc_lexer`, as published for rust-analyzer: `ra-ap-rustc_lexer`), for any text read as a
-// whole Rust file from its first line.
+// whole Rust file from its first line. (The first view is kept as it was, so that nothing
+// 0.8.3 found is lost; nothing here is about it.)
 //
 // The oracle reads the text as the compiler does: the lexer's tokens, and where the lexer
 // offers `#"` or `##` as one token (reserved in edition 2024, which refuses it), a `#` and the
 // rest read again, as the compiler does in every edition that accepts the text; and where it
 // offers `k#name` as one token (a token no edition of rustc 1.99.1 has: 2021 and 2024 refuse
-// the prefix, earlier ones read `k`, `#`, `name`), a `k` and the rest read again; and where it
-// offers `'r#name` as one token (a raw lifetime, editions 2021 and 2024), the lifetime `'r` and
-// the rest read again, as editions 2015 and 2018 read it and as 0.8.3 did. A C string is
+// the prefix, earlier ones read `k`, `#`, `name`), a `k` and the rest read again. A C string is
 // one token (edition 2021 and later). The view gets the same text one line at a time, cut at
 // `\n` only, as a hunk gives it.
 //
@@ -47,7 +47,7 @@
 // may start a name, go on in one, or is an emoji. The view has those three tables of its own,
 // and this is what fails when they fall behind the lexer's.
 
-use deep_diff_forge_graph::lexical::{Language, ScanState, code_view};
+use deep_diff_forge_graph::lexical::{RustLexerState, rust_lexer_view};
 use libfuzzer_sys::fuzz_target;
 use ra_ap_rustc_lexer::{
     Cursor, FrontmatterAllowed, LiteralKind, RawStrError, TokenKind, is_id_continue, is_id_start,
@@ -99,13 +99,6 @@ fn truth(text: &str) -> Truth {
             TokenKind::GuardedStrPrefix | TokenKind::ForcedKeywordIdent => {
                 len = 1;
                 cursor = Cursor::new(&text[at + 1..], FrontmatterAllowed::No);
-            }
-            // `'r#name` is one raw lifetime from edition 2021 on. The view keeps the reading
-            // of editions 2015 and 2018, which 0.8.3 had: the lifetime `'r`, two bytes of
-            // code, and the `#` and the rest read again (`'r#r"\"` then holds a raw string).
-            TokenKind::RawLifetime => {
-                len = 2;
-                cursor = Cursor::new(&text[at + 2..], FrontmatterAllowed::No);
             }
             TokenKind::LineComment { .. } => {
                 found.line_comments.push(at);
@@ -192,18 +185,18 @@ fn literal(kind: LiteralKind, body: &str, piece: &str) -> (Class, Option<(usize,
 /// Hold the view of `text`, read line by line from its first line, to the compiler's reading.
 fn check(text: &str) {
     let truth = truth(text);
-    let (mut state, mut again) = (ScanState::default(), ScanState::default());
+    let (mut state, mut again) = (RustLexerState::default(), RustLexerState::default());
     let mut comments = truth.line_comments.iter().copied().peekable();
     let mut start = 0;
     for (number, line) in text.split('\n').enumerate() {
         let end = start + line.len();
         // One reading: no literal has run over a line end yet, or nothing at all is carried.
         let precise = truth.literal_over_line_end.is_none_or(|at| at >= start)
-            || state == ScanState::default();
-        let view = code_view(Language::Rust, line, &mut state);
+            || state == RustLexerState::default();
+        let view = rust_lexer_view(line, &mut state);
         assert_eq!(
             view,
-            code_view(Language::Rust, line, &mut again),
+            rust_lexer_view(line, &mut again),
             "two scans of line {} differ",
             number + 1
         );
@@ -302,7 +295,7 @@ struct Asked {
 /// in it: the `x` is blank where the answer is yes. Then empty the lines.
 fn answer(lines: &mut [String; 3], asked: &mut Vec<Asked>) {
     for (question, line) in lines.iter().enumerate() {
-        let view = code_view(Language::Rust, line, &mut ScanState::default());
+        let view = rust_lexer_view(line, &mut RustLexerState::default());
         assert_eq!(view.len(), line.len(), "{line:?} -> {view:?}");
         for Asked { c, lexer, x } in asked.iter() {
             assert_eq!(

@@ -9,7 +9,7 @@
 //! matches. Evidence is lexical ([`EVIDENCE_BASIS`]): it finds tokens, it never proves a change
 //! is safe, and a construct split across lines or built at run time can hide from it.
 
-use crate::lexical::{Language, ScanState, code_view, has_token, is_boundary_blocker, is_ident};
+use crate::lexical::{Language, Readings, code_views, has_token, is_boundary_blocker, is_ident};
 use deep_diff_forge_core::{HunkId, PatchHunk, PatchLineKind, ReviewFile};
 
 /// How every evidence item was found.
@@ -518,47 +518,62 @@ pub fn hunk_signals(file: &ReviewFile, hunk: &PatchHunk) -> Vec<EvidenceSignal> 
 /// signal and line however many rules or tokens match, in [`EvidenceSignal::ALL`] order. Block
 /// comments and triple strings are followed through the hunk on each side (state starts fresh
 /// per hunk).
+///
+/// A rule that reads code is asked of every reading of the line ([`code_views`]) and finds
+/// what it finds in any of them. Rust has two readings, the one 0.8.3 had and the compiler's
+/// lexer's, so every item 0.8.3 reported is reported. No rule concludes anything from code
+/// being absent: [`Match::AnyCode`] too is a finding (a line that is code in either reading).
 fn hunk_matches(
     hunk: &PatchHunk,
     language: Option<Language>,
     rules: &[&Rule],
 ) -> Vec<(Side, EvidenceSignal, u32)> {
-    let mut old_state = ScanState::default();
-    let mut new_state = ScanState::default();
+    hunk_matches_in(hunk, language, rules, code_views)
+}
+
+/// [`hunk_matches`] with the views of each line taken from `views_of`, which is [`code_views`]
+/// everywhere but in the tests that ask what one reading alone finds.
+fn hunk_matches_in(
+    hunk: &PatchHunk,
+    language: Option<Language>,
+    rules: &[&Rule],
+    views_of: fn(Language, &str, &mut Readings) -> Vec<String>,
+) -> Vec<(Side, EvidenceSignal, u32)> {
+    let mut old_state = Readings::default();
+    let mut new_state = Readings::default();
     let mut found = Vec::new();
     for line in &hunk.lines {
-        let (side, number, view) = match line.kind {
+        let (side, number, views) = match line.kind {
             PatchLineKind::Context => {
                 if let Some(language) = language {
-                    let _ = code_view(language, &line.text, &mut old_state);
-                    let _ = code_view(language, &line.text, &mut new_state);
+                    let _ = views_of(language, &line.text, &mut old_state);
+                    let _ = views_of(language, &line.text, &mut new_state);
                 }
                 continue;
             }
             PatchLineKind::Added => (
                 Side::New,
                 line.new_line,
-                language.map(|l| code_view(l, &line.text, &mut new_state)),
+                language.map(|l| views_of(l, &line.text, &mut new_state)),
             ),
             PatchLineKind::Removed => (
                 Side::Old,
                 line.old_line,
-                language.map(|l| code_view(l, &line.text, &mut old_state)),
+                language.map(|l| views_of(l, &line.text, &mut old_state)),
             ),
         };
         let Some(number) = number else { continue };
-        let hits = |rule: &Rule| {
-            let text = match rule.view {
-                View::Raw => line.text.as_str(),
-                // A rule that reads code needs a language; `Scope::Any` code rules have none.
-                View::Code => view.as_deref().unwrap_or(line.text.as_str()),
-            };
-            match rule.matches {
-                Match::Tokens(tokens) => tokens.iter().any(|t| token_in(text, t)),
-                Match::AnyCode => !text.trim().is_empty(),
-                Match::Secret => looks_like_secret(text),
-                Match::Imports(modules) => imports_module(text, &line.text, modules),
-            }
+        let hits_in = |rule: &Rule, text: &str| match rule.matches {
+            Match::Tokens(tokens) => tokens.iter().any(|t| token_in(text, t)),
+            Match::AnyCode => !text.trim().is_empty(),
+            Match::Secret => looks_like_secret(text),
+            Match::Imports(modules) => imports_module(text, &line.text, modules),
+        };
+        let hits = |rule: &Rule| match (rule.view, &views) {
+            // Each reading on its own: what any of them finds is found.
+            (View::Code, Some(views)) => views.iter().any(|view| hits_in(rule, view)),
+            // A rule that reads code needs a language; `Scope::Any` code rules have none.
+            (View::Raw, _) | (View::Code, None) => hits_in(rule, &line.text),
         };
         for signal in EvidenceSignal::ALL {
             if rules
@@ -676,6 +691,7 @@ fn looks_like_secret(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lexical::{ScanState, code_view};
     use deep_diff_forge_patch::parse;
 
     /// One file whose single hunk keeps a context line `x` and adds (`+`) or removes (`-`)
@@ -1347,6 +1363,272 @@ mod tests {
                 .map(|e| (e.signal, e.side, e.line))
                 .collect();
             assert_eq!(found, [(S::TestRemoved, Side::Old, line)], "{lines:?}");
+        }
+    }
+
+    /// What 0.8.3 found in Rust is found, whatever else is. A hunk can start inside a string or
+    /// a comment opened above it, and then neither reading of Rust is the compiler's: each can
+    /// come back to code where the other does not. Each patch below is one where the reading
+    /// of 0.8.3 finds real code and the lexer reading alone finds nothing (measured on the
+    /// published v0.8.3 binary: the items expected here, and scores 6, 5, 6 and 5).
+    /// - A list kept in a string, with a glob of two wildcard directories: `/*`, `/*` and
+    ///   `*/` to a reader that started in code. The reading of 0.8.3 ends its comment at the
+    ///   `*/`; the nesting reading is still one deep at the end of the hunk. `git diff`
+    ///   writes this hunk for a function added below such a list.
+    /// - The same list above a removed test, for the old side.
+    /// - Shell text in a raw string with an apostrophe before a quote: the lexer reading
+    ///   takes `'\t"%s\n'` for a character literal, and the closing `"#` then opens a string.
+    /// - Two added lines of a `build.rs` that hold nothing but a character literal with a
+    ///   long escape and one of several bytes: blank to the lexer reading, not to 0.8.3's.
+    #[test]
+    fn what_the_reading_of_0_8_3_finds_from_an_unknown_start_is_found() {
+        let glob = "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -8,6 +8,10 @@\n     LICENSE\n     \
+                    crates/*/*/Cargo.toml\n     docs/README.md\n \";\n \n+pub fn run(cmd: &str) \
+                    -> bool {\n+    std::process::Command::new(\"sh\").arg(cmd).status().is_ok()\
+                    \n+}\n+\n fn main() {\n";
+        let removed_test = "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -8,10 +8,6 @@\n     \
+                            LICENSE\n     crates/*/*/Cargo.toml\n     docs/README.md\n \";\n \n\
+                            -#[test]\n-fn patterns_are_checked() {\n-    \
+                            assert!(PATTERNS.lines().count() > 3);\n-}\n fn main() {\n";
+        let apostrophe = "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -8,8 +8,8 @@\n     set -eu\n     \
+                          cd \"$1\"\n     make\n-    printf done\n-\"#; pub fn f() { g() }\n\
+                          +    printf '\\t\"%s\\n' done\n+\"#; pub fn f() { unsafe { \
+                          hint2::run(g) } }\n \n \n mod hint2 { pub unsafe fn run(f: fn()) { f() } }\n";
+        let build = "--- a/build.rs\n+++ b/build.rs\n@@ -3,2 +3,4 @@\n const T: [char; 2] = [\n\
+                     +'\\x41'\n+'é'\n     ];\n";
+        let cases: [(&str, &[Found]); 4] = [
+            (glob, &[(S::ProcessSpawn, Side::New, 14)]),
+            (removed_test, &[(S::TestRemoved, Side::Old, 13)]),
+            (apostrophe, &[(S::UnsafeAdded, Side::New, 12)]),
+            (
+                build,
+                &[(S::BuildHook, Side::New, 4), (S::BuildHook, Side::New, 5)],
+            ),
+        ];
+        for (patch, expected) in cases {
+            let file = parse(patch).unwrap().remove(0);
+            let items = |views_of| -> Vec<Found> {
+                let kind = FileKind::of(&file);
+                let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
+                hunk_matches_in(&file.patch_twin.hunks[0], kind.language, &rules, views_of)
+                    .into_iter()
+                    .map(|(side, signal, line)| (signal, side, line))
+                    .collect()
+            };
+            assert_eq!(items(code_views), expected, "{patch}");
+            assert_eq!(items(legacy_alone), expected, "0.8.3's reading: {patch}");
+            assert_eq!(items(lexer_alone), [], "the lexer reading: {patch}");
+            let found: Vec<_> = file_evidence(&file)
+                .iter()
+                .map(|e| (e.signal, e.side, e.line))
+                .collect();
+            assert_eq!(found, expected, "{patch}");
+        }
+    }
+
+    /// An item as the tests of the two readings compare it.
+    type Found = (S, Side, u32);
+
+    /// The first view of a line alone: for Rust, the reading of 0.8.3.
+    fn legacy_alone(language: Language, line: &str, state: &mut Readings) -> Vec<String> {
+        let mut views = code_views(language, line, state);
+        views.truncate(1);
+        views
+    }
+
+    /// The last view of a line alone: for Rust, the lexer reading.
+    fn lexer_alone(language: Language, line: &str, state: &mut Readings) -> Vec<String> {
+        let mut views = code_views(language, line, state);
+        views.drain(..views.len() - 1);
+        views
+    }
+
+    /// `'r#r"\"` is read by each reading as its editions read it, and the rules read both: the
+    /// text written for editions 2015 and 2018 is found by the reading of 0.8.3 (as 0.8.3
+    /// found it), the text written for 2021 and 2024 by the lexer reading (0.8.3 missed it).
+    #[test]
+    fn a_raw_lifetime_before_a_string_hides_nothing_in_any_edition() {
+        for (line, by_legacy, by_lexer) in [
+            (
+                r#"m!('r#r"\"); let s = std::process::Command::new("sh").status(); m!("");"#,
+                true,
+                false,
+            ),
+            (
+                r#"m!('r#r"\" /* "); let s = std::process::Command::new("sh").status(); m!(" */ ");"#,
+                false,
+                true,
+            ),
+        ] {
+            let file = added("src/x.rs", &[line]);
+            assert_eq!(signals(&file), [S::ProcessSpawn], "{line}");
+            let kind = FileKind::of(&file);
+            let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
+            let hunk = &file.patch_twin.hunks[0];
+            for (views_of, finds) in [
+                (legacy_alone as fn(_, &str, &mut _) -> _, by_legacy),
+                (lexer_alone, by_lexer),
+            ] {
+                let found = hunk_matches_in(hunk, kind.language, &rules, views_of);
+                assert_eq!(!found.is_empty(), finds, "{line}");
+            }
+        }
+    }
+
+    /// No answer is lower than 0.8.3's, by construction, and this holds the construction: for
+    /// Rust text of every shape a hunk can have, what the rules find is what the reading of
+    /// 0.8.3 finds together with what the lexer reading finds, each read alone. Nothing the
+    /// first finds is missing, and nothing is found that neither finds (their bytes are never
+    /// mixed into a view of their own). The reading of 0.8.3 is the shared scanner's, whose
+    /// code is the released code (`lexical.rs` differs from the release by added lines only),
+    /// and it carries a state the other reading never touches. A file's score adds a weight of
+    /// at least 1 for each signal found, so it is never lower either.
+    ///
+    /// The text is made from the pieces the two readings disagree about (quotes, comment
+    /// openers and closers, character literals with long escapes, raw strings and prefixes)
+    /// with rule tokens between them, as a new file, as added lines below a context line, as
+    /// removed lines, and as a mix of context, added and removed lines, on a source path and
+    /// on `build.rs`. Other languages have one reading, which is `code_view` itself.
+    #[test]
+    fn rust_items_are_those_of_0_8_3_and_those_of_the_lexer_reading() {
+        const ATOMS: [&str; 42] = [
+            "unsafe { g() }",
+            "std::process::Command::new(\"sh\")",
+            "reqwest::blocking::get(u)",
+            "#[test]",
+            "fn t() {}",
+            "/*",
+            "*/",
+            "//",
+            "\"",
+            "'",
+            "'\\x41'",
+            "'\"'",
+            "'\\u{1F600}'",
+            "'é'",
+            "r\"",
+            "r#\"",
+            "\"#",
+            "b'",
+            "b\"",
+            "'r#r",
+            "k#r",
+            "cr\"",
+            "\\",
+            "\\\"",
+            "crates/*/*/Cargo.toml",
+            " ",
+            " ",
+            "x",
+            ";",
+            "1e",
+            "#",
+            "/",
+            "*",
+            "'a",
+            "'\\''",
+            "/* /* */",
+            "// */",
+            "\"/*\"",
+            "'\\t\"%s\\n'",
+            "é",
+            "/* /* */ // */ ",
+            "('\\x41','\"', \"/*\"); ",
+        ];
+        let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move |below: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % (below as u64)).unwrap()
+        };
+        assert!(S::ALL.iter().all(|signal| signal.weight() >= 1));
+        let (mut only_legacy, mut only_lexer, mut items_seen) = (0, 0, 0);
+        for case in 0..4000 {
+            let lines: Vec<String> = (0..=next(8))
+                .map(|_| (0..=next(6)).map(|_| ATOMS[next(ATOMS.len())]).collect())
+                .collect();
+            let path = if case % 5 == 0 {
+                "build.rs"
+            } else {
+                "src/x.rs"
+            };
+            let (mut old, mut new, mut body) = (0, 0, String::new());
+            for line in &lines {
+                let sign = match case % 4 {
+                    0 | 1 => '+',
+                    2 => '-',
+                    _ => [' ', '+', '-'][next(3)],
+                };
+                old += u32::from(sign != '+');
+                new += u32::from(sign != '-');
+                body.push(sign);
+                body.push_str(line);
+                body.push('\n');
+            }
+            let text = match case % 4 {
+                0 => format!("--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{new} @@\n{body}"),
+                1 | 2 => format!(
+                    "--- a/{path}\n+++ b/{path}\n@@ -1,{} +1,{} @@\n x\n{body}",
+                    old + 1,
+                    new + 1
+                ),
+                _ => format!("--- a/{path}\n+++ b/{path}\n@@ -7,{old} +7,{new} @@\n{body}"),
+            };
+            let Ok(mut files) = parse(&text) else {
+                continue; // a mix with no changed line is no patch
+            };
+            let file = files.remove(0);
+            let kind = FileKind::of(&file);
+            assert_eq!(kind.language, Some(Language::Rust));
+            let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
+            let hunk = &file.patch_twin.hunks[0];
+            let all = hunk_matches_in(hunk, kind.language, &rules, code_views);
+            let legacy = hunk_matches_in(hunk, kind.language, &rules, legacy_alone);
+            let lexer = hunk_matches_in(hunk, kind.language, &rules, lexer_alone);
+            for item in &legacy {
+                assert!(all.contains(item), "0.8.3 finds {item:?}:\n{text}");
+            }
+            for item in &all {
+                assert!(
+                    legacy.contains(item) || lexer.contains(item),
+                    "neither reading finds {item:?}:\n{text}"
+                );
+            }
+            for item in &lexer {
+                assert!(
+                    all.contains(item),
+                    "the lexer reading finds {item:?}:\n{text}"
+                );
+            }
+            assert_eq!(hunk_matches(hunk, kind.language, &rules), all);
+            items_seen += all.len();
+            only_legacy += usize::from(legacy.iter().any(|item| !lexer.contains(item)));
+            only_lexer += usize::from(lexer.iter().any(|item| !legacy.contains(item)));
+        }
+        // The generator bites: many items, and many hunks in which one reading finds what the
+        // other does not, in each direction.
+        assert!(
+            items_seen > 2000 && only_legacy > 100 && only_lexer > 100,
+            "{items_seen} items, {only_legacy} hunks only 0.8.3 reads, {only_lexer} only the lexer"
+        );
+        // Every other language has one reading, the shared scanner's.
+        for language in [
+            Language::Python,
+            Language::JavaScript,
+            Language::Go,
+            Language::Shell,
+            Language::Yaml,
+        ] {
+            let (mut readings, mut state) = (Readings::default(), ScanState::default());
+            for _ in 0..500 {
+                let line: String = (0..=next(6)).map(|_| ATOMS[next(ATOMS.len())]).collect();
+                assert_eq!(
+                    code_views(language, &line, &mut readings),
+                    [code_view(language, &line, &mut state)],
+                    "{language:?}: {line}"
+                );
+            }
         }
     }
 
