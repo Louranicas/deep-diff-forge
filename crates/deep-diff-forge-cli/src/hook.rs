@@ -1012,14 +1012,34 @@ pub(crate) fn failure_lines(judged: &Judged) -> BTreeMap<String, usize> {
         lines.insert(line_key(&format!("\0said\0{words}")), 1);
     }
     if lines.len() > LINES_KEPT {
-        let all: Vec<String> = lines
-            .iter()
-            .map(|(key, count)| format!("{key}:{count}"))
-            .collect();
-        let count = lines.len();
-        return BTreeMap::from([(format!("all{}", &line_key(&all.join("\n"))[..21]), count)]);
+        let (mark, count) = mark_of(&lines);
+        return BTreeMap::from([(mark, count)]);
     }
     lines
+}
+
+/// The mark that stands for all of `lines` at once: `all` with a digest of every line and its
+/// count, and the number of the lines. A failure that is known by its mark stands while it is
+/// exactly these lines, and blocks as a whole when anything of it changes: which of its lines
+/// are new is not known then. It is what is kept of a failure with more than [`LINES_KEPT`]
+/// lines, and of any failure when the session has more failing lines than its state keeps
+/// one by one.
+pub(crate) fn mark_of<K: std::borrow::Borrow<str> + Ord>(
+    lines: &BTreeMap<K, usize>,
+) -> (String, usize) {
+    let all: Vec<String> = lines
+        .iter()
+        .map(|(key, count)| format!("{}:{count}", key.borrow()))
+        .collect();
+    (
+        format!("all{}", &line_key(&all.join("\n"))[..21]),
+        lines.len(),
+    )
+}
+
+/// Whether a remembered line is a mark ([`mark_of`]): a line's own key is hex digits.
+pub(crate) fn is_mark(key: &str) -> bool {
+    key.starts_with("all")
 }
 
 /// One remembered line as the state keeps it: the unit's tag, the line and its count.
@@ -1027,8 +1047,8 @@ pub(crate) fn remembered_line(tag: &str, key: &str, count: usize) -> String {
     format!("{tag}/{key}:{count}")
 }
 
-/// What `blocked` remembers of the unit tagged `tag`: each line with its count.
-pub(crate) fn remembered<'a>(blocked: &'a [String], tag: &str) -> BTreeMap<&'a str, usize> {
+/// What `blocked` remembers under exactly the tag `tag`: each line with its count.
+pub(crate) fn remembered_as<'a>(blocked: &'a [String], tag: &str) -> BTreeMap<&'a str, usize> {
     blocked
         .iter()
         .filter_map(|entry| {
@@ -1037,6 +1057,20 @@ pub(crate) fn remembered<'a>(blocked: &'a [String], tag: &str) -> BTreeMap<&'a s
             (unit == tag).then_some((key, count.parse().ok()?))
         })
         .collect()
+}
+
+/// What `blocked` remembers of the unit tagged `tag`: each line with its count. For a staged
+/// change (`TREE/s`) that is its own lines and the lines kept for it (`TREE/k`): lines that
+/// blocked as the staged change's own, which the index still holds and the uncommitted
+/// change's failure has too at the moment.
+pub(crate) fn remembered<'a>(blocked: &'a [String], tag: &str) -> BTreeMap<&'a str, usize> {
+    let mut lines = remembered_as(blocked, tag);
+    if let Some(tree) = tag.strip_suffix("/s") {
+        for (key, count) in remembered_as(blocked, &format!("{tree}/k")) {
+            lines.entry(key).or_insert(count);
+        }
+    }
+    lines
 }
 
 /// Whether the line `key` with `count` items is among `known` with as many items or more.
@@ -1048,12 +1082,24 @@ fn covered<K: std::borrow::Borrow<str> + Ord>(
     known.get(key).is_some_and(|seen| *seen >= count)
 }
 
-/// The lines of `judged` that `known` does not hold, or holds with fewer items.
+/// The lines of `judged` that `known` does not hold, or holds with fewer items. When `known`
+/// is a mark ([`mark_of`]), none if the failure is exactly the lines the mark stands for, and
+/// otherwise every line: what the mark stood for is not known line by line.
 pub(crate) fn lines_beyond<K: std::borrow::Borrow<str> + Ord>(
     judged: &Judged,
     known: &BTreeMap<K, usize>,
 ) -> BTreeSet<String> {
-    failure_lines(judged)
+    let lines = failure_lines(judged);
+    if !lines.is_empty()
+        && known.keys().any(|key| is_mark(key.borrow()))
+        && !lines.keys().any(|key| is_mark(key))
+    {
+        let (mark, count) = mark_of(&lines);
+        if covered(known, &mark, count) {
+            return BTreeSet::new();
+        }
+    }
+    lines
         .into_iter()
         .filter(|(key, count)| !covered(known, key, *count))
         .map(|(key, _)| key)
@@ -1070,7 +1116,7 @@ pub(crate) fn failure_part(judged: &Judged, keep: &BTreeSet<String>, rest: bool)
     };
     let wanted = |key: &str| keep.contains(key) != rest;
     let lines = failure_lines(judged);
-    if lines.keys().any(|key| key.starts_with("all")) {
+    if lines.keys().any(|key| is_mark(key)) {
         return lines.keys().all(|key| wanted(key)).then(|| judged.clone());
     }
     let part: Vec<RuleOutcome> = rules
@@ -1404,6 +1450,18 @@ fn unit_within(
 /// The most characters of the lines that say what stands beside the new lines of a unit.
 const BESIDE_ROOM: usize = 400;
 
+/// What "stands" says of a change that is not committed, as far as the hook knows it. The
+/// judge's verdict gives, for each violation, a rule, a signal, a path and its pieces of
+/// evidence, each a hunk's address and a line number: nothing in it stays the same for one
+/// finding when the file is edited above it and differs for another finding in the same
+/// file. So a failure is known by rule, signal, path and number, and a finding that replaces
+/// another under the same rule in the same file between two stops is not told apart.
+const STANDS_BY_LINE: &str = " For a change that is not committed, that means: the judge names the same rules on the same paths as it did then, as many times or fewer. Whether they are the same lines of those files the hook does not know.";
+
+/// What is said under a failure that blocks again because it changed while it was remembered
+/// by its mark ([`mark_of`]): the agent is not told that all of it is new.
+const BY_MARK: &str = "A failure here has blocked before and is not what it was. It was remembered by a digest of all its lines (it has more lines than are kept one by one, or the session has more failing lines than it keeps): which of the lines above are new is not known, and the ones that were said before are left for a person.\n";
+
 /// What stands beside the new lines of a unit that blocks: the lines of its failure that
 /// have blocked before and are as they were. The agent was told to repair the whole failure
 /// again when one part of it was new (seventh independent review of the hooks, HR7-M-1).
@@ -1479,6 +1537,14 @@ fn blocking_text(trees: &[TreeJudged], blocked: &[String], room: usize) -> (Stri
                 stands_beside(&old),
                 "FAIL, new at this stop",
             ),
+            // a failure that is remembered by its mark and is not what it was
+            _ if !is_commit(unit)
+                && remembered(blocked, &unit.tag)
+                    .keys()
+                    .any(|key| is_mark(key)) =>
+            {
+                ((*unit).clone(), BY_MARK.to_owned(), "FAIL")
+            }
             _ => ((*unit).clone(), String::new(), "FAIL"),
         };
         let Some(Judged::Fail { rules, .. }) = &shown.judged else {
@@ -1486,7 +1552,7 @@ fn blocking_text(trees: &[TreeJudged], blocked: &[String], room: usize) -> (Stri
         };
         let line = format!("{}: {outcome} ({})\n", unit.what, rule_names(rules, true));
         // a unit that is alone is not named, so what is new in it is said on a line of its own
-        let lead = if many || beside.is_empty() {
+        let lead = if many || beside.is_empty() || outcome == "FAIL" {
             ""
         } else {
             "New at this stop:\n"
@@ -1797,8 +1863,19 @@ pub(crate) fn decide_stop_trees(
             "deep-diff-forge: HOLD. The judge wants a person to look at this change ({range}).\n{detail}"
         )
     } else if is(|judged| matches!(judged, Judged::Fail { .. })) {
+        // What "this failure" is for a change that is not committed is said with it: the
+        // sentence was read as "these lines have blocked", which is more than the hook
+        // knows (eighth independent review of the hooks, HR8-L-4).
+        let lines = if trees
+            .iter()
+            .any(|tree| !is_commit(tree) && matches!(tree.judged, Some(Judged::Fail { .. })))
+        {
+            STANDS_BY_LINE
+        } else {
+            ""
+        };
         format!(
-            "deep-diff-forge: FAIL STANDS. This failure has already blocked a stop of this session ({range}); it is left for a person.\n{detail}"
+            "deep-diff-forge: FAIL STANDS. This failure has already blocked a stop of this session ({range}); it is left for a person.{lines}\n{detail}"
         )
     } else {
         return StopDecision::Allow { message: None };
@@ -2037,6 +2114,33 @@ mod tests {
             held_line + reason.matches(": HOLD\n").count(),
             10,
             "{reason}"
+        );
+    }
+
+    /// A mutant the mutation run of round 15 could not be trusted on (its test process was
+    /// killed from outside): `>` for `>=` where [`rules_brief`] decides whether one more path
+    /// of a rule fits its share. A path that fills the share exactly is shown; one byte less
+    /// of room and it is counted instead.
+    #[test]
+    fn a_path_that_fills_a_rules_share_exactly_is_shown() {
+        let rule = RuleOutcome {
+            id: "no-secrets".to_owned(),
+            why: "because".to_owned(),
+            held: false,
+            violations: vec![
+                ("secret_like".to_owned(), "a.rs".to_owned(), 1),
+                ("secret_like".to_owned(), "lib/b.rs".to_owned(), 1),
+            ],
+        };
+        let first = format!("{}: {}", rule_head(&rule, true), shown_path("a.rs"));
+        let exact = first.len() + shown_path("lib/b.rs").len() + 24;
+        assert_eq!(
+            rules_brief(std::slice::from_ref(&rule), true, exact),
+            format!("{first}, {}\n", shown_path("lib/b.rs"))
+        );
+        assert_eq!(
+            rules_brief(std::slice::from_ref(&rule), true, exact - 1),
+            format!("{first} (+1 more paths)\n")
         );
     }
 

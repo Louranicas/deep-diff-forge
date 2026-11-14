@@ -6199,7 +6199,7 @@ fn two_stops_of_one_session_do_not_run_at_once() {
     let waited = allowed(&second);
     assert!(
         waited.starts_with("deep-diff-forge: UNJUDGED. ")
-            && waited.contains("another stop of this session is running"),
+            && waited.contains("another hook of this session is running"),
         "{waited}"
     );
     assert!(
@@ -6500,6 +6500,8 @@ fn what_is_left_of_a_failure_does_not_block_again() {
 ///
 /// | what happens to a linked working tree whose failure has blocked | a stop made from inside it then |
 /// | --- | --- |
+/// | the times of its administrative files set anew (`touch`) | stands |
+/// | `git gc`, and `git worktree repair` with nothing to repair | stands |
 /// | `git worktree move` | stands: it is the same tree with the same failure |
 /// | moved with `mv`, then `git worktree repair` | stands |
 /// | `git worktree remove`, then `add` at the same path, with another failure | blocks |
@@ -6508,6 +6510,10 @@ fn what_is_left_of_a_failure_does_not_block_again() {
 /// | removed for good | nothing is said of it: its failure is not in the project any more |
 /// | a second tree, whose long path is shown as the first one's | blocks for its own failure |
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table: each thing that can happen to a working tree, in turn"
+)]
 fn a_working_tree_is_known_by_what_it_is_not_by_where_it_is() {
     let scratch = Scratch::new("hook-tree-instance");
     let root = repository(&scratch);
@@ -6542,6 +6548,23 @@ fn a_working_tree_is_known_by_what_it_is_not_by_where_it_is() {
     secret(&first, "k.rs");
     blocked(&stop_from(&first, "s", &script));
     stands(&first, "nothing changed");
+    // Review V4 round 16, VD4R16-L-1: the times of the tree's administrative files are set
+    // anew, as `touch` and a restore do. The tree was known by the modification time of its
+    // `commondir` too, so it became another tree and its unchanged failure blocked again.
+    let admin = root.join(".git/worktrees/wt");
+    let later = std::fs::metadata(&admin).unwrap().modified().unwrap()
+        + std::time::Duration::from_secs(3_600);
+    for name in ["commondir", "gitdir", "HEAD", "."] {
+        std::fs::File::open(admin.join(name))
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+    }
+    stands(&first, "the times of its administrative files set anew");
+    git(&root, &["gc", "--quiet"]);
+    stands(&first, "git gc");
+    git(&root, &["worktree", "repair"]);
+    stands(&first, "git worktree repair with nothing to repair");
     // moved by Git, and moved by hand and repaired: the same tree
     git(
         &root,
@@ -6609,6 +6632,480 @@ fn a_working_tree_is_known_by_what_it_is_not_by_where_it_is() {
     assert!(
         allowed(&stop_from(&one, "long", &script)).starts_with("deep-diff-forge: FAIL STANDS. ")
     );
+}
+
+/// The lines of the session's file of judged commits, by commit: what each is written down
+/// as. One session's file is expected.
+fn judged_lines() -> std::collections::BTreeMap<String, String> {
+    let files: Vec<PathBuf> = std::fs::read_dir(sessions())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|kind| kind == "judged"))
+        .collect();
+    assert!(files.len() <= 1, "{files:?}");
+    files
+        .first()
+        .map(|file| std::fs::read_to_string(file).unwrap())
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .map(|(id, said)| (id.to_owned(), said.to_owned()))
+        .collect()
+}
+
+/// A stand-in for Git, in a directory to put in front of `PATH`: it runs `before` (a piece
+/// of shell that sees the arguments) and then the real Git with the same arguments. The
+/// stand-in is what makes a stop slow where a test needs a slow one: a large repository's
+/// `git status`, not the judge.
+fn git_with(scratch: &Scratch, name: &str, before: &str) -> PathBuf {
+    let real = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|dir| dir.join("git"))
+        .find(|path| path.is_file())
+        .expect("git is on PATH");
+    let dir = scratch.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    write_program(
+        &dir.join("git"),
+        &format!("#!/bin/sh\n{before}\nexec '{}' \"$@\"\n", real.display()),
+    );
+    dir
+}
+
+/// A stop of `session` from `cwd` with the directory `first` in front of `PATH`.
+fn stop_with_path(first: &Path, cwd: &Path, session: &str, judge: &Path) -> Value {
+    let mut dirs = vec![first.to_path_buf()];
+    dirs.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let (code, stdout, stderr) = hook_in(
+        "stop",
+        &["--judge", judge.to_str().unwrap()],
+        &input("Stop", cwd, session, false),
+        |command| {
+            command.env("PATH", std::env::join_paths(dirs).unwrap());
+        },
+    );
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    if stdout.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"))
+    }
+}
+
+/// Eighth independent review of the hooks, HR8-M-1, as reproduced, and the rows it asks for.
+/// A linked working tree whose paths Git records as relative ones (`git worktree add
+/// --relative-paths`, `worktree.useRelativePaths`, `git worktree repair --relative-paths`;
+/// Git 2.48 and later) is the same tree from outside as from inside. The path in its
+/// `gitdir` file was used as it stood, from the hook's own directory, so from the project
+/// the tree had another identity: the stop forgot what had blocked there, did not say that
+/// a failure stands, and the unchanged failure blocked again at every return.
+///
+/// | how the tree's paths are recorded | in the tree, from the project, back in the tree |
+/// | --- | --- |
+/// | made with `--relative-paths` | stands; "a failure stands there"; stands |
+/// | made with `worktree.useRelativePaths=true` | the same |
+/// | made absolute, then `git worktree repair --relative-paths` | the same: it is the same tree |
+/// | and back, `git worktree repair --no-relative-paths` | the same |
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table: each way a tree comes to have relative paths, in turn"
+)]
+fn a_working_tree_recorded_by_relative_paths_is_the_same_tree_from_outside() {
+    let scratch = Scratch::new("hook-relative-paths");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let tree = |name: &str| scratch.join(name);
+    let tried = Command::new("git")
+        .current_dir(&root)
+        .envs(ISOLATE)
+        .args(["worktree", "add", "--quiet", "--relative-paths", "-b", "r1"])
+        .arg(tree("rel"))
+        .output()
+        .unwrap();
+    if !tried.status.success() {
+        // a Git before 2.48 has no relative paths for working trees: nothing to hold
+        assert!(
+            String::from_utf8_lossy(&tried.stderr).contains("relative-paths"),
+            "{}",
+            String::from_utf8_lossy(&tried.stderr)
+        );
+        return;
+    }
+    let recorded = |name: &str| -> String {
+        std::fs::read_to_string(root.join(".git/worktrees").join(name).join("gitdir")).unwrap()
+    };
+    start(&root, "s");
+    let stands = |at: &Path, row: &str| {
+        let said = allowed(&stop_from(at, "s", &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: FAIL STANDS. "),
+            "{row}: {said}"
+        );
+    };
+    // from the project: every tree where a failure has blocked is said to hold one
+    let outside = |standing: usize, row: &str| {
+        let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+        assert_eq!(
+            said.matches("A failure there has blocked a stop of this session and stands")
+                .count()
+                + said.matches("(a failure stands there)").count(),
+            standing,
+            "{row}: {said}"
+        );
+    };
+    let row = |name: &str, standing: usize, how: &str| {
+        secret(&tree(name), "k.rs");
+        blocked(&stop_from(&tree(name), "s", &script));
+        stands(&tree(name), how);
+        outside(standing, how);
+        stands(&tree(name), how);
+        outside(standing, how);
+        stands(&tree(name), how);
+    };
+    assert!(recorded("rel").starts_with("../"), "{}", recorded("rel"));
+    row("rel", 1, "made with --relative-paths");
+
+    git(&root, &["config", "worktree.useRelativePaths", "true"]);
+    git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "r2",
+            tree("cfg").to_str().unwrap(),
+        ],
+    );
+    git(&root, &["config", "--unset", "worktree.useRelativePaths"]);
+    assert!(recorded("cfg").starts_with("../"), "{}", recorded("cfg"));
+    row("cfg", 2, "made with worktree.useRelativePaths");
+
+    // made absolute; then its paths are written as relative ones, and as absolute ones again
+    git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "--no-relative-paths",
+            "-b",
+            "r3",
+            tree("abs").to_str().unwrap(),
+        ],
+    );
+    assert!(recorded("abs").starts_with('/'), "{}", recorded("abs"));
+    row("abs", 3, "made with absolute paths");
+    git(
+        &root,
+        &[
+            "worktree",
+            "repair",
+            "--relative-paths",
+            tree("abs").to_str().unwrap(),
+        ],
+    );
+    assert!(recorded("abs").starts_with("../"), "{}", recorded("abs"));
+    stands(&tree("abs"), "repair --relative-paths");
+    outside(3, "repair --relative-paths");
+    stands(&tree("abs"), "repair --relative-paths, back in the tree");
+    git(
+        &root,
+        &[
+            "worktree",
+            "repair",
+            "--no-relative-paths",
+            tree("abs").to_str().unwrap(),
+        ],
+    );
+    assert!(recorded("abs").starts_with('/'), "{}", recorded("abs"));
+    stands(&tree("abs"), "repair --no-relative-paths");
+    outside(3, "repair --no-relative-paths");
+    stands(&tree("rel"), "the first tree, after all of it");
+}
+
+/// Eighth independent review of the hooks, HR8-L-2, as reproduced in small. The project's
+/// own change has a credential, and the project has three other working trees in which
+/// `git status` is slow (a large tree; here a stand-in Git that sleeps four seconds). A
+/// stop looked at the other trees first, each with all the time it had left, and judged its
+/// own change with what remained: with sixteen such trees that was nothing, at every stop.
+/// The own change is judged first; the other trees come last, in six seconds of their own,
+/// and the ones that were not reached are counted and said.
+#[test]
+fn the_sessions_own_change_is_judged_before_other_trees_are_looked_at() {
+    let scratch = Scratch::new("hook-own-first");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    for n in 0..3 {
+        git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+                scratch.join(format!("other{n}")).to_str().unwrap(),
+            ],
+        );
+    }
+    start(&root, "s");
+    secret(&root, "k.rs");
+    let slow = git_with(
+        &scratch,
+        "slow-git",
+        &format!(
+            "case \" $* \" in *\" status \"*) case \"$(pwd)\" in */other[0-9]) printf 'STATUS\\n' >> '{}'; sleep 4;; esac;; esac",
+            log.display()
+        ),
+    );
+    let began = std::time::Instant::now();
+    let decision = stop_with_path(&slow, &root, "s", &script);
+    let took = began.elapsed();
+    let reason = blocked(&decision);
+    assert!(
+        reason.contains("3 working trees of this project were not reached in that time"),
+        "{reason}"
+    );
+    // the judge was shown the change before any other tree was looked at
+    let seen = std::fs::read_to_string(&log).unwrap();
+    let (judged, looked) = (
+        seen.find("PATCH-NAMES ").expect("the judge was run"),
+        seen.find("STATUS\n").expect("another tree was looked at"),
+    );
+    assert!(judged < looked, "{seen}");
+    // and the looking has its own bound: six seconds for all of them, not four for each
+    assert!(
+        took < std::time::Duration::from_secs(30),
+        "the stop took {took:?}"
+    );
+    // nothing was forgotten or made up for the trees that were not reached: the next stop
+    // (with a Git that answers) finds them clean and says nothing of them
+    let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        said.starts_with("deep-diff-forge: FAIL STANDS. ") && !said.contains("not looked at"),
+        "{said}"
+    );
+}
+
+/// Eighth independent review of the hooks, HR8-L-1, at the edge it was found at. A stop
+/// that comes to its commits with only a few seconds left (Git was slow: here a stand-in
+/// that sleeps once) must not write down an ask it did not make. The commit whose turn it
+/// was got "what is left less five seconds" as its time, which was nothing: the judge was
+/// not started for it, and the session's file said it had been asked for the seventh time.
+/// Whatever the stop has time for, the file and the judge's log agree, commit by commit:
+/// a line changes only for a commit the judge was shown at that stop.
+#[test]
+fn an_ask_that_was_not_made_is_not_written_down() {
+    let scratch = Scratch::new("hook-ask-not-made");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    start(&root, "s");
+    secret(&root, "k.rs");
+    commit_all(&root, "a key");
+    let key = git(&root, &["rev-parse", "HEAD"]).trim().to_owned();
+    // the key has no verdict six times, at stops where another commit gets one: it waits
+    // for its turn from then on
+    std::fs::write(scratch.join("judge.flaky"), "7\n").unwrap();
+    for stop in 1..=6 {
+        std::fs::write(root.join(format!("fine{stop}.rs")), "fn f() {}\n").unwrap();
+        commit_all(&root, "harmless");
+        allowed(&stop_from(&root, "s", &script));
+    }
+    assert!(
+        judged_lines()[&key].starts_with("n6@"),
+        "{:?}",
+        judged_lines()
+    );
+    // and a second commit with no verdict, asked about once
+    unjudgeable(&root, "odd.rs");
+    let odd = git(&root, &["rev-parse", "HEAD"]).trim().to_owned();
+    allowed(&stop_from(&root, "s", &script));
+    let written = judged_lines();
+    assert!(written[&odd].starts_with("n1@"), "{written:?}");
+    assert!(written[&key].starts_with("n7@"), "{written:?}");
+
+    // The slow stop: the first thing it asks of Git takes 35.5 seconds, so it comes to its
+    // commits with between three and five of its 41 seconds left.
+    let flag = scratch.join("git.sleep");
+    std::fs::write(&flag, "35.5\n").unwrap();
+    let slow = git_with(
+        &scratch,
+        "slow-git",
+        &format!(
+            "if mv '{flag}' '{flag}.used' 2>/dev/null; then sleep \"$(cat '{flag}.used')\"; fi",
+            flag = flag.display()
+        ),
+    );
+    let before = shown(&log).len();
+    let decision = stop_with_path(&slow, &root, "s", &script);
+    assert!(!flag.exists(), "the stand-in Git was not used");
+    let submitted = shown(&log)[before..].to_vec();
+    let after = judged_lines();
+    for (id, file) in [(&key, "k.rs"), (&odd, "odd.rs")] {
+        let asked = submitted.iter().any(|shown| shown == file);
+        assert_eq!(
+            after[id] != written[id],
+            asked,
+            "{file}: written down as {} (before: {}), and the judge was shown {submitted:?}: {decision}",
+            after[id],
+            written[id]
+        );
+        // one that was not asked says so, and keeps what it had
+        if !asked {
+            assert!(
+                decision
+                    .to_string()
+                    .contains("not asked at this stop for lack of time"),
+                "{decision}"
+            );
+        }
+    }
+}
+
+/// Review V4 round 16, VD4R16-L-1, the last row of the table: a copy of the whole project is
+/// put back at the project's path (a restore from a backup). Every inode is new, the Git
+/// directory's too, so this is no tree of the session's project that came back as another:
+/// it is another repository at the project's path, like a clone put there, and a stop is not
+/// judged and says so, from the project and from its linked working tree alike. The failure
+/// that had blocked is not said to stand and does not pass in silence.
+#[test]
+fn a_copy_of_the_project_at_its_path_is_not_the_project() {
+    let scratch = Scratch::new("hook-copied-project");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    start(&root, "s");
+    let tree = scratch.join("wt");
+    git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "b1",
+            tree.to_str().unwrap(),
+        ],
+    );
+    secret(&tree, "k.rs");
+    blocked(&stop_from(&tree, "s", &script));
+    let old = scratch.join("project-old");
+    std::fs::rename(&root, &old).unwrap();
+    let copied = std::process::Command::new("cp")
+        .args(["-R", "-p"])
+        .arg(&old)
+        .arg(&root)
+        .status()
+        .unwrap();
+    assert!(copied.success());
+    // Git takes the copy for the project, with its linked tree
+    assert!(git(&tree, &["status", "--porcelain=v1"]).contains("k.rs"));
+    let recorded = std::fs::canonicalize(&root).unwrap();
+    let judged = runs(&log);
+    for cwd in [&tree, &root] {
+        let decision = stop_from(cwd, "s", &script);
+        let said = allowed(&decision);
+        assert!(
+            said.starts_with("deep-diff-forge: UNJUDGED. ")
+                && said.contains(&format!(
+                    "the repository at \"{}\" is not the one this session started in",
+                    recorded.display()
+                ))
+                && said.contains("start a new session to have the work there judged"),
+            "{said}"
+        );
+    }
+    assert_eq!(runs(&log), judged, "the copy was judged");
+    // a new session there has the tree's failure judged: it blocks, as new
+    start(&root, "s2");
+    blocked(&stop_from(&tree, "s2", &script));
+}
+
+/// Review V4 round 16, VD4R16-M-1, as reproduced: nine linked working trees, each with a
+/// failure of 256 lines, and a stop made from each. The session's state kept 2,048 failing
+/// lines and cut the oldest from the front with no word, so the ninth tree pushed out the
+/// first one's lines, and the first, unchanged and already told to a person, blocked a
+/// second time. Now a tree whose lines do not fit is remembered by a mark of all of them:
+/// it stands while it is what it was, and blocks as a whole, saying why, when a part of
+/// it changes; a tree that is remembered line by line stands when a part of it is repaired.
+/// No stop says that anything was lost, because nothing was.
+#[test]
+fn a_failure_that_stands_is_not_pushed_out_by_the_failures_of_other_trees() {
+    let scratch = Scratch::new("hook-blocked-bound");
+    let root = repository(&scratch);
+    let (script, _) = listing_judge(&scratch);
+    start(&root, "s");
+    let tree = |n: usize| scratch.join(format!("wt{n}"));
+    let stands = |n: usize, row: &str| {
+        let said = allowed(&stop_from(&tree(n), "s", &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: FAIL STANDS. ")
+                && !said.contains("could not be kept"),
+            "tree {n}, {row}: {said}"
+        );
+    };
+    let remembered = || -> Vec<String> {
+        let state = states_in(&sessions());
+        let kept: Value =
+            serde_json::from_str(&std::fs::read_to_string(&state[0]).unwrap()).unwrap();
+        kept["blocked"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry.as_str().unwrap().to_owned())
+            .collect()
+    };
+    for n in 1..=9 {
+        git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                &format!("b{n}"),
+                tree(n).to_str().unwrap(),
+            ],
+        );
+        for file in 0..256 {
+            secrets(&tree(n), &format!("k{file}.rs"), 1);
+        }
+        let reason = blocked(&stop_from(&tree(n), "s", &script)).to_owned();
+        assert!(!reason.contains("could not be kept"), "tree {n}: {reason}");
+        assert!(
+            remembered().len() <= 2_048,
+            "tree {n}: {}",
+            remembered().len()
+        );
+    }
+    // 2,304 lines do not fit: two trees are one mark each, seven are kept line by line
+    let kept = remembered();
+    assert_eq!(kept.len(), 2 + 7 * 256, "{}", kept.len());
+    assert_eq!(
+        kept.iter()
+            .filter(|entry| entry.rsplit_once('/').unwrap().1.starts_with("all"))
+            .count(),
+        2
+    );
+    // the first tree, unchanged, and the second: each has blocked, and stands
+    stands(1, "unchanged, after eight other trees");
+    stands(2, "unchanged");
+    stands(9, "unchanged");
+    // By now the third tree is remembered by its mark. One of its files is repaired: it
+    // blocks again, as a whole, and says that it is not all new; then it stands.
+    std::fs::remove_file(tree(3).join("k0.rs")).unwrap();
+    let reason = blocked(&stop_from(&tree(3), "s", &script)).to_owned();
+    assert!(
+        reason.contains("A failure here has blocked before and is not what it was")
+            && !reason.contains("New at this stop"),
+        "{reason}"
+    );
+    stands(3, "after its block");
+    // the ninth is remembered line by line: with one file repaired it stands
+    std::fs::remove_file(tree(9).join("k0.rs")).unwrap();
+    stands(9, "one part repaired");
+    assert!(remembered().len() <= 2_048);
 }
 
 /// Review V4 round 15, VD4R15-M-1, as reproduced. A commit with a credential has had no
@@ -6694,8 +7191,14 @@ fn every_commit_without_a_verdict_is_submitted_in_turn() {
     }
     // which commits each of twenty stops submits
     let mut stops: Vec<Vec<String>> = Vec::new();
+    let file_of = |id: &str| -> String {
+        git(&root, &["show", "--format=", "--name-only", id])
+            .trim()
+            .to_owned()
+    };
     for _ in 0..20 {
         let before = shown(&log).len();
+        let written = judged_lines();
         // every one of the eight is named or counted at every stop: on the line of those
         // with no verdict, or among those that wait to be asked about for the first time
         let said = allowed(&stop_from(&root, "s", &script)).to_owned();
@@ -6712,6 +7215,17 @@ fn every_commit_without_a_verdict_is_submitted_in_turn() {
             "{said}"
         );
         stops.push(shown(&log)[before..].to_vec());
+        // Eighth independent review of the hooks, HR8-L-1: what the session's file says
+        // was asked at this stop is what the judge was shown at this stop, commit by commit.
+        let submitted = stops.last().unwrap();
+        for (id, line) in judged_lines() {
+            if written.get(&id) != Some(&line) {
+                assert!(
+                    submitted.contains(&file_of(&id)),
+                    "{id} is written down as asked ({line}) and the judge was not shown it: {submitted:?}"
+                );
+            }
+        }
     }
     let waited = |name: &String| -> usize {
         // the longest run of stops in which it was not submitted
@@ -6919,7 +7433,7 @@ fn two_first_stops_of_a_session_do_not_run_at_once() {
         .filter(|said| {
             said["systemMessage"]
                 .as_str()
-                .is_some_and(|text| text.contains("another stop of this session is running"))
+                .is_some_and(|text| text.contains("another hook of this session is running"))
         })
         .count();
     assert_eq!((blocks, waited), (1, 1), "{both:?}");
@@ -7041,9 +7555,12 @@ fn an_advice_hook_does_not_write_back_what_a_stop_has_forgotten() {
 }
 
 /// The sixteen working trees a stop looks at, and the memory of failures: a failure that has
-/// blocked in a tree which a stop from the project does not look at, because it is beyond
-/// the sixteen, is not forgotten by that stop (the tree is still one Git lists), and a stop
-/// made from inside the tree afterwards does not block again.
+/// blocked in the last of eighteen linked trees is not forgotten by a stop from the project,
+/// and a stop made from inside the tree afterwards does not block again. And it is said:
+/// the trees were looked at in the order Git lists them, so this one was beyond the sixteen,
+/// only counted, and no stop from the project said that a failure stands (eighth
+/// independent review of the hooks, HR8-L-3). The trees where a failure stands are looked at
+/// and named first, at every stop, whatever else there is to name.
 #[test]
 fn a_failure_in_a_tree_beyond_the_sixteen_stands() {
     let scratch = Scratch::new("hook-beyond-sixteen");
@@ -7063,18 +7580,46 @@ fn a_failure_in_a_tree_beyond_the_sixteen_stands() {
         );
         tree
     };
-    for n in 0..17 {
+    for n in 0..18 {
         add(&format!("tree{n:02}"));
     }
-    let last = add("last");
+    // In the order Git lists them (the project first): the failure is in the tree listed
+    // last, which is beyond the sixteen in that order, and four of the trees listed first
+    // have changes of their own, which are named too.
+    let listed: Vec<PathBuf> = git(&root, &["worktree", "list", "--porcelain"])
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .collect();
+    assert_eq!(listed.len(), 19);
+    for tree in &listed[1..5] {
+        std::fs::write(tree.join("new.rs"), "fn n() {}\n").unwrap();
+    }
+    let last = listed[18].clone();
     start(&root, "s");
     secret(&last, "k.rs");
     blocked(&stop_from(&last, "s", &script));
+    let shown = format!(
+        "the working tree \"{}\" (a failure stands there)",
+        std::fs::canonicalize(&last).unwrap().display()
+    );
     let outside = allowed(&stop_from(&root, "s", &script)).to_owned();
     assert!(
-        outside.contains("This project has 2 more working trees than the 16 a stop looks at"),
+        outside.contains("This project has 2 more working trees than the 16 a stop looks at")
+            && outside.contains(
+                "A failure there has blocked a stop of this session and stands: it was not looked at at this stop."
+            ),
         "{outside}"
     );
+    for stop in 2..=3 {
+        let outside = allowed(&stop_from(&root, "s", &script)).to_owned();
+        assert!(
+            outside.contains(&format!(
+                "6 things in this project are not judged: {shown}, "
+            )),
+            "stop {stop}: {outside}"
+        );
+    }
     let inside = allowed(&stop_from(&last, "s", &script)).to_owned();
     assert!(
         inside.starts_with("deep-diff-forge: FAIL STANDS. "),

@@ -721,8 +721,15 @@ fn nested_repositories_are_left_out_of_the_patch_and_named() {
         before,
         "making the patch changed the repository"
     );
-    let mut left_out = patch.nested.clone();
-    left_out.sort();
+    let named = |nested: &[std::path::PathBuf]| -> Vec<String> {
+        let mut named: Vec<String> = nested
+            .iter()
+            .map(|path| path.to_str().unwrap().to_owned())
+            .collect();
+        named.sort();
+        named
+    };
+    let left_out = named(&patch.nested);
     assert_eq!(
         left_out,
         [
@@ -749,7 +756,7 @@ fn nested_repositories_are_left_out_of_the_patch_and_named() {
     let other = Scratch::new("judge-patch-nested-none");
     let plain = changed_repository(&other);
     let patch = judge_patch(&plain, "HEAD", &fresh(&scratch, "none"), &options()).unwrap();
-    assert_eq!(patch.nested, Vec::<String>::new());
+    assert_eq!(patch.nested, Vec::<std::path::PathBuf>::new());
 
     // A nested repository the index holds is the project's (a submodule): it stays in the
     // tree, as the link a commit would record.
@@ -760,9 +767,10 @@ fn nested_repositories_are_left_out_of_the_patch_and_named() {
         shown.contains("new file mode 160000\n") && shown.contains("b/dir/with commit"),
         "{shown}"
     );
-    let mut left_out = patch.nested;
-    left_out.sort();
-    assert_eq!(left_out, ["odd [1]*?", "plain/deeper/repo", "unborn"]);
+    assert_eq!(
+        named(&patch.nested),
+        ["odd [1]*?", "plain/deeper/repo", "unborn"]
+    );
 }
 
 /// Second independent review of the hooks, HR2-H-1, at the patch: what the session committed

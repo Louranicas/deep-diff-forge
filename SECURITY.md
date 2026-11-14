@@ -417,23 +417,48 @@ bounded form.** What it holds to:
   such stop, that a failure stands there.
 - **A working tree is what it is, not where it is.** A failure is remembered with the
   working tree it is in, and a linked tree is known by its administrative directory under
-  the repository (its inode) and the file `commondir` in it (its inode and modification
-  time), which Git writes when it makes the tree and not again; nothing is written to mark
-  a tree, and nothing of a tree's identity is taken from a path as a message shows it.
-  That stays over `git worktree move` and over `mv` with `git worktree repair`, and is
+  the repository: its inode and its birth time, which no program can set. The file
+  `commondir` in it (its inode and modification time) stood there too, so a `touch` of
+  that file made an unchanged tree a new one whose failure blocked again; it is used now
+  only where the file system keeps no birth time, and there that limit remains. Nothing is
+  written to mark a tree, and nothing of a tree's identity is taken from a path, as a
+  message shows it or as Git records it: which trees a repository has is read from the
+  directories under `worktrees`, and a path from Git's files is read as bytes and from
+  the directory Git reads it from (a tree recorded by relative paths had another identity
+  from outside than from inside, and what had blocked in it was forgotten by every stop
+  made from the project).
+  That stays over `git worktree move`, over `mv` with `git worktree repair`, over
+  `git gc` and over a change of every time that can be set, and is
   new for a tree made at the path of a removed one. A tree was known by its path: moved,
   an unchanged failing tree blocked a second time; removed and made again at the same
   path, a new tree inherited "has already blocked" and its failure never blocked; and two
   trees whose long paths were cut to the same words shared one identity. What is
-  remembered of a tree that `git worktree list` no longer names is forgotten. Where
-  modification times are whole seconds and inode numbers are reused, a tree removed and
-  made again within one second can be taken for the old one.
+  remembered of a tree that has no administrative directory any more is forgotten. Where
+  there is no birth time, modification times are whole seconds and inode numbers are
+  reused, a tree removed and made again within one second can be taken for the old one.
+- **What "the same failure" is, and what it is not.** For a change that is not committed
+  it is the judge's lines: a rule, a signal, a path and a number of items. That is all a
+  verdict gives that stays the same from one stop to the next (its evidence is a hunk's
+  address and a line number, which change when the file is edited above). So a finding
+  that is removed and replaced by another under the same rule in the same file between
+  two stops is not told apart: the stop says FAIL STANDS, and says in that message what
+  "stands" means. The limit reaches one turn: a line that was gone at any stop that
+  looked is forgotten. The post-tool advice, which is keyed by the text of a line, does
+  show the new finding.
+- **The memory of failures is bounded, and nothing leaves it in silence.** A session keeps
+  2,048 failing lines of uncommitted and staged changes. The list was cut from its front
+  with no word, so nine working trees with large failures made the first one's unchanged
+  failure block again. Now a change whose lines do not fit is kept as one digest of all
+  of them (the largest changes that the stop is not looking at first): it stands
+  unchanged and blocks as a whole on any change, and the block says that it is not all
+  new. Only with more than 2,048 failing changes is any memory given up, and the stop at
+  which that happens says for how many.
 - **A session's state is changed by one hook at a time.** Every stop holds a lock
   (`flock`) on a file beside the session's state, named from the session's id, from before
   it reads the state until it has written it; so does the stop that is the session's
   first hook, which took none while there was no state yet (two such stops both judged,
   both blocked for one failure and both wrote). A second stop of the same session waits
-  three seconds, then says UNJUDGED and that another stop is running. A session-start
+  three seconds, then says UNJUDGED and that another hook is running. A session-start
   hook holds the lock for its reading and recording. An advice hook takes it for its
   write alone, re-reads the state under it and adds only what it has said: it wrote back
   its whole older copy, and with it a failure that a stop had meanwhile seen repaired and
@@ -461,7 +486,9 @@ bounded form.** What it holds to:
   staged change of the project's working tree and of a linked working tree the session's
   directory is in, and the session's commits. Another working tree of the project that has
   changes which are not committed is named as not judged, and so is one that was
-  removed by hand (sixteen are looked at; how many more there are is said). Named the same way: another repository the
+  removed by hand (sixteen are looked at, after everything that is judged and in six
+  seconds of their own, the ones where a failure stands first; how many were not looked
+  at, and in how many of those a failure stands, is said). Named the same way: another repository the
   session's directory is in at a stop, a submodule with changes that are not committed in
   it, a nested repository in the project's tree, which is left out of the patch (Git cannot
   even stage one that has no commit), and another working tree of the project that lies

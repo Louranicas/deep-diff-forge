@@ -394,9 +394,16 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   among those past five attempts, then about the one asked about least recently among
   those with fewer, and only then about anything else, so no answer for one commit and no
   commit that stands in front can keep another from being asked about. (That holds while
-  the judge can be run, the state can be kept, and the stop has three seconds left after
-  the working trees' changes; a run of the judge before these asks leaves five seconds for
-  each of them.) Nothing of a stop is written before it ends: a stop that is killed leaves
+  the judge can be run, the state can be kept, and the stop has 8 seconds of its judging
+  left when it comes to its commits, after the changes of its working trees are judged.
+  Then both asks are made, however long the first takes. With less, and at least 3
+  seconds, the first of the two is made, and the second if the first left 3 seconds; with
+  less than 3 neither is. A run of the judge before these asks leaves them their time;
+  Git taking long to read the working tree or the commits can use it.) An ask that is not
+  made is not written down: no attempt is counted, the commit keeps its turn, and the stop
+  says of it "not asked at this stop for lack of time". An attempt is counted, and a turn
+  used, only for a commit the judge was run for. Nothing of a stop is written before it
+  ends: a stop that is killed leaves
   every commit where it was, its turn too. An attempt counts at a stop where
   some patch got a verdict; where an ask failed and none did, the judge is asked once about
   the probe `agent doctor --gate` uses (after three failed asks, or at the end of the
@@ -484,7 +491,16 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   and path that fails, with the number of items the judge cites for it. A stop blocks for
   a line that has not blocked before, and for a line whose number of items has grown; the
   lines that have blocked stand, however many of the others are repaired, and when both
-  are there the block says which lines are new and which stand. A stop that looked at the
+  are there the block says which lines are new and which stand. **A line is not a line of
+  a file.** It is what the judge's verdict gives: a rule, a signal, a path and a number.
+  "Stands" therefore says that this rule fails on this path as many times as before (or
+  fewer), not that the lines of the file are the same ones: when a finding is removed
+  and another that the same rule names is written into the same file between two stops,
+  the stop says FAIL STANDS, and the new finding has never been put to the agent. (The
+  post-tool advice does show it: advice is keyed by the text of the line.) The verdict
+  holds nothing that would tell the two apart and stay the same when the file is edited
+  above them: its evidence is a hunk's address and a line number. The message that says
+  a failure stands says this of a change that is not committed. A stop that looked at the
   working tree remembers what it saw: a line that is gone is forgotten, so it blocks again
   if it comes back, and a number that fell is remembered as the lower one. A stop that did
   not look (the session's directory was not in that linked working tree) forgets nothing,
@@ -500,9 +516,30 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   at the path of a removed one is another tree, and its failure blocks, also when it is
   word for word the old one; and what was remembered of a tree that Git no longer lists
   is forgotten. (A linked tree is told by its administrative directory under the
-  repository and the file `commondir` in it, which Git writes once; nothing is written to
-  mark a tree.) A failure of more than 256 lines is remembered as one: any change in it
-  blocks. A failing commit blocks at
+  repository: the directory's inode and the time it was made, its birth time, which no
+  `touch` and no tool that sets times can change. So setting the times of Git's files,
+  `git gc` and `git worktree repair` leave a tree what it is. Where the file system keeps
+  no birth time, the file `commondir` in that directory stands in, with its inode and
+  modification time: there, a `touch` of that file or a restore that does not put its
+  time back makes the tree a new one, and a failure in it blocks once more. btrfs and
+  tmpfs keep a birth time; ext4 made with 128-byte inodes, ext2, ext3 and many network
+  and FUSE file systems give none. Which trees a repository has is read from those
+  directories, not from paths: a tree whose paths Git records as relative ones
+  (`git worktree add --relative-paths`, `worktree.useRelativePaths`) is the same tree
+  from inside and from outside. Nothing is written to mark a tree. A copy of the whole
+  project put at its path is another repository, not the project: stops there are
+  UNJUDGED and say so.) A failure of more than 256 lines is remembered as one, a digest of
+  all of them: it stands while it is exactly what it was, and any change in it, the
+  repair of one part too, blocks again as a whole, with a sentence that says the block is
+  not all new. **The session remembers 2,048 failing lines** (under 140 KiB of a state
+  that is read up to 4 MiB). When the changes of its working trees have more, the largest
+  ones that the stop is not looking at are remembered the same way, each by one digest,
+  and nothing is lost by that: an unchanged failure still stands, and a changed one
+  blocks. A change the stop is looking at is put into that form only when every other
+  already is, and the stop says so. Only when the working trees have more than 2,048
+  failing changes, one digest each, is the memory of the oldest ones given up, and the
+  stop at which that happens says how many: those, and only those, may block once more
+  although nothing changed, while the state can be written. A failing commit blocks at
   the stop that first judges it, whatever has blocked before as an uncommitted change: its
   lines are a rule, a path and a number, and another credential in the same file has the
   same. So a change that is stashed and brought back blocks three times, each time for
@@ -614,10 +651,23 @@ project and not judged at every stop while it is true, as stated above):
   wait. Commits that were already in the repository when the session began are not judged,
   whatever brings them onto the branch: every message that names the range says so.
 - Another working tree of the project that the session's directory is not in and that has
-  uncommitted or staged changes: named, as not judged. Sixteen such trees are looked at;
-  when there are more, the stop says how many it did not look at. A working tree that was
-  removed by hand: named, with `git worktree prune`. A tree of either kind in which a
-  failure has blocked is named with that ("a failure stands there") at every stop.
+  uncommitted or staged changes: named, as not judged. The other trees are looked at
+  last, after everything the stop judges, in six seconds of their own (each `git status`
+  may take half of what is left of them, or an even share when that is more), the trees
+  where a failure has blocked first. Sixteen are looked at; the ones beyond, and the ones the six seconds did not
+  reach, were not looked at: the stop says how many, and nothing that is remembered of
+  them is forgotten. A working tree that was removed by hand: named, with
+  `git worktree prune`. A tree in which a failure has blocked is named with that ("a
+  failure stands there") at every stop, before the others; for the trees a stop's line
+  does not name, and for the ones it only counts, the line gives their number ("among
+  them 2 working trees where a failure stands that has blocked").
+- The order of a stop, under its one limit of 45 seconds: the working tree the stop is in
+  is read and its staged and uncommitted changes are judged; then the two asks about
+  commits that every stop owes; then the other commits; then the submodules and the other
+  working trees are looked at. When the project has linked working trees or submodules,
+  six seconds are kept for that last part, so the judging has 35 seconds, not 41. No stop
+  takes longer than the 45 seconds; a stop in a repository where Git is slow no longer
+  spends them on other trees before its own change has a verdict.
 - A shallow clone: a commit whose parent the clone does not have is UNJUDGED by its id,
   at every stop, until the clone has the parent (`git fetch --unshallow`); then it is
   judged.
@@ -650,7 +700,8 @@ Stated limits, which the judge on the pull request covers:
 - Two stops of one session do not run at the same time: every stop, the session's first
   too, holds a lock beside the session's state while it runs (`flock` on
   `session-<hash>.lock`), and a second one waits three seconds and then says UNJUDGED,
-  "another stop of this session is running". A session-start hook holds the lock while it
+  "another hook of this session is running" (it may be the session's start that holds the
+  lock). A session-start hook holds the lock while it
   reads and records; when it cannot have it in two seconds it records nothing and says
   so. An advice hook works without the lock and takes it only to write, onto the state as
   it is then, and only what it owns (what it has said): what a stop wrote in the meantime

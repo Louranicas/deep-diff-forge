@@ -455,6 +455,67 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     counted); a state of an earlier schema is not read. The session's lock file is
     `session-<hash>.lock`.
 
+- **Round 16 of Vesper's review and an eighth independent review of the hooks: nothing is
+  forgotten in silence; a tree is known by what cannot be touched and found by no path;
+  the session's own change is judged first; an ask that was not made is not written down.**
+  - *The memory of failures has a bound that loses nothing in silence (VD4R16-M-1).* The
+    session's state kept 2,048 failing lines and cut the oldest from the front with no
+    word: nine linked working trees with a failure of 256 lines each pushed out the first
+    tree's lines, and its unchanged failure blocked a second time. What is remembered is
+    now kept change by change. When there are more lines than the bound, the largest
+    changes the stop is not looking at are kept as one digest of all their lines, like a
+    failure of more than 256 lines already was: unchanged they stand, and any change
+    blocks as a whole, with a sentence that says the block is not all new. A change the
+    stop is looking at goes into that form only when every other is in it, and the stop
+    says so. Only with more than 2,048 failing changes is memory given up, oldest first,
+    never of the change being looked at, and the stop at which that happens says for how
+    many: "may block once more" is said then, not when the block comes.
+  - *A linked working tree is known by its administrative directory's inode and birth
+    time (VD4R16-L-1).* The modification time of its `commondir` file was part of what it
+    was, so `touch` of that file made an unchanged tree a new one and its failure blocked
+    again. The birth time cannot be set. Where a file system keeps none, `commondir`
+    stands in as before, and the limit is stated.
+  - *A tree whose paths Git records as relative ones is the same tree from outside
+    (HR8-M-1).* The content of a tree's `gitdir` file was read as text and used from the
+    hook's own directory. A tree made with `git worktree add --relative-paths` or
+    `worktree.useRelativePaths` therefore had another identity from the project than from
+    inside: a stop from the project forgot what had blocked in it, did not say that a
+    failure stands there, and the unchanged failure blocked again at every return. Paths
+    from Git's files are read as bytes and from the directory Git reads them from; which
+    trees a repository has is read from the directories under `worktrees`, not from
+    paths; and a tree that can only be named by its path is never forgotten for not being
+    listed. The nested repositories a patch leaves out are paths, not text
+    (`JudgePatch::nested` is `Vec<PathBuf>`).
+  - *An ask that was not made is not written down (HR8-L-1).* The first of the two asks a
+    stop owes was given "what is left less five seconds", which is nothing under five
+    seconds: the judge was not started, and the commit was written down as asked, with an
+    attempt counted. A run that comes first now has what is left when the reserve would
+    leave it under three seconds; an attempt is counted and a turn used only for a commit
+    the judge was run for; a commit the stop's time did not reach keeps both and is said
+    to be "not asked at this stop for lack of time". The time both asks need (8 seconds
+    of the judging left when the stop comes to its commits) is one constant that the
+    documents and the tests take it from.
+  - *The session's own change is judged before other working trees are looked at
+    (HR8-L-2).* A stop looked at up to sixteen other working trees first, each `git
+    status` with all the time the stop had left; where that is slow the project's own
+    change was UNJUDGED at every stop, with a reason that did not name the cause. The
+    order is now: the working tree the stop is in, the two asks it owes, the other
+    commits, and last the submodules and the other trees, in six seconds of their own, of
+    which one tree may take half of what is left. A tree that was not reached is counted as not looked at
+    and keeps what is remembered of it. A patch the judge had no time for says that.
+  - *Where failures stand is said at every stop from outside (HR8-L-3).* The trees where a
+    failure has blocked are looked at and named first; the line that counts what is not
+    judged gives the number of such trees among the things it does not name; a note that
+    only counts trees says in how many of them a failure stands.
+  - *What "stands" means is said where it is read (HR8-L-4).* A failure of a change that
+    is not committed is a rule, a signal, a path and a number, because that is all a
+    verdict gives that stays the same between two stops. README and SECURITY.md say so
+    where the identity is described, and the message FAIL STANDS says it.
+  - *Smaller.* A stop that waits for the session's lock says "another hook", not "another
+    stop": it may be the session's start.
+  - *State.* Schema `deep-diff-forge.hook-state.v8` (a v7 state is not read: the entries
+    of what has blocked have another form, and trees other identities).
+
 ### Changed
 
 - Path and shape weights are stated once, in `RiskSignal::weight`, and the scorer reads

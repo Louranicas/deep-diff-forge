@@ -61,8 +61,9 @@ pub struct JudgePatch {
     pub base: String,
     /// The tree of the working state (it exists only in the scratch directory).
     pub tree: String,
-    /// The nested repositories that were left out of the tree, as paths from the top level.
-    pub nested: Vec<String>,
+    /// The nested repositories that were left out of the tree, as paths from the top level:
+    /// the bytes Git names them by, which need not be UTF-8.
+    pub nested: Vec<std::path::PathBuf>,
 }
 
 /// Why [`judge_patch`] made no patch. The three are kept apart because a caller answers each
@@ -455,7 +456,7 @@ fn working_tree(
     repository: &Path,
     options: &GitAcquireOptions,
     deadline: std::time::Instant,
-) -> Result<(String, Vec<String>), GitAcquireError> {
+) -> Result<(String, Vec<std::path::PathBuf>), GitAcquireError> {
     let staging = Runner {
         options,
         cwd: from.root.clone(),
@@ -544,7 +545,7 @@ fn leave_nested_out(
     staging: &Runner,
     repository: &Path,
     indexed: &[Vec<u8>],
-) -> Result<Vec<String>, GitAcquireError> {
+) -> Result<Vec<std::path::PathBuf>, GitAcquireError> {
     use std::io::Write as _;
     let others = staging.run(
         "git ls-files",
@@ -587,7 +588,10 @@ fn leave_nested_out(
         .map_err(|e| refused(format!("cannot prepare the scratch directory: {e}")))?;
     Ok(nested
         .iter()
-        .map(|path| String::from_utf8_lossy(path).into_owned())
+        .map(|path| {
+            use std::os::unix::ffi::OsStrExt as _;
+            std::path::PathBuf::from(OsStr::from_bytes(path))
+        })
         .collect())
 }
 
