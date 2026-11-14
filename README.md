@@ -383,14 +383,20 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   judged at the next stop"). **A commit that gets no verdict is not done.** It is named at
   every stop while it has none ("2 commits of this session have no verdict: ab12cd34ef56
   (the reason), …": the number and the first three with the latest reason) and it is asked
-  about again at later stops. After five attempts that count it is asked about no more and
-  is still named, as "could not be judged in 5 attempts". An attempt counts at a stop where
-  some patch got a verdict; where none did, and the first three asks about commits failed,
-  the judge is asked once about the probe `agent doctor --gate` uses, and with no verdict
-  on that either the stop asks no more: the rest are counted, and nothing is given up. Only
-  what the hook itself proves from the repository is final at once, and it too is named at
-  every stop: a commit at the edge of a shallow clone, whose parent the repository does not
-  have, and a commit whose patch is over the size the builder makes.
+  about again: at every stop for its first five attempts that count, and after them in its
+  turn, one such commit at each stop (the one with the fewest attempts, asked last, within
+  the same time). It is never given up: a judge that fails on one patch for a while and
+  then recovers gives its verdict at a later stop, and a fail then blocks like any first
+  judgment. Such a commit is named as "no verdict in 7 attempts; it is asked about again in
+  its turn". An attempt counts at a stop where
+  some patch got a verdict; where an ask failed and none did, the judge is asked once about
+  the probe `agent doctor --gate` uses (after three failed asks, or at the end of the
+  asking), and with no verdict on that either the stop asks no more: the rest are counted,
+  and nothing is given up. Only what the hook itself proves from the commit is final at
+  once, and it too is named at every stop: a commit whose patch is over the size the
+  builder makes (a commit does not change). A commit at the edge of a shallow clone, whose
+  parent the repository does not have, is named at every stop while that is so and nothing
+  is written down for it: after `git fetch --unshallow` it is judged like any other.
 - **What a stop's message holds, in this order.** What blocks now: the staged change, the
   uncommitted change, then the commits, the newest first (the session's latest work before
   pulled history). Each with its rules and what answers them while there is room; then
@@ -398,11 +404,19 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   twenty more, its name with the names of its rules; the rest are counted. A rule's name
   is never dropped for its explanation, and a path that is cut keeps its file name. Then a
   working tree's change that got no verdict and the commits that wait, with the reason;
-  then what the judge holds that is new at this stop, with its rules. Then one line each,
-  at every stop: the commits with no verdict, what the judge held at earlier stops, and the
-  failures that stand (by name while there are three or fewer, else "13 earlier failures
-  stand: Commit …, and 10 more."). A message is under 9,000 characters; what the hook names
-  beside the verdict gets the room that is left, and says when it was cut. The first line
+  then what the judge holds that is new at this stop, with its rules. A unit that fails
+  and also has rules the judge holds for shows both, the failing ones first and the others
+  marked "held, for a person". Then one line each, at every stop: the commits with no
+  verdict, what the judge held at earlier stops, and the failures that stand (by name while
+  there are three or fewer, else "13 earlier failures stand: Commit … (no-secrets), and 10
+  more."); each unit these lines name comes with the names of its rules, which are kept
+  with a commit's answer for the rest of the session. A message is at most 9,000
+  characters, and that holds where the message is finished, whatever its parts add up to:
+  the lines of every stop are kept whole, what stands above them gives way and says "Not
+  all of the above fits", what the hook names beside the verdict gets the room that is
+  left (a thing that has no room to be said in full is counted on its line, and is said in
+  full at the first stop that has room), and a text that is still over the bound is cut
+  and ends with a line that says so. The first line
   is the worst answer that is new or still open at this stop: a block, else UNJUDGED, else
   HOLD, else FAIL STANDS.
 - **The judge is [forge-warden](https://github.com/Louranicas/forge-warden)**, in its authority
@@ -455,14 +469,18 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   does not block, because a commit cannot be made good by a later one and is for a person.
   A branch switch, a new ref or another working tree does not make it block again: it is
   known by its id. A failing uncommitted change (the same rules, signals, paths and numbers
-  of items) holds one stop and stands while every stop still finds it; when a stop finds
-  the change without it, it is forgotten, so the same failure blocks again if it comes
-  back. One more item under a rule that already failed is a new failure and blocks. A
-  failing staged change follows the same rule and is its own failure: a credential that
-  blocked while it was staged and in the working tree blocks again, as "Staged changes",
-  when the file is repaired and not staged again, and the message says what clears it
-  (`git add` of the repaired file, or `git restore --staged`). The same failure in another
-  working tree is that tree's own too. A failing commit blocks at
+  of items) holds one stop and stands while every stop still finds it. It is forgotten
+  only by a stop that looked at its working tree and found the change without it, so the
+  same failure blocks again if it comes back; a stop that did not look (the session's
+  directory was not in that linked working tree) forgets nothing, names the tree and says
+  that a failure stands there. One more item under a rule that already failed is a new
+  failure and blocks. What is staged is a failure of its own only where the working tree
+  does not have it: a credential that blocked while it was staged and in the working tree
+  blocks again, as "Staged changes", when the file is repaired and not staged again, and
+  the message says what clears it (`git add` of the repaired file, or `git restore
+  --staged`). A staged failure that is all in the working tree's failure is that failure:
+  staging, and editing other files, does not make it block again. The same failure in
+  another working tree is that tree's own. A failing commit blocks at
   the stop that first judges it, whatever has blocked before as an uncommitted change. A
   commit that was amended or rebased is another commit and is judged again. When the hook
   cannot keep its state (a read-only directory, a full disk), it says so with the decision,
@@ -571,7 +589,9 @@ project and not judged at every stop while it is true, as stated above):
   uncommitted or staged changes: named, as not judged. Sixteen such trees are looked at;
   when there are more, the stop says how many it did not look at. A working tree that was
   removed by hand: named, with `git worktree prune`.
-- A shallow clone: a commit whose parent the clone does not have is UNJUDGED by its id.
+- A shallow clone: a commit whose parent the clone does not have is UNJUDGED by its id,
+  at every stop, until the clone has the parent (`git fetch --unshallow`); then it is
+  judged.
 - A session that began in a repository with no commit, or on an orphan branch, has no base:
   its stops are UNJUDGED (after the first commit, in the first case; before it, every stop
   says that the repository's files are not judged).
@@ -598,15 +618,20 @@ Stated limits, which the judge on the pull request covers:
   the stash; a working tree whose directory is gone is not asked.
 - Work in a copy of the repository, and anything in a repository that is not the session's
   project: named where the hook sees it, not judged.
-- Two hooks of one session that run at the same time can each write the state the other
-  did not see. What the later writer did not see is lost: a commit is then judged again, a
-  failure blocks again, or an attempt is not counted. Nothing becomes a pass by it, and a
-  stop that is cut off in the middle (an outage, a kill) makes nothing final: only a
-  verdict is written down as one.
+- Two stops of one session do not run at the same time: a stop holds a lock beside the
+  session's state while it runs, and a second one waits three seconds and then says
+  UNJUDGED, "another stop of this session is running". (A session's very first hook has no
+  state yet and no lock.) An advice hook and a stop that run at the same time can still
+  each write the state the other did not see: what the later writer did not see is lost,
+  so a commit is then judged again, a failure blocks again, or an attempt is not counted.
+  Nothing becomes a pass by it, and a stop that is cut off in the middle (an outage, a
+  kill) makes nothing final: only a verdict is written down as one.
 - An entry made with `git add -N` is no staged content; it is in the uncommitted change.
 - A session with only commits the judge cannot judge, and nothing else that gets a
-  verdict, asks about up to three of them at every stop: the judge answers its probe, so
-  their attempts count and end after five.
+  verdict, asks about up to three of them at a stop and then about the judge's probe: the
+  probe gets its verdict, so their attempts count, and after five each is asked about in
+  its turn, one at a stop. Under a policy that has no probe (a policy file with no line)
+  nothing shows that the chain works: no attempt counts, and each stop asks again.
 - The settings that install the hooks, the state file, the list of commits beside it and
   the judge on `PATH` are the agent's to edit: it shares the user's account. Whoever edits
   the state or that list can move the base, or make a commit count as there before.

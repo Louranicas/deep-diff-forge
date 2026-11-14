@@ -359,6 +359,58 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     a stop is silent (HR5-L-7).
   - *State.* Schema `deep-diff-forge.hook-state.v5`; the file of judged commits holds
     `id:n<attempts>:reason` and `id:x:reason` lines beside `p`, `h`, `f`.
+- **Round 14 of Vesper's review and a sixth independent review of the hooks: a no-verdict
+  is never given up; a failure is forgotten only when it was looked for and not found;
+  what is held is always named** (`docs/reviews/vesper-v4-round14-report-20261114.md`,
+  NO-GO on one medium, VD4R14-M-1; `docs/reviews/claude-independent-review-hooks-6-20261114.md`,
+  GO-WITH-FIXES: it found no stop that prints nothing while something is open).
+  - *A commit with no verdict is never given up* (VD4R14-M-1, HR6-L-1). After five
+    attempts that counted, a commit with no verdict was named at every stop and asked about
+    no more. A judge that failed on one patch five times while it answered for other patches
+    (so each attempt counted) left a commit with a credential UNJUDGED for the rest of the
+    session: when the judge recovered, the failing verdict was never obtained and no stop
+    blocked. Now such a commit is asked about again at every stop for the first five
+    attempts, then one such commit per stop in turn (the fewest attempts first, the last ask
+    of the stop, inside the same deadline); never given up. A fail then blocks like any
+    first judgment, a pass leaves the list, a hold is held. Its line says what is true: "no
+    verdict in N attempts; it is asked about again in its turn". The file of judged commits
+    holds any attempt count in `id:n<attempts>:reason` (it stopped at 5).
+  - *A failure that stands does not block again because nothing looked at it* (HR6-M-1).
+    A remembered failure was forgotten whenever its unit was absent from a stop. So a
+    staged failure blocked again after `git add -A` and one more edit of any file, every
+    other turn, with advice that was not true there; and a failure in a linked working
+    tree blocked again each time the session's directory left the tree and came back. Now
+    a failure is remembered with its working tree and forgotten only by a stop that looked
+    at that tree and found it gone; a stop that does not look names the tree and says that
+    a failure stands there; and a staged failure that is all in the working tree's failure
+    is that failure, not a second one (what is staged and no longer in the tree still
+    blocks for itself, once).
+  - *What the judge holds is always named* (HR6-M-2). A verdict that fails for one rule
+    and holds for another showed the failing rule alone, at every stop: both are shown,
+    the held ones marked "held, for a person", in the full and in the shorter form. And a
+    commit the judge held was named by its id alone from the second stop on, and at the
+    first too when the message was crowded: the names of a commit's rules are kept with
+    its answer (`id:h:rules`, `id:f:rules;held rules`) and said on the line of every stop.
+    New fixture: a recorded verdict of the real judge that fails and holds.
+  - *Lows.* A commit at a shallow clone's edge is not final: it is looked at again at
+    every stop and judged once `git fetch --unshallow` brought its parent (HR6-L-2). The
+    judge's probe is asked whenever an ask failed and no patch got a verdict, so the
+    attempts of one or two commits with no verdict count; they never did, and every stop
+    asked again at the judge's time-out (HR6-L-3). A message's bound is kept where the
+    message is finished: the lines of every stop stay whole, what is above gives way and
+    says so, a text over 9,000 characters is cut and says so, and something beside the
+    verdict that has no room to be said in full is counted and said in full at the first
+    stop with room, where it had been cut to nothing and remembered as said (HR6-L-4; a
+    message of 9,005 characters was produced). An index with unmerged paths is said as
+    that, with what to do, where it was Git's "error building trees"; the gate link for
+    hooks that are not registered says which settings files it read; SECURITY.md no
+    longer says that every unit that blocks is named with its rules (HR6-L-5).
+  - *Suspected by the review, closed.* Two stops of one session do not run at once: a
+    stop holds a lock beside the session's state, and a second one says UNJUDGED after
+    three seconds. A unit shown in its shorter form keeps one line of what the judge said
+    beside its rules.
+  - *State.* Schema `deep-diff-forge.hook-state.v6`: a remembered failure is kept with
+    the working tree it is in. *New in the patch crate:* `JudgePatchError::Unmerged`.
 
 ### Changed
 

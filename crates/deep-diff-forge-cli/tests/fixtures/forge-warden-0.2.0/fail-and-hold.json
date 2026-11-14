@@ -1,0 +1,143 @@
+{
+  "schema": "forge-warden.verdict.v2",
+  "tool": {
+    "name": "forge-warden",
+    "version": "0.2.0"
+  },
+  "evaluated_on": "2026-11-14",
+  "seals": {
+    "policy_sha256": "5ffb7c2f5d2e79046850c8ecae22badc9021d5f0bf6ea5f9ff43b75107078a1a",
+    "rank_sha256": "4b7a5d7660c254a5283a03a9e5427b55a0218b74481bc1946c09fab69aee881e",
+    "patch_sha256": "598b834fa764283abe4602f9df12fc71a0f626c9bc87b380f9dc07e85eb9a523",
+    "patch_facts_sha256": "58b507ee3aaaceebfa68fb03ff203d4dc25906ca596b693bb78f4037f6c58533",
+    "provenance": "produced",
+    "ranked_by": {
+      "version": "0.8.3",
+      "sha256": "ecb8605c3c0d56a59eaee649e57c0aade137b8e4940ba602f9e31a06a1aed467"
+    },
+    "git": {
+      "path": "/usr/bin/git",
+      "version": "git version 2.56.0",
+      "sha256": "20739384fd97e904e8545b39753c3e42a0cd7a8016d382f6ec1aadc910f8c872",
+      "admission": "approved",
+      "allowlist_sha256": "6caed663d4f7d288d8f4df32495800a5d58f2df9db14017f03f1e4cb3e1894ba"
+    }
+  },
+  "verdict": "fail",
+  "exit": {
+    "code": 7,
+    "name": "policy_fail",
+    "action": "change_input"
+  },
+  "summary": {
+    "files": 2,
+    "rules": 9,
+    "passed": 7,
+    "waived": 0,
+    "held": 1,
+    "failed": 1
+  },
+  "rules": [
+    {
+      "id": "no-secrets",
+      "kind": "forbid_signal",
+      "severity": "fail",
+      "outcome": "fail",
+      "why": "A credential committed once is compromised forever, even after a revert.",
+      "violations": [
+        {
+          "path": "lib/a.rs",
+          "message": "carries forbidden signal `secret_like`",
+          "signal": "secret_like",
+          "evidence": [
+            {
+              "address": "e2999dfe026c9721d1d4f0932c822ca1a55ff041588ebe0e05d56b37ce7c8c5c",
+              "side": "new",
+              "line": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "no-hidden-text",
+      "kind": "forbid_signal",
+      "severity": "fail",
+      "outcome": "pass",
+      "why": "Bidi controls, invisible characters and traversing paths make code read differently than it runs.",
+      "violations": []
+    },
+    {
+      "id": "no-ci-privilege",
+      "kind": "forbid_signal",
+      "severity": "fail",
+      "outcome": "pass",
+      "why": "pull_request_target, write-all and secret inheritance hand untrusted code the keys to the repository.",
+      "violations": []
+    },
+    {
+      "id": "unsafe-needs-review",
+      "kind": "forbid_signal",
+      "severity": "hold",
+      "outcome": "pass",
+      "why": "Every new unsafe block needs a reviewer who checks its safety argument.",
+      "violations": []
+    },
+    {
+      "id": "no-silent-suppression",
+      "kind": "forbid_signal",
+      "severity": "hold",
+      "outcome": "hold",
+      "why": "A silenced check hides the next real bug; fix the cause or justify it in review.",
+      "violations": [
+        {
+          "path": "lib/s.rs",
+          "message": "carries forbidden signal `check_suppressed`",
+          "signal": "check_suppressed",
+          "evidence": [
+            {
+              "address": "1030a33002ae237bc8cdbbdf097ecfd5741a0e632d5b7b916080267aa9bb4361",
+              "side": "new",
+              "line": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "keep-the-tests",
+      "kind": "forbid_signal",
+      "severity": "hold",
+      "outcome": "pass",
+      "why": "Deleting a test removes a guarantee someone relied on; that deserves a second pair of eyes.",
+      "violations": []
+    },
+    {
+      "id": "tests-travel-with-code",
+      "kind": "require_companion",
+      "severity": "fail",
+      "outcome": "pass",
+      "why": "Behaviour that changes without a test change is behaviour nobody pinned down.",
+      "violations": []
+    },
+    {
+      "id": "ci-is-owned",
+      "kind": "protect_paths",
+      "severity": "hold",
+      "outcome": "pass",
+      "why": "CI and supply-chain configuration decide what every other check means.",
+      "violations": []
+    },
+    {
+      "id": "reviewable-size",
+      "kind": "max_score",
+      "severity": "hold",
+      "outcome": "pass",
+      "why": "A change too risky to hold in one head gets rubber-stamped; split it.",
+      "violations": []
+    }
+  ],
+  "expired_waivers": [],
+  "unused_waivers": [],
+  "notes": []
+}

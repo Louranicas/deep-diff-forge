@@ -78,6 +78,11 @@ pub enum JudgePatchError {
     /// tree would show every one of them as deleted (review V4 round 2, VD4R2-M-1). Refused
     /// until the scratch index can carry those marks.
     SkipWorktree,
+    /// The index has unmerged paths (a merge, a rebase or a cherry-pick stopped on a conflict):
+    /// it has no tree, so there is nothing a commit could record. Git's own word for it,
+    /// "error building trees", does not say what a person has to do (sixth independent
+    /// review of the hooks, HR6-L-5).
+    Unmerged,
     /// Git failed or ran out of time or budget, or a file this needs could not be prepared.
     Failed(GitAcquireError),
 }
@@ -88,6 +93,9 @@ impl std::fmt::Display for JudgePatchError {
             Self::NoBase => out.write_str("the base names no commit"),
             Self::SkipWorktree => out.write_str(
                 "the index marks paths skip-worktree (a sparse checkout): the working tree is not the whole change, and no patch is made from it",
+            ),
+            Self::Unmerged => out.write_str(
+                "the index has unmerged paths (a merge, a rebase or a cherry-pick stopped on a conflict), so it holds nothing a commit could record: resolve them and `git add` the files",
             ),
             Self::Failed(error) => write!(out, "{error}"),
         }
@@ -678,7 +686,8 @@ pub fn judge_patch(
 /// recorded it (fourth independent review of the hooks, HR4-H-1).
 ///
 /// # Errors
-/// As [`judge_patch`]; an index with unmerged paths has no tree, which is an error.
+/// As [`judge_patch`]; an index with unmerged paths has no tree, which is
+/// [`JudgePatchError::Unmerged`].
 pub fn staged_patch(
     repo: &Path,
     base: &str,
@@ -704,6 +713,17 @@ pub fn staged_patch(
         &[0],
         INDEX_LISTING_CAP,
     )?;
+    // An entry of a stage other than 0 is one side of a conflict: `<mode> <id> <stage>\t<path>`.
+    let unmerged = entries.split(|byte| *byte == 0).any(|entry| {
+        entry
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .and_then(|tab| tab.checked_sub(1))
+            .is_some_and(|stage| entry[stage] != b'0')
+    });
+    if unmerged {
+        return Err(JudgePatchError::Unmerged);
+    }
     // An entry made with `git add -N` says that a path will be added and holds no content:
     // a commit leaves it out, so it is no staged content. It was read as a staged empty
     // file (fifth independent review of the hooks, HR5-L-1). Git shows such a path, and

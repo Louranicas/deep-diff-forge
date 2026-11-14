@@ -329,7 +329,8 @@ bounded form.** What it holds to:
   documents said that a pull or a merge always makes commits the session's; every message
   that names the range says the rule now, the advice after a tool call included.
 - **A stop's message never loses what blocks.** It holds, in this order: every unit that
-  blocks now, each named, with its rules; every unit that got no verdict, named, and the
+  blocks now, with its rules while there is room, then with the names of its rules (twenty
+  more), then counted; every unit that got no verdict, named, and the
   count of commits that wait; new holds; what stands from before, as a count with three
   names once there are more than three. Twelve units used to be listed, the oldest first:
   with twelve failures standing, a commit that failed blocked the stop without being named,
@@ -339,19 +340,36 @@ bounded form.** What it holds to:
   judgeable, said once, and then neither asked about nor named again: one transient failure
   of the judge on a commit with a credential made every later stop silent. Now only a
   verdict is an answer. A commit without one is named at every stop and asked about again,
-  the commits never asked about first; after five attempts that count it is asked about no
-  more and is still named. Only what the hook proves from the repository is final at once
-  (a shallow clone's edge, a patch over the builder's size), and is named at every stop
-  too. What the judge holds and what stands are a line of every stop as well: a hold first
-  seen at a stop that blocked for something else was never shown again.
-- **A message is bounded and what blocks keeps its rule.** Under 9,000 characters; what
+  the commits never asked about first: at every stop for its first five attempts that
+  count, then one such commit at each stop in turn, the one with the fewest attempts. It is
+  never given up while the session lives: the cap of five used to end the asking, so a
+  judge that failed on one patch five times while it answered for others left a commit
+  with a credential UNJUDGED for good, and its failing verdict was never obtained. Only
+  what the hook proves from the commit itself is final at once (a patch over the builder's
+  size), and is named at every stop too. A shallow clone's edge is not such a thing: the
+  clone can get the parent, so it is looked at again at every stop, and the commit is
+  judged once the history is there (it was written down as final and stayed unjudged after
+  `git fetch --unshallow`). What the judge holds and what stands are a line of every stop
+  as well, each with the names of its rules: a hold first seen at a stop that blocked for
+  something else was never shown again, and a rule the judge held for beside a rule that
+  failed was shown at no stop. A verdict that fails keeps the rules it holds for, and a
+  commit's answer keeps the names of its rules for the rest of the session.
+- **A message is bounded and what blocks keeps its rule.** At most 9,000 characters, kept
+  where the message is finished and not by what each part was allowed: the lines of every
+  stop stay whole, what is above them gives way and says so, and a text over the bound is
+  cut and ends with a line that says it was (the parts once added up to 9,005, and could
+  to about 10,300, past where the client cuts). What
   blocks is shown the staged change first, then the uncommitted one, then the commits the
   newest first; a unit that does not fit whole is shown with each rule's name and first
   path, then with its rules' names alone, then counted. Before, a unit whose rules were
   longer than the room was shown with no rule, and 150 failing commits put the session's
   own past where the client cuts the message.
-- **A staged failure is its own.** The identity of a working tree's failure holds which
-  unit it is in, so what is staged blocks for itself after the working tree was repaired.
+- **A staged failure is its own where the working tree does not have it.** The identity
+  of a working tree's failure holds which unit it is in, so what is staged blocks for
+  itself after the working tree was repaired. A staged failure whose every rule, signal,
+  path and count is in the working tree's failure is that failure and no unit of its own:
+  as a second identity it made a failure that stood block again after `git add -A` and one
+  more edit of any file, every other turn.
 - **A commit with no verdict never stops the judging of others.** When the chain gives
   verdicts and one patch is refused (a name that is not UTF-8, a size, a shallow clone's
   edge), that commit is said once by its id, remembered as not judgeable, and the next is
@@ -369,9 +387,20 @@ bounded form.** What it holds to:
   match (rule, signal, path, count) let another credential in the same file stand without
   ever blocking. A commit is known by its id, so a branch switch or a new ref does not
   make its failure block again, and a later commit cannot make it pass. The failure of an
-  uncommitted change is known by its rules, signals, paths and numbers of items; it is
-  forgotten when a stop finds the change without it. Before, it was remembered for the
-  whole session, so a failure that was repaired and then brought back never blocked.
+  uncommitted change is known by its rules, signals, paths and numbers of items, and is
+  remembered with the working tree it is in. It is forgotten only by a stop that looked at
+  that tree and found the change without it. Once it was remembered for the whole session,
+  so a failure that was repaired and then brought back never blocked; then it was
+  forgotten whenever its unit was absent from a stop, also when nothing had looked, so a
+  failure in a linked working tree blocked again each time the session's directory left
+  the tree and came back. A stop that does not look at a tree names it and says that a
+  failure stands there.
+- **One stop of a session at a time.** A stop holds a lock (`flock`) on a file beside the
+  session's state from before it reads the state until it has written it. A second stop
+  of the same session waits three seconds, then says UNJUDGED and that another stop is
+  running. Two stops could otherwise write their lists and states across each other, after
+  which the state named a list that was not in the file and every later stop was UNJUDGED.
+  The lock is for a session that has a state file; advice hooks do not take it.
 - **The project is a repository at a path.** It is recorded with the inode of its Git common
   directory and its top level. What stands at that path with another inode is not the
   project (a clean clone put there used to be judged in its place, in silence), and neither

@@ -2206,13 +2206,9 @@ fn a_base_the_branch_left_is_still_judged_and_one_that_is_gone_is_unjudged() {
     // the same when HEAD names no commit at all any more (an orphan branch): the tree is
     // measured from the session's base then
     git(&root, &["checkout", "--quiet", "--orphan", "wip"]);
-    let decision = stop_from(&root, "s", &script);
-    // Round 14 (HR5-M-3): the index of the new branch holds another change than the tree,
-    // and what is staged fails for itself: it blocks once, then stands with the tree's
-    assert!(
-        blocked(&decision).contains("the branch has moved"),
-        "{decision}"
-    );
+    // Round 15 (HR6-M-1): the index of the new branch holds another change than the tree,
+    // and the failure in it is the tree's, which has blocked: it stands, and does not block
+    // for the index again
     let decision = stop_from(&root, "s", &script);
     assert!(
         allowed(&decision).starts_with("deep-diff-forge: FAIL STANDS. ")
@@ -4029,13 +4025,15 @@ fn states_in(dir: &Path) -> Vec<PathBuf> {
 
 /// A stand-in judge that reads the patch it is shown: it fails a patch that adds a line with
 /// `SECRET` in it and passes every other. It logs the files each patch names (`PATCH-NAMES`),
-/// and first sleeps for the seconds written in `judge.sleep` when that file is there. The
+/// and first sleeps for the seconds written in `judge.sleep` when that file is there. While
+/// `judge.flaky` is there it gives no verdict on a patch with `SECRET`: as many times as the
+/// file says (once when it is empty), then the file is gone. The
 /// other stand-in gives one answer whatever it is shown, so it cannot tell a stop that judged
 /// the right commit from one that judged another.
 fn reading_judge(scratch: &Scratch) -> (PathBuf, PathBuf) {
     const READ: &str = r#"printf 'PATCH-NAMES %s\n' "$(grep '^diff --git' "$patch" | tr '\n' ' ')" >> '@LOG@'
 if [ -f '@SLEEP@' ]; then sleep "$(cat '@SLEEP@')"; fi
-if [ -f '@FLAKY@' ] && grep -q '^+.*SECRET' "$patch"; then rm -f '@FLAKY@'; echo '{"exit":3,"name":"io","message":"the ranker did not answer in time","next":"retry"}' >&2; exit 3; fi
+if [ -f '@FLAKY@' ] && grep -q '^+.*SECRET' "$patch"; then left="$(cat '@FLAKY@')"; left=$((${left:-1} - 1)); if [ "$left" -le 0 ]; then rm -f '@FLAKY@'; else echo "$left" > '@FLAKY@'; fi; echo '{"exit":3,"name":"io","message":"the ranker did not answer in time","next":"retry"}' >&2; exit 3; fi
 if grep -q '^+.*NOVERDICT' "$patch"; then echo '{"exit":3,"name":"io","message":"patch parse failed","next":"fix_input"}' >&2; exit 3; fi
 if grep -q '^+.*SECRET' "$patch"; then code=7; elif grep -q '^+.*HOLDME' "$patch"; then code=8; else code=0; fi"#;
     let (script, log, exit_file) = (
@@ -5028,6 +5026,34 @@ fn a_stop_names_what_blocks_now_however_many_failures_stand() {
     assert!(allowed(&stop_from(&root, "s", &script)).contains("14 earlier failures stand: "));
 }
 
+/// Round 15 (VD4R14-M-1): after five attempts none of the three commits of session `n1` is
+/// given up. They take turns, one a stop, the one with the fewest attempts first: each comes
+/// round again, and all three are named at every stop with what is true of them.
+fn three_take_turns(root: &Path, script: &Path, log: &Path) {
+    for turn in 0..7 {
+        let before = runs(log);
+        let said = allowed(&stop_from(root, "n1", script)).to_owned();
+        assert!(
+            said.contains("3 commits of this session have no verdict: ")
+                && said.contains(&format!(
+                    "(no verdict in {} attempts; it is asked about again in its turn, one such commit at each stop; the last reason: ",
+                    6 + turn / 3
+                )),
+            "turn {turn}: {said}"
+        );
+        assert_eq!(
+            runs(log),
+            before + 1,
+            "turn {turn}: one commit is asked about"
+        );
+        assert_eq!(
+            shown(log).last().map(String::as_str),
+            Some(format!("odd{}.rs", turn % 3).as_str()),
+            "turn {turn}"
+        );
+    }
+}
+
 /// Fourth independent review of the hooks, HR4-M-2, the reviewer's N1 and N2. A commit that
 /// got no verdict was asked about again, first, at every stop, and three of them ended the
 /// judging of every later commit for the rest of the session. A commit whose patch is refused
@@ -5058,7 +5084,7 @@ fn a_commit_with_no_verdict_never_stops_the_judging_of_later_commits() {
         "{reason}"
     );
     // Round 14 (HR5-H-1): a commit with no verdict is not done. It is named at every stop,
-    // and asked about again, up to five attempts; after that it is still named.
+    // and asked about again: at every stop for five attempts, then in its turn.
     for attempt in 2..=5 {
         let before = runs(&log);
         let said = allowed(&stop_from(&root, "n1", &script)).to_owned();
@@ -5071,16 +5097,7 @@ fn a_commit_with_no_verdict_never_stops_the_judging_of_later_commits() {
         // the three commits, and the probe once nothing had a verdict
         assert_eq!(runs(&log), before + 4, "attempt {attempt}");
     }
-    for _ in 0..2 {
-        let before = runs(&log);
-        let said = allowed(&stop_from(&root, "n1", &script)).to_owned();
-        assert!(
-            said.contains("3 commits of this session have no verdict: ")
-                && said.contains("(could not be judged in 5 attempts; the last reason: "),
-            "{said}"
-        );
-        assert_eq!(runs(&log), before, "asked about after five attempts");
-    }
+    three_take_turns(&root, &script, &log);
 
     // N2: no-verdict commits and harmless ones in turn; a stop; then the credential
     start(&root, "n2");
@@ -5340,7 +5357,10 @@ fn other_working_trees_that_are_gone_or_have_changes_are_named_at_every_stop() {
 
 /// Fourth independent review of the hooks, HR4-L-2. In a shallow clone a commit at the edge
 /// has no parent the repository holds; judged "from nothing" its change was the whole tree.
-/// It is UNJUDGED by its id, with that reason, once.
+/// It is UNJUDGED by its id, with that reason, at every stop while the clone is shallow
+/// there; and when the clone has its history (`git fetch --unshallow`, which the reason
+/// names) it is judged. It stayed "shallow" for the rest of the session (sixth independent
+/// review of the hooks, HR6-L-2).
 #[test]
 fn a_commit_at_the_edge_of_a_shallow_clone_is_not_judged_from_nothing() {
     let scratch = Scratch::new("hook-shallow");
@@ -5362,7 +5382,7 @@ fn a_commit_at_the_edge_of_a_shallow_clone_is_not_judged_from_nothing() {
         ],
     );
     start(&root, "s");
-    std::fs::write(origin.join("c.rs"), "fn d() {}\n").unwrap();
+    secret(&origin, "c.rs");
     commit_all(&origin, "third");
     git(
         &root,
@@ -5370,8 +5390,7 @@ fn a_commit_at_the_edge_of_a_shallow_clone_is_not_judged_from_nothing() {
     );
     git(&root, &["reset", "--quiet", "--hard", "FETCH_HEAD"]);
     let tip = short(&root, "HEAD");
-    // Round 14: final at once (the hook proves it from the repository), and said at every
-    // stop, not once
+    // said at every stop, not once; and nothing is asked of the judge
     for _ in 0..3 {
         let said = allowed(&stop_from(&root, "s", &script)).to_owned();
         assert!(
@@ -5382,6 +5401,57 @@ fn a_commit_at_the_edge_of_a_shallow_clone_is_not_judged_from_nothing() {
         );
     }
     assert_eq!(runs(&log), 0);
+    // the history is fetched: the commit has its parent now, is judged, and blocks
+    git(&root, &["fetch", "--quiet", "--unshallow", "origin"]);
+    let reason = blocked(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        reason.contains(&format!("Commit {tip}: FAIL\n")),
+        "{reason}"
+    );
+    assert_eq!(shown(&log), ["c.rs"]);
+}
+
+/// Sixth independent review of the hooks, HR6-L-3. One commit that gets no verdict and
+/// nothing else to judge: the judge's probe was asked only after three failed asks, so the
+/// chain was never seen to work, no attempt counted, and every stop of the session asked
+/// about the commit again. The probe is asked whenever an ask failed and no patch got a
+/// verdict: the attempts count, and after five the commit is asked about in its turn.
+#[test]
+fn one_commit_with_no_verdict_has_its_attempts_counted() {
+    let scratch = Scratch::new("hook-one-no-verdict");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    start(&root, "s");
+    let odd = unjudgeable(&root, "odd.rs");
+    for attempt in 1..=7 {
+        let before = runs(&log);
+        let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+        assert!(
+            said.contains(&format!("1 commit of this session has no verdict: {odd} (")),
+            "{attempt}: {said}"
+        );
+        // the commit and the probe; in its turn the commit alone, and it says so
+        assert_eq!(
+            runs(&log) - before,
+            if attempt <= 5 { 2 } else { 1 },
+            "{attempt}"
+        );
+        assert_eq!(
+            said.contains(&format!("(no verdict in {attempt} attempts; ")),
+            attempt > 5,
+            "{attempt}: {said}"
+        );
+    }
+    let state = states_in(&sessions());
+    let lines = std::fs::read_to_string(state[0].with_extension("judged")).unwrap();
+    assert_eq!(
+        lines
+            .lines()
+            .filter_map(|line| line[40..].split(':').nth(1))
+            .collect::<Vec<_>>(),
+        ["n1", "n2", "n3", "n4", "n5", "n6", "n7"],
+        "{lines}"
+    );
 }
 
 /// Fourth independent review of the hooks, HR4-L-3. The commits that have their answer are a
@@ -5409,7 +5479,8 @@ fn the_commits_that_have_their_answer_are_a_file_the_state_names() {
         line[40..].to_owned()
     };
     assert_eq!(said_of(&harmless), ":p");
-    assert_eq!(said_of(&key), ":f");
+    // (with the names of its rules: round 15, HR6-M-2)
+    assert_eq!(said_of(&key), ":f:no-secrets");
     // no verdict is not an answer that ends anything: one attempt, with the reason
     assert!(said_of(&no_verdict).starts_with(":n1:"), "{lines}");
     let kept: Value = serde_json::from_str(&std::fs::read_to_string(&state[0]).unwrap()).unwrap();
@@ -5497,10 +5568,14 @@ fn what_the_judge_holds_is_said_at_every_stop() {
         let said = allowed(&stop_from(&root, "s", &script)).to_owned();
         assert!(
             said.starts_with("deep-diff-forge: HOLD. ")
+                // with the name of its rule, at every stop (round 15, HR6-M-2: a commit
+                // held at a crowded stop was named by its id alone from then on)
                 && said.contains(&format!(
-                    "1 held by the judge, for a person: Commit {held}.\n"
+                    "1 held by the judge, for a person: Commit {held} (no-secrets).\n"
                 ))
-                && said.contains(&format!("Commit {key}: FAIL, which stands\n")),
+                && said.contains(&format!(
+                    "Commit {key}: FAIL, which stands\n- rule no-secrets\n"
+                )),
             "{said}"
         );
     }
@@ -5541,25 +5616,42 @@ fn a_stops_message_is_bounded_and_what_blocks_keeps_its_rule() {
     );
     git(&root, &["checkout", "--quiet", "--", "a.rs"]);
 
-    // forty-six commits that fail at one stop, the session's own the newest (as few as show
-    // all three forms: a stop judges what its forty-five seconds allow, and on a loaded host
-    // sixty were not all judged in them)
-    let (script, _) = reading_judge(&scratch);
-    start(&root, "many");
-    for n in 0..45 {
-        secret(&root, &format!("pulled{n:02}.rs"));
-        commit_all(&root, "a key from elsewhere");
+    crowded_stop(&scratch, &root);
+}
+
+/// The second half of [`a_stops_message_is_bounded_and_what_blocks_keeps_its_rule`]: forty
+/// commits that fail at one stop, the session's own the newest (as few as show all three
+/// forms: a stop judges what its forty-five seconds allow, and on a loaded host sixty were
+/// not all judged in them). With them, since the sixth independent review of the hooks
+/// (HR6-L-4, "weak tests"): commits the judge holds, commits with no verdict, and things
+/// beside the verdict, so that every kind of line is in one message.
+fn crowded_stop(scratch: &Scratch, root: &Path) {
+    let (script, _) = reading_judge(scratch);
+    start(root, "many");
+    let odd: Vec<String> = (0..3)
+        .map(|n| unjudgeable(root, &format!("odd{n}.rs")))
+        .collect();
+    std::fs::write(root.join("h.rs"), "// HOLDME\n").unwrap();
+    let held = commit_all(root, "for a person");
+    for n in 0..39 {
+        secret(root, &format!("pulled{n:02}.rs"));
+        commit_all(root, "a key from elsewhere");
     }
-    secret(&root, "own.rs");
-    let own = commit_all(&root, "the session's own key");
-    let reason = blocked(&stop_from(&root, "many", &script)).to_owned();
+    secret(root, "own.rs");
+    let own = commit_all(root, "the session's own key");
+    for n in 0..2 {
+        let nested = root.join(format!("vendor{n}"));
+        std::fs::create_dir(&nested).unwrap();
+        git(&nested, &["init", "--quiet"]);
+    }
+    let reason = blocked(&stop_from(root, "many", &script)).to_owned();
     assert!(reason.chars().count() < 9_000, "{}", reason.chars().count());
     let named = reason
         .find(&format!("Commit {own}: FAIL\n- rule no-secrets: "))
         .unwrap_or_else(|| panic!("the session's own commit is not named: {reason}"));
     assert!(named < 1_000, "{named}: {reason}");
     // with their rules while there is room, then twenty with the names of their rules, then
-    // a count: every one of the forty-six is in one of the three
+    // a count: every one of the forty is in one of the three
     let with_rules = reason.matches(": FAIL\n- rule no-secrets: ").count();
     assert_eq!(
         reason.matches(": FAIL (no-secrets)\n").count(),
@@ -5571,10 +5663,37 @@ fn a_stops_message_is_bounded_and_what_blocks_keeps_its_rule() {
         .and_then(|(before, _)| before.rsplit_once("and "))
         .and_then(|(_, count)| count.parse().ok())
         .unwrap_or_else(|| panic!("the rest are not counted: {reason}"));
-    assert!(with_rules >= 10 && counted > 0, "{with_rules} {counted}");
-    assert_eq!(with_rules + 20 + counted, 46, "{reason}");
-    // afterwards they stand, as a count
-    assert!(allowed(&stop_from(&root, "many", &script)).contains("46 earlier failures stand: "));
+    assert!(with_rules >= 8 && counted > 0, "{with_rules} {counted}");
+    assert_eq!(with_rules + 20 + counted, 40, "{reason}");
+    // what the judge holds, with the name of its rule; the commits with no verdict; and
+    // what is beside the verdict: each is in the same message, whole
+    assert!(
+        reason.contains(&format!("Commit {held}: HOLD\n- rule no-secrets: "))
+            || reason.contains(&format!(
+                "1 held by the judge, for a person: Commit {held} (no-secrets).\n"
+            )),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("3 commits of this session have no verdict: ")
+            && odd.iter().all(|id| reason.contains(&format!("{id} ("))),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("The directory \"vendor0\" in ") && reason.contains("\"vendor1\""),
+        "{reason}"
+    );
+    // afterwards they stand, as a count, beside the other lines of every stop
+    let later = allowed(&stop_from(root, "many", &script)).to_owned();
+    assert!(
+        later.contains("40 earlier failures stand: ")
+            && later.contains(&format!(
+                "1 held by the judge, for a person: Commit {held} (no-secrets).\n"
+            ))
+            && later.contains("3 commits of this session have no verdict: ")
+            && later.contains("2 things in this project are not judged: the nested repository \"vendor0\", the nested repository \"vendor1\"."),
+        "{later}"
+    );
 }
 
 /// Fifth independent review of the hooks, HR5-M-3. A credential is staged and blocks while
@@ -5685,8 +5804,12 @@ fn an_intent_to_add_a_bare_repository_and_unmerged_paths_are_read_as_what_they_a
         .into_iter()
         .find(|(name, _)| name == "patch");
     assert_eq!(patch, Some(("patch".to_owned(), false)), "{doc:#}");
+    // (said as what it is, with what to do: Git's "error building trees" was all it said;
+    // sixth independent review of the hooks, HR6-L-5)
     assert!(
-        detail(&doc, "patch").contains("UNJUDGED for what is staged"),
+        detail(&doc, "patch").contains(
+            "UNJUDGED for what is staged: the index has unmerged paths (a merge, a rebase or a cherry-pick stopped on a conflict)"
+        ),
         "{doc:#}"
     );
     // and the start of a session there names it, instead of a promise
@@ -5699,6 +5822,12 @@ fn an_intent_to_add_a_bare_repository_and_unmerged_paths_are_read_as_what_they_a
         said.contains("patch: a stop here would be UNJUDGED for what is staged")
             && !said.contains("stops will be judged"),
         "{said}"
+    );
+    let stop = allowed(&stop_from(&root, "unmerged", &script)).to_owned();
+    assert!(
+        stop.contains("what is staged cannot be judged: the index has unmerged paths (")
+            && stop.contains("resolve them and `git add` the files"),
+        "{stop}"
     );
 }
 
@@ -5805,4 +5934,382 @@ fn a_policy_with_no_probe_still_has_every_commit_judged() {
         reason.contains(&format!("Commit {key}: FAIL\n")),
         "{reason}"
     );
+}
+
+/// Review V4 round 14, VD4R14-M-1, as reproduced. A commit with a credential; a harmless
+/// commit before each stop; a judge that gives no verdict on the credential's patch the first
+/// five times and answers for every other patch, so that the chain is seen working and each
+/// attempt counts. After five attempts the commit was asked about no more: the judge
+/// recovered, the failing verdict was never obtained, and no stop of the session blocked. It
+/// is asked about again in its turn, and the stop after the recovery blocks.
+#[test]
+fn a_commit_that_had_no_verdict_five_times_is_asked_about_again_and_blocks() {
+    let scratch = Scratch::new("hook-attempts");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    start(&root, "s");
+    secret(&root, "k.rs");
+    let key = commit_all(&root, "a key");
+    std::fs::write(scratch.join("judge.flaky"), "5\n").unwrap();
+    let harmless = |stop: usize| {
+        std::fs::write(root.join(format!("fine{stop}.rs")), "fn f() {}\n").unwrap();
+        commit_all(&root, "harmless");
+    };
+    for stop in 1..=5 {
+        harmless(stop);
+        let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: UNJUDGED. ")
+                && said.contains(&format!("1 commit of this session has no verdict: {key} (")),
+            "stop {stop}: {said}"
+        );
+    }
+    assert!(
+        !scratch.join("judge.flaky").exists(),
+        "five times no verdict"
+    );
+    // the judge answers again: the commit is asked about, after the new one, and blocks
+    harmless(6);
+    let before = runs(&log);
+    let reason = blocked(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        reason.contains(&format!("Commit {key}: FAIL\n")),
+        "{reason}"
+    );
+    assert_eq!(runs(&log), before + 2);
+    assert_eq!(shown(&log).last().map(String::as_str), Some("k.rs"));
+    // like any commit that failed: it has blocked once, and stands
+    harmless(7);
+    assert!(
+        allowed(&stop_from(&root, "s", &script))
+            .contains(&format!("Commit {key}: FAIL, which stands\n"))
+    );
+
+    // Two such commits take turns, the older first: one is asked about at a stop, and the
+    // other says that it waits for its turn.
+    start(&root, "two");
+    secret(&root, "k1.rs");
+    let first = commit_all(&root, "a key");
+    secret(&root, "k2.rs");
+    let second = commit_all(&root, "another key");
+    std::fs::write(scratch.join("judge.flaky"), "10\n").unwrap();
+    for stop in 1..=5 {
+        harmless(10 + stop);
+        let said = allowed(&stop_from(&root, "two", &script)).to_owned();
+        assert!(
+            said.contains("2 commits of this session have no verdict: "),
+            "stop {stop}: {said}"
+        );
+    }
+    assert!(!scratch.join("judge.flaky").exists());
+    let before = runs(&log);
+    let reason = blocked(&stop_from(&root, "two", &script)).to_owned();
+    assert!(
+        reason.contains(&format!("Commit {first}: FAIL\n"))
+            && reason.contains(&format!(
+                "1 commit of this session has no verdict: {second} (no verdict in 5 attempts; it is asked about again in its turn, one such commit at each stop; the last reason: "
+            )),
+        "{reason}"
+    );
+    assert_eq!(
+        runs(&log),
+        before + 1,
+        "one commit is asked about in its turn"
+    );
+    let reason = blocked(&stop_from(&root, "two", &script)).to_owned();
+    assert!(
+        reason.contains(&format!("Commit {second}: FAIL\n"))
+            && reason.contains(&format!("Commit {first}: FAIL, which stands\n")),
+        "{reason}"
+    );
+}
+
+/// Sixth independent review of the hooks, HR6-M-1 (a), as a table over stops. A failure that
+/// has blocked and stands is forgotten only by a stop that looked for it and did not find it.
+/// The staged change had an identity of its own and was a unit only when it differed from
+/// the working tree's, so `git add -A` and one more edit of any file made a failure that
+/// stood block again, every other turn, with advice that was not true there.
+#[test]
+fn a_staged_failure_that_has_not_changed_never_blocks_again() {
+    let scratch = Scratch::new("hook-staged-table");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let top = std::fs::canonicalize(&root).unwrap();
+    let staged = uncommitted_in(&top).replace("Uncommitted changes", "Staged changes");
+    // (a message names its units when there are more than one)
+    let stands = |words: &str, step: &str| {
+        let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: FAIL STANDS. ")
+                && said.contains("- rule no-secrets")
+                && (words.is_empty() || said.contains(&format!("{words}: FAIL, which stands\n"))),
+            "{step}: {said}"
+        );
+        said
+    };
+    let mut edits = 0;
+    let mut edit_another = || {
+        edits += 1;
+        std::fs::write(root.join("other.rs"), format!("// edit {edits}\n")).unwrap();
+    };
+    start(&root, "s");
+    // 1: a credential is staged, and the tree holds the same: one block, then it stands
+    secret(&root, "k.rs");
+    git(&root, &["add", "--all"]);
+    let reason = blocked(&stop_from(&root, "s", &script)).to_owned();
+    assert!(reason.contains("- rule no-secrets: "), "{reason}");
+    stands("", "1");
+    // 2: another file is edited and not staged. The index and the tree differ now, and the
+    // failing path is the same in both: it stands, and nothing says "stage the repaired file"
+    edit_another();
+    let said = stands("", "2");
+    assert!(
+        !said.contains("Staged changes") && !said.contains("git add"),
+        "{said}"
+    );
+    // 3: the failing path is repaired in the tree and the repair is not staged: what a plain
+    // `git commit` would record still fails, which blocks once, with advice that is true
+    std::fs::write(root.join("k.rs"), "const KEY: &str = \"\";\n").unwrap();
+    let reason = blocked(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        reason.contains(&format!("{staged}: FAIL\n- rule no-secrets: "))
+            && reason.contains("stage the repaired file (`git add`)"),
+        "{reason}"
+    );
+    stands(&staged, "3");
+    edit_another();
+    stands(&staged, "3, another edit");
+    // 4: the repair is staged: forgotten, and everything passes
+    git(&root, &["add", "--all"]);
+    assert_eq!(stop_from(&root, "s", &script), Value::Null);
+    edit_another();
+    assert_eq!(stop_from(&root, "s", &script), Value::Null);
+
+    // 5: the reviewer's sequence. A fixture with a key is told to the person at turn 1 and
+    // left as it is; the session goes on staging and editing. It blocked at turns 2, 4, 6.
+    start(&root, "t");
+    secret(&root, "fixture.rs");
+    blocked(&stop_from(&root, "t", &script));
+    for turn in 2..=7 {
+        if turn % 2 == 0 {
+            git(&root, &["add", "--all"]);
+            edit_another();
+        } else {
+            git(&root, &["add", "--all"]);
+        }
+        let said = allowed(&stop_from(&root, "t", &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: FAIL STANDS. ") && !said.contains("Staged changes"),
+            "turn {turn}: {said}"
+        );
+    }
+}
+
+/// HR6-M-1 (b). A failing change in a linked working tree blocks once, from inside it. A stop
+/// made from the project's own directory does not look at that tree: it names the tree and
+/// says that a failure stands there, and forgets nothing, so the next stop from inside the
+/// tree does not block again. It blocked at every return. A tree that a stop finds with
+/// nothing uncommitted has no such failure left: when the failure comes back, it blocks.
+#[test]
+fn a_failure_in_a_working_tree_that_was_not_looked_at_stands() {
+    let scratch = Scratch::new("hook-linked-stands");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let linked = scratch.join("linked");
+    git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "side",
+            linked.to_str().unwrap(),
+        ],
+    );
+    start(&root, "s");
+    secret(&linked, "k.rs");
+    blocked(&stop_from(&linked, "s", &script));
+    for round in 0..3 {
+        let inside = allowed(&stop_from(&linked, "s", &script)).to_owned();
+        assert!(
+            inside.starts_with("deep-diff-forge: FAIL STANDS. "),
+            "round {round}: {inside}"
+        );
+        // from the project: the tree is not looked at, and what stands there is said
+        let outside = allowed(&stop_from(&root, "s", &script)).to_owned();
+        let named = if round == 0 {
+            outside.contains("has changes that are not committed, and the session's directory is not in it")
+                && outside.contains("A failure there has blocked a stop of this session and stands: it was not looked at at this stop.")
+        } else {
+            outside.starts_with(
+                "deep-diff-forge: 1 thing in this project is not judged: the working tree \"",
+            )
+        };
+        assert!(named, "round {round}: {outside}");
+    }
+    // the tree is cleaned while the session is elsewhere, and a stop from the project sees
+    // that: the failure is gone, so when it comes back it is new, and blocks
+    std::fs::remove_file(linked.join("k.rs")).unwrap();
+    assert_eq!(stop_from(&root, "s", &script), Value::Null);
+    secret(&linked, "k.rs");
+    blocked(&stop_from(&linked, "s", &script));
+}
+
+/// Sixth independent review of the hooks, suspected from reading: two stops of one session at
+/// the same time could write their lists and states across each other, after which the state
+/// named a list that was not in the file and every later stop was UNJUDGED. A stop holds a
+/// lock on a file beside the session's state for as long as it runs: the second waits three
+/// seconds, then says that another stop of the session is running, and judges nothing.
+#[test]
+fn two_stops_of_one_session_do_not_run_at_once() {
+    let scratch = Scratch::new("hook-one-stop");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    start(&root, "s");
+    secret(&root, "k.rs");
+    let key = commit_all(&root, "a key");
+    std::fs::write(scratch.join("judge.sleep"), "7\n").unwrap();
+    let lock = states_in(&sessions())[0].with_extension("lock");
+    let (first, second) = std::thread::scope(|scope| {
+        let slow = scope.spawn(|| {
+            home_in(&scratch);
+            stop_from(&root, "s", &script)
+        });
+        // the first stop holds the lock from before it reads its state; its judge sleeps
+        let asked = std::time::Instant::now();
+        while !lock.exists() {
+            // without the lock this never comes: the test fails then, and does not wait
+            assert!(
+                asked.elapsed() < std::time::Duration::from_secs(20),
+                "the first stop took no lock in twenty seconds"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let second = stop_from(&root, "s", &script);
+        (slow.join().unwrap(), second)
+    });
+    let waited = allowed(&second);
+    assert!(
+        waited.starts_with("deep-diff-forge: UNJUDGED. ")
+            && waited.contains("another stop of this session is running"),
+        "{waited}"
+    );
+    assert!(
+        blocked(&first).contains(&format!("Commit {key}: FAIL\n")),
+        "{first}"
+    );
+    assert_eq!(runs(&log), 1, "the second stop ran the judge");
+    // afterwards the session goes on: the failure stands, and nothing is UNJUDGED
+    std::fs::remove_file(scratch.join("judge.sleep")).unwrap();
+    assert!(
+        allowed(&stop_from(&root, "s", &script))
+            .contains(&format!("Commit {key}: FAIL, which stands\n"))
+    );
+    // a session with no state has no lock file: a stop that records nothing leaves nothing
+    let nowhere = scratch.join("nowhere");
+    std::fs::create_dir(&nowhere).unwrap();
+    assert_eq!(stop_from(&nowhere, "none", &script), Value::Null);
+    let locks = std::fs::read_dir(sessions())
+        .unwrap()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|kind| kind == "lock")
+        })
+        .count();
+    assert_eq!(locks, 1);
+}
+
+/// The rule of the hooks as a table over stops, with a judge: every kind of unit in every
+/// outcome, three stops each with nothing changed between them. A stop is silent only when
+/// the unit has a pass; a failure blocks once and then stands; what is held and what has no
+/// verdict is said at every stop; and nothing blocks twice. The unit test of the decision
+/// sees one stop of units it is handed: it cannot see which units a stop makes, or what a
+/// sequence of stops remembers and forgets (sixth independent review of the hooks, "weak
+/// tests").
+#[test]
+fn a_stop_is_silent_only_for_a_pass_at_each_of_three_stops() {
+    const SECRET: &str = "const KEY: &str = \"SECRET\";\n";
+    let scratch = Scratch::new("hook-rule-table");
+    let base = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let flaky = scratch.join("judge.flaky");
+    let outcomes: [(&str, &str, [&str; 3]); 5] = [
+        ("pass", "fn f() {}\n", ["", "", ""]),
+        ("hold", "// HOLDME\n", ["HOLD", "HOLD", "HOLD"]),
+        ("fail", SECRET, ["block", "FAIL STANDS", "FAIL STANDS"]),
+        (
+            "no verdict",
+            "// NOVERDICT\n",
+            ["UNJUDGED", "UNJUDGED", "UNJUDGED"],
+        ),
+        (
+            "no verdict once",
+            SECRET,
+            ["UNJUDGED", "block", "FAIL STANDS"],
+        ),
+    ];
+    let mut row = 0;
+    for kind in ["uncommitted", "staged", "commit"] {
+        for (outcome, text, expected) in outcomes {
+            row += 1;
+            let root = scratch.join(format!("row{row}"));
+            git(
+                scratch.path(),
+                &[
+                    "clone",
+                    "--quiet",
+                    base.to_str().unwrap(),
+                    root.to_str().unwrap(),
+                ],
+            );
+            let session = format!("row{row}");
+            start(&root, &session);
+            std::fs::write(root.join("u.rs"), text).unwrap();
+            let mut named = String::new();
+            match kind {
+                "staged" => {
+                    // the index holds it and the working tree does not: another change
+                    git(&root, &["add", "u.rs"]);
+                    std::fs::write(root.join("u.rs"), "fn other() {}\n").unwrap();
+                    named = "Staged changes in ".to_owned();
+                }
+                "commit" => named = format!("Commit {}", commit_all(&root, "the unit")),
+                _ => {}
+            }
+            if outcome == "no verdict once" {
+                std::fs::write(&flaky, "").unwrap();
+            }
+            for (stop, word) in expected.iter().enumerate() {
+                let decision = stop_from(&root, &session, &script);
+                let at = format!("{kind}, {outcome}, stop {}: {decision}", stop + 1);
+                let said = match *word {
+                    "" => {
+                        assert_eq!(decision, Value::Null, "{at}");
+                        continue;
+                    }
+                    "block" => blocked(&decision),
+                    word => {
+                        let said = allowed(&decision);
+                        assert!(said.contains(word), "{at}");
+                        said
+                    }
+                };
+                // a commit that has no verdict is named by its id alone
+                let named = if kind == "commit" && *word == "UNJUDGED" {
+                    named.trim_start_matches("Commit ")
+                } else {
+                    named.as_str()
+                };
+                assert!(said.contains(named), "{at}");
+            }
+            assert!(!flaky.exists(), "{kind}, {outcome}");
+        }
+    }
+    assert_eq!(row, 15);
 }

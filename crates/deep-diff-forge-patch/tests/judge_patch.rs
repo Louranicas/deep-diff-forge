@@ -1285,6 +1285,40 @@ fn the_staged_change_is_what_the_index_holds_not_what_the_tree_holds() {
         staged_patch(&root, "no-such-commit", &fresh(&scratch, "bad"), &options()),
         Err(JudgePatchError::NoBase)
     ));
+    // An index with unmerged paths (both sides of a conflict, as a merge that stopped leaves
+    // them) has no tree. That is said as what it is, with what to do: Git's own words for it
+    // are "error building trees" (sixth independent review of the hooks, HR6-L-5).
+    git(&root, &["checkout", "--quiet", "--force", "HEAD"]);
+    let base = text(git(&root, &["rev-parse", "HEAD"]));
+    let side = |branch: &str, body: &str| {
+        git(&root, &["checkout", "--quiet", "-B", branch, base.trim()]);
+        std::fs::write(root.join("src.rs"), body).unwrap();
+        git(&root, &["commit", "--quiet", "--all", "-m", branch]);
+        text(git(&root, &["rev-parse", "HEAD"]))
+    };
+    let (theirs, ours) = (
+        side("theirs", "fn theirs() {}\n"),
+        side("ours", "fn ours() {}\n"),
+    );
+    git(
+        &root,
+        &["read-tree", "-m", base.trim(), ours.trim(), theirs.trim()],
+    );
+    assert!(
+        text(git(&root, &["ls-files", "--unmerged"])).contains("src.rs"),
+        "the index was to hold a conflict"
+    );
+    let unmerged = staged("unmerged").unwrap_err();
+    assert!(matches!(unmerged, JudgePatchError::Unmerged), "{unmerged}");
+    assert!(
+        unmerged
+            .to_string()
+            .starts_with("the index has unmerged paths (")
+            && unmerged
+                .to_string()
+                .ends_with("resolve them and `git add` the files"),
+        "{unmerged}"
+    );
 }
 
 /// Fourth independent review of the hooks, HR4-L-1 and HR4-L-5. `worktrees` lists the working
