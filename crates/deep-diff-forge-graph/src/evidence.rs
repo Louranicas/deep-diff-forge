@@ -484,10 +484,12 @@ pub fn file_evidence(file: &ReviewFile) -> Vec<Evidence> {
     file_evidence_marked(file).0
 }
 
-/// For each item of [`file_evidence`], in its order: whether the reading every release up to
-/// 0.8.3 had finds it. A ranked file's bounded list holds those items first
+/// Not part of the API, and may change (the fuzz crate uses it). For each item of
+/// [`file_evidence`], in its order: whether the reading every release up to 0.8.3 had finds
+/// it. A ranked file's bounded list holds those items first
 /// ([`crate::RankedFile`]), so it never lists fewer of them than 0.8.3 listed; the
 /// `evidence_scan` fuzz target holds that with this.
+#[doc(hidden)]
 #[must_use]
 pub fn file_evidence_released(file: &ReviewFile) -> Vec<bool> {
     file_evidence_marked(file).1
@@ -534,10 +536,16 @@ pub(crate) fn file_evidence_marked(file: &ReviewFile) -> (Vec<Evidence>, Vec<boo
 /// of one [`HunkLabels`], which reads them once.
 #[must_use]
 pub fn hunk_signals(file: &ReviewFile, hunk: &PatchHunk) -> Vec<EvidenceSignal> {
-    if let Some(index) = file.patch_twin.hunks.iter().position(|h| h.id == hunk.id) {
+    // The file's own hunk: the one given, or one that is its equal. A hunk of some other
+    // making that only shares an id is read alone, as every release up to 0.8.3 read any hunk.
+    let hunks = &file.patch_twin.hunks;
+    let own = hunks
+        .iter()
+        .position(|h| std::ptr::eq(h, hunk))
+        .or_else(|| hunks.iter().position(|h| h.id == hunk.id && h == hunk));
+    if let Some(index) = own {
         return HunkLabels::new(file).of(index);
     }
-    // Not a hunk of this file's list: read alone.
     let kind = FileKind::of(file);
     let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
     distinct(&hunk_matches(hunk, kind.language, &rules))
@@ -549,13 +557,6 @@ fn distinct(found: &[(Side, EvidenceSignal, u32)]) -> Vec<EvidenceSignal> {
         .into_iter()
         .filter(|signal| found.iter().any(|(_, s, _)| s == signal))
         .collect()
-}
-
-/// What a run of hunks has left open on each side, for the hunk that goes on from it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct Carry {
-    old: Carried,
-    new: Carried,
 }
 
 /// Where a hunk stands in the old file, as two counts of lines: how many lines of the file are
@@ -612,70 +613,131 @@ fn ends_file(hunk: &PatchHunk) -> bool {
         .is_some_and(|line| line.kind != PatchLineKind::Context)
 }
 
-/// What a hunk comes into from the hunks it goes on from: what its run has open on each side
-/// (`continues`), and, for a hunk Git appends, what the end of the file has open (`appended`).
+/// How many states of its new side a hunk passes on, at most, and so how many readings a
+/// hunk is given on that side beside those that start it as code.
+const ENDS: usize = 4;
+
+/// What a hunk comes into from the hunks it goes on from. On the old side, what the hunk
+/// before left open, when this one goes on from it by the numbers (`continues`). On the new
+/// side, up to [`ENDS`] states without repeats: each state the hunk before can end in, when
+/// this one goes on from it by the numbers, and each state the hunk at the end of the file
+/// can end in, when Git appends this one (`appended`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct Entering {
-    run: Carry,
-    end: Carried,
+    old: Carried,
+    new: [Carried; ENDS],
+    len: usize,
+    /// Which of `new` the hunk before passed on as the reading of its run by the numbers.
+    by_numbers: Option<usize>,
+    /// Which of `new` the end of the file passed on as its own reading.
+    at_end: Option<usize>,
+}
+
+impl Entering {
+    /// Where `state` stands in `new`, added if it is not there and there is room.
+    fn give(&mut self, state: Carried) -> Option<usize> {
+        if let Some(at) = self.new[..self.len].iter().position(|s| *s == state) {
+            return Some(at);
+        }
+        (self.len < ENDS).then(|| {
+            self.new[self.len] = state;
+            self.len += 1;
+            self.len - 1
+        })
+    }
+}
+
+/// What a hunk leaves open for a hunk that goes on from it: the state of its old side by the
+/// numbers, and the states its new side can end in under the readings it was given, at most
+/// [`ENDS`]. The first is the reading of its run by the numbers (from code, when the hunk
+/// begins a run), the second the reading of the end of the file (the first again, for a hunk
+/// Git does not append); then what the other readings it was given end in, without repeats.
+/// A hunk that goes on from this one takes them all, whichever way it goes on: a hunk can be
+/// in a run by the numbers and appended at once, and what it ends in must not depend on which
+/// of the two the next hunk follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Ends {
+    old: Carried,
+    new: [Carried; ENDS],
+    len: usize,
+    /// The first state is only the hunk's reading from code: the hunk was appended and did
+    /// not go on by the numbers. An appended hunk after it does not take that one (the end of
+    /// the file was something, and the hunk was read from it).
+    own_first: bool,
 }
 
 /// The end of the file, as far as the hunks read so far say: the new side after the last hunk
 /// that must stand there (`ends_file`).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 enum FileEnd {
     /// No hunk so far stands at the end of the file.
+    #[default]
     Unknown,
-    /// Hunk `.0` stands there and came into its new side with `.1` open; what it leaves open is
-    /// not read until an appended hunk asks.
-    After(usize, Carried),
+    /// Hunk `.0` stands there and came into `.1`; what it leaves open is not read until an
+    /// appended hunk asks.
+    After(usize, Entering),
     /// What is open there.
-    Open(Carried),
+    Open(Ends),
 }
 
-/// The signals of a file's hunks, asked one hunk at a time, in any order.
-///
-/// A hunk that goes on from another, with no line of the file between them, is read once more
-/// from what that one left open. Two things can stand before a hunk with no unseen line
-/// between. By the numbers, the hunk before it in the patch (`continues`). And for a hunk Git
-/// appends (`appended`), the last earlier hunk that stands at the end of the file (`ends_file`),
-/// whatever the numbers say. Each gives one further reading of the hunk, beside the readings
-/// that start it as code.
-///
-/// What each hunk comes into is worked out once for the file, in file order, as far as the
-/// hunk asked for, and kept: a table of the hunks that come into something open. So, counting
-/// the lines whose text is read:
-///
-/// - A hunk that goes on from no other costs its own lines, whatever the size of its file and
-///   whatever else was asked. In a patch `git diff` wrote with context that is every hunk.
-/// - The first hunk asked for that goes on from another costs its own lines and, once, the
-///   lines of the hunks before it that another hunk goes on from: at most the file before it.
-/// - Every hunk of the file, in any order, costs each hunk's own lines once for each time it
-///   is asked for, and the lines of the hunks another goes on from once more, for the table: at
-///   most twice the file's lines and a third time its new side, however long its runs are and
-///   whatever the order. Never a run's lines once for each of its hunks.
-///
-/// (Beside the text read, placing a hunk looks at the line kinds and the header numbers of it
-/// and its neighbours, and the table keeps one entry for each hunk that comes into something
-/// open.)
-pub struct HunkLabels<'a> {
-    file: &'a ReviewFile,
-    kind: FileKind,
-    rules: Vec<&'static Rule>,
-    /// The hunks before `next` that come into something open, in file order, with what it is.
-    open: Vec<(usize, Entering)>,
-    /// The first hunk the table has not come to.
+/// Where the reading of a file's hunks in file order stands: one hunk's worth of state,
+/// whatever the number of hunks.
+#[derive(Debug, Default)]
+struct Pass {
+    /// The first hunk not come to.
     next: usize,
     /// What the hunk before `next` came into (it is read only when a later hunk needs what
     /// it leaves open).
     came: Entering,
     /// The end of the file as the hunks before the one before `next` leave it.
     end: FileEnd,
+}
+
+/// The signals of a file's hunks, asked one hunk at a time.
+///
+/// A hunk that goes on from another, with no line of the file between them, is read once more
+/// from what that one left open. Two things can stand before a hunk with no unseen line
+/// between. By the numbers, the hunk before it in the patch (`continues`). And for a hunk Git
+/// appends (`appended`), the last earlier hunk that stands at the end of the file (`ends_file`),
+/// whatever the numbers say. Each gives further readings of the hunk, beside the readings
+/// that start it as code: one for each state the hunk it goes on from can end in, at most
+/// four in all.
+///
+/// What a hunk comes into is worked out by going through the file's hunks in file order. What
+/// that costs, in lines whose text is read and in what is kept:
+///
+/// - A hunk that goes on from no other costs its own lines and keeps nothing, whatever the
+///   size of its file and whatever else was asked. In a patch `git diff` wrote with context
+///   that is every hunk.
+/// - Hunks asked for in file order ([`Self::new`]: the rank, the outline, a listing by path)
+///   cost each hunk's own lines and, once more, the lines of the hunks another goes on from.
+///   One hunk's worth of state is kept, however many hunks the file has: no table.
+/// - Hunks asked for in any other order are named first ([`Self::naming`]: a listing by
+///   address). The file is gone through once, as far as the last hunk named, and the labels
+///   of the named hunks that go on from another are kept: eight bytes for each, so what is
+///   kept follows the selection and not the file. Each is then answered from what is kept.
+/// - A hunk behind the place the reading has come to that was not named is answered by
+///   going through the file again from its top: right, and as slow as that says.
+///
+/// (Beside the text read, placing a hunk looks at the line kinds and the header numbers of it
+/// and its neighbours.)
+pub struct HunkLabels<'a> {
+    file: &'a ReviewFile,
+    kind: FileKind,
+    rules: Vec<&'static Rule>,
+    /// The hunks named to be asked for in any order, ascending.
+    named: Vec<u32>,
+    /// The named hunks that go on from another and that the reading has come to, ascending,
+    /// each with its labels as bits in [`EvidenceSignal::ALL`] order.
+    labels: Vec<(u32, u16)>,
+    /// Where the reading in file order stands, while it is under way.
+    pass: Option<Box<Pass>>,
     /// The lines whose text was read so far, counted each time one was.
     lines_read: usize,
 }
 
 impl<'a> HunkLabels<'a> {
+    /// A reader for hunks asked for in file order.
     #[must_use]
     pub fn new(file: &'a ReviewFile) -> Self {
         let kind = FileKind::of(file);
@@ -683,15 +745,31 @@ impl<'a> HunkLabels<'a> {
         Self::with(file, kind, rules)
     }
 
+    /// A reader for the hunks `asked`, given in the order they will be asked for. In file
+    /// order this is [`Self::new`]; in any other order the labels of these hunks are kept as
+    /// the file is gone through, so each is answered without going through it again.
+    #[must_use]
+    pub fn naming(file: &'a ReviewFile, asked: &[usize]) -> Self {
+        let mut labels = Self::new(file);
+        if !asked.is_sorted_by(|a, b| a < b) {
+            labels.named = asked
+                .iter()
+                .filter_map(|&index| u32::try_from(index).ok())
+                .collect();
+            labels.named.sort_unstable();
+            labels.named.dedup();
+        }
+        labels
+    }
+
     fn with(file: &'a ReviewFile, kind: FileKind, rules: Vec<&'static Rule>) -> Self {
         Self {
             file,
             kind,
             rules,
-            open: Vec::new(),
-            next: 0,
-            came: Entering::default(),
-            end: FileEnd::Unknown,
+            named: Vec::new(),
+            labels: Vec::new(),
+            pass: None,
             lines_read: 0,
         }
     }
@@ -700,6 +778,14 @@ impl<'a> HunkLabels<'a> {
     /// [`hunk_signals`] for that hunk.
     #[must_use]
     pub fn of(&mut self, index: usize) -> Vec<EvidenceSignal> {
+        if let Some(bits) = self.kept_labels(index) {
+            return EvidenceSignal::ALL
+                .into_iter()
+                .enumerate()
+                .filter(|(bit, _)| bits & (1 << bit) != 0)
+                .map(|(_, signal)| signal)
+                .collect();
+        }
         let found: Vec<_> = self
             .matches(index)
             .into_iter()
@@ -708,126 +794,227 @@ impl<'a> HunkLabels<'a> {
         distinct(&found)
     }
 
-    /// The findings of hunk `index`: [`hunk_matches`], and for a hunk that goes on from another
-    /// also what the reading carried into it finds (which is never a released finding).
-    fn matches(&mut self, index: usize) -> Vec<Item> {
-        let file = self.file;
-        let hunks = &file.patch_twin.hunks;
-        let Some(hunk) = hunks.get(index) else {
-            return Vec::new();
-        };
-        if self.rules.is_empty() {
-            return Vec::new();
-        }
-        // Only a hunk that goes on from another can come into something open, and only it
-        // needs the table.
-        let goes_on =
-            (index > 0 && continues(file, &hunks[index - 1], hunk)) || appended(file, hunk);
-        let entering = if goes_on { self.entering(index) } else { None };
-        // A reading that comes in with nothing open is the reading that starts as code.
-        let mut run = entering
-            .map(|entering| entering.run)
-            .filter(|run| *run != Carry::default());
-        let mut end = entering
-            .map(|entering| entering.end)
-            .filter(|end| *end != Carried::default());
-        self.lines_read += hunk.lines.len();
-        scan_hunk(
-            hunk,
-            self.kind.language,
-            &self.rules,
-            code_views,
-            run.as_mut(),
-            end.as_mut(),
-        )
-    }
-
-    /// The lines whose text was read so far, counted each time one was: what the requests so
-    /// far have cost. The tests that hold the costs above count with it.
+    /// Not part of the API, and may change: the lines whose text was read so far, counted
+    /// each time one was. The tests that hold what a request costs count with it.
+    #[doc(hidden)]
     #[must_use]
     pub const fn lines_read(&self) -> usize {
         self.lines_read
     }
 
-    /// What hunk `index` comes into, when something is open there: from the table, which is
-    /// first brought as far as that hunk.
-    fn entering(&mut self, index: usize) -> Option<Entering> {
-        let language = self.kind.language?;
-        while self.next <= index {
-            self.step(language);
-        }
-        self.open
-            .binary_search_by_key(&index, |&(at, _)| at)
-            .ok()
-            .map(|found| self.open[found].1)
+    /// Not part of the API, and may change: how many entries are kept now, the labels of
+    /// named hunks and the one state of the reading in file order while it is under way.
+    /// The tests that hold what a reader keeps count with it.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn entries_kept(&self) -> usize {
+        self.labels.len() + usize::from(self.pass.is_some())
     }
 
-    /// Brings the table one hunk on: reads the hunk before `next` where `next` or a later hunk
-    /// goes on from it, and notes what hunk `next` comes into.
-    fn step(&mut self, language: Language) {
+    /// The labels kept for hunk `index`, when it is a named hunk the reading has come to.
+    fn kept_labels(&self, index: usize) -> Option<u16> {
+        let index = u32::try_from(index).ok()?;
+        let at = self.labels.binary_search_by_key(&index, |&(hunk, _)| hunk);
+        at.ok().map(|at| self.labels[at].1)
+    }
+
+    /// Whether hunk `index` is one of the hunks named to be asked for in any order.
+    fn is_named(&self, index: usize) -> bool {
+        u32::try_from(index).is_ok_and(|index| self.named.binary_search(&index).is_ok())
+    }
+
+    /// Whether hunk `index` goes on from another hunk. Only such a hunk can come into
+    /// something open, and only for it the file is gone through.
+    fn goes_on(&self, index: usize) -> bool {
+        let hunks = &self.file.patch_twin.hunks;
+        self.kind.language.is_some()
+            && ((index > 0 && continues(self.file, &hunks[index - 1], &hunks[index]))
+                || appended(self.file, &hunks[index]))
+    }
+
+    /// The findings of hunk `index`: [`hunk_matches`], and for a hunk that goes on from another
+    /// also what the readings carried into it find (which is never a released finding).
+    fn matches(&mut self, index: usize) -> Vec<Item> {
+        if index >= self.file.patch_twin.hunks.len() || self.rules.is_empty() {
+            return Vec::new();
+        }
+        let entering = match self.kind.language {
+            Some(language) if self.goes_on(index) => self.entering(index, language),
+            _ => Entering::default(),
+        };
+        let found = self.scan(index, &entering);
+        self.keep(index, &found);
+        // Every named hunk is answered from what is kept now: the reading is done with.
+        let last_named = self.named.last().map(|&last| usize::try_from(last));
+        if matches!(last_named, Some(Ok(last)) if last <= index)
+            && self.pass.as_ref().is_some_and(|pass| pass.next > index)
+        {
+            self.pass = None;
+        }
+        found
+    }
+
+    /// The scan of hunk `index`, which came into `entering`.
+    fn scan(&mut self, index: usize, entering: &Entering) -> Vec<Item> {
+        let hunk = &self.file.patch_twin.hunks[index];
+        // A reading that comes in with nothing open is the reading that starts as code.
+        let open = |state: &&Carried| **state != Carried::default();
+        let old = Some(entering.old).filter(|state| open(&state));
+        let new: Vec<Carried> = entering.new[..entering.len]
+            .iter()
+            .filter(open)
+            .copied()
+            .collect();
+        self.lines_read += hunk.lines.len();
+        scan_hunk(hunk, self.kind.language, &self.rules, code_views, old, &new)
+    }
+
+    /// Keeps the labels of hunk `index`, when it is a named hunk that goes on from another.
+    fn keep(&mut self, index: usize, found: &[Item]) {
+        if !self.is_named(index) || !self.goes_on(index) || self.kept_labels(index).is_some() {
+            return;
+        }
+        let Ok(hunk) = u32::try_from(index) else {
+            return;
+        };
+        let bits = EvidenceSignal::ALL
+            .into_iter()
+            .enumerate()
+            .filter(|(_, signal)| found.iter().any(|(_, s, _, _)| s == signal))
+            .fold(0u16, |bits, (bit, _)| bits | (1 << bit));
+        let at = self.labels.partition_point(|&(kept, _)| kept < hunk);
+        self.labels.insert(at, (hunk, bits));
+    }
+
+    /// What hunk `index` comes into: the reading in file order is brought as far as that
+    /// hunk (from the top of the file again, when it had gone past it), and the labels of the
+    /// named hunks it passes on the way are kept.
+    fn entering(&mut self, index: usize, language: Language) -> Entering {
+        let mut pass = self
+            .pass
+            .take()
+            .filter(|pass| pass.next <= index + 1)
+            .unwrap_or_default();
+        while pass.next <= index {
+            self.step(&mut pass, language);
+            let at = pass.next - 1;
+            // A named hunk on the way that goes on from another: its labels are kept now,
+            // while what it comes into is at hand.
+            let wanted = at < index && self.is_named(at) && self.goes_on(at);
+            if wanted && self.kept_labels(at).is_none() {
+                let found = self.scan(at, &pass.came);
+                self.keep(at, &found);
+            }
+        }
+        let came = pass.came;
+        self.pass = Some(pass);
+        came
+    }
+
+    /// Brings the reading one hunk on: reads the hunk before `next` where `next` goes on from
+    /// it, and notes what hunk `next` comes into.
+    fn step(&mut self, pass: &mut Pass, language: Language) {
         let file = self.file;
         let hunks = &file.patch_twin.hunks;
-        let at = self.next;
+        let at = pass.next;
         let hunk = &hunks[at];
-        self.next += 1;
-        let mut run = Carry::default();
+        pass.next += 1;
+        let mut before = None;
         if at > 0 {
-            let (before, came) = (&hunks[at - 1], self.came);
-            let goes_on = continues(file, before, hunk);
+            let goes_on = continues(file, &hunks[at - 1], hunk);
             if goes_on {
-                run = came.run;
-                for line in &before.lines {
-                    if line.kind != PatchLineKind::Added {
-                        let _ = carried_view(language, &line.text, &mut run.old);
-                    }
-                    if line.kind != PatchLineKind::Removed {
-                        let _ = carried_view(language, &line.text, &mut run.new);
-                    }
-                }
-                self.lines_read += before.lines.len();
+                before = Some(self.leave(at - 1, &pass.came, true, language));
             }
-            if ends_file(before) {
-                // What the end of the file has open after that hunk: as an appended hunk
-                // leaves it, or else as the hunk's run does.
-                self.end = if appended(file, before) {
-                    FileEnd::After(at - 1, came.end)
-                } else if goes_on {
-                    FileEnd::Open(run.new)
-                } else {
-                    FileEnd::After(at - 1, came.run.new)
-                };
+            if ends_file(&hunks[at - 1]) {
+                pass.end = before.map_or(FileEnd::After(at - 1, pass.came), FileEnd::Open);
             }
         }
-        let end = if appended(file, hunk) {
-            self.end_open(language)
-        } else {
-            Carried::default()
-        };
-        self.came = Entering { run, end };
-        if self.came != Entering::default() {
-            self.open.push((at, self.came));
+        // What the end of the file can be in, for a hunk Git appends: nothing open, when no
+        // earlier hunk stands there.
+        let end = appended(file, hunk).then(|| match pass.end {
+            FileEnd::Unknown => None,
+            FileEnd::Open(ends) => Some(ends),
+            FileEnd::After(standing, came) => {
+                let ends = self.leave(standing, &came, false, language);
+                pass.end = FileEnd::Open(ends);
+                Some(ends)
+            }
+        });
+        // The two readings a hunk had before it could be given more: the run's by the
+        // numbers and the end of the file's own. They come first and always have room.
+        let mut entering = Entering::default();
+        if let Some(before) = before {
+            entering.old = before.old;
+            entering.by_numbers = entering.give(before.new[0]);
         }
+        if let Some(end) = end {
+            entering.at_end = entering.give(end.map_or(Carried::default(), |ends| ends.new[1]));
+        }
+        if let Some(before) = before {
+            for state in &before.new[1..before.len] {
+                let _ = entering.give(*state);
+            }
+        }
+        if let Some(Some(ends)) = end {
+            for state in &ends.new[usize::from(ends.own_first)..ends.len] {
+                let _ = entering.give(*state);
+            }
+        }
+        pass.came = entering;
     }
 
-    /// What the new side has open at the end of the file, as far as the table has come: after
-    /// the last hunk so far that stands there. Nothing, when none does. That hunk is read
-    /// here, once, if it was not read for its run.
-    fn end_open(&mut self, language: Language) -> Carried {
-        match self.end {
-            FileEnd::Unknown => Carried::default(),
-            FileEnd::Open(state) => state,
-            FileEnd::After(at, mut state) => {
-                let lines = &self.file.patch_twin.hunks[at].lines;
-                for line in lines {
-                    if line.kind != PatchLineKind::Removed {
-                        let _ = carried_view(language, &line.text, &mut state);
-                    }
+    /// What hunk `index`, which came into `came`, leaves open: its lines read once from each
+    /// state it was given. `by_numbers`: for a hunk that goes on from it by the numbers, which
+    /// takes the hunk's reading from code where the hunk was given none by the numbers; a
+    /// hunk Git appends after it takes that one only when the hunk was given nothing at all.
+    fn leave(
+        &mut self,
+        index: usize,
+        came: &Entering,
+        by_numbers: bool,
+        language: Language,
+    ) -> Ends {
+        let hunk = &self.file.patch_twin.hunks[index];
+        let (mut old, mut new, mut own) = (came.old, came.new, Carried::default());
+        let from_code = came.by_numbers.is_none() && (by_numbers || came.at_end.is_none());
+        for line in &hunk.lines {
+            if line.kind != PatchLineKind::Added {
+                let _ = carried_view(language, &line.text, &mut old);
+            }
+            if line.kind != PatchLineKind::Removed {
+                for state in &mut new[..came.len] {
+                    let _ = carried_view(language, &line.text, state);
                 }
-                self.lines_read += lines.len();
-                self.end = FileEnd::Open(state);
-                state
+                if from_code {
+                    let _ = carried_view(language, &line.text, &mut own);
+                }
             }
         }
+        self.lines_read += hunk.lines.len();
+        let end_reading = came.at_end.map(|at| new[at]);
+        let first = came.by_numbers.map_or(own, |at| new[at]);
+        let first = if from_code || came.by_numbers.is_some() {
+            first
+        } else {
+            // Not read from code, and not asked for: an appended hunk after this one does not
+            // take the first state (`own_first`).
+            end_reading.unwrap_or_default()
+        };
+        let mut ends = Ends {
+            old,
+            new: [Carried::default(); ENDS],
+            len: 2,
+            own_first: came.at_end.is_some() && came.by_numbers.is_none(),
+        };
+        ends.new[0] = first;
+        ends.new[1] = end_reading.unwrap_or(first);
+        for state in &new[..came.len] {
+            if ends.len < ENDS && !ends.new[..ends.len].contains(state) {
+                ends.new[ends.len] = *state;
+                ends.len += 1;
+            }
+        }
+        ends
     }
 }
 
@@ -856,53 +1043,35 @@ fn hunk_matches_in(
     rules: &[&Rule],
     views_of: fn(Language, &str, &mut Readings) -> Vec<String>,
 ) -> Vec<(Side, EvidenceSignal, u32)> {
-    scan_hunk(hunk, language, rules, views_of, None, None)
+    scan_hunk(hunk, language, rules, views_of, None, &[])
         .into_iter()
         .map(|(side, signal, line, _)| (side, signal, line))
         .collect()
 }
 
-/// The scan of one hunk. With `carry`, the hunk is one of a run ([`continues`]): each line is
-/// also read from what the run had left open on its side, as a further reading beside those
-/// that start the hunk as code (which are asked as always, so nothing they find is lost), and
-/// `carry` is left as the run stands after this hunk. With `end`, the hunk is one Git appends
-/// ([`appended`]): its lines are read as well from what the end of the file had open, and `end`
-/// is left as the end of the file stands after it. A further reading is asked only where it
-/// came into the hunk with something open; from nothing open it is the reading that starts as
-/// code. Each finding says whether the reading every release up to 0.8.3 had finds it: the
-/// first of the line's views, or a rule that reads the line as it is. What only the lexer
-/// reading or a carried reading finds is a further finding.
+/// The scan of one hunk. `old` and `new` are the readings carried into it from the hunks it goes
+/// on from (`continues`, `appended`), those that come in with something open: each line is
+/// also read from each of them on its side, as a further reading beside those that start the
+/// hunk as code (which are asked as always, so nothing they find is lost). A reading that
+/// comes in with nothing open is the reading that starts as code, and is not passed here.
+/// Each finding says whether the reading every release up to 0.8.3 had finds it: the first of
+/// the line's views, or a rule that reads the line as it is. What only the lexer reading or a
+/// carried reading finds is a further finding. The views of a line are dropped with the line.
 fn scan_hunk(
     hunk: &PatchHunk,
     language: Option<Language>,
     rules: &[&Rule],
     views_of: fn(Language, &str, &mut Readings) -> Vec<String>,
-    mut carry: Option<&mut Carry>,
-    mut end: Option<&mut Carried>,
+    old: Option<Carried>,
+    new: &[Carried],
 ) -> Vec<Item> {
-    let open = carry.as_deref().copied().unwrap_or_default();
-    let (old_open, new_open) = (
-        open.old != Carried::default(),
-        open.new != Carried::default(),
-    );
-    let end_open = end.as_deref().is_some_and(|end| *end != Carried::default());
-    // The views of a line on one side: the readings from code, and each carried one when it
-    // can differ from them.
+    let mut old: Vec<Carried> = old.into_iter().collect();
+    let mut new: Vec<Carried> = new.to_vec();
+    // The views of a line on one side: the readings from code, and each carried one.
     let mut carried = |language: Language, text: &str, new_side: bool, views: &mut Vec<String>| {
-        if let Some(carry) = carry.as_deref_mut() {
-            let (state, asked) = if new_side {
-                (&mut carry.new, new_open)
-            } else {
-                (&mut carry.old, old_open)
-            };
+        for state in if new_side { &mut new } else { &mut old } {
             let view = carried_view(language, text, state);
-            if asked && !views.contains(&view) {
-                views.push(view);
-            }
-        }
-        if new_side && let Some(end) = end.as_deref_mut() {
-            let view = carried_view(language, text, end);
-            if end_open && !views.contains(&view) {
+            if !views.contains(&view) {
                 views.push(view);
             }
         }
@@ -2377,7 +2546,7 @@ mod tests {
         assert_eq!(items(&with_context), items_of_hunks_alone(&with_context));
     }
 
-    /// Stated, not closed (second independent review 2026-11-15, LF2-M-2): a hunk of added
+    /// Stated, not closed: a hunk of added
     /// lines only below a hunk that ends in a context line. Whether that line is the last of
     /// the file is something the patch does not show. Where it is, Git 2.56.0 appends the
     /// added hunk below it whatever its number says (`@@ -9,0 +9,1 @@` on a file of three
@@ -2398,6 +2567,170 @@ mod tests {
             [],
             "a stated limit, if this is found now"
         );
+    }
+
+    /// A hunk can go on from the hunk before it by the numbers and be appended by Git at
+    /// once, and what it ends in is passed on whichever way the next hunk goes on from it.
+    /// Three hunks on a file of three lines: the first adds `/*` above the last line, shown as
+    /// context; the second, with its true number, adds a line below it (it goes on from the
+    /// first by the numbers, and is a hunk Git appends); the third closes the comment before
+    /// a spawn. With a false number the third is appended by Git below the second (2.56.0:
+    /// applied cleanly, and the file runs the spawn), so it goes on from what the second ends
+    /// in, which is the comment the first opened: found. (A reader that passed on to an
+    /// appended hunk only what the second ended in as an appended hunk itself, from code,
+    /// found nothing: score 7, as 0.8.3.) With the true number, and with the last two hunks
+    /// written as one, it was found before and is found.
+    #[test]
+    fn a_hunk_in_a_run_and_appended_passes_on_what_either_way_ends_in() {
+        let first = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -2,2 +2,3 @@\n pub fn two() -> u32 { 2 }\n\
+                     +/*\n pub fn three() -> u32 { 3 }\n";
+        let evil = "+// */ pub fn evil() { std::process::Command::new(\"sh\").status().ok(); }\n";
+        for third in ["@@ -9,0 +6,1 @@\n", "@@ -3,0 +6,1 @@\n", ""] {
+            let patch = if third.is_empty() {
+                format!("{first}@@ -3,0 +5,2 @@\n+still a comment\n{evil}")
+            } else {
+                format!("{first}@@ -3,0 +5,1 @@\n+still a comment\n{third}{evil}")
+            };
+            assert_eq!(items(&patch), [(S::ProcessSpawn, Side::New, 6)], "{patch}");
+        }
+        // The other way round: the second hunk is appended with a false number (so it does
+        // not go on from the first, whose last line is a context line, and starts as code,
+        // where it opens a comment of its own); the third has the number that follows the
+        // second's and goes on from it by the numbers.
+        let own = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -40,0 +41,1 @@\n+/*\n@@ -40,0 +42,1 @@\n";
+        assert_eq!(
+            items(&format!("{own}{evil}")),
+            [(S::ProcessSpawn, Side::New, 42)]
+        );
+    }
+
+    /// Runs that mix the two ways of going on, generated: a file that exists, a first hunk
+    /// that shows the file's last line as context, then hunks of added lines only, the first
+    /// of them with its true number (it goes on from the first hunk by the numbers) and each
+    /// later one with its true number or a false one, at random. Plain Git puts every one of
+    /// them at the end of the file as it then is, in patch order, so the file Git builds has
+    /// the added lines as one text. Every item the lexer reading finds in that text, written
+    /// as one hunk, is found in the hunks, and no hunk has fewer items than read alone.
+    #[test]
+    fn runs_that_mix_numbers_and_appending_find_what_the_one_text_has() {
+        use std::fmt::Write as _;
+        const ATOMS: [&str; 12] = [
+            "unsafe { g() }",
+            "std::process::Command::new(\"sh\")",
+            "/*",
+            "*/",
+            "// */ unsafe { g() }",
+            "\"",
+            "\"; unsafe { g() }",
+            "r#\"",
+            "\"#; std::process::Command::new(\"sh\")",
+            "x",
+            "/* /* */",
+            "// */",
+        ];
+        let mut seed = 0x1234_5678_9ABC_DEF1_u64;
+        let mut next = move |below: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % (below as u64)).unwrap()
+        };
+        let (mut mixed, mut carried_only) = (0, 0);
+        for _ in 0..3000 {
+            let lines: Vec<String> = (0..2 + next(7))
+                .map(|_| {
+                    (0..=next(2))
+                        .map(|_| ATOMS[next(ATOMS.len())])
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect();
+            let head = "--- a/src/x.rs\n+++ b/src/x.rs\n";
+            // Old lines 8 and 9, the last of the file; an added line between them.
+            let mut text = format!(
+                "@@ -8,2 +8,3 @@\n fn a() {{}}\n+{}\n fn z() {{}}\n",
+                lines[0]
+            );
+            let mut one = text.replace("+8,3", &format!("+8,{}", lines.len() + 2));
+            let (mut at, mut falsely) = (1, false);
+            while at < lines.len() {
+                let take = 1 + next(lines.len() - at);
+                // The first added-only hunk has its true number; a later one may not.
+                let old = if at > 1 && next(2) == 0 {
+                    20 + next(50)
+                } else {
+                    9
+                };
+                falsely |= old != 9;
+                let _ = writeln!(text, "@@ -{old},0 +{},{take} @@", at + 10);
+                for line in &lines[at..at + take] {
+                    let _ = writeln!(text, "+{line}");
+                    let _ = writeln!(one, "+{line}");
+                }
+                at += take;
+            }
+            let file = parse(&format!("{head}{text}")).unwrap().remove(0);
+            let _ = hunks_with_more_than_alone(&file, &text);
+            mixed += usize::from(falsely && file.patch_twin.hunks.len() > 2);
+            let found = file_evidence(&file);
+            let one = parse(&format!("{head}{one}")).unwrap().remove(0);
+            let kind = FileKind::of(&one);
+            let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
+            let hunk = &one.patch_twin.hunks[0];
+            // What the hunks find when each is read alone, to count what only going on finds.
+            let alone: Vec<_> = file
+                .patch_twin
+                .hunks
+                .iter()
+                .flat_map(|hunk| hunk_matches(hunk, kind.language, &rules))
+                .collect();
+            for item in hunk_matches_in(hunk, kind.language, &rules, lexer_alone) {
+                let (side, signal, line) = item;
+                assert!(
+                    found.iter().any(|e| (e.side, e.signal, e.line) == item),
+                    "as one text {signal:?} is on {side:?} line {line}:\n{text}"
+                );
+                carried_only += usize::from(!alone.contains(&item));
+            }
+        }
+        assert!(
+            mixed > 800 && carried_only > 300,
+            "{mixed} mixed runs, {carried_only} items only going on finds"
+        );
+    }
+
+    /// `hunk_signals` answers for the hunk it is given. For a hunk of the file's own list it
+    /// is the label of that hunk in its run. A hunk that only shares an id with one of the
+    /// file's (built by hand, or from another parse) is read alone, as every release up to
+    /// 0.8.3 read any hunk: it does not get the labels of the file's hunk.
+    #[test]
+    fn hunk_signals_answers_for_the_hunk_it_is_given() {
+        let spawn = "std::process::Command::new(\"sh\");";
+        let file = parse(&format!(
+            "--- /dev/null\n+++ b/src/x.rs\n@@ -0,0 +1,1 @@\n+/*\n@@ -0,0 +2,1 @@\n+// */ {spawn}\n"
+        ))
+        .unwrap()
+        .remove(0);
+        let hunks = &file.patch_twin.hunks;
+        assert_eq!(hunk_signals(&file, &hunks[1]), [S::ProcessSpawn]);
+        assert_eq!(hunk_signals(&file, &hunks[1].clone()), [S::ProcessSpawn]);
+        // Another hunk under the second hunk's id: a spawn in plain sight, and one behind a
+        // line comment.
+        let other = parse(&format!(
+            "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1,0 +2,1 @@\n+{spawn}\n@@ -5,0 +7,1 @@\n+// {spawn}\n"
+        ))
+        .unwrap()
+        .remove(0);
+        for (hunk, labels) in [(0, vec![S::ProcessSpawn]), (1, vec![])] {
+            let mut given = other.patch_twin.hunks[hunk].clone();
+            given.id = hunks[1].id;
+            assert_eq!(hunk_signals(&file, &given), labels, "hunk {hunk}");
+        }
+        // The first of them under the first hunk's id: the file's first hunk has no label.
+        let mut given = other.patch_twin.hunks[0].clone();
+        given.id = hunks[0].id;
+        assert_eq!(hunk_signals(&file, &given), [S::ProcessSpawn]);
+        assert_eq!(hunk_signals(&file, &hunks[0]), []);
     }
 
     /// The items of a patch's one file when each hunk is read alone, as before hunks were
@@ -2646,20 +2979,29 @@ mod tests {
             let labels = distinct(&of_file(&hunks[index]));
             assert_eq!(backwards.of(index), labels, "backwards:\n{text}");
         }
-        // In any order, a hunk more than once: three asks for each hunk, drawn at random.
+        // In any order, a hunk more than once: three asks for each hunk, drawn at random, of
+        // a reader that was told the order (it keeps the labels) and of one that was not (it
+        // goes through the file again when asked for a hunk behind it).
         let mut seed = 0x9E37_79B9_7F4A_7C15_u64 ^ (text.len() as u64);
-        let mut any_order = HunkLabels::new(file);
-        for _ in 0..3 * hunks.len() {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            let index = usize::try_from(seed % (hunks.len() as u64)).unwrap();
+        let order: Vec<usize> = (0..3 * hunks.len())
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                usize::try_from(seed % (hunks.len() as u64)).unwrap()
+            })
+            .collect();
+        let mut named = HunkLabels::naming(file, &order);
+        let mut unnamed = HunkLabels::new(file);
+        for &index in &order {
             let labels = distinct(&of_file(&hunks[index]));
+            assert_eq!(named.of(index), labels, "named, hunk {index}:\n{text}");
             assert_eq!(
-                any_order.of(index),
+                unnamed.of(index),
                 labels,
                 "any order, hunk {index}:\n{text}"
             );
+            assert!(named.entries_kept() <= hunks.len() + 1, "{text}");
         }
         more
     }
@@ -2704,8 +3046,8 @@ mod tests {
 
     const RUN: usize = 2000;
 
-    /// What asking for hunks costs, counted in lines read and not by the clock (review
-    /// 2026-11-15, VLF4-M-1: a reader that read a run again from its first hunk for every hunk
+    /// What asking for hunks costs, counted in lines read and not by the clock (found in
+    /// review, 2026-11-15: a reader that read a run again from its first hunk for every hunk
     /// asked out of order made a request for the 8,000 hunks of a file by address in reverse
     /// take 6.2 s where the same hunks by path took 0.13 s, and 16,000 took a minute).
     ///
@@ -2715,6 +3057,20 @@ mod tests {
     /// from. A hunk asked again costs its own lines. One hunk alone costs no more than the file
     /// up to it. And in a file whose hunks do not touch, a hunk costs its own lines, whatever
     /// else the file holds.
+    /// Asks `file`'s hunks in `order` of one reader that was told the order. Returns the lines
+    /// read, the labels by hunk, the most entries the reader kept at any time, and how many it
+    /// keeps at the end.
+    fn ask_named(file: &ReviewFile, order: &[usize]) -> (usize, Vec<Vec<S>>, usize, usize) {
+        let mut labels = HunkLabels::naming(file, order);
+        let mut got = vec![Vec::new(); file.patch_twin.hunks.len()];
+        let mut most = 0;
+        for &index in order {
+            got[index] = labels.of(index);
+            most = most.max(labels.entries_kept());
+        }
+        (labels.lines_read(), got, most, labels.entries_kept())
+    }
+
     #[test]
     fn asking_for_the_hunks_of_a_run_costs_the_same_in_any_order() {
         const HUNKS: usize = RUN;
@@ -2729,14 +3085,6 @@ mod tests {
         }
         let in_order: Vec<usize> = (0..HUNKS).collect();
         let reversed: Vec<usize> = (0..HUNKS).rev().collect();
-        let ask = |file: &ReviewFile, order: &[usize]| {
-            let mut labels = HunkLabels::new(file);
-            let mut got = vec![Vec::new(); HUNKS];
-            for &index in order {
-                got[index] = labels.of(index);
-            }
-            (labels.lines_read(), got)
-        };
         for (name, text) in [
             ("created", &created),
             ("touching", &touching),
@@ -2747,13 +3095,23 @@ mod tests {
             assert_eq!(hunks.len(), HUNKS);
             let lines: usize = hunks.iter().map(|hunk| hunk.lines.len()).sum();
             let last = hunks[HUNKS - 1].lines.len();
-            let (cost, labels) = ask(&file, &in_order);
-            // Each hunk once, and each hunk another goes on from once more: all but the last.
+            // In file order: each hunk once, and each hunk another goes on from once more
+            // (all but the last); one entry kept, however long the run.
+            let (cost, labels, most, _) = ask_named(&file, &in_order);
             assert_eq!(cost, 2 * lines - last, "{name}: in order");
+            assert_eq!(most, 1, "{name}: in order, one entry");
+            // In any other order: the same lines; kept, the labels of the hunks named that go
+            // on from another (every hunk but the first of a run by the numbers), and while
+            // the file is gone through one entry more.
+            let joined = HUNKS - usize::from(name != "appended");
             for (order, asked) in [("reversed", &reversed), ("any order", &shuffled)] {
-                let (cost_so, labels_so) = ask(&file, asked);
+                let (cost_so, labels_so, most, kept) = ask_named(&file, asked);
                 assert_eq!(cost_so, cost, "{name}: {order}");
                 assert!(labels_so == labels, "{name}: labels differ {order}");
+                assert!(
+                    most <= joined + 1 && kept == joined,
+                    "{name}: {most} {kept}"
+                );
             }
             // The labels are the carried reading's where it finds more, and the rank's.
             assert_eq!(labels[4], [EvidenceSignal::ProcessSpawn], "{name}");
@@ -2766,20 +3124,17 @@ mod tests {
                     "{name} {index}"
                 );
             }
-            // A hunk asked again costs its own lines.
-            let mut again = HunkLabels::new(&file);
+            // A named hunk that goes on from another, asked again, is answered from what is
+            // kept: no line is read.
+            let mut again = HunkLabels::naming(&file, &reversed);
             for &index in &reversed {
                 let _ = again.of(index);
             }
-            for index in [HUNKS - 1, 4, 0, 4] {
-                let before = again.lines_read();
+            let before = again.lines_read();
+            for index in [HUNKS - 1, 4, 1, 4] {
                 assert_eq!(again.of(index), labels[index]);
-                assert_eq!(
-                    again.lines_read() - before,
-                    hunks[index].lines.len(),
-                    "{name}"
-                );
             }
+            assert_eq!(again.lines_read(), before, "{name}");
             // One hunk alone: the hunks before it once, and itself.
             let mut one = HunkLabels::new(&file);
             assert_eq!(one.of(1004), labels[1004]);
@@ -2790,19 +3145,65 @@ mod tests {
                 let mut first = HunkLabels::new(&file);
                 let _ = first.of(0);
                 assert_eq!(first.lines_read(), hunks[0].lines.len(), "{name}");
+                assert_eq!(first.entries_kept(), 0, "{name}");
             }
         }
-        // Hunks that do not touch: each costs its own lines, alone or among all.
+        // Hunks that do not touch: each costs its own lines, alone or among all, and nothing
+        // is kept for them.
         let file = parse(&apart).unwrap().remove(0);
         let hunks = &file.patch_twin.hunks;
         let lines: usize = hunks.iter().map(|hunk| hunk.lines.len()).sum();
-        let (cost, labels) = ask(&file, &reversed);
-        assert_eq!(cost, lines);
+        let (cost, labels, most, _) = ask_named(&file, &reversed);
+        assert_eq!((cost, most), (lines, 0));
         // Read alone, the line behind the closer is a comment.
         assert!(labels.iter().all(Vec::is_empty));
         let mut one = HunkLabels::new(&file);
         let _ = one.of(HUNKS - 1);
         assert_eq!(one.lines_read(), hunks[HUNKS - 1].lines.len());
+    }
+
+    /// What a reader keeps follows what it is asked for and not the file. A file the patch
+    /// creates in 3,000 one-line hunks, the first of which opens a comment that nothing
+    /// closes before the last: every hunk comes into something open. Read in file order, as
+    /// the rank and the outline read, one entry is kept, whatever the number of hunks (a
+    /// reader that kept an entry of 704 bytes for each such hunk made a ranking of 499,990
+    /// of them take 508 MB where 0.8.3 took 164 MB). Asked for ten hunks in reverse, their
+    /// ten labels are kept, of eight bytes each. And a hunk that was not named, asked for
+    /// behind the place the reading has come to, is still answered right.
+    #[test]
+    fn what_a_reader_keeps_follows_what_is_asked_and_not_the_file() {
+        use std::fmt::Write as _;
+        const HUNKS: usize = 3000;
+        let mut text = "--- /dev/null\n+++ b/src/x.rs\n@@ -0,0 +1,1 @@\n+/*\n".to_owned();
+        for hunk in 1..HUNKS - 1 {
+            let _ = write!(text, "@@ -0,0 +{},1 @@\n+x{hunk}\n", hunk + 1);
+        }
+        let _ = write!(
+            text,
+            "@@ -0,0 +{HUNKS},1 @@\n+// */ std::process::Command::new(\"sh\");\n"
+        );
+        let file = parse(&text).unwrap().remove(0);
+        assert_eq!(file.patch_twin.hunks.len(), HUNKS);
+        let in_order: Vec<usize> = (0..HUNKS).collect();
+        let (_, labels, most, kept) = ask_named(&file, &in_order);
+        assert_eq!((most, kept), (1, 1), "in file order");
+        assert_eq!(labels[HUNKS - 1], [EvidenceSignal::ProcessSpawn]);
+        assert_eq!(file_evidence(&file).len(), 1);
+        let ten: Vec<usize> = (0..10).map(|k| HUNKS - 1 - 300 * k).collect();
+        let (_, of_ten, most, kept) = ask_named(&file, &ten);
+        assert!(most <= 11 && kept == 10, "{most} {kept}");
+        assert_eq!(of_ten[HUNKS - 1], labels[HUNKS - 1]);
+        let reversed: Vec<usize> = (0..HUNKS).rev().collect();
+        let (_, of_all, most, kept) = ask_named(&file, &reversed);
+        assert!(of_all == labels && most <= HUNKS && kept == HUNKS - 1);
+        assert_eq!(std::mem::size_of::<(u32, u16)>(), 8);
+        // Not named and behind the reading: the file is gone through again, and the answer
+        // is the same.
+        let mut unnamed = HunkLabels::new(&file);
+        assert_eq!(unnamed.of(HUNKS - 1), labels[HUNKS - 1]);
+        assert_eq!(unnamed.of(7), labels[7]);
+        assert_eq!(unnamed.of(HUNKS - 1), labels[HUNKS - 1]);
+        assert_eq!(unnamed.entries_kept(), 1);
     }
 
     #[test]

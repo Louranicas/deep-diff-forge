@@ -411,14 +411,18 @@ pub fn outline(review: &SealedReview, page: &Page) -> Result<Value, ViewError> {
 /// [`deep_diff_forge_graph::HunkLabels`] for each file, kept until the listing's last hunk of
 /// that file. A file's hunks asked for in reverse, or the hunks of two files in turn, are then
 /// served from one reading of what each hunk comes into, and a request costs the lines of the
-/// hunks it lists and at most once more the lines of their files (review 2026-11-15,
-/// VLF4-M-1: with a reader that was made again when the file changed and that read a run of
+/// hunks it lists and at most once more the lines of their files (found in review,
+/// 2026-11-15: with a reader that was made again when the file changed and that read a run of
 /// touching hunks from its start for each hunk asked out of order, 8,000 one-line hunks of a
 /// new file by address in reverse took 6.2 s against 0.13 s by path).
 struct UnitLabels<'a> {
     files: &'a [ReviewFile],
     /// The last place in the listing that names each file.
     last: std::collections::HashMap<usize, usize>,
+    /// For each file whose hunks the listing does not name in file order: its hunks, in the
+    /// order named. Its reader keeps their labels as it goes through the file once; a file
+    /// listed in file order is read as it comes and nothing is kept for it.
+    out_of_order: std::collections::HashMap<usize, Vec<usize>>,
     kept: std::collections::HashMap<usize, deep_diff_forge_graph::HunkLabels<'a>>,
     /// The lines the readers let go so far had read, and how many readers were made.
     #[cfg(test)]
@@ -427,6 +431,24 @@ struct UnitLabels<'a> {
 
 impl<'a> UnitLabels<'a> {
     fn new(files: &'a [ReviewFile], units: &[(usize, usize)]) -> Self {
+        use std::collections::HashMap;
+        // Each file's last hunk so far, and whether its hunks came in file order.
+        let mut order: HashMap<usize, (usize, bool)> = HashMap::new();
+        for &(f, h) in units {
+            order
+                .entry(f)
+                .and_modify(|(before, in_order)| {
+                    *in_order &= *before < h;
+                    *before = h;
+                })
+                .or_insert((h, true));
+        }
+        let mut out_of_order: HashMap<usize, Vec<usize>> = HashMap::new();
+        for &(f, h) in units {
+            if order.get(&f).is_some_and(|(_, in_order)| !in_order) {
+                out_of_order.entry(f).or_default().push(h);
+            }
+        }
         Self {
             files,
             last: units
@@ -434,10 +456,20 @@ impl<'a> UnitLabels<'a> {
                 .enumerate()
                 .map(|(position, &(f, _))| (f, position))
                 .collect(),
-            kept: std::collections::HashMap::new(),
+            out_of_order,
+            kept: HashMap::new(),
             #[cfg(test)]
             work: (0, 0),
         }
+    }
+
+    /// How many entries the readers kept hold now (what the tests of memory count).
+    #[cfg(test)]
+    fn entries(&self) -> usize {
+        self.kept
+            .values()
+            .map(deep_diff_forge_graph::HunkLabels::entries_kept)
+            .sum()
     }
 
     /// The labels of hunk `h` of file `f`, the unit at `position` of the listing.
@@ -453,7 +485,10 @@ impl<'a> UnitLabels<'a> {
             {
                 self.work.1 += 1;
             }
-            deep_diff_forge_graph::HunkLabels::new(file)
+            match self.out_of_order.remove(&f) {
+                Some(named) => deep_diff_forge_graph::HunkLabels::naming(file, &named),
+                None => deep_diff_forge_graph::HunkLabels::new(file),
+            }
         });
         let signals = labels.of(h);
         if self.last.get(&f) == Some(&position) {
@@ -987,8 +1022,8 @@ mod tests {
     }
 
     /// Hunks asked for by address in any order, the hunks of two files in turn, are labelled
-    /// as by path, from one reader for each file and for the work of file order (review
-    /// 2026-11-15, VLF4-M-1: a reader made again whenever the file changed, reading a run of
+    /// as by path, from one reader for each file and for the work of file order (found in
+    /// review, 2026-11-15: a reader made again whenever the file changed, reading a run of
     /// hunks from its first for each hunk asked out of order, took 6.2 s for the 8,000 hunks
     /// of a new file by address in reverse, against 0.13 s by path). Counted, not timed.
     #[test]
@@ -1016,12 +1051,24 @@ mod tests {
             (0..HUNKS).rev().flat_map(|h| [(0, h), (1, h)]).collect();
         let read = |units: &[(usize, usize)]| {
             let mut labels = UnitLabels::new(files, units);
+            let mut most = 0;
             let mut got: Vec<_> = units
                 .iter()
                 .enumerate()
-                .map(|(position, &(f, h))| ((f, h), labels.of(position, f, h)))
+                .map(|(position, &(f, h))| {
+                    let signals = labels.of(position, f, h);
+                    most = most.max(labels.entries());
+                    ((f, h), signals)
+                })
                 .collect();
             got.sort();
+            // What is kept: in file order one entry, whatever the number of hunks; in any
+            // other order no more entries than hunks asked for.
+            let in_file_order = units.is_sorted();
+            assert!(
+                most <= if in_file_order { 1 } else { units.len() },
+                "{most} entries kept"
+            );
             assert!(
                 labels.kept.is_empty(),
                 "every reader is let go at its last hunk"

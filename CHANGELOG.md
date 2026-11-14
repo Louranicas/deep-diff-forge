@@ -98,8 +98,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     listed items (at the bound of 32 a file) of the ranking are at least those of 0.8.3. An
     answer that is bounded in bytes (the MCP summary, a protocol line, a page) reaches its
     bound sooner when it says more, and says so as before (a summary with its omitted count,
-    error 8, a cursor). Three cases measured against the published v0.8.3 binary (second
-    independent review, 2026-11-15):
+    error 8, a cursor); time and memory are linear in the patch, within the factors stated
+    (the next entry has the measurements). Three cases measured against the published v0.8.3
+    binary (second independent review, 2026-11-15):
     - *The MCP summary.* `rank_patch` answers a ranking over 256 KiB with
       `rank-summary.v0`, the highest-ranked files that fit. For a patch of 1,500 small Rust
       files, one of which has fetches only the lexer reading finds, 0.8.3 lists 1,094 files
@@ -145,13 +146,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     0.8.3 takes 0.12 s, with the same peak memory.
   - *The Rust API of the crates.* Nothing public changes or goes, and what is added cannot
     break a caller (`Evidence`, `Assessment` and every released function keep their shape).
-    `deep-diff-forge-graph` gains `HunkLabels` (the evidence labels of a file's hunks, asked
-    in any order; the daemon's views use it), `file_evidence_released` (for each item of
-    `file_evidence`, whether the reading of 0.8.3 finds it; the fuzz target holds the
-    bounded list with it) and, in `lexical`, `rust_lexer_view` with its state
-    `RustLexerState` (the fuzz targets hold it to the compiler's lexer). `file_evidence`,
-    `hunk_signals`, `assess_file` and `RankedFile::scored` return what this entry and the
-    next describe.
+    `deep-diff-forge-graph` gains `HunkLabels`, the evidence labels of a file's hunks
+    (`new` for hunks asked for in file order, `naming` for hunks asked for in any order,
+    `of`; the daemon's views use it). Five more items are public only for this workspace's
+    own tests and fuzz targets; they are hidden from the documentation, are not part of the
+    API and may change: `HunkLabels::lines_read` and `HunkLabels::entries_kept` (what a
+    reader has read and what it keeps), `file_evidence_released` (for each item of
+    `file_evidence`, whether the reading of 0.8.3 finds it) and, in `lexical`,
+    `rust_lexer_view` with its state `RustLexerState`. `file_evidence`, `assess_file` and
+    `RankedFile::scored` return what this entry and the next describe; `hunk_signals`
+    answers for the hunk it is given, in its run when that is a hunk of the file's own list
+    and read alone, as before, when it is any other hunk.
   - *Not closed.* A hunk is a fragment, and both readings start it as code. From a start
     that is not known (a block comment or a string opened above the hunk, in another hunk
     or in unchanged text the patch does not show), the readings are 0.8.3's and the
@@ -180,34 +185,45 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     after the hunk that shows the last line. It holds in every language here that has block
     comments or strings over lines, not only in Rust.
   - *Since when.* Every release that has code evidence, 0.5.0 to 0.8.3.
-  - *The fix.* Hunks with no unseen line between them are read as one text, in the order of
-    the patch: every hunk of a file the patch creates (Git puts each after the one before,
-    whatever its numbers say), and in a file that exists a hunk whose old-side position
-    begins exactly where the hunk before it ends (`@@ -S,L` covers the old lines S to S+L-1;
-    a hunk that only adds, `-S,0`, stands after line S). And a hunk of added lines only, in
-    a file that exists and not at its top, is also read as Git places it: plain `git apply`
-    appends such a hunk to the file as it then is, whatever the numbers in its header say (a
-    hunk whose last line is not a context line must match at the end of the file, and one
-    with no old line has nothing else to match), so it goes on from the last earlier hunk of
-    its section whose last line is not a context line. Such a hunk is read once more, from
-    what the hunks before it left open on that side: in Rust by the lexer reading, which for
-    a created file is the compiler's reading of the whole file, and in the other languages
-    by their one reading. It is a further reading, never a replacement (and at the bound of
-    a file's printed list what only it finds is listed after the items of 0.8.3, like what
-    only the lexer reading finds). The readings that
-    start the hunk as code are asked as before, so here too no score is lower than 0.8.3's
-    and no signal or listed item of the ranking is missing, and a hunk that goes on from no
-    other is read exactly as before.
+  - *The fix.* Three forms of hunks are read together, in the order of the patch, and
+    nothing more general:
+    1. every hunk of a section that creates a file (Git puts each after the one before,
+       whatever its numbers say);
+    2. in a file that exists, a hunk whose old position is the line after the last old line
+       of the hunk before it, by the numbers the patch gives (`@@ -S,L` covers the old lines
+       S to S+L-1; a hunk that only adds, `-S,0`, stands after line S);
+    3. in a file that exists, a hunk of added lines only with an old position above 1, after
+       the last earlier hunk of its section whose last line is not a context line, whatever
+       the numbers say: plain `git apply` appends such a hunk to the file as it then is (a
+       hunk whose last line is not a context line must match at the end of the file, and
+       one with no old line has nothing else to match).
+
+    Such a hunk is read once more from each state the hunk it goes on from can end in, at
+    most four: in Rust by the lexer reading, which for a created file is the compiler's
+    reading of the whole file, and in the other languages by their one reading. A hunk can
+    go on by the second form and be appended by the third at once, and what it ends in is
+    passed on whichever way the next hunk goes on from it (a hunk with its true number below
+    a context line, then a hunk with a false number that Git appends below it: the last is
+    read from what the first hunk opened, through the second). These are further readings,
+    never a replacement (and at the bound of a file's printed list what only they find is
+    listed after the items of 0.8.3, like what only the lexer reading finds). The readings
+    that start the hunk as code are asked as before, so here too no score is lower than
+    0.8.3's and no signal or listed item of the ranking is missing, and a hunk that goes on
+    from no other is read exactly as before.
   - *How it is held.* Unit tests hold each form, with what `git apply --check -v` says to it
     recorded beside them, and the negative (one unseen line between two hunks: no join). A
     property test holds, for 4,500 generated files whose hunks have every form and any
     numbers, that no hunk has fewer items than when it is read alone and that the per-hunk
     labels are the file's, asked in order, backwards, one at a time, or at random with
-    repeats. A test counts the lines read for the 2,000 hunks of a run (a file the patch
-    creates, hunks that touch by their numbers, appended hunks): the same count in file
-    order, reversed and shuffled, twice the lines less the last hunk's; a hunk asked again
-    costs its own lines; and a hunk that touches no other costs its own lines whatever its
-    file holds. A rule in the `evidence_scan` fuzz target
+    repeats, of a reader that was told the order and of one that was not. A second
+    property holds runs that mix the second and third forms (3,000 generated: a first hunk
+    that shows the file's last line as context, then added hunks with true and false
+    numbers, all of which Git appends in patch order): every item the lexer reading finds
+    in the added lines as one text is found. A test counts the lines read for the 2,000
+    hunks of a run (a file the patch creates, hunks that touch by their numbers, appended
+    hunks): the same count in file order, reversed and shuffled, twice the lines less the
+    last hunk's; a named hunk asked again reads no line; and a hunk that touches no other
+    costs its own lines whatever its file holds. A rule in the `evidence_scan` fuzz target
     holds that a stretch of Rust cut into hunks at lines the input chooses (a file the patch
     creates; the end of a file that exists, its later hunks at any old position) has every
     item its lexer reading has as one text. Measured: of 3,287 patch files (this
@@ -224,44 +240,86 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     from the end of the hunk before it that ends its file; that reading can add an item and
     takes none away (measured on the `-U0` patches of this repository's last 150 commits,
     672 such hunks among 5,159: no answer changes). The outline and the hunks view label
-    hunks as the rank does. What each hunk comes into from the hunks before it is worked out
-    once for a file, in file order, and kept for the request, so hunks can be asked for in
-    any order, by address or by path, the hunks of several files in turn: a request reads
-    the lines of the hunks it lists and at most once more the lines of their files, and a
-    hunk that touches no other costs its own lines whatever its file holds. Measured, best
-    of two: `review.hunks` for all 16,000 one-line hunks of a new file, by address, takes
-    0.25 s in file order, reversed and shuffled, as on 0.8.3; for 20,000 touching hunks of a
-    file that exists, 0.38 s in each order against 0.36 s on 0.8.3. (A reader that read a
-    run again from its first hunk for each hunk asked out of order took 25 to 52 s and 93 to
-    109 s for those requests reversed or shuffled: found in review on 2026-11-15, before any
-    release.) This changes how the labels are computed, not what they are for a patch Git
-    wrote.
-  - *Not closed.* The parser still accepts hunk positions Git would not write and reports
-    the header's line numbers: Git places a hunk by its context and takes the numbers as a
-    hint (`@@ -9,4 +1,5 @@` is applied at line 9, and an appended hunk's lines are reported
-    at the numbers its header gives). What Git must do with a hunk is read; what depends on
-    a number that can be false, or on a fact the patch does not show, is not, in two forms.
-    For hunks with old lines the join goes by the numbers given: two that touch in the file
-    while their positions say they do not are read apart, and the reverse together. And a
-    hunk of added lines only goes on from the last earlier hunk whose last line is a changed
-    line; below a hunk that ends in a context line it is joined only by its number. Git
-    appends it there whatever its number says when that context line is the last line of
-    the file, which the patch does not show (`@@ -2,2 +2,3 @@` ending in a context line,
-    then `@@ -9,0 +9,1 @@`, on a file of three lines: "Hunk #2 succeeded at 5 (offset -4
-    lines)"; a comment opened in the first hides code in the second, score 7 with no
-    evidence here as on 0.8.3; with the true number, `@@ -3,0 +5,1 @@`, the two are read
-    together and the spawn is found). Hunks listed out of the file's order, which Git
-    accepts, are not joined. A path named by more than one section is read section by
-    section (release 0.8.4 refuses such a patch): plain `git apply` applies the second
-    section to the result of the first, so a comment opened at the end of one hides code in
-    the next, as on 0.8.3. A hunk with unseen lines above it is still started as code,
-    whatever is open there. And two ways of applying other than plain `git apply` place
-    hunks differently. `git apply --unidiff-zero` puts a hunk of added lines only where its
-    numbers say and not at the end of the file: for a patch applied that way the reading
-    from the end of the file is one more reading that the file does not have.
-    `git apply --allow-overlap` applies two hunks that share a context line, which plain
-    `git apply` refuses: what the first opens above the shared line is open in the second
-    below it, and they are not joined.
+    hunks as the rank does, for a patch Git wrote exactly as before.
+  - *What it costs, in time and in memory.* What a hunk comes into is worked out by going
+    through its file's hunks in file order with one hunk's worth of state: the rank, the
+    outline and a listing by path read that way and keep nothing more. A listing by address
+    names its hunks first; the file is gone through once, as far as the last hunk named,
+    and the labels of the named hunks are kept, eight bytes each, so hunks can be asked for
+    in any order, the hunks of several files in turn, and what is kept follows the
+    selection and not the file. A request reads the lines of the hunks it lists and at most
+    once more the lines of their files; a hunk that touches no other costs its own lines
+    and keeps nothing.
+
+    Time, best of two: `review.hunks` for all 16,000 one-line hunks of a new file, by
+    address, takes the same in file order, reversed and shuffled, and what 0.8.3 takes
+    (0.25 s on a quiet host, 0.4 s under load, for both); so do 20,000 touching hunks of a
+    file that exists (0.36 to 0.38 s, and 0.55 s under load). Where every hunk comes into
+    something a hunk before left open, each line is read once more for it: 499,990 such
+    one-line hunks of a new file rank in 0.68 s against 0.38 s on 0.8.3 on a quiet host
+    (about 1.8 times), the most measured.
+
+    Peak memory (the maximum resident size `/usr/bin/time` reports), 0.8.3 and this build:
+    - those 499,990 hunks, `--rank --json`: 160 MB and 160 MB; `--outline` with a page of
+      64 KiB: 161 and 161; with a page of 16 MiB: 342 and 342; `--hunks --path` with a page
+      of 16 MiB: 549 and 550; over the protocol, `diff.rank`: 178 and 178, and
+      `review.outline` with a page of 2,048 bytes: 178 and 178;
+    - 200,000 such hunks, each with an address of its own, `review.hunks` with every
+      address in file order: 517 and 522 MB; reversed: 516 and 523; shuffled: 516 and 524;
+    - the 16,000 hunks of a new file by address, reversed: 124 and 125 MB; the 20,000
+      touching hunks: 189 and 189;
+    - 80,000 files of three hunks by address, the files in turn and reversed: 577 and
+      606 MB, the most measured (1.05 times);
+    - 2 MiB of ordinary Rust as a new file in one hunk, `--rank`, `--outline`, `--hunks`:
+      11, 15 and 107 MB on both; as hunks of 40 added lines: 12, 15 and 118 MB on both.
+
+    Under a limit of 300 MB of address space the first of these answers, as 0.8.3 does. No
+    mode holds the two views of a file's lines at once: the views of a line are dropped
+    with the line. Held without the clock or the allocator: tests count the lines read and
+    the entries kept (a run of 2,000 hunks in file order: one entry; ten hunks of 3,000
+    named in reverse: ten; two files in turn in the daemon's view: no more than the hunks
+    asked for). Two things found in review on 2026-11-15, before any release, are behind
+    this: a reader that read a run again from its first hunk for each hunk asked out of
+    order (25 to 52 s for the 16,000 hunks reversed), and then one that kept 704 bytes of
+    state for every hunk that came into something open (497 MB for the 499,990 hunks, and
+    an abort under the limit).
+  - *Not closed.* The second form reads the adjacency the numbers state, and the third what
+    plain Git does with one kind of hunk; neither is a claim about everything Git does with
+    a patch. Stated, and not read together:
+    - The parser accepts hunk positions Git would not write and reports the header's line
+      numbers: Git places a hunk by its context and takes the numbers as a hint
+      (`@@ -9,4 +1,5 @@` is applied at line 9, and an appended hunk's lines are reported at
+      the numbers its header gives).
+    - Hunks with old lines are joined by the numbers given: two that touch in the file
+      while their positions say they do not are read apart, and the reverse together.
+    - A hunk of added lines only, below a hunk that ends in a context line, is joined only
+      by its true number. Git appends it there whatever its number says when that context
+      line is the last line of the file, which the patch does not show (`@@ -2,2 +2,3 @@`
+      ending in a context line, then `@@ -9,0 +9,1 @@`, on a file of three lines: "Hunk #2
+      succeeded at 5 (offset -4 lines)"; a comment opened in the first hides code in the
+      second, score 7 with no evidence here as on 0.8.3; with the true number,
+      `@@ -3,0 +5,1 @@`, the two are read together and the spawn is found).
+    - Hunks with old lines that plain Git can apply only in reverse file order, because
+      each must stand at the end of the file as it then is: a deletion, or the tail of a
+      file, written as several hunks. Git applies the hunk of the last lines first and
+      refuses file order; in the order Git applies they are read apart (a test removed
+      below a string opened in the hunk above it: no `test_removed`, as on 0.8.3), and file
+      order, which Git refuses, is what the second form joins.
+    - Hunks listed out of the file's order, which Git accepts, are not joined.
+    - A path named by more than one section is read section by section (the release
+      track's fix for a path named by more than one section, not yet released, refuses such
+      a patch): plain `git apply` applies the second section to the result of the first, so
+      a comment opened at the end of one hides code in the next, as on 0.8.3.
+    - A hunk with unseen lines above it is started as code, whatever is open there.
+    - Three ways of applying other than plain `git apply` place hunks differently.
+      `git apply --unidiff-zero` puts a hunk of added lines only where its numbers say and
+      not at the end of the file: for a patch applied that way the reading from the end of
+      the file is one more reading that the file does not have. `git apply --allow-overlap`
+      applies two hunks that share a context line, which plain `git apply` refuses: what the
+      first opens above the shared line is open in the second below it, and they are not
+      joined. `git apply --inaccurate-eof` joins the first line of an appended hunk onto the
+      last line of the hunk before it, inside a line: a token cut in two by the hunk
+      boundary is found by no reading by lines.
 
 ## [0.8.3] - 2026-11-11
 

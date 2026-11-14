@@ -488,7 +488,8 @@ Additive members, so the schema names stay `v0`. They are present only when foun
   - What is held against 0.8.3: for every patch, the signals, the score and the listed items (at
     the bound of 32 a file) of the ranking are at least those of 0.8.3. An answer that is bounded
     in bytes (the MCP summary, a protocol line, a page) reaches its bound sooner when it says
-    more, and says so as before (a summary with its omitted count, error 8, a cursor). Measured
+    more, and says so as before (a summary with its omitted count, error 8, a cursor); time and
+    memory are linear in the patch, within the factors stated in the changelog. Measured
     against the published v0.8.3 binary: the `rank_patch` summary (256 KiB) of a 1,500-file patch
     lists 1,082 files where 0.8.3 listed 1,094 (`omitted_files` 418 against 406), and a ranking
     147 bytes under that cap on 0.8.3 comes back as a summary; a `diff.rank` answer of 83,885,992

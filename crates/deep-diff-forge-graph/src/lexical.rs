@@ -918,13 +918,17 @@ pub(crate) fn code_views(language: Language, line: &str, state: &mut Readings) -
 }
 
 /// What the hunks before a hunk have left open for it, when no line of the file stands between
-/// them: the state of [`carried_view`].
+/// them: the state of [`carried_view`]. It holds the state of the one scanner its language
+/// has, and nothing at all when nothing is open, which is how most hunks are entered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct Carried {
+pub(crate) enum Carried {
+    /// Nothing is open: the next line starts as code.
+    #[default]
+    Nothing,
     /// Rust: the state of the lexer reading.
-    lexer: RustLexerState,
+    Rust(RustLexerState),
     /// Every other language: the state of the shared scanner.
-    shared: ScanState,
+    Shared(ScanState),
 }
 
 /// One more reading of `line`: the one that goes on from what the hunk before left open, for a
@@ -936,18 +940,45 @@ pub(crate) struct Carried {
 #[must_use]
 pub(crate) fn carried_view(language: Language, line: &str, state: &mut Carried) -> String {
     if language == Language::Rust {
-        rust_lexer_view(line, &mut state.lexer)
+        let mut lexer = match *state {
+            Carried::Rust(lexer) => lexer,
+            _ => RustLexerState::default(),
+        };
+        let view = rust_lexer_view(line, &mut lexer);
+        *state = if lexer == RustLexerState::default() {
+            Carried::Nothing
+        } else {
+            Carried::Rust(lexer)
+        };
+        view
     } else {
-        code_view(language, line, &mut state.shared)
+        let mut shared = match *state {
+            Carried::Shared(shared) => shared,
+            _ => ScanState::default(),
+        };
+        let view = code_view(language, line, &mut shared);
+        *state = if shared == ScanState::default() {
+            Carried::Nothing
+        } else {
+            Carried::Shared(shared)
+        };
+        view
     }
 }
 
+/// Not part of the API, and may change (the fuzz crate uses it): the state of
+/// [`rust_lexer_view`].
+#[doc(hidden)]
 pub use rust::State as RustLexerState;
 
 /// The code bytes of one Rust line as the compiler's lexer reads it (the `rust` module of this
 /// file), and in `state` what the line leaves open for the next. Comments and the text of
 /// literals are blank; the view is as long as the line, or ends where a line comment starts.
 /// It is one of the two readings of Rust (`code_views`); the other is [`code_view`].
+///
+/// Not part of the API, and may change: it is public for the fuzz targets that hold it to the
+/// compiler's lexer.
+#[doc(hidden)]
 #[must_use]
 pub fn rust_lexer_view(line: &str, state: &mut RustLexerState) -> String {
     rust::code_view(line, state)
