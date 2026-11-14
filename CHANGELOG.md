@@ -26,12 +26,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   Claude Code hooks that run this binary during a session. After every tool call the agent
   is told the evidence that is new in the working tree since the session began (label, path,
   line, what answers the signal); this is advice and never blocks, and a finding is said
-  once per session. At a stop the working tree, and every commit made since the session
-  began that a branch, a tag, the stash or a remote-tracking ref names, is judged by
+  once per session. At a stop the uncommitted changes, and each commit made since the
+  session began that the branches, tags, stash, `HEAD` or their history name (each commit
+  once, by its own change), are judged by
   forge-warden in authority mode against the policy at the commit the session began from;
   only a fail holds the stop, a hold is reported for a person,
-  and a missing judge, policy or admitted ranker is UNJUDGED, never a pass. A failure blocks
-  once in a session. No line of the change is repeated to the agent, and a path is quoted,
+  and a missing judge, policy or admitted ranker is UNJUDGED, never a pass. A failing commit
+  blocks once and then stands; a failing uncommitted change blocks once while it is there. No line of the change is repeated to the agent, and a path is quoted,
   escaped and cut. When the judge gives no verdict, the reason carries its own words (the
   name and message of its error document), not a guess from the exit code. `agent setup
   --client claude --hooks` prints the settings and writes nothing. README "For agents: told while it works, judged when it stops"; SECURITY.md "Agent
@@ -242,6 +243,57 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     refused.
   - *New in the patch crate:* `commit_patch`, `ref_tips`, `has_commits_beyond`,
     `merge_base`, `dirty_submodules`.
+- **Round 11 of Vesper's review and a third independent review of the hooks (both NO-GO):
+  commits are judged one by one.** Both reviews found one root in different forms
+  (`docs/reviews/vesper-v4-round11-report-20261114.md`,
+  `docs/reviews/claude-independent-review-hooks-3-20261114.md`): a stop judged, for each
+  ref, the net patch from the session's base to the ref's tip, over bounded lists of refs.
+  The unit that is judged was changed; the findings were not patched one by one.
+  - *A commit is judged once, by its own change.* A stop has judged the uncommitted change
+    of the project's working tree (and of a linked working tree the session is in) against
+    that tree's `HEAD`, and then each commit of the session that no stop has judged, the
+    oldest first, as the patch from its first parent to itself. A commit is the session's
+    when a branch, a tag, the stash, the `HEAD` of a working tree, or the reflog of such a
+    `HEAD` or of the stash leads to it and nothing that was named when the session began
+    does. This closes: a credential committed and then reverted, whose net patch was empty
+    (VD4R11-H-1); a commit that a second commit undoes (HR3-M-1); the untracked files of
+    `git stash -u`, which are a commit of their own, and the older entries of the stash
+    (HR3-H-1); a commit on a detached `HEAD` that was left, and one in another working
+    tree (HR3-L-6). A commit that only a remote-tracking ref names is fetched, not the
+    session's.
+  - *No bound a repository reaches, and no order by name.* The commits that were there
+    when the session began are ids in a file beside the state (up to a million), which the
+    state names by SHA-256 and length; a list that is missing or changed is UNJUDGED. A
+    repository with more than 4,096 refs lost its stash and tags from the list (HR3-H-2);
+    the first four patches of sixteen tips in name order could leave out the session's own
+    (HR3-M-2). One stop now judges as many commits as its time allows, the oldest first,
+    and counts the rest as UNJUDGED until a later stop judges them. No name of a ref is
+    read (HR3-L-4) or put in a message (HR3-L-5): a unit is "Uncommitted changes in" a
+    path or "Commit" and twelve digits.
+  - *What blocks.* A failing commit holds the stop that first judges it and then stands,
+    whatever refs name it (HR3-L-1). A failing uncommitted change holds one stop while it
+    is there and is forgotten when a stop finds the change without it, so it blocks again
+    when it comes back (HR3-M-3).
+  - *Identity.* The project is known by the inode of its Git directory and its path; the
+    device number is left out, because it is given at mount time and a session resumed
+    after a reboot was refused (HR3-M-4). A project that was moved is no longer judged
+    where the session finds it: like a clone at its path, it is UNJUDGED with the remedy,
+    a new session.
+  - *Lows.* A stop that has more to name beside its verdict than a session remembers says
+    so once (HR3-L-2). A linked working tree inside the project's tree is named as that,
+    not as a repository of its own (HR3-L-3). README and SECURITY.md say what the code
+    does: 4 MiB for a state file, no naming of refs, `/clear` as a new session (HR3-L-7).
+  - *State.* Schema `deep-diff-forge.hook-state.v3`; a state of an earlier schema is not
+    read (UNJUDGED until the file is removed or a new session starts).
+  - *New in the patch crate:* `named_commits`, `commits_beyond`.
+  - *Tests after a mutation run on the hooks.* Of the 64 changes the run had found by then
+    that no test noticed, the ones whose code is still there have a test now: the forms of a
+    verdict that are two conditions, an unclosed string in the duplicate-key reader, the
+    bounds of the state, the input, the judge's error output, the rankers' listing and the
+    messages at the byte, which failure of a directory is which, the key of a finding on the
+    old side, five places of `agent doctor --gate`, and in the patch crate a long path, a
+    large index, a long or missing or unreadable `info/exclude`, the user's `diff.context`
+    and `head_contains`. The others are equivalent and are listed in the round's report.
 
 ### Changed
 

@@ -814,6 +814,227 @@ pub fn has_commits_beyond(
     Ok(!runner.run("git rev-list", &args, &[0], 4096)?.is_empty())
 }
 
+/// Which refs [`named_commits`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Named {
+    /// Every ref of the repository, the remote-tracking ones included: what is known when a
+    /// session begins.
+    Everything,
+    /// The refs a session's own work is under: `refs/heads`, `refs/tags` and `refs/stash`. A
+    /// commit that only a remote-tracking ref names was fetched, not made here.
+    Own,
+}
+
+/// The most bytes of a listing of refs or of a reflog that are read: room for a million ids.
+const NAMED_LISTING_CAP: usize = 192 * 1024 * 1024;
+/// The most working trees of one repository whose reflogs [`named_commits`] reads; a
+/// repository with more is refused.
+const WORKTREES_CAP: usize = 256;
+/// The most commit ids [`named_commits`] gives; a repository with more is refused.
+pub const NAMED_COMMITS_CAP: usize = 1_000_000;
+
+/// A full object id as Git writes one in hex.
+fn is_object_id(text: &str) -> bool {
+    matches!(text.len(), 40 | 64) && text.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The id of every commit that something in the repository containing `repo` names: its refs
+/// (all of them, or the session's own kinds: [`Named`]), a tag being followed to the commit
+/// it tags; the `HEAD` of every working tree (`git worktree list`); and every entry of the
+/// reflog of each working tree's `HEAD` and of the reflog of `refs/stash`. Ids only, each
+/// once, sorted.
+///
+/// No name of a ref is read, so a name that is not UTF-8 cannot matter, and nothing is cut
+/// off after some number of refs: a list of the first 4,096 refs by name left out the stash
+/// and the tags of a repository with many branches (third independent review of the hooks,
+/// HR3-H-2 and HR3-L-4). The reflogs name what no ref names any more: a commit made on a
+/// detached `HEAD`, and the older entries of the stash.
+///
+/// # Errors
+/// Any [`GitAcquireError`] from running Git; a listing that cannot be read; more than
+/// [`NAMED_COMMITS_CAP`] commits.
+pub fn named_commits(
+    repo: &Path,
+    which: Named,
+    options: &GitAcquireOptions,
+) -> Result<Vec<String>, GitAcquireError> {
+    let runner = Runner {
+        options,
+        cwd: repo.to_path_buf(),
+        deadline: deadline_after(options.time_limit),
+        config_env: Vec::new(),
+    };
+    let mut found = std::collections::BTreeSet::new();
+    let mut refs: Vec<&OsStr> = vec![
+        OsStr::new("for-each-ref"),
+        OsStr::new("--format=%(objecttype) %(objectname) %(*objecttype) %(*objectname)"),
+    ];
+    if which == Named::Own {
+        refs.extend([
+            OsStr::new("refs/heads"),
+            OsStr::new("refs/tags"),
+            OsStr::new("refs/stash"),
+        ]);
+    }
+    let listing = runner.run("git for-each-ref", &refs, &[0], NAMED_LISTING_CAP)?;
+    for record in String::from_utf8_lossy(&listing).lines() {
+        // `commit ID`, or for a tag `tag ID commit ID` with the commit it leads to.
+        let fields: Vec<&str> = record.split(' ').collect();
+        let (["commit", commit, ..] | [_, _, "commit", commit]) = fields[..] else {
+            continue;
+        };
+        if !is_object_id(commit) {
+            return Err(refused("git for-each-ref wrote a line that cannot be read"));
+        }
+        found.insert(commit.to_owned());
+    }
+    // Every working tree of the repository: its `HEAD` (zeros for none yet), and what the
+    // reflog of that `HEAD` names. Each working tree has a `HEAD` and a reflog of its own, so
+    // each is asked where it stands.
+    let trees = runner.run(
+        "git worktree list",
+        &[
+            OsStr::new("worktree"),
+            OsStr::new("list"),
+            OsStr::new("--porcelain"),
+            OsStr::new("-z"),
+        ],
+        &[0],
+        NAMED_LISTING_CAP,
+    )?;
+    let mut places = Vec::new();
+    for record in trees.split(|byte| *byte == 0) {
+        if let Some(path) = record.strip_prefix(b"worktree ") {
+            use std::os::unix::ffi::OsStrExt as _;
+            places.push(std::path::PathBuf::from(OsStr::from_bytes(path)));
+        } else if let Some(id) = record.strip_prefix(b"HEAD ")
+            && let Ok(id) = std::str::from_utf8(id)
+            && is_object_id(id)
+            && id.bytes().any(|b| b != b'0')
+        {
+            found.insert(id.to_owned());
+        }
+    }
+    if places.len() > WORKTREES_CAP {
+        return Err(refused(
+            "the repository has more working trees than a hook reads the history of",
+        ));
+    }
+    let reflog = |from: &Runner<'_>, walked: &str| -> Result<Vec<String>, GitAcquireError> {
+        // Nothing to walk from where the name leads to no commit.
+        if from.commit_id(walked)?.is_none() {
+            return Ok(Vec::new());
+        }
+        let entries = from.run(
+            "git log",
+            &[
+                OsStr::new("log"),
+                OsStr::new("--walk-reflogs"),
+                OsStr::new("--format=%H"),
+                OsStr::new("--end-of-options"),
+                OsStr::new(walked),
+            ],
+            &[0],
+            NAMED_LISTING_CAP,
+        )?;
+        let text = String::from_utf8_lossy(&entries);
+        if !text.lines().all(is_object_id) {
+            return Err(refused("git log wrote a line that cannot be read"));
+        }
+        Ok(text.lines().map(str::to_owned).collect())
+    };
+    found.extend(reflog(&runner, "refs/stash")?);
+    for place in places {
+        // A working tree whose directory is gone has nowhere to be asked from.
+        if !place.is_dir() {
+            continue;
+        }
+        let there = Runner {
+            options,
+            cwd: place,
+            deadline: runner.deadline,
+            config_env: Vec::new(),
+        };
+        found.extend(reflog(&there, "HEAD")?);
+    }
+    if found.len() > NAMED_COMMITS_CAP {
+        return Err(refused(
+            "the repository names more than 1,000,000 commits by its refs and reflogs",
+        ));
+    }
+    Ok(found.into_iter().collect())
+}
+
+/// One commit with its first parent (`None` for a commit that has no parent).
+pub type CommitAndParent = (String, Option<String>);
+
+/// The commits that `sources` lead to and none of `known` leads to, parents before children
+/// (the oldest first), each with its first parent. `list` is a file this writes and Git reads
+/// (in a scratch directory the caller owns): a list of ids is not put on a command line. An
+/// id in `known` that the repository no longer has is passed over.
+///
+/// # Errors
+/// Any [`GitAcquireError`] from running Git; an id that is not one; a list that cannot be
+/// written.
+pub fn commits_beyond(
+    repo: &Path,
+    sources: &[String],
+    known: &[String],
+    list: &Path,
+    options: &GitAcquireOptions,
+) -> Result<Vec<CommitAndParent>, GitAcquireError> {
+    if sources.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !sources.iter().chain(known).all(|id| is_object_id(id)) {
+        return Err(refused("a commit id in the list is not one"));
+    }
+    let mut text = String::with_capacity((sources.len() + known.len()) * 66);
+    for id in known {
+        text.push('^');
+        text.push_str(id);
+        text.push('\n');
+    }
+    for id in sources {
+        text.push_str(id);
+        text.push('\n');
+    }
+    std::fs::write(list, text)
+        .map_err(|e| refused(format!("cannot prepare the scratch directory: {e}")))?;
+    let runner = Runner {
+        options,
+        cwd: repo.to_path_buf(),
+        deadline: deadline_after(options.time_limit),
+        config_env: Vec::new(),
+    };
+    let listing = runner.run_reading(
+        "git rev-list",
+        &[
+            OsStr::new("rev-list"),
+            OsStr::new("--topo-order"),
+            OsStr::new("--reverse"),
+            OsStr::new("--parents"),
+            OsStr::new("--ignore-missing"),
+            OsStr::new("--stdin"),
+        ],
+        &[0],
+        NAMED_LISTING_CAP,
+        list,
+    )?;
+    let mut commits = Vec::new();
+    for record in String::from_utf8_lossy(&listing).lines() {
+        let mut ids = record.split(' ');
+        let (Some(commit), parent) = (ids.next(), ids.next()) else {
+            continue;
+        };
+        if !is_object_id(commit) || parent.is_some_and(|id| !is_object_id(id)) {
+            return Err(refused("git rev-list wrote a line that cannot be read"));
+        }
+        commits.push((commit.to_owned(), parent.map(str::to_owned)));
+    }
+    Ok(commits)
+}
+
 /// The best common ancestor of the commits `one` and `other`, or `None` when they share no
 /// history.
 ///

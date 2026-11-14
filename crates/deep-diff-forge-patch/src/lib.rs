@@ -45,9 +45,9 @@ pub use git_raw::{
 };
 pub use guards::{InputGuards, has_reviewable_hunks};
 pub use judge_patch::{
-    HeadState, JudgePatch, JudgePatchError, RefTips, commit_patch, dirty_submodules,
-    file_at_commit, has_commits_beyond, head_contains, head_state, judge_patch, merge_base,
-    ref_tips,
+    CommitAndParent, HeadState, JudgePatch, JudgePatchError, NAMED_COMMITS_CAP, Named, RefTips,
+    commit_patch, commits_beyond, dirty_submodules, file_at_commit, has_commits_beyond,
+    head_contains, head_state, judge_patch, merge_base, named_commits, ref_tips,
 };
 pub use parser::{ParseOptions, parse, parse_decoded, parse_with};
 pub use render::{old_path, render_unified};

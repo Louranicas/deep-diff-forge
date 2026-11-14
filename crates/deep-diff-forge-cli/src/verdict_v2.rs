@@ -480,6 +480,93 @@ pub(crate) mod tests {
         }
     }
 
+    /// A mutation run on the hooks (2026-11-14) left six changes in this file alive. Each form
+    /// below is two conditions, and the tests bent both at once: a rule id that neither starts
+    /// with a letter nor is made of words, a `ranked_by` with nothing in it. Each case here
+    /// breaks one condition and keeps the other.
+    #[test]
+    fn a_form_of_two_conditions_is_refused_when_either_fails() {
+        type Bend = fn(&mut Value);
+        let bends: &[(&str, Bend)] = &[
+            ("a rule id with an empty word after a good start", |d| {
+                d["rules"][0]["id"] = json!("a--b");
+            }),
+            ("a rule id of good words that starts with a digit", |d| {
+                d["rules"][0]["id"] = json!("9-a");
+            }),
+            (
+                "a rule kind with an uppercase letter after a good start",
+                |d| {
+                    d["rules"][0]["kind"] = json!("max_Score");
+                },
+            ),
+            (
+                "a rule kind of good characters that starts with a digit",
+                |d| {
+                    d["rules"][0]["kind"] = json!("9max");
+                },
+            ),
+            ("a note code that starts with an underscore", |d| {
+                d["notes"] = json!([{"code": "_x", "detail": "d"}]);
+            }),
+            ("a violation whose path is not a string", |d| {
+                d["rules"][0]["violations"] = json!([{"message": "m", "path": 5}]);
+            }),
+            ("a violation whose signal is not a string", |d| {
+                d["rules"][0]["violations"] = json!([{"message": "m", "signal": ["s"]}]);
+            }),
+            ("a note whose path is not a string", |d| {
+                d["notes"] = json!([{"code": "x", "detail": "d", "path": 1}]);
+            }),
+            ("ranked_by with a digest and no version", |d| {
+                d["seals"]["ranked_by"] = json!({"sha256": "6".repeat(64)});
+            }),
+            (
+                "ranked_by with a version and a digest that is not one",
+                |d| {
+                    d["seals"]["ranked_by"] = json!({"version": "v", "sha256": "x"});
+                },
+            ),
+            ("an unpinned git that names an allowlist", |d| {
+                d["seals"]["git"]["admission"] = json!("unpinned");
+            }),
+            ("a git of another admission with no allowlist", |d| {
+                d["seals"]["git"]["admission"] = json!("refused");
+                d["seals"]["git"]["allowlist_sha256"] = Value::Null;
+            }),
+        ];
+        for (what, bend) in bends {
+            let mut bent = sample("pass");
+            bend(&mut bent);
+            assert!(defect(&bent).is_some(), "{what} was accepted");
+        }
+        // the forms themselves, with each optional part there, are accepted
+        let controls: &[(&str, Bend)] = &[
+            ("a note with a path", |d| {
+                d["notes"] = json!([{"code": "x_1", "detail": "d", "path": "p"}]);
+            }),
+            ("a violation with a path and a signal", |d| {
+                d["rules"][0]["violations"] = json!([{"message": "m", "path": "p", "signal": "s"}]);
+            }),
+            ("ranked_by with no digest", |d| {
+                d["seals"]["ranked_by"] = json!({"version": "v", "sha256": null});
+            }),
+            ("an unpinned git with no allowlist", |d| {
+                d["seals"]["git"]["admission"] = json!("unpinned");
+                d["seals"]["git"]["allowlist_sha256"] = Value::Null;
+            }),
+        ];
+        for (what, bend) in controls {
+            let mut bent = sample("pass");
+            bend(&mut bent);
+            assert_eq!(defect(&bent), None, "{what} was refused");
+        }
+        // what is no object is no Git admission at all, and is said to be missing
+        let mut bent = sample("pass");
+        bent["seals"]["git"] = json!("git");
+        assert_eq!(defect(&bent), Some("`seals.git` is missing"));
+    }
+
     /// Review V4 round 4, VD4R4-M-1: a member the schema makes optional has the schema's form
     /// when it is present. A document with four of these malformed, beside a waived rule, was a
     /// pass.

@@ -639,6 +639,20 @@ fn the_users_configuration_does_not_shape_the_patch_and_the_users_ignore_file_do
         "the user's configuration changed the patch"
     );
     assert_eq!(filtered.tree, plain.tree);
+    // nor does the diff itself: the lines of context are not the user's to choose (a mutation
+    // run left the environment of what runs outside the repository alive when emptied)
+    let narrow = judge_patch(
+        &root,
+        "HEAD",
+        &fresh(&scratch, "narrow"),
+        &with(&user_config("[diff]\n\tcontext = 0\n")),
+    )
+    .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&narrow.bytes),
+        shown,
+        "the user's configuration changed the diff"
+    );
 
     // the user's ignore file keeps a file out, as it does for a commit
     assert!(shown.contains("b/new name.txt"), "{shown}");
@@ -952,4 +966,268 @@ fn submodules_with_changes_that_are_not_committed_are_found() {
         dirty_submodules(&root, &options()).unwrap(),
         ["vendor/t w o"]
     );
+}
+
+/// A repository in which commits are named in every way a session's commits can be, with
+/// the id of each.
+struct NamedCommits {
+    root: PathBuf,
+    base: String,
+    work: String,
+    reverted: String,
+    /// A commit that only a remote-tracking ref names: it was never on `HEAD`.
+    fetched: String,
+    /// The stash, the commit of its index, and the commit of its untracked files.
+    stash: [String; 3],
+    /// A commit on a detached `HEAD` that was left again: only the reflog of `HEAD` names it.
+    left: String,
+    /// The commit the `HEAD` of another working tree names, and one only that tree's reflog
+    /// names.
+    there: String,
+    at: String,
+}
+
+fn named_commits_repository(scratch: &Scratch) -> NamedCommits {
+    use deep_diff_forge_patch::{Named, named_commits};
+    let root = changed_repository(scratch);
+    let id = |rev: &str| text(git(&root, &["rev-parse", rev]));
+    let base = id("HEAD");
+    // with one commit, that commit is all that is named
+    for which in [Named::Everything, Named::Own] {
+        assert_eq!(
+            named_commits(&root, which, &options()).unwrap(),
+            std::slice::from_ref(&base)
+        );
+    }
+    // a commit and its revert; an annotated tag, which is followed to its commit
+    git(&root, &["add", "--all"]);
+    git(&root, &["commit", "--quiet", "-m", "work"]);
+    let work = id("HEAD");
+    git(&root, &["revert", "--no-edit", "HEAD"]);
+    let reverted = id("HEAD");
+    git(&root, &["tag", "-a", "v1", "-m", "v1", &base]);
+    let fetched = text(git(
+        &root,
+        &["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "fetched"],
+    ));
+    git(&root, &["update-ref", "refs/remotes/origin/main", &fetched]);
+    std::fs::write(root.join("src.rs"), "fn stashed() {}\n").unwrap();
+    std::fs::write(root.join("untracked.txt"), "u\n").unwrap();
+    git(&root, &["stash", "--quiet", "--include-untracked"]);
+    let stash = [id("refs/stash"), id("refs/stash^2"), id("refs/stash^3")];
+    git(&root, &["checkout", "--quiet", "--detach"]);
+    git(&root, &["commit", "--quiet", "--allow-empty", "-m", "left"]);
+    let left = id("HEAD");
+    git(&root, &["checkout", "--quiet", "-"]);
+    let linked = scratch.join("linked");
+    git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            linked.to_str().unwrap(),
+        ],
+    );
+    git(
+        &linked,
+        &["commit", "--quiet", "--allow-empty", "-m", "there"],
+    );
+    let there = text(git(&linked, &["rev-parse", "HEAD"]));
+    git(&linked, &["commit", "--quiet", "--allow-empty", "-m", "at"]);
+    let at = text(git(&linked, &["rev-parse", "HEAD"]));
+    git(&linked, &["reset", "--quiet", "--hard", &there]);
+    NamedCommits {
+        root,
+        base,
+        work,
+        reverted,
+        fetched,
+        stash,
+        left,
+        there,
+        at,
+    }
+}
+
+/// Review V4 round 11 and the third independent review of the hooks: what a session's commits
+/// are told from. `named_commits` gives the id of every commit that something names: every
+/// ref (a tag followed to its commit), the `HEAD` of every working tree, and every entry of
+/// the reflogs of those `HEAD`s and of the stash; or only what the session's own kinds of refs
+/// name, which leaves out a commit that was only fetched. No name of a ref is read and nothing
+/// is cut off.
+#[test]
+fn the_commits_that_something_names_are_listed_by_their_ids() {
+    use deep_diff_forge_patch::{Named, named_commits};
+    let scratch = Scratch::new("judge-patch-named");
+    let made = named_commits_repository(&scratch);
+    let named = |which: Named| named_commits(&made.root, which, &options()).unwrap();
+    // the stash names one commit; the two it leads to are not named, only led to
+    let mut everything = vec![
+        made.base.clone(),
+        made.work.clone(),
+        made.reverted.clone(),
+        made.fetched.clone(),
+        made.stash[0].clone(),
+        made.left.clone(),
+        made.there.clone(),
+        made.at.clone(),
+    ];
+    everything.sort();
+    assert_eq!(named(Named::Everything), everything);
+    everything.retain(|id| *id != made.fetched);
+    assert_eq!(named(Named::Own), everything);
+}
+
+/// `commits_beyond` gives the commits that lead on from the known ones, parents before
+/// children, each with its first parent: what a session made, when the known ones are what
+/// was named as it began.
+#[test]
+fn the_commits_beyond_the_known_ones_are_listed_parents_first() {
+    use deep_diff_forge_patch::{Named, commits_beyond, named_commits};
+    let scratch = Scratch::new("judge-patch-beyond");
+    let made = named_commits_repository(&scratch);
+    let (root, base, stash) = (&made.root, &made.base, &made.stash);
+    let own = named_commits(root, Named::Own, &options()).unwrap();
+    let everything = named_commits(root, Named::Everything, &options()).unwrap();
+    let list = scratch.join("list");
+    let beyond = |sources: &[String], known: &[String]| {
+        commits_beyond(root, sources, known, &list, &options()).unwrap()
+    };
+    // What the session's own names lead to beyond the base: every commit but the fetched
+    // one, and the two commits the stash leads to.
+    let found = beyond(&own, std::slice::from_ref(base));
+    let position = |id: &String| {
+        found
+            .iter()
+            .position(|(commit, _)| commit == id)
+            .unwrap_or_else(|| panic!("{id} is missing: {found:?}"))
+    };
+    let parent = |id: &String| found[position(id)].1.as_ref();
+    assert_eq!(found.len(), 8, "{found:?}");
+    assert!(
+        found
+            .iter()
+            .all(|(commit, _)| *commit != made.fetched && commit != base),
+        "{found:?}"
+    );
+    assert_eq!(parent(&made.work), Some(base));
+    assert_eq!(parent(&made.reverted), Some(&made.work));
+    assert_eq!(parent(&stash[0]), Some(&made.reverted));
+    assert_eq!(parent(&stash[1]), Some(&made.reverted));
+    assert_eq!(
+        parent(&stash[2]),
+        None,
+        "the commit of a stash's untracked files has no parent"
+    );
+    assert_eq!(parent(&made.at), Some(&made.there));
+    for (child, of) in [
+        (&made.reverted, &made.work),
+        (&stash[0], &made.reverted),
+        (&stash[0], &stash[1]),
+        (&stash[0], &stash[2]),
+        (&made.left, &made.reverted),
+        (&made.at, &made.there),
+    ] {
+        assert!(position(of) < position(child), "{of} after {child}");
+    }
+    // nothing lies beyond what is known; an id the repository does not have is passed over;
+    // with nothing to start from there is nothing; and a name is not an id
+    let none: Vec<(String, Option<String>)> = Vec::new();
+    assert_eq!(beyond(&own, &everything), none);
+    let gone = "0123456789abcdef0123456789abcdef01234567".to_owned();
+    assert_eq!(
+        beyond(std::slice::from_ref(&made.work), &[gone, base.clone()]),
+        [(made.work.clone(), Some(base.clone()))]
+    );
+    assert_eq!(beyond(&[], std::slice::from_ref(base)), none);
+    assert!(commits_beyond(root, &["HEAD".to_owned()], &[], &list, &options()).is_err());
+}
+
+/// A mutation run on the hooks left three bounds of this module alive: no test came near
+/// them, so each could be a thousand times smaller. A repository under a path of more than a
+/// kibibyte, with an index whose listing is over a mebibyte and more than two kibibytes of its
+/// own ignore rules, is read whole.
+#[test]
+fn a_long_path_a_large_index_and_many_ignore_rules_are_read_whole() {
+    let scratch = Scratch::new("judge-patch-bounds");
+    let mut deep = scratch.path().to_path_buf();
+    for letter in ["a", "b", "c", "d", "e"] {
+        deep.push(letter.repeat(250));
+    }
+    let root = deep.join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    git(&root, &["init", "--quiet"]);
+    std::fs::write(root.join("src.rs"), "fn a() {}\n").unwrap();
+    for n in 0..6_000 {
+        std::fs::write(root.join(format!("{n:04}-{}", "n".repeat(200))), "").unwrap();
+    }
+    git(&root, &["add", "--all"]);
+    git(&root, &["commit", "--quiet", "-m", "base"]);
+    let listing = git(&root, &["ls-files", "-t", "-z"]).len();
+    assert!(listing > 1024 * 1024 + 64, "{listing}");
+    // the rule that matters comes last
+    let rules = "# a line of the repository's own ignore file\n".repeat(80);
+    assert!(rules.len() > 2 * 1024 + 1024);
+    std::fs::write(root.join(".git/info/exclude"), format!("{rules}late.txt\n")).unwrap();
+    std::fs::write(root.join("late.txt"), "ignored\n").unwrap();
+    std::fs::write(root.join("src.rs"), "fn a() { b(); }\n").unwrap();
+
+    let patch = judge_patch(&root, "HEAD", &fresh(&scratch, "work"), &options()).unwrap();
+    let shown = String::from_utf8_lossy(&patch.bytes);
+    assert!(shown.contains("+fn a() { b(); }\n"), "{shown}");
+    assert_eq!(shown.matches("diff --git ").count(), 1, "{shown}");
+    assert!(!shown.contains("late.txt"), "{shown}");
+}
+
+/// Whether `HEAD` leads back to a commit: yes for the commit it names and for one before it,
+/// no for one it has left, and an error for a name that is no commit. (A mutation run left
+/// the answer alive when it was always "no": a stop then always said that the branch had
+/// moved, and no test read those words where they must not be.)
+#[test]
+fn head_contains_says_whether_head_leads_back_to_a_commit() {
+    use deep_diff_forge_patch::head_contains;
+    let scratch = Scratch::new("judge-patch-head-contains");
+    let root = changed_repository(&scratch);
+    let contains = |commit: &str| head_contains(&root, commit, &options());
+    let base = text(git(&root, &["rev-parse", "HEAD"]));
+    assert!(contains(&base).unwrap());
+    git(&root, &["add", "--all"]);
+    git(&root, &["commit", "--quiet", "-m", "work"]);
+    let work = text(git(&root, &["rev-parse", "HEAD"]));
+    assert!(contains(&base).unwrap() && contains(&work).unwrap());
+    git(&root, &["reset", "--quiet", "--hard", &base]);
+    assert!(contains(&base).unwrap());
+    assert!(!contains(&work).unwrap());
+    assert!(contains("0123456789abcdef0123456789abcdef01234567").is_err());
+}
+
+/// The repository's own ignore file, `info/exclude`: one that is not there gives no rule, and
+/// one that is there and cannot be read is refused, because dropping its rules would put files
+/// in the patch that a commit leaves out. (A mutation run left "which failure is it" alive both
+/// ways: no test had a repository without the file, or with one it could not read.)
+#[test]
+fn a_missing_ignore_file_is_no_rule_and_an_unreadable_one_is_refused() {
+    let scratch = Scratch::new("judge-patch-exclude");
+    let root = changed_repository(&scratch);
+    let exclude = root.join(".git/info/exclude");
+    let plain = judge_patch(&root, "HEAD", &fresh(&scratch, "plain"), &options()).unwrap();
+    let _ = std::fs::remove_file(&exclude);
+    let without = judge_patch(&root, "HEAD", &fresh(&scratch, "without"), &options()).unwrap();
+    assert_eq!(without.bytes, plain.bytes);
+
+    std::fs::write(&exclude, "new name.txt\n").unwrap();
+    std::fs::set_permissions(&exclude, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // not as root, who reads it all the same
+    if std::fs::read(&exclude).is_err() {
+        let refused = judge_patch(&root, "HEAD", &fresh(&scratch, "unreadable"), &options());
+        assert!(
+            refused.is_err() && format!("{refused:?}").contains("info/exclude"),
+            "{refused:?}"
+        );
+    }
+    std::fs::set_permissions(&exclude, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let ruled = judge_patch(&root, "HEAD", &fresh(&scratch, "ruled"), &options()).unwrap();
+    assert!(!String::from_utf8_lossy(&ruled.bytes).contains("new name.txt"));
 }

@@ -428,6 +428,29 @@ impl Runner<'_> {
             .map(|done| done.stdout)
     }
 
+    /// [`Self::run`] with the file at `input` as Git's standard input.
+    pub(crate) fn run_reading(
+        &self,
+        command: &'static str,
+        args: &[&OsStr],
+        ok_codes: &[i32],
+        budget: usize,
+        input: &Path,
+    ) -> Result<Vec<u8>, GitAcquireError> {
+        self.output_reading(command, args, ok_codes, budget, Some(input))
+            .map(|done| done.stdout)
+    }
+
+    fn output(
+        &self,
+        command: &'static str,
+        args: &[&OsStr],
+        ok_codes: &[i32],
+        budget: usize,
+    ) -> Result<GitOutput, GitAcquireError> {
+        self.output_reading(command, args, ok_codes, budget, None)
+    }
+
     /// Run Git for its exit code alone: one of `ok_codes`. Its output is not kept.
     pub(crate) fn output_code(
         &self,
@@ -445,19 +468,32 @@ impl Runner<'_> {
         clippy::disallowed_methods,
         reason = "the git-acquisition door: patch acquisition spawns git only here, hardened by core::git"
     )]
-    fn output(
+    fn output_reading(
         &self,
         command: &'static str,
         args: &[&OsStr],
         ok_codes: &[i32],
         budget: usize,
+        input: Option<&Path>,
     ) -> Result<GitOutput, GitAcquireError> {
+        // Git's standard input: nothing, or a file the caller wrote (a list of revisions).
+        let stdin = match input {
+            Some(path) => {
+                Stdio::from(
+                    std::fs::File::open(path).map_err(|e| GitAcquireError::Spawn {
+                        command,
+                        detail: e.to_string(),
+                    })?,
+                )
+            }
+            None => Stdio::null(),
+        };
         let mut cmd = Command::new(&self.options.git_program);
         cmd.current_dir(&self.cwd)
             .args(deep_diff_forge_core::git::ARGS)
             .args(GLOBAL_ARGS)
             .args(args)
-            .stdin(Stdio::null())
+            .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for name in deep_diff_forge_core::git::ENV_REMOVED {

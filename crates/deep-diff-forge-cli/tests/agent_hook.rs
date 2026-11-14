@@ -645,7 +645,9 @@ fn an_unjudged_stop_passes_on_what_the_judge_said() {
     )
     .unwrap();
     let script = scratch.join("judge");
-    let body = "#!/bin/sh\necho '{\"exit\":3,\"name\":\"io\",\"message\":\"Git admission: no Git allowlist enrolled\",\"next\":\"check_environment\"}' >&2\nexit 3\n";
+    // (before its last line the judge writes more than a kibibyte of other lines: a mutation
+    // run left the cap of what is read of them, 64 KiB, alive as 64 + 1024 bytes)
+    let body = "#!/bin/sh\ni=0; while [ $i -lt 60 ]; do echo 'warning: a line of sixty characters that says nothing at all' >&2; i=$((i+1)); done\necho '{\"exit\":3,\"name\":\"io\",\"message\":\"Git admission: no Git allowlist enrolled\",\"next\":\"check_environment\"}' >&2\nexit 3\n";
     let mut writer = Command::new("sh")
         .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
         .arg(&script)
@@ -691,6 +693,13 @@ fn a_stop_offers_other_rankers_when_the_policy_does_not_admit_this_one() {
     let rankers = scratch.join("rankers");
     std::fs::create_dir(&rankers).unwrap();
     std::fs::write(rankers.join("ddf-0.8.4"), "stand-in ranker\n").unwrap();
+    // Six more that come before it by name and are not admitted: with this binary, the eight
+    // candidates a stop tries. Their listing is past a kibibyte (a mutation run left the cap
+    // of what is read of it, 256 KiB, alive as 256 + 1024 bytes).
+    for n in 0..6 {
+        let name = format!("a-stand-in-ranker-that-the-policy-does-not-admit-{n}");
+        std::fs::write(rankers.join(name), format!("not admitted {n}\n")).unwrap();
+    }
     // exit 4 unless the ranker is the admitted one; then the stand-in judge passes
     let (passing, _, _) = judge(&scratch, &verdict("pass", "size", "", ""));
     let log = scratch.join("calls.log");
@@ -720,7 +729,7 @@ fn a_stop_offers_other_rankers_when_the_policy_does_not_admit_this_one() {
         (0, String::new(), String::new()),
         "an admitted ranker passes"
     );
-    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 2);
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 8);
 
     // without the directory no ranker is admitted: unjudged, and the reason says so
     let (code, stdout, _) = hook("stop", &["--judge", script.to_str().unwrap()], &event);
@@ -766,7 +775,7 @@ fn session_start_states_the_contract_and_whether_a_stop_can_be_judged() {
     // HR2-H-1: what is judged is said exactly, not as "everything, committed or not"
     assert!(
         stdout.contains(&format!(
-            "the working tree, and every commit made since the session began (commit {}) that a branch, a tag, the stash or a remote-tracking ref names, is judged",
+            "your uncommitted changes, and each commit made since this session began (commit {}) that your branches, tags, stash, HEAD or their history name, are judged",
             &base[..7]
         )),
         "{stdout}"
@@ -1489,10 +1498,7 @@ fn the_state_is_kept_in_a_directory_of_its_own_and_read_with_a_bound() {
             && std::fs::metadata(&left[0]).unwrap().len() == 0,
         "{left:?}"
     );
-    let state: Vec<PathBuf> = std::fs::read_dir(&sessions)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect();
+    let state = states_in(&sessions);
     assert_eq!(state.len(), 1, "{state:?}");
     assert_eq!(mode(&state[0]), 0o600);
     // said once: the state was read back
@@ -1515,10 +1521,7 @@ fn a_state_file_that_cannot_be_read_is_never_no_state() {
             .1
             .contains("check_suppressed")
     );
-    let state: Vec<PathBuf> = std::fs::read_dir(sessions())
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect();
+    let state = states_in(&sessions());
     assert_eq!(state.len(), 1, "{state:?}");
     let stop = || {
         let (code, stdout, _) = hook("stop", &[], &input("Stop", &root, "s", false));
@@ -1864,7 +1867,7 @@ fn the_project_is_judged_wherever_the_session_has_gone() {
             "{session}: {reason}"
         );
         // one tree was judged: the session is in no other working tree of this repository
-        assert!(!reason.contains("Working tree "), "{session}: {reason}");
+        assert!(!reason.contains("Uncommitted"), "{session}: {reason}");
     }
 
     // With no hook before the stop, the directory the client names as the project decides.
@@ -1957,22 +1960,16 @@ fn a_linked_working_tree_the_session_entered_is_judged_too() {
     let linked = std::fs::canonicalize(&linked).unwrap();
     let top = std::fs::canonicalize(&root).unwrap();
     // a tree is named as every path is: quoted, and cut at 120 characters
-    let tree = |path: &Path, outcome: &str| {
-        let whole = path.display().to_string();
-        let mut cut: String = whole.chars().take(120).collect();
-        if cut.len() < whole.len() {
-            cut.push('…');
-        }
-        format!("Working tree \"{cut}\": {outcome}\n")
-    };
+    let tree = |path: &Path, outcome: &str| format!("{}: {outcome}\n", uncommitted_in(path));
 
     // the change is in the linked tree, where the session is; the project itself is clean
     start(&root, "s1");
     silence_a_lint(&linked);
     let decision = stop_from(&linked, "s1", &script);
     let reason = blocked(&decision);
+    // Round 12: a tree with no change is not listed
     assert!(
-        reason.contains(&tree(&top, "no change")) && reason.contains(&tree(&linked, "FAIL")),
+        !reason.contains(&uncommitted_in(&top)) && reason.contains(&tree(&linked, "FAIL")),
         "{reason}"
     );
     assert!(reason.contains("check_suppressed in \"a.rs\""), "{reason}");
@@ -1984,19 +1981,21 @@ fn a_linked_working_tree_the_session_entered_is_judged_too() {
         blocked(&decision).contains(&tree(&linked, "FAIL")),
         "{decision}"
     );
-    // committed there: still judged, from the commit the session began from
+    // committed there: the commit is the session's and is judged; neither tree has anything
+    // uncommitted
     start(&root, "s2");
     git(
         &linked,
         &["commit", "--quiet", "-am", "work in the linked tree"],
     );
+    let work = short(&linked, "HEAD");
     let decision = stop_from(&linked, "s2", &script);
-    // the tree is what its branch holds: one patch, judged once, named as both
-    let both = tree(&linked, "FAIL").replace(
-        "\": FAIL\n",
-        "\" and Commits of \"refs/heads/side\": FAIL\n",
+    let reason = blocked(&decision);
+    assert!(
+        reason.contains(&format!("Commit {work}: FAIL\n"))
+            && !reason.contains("Uncommitted changes in "),
+        "{reason}"
     );
-    assert!(blocked(&decision).contains(&both), "{decision}");
 
     // the change is in the project, the session is in the (clean) linked tree
     git(&linked, &["reset", "--quiet", "--hard", "main"]);
@@ -2005,10 +2004,12 @@ fn a_linked_working_tree_the_session_entered_is_judged_too() {
     let decision = stop_from(&linked, "s3", &script);
     let reason = blocked(&decision);
     assert!(
-        reason.contains(&tree(&top, "FAIL")) && reason.contains(&tree(&linked, "no change")),
+        reason.contains(&tree(&top, "FAIL")) && !reason.contains(&uncommitted_in(&linked)),
         "{reason}"
     );
-    // both changed in the same way: one patch, shown to the judge once, one answer for both
+    // both changed in the same way: one patch, shown to the judge once. Round 12: a failure
+    // of an uncommitted change is known by its rules, signals, paths and numbers of items,
+    // whichever tree it is in, and this one has blocked: it stands in both.
     let runs = || {
         std::fs::read_to_string(&log)
             .unwrap()
@@ -2018,31 +2019,33 @@ fn a_linked_working_tree_the_session_entered_is_judged_too() {
     let before = runs();
     silence_a_lint(&linked);
     let decision = stop_from(&linked, "s3", &script);
-    let reason = blocked(&decision);
-    assert!(!reason.contains("Working tree "), "{reason}");
+    let said = allowed(&decision);
+    assert!(
+        said.starts_with("deep-diff-forge: FAIL STANDS. ")
+            && said.contains(&tree(&top, "FAIL, which stands"))
+            && said.contains(&tree(&linked, "FAIL, which stands")),
+        "{said}"
+    );
     assert_eq!(runs(), before + 1);
     // changed differently: each is shown to the judge as its own patch
     let before = runs();
     std::fs::write(linked.join("new.rs"), "#[allow(unused)]\nfn n() {}\n").unwrap();
     let decision = stop_from(&linked, "s3", &script);
-    let reason = blocked(&decision);
+    let said = allowed(&decision);
     assert!(
-        reason.contains(&tree(&top, "FAIL")) && reason.contains(&tree(&linked, "FAIL")),
-        "{reason}"
+        said.contains(&tree(&top, "FAIL, which stands"))
+            && said.contains(&tree(&linked, "FAIL, which stands")),
+        "{said}"
     );
     let seen = std::fs::read_to_string(&log).unwrap();
     assert_eq!(runs(), before + 2, "{seen}");
-    assert!(
-        seen.contains("change-0.patch") && seen.contains("change-1.patch"),
-        "{seen}"
-    );
 
     // a session that began in the linked tree has that tree as its project, and one tree
     git(&root, &["checkout", "--quiet", "--", "a.rs"]);
     start(&linked, "s4");
     let decision = stop_from(&linked, "s4", &script);
     let reason = blocked(&decision);
-    assert!(!reason.contains("Working tree "), "{reason}");
+    assert!(!reason.contains("Uncommitted changes in "), "{reason}");
     // nothing was left behind, and the hooks' directory is the repository's, not the tree's
     assert!(root.join(".git/deep-diff-forge").is_dir());
     assert_eq!(
@@ -2076,10 +2079,17 @@ fn work_and_policy_the_session_committed_are_judged_from_where_it_began() {
     start(&root, "s");
     silence_a_lint(&root);
     git(&root, &["commit", "--quiet", "-am", "work"]);
+    let work = short(&root, "HEAD");
     assert_eq!(git(&root, &["status", "--porcelain=v1"]), "");
     let decision = stop_from(&root, "s", &script);
     let reason = blocked(&decision);
     assert!(reason.contains(&since), "{reason}");
+    assert!(
+        reason.contains(&format!("Commit {work}: FAIL\n")),
+        "{reason}"
+    );
+    // the branch has only gone on from the base: nothing says that it left it
+    assert!(!reason.contains("the branch has moved"), "{reason}");
     assert!(reason.contains("check_suppressed in \"a.rs\""), "{reason}");
     assert!(
         std::fs::read_to_string(&log)
@@ -2100,23 +2110,33 @@ fn work_and_policy_the_session_committed_are_judged_from_where_it_began() {
         &root,
         &["commit", "--quiet", "-am", "policy: drop the rules"],
     );
+    let policy = short(&root, "HEAD");
     std::fs::write(root.join("new.rs"), "#[allow(unused)]\nfn n() {}\n").unwrap();
     let decision = stop_from(&root, "s", &script);
-    blocked(&decision);
+    let reason = blocked(&decision);
+    // Round 12: three units. The uncommitted new file and the commit of the policy are judged
+    // at this stop; the commit of the work was judged at the first one and stands.
+    assert!(
+        reason.contains(&format!(
+            "{}: FAIL\n",
+            uncommitted_in(&std::fs::canonicalize(&root).unwrap())
+        )) && reason.contains(&format!("Commit {work}: FAIL, which stands\n"))
+            && reason.contains(&format!("Commit {policy}: FAIL\n")),
+        "{reason}"
+    );
     let seen = std::fs::read_to_string(&log).unwrap();
     assert!(!seen.contains("loosened"), "{seen}");
-    // three runs of the judge: the first stop, and at this one the working tree and what
-    // `HEAD` holds, which differ by the new file; each by the base's policy
+    // three runs of the judge: the first stop, and at this one the new file and the commit
+    // of the policy; each by the base's policy, each a patch of one file
     assert_eq!(
         seen.matches("POLICY # the policy at the base commit\n")
             .count(),
         3,
         "{seen}"
     );
-    // the committed work, the committed policy and the new file
-    assert!(seen.contains("PATCH-FILES 3\n"), "{seen}");
+    assert_eq!(seen.matches("PATCH-FILES 1\n").count(), 3, "{seen}");
 
-    // A later start of the same session (resume, compact, clear) does not move the base.
+    // A later start of the same session (a resume, a compaction) does not move the base.
     let again = start(&root, "s");
     assert!(
         again.contains(&format!(
@@ -2144,14 +2164,16 @@ fn work_and_policy_the_session_committed_are_judged_from_where_it_began() {
 }
 
 /// HR-H-2, the base when history moves under the session. A reset or another branch leaves
-/// `HEAD` on history that does not contain the base: its tree is still what the working tree is
-/// compared with, and the message says the branch moved. A base whose commit is gone from the
-/// repository cannot be compared with: the stop is UNJUDGED and says so.
+/// `HEAD` on history that does not contain the base: the message says the branch moved, and
+/// the policy is still the base's. Since round 12 the uncommitted change is measured from
+/// the tree's own `HEAD`, so a branch that was only put back has nothing to judge. A base
+/// whose commit is gone from the repository has no policy to read: a stop with something to
+/// judge is UNJUDGED and says so.
 #[test]
 fn a_base_the_branch_left_is_still_judged_and_one_that_is_gone_is_unjudged() {
     let scratch = Scratch::new("hook-base-moved");
     let root = repository(&scratch);
-    let (script, _, _) = failing_judge(&scratch);
+    let (script, log, _) = failing_judge(&scratch);
     let first = git(&root, &["rev-parse", "HEAD"]);
     std::fs::write(root.join("b.rs"), "fn c() {}\n").unwrap();
     git(&root, &["add", "b.rs"]);
@@ -2160,6 +2182,13 @@ fn a_base_the_branch_left_is_still_judged_and_one_that_is_gone_is_unjudged() {
 
     start(&root, "s");
     git(&root, &["reset", "--quiet", "--hard", first.trim()]);
+    // Round 12: a branch put back to a commit that was there before holds no commit of the
+    // session and leaves nothing uncommitted, so there is nothing to judge.
+    assert_eq!(stop_from(&root, "s", &script), Value::Null);
+    assert_eq!(runs(&log), 0);
+    // an uncommitted change there is judged, by the policy of the commit the session began
+    // from, and the message says that the branch has left that commit
+    silence_a_lint(&root);
     let decision = stop_from(&root, "s", &script);
     let reason = blocked(&decision);
     assert!(
@@ -2169,10 +2198,11 @@ fn a_base_the_branch_left_is_still_judged_and_one_that_is_gone_is_unjudged() {
         )),
         "{reason}"
     );
-    // the same when HEAD names no commit at all any more (an orphan branch)
+    // the same when HEAD names no commit at all any more (an orphan branch): the tree is
+    // measured from the session's base then
     git(&root, &["checkout", "--quiet", "--orphan", "wip"]);
     let decision = stop_from(&root, "s", &script);
-    // the same failure as a moment ago: it has blocked once in this session and stands
+    // the same failure as a moment ago: it has blocked once and is still there, so it stands
     assert!(
         allowed(&decision).starts_with("deep-diff-forge: FAIL STANDS. ")
             && allowed(&decision).contains("the branch has moved"),
@@ -2183,21 +2213,27 @@ fn a_base_the_branch_left_is_still_judged_and_one_that_is_gone_is_unjudged() {
     git(&root, &["checkout", "--quiet", "-f", "main"]);
     git(&root, &["reflog", "expire", "--expire=now", "--all"]);
     git(&root, &["gc", "--quiet", "--prune=now"]);
+    // nothing to judge, so nothing needs the policy of the commit that is gone
+    assert_eq!(stop_from(&root, "s", &script), Value::Null);
+    // with something to judge the policy cannot be read: UNJUDGED, said
+    silence_a_lint(&root);
+    let before = runs(&log);
     let decision = stop_from(&root, "s", &script);
     let said = allowed(&decision);
     assert!(
         said.starts_with("deep-diff-forge: UNJUDGED. ")
-            && said.contains(&format!(
-                "the commit this session began from ({}) can no longer be read",
-                &second[..7]
-            )),
+            && said.contains("the policy could not be read from Git"),
         "{said}"
     );
+    assert_eq!(runs(&log), before);
     // advice says it once, then stays silent
     let event = input("PostToolUse", &root, "s", false);
     let (_, stdout, _) = hook("post-tool", &[], &event);
     assert!(
-        system_message(&stdout).contains("can no longer be read"),
+        system_message(&stdout).contains(&format!(
+            "the commit this session began from ({}) can no longer be read",
+            &second[..7]
+        )),
         "{stdout}"
     );
     assert_eq!(hook("post-tool", &[], &event).1, "");
@@ -2548,8 +2584,10 @@ fn a_new_item_blocks_again_and_a_state_that_cannot_be_kept_is_said() {
     write_program(&script, &judge_script(&log, &exit_file, &citing(3)));
     blocked(&stop(true));
     assert!(allowed(&stop(true)).starts_with("deep-diff-forge: FAIL STANDS. "));
-    // and the first one again is still one that has blocked
+    // Round 12 (HR3-M-3): the first one is no longer there at that stop, so it was forgotten;
+    // when it comes back it blocks again, once
     write_program(&script, &judge_script(&log, &exit_file, &citing(1)));
+    blocked(&stop(false));
     assert!(allowed(&stop(false)).starts_with("deep-diff-forge: FAIL STANDS. "));
 
     // The state cannot be kept: its directory can be read and not written (not as root, who
@@ -2740,7 +2778,21 @@ fn a_large_tool_answer_is_read_and_one_over_the_cap_is_refused_by_name() {
     let decision: Value = serde_json::from_str(&stdout).unwrap();
     blocked(&decision);
 
-    let over = with("Stop", "last_assistant_message", 33 * 1024 * 1024);
+    // An input of exactly the cap is read; and one four mebibytes over it is refused after all
+    // of it was taken from the pipe (the writer here would fail on a pipe that was closed
+    // early). A mutation run left both bounds alive.
+    let cap = 32 * 1024 * 1024;
+    let frame = with("Stop", "last_assistant_message", 0).to_string().len();
+    let exact = with("Stop", "last_assistant_message", cap - frame);
+    assert_eq!(exact.to_string().len(), cap);
+    let (_, stdout, _) = hook("stop", &["--judge", script.to_str().unwrap()], &exact);
+    assert!(
+        allowed(&serde_json::from_str(&stdout).unwrap())
+            .starts_with("deep-diff-forge: FAIL STANDS. "),
+        "{}",
+        &stdout[..stdout.len().min(300)]
+    );
+    let over = with("Stop", "last_assistant_message", cap + 4 * 1024 * 1024);
     let (code, stdout, _) = hook("stop", &["--judge", script.to_str().unwrap()], &over);
     assert_eq!(code, 0);
     let said = system_message(&stdout);
@@ -2770,7 +2822,8 @@ fn the_state_of_a_session_is_in_the_users_state_directory_or_the_hook_says_it_ha
         command.env("XDG_STATE_HOME", &xdg);
     });
     assert!(stdout.contains("check_suppressed"), "{stdout}");
-    assert_eq!(files(&xdg.join("deep-diff-forge/hooks")), 1);
+    // two files: the state, and the list of commits that were there when the session began
+    assert_eq!(files(&xdg.join("deep-diff-forge/hooks")), 2);
     assert_eq!(files(&sessions()), 0);
     let (_, stdout, _) = hook_in("post-tool", &[], &event, |command| {
         command
@@ -2778,7 +2831,7 @@ fn the_state_of_a_session_is_in_the_users_state_directory_or_the_hook_says_it_ha
             .current_dir(&root);
     });
     assert!(stdout.contains("check_suppressed"), "{stdout}");
-    assert_eq!(files(&sessions()), 1);
+    assert_eq!(files(&sessions()), 2);
     assert!(!root.join("relative").exists());
     // nothing of a session is kept in the repository
     assert_eq!(files(&root.join(".git/deep-diff-forge")), 0);
@@ -2940,7 +2993,8 @@ fn runs(log: &Path) -> usize {
 /// tree still held it. The ordinary branch workflow (branch, commit, switch back), a commit of
 /// a staged file that was edited again, and a commit the tree was put back from all ended in a
 /// stop with no output and the judge never asked. A stop now also has judged what the session
-/// committed and `HEAD`, a branch, a tag, the stash or a remote-tracking ref still names.
+/// committed. Since round 12 each commit is judged by itself and named by its id: the commits
+/// that a branch, a tag, the stash, `HEAD` or their reflogs lead to.
 #[test]
 fn commits_the_session_made_are_judged_wherever_a_ref_names_them() {
     let scratch = Scratch::new("hook-session-commits");
@@ -2949,7 +3003,6 @@ fn commits_the_session_made_are_judged_wherever_a_ref_names_them() {
     let top = std::fs::canonicalize(&root).unwrap();
     let base = git(&root, &["rev-parse", "HEAD"]);
     let base = base.trim();
-    let no_change = format!("Working tree \"{}\": no change\n", top.display());
     let harmless = "fn a() {}\nfn b() {}\nfn c() {}\n";
     // back to the base on `main`, with nothing left of the case before
     let reset = || {
@@ -2971,21 +3024,29 @@ fn commits_the_session_made_are_judged_wherever_a_ref_names_them() {
     git(&root, &["checkout", "--quiet", "-b", "feature"]);
     silence_a_lint(&root);
     git(&root, &["commit", "--quiet", "-am", "work"]);
+    let work = short(&root, "HEAD");
     git(&root, &["checkout", "--quiet", "main"]);
     assert_eq!(git(&root, &["status", "--porcelain=v1"]), "");
     let decision = stop_from(&root, "2b", &script);
     let reason = blocked(&decision);
+    // Round 12: the commit is named by its id; a tree with no change is not listed, and no
+    // name of a ref is in the message
     assert!(
         reason.contains(&format!(
-            "{no_change}Commits of \"refs/heads/feature\": FAIL\n- rule no-silent-suppression: "
+            "Commit {work}: FAIL\n- rule no-silent-suppression: "
         )),
+        "{reason}"
+    );
+    assert!(
+        !reason.contains("refs/") && !reason.contains("Uncommitted changes in"),
         "{reason}"
     );
     let seen = std::fs::read_to_string(&log).unwrap();
     assert!(seen.ends_with("PATCH-FILES 1\nPATCH-ALLOWS 1\n"), "{seen}");
     assert_eq!(runs(&log), 1);
 
-    // 11b: committed, pushed, and the branch put back. A remote-tracking ref names the commit.
+    // 11b: committed, pushed, and the branch put back. The reflog of `HEAD` names the commit
+    // (the remote-tracking ref does too, which makes no commit the session's).
     reset();
     git(&root, &["branch", "--quiet", "-D", "feature"]);
     let origin = scratch.join("origin.git");
@@ -3001,39 +3062,40 @@ fn commits_the_session_made_are_judged_wherever_a_ref_names_them() {
     start(&root, "11b");
     silence_a_lint(&root);
     git(&root, &["commit", "--quiet", "-am", "work"]);
+    let work = short(&root, "HEAD");
     git(&root, &["push", "--quiet", "origin", "main"]);
     git(&root, &["reset", "--quiet", "--hard", base]);
     let decision = stop_from(&root, "11b", &script);
     let reason = blocked(&decision);
     assert!(
-        reason.contains(&format!(
-            "{no_change}Commits of \"refs/remotes/origin/main\": FAIL\n"
-        )),
+        reason.contains(&format!("Commit {work}: FAIL\n")),
         "{reason}"
     );
 
     // 2f: staged, edited again, committed without adding again. `HEAD` holds what the working
-    // file no longer does: two patches, and the one of `HEAD` is the one with the lint.
+    // file no longer does: the uncommitted change and the commit are two units, and the
+    // commit is the one with the lint.
     reset();
     start(&root, "2f");
     silence_a_lint(&root);
     git(&root, &["add", "--all"]);
     std::fs::write(root.join("a.rs"), harmless).unwrap();
     git(&root, &["commit", "--quiet", "-m", "add c"]);
+    let work = short(&root, "HEAD");
     assert_eq!(git(&root, &["status", "--porcelain=v1"]), " M a.rs\n");
     let before = runs(&log);
     let decision = stop_from(&root, "2f", &script);
     let reason = blocked(&decision);
     assert!(
-        reason.contains(&format!("Working tree \"{}\": FAIL\n", top.display()))
-            && reason.contains("Commits of HEAD, \"refs/heads/main\": FAIL\n"),
+        reason.contains(&format!("{}: FAIL\n", uncommitted_in(&top)))
+            && reason.contains(&format!("Commit {work}: FAIL\n")),
         "{reason}"
     );
     assert_eq!(runs(&log), before + 2);
+    // the uncommitted change first (it takes the lint out again), then the commit
     let seen = std::fs::read_to_string(&log).unwrap();
     assert!(
-        seen.ends_with("PATCH-FILES 1\nPATCH-ALLOWS 0\n")
-            || seen.contains("PATCH-FILES 1\nPATCH-ALLOWS 0\nARGS"),
+        seen.contains("PATCH-FILES 1\nPATCH-ALLOWS 0\nARGS"),
         "{seen}"
     );
     assert!(seen.ends_with("PATCH-ALLOWS 1\n"), "{seen}");
@@ -3047,10 +3109,8 @@ fn a_commit_the_working_tree_no_longer_shows_is_judged() {
     let scratch = Scratch::new("hook-session-commits-3");
     let root = repository(&scratch);
     let (script, _, _) = failing_judge(&scratch);
-    let top = std::fs::canonicalize(&root).unwrap();
     let base = git(&root, &["rev-parse", "HEAD"]);
     let base = base.trim();
-    let no_change = format!("Working tree \"{}\": no change\n", top.display());
     let reset = || {
         git(&root, &["checkout", "--quiet", "-f", "main"]);
         git(&root, &["reset", "--quiet", "--hard", base]);
@@ -3062,12 +3122,11 @@ fn a_commit_the_working_tree_no_longer_shows_is_judged() {
     start(&root, "2c");
     silence_a_lint(&root);
     git(&root, &["commit", "--quiet", "-am", "work"]);
+    let work = short(&root, "HEAD");
     git(&root, &["checkout", "--quiet", base, "--", "."]);
     let decision = stop_from(&root, "2c", &script);
     assert!(
-        blocked(&decision).contains(&format!(
-            "{no_change}Commits of HEAD, \"refs/heads/main\": FAIL\n"
-        )),
+        blocked(&decision).contains(&format!("Commit {work}: FAIL\n")),
         "{decision}"
     );
 
@@ -3082,11 +3141,12 @@ fn a_commit_the_working_tree_no_longer_shows_is_judged() {
     .unwrap();
     git(&root, &["add", "build/gen.rs"]);
     git(&root, &["commit", "--quiet", "-m", "work"]);
+    let work = short(&root, "HEAD");
     git(&root, &["rm", "--quiet", "--cached", "build/gen.rs"]);
     std::fs::write(root.join(".git/info/exclude"), "build/\n").unwrap();
     let decision = stop_from(&root, "2d", &script);
     assert!(
-        blocked(&decision).contains("Commits of HEAD, \"refs/heads/main\": FAIL\n"),
+        blocked(&decision).contains(&format!("Commit {work}: FAIL\n")),
         "{decision}"
     );
     std::fs::write(root.join(".git/info/exclude"), "").unwrap();
@@ -3094,17 +3154,15 @@ fn a_commit_the_working_tree_no_longer_shows_is_judged() {
 
 /// HR2-H-1, the other names a commit can have, and the usual case. The stash and a tag name
 /// commits as a branch does. A commit on the branch the session is on, with a clean tree, is
-/// one patch with the working tree and one run of the judge. And one stop has at most four
-/// distinct patches judged: what is beyond is UNJUDGED and named, never a pass.
+/// one run of the judge. Since round 12 there is no bound of four patches: every commit is
+/// judged, and each once in a session.
 #[test]
 fn the_stash_a_tag_and_many_branches_name_commits_too() {
     let scratch = Scratch::new("hook-session-commits-2");
     let root = repository(&scratch);
     let (script, log, exit_file) = failing_judge(&scratch);
-    let top = std::fs::canonicalize(&root).unwrap();
     let base = git(&root, &["rev-parse", "HEAD"]);
     let base = base.trim();
-    let no_change = format!("Working tree \"{}\": no change\n", top.display());
     let reset = || {
         git(&root, &["checkout", "--quiet", "-f", "main"]);
         git(&root, &["reset", "--quiet", "--hard", base]);
@@ -3118,9 +3176,10 @@ fn the_stash_a_tag_and_many_branches_name_commits_too() {
     silence_a_lint(&root);
     git(&root, &["stash", "--quiet"]);
     assert_eq!(git(&root, &["status", "--porcelain=v1"]), "");
+    let stashed = short(&root, "refs/stash");
     let decision = stop_from(&root, "stash", &script);
     assert!(
-        blocked(&decision).contains(&format!("{no_change}Commits of \"refs/stash\": FAIL\n")),
+        blocked(&decision).contains(&format!("Commit {stashed}: FAIL\n")),
         "{decision}"
     );
     git(&root, &["stash", "drop", "--quiet"]);
@@ -3128,29 +3187,34 @@ fn the_stash_a_tag_and_many_branches_name_commits_too() {
     git(&root, &["checkout", "--quiet", "--detach"]);
     silence_a_lint(&root);
     git(&root, &["commit", "--quiet", "-am", "work"]);
+    let work = short(&root, "HEAD");
     git(&root, &["tag", "kept"]);
     git(&root, &["checkout", "--quiet", "main"]);
     let decision = stop_from(&root, "tag", &script);
     assert!(
-        blocked(&decision).contains(&format!("{no_change}Commits of \"refs/tags/kept\": FAIL\n")),
+        blocked(&decision).contains(&format!("Commit {work}: FAIL\n")),
         "{decision}"
     );
     git(&root, &["tag", "-d", "kept"]);
 
     // The usual stop stays one run of the judge: committed on the branch the session is on,
-    // with a clean tree, the working tree and `HEAD` are one patch and one answer.
+    // with a clean tree, there is one commit to judge and nothing uncommitted.
     reset();
     start(&root, "usual");
     silence_a_lint(&root);
     git(&root, &["commit", "--quiet", "-am", "work"]);
+    let work = short(&root, "HEAD");
     let before = runs(&log);
     let decision = stop_from(&root, "usual", &script);
     let reason = blocked(&decision);
-    assert!(!reason.contains(": FAIL\n"), "{reason}");
+    assert!(
+        reason.contains(&format!("Commit {work}: FAIL\n")),
+        "{reason}"
+    );
     assert_eq!(runs(&log), before + 1);
 
-    // More distinct patches than one stop has judged: the first four are judged, the rest are
-    // UNJUDGED and named, and that is never a pass.
+    // Round 12: no bound of four patches. Six branches with a commit each are six commits,
+    // each judged, and each once in the session: the second stop asks the judge nothing.
     reset();
     std::fs::write(&exit_file, "0").unwrap();
     start(&root, "many");
@@ -3165,109 +3229,10 @@ fn the_stash_a_tag_and_many_branches_name_commits_too() {
     }
     git(&root, &["checkout", "--quiet", "main"]);
     let before = runs(&log);
-    let decision = stop_from(&root, "many", &script);
-    let said = allowed(&decision);
-    assert!(
-        said.starts_with("deep-diff-forge: UNJUDGED. Not everything of this change (")
-            && said.ends_with("That is not a pass."),
-        "{said}"
-    );
-    for (branch, outcome) in [
-        ("b0", "pass"),
-        ("b3", "pass"),
-        ("b4", "UNJUDGED"),
-        ("b5", "UNJUDGED"),
-    ] {
-        assert!(
-            said.contains(&format!("Commits of \"refs/heads/{branch}\": {outcome}\n")),
-            "{branch}: {said}"
-        );
-    }
-    assert!(
-        said.contains("one stop has at most 4 distinct patches judged"),
-        "{said}"
-    );
-    assert_eq!(runs(&log), before + 4);
-}
-
-/// HR2-H-1, the bounds. More refs than are recorded when a session begins make the record
-/// partial: of a ref with commits that no recorded tip leads to it cannot be said whether the
-/// session made them, so they are UNJUDGED and the ref is named. More changed tips than one
-/// stop examines are UNJUDGED and named as well. Neither is silent, and `HEAD` is still judged.
-#[test]
-fn refs_beyond_what_a_stop_can_know_or_examine_are_unjudged_and_named() {
-    let scratch = Scratch::new("hook-many-refs");
-    let root = repository(&scratch);
-    let (script, _, exit_file) = failing_judge(&scratch);
-    std::fs::write(&exit_file, "0").unwrap();
-    let base = git(&root, &["rev-parse", "HEAD"]);
-    let base = base.trim();
-
-    // more changed tips than a stop examines: 18 branches, each with a commit of its own
-    start(&root, "examined");
-    for n in 10..28 {
-        git(
-            &root,
-            &["checkout", "--quiet", "-b", &format!("b{n}"), base],
-        );
-        git(
-            &root,
-            &["commit", "--quiet", "--allow-empty", "-m", &format!("c{n}")],
-        );
-    }
-    git(&root, &["checkout", "--quiet", "main"]);
-    let decision = stop_from(&root, "examined", &script);
-    let said = allowed(&decision);
-    assert!(
-        said.contains("UNJUDGED")
-            && said.contains("more refs changed since the session began than one stop examines")
-            && said.contains("Commits of \"refs/heads/b26\", \"refs/heads/b27\": UNJUDGED\n"),
-        "{said}"
-    );
-
-    // more refs than are recorded: 4,200 tags written straight into the packed refs, beside
-    // whatever Git has packed there itself (it packs loose refs when there are many)
-    let packed_refs = root.join(".git/packed-refs");
-    let mut lines: Vec<String> = std::fs::read_to_string(&packed_refs)
-        .unwrap_or_default()
-        .lines()
-        .filter(|line| !line.starts_with('#'))
-        .map(str::to_owned)
-        .collect();
-    assert!(lines.iter().all(|line| !line.starts_with('^')), "{lines:?}");
-    lines.extend((0..4_200).map(|n| format!("{base} refs/tags/t{n:04}")));
-    lines.sort_by(|one, other| one.split(' ').nth(1).cmp(&other.split(' ').nth(1)));
-    std::fs::write(
-        &packed_refs,
-        format!(
-            "# pack-refs with: peeled fully-peeled sorted \n{}\n",
-            lines.join("\n")
-        ),
-    )
-    .unwrap();
-    start(&root, "partial");
-    git(&root, &["checkout", "--quiet", "-b", "zz-late", base]);
-    silence_a_lint(&root);
-    git(&root, &["commit", "--quiet", "-am", "work"]);
-    git(&root, &["checkout", "--quiet", "main"]);
-    let decision = stop_from(&root, "partial", &script);
-    let said = allowed(&decision);
-    assert!(
-        said.contains("UNJUDGED")
-            && said
-                .contains("the repository has more refs than were recorded when the session began")
-            && said.contains("Commits of \"refs/heads/zz-late\": UNJUDGED\n"),
-        "{said}"
-    );
-    // what `HEAD` holds is known all the same: committed on the session's own branch, it is
-    // judged (here: fails) although the record is partial
-    std::fs::write(&exit_file, "7").unwrap();
-    git(&root, &["merge", "--quiet", "--ff-only", "zz-late"]);
-    let decision = stop_from(&root, "partial", &script);
-    assert!(
-        blocked(&decision).contains("check_suppressed in \"a.rs\""),
-        "{decision}"
-    );
+    assert_eq!(stop_from(&root, "many", &script), Value::Null);
+    assert_eq!(runs(&log), before + 6);
+    assert_eq!(stop_from(&root, "many", &script), Value::Null);
+    assert_eq!(runs(&log), before + 6);
 }
 
 /// Second independent review of the hooks, HR2-M-1, the reviewer's case: a failure with 4,000
@@ -3293,10 +3258,7 @@ fn a_failure_with_thousands_of_violations_is_remembered() {
     start(&root, "s");
     silence_a_lint(&root);
     blocked(&stop_from(&root, "s", &script));
-    let state: Vec<PathBuf> = std::fs::read_dir(sessions())
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect();
+    let state = states_in(&sessions());
     assert_eq!(state.len(), 1, "{state:?}");
     let kept = std::fs::read_to_string(&state[0]).unwrap();
     assert!(kept.len() < 4_096, "{} bytes", kept.len());
@@ -3534,10 +3496,12 @@ fn a_failure_blocks_once_in_a_session_also_over_later_turns() {
 /// clone of it is put at its recorded path; the stop names the old path as the project and has
 /// its directory in the moved original. The clean clone was taken for the project, the changed
 /// original for an unrelated repository, and the stop said nothing. A project is the
-/// repository that was recorded (the device and inode of its Git common directory), wherever
-/// it is now.
+/// repository that was recorded (the inode of its Git common directory) at the path it was
+/// recorded at: since round 12 a project that was moved is not judged where the session
+/// finds it, but is UNJUDGED like the clone, with the remedy (a new session).
 #[test]
 fn a_clone_put_at_the_projects_path_is_not_the_project() {
+    use std::os::unix::fs::MetadataExt as _;
     let scratch = Scratch::new("hook-moved-project");
     let root = repository(&scratch);
     let (script, log, _) = failing_judge(&scratch);
@@ -3570,6 +3534,17 @@ fn a_clone_put_at_the_projects_path_is_not_the_project() {
     );
     assert_eq!(code, 0);
     let recorded = std::fs::canonicalize(&root).unwrap();
+    // HR3-M-4: the repository is recorded by the inode of its Git directory, with no device
+    // number before it (that one is given when the file system is mounted)
+    let state = states_in(&sessions());
+    let kept: Value = serde_json::from_str(&std::fs::read_to_string(&state[0]).unwrap()).unwrap();
+    assert_eq!(
+        kept["project"]["id"],
+        std::fs::metadata(root.join(".git"))
+            .unwrap()
+            .ino()
+            .to_string()
+    );
     silence_a_lint(&root);
     std::fs::rename(&root, &moved).unwrap();
     git(
@@ -3585,24 +3560,14 @@ fn a_clone_put_at_the_projects_path_is_not_the_project() {
     assert_eq!(git(&root, &["status", "--porcelain=v1"]), "");
     assert_eq!(git(&moved, &["status", "--porcelain=v1"]), " M a.rs\n");
 
-    // Vesper's stop: the client still names the old path, the session is in the moved original
-    let decision = stop("s", &moved, Some(&root));
-    let reason = blocked(&decision);
-    assert!(reason.contains("check_suppressed in \"a.rs\""), "{reason}");
-    assert!(
-        reason.contains(&format!(
-            "The project this session began in is no longer at \"{}\": it was found, and judged, at \"{}\".",
-            recorded.display(),
-            std::fs::canonicalize(&moved).unwrap().display()
-        )),
-        "{reason}"
-    );
-    assert_eq!(runs(&log), 1);
-    // the same with no project named: the recorded path holds another repository
-    assert!(allowed(&stop("s", &moved, None)).starts_with("deep-diff-forge: FAIL STANDS. "));
-    // From anywhere else the original cannot be found: the clone at the recorded path is not
-    // the project, and the stop says so instead of judging it clean.
+    // Vesper's stop (the client still names the old path, the session is in the moved
+    // original), the same with no project named, and from anywhere else: the clone at the
+    // recorded path is not the project, and the stop says so instead of judging it clean.
+    // Round 12: the moved original is not judged in this session either (the project is a
+    // repository at a path); the message names the remedy.
     for (cwd, project) in [
+        (&moved, Some(root.as_path())),
+        (&moved, None),
         (&root, Some(root.as_path())),
         (&root, None),
         (&scratch.join("nowhere"), None),
@@ -3614,10 +3579,12 @@ fn a_clone_put_at_the_projects_path_is_not_the_project() {
                 && said.contains(&format!(
                     "the repository at \"{}\" is not the one this session started in",
                     recorded.display()
-                )),
+                ))
+                && said.contains("start a new session to have the work there judged"),
             "{said}"
         );
     }
+    assert_eq!(runs(&log), 0);
     // advice says it once, and the start of the session says it too
     let event = input("PostToolUse", &root, "s", false);
     assert!(
@@ -3626,7 +3593,15 @@ fn a_clone_put_at_the_projects_path_is_not_the_project() {
     );
     assert_eq!(hook("post-tool", &[], &event).1, "");
     assert!(start(&root, "s").contains("is not the one this session started in"));
-    assert_eq!(runs(&log), 2);
+    // the remedy: a new session in the moved original has its work judged
+    start(&moved, "s2");
+    std::fs::write(moved.join("new.rs"), "#[allow(unused)]\nfn n() {}\n").unwrap();
+    let decision = stop("s2", &moved, None);
+    assert!(
+        blocked(&decision).contains("check_suppressed in \"a.rs\""),
+        "{decision}"
+    );
+    assert_eq!(runs(&log), 1);
 }
 
 /// The second review's "weak tests": the two refusals in finding the project had no test, so a
@@ -3663,28 +3638,35 @@ fn a_project_that_is_another_or_is_gone_is_refused_by_name() {
     assert_eq!(
         said,
         format!(
-            "deep-diff-forge: UNJUDGED. This stop was not judged: this session began in \"{}\", and the project found now is \"{}\". That is not a pass.",
+            "deep-diff-forge: UNJUDGED. This stop was not judged: this session began in \"{}\", and the project found now is \"{}\"; start a new session to have the work there judged. That is not a pass.",
             recorded.display(),
             std::fs::canonicalize(&other).unwrap().display()
         )
     );
-    // the recorded project is gone, and the session is somewhere it cannot be found from
+    // the recorded project is gone from its path. Round 12: also when the session is in the
+    // directory it was moved to (a project is a repository at a path)
     std::fs::rename(&root, scratch.join("put-away")).unwrap();
-    for cwd in [&other, &scratch.join("nowhere")] {
+    for cwd in [&other, &scratch.join("nowhere"), &scratch.join("put-away")] {
         let decision = stop_from(cwd, "s", &script);
         assert_eq!(
             allowed(&decision),
             format!(
-                "deep-diff-forge: UNJUDGED. This stop was not judged: the project this session began in, \"{}\", is no longer a Git working tree. That is not a pass.",
+                "deep-diff-forge: UNJUDGED. This stop was not judged: the project this session began in, \"{}\", is no longer a Git working tree; start a new session to have the work there judged. That is not a pass.",
                 recorded.display()
             )
         );
     }
     assert_eq!(runs(&log), 0, "another repository was judged in its place");
-    // moved, and the session is in it: found by what it is, and judged there
-    let decision = stop_from(&scratch.join("put-away"), "s", &script);
+    // the remedy: a new session where the project is now has its work judged
+    start(&scratch.join("put-away"), "s2");
+    std::fs::write(
+        scratch.join("put-away/new.rs"),
+        "#[allow(unused)]\nfn n() {}\n",
+    )
+    .unwrap();
+    let decision = stop_from(&scratch.join("put-away"), "s2", &script);
     assert!(
-        blocked(&decision).contains("is no longer at ") && runs(&log) == 1,
+        blocked(&decision).contains("check_suppressed in \"a.rs\"") && runs(&log) == 1,
         "{decision}"
     );
 }
@@ -3955,4 +3937,848 @@ fn a_state_that_cannot_be_kept_is_said_once_by_advice_and_always_by_a_stop() {
         "a state was written into the working tree"
     );
     assert_eq!(git(&root, &["status", "--porcelain=v1"]), " M a.rs\n");
+}
+
+// ---- Round 11 of Vesper's review and the third independent review (2026-11-14, both NO-GO) ----
+
+/// The first twelve digits of the commit `rev` names in `root`: how a stop names a commit.
+fn short(root: &Path, rev: &str) -> String {
+    git(root, &["rev-parse", rev])[..12].to_owned()
+}
+
+/// The uncommitted change of the working tree at `top` as a stop names it: the path quoted,
+/// and cut at 120 characters as every path is.
+fn uncommitted_in(top: &Path) -> String {
+    let whole = top.display().to_string();
+    let mut cut: String = whole.chars().take(120).collect();
+    if cut.len() < whole.len() {
+        cut.push('…');
+    }
+    format!("Uncommitted changes in \"{cut}\"")
+}
+
+/// The state files in `dir`, without the lists of commits that are kept beside them.
+fn states_in(dir: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|kind| kind == "json"))
+        .collect();
+    found.sort();
+    found
+}
+
+/// A stand-in judge that reads the patch it is shown: it fails a patch that adds a line with
+/// `SECRET` in it and passes every other. It logs the files each patch names (`PATCH-NAMES`),
+/// and first sleeps for the seconds written in `judge.sleep` when that file is there. The
+/// other stand-in gives one answer whatever it is shown, so it cannot tell a stop that judged
+/// the right commit from one that judged another.
+fn reading_judge(scratch: &Scratch) -> (PathBuf, PathBuf) {
+    const READ: &str = r#"printf 'PATCH-NAMES %s\n' "$(grep '^diff --git' "$patch" | tr '\n' ' ')" >> '@LOG@'
+if [ -f '@SLEEP@' ]; then sleep "$(cat '@SLEEP@')"; fi
+if grep -q '^+.*SECRET' "$patch"; then code=7; else code=0; fi"#;
+    let (script, log, exit_file) = (
+        scratch.join("judge"),
+        scratch.join("judge.log"),
+        scratch.join("judge.exit"),
+    );
+    let body = judge_script(
+        &log,
+        &exit_file,
+        &verdict("fail", "no-secrets", "secret_like", "k.rs"),
+    );
+    let told = format!("code=\"$(cat '{}')\"", exit_file.display());
+    assert!(body.contains(&told), "{body}");
+    let read = READ.replace("@LOG@", &log.display().to_string()).replace(
+        "@SLEEP@",
+        &scratch.join("judge.sleep").display().to_string(),
+    );
+    write_program(&script, &body.replace(&told, &read));
+    (script, log)
+}
+
+/// The files of each patch the reading judge was shown, in the order it was shown them.
+fn shown(log: &Path) -> Vec<String> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.strip_prefix("PATCH-NAMES "))
+        .map(|names| {
+            names
+                .split(' ')
+                .filter_map(|word| word.strip_prefix("b/"))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect()
+}
+
+/// Write a file the reading judge fails.
+fn secret(root: &Path, name: &str) {
+    std::fs::write(root.join(name), "const KEY: &str = \"SECRET\";\n").unwrap();
+}
+
+/// Commit everything in `root`, and give the commit as a stop names it.
+fn commit_all(root: &Path, message: &str) -> String {
+    git(root, &["add", "--all"]);
+    git(root, &["commit", "--quiet", "-m", message]);
+    short(root, "HEAD")
+}
+
+/// Review V4 round 11, VD4R11-H-1, as reproduced: a credential is committed and the commit is
+/// reverted. The branch keeps the commit, the net patch from the session's base to the tip is
+/// empty, and a stop that judged that net patch said nothing and never asked the judge. Each
+/// commit of the session is judged by its own change now, once.
+#[test]
+fn a_credential_that_was_committed_and_then_reverted_is_judged() {
+    let scratch = Scratch::new("hook-commit-revert");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    start(&root, "s");
+    secret(&root, "k.rs");
+    let added = commit_all(&root, "add a key");
+    git(&root, &["revert", "--no-edit", "HEAD"]);
+    let reverted = short(&root, "HEAD");
+    assert_eq!(git(&root, &["status", "--porcelain=v1"]), "");
+    assert_eq!(git(&root, &["diff", "--stat", "HEAD~2", "HEAD"]), "");
+
+    let decision = stop_from(&root, "s", &script);
+    let reason = blocked(&decision);
+    assert!(
+        reason.contains(&format!("Commit {added}: FAIL\n- rule no-secrets: ")),
+        "{reason}"
+    );
+    assert!(!reason.contains(&reverted), "{reason}");
+    assert!(reason.contains("secret_like in \"k.rs\""), "{reason}");
+    // the judge was shown each commit by its own change: the one that adds the file, and the
+    // one that removes it
+    assert_eq!(shown(&log), ["k.rs", "k.rs"]);
+    // A commit is judged once in a session: its failure stands, by its name, and the judge is
+    // not asked again.
+    for _ in 0..2 {
+        let again = stop_from(&root, "s", &script);
+        let said = allowed(&again);
+        assert!(
+            said.starts_with("deep-diff-forge: FAIL STANDS. ")
+                && said.contains(&format!("Commit {added}: FAIL, which stands\n")),
+            "{said}"
+        );
+    }
+    assert_eq!(runs(&log), 2);
+    // another branch that names the same commit does not make it block again (HR3-L-1)
+    git(&root, &["branch", "also", &added]);
+    git(&root, &["checkout", "--quiet", "also"]);
+    assert!(allowed(&stop_from(&root, "s", &script)).starts_with("deep-diff-forge: FAIL STANDS. "));
+    assert_eq!(runs(&log), 2);
+}
+
+/// Third independent review of the hooks, HR3-M-1: a commit adds a credential and a second
+/// commit removes the file. Nothing is left in the tree or in the net change, and the first
+/// commit is in the branch's history all the same. It is judged.
+#[test]
+fn a_commit_that_a_later_commit_undoes_is_judged() {
+    let scratch = Scratch::new("hook-commit-undone");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    start(&root, "s");
+    secret(&root, "k.rs");
+    let added = commit_all(&root, "add a key");
+    std::fs::remove_file(root.join("k.rs")).unwrap();
+    let removed = commit_all(&root, "remove the key");
+    let decision = stop_from(&root, "s", &script);
+    let reason = blocked(&decision);
+    assert!(
+        reason.contains(&format!("Commit {added}: FAIL\n")) && !reason.contains(&removed),
+        "{reason}"
+    );
+    assert_eq!(runs(&log), 2);
+}
+
+/// Third independent review of the hooks, HR3-H-1. `git stash -u` puts the untracked files in
+/// a commit of their own, the third parent of the stash, which is in no patch from the base to
+/// the stash; and an older entry of the stash is named by the stash's reflog alone. Both were
+/// silent. Each is a commit the stash leads to, and is judged as one.
+#[test]
+fn a_stash_of_untracked_files_and_an_older_stash_entry_are_judged() {
+    let scratch = Scratch::new("hook-stash-entries");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+
+    start(&root, "untracked");
+    secret(&root, "k.rs");
+    git(&root, &["stash", "--quiet", "--include-untracked"]);
+    assert_eq!(git(&root, &["status", "--porcelain=v1"]), "");
+    let untracked = short(&root, "refs/stash^3");
+    let decision = stop_from(&root, "untracked", &script);
+    assert!(
+        blocked(&decision).contains(&format!("Commit {untracked}: FAIL\n")),
+        "{decision}"
+    );
+    // one patch had anything in it: the commit of the untracked file
+    assert_eq!(shown(&log), ["k.rs"]);
+    git(&root, &["stash", "drop", "--quiet"]);
+
+    start(&root, "older");
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\nfn b() {}\nconst KEY: &str = \"SECRET\";\n",
+    )
+    .unwrap();
+    git(&root, &["stash", "--quiet"]);
+    let older = short(&root, "refs/stash");
+    std::fs::write(root.join("a.rs"), "fn a() {}\nfn b() {}\nfn c() {}\n").unwrap();
+    git(&root, &["stash", "--quiet"]);
+    let newer = short(&root, "refs/stash");
+    assert_ne!(newer, older);
+    let decision = stop_from(&root, "older", &script);
+    let reason = blocked(&decision);
+    assert!(
+        reason.contains(&format!("Commit {older}: FAIL\n")) && !reason.contains(&newer),
+        "{reason}"
+    );
+}
+
+/// Third independent review of the hooks, HR3-L-6. A commit made on a detached `HEAD` that
+/// was then left is named by the reflog of `HEAD` alone, and a commit on the detached `HEAD`
+/// of another working tree by that tree's `HEAD` (or, once it was left, by that tree's
+/// reflog). No ref names either, so no stop found them.
+#[test]
+fn a_commit_left_on_a_detached_head_or_made_in_another_working_tree_is_judged() {
+    let scratch = Scratch::new("hook-detached");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let linked = scratch.join("linked");
+    git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            linked.to_str().unwrap(),
+        ],
+    );
+
+    start(&root, "detached");
+    git(&root, &["checkout", "--quiet", "--detach"]);
+    secret(&root, "k.rs");
+    let left = commit_all(&root, "on a detached HEAD");
+    git(&root, &["checkout", "--quiet", "main"]);
+    assert_eq!(git(&root, &["status", "--porcelain=v1"]), "");
+    let decision = stop_from(&root, "detached", &script);
+    assert!(
+        blocked(&decision).contains(&format!("Commit {left}: FAIL\n")),
+        "{decision}"
+    );
+
+    // in the other working tree, while the session stays in the project
+    start(&root, "linked");
+    secret(&linked, "k2.rs");
+    let there = commit_all(&linked, "in the linked tree");
+    let decision = stop_from(&root, "linked", &script);
+    assert!(
+        blocked(&decision).contains(&format!("Commit {there}: FAIL\n")),
+        "{decision}"
+    );
+
+    // and one that the other tree has left again
+    start(&root, "linked-left");
+    secret(&linked, "k3.rs");
+    let gone = commit_all(&linked, "in the linked tree, then left");
+    git(&linked, &["checkout", "--quiet", "--detach", "main"]);
+    let decision = stop_from(&root, "linked-left", &script);
+    let reason = blocked(&decision);
+    assert!(
+        reason.contains(&format!("Commit {gone}: FAIL\n")),
+        "{reason}"
+    );
+    // the commit before it was there when this session began: it is not this session's
+    assert!(!reason.contains(&there), "{reason}");
+}
+
+/// Third independent review of the hooks, HR3-M-3. A failure was remembered for the whole
+/// session, so one that was repaired and then brought back never blocked again. It is
+/// forgotten at the stop that finds the change without it. And a failure that has blocked as
+/// an uncommitted change does not block a second time when it is committed as it is: the
+/// commit is said to stand.
+#[test]
+fn a_failure_that_was_repaired_and_comes_back_blocks_again() {
+    let scratch = Scratch::new("hook-fail-returns");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let stands = |decision: &Value| {
+        let said = allowed(decision);
+        assert!(said.starts_with("deep-diff-forge: FAIL STANDS. "), "{said}");
+    };
+    start(&root, "s");
+    secret(&root, "k.rs");
+    blocked(&stop_from(&root, "s", &script));
+    stands(&stop_from(&root, "s", &script));
+    // repaired: the stop passes
+    std::fs::remove_file(root.join("k.rs")).unwrap();
+    assert_eq!(stop_from(&root, "s", &script), Value::Null);
+    // the same failure again: it blocks again, once
+    secret(&root, "k.rs");
+    blocked(&stop_from(&root, "s", &script));
+    stands(&stop_from(&root, "s", &script));
+    // committed as it is: told already, so the commit stands, at this stop and at later ones
+    let kept = commit_all(&root, "keep the key");
+    for _ in 0..2 {
+        let decision = stop_from(&root, "s", &script);
+        stands(&decision);
+        assert!(
+            allowed(&decision).contains(&format!("Commit {kept}: FAIL, which stands\n")),
+            "{decision}"
+        );
+    }
+    // a commit that fails and was never told blocks
+    secret(&root, "other.rs");
+    let untold = commit_all(&root, "another key");
+    let decision = stop_from(&root, "s", &script);
+    let reason = blocked(&decision);
+    assert!(
+        reason.contains(&format!("Commit {untold}: FAIL\n"))
+            && reason.contains(&format!("Commit {kept}: FAIL, which stands\n")),
+        "{reason}"
+    );
+}
+
+/// Third independent review of the hooks, HR3-H-2 and HR3-M-4. The commits that were there
+/// when a session began are a file beside its state: ids only, with no bound a repository
+/// reaches, named in the state by its SHA-256 and its length. A list that is gone, cut or
+/// longer is not believed (a commit added to it would be one that "was there before"): the
+/// stop is UNJUDGED and names the remedy. The repository's identity in the state is the inode
+/// of its Git directory and no device number.
+#[test]
+fn a_list_of_commits_that_is_gone_or_was_changed_is_never_another_list() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let scratch = Scratch::new("hook-tips-file");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    start(&root, "s");
+    let state = states_in(&sessions());
+    assert_eq!(state.len(), 1, "{state:?}");
+    let tips = state[0].with_extension("tips");
+    let recorded = std::fs::read_to_string(&tips).unwrap();
+    assert_eq!(
+        recorded,
+        git(&root, &["rev-parse", "HEAD"]),
+        "one commit was there: its id, and nothing else"
+    );
+    assert_eq!(
+        std::fs::metadata(&tips).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let kept: Value = serde_json::from_str(&std::fs::read_to_string(&state[0]).unwrap()).unwrap();
+    assert_eq!(kept["project"]["tips_count"], 1);
+    assert_eq!(
+        kept["project"]["id"],
+        std::fs::metadata(root.join(".git"))
+            .unwrap()
+            .ino()
+            .to_string()
+    );
+
+    secret(&root, "k.rs");
+    commit_all(&root, "add a key");
+    let head = git(&root, &["rev-parse", "HEAD"]);
+    for (what, text) in [
+        ("longer", Some(format!("{recorded}{head}"))),
+        ("cut", Some(String::new())),
+        ("gone", None),
+    ] {
+        match &text {
+            Some(text) => std::fs::write(&tips, text).unwrap(),
+            None => std::fs::remove_file(&tips).unwrap(),
+        }
+        let decision = stop_from(&root, "s", &script);
+        let said = allowed(&decision);
+        assert!(
+            said.starts_with("deep-diff-forge: UNJUDGED. ")
+                && said.contains("list of the commits that were there when it began")
+                && said.contains("start a new session"),
+            "{what}: {said}"
+        );
+    }
+    assert_eq!(runs(&log), 0);
+    // as it was recorded it is believed, and the commit is judged
+    std::fs::write(&tips, recorded).unwrap();
+    blocked(&stop_from(&root, "s", &script));
+}
+
+/// Third independent review of the hooks, HR3-H-2: the first 4,096 refs by name were
+/// recorded, so in a repository with more the stash and the tags were not, and a stash or a
+/// commit on a new branch was UNJUDGED or silent. Nothing is cut off now: with 5,000 branches
+/// and tags the session is recorded, a stash is judged, and so is a commit on a new branch.
+#[test]
+fn a_repository_with_five_thousand_branches_and_tags_is_recorded_whole() {
+    let scratch = Scratch::new("hook-many-refs");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let base = git(&root, &["rev-parse", "HEAD"]);
+    let base = base.trim();
+    // written straight into the packed refs, beside whatever Git has packed there itself
+    let packed_refs = root.join(".git/packed-refs");
+    let mut lines: Vec<String> = std::fs::read_to_string(&packed_refs)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(str::to_owned)
+        .collect();
+    assert!(lines.iter().all(|line| !line.starts_with('^')), "{lines:?}");
+    lines.extend((0..2_500).flat_map(|n| {
+        [
+            format!("{base} refs/heads/b{n:04}"),
+            format!("{base} refs/tags/t{n:04}"),
+        ]
+    }));
+    lines.sort_by(|one, other| one.split(' ').nth(1).cmp(&other.split(' ').nth(1)));
+    std::fs::write(
+        &packed_refs,
+        format!(
+            "# pack-refs with: peeled fully-peeled sorted \n{}\n",
+            lines.join("\n")
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        git(&root, &["for-each-ref", "--format=x"]).lines().count(),
+        5_001
+    );
+
+    start(&root, "s");
+    // a stash: `refs/stash` sorts after every branch
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\nfn b() {}\nconst KEY: &str = \"SECRET\";\n",
+    )
+    .unwrap();
+    git(&root, &["stash", "--quiet"]);
+    let stashed = short(&root, "refs/stash");
+    let decision = stop_from(&root, "s", &script);
+    assert!(
+        blocked(&decision).contains(&format!("Commit {stashed}: FAIL\n")),
+        "{decision}"
+    );
+    // a commit on a new branch whose name sorts after all of them
+    git(&root, &["checkout", "--quiet", "-b", "zz-late"]);
+    secret(&root, "k.rs");
+    let late = commit_all(&root, "work");
+    git(&root, &["checkout", "--quiet", "main"]);
+    let decision = stop_from(&root, "s", &script);
+    let reason = blocked(&decision);
+    assert!(
+        reason.contains(&format!("Commit {late}: FAIL\n"))
+            && reason.contains(&format!("Commit {stashed}: FAIL, which stands\n"))
+            && !reason.contains("UNJUDGED"),
+        "{reason}"
+    );
+}
+
+/// Third independent review of the hooks, HR3-M-2: of the tips that had changed, the first
+/// sixteen by name were examined and the first four patches judged, so twenty branches whose
+/// names sort before the session's own left its commit unjudged. There is no order by name
+/// now, and no such bound: every commit is judged, and each once in a session.
+#[test]
+fn the_sessions_commit_is_judged_whatever_its_branch_is_called() {
+    let scratch = Scratch::new("hook-branch-names");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    let base = git(&root, &["rev-parse", "HEAD"]);
+    let base = base.trim();
+    start(&root, "s");
+    for n in 0..20 {
+        git(
+            &root,
+            &["checkout", "--quiet", "-b", &format!("aa{n:02}"), base],
+        );
+        std::fs::write(root.join(format!("f{n:02}.rs")), "fn f() {}\n").unwrap();
+        commit_all(&root, "one harmless file");
+    }
+    git(&root, &["checkout", "--quiet", "-b", "zz-own", base]);
+    secret(&root, "k.rs");
+    let own = commit_all(&root, "the session's own work");
+    git(&root, &["checkout", "--quiet", "main"]);
+
+    let decision = stop_from(&root, "s", &script);
+    let reason = blocked(&decision);
+    assert!(
+        reason.contains(&format!("Commit {own}: FAIL\n")) && !reason.contains("UNJUDGED"),
+        "{reason}"
+    );
+    assert_eq!(runs(&log), 21);
+    // nothing is judged twice
+    assert!(allowed(&stop_from(&root, "s", &script)).starts_with("deep-diff-forge: FAIL STANDS. "));
+    assert_eq!(runs(&log), 21);
+}
+
+/// The reviews' lists of weak tests: a merge base that is not the session's base. A commit on
+/// an older branch, the commits a pull brings, and the commits a rebase writes are each judged
+/// by their own change, against their own first parent; and patches that are the same are
+/// judged once.
+#[test]
+fn a_commit_is_judged_by_its_own_change_on_an_older_branch_after_a_pull_and_a_rebase() {
+    let scratch = Scratch::new("hook-own-change");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    git(&root, &["branch", "old"]);
+    std::fs::write(root.join("b.rs"), "fn c() {}\n").unwrap();
+    commit_all(&root, "second");
+    // somebody else's repository, with two commits to pull: a harmless one and one with a key
+    let theirs = scratch.join("theirs");
+    git(
+        scratch.path(),
+        &[
+            "clone",
+            "--quiet",
+            "--no-local",
+            root.to_str().unwrap(),
+            theirs.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(theirs.join("h.rs"), "fn h() {}\n").unwrap();
+    commit_all(&theirs, "theirs: harmless");
+    secret(&theirs, "s.rs");
+    let pulled = commit_all(&theirs, "theirs: a key");
+
+    // an older branch: what lies between it and the session's base is not the commit's change
+    start(&root, "old");
+    git(&root, &["checkout", "--quiet", "old"]);
+    secret(&root, "k.rs");
+    let on_old = commit_all(&root, "on the older branch");
+    git(&root, &["checkout", "--quiet", "main"]);
+    let decision = stop_from(&root, "old", &script);
+    assert!(
+        blocked(&decision).contains(&format!("Commit {on_old}: FAIL\n")),
+        "{decision}"
+    );
+    assert_eq!(shown(&log), ["k.rs"]);
+
+    // a pull: the commits it brings are the session's from then on, each judged by itself
+    start(&root, "pull");
+    git(
+        &root,
+        &[
+            "pull",
+            "--quiet",
+            "--ff-only",
+            theirs.to_str().unwrap(),
+            "main",
+        ],
+    );
+    let decision = stop_from(&root, "pull", &script);
+    assert!(
+        blocked(&decision).contains(&format!("Commit {pulled}: FAIL\n")),
+        "{decision}"
+    );
+    assert_eq!(shown(&log)[1..], ["h.rs", "s.rs"]);
+
+    // a rebase: the commit it writes is a new commit. Here it has the same patch as the one
+    // it was written from, which the reflog still names: the two are judged once, and the
+    // commit on `main` by itself.
+    start(&root, "rebase");
+    git(&root, &["checkout", "--quiet", "-b", "topic"]);
+    std::fs::write(root.join("t.rs"), "fn t() {}\n").unwrap();
+    commit_all(&root, "topic work");
+    git(&root, &["checkout", "--quiet", "main"]);
+    std::fs::write(root.join("m.rs"), "fn m() {}\n").unwrap();
+    commit_all(&root, "main moves on");
+    git(&root, &["rebase", "--quiet", "main", "topic"]);
+    let before = runs(&log);
+    assert_eq!(stop_from(&root, "rebase", &script), Value::Null);
+    let mut seen = shown(&log)[before..].to_vec();
+    seen.sort();
+    assert_eq!(seen, ["m.rs", "t.rs"]);
+    // all three are remembered: the next stop asks the judge nothing
+    assert_eq!(stop_from(&root, "rebase", &script), Value::Null);
+    assert_eq!(runs(&log), before + 2);
+}
+
+/// The reviews' lists of weak tests: the order in which a stop judges when not everything
+/// fits its time. The commits are judged the oldest first; those that did not fit are counted
+/// and said to be UNJUDGED, never passed over, and are judged at the next stop, where no
+/// commit that already has a verdict is judged again.
+///
+/// This test takes about forty seconds: it runs one stop up to its deadline, with a judge
+/// that takes thirteen seconds for each patch.
+#[test]
+fn commits_are_judged_the_oldest_first_and_the_rest_at_the_next_stop() {
+    let scratch = Scratch::new("hook-commit-order");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    start(&root, "s");
+    let names: Vec<String> = (1..=5).map(|n| format!("f{n}.rs")).collect();
+    for name in &names {
+        std::fs::write(root.join(name), "fn f() {}\n").unwrap();
+        commit_all(&root, name);
+    }
+    std::fs::write(scratch.join("judge.sleep"), "13").unwrap();
+    let decision = stop_from(&root, "s", &script);
+    let said = allowed(&decision);
+    let first = shown(&log);
+    assert!(
+        !first.is_empty() && first.len() < names.len(),
+        "{first:?}: {said}"
+    );
+    assert_eq!(first[..], names[..first.len()], "not the oldest first");
+    assert!(
+        said.starts_with("deep-diff-forge: UNJUDGED. Not everything of this change (")
+            && said.contains(" of this session: UNJUDGED\n")
+            && said.contains("they are judged at the next stop")
+            && said.ends_with("That is not a pass."),
+        "{said}"
+    );
+
+    // the next stop, with a judge that answers at once: the rest, the oldest first
+    std::fs::remove_file(scratch.join("judge.sleep")).unwrap();
+    assert_eq!(stop_from(&root, "s", &script), Value::Null);
+    let all = shown(&log);
+    let rest = &all[first.len()..];
+    assert!(
+        !rest.is_empty() && rest.windows(2).all(|pair| pair[0] < pair[1]),
+        "{all:?}"
+    );
+    assert_eq!(rest.last(), names.last(), "{all:?}");
+    for name in &names {
+        assert!(all.contains(name), "{name} was never judged: {all:?}");
+    }
+    // every commit has its verdict: a third stop asks nothing
+    let before = runs(&log);
+    assert_eq!(stop_from(&root, "s", &script), Value::Null);
+    assert_eq!(runs(&log), before);
+}
+
+/// Third independent review of the hooks, HR3-L-2: a session remembers 32 things as said
+/// once. Past that a stop named nothing more beside its verdict, and did not say so. It says
+/// once that there is more.
+#[test]
+fn more_things_beside_a_verdict_than_a_session_remembers_are_said_to_be_more() {
+    let scratch = Scratch::new("hook-many-notes");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    start(&root, "s");
+    for n in 0..33 {
+        let nested = root.join(format!("n{n:02}"));
+        std::fs::create_dir(&nested).unwrap();
+        git(&nested, &["init", "--quiet"]);
+        std::fs::write(nested.join("x"), "x\n").unwrap();
+    }
+    let decision = stop_from(&root, "s", &script);
+    let said = allowed(&decision);
+    assert_eq!(
+        said.matches("is a Git repository of its own").count(),
+        32,
+        "{said}"
+    );
+    assert!(
+        said.ends_with(
+            "More things were left out or not judged than this session's hooks name one by one: the others are not named from here on."
+        ),
+        "{said}"
+    );
+    assert_eq!(stop_from(&root, "s", &script), Value::Null);
+}
+
+/// Third independent review of the hooks, HR3-L-3: another working tree of the project that
+/// lies inside its tree was called "a Git repository of its own". It is named as what it is;
+/// a commit made in it is the session's and is judged from the project's own directory, and
+/// its uncommitted change when the session is in it.
+#[test]
+fn a_linked_working_tree_inside_the_project_is_named_as_what_it_is() {
+    let scratch = Scratch::new("hook-inner-worktree");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let inner = root.join("inner");
+    git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            inner.to_str().unwrap(),
+        ],
+    );
+    start(&root, "s");
+    let decision = stop_from(&root, "s", &script);
+    let said = allowed(&decision);
+    assert!(
+        said.contains("The directory \"inner\" in ")
+            && said.contains("is another working tree of this project (a linked worktree)")
+            && !said.contains("a Git repository of its own"),
+        "{said}"
+    );
+    secret(&inner, "k.rs");
+    let made = commit_all(&inner, "in the inner tree");
+    let decision = stop_from(&root, "s", &script);
+    assert!(
+        blocked(&decision).contains(&format!("Commit {made}: FAIL\n")),
+        "{decision}"
+    );
+    secret(&inner, "k2.rs");
+    let decision = stop_from(&inner, "s", &script);
+    let reason = blocked(&decision);
+    assert!(
+        reason.contains(&format!(
+            "{}: FAIL\n",
+            uncommitted_in(&std::fs::canonicalize(&inner).unwrap())
+        )) && reason.contains(&format!("Commit {made}: FAIL, which stands\n")),
+        "{reason}"
+    );
+}
+
+// ---- A mutation run on the hooks (2026-11-14): changes no test noticed ----
+
+/// A file where the directory of the sessions' state should be is said as what it is. The
+/// check that says so was alive when taken out: the state file under it then "cannot be
+/// opened", which is another failure with other words, and no test read the words.
+#[test]
+fn a_file_where_the_sessions_directory_should_be_is_said_as_what_it_is() {
+    const NOT_ITS_OWN: &str =
+        "is not a directory of its own (a symbolic link or a file stands there)";
+    let scratch = Scratch::new("hook-state-dir-file");
+    let root = repository(&scratch);
+    let (script, log, _) = failing_judge(&scratch);
+    silence_a_lint(&root);
+    let sessions = sessions();
+    std::fs::create_dir_all(sessions.parent().unwrap()).unwrap();
+    std::fs::write(&sessions, "not a directory\n").unwrap();
+    let (code, stdout, _) = hook("post-tool", &[], &input("PostToolUse", &root, "s", false));
+    assert_eq!(code, 0);
+    let said = system_message(&stdout);
+    assert!(said.contains(NOT_ITS_OWN), "{said}");
+    let decision = stop_from(&root, "s", &script);
+    let said = allowed(&decision);
+    assert!(
+        said.starts_with("deep-diff-forge: UNJUDGED. ") && said.contains(NOT_ITS_OWN),
+        "{said}"
+    );
+    assert_eq!(runs(&log), 0);
+    assert_eq!(
+        std::fs::read_to_string(&sessions).unwrap(),
+        "not a directory\n"
+    );
+}
+
+/// A hook that changes nothing in its session's state writes nothing: with the state's
+/// directory read-only, a stop with nothing to judge and a hook after a tool call with
+/// nothing new stay silent. (The test of "was anything changed" was alive when it always
+/// said yes: the state was written again each time, and nothing looked.)
+#[test]
+fn a_hook_that_changes_nothing_in_its_state_writes_nothing() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Scratch::new("hook-state-unchanged");
+    let root = repository(&scratch);
+    let (script, _, _) = failing_judge(&scratch);
+    start(&root, "s");
+    let sessions = sessions();
+    std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o500)).unwrap();
+    // not as root, who writes there all the same
+    if std::fs::write(sessions.join("probe"), "x").is_err() {
+        assert_eq!(stop_from(&root, "s", &script), Value::Null);
+        let event = input("PostToolUse", &root, "s", false);
+        assert_eq!(
+            hook("post-tool", &[], &event),
+            (0, String::new(), String::new())
+        );
+    }
+    std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+/// What `agent doctor --gate` says in four places no test read, and one path no test took: a
+/// timeout that is long enough; a start hook that names a judge; the other two hooks outside a
+/// repository; the hooks' own directory when it cannot be used; and a judge that refuses this
+/// binary as a ranker and admits another.
+#[test]
+fn doctor_gate_says_what_it_found_where_no_test_read_it() {
+    let (scratch, root, home, script, _log, _exit_file) = gate_fixture("doctor-gate-words");
+    let judge_arg = ["--judge", script.to_str().unwrap()];
+    std::fs::create_dir(home.join(".claude")).unwrap();
+    let user = home.join(".claude/settings.json");
+    let registered: Value = serde_json::from_str(&stop_hook_settings(&script)).unwrap();
+    let gate = |root: &Path, extra: &[&str]| {
+        let (code, doc, _) = doctor_gate(root, &home, extra);
+        ((code, gate_checks(&doc)), doc)
+    };
+    let mut settings = registered.clone();
+    settings["hooks"]["Stop"][0]["hooks"][0]["timeout"] = json!(60);
+    std::fs::write(&user, settings.to_string()).unwrap();
+    let (found, doc) = gate(&root, &judge_arg);
+    assert_eq!(found, (0, gate_but(&[])), "{doc:#}");
+    assert_eq!(
+        detail(&doc, "hook_timeout"),
+        "the stop hook's timeout is 60 seconds (50 or more are needed)"
+    );
+
+    // a start hook that names a judge is held to it: the one that was checked, or another
+    let start = |judge: &Path| {
+        json!(format!(
+            "'{}' agent hook session-start --client claude --judge '{}'",
+            this_binary().display(),
+            judge.display()
+        ))
+    };
+    settings["hooks"]["SessionStart"][0]["hooks"][0]["command"] =
+        start(&std::fs::canonicalize(&script).unwrap());
+    std::fs::write(&user, settings.to_string()).unwrap();
+    let (found, doc) = gate(&root, &judge_arg);
+    assert_eq!(found, (0, gate_but(&[])), "{doc:#}");
+    settings["hooks"]["SessionStart"][0]["hooks"][0]["command"] = start(Path::new("/usr/bin/true"));
+    std::fs::write(&user, settings.to_string()).unwrap();
+    let (found, doc) = gate(&root, &judge_arg);
+    assert_eq!(found, (7, gate_but(&["start_hook_registered"])), "{doc:#}");
+    assert!(
+        detail(&doc, "start_hook_registered")
+            .contains("names another judge than the one checked here"),
+        "{doc:#}"
+    );
+    std::fs::write(&user, registered.to_string()).unwrap();
+
+    // outside a repository the other two hooks are not checked, and are said so in those words
+    let outside = scratch.join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    let (_, doc) = gate(&outside, &judge_arg);
+    for name in ["start_hook_registered", "advice_hook_registered"] {
+        assert_eq!(detail(&doc, name), "not checked: it needs the repository");
+    }
+
+    // the hooks' own directory in the repository cannot be used: the patch and the chain say why
+    let own = root.join(".git/deep-diff-forge");
+    std::fs::remove_dir(&own).unwrap();
+    std::fs::write(&own, "a file\n").unwrap();
+    let (found, doc) = gate(&root, &judge_arg);
+    assert_eq!(found.0, 7, "{doc:#}");
+    for name in ["patch", "chain"] {
+        assert!(
+            detail(&doc, name).contains("is not a directory of its own"),
+            "{name}: {doc:#}"
+        );
+    }
+    std::fs::remove_file(&own).unwrap();
+
+    // the judge refuses this binary as a ranker (exit 4) and admits another: the chain is ready
+    let rankers = scratch.join("rankers");
+    std::fs::create_dir(&rankers).unwrap();
+    std::fs::write(rankers.join("ddf-0.8.4"), "stand-in ranker\n").unwrap();
+    let picky = scratch.join("admits-one-ranker");
+    write_program(
+        &picky,
+        &format!(
+            "#!/bin/sh\ncase \"$*\" in *ddf-0.8.4*) exec '{}' \"$@\";; *) exit 4;; esac\n",
+            script.display()
+        ),
+    );
+    let (_, doc) = gate(
+        &root,
+        &[
+            "--judge",
+            picky.to_str().unwrap(),
+            "--ranker-dir",
+            rankers.to_str().unwrap(),
+        ],
+    );
+    let chain = gate_checks(&doc)
+        .into_iter()
+        .find(|(name, _)| name == "chain");
+    assert_eq!(chain, Some(("chain".to_owned(), true)), "{doc:#}");
 }

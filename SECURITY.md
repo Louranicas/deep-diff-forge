@@ -292,23 +292,39 @@ limit.
   the session itself moves. A `cd` into a nested repository, another repository or a
   directory that was gone let the stop pass with no output, and so did committing the work;
   a committed policy change was the policy for the rest of the session. A stop now judges
-  the project wherever the session's directory is, and the working tree against the recorded
-  commit with that commit's policy. A linked working tree the session's directory is in is
-  judged as well.
-- **What the session committed is judged where a ref still names it.** The session's first
-  hook records, with the base, the commits the branches, remote-tracking refs, tags and the
-  stash led to (4,096 refs at most). A stop has judged the working tree against the base and,
-  for `HEAD` and each ref that names a commit none of those tips leads to, the patch from the
-  common ancestor of the base and that commit to it; the same patch once; four distinct
-  patches at most, the rest UNJUDGED with the refs named. Before, only the working tree was
-  compared, so a branch the session had left, a commit of a staged file that was edited
-  again, and a commit the tree was put back from all ended in a silent stop. A commit no ref
-  names any more is not found; that is a stated limit.
-- **The project is a repository, not a pathname.** It is recorded with the device and inode
-  of its Git common directory. A repository of another identity at the recorded path is not
-  the project (a clean clone put there used to be judged in its place, in silence): the stop
-  is UNJUDGED and says so, and when the session's directory is in the recorded repository,
-  moved, it is judged there and the message says where.
+  the project wherever the session's directory is, by the policy of the recorded commit. A
+  linked working tree the session's directory is in is judged as well.
+- **The unit that is judged is a commit, by its own change.** The session's first hook
+  records, with the base, the id of every commit that something names then: every ref, the
+  `HEAD` of every working tree, and the reflogs of those `HEAD`s and of the stash. A commit
+  is the session's when a branch, a tag, the stash, a `HEAD` or one of those reflogs leads
+  to it now and none of the recorded commits does. A stop has judged the uncommitted change
+  of the working tree (against that tree's `HEAD`) and each commit of the session that no
+  earlier stop judged, as the patch from its first parent to itself, the oldest first, as
+  many as its time allows; the rest are counted as UNJUDGED and judged at later stops.
+  Before, a stop judged for each ref the net patch from the base to its tip, over bounded
+  lists of refs. A credential that was committed and then reverted left an empty net patch
+  and a silent stop while the branch kept the commit; the untracked files of `git stash -u`
+  and the older entries of the stash were in no net patch; four patches of sixteen tips in
+  name order could leave out the session's own; a list of 4,096 refs dropped the stash of a
+  repository with more. None of these has a bound or an order by name now: the recorded
+  ids are a file of their own with no such limit, and no name of a ref is read or shown, so
+  a name that is not UTF-8 or that somebody else chose cannot matter. A commit that only a
+  remote-tracking ref names was fetched and is not the session's. A commit that is gone
+  from every ref and every reflog read is not found; that is a stated limit.
+- **A failing commit blocks once and stands; a failing uncommitted change blocks again when
+  it comes back.** A commit is known by its id, so a branch switch or a new ref does not
+  make its failure block again, and a later commit cannot make it pass. The failure of an
+  uncommitted change is known by its rules, signals, paths and numbers of items; it is
+  forgotten when a stop finds the change without it. Before, it was remembered for the
+  whole session, so a failure that was repaired and then brought back never blocked.
+- **The project is a repository at a path.** It is recorded with the inode of its Git common
+  directory and its top level. What stands at that path with another inode is not the
+  project (a clean clone put there used to be judged in its place, in silence), and neither
+  is the project once it was moved: the stop is UNJUDGED, says which, and names the remedy,
+  a new session. The device number stood in the identity before and is left out: it is
+  given at mount time, and a session resumed after a reboot was refused for good, with a
+  reason that was not true.
 - **The first stop of a session whose start was not recorded says so.** When no
   session-start hook recorded the project and the base, they were recorded by the first stop
   or by an advice hook before it (the hook after the tool call that commits always runs
@@ -318,19 +334,24 @@ limit.
   message; a fail, a hold and UNJUDGED carry it too). It stays
   silent only where no project can be found at all: Git says there is no repository around
   the session's directory, the client names none, and none is recorded.
-- **What the hooks do not judge, and what they name.** They judge the project's working tree,
-  a linked working tree the session's directory is in, and the session's commits that a ref
-  names. Named once in a session as not judged: another repository the session's directory
-  is in at a stop, a submodule with changes that are not committed in it, and a nested
-  repository in the project's tree, which is left out of the patch (Git cannot even stage
-  one that has no commit). Not judged and not named, for the judge on the pull request: a
-  commit no ref names, a change written into a linked working tree the session is not in,
+- **What the hooks do not judge, and what they name.** They judge the uncommitted change of
+  the project's working tree and of a linked working tree the session's directory is in,
+  and the session's commits. Named once in a session as not judged: another repository the
+  session's directory is in at a stop, a submodule with changes that are not committed in
+  it, a nested repository in the project's tree, which is left out of the patch (Git cannot
+  even stage one that has no commit), and another working tree of the project that lies
+  inside its tree (named as that). When a session has more such things than it remembers
+  as said (32), it says once that there is more. Not judged and not named, for the judge on
+  the pull request: a commit that only a remote-tracking ref names; a commit that is gone
+  from every ref and from the reflogs that are read (those of each working tree's `HEAD`
+  and of the stash); an uncommitted change in a linked working tree the session is not in;
   and work in a copy. An agent can make a stop UNJUDGED by breaking what the judge needs (an
   unreadable file; a path marked skip-worktree): never a pass, always visible, and never a
   block. Advice after a tool call covers the project's tree only. "No repository" is read
   from Git's English message under `LC_ALL=C`; any other wording is a failure and is said.
-  The cleanup of a killed hook's scratch directory needs `/proc`. The state file is the
-  agent's to edit, as below.
+  The cleanup of a killed hook's scratch directory needs `/proc`. The state file and the
+  list of commits beside it are the agent's to edit, as below: whoever edits them can move
+  the base or make a commit count as there before the session.
 - **Neither the repository's configuration nor the user's shapes the patch.** The working
   tree is staged, and the patch diffed, in a new, empty Git directory that only borrows the
   object store: the repository's own configuration and its `info/attributes` are never read,
@@ -356,27 +377,34 @@ limit.
   never what a link of that name points at. Two hooks in different process-id namespaces
   that share one repository can take each other's process for gone; the hook that loses its
   directory then reports UNJUDGED, not a pass.
-- **One state file per session, in the user's state directory.** `deep-diff-forge/hooks`
-  under an absolute `$XDG_STATE_HOME`, else under `~/.local/state`. It is there, and not in
-  the repository, so that it is found by the session's id alone: before the repository is
-  found, and when Git cannot find it. The session id is hashed and never chooses a file
-  name. The file holds the project's top level, the commit the session began from (a full
-  commit id, or that there was none), the keys of findings already said, the reasons already
-  given for not running and the things a stop named (hashed), the tips of the refs when the
-  session began, and the failures that have blocked a stop (each as a SHA-256 and a count).
-  Every list is bounded when it is written, so the largest state is far under the 4 MiB a
-  hook reads back. A file that is there and is not a state the hooks can read (a link,
-  another kind of file, too large, another schema, a project that is not whole) is never
-  read as "no state": the stop is UNJUDGED with the reason and nothing is recorded over it.
-  Before, a block with thousands of violations wrote a state the next hook would not read,
-  and the session forgot its base. A state directory inside the project's working tree is
-  refused the same way. When the state cannot be kept, a stop says so every time and the
-  advice hook once, marked by an empty file beside the scratch directory.
+- **Two files per session, in the user's state directory.** `deep-diff-forge/hooks` under
+  an absolute `$XDG_STATE_HOME`, else under `~/.local/state`. They are there, and not in
+  the repository, so that they are found by the session's id alone: before the repository
+  is found, and when Git cannot find it. The session id is hashed and never chooses a file
+  name. The state file holds the project's top level and the inode of its Git directory,
+  the commit the session began from (a full commit id, or that there was none), the keys of
+  findings already said, the reasons already given for not running and the things a stop
+  named (hashed), the failures of uncommitted changes that have blocked a stop (each as a
+  SHA-256 and a count), the commits that were judged with their outcomes (the last 4,096),
+  and the SHA-256 and the length of the second file. Every list is bounded when it is
+  written, so the largest state is far under the 4 MiB a hook reads back. The second file
+  is the list of commit ids that were named when the session began, one a line (up to a
+  million; a repository that names more cannot be recorded, which is said). A state file
+  that is there and is not a state the hooks can read (a link, another kind of file, too
+  large, another schema, a project that is not whole) is never read as "no state", and a
+  list that is missing, is a link, or is not the text the state names by its SHA-256 and
+  length is never read as another list: the stop is UNJUDGED with the reason and nothing is
+  recorded over either. Before, a block with thousands of violations wrote a state the next
+  hook would not read, and the session forgot its base. A state directory inside the
+  project's working tree is refused the same way. When the state cannot be kept, a stop
+  says so every time and the advice hook once, marked by an empty file beside the scratch
+  directory.
 - **Each directory of the hooks is a directory of its own.** `deep-diff-forge/` under the Git
   common directory and `deep-diff-forge/hooks` in the state directory are made with mode
   0700; when a symbolic link or a file stands at either the hook does not run and says so. A
-  state file is opened without following a link, must be a regular file of at most 1 MiB,
-  and is written to a new file of mode 0600 that is moved into place. These are checks by
+  state file is opened without following a link, must be a regular file of at most 4 MiB
+  (the list of commits beside it: 65 MiB), and is written to a new file of mode 0600 that
+  is moved into place. These are checks by
   path: whoever can swap the directory between a check and a use can already write wherever
   this account can.
 - **The policy is read from the commit the session began from**, never from the working tree
