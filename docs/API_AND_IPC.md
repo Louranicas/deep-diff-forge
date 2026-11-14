@@ -502,6 +502,11 @@ Additive members, so the schema names stay `v0`. They are present only when foun
     of a file the patch creates is reported like any other and carries this member.
   - Items are ordered by hunk, then line, then signal. `evidence_truncated: true` follows when more
     were found; the score counts all of them. Each signal also appears in `signals`.
+  - Which 32, when a file has more (since 2026-11-15; before, the first 32): first the items
+    release 0.8.3 listed, so the list of a later version never lacks an item that release
+    showed; then the first item of every signal with no item in the list yet, the heavier
+    signal first; then the others in order. The list is printed in the order above whichever
+    items it holds. The CLI and the daemon (and so MCP) take the list from the same function.
 - `review-outline.v0` and `review-hunks.v0` hunk heads: `evidence`, the distinct signal labels in
   that hunk. It comes from the same scan as `rank`, so the two never disagree.
 - The CLI (`--rank --json`, `--outline`), the daemon (`diff.rank`, `review.outline`,

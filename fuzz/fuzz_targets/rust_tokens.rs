@@ -31,10 +31,13 @@
 //    or several. The reader's signals must be the same set. Until 2026-11-14 a line after a
 //    string over a line end was read two ways and the bytes of both readings were united:
 //    `x.unwrap/*""*/()` then had `""` between `unwrap` and `(`, and nothing was found.
-//    Checked as a file the patch creates and as a hunk below line 1 of an existing file (the
-//    literals unchanged lines, the constructs added). In the hunk the literals hold no `*`:
-//    such a hunk is also read as if it began inside a block comment, and a `*/` in a string
-//    there shows what follows it as code, which is that reading's declared cost.
+//    Checked as a file the patch creates, where the signals must be the same set, and as a
+//    hunk below line 1 of an existing file (the literals unchanged lines, the constructs
+//    added), where none may be missing. Such a hunk does not say how it starts and is also
+//    read from inside a block comment, a string and a raw string: there a `*/` or a quote in
+//    the text of a string or of a comment shows what follows it as code, so those readings
+//    can add a signal from that text, which is their declared cost (a comment over lines
+//    that holds one quote, and after it `todo!()`). They never take one away.
 //
 // Input: the first byte picks the shape (bit 0: a new file, or a change), a path (bits 1 and
 // 2) and the place of the one respacing (the bits above); the rest is the text. For rule 5
@@ -168,7 +171,8 @@ const CONSTRUCTS: &[(&[&str], EvidenceSignal)] = &[
 
 /// Rule 5 for one shape (a new file, or a hunk below line 1 of an existing one): the lines of
 /// `picked` constructs alone, and the same with `comment` between two tokens of each and
-/// `literals` on the lines before them, give the same signals of the reader.
+/// `literals` on the lines before them, give the same signals of the reader in a new file, and
+/// in a hunk lose none.
 fn comments_and_earlier_strings_change_nothing(
     path: &str,
     new_file: bool,
@@ -227,14 +231,27 @@ fn comments_and_earlier_strings_change_nothing(
         }
     }
     let with = checked(&hunk(literals, &commented)).expect("the constructs are a patch");
-    assert_eq!(
-        with.iter().map(|signal| signal.label()).collect::<Vec<_>>(),
-        base.iter().map(|signal| signal.label()).collect::<Vec<_>>(),
-        "a comment between tokens or strings on earlier lines changed the signals of {path} ({}):\n{}\n{}",
-        if new_file { "a new file" } else { "a hunk below line 1" },
-        literals.join("\n"),
-        commented.join("\n")
-    );
+    let labels = |signals: &[EvidenceSignal]| -> Vec<&str> {
+        signals.iter().map(|signal| signal.label()).collect()
+    };
+    if new_file {
+        assert_eq!(
+            labels(&with),
+            labels(&base),
+            "a comment between tokens or strings on earlier lines changed the signals of {path} (a new file):\n{}\n{}",
+            literals.join("\n"),
+            commented.join("\n")
+        );
+    } else {
+        assert!(
+            base.iter().all(|signal| with.contains(signal)),
+            "a comment between tokens or strings on earlier lines lost a signal of {path} (a hunk below line 1): {:?} became {:?}:\n{}\n{}",
+            labels(&base),
+            labels(&with),
+            literals.join("\n"),
+            commented.join("\n")
+        );
+    }
 }
 
 /// Rule 5, from the text of an input: its first line picks the constructs and the place of the
@@ -265,10 +282,10 @@ fn rule_five(path: &str, text: &str) {
     let comment = comment.trim_end_matches('/');
     for new_file in [true, false] {
         // Complete literals of the strings' text, a few kinds: what would end one is taken
-        // out. In a hunk below line 1 a `*` is taken out too (see rule 5 above).
+        // out.
         let body: String = strings
             .chars()
-            .filter(|c| *c != '"' && *c != '\\' && (new_file || *c != '*'))
+            .filter(|c| *c != '"' && *c != '\\')
             .collect();
         let literals = if strings.is_empty() {
             Vec::new()

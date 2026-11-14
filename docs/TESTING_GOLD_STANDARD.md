@@ -27,7 +27,8 @@ era) no longer holds. How the standard is enforced today:
 - **Fuzz smoke:** every target in `fuzz/Cargo.toml`
   (`patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
   `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness`,
-  `findings_verify`, `evidence_scan`, `rust_tokens`, `rust_code_view`; `stdio_invariants.rs` is a
+  `findings_verify`, `evidence_scan`, `rust_tokens`, `rust_code_view`, `rust_hunk_places`;
+  `stdio_invariants.rs` is a
   shared module)
   runs for 10 s per pull request; CI fails if a declared target is not in the
   run list. Crash inputs become fixtures under
@@ -39,7 +40,17 @@ era) no longer holds. How the standard is enforced today:
   those of `/*` and the text, from inside a string those of `"` and the text, and from line 1
   of a file a shebang line by the compiler's rule is blank. `rust_tokens` holds, among its
   rules, that a comment between two tokens of a construct and complete strings on the lines
-  before it do not change the reader's signals.
+  before it do not change the reader's signals. `rust_hunk_places` holds where a hunk is and
+  how it starts: it builds a whole Rust file whose every line is in a known state, takes the
+  evidence of the file read whole, and requires that the same change written in other ways
+  Git accepts loses no item (the file created as several hunks, with honest or false
+  headers; a hunk cut out with the lines above and below unseen, whatever the cut left open;
+  the same hunk with another new position in its header), that nothing the scanner and
+  the Rust rules of release 0.8.3 find on a changed line is missing, and that no join takes
+  a reading away (what each hunk gives as a patch of its own is among what its file gives
+  for it). Nine of its ten seeds fail on the sources of the commit before it (`8f290e3`);
+  the tenth holds there and fails on round 14 as it was first built, which read a hunk
+  Git must put after another only as its continuation.
 - **Sandbox refusal controls:** the rootless-Podman planted-breach suite
   (`crates/deep-diff-forge-cli/tests/council_sandbox.rs`, 12 probes) runs on
   every pull request.
@@ -53,9 +64,9 @@ era) no longer holds. How the standard is enforced today:
   `fuzz_target.sh` lists targets with a TOML parser and fuzzes a new private
   corpus each run, under a root it makes if missing.
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
-  `fixtures/eval` (48 cases, measured 2026-11-14) must score at least its floors,
-  which are the measured values: ranking pairs 12/15, evidence precision 116/132,
-  evidence recall 116/162, findings 33/33. Any undeclared miss fails. The 65
+  `fixtures/eval` (49 cases, measured 2026-11-14) must score at least its floors,
+  which are the measured values: ranking pairs 12/15, evidence precision 134/153,
+  evidence recall 134/187, findings 33/33. Any undeclared miss fails. The 75
   declared misses (`known_miss`, `known_false_positive`) count as wrong in their
   metric rather than being excluded, and each fails once the engine gets it
   right. Planted controls prove a wrong label fails with exit 7, a changed file,

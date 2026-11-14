@@ -115,3 +115,10 @@ path = "fuzz_targets/rust_code_view.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "rust_hunk_places"
+path = "fuzz_targets/rust_hunk_places.rs"
+test = false
+doc = false
+bench = false

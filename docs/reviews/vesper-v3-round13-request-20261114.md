@@ -32,7 +32,7 @@ One step of the local gate, "hostile daemon soak smoke", failed twice at machine
 - A side that began inside a RAW string is read by the STRING view as an ordinary string.
 - A fragment at comment depth two or more is read as depth one.
 - Editions before 2021 (`cr"…"`, raw lifetimes); frontmatter; characters assigned after Unicode 18.
-- A side whose first line says it is line 1 is taken for the top of its file, as `git apply` places it without `--unidiff-zero` or `-C0`.
+- A side whose first line says it is line 1 is taken for the top of its file, as `git apply` places it without `--unidiff-zero` or `-C0`. (Corrected 2026-11-14, after the sixth independent review, IR6-H-1: this sentence was wrong. Git places a hunk by its OLD position and never by the new one, so `@@ -9,4 +1,5 @@` is applied at line 9. Since round 14 the top of a file is decided by the old position.)
 
 ## What is claimed
 

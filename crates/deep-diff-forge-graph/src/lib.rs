@@ -18,7 +18,7 @@ mod rust_tokens;
 
 pub use evidence::{
     Basis, EVIDENCE_BASIS, Evidence, EvidenceSignal, MAX_EVIDENCE_PER_FILE, Side, file_evidence,
-    hunk_signals,
+    hunk_signals, hunk_signals_alone, joined_hunks,
 };
 pub use rank::{RankedFile, rank, sort_ranked};
 pub use risk::{

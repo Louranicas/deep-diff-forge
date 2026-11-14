@@ -71,14 +71,29 @@ use std::process::Command;
 /// cost of reading a hunk also as beginning inside a comment, and inside a string) and four
 /// declared misses (a text that only editions before 2021 read as the compiler does, and a
 /// string opened by an earlier hunk). Both floors rose.
+/// Measured a seventh time 2026-11-14 on 49 cases, after round 14, when nothing about a
+/// hunk's place or its start was taken on the patch writer's word any more: precision 134 of
+/// 153, recall 134 of 187. The new case, `evidence/independent-review-6-20261114`, has
+/// seventeen expected items (hunks whose header says `+1`, a file created as several hunks,
+/// two hunks of added lines that are read together and each on its own, a hunk between two
+/// strings over lines, a string whose text opens more comments than it closes, and the
+/// full-context forms of two constructions that a bare fragment cannot show), three
+/// declared false positives and eight declared misses. One declared miss of the case before
+/// it is found (a spawn in a text only editions before 2021 read as the compiler does: the
+/// reading of release 0.8.3, which every Rust hunk now also gets, reads it that way). The
+/// precision floor fell a little (it was 878,787), on purpose: two of the three new false
+/// positives are items release 0.8.3 reports in the text of a string, and that reading is
+/// kept so that no item of that release is lost. The recall floor rose a little (it was
+/// 716,049), though four of the eight new misses are spellings of a suppressed lint that no
+/// rule reads yet.
 const RANKING_PAIRS_FLOOR: u64 = 800_000;
-const EVIDENCE_PRECISION_FLOOR: u64 = 878_787;
-const EVIDENCE_RECALL_FLOOR: u64 = 716_049;
+const EVIDENCE_PRECISION_FLOOR: u64 = 875_816;
+const EVIDENCE_RECALL_FLOOR: u64 = 716_577;
 const FINDINGS_FLOOR: u64 = 1_000_000;
 /// Declared misses (plan N4): each counts as wrong in its metric above. The receipt's
 /// `known_misses` keeps its first meaning, the evidence `known_miss` items; `declared` lists all.
-const DECLARED: u64 = 65;
-const EVIDENCE_KNOWN_MISSES: u64 = 46;
+const DECLARED: u64 = 75;
+const EVIDENCE_KNOWN_MISSES: u64 = 53;
 /// The smallest corpus the gate accepts, and the fewest cases of each kind.
 const MIN_CASES: usize = 30;
 const MIN_CASES_PER_KIND: usize = 3;
@@ -198,14 +213,14 @@ fn the_summary_names_each_metric_and_each_failure() {
     let (code, text) = run(&corpus());
     assert_eq!(code, Some(0), "{text}");
     assert!(
-        text.starts_with("deep-diff-forge eval: 48 cases\n"),
+        text.starts_with("deep-diff-forge eval: 49 cases\n"),
         "{text}"
     );
     for line in [
         "  ranking_pairs        12/15",
-        "  evidence_precision   116/132",
-        "  evidence_recall      116/162",
-        "  declared             65",
+        "  evidence_precision   134/153",
+        "  evidence_recall      134/187",
+        "  declared             75",
         "  KNOWN ranking/auth-check-removed: src/handlers/delete.rs ranks below docs/CHANGES.md",
         "  KNOWN evidence/shell-heredoc: reports (\"scripts/docs.sh\", \"network_fetch\", \"new\", 3)",
     ] {
@@ -556,7 +571,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_recall"],
-        serde_json::json!({"right": 116, "total": 161, "ppm": 720_496})
+        serde_json::json!({"right": 134, "total": 186, "ppm": 720_430})
     );
 
     // A declared false positive the engine does not report.
@@ -574,7 +589,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_precision"],
-        serde_json::json!({"right": 116, "total": 132, "ppm": 878_787})
+        serde_json::json!({"right": 134, "total": 153, "ppm": 875_816})
     );
 
     // A declared false positive that is also expected.
@@ -590,7 +605,7 @@ fn a_declared_miss_must_still_be_a_miss() {
             .unwrap()
             .ends_with("is not reported, or is expected: remove it")
     );
-    assert_eq!(metrics["evidence_precision"]["right"], 117);
+    assert_eq!(metrics["evidence_precision"]["right"], 135);
     assert_eq!(known, usize::try_from(DECLARED).unwrap() - 1);
 }
 

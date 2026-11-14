@@ -6,9 +6,12 @@
 //! A side of a hunk is its unchanged lines and its added lines (the new side) or its removed
 //! lines (the old side), each as its code view: comments and strings blank, raw identifier
 //! prefixes blank. A view is one whole reading of the side from a stated start, and a side can
-//! have up to three (from code; from inside a block comment; from inside a string): the reader
-//! reads each on its own and what it finds in any is found. No view is a mixture of two
-//! readings. This module cuts a view's text into tokens and looks at each token once. A token
+//! have several (from code; from inside a block comment, a string or a raw string; from the
+//! top of a file): the reader reads each on its own and what it
+//! finds in any is found. No view is a mixture of two readings. The lines are those of a text,
+//! which is one hunk or several that Git must put one straight after the other (a file created
+//! as several hunks is one text). This module cuts a view's text into tokens and looks at each
+//! token once. A token
 //! is an identifier (ASCII letters, digits, `_` and any byte that is not ASCII) or one byte of
 //! punctuation, and it knows the hunk line and the byte column it stands at. White space and
 //! line ends only separate tokens, so a construct reads the same on one line and over ten.
@@ -32,24 +35,42 @@
 //! What it cannot see, by its design:
 //! - The code view decides what is a comment or a string. Read from where a file starts it
 //!   agrees with the compiler's lexer (editions 2021 and 2024; a fuzz target holds it to that
-//!   lexer). What it cannot know is what the lines above a hunk left open. So a side that
-//!   starts below line 1 and holds a changed line is read from code and also as beginning
-//!   inside one block comment; and when, read from code, it ends inside a string, also as
-//!   beginning inside an ordinary string. What remains:
-//!   - A side that began inside a string, but whose quotes do not say so (read from code it
-//!     ends in code: another string opens on it and stays open, or a later hunk closes the
-//!     string after `//`), is read from code: from the closing quote on, each string's text is
-//!     taken for code and the code between for strings. On 177,957 fragments cut from 13,779
-//!     real crate files 93 real items are missed this way; on this repository's history, 1.
-//!   - A side that began inside a raw string is read as if the string were an ordinary one:
-//!     it ends at the first quote, whatever `#` the raw string needs after it.
-//!   - A side that began two or more block comments deep is read as one deep. That shows what
-//!     follows the first `*/` as code earlier than the compiler does, never later.
-//!   - The further readings have a cost in false items. In the reading from inside a comment,
-//!     a `*/` in a string near the start of a fragment ends the supposed comment and the text
-//!     after it is read as code (measured: 1 item on those fragments, 8 on this repository's
-//!     history, all in strings that hold patch text). In the reading from inside a string,
-//!     the text of the side's strings is code (36 items on those fragments, 3 on the history).
+//!   lexer), and a text that Git must put at the top of its file is read that way and no
+//!   other. So a patch made with full context (`git diff -U<large>`), every hunk of which
+//!   reaches the top of its file, has no unknown start. What the view cannot know is what the
+//!   lines above any other text left open. A side of such a text that the change touches is
+//!   read from code and also from the further starts the module `evidence` gives it
+//!   (`text_hits`): from inside one block comment; from inside a string, and from inside a
+//!   raw string, when its reading from code carries anything over a line end; from the top
+//!   of a file, when its first line is a shebang. (Every hunk is read once more as release
+//!   0.8.3 read it, by that release's rules; this reader does not read that view.) What remains (the figures are from 177,957 fragments cut from 13,779 real
+//!   crate files, 25,208 more with their true starts known, and this repository's history of
+//!   481 commits):
+//!   - A side that began inside a string and that, read from code, carries nothing over a
+//!     line end: the last line of the string with code after it and quotes that balance
+//!     (`"; call(); // "`). Nothing then says the side began in a string. It takes a writer
+//!     who sets out to: of the fragments with known starts none loses an item. Reading every
+//!     fragment from inside a string would close this for 457 false items on the fragments
+//!     and 212 on the history (3.8% of its items), and is not done.
+//!   - A side that began two or more block comments deep is read as one deep, and from its
+//!     first `*/` on that reading is wrong: the text it shows too early can open a line
+//!     comment or a string of its own and hide code the compiler reads later (`// */ //`,
+//!     and on the next line `// */ call(); /*`). None of the fragments with known starts
+//!     begins two deep. (Opened by an earlier hunk of a created file, the comment is in the
+//!     same text, and nothing is unknown.)
+//!   - A side that began inside a raw string whose own text holds a quote followed by `#`
+//!     (it was opened with more `#` than that), or inside one opened with no `#` whose
+//!     closing quote follows a backslash, is read with the string ending in the wrong place.
+//!   - Two hunks that touch while the old position of the second says they do not: Git finds
+//!     a hunk by its context wherever its header says it is, and a construct cut in two by
+//!     such a pair is read in two halves.
+//!   - The further readings cost false items. From inside a comment: the text after a `*/`
+//!     in a string near the start of a fragment (1 on the fragments, 8 on the history). From
+//!     inside a string: the text of the side's own strings (60 and 24). From inside a raw
+//!     string: none measured. The reading of release 0.8.3, which only that release's own
+//!     rules read (the reader of tokens does not): text of strings and comments that its
+//!     scanner took for code (2 and 9; and 148 on 603 crates read as created files, where
+//!     every other reading is exact).
 //!   - Editions before 2021 read three forms otherwise, and there a string can be taken to
 //!     end at another place than the compiler ends it: `cr"…"` (the name `cr` and an ordinary
 //!     string), `c"…"` (the name `c` and a string: the same bytes are blank), and `'r#name`
@@ -64,7 +85,7 @@
 //!   that becomes one because a line was removed has no token on an added line.
 
 use crate::evidence::{Basis, EvidenceSignal};
-use deep_diff_forge_core::{PatchHunk, PatchLineKind};
+use deep_diff_forge_core::{PatchLine, PatchLineKind};
 
 /// The most tokens generic arguments written with `::<` may be, from their `<` to their `>`,
 /// both counted, for the reader to pass over them: `x.unwrap::<…>()`, `X::unwrap::<…>(x)`,
@@ -90,7 +111,7 @@ const SLIDE: usize = 1024;
 /// One line of one side of a hunk.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SideLine<'a> {
-    /// Its index in `hunk.lines`.
+    /// Its index in the lines of the text.
     pub index: usize,
     /// Its code view.
     pub code: &'a str,
@@ -101,7 +122,8 @@ pub(crate) struct SideLine<'a> {
 /// One signal the reader found: at a line of the hunk, with the rung it stands on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Item {
-    /// The index in `hunk.lines` of the first changed line that holds a token of the construct.
+    /// The index, in the lines of the text, of the first changed line that holds a token of the
+    /// construct.
     pub line: usize,
     pub signal: EvidenceSignal,
     /// [`Basis::Lexical`] when the construct's tokens are on one line, [`Basis::Hunk`] when
@@ -128,13 +150,13 @@ pub(crate) struct HunkItems {
 /// and read as if it began inside a block comment): each is read here on its own, whole, and
 /// what they find is united by the caller. No view is ever a mixture of two readings.
 pub(crate) fn read_hunk(
-    hunk: &PatchHunk,
+    lines: &[&PatchLine],
     views: &[(Option<String>, Option<String>)],
     old: bool,
     new: bool,
 ) -> HunkItems {
     let side = |new: bool| {
-        hunk.lines
+        lines
             .iter()
             .zip(views)
             .enumerate()
@@ -153,7 +175,7 @@ pub(crate) fn read_hunk(
     };
     // A side with no changed line has nothing to report, and is not read; nor is a side that
     // `views` does not cover.
-    let has = |kind: PatchLineKind| hunk.lines.iter().any(|line| line.kind == kind);
+    let has = |kind: PatchLineKind| lines.iter().any(|line| line.kind == kind);
     HunkItems {
         new: if new && has(PatchLineKind::Added) {
             read_new(side(true))
@@ -2093,7 +2115,7 @@ mod tests {
                     }
                 })
                 .collect();
-            read_hunk(hunk, &views, true, true)
+            read_hunk(&hunk.lines.iter().collect::<Vec<_>>(), &views, true, true)
         };
         // the removed line between the dot and the name is not on the new side
         let found = read(" x.\n-#[test]\n+unwrap()\n");

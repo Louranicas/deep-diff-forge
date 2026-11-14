@@ -27,8 +27,11 @@
 //!   twice and no two readings are mixed, so a view never shows a byte its own reading takes
 //!   for a comment or a literal. Where the start of a hunk is not known, its side is read as
 //!   more than one whole view ([`rust_views`]: from code, from inside a block comment, from
-//!   inside a string) and the rules read each; what they find is united, the bytes never
-//!   are. A fuzz target (`rust_code_view`) holds the view to the compiler's lexer.
+//!   inside a string or a raw string) and the rules read each; what they find is united, the
+//!   bytes never are. A fuzz target (`rust_code_view`) holds the view to the compiler's lexer.
+//!   The scanner of release 0.8.3 is kept beside it, as it was (the module `legacy_rust`,
+//!   [`rust_legacy_views`]): a Rust hunk is read through it once more, so that no item that
+//!   release reports is lost where a hunk's unknown start makes the two scanners differ.
 //! - An interpolation is scanned as code with its own strings, escapes and comments, and ends
 //!   at its matching closer on the same line. Shell `case` patterns, ANSI-C `$'…'` strings,
 //!   word-start `#` comments, JS regex literals (also on a line that continues an
@@ -866,12 +869,19 @@ pub enum RustStart {
     FileStart,
     /// In code, below line 1.
     Code,
-    /// Inside one block comment that the lines above opened. (Inside two or more, the first
-    /// `*/` would not yet end the comment: this start shows what follows it as code earlier
-    /// than the compiler does, never later.)
+    /// Inside one block comment that the lines above opened. A side that begins inside two or
+    /// more is read as inside one, and that reading is wrong from its first `*/` on: it takes
+    /// what follows for code while the compiler is still in a comment. Mostly that shows text
+    /// as code too early, but the text it shows can open a line comment or a string of its
+    /// own and so hide code the compiler does read later (`// */ //` and on the next line
+    /// `// */ call(); /*`, two comments deep: review V3 round 13, VD3R13-M-1, and the sixth
+    /// independent review, IR6-L-1). No start is made for a greater depth: a declared limit.
     Comment,
     /// Inside an ordinary string (`"…"`, `b"…"`, `c"…"`) that the lines above opened.
     Str,
+    /// Inside a raw string that the lines above opened with this many `#`: it takes no
+    /// escapes and ends at the first quote that this many `#`, or more, follow.
+    RawStr(usize),
 }
 
 /// One side of a Rust hunk, read whole from a start: [`rust_side`].
@@ -883,6 +893,10 @@ pub struct RustSide {
     /// a side that may have begun inside a string: its closing quote was taken for an opener,
     /// and so on to the end, each string's text read as code and the code between as strings.
     pub ends_in_string: bool,
+    /// Some line of the side, the last or an earlier one, ends inside something: a string, a
+    /// raw string, a block comment (or a character literal the lexer lets run on). The reading
+    /// carries an open state over a line end.
+    pub open_over_lines: bool,
 }
 
 /// The code view of every line of one side of a Rust hunk (`lines`, in order), read whole from
@@ -902,10 +916,31 @@ pub fn rust_views(lines: &[&str], start: RustStart) -> Vec<String> {
     rust::side(lines, start).views
 }
 
-/// [`rust_views`], and whether the side ends inside a string.
+/// [`rust_views`], and what the reading says of what it carries: whether the side ends inside a
+/// string, and whether anything is open over a line end.
 #[must_use]
 pub fn rust_side(lines: &[&str], start: RustStart) -> RustSide {
     rust::side(lines, start)
+}
+
+/// The code view of every line of one side of a Rust hunk as release 0.8.3 read it: the
+/// scanner of that release (the module `legacy_rust`), from a fresh state, line after line. It
+/// is one of the readings of a Rust hunk, so that nothing the released version reports is lost
+/// to the scanner that follows the compiler's lexer where a hunk's start makes the two differ.
+#[must_use]
+pub fn rust_legacy_views(lines: &[&str]) -> Vec<String> {
+    let mut state = legacy_rust::ScanState::default();
+    lines
+        .iter()
+        .map(|line| legacy_rust::code_view(Language::Rust, line, &mut state))
+        .collect()
+}
+
+/// Whether the first of `lines`, were it line 1 of a file, is a shebang by the compiler's rule
+/// (so that a reading from [`RustStart::FileStart`] differs from one from [`RustStart::Code`]).
+#[must_use]
+pub fn rust_shebang(lines: &[&str]) -> bool {
+    rust::is_shebang(lines)
 }
 
 /// The length in bytes of the white space character `rest` starts with, or 0 when it starts
@@ -920,6 +955,8 @@ pub(crate) const fn rust_white(rest: &[u8]) -> usize {
         _ => 0,
     }
 }
+
+mod legacy_rust;
 
 /// Rust, read as the compiler's lexer reads it.
 ///
@@ -994,8 +1031,10 @@ mod rust {
         let mut open = match start {
             RustStart::Comment => Open::Comment(1),
             RustStart::Str => Open::Str,
+            RustStart::RawStr(hashes) => Open::RawStr(hashes),
             RustStart::FileStart | RustStart::Code => Open::Nothing,
         };
+        let mut open_over_lines = false;
         let views = lines
             .iter()
             .enumerate()
@@ -1005,12 +1044,14 @@ mod rust {
                 }
                 let (view, end) = scan(line, open);
                 open = end;
+                open_over_lines |= open != Open::Nothing;
                 view
             })
             .collect();
         RustSide {
             views,
             ends_in_string: matches!(open, Open::Str | Open::RawStr(_)),
+            open_over_lines,
         }
     }
 
@@ -1026,7 +1067,7 @@ mod rust {
     /// Checked with rustc 1.99.1: `#!… /*` on line 1 hides nothing below it; `#!` with `[` on
     /// the next line, after `// plain` or after a block comment over two lines, is an
     /// attribute; `#!/** doc */ [` is a shebang; a shebang is line 1 only.
-    fn is_shebang(lines: &[&str]) -> bool {
+    pub(super) fn is_shebang(lines: &[&str]) -> bool {
         let Some(first) = lines.first() else {
             return false;
         };
@@ -3148,7 +3189,9 @@ mod tests {
         from_code[0].drain(..2);
         assert_eq!(rust_views(&lines, RustStart::Comment), from_code);
         // Inside two comments the first `*/` ends only one of them. Read as inside one, what
-        // follows it is shown as code: earlier than the compiler shows it, never later.
+        // follows it is shown as code, earlier than the compiler shows it. (That reading is
+        // then wrong, and what it shows can hide code further on: no start is made for a
+        // side two comments deep.)
         assert_eq!(
             rust_views(&["a /* b */ c */ d", "e */ f"], RustStart::Comment),
             ["               d", "e */ f"]

@@ -499,17 +499,20 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     ends in code (another string opens on it and stays open, or the string was opened by an
     earlier hunk and is closed after `//`) is read from code: the 93 and the 1 above. A side
     that began inside a raw string is read as if the string were an ordinary one. A side
-    that began two or more block comments deep is read as one deep, which shows code
-    earlier than the compiler does and never later. The false items of the two further
+    that began two or more block comments deep is read as one deep (this entry said that
+    this "shows code earlier than the compiler does and never later"; that was false, as
+    the next entry says: the text shown too early can hide later code).
+    The false items of the two further
     readings, counted above. Editions before 2021: `cr"…"` is there the name `cr` and an
     ordinary string, and `'r#name` is `'r`, `#` and what follows, so `cr"\"` and `'r#r"\"`
     end a string elsewhere than the view does and a text written for those editions can
     hide what follows (`c"…"` blanks the same bytes either way; `k#…` is read as those
     editions read it). Frontmatter, which the compiler refuses as experimental. Characters
-    assigned after Unicode 18.0.0. A side whose first line says it is line 1 is taken for
-    the top of its file, which is where `git apply` puts such a hunk unless it is run with
-    `--unidiff-zero` or `-C0`; a tool that places hunks more loosely could put it lower,
-    and then the readings from inside a comment and a string are not made for it.
+    assigned after Unicode 18.0.0. A side whose first line says it is line 1 was taken for
+    the top of its file. (This entry said that this is where `git apply` puts such a hunk
+    unless it is run with `--unidiff-zero` or `-C0`. That was wrong for the new side: Git
+    places a hunk by its old position and never by the new one. The next entry corrects it:
+    the top of a file is decided by what Git must do.)
   - *Tests.* Unit tests hold each start of a view, the shebang rule in twenty-four forms
     (each checked with rustc 1.99.1), `k#`, the white space, and the eleven scanner rules
     that the review's mutation run found no test for (IR5-L-1; one of the eleven, a rule
@@ -529,6 +532,244 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     (VD3R12-L-1, IR5-L-2), and the comment on `Found` names both kinds of item that can
     come late (IR5-L-3).
 
+- **Round 13 of Vesper's review and a sixth independent review (both NO-GO): nothing about a
+  hunk's place or start is taken on trust.** Both reviews confirmed the model of round 13
+  (whole views, no mixture, a further view only adds, each view lexed as the compiler lexes
+  it, the other languages unchanged). What they broke is everything that round still took
+  from the patch on its word: the numbers in a hunk header, the boundaries between hunks, and
+  a guess at how a fragment starts. A third report, on the port of the Rust scanner to the
+  released line, showed that the new scanner reports less than release 0.8.3 on some hunks.
+  - *The rule.* Where a hunk sits is what plain `git apply` must do with it. Hunks with no
+    unseen line between them are one text, and every hunk is also a text of its own: a join
+    is a further reading and takes none away. Where the start of a text cannot be known,
+    every start that could be true is read, and what any reading finds is found. Every claim about
+    Git below was run with `git apply` 2.56.0 in scratch repositories, and the runs are
+    written into the doc comments of the tests that hold them.
+  - *The top of a file (IR6-H-1, high).* A side counted as the top of its file when its
+    first line had the number 1, and for the new side that number is the `+N` of the header.
+    Git never places a hunk by it: `@@ -9,4 +1,5 @@` is applied at line 9 ("succeeded at 9
+    (offset 8 lines)"). One digit switched the readings from inside a comment and a string
+    off and the shebang rule on, and a spawn on a line `#! ...` inside a macro call, which
+    every earlier version reported, was blank. The top of a file is now where Git must put
+    the hunk: old position 0, or old position 1 in a hunk that holds a line of the old file
+    (with any other, Git puts the hunk where it finds its old lines), and the first hunk of
+    a section that creates a file, whatever its header says. A hunk `@@ -1,0 +N @@` of added
+    lines only in an existing file is a fragment: its readings include the one from code,
+    and the one from the top of a file when its first line is a shebang, so nothing the top
+    reading gives is lost.
+    A hunk that says it is lower can still be the top (`@@ -3,2 +3,3 @@` whose lines are
+    the first of the file is applied at line 1), so a fragment whose first line is a shebang
+    is also read from the top of a file. The sentence in the entry before this one and in
+    the request for round 13, that `git apply` puts a hunk at line 1 by its new number
+    "unless it is run with `--unidiff-zero` or `-C0`", was wrong and is corrected. One
+    answer changes the other way and is right: a hunk `@@ -1,3 +7,4 @@` is the top of its
+    file, and a line `// */ call(); /*` in it is a line comment (the review's `asym.patch`).
+  - *Hunks Git must put together (IR6-H-3, high; in release 0.8.3 too).* Each hunk was read
+    alone, and Git accepts a file created as several hunks: a call whose name ended the
+    first hunk and whose `()` began the second left no item, and a comment opened in the
+    first hid a spawn in the second. A hunk whose last line is not a context line must match
+    at the end of its file, and a hunk of added lines only has nothing else to match, so
+    such a hunk stands straight after the last earlier hunk that ended the file whatever its
+    header says (`@@ -50,0 +90,1 @@` after `@@ -0,0 +1,2 @@` is line 3). A file created as
+    several hunks is therefore one text from line 1, and so is a run of such hunks at the
+    end of an existing file: the state of the lexer and the window of the reader of tokens
+    run across the join, and each item is reported with the hunk and the line it stands in.
+    Hunks whose old positions say they touch are read as one text too.
+    *Every hunk is also read on its own*, in every language and whatever joins it: what a
+    hunk gives when it is read alone is always in the answer. The applier modelled is plain
+    `git apply`; an applier that puts a hunk where its numbers say leaves such hunks apart,
+    each a fragment of its own, and the reading of every hunk alone is that reading. As this
+    round was first built (never committed), a Rust hunk that Git must put after another
+    was read only as its continuation, and that lost what round 13 reported: two hunks of
+    added lines only in an existing file, the first leaving a block comment open, the
+    second a spawn and a call. Plain `git apply` puts both at the end of the file ("Hunk #1
+    succeeded at 23 (offset 17 lines). Hunk #2 succeeded at 25"), where the second is the
+    text of that comment; `git apply --unidiff-zero`, which a `git diff -U0` patch needs,
+    puts each where its numbers say, and rustc compiles the second as code. Both readings
+    are made now. With every hunk a text of its own, a hunk stands in at most three texts
+    (itself, the run Git must make, the run the positions make), so the bound on joins by
+    position that the first build had (eight a file) is gone and nothing replaces it.
+    `git diff` with context lines writes neither touching hunks nor a creation in several
+    hunks: on the 481 per-commit patches of this repository no answer changes for this
+    reason. The views that show hunks take the labels
+    of a joined hunk from the one scan of its file; a hunk that is a text of its own is
+    still scanned alone (`hunk_signals_alone`, `joined_hunks`).
+  - *The starts of a fragment (IR6-H-2, high; LF-H-1).* The reading from inside a string
+    was made only for a side that, read from code, ENDED inside a string. An ordinary
+    `diff -U3` hunk between two strings over lines (the closing line of one above its
+    change, the opening line of the next below) ends in code, and every item of such a hunk
+    was lost, `#[ignore]` on a test among them, which rounds 10 to 12 had found; and a hunk
+    that began in a string whose text holds `crates/*/*/Cargo.toml` ends in a comment (two
+    opened, one closed), which lost a spawn that release 0.8.3 reports. The condition is now
+    that the reading from code carries anything over a line end: a string, a raw string or a
+    block comment. On the same condition a side that holds a quote with `#` after it is read
+    from inside a raw string too: a raw string takes no escapes and ends at the first quote
+    that as many `#` follow as opened it, and the count is that of the side's first such
+    quote, which is the string's closing quote unless its own text holds one (so one reading
+    serves any count; read as an ordinary string, a raw string whose text ends in a
+    backslash does not end where it ends).
+  - *Never less than the released version (LF-H-1, LF-M-1).* The scanner that follows the
+    compiler's lexer is right about text read from a known start, and a hunk has none: from
+    a start that is wrong, being exact goes wrong in other places than the old scanner did.
+    So the scanner of release 0.8.3 is back beside it, byte for byte as released (a private
+    module, `lexical/legacy_rust.rs`: lines 119 to 841 of `lexical.rs` at the tag's commit
+    `d4dbc91`), and every Rust hunk is read once more as that release read it: alone, from a
+    fresh state, by that release's own Rust rules. What it finds is united with the rest.
+    (Letting every rule of today read that view too was measured and not taken: it gains no
+    true item on any set, adds 5 false items on this repository's history and 16 on 603
+    crates read as created files, costs a third more time on created files, and it breaks
+    the rule the fuzz target `rust_tokens` has held since round 13, that strings on earlier
+    lines change none of the reader's signals.) Checked against the published 0.8.3
+    binary on every set named below (2,121 patch files that both binaries read): the list
+    of patches in which a signal of that release is reported by 0.8.3 and not by this
+    version is empty. The cost is what that scanner got wrong and the release also
+    reported: text of strings and comments taken for code (figures below), and about what
+    that release's scan took in time.
+  - *The general answer: do not guess the start.* A text that Git must put at the top of
+    its file is read from code and in no other way, and that reading is exact. So a patch
+    made with full context (`git diff -U<large>`) has no unknown start, and the
+    constructions that no reading of a bare fragment covers are found in that form (tests
+    and a pair of corpus sections hold four of them). The README says so to whoever builds
+    patches for a gate. The rule that was measured and NOT taken, "code may begin wherever a
+    comment or a string could end", closes every start-related construction and costs 2.8%
+    more items on real fragments and 10.7% on this repository's history, nearly all false
+    (doc examples in line comments); sparing line comments reopens them; and it needs a cap
+    with a known residue or a new reading engine.
+  - *One reading at a time (IR6-L-2).* A text's readings are made, read and dropped one
+    after another, and what is kept between them is what they found. On the review's inputs
+    (CPU seconds and peak memory, release builds; round 12, round 13, now): 999,000
+    one-byte lines below line 1, 0.74 s and 158 MiB, 0.81 s and 388 MiB, 1.23 s and 212 MiB;
+    a 60.9 MB fragment with an item on every line, 2.33 s and 328 MiB, 3.47 s and 626 MiB,
+    4.34 s and 404 MiB; the same as a created file, 2.33 s and 328 MiB, 2.23 s and 381 MiB,
+    3.09 s and 373 MiB. Memory is within a third of round 12's on every input (round 13: up
+    to 2.4 times).
+  - *Measured, against round 13.* On 177,957 fragments cut from 13,779 real crate files,
+    cut two ways. One hunk a section (no join): the 93 real items round 13 lost against
+    round 12 are all found, nothing is lost, and 26 false items are new (24 from the wider
+    condition for the reading from inside a string, none from the raw-string reading, 2
+    from the reading of release 0.8.3). As first cut, several hunks of added lines a file
+    (which Git and now this version also read together): nothing is lost either, the same
+    93 and 26, and the joins add 17 items: 10 real (`#[cfg_attr(…, ignore = …)]` written
+    over several lines and cut by a hunk boundary, which only the joined text shows) and 7
+    false (the further starts of a joined text: 5 from inside a string, 2 from inside a raw
+    string). On 25,208 fragments with their true starts known (the sixth
+    review's set): 0 misses in every start where round 13 had 20, all in fragments that
+    begin in a raw string; 37 added items where round 13 had 35. On the 481 commits of this
+    repository: 31 new items, one of them real (`json.rs:517`), 21 from the reading from
+    inside a string and 9 from the reading of release 0.8.3; nothing lost. On 603 crates
+    read as created files: 148 new items, all from the reading of release 0.8.3 and all
+    text of strings and comments (of the 164 such items that round 13 had removed against
+    round 12, the ones of that release's signals). Of 347 earlier reproduction patches 24
+    change: 22 gain what a review asked for, one gains back two false items (`union-fp`),
+    and one loses an item by the rule for the top of a file (`asym.patch`, above).
+    Time is not what it was: the reading of release 0.8.3 costs about what that release's
+    scan did, and a fragment has more readings. The review's ten inputs take 1.2 to 1.7
+    times round 13's CPU time, and of thirty-four hostile units of two megabytes the slowest
+    takes 1.4 s where it took 0.65 (900,000 lines of `"` below line 1; 700,000 lines of
+    `"#`, which get every reading, take 1.4 s where they took 0.5). The cost is linear as
+    before: a side of a text has at most five readings, a Rust hunk one more as release
+    0.8.3 read it, and a hunk stands in at most three texts. A file written as 330,000
+    hunks that are joined is read hunk by hunk and as its runs: created in that many hunks,
+    as that many hunks of added lines only, and as that many hunks whose positions say they
+    touch, 18 to 20 MB each, it takes 1.4, 1.35 and 1.8 times round 13's CPU time (3.5, 3.3
+    and 4.6 s on a busy host where round 13 took 2.4, 2.5 and 2.6) and 1.6, 1.6 and 1.9
+    times its memory (252, 260 and 324 MiB where it took 161, 162 and 173). The same
+    number of hunks apart from each other cost what they cost in the first build of this
+    round (measured side by side).
+  - *Limits that remain, declared, each as what it is.* A side that began inside a string
+    and that, read from code, carries nothing over a line end (`"; call(); // "`): it takes
+    a writer who sets out to; reading every fragment from inside a string would close it
+    for 457 false items on the fragments and 212 on the history (3.8% of its items), and
+    still would not close the next. A side that began two or more block comments deep is
+    read as one deep, and that reading can hide later code: the sentence "earlier than the
+    compiler does and never later" was false (VD3R13-M-1, IR6-L-1: `// */ //`, then
+    `// */ call(); /*`) and is gone from the code and the README, and marked in the entry
+    before this one. A raw
+    string whose own text holds a quote followed by `#`, or one opened with no `#` whose
+    closing quote follows a backslash. Two hunks that touch while the old position of the
+    second says they do not: Git finds a hunk by its context wherever its header says it
+    is (`@@ -40,1 +41,2 @@` "succeeded at 5 (offset -36 lines)"), and a construct cut in
+    two by such a pair is read in two halves. Two hunks that do touch, behind an earlier
+    hunk whose position falsely says it touches the first of them, are read together only
+    with that hunk in front. A hunk whose old position is 1 and that holds old lines is the
+    top of its file to plain `git apply`, which refuses it anywhere else, and is read so and
+    in no other way; `git apply --unidiff-zero` puts it lower when its old lines are lower
+    ("succeeded at 5 (offset 4 lines)"; `-C0` too, for a hunk that begins with a context
+    line). For hunks with no old line, which is what a `-U0` patch of added lines has, the
+    reading of every hunk alone covers the applier that believes positions. None of the 25,208 fragments with known
+    starts shows the first two. A suppressed lint is still read on one line (IR6-L-4): the
+    four spellings the review gives are declared misses, not code, in this round. Editions
+    before 2021, frontmatter and characters after Unicode 18: as in the entry before this
+    one (a spawn in one text of the older editions is now found, by the reading of release
+    0.8.3).
+  - *Tests.* Unit tests hold the top rule in both directions of a false header, the texts of
+    a file (every hunk alone, certain joins, joins on the word of positions, hunks out of
+    order), that a join takes no reading away (the two hunks above, and `@@ -1,0 +N @@`
+    read both ways) and the same as a property over 1,500 generated files cut four ways
+    (what a hunk gives alone is among what its file gives for it), every review reproduction as an assertion (`lie1` to `lie3`, `split2`, `split4`,
+    the three `newfile-depth` forms, `snap2`, `oldstr-both`, `strcmt`, `rawbs`, `glob-git`,
+    `apos-git`, `newfile-string-depth`), the full-context forms of four declared misses,
+    the labels of joined hunks in the graph and in the daemon's views, and, on 3,000
+    generated texts as a created file and as a fragment, added and removed, that nothing
+    release 0.8.3 reports is lost. The test that held the miss of IR6-H-2 as its expected
+    answer asserts the finding. A new fuzz target, `rust_hunk_places` (IR6-L-3), builds a
+    whole Rust file whose every line is in a known state and requires that the same change
+    written in other ways Git accepts loses no item: the file created as several hunks with
+    honest or false headers, a hunk cut out with the lines above and below unseen whatever
+    the cut left open, the same hunk with another new position, and what the scanner and
+    rules of release 0.8.3 find on any text; and that no join takes a reading away (what each
+    hunk gives as a patch of its own is among what the file gives for it, for a creation in
+    several hunks and for hunks of added lines apart in an existing file). Its ten seeds
+    hold. Nine of them fail on the sources of the commit before (`8f290e3`); the tenth,
+    the two hunks above, holds there and fails on this round as first built. Rule 5 of `rust_tokens` (a comment between
+    two tokens and strings on earlier lines change nothing) now asks of a hunk below line 1
+    that no signal is lost, where it asked for the same set: the further readings of a
+    fragment can add a signal from the text of a comment or a string, which is their
+    declared cost; in a created file the set must still be the same. The corpus has 49 cases (new:
+    `evidence/independent-review-6-20261114`, seventeen items, three declared false positives
+    and eight declared misses; one declared miss of the case before it is found): evidence
+    precision 134 of 153 (was 116 of 132), recall 134 of 187 (was 116 of 162), 75 declared
+    (was 65). Precision fell a little, on purpose: two of the three new false positives are
+    items release 0.8.3 reports. Recall rose a little, though four of the eight new misses
+    are spellings of a suppressed lint that no rule reads yet.
+  - *The bounded list keeps what release 0.8.3 listed (review of the same change on the
+    released line, VLF3-L-1).* `rank.v0` lists at most 32 items a file, and they were the
+    first 32 of all items. An item only this version finds, on an earlier line, pushed out
+    one that release showed: far more often here than on the released line, since the
+    signals this branch adds do it on ordinary history (a test file of this repository
+    spawns processes at five places and listed four of them, after the panic paths of its
+    tests took the rest of the room; on 2,990 patch files, 238 of the 620 files with more
+    than 32 items lacked an item that release listed). Score and signals were right and
+    `evidence_truncated` said so, but a reader of the list saw a spawn less than before.
+    The bound stays 32. The list now holds, while there is room: first the items release
+    0.8.3 listed, in its order (an item carries whether that release reported it: for Rust
+    what the reading of that release finds, for another language a signal it had, found in
+    the hunk read alone); then the first item of every signal with no item in the list yet,
+    the heavier signal first; then the others as they come. It is printed in the file's
+    order (hunk, line, signal) as before, and a file with 32 items or fewer prints what it
+    printed. Three orders for the items after the release's were measured on those 620
+    files. As they come: 189 files have a signal with no item in the list. The heavier
+    signal's items first: the same list in every one of the 620 (nearly all weights are 3).
+    A place for every signal first (taken): 180 such files, a different list in 9, each a
+    crate's file in which `test_skipped`, `stub_added` or `error_swallowed` gains its place;
+    on this repository's history the three give the same lists. In 177 of the 620 the
+    release's items fill all 32 places and a newer signal has no item in the list under any
+    order that keeps them (none on this repository's history): it is in `signals`, and the
+    list says it is cut short. Raising the bound would move that, not end it, and is not
+    done. The CLI and the daemon (and so MCP) take the list from one function
+    (`RankedFile::scored`); the views that show one hunk's labels are not bounded. Checked
+    against the published 0.8.3 binary on the 2,990 patch files, comparing every listed
+    item also where a list is cut short: no patch has an item that release lists and this
+    version does not (the same comparison finds 193 such patches for round 13's binary).
+    Tests: at the level of the rank, an item of a newer signal, and one of a newer reading,
+    on line 1 above 32 spawns (all 32 are listed); forty panic paths and a stub; the heavier
+    of two signals for the last place; and as a property over 1,200 generated files in Rust
+    and Python with many items, created in one hunk, in several, and changed by hunks of
+    added lines, that the items marked are exactly that release's, that what it printed is
+    printed, that the list is in the file's order and as long as the bound allows, and that
+    every signal has a place where there is room. Each fails under its control (the first
+    32 again; no place kept for a signal; no weight; a mark by signal alone; no mark).
+
 ### Changed
 
 - **`basis` in `rank.v0` evidence is no longer always `lexical`.** An item carries the highest
@@ -538,6 +779,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   before release: the values are `lexical` and `hunk`; `syntax_fragment` was never released
   and is gone with the parser. `hunk` now also marks a Rust construct whose tokens stand on
   several lines.*
+- **A hunk's evidence can depend on the hunks Git must put beside it.** A file created as
+  several hunks, a hunk of added lines after one that ends its file, and hunks whose old
+  positions say they touch are read as one text, and an item is reported in the hunk and on
+  the line it stands in. For a patch `git diff` writes nothing changes: every hunk is a text
+  of its own. The graph crate gains `joined_hunks` (the hunks of a file that are read with
+  another) and `hunk_signals_alone` (the scan of a hunk that is a text of its own);
+  `hunk_signals` answers for any hunk, at the cost of the texts it stands in.
+- **Every Rust hunk is also read as release 0.8.3 read it**, so a version after this one never
+  reports fewer items of that release's signals than the release did. Items of those
+  signals that the release reported in the text of a string or a comment, which rounds 12
+  and 13 had stopped reporting, are reported again.
 - **Existing Rust signals can be found where they were not before.** `test_skipped`,
   `trivial_assert` and `stub_added` in a Rust hunk are now also found by the parser, so a
   spelling the tokens missed is reported and raises the file's score. *Superseded before
@@ -547,6 +799,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Security
 
+- **A construct cut in two by a hunk boundary, or a comment carried over one, is read as Git
+  applies it** (sixth independent review of the integrity signals, IR6-H-3; in releases up to
+  0.8.3 too). Every hunk was read alone. Plain `git apply` accepts a file created as several
+  hunks, and a hunk of added lines after one that ends an existing file, and puts them one
+  straight after the other: a block comment opened in the first hunk hid a
+  `std::process::Command::new` in the second from `process_spawn` (the same for `unsafe`
+  and a network call), and a call whose name ended one hunk and whose `()` began the next
+  left no item. Hunks Git must put together are now one text. And a hunk header's NEW
+  position is no longer believed (IR6-H-1; the readings it switched off are not in a
+  release). Details and what stays open are in the Testing entry for round 13.
 - **Rust code after a nested block comment, or after a character literal with a long escape,
   was hidden from every Rust rule** (second and fourth independent reviews of 2026-11-14,
   IR2-H-3 and IR4-H-1; both reproduced on the released v0.8.3 binary with a control). Every
