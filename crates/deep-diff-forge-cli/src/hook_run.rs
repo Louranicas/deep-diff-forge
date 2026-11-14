@@ -39,7 +39,8 @@ use deep_diff_forge_core::process::{Limits, run_bounded};
 use deep_diff_forge_graph::Side;
 use deep_diff_forge_patch::{
     GitAcquireError, GitAcquireOptions, HeadState, InputGuards, JudgePatchError, SealedReview,
-    file_at_commit, head_contains, head_state, judge_patch, repository_dirs,
+    commit_patch, dirty_submodules, file_at_commit, has_commits_beyond, head_contains, head_state,
+    judge_patch, merge_base, ref_tips, repository_dirs,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -60,9 +61,14 @@ const INPUT_CAP: u64 = 32 * 1024 * 1024;
 const INPUT_DROPPED: u64 = 1024 * 1024 * 1024;
 /// The most keys of reported findings one session's state keeps.
 const REPORTED_CAP: usize = 5_000;
-/// The most reasons one session's state keeps as told ([`notice`]). Past it, an advice hook
+/// The most things one session's state keeps as said once ([`once`]). Past it, an advice hook
 /// that cannot run says nothing more; a stop still says why it was not judged.
-const NOTICED_CAP: usize = 16;
+const NOTICED_CAP: usize = 32;
+/// The most failures one session's state keeps as having blocked a stop; the oldest goes first.
+const BLOCKED_CAP: usize = 256;
+/// The most refs whose tips are recorded when a session begins, and the most that are looked
+/// at when it stops.
+const REFS_CAP: usize = 4096;
 /// The most rankers a stop tries before it gives up on finding one the policy admits.
 const RANKERS_TRIED: usize = 8;
 
@@ -179,8 +185,8 @@ pub(crate) fn run(args: &[String]) {
         return did_not_run("its input is over 32 MiB");
     }
     let said = hook::parse_input(event, &text).and_then(|input| match event {
-        Event::SessionStart => session_start(&input, args),
-        Event::PostTool => post_tool(&input),
+        Event::SessionStart => Ok(session_start(&input, args)),
+        Event::PostTool => Ok(post_tool(&input)),
         Event::Stop => stop(&input, args),
     });
     match said {
@@ -198,6 +204,16 @@ struct Place {
     own: PathBuf,
     /// The Git common directory: for a linked worktree it is not under `top`.
     common: PathBuf,
+    /// Which repository this is ([`identity`]).
+    id: String,
+}
+
+/// Which repository a Git common directory is: its device and inode. They stay when the
+/// repository is moved, and a clone put at the old path has others.
+fn identity(common: &Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let found = std::fs::metadata(common).ok()?;
+    Some(format!("{}:{}", found.dev(), found.ino()))
 }
 
 /// What Git says of a directory.
@@ -229,11 +245,18 @@ fn find(dir: &Path, deadline: Deadline) -> Found {
         .env
         .push((OsString::from("LC_ALL"), OsString::from("C")));
     match repository_dirs(dir, &options) {
-        Ok(dirs) => Found::Tree(Place {
-            top: dirs.top,
-            own: dirs.common_dir.join("deep-diff-forge"),
-            common: dirs.common_dir,
-        }),
+        Ok(dirs) => match identity(&dirs.common_dir) {
+            Some(id) => Found::Tree(Place {
+                top: dirs.top,
+                own: dirs.common_dir.join("deep-diff-forge"),
+                common: dirs.common_dir,
+                id,
+            }),
+            None => Found::Failed(format!(
+                "the Git directory of the repository {} is in could not be read",
+                shown(dir)
+            )),
+        },
         Err(GitAcquireError::CommandFailed { stderr, .. }) if stderr.contains(NO_REPOSITORY) => {
             Found::NotARepository
         }
@@ -384,22 +407,39 @@ enum Base {
 struct Project {
     /// The top level of the working tree.
     top: String,
+    /// Which repository that is: the device and inode of its Git common directory. A path
+    /// alone names whatever stands there now: the project moved away and a clean clone put in
+    /// its place was taken for the project (review V4 round 10, VD4R10-H-1).
+    id: String,
     base: Base,
+    /// The commits the repository's refs and `HEAD` led to when the session began
+    /// ([`REFS_CAP`] refs at most). What a ref names now and none of these leads to was
+    /// committed, fetched or pulled since.
+    tips: Vec<String>,
+    /// The repository had more refs than were recorded.
+    tips_partial: bool,
+    /// A session-start hook recorded this. Otherwise the base is only where `HEAD` was when
+    /// the session's first hook ran.
+    by_start: bool,
 }
 
 /// What one session remembers between hooks.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct State {
     project: Option<Project>,
+    /// A stop has said that the session's start was not recorded ([`hook::FIRST_STOP`]).
+    start_said: bool,
     /// The keys of findings already said in this session ([`Finding::key`]).
     reported: BTreeSet<String>,
-    /// The reasons an advice hook already gave for not running, hashed ([`notice`]).
+    /// What was already said once in this session, hashed: the reasons an advice hook gave for
+    /// not running ([`notice`]) and the things a stop named as not judged.
     noticed: BTreeSet<String>,
-    /// The failure that blocked the last stop, if the last stop was blocked.
-    last_block: Option<Vec<String>>,
+    /// The failures that have blocked a stop of this session ([`hook::failure_digest`]), the
+    /// latest last.
+    blocked: Vec<String>,
 }
 
-const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v1";
+const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v2";
 
 /// A session's state file. The session id is hashed: it is the client's string and must not
 /// choose a file name.
@@ -460,12 +500,22 @@ fn base_from(text: &str) -> Option<Base> {
     }
 }
 
-fn state_from(text: &str) -> State {
-    let Ok(value) = serde_json::from_str::<Value>(text) else {
-        return State::default();
-    };
+/// The identity of a repository as the state writes it: two numbers.
+fn is_identity(text: &str) -> bool {
+    text.split_once(':').is_some_and(|(device, inode)| {
+        let number = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+        number(device) && number(inode)
+    })
+}
+
+/// Read a state file's text. `Err` says why it is not a state this version wrote: such a file
+/// is never read as "no state", in part or whole. An empty state would make the next hook the
+/// session's first, and the commit `HEAD` names then its base: what the session had committed
+/// until then passed in silence (second independent review of the hooks, HR2-M-1).
+fn state_from(text: &str) -> Result<State, &'static str> {
+    let value = serde_json::from_str::<Value>(text).map_err(|_| "it is not JSON")?;
     if value["schema"] != STATE_SCHEMA {
-        return State::default();
+        return Err("it is not a state of this version of the hooks");
     }
     let strings = |member: &Value| -> Option<Vec<String>> {
         member
@@ -474,35 +524,44 @@ fn state_from(text: &str) -> State {
             .map(|v| v.as_str().map(str::to_owned))
             .collect()
     };
-    // A project that cannot be read whole is no project: the base is not trusted in part.
+    let list = |name: &str, cap: usize| -> Result<Vec<String>, &'static str> {
+        strings(&value[name])
+            .filter(|list| list.len() <= cap)
+            .ok_or("one of its lists is missing, malformed or longer than the hooks write")
+    };
     let project = match &value["project"] {
         Value::Null => None,
         project => {
-            let read = || {
+            let read = || -> Option<Project> {
                 let top = project["top"].as_str().filter(|top| !top.is_empty())?;
+                let tips = strings(&project["tips"])?;
+                if tips.len() > REFS_CAP + 1 || !tips.iter().all(|tip| is_commit_id(tip)) {
+                    return None;
+                }
                 Some(Project {
                     top: top.to_owned(),
+                    id: project["id"]
+                        .as_str()
+                        .filter(|id| is_identity(id))?
+                        .to_owned(),
                     base: base_from(project["base"].as_str()?)?,
+                    tips,
+                    tips_partial: project["tips_partial"].as_bool()?,
+                    by_start: project["by_start"].as_bool()?,
                 })
             };
-            match read() {
-                Some(project) => Some(project),
-                None => return State::default(),
-            }
+            Some(read().ok_or("its project is not whole")?)
         }
     };
-    State {
+    Ok(State {
         project,
-        reported: strings(&value["reported"])
-            .unwrap_or_default()
-            .into_iter()
-            .collect(),
-        noticed: strings(&value["noticed"])
-            .unwrap_or_default()
-            .into_iter()
-            .collect(),
-        last_block: strings(&value["last_block"]),
-    }
+        start_said: value["start_said"]
+            .as_bool()
+            .ok_or("one of its members is missing")?,
+        reported: list("reported", REPORTED_CAP)?.into_iter().collect(),
+        noticed: list("noticed", NOTICED_CAP)?.into_iter().collect(),
+        blocked: list("blocked", BLOCKED_CAP)?,
+    })
 }
 
 fn state_text(state: &State) -> String {
@@ -510,42 +569,57 @@ fn state_text(state: &State) -> String {
         "schema": STATE_SCHEMA,
         "project": state.project.as_ref().map(|project| json!({
             "top": project.top,
+            "id": project.id,
             "base": base_text(&project.base),
+            "tips": project.tips,
+            "tips_partial": project.tips_partial,
+            "by_start": project.by_start,
         })),
+        "start_said": state.start_said,
         "reported": state.reported,
         "noticed": state.noticed,
-        "last_block": state.last_block,
+        "blocked": state.blocked,
     })
     .to_string()
 }
 
-/// The most bytes of a state file that are read. A full state ([`REPORTED_CAP`] keys of 64 hex
-/// digits and a block of a few rules) is under half of this.
-const STATE_CAP: u64 = 1024 * 1024;
+/// The most bytes of a state file that are read. Every list in a state is bounded when it is
+/// written ([`REPORTED_CAP`], [`NOTICED_CAP`], [`BLOCKED_CAP`], [`REFS_CAP`]), and a state
+/// with every list full is under a quarter of this (a test holds it). Before, the failure
+/// that blocked was kept with a line for each violation and no bound, so the hooks wrote a
+/// file they would not read back.
+const STATE_CAP: u64 = 4 * 1024 * 1024;
 
-/// A missing, unreadable, foreign or oversized state file is an empty state: what follows is a
-/// finding said twice, a failure that blocks once more, or a session whose changes are
-/// measured from the commit `HEAD` names now. The file is opened without following a link and
-/// without waiting on a FIFO, must be a regular file once open, and its size is checked before
-/// anything is read: a state file of 512 MiB used to be read whole to find that it was not
-/// JSON (review V4, VD4-M-1).
-fn load(path: &Path) -> State {
+/// Read a session's state file: `Ok(None)` when there is none, `Err` with the reason when
+/// something stands at its name that is not a state the hooks can read (a link, another kind
+/// of file, a file over [`STATE_CAP`], other content). The file is opened without following a
+/// link and without waiting on a FIFO, must be a regular file once open, and its size is
+/// checked before anything is read (review V4, VD4-M-1).
+fn load(path: &Path) -> Result<Option<State>, String> {
     use std::os::unix::fs::OpenOptionsExt as _;
-    let read = || -> Option<String> {
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
-            .open(path)
-            .ok()?;
-        let found = file.metadata().ok()?;
-        if !found.is_file() || found.len() > STATE_CAP {
-            return None;
-        }
-        let mut text = String::new();
-        file.take(STATE_CAP).read_to_string(&mut text).ok()?;
-        Some(text)
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("it cannot be opened ({error})")),
     };
-    read().map(|text| state_from(&text)).unwrap_or_default()
+    let found = file
+        .metadata()
+        .map_err(|e| format!("it cannot be read ({e})"))?;
+    if !found.is_file() {
+        return Err("it is not a regular file".to_owned());
+    }
+    if found.len() > STATE_CAP {
+        return Err("it is larger than any state the hooks write".to_owned());
+    }
+    let mut text = String::new();
+    file.take(STATE_CAP)
+        .read_to_string(&mut text)
+        .map_err(|e| format!("it cannot be read ({e})"))?;
+    state_from(&text).map(Some).map_err(str::to_owned)
 }
 
 /// Write the state beside its file and move it into place, so a reader never sees half of it.
@@ -554,6 +628,11 @@ fn load(path: &Path) -> State {
 fn save(path: &Path, state: &State) -> Result<(), String> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
+    let text = state_text(state);
+    // Never written: what the next hook would refuse to read.
+    if text.len() as u64 > STATE_CAP {
+        return Err("its state is larger than it reads back".to_owned());
+    }
     let partial = path.with_extension(format!("{}.partial", std::process::id()));
     // what an earlier process with this id left behind
     let _ = std::fs::remove_file(&partial);
@@ -563,7 +642,7 @@ fn save(path: &Path, state: &State) -> Result<(), String> {
         .mode(0o600)
         .custom_flags(nix::libc::O_NOFOLLOW)
         .open(&partial)
-        .and_then(|mut file| file.write_all(state_text(state).as_bytes()))
+        .and_then(|mut file| file.write_all(text.as_bytes()))
         .and_then(|()| std::fs::rename(&partial, path))
         .map_err(|e| {
             // what could not be moved into place is not left beside the state
@@ -574,38 +653,102 @@ fn save(path: &Path, state: &State) -> Result<(), String> {
 
 /// A session's state, with the file it is kept in.
 struct Session {
+    /// The directory of every session's state.
+    dir: PathBuf,
     file: PathBuf,
     state: State,
-    /// The state as the file holds it.
-    kept: State,
+    /// The state as the file holds it; `None` when there is no file.
+    kept: Option<State>,
 }
 
 impl Session {
-    /// The state of the session `id`, read from the user's state directory. `Err` when there
-    /// is no such directory to keep a state in.
+    /// The state of the session `id`, read from the user's state directory; an empty state
+    /// when it has no file there. Nothing is made or written here. `Err` when there is no
+    /// directory a state could be kept in, when a link or a file stands where the directory
+    /// should be, or when the session's file is there and cannot be read as a state: none of
+    /// these is "no state".
     fn open(id: &str) -> Result<Self, String> {
         let dir = sessions_dir()?;
-        if let Some(parent) = dir.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("its state directory could not be made: {e}"))?;
+        match std::fs::symlink_metadata(&dir) {
+            Ok(found) if !found.file_type().is_dir() => {
+                return Err(format!(
+                    "{} is not a directory of its own (a symbolic link or a file stands there)",
+                    shown(&dir)
+                ));
+            }
+            _ => {}
         }
-        own_directory(&dir)?;
         let file = state_file(&dir, id);
-        let state = load(&file);
+        let kept = load(&file).map_err(|why| {
+            format!(
+                "this session's state file {} cannot be read as a state ({why}), so the project and the commit this session began from are not known; nothing is recorded over it (remove the file to have the next hook record the session anew)",
+                shown(&file)
+            )
+        })?;
         Ok(Self {
+            dir,
             file,
-            kept: state.clone(),
-            state,
+            state: kept.clone().unwrap_or_default(),
+            kept,
         })
     }
 
-    /// Write the state if this hook changed it.
+    /// Write the state if this hook changed it, making its directory first.
     fn keep(&mut self) -> Result<(), String> {
-        if self.state != self.kept {
-            save(&self.file, &self.state)?;
-            self.kept = self.state.clone();
+        if self.kept.as_ref() == Some(&self.state)
+            || (self.kept.is_none() && self.state == State::default())
+        {
+            return Ok(());
         }
+        if let Some(parent) = self.dir.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("its state directory could not be made: {e}"))?;
+        }
+        own_directory(&self.dir)?;
+        save(&self.file, &self.state)?;
+        self.kept = Some(self.state.clone());
         Ok(())
+    }
+
+    /// Why the state directory must not be used for the project at `top`: it lies inside that
+    /// working tree. A state there would be an untracked file in every patch, and cleaning the
+    /// tree would remove the session's base.
+    fn inside(&self, top: &Path) -> Option<String> {
+        inside_tree(&self.dir, top)
+    }
+}
+
+/// Why the state directory `dir` must not be used for the project at `top`, if it lies inside
+/// that working tree.
+fn inside_tree(dir: &Path, top: &Path) -> Option<String> {
+    resolved(dir).starts_with(top).then(|| {
+        format!(
+            "the state directory {} lies inside the project's working tree {}: point XDG_STATE_HOME (or HOME) outside it",
+            shown(dir),
+            shown(top)
+        )
+    })
+}
+
+/// `path` with its symbolic links followed as far as it exists: the part that exists is made
+/// canonical and the rest is kept as written.
+fn resolved(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut existing = path;
+    loop {
+        if let Ok(canonical) = std::fs::canonicalize(existing) {
+            return rest
+                .iter()
+                .rev()
+                .fold(canonical, |whole, part| whole.join(part));
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                existing = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
     }
 }
 
@@ -616,109 +759,168 @@ enum Located {
     Nowhere,
     /// Something that must be said: the project could not be found, and why.
     Trouble(String),
-    Here(Work),
+    Here(Box<Work>),
 }
 
 /// The session's project, and the commit its changes are measured from.
 struct Work {
     place: Place,
-    base: Base,
+    project: Project,
     /// This hook is the session's first here: it recorded the project and the base.
     fresh: bool,
+    /// The recorded top level, when the project is no longer there and was found elsewhere.
+    moved_from: Option<String>,
 }
 
-/// Find the session's project and the base of its changes, recording both in `state` when this
-/// is the session's first hook that finds a repository.
-///
-/// The project is, in this order: the directory the client names (`CLAUDE_PROJECT_DIR`) when
-/// it is in a Git working tree; the top level recorded in the session's state; the hook
-/// input's `cwd`. The `cwd` alone used to decide, and it follows the agent: from a nested
-/// repository, another repository or a directory that was gone, the project's change was not
-/// judged and nothing was said (independent review of the hooks, HR-H-1).
-fn locate(input: &Input, state: &mut State, deadline: Deadline) -> Located {
-    let mut place = None;
-    if let Some(dir) = client_project_dir() {
-        match find(&dir, deadline) {
-            Found::Tree(found) => place = Some(found),
-            Found::Failed(reason) => return Located::Trouble(reason),
-            Found::NotARepository | Found::Gone => {}
+/// The commits the refs of the repository at `top` and its `HEAD` lead to now, each once, and
+/// whether the repository has more refs than [`REFS_CAP`].
+fn tips_now(
+    top: &Path,
+    head: Option<&str>,
+    deadline: Deadline,
+) -> Result<(Vec<String>, bool), String> {
+    let refs = ref_tips(top, REFS_CAP, &deadline.git()).map_err(|error| {
+        format!(
+            "the repository's refs could not be listed: {}",
+            git_words(&error)
+        )
+    })?;
+    let mut tips: BTreeSet<String> = refs.tips.into_iter().map(|(_, commit)| commit).collect();
+    tips.extend(head.map(str::to_owned));
+    Ok((tips.into_iter().collect(), refs.partial))
+}
+
+/// Record the project at `place` for a session that has none: the commit `HEAD` names, the
+/// commits the refs lead to, and which repository it is.
+fn record(place: &Place, deadline: Deadline) -> Result<Project, String> {
+    let Some(top) = place.top.to_str() else {
+        return Err("the project's path is not UTF-8".to_owned());
+    };
+    let base = match head_state(&place.top, &deadline.git()) {
+        Ok(HeadState::Commit(id)) if is_commit_id(&id) => Base::Commit(id),
+        Ok(HeadState::Commit(_)) => {
+            return Err("Git named the commit of HEAD in a form that cannot be read".to_owned());
         }
-    }
-    if place.is_none()
-        && let Some(project) = &state.project
-    {
-        let top = Path::new(&project.top);
-        match find(top, deadline) {
-            Found::Tree(found) => place = Some(found),
-            Found::Failed(reason) => return Located::Trouble(reason),
-            Found::NotARepository | Found::Gone => {
-                return Located::Trouble(format!(
-                    "the project this session began in, {}, is no longer a Git working tree",
-                    shown(top)
-                ));
-            }
-        }
-    }
-    let place = if let Some(place) = place {
-        place
-    } else {
-        let cwd = Path::new(&input.cwd);
-        match find(cwd, deadline) {
-            Found::Tree(found) => found,
-            Found::NotARepository => return Located::Nowhere,
-            Found::Gone => {
-                return Located::Trouble(format!(
-                    "the session's directory {} does not exist, and no project is recorded for this session",
-                    shown(cwd)
-                ));
-            }
-            Found::Failed(reason) => return Located::Trouble(reason),
+        Ok(HeadState::Unborn {
+            repository_has_commits: false,
+        }) => Base::NoCommit,
+        Ok(HeadState::Unborn { .. }) => Base::Orphan,
+        Err(error) => {
+            return Err(format!(
+                "the commit HEAD names could not be read: {}",
+                git_words(&error)
+            ));
         }
     };
-    match &state.project {
-        Some(project) if Path::new(&project.top) == place.top => Located::Here(Work {
-            base: project.base.clone(),
-            fresh: false,
-            place,
-        }),
-        Some(project) => Located::Trouble(format!(
-            "this session began in {}, and the project found now is {}",
-            hook::shown_path(&project.top),
-            shown(&place.top)
-        )),
-        None => {
-            let Some(top) = place.top.to_str() else {
-                return Located::Trouble("the project's path is not UTF-8".to_owned());
-            };
-            let base = match head_state(&place.top, &deadline.git()) {
-                Ok(HeadState::Commit(id)) if is_commit_id(&id) => Base::Commit(id),
-                Ok(HeadState::Commit(_)) => {
-                    return Located::Trouble(
-                        "Git named the commit of HEAD in a form that cannot be read".to_owned(),
-                    );
-                }
-                Ok(HeadState::Unborn {
-                    repository_has_commits: false,
-                }) => Base::NoCommit,
-                Ok(HeadState::Unborn { .. }) => Base::Orphan,
-                Err(error) => {
+    let head = match &base {
+        Base::Commit(id) => Some(id.as_str()),
+        _ => None,
+    };
+    let (tips, tips_partial) = tips_now(&place.top, head, deadline)?;
+    Ok(Project {
+        top: top.to_owned(),
+        id: place.id.clone(),
+        base,
+        tips,
+        tips_partial,
+        by_start: false,
+    })
+}
+
+/// Find the session's project, recording it in `state` when this is the session's first hook
+/// that finds a repository.
+///
+/// With nothing recorded the project is the directory the client names (`CLAUDE_PROJECT_DIR`)
+/// when it is in a Git working tree, else the hook input's `cwd`. The `cwd` alone used to
+/// decide, and it follows the agent (independent review of the hooks, HR-H-1).
+///
+/// With a project recorded, the project is the repository that was recorded, not whatever
+/// stands at its path: the first of the client's project directory, the recorded top level
+/// and `cwd` that is in the repository with the recorded identity. When the project was moved
+/// it is found, and judged, where `cwd` is. A repository of another identity at the recorded
+/// path is not the project, however clean it is (review V4 round 10, VD4R10-H-1).
+fn locate(input: &Input, state: &mut State, deadline: Deadline) -> Located {
+    let named = match client_project_dir().map(|dir| find(&dir, deadline)) {
+        Some(Found::Tree(found)) => Some(found),
+        Some(Found::Failed(reason)) => return Located::Trouble(reason),
+        Some(Found::NotARepository | Found::Gone) | None => None,
+    };
+    let Some(project) = state.project.clone() else {
+        let place = if let Some(place) = named {
+            place
+        } else {
+            let cwd = Path::new(&input.cwd);
+            match find(cwd, deadline) {
+                Found::Tree(found) => found,
+                Found::NotARepository => return Located::Nowhere,
+                Found::Gone => {
                     return Located::Trouble(format!(
-                        "the commit HEAD names could not be read: {}",
-                        git_words(&error)
+                        "the session's directory {} does not exist, and no project is recorded for this session",
+                        shown(cwd)
                     ));
                 }
-            };
-            state.project = Some(Project {
-                top: top.to_owned(),
-                base: base.clone(),
-            });
-            Located::Here(Work {
-                place,
-                base,
-                fresh: true,
-            })
+                Found::Failed(reason) => return Located::Trouble(reason),
+            }
+        };
+        return match record(&place, deadline) {
+            Ok(project) => {
+                state.project = Some(project.clone());
+                Located::Here(Box::new(Work {
+                    place,
+                    project,
+                    fresh: true,
+                    moved_from: None,
+                }))
+            }
+            Err(reason) => Located::Trouble(reason),
+        };
+    };
+    let recorded = Path::new(&project.top);
+    let here = |place: Place| {
+        let moved_from = (place.top != recorded).then(|| project.top.clone());
+        Located::Here(Box::new(Work {
+            place,
+            project: project.clone(),
+            fresh: false,
+            moved_from,
+        }))
+    };
+    // The client names a repository: the recorded one, or another.
+    if let Some(place) = named {
+        if place.id == project.id {
+            return here(place);
+        }
+        if place.top != recorded {
+            return Located::Trouble(format!(
+                "this session began in {}, and the project found now is {}",
+                hook::shown_path(&project.top),
+                shown(&place.top)
+            ));
         }
     }
+    let at_path = match find(recorded, deadline) {
+        Found::Tree(found) if found.id == project.id => return here(found),
+        Found::Failed(reason) => return Located::Trouble(reason),
+        Found::Tree(_) => true,
+        Found::NotARepository | Found::Gone => false,
+    };
+    // The project is not at its path any more. It may have been moved to where the session is.
+    if let Found::Tree(found) = find(Path::new(&input.cwd), deadline)
+        && found.id == project.id
+    {
+        return here(found);
+    }
+    Located::Trouble(if at_path {
+        format!(
+            "the repository at {} is not the one this session started in (another repository stands at that path now)",
+            hook::shown_path(&project.top)
+        )
+    } else {
+        format!(
+            "the project this session began in, {}, is no longer a Git working tree",
+            hook::shown_path(&project.top)
+        )
+    })
 }
 
 /// What a hook compares the working tree with.
@@ -735,7 +937,7 @@ enum Subject {
 const ORPHAN: &str = "this session began on a branch with no commit (an orphan branch) in a repository that has commits, so there is no commit to measure its changes from";
 
 fn subject(work: &Work, deadline: Deadline) -> Subject {
-    match &work.base {
+    match &work.project.base {
         Base::Commit(id) => {
             // A base that can no longer be read is found, and said, when the patch is made.
             let moved = matches!(
@@ -744,7 +946,7 @@ fn subject(work: &Work, deadline: Deadline) -> Subject {
             );
             Subject::Range {
                 base: id.clone(),
-                words: hook::range_words(id, work.fresh, moved),
+                words: hook::range_words(id, !work.project.by_start, moved),
             }
         }
         Base::Orphan => Subject::Unjudged(ORPHAN.to_owned()),
@@ -812,19 +1014,24 @@ fn findings(patch: &[u8]) -> Result<Vec<Finding>, String> {
     Ok(out)
 }
 
-/// The working tree at `top` as the patch a judge would be given against the commit `base`,
-/// or `None` when the tree equals it: only that is "no change". Every failure is an error with
-/// its reason: when one answer stood for "nothing to judge" and for failures alike, a patch
-/// that could not be made let a stop pass in silence.
-fn change(
-    top: &Path,
-    base: &str,
-    work: &Path,
-    deadline: Deadline,
-) -> Result<Option<Vec<u8>>, String> {
+/// A working tree as the patch a judge would be given, with the nested repositories that were
+/// left out of it.
+struct Change {
+    /// `None`: the tree equals the base.
+    patch: Option<Vec<u8>>,
+    nested: Vec<String>,
+}
+
+/// The working tree at `top` as the patch a judge would be given against the commit `base`.
+/// A tree that equals the base has no patch: only that is "no change". Every failure is an
+/// error with its reason: when one answer stood for "nothing to judge" and for failures alike,
+/// a patch that could not be made let a stop pass in silence.
+fn change(top: &Path, base: &str, work: &Path, deadline: Deadline) -> Result<Change, String> {
     match judge_patch(top, base, work, &deadline.git()) {
-        Ok(patch) if patch.bytes.is_empty() => Ok(None),
-        Ok(patch) => Ok(Some(patch.bytes)),
+        Ok(patch) => Ok(Change {
+            patch: Some(patch.bytes).filter(|bytes| !bytes.is_empty()),
+            nested: patch.nested,
+        }),
         Err(JudgePatchError::NoBase) => Err(format!(
             "the commit this session began from ({}) can no longer be read from the repository",
             base.chars().take(7).collect::<String>()
@@ -839,35 +1046,105 @@ fn change(
     }
 }
 
+/// Whether `what` is said now, once in a session: `false` when it was said before, or when
+/// [`NOTICED_CAP`] things were.
+fn once(state: &mut State, what: &str) -> bool {
+    state.noticed.len() < NOTICED_CAP
+        && state
+            .noticed
+            .insert(deep_diff_forge_core::sha256_hex(what.as_bytes()))
+}
+
 /// Tell a reason an advice hook has for not running, once in a session: `None` when it was
-/// told before, or when [`NOTICED_CAP`] reasons were. A lasting condition (an untracked file
+/// told before, or when [`NOTICED_CAP`] things were. A lasting condition (an untracked file
 /// that cannot be read, a sparse checkout, Git refusing the repository) used to be said after
 /// every tool call, or never (independent review of the hooks, HR-L-2 and HR-M-1).
 fn notice(state: &mut State, reason: &str) -> Option<String> {
-    if state.noticed.len() >= NOTICED_CAP {
+    once(state, reason).then(|| hook::notice_output(reason, state.noticed.len() == NOTICED_CAP))
+}
+
+/// The most marks [`said_beside`] leaves in one repository.
+const MARKS_KEPT: usize = 256;
+
+/// Tell `reason` in an advice hook once when the session's state cannot remember that it was
+/// told: the state directory is missing, cannot be written, or holds a file that cannot be
+/// read. What was said is marked by an empty file beside the scratch directory, in the hooks'
+/// own directory `own` of the repository. With no such directory, or no room for a mark, the
+/// advice hook says nothing: it used to say "the hook did not run" after every tool call
+/// (second independent review of the hooks, HR2-L-2). A stop says the reason every time.
+fn said_beside(own: Option<&Path>, session: &str, reason: &str) -> Option<String> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let own = own?;
+    own_directory(own).ok()?;
+    let marks = std::fs::read_dir(own)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("said-"))
+        .take(MARKS_KEPT + 1)
+        .count();
+    if marks > MARKS_KEPT {
         return None;
     }
-    state
-        .noticed
-        .insert(deep_diff_forge_core::sha256_hex(reason.as_bytes()))
-        .then(|| hook::notice_output(reason, state.noticed.len() == NOTICED_CAP))
+    let digest = |text: &str| deep_diff_forge_core::sha256_hex(text.as_bytes())[..16].to_owned();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(nix::libc::O_NOFOLLOW)
+        .open(own.join(format!("said-{}-{}", digest(session), digest(reason))))
+        .ok()
+        .map(|_| hook::notice_output(reason, false))
+}
+
+/// The hooks' own directory in the repository a hook that has no state would work in: the
+/// client's project directory, else the hook input's `cwd`.
+fn own_without_state(input: &Input, deadline: Deadline) -> Option<PathBuf> {
+    let dir = client_project_dir().unwrap_or_else(|| PathBuf::from(&input.cwd));
+    match find(&dir, deadline) {
+        Found::Tree(place) => Some(place.own),
+        _ => None,
+    }
 }
 
 /// After a tool ran: say what is new in the session's change. Advice only.
-fn post_tool(input: &Input) -> Result<Option<String>, String> {
+fn post_tool(input: &Input) -> Option<String> {
     let deadline = Deadline::after(ADVICE_LIMIT);
-    let mut session = Session::open(&input.session)?;
-    let advice = match locate(input, &mut session.state, deadline) {
-        Located::Nowhere => return Ok(None),
-        Located::Trouble(reason) => Err(reason),
-        Located::Here(work) => advice_for(&work, &mut session.state, deadline),
+    let mut session = match Session::open(&input.session) {
+        Ok(session) => session,
+        Err(why) => {
+            return said_beside(
+                own_without_state(input, deadline).as_deref(),
+                &input.session,
+                &why,
+            );
+        }
+    };
+    let (own, advice) = match locate(input, &mut session.state, deadline) {
+        Located::Nowhere => return None,
+        Located::Trouble(reason) => (None, Err(reason)),
+        Located::Here(work) => {
+            if let Some(why) = session.inside(&work.place.top) {
+                return said_beside(Some(&work.place.own), &input.session, &why);
+            }
+            let advice = advice_for(&work, &mut session.state, deadline);
+            (Some(work.place.own), advice)
+        }
     };
     let out = match advice {
         Ok(advice) => advice,
         Err(reason) => notice(&mut session.state, &reason),
     };
-    session.keep()?;
-    Ok(out)
+    match session.keep() {
+        Ok(()) => out,
+        // What was to be said is not: the state would not remember it, and it would be said
+        // again after every tool call.
+        Err(why) => said_beside(
+            own.or_else(|| own_without_state(input, deadline))
+                .as_deref(),
+            &input.session,
+            &why,
+        ),
+    }
 }
 
 /// The advice for what is new in the project's change, `None` when there is nothing new, or
@@ -883,7 +1160,7 @@ fn advice_for(
         Subject::Range { base, words } => (base, words),
     };
     let scratch = Scratch::new(&work.place.own)?;
-    let Some(patch) = change(&work.place.top, &base, &scratch.sub("work")?, deadline)? else {
+    let Some(patch) = change(&work.place.top, &base, &scratch.sub("work")?, deadline)?.patch else {
         return Ok(None);
     };
     let all = findings(&patch)?;
@@ -909,32 +1186,46 @@ const NOT_CHECKED: &str = "not checked: ";
 
 /// At the start of a session: what the hooks will do, what the session's changes are measured
 /// from, and whether a stop can be judged here.
-fn session_start(input: &Input, args: &[String]) -> Result<Option<String>, String> {
+fn session_start(input: &Input, args: &[String]) -> Option<String> {
     let deadline = Deadline::after(START_LIMIT);
-    let mut session = Session::open(&input.session)?;
+    let mut session = match Session::open(&input.session) {
+        Ok(session) => session,
+        Err(why) => return Some(hook::contract_trouble(&why)),
+    };
     let work = match locate(input, &mut session.state, deadline) {
-        Located::Nowhere => return Ok(None),
-        Located::Trouble(reason) => return Ok(Some(hook::contract_trouble(&reason))),
+        Located::Nowhere => return None,
+        Located::Trouble(reason) => return Some(hook::contract_trouble(&reason)),
         Located::Here(work) => work,
     };
+    if let Some(why) = session.inside(&work.place.top) {
+        return Some(hook::contract_trouble(&why));
+    }
+    if work.fresh
+        && let Some(project) = &mut session.state.project
+    {
+        project.by_start = true;
+    }
     let unsaved = session.keep().err();
-    let id = match &work.base {
+    let top = work.place.top.to_string_lossy();
+    let id = match &work.project.base {
         Base::Commit(id) => id,
         Base::NoCommit => {
-            return Ok(Some(hook::contract(
+            return Some(hook::contract(
+                &top,
                 StartBase::NoCommit,
                 &[],
                 false,
                 unsaved.as_deref(),
-            )));
+            ));
         }
         Base::Orphan => {
-            return Ok(Some(hook::contract(
+            return Some(hook::contract(
+                &top,
                 StartBase::Orphan,
                 &[],
                 false,
                 unsaved.as_deref(),
-            )));
+            ));
         }
     };
     // The same links `agent doctor --gate` checks, in the time a start has.
@@ -945,7 +1236,8 @@ fn session_start(input: &Input, args: &[String]) -> Result<Option<String>, Strin
         .filter(|check| !check.ok && !check.detail.starts_with(NOT_CHECKED))
         .map(|check| (check.name.to_owned(), check.detail.clone()))
         .collect();
-    Ok(Some(hook::contract(
+    Some(hook::contract(
+        &top,
         StartBase::Commit {
             id,
             resumed: !work.fresh,
@@ -953,7 +1245,7 @@ fn session_start(input: &Input, args: &[String]) -> Result<Option<String>, Strin
         &not_ready,
         gate.dirty,
         unsaved.as_deref(),
-    )))
+    ))
 }
 
 fn policy_name(args: &[String]) -> String {
@@ -1228,57 +1520,291 @@ impl<'a> Bench<'a> {
     }
 }
 
-/// Another working tree of the project's repository that the session is in now: `Ok` with its
-/// top level when the hook input's `cwd` lies in a linked working tree (the same Git common
-/// directory, another top level), `Err` when Git could not say. `None` for every other `cwd`:
-/// in the project's own tree, in another repository, outside any, or gone. The project is
-/// judged wherever `cwd` is; this only adds a tree.
-fn other_tree(cwd: &str, place: &Place, deadline: Deadline) -> Option<Result<PathBuf, String>> {
-    let cwd = std::fs::canonicalize(cwd).ok()?;
+/// Where the session's directory is at a stop, beside the project's own working tree.
+enum Elsewhere {
+    /// Nowhere that adds anything: in the project's tree, in no repository, or gone.
+    Nothing,
+    /// In a linked working tree of the project's repository, with this top level: that tree is
+    /// judged as well.
+    Linked(PathBuf),
+    /// In another repository, with this top level (a nested repository and a submodule are
+    /// repositories of their own): it is not the session's project and is not judged, which is
+    /// said.
+    Foreign(PathBuf),
+    /// Git could not say.
+    Failed(String),
+}
+
+/// Look at the hook input's `cwd`. The project is judged wherever `cwd` is; this only finds
+/// what else there is to judge or to name.
+fn elsewhere(cwd: &str, place: &Place, deadline: Deadline) -> Elsewhere {
+    let Ok(cwd) = std::fs::canonicalize(cwd) else {
+        return Elsewhere::Nothing;
+    };
     // The project's own top level, or a place inside the Git directory, where no working
     // tree is.
     if cwd == place.top || cwd.starts_with(&place.common) {
-        return None;
+        return Elsewhere::Nothing;
     }
     match find(&cwd, deadline) {
-        Found::Tree(found) if found.common == place.common && found.top != place.top => {
-            Some(Ok(found.top))
-        }
-        Found::Tree(_) | Found::NotARepository | Found::Gone => None,
-        Found::Failed(reason) => Some(Err(format!(
+        Found::Tree(found) if found.id != place.id => Elsewhere::Foreign(found.top),
+        Found::Tree(found) if found.top != place.top => Elsewhere::Linked(found.top),
+        Found::Tree(_) | Found::NotARepository | Found::Gone => Elsewhere::Nothing,
+        Found::Failed(reason) => Elsewhere::Failed(format!(
             "whether the session's directory is another working tree of this repository could not be found out: {reason}"
-        ))),
+        )),
     }
 }
 
-/// Have the session's change judged in every working tree it is in: the project's and, when
-/// the session entered a linked working tree of the same repository, that one too, each
-/// against the same base with the same policy. A tree that equals the base has nothing to
-/// judge; when that is all of them, no judge is needed and none is looked for.
-fn judge_trees(
+/// The most distinct tips of refs that one stop examines for commits made since the session
+/// began.
+const TIPS_EXAMINED: usize = 16;
+/// The most distinct patches one stop has judged.
+const MAX_PATCHES: usize = 4;
+
+/// The commits made since the session began that something still names.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SessionCommits {
+    /// Each commit that `HEAD` or a ref names now and that leads to a commit none of the
+    /// recorded tips leads to, with every name it has (`HEAD` first, then refs by name).
+    holders: Vec<(Vec<String>, String)>,
+    /// The refs that changed and were not examined: more tips changed than
+    /// [`TIPS_EXAMINED`].
+    not_examined: Vec<String>,
+    /// The refs with new commits of which it cannot be said whether the session made them:
+    /// the repository had, or has, more refs than [`REFS_CAP`].
+    not_known: Vec<String>,
+}
+
+/// Find what the session committed and a ref still names: the commits `HEAD`, a branch, a
+/// remote-tracking ref, a tag or the stash leads to now and none of the tips recorded at the
+/// session's first hook leads to.
+///
+/// The working tree alone used to be compared with the base. Work that was committed and was
+/// no longer in the tree at the stop (a branch the session left, a commit of a staged file
+/// that was edited again, a commit the tree was put back from) was never shown to the judge,
+/// and the stop said nothing (second independent review of the hooks, HR2-H-1).
+fn session_commits(
     place: &Place,
+    project: &Project,
+    deadline: Deadline,
+) -> Result<SessionCommits, String> {
+    let words = |error: &GitAcquireError| {
+        format!(
+            "the commits made since the session began could not be listed: {}",
+            git_words(error)
+        )
+    };
+    let head = match head_state(&place.top, &deadline.git()).map_err(|e| words(&e))? {
+        HeadState::Commit(id) => Some(id),
+        HeadState::Unborn { .. } => None,
+    };
+    let refs = ref_tips(&place.top, REFS_CAP, &deadline.git()).map_err(|e| words(&e))?;
+    let partial = project.tips_partial || refs.partial;
+    // Each commit that is named now and was no tip then, with its names.
+    let mut changed: Vec<(Vec<String>, String)> = Vec::new();
+    let now = head
+        .into_iter()
+        .map(|id| ("HEAD".to_owned(), id))
+        .chain(refs.tips);
+    for (name, id) in now {
+        if project.tips.contains(&id) {
+            continue;
+        }
+        match changed.iter_mut().find(|(_, known)| *known == id) {
+            Some((names, _)) => names.push(name),
+            None => changed.push((vec![name], id)),
+        }
+    }
+    let mut found = SessionCommits::default();
+    for (at, (names, id)) in changed.into_iter().enumerate() {
+        if at >= TIPS_EXAMINED {
+            found.not_examined.extend(names);
+            continue;
+        }
+        // A tip that only moved back, or to a commit that was already there, holds nothing new.
+        if !has_commits_beyond(&place.top, &id, &project.tips, &deadline.git())
+            .map_err(|e| words(&e))?
+        {
+            continue;
+        }
+        if partial && names.first().is_none_or(|name| name != "HEAD") {
+            found.not_known.extend(names);
+        } else {
+            found.holders.push((names, id));
+        }
+    }
+    Ok(found)
+}
+
+/// One thing a stop shows the judge: what it is called, and its patch (`None`: no change), or
+/// why there is none.
+struct Shown {
+    what: Vec<String>,
+    patch: Result<Option<Vec<u8>>, String>,
+}
+
+/// The patches of the commits the session made that a ref still names: for each holder, from
+/// the best common ancestor of the base and that commit (the base itself when the commit comes
+/// after it; nothing at all when they share no history) to the commit.
+fn commit_patches(
+    place: &Place,
+    project: &Project,
+    base: &str,
+    scratch: &Scratch,
+    deadline: Deadline,
+) -> Result<Vec<Shown>, String> {
+    let commits = match session_commits(place, project, deadline) {
+        Ok(commits) => commits,
+        Err(reason) => {
+            return Ok(vec![Shown {
+                what: vec!["Commits made since the session began".to_owned()],
+                patch: Err(reason),
+            }]);
+        }
+    };
+    let mut shown = Vec::new();
+    for (at, (names, id)) in commits.holders.iter().enumerate() {
+        let work = scratch.sub(&format!("commits-{at}"))?;
+        let patch = merge_base(&place.top, base, id, &deadline.git())
+            .map_err(JudgePatchError::Failed)
+            .and_then(|from| commit_patch(&place.top, from.as_deref(), id, &work, &deadline.git()))
+            .map(|bytes| Some(bytes).filter(|bytes| !bytes.is_empty()))
+            .map_err(|error| match error {
+                JudgePatchError::Failed(error) => format!(
+                    "the commits could not be read from Git: {}",
+                    git_words(&error)
+                ),
+                other => format!("the commits could not be read from Git: {other}"),
+            });
+        // Commits that change nothing between them are nothing to judge, and are not named.
+        if !matches!(patch, Ok(None)) {
+            shown.push(Shown {
+                what: vec![hook::ref_label(names)],
+                patch,
+            });
+        }
+    }
+    for (names, reason) in [
+        (
+            &commits.not_examined,
+            "more refs changed since the session began than one stop examines, so these were not judged",
+        ),
+        (
+            &commits.not_known,
+            "the repository has more refs than were recorded when the session began, so whether these commits were made since is not known and they were not judged",
+        ),
+    ] {
+        if !names.is_empty() {
+            shown.push(Shown {
+                what: vec![hook::ref_label(names)],
+                patch: Err(reason.to_owned()),
+            });
+        }
+    }
+    Ok(shown)
+}
+
+/// Make one of things that have the same patch, and leave no more than [`MAX_PATCHES`]
+/// patches to judge: the usual stop (the working tree is what `HEAD` holds, on one branch) is
+/// one patch and one run of the judge.
+fn distinct(shown: Vec<Shown>) -> Vec<Shown> {
+    let mut kept: Vec<(Option<String>, Shown)> = Vec::new();
+    for one in shown {
+        let digest = match &one.patch {
+            Ok(Some(bytes)) => Some(deep_diff_forge_core::sha256_hex(bytes)),
+            _ => None,
+        };
+        match kept
+            .iter_mut()
+            .find(|(known, _)| digest.is_some() && *known == digest)
+        {
+            Some((_, same)) => same.what.extend(one.what),
+            None => kept.push((digest, one)),
+        }
+    }
+    let mut patches = 0;
+    kept.into_iter()
+        .map(|(digest, mut one)| {
+            if digest.is_some() {
+                patches += 1;
+                if patches > MAX_PATCHES {
+                    one.patch = Err(format!(
+                        "one stop has at most {MAX_PATCHES} distinct patches judged, and this one is beyond them"
+                    ));
+                }
+            }
+            one
+        })
+        .collect()
+}
+
+/// Have the session's change judged: the project's working tree; a linked working tree of the
+/// same repository that the session entered; and the commits made since the session began
+/// that `HEAD` or a ref names. Each is compared with the same base and judged by the same
+/// policy; things with the same patch are judged once. Something that equals the base has
+/// nothing to judge; when that is all of them, no judge is needed and none is looked for.
+///
+/// With the trees comes what must be said beside the verdict, each thing once in a session:
+/// a nested repository that was left out, another repository the session is in, a submodule
+/// with changes that are not committed in it.
+fn judge_all(
+    work: &Work,
     cwd: &str,
     base: &str,
     scratch: &Scratch,
     args: &[String],
     deadline: Deadline,
-) -> Result<Vec<TreeJudged>, String> {
-    let mut trees = vec![(
-        place.top.clone(),
-        change(&place.top, base, &scratch.sub("work")?, deadline),
-    )];
-    match other_tree(cwd, place, deadline) {
-        None => {}
-        Some(Ok(top)) => {
-            let patch = change(&top, base, &scratch.sub("work-2")?, deadline);
-            trees.push((top, patch));
+) -> Result<(Vec<TreeJudged>, Vec<String>), String> {
+    let place = &work.place;
+    let mut beside = Vec::new();
+    let mut tops = vec![place.top.clone()];
+    let mut shown = Vec::new();
+    let tree = |top: &Path, name: &str, beside: &mut Vec<String>| -> Result<Shown, String> {
+        let changed = change(top, base, &scratch.sub(name)?, deadline);
+        if let Ok(changed) = &changed {
+            beside.extend(changed.nested.iter().map(|nested| {
+                format!(
+                    "The directory {} in {} is a Git repository of its own and no part of what this project would commit: it was left out and not judged.",
+                    hook::shown_path(nested),
+                    shown_tree(top)
+                )
+            }));
         }
-        Some(Err(reason)) => trees.push((PathBuf::from(cwd), Err(reason))),
+        Ok(Shown {
+            what: vec![hook::tree_label(&top.to_string_lossy())],
+            patch: changed.map(|changed| changed.patch),
+        })
+    };
+    shown.push(tree(&place.top, "work", &mut beside)?);
+    match elsewhere(cwd, place, deadline) {
+        Elsewhere::Nothing => {}
+        Elsewhere::Linked(top) => {
+            shown.push(tree(&top, "work-2", &mut beside)?);
+            tops.push(top);
+        }
+        Elsewhere::Foreign(top) => beside.push(format!(
+            "The session's directory is in another repository, {}, which is not this session's project ({}): nothing in it was judged.",
+            shown_tree(&top),
+            shown_tree(&place.top)
+        )),
+        Elsewhere::Failed(reason) => shown.push(Shown {
+            what: vec![hook::tree_label(cwd)],
+            patch: Err(reason),
+        }),
     }
-    let named = |tree: &Path| tree.to_string_lossy().into_owned();
-    // A judge is looked for only when some tree has a patch for it.
-    let bench = if trees.iter().any(|(_, patch)| matches!(patch, Ok(Some(_)))) {
-        let mut writable: Vec<&Path> = trees.iter().map(|(top, _)| top.as_path()).collect();
+    shown.extend(commit_patches(
+        place,
+        &work.project,
+        base,
+        scratch,
+        deadline,
+    )?);
+    beside.extend(submodules_with_changes(place, deadline));
+    let shown = distinct(shown);
+    // A judge is looked for only when something has a patch for it.
+    let bench = if shown.iter().any(|one| matches!(one.patch, Ok(Some(_)))) {
+        let mut writable: Vec<&Path> = tops.iter().map(PathBuf::as_path).collect();
         writable.push(&place.common);
         Some(Bench::new(
             &place.top, base, scratch, args, &writable, deadline,
@@ -1286,12 +1812,12 @@ fn judge_trees(
     } else {
         None
     };
-    Ok(trees
+    let trees = shown
         .iter()
         .enumerate()
-        .map(|(at, (tree, patch))| TreeJudged {
-            tree: named(tree),
-            judged: match (patch, &bench) {
+        .map(|(at, one)| TreeJudged {
+            what: one.what.join(" and "),
+            judged: match (&one.patch, &bench) {
                 (Ok(None), _) => None,
                 (Err(reason), _) | (Ok(Some(_)), Some(Err(reason))) => Some(Judged::Unjudged {
                     reason: reason.clone(),
@@ -1299,13 +1825,45 @@ fn judge_trees(
                 (Ok(Some(bytes)), Some(Ok(bench))) => {
                     Some(bench.judge(bytes, &format!("change-{at}.patch")))
                 }
-                // A patch with no bench cannot be: the bench is made when any tree has one.
+                // A patch with no bench cannot be: the bench is made when anything has one.
                 (Ok(Some(_)), None) => Some(Judged::Unjudged {
                     reason: "the judge was not prepared".to_owned(),
                 }),
             },
         })
-        .collect())
+        .collect();
+    Ok((trees, beside))
+}
+
+fn shown_tree(top: &Path) -> String {
+    hook::shown_path(&top.to_string_lossy())
+}
+
+/// What to say of the project's submodules that have changes not committed in them: the
+/// project's patch shows a submodule only as the commit it is at, so those changes are in no
+/// patch (second independent review of the hooks, HR2-M-3). Nothing is asked of Git when the
+/// project has no `.gitmodules` file.
+fn submodules_with_changes(place: &Place, deadline: Deadline) -> Vec<String> {
+    if !place.top.join(".gitmodules").exists() {
+        return Vec::new();
+    }
+    match dirty_submodules(&place.top, &deadline.git()) {
+        Ok(paths) => paths
+            .iter()
+            .map(|path| {
+                format!(
+                    "The submodule {} of {} has changes that are not committed in it: they were not judged (the project's patch shows a submodule only as the commit it is at).",
+                    hook::shown_path(path),
+                    shown_tree(&place.top)
+                )
+            })
+            .collect(),
+        Err(error) => vec![format!(
+            "Whether a submodule of {} has changes that are not committed in it could not be found out ({}): such changes are not judged.",
+            shown_tree(&place.top),
+            git_words(&error)
+        )],
+    }
 }
 
 /// The word that starts the stop hook's helper: `agent hook seal-rankers [--ranker-dir DIR]`.
@@ -1446,8 +2004,8 @@ fn file_sha256(path: &Path, deadline: std::time::Instant) -> Result<String, &'st
     }
 }
 
-/// When the agent wants to stop: have the session's change judged, and block only on a fail
-/// that is not the one that blocked last time.
+/// When the agent wants to stop: have the session's change judged, and block on a fail that
+/// has not blocked a stop of this session before.
 fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
     let deadline = Deadline::after(STOP_LIMIT);
     let mut session = Session::open(&input.session)?;
@@ -1456,8 +2014,12 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
         Located::Trouble(reason) => return Ok(Some(hook::unjudged_output(&reason))),
         Located::Here(work) => work,
     };
+    if let Some(why) = session.inside(&work.place.top) {
+        return Ok(Some(hook::unjudged_output(&why)));
+    }
     // The project and the base are recorded before anything else can fail.
     let mut unsaved = session.keep().err();
+    let mut beside = Vec::new();
     let decision = match subject(&work, deadline) {
         Subject::Nothing => StopDecision::Allow { message: None },
         Subject::Unjudged(reason) => StopDecision::Allow {
@@ -1465,27 +2027,41 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
         },
         Subject::Range { base, words } => {
             let scratch = Scratch::new(&work.place.own)?;
-            let trees = judge_trees(&work.place, &input.cwd, &base, &scratch, args, deadline)?;
-            hook::decide_stop_trees(
-                &trees,
-                input.stop_hook_active,
-                session.state.last_block.as_deref(),
-                &words,
-            )
+            let (trees, said) = judge_all(&work, &input.cwd, &base, &scratch, args, deadline)?;
+            beside = said;
+            hook::decide_stop_trees(&trees, &session.state.blocked, &words)
         }
     };
-    session.state.last_block = match &decision {
-        StopDecision::Block { rules, .. } => Some(rules.clone()),
-        StopDecision::Allow { .. } => None,
-    };
-    if let Err(why) = session.keep() {
-        unsaved = Some(why);
+    let state = &mut session.state;
+    if let StopDecision::Block { identity, .. } = &decision {
+        if state.blocked.len() >= BLOCKED_CAP {
+            state.blocked.remove(0);
+        }
+        state.blocked.push(identity.clone());
     }
     let mut notes = Vec::new();
-    // A stop that is its session's first hook has only now recorded where the session is: it
-    // is never silent, whatever the judge says of what is left in the tree.
-    if work.fresh {
+    // A session whose start no session-start hook recorded says so at its first stop, whether
+    // this stop or an advice hook before it did the recording. An advice hook runs after the
+    // tool call that commits, so with the three printed hooks it was always the one, and it
+    // said nothing (second independent review of the hooks, HR2-M-2).
+    if !state.start_said && state.project.as_ref().is_some_and(|p| !p.by_start) {
+        state.start_said = true;
         notes.push(hook::FIRST_STOP.to_owned());
+    }
+    if let Some(from) = &work.moved_from {
+        notes.push(format!(
+            "The project this session began in is no longer at {}: it was found, and judged, at {}.",
+            hook::shown_path(from),
+            shown_tree(&work.place.top)
+        ));
+    }
+    for said in beside {
+        if once(state, &said) {
+            notes.push(said);
+        }
+    }
+    if let Err(why) = session.keep() {
+        unsaved = Some(why);
     }
     // A state that cannot be saved must not hide the decision, and is said with it: the same
     // failure then blocks at every stop, which used to happen with no word of why
@@ -1542,24 +2118,114 @@ fn probe_patch(name: &str, policy: &[u8]) -> Option<String> {
 struct StopHook {
     command: String,
     timeout: Option<Value>,
+    /// The matcher of the entry the hook stands in, when it has one that is not empty.
+    matcher: Option<String>,
 }
 
 /// Every `Stop` hook of type `command` a Claude Code settings document registers.
 fn stop_hooks(settings: &Value) -> Vec<StopHook> {
-    let entries = settings["hooks"]["Stop"].as_array();
+    event_hooks(settings, "Stop")
+}
+
+/// Every hook of type `command` a Claude Code settings document registers for `event`.
+fn event_hooks(settings: &Value, event: &str) -> Vec<StopHook> {
+    let entries = settings["hooks"][event].as_array();
     entries
         .into_iter()
         .flatten()
-        .filter_map(|entry| entry["hooks"].as_array())
-        .flatten()
-        .filter(|hook| hook["type"] == "command")
-        .filter_map(|hook| {
-            Some(StopHook {
-                command: hook["command"].as_str()?.to_owned(),
-                timeout: hook.get("timeout").filter(|set| !set.is_null()).cloned(),
-            })
+        .flat_map(|entry| {
+            let matcher = entry["matcher"]
+                .as_str()
+                .filter(|matcher| !matcher.is_empty() && *matcher != "*")
+                .map(str::to_owned);
+            entry["hooks"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|hook| hook["type"] == "command")
+                .filter_map(move |hook| {
+                    Some(StopHook {
+                        command: hook["command"].as_str()?.to_owned(),
+                        timeout: hook.get("timeout").filter(|set| !set.is_null()).cloned(),
+                        matcher: matcher.clone(),
+                    })
+                })
         })
         .collect()
+}
+
+/// The settings file that registers this binary's hook for `event` (`word` on its command
+/// line), or why none does. The judged range depends on the session-start hook, and a commit
+/// is seen as it is made only by the hook after a tool call; the gate used to look for the
+/// stop hook alone (second independent review of the hooks, HR2-M-2 and HR2-L-1).
+fn companion(
+    place: &Place,
+    event: &str,
+    word: &str,
+    judge: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let this = std::env::current_exe().and_then(std::fs::canonicalize).ok();
+    let this = this.as_deref().and_then(Path::to_str);
+    let mut close: Option<String> = None;
+    for file in settings_files(&place.top) {
+        let Some(settings) = settings(&file) else {
+            continue;
+        };
+        for hook in event_hooks(&settings, event) {
+            let why = match hook::hook_command(&hook.command, word) {
+                None => "is not the command `agent setup --hooks` prints",
+                Some(read) if this != Some(read.program.as_str()) => {
+                    "does not run this program by its own absolute path"
+                }
+                Some(read)
+                    if read.judge.is_some()
+                        && read.judge.as_deref() != judge.and_then(Path::to_str) =>
+                {
+                    "names another judge than the one checked here"
+                }
+                Some(_) if hook.matcher.is_some() => "has a matcher, so it does not run every time",
+                Some(_) => return Ok(file),
+            };
+            close.get_or_insert(format!("{}: a {event} hook {why}", file.display()));
+        }
+    }
+    Err(close.unwrap_or_else(|| {
+        format!(
+            "no Claude Code settings file registers a {event} hook of this program (agent setup --client claude --hooks prints the block)"
+        )
+    }))
+}
+
+/// The link `state_directory`: the directory the state of every session is kept in is there
+/// or can be made, is a directory of its own, can be written, and is not inside the project's
+/// working tree. Without it every hook says that it did not run, and the gate said that every
+/// link was ready (second independent review of the hooks, HR2-L-1).
+fn state_directory_check(place: Option<&Place>) -> GateCheck {
+    let usable = || -> Result<PathBuf, String> {
+        let dir = sessions_dir()?;
+        if let Some(why) = place.and_then(|place| inside_tree(&dir, &place.top)) {
+            return Err(why);
+        }
+        if let Some(parent) = dir.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("{} could not be made: {e}", shown(&dir)))?;
+        }
+        own_directory(&dir)?;
+        let probe = dir.join(format!("gate-{}.probe", std::process::id()));
+        let written = std::fs::write(&probe, b"");
+        let _ = std::fs::remove_file(&probe);
+        written.map_err(|e| format!("{} cannot be written: {e}", shown(&dir)))?;
+        Ok(dir)
+    };
+    let found = usable();
+    check(
+        "state_directory",
+        found.is_ok(),
+        match found {
+            Ok(dir) => format!("{}", dir.display()),
+            Err(why) => why,
+        },
+    )
 }
 
 /// Why the stop hook `command` is not the chain this gate checked; `None` when it is: the
@@ -1789,7 +2455,7 @@ fn settings_checks(
     judge: Option<&Path>,
     policy: &str,
     args: &[String],
-) -> [GateCheck; 3] {
+) -> [GateCheck; 5] {
     let disabled = place.map(|place| hooks_disabled_by(&place.top));
     let enabled = check(
         "hooks_enabled",
@@ -1837,7 +2503,34 @@ fn settings_checks(
             Err(why) => why.clone(),
         },
     );
-    [enabled, registered, timed]
+    let beside = |name: &'static str, event: &str, word: &str, without: &str| {
+        let found = match place {
+            Some(place) => companion(place, event, word, judge),
+            None => Err(not_checked("it needs the repository")),
+        };
+        check(
+            name,
+            found.is_ok(),
+            match found {
+                Ok(file) => format!("{}", file.display()),
+                Err(why) if why.starts_with(NOT_CHECKED) => why,
+                Err(why) => format!("{why}; {without}"),
+            },
+        )
+    };
+    let start = beside(
+        "start_hook_registered",
+        "SessionStart",
+        "session-start",
+        "without it a session's changes are measured from its first tool call or stop, not from its start",
+    );
+    let advice = beside(
+        "advice_hook_registered",
+        "PostToolUse",
+        "post-tool",
+        "without it nothing is said while the agent works",
+    );
+    [enabled, registered, timed, start, advice]
 }
 
 /// The links of the chain, checked for the working tree at `place` (or reported as missing
@@ -1934,6 +2627,7 @@ fn gate_in(
     checks.extend(chain_checks(&name, &verdict));
     let (patch, dirty) = patch_check(place, scratch.as_ref(), rev, &at, deadline);
     checks.push(patch);
+    checks.push(state_directory_check(place));
     checks.extend(settings_checks(place, program.as_deref(), &name, args));
     Gate { checks, dirty }
 }
@@ -2036,62 +2730,272 @@ mod tests {
         );
     }
 
+    const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    fn project(base: Base) -> Project {
+        Project {
+            top: "/r".to_owned(),
+            id: "59:11082023".to_owned(),
+            base,
+            tips: vec![COMMIT.to_owned(), "a".repeat(40)],
+            tips_partial: false,
+            by_start: true,
+        }
+    }
+
+    /// Second independent review of the hooks, HR2-M-1. A state the hooks wrote is read back
+    /// whole. Anything else that stands at a state's name is an error with its reason, never an
+    /// empty state: read as "no state", it made the next hook the session's first and the
+    /// commit `HEAD` named then its base.
     #[test]
-    fn a_state_round_trips_and_anything_else_is_an_empty_state() {
-        let commit = "0123456789abcdef0123456789abcdef01234567";
+    fn a_state_round_trips_and_anything_else_is_not_a_state() {
         let state = State {
-            project: Some(Project {
-                top: "/r".to_owned(),
-                base: Base::Commit(commit.to_owned()),
-            }),
+            project: Some(project(Base::Commit(COMMIT.to_owned()))),
+            start_said: true,
             reported: ["b".to_owned(), "a".to_owned()].into(),
             noticed: ["n".to_owned()].into(),
-            last_block: Some(vec!["r\0s\0p\x001".to_owned()]),
+            blocked: vec![format!("{}:3", "f".repeat(64))],
         };
-        assert_eq!(state_from(&state_text(&state)), state);
+        assert_eq!(state_from(&state_text(&state)), Ok(state));
         for base in [Base::NoCommit, Base::Orphan, Base::Commit("a".repeat(64))] {
             let other = State {
                 project: Some(Project {
-                    top: "/r".to_owned(),
-                    base,
+                    tips_partial: true,
+                    by_start: false,
+                    ..project(base)
                 }),
                 ..State::default()
             };
-            assert_eq!(state_from(&state_text(&other)), other);
+            assert_eq!(state_from(&state_text(&other)), Ok(other));
         }
         let none = State::default();
-        assert_eq!(state_from(&state_text(&none)), none);
-        // A project that is not whole is no state at all: a base is not believed in part, and
-        // only a full commit id is one (a name like `HEAD` would move with the session).
-        for project in [
-            r#"{"top":"/r"}"#,
-            r#"{"base":"none"}"#,
-            r#"{"top":"","base":"none"}"#,
-            r#"{"top":"/r","base":"HEAD"}"#,
-            r#"{"top":"/r","base":"0123456"}"#,
-            r#"{"top":"/r","base":"0123456789ABCDEF0123456789abcdef01234567"}"#,
-            r#"{"top":"/r","base":7}"#,
-            r#""/r""#,
+        assert_eq!(state_from(&state_text(&none)), Ok(none));
+        // A project that is not whole is no state: a base is not believed in part, only a
+        // full commit id is one (a name like `HEAD` would move with the session), and the
+        // repository's identity is two numbers.
+        let whole = json!({"top": "/r", "id": "1:2", "base": "none", "tips": [],
+                           "tips_partial": false, "by_start": true});
+        let with = |project: &Value| {
+            json!({"schema": STATE_SCHEMA, "project": project, "start_said": false,
+                   "reported": ["a"], "noticed": [], "blocked": []})
+            .to_string()
+        };
+        assert!(state_from(&with(&whole)).is_ok());
+        for (member, value) in [
+            ("top", json!("")),
+            ("top", Value::Null),
+            ("id", json!("1")),
+            ("id", json!("1:x")),
+            ("id", json!(":2")),
+            ("id", Value::Null),
+            ("base", json!("HEAD")),
+            ("base", json!("0123456")),
+            ("base", json!("0123456789ABCDEF0123456789abcdef01234567")),
+            ("base", json!(7)),
+            ("tips", json!(["HEAD"])),
+            ("tips", json!("x")),
+            ("tips", Value::Null),
+            ("tips_partial", Value::Null),
+            ("by_start", json!("yes")),
         ] {
-            let text = format!(
-                r#"{{"schema":"deep-diff-forge.hook-state.v1","project":{project},"reported":["a"]}}"#
+            let mut spoiled = whole.clone();
+            spoiled[member] = value.clone();
+            assert_eq!(
+                state_from(&with(&spoiled)),
+                Err("its project is not whole"),
+                "{member}: {value}"
             );
-            assert_eq!(state_from(&text), State::default(), "{project}");
         }
+        assert!(state_from(&with(&json!("/r"))).is_err());
+        // not JSON, another schema (the one before this version too), a missing member, a
+        // member of the wrong type: each is refused, none is read in part
         for foreign in [
             "",
             "not json",
             "[]",
             r#"{"schema":"other","reported":["a"]}"#,
-            r#"{"schema":"deep-diff-forge.hook-state.v0","reported":["a"]}"#,
+            r#"{"schema":"deep-diff-forge.hook-state.v1","project":null,"reported":["a"],"noticed":[],"last_block":null}"#,
             r#"{"reported":["a"]}"#,
+            r#"{"schema":"deep-diff-forge.hook-state.v2","project":null,"reported":[],"noticed":[],"blocked":[]}"#,
+            r#"{"schema":"deep-diff-forge.hook-state.v2","project":null,"start_said":false,"reported":["a",1],"noticed":[],"blocked":[]}"#,
+            r#"{"schema":"deep-diff-forge.hook-state.v2","project":null,"start_said":false,"reported":[],"noticed":[],"blocked":"x"}"#,
+            r#"{"schema":"deep-diff-forge.hook-state.v2","project":null,"start_said":false,"reported":[],"noticed":[]}"#,
         ] {
-            assert_eq!(state_from(foreign), State::default(), "{foreign}");
+            assert!(state_from(foreign).is_err(), "{foreign}");
         }
-        // a member of the wrong type is dropped, not trusted in part
-        let odd =
-            r#"{"schema":"deep-diff-forge.hook-state.v1","reported":["a",1],"last_block":"x"}"#;
-        assert_eq!(state_from(odd), State::default());
+    }
+
+    /// HR2-M-1: every list of a state is bounded when it is written, so the largest state the
+    /// hooks can write is far under what they read back, and it is read back whole. Before, a
+    /// block with 4,000 violations wrote 1.1 MB and the reader stopped at 1 MiB.
+    #[test]
+    fn the_largest_state_the_hooks_write_is_read_back() {
+        let hex = |n: usize, width: usize| format!("{n:0width$x}");
+        let full = State {
+            project: Some(Project {
+                top: "/".to_owned() + &"p".repeat(4_000),
+                id: format!("{}:{}", u64::MAX, u64::MAX),
+                base: Base::Commit(hex(0, 64)),
+                tips: (0..=REFS_CAP).map(|n| hex(n, 64)).collect(),
+                tips_partial: true,
+                by_start: false,
+            }),
+            start_said: true,
+            reported: (0..REPORTED_CAP).map(|n| hex(n, 64)).collect(),
+            noticed: (0..NOTICED_CAP).map(|n| hex(n, 64)).collect(),
+            blocked: (0..BLOCKED_CAP)
+                .map(|n| format!("{}:{}", hex(n, 64), usize::MAX))
+                .collect(),
+        };
+        let text = state_text(&full);
+        assert!(
+            (text.len() as u64) < STATE_CAP / 4,
+            "{} bytes of {STATE_CAP}",
+            text.len()
+        );
+        assert_eq!(state_from(&text), Ok(full.clone()));
+        // one entry more in any list is not a state the hooks wrote
+        for grow in 0..4 {
+            let mut over = full.clone();
+            match grow {
+                0 => {
+                    over.reported.insert("x".to_owned());
+                }
+                1 => {
+                    over.noticed.insert("x".to_owned());
+                }
+                2 => over.blocked.push("x".to_owned()),
+                _ => {
+                    if let Some(project) = &mut over.project {
+                        project.tips.push(hex(1, 40));
+                    }
+                }
+            }
+            assert!(state_from(&state_text(&over)).is_err(), "{grow}");
+        }
+        // through a file, as a hook does it: saved, and read back the same
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-state-largest");
+        let file = scratch.join("session.json");
+        assert_eq!(load(&file), Ok(None));
+        save(&file, &full).unwrap();
+        assert_eq!(load(&file), Ok(Some(full)));
+        // what stands there and is not a state is said with its reason, each one
+        std::fs::write(&file, "x".repeat(usize::try_from(STATE_CAP).unwrap() + 1)).unwrap();
+        assert_eq!(
+            load(&file),
+            Err("it is larger than any state the hooks write".to_owned())
+        );
+        std::fs::write(&file, "{}").unwrap();
+        assert_eq!(
+            load(&file),
+            Err("it is not a state of this version of the hooks".to_owned())
+        );
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        assert_eq!(load(&file), Err("it is not a regular file".to_owned()));
+        std::fs::remove_dir(&file).unwrap();
+        std::os::unix::fs::symlink(scratch.join("elsewhere"), &file).unwrap();
+        assert!(
+            load(&file).is_err_and(|why| why.starts_with("it cannot be opened (")),
+            "a link was followed or read as no state"
+        );
+    }
+
+    /// Review V4 round 10, VD4R10-H-1: a repository is known by the device and inode of its
+    /// Git common directory, which stay when it is moved and differ for another directory.
+    #[test]
+    fn a_repository_is_known_by_its_directory_not_by_its_path() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-identity");
+        let (one, other) = (scratch.join("one"), scratch.join("other"));
+        std::fs::create_dir(&one).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        let first = identity(&one).unwrap();
+        assert!(is_identity(&first), "{first}");
+        assert_ne!(Some(&first), identity(&other).as_ref());
+        std::fs::rename(&one, scratch.join("moved")).unwrap();
+        assert_eq!(identity(&scratch.join("moved")), Some(first.clone()));
+        std::fs::create_dir(&one).unwrap();
+        assert_ne!(identity(&one), Some(first));
+        assert_eq!(identity(&scratch.join("missing")), None);
+        // a path is made canonical as far as it exists
+        assert_eq!(
+            resolved(&scratch.join("moved/not/there")),
+            std::fs::canonicalize(scratch.join("moved"))
+                .unwrap()
+                .join("not/there")
+        );
+        std::os::unix::fs::symlink(scratch.join("moved"), scratch.join("link")).unwrap();
+        assert_eq!(
+            resolved(&scratch.join("link/state")),
+            std::fs::canonicalize(scratch.join("moved"))
+                .unwrap()
+                .join("state")
+        );
+        assert!(
+            inside_tree(
+                &scratch.join("link/state"),
+                &resolved(&scratch.join("moved"))
+            )
+            .is_some()
+        );
+        assert!(
+            inside_tree(
+                &scratch.join("other/state"),
+                &resolved(&scratch.join("moved"))
+            )
+            .is_none()
+        );
+    }
+
+    /// HR2-H-1: things with the same patch are judged once, in the order they were found, and
+    /// no more than [`MAX_PATCHES`] patches are left to judge; what is beyond is not judged
+    /// and says so.
+    #[test]
+    fn the_same_patch_is_judged_once_and_no_more_than_four_patches() {
+        let shown = |what: &str, patch: Result<Option<&str>, &str>| Shown {
+            what: vec![what.to_owned()],
+            patch: patch
+                .map(|bytes| bytes.map(|bytes| bytes.as_bytes().to_vec()))
+                .map_err(str::to_owned),
+        };
+        // the usual stop: the working tree is what HEAD holds, and a branch and a tag name it
+        let usual = distinct(vec![
+            shown("tree", Ok(Some("P"))),
+            shown("HEAD", Ok(Some("P"))),
+            shown("tag", Ok(Some("P"))),
+        ]);
+        assert_eq!(usual.len(), 1);
+        assert_eq!(usual[0].what, ["tree", "HEAD", "tag"]);
+        assert_eq!(usual[0].patch, Ok(Some(b"P".to_vec())));
+        // no change and failures are each their own, and are not counted as patches
+        let mixed = distinct(vec![
+            shown("tree", Ok(None)),
+            shown("linked", Ok(None)),
+            shown("a", Ok(Some("A"))),
+            shown("x", Err("why")),
+            shown("b", Ok(Some("B"))),
+            shown("a2", Ok(Some("A"))),
+            shown("c", Ok(Some("C"))),
+            shown("d", Ok(Some("D"))),
+            shown("e", Ok(Some("E"))),
+            shown("e2", Ok(Some("E"))),
+        ]);
+        let what: Vec<String> = mixed.iter().map(|one| one.what.join("+")).collect();
+        assert_eq!(what, ["tree", "linked", "a+a2", "x", "b", "c", "d", "e+e2"]);
+        let judged = mixed
+            .iter()
+            .filter(|one| matches!(one.patch, Ok(Some(_))))
+            .count();
+        assert_eq!(judged, MAX_PATCHES);
+        assert!(
+            mixed[7]
+                .patch
+                .as_ref()
+                .is_err_and(|why| why.contains("at most 4 distinct patches")),
+            "{:?}",
+            mixed[7].patch
+        );
+        assert_eq!(mixed[3].patch, Err("why".to_owned()));
     }
 
     #[test]
@@ -2158,9 +3062,29 @@ mod tests {
             stop_hooks(&timed),
             [StopHook {
                 command: "c".to_owned(),
-                timeout: Some(json!(1))
+                timeout: Some(json!(1)),
+                matcher: None,
             }]
         );
+        // HR2-L-1: the hooks of the other events are read the same way, each with the matcher
+        // of the entry it stands in when that narrows it
+        let others = json!({"hooks": {
+            "SessionStart": [{"matcher": "startup", "hooks": [{"type": "command", "command": "s"}]}],
+            "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "p"}]},
+                            {"matcher": "", "hooks": [{"type": "command", "command": "q"}]}],
+        }});
+        assert_eq!(
+            event_hooks(&others, "SessionStart"),
+            [StopHook {
+                command: "s".to_owned(),
+                timeout: None,
+                matcher: Some("startup".to_owned()),
+            }]
+        );
+        let advice = event_hooks(&others, "PostToolUse");
+        assert_eq!(advice.len(), 2);
+        assert!(advice.iter().all(|hook| hook.matcher.is_none()));
+        assert_eq!(event_hooks(&others, "Stop"), []);
 
         assert_eq!(
             probe_patch("warden.toml", b"schema = 1\nrest\n").as_deref(),

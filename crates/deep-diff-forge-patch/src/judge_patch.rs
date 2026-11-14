@@ -21,6 +21,13 @@
 //! is in the next commit; `git add --all` alone left it out of the patch (independent review of
 //! the hooks, HR-M-2).
 //!
+//! **A nested repository is left out.** A directory in the working tree that is a Git
+//! repository of its own and that the base and the index do not hold (a scratch `git init`, a
+//! checkout made inside the project) is not part of what the project would commit as files.
+//! `git add --all` records one that has a commit as a link to that commit and fails on one
+//! that has none, which made every patch of such a tree fail (round 11 of the review of the
+//! hooks). They are kept out of the staged tree and named in [`JudgePatch::nested`].
+//!
 //! **Staging reads no configuration.** The scratch Git directory has none, and the staging
 //! commands run with the system's and the user's configuration off as well, with no attributes
 //! file of the user or the system: a filter the user's configuration defines used to run on
@@ -54,6 +61,8 @@ pub struct JudgePatch {
     pub base: String,
     /// The tree of the working state (it exists only in the scratch directory).
     pub tree: String,
+    /// The nested repositories that were left out of the tree, as paths from the top level.
+    pub nested: Vec<String>,
 }
 
 /// Why [`judge_patch`] made no patch. The three are kept apart because a caller answers each
@@ -153,18 +162,37 @@ fn pair(name: &str, value: impl Into<OsString>) -> (OsString, OsString) {
     (OsString::from(name), value.into())
 }
 
-/// What is read from the repository before anything is made: where it is, how to read it
-/// without running its filters, and what it is compared with.
-struct Source {
-    root: std::path::PathBuf,
-    /// The base commit, resolved.
-    base: String,
+/// What a scratch repository borrows from the reviewed one.
+struct Store {
     /// The repository's object directory.
     objects: std::path::PathBuf,
     /// The repository's `info/exclude`: paths it ignores without a `.gitignore` saying so.
     exclude: std::path::PathBuf,
     /// `sha1` or `sha256`.
     object_format: String,
+}
+
+/// The [`Store`] of the repository `inside` runs in.
+fn store(inside: &Runner) -> Result<Store, GitAcquireError> {
+    Ok(Store {
+        objects: git_path(inside, "objects")?,
+        exclude: git_path(inside, "info/exclude")?,
+        object_format: line(inside.run(
+            "git rev-parse",
+            &[OsStr::new("rev-parse"), OsStr::new("--show-object-format")],
+            &[0],
+            4096,
+        )?)?,
+    })
+}
+
+/// What is read from the repository before anything is made: where it is, how to read it
+/// without running its filters, and what it is compared with.
+struct Source {
+    root: std::path::PathBuf,
+    /// The base commit, resolved.
+    base: String,
+    store: Store,
     /// The paths the repository's own index lists, as Git wrote them.
     indexed: Vec<Vec<u8>>,
     /// The user's own ignore file (`core.excludesFile` in the user's configuration), when it is
@@ -284,20 +312,10 @@ fn source(
         Err(GitAcquireError::CommandFailed { .. }) => None,
         Err(other) => return Err(other.into()),
     };
-    let objects = git_path(&inside, "objects")?;
-    let exclude = git_path(&inside, "info/exclude")?;
-    let object_format = line(inside.run(
-        "git rev-parse",
-        &[OsStr::new("rev-parse"), OsStr::new("--show-object-format")],
-        &[0],
-        4096,
-    )?)?;
     Ok(Source {
         root,
         base,
-        objects,
-        exclude,
-        object_format,
+        store: store(&inside)?,
         indexed,
         user_excludes,
     })
@@ -315,7 +333,7 @@ fn isolated() -> Vec<(OsString, OsString)> {
 /// store and ignores what its `info/exclude` ignores. Everything this module writes goes into
 /// it. It has no configuration but what `git init` writes, no attributes and no hooks.
 fn empty_repository(
-    from: &Source,
+    from: &Store,
     scratch: &Path,
     options: &GitAcquireOptions,
     deadline: std::time::Instant,
@@ -429,7 +447,7 @@ fn working_tree(
     repository: &Path,
     options: &GitAcquireOptions,
     deadline: std::time::Instant,
-) -> Result<String, GitAcquireError> {
+) -> Result<(String, Vec<String>), GitAcquireError> {
     let staging = Runner {
         options,
         cwd: from.root.clone(),
@@ -442,6 +460,7 @@ fn working_tree(
         &[0],
         4096,
     )?;
+    let nested = leave_nested_out(&staging, repository, &from.indexed)?;
     staging.run(
         "git add",
         &[
@@ -485,14 +504,90 @@ fn working_tree(
             64 * 1024,
         )?;
     }
-    line(staging.run("git write-tree", &[OsStr::new("write-tree")], &[0], 4096)?)
+    let tree = line(staging.run("git write-tree", &[OsStr::new("write-tree")], &[0], 4096)?)?;
+    Ok((tree, nested))
+}
+
+/// A path as an ignore rule that names exactly it, as a directory, from the top level: the
+/// characters a rule reads as a pattern are escaped. `None` for a path a rule cannot name (one
+/// that holds a newline).
+fn exact_rule(path: &[u8]) -> Option<Vec<u8>> {
+    if path.contains(&b'\n') || path.is_empty() {
+        return None;
+    }
+    let mut rule = vec![b'/'];
+    for byte in path {
+        if matches!(byte, b'\\' | b'*' | b'?' | b'[') {
+            rule.push(b'\\');
+        }
+        rule.push(*byte);
+    }
+    // A space before the end of a rule is dropped unless it is escaped; the rule ends in `/`.
+    rule.extend_from_slice(b"/\n");
+    Some(rule)
+}
+
+/// Keep the nested repositories of the working tree out of what `staging` adds, and name
+/// them. Git lists a directory that is a repository of its own, and that the index does not
+/// hold, as one untracked entry ending in `/`; each gets a rule in the scratch repository's
+/// `info/exclude`. One the base holds (a submodule) is not untracked and stays, and so does
+/// one the repository's own index lists (`indexed`).
+fn leave_nested_out(
+    staging: &Runner,
+    repository: &Path,
+    indexed: &[Vec<u8>],
+) -> Result<Vec<String>, GitAcquireError> {
+    use std::io::Write as _;
+    let others = staging.run(
+        "git ls-files",
+        &[
+            OsStr::new("ls-files"),
+            OsStr::new("--others"),
+            OsStr::new("--exclude-standard"),
+            OsStr::new("-z"),
+        ],
+        &[0],
+        INDEX_LISTING_CAP,
+    )?;
+    let nested: Vec<&[u8]> = others
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| entry.strip_suffix(b"/"))
+        // One the repository's own index holds is the project's: it is staged like any path.
+        .filter(|path| !indexed.iter().any(|held| held == path))
+        .collect();
+    if nested.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut rules = Vec::new();
+    for path in &nested {
+        rules.extend(exact_rule(path).ok_or_else(|| {
+            refused("a nested repository's path cannot be written as an ignore rule")
+        })?);
+    }
+    std::fs::create_dir_all(repository.join("info"))
+        .and_then(|()| {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(repository.join("info/exclude"))
+        })
+        // a copied `info/exclude` may not end in a newline
+        .and_then(|mut file| {
+            file.write_all(b"\n")?;
+            file.write_all(&rules)
+        })
+        .map_err(|e| refused(format!("cannot prepare the scratch directory: {e}")))?;
+    Ok(nested
+        .iter()
+        .map(|path| String::from_utf8_lossy(path).into_owned())
+        .collect())
 }
 
 /// The diff of the base commit against `tree`, made in the scratch repository from outside any
 /// work tree: no configuration of the user, the system or the reviewed repository is read for
 /// it.
 fn diff_outside(
-    from: &Source,
+    base: &str,
     tree: &str,
     scratch: &Path,
     repository: &Path,
@@ -531,7 +626,12 @@ fn diff_outside(
         OsStr::new("core.quotePath=true"),
     ];
     args.extend(DIFF_ARGS.iter().map(OsStr::new));
-    args.push(OsStr::new(&from.base));
+    // The empty tree stands for "no commit to compare with".
+    args.push(OsStr::new(if base.is_empty() {
+        empty_tree.as_str()
+    } else {
+        base
+    }));
     args.push(OsStr::new(tree));
     outside.run("git diff", &args, &[0], options.byte_budget)
 }
@@ -554,14 +654,244 @@ pub fn judge_patch(
 ) -> Result<JudgePatch, JudgePatchError> {
     let deadline = deadline_after(options.time_limit);
     let from = source(repo, base, options, deadline)?;
-    let repository = empty_repository(&from, scratch, options, deadline)?;
-    let tree = working_tree(&from, scratch, &repository, options, deadline)?;
-    let bytes = diff_outside(&from, &tree, scratch, &repository, options, deadline)?;
+    let repository = empty_repository(&from.store, scratch, options, deadline)?;
+    let (tree, nested) = working_tree(&from, scratch, &repository, options, deadline)?;
+    let bytes = diff_outside(&from.base, &tree, scratch, &repository, options, deadline)?;
     Ok(JudgePatch {
         bytes,
         base: from.base,
         tree,
+        nested,
     })
+}
+
+/// The patch from the commit `from` to the commit `to`, in the form and with the bytes
+/// [`judge_patch`] gives for a working tree whose state is `to`'s tree: diffed in a new, empty
+/// repository in `scratch` that only borrows the object store, with no configuration and no
+/// attributes. `from` is `None` for a commit with nothing to compare with (no history in
+/// common): the patch then adds everything `to` holds.
+///
+/// # Errors
+/// [`JudgePatchError::NoBase`] when `from` or `to` names no commit; otherwise as
+/// [`judge_patch`].
+pub fn commit_patch(
+    repo: &Path,
+    from: Option<&str>,
+    to: &str,
+    scratch: &Path,
+    options: &GitAcquireOptions,
+) -> Result<Vec<u8>, JudgePatchError> {
+    let deadline = deadline_after(options.time_limit);
+    let inside = Runner {
+        options,
+        cwd: repo.to_path_buf(),
+        deadline,
+        config_env: Vec::new(),
+    };
+    let resolved = |rev: &str| match inside.commit_id(rev) {
+        Ok(Some(id)) => Ok(id),
+        Ok(None) | Err(GitAcquireError::InvalidSelection { .. }) => Err(JudgePatchError::NoBase),
+        Err(other) => Err(other.into()),
+    };
+    let from = from.map(resolved).transpose()?.unwrap_or_default();
+    let to = resolved(to)?;
+    let repository = empty_repository(&store(&inside)?, scratch, options, deadline)?;
+    Ok(diff_outside(
+        &from,
+        &to,
+        scratch,
+        &repository,
+        options,
+        deadline,
+    )?)
+}
+
+/// The most bytes of a listing of refs that are read.
+const REF_LISTING_CAP: usize = 4 * 1024 * 1024;
+
+/// The refs of a repository that can name a session's commits, each with the commit it leads
+/// to.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RefTips {
+    /// `(name, commit)` in the order of the names. A tag is followed to the commit it tags; a
+    /// ref that leads to no commit is left out.
+    pub tips: Vec<(String, String)>,
+    /// The repository has more refs than were asked for: `tips` is the first of them.
+    pub partial: bool,
+}
+
+/// The branches, remote-tracking refs, tags and the stash of the repository containing `repo`
+/// (`refs/heads`, `refs/remotes`, `refs/tags`, `refs/stash`), at most `limit` of them.
+///
+/// # Errors
+/// Any [`GitAcquireError`] from running Git, or a listing that cannot be read.
+pub fn ref_tips(
+    repo: &Path,
+    limit: usize,
+    options: &GitAcquireOptions,
+) -> Result<RefTips, GitAcquireError> {
+    let runner = Runner {
+        options,
+        cwd: repo.to_path_buf(),
+        deadline: deadline_after(options.time_limit),
+        config_env: Vec::new(),
+    };
+    let count = OsString::from(format!("--count={}", limit.saturating_add(1)));
+    let listing = runner.run(
+        "git for-each-ref",
+        &[
+            OsStr::new("for-each-ref"),
+            count.as_os_str(),
+            OsStr::new(
+                "--format=%(refname)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)",
+            ),
+            OsStr::new("refs/heads"),
+            OsStr::new("refs/remotes"),
+            OsStr::new("refs/tags"),
+            OsStr::new("refs/stash"),
+        ],
+        &[0],
+        REF_LISTING_CAP,
+    )?;
+    let text = String::from_utf8(listing).map_err(|_| refused("a ref's name is not UTF-8"))?;
+    let mut tips = Vec::new();
+    let mut seen = 0usize;
+    for record in text.lines() {
+        let fields: Vec<&str> = record.split('\0').collect();
+        let [name, kind, id, tagged_kind, tagged] = fields[..] else {
+            return Err(refused("git for-each-ref wrote a line that cannot be read"));
+        };
+        seen += 1;
+        if seen > limit {
+            break;
+        }
+        match (kind, tagged_kind) {
+            ("commit", _) => tips.push((name.to_owned(), id.to_owned())),
+            (_, "commit") => tips.push((name.to_owned(), tagged.to_owned())),
+            _ => {}
+        }
+    }
+    Ok(RefTips {
+        tips,
+        partial: seen > limit,
+    })
+}
+
+/// Whether `tip` leads to a commit that none of the commits `known` leads to. A commit in
+/// `known` that the repository no longer has is passed over.
+///
+/// # Errors
+/// Any [`GitAcquireError`] from running Git; `tip` not naming a commit that can be read.
+pub fn has_commits_beyond(
+    repo: &Path,
+    tip: &str,
+    known: &[String],
+    options: &GitAcquireOptions,
+) -> Result<bool, GitAcquireError> {
+    let runner = Runner {
+        options,
+        cwd: repo.to_path_buf(),
+        deadline: deadline_after(options.time_limit),
+        config_env: Vec::new(),
+    };
+    let tip = runner
+        .commit_id(tip)?
+        .ok_or_else(|| refused(format!("`{tip}` does not name a commit")))?;
+    let mut args: Vec<&OsStr> = vec![
+        OsStr::new("rev-list"),
+        OsStr::new("--max-count=1"),
+        OsStr::new("--ignore-missing"),
+        OsStr::new(&tip),
+        OsStr::new("--not"),
+    ];
+    // Only full commit ids are passed on: nothing here can be read as an option.
+    args.extend(
+        known
+            .iter()
+            .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_hexdigit()))
+            .map(OsStr::new),
+    );
+    Ok(!runner.run("git rev-list", &args, &[0], 4096)?.is_empty())
+}
+
+/// The best common ancestor of the commits `one` and `other`, or `None` when they share no
+/// history.
+///
+/// # Errors
+/// Any [`GitAcquireError`] from running Git; either not naming a commit that can be read.
+pub fn merge_base(
+    repo: &Path,
+    one: &str,
+    other: &str,
+    options: &GitAcquireOptions,
+) -> Result<Option<String>, GitAcquireError> {
+    let runner = Runner {
+        options,
+        cwd: repo.to_path_buf(),
+        deadline: deadline_after(options.time_limit),
+        config_env: Vec::new(),
+    };
+    let named = |rev: &str| {
+        runner
+            .commit_id(rev)?
+            .ok_or_else(|| refused(format!("`{rev}` does not name a commit")))
+    };
+    let (one, other) = (named(one)?, named(other)?);
+    let found = line(runner.run(
+        "git merge-base",
+        &[
+            OsStr::new("merge-base"),
+            OsStr::new(&one),
+            OsStr::new(&other),
+        ],
+        &[0, 1],
+        4096,
+    )?)?;
+    Ok(Some(found).filter(|id| !id.is_empty()))
+}
+
+/// The submodules of the repository containing `repo` whose own working tree has changes that
+/// are not committed there (modified or untracked files), as paths from the top level. The
+/// patch of the outer repository shows a submodule only as the commit it is at.
+///
+/// # Errors
+/// Any [`GitAcquireError`] from running Git.
+pub fn dirty_submodules(
+    repo: &Path,
+    options: &GitAcquireOptions,
+) -> Result<Vec<String>, GitAcquireError> {
+    let runner = Runner {
+        options,
+        cwd: repo.to_path_buf(),
+        deadline: deadline_after(options.time_limit),
+        config_env: Vec::new(),
+    };
+    let status = runner.run(
+        "git status",
+        &[
+            OsStr::new("status"),
+            OsStr::new("--porcelain=v2"),
+            OsStr::new("-z"),
+            OsStr::new("--ignore-submodules=none"),
+            OsStr::new("--untracked-files=no"),
+        ],
+        &[0],
+        INDEX_LISTING_CAP,
+    )?;
+    // An ordinary entry is `1 XY SUB mH mI mW hH hI PATH`; `SUB` is `S` with a letter for a
+    // changed commit, modified content (`M`) and untracked files (`U`).
+    Ok(status
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| {
+            let text = std::str::from_utf8(entry).ok()?;
+            let mut fields = text.splitn(9, ' ');
+            let (kind, _, sub) = (fields.next()?, fields.next()?, fields.next()?);
+            let path = fields.nth(5)?;
+            let dirty = sub.starts_with('S')
+                && (sub.as_bytes().get(2) == Some(&b'M') || sub.as_bytes().get(3) == Some(&b'U'));
+            (kind == "1" && dirty).then(|| path.to_owned())
+        })
+        .collect())
 }
 
 /// What `HEAD` names in a repository.

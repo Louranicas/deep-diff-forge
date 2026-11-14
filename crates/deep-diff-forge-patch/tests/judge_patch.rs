@@ -658,3 +658,298 @@ fn the_users_configuration_does_not_shape_the_patch_and_the_users_ignore_file_do
     assert!(without.contains("+fn a() { b(); }\n"), "{without}");
     assert!(!marker.exists(), "a filter of the user's configuration ran");
 }
+
+/// Round 11 of the review of the hooks. A directory in the working tree that is a Git
+/// repository of its own is no file of the project. `git add --all` fails on one that has no
+/// commit (`git init scratch/`), so every patch of such a tree failed and every stop was
+/// UNJUDGED; one that has a commit was staged as a link to it. Both are left out of the staged
+/// tree and named, whatever their names; one the index holds (a submodule) stays.
+#[test]
+fn nested_repositories_are_left_out_of_the_patch_and_named() {
+    let scratch = Scratch::new("judge-patch-nested");
+    let root = scratch.join("repo");
+    std::fs::create_dir(&root).unwrap();
+    git(&root, &["init", "--quiet"]);
+    std::fs::write(root.join("src.rs"), "fn a() {}\n").unwrap();
+    std::fs::create_dir(root.join("dir")).unwrap();
+    std::fs::write(root.join("dir/kept.txt"), "x\n").unwrap();
+    git(&root, &["add", "--all"]);
+    git(&root, &["commit", "--quiet", "-m", "base"]);
+    let nested = |path: &str, commit: bool| {
+        let dir = root.join(path);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "--quiet"]);
+        std::fs::write(dir.join("inner.rs"), "const INNER: u8 = 1;\n").unwrap();
+        if commit {
+            git(&dir, &["add", "--all"]);
+            git(&dir, &["commit", "--quiet", "-m", "inner"]);
+        }
+    };
+    nested("unborn", false);
+    nested("dir/with commit", true);
+    nested("odd [1]*?", false);
+    nested("plain/deeper/repo", true);
+    std::fs::write(root.join("plain/file.rs"), "const OUTER: u8 = 2;\n").unwrap();
+    std::fs::write(root.join("src.rs"), "fn a() { b(); }\n").unwrap();
+    // a directory whose name a careless rule for `odd [1]*?` would also match
+    std::fs::create_dir(root.join("odd 1xy")).unwrap();
+    std::fs::write(root.join("odd 1xy/file.rs"), "const NEAR: u8 = 3;\n").unwrap();
+
+    let before = untouched(&root);
+    let patch = judge_patch(&root, "HEAD", &fresh(&scratch, "nested"), &options()).unwrap();
+    assert_eq!(
+        untouched(&root),
+        before,
+        "making the patch changed the repository"
+    );
+    let mut left_out = patch.nested.clone();
+    left_out.sort();
+    assert_eq!(
+        left_out,
+        [
+            "dir/with commit",
+            "odd [1]*?",
+            "plain/deeper/repo",
+            "unborn"
+        ]
+    );
+    let shown = String::from_utf8_lossy(&patch.bytes).into_owned();
+    for part in [
+        "+fn a() { b(); }\n",
+        "diff --git a/plain/file.rs b/plain/file.rs\n",
+        "+const OUTER: u8 = 2;\n",
+        "+const NEAR: u8 = 3;\n",
+    ] {
+        assert!(shown.contains(part), "{part:?} is missing: {shown}");
+    }
+    for part in ["INNER", "160000", "unborn", "with commit", "deeper"] {
+        assert!(!shown.contains(part), "{part:?} is in the patch: {shown}");
+    }
+
+    // a tree with none names none
+    let other = Scratch::new("judge-patch-nested-none");
+    let plain = changed_repository(&other);
+    let patch = judge_patch(&plain, "HEAD", &fresh(&scratch, "none"), &options()).unwrap();
+    assert_eq!(patch.nested, Vec::<String>::new());
+
+    // A nested repository the index holds is the project's (a submodule): it stays in the
+    // tree, as the link a commit would record.
+    git(&root, &["add", "dir/with commit"]);
+    let patch = judge_patch(&root, "HEAD", &fresh(&scratch, "indexed"), &options()).unwrap();
+    let shown = String::from_utf8_lossy(&patch.bytes).into_owned();
+    assert!(
+        shown.contains("new file mode 160000\n") && shown.contains("b/dir/with commit"),
+        "{shown}"
+    );
+    let mut left_out = patch.nested;
+    left_out.sort();
+    assert_eq!(left_out, ["odd [1]*?", "plain/deeper/repo", "unborn"]);
+}
+
+/// Second independent review of the hooks, HR2-H-1, at the patch: what the session committed
+/// is judged from the commits themselves. The patch between two commits has the bytes the
+/// patch of a working tree has when the tree is what the second commit holds, so the two are
+/// one patch for a judge; and they are the patch maker's bytes.
+#[test]
+fn the_patch_of_commits_is_the_patch_of_the_tree_they_hold() {
+    use deep_diff_forge_patch::commit_patch;
+    let scratch = Scratch::new("judge-patch-commits");
+    let root = changed_repository(&scratch);
+    let base = text(git(&root, &["rev-parse", "HEAD"]));
+    let tree = judge_patch(&root, "HEAD", &fresh(&scratch, "tree"), &options()).unwrap();
+    git(&root, &["add", "--all"]);
+    git(&root, &["commit", "--quiet", "-m", "work"]);
+    let head = text(git(&root, &["rev-parse", "HEAD"]));
+    let before = untouched(&root);
+    let commits = commit_patch(
+        &root,
+        Some(&base),
+        &head,
+        &fresh(&scratch, "commits"),
+        &options(),
+    )
+    .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&commits),
+        String::from_utf8_lossy(&tree.bytes)
+    );
+    assert_eq!(commits, patch_maker(&root, &scratch, &base, &head));
+    assert_eq!(
+        untouched(&root),
+        before,
+        "making the patch changed the repository"
+    );
+    // the same commit twice is no change; with nothing to compare with, everything is added
+    assert_eq!(
+        commit_patch(
+            &root,
+            Some(&head),
+            &head,
+            &fresh(&scratch, "same"),
+            &options()
+        )
+        .unwrap(),
+        b""
+    );
+    let whole = commit_patch(&root, None, &base, &fresh(&scratch, "whole"), &options()).unwrap();
+    let shown = String::from_utf8_lossy(&whole).into_owned();
+    assert!(
+        shown.contains("diff --git a/src.rs b/src.rs\nnew file mode 100644\n")
+            && shown.contains("+fn a() {}\n"),
+        "{shown}"
+    );
+    // a name that is no commit is refused by name, not read as "no change"
+    for (from, to) in [
+        (Some("no-such-commit"), head.as_str()),
+        (Some(base.as_str()), "no-such"),
+    ] {
+        assert!(matches!(
+            commit_patch(
+                &root,
+                from,
+                to,
+                &fresh(&scratch, &format!("bad-{to}")),
+                &options()
+            ),
+            Err(JudgePatchError::NoBase)
+        ));
+    }
+}
+
+/// HR2-H-1, what names a session's commits: branches, remote-tracking refs, tags and the
+/// stash, each with the commit it leads to; which of them lead to commits that were not there
+/// before; and where the change of such a commit begins.
+#[test]
+fn the_refs_that_name_commits_and_what_lies_beyond_the_known_ones() {
+    use deep_diff_forge_patch::{HeadState, has_commits_beyond, head_state, merge_base, ref_tips};
+    let scratch = Scratch::new("judge-patch-refs");
+    let root = changed_repository(&scratch);
+    let base = text(git(&root, &["rev-parse", "HEAD"]));
+    git(&root, &["add", "--all"]);
+    git(&root, &["commit", "--quiet", "-m", "work"]);
+    let head = text(git(&root, &["rev-parse", "HEAD"]));
+    // what names commits: branches, remote-tracking refs, tags (a tag is followed to its
+    // commit) and the stash, in the order of their names, at most as many as asked for
+    git(&root, &["branch", "side", &base]);
+    git(&root, &["tag", "-a", "v1", "-m", "v1", &base]);
+    git(&root, &["tag", "light"]);
+    git(&root, &["update-ref", "refs/remotes/origin/main", &head]);
+    git(&root, &["update-ref", "refs/notes/x", &head]);
+    std::fs::write(root.join("src.rs"), "fn stashed() {}\n").unwrap();
+    git(&root, &["stash", "--quiet"]);
+    let stash = text(git(&root, &["rev-parse", "refs/stash"]));
+    let tips = ref_tips(&root, 100, &options()).unwrap();
+    assert!(!tips.partial);
+    let named = |name: &str| {
+        tips.tips
+            .iter()
+            .find(|(known, _)| known == name)
+            .map(|(_, commit)| commit.as_str())
+    };
+    assert_eq!(named("refs/heads/main"), Some(head.as_str()));
+    assert_eq!(named("refs/heads/side"), Some(base.as_str()));
+    assert_eq!(named("refs/tags/v1"), Some(base.as_str()));
+    assert_eq!(named("refs/tags/light"), Some(head.as_str()));
+    assert_eq!(named("refs/remotes/origin/main"), Some(head.as_str()));
+    assert_eq!(named("refs/stash"), Some(stash.as_str()));
+    assert_eq!(named("refs/notes/x"), None);
+    assert_eq!(tips.tips.len(), 6);
+    let few = ref_tips(&root, 2, &options()).unwrap();
+    assert!(few.partial);
+    assert_eq!(few.tips.len(), 2);
+    assert_eq!(few.tips, tips.tips[..2]);
+
+    // which of them lead to commits that were not there, and where their change begins
+    let known = vec![base.clone()];
+    assert!(has_commits_beyond(&root, &head, &known, &options()).unwrap());
+    assert!(has_commits_beyond(&root, &stash, &known, &options()).unwrap());
+    assert!(!has_commits_beyond(&root, &base, &known, &options()).unwrap());
+    assert!(!has_commits_beyond(&root, &head, std::slice::from_ref(&head), &options()).unwrap());
+    // a known commit the repository no longer has is passed over, not an error
+    let gone = "0".repeat(39) + "1";
+    assert!(has_commits_beyond(&root, &head, &[gone, base.clone()], &options()).unwrap());
+    assert_eq!(
+        merge_base(&root, &base, &stash, &options()).unwrap(),
+        Some(base.clone())
+    );
+    git(&root, &["checkout", "--quiet", "--orphan", "apart"]);
+    assert_eq!(
+        head_state(&root, &options()).unwrap(),
+        HeadState::Unborn {
+            repository_has_commits: true
+        }
+    );
+    git(
+        &root,
+        &["commit", "--quiet", "--allow-empty", "-m", "apart"],
+    );
+    let apart = text(git(&root, &["rev-parse", "HEAD"]));
+    assert_eq!(merge_base(&root, &base, &apart, &options()).unwrap(), None);
+    assert!(merge_base(&root, &base, "no-such-commit", &options()).is_err());
+}
+
+/// Second independent review of the hooks, HR2-M-3, at the patch crate: a submodule whose own
+/// working tree has changes that are not committed in it. The outer repository's patch shows a
+/// submodule only as the commit it is at, so these are found and named apart.
+#[test]
+fn submodules_with_changes_that_are_not_committed_are_found() {
+    use deep_diff_forge_patch::dirty_submodules;
+    let scratch = Scratch::new("judge-patch-submodules");
+    let inner = scratch.join("inner");
+    std::fs::create_dir(&inner).unwrap();
+    git(&inner, &["init", "--quiet"]);
+    std::fs::write(inner.join("s.rs"), "fn s() {}\n").unwrap();
+    git(&inner, &["add", "--all"]);
+    git(&inner, &["commit", "--quiet", "-m", "inner"]);
+    let root = scratch.join("repo");
+    std::fs::create_dir(&root).unwrap();
+    git(&root, &["init", "--quiet"]);
+    std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+    git(&root, &["add", "--all"]);
+    git(&root, &["commit", "--quiet", "-m", "base"]);
+    assert_eq!(
+        dirty_submodules(&root, &options()).unwrap(),
+        Vec::<String>::new()
+    );
+    for path in ["vendor/one", "vendor/t w o"] {
+        git(
+            &root,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "--quiet",
+                "add",
+                inner.to_str().unwrap(),
+                path,
+            ],
+        );
+    }
+    git(&root, &["commit", "--quiet", "-m", "submodules"]);
+    assert_eq!(
+        dirty_submodules(&root, &options()).unwrap(),
+        Vec::<String>::new()
+    );
+    // a tracked file changed in one, an untracked file added in the other
+    std::fs::write(root.join("vendor/one/s.rs"), "fn changed() {}\n").unwrap();
+    assert_eq!(dirty_submodules(&root, &options()).unwrap(), ["vendor/one"]);
+    std::fs::write(root.join("vendor/t w o/new.rs"), "fn new() {}\n").unwrap();
+    let mut found = dirty_submodules(&root, &options()).unwrap();
+    found.sort();
+    assert_eq!(found, ["vendor/one", "vendor/t w o"]);
+    // committed inside, a submodule is at another commit, which the outer patch shows
+    git(
+        &root.join("vendor/one"),
+        &["commit", "--quiet", "-am", "inner work"],
+    );
+    assert_eq!(
+        dirty_submodules(&root, &options()).unwrap(),
+        ["vendor/t w o"]
+    );
+    // and a change of the outer repository's own files is not a submodule's
+    std::fs::write(root.join("a.rs"), "fn a() { b(); }\n").unwrap();
+    assert_eq!(
+        dirty_submodules(&root, &options()).unwrap(),
+        ["vendor/t w o"]
+    );
+}

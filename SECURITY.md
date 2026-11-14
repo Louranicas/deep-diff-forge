@@ -271,7 +271,15 @@ every gate ran as root inside the container. Gates refuse to run unless
 
 ### Agent hooks
 
-`agent hook` runs inside an agent's session, on the agent's own change. Its boundaries:
+The hooks guard against an agent's honest mistakes and shortcuts: a credential it commits, a
+check it silences, a policy it loosens. They are **not** a boundary against an agent that sets
+out to evade them: it has a shell, so it can edit the settings, the session's state, or work
+in a copy. That boundary is the judge on the pull request (forge-warden on the server). The
+rule for every case below: an ordinary workflow must never end in a silent stop with unjudged
+work; a deliberate evasion is made visible where that is cheap, and is otherwise a stated
+limit.
+
+`agent hook` runs inside an agent's session, on the agent's own change. What it holds to:
 
 - **The change is attacker-controlled, and so is everything read from it.** A hook message
   never repeats the text of a changed line. A path is shown quoted, with control characters
@@ -287,22 +295,39 @@ every gate ran as root inside the container. Gates refuse to run unless
   the project wherever the session's directory is, and the working tree against the recorded
   commit with that commit's policy. A linked working tree the session's directory is in is
   judged as well.
-- **A stop that is its session's first hook is never silent.** It has just recorded the
-  project and the commit `HEAD` names, and knows nothing of what the session did before: the
-  session-start hook was installed after the session began, or not at all. On a clean tree
-  such a stop used to say nothing, so committed work still passed in silence. It now says,
-  once, that the session's start was not recorded and that work committed before the stop
-  was not judged, whatever the judge says of what is left in the tree (a pass or an empty
-  change is allowed with that message; a fail, a hold and UNJUDGED carry it too). It stays
+- **What the session committed is judged where a ref still names it.** The session's first
+  hook records, with the base, the commits the branches, remote-tracking refs, tags and the
+  stash led to (4,096 refs at most). A stop has judged the working tree against the base and,
+  for `HEAD` and each ref that names a commit none of those tips leads to, the patch from the
+  common ancestor of the base and that commit to it; the same patch once; four distinct
+  patches at most, the rest UNJUDGED with the refs named. Before, only the working tree was
+  compared, so a branch the session had left, a commit of a staged file that was edited
+  again, and a commit the tree was put back from all ended in a silent stop. A commit no ref
+  names any more is not found; that is a stated limit.
+- **The project is a repository, not a pathname.** It is recorded with the device and inode
+  of its Git common directory. A repository of another identity at the recorded path is not
+  the project (a clean clone put there used to be judged in its place, in silence): the stop
+  is UNJUDGED and says so, and when the session's directory is in the recorded repository,
+  moved, it is judged there and the message says where.
+- **The first stop of a session whose start was not recorded says so.** When no
+  session-start hook recorded the project and the base, they were recorded by the first stop
+  or by an advice hook before it (the hook after the tool call that commits always runs
+  first), and nothing is known of what the session did before. That stop says, once, that
+  the session's start was not recorded and that work committed before was not judged,
+  whatever the judge says of what is left (a pass or an empty change is allowed with that
+  message; a fail, a hold and UNJUDGED carry it too). It stays
   silent only where no project can be found at all: Git says there is no repository around
   the session's directory, the client names none, and none is recorded.
-- **What the hooks do not judge.** They judge the project's working tree and the working tree
-  the session's directory is in. A change written into another linked working tree, or
-  committed on another branch without touching those trees, is not judged by the hooks; a
-  judge on the pull request is what covers that. An agent can make a stop UNJUDGED by
-  breaking what the judge needs (a nested repository with no commit, which Git cannot stage;
-  an unreadable file; a path marked skip-worktree): never a pass, always visible, and never
-  a block. Advice after a tool call covers the project's tree only. "No repository" is read
+- **What the hooks do not judge, and what they name.** They judge the project's working tree,
+  a linked working tree the session's directory is in, and the session's commits that a ref
+  names. Named once in a session as not judged: another repository the session's directory
+  is in at a stop, a submodule with changes that are not committed in it, and a nested
+  repository in the project's tree, which is left out of the patch (Git cannot even stage
+  one that has no commit). Not judged and not named, for the judge on the pull request: a
+  commit no ref names, a change written into a linked working tree the session is not in,
+  and work in a copy. An agent can make a stop UNJUDGED by breaking what the judge needs (an
+  unreadable file; a path marked skip-worktree): never a pass, always visible, and never a
+  block. Advice after a tool call covers the project's tree only. "No repository" is read
   from Git's English message under `LC_ALL=C`; any other wording is a failure and is said.
   The cleanup of a killed hook's scratch directory needs `/proc`. The state file is the
   agent's to edit, as below.
@@ -337,7 +362,16 @@ every gate ran as root inside the container. Gates refuse to run unless
   found, and when Git cannot find it. The session id is hashed and never chooses a file
   name. The file holds the project's top level, the commit the session began from (a full
   commit id, or that there was none), the keys of findings already said, the reasons already
-  given for not running (hashed) and the failure that blocked the last stop.
+  given for not running and the things a stop named (hashed), the tips of the refs when the
+  session began, and the failures that have blocked a stop (each as a SHA-256 and a count).
+  Every list is bounded when it is written, so the largest state is far under the 4 MiB a
+  hook reads back. A file that is there and is not a state the hooks can read (a link,
+  another kind of file, too large, another schema, a project that is not whole) is never
+  read as "no state": the stop is UNJUDGED with the reason and nothing is recorded over it.
+  Before, a block with thousands of violations wrote a state the next hook would not read,
+  and the session forgot its base. A state directory inside the project's working tree is
+  refused the same way. When the state cannot be kept, a stop says so every time and the
+  advice hook once, marked by an empty file beside the scratch directory.
 - **Each directory of the hooks is a directory of its own.** `deep-diff-forge/` under the Git
   common directory and `deep-diff-forge/hooks` in the state directory are made with mode
   0700; when a symbolic link or a file stands at either the hook does not run and says so. A
@@ -383,7 +417,9 @@ every gate ran as root inside the container. Gates refuse to run unless
   must be the gate's. The entry is read whole: its type must be `command`, a timeout it sets
   must leave a stop its time, and `disableAllHooks` in the settings file that wins (the
   project's local file, the project's shared file, then the user's) fails the gate. The gate
-  also makes the patch a stop would make, so a tree a stop cannot judge is found by it.
+  also makes the patch a stop would make, so a tree a stop cannot judge is found by it; it
+  checks that the session-start hook and the hook after a tool call are registered for this
+  program with no matcher that narrows them; and that the state directory can be used.
   Settings an administrator manages are not read.
 - **The judge decides, by its exit code and its document together.** DDF starts
   `forge-warden` under a deadline and output caps. Exit 0, 7 or 8 is a verdict only with a
@@ -415,9 +451,11 @@ every gate ran as root inside the container. Gates refuse to run unless
   A directory outside the repository that a change can also write to is not detected: keep
   the judge where the session's tools cannot write.
 - **What the state can and cannot do.** The state file holds the session's project and base,
-  which findings were said and which failure blocked the last stop. A lost file makes the
-  next hook the session's first: the base becomes the commit `HEAD` names then, a finding
-  can be said twice and a failure can block once more. A verdict is always fresh, so no
+  which findings were said and which failures have blocked. A removed file makes the next
+  hook the session's first: the base becomes the commit `HEAD` names then, the first stop
+  says that the start was not recorded, a finding can be said twice and a failure can block
+  once more. A failure blocks once in a session: one that has blocked is said to stand at
+  every later stop. A verdict is always fresh, so no
   state turns a judged fail into a pass; but whoever edits the file can move the base, and
   with it what is judged. A base in the file is believed only as a full commit id. "The same
   failure" is the rule, the signal, the path and the number of items the judge cites: a new

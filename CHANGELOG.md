@@ -24,13 +24,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 - **The agent loop: `deep-diff-forge agent hook session-start|post-tool|stop --client claude`.**
   Claude Code hooks that run this binary during a session. After every tool call the agent
-  is told the evidence that is new in everything it changed since the session began,
-  committed or not (label, path, line, what answers the signal); this is advice and never
-  blocks, and a finding is said once per session. At a stop those changes are judged by
+  is told the evidence that is new in the working tree since the session began (label, path,
+  line, what answers the signal); this is advice and never blocks, and a finding is said
+  once per session. At a stop the working tree, and every commit made since the session
+  began that a branch, a tag, the stash or a remote-tracking ref names, is judged by
   forge-warden in authority mode against the policy at the commit the session began from;
   only a fail holds the stop, a hold is reported for a person,
-  and a missing judge, policy or admitted ranker is UNJUDGED, never a pass. The same failure
-  does not block twice. No line of the change is repeated to the agent, and a path is quoted,
+  and a missing judge, policy or admitted ranker is UNJUDGED, never a pass. A failure blocks
+  once in a session. No line of the change is repeated to the agent, and a path is quoted,
   escaped and cut. When the judge gives no verdict, the reason carries its own words (the
   name and message of its error document), not a guess from the exit code. `agent setup
   --client claude --hooks` prints the settings and writes nothing. README "For agents: told while it works, judged when it stops"; SECURITY.md "Agent
@@ -199,6 +200,48 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     judge on the pull request covers that); an agent can make a stop UNJUDGED, never a
     pass; advice covers the project's tree only; work already in the tree when a session
     begins is judged with it.
+- **Round 10 of Vesper's review and a second independent review of the hooks (both NO-GO) and
+  what changed.** The second review found that the cause of the first one's high finding was
+  half removed: the base was fixed, but only the working tree was compared with it
+  (`docs/reviews/claude-independent-review-hooks-2-20261114.md`); Vesper found a clone put
+  at the project's path taken for the project (`docs/reviews/vesper-v4-round10-report-20261114.md`).
+  - *What the hooks are for is said first* (README, SECURITY.md): they guard against honest
+    mistakes and shortcuts, and are not a boundary against deliberate evasion, which is the
+    judge on the pull request. An ordinary workflow must never end in a silent stop with
+    unjudged work; the limits are sorted by that.
+  - *High: committed work was judged only while the working tree still held it.* Branch,
+    commit, switch back; commit a staged file that was edited again; commit, push and reset:
+    each ended in a stop with no output. The session's first hook now records the tips of
+    the branches, remote-tracking refs, tags and the stash, and a stop has judged the working
+    tree and, for `HEAD` and each ref that names a commit made since, the patch from the
+    base (or the common ancestor) to it. The same patch is judged once; at most four
+    distinct patches; the rest, and new commits where the record of refs is partial, are
+    UNJUDGED with the refs named.
+  - *High (Vesper): the project was a pathname.* It is recorded with the device and inode of
+    its Git common directory; another repository at that path is UNJUDGED, and a project
+    that was moved is judged where the session's directory is in it.
+  - *Medium: the hooks wrote a state file larger than they read*, after a block with
+    thousands of violations, and the next hook took the session for a new one. A failure is
+    kept as a SHA-256 and a count, every list is bounded, and a state file that cannot be
+    read is UNJUDGED, never "no state". State schema `deep-diff-forge.hook-state.v2`.
+  - *Medium: a start that was not recorded was silent whenever the hook after a tool call
+    ran before the stop.* The first stop of such a session says so, whoever recorded.
+  - *Medium: another repository was never named.* A repository the session's directory is
+    in that is not its project, and a submodule with changes not committed in it, are named
+    once as not judged.
+  - *Medium: a failure held the first stop of every later turn.* A failure blocks once in a
+    session and then stands. Messages no longer call the range "your changes" or ask to
+    "repair what the rules name": the range holds commits pulled or made by others.
+  - *A nested repository no longer breaks staging.* One with no commit made `git add` fail
+    and every stop UNJUDGED. Nested repositories that the index does not hold are left out
+    of the staged tree and named (`JudgePatch::nested`).
+  - *Low.* `agent doctor --gate` has thirteen links, was ten: `state_directory`,
+    `start_hook_registered` and `advice_hook_registered` are new. When the state cannot be
+    kept the advice hook says so once, not after every tool call. The start of a session
+    names the project's directory. A state directory inside the project's working tree is
+    refused.
+  - *New in the patch crate:* `commit_patch`, `ref_tips`, `has_commits_beyond`,
+    `merge_base`, `dirty_submodules`.
 
 ### Changed
 

@@ -110,7 +110,7 @@ fn setup(args: &[String]) {
     }
     if hooks {
         emitln!(
-            "\n# Claude Code hooks: merge into .claude/settings.json (one project) or ~/.claude/settings.json (every project).\n# Nothing is written for you. After a tool call the hook gives advice and never blocks; at a stop it\n# asks forge-warden for a verdict on everything changed since the session began, and only a fail holds the stop.\n# {}\n{:#}",
+            "\n# Claude Code hooks: merge into .claude/settings.json (one project) or ~/.claude/settings.json (every project).\n# Nothing is written for you. After a tool call the hook gives advice and never blocks; at a stop it\n# asks forge-warden for a verdict on the working tree and the commits made since the session began, and only a fail holds the stop.\n# {}\n{:#}",
             match &judge {
                 Some(judge) => format!(
                     "The judge is named by its path as found now: {}",

@@ -296,6 +296,15 @@ git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require
 
 ### For agents: told while it works, judged when it stops
 
+**What the hooks are for.** They guard against an agent's honest mistakes and shortcuts: a
+credential it commits, a check it silences, a policy it loosens. They are not a boundary
+against an agent that sets out to evade them: it has a shell, so it can edit the settings that
+install the hooks, the session's state, or do its work in a copy. That boundary is the judge
+on the pull request (forge-warden on the server). So one rule sorts every case: an ordinary
+workflow must never end in a silent stop with unjudged work; a deliberate evasion is made
+visible where that is cheap, and is otherwise a stated limit (the list at the end of this
+section is sorted that way).
+
 A review at the end comes too late for an agent: it works one tool call at a time. With
 Claude Code's hooks, this binary tells the agent what its own change looks like while it is
 still working, and asks a judge before it stops. `agent setup --hooks` prints the settings and
@@ -308,16 +317,30 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
 | Event | Command | What the agent gets |
 | --- | --- | --- |
 | `SessionStart` | `agent hook session-start` | What the hooks do, the commit the session's changes are measured from, and whether a stop can be judged here: the chain is checked the way `agent doctor --gate` checks it, and a link that is missing is named instead of a promise. |
-| `PostToolUse`, after every tool | `agent hook post-tool` | **Advice, never a block.** The evidence that is new in everything it changed since the session began, committed or not: label, path, line, how the line was read, and what answers the signal and what does not. A finding is said once per session, also when the line moves. |
-| `Stop` | `agent hook stop` | A verdict on everything changed since the session began, committed or not. **Only a fail holds the stop**, with the rules that failed and what answers them. A hold is reported for a person. With no judge, no policy, or no ranker the policy admits, the result is **UNJUDGED**, said plainly, and never a pass. |
+| `PostToolUse`, after every tool | `agent hook post-tool` | **Advice, never a block.** The evidence that is new in the working tree since the session began (commits pulled or made by others in that time are in that range too): label, path, line, how the line was read, and what answers the signal and what does not. A finding is said once per session, also when the line moves. |
+| `Stop` | `agent hook stop` | A verdict on the working tree, and on every commit made since the session began that a branch, a tag, the stash or a remote-tracking ref names. **Only a fail holds the stop**, once in a session, with the rules that failed and what answers them. A hold is reported for a person. With no judge, no policy, or no ranker the policy admits, the result is **UNJUDGED**, said plainly, and never a pass. |
 
 - **One project and one base for a session.** The session's first hook fixes two things and
   keeps them in the session's state: the project (the directory Claude Code names in
   `CLAUDE_PROJECT_DIR`, else the one already recorded, else the hook input's `cwd`) and the
-  commit `HEAD` names there. Every later hook of the session judges that project from that
-  commit, wherever the agent has gone with `cd` and whatever it has committed: a stop from a
-  nested repository, another repository, a directory outside any, or one that is gone still
-  judges the project, and work that was committed is in the patch. When the session's
+  commit `HEAD` names there, with the commits every branch, remote-tracking ref, tag and the
+  stash led to then (4,096 refs at most). Every later hook of the session judges that project
+  from that commit, wherever the agent has gone with `cd`: a stop from a nested repository,
+  another repository, a directory outside any, or one that is gone still judges the project.
+  The project is a repository, not a path: it is known by the device and inode of its Git
+  directory, so a clone put at its path is not it (the stop is UNJUDGED and says so), and a
+  project that was moved is judged where the session's directory finds it.
+- **What a stop has judged.** The working tree against that commit; and, for `HEAD` and for
+  each ref that names a commit made since the session began (one that none of the recorded
+  tips leads to), the patch from the common ancestor of the base and that commit to it. So
+  work that was committed and is no longer in the tree is judged where a ref still names it:
+  on a branch the session left, in a commit of a staged file that was edited again, on a
+  remote-tracking ref after a push, in the stash, under a tag. Things with the same patch are
+  judged once, so a commit on the session's own branch with a clean tree is one run of the
+  judge. One stop has at most four distinct patches judged; what is beyond that, more than 16
+  changed refs, or new commits in a repository with more refs than were recorded, is
+  UNJUDGED and names the refs. The worst answer decides, and the message names the tree or
+  the refs each answer is about. When the session's
   directory is in another working tree of the same repository (a linked worktree it
   entered), that tree is judged as well, from the same commit by the same policy; the worst
   answer decides and one message names each tree. A later `SessionStart` of the same session
@@ -369,11 +392,14 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   by name, eight candidates in all. forge-warden
   admits a ranker only if the policy lists its SHA-256, so a newer DDF than the policy admits
   can still have its stop judged by an older, admitted one.
-- **The same failure does not block twice.** When Claude Code is already continuing because of
-  a stop hook and the same rules fail for the same signals on the same paths with the same
-  number of items, the stop is allowed and the failure is left for a person. One more item
-  under a rule that already failed is a new failure and blocks again. When the hook cannot
-  keep its state, it says so with the decision.
+- **A failure blocks once in a session.** A failure that has already blocked a stop of this
+  session (the same rules, signals, paths and numbers of items, for the same trees and refs)
+  does not block again, at this turn or a later one: it is said to stand and is left for a
+  person. The base does not move, so without this a failure a person had accepted would hold
+  the first stop of every later turn. One more item under a rule that already failed is a
+  new failure and blocks. The range is everything since the session began, and a pull or a
+  merge brings other people's commits into it: messages say so and do not call it the
+  session's own work. When the hook cannot keep its state, it says so with the decision.
 - **What the judge names beside its rules is passed on.** forge-warden also fails a change
   for a waiver that has expired and holds one for a note, with every rule passed. The message
   then carries the judge's own words for it (bounded, escaped, marked as the judge's text and
@@ -398,13 +424,18 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   and the judge each named by its own absolute path, and the policy and the rankers that were
   checked; a command that only holds the words, starts with an assignment, names this binary
   through a link or a relative path, or names no judge is not it), and whether that hook's
-  timeout leaves a stop its time (50 seconds or more; `agent setup --hooks` prints 60). The
+  timeout leaves a stop its time (50 seconds or more; `agent setup --hooks` prints 60),
+  whether the session-start hook and the hook after a tool call are registered too (the
+  judged range depends on the first; a matcher that narrows either fails the link), and
+  whether the directory the sessions' state is kept in can be used (there, a directory of
+  its own, writable, outside the project's working tree). The
   settings read are the project's `.claude/settings.local.json` and `.claude/settings.json`
   and the user's `~/.claude/settings.json`; settings an administrator manages are not read.
   A link that cannot be checked because an earlier one is missing is reported as not ready,
   never as fine. Exit 0 only when every link is ready, otherwise 7 (the contract asked for is
   not met). In `--json` the checks are named `git`, `repository`, `policy`, `judge`, `chain`,
-  `policy_protects_itself`, `patch`, `hooks_enabled`, `hooks_registered` and `hook_timeout`,
+  `policy_protects_itself`, `patch`, `state_directory`, `hooks_enabled`, `hooks_registered`,
+  `hook_timeout`, `start_hook_registered` and `advice_hook_registered`,
   after the checks `agent doctor` always makes. It takes the same `--judge`, `--policy` and
   `--ranker-dir` as the stop hook. The start of a session runs the same checks in the time
   it has and says "stops will be judged" only when every one of them is ready.
@@ -413,10 +444,12 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   command line the hook cannot read (a mistyped option says that the hook did not run, and
   for a stop that it is UNJUDGED). Nothing is said in three cases only: Git ran and found no
   repository around a session that has no project recorded; the repository had no commit
-  when the session began and has none now; the change is empty. A stop that is the first
-  hook of its session is the exception to the last two: it has only then recorded where the
-  session is, so it always says that the session's start was not recorded and that work
-  committed before it was not judged (once; the next stop is ordinary). Everything else is said: Git
+  when the session began and has none now; the change is empty. The first stop of a session
+  that no session-start hook recorded is the exception to the last two: the project and the
+  base were recorded by that stop or by an advice hook before it, so it says, once, that the
+  session's start was not recorded and that work committed before was not judged. A state
+  file that is there and cannot be read (a link, too large, another version, damaged) is
+  never "no state": the stop is UNJUDGED and nothing is recorded over it. Everything else is said: Git
   missing or refusing the repository (another owner), a directory inside `.git`, a base that
   cannot be read, an orphan branch, a patch that cannot be made. A stop then says UNJUDGED
   with the reason, a start says that stops will not be judged, and advice says each reason
@@ -427,42 +460,53 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   its own on top. The scratch directory a hook that was killed left behind is removed by the
   next hook of the repository, once its process is gone (where `/proc` says so).
 
-Limits, stated:
+Limits, sorted by the rule above.
 
-- The base is the commit `HEAD` named when the session's first hook ran. With the printed
-  settings that is the start of the session. A stop that is its session's first hook (the
-  session-start hook was installed after the session began, or not at all) can only measure
-  from where `HEAD` is then: what the session committed before it is not judged. Such a stop
-  is never silent. Whatever the judge says of what is left in the tree, it adds, once, that
-  the session's start was not recorded and that the session-start hook must be installed
-  before a session begins.
-- What is judged is two working trees at most: the project's, and the one the session's
-  directory is in at the stop when that is another working tree of the same repository. A
-  change written into another linked working tree, or committed on another branch without
-  touching those trees, is not judged by the hooks. A judge on the pull request is what
-  covers that.
-- An agent can make a stop UNJUDGED by breaking what the judge needs: a nested repository
-  with no commit in the tree (Git cannot stage it), a file that cannot be read, a path
-  marked skip-worktree. That is never a pass and always visible to the user, and it is never
-  a block either.
-- Advice after a tool call covers the project's working tree only, not a linked working tree
-  the session is in. The stop judges both.
+Ordinary workflows, which must never end in silence. These are said, each once in a session:
+
+- A session whose start no session-start hook recorded (the hook was installed after the
+  session began, or not at all): its base is where `HEAD` was at its first hook, and its
+  first stop says that work committed before was not judged.
+- Uncommitted work that was already in the tree when the session began is inside what is
+  judged: start sessions on a clean tree. The start says so when the tree is not clean.
+- Another repository: when the session's directory is in a repository that is not its
+  project at a stop, the stop names it as not judged. A submodule with changes that are not
+  committed in it is named the same way (the project's patch shows a submodule only as the
+  commit it is at). A nested repository in the project's tree (a scratch `git init`, a
+  checkout) is left out of the patch and named.
+- Commits pulled, merged or fetched during the session are in the range and are judged:
+  a failure in them blocks once and is then left for a person, like any other.
+- A session that began in a repository with no commit, or on an orphan branch, has no base:
+  its stops are UNJUDGED (after the first commit, in the first case).
+- A `git fetch` that brings many new remote branches gives a stop more than four patches:
+  it is UNJUDGED for the rest and names them.
+
+Deliberate evasion, made visible where that is cheap:
+
+- A clone put at the project's path, a state file that was damaged or replaced, a state
+  directory inside the working tree: UNJUDGED, with the reason. A removed state file: the
+  next stop says that the session's start was not recorded.
+- An agent can make a stop UNJUDGED by breaking what the judge needs (a file that cannot be
+  read, a path marked skip-worktree). That is never a pass and always visible to the user,
+  and it is never a block either.
+
+Stated limits, which the judge on the pull request covers:
+
+- A commit no ref names any more (reset away and never pushed, a deleted branch), a change
+  written into another linked working tree that the session's directory is not in, work in
+  a copy of the repository, and anything in a repository that is not the session's project.
+- The settings that install the hooks, the state file and the judge on `PATH` are the
+  agent's to edit: it shares the user's account.
+- Advice after a tool call covers the project's working tree only: not a linked working
+  tree the session is in, and not commits that are no longer in the tree. The stop has both
+  judged.
 - "No repository here" is read from Git's own English message, with `LC_ALL=C` set for that
   call. A Git that words it otherwise is read as a failure, which is said, not as silence.
 - The scratch directory of a hook that was killed is removed only where `/proc` says its
-  process is gone (Linux). Elsewhere it stays until a process with the same id runs a hook
-  in that repository.
-- Uncommitted work that was already in the tree when the session began is inside what is
-  judged: start sessions on a clean tree. The start says so when the tree is not clean.
-- A session that began in a repository with no commit, or on an orphan branch, has no base:
-  its stops are UNJUDGED (after the first commit, in the first case).
-- The state of a session (its project, its base, what was said) is one file in the user's
-  state directory (`deep-diff-forge/hooks` under `$XDG_STATE_HOME`, else under
-  `~/.local/state`), found by the session's id; without such a directory the hooks say that
-  they did not run. Files of sessions that have ended are not removed.
-- The hooks guard against honest mistakes: an agent that shares the user's account can edit
-  the settings that install them or the state file, so CI in authority mode remains the
-  authority. Hooks for Codex are not designed.
+  process is gone (Linux).
+- The state of a session is one file in the user's state directory (`deep-diff-forge/hooks`
+  under `$XDG_STATE_HOME`, else under `~/.local/state`), found by the session's id; files of
+  sessions that have ended are not removed. Hooks for Codex are not designed.
 
 ---
 

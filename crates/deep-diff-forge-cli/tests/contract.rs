@@ -10,7 +10,20 @@ use std::process::{Command, Stdio};
 const PATCH: &str = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n";
 
 fn run(args: &[&str], stdin: &str) -> (i32, String, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"));
+    // The agent hooks and the gate keep a session's state in the user's state directory. A test
+    // must never write there: these runs get a home of their own, and no project is named to
+    // them. (Found 2026-11-14: `every_documented_option_is_admitted` ran three stop hooks and the
+    // gate with the developer's own `HOME` and left `~/.local/state/deep-diff-forge/hooks`.)
+    if args.first() == Some(&"agent") {
+        let home = std::env::temp_dir().join(format!("ddf-contract-home-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        command
+            .env("HOME", &home)
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("CLAUDE_PROJECT_DIR");
+    }
+    let mut child = command
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
