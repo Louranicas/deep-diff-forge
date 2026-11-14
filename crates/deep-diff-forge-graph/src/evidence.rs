@@ -10,7 +10,7 @@
 //! is safe, and a construct split across lines or built at run time can hide from it.
 
 use crate::lexical::{Language, ScanState, code_view, has_token, is_boundary_blocker, is_ident};
-use deep_diff_forge_core::{FileStatus, HunkId, PatchHunk, PatchLine, PatchLineKind, ReviewFile};
+use deep_diff_forge_core::{HunkId, PatchHunk, PatchLine, PatchLineKind, ReviewFile};
 use deep_diff_forge_syntax::{ConstructKind, FragmentScan, scan_fragment};
 
 /// The basis of the first rung: what every item carried before [`Basis`] existed, and what an
@@ -53,8 +53,10 @@ pub enum EvidenceSignal {
     /// An error is caught and dropped: an `except` whose body is `pass`, an empty `catch` block,
     /// an empty `if err != nil` block, `_ = err`, an `Err(_)` arm that does nothing.
     ErrorSwallowed,
-    /// A call that panics on failure is added to code that is not a test (Rust `.unwrap()`,
-    /// `.expect(`).
+    /// A call that panics on failure is added (Rust `unwrap` and `expect`, called as a method
+    /// or by a path, or passed as a function). It is reported in test code too: nothing in a
+    /// patch proves that code is test code, and an item the hunk shows under a test attribute
+    /// says so ([`Evidence::test_likely`]).
     PanicPathAdded,
     /// A Rust hunk holds words the parser checks (`unwrap`, `assert`, `todo`, `ignore`, …) and
     /// the parser did not read it: the hunk is over a budget, or the review's budget was spent
@@ -197,6 +199,14 @@ pub struct Evidence {
     /// import can bind those names to anything, and a hunk can sit under an open comment. So
     /// the item stands, the score does not change, and what a judge sees is the same; a reader
     /// may weigh the item by it. Only ever true on [`EvidenceSignal::PanicPathAdded`].
+    ///
+    /// Nothing withdraws a panic path any more. Until 2026-11-14 the parser withdrew one that
+    /// it "proved" to be inside a top-level `#[cfg(test)]` item of a file the patch creates
+    /// whole. Five rounds of review each found another text that the grammar and the compiler
+    /// read differently, every one compiled and run to a panic in production code (second
+    /// independent review, IR2-H-1 to IR2-H-4), and that class has no end. The decision: the
+    /// parser never removes evidence. The cost is that a panic path in a test module is
+    /// reported, with this mark.
     pub test_likely: bool,
 }
 
@@ -251,8 +261,8 @@ enum Match {
     /// Rust `assert!(true)`, `assert!(true, …)`, `assert_eq!(true, true)`, `assert_eq!(true,
     /// true, …)` and their `debug_` forms, whatever the spacing ([`trivial_assert_rust`]).
     TrivialAssertRust,
-    /// Rust `#[ignore]`, `#[ignore = "…"]` and `#[cfg_attr(…, ignore)]`, whatever the spacing
-    /// ([`ignore_rust`]).
+    /// Rust `#[ignore]`, `#[ignore = "…"]` and `#[cfg_attr(…, ignore)]`, whatever the spacing,
+    /// and through a `cfg_attr` that a `cfg_attr` applies ([`ignore_rust`]).
     IgnoreRust,
 }
 
@@ -516,12 +526,18 @@ const RULES: &[Rule] = &[
         Scope::Languages(GO),
         Match::Tokens(&["//nolint", "// nolint", "#nosec"]),
     ),
+    // Whatever the spacing, and so with raw identifiers too, whose prefixes the code view
+    // blanks: `#[r#test]` reads `#[  test]` there, and the exact token `#[test]` did not match
+    // it (review V3 round 9, VD3R9-M-1).
     rule(
         S::TestRemoved,
         Side::Old,
         View::Code,
         Scope::Languages(RUST),
-        Match::Tokens(&["#[test]", "#[tokio::test]", "#[rstest]"]),
+        Match::Spaced {
+            heads: &["#"],
+            tails: &["[test]", "[tokio::test]", "[rstest]"],
+        },
     ),
     rule(
         S::TestRemoved,
@@ -652,10 +668,9 @@ const RULES: &[Rule] = &[
         Match::Tokens(&["_ = err"]),
     ),
     // Called as a method or by a path, or the standard one named as a function to pass
-    // ([`calls_method`]). By spelling this cannot tell a test from other code: the path halves
-    // it on a test path,
-    // and the parser withdraws it where the hunk shows a `#[cfg(test)]` around it
-    // ([`fragment_evidence`]).
+    // ([`calls_method`]). Nothing tells a test from other code here: a test path halves the
+    // weight, and an item the hunk shows under a test attribute is marked `test_likely`, and
+    // stands.
     rule(
         S::PanicPathAdded,
         Side::New,
@@ -740,19 +755,50 @@ impl FileKind {
 /// round 2, VD3R2-H-2: a 61 MiB patch of a thousand 64 KB expressions ran past 15 s). Hunks
 /// beyond the budget keep what the token rules found.
 ///
-/// The budget is sized for the slowest text, not for ordinary code. Ordinary Rust parses at
-/// about 0.3 microseconds a byte; text that is all error recovery (`a?b:a?b:…`) at about 13,
-/// and 2 MiB of it ranked in 27 seconds (independent review, IR-H-3). At 256 KiB the worst
-/// known text costs about 3.5 seconds. Measured on this repository: every one of its last 60
-/// commits is under 160 KiB of such hunks (the median has none) and this whole branch against
-/// `main` is 174 KiB; only a review of very many commits at once goes over, and then its later
-/// hunks say `syntax_unchecked`.
-pub const REVIEW_FRAGMENT_BUDGET: usize = 256 * 1024;
+/// This is the limit for text whose cost grows in step with its length. Ordinary Rust parses
+/// at about 0.3 microseconds a byte; the slowest such text found, all error recovery
+/// (`a?b:a?b:…`), at about 14, and 2 MiB of it ranked in 27 seconds (independent review,
+/// IR-H-3). It was 256 KiB until 2026-11-14; text whose cost grows with the square of its
+/// length is bounded by [`REVIEW_SQUARE_BUDGET`], and both limits hold at once.
+pub const REVIEW_FRAGMENT_BUDGET: usize = 128 * 1024;
+
+/// The most the parser's hunks of one review may add up to when each parsed hunk is charged
+/// the square of its bytes: the square of its new side, plus the square of its old side (of
+/// at most one fragment of it, as for [`REVIEW_FRAGMENT_BUDGET`]). The value is the square of
+/// 22 KiB, about 5.07e8.
+///
+/// A byte budget alone does not bound the parser's time. For some text tree-sitter's cost
+/// grows with the square of the length: `// todo`, a newline and `#!#!#!…` costs about
+/// 3.76e-9 s times the square of its bytes for one parse (4 KiB 0.07 s, 8 KiB 0.28 s, 16 KiB
+/// 1.0 s, 32 KiB 3.9 s, 64 KiB 14.8 s), so sixteen hunks of 16 KB, inside the 256 KiB the
+/// review budget then was, ranked in 15 s, and one hunk of 64 KiB in as long (second
+/// independent review, IR2-H-5). No clock cuts a parse (the same patch must give the same
+/// answer on a loaded machine; IR-M-1), so the bound has to be a count, and the count that
+/// follows a cost on the square is the sum of the squares.
+///
+/// Measured on this repository's last 300 commits: 97% of the hunks that hold a word the
+/// parser reads are under 8 KiB and 99.5% under 16 KiB, and the 99th percentile commit totals
+/// 56 KB of them. So a real review, which is many small hunks, spends little of this budget
+/// (a hundred hunks of 1 KiB spend a fifth of it, and the byte budget ends a review of such
+/// hunks first), while one hunk of 22 KiB spends it all and a larger one is never parsed.
+/// The worst known cost of a whole budget:
+/// about 1.9 s for the quadratic text and 1.8 s for the slowest linear text (14 microseconds
+/// a byte over [`REVIEW_FRAGMENT_BUDGET`]), for each wrapping of a hunk that is tried. The two
+/// budgets are spent apart, so one review can spend both: a patch built for it (seven hunks
+/// of 8 KB of the quadratic text, then ninety-four of 790 bytes of the linear one) ranked in
+/// 2.8 s.
+///
+/// A view costs what the rank costs: `--outline` and `--hunks` scan each file once under the
+/// same plan and take a hunk's labels from that scan (that patch's outline took 2.8 s; when
+/// the views scanned each hunk a second time for its labels it took between 5.2 and 5.8 s).
+pub const REVIEW_SQUARE_BUDGET: u64 = (22 * 1024) * (22 * 1024);
 
 /// Which hunks of a review the parser may read: hunks of Rust files, in the review's own order,
-/// until [`REVIEW_FRAGMENT_BUDGET`] is spent. It is made from the whole review before any file
-/// is scored, so the answer for a hunk does not depend on which files were scored first or on
-/// how many workers score them.
+/// each one that still fits both budgets, [`REVIEW_FRAGMENT_BUDGET`] for its bytes and
+/// [`REVIEW_SQUARE_BUDGET`] for their squares. A hunk that does not fit either is not parsed
+/// and costs nothing; a smaller one after it may still fit. It is made from the whole review
+/// before any file is scored, so the answer for a hunk does not depend on which files were
+/// scored first or on how many workers score them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FragmentPlan {
     allowed: Vec<Vec<Reading>>,
@@ -764,44 +810,41 @@ pub enum Reading {
     /// Not parsed: the token rules' answer stands.
     #[default]
     Off,
-    /// Parsed. The hunk proves nothing about the rest of its file.
+    /// Parsed. What the parser reads adds evidence or raises its basis, and removes none: a
+    /// hunk proves nothing about the rest of its file, and neither does a file the patch
+    /// creates whole (there was a third reading for that file until 2026-11-14; see
+    /// [`Evidence::test_likely`]).
     Hunk,
-    /// Parsed, and the hunk is its whole file: the patch creates the file, this is its one
-    /// hunk, and no other file of the review has its path. Only the plan can say the last,
-    /// since Git applies every section of a patch that names a path: a later section that
-    /// prepends `/*` turns the `#[cfg(test)] // */` of the created file into a comment
-    /// (review V3 round 5, VD3R5-H-1). Only this reading lets the parser withdraw evidence.
-    WholeFile,
 }
 
 impl FragmentPlan {
     /// The plan for `files`, the whole review in its order.
     #[must_use]
     pub fn of(files: &[ReviewFile]) -> Self {
-        // How often each path is named: a path named twice is two sections of one file.
-        let mut named: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
-        for file in files {
-            *named.entry(file.path.as_str()).or_default() += 1;
-        }
-        let mut spent = 0usize;
+        let mut spent = FragmentCost::default();
         let mut allowed = Vec::with_capacity(files.len());
         for file in files {
             let rust = FileKind::of(file).language == Some(Language::Rust);
-            let whole = file.status == FileStatus::Added
-                && file.patch_twin.hunks.len() == 1
-                && named.get(file.path.as_str()) == Some(&1);
             let mut hunks = Vec::with_capacity(file.patch_twin.hunks.len());
             for hunk in &file.patch_twin.hunks {
-                let cost = if rust { fragment_cost(hunk) } else { None };
-                let fits =
-                    cost.is_some_and(|cost| spent.saturating_add(cost) <= REVIEW_FRAGMENT_BUDGET);
-                if fits {
-                    spent += cost.unwrap_or(0);
+                let after = rust
+                    .then(|| fragment_cost(hunk))
+                    .flatten()
+                    .map(|cost| FragmentCost {
+                        bytes: spent.bytes.saturating_add(cost.bytes),
+                        squares: spent.squares.saturating_add(cost.squares),
+                    })
+                    .filter(|after| {
+                        after.bytes <= REVIEW_FRAGMENT_BUDGET
+                            && after.squares <= REVIEW_SQUARE_BUDGET
+                    });
+                if let Some(after) = after {
+                    spent = after;
                 }
-                hunks.push(match (fits, whole) {
-                    (false, _) => Reading::Off,
-                    (true, false) => Reading::Hunk,
-                    (true, true) => Reading::WholeFile,
+                hunks.push(if after.is_some() {
+                    Reading::Hunk
+                } else {
+                    Reading::Off
                 });
             }
             allowed.push(hunks);
@@ -861,10 +904,20 @@ fn first_parser_word(hunk: &PatchHunk) -> Option<usize> {
         })
 }
 
-/// What parsing `hunk` costs against [`REVIEW_FRAGMENT_BUDGET`]: the bytes of its new side and,
-/// up to one fragment, of its old side. `None` when it is not parsed at all: its new side holds
-/// no word the parser reads ([`first_parser_word`]), or is over the fragment budget.
-fn fragment_cost(hunk: &PatchHunk) -> Option<usize> {
+/// What parsing a hunk costs a review: against [`REVIEW_FRAGMENT_BUDGET`] its bytes, and
+/// against [`REVIEW_SQUARE_BUDGET`] the squares of the bytes of each side.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct FragmentCost {
+    bytes: usize,
+    squares: u64,
+}
+
+/// What parsing `hunk` costs: the bytes of its new side and, up to one fragment, of its old
+/// side (the old side is parsed only when a construct that starts on an unchanged line
+/// reaches an added one, and the plan is made before that is known). `None` when it is not
+/// parsed at all: its new side holds no word the parser reads ([`first_parser_word`]), or is
+/// over the fragment budget.
+fn fragment_cost(hunk: &PatchHunk) -> Option<FragmentCost> {
     first_parser_word(hunk)?;
     let (mut new, mut old, mut added) = (0usize, 0usize, false);
     for line in &hunk.lines {
@@ -881,8 +934,15 @@ fn fragment_cost(hunk: &PatchHunk) -> Option<usize> {
             PatchLineKind::Removed => old += bytes,
         }
     }
-    (added && new <= deep_diff_forge_syntax::FRAGMENT_BYTE_BUDGET)
-        .then(|| new + old.min(deep_diff_forge_syntax::FRAGMENT_BYTE_BUDGET))
+    let old = old.min(deep_diff_forge_syntax::FRAGMENT_BYTE_BUDGET);
+    let square = |bytes: usize| {
+        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+        bytes.saturating_mul(bytes)
+    };
+    (added && new <= deep_diff_forge_syntax::FRAGMENT_BYTE_BUDGET).then(|| FragmentCost {
+        bytes: new + old,
+        squares: square(new).saturating_add(square(old)),
+    })
 }
 
 /// Every piece of evidence in `file`, in hunk order, then line order, then rule order, with no
@@ -1029,9 +1089,7 @@ fn hunk_matches(
         None
     };
     let parsed = match word {
-        Some(_) if reading != Reading::Off => {
-            fragment_evidence(hunk, &views, reading == Reading::WholeFile)
-        }
+        Some(_) if reading != Reading::Off => fragment_evidence(hunk, &views),
         _ => None,
     };
     // Not parsed: the hunk says so once, where its first word is. Parsed: see `Parsed::unread`.
@@ -1089,15 +1147,13 @@ fn hunk_matches(
                         basis = Some(Basis::Lexical);
                     }
                 }
-                // What the parser found is added, or its basis raised; a panic path inside code
-                // the hunk proves to be test-only is withdrawn. Where the parser could not
-                // read, the lower rungs' answer stands.
-                if let Some(parsed) = &parsed {
-                    if Parsed::has(&parsed.found, at, signal) {
-                        basis = basis.max(Some(Basis::SyntaxFragment));
-                    } else if Parsed::has(&parsed.withdrawn, at, signal) {
-                        basis = None;
-                    }
+                // What the parser found is added, or its basis raised. It takes nothing away:
+                // where it found nothing, or could not read, the lower rungs' answer stands.
+                if parsed
+                    .as_ref()
+                    .is_some_and(|parsed| Parsed::has(&parsed.found, at, signal))
+                {
+                    basis = basis.max(Some(Basis::SyntaxFragment));
                 }
             }
             if let Some(basis) = basis {
@@ -1114,9 +1170,13 @@ fn hunk_matches(
 /// Whether `code` calls a method named `name`: `.name(`, with nothing but whitespace between the
 /// dot, the name and the parenthesis (`value.unwrap ()` is the same call), or calls it by a
 /// path, whatever the path (`<Option<u32>>::unwrap(x)`, `Result::<u32, E>::unwrap(r)`), or
-/// names the standard one as a function to pass (`.map(Result::unwrap)`, `Option :: expect`):
-/// no method call there, so the parser's construct does not cover it and the spelling is all
-/// there is.
+/// names the standard one as a function to pass (`.map(Result::unwrap)`, `Option :: expect`).
+///
+/// This reads one line. Where the parser reads the hunk it names each of these as a construct
+/// itself, the path forms included and over any number of lines (`X::` and `unwrap(x)` on the
+/// next; review V3 round 9, VD3R9-M-1), and for a path passed as a value it does not ask whose
+/// path it is. This rule is what is left where the parser does not read: past a budget, under
+/// an error, inside another macro's body.
 fn calls_method(code: &str, name: &str) -> bool {
     code.match_indices(name).any(|(at, _)| {
         let before = code[..at].trim_end();
@@ -1228,10 +1288,23 @@ fn trivial_assert_rust(text: &str) -> bool {
 }
 
 /// Rust `#[ignore]`, `#[ignore = "…"]`, and `#[cfg_attr(…, ignore)]` (with `= "…"` or more
-/// after `ignore`): the test does not run, or does not under some configuration. Whatever the
-/// spacing. One search, for `#`.
+/// after `ignore`, or with the `ignore` applied by a `cfg_attr` inside the first): the test
+/// does not run, or does not under some configuration. Whatever the spacing. One search, for
+/// `#`.
+///
+/// Each `cfg_attr` list on the line is read from its own start to its end, so lists written
+/// inside one another are read once for each list around them, and a line that is nothing but
+/// `#[cfg_attr(` cost the square of its length: 880 KB of it took 32 s (found 2026-11-14 while
+/// the rule was taught nested lists; the cost was older). No code nests them so. The lists of
+/// one line may together cost [`CFG_ATTR_READS`] times the line and a little more; a line
+/// past that is taken to hold a skip, since what was not read is no reason to drop evidence.
 fn ignore_rust(text: &str) -> bool {
     let bytes = text.as_bytes();
+    let allowance = bytes
+        .len()
+        .saturating_mul(CFG_ATTR_READS)
+        .saturating_add(4096);
+    let mut read = 0usize;
     text.match_indices('#').any(|(at, _)| {
         if at > 0 && is_boundary_blocker(bytes[at - 1]) {
             return false;
@@ -1242,51 +1315,93 @@ fn ignore_rust(text: &str) -> bool {
                 .get(end)
                 .is_none_or(|b| !(b.is_ascii_alphanumeric() || *b == b'_'));
         }
-        follows(rest, b"[cfg_attr(").is_some_and(|end| cfg_attr_skips(&rest[end..]))
+        follows(rest, b"[cfg_attr(").is_some_and(|end| {
+            let (skips, cost) = cfg_attr_skips(&rest[end..]);
+            read = read.saturating_add(cost);
+            skips || read > allowance
+        })
     })
 }
+
+/// How many times the length of a line its `cfg_attr` lists may cost to read ([`ignore_rust`]).
+const CFG_ATTR_READS: usize = 16;
 
 /// Whether the arguments of a `cfg_attr(`, from just after its parenthesis, hold `ignore` as an
 /// attribute of their own: an argument after the condition that is `ignore` or `ignore = …`.
 /// An `ignore` nested in another attribute's list is that attribute's
 /// (`cfg_attr(feature = "serde", serde(skip, ignore))` skips no test; independent review,
 /// IR-L-2), and the condition is not an attribute at all.
-fn cfg_attr_skips(arguments: &[u8]) -> bool {
+///
+/// One nested list is followed, and only that one: an argument after the condition that is
+/// itself `cfg_attr(…)` applies attributes too, so its arguments are read by the same rule
+/// (`cfg_attr(all(), cfg_attr(all(), ignore))` skips the test; second independent review,
+/// IR2-M-2). One pass, with a count of the lists entered and no recursion: a line can nest
+/// as many as it has bytes for.
+///
+/// The answer comes with its cost: how many bytes were read for it.
+fn cfg_attr_skips(arguments: &[u8]) -> (bool, usize) {
+    // Brackets open inside the current list, other than a followed `cfg_attr(`.
     let mut depth = 0usize;
+    // How many `cfg_attr(` lists are open around the current one. Each was entered from an
+    // argument after its list's condition, so that is all there is to remember of them.
+    let mut levels = 0usize;
     let mut argument = 0usize;
-    let mut start = 0usize;
+    // Where the current argument begins: its first byte that is not whitespace.
+    let mut start: Option<usize> = None;
+    // The current argument was a nested `cfg_attr(…)`, now closed: it is not `ignore`,
+    // whatever stands between it and the next comma.
+    let mut spent = false;
     let is_ignore = |text: &[u8]| {
         let text = text.trim_ascii();
         text.strip_prefix(b"ignore")
             .is_some_and(|rest| rest.trim_ascii_start().first().is_none_or(|b| *b == b'='))
     };
     for (at, byte) in arguments.iter().enumerate() {
+        if depth == 0 && start.is_none() && !byte.is_ascii_whitespace() {
+            start = Some(at);
+        }
+        let here = start.unwrap_or(at);
         match byte {
+            b'(' if depth == 0
+                && argument > 0
+                && !spent
+                && arguments[here..at].trim_ascii_end() == b"cfg_attr" =>
+            {
+                levels += 1;
+                argument = 0;
+                start = None;
+            }
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' if depth > 0 => depth -= 1,
             b',' | b')' if depth == 0 => {
-                if argument > 0 && is_ignore(&arguments[start..at]) {
-                    return true;
+                if argument > 0 && !spent && is_ignore(&arguments[here..at]) {
+                    return (true, at + 1);
                 }
-                if *byte == b')' {
-                    return false;
+                if *byte == b',' {
+                    argument += 1;
+                    spent = false;
+                } else if levels == 0 {
+                    return (false, at + 1);
+                } else {
+                    // back in the list around it, in an argument after its condition
+                    levels -= 1;
+                    argument = 1;
+                    spent = true;
                 }
-                argument += 1;
-                start = at + 1;
+                start = None;
             }
             _ => {}
         }
     }
     // the list is not closed on this line: what is here so far
-    argument > 0 && is_ignore(&arguments[start..])
+    let skips = argument > 0 && !spent && start.is_some_and(|start| is_ignore(&arguments[start..]));
+    (skips, arguments.len())
 }
 
-/// What the parser says about the added lines of a Rust hunk: `(line index, signal)` pairs it
-/// found, and pairs it withdraws because the hunk proves test code around them. Both are sorted
-/// by line index.
+/// What the parser says about the added lines of a Rust hunk: the `(line index, signal)` pairs
+/// it found, sorted by line index. It has no way to say that an item is not there.
 struct Parsed {
     found: Vec<(usize, EvidenceSignal)>,
-    withdrawn: Vec<(usize, EvidenceSignal)>,
     /// The words of the parser's constructs that it did not read, by the line they are on and
     /// the signal the token rules would have to report for the word to be accounted for,
     /// sorted by line index. See [`unread_words`].
@@ -1307,11 +1422,10 @@ struct HunkFound {
 
 impl Parsed {
     /// Whether line `at` holds a word of the parser's that nothing read: one whose signal is
-    /// neither among the line's items (`reported`) nor withdrawn for the line as test code.
+    /// not among the line's items (`reported`).
     fn leaves_unread(&self, at: usize, reported: &[(Side, EvidenceSignal, u32, Basis)]) -> bool {
-        Self::signals_at(&self.unread, at).any(|wanted| {
-            !reported.iter().any(|item| item.1 == wanted) && !Self::has(&self.withdrawn, at, wanted)
-        })
+        Self::signals_at(&self.unread, at)
+            .any(|wanted| !reported.iter().any(|item| item.1 == wanted))
     }
 
     /// The signals `list` (sorted by line index) holds for line `at`.
@@ -1469,47 +1583,14 @@ fn scan_side(
 fn fragment_evidence(
     hunk: &PatchHunk,
     views: &[(Option<String>, Option<String>)],
-    whole_file: bool,
 ) -> Option<Parsed> {
     fragment_cost(hunk)?;
     let new = scan_side(hunk, views, Side::New)?;
-    // The parser's proof of test code holds only for a fragment that is its whole file, read
-    // as it stands: the one hunk of a new file, every line added. Any other hunk can show a
-    // `#[cfg(test)]` that a comment or a string opened above it holds (`/*` above, then
-    // `#[cfg(test)] // */`), and then the function under it is in the program. A hunk of an
-    // existing file that says it starts at line 1 is no better: its header is the patch
-    // writer's word, and `git apply --unidiff-zero` or `-C0` applies it further down (review
-    // V3 round 4, VD3R4-H-1). A patch that creates a file is refused when the file exists.
-    let whole_file = whole_file
-        && new.offset == 0
-        && hunk.new_start == Some(1)
-        && hunk
-            .lines
-            .iter()
-            .all(|line| line.kind == PatchLineKind::Added);
-    // A line is test code when all the code on it lies inside one proved item, from the first
-    // thing on the line to the last. By the line alone, a production function that shares a
-    // line with a test function lost its panic path whenever the parser named no construct for
-    // it: `Result::unwrap(x)`, or a call inside a macro's arguments (independent review,
-    // IR-H-1).
-    let test_lines: Vec<usize> = if whole_file {
-        lines_inside(hunk, views, &new, |scan, first, last| {
-            scan.inside_test(first, last)
-        })
-    } else {
-        Vec::new()
-    };
     let mut old: Option<Option<SideScan>> = None;
     let mut parsed = Parsed {
         found: Vec::new(),
-        withdrawn: test_lines
-            .iter()
-            .map(|index| (*index, S::PanicPathAdded))
-            .collect(),
         unread: unread_words(hunk, views, &new),
-        test_likely: lines_inside(hunk, views, &new, |scan, first, last| {
-            scan.spells_test(first, last)
-        }),
+        test_likely: likely_test_lines(hunk, views, &new),
     };
     for construct in &new.scan.constructs {
         let Some(signal) = signal_of(&construct.kind) else {
@@ -1529,9 +1610,12 @@ fn fragment_evidence(
             };
             // It was there before only if the old side has the same construct at the same
             // place: for a macro, one that carries the same signal (a changed message is no
-            // change); for an attribute, the same words, since a conditional skip whose
-            // condition changed is another skip (`cfg_attr(miri, ignore)` to
-            // `cfg_attr(all(), ignore)`; independent review, IR-M-3).
+            // change); for an attribute, the same attribute, its whole text compared without
+            // whitespace, since a conditional skip whose condition changed is another skip.
+            // The words alone are not the attribute: they are the same for
+            // `cfg_attr(all(miri), ignore)` and `cfg_attr(all(), ignore)`, and for
+            // `target_os = "plan9"` and `"linux"` (independent review, IR-M-3; second
+            // independent review, IR2-M-1).
             let carried_it_before = old
                 .get_or_insert_with(|| scan_side(hunk, views, Side::Old))
                 .as_ref()
@@ -1550,9 +1634,6 @@ fn fragment_evidence(
             }
             added
         };
-        if signal == S::PanicPathAdded && test_lines.binary_search(&index).is_ok() {
-            continue;
-        }
         parsed.found.push((index, signal));
     }
     parsed.found.sort_by_key(|pair| pair.0);
@@ -1573,14 +1654,33 @@ fn code_extent(code: &str) -> Option<(u32, u32)> {
     })
 }
 
-/// The added lines of `hunk`, by index and in order, whose code lies wholly `inside` one item of
-/// the scan, as `inside` decides for the place of the line's first and last code.
-fn lines_inside(
+/// The added lines of `hunk`, by index and in order, that lie in an item whose attribute spells
+/// a test: the hint of [`Evidence::test_likely`], never proof.
+///
+/// A line is one when all the code on it lies inside one such item, from the first thing on the
+/// line to the last: by the line alone, a production function that shares a line with a test
+/// function carried the hint (review V3 round 7, VD3R7-L-1; independent review, IR-H-1). The
+/// code of a line is measured on the lexer's code view, which ends a block comment at the
+/// first `*/` where the compiler nests them, so after `/* /* */ " */` it takes the rest of the
+/// line for a string and the line for shorter than it is. So a second condition: no panic
+/// path that the parser names on the line may lie outside such an item (second independent
+/// review, IR2-L-1: the production call after such a comment carried the hint).
+fn likely_test_lines(
     hunk: &PatchHunk,
     views: &[(Option<String>, Option<String>)],
     new: &SideScan,
-    inside: impl Fn(&FragmentScan, (u32, u32), (u32, u32)) -> bool,
 ) -> Vec<usize> {
+    // lines that hold a panic path outside every item that spells a test, sorted
+    let mut outside: Vec<usize> = new
+        .scan
+        .constructs
+        .iter()
+        .filter(|construct| {
+            !construct.test_spelled && signal_of(&construct.kind) == Some(S::PanicPathAdded)
+        })
+        .filter_map(|construct| new.line_of(construct.row))
+        .collect();
+    outside.sort_unstable();
     (0u32..)
         .zip(&new.lines)
         .filter(|(row, index)| {
@@ -1589,7 +1689,8 @@ fn lines_inside(
             let row = row + new.offset;
             line.kind == PatchLineKind::Added
                 && code_extent(code)
-                    .is_some_and(|(first, last)| inside(&new.scan, (row, first), (row, last)))
+                    .is_some_and(|(first, last)| new.scan.spells_test((row, first), (row, last)))
+                && outside.binary_search(index).is_err()
         })
         .map(|(_, index)| *index)
         .collect()
@@ -1702,10 +1803,11 @@ fn unmatched_parentheses(code: &str) -> Vec<usize> {
 /// The signal a Rust construct is evidence of, if any.
 fn signal_of(kind: &ConstructKind) -> Option<EvidenceSignal> {
     match kind {
-        ConstructKind::Attribute { words } => {
+        ConstructKind::Attribute { words, .. } => {
             let first = words.first().map(String::as_str);
             // `words` are the path and the attribute's own arguments: after `cfg_attr` comes
-            // its condition, then the attributes it applies.
+            // its condition, then the attributes it applies, those of a `cfg_attr` among them
+            // included (`cfg_attr(all(), cfg_attr(all(), ignore))`).
             let ignored = first == Some("ignore")
                 || (first == Some("cfg_attr") && words.iter().skip(2).any(|w| w == "ignore"));
             ignored.then_some(S::TestSkipped)
@@ -3244,16 +3346,22 @@ mod tests {
         assert!(Basis::SyntaxFragment > Basis::Hunk);
     }
 
-    /// A panic path inside code the hunk proves is compiled only for tests is no evidence: the
-    /// parser withdraws what the spelling found. The proof is an exact `#[cfg(test)]`, first
-    /// attribute of a top-level module, function or `impl`, in a hunk that is the beginning of
-    /// its file and parses with no error. Nothing less is proof (review V3 round 3, VD3R3-H-1):
-    /// any attribute name but `cfg` can be bound to a macro that leaves the function in the
-    /// program, and above a hunk from the middle of a file a comment or a string can be open.
+    /// The decision of 2026-11-14 (D1): the parser never removes evidence. A panic path under
+    /// an exact `#[cfg(test)]`, first attribute of a top-level item of a file the patch
+    /// creates whole, used to be withdrawn as proved test code. The second independent review
+    /// compiled four files that met every condition and panicked in production code (IR2-H-1
+    /// to IR2-H-4). Now each such item stands, at the same score as anywhere, and says
+    /// `test_likely`. Before, each of these three files gave no evidence.
     #[test]
-    fn a_panic_path_under_a_proved_cfg_test_is_withdrawn() {
-        let proved: &[&[&str]] = &[
-            &[
+    fn a_panic_path_under_cfg_test_in_a_new_file_stands_and_is_marked_test_likely() {
+        let marks = |body: &[&str]| -> Vec<(EvidenceSignal, Basis, u32, bool)> {
+            file_evidence(&new_file("src/a.rs", body))
+                .iter()
+                .map(|e| (e.signal, e.basis, e.line, e.test_likely))
+                .collect()
+        };
+        assert_eq!(
+            marks(&[
                 "pub fn real() {}",
                 "",
                 "#[cfg(test)]",
@@ -3265,29 +3373,42 @@ mod tests {
                 "        f().expect(\"set\");",
                 "    }",
                 "}",
-            ],
-            &["#[cfg(test)]", "fn helper() {", "    f().unwrap();", "}"],
-            &[
+            ]),
+            [
+                (S::PanicPathAdded, Basis::Lexical, 8, true),
+                (S::PanicPathAdded, Basis::SyntaxFragment, 9, true),
+            ]
+        );
+        assert_eq!(
+            marks(&["#[cfg(test)]", "fn helper() {", "    f().unwrap();", "}"]),
+            [(S::PanicPathAdded, Basis::SyntaxFragment, 3, true)]
+        );
+        assert_eq!(
+            marks(&[
                 "/// For tests.",
                 "#[cfg(test)]",
                 "#[inline]",
                 "impl Thing {",
                 "    fn make() -> Self { f().expect(\"x\") }",
                 "}",
-            ],
-        ];
-        for body in proved {
-            assert_eq!(found(&new_file("src/a.rs", body)), [], "{body:?}");
-        }
+            ]),
+            [(S::PanicPathAdded, Basis::SyntaxFragment, 5, true)]
+        );
+        // the mark changes no score: the same file without the attribute scores the same
+        let score = |body: &[&str]| crate::risk::score_file(&new_file("src/a.rs", body)).0;
+        assert_eq!(
+            score(&["#[cfg(test)]", "fn helper() {", "    f().unwrap();", "}"]),
+            score(&["#[inline]", "fn helper() {", "    f().unwrap();", "}"])
+        );
     }
 
     /// Review V3 round 4, VD3R4-H-1. A hunk of an existing file that says it starts at line 1
     /// is not the beginning of the file: the header is the patch writer's word, and `git apply
     /// --unidiff-zero` or `-C0` applies the hunk further down, under a comment opened above
-    /// it. Only the one hunk of a new file is certain to be the file. Before, this production
-    /// panic path was withdrawn.
+    /// it. Before, this production panic path was withdrawn. Since 2026-11-14 nothing is
+    /// withdrawn anywhere, and these stay as cases that must keep their item.
     #[test]
-    fn a_hunk_that_only_says_it_starts_the_file_proves_no_test_code() {
+    fn a_hunk_that_only_says_it_starts_the_file_keeps_its_panic_path() {
         let forged = parse(
             "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,4 +1,4 @@\n #[cfg(test)] // */\n fn production() {\n-    safe();\n+    load().unwrap();\n }\n",
         )
@@ -3422,78 +3543,81 @@ mod tests {
 
     /// Review V3 round 5, VD3R5-H-1. One section creates a file whose `#[cfg(test)]` a line
     /// comment follows; a later section for the same path prepends `/*`. Git applies both, and
-    /// the function is in the program. The plan sees the whole review, and a path named twice
-    /// is no whole file. Before, the panic path was withdrawn.
+    /// the function is in the program. Before, the panic path was withdrawn; then the plan
+    /// counted the sections that name a path. Since 2026-11-14 a created file is read like any
+    /// hunk: alone or beside another section, in either order, the item stands.
     #[test]
-    fn a_path_named_by_two_sections_is_no_whole_file() {
+    fn a_created_file_is_read_like_any_other_hunk() {
         let created = "diff --git a/src/d.rs b/src/d.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/d.rs\n@@ -0,0 +1,4 @@\n+#[cfg(test)] // */\n+fn production() {\n+    load().unwrap();\n+}\n";
         let prepended = "diff --git a/src/d.rs b/src/d.rs\n--- a/src/d.rs\n+++ b/src/d.rs\n@@ -1,1 +1,2 @@\n+/*\n #[cfg(test)] // */\n";
+        let stands = [(S::PanicPathAdded, Basis::SyntaxFragment, 3)];
         let alone = parse(created).unwrap();
-        assert_eq!(FragmentPlan::of(&alone).reading(0, 0), Reading::WholeFile);
-        assert_eq!(found(&alone[0]), []);
-        // the two sections are parsed apart and put together, so that this holds whether or
-        // not the patch parser accepts a path named twice
+        assert_eq!(FragmentPlan::of(&alone).reading(0, 0), Reading::Hunk);
+        assert_eq!(found(&alone[0]), stands);
+        assert!(file_evidence(&alone[0])[0].test_likely);
         let mut both = parse(created).unwrap();
         both.extend(parse(prepended).unwrap());
-        assert_eq!(both.len(), 2);
-        let plan = FragmentPlan::of(&both);
-        assert_eq!(plan.reading(0, 0), Reading::Hunk);
-        let items: Vec<(EvidenceSignal, Basis, u32)> = file_evidence_in(&both[0], plan.file(0))
-            .iter()
-            .map(|e| (e.signal, e.basis, e.line))
-            .collect();
-        assert_eq!(items, [(S::PanicPathAdded, Basis::SyntaxFragment, 3)]);
-        // in either order
         let mut reversed = parse(prepended).unwrap();
         reversed.extend(parse(created).unwrap());
-        let at = reversed
-            .iter()
-            .position(|file| file.status == FileStatus::Added)
-            .unwrap();
-        assert_eq!(FragmentPlan::of(&reversed).reading(at, 0), Reading::Hunk);
-        // a file that is not created, or has two hunks, is no whole file either
-        let modified = hunk_of("src/a.rs", &["+#[cfg(test)]", "+fn h() { a().unwrap(); }"]);
-        assert_eq!(
-            FragmentPlan::of(std::slice::from_ref(&modified)).reading(0, 0),
-            Reading::Hunk
-        );
+        for files in [both, reversed] {
+            let plan = FragmentPlan::of(&files);
+            let at = files
+                .iter()
+                .position(|file| {
+                    file.path == "src/d.rs" && file.patch_twin.hunks[0].lines.len() == 4
+                })
+                .unwrap();
+            let items: Vec<(EvidenceSignal, Basis, u32)> =
+                file_evidence_in(&files[at], plan.file(at))
+                    .iter()
+                    .map(|e| (e.signal, e.basis, e.line))
+                    .collect();
+            assert_eq!(items, stands);
+        }
     }
 
     /// Independent review, IR-H-1. The withdrawal went by line: a production function that
     /// shares a line with a proved test function lost its panic path whenever the parser named
     /// no construct for it (the function form, or a call inside a macro's arguments). Compiled
-    /// and run, both functions panicked. A line is test code only when all its code lies inside
-    /// one proved item.
+    /// and run, both functions panicked. Nothing is withdrawn now; what goes by the line is
+    /// the hint, and a line has it only when all its code lies inside one item that spells a
+    /// test.
     #[test]
-    fn a_production_call_on_the_line_of_a_proved_test_stands() {
-        let shared = found(&new_file(
-            "src/a6.rs",
-            &[
+    fn a_production_call_on_the_line_of_a_test_stands_and_has_no_hint() {
+        let marks = |body: &[&str]| -> Vec<(EvidenceSignal, u32, bool)> {
+            file_evidence(&new_file("src/a6.rs", body))
+                .iter()
+                .map(|e| (e.signal, e.line, e.test_likely))
+                .collect()
+        };
+        assert_eq!(
+            marks(&[
                 "#[cfg(test)]",
                 "fn t() { a().unwrap(); } pub fn production() -> u32 { Result::unwrap(crate::b()) }",
                 "pub fn production2() -> u32 { vec![crate::b().unwrap()][0] } #[cfg(test)] fn t2() { a().unwrap(); }",
-            ],
-        ));
-        assert_eq!(
-            shared
-                .iter()
-                .map(|item| (item.0, item.2))
-                .collect::<Vec<_>>(),
-            [(S::PanicPathAdded, 2), (S::PanicPathAdded, 3)]
+            ]),
+            [(S::PanicPathAdded, 2, false), (S::PanicPathAdded, 3, false)]
         );
-        // the controls: the test function alone on its line is withdrawn, with the attribute on
-        // the line above or on the same line, and a comment after it is not code
-        for body in [
-            &["#[cfg(test)]", "fn t() { a().unwrap(); }"][..],
-            &["#[cfg(test)] fn t() { a().unwrap(); } // only in tests"][..],
-            &[
-                "#[cfg(test)]",
-                "mod t {",
-                "    fn f() { vec![b().unwrap()][0] }",
-                "}",
-            ][..],
+        // the controls: the test function alone on its line has the hint, with the attribute
+        // on the line above or on the same line, and a comment after it is not code. Each of
+        // these was withdrawn before 2026-11-14.
+        for (body, line) in [
+            (&["#[cfg(test)]", "fn t() { a().unwrap(); }"][..], 2),
+            (
+                &["#[cfg(test)] fn t() { a().unwrap(); } // only in tests"][..],
+                1,
+            ),
+            (
+                &[
+                    "#[cfg(test)]",
+                    "mod t {",
+                    "    fn f() { vec![b().unwrap()][0] }",
+                    "}",
+                ][..],
+                3,
+            ),
         ] {
-            assert_eq!(found(&new_file("src/a.rs", body)), [], "{body:?}");
+            assert_eq!(marks(body), [(S::PanicPathAdded, line, true)], "{body:?}");
         }
         // and the hint goes the same way: a production call in a macro's arguments beside a test
         let hinted: Vec<bool> = file_evidence(&hunk_of(
@@ -3506,12 +3630,17 @@ mod tests {
         assert_eq!(hinted, [false]);
     }
 
-    /// Independent review, IR-H-2 and IR-L-1. A first line the grammar reads as a shebang and
-    /// the compiler as an attribute and an opened comment, or a statement at the top level:
-    /// the tree has no error, and the `#[cfg(test)]` on the next line is comment text for the
-    /// compiler. Compiled and run, the function panicked. Such a file proves nothing.
+    /// Independent review, IR-H-2 and IR-L-1, and the second independent review, IR2-H-1 to
+    /// IR2-H-4. Each of these is a new file in which the grammar sees a top-level item under
+    /// an exact `#[cfg(test)]`, with no error in the tree, and the compiler sees production
+    /// code: a first line the grammar reads as a shebang, a statement at the top level, a
+    /// `//*` inside a block comment (the grammar does not count the nested opener), a
+    /// character whose low byte is `*` or `/` (the grammar's scanner cuts it to eight bits), a
+    /// comment the lexer's code view ends too early, and a `cr"\"` that is a raw string only
+    /// from edition 2021. Each was compiled and run to a panic, and each gave no evidence. The
+    /// parser removes nothing now, so each reports its panic path.
     #[test]
-    fn a_file_the_compiler_reads_otherwise_proves_no_test_code() {
+    fn a_file_the_compiler_reads_otherwise_keeps_its_panic_path() {
         for (body, line) in [
             (
                 &[
@@ -3535,6 +3664,66 @@ mod tests {
                 ][..],
                 6,
             ),
+            // IR2-H-1
+            (
+                &[
+                    "/* //* */ #[cfg(test)] // */",
+                    "pub mod t {",
+                    "    pub fn production() -> u32 { crate::b().unwrap() }",
+                    "}",
+                ][..],
+                3,
+            ),
+            // IR2-H-2, both ways
+            (
+                &[
+                    "macro_rules! live { (#[cfg(test)] $($rest:tt)*) => { $($rest)* }; }",
+                    "/* įĪ */ live! { // */",
+                    "#[cfg(test)]",
+                    "pub mod t {",
+                    "    pub fn production() -> u32 { crate::b().unwrap() }",
+                    "}",
+                    "/* įĪ */ } // */",
+                ][..],
+                5,
+            ),
+            (
+                &[
+                    "/* /* Īį */ #[cfg(test)] // */",
+                    "pub mod t {",
+                    "    pub fn production() -> u32 { crate::b().unwrap() }",
+                    "}",
+                ][..],
+                3,
+            ),
+            // IR2-H-3, with a method call and with the function form
+            (
+                &[
+                    "#[cfg(test)]",
+                    "fn t() { a().unwrap(); /* /* */ \" */ } pub fn production() -> u32 { crate::b().unwrap() }",
+                    "/* /* */ } */",
+                ][..],
+                2,
+            ),
+            (
+                &[
+                    "#[cfg(test)]",
+                    "fn t() { a().unwrap(); /* /* */ // */ } pub fn production() -> u32 { Result::unwrap(crate::b()) }",
+                    "/* /* */ } */",
+                ][..],
+                2,
+            ),
+            // IR2-H-4
+            (
+                &[
+                    "macro_rules! live { ($a:ident $b:literal $($rest:tt)*) => { $($rest)* }; }",
+                    "live! { cr\"\\\" }",
+                    "#[cfg(test)] pub mod t { // \"",
+                    "    pub fn production() -> u32 { crate::b().unwrap() }",
+                    "}",
+                ][..],
+                4,
+            ),
         ] {
             let items = found(&new_file("src/s.rs", body));
             assert!(
@@ -3544,6 +3733,41 @@ mod tests {
                 "{body:?}: {items:?}"
             );
         }
+    }
+
+    /// Second independent review, IR2-L-1. The lexer's code view ends a block comment at the
+    /// first `*/`, so after `/* /* */ " */` it takes the rest of the line for a string, and
+    /// the production function there was not seen: the line counted as lying wholly inside
+    /// the test function and carried `test_likely`. A panic path the parser names outside
+    /// every item that spells a test takes the hint from its line.
+    #[test]
+    fn a_production_call_after_a_nested_comment_takes_the_hint_from_its_line() {
+        let hints = |body: &[&str]| -> Vec<(u32, bool)> {
+            file_evidence(&new_file("src/n1.rs", body))
+                .iter()
+                .filter(|e| e.signal == S::PanicPathAdded)
+                .map(|e| (e.line, e.test_likely))
+                .collect()
+        };
+        assert_eq!(
+            hints(&[
+                "#[cfg(test)]",
+                "fn t() { a().unwrap(); /* /* */ \" */ } pub fn production() -> u32 { crate::b().unwrap() }",
+            ]),
+            [(2, false)]
+        );
+        assert_eq!(
+            hints(&[
+                "#[cfg(test)]",
+                "fn t() { a().unwrap(); /* /* */ // */ } pub fn production() -> u32 { Result::unwrap(crate::b()) }",
+            ]),
+            [(2, false)]
+        );
+        // the control: the test function alone, with the same comment, keeps the hint
+        assert_eq!(
+            hints(&["#[cfg(test)]", "fn t() { a().unwrap(); /* /* */ \" */ }",]),
+            [(2, true)]
+        );
     }
 
     /// Independent review, IR-M-2. Inside another macro's body the parser names no construct.
@@ -3622,7 +3846,72 @@ mod tests {
             ],
         ));
         assert_eq!(changed, [(S::TestSkipped, Basis::SyntaxFragment, 4)]);
-        // only its reason changed: the same skip
+        // Second independent review, IR2-M-1: the comparison went by the attribute's words,
+        // which leave out what is nested in a list and what is a string. Each of these changes
+        // the condition under which the test is skipped, and each was "the same attribute":
+        // no evidence. The whole text is compared now.
+        for (before, after) in [
+            ("all(miri),", "all(),"),
+            ("not(any()),", "not(miri),"),
+            ("target_os = \"plan9\",", "target_os = \"linux\","),
+            ("feature = \"never-enabled\",", "feature = \"default\","),
+            ("any(miri),", "any(miri, unix, windows),"),
+        ] {
+            let (removed, added) = (format!("-    {before}"), format!("+    {after}"));
+            let condition = found(&hunk_of(
+                "tests/slow.rs",
+                &[
+                    " #[test]",
+                    " #[cfg_attr(",
+                    &removed,
+                    &added,
+                    "     ignore",
+                    " )]",
+                    " fn slow() {",
+                ],
+            ));
+            assert_eq!(
+                condition,
+                [(S::TestSkipped, Basis::SyntaxFragment, 4)],
+                "{before} to {after}"
+            );
+        }
+        // The controls. Only the spacing changed: the same attribute, and no evidence.
+        for (before, after) in [
+            ("-    all(miri),", "+    all( miri ) ,"),
+            ("-    all(miri),", "+        all(miri),"),
+        ] {
+            let spacing = found(&hunk_of(
+                "tests/slow.rs",
+                &[
+                    " #[test]",
+                    " #[cfg_attr(",
+                    before,
+                    after,
+                    "     ignore",
+                    " )]",
+                    " fn slow() {",
+                ],
+            ));
+            assert_eq!(spacing, [], "{before} to {after}");
+        }
+        // A line added beside the attribute and not in it: no evidence.
+        let beside = found(&hunk_of(
+            "tests/slow.rs",
+            &[
+                " #[test]",
+                " #[cfg_attr(",
+                "     all(miri),",
+                "     ignore",
+                " )]",
+                "+#[inline]",
+                " fn slow() {",
+            ],
+        ));
+        assert_eq!(beside, []);
+        // Only the reason changed. The text of the attribute is another text, so this is
+        // reported too: it was not before 2026-11-14, when the words were compared. It is the
+        // price of comparing the whole attribute, and it errs toward evidence.
         let reason = found(&hunk_of(
             "tests/slow.rs",
             &[
@@ -3635,7 +3924,31 @@ mod tests {
                 " fn slow() {",
             ],
         ));
-        assert_eq!(reason, []);
+        assert_eq!(reason, [(S::TestSkipped, Basis::SyntaxFragment, 5)]);
+    }
+
+    /// Found 2026-11-14 while the rule was taught nested lists; the cost was older. Each
+    /// `cfg_attr` list of a line was read from its own start, so lists opened inside one
+    /// another cost the square of the line: 80,000 of `#[cfg_attr(` (880 KB) took 32 s to
+    /// rank. The lists of a line now have an allowance between them, a count and no clock,
+    /// and a line past it is taken to hold a skip. With the allowance removed this test's
+    /// first line reads over two hundred thousand million bytes and gives `false`.
+    #[test]
+    fn the_cfg_attr_lists_of_a_line_have_an_allowance() {
+        let opened = within_deadline(|| ignore_rust(&"#[cfg_attr(".repeat(200_000)));
+        assert!(opened, "a line past its allowance is taken to hold a skip");
+        // the same flood in a patch: one item, on its line
+        let flood = format!("+{}", "#[cfg_attr(".repeat(50_000));
+        assert_eq!(
+            within_deadline(move || found(&hunk_of("tests/a.rs", &[&flood]))),
+            [(S::TestSkipped, Basis::Lexical, 2)]
+        );
+        // inside the allowance the answer is exact: a deep nest that applies nothing, lists
+        // side by side, and one skip at the end of them
+        assert!(!ignore_rust(&"#[cfg_attr(".repeat(CFG_ATTR_READS)));
+        let beside = "#[cfg_attr(a, inline)] ".repeat(10_000);
+        assert!(!ignore_rust(&beside));
+        assert!(ignore_rust(&format!("{beside}#[cfg_attr(a, ignore)]")));
     }
 
     /// Independent review, IR-L-2 and IR-L-3: an `ignore` that belongs to another attribute is
@@ -3664,9 +3977,42 @@ mod tests {
             ("feature = \"serde\", serde(skip, ignore, default))]", false),
             ("miri, ignored)]", false),
             ("miri)]", false),
+            // second independent review, IR2-M-2: a `cfg_attr` that a `cfg_attr` applies is
+            // followed (before, each of the first six was false)
+            ("all(), cfg_attr(all(), ignore))]", true),
+            ("all(), cfg_attr ( all() , ignore = \"slow\" ) )]", true),
+            ("a, allow(x), cfg_attr(b, inline, ignore))]", true),
+            ("a, cfg_attr(b, cfg_attr(c, ignore)))]", true),
+            ("a, cfg_attr(b, cfg_attr(c, inline)), ignore)]", true),
+            ("a, cfg_attr(b, ignore", true),
+            // and only that: the nested condition, the place of the condition, another
+            // attribute's list, a longer name, and what follows a nested list that has closed
+            ("all(), cfg_attr(ignore, allow(x)))]", false),
+            ("cfg_attr(a, ignore), allow(x))]", false),
+            ("a, serde(cfg_attr(b, ignore)))]", false),
+            ("a, my_cfg_attr(b, ignore))]", false),
+            ("a, cfg_attr(b, inline) ignore)]", false),
+            (
+                "a, cfg_attr(b, cfg_attr(c, inline)))] fn ignore() {}",
+                false,
+            ),
         ] {
-            assert_eq!(cfg_attr_skips(text.as_bytes()), skips, "{text}");
+            assert_eq!(cfg_attr_skips(text.as_bytes()).0, skips, "{text}");
         }
+        // one pass and no recursion: a line that nests as deep as it is long, and the cost
+        // is the bytes read: all of an open list, and a closed one up to its end
+        let deep = format!("a, {}ignore", "cfg_attr(a, ".repeat(200_000));
+        assert_eq!(cfg_attr_skips(deep.as_bytes()), (true, deep.len()));
+        let deep = format!(
+            "a, {}inline{}",
+            "cfg_attr(a, ".repeat(200_000),
+            ")".repeat(200_001)
+        );
+        assert_eq!(cfg_attr_skips(deep.as_bytes()), (false, deep.len()));
+        assert_eq!(cfg_attr_skips(b"miri, ignore)] fn a() {}"), (true, 13));
+        assert_eq!(cfg_attr_skips(b"miri)] fn a() {}"), (false, 5));
+        // (since review V3 round 9 the parser names a path call and a path value itself, so
+        // these carry its basis; past its budget the token rule finds the same five)
         for line in [
             "+    it.map(Result::unwrap)",
             "+    it.map(Option::expect)",
@@ -3676,7 +4022,15 @@ mod tests {
         ] {
             assert_eq!(
                 found(&hunk_of("src/a.rs", &[line])),
-                [(S::PanicPathAdded, Basis::Lexical, 2)],
+                [(S::PanicPathAdded, Basis::SyntaxFragment, 2)],
+                "{line}"
+            );
+            assert_eq!(
+                found(&hunk_of("src/a.rs", &[&format!("{line} // {pad}")])),
+                [
+                    (S::PanicPathAdded, Basis::Lexical, 2),
+                    (S::SyntaxUnchecked, Basis::Lexical, 2)
+                ],
                 "{line}"
             );
         }
@@ -3760,6 +4114,258 @@ mod tests {
             without_raw_prefixes("x.r#unwrap(r#\"s\"#, r#fn)").as_deref(),
             Some("x.  unwrap(r#\"s\"#,   fn)")
         );
+    }
+
+    /// Review V3 round 9, VD3R9-M-1. A function named by a path is a panic path like the
+    /// method call it is: `X::unwrap(x)`, `<Option<u32>>::expect(x, "…")`, and the path passed
+    /// as a value, `it.map(X::unwrap)`. Only a token rule read these, on one line, so a path
+    /// broken after its `::` (which compiles to the same call) left neither an item nor a
+    /// mark; with the raw spelling `r#unwrap` this was Vesper's file. The parser names them
+    /// now, on the line of the name.
+    #[test]
+    fn a_path_call_and_a_path_value_are_panic_paths_over_any_number_of_lines() {
+        let vesper = new_file(
+            "src/raw.rs",
+            &[
+                "pub struct X;",
+                "impl X { pub fn unwrap(self) {} }",
+                "pub fn method(x: X) {",
+                "    x.",
+                "        r#unwrap();",
+                "}",
+                "pub fn path(x: X) {",
+                "    X::",
+                "        r#unwrap(x);",
+                "}",
+                "pub fn passed(it: impl Iterator<Item = X>) {",
+                "    let _ = it.map(X::",
+                "        r#unwrap);",
+                "}",
+                "pub fn standard(it: impl Iterator<Item = Result<u8, ()>>) {",
+                "    let _ = it.map(Result::",
+                "        r#unwrap);",
+                "}",
+            ],
+        );
+        // before: line 5 alone
+        assert_eq!(
+            found(&vesper),
+            [
+                (S::PanicPathAdded, Basis::SyntaxFragment, 5),
+                (S::PanicPathAdded, Basis::SyntaxFragment, 9),
+                (S::PanicPathAdded, Basis::SyntaxFragment, 13),
+                (S::PanicPathAdded, Basis::SyntaxFragment, 17),
+            ]
+        );
+        let cases: &[(&[&str], u32)] = &[
+            (&["+    let v = X::unwrap(x);"], 2),
+            (&["+    let v = X::", "+        unwrap(x);"], 3),
+            (
+                &[
+                    "+    let v = <Option<u32>>::",
+                    "+        expect(x, \"one\");",
+                ],
+                3,
+            ),
+            (
+                &["+    let v = Result::<u32, E>::", "+        unwrap(r);"],
+                3,
+            ),
+            (&["+    let v = a::b::", "+        unwrap::<u8>(x);"], 3),
+            // passed as a value: a type of the patch's own, the standard one over two lines,
+            // and with generic arguments (second independent review, IR2-M-2: no evidence)
+            (&["+    let v = it.map(X::unwrap);"], 2),
+            (&["+    let v = it.map(Option::", "+        expect);"], 3),
+            (&["+    let f = Option::<u32>::unwrap;"], 2),
+            // IR2-M-2: after `/* /* */ // */` the lexer's code view takes the rest of the line
+            // for a comment, so no token rule sees the call. The parser nests comments as
+            // the compiler does and names it; the function form was not a construct before.
+            (&["+    /* /* */ // */ let v = Result::unwrap(x);"], 2),
+            (&["+    /* /* */ // */ let v = x.unwrap();"], 2),
+        ];
+        for (body, line) in cases {
+            assert_eq!(
+                found(&hunk_of("src/p.rs", body)),
+                [(S::PanicPathAdded, Basis::SyntaxFragment, *line)],
+                "{body:?}"
+            );
+        }
+        // not panic paths: an import, a longer name, a path that only leads on, a macro of
+        // that name, a type, a definition
+        for body in [
+            &["+use a::expect;", "+use b::{c, unwrap};"][..],
+            &["+    let v = X::unwrap_or(x, 1);"][..],
+            &["+    let v = a::unwrap::b(x);"][..],
+            &["+    X::unwrap!(x);"][..],
+            &["+fn f(a: a::unwrap) {}"][..],
+            &["+impl X { fn unwrap(self) {} }"][..],
+        ] {
+            assert_eq!(found(&hunk_of("src/p.rs", body)), [], "{body:?}");
+        }
+        // Inside another macro's body the parser names nothing. On one line the token rule
+        // reads a call by any path; a path broken over two lines, and a function of the
+        // patch's own type passed as a value, are words nothing read, and the line says so.
+        let inside = |lines: &[&str]| {
+            let mut body = vec![" // ctx", "+outer! {"];
+            body.extend_from_slice(lines);
+            body.extend_from_slice(&["+}", " // ctx"]);
+            found(&hunk_of("src/x.rs", &body))
+                .iter()
+                .map(|item| (item.0, item.1))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            inside(&["+    let v = X::unwrap(x);"]),
+            [(S::PanicPathAdded, Basis::Lexical)]
+        );
+        assert_eq!(
+            inside(&["+    let v = X::", "+        unwrap(x);"]),
+            [(S::SyntaxUnchecked, Basis::Lexical)]
+        );
+        assert_eq!(
+            inside(&["+    let v = it.map(X::unwrap);"]),
+            [(S::SyntaxUnchecked, Basis::Lexical)]
+        );
+    }
+
+    /// Review V3 round 9, VD3R9-M-1: a removed `#[r#test]` is a removed test. The rule was
+    /// three exact tokens, and the code view blanks a raw prefix to two spaces, so
+    /// `#[  test]` matched none of them. The rule reads the same three attributes whatever
+    /// their spacing.
+    #[test]
+    fn a_removed_test_attribute_is_read_whatever_its_spelling() {
+        for line in [
+            "#[test]",
+            "#[r#test]",
+            "# [ test ]",
+            "#[tokio::test]",
+            "#[r#tokio::r#test]",
+            "#[ tokio :: test ]",
+            "#[rstest]",
+            "#[r#rstest]",
+            "    #[test] // was slow",
+        ] {
+            let found: Vec<(EvidenceSignal, Side, u32)> =
+                file_evidence(&removed("tests/x.rs", &[line, "fn t() {}"]))
+                    .iter()
+                    .map(|e| (e.signal, e.side, e.line))
+                    .collect();
+            assert_eq!(found, [(S::TestRemoved, Side::Old, 2)], "{line}");
+            // adding one is not evidence of anything
+            assert_eq!(signals(&added("tests/x.rs", &[line])), [], "{line}");
+        }
+        for line in [
+            "#[testing]",
+            "#[test_case(1)]",
+            "#[cfg(test)]",
+            "#![test]",
+            "// #[test]",
+            "let s = \"#[test]\";",
+            "let a = x#[test];",
+        ] {
+            assert_eq!(signals(&removed("tests/x.rs", &[line])), [], "{line}");
+        }
+        // Vesper's second file
+        let file = parse(
+            "diff --git a/tests/raw_removed.rs b/tests/raw_removed.rs\n--- a/tests/raw_removed.rs\n+++ b/tests/raw_removed.rs\n@@ -1,3 +1,2 @@\n-#[r#test]\n fn check() {}\n fn stays() {}\n",
+        )
+        .unwrap()
+        .remove(0);
+        let items: Vec<(EvidenceSignal, Side, u32)> = file_evidence(&file)
+            .iter()
+            .map(|e| (e.signal, e.side, e.line))
+            .collect();
+        assert_eq!(items, [(S::TestRemoved, Side::Old, 1)]);
+    }
+
+    /// Second independent review, IR2-M-2: the rows of its table. Each compiles and behaves
+    /// as its plain spelling does, and each left neither an item nor `syntax_unchecked`. One
+    /// row is not here because it is still so: a call inside another macro's body after
+    /// `/* /* */ // */` (the corpus declares it a known miss; the lexer's code view does not
+    /// nest block comments, and inside a macro's body nothing else reads).
+    #[test]
+    fn every_other_row_of_the_second_reviews_table_is_an_item() {
+        let rows: &[(&[&str], EvidenceSignal, u32)] = &[
+            (&["+    let v = x.r#unwrap();"], S::PanicPathAdded, 11),
+            (
+                &["+    let v = x.r#expect(\"set\");"],
+                S::PanicPathAdded,
+                11,
+            ),
+            (
+                &["+    let v = it.map(Option::r#unwrap);"],
+                S::PanicPathAdded,
+                11,
+            ),
+            (&["+    #[r#ignore]", "+    fn t() {}"], S::TestSkipped, 11),
+            (
+                &["+    let f = Option::<u32>::unwrap;"],
+                S::PanicPathAdded,
+                11,
+            ),
+            (
+                &[
+                    "+    #[cfg_attr(all(), cfg_attr(all(), ignore))]",
+                    "+    fn t() {}",
+                ],
+                S::TestSkipped,
+                11,
+            ),
+            (
+                &["+    /* /* */ // */ let v = Result::unwrap(x);"],
+                S::PanicPathAdded,
+                11,
+            ),
+        ];
+        for (lines, signal, line) in rows {
+            // the review's shape: a hunk at line 10 of an existing file, a comment line
+            // before and after
+            let mut text = format!(
+                "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -10,2 +10,{} @@\n // ctx\n",
+                lines.len() + 2
+            );
+            for line in *lines {
+                text.push_str(line);
+                text.push('\n');
+            }
+            text.push_str(" // ctx\n");
+            let file = parse(&text).unwrap().remove(0);
+            assert_eq!(
+                found(&file),
+                [(*signal, Basis::SyntaxFragment, *line)],
+                "{lines:?}"
+            );
+        }
+        // the nested conditional skip past the parser's budget: the token rule follows the
+        // nested `cfg_attr` too, and only that
+        let pad = "a".repeat(70_000);
+        assert_eq!(
+            found(&hunk_of(
+                "tests/a.rs",
+                &[&format!(
+                    "+#[cfg_attr(all(), cfg_attr(all(), ignore))] // {pad}"
+                )]
+            )),
+            [
+                (S::TestSkipped, Basis::Lexical, 2),
+                (S::SyntaxUnchecked, Basis::Lexical, 2)
+            ]
+        );
+        for line in [
+            "+#[cfg_attr(all(), cfg_attr(ignore, allow(x)))]",
+            "+#[cfg_attr(all(), serde(cfg_attr(all(), ignore)))]",
+        ] {
+            assert_eq!(
+                found(&hunk_of("tests/a.rs", &[line, "+struct A;"])),
+                [],
+                "{line}"
+            );
+            assert_eq!(
+                found(&hunk_of("tests/a.rs", &[&format!("{line} // {pad}")])),
+                [(S::SyntaxUnchecked, Basis::Lexical, 2)],
+                "{line}"
+            );
+        }
     }
 
     /// Review V3 round 4, VD3R4-M-1: inside another macro's body the parser names no
@@ -3870,10 +4476,10 @@ mod tests {
         assert_eq!(code_extent("   "), None);
     }
 
-    /// The other half: in a new file, what is not that proof leaves the item standing, and a
-    /// hunk from the middle of a file proves nothing whatever it shows.
+    /// In a new file a panic path stands whatever attribute is above it. (These were the
+    /// cases that fell short of the proof of test code, while there was one.)
     #[test]
-    fn a_panic_path_under_anything_less_than_that_proof_stands() {
+    fn a_panic_path_in_a_new_file_stands_whatever_attribute_is_above_it() {
         let stands: &[(&[&str], u32)] = &[
             (&["#[test]", "fn a() {", "    f().unwrap();", "}"], 3),
             (
@@ -3953,9 +4559,9 @@ mod tests {
 
     /// A hunk from the middle of a file proves nothing, whatever it shows: above it a comment
     /// can be open that ends on the attribute's own line, and then this function is in the
-    /// program.
+    /// program. Its panic path stands.
     #[test]
-    fn a_hunk_from_the_middle_of_a_file_proves_no_test_code() {
+    fn a_hunk_from_the_middle_of_a_file_keeps_its_panic_path() {
         let middle = parse(
             "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -40,4 +40,5 @@\n  notes\n #[cfg(test)] // */\n pub fn production() {\n+    load().unwrap();\n }\n",
         )
@@ -4186,12 +4792,12 @@ mod tests {
                 "{body:?}"
             );
         }
-        // what is proved is still withdrawn
+        // and so does one under a real `#[cfg(test)]` in a new file: nothing is withdrawn
         let real = found(&new_file(
             "src/a.rs",
             &["#[cfg(test)]", "fn a() {", "    load().unwrap();", "}"],
         ));
-        assert_eq!(real, []);
+        assert_eq!(real, [(S::PanicPathAdded, Basis::SyntaxFragment, 3)]);
     }
 
     /// Review V3 round 1, VD3-M-1: a change inside a construct that started on an unchanged
@@ -4293,12 +4899,22 @@ mod tests {
             )),
             lexical(S::TestSkipped)
         );
+        // (the function form is the parser's own construct since review V3 round 9; inside
+        // another macro's body, where the parser names nothing, the token rule finds it)
         for line in [
             "+let v = Result::unwrap(read());",
             "+let v = Option::expect(first(), \"one\");",
         ] {
             assert_eq!(
                 found(&hunk_of("src/u.rs", &[line])),
+                [(S::PanicPathAdded, Basis::SyntaxFragment, 2)],
+                "{line}"
+            );
+            assert_eq!(
+                found(&hunk_of(
+                    "src/u.rs",
+                    &[&format!("+outer! {{ {} }}", &line[1..])]
+                )),
                 lexical(S::PanicPathAdded),
                 "{line}"
             );
@@ -4348,20 +4964,38 @@ mod tests {
             [S::TestSkipped]
         );
     }
-    /// Review V3 round 2, VD3R2-H-2: the parser reads at most a budget of hunk bytes per review,
-    /// in the review's order, and what lies beyond keeps the token rules' answer.
+    /// Review V3 round 2, VD3R2-H-2: the parser reads at most a budget of hunks per review, in
+    /// the review's order, and what lies beyond keeps the token rules' answer. Since the
+    /// second independent review (IR2-H-5) a hunk is charged the square of its bytes, so
+    /// hunks of 12 KB end the budget after three.
     #[test]
     fn the_parser_reads_a_review_only_up_to_its_budget() {
-        // each hunk: one added line of about 60 KB, then an added panic path
-        let filler = format!("+    let x = {};", "1 + ".repeat(15_000) + "1");
+        // each hunk: one added line of about 12 KB, then an added panic path
+        let filler = format!("+    let x = {};", "1 + ".repeat(3_000) + "1");
         let files: Vec<ReviewFile> = (0..40)
             .map(|n| hunk_of(&format!("src/f{n}.rs"), &[&filler, "+    y.unwrap();"]))
             .collect();
         let plan = FragmentPlan::of(&files);
         let parsed = (0..files.len()).filter(|n| plan.allows(*n, 0)).count();
-        let cost = filler.len() + "+    y.unwrap();".len() + 2 + 2 * " x\n".len();
-        assert_eq!(parsed, REVIEW_FRAGMENT_BUDGET / cost, "cost {cost}");
-        assert!(parsed >= 3 && parsed < files.len(), "{parsed}");
+        // the new side: the unchanged line `x`, the filler and the call, each with its line
+        // end (a line's `+` stands for it here); the old side: the unchanged line
+        let new = "x\n".len() + filler.len() + "+    y.unwrap();".len();
+        let old = "x\n".len();
+        let cost = fragment_cost(&files[0].patch_twin.hunks[0]).unwrap();
+        assert_eq!(
+            cost,
+            FragmentCost {
+                bytes: new + old,
+                squares: u64::try_from(new * new + old * old).unwrap()
+            }
+        );
+        assert_eq!(
+            u64::try_from(parsed).unwrap(),
+            REVIEW_SQUARE_BUDGET / cost.squares,
+            "cost {cost:?}"
+        );
+        assert_eq!(parsed, 3);
+        assert!(parsed * cost.bytes < REVIEW_FRAGMENT_BUDGET / 2);
         // the allowed hunks are the first ones, and an index the plan lacks is not parsed
         assert!((0..parsed).all(|n| plan.allows(n, 0)));
         assert!((parsed..files.len()).all(|n| !plan.allows(n, 0)));
@@ -4402,6 +5036,110 @@ mod tests {
             &["     assert!(", "+        true", "     );"],
         )];
         assert!(FragmentPlan::of(&context).allows(0, 0));
+    }
+
+    /// A new Rust file whose one hunk is `bytes` bytes on its new side and holds a word the
+    /// parser reads (in a comment: it costs the parser nothing but the reading).
+    fn sized(path: &str, bytes: usize) -> ReviewFile {
+        let head = "// unwrap ";
+        let line = format!("{head}{}", "a".repeat(bytes - head.len() - 1));
+        let file = new_file(path, &[&line]);
+        assert_eq!(
+            fragment_cost(&file.patch_twin.hunks[0]).map(|cost| cost.bytes),
+            Some(bytes)
+        );
+        file
+    }
+
+    /// Second independent review, IR2-H-5. For some text the parser's time grows with the
+    /// square of the length (`// todo`, a newline, `#!#!#!…`: 16 KiB a second, 64 KiB fifteen),
+    /// so the 256 KiB of bytes a review had bought sixteen hunks of 16 KB and 15 s, and one
+    /// hunk of 64 KiB as long. Each parsed hunk is now charged the square of its bytes
+    /// against the square of 22 KiB, and the plan stops there.
+    #[test]
+    fn the_plan_stops_at_the_square_budget() {
+        const KIB: usize = 1024;
+        assert_eq!(REVIEW_SQUARE_BUDGET, (22 * 1024) * (22 * 1024));
+        assert_eq!(REVIEW_FRAGMENT_BUDGET, 128 * KIB);
+        let readings = |sizes: &[usize]| -> Vec<bool> {
+            let files: Vec<ReviewFile> = sizes
+                .iter()
+                .enumerate()
+                .map(|(n, bytes)| sized(&format!("src/s{n}.rs"), *bytes))
+                .collect();
+            let plan = FragmentPlan::of(&files);
+            (0..files.len()).map(|n| plan.allows(n, 0)).collect()
+        };
+        // one hunk of exactly 22 KiB spends the budget whole; a byte more is never parsed
+        assert_eq!(readings(&[22 * KIB, 16]), [true, false]);
+        assert_eq!(readings(&[22 * KIB + 1]), [false]);
+        // the reviewer's patches: sixteen hunks of 16 KB (one is read), one and four of 64 KB
+        // (none is), thirty-two of 8 KB (seven are)
+        let read = |sizes: &[usize]| readings(sizes).iter().filter(|read| **read).count();
+        assert_eq!(read(&[16_000; 16]), 1);
+        assert_eq!(read(&[64_000; 4]), 0);
+        assert_eq!(read(&[8_000; 32]), 7);
+        // a hunk that does not fit costs nothing, and a smaller one after it may still fit
+        assert_eq!(
+            readings(&[16 * KIB, 16 * KIB, KIB, 16 * KIB, 14 * KIB]),
+            [true, false, true, false, true]
+        );
+        // a hunk the plan turned away says that the parser did not read it
+        let files = [sized("src/a.rs", 16_000), sized("src/b.rs", 16_000)];
+        let plan = FragmentPlan::of(&files);
+        let items = |n: usize| {
+            file_evidence_in(&files[n], plan.file(n))
+                .iter()
+                .map(|e| (e.signal, e.basis, e.line))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(items(0), []);
+        assert_eq!(items(1), [(S::SyntaxUnchecked, Basis::Lexical, 1)]);
+        // the old side is charged too, by its square: a small change under a large removal
+        let removed = format!("-// {}", "a".repeat(16_000));
+        let both = [
+            hunk_of("src/c.rs", &[&removed, "+    y.unwrap();"]),
+            hunk_of("src/d.rs", &[&removed, "+    y.unwrap();"]),
+        ];
+        let plan = FragmentPlan::of(&both);
+        assert!(plan.allows(0, 0) && !plan.allows(1, 0));
+    }
+
+    /// The other side of the square budget: real reviews are many small hunks, and those all
+    /// fit. A hundred hunks of 1 KiB spend a fifth of the square budget; what ends a review of
+    /// such hunks is the byte budget, at 128 KiB.
+    #[test]
+    fn many_small_hunks_all_fit() {
+        const KIB: usize = 1024;
+        let small = |count: usize| -> Vec<ReviewFile> {
+            (0..count)
+                .map(|n| sized(&format!("src/s{n}.rs"), KIB))
+                .collect()
+        };
+        let hundred = small(100);
+        let plan = FragmentPlan::of(&hundred);
+        assert!((0..hundred.len()).all(|n| plan.allows(n, 0)));
+        assert!(u64::try_from(100 * KIB * KIB * 4).unwrap() < REVIEW_SQUARE_BUDGET);
+        // the byte budget: exactly 128 of them fit, and the 129th does not
+        let many = small(140);
+        let plan = FragmentPlan::of(&many);
+        let read: Vec<bool> = (0..many.len()).map(|n| plan.allows(n, 0)).collect();
+        assert!(read[..128].iter().all(|read| *read));
+        assert!(read[128..].iter().all(|read| !*read));
+        // and a review of typical size, forty hunks of 2 KiB with a panic path in each, is
+        // read whole by the parser
+        let filler = format!("+    let x = {};", "1 + ".repeat(500) + "1");
+        let typical: Vec<ReviewFile> = (0..40)
+            .map(|n| hunk_of(&format!("src/t{n}.rs"), &[&filler, "+    y.unwrap();"]))
+            .collect();
+        let plan = FragmentPlan::of(&typical);
+        for (n, file) in typical.iter().enumerate() {
+            let items: Vec<(EvidenceSignal, Basis)> = file_evidence_in(file, plan.file(n))
+                .iter()
+                .map(|e| (e.signal, e.basis))
+                .collect();
+            assert_eq!(items, [(S::PanicPathAdded, Basis::SyntaxFragment)], "{n}");
+        }
     }
 
     /// A hunk with very many items is read in one pass. The parser's answer used to be merged
@@ -4477,8 +5215,11 @@ mod tests {
             ],
         ));
         assert_eq!(first, []);
+        // An old side over the fragment budget is not parsed, and suppresses nothing. (Under
+        // a review's plan such a hunk is no longer parsed at all, since its old side is
+        // charged by its square, so the parser is asked for it directly here.)
         let long = format!("-        {}", "1 + ".repeat(17_000) + "1 > 0");
-        let unreadable = found(&hunk_of(
+        let file = hunk_of(
             "tests/m.rs",
             &[
                 " fn check() {",
@@ -4487,8 +5228,17 @@ mod tests {
                 "+        true",
                 "     );",
             ],
-        ));
-        assert_eq!(unreadable, [(S::TrivialAssert, Basis::SyntaxFragment, 4)]);
+        );
+        let kind = FileKind::of(&file);
+        let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
+        let hunk = &file.patch_twin.hunks[0];
+        assert_eq!(
+            hunk_matches(hunk, kind.language, &rules, Reading::Hunk).items,
+            [(Side::New, S::TrivialAssert, 4, Basis::SyntaxFragment)]
+        );
+        // under the plan it says that it was not read
+        assert!(!FragmentPlan::of(std::slice::from_ref(&file)).allows(0, 0));
+        assert_eq!(found(&file), [(S::SyntaxUnchecked, Basis::Lexical, 4)]);
     }
 
     /// Review V3 round 3, VD3R3-H-2. Whoever orders the hunks of a review must not be able to
@@ -4519,7 +5269,9 @@ mod tests {
             items(&plan, last),
             [(S::TrivialAssert, Basis::SyntaxFragment, 2)]
         );
-        // the same with filler that does hold a word the parser reads
+        // the same with filler that does hold a word the parser reads: hunks of about 12 KB,
+        // of which the square budget takes three
+        let filler = format!("+    let x = {};", "1 + ".repeat(3_000) + "1");
         let costly = format!("{filler} // unwrap");
         let mut files: Vec<ReviewFile> = (0..40)
             .map(|n| hunk_of(&format!("src/f{n}.rs"), &[&costly]))

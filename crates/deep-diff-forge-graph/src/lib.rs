@@ -17,8 +17,8 @@ mod risk;
 
 pub use evidence::{
     Basis, EVIDENCE_BASIS, Evidence, EvidenceSignal, FragmentPlan, MAX_EVIDENCE_PER_FILE,
-    REVIEW_FRAGMENT_BUDGET, Reading, Side, file_evidence, file_evidence_in, hunk_signals,
-    hunk_signals_in,
+    REVIEW_FRAGMENT_BUDGET, REVIEW_SQUARE_BUDGET, Reading, Side, file_evidence, file_evidence_in,
+    hunk_signals, hunk_signals_in,
 };
 pub use rank::{RankedFile, rank, sort_ranked};
 pub use risk::{

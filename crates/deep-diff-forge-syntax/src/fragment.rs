@@ -29,12 +29,23 @@ pub const MACRO_ARGUMENT_CAP: usize = 48;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConstructKind {
     /// An attribute. `words` are its identifiers in order: `#[cfg_attr(miri, ignore)]` gives
-    /// `cfg_attr`, `miri`, `ignore`. The contents of string literals are not words.
-    Attribute { words: Vec<String> },
+    /// `cfg_attr`, `miri`, `ignore`. The contents of string literals are not words, and neither
+    /// is what is nested in a list of its arguments, with one exception: see the private
+    /// `attribute_words`. `text` is the whole attribute as it is written, with all whitespace
+    /// removed: two attributes are the same attribute only when their texts are equal, since
+    /// the words leave out what is nested and what is a string (`all(miri)` against `all()`,
+    /// `target_os = "plan9"` against `"linux"`; second independent review, IR2-M-1).
+    Attribute { words: Vec<String>, text: String },
     /// A macro invocation: the last segment of its path, and its arguments with all whitespace
     /// removed, cut at [`MACRO_ARGUMENT_CAP`] bytes.
     MacroCall { name: String, arguments: String },
-    /// A method call `receiver.name(…)`.
+    /// A method call `receiver.name(…)`, or a function named by a path: called
+    /// (`Type::name(…)`, `<Option<u32>>::name(x)`, `Type::<T>::name(x)`) or used as a value
+    /// (`it.map(Type::name)`). `name` is the last segment of the path, and the construct is
+    /// placed there. A path in a `use` declaration, the path of a macro or of an attribute,
+    /// the path inside a visibility (`pub(in a::b)`) and a path that only leads to a longer
+    /// one are not constructs, and neither is a definition (`fn name`) or a name called with
+    /// no path (`name(x)`).
     MethodCall { name: String },
 }
 
@@ -49,29 +60,21 @@ pub type Span = (Place, Place);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Construct {
     pub kind: ConstructKind,
-    /// The row (0-based line of the fragment) it starts on; for a method call, the row of the
-    /// method's name.
+    /// The row (0-based line of the fragment) it starts on; for a method call or a path, the
+    /// row of the name.
     pub row: u32,
     /// The column (in bytes) it starts at on `row`. With the row it says which construct of a
     /// line this is, when a line holds several.
     pub column: u32,
     /// The last row it reaches: an attribute or a macro invocation can span several rows, and a
-    /// change to any of them changes the construct. For a method call, equal to `row`.
+    /// change to any of them changes the construct. For a method call or a path, equal to
+    /// `row`.
     pub last_row: u32,
     /// The place just past the part the parser read as this construct itself: the end of an
     /// attribute, the end of a macro's path (before its `!`: its arguments are not read), the
-    /// end of a method's name. A word between the construct's start and here is its own.
+    /// end of a method's or a path's name. A word between the construct's start and here is
+    /// its own.
     pub end: Place,
-    /// Whether it sits inside an item that carries `#[cfg(test)]` in a way that is proof **if
-    /// the fragment is the beginning of its file**: a module, a function or an `impl` at the
-    /// top level whose first attribute is exactly `#[cfg(test)]`, in a tree with no error (the
-    /// reasons are on the private `opens_test_code`). A fragment from
-    /// the middle of a file proves nothing, because what stands above it can make the attribute
-    /// text a comment, a string or the input of a macro; the caller knows where the fragment
-    /// begins (not from a hunk's header, which is the patch writer's word: only a file the
-    /// patch creates whole is known) and must not use this otherwise. False says only that there is no proof, not that
-    /// the code is production code.
-    pub in_test: bool,
     /// Whether an item around it carries an attribute that *spells* a test (`#[test]`, a path
     /// ending in `::test`, `#[rstest]`, `#[cfg(test)]`). A hint for a reader, never proof: see
     /// [`FragmentScan::spelled_items`]. It follows the items the construct is inside, so a
@@ -87,21 +90,18 @@ pub struct FragmentScan {
     /// Inclusive row ranges the parse says nothing reliable about: error nodes and the insides
     /// of macro invocations. Sorted, and merged so that no two overlap or touch.
     pub unreadable: Vec<(u32, u32)>,
-    /// The items proved to be test code **if the fragment is its whole file**: each from the
-    /// start of its first attribute to its end. Proof is by the stretch an item covers, not by
-    /// rows or lines: a function that only shares a line with a test item is outside it, and
-    /// so is a call the parser names no construct for (review, IR-H-1: by line, a production
-    /// call inside a macro's arguments was withdrawn with the test call beside it). See
-    /// [`Construct::in_test`] for the conditions.
-    pub test_items: Vec<Span>,
     /// The items (function, module, `impl`) that carry an attribute which *spells* a test:
     /// `#[test]`, `#[rstest]`, any path ending in `::test` (`#[tokio::test]`), or
     /// `#[cfg(test)]`, wherever the item stands in the fragment; each from the start of its
     /// first attribute to its end. This is a hint for a reader and never proof: every one of
     /// these names but `cfg` can be bound to something else, and a fragment from the middle of
-    /// a file can sit under an open comment. Nothing may be withdrawn on it; for what is proof
-    /// see [`Self::test_items`]. An item inside another macro's body is not read and gets no
-    /// hint.
+    /// a file can sit under an open comment. Nothing may be withdrawn on it, and nothing in
+    /// this scan is proof of test code: the scanner once offered one (a top-level
+    /// `#[cfg(test)]` item of a file read whole), and five reviews each found another text
+    /// that the grammar and the compiler read differently (a `//*` inside a block comment, a
+    /// character the scanner cuts to its low byte, a `cr"…"` that is a raw string only from
+    /// edition 2021; second independent review, IR2-H-1 to IR2-H-4). That class has no end, so
+    /// the proof is gone. An item inside another macro's body is not read and gets no hint.
     pub spelled_items: Vec<Span>,
 }
 
@@ -118,15 +118,6 @@ impl FragmentScan {
             .is_none_or(|(first, _)| *first > row)
     }
 
-    /// Whether everything from `first` up to `last` lies inside one item that is test code
-    /// (see [`Self::test_items`]).
-    #[must_use]
-    pub fn inside_test(&self, first: Place, last: Place) -> bool {
-        self.test_items
-            .iter()
-            .any(|(start, end)| *start <= first && last <= *end)
-    }
-
     /// Whether everything from `first` up to `last` lies inside one item whose attribute
     /// spells a test (see [`Self::spelled_items`]): a hint, never proof.
     #[must_use]
@@ -136,7 +127,8 @@ impl FragmentScan {
             .any(|(start, end)| *start <= first && last <= *end)
     }
 
-    /// Whether `place` is inside a construct's own part: its name, its path or its attribute.
+    /// Whether `place` is inside a construct's own part: a method's or a path's name, a
+    /// macro's path, or an attribute.
     #[must_use]
     pub fn names(&self, place: Place) -> bool {
         self.constructs
@@ -185,11 +177,16 @@ fn merged(mut ranges: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
 /// The answer is a function of `source` alone. No clock cuts this parse: a deadline made one
 /// patch give the parser's item on an idle machine and "not checked" on a loaded one
 /// (independent review, IR-M-1; still so after it was only documented, review V3 round 8).
-/// What bounds the work is the byte budget. Measured without a clock on 56 shapes of hostile
-/// text at 8, 16, 32 and 60 KiB (release build): the slowest, text that is all error recovery
-/// (`a?b:a?b:…`), costs about 14 microseconds a byte and grows in step with its length, 0.85 s
-/// for a whole fragment; ordinary Rust costs about 0.3. A caller that needs a deadline sets
-/// one around the whole operation, and then gets an error and not a different answer.
+/// What bounds the work is bytes. Measured without a clock on 56 shapes of hostile text at 8,
+/// 16, 32 and 60 KiB (release build): the slowest of them, text that is all error recovery
+/// (`a?b:a?b:…`), costs about 14 microseconds a byte and grows in step with its length;
+/// ordinary Rust costs about 0.3. One text is worse: `// todo`, a newline and `#!#!#!…` costs
+/// about 3.76e-9 s times the square of its bytes (16 KiB 1.0 s, 64 KiB 14.8 s; second
+/// independent review, IR2-H-5). So the byte budget here does not bound a caller's time by
+/// itself: a caller that scans many fragments charges each the square of its bytes against a
+/// budget of its own (the graph crate's `REVIEW_SQUARE_BUDGET`). A caller that needs a
+/// deadline sets one around the whole operation, and then gets an error and not a different
+/// answer.
 #[must_use]
 pub fn scan_fragment(language: Language, source: &str) -> Option<FragmentScan> {
     if !language.is_supported() || source.len() > FRAGMENT_BYTE_BUDGET {
@@ -206,53 +203,7 @@ pub fn scan_fragment(language: Language, source: &str) -> Option<FragmentScan> {
     }
     let mut scan = walk(root, source);
     scan.unreadable = merged(std::mem::take(&mut scan.unreadable));
-    // A tree with an error anywhere is not a reading of the file that the compiler shares, so
-    // it proves nothing about what is test code. Neither is one whose top level holds anything
-    // but items, attributes and comments: the grammar accepts there what the compiler never
-    // does (a shebang line that the compiler reads as an attribute and an opened comment,
-    // an expression), and each is a place where the two readers of one file part ways.
-    if root.has_error() || !top_level_is_items(root) {
-        scan.test_items.clear();
-        for construct in &mut scan.constructs {
-            construct.in_test = false;
-        }
-    }
     Some(scan)
-}
-
-/// Whether every child of the file's root is an item, an attribute or a comment.
-///
-/// tree-sitter-rust reads a first line `#! /**/ [allow(unused)] /*` as a shebang, one ignored
-/// line; the compiler skips the comment after `#!`, finds `[`, reads an inner attribute and then
-/// an opened block comment. A `#[cfg(test)] // */` on the next line is then comment text for
-/// the compiler and an attribute for the grammar, with no error in the tree (review, IR-H-2).
-/// So a shebang proves nothing here, and neither does any top-level statement.
-fn top_level_is_items(root: Node) -> bool {
-    let mut walker = root.walk();
-    root.children(&mut walker).all(|child| {
-        matches!(
-            child.kind(),
-            "function_item"
-                | "mod_item"
-                | "impl_item"
-                | "struct_item"
-                | "enum_item"
-                | "union_item"
-                | "trait_item"
-                | "type_item"
-                | "const_item"
-                | "static_item"
-                | "use_declaration"
-                | "extern_crate_declaration"
-                | "foreign_mod_item"
-                | "macro_definition"
-                | "macro_invocation"
-                | "attribute_item"
-                | "inner_attribute_item"
-                | "line_comment"
-                | "block_comment"
-        )
-    })
 }
 
 fn place_of(point: tree_sitter::Point) -> Place {
@@ -289,8 +240,9 @@ fn text<'a>(node: Node, source: &'a str) -> &'a str {
 struct Level<'tree> {
     /// An error sits at or above the parent.
     unread: bool,
-    /// Proved test code sits at or above the parent.
-    in_test: bool,
+    /// A `use` declaration sits at or above the parent: a path there names what is imported
+    /// and is no value.
+    in_use: bool,
     /// An item whose attribute spells a test sits at or above the parent.
     test_spelled: bool,
     /// The parent's kind.
@@ -315,9 +267,9 @@ fn walk<'tree>(root: Node<'tree>, source: &str) -> FragmentScan {
     loop {
         let node = cursor.node();
         let kind = node.kind();
-        let (error_above, test_above, spelled_above, parent) =
+        let (error_above, use_above, spelled_above, parent) =
             above.last().map_or((false, false, false, ""), |level| {
-                (level.unread, level.in_test, level.test_spelled, level.kind)
+                (level.unread, level.in_use, level.test_spelled, level.kind)
             });
         let run: &[Node<'tree>] = above.last().map_or(&[], |level| level.run.as_slice());
         let error_here = node.is_error() || node.is_missing();
@@ -327,34 +279,32 @@ fn walk<'tree>(root: Node<'tree>, source: &str) -> FragmentScan {
         }
         let unread = error_above || error_here;
         let item = matches!(kind, "function_item" | "mod_item" | "impl_item");
-        let opens_test = item && parent == "source_file" && opens_test_code(run, source);
-        if opens_test {
-            scan.test_items.push(item_span(node, run));
-        }
         let spells = item && spells_test(run, source);
         if spells {
             scan.spelled_items.push(item_span(node, run));
         }
         let test_spelled = spelled_above || spells;
-        let in_test = test_above || opens_test;
-        if !unread && let Some(kind) = construct(node, source) {
-            // A method call is where its name is: a chain often starts lines above it.
-            let named_at = match kind {
-                ConstructKind::MethodCall { .. } => node
+        let in_use = use_above || kind == "use_declaration";
+        if !unread && let Some(read) = construct(node, source, parent, in_use) {
+            // A method call is where its name is: a chain often starts lines above it, and a
+            // path can be broken after its `::`.
+            let named_at = match read {
+                ConstructKind::MethodCall { .. } if kind == "call_expression" => node
                     .child_by_field_name("function")
                     .and_then(|function| function.child_by_field_name("field")),
+                ConstructKind::MethodCall { .. } => node.child_by_field_name("name"),
                 ConstructKind::Attribute { .. } | ConstructKind::MacroCall { .. } => None,
             };
             let placed = named_at.unwrap_or(node);
             let row = row_of(placed);
-            // Its own part ends with the method's name, the macro's path, or the attribute.
-            let own = match kind {
+            // Its own part ends with the name, the macro's path, or the attribute.
+            let own = match read {
                 ConstructKind::MacroCall { .. } => node.child_by_field_name("macro"),
                 ConstructKind::MethodCall { .. } | ConstructKind::Attribute { .. } => None,
             }
             .unwrap_or(placed);
             scan.constructs.push(Construct {
-                kind,
+                kind: read,
                 row,
                 end: place_of(own.end_position()),
                 column: u32::try_from(placed.start_position().column).unwrap_or(u32::MAX),
@@ -363,7 +313,6 @@ fn walk<'tree>(root: Node<'tree>, source: &str) -> FragmentScan {
                 } else {
                     rows_of(node).1
                 },
-                in_test,
                 test_spelled,
             });
         }
@@ -381,7 +330,7 @@ fn walk<'tree>(root: Node<'tree>, source: &str) -> FragmentScan {
         if !closed && cursor.goto_first_child() {
             above.push(Level {
                 unread,
-                in_test,
+                in_use,
                 test_spelled,
                 kind,
                 run: Vec::new(),
@@ -400,10 +349,16 @@ fn walk<'tree>(root: Node<'tree>, source: &str) -> FragmentScan {
     }
 }
 
-fn construct(node: Node, source: &str) -> Option<ConstructKind> {
+/// The construct `node` is, if it is one. `parent` is the kind of the node above it and
+/// `in_use` says that a `use` declaration is above it.
+fn construct(node: Node, source: &str, parent: &str, in_use: bool) -> Option<ConstructKind> {
     match node.kind() {
         "attribute_item" | "inner_attribute_item" => Some(ConstructKind::Attribute {
             words: attribute_words(node, source),
+            text: text(node, source)
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect(),
         }),
         "macro_invocation" => {
             let path = text(node.child_by_field_name("macro")?, source);
@@ -438,6 +393,28 @@ fn construct(node: Node, source: &str) -> Option<ConstructKind> {
             let name = plain(text(function.child_by_field_name("field")?, source)).to_owned();
             Some(ConstructKind::MethodCall { name })
         }
+        // A path in an expression: the function of a call (`X::unwrap(x)`), with or without
+        // generic arguments, or a value (`it.map(Result::unwrap)`). Before, only the token
+        // rules read these, on one line: `X::` and `r#unwrap(x)` on the next left neither an
+        // item nor a mark (review V3 round 9, VD3R9-M-1). A type's path is another kind of
+        // node. Not a value: what a `use` imports, the path of a macro or of an attribute, the
+        // path a visibility names, and a path that is only the front of a longer one. A path
+        // in a pattern is read as a value: it errs toward a construct.
+        "scoped_identifier" => {
+            let leads = matches!(
+                parent,
+                "macro_invocation"
+                    | "attribute"
+                    | "scoped_identifier"
+                    | "scoped_type_identifier"
+                    | "visibility_modifier"
+            );
+            if in_use || leads {
+                return None;
+            }
+            let name = plain(text(node.child_by_field_name("name")?, source)).to_owned();
+            Some(ConstructKind::MethodCall { name })
+        }
         _ => None,
     }
 }
@@ -446,6 +423,12 @@ fn construct(node: Node, source: &str) -> Option<ConstructKind> {
 /// in its argument list. What is nested deeper belongs to something else:
 /// `#[cfg_attr(feature = "serde", serde(skip, ignore))]` gives `cfg_attr`, `feature`, `serde`,
 /// and the `ignore` there is serde's, not a skipped test (review, IR-L-2).
+///
+/// One nested list is followed, and only that one: in a `cfg_attr`, an argument after the
+/// condition that is itself `cfg_attr(…)` applies attributes too, so what stands directly in
+/// that list after its own condition is added, after the words of the list around it:
+/// `#[cfg_attr(all(), cfg_attr(all(), ignore))]` gives `cfg_attr`, `all`, `cfg_attr`, `ignore`
+/// (second independent review, IR2-M-2: it gave no `ignore`, and the test did not run).
 fn attribute_words(item: Node, source: &str) -> Vec<String> {
     let mut walker = item.walk();
     let Some(attribute) = item
@@ -458,14 +441,41 @@ fn attribute_words(item: Node, source: &str) -> Vec<String> {
         .named_child(0)
         .map(|path| identifiers(path, source))
         .unwrap_or_default();
-    if let Some(arguments) = attribute.child_by_field_name("arguments") {
-        let mut walker = arguments.walk();
-        words.extend(
-            arguments
-                .children(&mut walker)
-                .filter(|child| child.kind() == "identifier")
-                .map(|child| plain(text(child, source)).to_owned()),
-        );
+    let Some(arguments) = attribute.child_by_field_name("arguments") else {
+        return words;
+    };
+    let conditional = words.len() == 1 && words[0] == "cfg_attr";
+    // The lists still to read, without recursion: the attribute's own, then each nested
+    // `cfg_attr(…)` found on the way. Of a nested list the condition is left out.
+    let mut lists = vec![(arguments, false)];
+    while let Some((list, nested)) = lists.pop() {
+        let mut walker = list.walk();
+        // which argument of the list, counted by its commas, and whether the last word was a
+        // `cfg_attr` that a list may follow
+        let (mut argument, mut applies) = (0usize, false);
+        for child in list.children(&mut walker) {
+            match child.kind() {
+                "," => {
+                    argument += 1;
+                    applies = false;
+                }
+                "identifier" => {
+                    let word = plain(text(child, source));
+                    applies = conditional && argument > 0 && word == "cfg_attr";
+                    if !nested || argument > 0 {
+                        words.push(word.to_owned());
+                    }
+                }
+                "token_tree" => {
+                    if applies {
+                        lists.push((child, true));
+                    }
+                    applies = false;
+                }
+                "line_comment" | "block_comment" => {}
+                _ => applies = false,
+            }
+        }
     }
     words
 }
@@ -516,48 +526,22 @@ fn attribute_parts(item: Node, source: &str) -> Option<(String, Option<String>)>
     Some((compact(path), arguments))
 }
 
-/// Whether the item that the attributes `run` stand before is compiled only for tests, as far
-/// as a file read from its first line can prove it: the caller has found a module, a function
-/// or an `impl` at the top level of the file, and its first attribute is exactly
-/// `#[cfg(test)]`.
-///
-/// The answer withdraws evidence, so it has to be proof. Each condition closes a way to make
-/// production code look like test code (review V3: VD3-H-1, VD3R2-H-1, VD3R3-H-1):
-///
-/// - **`cfg`, and nothing else.** The compiler reserves that name ("name `cfg` is reserved in
-///   attribute namespace"), so no import and no crate can make `#[cfg(test)]` mean anything
-///   else. Every other attribute can be rebound: `use tracing::instrument as rstest;` makes
-///   `#[rstest]` leave the function in the program, a dependency renamed to `tokio` makes
-///   `#[tokio::test]` whatever that crate says, and `use some::attribute as test;` does the
-///   same to `#[test]` itself (compiled and run on Rust 1.99, 2026-11-13). So `#[test]` proves
-///   nothing here. `#[cfg(not(test))]`, `#[cfg(any(test, …))]` and `#[cfg_attr(…, cfg(test))]`
-///   are not it either.
-/// - **The first attribute.** An attribute macro written before it receives the item with the
-///   `cfg` still on it and may drop it.
-/// - **At the top level of the file.** An attribute macro on an enclosing item, or a macro whose
-///   body the item is in, receives the item as tokens and may do the same.
-/// - **In a tree with no error, read from the first line** (the caller's part, and
-///   [`scan_fragment`]'s): otherwise a comment or a string opened above the fragment can hold
-///   the attribute text and end before the item.
-///
-/// What is left unproved: a build that sets `--cfg test` itself, and a file that another file
-/// includes inside a macro. Neither is in the hunk, and the first is a build setting a review
-/// of the build files sees.
-fn opens_test_code(run: &[Node], source: &str) -> bool {
-    run.first()
-        .and_then(|attribute| attribute_parts(*attribute, source))
-        .is_some_and(|(path, arguments)| path == "cfg" && arguments.as_deref() == Some("(test)"))
-}
-
 /// Whether an item with the attributes `run` before it has one that spells a test: its path
-/// ends in `test` (`#[test]`, `#[tokio::test]`, `#[r#test]`) or is `rstest`, or it is exactly
-/// `#[cfg(test)]`. A hint for a reader, never proof: [`opens_test_code`] says what proof takes.
+/// ends in `test` (`#[test]`, `#[tokio::test]`) or is `rstest`, or it is exactly
+/// `#[cfg(test)]`. Each segment of the path is read as the identifier it is (`#[r#test]`,
+/// `#[r#tokio::r#test]`, `#[r#cfg(test)]`; review V3 round 9).
+///
+/// A hint for a reader, never proof. Every one of these names but `cfg` can be bound by an
+/// import to a macro that leaves the function in the program (`use tracing::instrument as
+/// rstest;`, a dependency renamed to `tokio`, `use some::attribute as test;`: compiled and run
+/// on Rust 1.99, 2026-11-13), an attribute macro before or around a `#[cfg(test)]` may drop
+/// it, and a fragment can begin under a comment that ends on the attribute's own line.
 fn spells_test(run: &[Node], source: &str) -> bool {
     run.iter().any(|attribute| {
         attribute_parts(*attribute, source).is_some_and(|(path, arguments)| {
             let last = path.rsplit("::").next().unwrap_or(&path);
             matches!(plain(last), "test" | "rstest")
-                || (path == "cfg" && arguments.as_deref() == Some("(test)"))
+                || (plain(&path) == "cfg" && arguments.as_deref() == Some("(test)"))
         })
     })
 }
@@ -576,17 +560,29 @@ mod tests {
         scan_fragment(Language::Rust, source).expect("a small Rust fragment is scanned")
     }
 
-    fn kinds(source: &str) -> Vec<(ConstructKind, u32, bool)> {
+    /// Each construct's kind and row. An attribute's `text` is left out (emptied), so that a
+    /// test can name an attribute by its words: [`attribute`].
+    fn kinds(source: &str) -> Vec<(ConstructKind, u32)> {
         scan(source)
             .constructs
             .into_iter()
-            .map(|c| (c.kind, c.row, c.in_test))
+            .map(|c| {
+                let kind = match c.kind {
+                    ConstructKind::Attribute { words, .. } => ConstructKind::Attribute {
+                        words,
+                        text: String::new(),
+                    },
+                    other => other,
+                };
+                (kind, c.row)
+            })
             .collect()
     }
 
     fn attribute(words: &[&str]) -> ConstructKind {
         ConstructKind::Attribute {
             words: words.iter().map(|w| (*w).to_owned()).collect(),
+            text: String::new(),
         }
     }
 
@@ -604,15 +600,15 @@ mod tests {
     }
 
     #[test]
-    fn a_whole_test_function_is_read_and_a_test_attribute_alone_proves_nothing() {
+    fn a_whole_test_function_is_read() {
         let source = "#[test]\n#[ignore = \"slow\"]\nfn a() {\n    assert!( true );\n    let x = f().unwrap();\n}\n";
         assert_eq!(
             kinds(source),
             [
-                (attribute(&["test"]), 0, false),
-                (attribute(&["ignore"]), 1, false),
-                (macro_call("assert", "true"), 3, false),
-                (method("unwrap"), 4, false),
+                (attribute(&["test"]), 0),
+                (attribute(&["ignore"]), 1),
+                (macro_call("assert", "true"), 3),
+                (method("unwrap"), 4),
             ]
         );
     }
@@ -636,7 +632,6 @@ mod tests {
                 &macro_call("todo", "")
             ]
         );
-        assert!(found.constructs.iter().all(|c| !c.in_test));
         assert!(found.readable(0) && found.readable(1));
         // the macro's own row holds a macro body
         assert!(!found.readable(2));
@@ -645,89 +640,30 @@ mod tests {
     #[test]
     fn a_method_call_is_placed_on_the_row_of_its_name() {
         let source = "    let v = f()\n        .g()\n        .expect(\"set\");\n";
-        assert_eq!(
-            kinds(source),
-            [(method("expect"), 2, false), (method("g"), 1, false)]
-        );
+        assert_eq!(kinds(source), [(method("expect"), 2), (method("g"), 1)]);
     }
 
     #[test]
     fn a_string_a_comment_and_a_longer_name_are_not_the_construct() {
         let source = "    let s = \"x.unwrap() assert!(true) #[ignore]\"; // y.unwrap()\n    z.unwrap_or(1);\n";
-        assert_eq!(kinds(source), [(method("unwrap_or"), 1, false)]);
+        assert_eq!(kinds(source), [(method("unwrap_or"), 1)]);
     }
 
     #[test]
     fn an_attribute_lists_its_identifiers_and_not_its_strings() {
         assert_eq!(
             kinds("#[cfg_attr(miri, ignore)]\nfn a() {}\n"),
-            [(attribute(&["cfg_attr", "miri", "ignore"]), 0, false)]
+            [(attribute(&["cfg_attr", "miri", "ignore"]), 0)]
         );
         assert_eq!(
             kinds("#[doc = \"ignore\"]\nfn a() {}\n"),
-            [(attribute(&["doc"]), 0, false)]
+            [(attribute(&["doc"]), 0)]
         );
     }
 
-    #[test]
-    fn only_an_exact_first_cfg_test_at_the_top_level_marks_what_is_inside_it() {
-        let module = "#[cfg(test)]\nmod checks {\n    fn helper() { a().unwrap(); }\n}\n";
-        assert_eq!(kinds(module)[1], (method("unwrap"), 2, true));
-        let spaced = "#[ cfg( test ) ]\nmod checks {\n    fn helper() { a().unwrap(); }\n}\n";
-        assert_eq!(kinds(spaced)[1], (method("unwrap"), 2, true));
-        // on a function and on an impl it is the same proof, with other attributes after it
-        let function = "#[cfg(test)]\n#[allow(dead_code)]\nfn helper() { a().unwrap(); }\n";
-        assert_eq!(kinds(function)[2], (method("unwrap"), 2, true));
-        let implementation = "use x::Thing;\n/// For tests.\n#[cfg(test)]\nimpl Thing {\n    fn make() -> Self { a().unwrap() }\n}\n";
-        assert_eq!(kinds(implementation)[1], (method("unwrap"), 4, true));
-        // a test function inside it stays test code, and so does a closure inside that
-        let nested =
-            "#[cfg(test)]\nmod t {\n    #[test]\n    fn a() { run(|| b().unwrap()); }\n}\n";
-        assert_eq!(kinds(nested).last().unwrap(), &(method("unwrap"), 3, true));
-        // the rows wholly inside the item are test code, a macro's body included; the rows the
-        // item shares with what is before and after it are not claimed
-        // the item is a stretch, from its first attribute to its end: what lies in it is test
-        // code, a macro's body included, and what only shares a row with it is not
-        let found = scan(nested);
-        assert_eq!(found.test_items, [((0, 0), (4, 1))]);
-        assert!(found.inside_test((3, 4), (3, 36)) && found.inside_test((0, 0), (4, 1)));
-        assert!(!found.inside_test((3, 4), (4, 2)) && !found.inside_test((5, 0), (5, 1)));
-        let shared = scan("#[cfg(test)]\nfn t() { a().unwrap(); } pub fn p() { b().unwrap(); }\n");
-        assert_eq!(shared.test_items, [((0, 0), (1, 24))]);
-        assert!(shared.inside_test((1, 0), (1, 24)));
-        assert!(
-            !shared.inside_test((1, 0), (1, 52)),
-            "the row holds another function"
-        );
-        let broken = scan("#[cfg(test)]\nmod t {\n    fn a() {}\n}\nfn broken( {\n");
-        assert_eq!(broken.test_items, []);
-        let unproved = [
-            // a cfg that only mentions test among other things
-            "#[cfg(not(test))]\nmod real {\n    fn f() { a().unwrap(); }\n}\n",
-            // the item after the one under cfg(test) is not under it
-            "#[cfg(test)]\nfn helper() {}\nfn real() { a().unwrap(); }\n",
-            // an attribute before it may be a macro that drops it
-            "#[strip]\n#[cfg(test)]\nfn production() { a().unwrap(); }\n",
-            // so may an attribute on the item around it, or a macro whose body it is in
-            "#[strip]\nmod outer {\n    #[cfg(test)]\n    fn production() { a().unwrap(); }\n}\n",
-            "mod outer {\n    #[cfg(test)]\n    fn production() { a().unwrap(); }\n}\n",
-            "fn wrapper() {\n    #[cfg(test)]\n    fn production() { a().unwrap(); }\n}\n",
-            // a tree with an error anywhere is no reading of the file
-            "let = ;\n#[cfg(test)]\nfn production() { a().unwrap(); }\n",
-            "#[cfg(test)]\nfn production() { a().unwrap(); }\nfn broken( {\n",
-        ];
-        for source in unproved {
-            let found = kinds(source);
-            let call = found
-                .iter()
-                .find(|(kind, _, _)| *kind == method("unwrap"))
-                .unwrap_or_else(|| panic!("no call read: {source}"));
-            assert!(!call.2, "believed to be test code: {source}");
-        }
-    }
-
-    /// The hint beside the proof: a construct inside an item whose attribute spells a test
-    /// says so, wherever the item stands, and nothing more is claimed for it.
+    /// The hint: a construct inside an item whose attribute spells a test says so, wherever
+    /// the item stands, and nothing more is claimed for it. There is no proof of test code any
+    /// more (second independent review, IR2-H-1 to IR2-H-4).
     #[test]
     fn a_construct_inside_an_item_that_spells_a_test_carries_the_hint() {
         let hinted = |source: &str| -> Vec<bool> {
@@ -746,16 +682,22 @@ mod tests {
             "#[r#test]",
             "#[my_framework::test]",
             "#[cfg(test)]",
+            "#[ cfg( test ) ]",
+            // review V3 round 9: each segment of the path is the identifier it is. Before,
+            // `r#cfg` was not `cfg`.
+            "#[r#cfg(test)]",
+            "#[r#tokio::r#test]",
+            "#[::core::prelude::v1::test]",
+            "#[std::prelude::v1::test]",
+            "#[tokio::test(flavor = \"multi_thread\")]",
+            "#[async_std::test]",
+            "#[actix_rt::test]",
+            "#[test_log::test]",
+            "#[rstest::rstest]",
+            "#[tokio::testing::test]",
         ] {
             let source = format!("fn real() {{}}\n{attribute}\nfn a() {{ b().unwrap(); }}\n");
             assert_eq!(hinted(&source), [true], "{attribute}");
-            // a hint is not the proof: only the exact `cfg(test)` is, and then only for a
-            // fragment that is its whole file, which the caller knows
-            assert_eq!(
-                scan(&source).test_items.is_empty(),
-                attribute != "#[cfg(test)]",
-                "{attribute}"
-            );
         }
         for attribute in [
             "#[inline]",
@@ -763,6 +705,15 @@ mod tests {
             "#[cfg_attr(test, allow(x))]",
             "#[testing]",
             "#[doc = \"test\"]",
+            "#[cfg_attr(any(), test)]",
+            "#[cfg_attr(feature = \"x\", test)]",
+            "#[allow(test)]",
+            "#[doc(alias = \"x\", test)]",
+            "#[my::tests]",
+            "#[cfg(any(test, feature = \"x\"))]",
+            "#[cfg_attr(any(), cfg(test))]",
+            "#[cfg(test = \"x\")]",
+            "#[a::cfg(test)]",
         ] {
             let source = format!("{attribute}\nfn a() {{ b().unwrap(); }}\n");
             assert_eq!(hinted(&source), [false], "{attribute}");
@@ -777,6 +728,11 @@ mod tests {
                 "#[cfg(test)]\nmod t {\n    fn h() { b().unwrap(); }\n}\nfn real() { c().unwrap(); }\n"
             ),
             [true, false]
+        );
+        // a module that is only named `tests` spells nothing
+        assert_eq!(
+            hinted("mod tests {\n    pub fn production() { load().unwrap(); }\n}\n"),
+            [false]
         );
         // Review V3 round 7, VD3R7-L-1: a function that only shares a row with a test is not
         // one. Before, the hint went by rows and this production call carried it.
@@ -798,31 +754,6 @@ mod tests {
         let shared = scan("#[test] fn a() {} fn b() {}\n");
         assert_eq!(shared.spelled_items, [((0, 0), (0, 17))]);
         assert!(shared.spells_test((0, 0), (0, 17)) && !shared.spells_test((0, 0), (0, 27)));
-    }
-
-    /// Review, IR-H-2 and IR-L-1: the grammar and the compiler part ways on a first line that
-    /// starts `#!`, and the grammar takes a statement at the top level. Either way the tree has
-    /// no error and the `#[cfg(test)]` under it is not one for the compiler. Only a top level of
-    /// items, attributes and comments proves anything.
-    #[test]
-    fn a_top_level_the_compiler_would_read_otherwise_proves_no_test_code() {
-        for source in [
-            // for the compiler: `#![allow(unused)]`, then a comment that ends on line 2
-            "#! /**/ [allow(unused)] /*\n#[cfg(test)] // */\npub mod t {\n    pub fn production() -> u32 { b().unwrap() }\n}\n",
-            "#!/usr/bin/env run\n#[cfg(test)]\nmod t {\n    fn f() { b().unwrap(); }\n}\n",
-            // an expression where only items may stand
-            "x;\n#[cfg(test)]\nmod t {\n    fn f() { b().unwrap(); }\n}\n",
-            "---x\n;#[cfg(test)] /*\n---\n// */\nmod t {\n    pub fn production() -> u32 { b().unwrap() }\n}\n",
-        ] {
-            let found = scan(source);
-            assert_eq!(found.test_items, [], "{source}");
-            assert!(found.constructs.iter().all(|c| !c.in_test), "{source}");
-        }
-        // the control: an inner attribute and a comment first are an ordinary file
-        let plain = scan(
-            "#![allow(unused)]\n// a file\nuse a::b;\n#[cfg(test)]\nmod t {\n    fn f() { b().unwrap(); }\n}\n",
-        );
-        assert_eq!(plain.test_items, [((3, 0), (6, 1))]);
     }
 
     /// The part of a construct that is its own, and the rows the parser could not read: sorted,
@@ -870,63 +801,6 @@ mod tests {
             kinds("#[tokio::test(flavor = \"x\")]\nasync fn a() {}\n")[0].0,
             attribute(&["tokio", "test", "flavor"])
         );
-    }
-
-    /// Review V3 round 3, VD3R3-H-1. Every attribute name but `cfg` can be bound by an import
-    /// to a macro that leaves the function in the program, `test` included, so none of them is
-    /// proof that code is test code.
-    #[test]
-    fn a_test_attribute_of_any_spelling_proves_no_test_code() {
-        for attribute in [
-            "#[test]",
-            "#[r#test]",
-            "#[::core::prelude::v1::test]",
-            "#[std::prelude::v1::test]",
-            "#[tokio::test]",
-            "#[tokio::test(flavor = \"multi_thread\")]",
-            "#[r#tokio::r#test]",
-            "#[async_std::test]",
-            "#[actix_rt::test]",
-            "#[test_log::test]",
-            "#[rstest]",
-            "#[rstest::rstest]",
-        ] {
-            let source = format!("{attribute}\npub fn production() {{ b().unwrap(); }}\n");
-            assert_eq!(
-                kinds(&source)[1],
-                (method("unwrap"), 1, false),
-                "{attribute}"
-            );
-        }
-    }
-
-    /// Review V3 round 1, VD3-H-1. What withdraws evidence must be proved, not mentioned: an
-    /// attribute that only names `test` inside another attribute applies no `#[test]`, and a
-    /// module named `tests` without `#[cfg(test)]` is compiled into the program.
-    #[test]
-    fn an_attribute_that_only_mentions_test_proves_no_test_code() {
-        for source in [
-            "#[cfg_attr(any(), test)]\npub fn production() {\n    load().unwrap();\n}\n",
-            "#[cfg_attr(feature = \"x\", test)]\nfn f() {\n    load().unwrap();\n}\n",
-            "#[cfg_attr(test, allow(dead_code))]\nfn f() {\n    load().unwrap();\n}\n",
-            "#[allow(test)]\nfn f() {\n    load().unwrap();\n}\n",
-            "#[doc(alias = \"x\", test)]\nfn f() {\n    load().unwrap();\n}\n",
-            "#[my::tests]\nfn f() {\n    load().unwrap();\n}\n",
-            // review V3 round 2, VD3R2-H-1: a path that only ends in `test` is not the test
-            // attribute of anything known
-            "#[my_framework::test]\npub fn production() {\n    load().unwrap();\n}\n",
-            "#[tokio::testing::test]\npub fn production() {\n    load().unwrap();\n}\n",
-            "#[testing]\nfn f() {\n    load().unwrap();\n}\n",
-            "#[cfg(any(test, feature = \"x\"))]\nmod m {\n    fn f() { load().unwrap(); }\n}\n",
-            "#[cfg_attr(any(), cfg(test))]\nmod m {\n    fn f() { load().unwrap(); }\n}\n",
-            "#[cfg(test = \"x\")]\nmod m {\n    fn f() { load().unwrap(); }\n}\n",
-            "mod tests {\n    pub fn production() { load().unwrap(); }\n}\n",
-        ] {
-            let found = kinds(source);
-            let (kind, _, in_test) = found.last().unwrap();
-            assert_eq!(*kind, method("unwrap"), "{source}");
-            assert!(!in_test, "believed to be test code: {source}");
-        }
     }
 
     /// Review V3 round 1, VD3-M-1: a construct that spans rows says where it ends, so a change
@@ -1042,8 +916,7 @@ mod tests {
     /// items nested in one another were scanned on the square of the depth: 4,700 nested
     /// functions took 2.9 s (release). The walk keeps both itself. Here 3,000 modules nested
     /// in one another, each under a test attribute, are scanned within the bound, and the
-    /// answer about each is unchanged: every one spells a test, none is proved (only the first
-    /// is at the top level, and its attribute is not `cfg(test)`).
+    /// answer about each is unchanged: every one spells a test.
     #[test]
     fn items_nested_in_one_another_are_scanned_in_one_pass() {
         const DEPTH: usize = 3_000;
@@ -1062,13 +935,12 @@ mod tests {
             .expect("3,000 nested modules were scanned within three seconds")
             .expect("the fragment is within its budgets");
         assert_eq!(found.spelled_items.len(), DEPTH);
-        assert_eq!(found.test_items, []);
         let call = found
             .constructs
             .iter()
             .find(|c| matches!(&c.kind, ConstructKind::MethodCall { name } if name == "unwrap"))
             .expect("the call is read");
-        assert!(call.test_spelled && !call.in_test);
+        assert!(call.test_spelled);
     }
 
     /// Review V3 round 8, VD3R8-M-1: a raw identifier is the identifier.
@@ -1076,7 +948,7 @@ mod tests {
     fn raw_identifiers_are_named_without_their_prefix() {
         let found =
             kinds("fn f(x: X) {\n    x.r#unwrap();\n    r#todo!();\n}\n#[r#ignore]\nfn t() {}\n");
-        let names: Vec<ConstructKind> = found.into_iter().map(|(kind, _, _)| kind).collect();
+        let names: Vec<ConstructKind> = found.into_iter().map(|(kind, _)| kind).collect();
         assert_eq!(
             names,
             [
@@ -1084,6 +956,202 @@ mod tests {
                 macro_call("todo", ""),
                 attribute(&["ignore"])
             ]
+        );
+    }
+
+    /// Review V3 round 9, VD3R9-M-1, and the second independent review, IR2-M-2: a function
+    /// named by a path is a construct like a method call, whether it is called or passed, and
+    /// it is placed at its name. Before, the scanner named only `receiver.name(…)`: a path was
+    /// left to the token rules, which read one line, and `X::` with `r#unwrap(x)` on the next
+    /// line was read by nothing.
+    #[test]
+    fn a_path_call_and_a_path_value_are_constructs() {
+        let named = |source: &str| -> Vec<(String, u32, u32)> {
+            scan(source)
+                .constructs
+                .into_iter()
+                .filter_map(|c| match c.kind {
+                    ConstructKind::MethodCall { name } => Some((name, c.row, c.column)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let one = |name: &str, row: u32, column: u32| vec![(name.to_owned(), row, column)];
+        for (source, column) in [
+            ("fn f() { X::unwrap(x); }", 12),
+            ("fn f() { <Option<u32>>::unwrap(x); }", 24),
+            ("fn f() { Result::<u32, E>::unwrap(r); }", 27),
+            ("fn f() { <X as T>::unwrap(x); }", 19),
+            ("fn f() { a::b::unwrap::<u8>(x); }", 15),
+            ("fn f() { self::unwrap(); }", 15),
+            ("fn f() { let g = Option::<u32>::unwrap; }", 32),
+            ("fn f() { X::r#unwrap(x); }", 12),
+        ] {
+            assert_eq!(named(source), one("unwrap", 0, column), "{source}");
+        }
+        // passed as a value: the call it is passed to is a construct too, and comes first
+        assert_eq!(
+            named("fn f() { it.map(Result::unwrap); }"),
+            [("map".to_owned(), 0, 12), ("unwrap".to_owned(), 0, 24)]
+        );
+        // over two lines the construct is on the line of the name, and its own part is the name
+        let broken = scan("fn f(x: X) {\n    X::\n        r#unwrap(x);\n}\n");
+        assert_eq!(broken.constructs.len(), 1);
+        let call = &broken.constructs[0];
+        assert_eq!(call.kind, method("unwrap"));
+        assert_eq!(
+            (call.row, call.column, call.last_row, call.end),
+            (2, 8, 2, (2, 16))
+        );
+        assert!(broken.names((2, 10)) && !broken.names((1, 4)));
+        assert_eq!(
+            named("fn f(it: I) {\n    let _ = it.map(Result::\n        expect);\n}\n"),
+            [("map".to_owned(), 1, 15), ("expect".to_owned(), 2, 8)]
+        );
+        // a path that only leads to a longer one names the longer one's end
+        assert_eq!(named("fn f() { a::unwrap::b(x); }"), one("b", 0, 20));
+        // not values: an import, a macro's path, an attribute's, a visibility's, a type, a
+        // definition, a field, and a name with no path
+        for source in [
+            "use a::expect;\nuse a::{b, unwrap};\nuse a::unwrap as c;\nuse a::unwrap::*;\n",
+            "fn f() { X::unwrap!(x); }",
+            "#![a::unwrap]\n#[b::expect]\nfn f() {}\n",
+            "fn f() {\n    #![a::unwrap]\n}\n",
+            "pub(in a::unwrap) fn f() {}",
+            "fn f(a: a::unwrap, b: x::expect<u8>) -> q::unwrap { loop {} }",
+            "impl X { fn unwrap(self) {} }\nfn expect() {}\n",
+            "fn f() { let h = x.unwrap; }",
+            "fn f() { unwrap(x); let g = unwrap; }",
+            "fn f() { let v = X::unwrap { a: 1 }; }",
+        ] {
+            assert_eq!(named(source), [], "{source}");
+        }
+        // inside an item whose attribute spells a test it carries the hint, like a method call
+        let hinted =
+            scan("#[test]\nfn a() { Result::unwrap(b()); }\nfn c() { Result::unwrap(d()); }\n");
+        let hints: Vec<bool> = hinted
+            .constructs
+            .iter()
+            .filter(|c| c.kind == method("unwrap"))
+            .map(|c| c.test_spelled)
+            .collect();
+        assert_eq!(hints, [true, false]);
+    }
+
+    /// Second independent review, IR2-M-2: `#[cfg_attr(all(), cfg_attr(all(), ignore))]`
+    /// switches the test off and gave no `ignore` among its words. A `cfg_attr` that a
+    /// `cfg_attr` applies is followed, and nothing else that is nested is.
+    #[test]
+    fn a_cfg_attr_applied_by_a_cfg_attr_gives_the_words_it_applies() {
+        for (source, words) in [
+            (
+                "#[cfg_attr(all(), cfg_attr(all(), ignore))]",
+                &["cfg_attr", "all", "cfg_attr", "ignore"][..],
+            ),
+            (
+                "#[cfg_attr(a, cfg_attr(b, cfg_attr(c, ignore = \"x\")))]",
+                &["cfg_attr", "a", "cfg_attr", "cfg_attr", "ignore"][..],
+            ),
+            (
+                "#[cfg_attr(a, allow(x), cfg_attr /* c */ (b, inline, ignore))]",
+                &["cfg_attr", "a", "allow", "cfg_attr", "inline", "ignore"][..],
+            ),
+            (
+                "#[r#cfg_attr(a, r#cfg_attr(b, r#ignore))]",
+                &["cfg_attr", "a", "cfg_attr", "ignore"][..],
+            ),
+            // the nested condition is no attribute, whatever it is called
+            (
+                "#[cfg_attr(all(), cfg_attr(ignore, allow(x)))]",
+                &["cfg_attr", "all", "cfg_attr", "allow"][..],
+            ),
+            // in the place of the condition nothing is applied
+            (
+                "#[cfg_attr(cfg_attr(a, ignore), allow(x))]",
+                &["cfg_attr", "cfg_attr", "allow"][..],
+            ),
+            // another attribute's list is that attribute's
+            (
+                "#[cfg_attr(a, serde(cfg_attr(b, ignore)))]",
+                &["cfg_attr", "a", "serde"][..],
+            ),
+            (
+                "#[other(a, cfg_attr(b, ignore))]",
+                &["other", "a", "cfg_attr"][..],
+            ),
+        ] {
+            assert_eq!(
+                kinds(&format!("{source}\nfn t() {{}}\n"))[0].0,
+                attribute(words),
+                "{source}"
+            );
+        }
+        // without recursion: a chain as deep as a fragment allows
+        let depth = 4_000;
+        let deep = format!(
+            "#[cfg_attr(a, {}ignore{})]\nfn t() {{}}\n",
+            "cfg_attr(a, ".repeat(depth),
+            ")".repeat(depth)
+        );
+        assert!(deep.len() <= FRAGMENT_BYTE_BUDGET);
+        let ConstructKind::Attribute { words, .. } = &scan(&deep).constructs[0].kind else {
+            panic!("an attribute");
+        };
+        assert_eq!(words.len(), depth + 3);
+        assert_eq!(words.last().map(String::as_str), Some("ignore"));
+    }
+
+    /// Second independent review, IR2-M-1: the words of an attribute leave out what is nested
+    /// in a list and what is a string, so two attributes with the same words can be different
+    /// attributes. The construct carries the attribute's whole text, without its whitespace.
+    #[test]
+    fn an_attribute_carries_its_whole_text_without_whitespace() {
+        let attributes = |source: &str| -> Vec<ConstructKind> {
+            scan(source)
+                .constructs
+                .into_iter()
+                .map(|c| c.kind)
+                .collect()
+        };
+        assert_eq!(
+            attributes(
+                "#[cfg_attr(\n    all( miri ),\n    ignore = \"very slow\"\n)]\nfn a() {\n    #![allow(x)]\n}\n"
+            ),
+            [
+                ConstructKind::Attribute {
+                    words: vec!["cfg_attr".into(), "all".into(), "ignore".into()],
+                    text: "#[cfg_attr(all(miri),ignore=\"veryslow\")]".into(),
+                },
+                ConstructKind::Attribute {
+                    words: vec!["allow".into(), "x".into()],
+                    text: "#![allow(x)]".into(),
+                },
+            ]
+        );
+        for (before, after) in [
+            ("all(miri)", "all()"),
+            ("not(any())", "not(miri)"),
+            ("target_os = \"plan9\"", "target_os = \"linux\""),
+            ("feature = \"never-enabled\"", "feature = \"default\""),
+            ("any(miri)", "any(miri, unix, windows)"),
+        ] {
+            let was = attributes(&format!("#[cfg_attr({before}, ignore)]\nfn a() {{}}\n"));
+            let is = attributes(&format!("#[cfg_attr({after}, ignore)]\nfn a() {{}}\n"));
+            let words = |kind: &ConstructKind| match kind {
+                ConstructKind::Attribute { words, .. } => words.clone(),
+                _ => Vec::new(),
+            };
+            assert_eq!(
+                words(&was[0]),
+                words(&is[0]),
+                "{before}: the words are the same"
+            );
+            assert_ne!(was, is, "{before}: the attributes are not");
+        }
+        // only the spacing differs: the same attribute
+        assert_eq!(
+            attributes("#[cfg_attr(miri, ignore)]\nfn a() {}\n"),
+            attributes("#[ cfg_attr(\n    miri,\n    ignore\n) ]\nfn a() {}\n")
         );
     }
 

@@ -476,7 +476,8 @@ Additive members, so the schema names stay `v0`. They are present only when foun
     `ci_privilege`, `build_hook`, `secret_like`, `check_suppressed`, `test_removed`,
     `test_skipped`, `trivial_assert`, `stub_added`, `error_swallowed`, `panic_path_added` and
     `syntax_unchecked` (a Rust hunk the parser should have read and did not: "not checked", not
-    "bad"). The list grows: a client must accept a
+    "bad"; among the reasons, a hunk over 22 KiB, which is over the parser's budget for a
+    review). The list grows: a client must accept a
     label it does not know.
   - `address` is the hunk's address: the same value the outline and `review.hunks` use.
   - `side` is `new` (an added line) or `old` (a removed line), and `line` is that line's number on
@@ -493,7 +494,9 @@ Additive members, so the schema names stay `v0`. They are present only when foun
     can sit under an open comment): the signal, the score and what a judge reads are the same
     with and without it. The hint follows the item the call is inside, so a function that only
     shares a line with a test is not marked; an item inside another macro's body is not read
-    and gets no hint. The member is absent otherwise.
+    and gets no hint. The member is absent otherwise. Since 2026-11-14 no `panic_path_added`
+    item is withdrawn as test code, whatever the patch shows: one in a `#[cfg(test)]` module
+    of a file the patch creates is reported like any other and carries this member.
   - Items are ordered by hunk, then line, then signal. `evidence_truncated: true` follows when more
     were found; the score counts all of them. Each signal also appears in `signals`.
 - `review-outline.v0` and `review-hunks.v0` hunk heads: `evidence`, the distinct signal labels in

@@ -35,14 +35,22 @@ use std::process::Command;
 /// where no parser backs the token rules.
 /// Measured again 2026-11-14 on 44 cases, after round 8 (raw identifiers): precision 69 of 75,
 /// recall 69 of 110.
+/// Measured a third time 2026-11-14 on 45 cases, after round 9 and a second independent review:
+/// precision 77 of 90, recall 77 of 119. The precision floor fell from 69 of 75 on purpose. The
+/// parser no longer withdraws a panic path as "proved test code" (the proof was broken four
+/// more ways, and the class has no end), so the five such items in the corpus are reported,
+/// marked `test_likely`, and are declared false positives, as is the one in the new case; and
+/// an attribute that starts on an unchanged line is the same as before only if its whole text
+/// is, so the conditional skip of which only the reason changed is reported and declared too.
+/// The recall floor rose: the new case has eight expected items and one declared miss.
 const RANKING_PAIRS_FLOOR: u64 = 800_000;
-const EVIDENCE_PRECISION_FLOOR: u64 = 920_000;
-const EVIDENCE_RECALL_FLOOR: u64 = 627_272;
+const EVIDENCE_PRECISION_FLOOR: u64 = 855_555;
+const EVIDENCE_RECALL_FLOOR: u64 = 647_058;
 const FINDINGS_FLOOR: u64 = 1_000_000;
 /// Declared misses (plan N4): each counts as wrong in its metric above. The receipt's
 /// `known_misses` keeps its first meaning, the evidence `known_miss` items; `declared` lists all.
-const DECLARED: u64 = 50;
-const EVIDENCE_KNOWN_MISSES: u64 = 41;
+const DECLARED: u64 = 58;
+const EVIDENCE_KNOWN_MISSES: u64 = 42;
 /// The smallest corpus the gate accepts, and the fewest cases of each kind.
 const MIN_CASES: usize = 30;
 const MIN_CASES_PER_KIND: usize = 3;
@@ -162,14 +170,14 @@ fn the_summary_names_each_metric_and_each_failure() {
     let (code, text) = run(&corpus());
     assert_eq!(code, Some(0), "{text}");
     assert!(
-        text.starts_with("deep-diff-forge eval: 44 cases\n"),
+        text.starts_with("deep-diff-forge eval: 45 cases\n"),
         "{text}"
     );
     for line in [
         "  ranking_pairs        12/15",
-        "  evidence_precision   69/75",
-        "  evidence_recall      69/110",
-        "  declared             50",
+        "  evidence_precision   77/90",
+        "  evidence_recall      77/119",
+        "  declared             58",
         "  KNOWN ranking/auth-check-removed: src/handlers/delete.rs ranks below docs/CHANGES.md",
         "  KNOWN evidence/shell-heredoc: reports (\"scripts/docs.sh\", \"network_fetch\", \"new\", 3)",
     ] {
@@ -520,7 +528,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_recall"],
-        serde_json::json!({"right": 69, "total": 109, "ppm": 633_027})
+        serde_json::json!({"right": 77, "total": 118, "ppm": 652_542})
     );
 
     // A declared false positive the engine does not report.
@@ -538,7 +546,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_precision"],
-        serde_json::json!({"right": 69, "total": 75, "ppm": 920_000})
+        serde_json::json!({"right": 77, "total": 90, "ppm": 855_555})
     );
 
     // A declared false positive that is also expected.
@@ -554,7 +562,7 @@ fn a_declared_miss_must_still_be_a_miss() {
             .unwrap()
             .ends_with("is not reported, or is expected: remove it")
     );
-    assert_eq!(metrics["evidence_precision"]["right"], 70);
+    assert_eq!(metrics["evidence_precision"]["right"], 78);
     assert_eq!(known, usize::try_from(DECLARED).unwrap() - 1);
 }
 

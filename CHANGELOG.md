@@ -248,6 +248,86 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     modules scanned under a bound (the old walk took 7.7 s against a bound of 3); the scanner's
     source may name no clock. The corpus has 44 cases; evidence precision 69 of 75, recall 69
     of 110.
+- **Round 9 of Vesper's review and a second independent review (both NO-GO) and what
+  changed.** The second independent review (`docs/reviews/claude-independent-review-2-20261114.md`)
+  compiled and ran each of its high findings; round 9
+  (`docs/reviews/vesper-v3-round9-report-20261114.md`) found the clock gone and one new medium
+  gap.
+  - *A decision: the parser never removes evidence.* A `panic_path_added` item was withdrawn
+    when the parser "proved" its line to be test code: under an exact `#[cfg(test)]`, first
+    attribute of a top-level item of a file the patch creates whole. Five rounds each found
+    another way in which the grammar and the compiler read one file differently, and this
+    review found four more, each a file that met every condition, gave no evidence, and
+    panicked in production code when built: a `//*` inside a block comment (the grammar does
+    not count the nested opener), a character whose low byte is `*` or `/` (the grammar's
+    scanner cuts a character to eight bits), a comment that the lexer's code view ends too
+    early, and `cr"\"`, which is a raw string only from edition 2021. That class has no end,
+    so the proof is gone and nothing is withdrawn. **The cost: a panic path in a test module
+    is reported.** A test path still halves its weight, and an item the hunk shows under a
+    test attribute carries `test_likely: true`, a hint that changes no signal and no score.
+    `Reading::WholeFile`, `FragmentScan::test_items` and `Construct::in_test` are removed; the
+    fuzz target's rule is now the plain one (every item the token rules find alone is still
+    there with the parser on, except `syntax_unchecked`).
+  - *High: a 257 KB patch ranked in 15 s, and one 64 KB hunk in as long.* For some text the
+    parser's time grows with the square of the length (`// todo`, a newline and `#!#!#!…`:
+    16 KiB a second, 64 KiB fifteen), so a budget of bytes did not bound it, and no clock
+    cuts a parse any more. Each parsed hunk is now charged the square of its bytes against
+    the square of 22 KiB (`REVIEW_SQUARE_BUDGET`), and the budget of bytes is 128 KiB, down
+    from 256. On this repository's last 300 commits 97% of the hunks that hold a word the
+    parser reads are under 8 KiB, so a real review is read whole; one hunk of 22 KiB spends
+    the whole budget, a larger one is never parsed, and each hunk passed over says
+    `syntax_unchecked`. Measured on the review's patches (user seconds, `--rank` and
+    `--outline`): sixteen hunks of 16 KB 0.97 and 1.94 (were 15.4 and 30.9); one of 64 KB 0.00
+    and 0.00 (14.8); four of 64 KB 0.00 and 0.01 (60 and 121); thirty-two of 8 KB 1.82 and 3.56
+    (7.9 and 15.2); the first review's `ternary32.patch` 0.05 and 0.09 (3.7 and 7.4) and
+    `slow.patch` 0.66 and 1.27. Those outline figures were taken while a view still scanned
+    each hunk twice, once for the rank and once for its labels. The views now scan each file
+    once and take a hunk's labels from that scan (`views.rs`, `Scans`), so a view costs what
+    the rank costs: the same patches' outlines take 0.86, 0.01, 0.01, 1.64, 0.09 and 0.69.
+    Known limit: the two budgets are spent apart, and a patch built to spend both (seven
+    hunks of 8 KB of the quadratic text, then ninety-four small ones of the slowest linear
+    text) ranks in 2.7 s; its outline and its hunks view take 2.8 s.
+  - *Found while the token rule was taught nested lists: a line of `#[cfg_attr(` cost the
+    square of its length.* The rule for `#[cfg_attr(…, ignore)]` read each list of a line from
+    its own start, so lists opened inside one another were read once for each list around
+    them: 880 KB of `#[cfg_attr(` on one line ranked in 32 s (the cost was older than this
+    round). The lists of one line may now cost sixteen times the line between them, a count
+    and no clock, and a line past that is taken to hold a skip; the same line ranks in
+    0.03 s and carries `test_skipped`.
+  - *Medium (round 9): a path call or a path value over two lines was read by nothing.*
+    `X::` with `r#unwrap(x)` on the next line, and `it.map(Result::` with `unwrap)` on the
+    next, compile to the same calls and left neither an item nor a mark: only a one-line
+    token rule read a call by a path. The parser now names a function called by a path
+    (`X::unwrap(x)`, `<Option<u32>>::unwrap(x)`, `Result::<u32, E>::unwrap(r)`) and a path
+    used as a value (`it.map(X::unwrap)`, `Option::<u32>::unwrap`) as the construct a method
+    call is, on the line of the name. A path in a `use` declaration, a macro's path and a
+    definition are not constructs. A removed `#[r#test]` is `test_removed`: that rule reads
+    its three attributes whatever the spacing.
+  - *Medium: a condition changed inside a list, or by a string, was "the same attribute".*
+    An attribute that starts on an unchanged line was compared with its old text by its
+    words, which leave out what is nested and what is a string: `all(miri)` to `all()`,
+    `target_os = "plan9"` to `"linux"`. The whole text is compared now, without its
+    whitespace. The cost: a conditional skip written over several lines of which only the
+    reason changed (`ignore = "slow"` to `"very slow"`) is reported as well; the corpus
+    declares it a false positive.
+  - *Medium: words that left neither an item nor a mark.* `#[cfg_attr(all(), cfg_attr(all(),
+    ignore))]` is `test_skipped`, by the parser and by the token rule: a `cfg_attr` that a
+    `cfg_attr` applies is followed, and nothing else that is nested is. `Option::<u32>::unwrap`
+    as a value and a call after `/* /* */ // */` in plain code are found by the parser's new
+    constructs. Still open, and declared in the corpus: the same call inside another
+    macro's body, where the parser names nothing and the lexer's code view, which does not
+    nest block comments, shows the token rules a comment.
+  - *Low: `test_likely` on a line that holds a production call.* After `/* /* */ " */` the
+    code view takes the rest of the line for a string, so a production function there was
+    not seen and the line carried the hint. A panic path that the parser names outside every
+    item that spells a test now takes the hint from its line. A raw `#[r#cfg(test)]` gives
+    the hint as `#[cfg(test)]` does.
+  - Tests: each finding has a regression test that names it, and each of the four files of
+    the high findings must report its panic path. The corpus has 45 cases (new:
+    `evidence/independent-review-2-20261114`, eight items, one declared miss, one declared
+    false positive); six items that were negatives are declared false positives (five
+    panic paths in `#[cfg(test)]` code of a created file, and the reason-only change), so
+    evidence precision is 77 of 90 (was 69 of 75) and recall 77 of 119 (was 69 of 110).
 
 ### Changed
 

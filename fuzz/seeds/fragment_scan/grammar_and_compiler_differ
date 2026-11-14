@@ -1,0 +1,15 @@
+/* //* */ #[cfg(test)] // */
+pub mod t {
+    pub fn production() -> u32 { crate::b().unwrap() }
+}
+/* /* Īį */ #[cfg(test)] // */
+pub mod u {
+    pub fn production() -> u32 { crate::b().unwrap() }
+}
+#[cfg(test)]
+fn t() { a().unwrap(); /* /* */ " */ } pub fn production() -> u32 { crate::b().unwrap() }
+/* /* */ } */
+live! { cr"\" }
+#[cfg(test)] pub mod v { // "
+    pub fn production() -> u32 { crate::b().unwrap() }
+}
