@@ -11,6 +11,10 @@
 //! evidence item is a false positive a reviewer sees, a hidden one is a miss nobody does.
 //! - Block comments and triple-quoted strings are followed across the lines of one hunk, in
 //!   order ([`ScanState`]); a hunk that starts inside one is read as code.
+//! - Hunks with no line of the file between them are one text: the hunks of a file the patch
+//!   creates, and a hunk that begins where the one before it ends. Such a hunk is read once
+//!   more from what the hunk before left open ([`carried_view`]), beside the readings that
+//!   start it as code.
 //! - A string still open at the end of a line (outside Rust) is read as code from its quote,
 //!   and is also carried to the next line of the hunk. That line is read twice, as code and as
 //!   resuming inside the string, and both readings go on down the hunk (up to four at once);
@@ -910,6 +914,31 @@ pub fn code_views(language: Language, line: &str, state: &mut Readings) -> Vec<S
         vec![legacy]
     } else {
         vec![legacy, lexer]
+    }
+}
+
+/// What the hunks before a hunk have left open for it, when no line of the file stands between
+/// them: the state of [`carried_view`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Carried {
+    /// Rust: the state of the lexer reading.
+    lexer: RustLexerState,
+    /// Every other language: the state of the shared scanner.
+    shared: ScanState,
+}
+
+/// One more reading of `line`: the one that goes on from what the hunk before left open, for a
+/// hunk that follows another with no line of the file between them (the hunks of a file the
+/// patch creates, and a hunk that begins where the one before it ends). For Rust it is the
+/// lexer reading ([`rust_lexer_view`]), which for a created file is the compiler's reading of
+/// the whole file; for every other language it is [`code_view`]. It is asked beside the
+/// readings that start the hunk as code ([`code_views`]), never in their place.
+#[must_use]
+pub fn carried_view(language: Language, line: &str, state: &mut Carried) -> String {
+    if language == Language::Rust {
+        rust_lexer_view(line, &mut state.lexer)
+    } else {
+        code_view(language, line, &mut state.shared)
     }
 }
 

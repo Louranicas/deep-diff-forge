@@ -129,6 +129,73 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     As everywhere in the lexical scan, no evidence means no token was found, never that a
     change is safe.
 
+- **Code after a block comment or a string that the hunk before had opened was hidden, where
+  the two hunks are one text** (found 2026-11-14; reproduced on the published v0.8.3 binary).
+  Every hunk was read alone and started as code. But a patch can write one stretch of a file
+  as several hunks with no line of the file between them, and then what the first leaves open
+  is open in the second.
+  - *What was hidden.* A file the patch creates, written as two hunks: the first ends with
+    `/*`, the second is `// */ pub fn evil() { std::process::Command::new("sh")… }`. Plain
+    `git apply` (2.56.0, no option) accepts `@@ -0,0 +1,2 @@` followed by `@@ -2,0 +3,2 @@`
+    and writes the lines in order, and the compiler compiles the function. Read alone, the
+    second hunk is a line comment. Measured on the published v0.8.3 binary: score 4 with no
+    evidence. The same holds in a file that exists, for a hunk that begins at the line after
+    the last line of the hunk before it, and at its end, for a hunk that only adds lines
+    after the hunk that shows the last line. It holds in every language here that has block
+    comments or strings over lines, not only in Rust.
+  - *Since when.* Every release that has code evidence, 0.5.0 to 0.8.3.
+  - *The fix.* Hunks with no unseen line between them are read as one text, in the order of
+    the patch: every hunk of a file the patch creates (Git puts each after the one before,
+    whatever its numbers say), and in a file that exists a hunk whose old-side position
+    begins exactly where the hunk before it ends (`@@ -S,L` covers the old lines S to S+L-1;
+    a hunk that only adds, `-S,0`, stands after line S). And a hunk of added lines only, in
+    a file that exists and not at its top, is also read as Git places it: plain `git apply`
+    appends such a hunk to the file as it then is, whatever the numbers in its header say (a
+    hunk whose last line is not a context line must match at the end of the file, and one
+    with no old line has nothing else to match), so it goes on from the last earlier hunk of
+    its section whose last line is not a context line. Such a hunk is read once more, from
+    what the hunks before it left open on that side: in Rust by the lexer reading, which for
+    a created file is the compiler's reading of the whole file, and in the other languages
+    by their one reading. It is a further reading, never a replacement (and at the bound of
+    a file's printed list what only it finds is listed after the items of 0.8.3, like what
+    only the lexer reading finds). The readings that
+    start the hunk as code are asked as before, so here too no answer is lower than 0.8.3's,
+    and a hunk that goes on from no other is read exactly as before.
+  - *How it is held.* Unit tests hold each form, with what `git apply --check -v` says to it
+    recorded beside them, and the negative (one unseen line between two hunks: no join). A
+    property test holds, for 4,500 generated files whose hunks have every form and any
+    numbers, that no hunk has fewer items than when it is read alone and that the per-hunk
+    labels are the file's, asked in any order. A rule in the `evidence_scan` fuzz target
+    holds that a stretch of Rust cut into hunks at lines the input chooses (a file the patch
+    creates; the end of a file that exists, its later hunks at any old position) has every
+    item its lexer reading has as one text. Measured: of 3,287 patch files (this
+    repository's commit patches, with context and as `git diff -U0` writes them, its
+    fixtures, and the reproduction patches of this change and its reviews) all give the
+    output of the build before this change, byte for byte, but thirteen whose hunks touch or
+    are appended, and each of those gains evidence; against the published v0.8.3 binary none
+    of them, and none of 300,000 generated Rust hunks and new files, is lower in any score,
+    signal or item, and of 12,000 large generated files, in one hunk and in hunks that touch
+    (5,438 with a list cut at the bound), none lacks an item v0.8.3 lists.
+  - *What changes for a reader.* A patch whose hunks touch can rank higher. `git diff`
+    with context never writes such hunks (it merges them), so for a patch it wrote nothing
+    changes. `git diff -U0` writes hunks of added lines only, and each is now also read
+    from the end of the hunk before it that ends its file; that reading can add an item and
+    takes none away (measured on the `-U0` patches of this repository's last 150 commits,
+    672 such hunks among 5,159: no answer changes). The outline and the hunks view label
+    hunks as the rank does. For that the daemon's views now ask a file's hunks through one
+    reader, so that a run of hunks is read once and not once for each of them: this changes
+    how the labels are computed, not what they are for a patch Git wrote.
+  - *Not closed.* The parser still accepts hunk positions Git would not write and reports
+    the header's line numbers: Git places a hunk by its context and takes the numbers as a
+    hint (`@@ -9,4 +1,5 @@` is applied at line 9, and an appended hunk's lines are reported
+    at the numbers its header gives). For hunks with old lines the join goes by those
+    numbers: two that touch in the file while their positions say they do not are read
+    apart, and the reverse together. Hunks listed out of the file's order, which Git
+    accepts, are not joined. A hunk with unseen lines above it is still started as code,
+    whatever is open there. And `git apply --unidiff-zero` puts a hunk of added lines only
+    where its numbers say and not at the end of the file: for a patch applied that way the
+    reading from the end of the file is one more reading that the file does not have.
+
 ## [0.8.3] - 2026-11-11
 
 Tagged `v0.8.3` at `a74bf91` (2026-11-11 UTC), signed.

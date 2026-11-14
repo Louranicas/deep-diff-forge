@@ -170,7 +170,19 @@ fn line_counts(hunk: &PatchHunk) -> (usize, usize) {
 }
 
 /// A hunk's header facts, without its lines.
+#[cfg(test)]
 fn hunk_head(file: &ReviewFile, hunk: &PatchHunk) -> serde_json::Map<String, Value> {
+    hunk_head_with(file, hunk, &deep_diff_forge_graph::hunk_signals(file, hunk))
+}
+
+/// A hunk's header facts with its evidence labels given. A view that lists hunks asks for the
+/// labels through one [`deep_diff_forge_graph::HunkLabels`] for each file, which reads a run of
+/// hunks that touch once, not once for each of them.
+fn hunk_head_with(
+    file: &ReviewFile,
+    hunk: &PatchHunk,
+    signals: &[deep_diff_forge_graph::EvidenceSignal],
+) -> serde_json::Map<String, Value> {
     let (old_lines, new_lines) = hunk.counts();
     let (additions, deletions) = line_counts(hunk);
     let mut hazards: Vec<&str> = Vec::new();
@@ -206,8 +218,9 @@ fn hunk_head(file: &ReviewFile, hunk: &PatchHunk) -> serde_json::Map<String, Val
     if !hazards.is_empty() {
         map.insert("hazards".into(), json!(hazards));
     }
-    let evidence: Vec<&str> = deep_diff_forge_graph::hunk_signals(file, hunk)
-        .into_iter()
+    let evidence: Vec<&str> = signals
+        .iter()
+        .copied()
         .map(deep_diff_forge_graph::EvidenceSignal::label)
         .collect();
     if !evidence.is_empty() {
@@ -351,8 +364,9 @@ pub fn outline(review: &SealedReview, page: &Page) -> Result<Value, ViewError> {
             "complete": true,
         });
         let mut used = size(&entry) + 1;
+        let mut labels = deep_diff_forge_graph::HunkLabels::new(file);
         for (h, hunk) in file.patch_twin.hunks.iter().enumerate().skip(first) {
-            let head = Value::Object(hunk_head(file, hunk));
+            let head = Value::Object(hunk_head_with(file, hunk, &labels.of(h)));
             let cost = size(&head) + 1;
             // A page always makes progress: its first hunk is listed even when it is over.
             let first_on_page = entries.is_empty() && h == first;
@@ -416,14 +430,19 @@ pub fn hunks(
     let mut budget = page.max_bytes - ENVELOPE_BYTES;
     let mut out = Vec::new();
     let mut next = None;
+    let mut labels: Option<(usize, deep_diff_forge_graph::HunkLabels)> = None;
     for (position, &(f, h)) in units.iter().enumerate().skip(start_unit) {
         let (file, hunk) = (&files[f], &files[f].patch_twin.hunks[h]);
+        if labels.as_ref().is_none_or(|(of, _)| *of != f) {
+            labels = Some((f, deep_diff_forge_graph::HunkLabels::new(file)));
+        }
+        let signals = labels.as_mut().map(|(_, l)| l.of(h)).unwrap_or_default();
         let offset = if position == start_unit {
             start_line
         } else {
             0
         };
-        let mut entry = Value::Object(hunk_head(file, hunk));
+        let mut entry = Value::Object(hunk_head_with(file, hunk, &signals));
         entry["path"] = json!(file.path);
         entry["line_offset"] = json!(offset);
         entry["complete"] = json!(true);
@@ -886,6 +905,26 @@ mod tests {
         assert_eq!(paths, ranked);
         assert_eq!(paths[0], "src/lib.rs");
         assert_eq!(answer["files"][1]["hunks"][0]["section"], "fn h0()");
+    }
+
+    /// The labels of hunks that touch are the rank's: a file the patch creates in two hunks, with
+    /// a comment opened in the first and closed in the second, shows its spawn on the second
+    /// hunk, in the outline and in the hunks view, as the rank does on the file.
+    #[test]
+    fn hunks_that_touch_are_labelled_as_one_text() {
+        let r = review(
+            "--- /dev/null\n+++ b/src/evil.rs\n@@ -0,0 +1,1 @@\n+/*\n@@ -2,0 +2,1 @@\n\
+             +// */ pub fn evil() { std::process::Command::new(\"sh\").status().ok(); }\n",
+        );
+        let outline = outline(&r, &page(MAX_MAX_BYTES, None)).unwrap();
+        let listed = &outline["files"][0]["hunks"];
+        assert!(listed[0].get("evidence").is_none(), "{listed:#}");
+        assert_eq!(listed[1]["evidence"], json!(["process_spawn"]));
+        let all = hunks(&r, &Selection::All, &page(MAX_MAX_BYTES, None)).unwrap();
+        assert!(all["hunks"][0].get("evidence").is_none(), "{all:#}");
+        assert_eq!(all["hunks"][1]["evidence"], json!(["process_spawn"]));
+        let ranked = deep_diff_forge_graph::RankedFile::scored(&r.files()[0]);
+        assert_eq!(ranked.evidence.len(), 1);
     }
 
     /// Hunks by address come back in the order asked, verbatim; by path, every hunk of the file.
