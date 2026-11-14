@@ -114,7 +114,15 @@ pub struct Evidence {
     pub side: Side,
     /// The line number on `side`.
     pub line: u32,
+    /// Whether the reading every release up to 0.8.3 had finds this item, alone or as well as
+    /// another reading. `false`: only a further reading finds it. A ranked file's bounded list
+    /// holds the released items first, so it never lists less of them than 0.8.3 listed.
+    pub released: bool,
 }
+
+/// One finding of a hunk's scan: the side, the signal, the line, and whether the reading every
+/// release up to 0.8.3 had finds it ([`Evidence::released`]).
+type Item = (Side, EvidenceSignal, u32, bool);
 
 /// What part of a line a rule reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -484,7 +492,7 @@ pub fn file_evidence(file: &ReviewFile) -> Vec<Evidence> {
         // `hunk_matches` yields each (side, signal, line) once and items from different hunks
         // differ in `hunk`, so there is nothing to deduplicate: a scan of `out` per item made a
         // patch of 160k matching lines take 4.8 s.
-        for (side, signal, line) in hunk_matches(hunk, kind.language, &rules) {
+        for (side, signal, line, released) in hunk_items(hunk, kind.language, &rules, code_views) {
             let address = address
                 .get_or_insert_with(|| hunk.address(&file.path))
                 .clone();
@@ -494,6 +502,7 @@ pub fn file_evidence(file: &ReviewFile) -> Vec<Evidence> {
                 address,
                 side,
                 line,
+                released,
             });
         }
     }
@@ -539,6 +548,21 @@ fn hunk_matches_in(
     rules: &[&Rule],
     views_of: fn(Language, &str, &mut Readings) -> Vec<String>,
 ) -> Vec<(Side, EvidenceSignal, u32)> {
+    hunk_items(hunk, language, rules, views_of)
+        .into_iter()
+        .map(|(side, signal, line, _)| (side, signal, line))
+        .collect()
+}
+
+/// The scan of one hunk: [`hunk_matches_in`], and for each finding whether the reading every
+/// release up to 0.8.3 had finds it (the first of the line's views, or a rule that reads the
+/// line as it is).
+fn hunk_items(
+    hunk: &PatchHunk,
+    language: Option<Language>,
+    rules: &[&Rule],
+    views_of: fn(Language, &str, &mut Readings) -> Vec<String>,
+) -> Vec<Item> {
     let mut old_state = Readings::default();
     let mut new_state = Readings::default();
     let mut found = Vec::new();
@@ -569,19 +593,28 @@ fn hunk_matches_in(
             Match::Secret => looks_like_secret(text),
             Match::Imports(modules) => imports_module(text, &line.text, modules),
         };
-        let hits = |rule: &Rule| match (rule.view, &views) {
-            // Each reading on its own: what any of them finds is found.
-            (View::Code, Some(views)) => views.iter().any(|view| hits_in(rule, view)),
+        // What the reading every release up to 0.8.3 had finds: the first view (the only one
+        // outside Rust, and the only one of a hunk no further reading is asked of), or the
+        // line as it is.
+        let released = |rule: &Rule| match (rule.view, &views) {
+            (View::Code, Some(views)) => views.first().is_some_and(|view| hits_in(rule, view)),
             // A rule that reads code needs a language; `Scope::Any` code rules have none.
             (View::Raw, _) | (View::Code, None) => hits_in(rule, &line.text),
         };
+        // Each further reading on its own: what any of them finds is found too.
+        let further = |rule: &Rule| match (rule.view, &views) {
+            (View::Code, Some(views)) => views.iter().skip(1).any(|view| hits_in(rule, view)),
+            (View::Raw, _) | (View::Code, None) => false,
+        };
         for signal in EvidenceSignal::ALL {
-            if rules
-                .iter()
-                .filter(|r| r.signal == signal && r.side == side)
-                .any(|r| hits(r))
-            {
-                found.push((side, signal, number));
+            let of_signal = || {
+                rules
+                    .iter()
+                    .filter(|r| r.signal == signal && r.side == side)
+            };
+            let by_released = of_signal().any(|r| released(r));
+            if by_released || of_signal().any(|r| further(r)) {
+                found.push((side, signal, number, by_released));
             }
         }
     }
@@ -845,6 +878,7 @@ mod tests {
                     address: hunk.address("src/lib.rs"),
                     side: Side::New,
                     line: 3,
+                    released: true,
                 },
                 Evidence {
                     signal: S::ProcessSpawn,
@@ -852,6 +886,7 @@ mod tests {
                     address: hunk.address("src/lib.rs"),
                     side: Side::New,
                     line: 3,
+                    released: true,
                 },
             ]
         );
@@ -1434,6 +1469,131 @@ mod tests {
         let mut views = code_views(language, line, state);
         views.truncate(1);
         views
+    }
+
+    /// The list 0.8.3 would print for `file`: what its reading alone finds in each hunk, in the
+    /// order of the file, cut at the bound.
+    fn listed_by_0_8_3(file: &ReviewFile) -> Vec<Found> {
+        let kind = FileKind::of(file);
+        let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
+        file.patch_twin
+            .hunks
+            .iter()
+            .flat_map(|hunk| hunk_matches_in(hunk, kind.language, &rules, legacy_alone))
+            .map(|(side, signal, line)| (signal, side, line))
+            .take(MAX_EVIDENCE_PER_FILE)
+            .collect()
+    }
+
+    /// What the bounded list of `file` must hold, whatever further readings find: every item
+    /// 0.8.3 would list; as many items as the bound allows; in the order of the file; and it
+    /// says so when there is more. Returns whether the list is cut, and how many of the items
+    /// 0.8.3 would list a cut after the first 32 items of all readings would have dropped.
+    fn bounded_list_holds(file: &ReviewFile, text: &str) -> (bool, usize) {
+        let all = file_evidence(file);
+        let ranked = crate::rank::RankedFile::scored(file);
+        let found = |e: &Evidence| (e.signal, e.side, e.line);
+        let listed: Vec<Found> = ranked.evidence.iter().map(found).collect();
+        let by_0_8_3 = listed_by_0_8_3(file);
+        for item in &by_0_8_3 {
+            assert!(listed.contains(item), "0.8.3 lists {item:?}:\n{text}");
+        }
+        assert_eq!(listed.len(), all.len().min(MAX_EVIDENCE_PER_FILE), "{text}");
+        assert_eq!(ranked.evidence_truncated, all.len() > MAX_EVIDENCE_PER_FILE);
+        let mut rest = all.iter();
+        for item in &ranked.evidence {
+            assert!(
+                rest.any(|e| e == item),
+                "not in the order of the file:\n{text}"
+            );
+        }
+        let first: Vec<Found> = all.iter().take(MAX_EVIDENCE_PER_FILE).map(found).collect();
+        let dropped = by_0_8_3.iter().filter(|item| !first.contains(item)).count();
+        (ranked.evidence_truncated, dropped)
+    }
+
+    /// At the bound of 32 the list still holds what 0.8.3 listed. For generated Rust files of
+    /// 40 to 120 changed lines, heavy with rule tokens and with the pieces the readings
+    /// disagree about (as a new file, as added lines and as removed lines): the list 0.8.3
+    /// would print, which is its reading alone cut at 32, is contained in the list printed;
+    /// the list is as long as the bound allows and in the order of the file; and an item is
+    /// marked released exactly when the reading of 0.8.3 alone finds it. Many of these lists
+    /// are cut, and in many a cut after the first 32 items of all readings would have dropped
+    /// an item 0.8.3 listed.
+    #[test]
+    fn the_bounded_list_holds_every_item_0_8_3_listed() {
+        use std::fmt::Write as _;
+        const ATOMS: [&str; 14] = [
+            "unsafe { g() }",
+            "std::process::Command::new(\"sh\")",
+            "reqwest::blocking::get(u)",
+            "#[test]",
+            "/* /* */ // */ ",
+            "('\\x41','\"', \"/*\"); ",
+            "/*",
+            "*/",
+            "\"",
+            "'",
+            "x",
+            " ",
+            "// */",
+            "crates/*/*/Cargo.toml",
+        ];
+        let mut seed = 0x1234_5678_9ABC_DEF1_u64;
+        let mut next = move |below: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % (below as u64)).unwrap()
+        };
+        let (mut cut, mut would_drop) = (0, 0);
+        for case in 0..400 {
+            let count = 40 + next(81);
+            let sign = if case % 3 == 2 { '-' } else { '+' };
+            let mut body = String::new();
+            for _ in 0..count {
+                // Mostly a rule token alone; often behind the nested comment, which hides
+                // it from the reading of 0.8.3 only; now and then one of the other pieces.
+                let before = match next(40) {
+                    0 => ATOMS[5],
+                    1 => ATOMS[6 + next(8)],
+                    2..=11 => ATOMS[4],
+                    _ => "",
+                };
+                let _ = writeln!(body, "{sign}{before}{}", ATOMS[next(4)]);
+            }
+            let text = match case % 3 {
+                0 => format!("--- /dev/null\n+++ b/src/x.rs\n@@ -0,0 +1,{count} @@\n{body}"),
+                1 => format!(
+                    "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1,1 +1,{} @@\n x\n{body}",
+                    count + 1
+                ),
+                _ => format!(
+                    "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1,{} +1,1 @@\n x\n{body}",
+                    count + 1
+                ),
+            };
+            let file = parse(&text).unwrap().remove(0);
+            let (is_cut, dropped) = bounded_list_holds(&file, &text);
+            cut += usize::from(is_cut);
+            would_drop += usize::from(dropped > 0);
+            // An item is released exactly when the reading of 0.8.3 alone finds it.
+            let kind = FileKind::of(&file);
+            let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
+            let hunk = &file.patch_twin.hunks[0];
+            let alone = hunk_matches_in(hunk, kind.language, &rules, legacy_alone);
+            for item in file_evidence(&file) {
+                assert_eq!(
+                    item.released,
+                    alone.contains(&(item.side, item.signal, item.line)),
+                    "{item:?}:\n{text}"
+                );
+            }
+        }
+        assert!(
+            cut > 100 && would_drop > 30,
+            "{cut} lists cut, {would_drop} where a plain cut would have dropped an item of 0.8.3"
+        );
     }
 
     /// The last view of a line alone: for Rust, the lexer reading.

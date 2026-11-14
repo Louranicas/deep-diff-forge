@@ -76,6 +76,22 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
       this repository's commits, its fixture patches and the reproduction patches collected
       while this change was reviewed) and on 300,000 generated Rust hunks and new files: no
       score is lower, no signal and no item is missing.
+
+    The printed list of a file's items has a bound of 32, as before, and the bound could
+    have cost an item: one that only the lexer reading finds, early in a file, would have
+    pushed the last of 32 items 0.8.3 listed off the end. So at the bound the list holds
+    first the items the reading of 0.8.3 finds, as many as fit, and then, in the room that
+    is left, items only the lexer reading finds; the items listed stay in the order of the
+    file. With 32 or more items of the first kind it is exactly the list 0.8.3 printed, and
+    it never holds fewer of them. The score and the signals count every item, and
+    `evidence_truncated` says when the list is not all there is. Measured on the published
+    v0.8.3 binary: a fetch behind a nested comment on line 1 and 32 process spawns below it
+    list the spawns on lines 2 to 33 there (score 8) and here (score 11, with
+    `network_fetch` among the signals); and of 12,000 large generated Rust files, 5,376 of
+    them with a list cut at the bound, none lacks an item v0.8.3 lists (without this rule
+    3,162 did). Held by a rank test, the same at the JSON level, a
+    property test (400 generated files of 40 to 120 changed lines: the list 0.8.3 would
+    print is contained in the list printed) and a rule of the `evidence_scan` fuzz target.
   - *How the lexer reading is held.* A new fuzz target, `rust_code_view` (the eleventh),
     compares it with the compiler's lexer itself (`ra-ap-rustc_lexer` 0.184.0, a dependency
     of the fuzz crate only, never of a crate that ships: the fuzz lock gains it and

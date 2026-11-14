@@ -1,7 +1,9 @@
 #![no_main]
 // Code evidence (plan 2026-10-30, Feature A): for any patch, ranking never panics, every evidence
 // item names a hunk of its own file by address and a line inside that hunk on its side, the
-// per-hunk labels agree with the file's evidence, and the cap holds.
+// per-hunk labels agree with the file's evidence, and the cap holds. At the cap the list holds
+// first the items the reading every release up to 0.8.3 had finds, in their order, so an item
+// only a further reading finds never takes the place of one that 0.8.3 listed.
 //
 // And no answer is lower than 0.8.3's: in a Rust file, a rule token that the reading of 0.8.3
 // shows on a changed line is evidence, whatever the lexer reading makes of that line. The
@@ -72,6 +74,15 @@ fuzz_target!(|data: &[u8]| {
     for file in &files {
         let ranked = RankedFile::scored(file);
         assert!(ranked.evidence.len() <= MAX_EVIDENCE_PER_FILE);
+        let all = file_evidence(file);
+        assert_eq!(ranked.evidence.len(), all.len().min(MAX_EVIDENCE_PER_FILE));
+        let released = || all.iter().filter(|e| e.released);
+        let listed = || ranked.evidence.iter().filter(|e| e.released);
+        assert_eq!(listed().count(), released().count().min(MAX_EVIDENCE_PER_FILE));
+        assert!(
+            listed().zip(released()).all(|(listed, found)| listed == found),
+            "the released items listed are not the first of the file"
+        );
         for item in &ranked.evidence {
             let hunk = file
                 .patch_twin
