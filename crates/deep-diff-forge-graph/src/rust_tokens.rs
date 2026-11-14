@@ -21,9 +21,10 @@
 //! Each construct is found from one word (`unwrap`, `assert`, `todo`, `#`, …) by reading a
 //! bounded number of the tokens before and after it ([`TURBOFISH_TOKENS`]). The one construct
 //! with no bound of its own, a `#[cfg_attr(…)]` list, is followed token by token as the tokens
-//! pass ([`Skips`]), never from each list's own start. Nothing recurses, and the tokens are
-//! held only in a short window, so the cost is the length of the side and the memory is the
-//! window, whatever the text.
+//! pass ([`Skips`]), never from each list's own start. Nothing recurses and nothing is sorted.
+//! The tokens are held only in a short window, and what is found is kept as the answer (one
+//! place for each line and signal, [`Found`]) and not as a list of matches. So the cost is the
+//! length of the side, and the memory is the window and the answer, whatever the text.
 //!
 //! What it cannot see, by its design:
 //! - The code view decides what is a comment or a string. It ends a Rust block comment at the
@@ -563,26 +564,61 @@ fn test_attribute<'a, I: Iterator<Item = SideLine<'a>>>(
     (window.marks(end, b']') || window.marks(end, b'(')).then_some((at, end))
 }
 
-/// What the reader found, as it finds it.
+/// The signals the reader gives, in the order of [`EvidenceSignal`], which is the order its
+/// items come out in for one line.
+const READ: [EvidenceSignal; 5] = [
+    EvidenceSignal::TestRemoved,
+    EvidenceSignal::TestSkipped,
+    EvidenceSignal::TrivialAssert,
+    EvidenceSignal::StubAdded,
+    EvidenceSignal::PanicPathAdded,
+];
+
+/// What one line holds: for each of [`READ`], the basis and the hint of the constructs of that
+/// signal found on it so far, taken together.
+type OnLine = [Option<(Basis, bool)>; READ.len()];
+
+/// What the reader found, as it finds it: one entry for each line that holds something, and in
+/// it one place for each signal. A construct found again on a line joins what is there.
+///
+/// So what is kept is the answer and never the matches: before, every match that did not
+/// directly follow one like it was kept to the end and the whole list was sorted, and a line
+/// of `x.unwrap(); todo!();` repeated over 16 MiB held 97 MiB for an answer of two items
+/// (review V3 round 11, VD3R11-M-1). Nothing is sorted here. Constructs come in the order of
+/// the lines they are reported on; the one that can come late is a `cfg_attr` list, which is
+/// noted where it ends for the line its first changed token is on, and such an item goes into
+/// `late`, a map by line, which is joined with `lines` at the end, both being in order.
 #[derive(Default)]
 struct Found {
-    items: Vec<Item>,
-    /// An item came before one already there.
-    unordered: bool,
+    /// The lines in the order they were first reported on, which is their order in the hunk.
+    lines: Vec<(usize, OnLine)>,
+    /// Items for a line before the last of `lines`.
+    late: std::collections::BTreeMap<usize, OnLine>,
 }
 
 impl Found {
     fn note(&mut self, item: Item) {
-        if let Some(last) = self.items.last_mut() {
-            let (was, is) = ((last.line, last.signal), (item.line, item.signal));
-            if was == is {
-                last.basis = last.basis.max(item.basis);
-                last.test_likely &= item.test_likely;
-                return;
+        // Only the reader's own signals are ever noted.
+        let Some(place) = READ.iter().position(|signal| *signal == item.signal) else {
+            return;
+        };
+        let last = self.lines.last().map(|(line, _)| *line);
+        let on_line = match last {
+            Some(line) if line > item.line => self.late.entry(item.line).or_default(),
+            Some(line) if line == item.line => {
+                let at = self.lines.len() - 1;
+                &mut self.lines[at].1
             }
-            self.unordered |= was > is;
-        }
-        self.items.push(item);
+            _ => {
+                self.lines.push((item.line, OnLine::default()));
+                let at = self.lines.len() - 1;
+                &mut self.lines[at].1
+            }
+        };
+        on_line[place] = Some(match on_line[place] {
+            Some((basis, likely)) => (basis.max(item.basis), likely && item.test_likely),
+            None => (item.basis, item.test_likely),
+        });
     }
 
     /// Note `signal` for the construct `window` holds from `first` to `last`, when one of its
@@ -605,19 +641,46 @@ impl Found {
         }
     }
 
-    /// The items by line and then by signal, one for each pair. They come in that order but
-    /// for a `cfg_attr` list, which is noted where it ends for the line its first changed
-    /// token is on.
-    fn sorted(mut self) -> Vec<Item> {
-        if self.unordered {
-            self.items.sort_by_key(|item| (item.line, item.signal));
-            let mut merged = Self::default();
-            for item in self.items {
-                merged.note(item);
+    /// The items by line and then by signal, one for each pair: `lines` and `late` are each in
+    /// line order and are walked together once, so this costs the answer's length.
+    fn sorted(self) -> Vec<Item> {
+        fn join(into: &mut OnLine, from: OnLine) {
+            for (place, more) in from.into_iter().enumerate() {
+                into[place] = match (into[place], more) {
+                    (Some((basis, likely)), Some((other, also))) => {
+                        Some((basis.max(other), likely && also))
+                    }
+                    (was, more) => was.or(more),
+                };
             }
-            return merged.items;
         }
-        self.items
+        let mut out = Vec::new();
+        let mut push = |line: usize, on_line: OnLine| {
+            for (signal, held) in READ.into_iter().zip(on_line) {
+                if let Some((basis, test_likely)) = held {
+                    out.push(Item {
+                        line,
+                        signal,
+                        basis,
+                        test_likely,
+                    });
+                }
+            }
+        };
+        let mut late = self.late.into_iter().peekable();
+        for (line, mut on_line) in self.lines {
+            while let Some((before, held)) = late.next_if(|(before, _)| *before < line) {
+                push(before, held);
+            }
+            if let Some((_, held)) = late.next_if(|(same, _)| *same == line) {
+                join(&mut on_line, held);
+            }
+            push(line, on_line);
+        }
+        for (line, held) in late {
+            push(line, held);
+        }
+        out
     }
 }
 
@@ -1063,6 +1126,69 @@ pub(crate) fn read_old<'a>(lines: impl Iterator<Item = SideLine<'a>>) -> Vec<Ite
 mod tests {
     use super::*;
     use EvidenceSignal as S;
+
+    /// Review V3 round 11, VD3R11-M-1: what the reader keeps is its answer, not its matches.
+    /// A line of `x.unwrap(); todo!();` repeated held one item for each construct to the end,
+    /// and they were sorted: 16 MiB of it took 97 MiB for an answer of two items. Here 200,000
+    /// constructs on one line, and as many again on a second, leave two lines of two signals
+    /// each; a conditional skip that ends late for an earlier line is one late entry, however
+    /// many such lists there are; and the answer is in order.
+    #[test]
+    fn what_is_kept_is_the_answer_and_not_the_matches() {
+        assert!(
+            READ.is_sorted(),
+            "items of one line come out in READ's order"
+        );
+        let mut found = Found::default();
+        let item = |line, signal, basis, test_likely| Item {
+            line,
+            signal,
+            basis,
+            test_likely,
+        };
+        for line in [3usize, 7] {
+            for round in 0..100_000 {
+                found.note(item(line, S::PanicPathAdded, Basis::Lexical, round != 5));
+                found.note(item(line, S::StubAdded, Basis::Lexical, false));
+            }
+        }
+        // lists that end on line 7 and were first changed on lines 5 and 1, many times over
+        for _ in 0..50_000 {
+            found.note(item(5, S::TestSkipped, Basis::Hunk, false));
+            found.note(item(1, S::TestSkipped, Basis::Lexical, false));
+            found.note(item(3, S::TestSkipped, Basis::Hunk, false));
+        }
+        found.note(item(9, S::TrivialAssert, Basis::Hunk, false));
+        assert_eq!((found.lines.len(), found.late.len()), (3, 3));
+        assert_eq!(
+            found.sorted(),
+            [
+                item(1, S::TestSkipped, Basis::Lexical, false),
+                item(3, S::TestSkipped, Basis::Hunk, false),
+                item(3, S::StubAdded, Basis::Lexical, false),
+                // one of the panic paths on the line was outside a test: no hint for the line
+                item(3, S::PanicPathAdded, Basis::Lexical, false),
+                item(5, S::TestSkipped, Basis::Hunk, false),
+                item(7, S::StubAdded, Basis::Lexical, false),
+                item(7, S::PanicPathAdded, Basis::Lexical, false),
+                item(9, S::TrivialAssert, Basis::Hunk, false),
+            ]
+        );
+        // and through the reader itself: one added line of alternating constructs
+        let text = "x.unwrap(); todo!(); ".repeat(50_000);
+        let lines = [SideLine {
+            index: 0,
+            code: &text,
+            changed: true,
+        }];
+        assert_eq!(
+            read_new(lines.into_iter()),
+            [
+                item(0, S::StubAdded, Basis::Lexical, false),
+                item(0, S::PanicPathAdded, Basis::Lexical, false),
+            ]
+        );
+    }
 
     /// A side from lines written as in a patch: `+` or `-` first for a line the change made, a
     /// space for an unchanged one.
