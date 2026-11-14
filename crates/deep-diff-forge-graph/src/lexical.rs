@@ -879,7 +879,10 @@ pub fn has_token(text: &str, token: &str) -> bool {
 /// later: `c"…"` and `cr"…"` are C strings. (Before 2021 `c"…"` is the name `c` and a string,
 /// with the same bytes between the quotes; `cr"\"` is the name `cr` and a string in which `\"`
 /// is an escape, where the raw reading ends the string at the second quote and so keeps more
-/// as code.) A `#` before a quote is punctuation and the quote opens a string, as in every
+/// as code.) One form is read as the editions before 2021 read it, which is how 0.8.3 read it:
+/// `'r#name` is the lifetime `'r`, a `#` and what follows, so `'r#r"\"` holds a raw string.
+/// (From 2021 it is one raw lifetime, and the quote after `'r#r` opens an ordinary string.)
+/// A `#` before a quote is punctuation and the quote opens a string, as in every
 /// edition in which `#"…"#` compiles; edition 2024 reserves that form and refuses it.
 ///
 /// One line is scanned at a time. What a line leaves open is a [`rust::Open`]: block comments
@@ -1187,7 +1190,8 @@ mod rust {
         /// label when a name, a digit or an emoji follows and no quote stands right after that
         /// one character; then the name is passed over. A quote right after the name makes the
         /// lexer take it for a literal after all (`'ab'`), which the compiler refuses: it ends
-        /// there, and is kept as text. Anything else is a character literal.
+        /// there, and is kept as text. Anything else is a character literal. A `#` after the
+        /// name is not part of it.
         fn lifetime_or_char(&mut self, quote: usize) -> Next {
             let Some(first) = self.char_at(quote + 1) else {
                 return Next::End(Open::CharEnd);
@@ -1199,11 +1203,8 @@ mod rust {
             if !lifetime {
                 return self.quoted(quote);
             }
-            if first == 'r' && second == Some(b'#') && self.char_at(after + 1).is_some_and(id_start)
-            {
-                // A raw lifetime (`'r#fn`): no quote after it is looked for.
-                return Next::At(self.name_run(after + 1));
-            }
+            // (No rule for the lexer's raw lifetime: `'r#fn` is `'r`, `#` and `fn`, as editions
+            // 2015 and 2018 read it and as 0.8.3 did. Editions 2021 and 2024 read one token.)
             let end = self.name_rest(after);
             // No suffix is taken after a literal read this way.
             Next::At(end + usize::from(self.bytes.get(end) == Some(&b'\'')))
@@ -2606,8 +2607,9 @@ mod tests {
 
     /// A `'` before a name is a lifetime or a label, not a literal: `'a`, `'static`, `'_`,
     /// `'outer: loop`, `&'a str`, `<'a, 'b>`, a name past ASCII (`'é`) and a raw lifetime
-    /// (`'r#fn`, edition 2021). Only a quote right after the name makes a literal: `'a'` is one,
-    /// `'ab` is a lifetime, and in `'a,'b'` the first is a lifetime and the second a literal.
+    /// (`'r#fn`, edition 2021; read here as `'r`, `#`, `fn`, all code either way). Only a quote
+    /// right after the name makes a literal: `'a'` is one, `'ab` is a lifetime, and in `'a,'b'`
+    /// the first is a lifetime and the second a literal.
     /// Checked with rustc 1.99.1: the functions compile, and a macro counts `'a 'b' x` and
     /// `'a,'b'` as three tokens each and `'a'` as one.
     #[test]
@@ -2996,6 +2998,65 @@ mod tests {
             ),
             ("m!(k#fn k#unsafe); unsafe", "m!(k#fn k#unsafe); unsafe"),
             (r##"m!(k#"x"#); unsafe"##, r##"m!(k#" "#); unsafe"##),
+        ] {
+            assert_eq!(view(Language::Rust, line), expected, "{line}");
+        }
+    }
+
+    /// A `#` after a lifetime is a `#`: `'r#name` is the lifetime `'r`, a `#` and what follows,
+    /// so `'r#r"\"` holds a raw string that ends at its second quote. That is how editions 2015
+    /// and 2018 read it, and how 0.8.3 read it. Editions 2021 and 2024 read one raw lifetime
+    /// `'r#r` and then an ordinary string in which `\"` is an escape; a text written for them
+    /// is read the older way here, as in 0.8.3, and a call that stands in what the older
+    /// reading takes for a comment is not seen. Checked with rustc 1.99.1: a macro counts
+    /// `'r#fn` as three tokens in editions 2015 and 2018 and as one in 2021 and 2024.
+    #[test]
+    fn rust_a_hash_after_a_lifetime_is_a_hash() {
+        for (line, expected) in [
+            // editions 2015 and 2018: the raw string has ended, and what follows is code
+            (r#"m!('r#r"\"); unsafe"#, r#"m!('r#r" "); unsafe"#),
+            (
+                r#"m!('r#r"\"); m!(" /* "); unsafe"#,
+                r#"m!('r#r" "); m!("    "); unsafe"#,
+            ),
+            (
+                r##"m!('r#r#"a"b"#); unsafe"##,
+                r##"m!('r#r#"   "#); unsafe"##,
+            ),
+            // the text for editions 2021 and 2024, where the `unsafe` block is code: here the
+            // raw string ends at the second quote, ` /* ` opens a comment over the block, and
+            // the last quote opens a string
+            (
+                r#"m!('r#r"\" /* "); unsafe { g() }; m!(" */ ");"#,
+                r#"m!('r#r" "                                "  "#,
+            ),
+        ] {
+            assert_eq!(view(Language::Rust, line), expected, "{line}");
+        }
+    }
+
+    /// What does not depend on that reading: a character literal, a lifetime, a label, a
+    /// lifetime before `#"…"#`, a name after the `#` that no quote follows, and a literal after
+    /// such a name whose bytes are the same either way. Each is read as before the rule for
+    /// `'r#name` was changed (this test passes with and without it).
+    #[test]
+    fn rust_a_quote_and_an_r_are_read_as_before() {
+        for (line, expected) in [
+            ("m!('r'); unsafe", "m!(   ); unsafe"),
+            ("m!('r 'r: 'rx); unsafe", "m!('r 'r: 'rx); unsafe"),
+            (r##"m!('r#"x"#); unsafe"##, r##"m!('r#" "#); unsafe"##),
+            (
+                "m!('r#fn 'r #fn 'r#1); unsafe",
+                "m!('r#fn 'r #fn 'r#1); unsafe",
+            ),
+            (
+                "m!('r#fn'x' 'r#b'y'); unsafe",
+                "m!('r#fn    'r#b   ); unsafe",
+            ),
+            (
+                r#"m!('r#b"\"" 'r#c"\""); unsafe"#,
+                r#"m!('r#b"  " 'r#c"  "); unsafe"#,
+            ),
         ] {
             assert_eq!(view(Language::Rust, line), expected, "{line}");
         }

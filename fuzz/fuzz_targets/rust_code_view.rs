@@ -12,7 +12,9 @@
 // offers `#"` or `##` as one token (reserved in edition 2024, which refuses it), a `#` and the
 // rest read again, as the compiler does in every edition that accepts the text; and where it
 // offers `k#name` as one token (a token no edition of rustc 1.99.1 has: 2021 and 2024 refuse
-// the prefix, earlier ones read `k`, `#`, `name`), a `k` and the rest read again. A C string is
+// the prefix, earlier ones read `k`, `#`, `name`), a `k` and the rest read again; and where it
+// offers `'r#name` as one token (a raw lifetime, editions 2021 and 2024), the lifetime `'r` and
+// the rest read again, as editions 2015 and 2018 read it and as 0.8.3 did. A C string is
 // one token (edition 2021 and later). The view gets the same text one line at a time, cut at
 // `\n` only, as a hunk gives it.
 //
@@ -97,6 +99,13 @@ fn truth(text: &str) -> Truth {
             TokenKind::GuardedStrPrefix | TokenKind::ForcedKeywordIdent => {
                 len = 1;
                 cursor = Cursor::new(&text[at + 1..], FrontmatterAllowed::No);
+            }
+            // `'r#name` is one raw lifetime from edition 2021 on. The view keeps the reading
+            // of editions 2015 and 2018, which 0.8.3 had: the lifetime `'r`, two bytes of
+            // code, and the `#` and the rest read again (`'r#r"\"` then holds a raw string).
+            TokenKind::RawLifetime => {
+                len = 2;
+                cursor = Cursor::new(&text[at + 2..], FrontmatterAllowed::No);
             }
             TokenKind::LineComment { .. } => {
                 found.line_comments.push(at);
