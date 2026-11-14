@@ -11,10 +11,9 @@
 //! evidence item is a false positive a reviewer sees, a hidden one is a miss nobody does.
 //! - Block comments and triple-quoted strings are followed across the lines of one hunk, in
 //!   order ([`ScanState`]); a hunk that starts inside one is read as code.
-//! - Hunks with no line of the file between them are one text: the hunks of a file the patch
-//!   creates, and a hunk that begins where the one before it ends. Such a hunk is read once
-//!   more from what the hunk before left open (`carried_view`), beside the readings that
-//!   start it as code.
+//! - The hunks of a file the patch creates are one text: a later one is read once more from
+//!   what the hunks before it left open (`carried_view`), beside the readings that start it
+//!   as code. The hunks of a file that exists are read each on its own.
 //! - A string still open at the end of a line (outside Rust) is read as code from its quote,
 //!   and is also carried to the next line of the hunk. That line is read twice, as code and as
 //!   resuming inside the string, and both readings go on down the hunk (up to four at once);
@@ -492,6 +491,68 @@ fn union_views(line: &str, views: &[String]) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
+/// [`union_views`] of views given one at a time: which bytes of the line some view so far
+/// keeps, one bit for each, so that a view can be dropped as soon as it is made and no two
+/// views of a line are alive together.
+#[derive(Debug, Default)]
+struct Kept {
+    bits: Vec<u64>,
+    len: usize,
+}
+
+impl Kept {
+    /// Adds `view`, a view of the line.
+    fn add(&mut self, view: &str) {
+        self.len = self.len.max(view.len());
+        self.bits
+            .resize(self.len.div_ceil(64).max(self.bits.len()), 0);
+        for (at, byte) in view.bytes().enumerate() {
+            if byte != b' ' {
+                self.bits[at / 64] |= 1 << (at % 64);
+            }
+        }
+    }
+
+    /// The bytes of `line` that any view added keeps, the rest blank: [`union_views`] of them.
+    fn view(self, line: &str) -> String {
+        let out: Vec<u8> = line
+            .bytes()
+            .take(self.len)
+            .enumerate()
+            .map(|(at, byte)| {
+                if self.bits[at / 64] & (1 << (at % 64)) == 0 {
+                    b' '
+                } else {
+                    byte
+                }
+            })
+            .collect();
+        String::from_utf8(out).unwrap_or_default()
+    }
+}
+
+/// [`code_view`], with each reading's view dropped before the next is made: the same view and
+/// the same state, at the cost in memory of one view however many readings `state` holds.
+/// The reading carried from one hunk of a created file to the next is read this way, since it
+/// can come to a line with several readings where a hunk read alone comes with one.
+fn code_view_one_at_a_time(language: Language, line: &str, state: &mut ScanState) -> String {
+    let mut readings = Vec::with_capacity(2 * (1 + MORE_READINGS));
+    let mut kept = Kept::default();
+    for mut start in state.readings() {
+        let open = start.in_string.take();
+        let mut plain = start;
+        kept.add(&scan_line(language, line, &mut plain, None));
+        readings.push(plain);
+        if let Some(open) = open {
+            let mut resumed = start;
+            kept.add(&scan_line(language, line, &mut resumed, Some(open)));
+            readings.push(resumed);
+        }
+    }
+    *state = ScanState::from_readings(&readings);
+    kept.view(line)
+}
+
 /// One line's scan in progress: the view so far, what is open, and how many of the next bytes
 /// a multi-byte decision (`/*`, `*/`, `"""`, a char literal, an opener, a regex) blanks or then
 /// copies. One byte per step, so no step can stall.
@@ -885,7 +946,7 @@ pub fn has_token(text: &str, token: &str) -> bool {
 }
 
 /// What the lines of one side of a hunk have left open, in each reading of them: the state of
-/// [`code_views`]. The readings share nothing; each goes on from what it left open itself.
+/// the scan of a line. The readings share nothing; each goes on from what it left open itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct Readings {
     /// The shared scanner's state. For Rust this is the reading of 0.8.3.
@@ -894,22 +955,50 @@ pub(crate) struct Readings {
     lexer: RustLexerState,
 }
 
-/// The views of `line`, one for each reading of it: what a rule that reads code is asked of.
-/// A rule finds something on the line when it finds it in any of them. The views are never
-/// merged, so a token must stand whole in one reading.
-///
-/// Every language but Rust has one reading, [`code_view`]. Rust has two. The first is
-/// [`code_view`] too, which reads Rust exactly as 0.8.3 did, so that whatever 0.8.3 found on a
-/// line is found. The second is [`rust_lexer_view`], the compiler's reading of text that
-/// starts in code, which finds what the first hides after a nested block comment or a
-/// character literal with a long escape. Where both give the same view it is returned once.
+impl Readings {
+    /// The view of `line` in the reading every release up to 0.8.3 had ([`code_view`]): for
+    /// every language but Rust the only one, and for Rust the first, kept exactly, so that
+    /// whatever 0.8.3 found on a line is found.
+    pub(crate) fn released_view(&mut self, language: Language, line: &str) -> String {
+        code_view(language, line, &mut self.legacy)
+    }
+
+    /// The view of a Rust `line` in its second reading ([`rust_lexer_view`]), the compiler's
+    /// reading of text that starts in code, which finds what the first hides after a nested
+    /// block comment or a character literal with a long escape. The two views are never
+    /// merged, so a token must stand whole in one reading.
+    pub(crate) fn lexer_view(&mut self, line: &str) -> String {
+        rust_lexer_view(line, &mut self.lexer)
+    }
+
+    /// What these readings have left open for the reading that goes from one hunk of a
+    /// created file to the next ([`carried_view`]): the lexer's state for Rust, the shared
+    /// scanner's for every other language.
+    pub(crate) fn carried(&self, language: Language) -> Carried {
+        if language == Language::Rust {
+            if self.lexer == RustLexerState::default() {
+                Carried::Nothing
+            } else {
+                Carried::Rust(self.lexer)
+            }
+        } else if self.legacy == ScanState::default() {
+            Carried::Nothing
+        } else {
+            Carried::Shared(self.legacy)
+        }
+    }
+}
+
+/// The views of `line` together, one for each reading of it, the same once where both give
+/// the same view: for the tests that compare the readings.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn code_views(language: Language, line: &str, state: &mut Readings) -> Vec<String> {
-    let legacy = code_view(language, line, &mut state.legacy);
+    let legacy = state.released_view(language, line);
     if language != Language::Rust {
         return vec![legacy];
     }
-    let lexer = rust_lexer_view(line, &mut state.lexer);
+    let lexer = state.lexer_view(line);
     if lexer == legacy {
         vec![legacy]
     } else {
@@ -931,12 +1020,11 @@ pub(crate) enum Carried {
     Shared(ScanState),
 }
 
-/// One more reading of `line`: the one that goes on from what the hunk before left open, for a
-/// hunk that follows another with no line of the file between them (the hunks of a file the
-/// patch creates, and a hunk that begins where the one before it ends). For Rust it is the
+/// One more reading of `line`: the one that goes on from what the hunk before left open, for
+/// the later hunks of a file the patch creates. For Rust it is the
 /// lexer reading ([`rust_lexer_view`]), which for a created file is the compiler's reading of
 /// the whole file; for every other language it is [`code_view`]. It is asked beside the
-/// readings that start the hunk as code ([`code_views`]), never in their place.
+/// readings that start the hunk as code, never in their place.
 #[must_use]
 pub(crate) fn carried_view(language: Language, line: &str, state: &mut Carried) -> String {
     if language == Language::Rust {
@@ -956,7 +1044,7 @@ pub(crate) fn carried_view(language: Language, line: &str, state: &mut Carried) 
             Carried::Shared(shared) => shared,
             _ => ScanState::default(),
         };
-        let view = code_view(language, line, &mut shared);
+        let view = code_view_one_at_a_time(language, line, &mut shared);
         *state = if shared == ScanState::default() {
             Carried::Nothing
         } else {
@@ -1007,7 +1095,7 @@ pub fn rust_lexer_view(line: &str, state: &mut RustLexerState) -> String {
 /// as code.) `'r#name` is one raw lifetime, so in `'r#r"\"` the quote opens an ordinary string.
 /// (Before 2021 it is the lifetime `'r`, a `#` and what follows, here the raw string `r"\"`.)
 /// (The rules also read Rust as the shared scanner reads it, which is how 0.8.3 read it and
-/// has the older reading of this form: [`code_views`](super::code_views).)
+/// has the older reading of this form: `code_view`.)
 /// A `#` before a quote is punctuation and the quote opens a string, as in every
 /// edition in which `#"…"#` compiles; edition 2024 reserves that form and refuses it.
 ///
@@ -1020,7 +1108,7 @@ pub fn rust_lexer_view(line: &str, state: &mut RustLexerState) -> String {
 /// (`State::exact`) and is never dropped: for text that starts in code it is the compiler's
 /// reading, and the view keeps at least what it keeps.
 mod rust {
-    use super::{MORE_READINGS, union_views};
+    use super::MORE_READINGS;
 
     /// What a line left open for the next one.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1075,25 +1163,35 @@ mod rust {
 
     /// The view of `line` and the state after it: [`super::rust_lexer_view`].
     pub(super) fn code_view(line: &str, state: &mut State) -> String {
-        let mut views = Vec::with_capacity(2 * (1 + MORE_READINGS));
-        let mut ends = Vec::with_capacity(views.capacity());
+        // Each reading's view is added to what is kept and dropped before the next is made.
+        let mut kept = super::Kept::default();
+        let mut ends = Vec::with_capacity(2 * (1 + MORE_READINGS));
         let mut exact = None;
+        // Where each reading so far began, with what it ended in: a second reading from the
+        // same place is the same scan, and the line is not read again for it. (Every reading
+        // that carries a literal is also read as resuming none, each from the same place.)
+        let mut scanned: Vec<(Open, Open)> = Vec::with_capacity(1 + MORE_READINGS);
         for (place, open) in state.readings().enumerate() {
             // As code, or in the comment every reading carries: resuming no literal.
-            let (view, mut end) = scan(
-                line,
-                if open.is_literal() {
-                    Open::Nothing
-                } else {
-                    open
-                },
-            );
-            views.push(view);
+            let from = if open.is_literal() {
+                Open::Nothing
+            } else {
+                open
+            };
+            let mut end = if let Some(&(_, end)) = scanned.iter().find(|(began, _)| *began == from)
+            {
+                end
+            } else {
+                let (view, end) = scan(line, from);
+                kept.add(&view);
+                scanned.push((from, end));
+                end
+            };
             ends.push(end);
             if open.is_literal() {
                 let view;
                 (view, end) = scan(line, open);
-                views.push(view);
+                kept.add(&view);
                 ends.push(end);
             }
             if place == state.exact {
@@ -1101,7 +1199,7 @@ mod rust {
             }
         }
         *state = after(&ends, exact);
-        union_views(line, &views)
+        kept.view(line)
     }
 
     /// The state after a line whose readings ended as `ends` (the plain one first): the plain
@@ -3235,5 +3333,45 @@ mod tests {
                 }
             });
         }
+    }
+    /// The carried reading of the shared scanner, which drops each reading's view before it
+    /// makes the next, gives the view and the state [`code_view`] gives: 20,000 generated
+    /// lines in six languages, read line after line with whatever the lines before left open.
+    #[test]
+    fn the_one_at_a_time_reading_is_the_shared_scanner_s() {
+        const ATOMS: [&str; 16] = [
+            "\"", "'", "`", "/*", "*/", "//", "#", "\"\"\"", "${", "}", "$(", ")", "x = 1", " ",
+            "\\", "r#\"",
+        ];
+        let languages = [
+            Language::Rust,
+            Language::Python,
+            Language::JavaScript,
+            Language::Go,
+            Language::Shell,
+            Language::Yaml,
+        ];
+        let mut seed = 0x5EED_1234_ABCD_0001_u64;
+        let mut next = move |below: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % (below as u64)).unwrap()
+        };
+        let mut several = 0;
+        for language in languages {
+            let (mut one, mut all) = (ScanState::default(), ScanState::default());
+            for _ in 0..20_000 / languages.len() {
+                let line: String = (0..=next(5)).map(|_| ATOMS[next(ATOMS.len())]).collect();
+                several += usize::from(all.readings().count() > 1);
+                assert_eq!(
+                    code_view_one_at_a_time(language, &line, &mut one),
+                    code_view(language, &line, &mut all),
+                    "{language:?}: {line:?}"
+                );
+                assert_eq!(one, all, "{language:?}: {line:?}");
+            }
+        }
+        assert!(several > 2000, "{several} lines read with several readings");
     }
 }

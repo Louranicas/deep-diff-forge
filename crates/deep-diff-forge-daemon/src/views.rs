@@ -176,8 +176,8 @@ fn hunk_head(file: &ReviewFile, hunk: &PatchHunk) -> serde_json::Map<String, Val
 }
 
 /// A hunk's header facts with its evidence labels given. A view that lists hunks asks for the
-/// labels through one [`deep_diff_forge_graph::HunkLabels`] for each file, which reads a run of
-/// hunks that touch once, not once for each of them.
+/// labels through one [`deep_diff_forge_graph::HunkLabels`] for each file, which reads the hunks
+/// of a file the patch creates as one text, once.
 fn hunk_head_with(
     file: &ReviewFile,
     hunk: &PatchHunk,
@@ -407,14 +407,12 @@ pub fn outline(review: &SealedReview, page: &Page) -> Result<Value, ViewError> {
     }))
 }
 
-/// The evidence labels of the hunks a view lists, in whatever order it lists them: one
-/// [`deep_diff_forge_graph::HunkLabels`] for each file, kept until the listing's last hunk of
-/// that file. A file's hunks asked for in reverse, or the hunks of two files in turn, are then
-/// served from one reading of what each hunk comes into, and a request costs the lines of the
-/// hunks it lists and at most once more the lines of their files (found in review,
-/// 2026-11-15: with a reader that was made again when the file changed and that read a run of
-/// touching hunks from its start for each hunk asked out of order, 8,000 one-line hunks of a
-/// new file by address in reverse took 6.2 s against 0.13 s by path).
+/// The evidence labels of the hunks a view lists, in whatever order it lists them. A hunk of
+/// a file that exists is read alone, and nothing is kept for it. The hunks of a file the
+/// patch creates are also read as one text: such a file has one
+/// [`deep_diff_forge_graph::HunkLabels`], kept until the listing's last hunk of that file,
+/// so its hunks asked for in reverse, or the hunks of two files in turn, are served from one
+/// reading of the file, and what is kept follows the hunks asked for.
 struct UnitLabels<'a> {
     files: &'a [ReviewFile],
     /// The last place in the listing that names each file.
@@ -432,9 +430,16 @@ struct UnitLabels<'a> {
 impl<'a> UnitLabels<'a> {
     fn new(files: &'a [ReviewFile], units: &[(usize, usize)]) -> Self {
         use std::collections::HashMap;
-        // Each file's last hunk so far, and whether its hunks came in file order.
+        // Only a file the patch creates in several hunks has a reader.
+        let units: Vec<(usize, (usize, usize))> = units
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|&(_, (f, _))| one_text(&files[f]))
+            .collect();
+        // Each such file's last hunk so far, and whether its hunks came in file order.
         let mut order: HashMap<usize, (usize, bool)> = HashMap::new();
-        for &(f, h) in units {
+        for &(_, (f, h)) in &units {
             order
                 .entry(f)
                 .and_modify(|(before, in_order)| {
@@ -444,7 +449,7 @@ impl<'a> UnitLabels<'a> {
                 .or_insert((h, true));
         }
         let mut out_of_order: HashMap<usize, Vec<usize>> = HashMap::new();
-        for &(f, h) in units {
+        for &(_, (f, h)) in &units {
             if order.get(&f).is_some_and(|(_, in_order)| !in_order) {
                 out_of_order.entry(f).or_default().push(h);
             }
@@ -453,8 +458,7 @@ impl<'a> UnitLabels<'a> {
             files,
             last: units
                 .iter()
-                .enumerate()
-                .map(|(position, &(f, _))| (f, position))
+                .map(|&(position, (f, _))| (f, position))
                 .collect(),
             out_of_order,
             kept: HashMap::new(),
@@ -480,6 +484,9 @@ impl<'a> UnitLabels<'a> {
         h: usize,
     ) -> Vec<deep_diff_forge_graph::EvidenceSignal> {
         let file = &self.files[f];
+        if !one_text(file) {
+            return deep_diff_forge_graph::hunk_signals(file, &file.patch_twin.hunks[h]);
+        }
         let labels = self.kept.entry(f).or_insert_with(|| {
             #[cfg(test)]
             {
@@ -495,13 +502,19 @@ impl<'a> UnitLabels<'a> {
             let done = self.kept.remove(&f);
             #[cfg(test)]
             {
-                self.work.0 += done.map_or(0, |labels| labels.lines_read());
+                self.work.0 += done.map_or(0, |labels| labels.scans());
             }
             #[cfg(not(test))]
             drop(done);
         }
         signals
     }
+}
+
+/// Whether the hunks of `file` are also read as one text: a file the patch creates, in more
+/// than one hunk.
+fn one_text(file: &ReviewFile) -> bool {
+    file.status == deep_diff_forge_core::FileStatus::Added && file.patch_twin.hunks.len() > 1
 }
 
 /// `deep-diff-forge.review-hunks.v0`: the selected hunks, verbatim, each with its address, path,
@@ -1001,11 +1014,11 @@ mod tests {
         assert_eq!(answer["files"][1]["hunks"][0]["section"], "fn h0()");
     }
 
-    /// The labels of hunks that touch are the rank's: a file the patch creates in two hunks, with
+    /// The labels of a creation's hunks are the rank's: a file the patch creates in two hunks, with
     /// a comment opened in the first and closed in the second, shows its spawn on the second
     /// hunk, in the outline and in the hunks view, as the rank does on the file.
     #[test]
-    fn hunks_that_touch_are_labelled_as_one_text() {
+    fn the_hunks_of_a_creation_are_labelled_as_one_text() {
         let r = review(
             "--- /dev/null\n+++ b/src/evil.rs\n@@ -0,0 +1,1 @@\n+/*\n@@ -2,0 +2,1 @@\n\
              +// */ pub fn evil() { std::process::Command::new(\"sh\").status().ok(); }\n",
@@ -1076,8 +1089,9 @@ mod tests {
             (labels.work, got)
         };
         let (work, labelled) = read(&in_order);
-        // One reader for each file; each line once, and all but each file's last once more.
-        assert_eq!(work, (2 * (2 * HUNKS - 1), 2));
+        // One reader for each file; each line scanned twice (it is Rust), and a third time
+        // in the hunk that comes into the comment the hunk before it opened.
+        assert_eq!(work, (2 * (2 * HUNKS + HUNKS / 10), 2));
         let (in_turn, the_same) = read(&in_turn_reversed);
         assert_eq!(in_turn, work, "the two files in turn, reversed");
         assert!(the_same == labelled, "labels differ by the order asked");
