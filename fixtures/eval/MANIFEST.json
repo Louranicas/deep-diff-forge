@@ -1176,6 +1176,51 @@
         }
       ],
       "sha256": "68186172b62d5d7fb5d62562a81cd97b95a314737e2ebdc76cef372ff58e48ea"
+    },
+    {
+      "id": "evidence/review-v3-round8",
+      "kind": "evidence",
+      "patch": "evidence/review-v3-round8.patch",
+      "origin": "internal: an adversarial review by Vesper, V3 round 8, 2026-11-14 (docs/reviews/vesper-v3-round8-report-20261114.md), finding VD3R8-M-1, reproduced before it was counted. Expected: a raw identifier read as the identifier it is to the compiler: unwrap called as a method, by a path and passed as a function, a placeholder macro, an ignored test and a trivial assertion, each spelled with r#. Negative: the opener of a raw string is not an identifier, and the call inside the string is text",
+      "expect": [
+        {
+          "path": "src/raw.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/raw.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/raw.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/raw.rs",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "tests/raw.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/raw.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 4
+        }
+      ],
+      "sha256": "c7a16e080c9f8874e900f1c7b41be78969bba3d310b28a1338391453e874ad31"
     }
   ]
 }

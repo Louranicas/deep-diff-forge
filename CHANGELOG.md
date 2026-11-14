@@ -210,19 +210,44 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     (`<Option<u32>>::unwrap(x)`), and `#[allow(` whatever its spacing. Declared in the corpus
     and not fixed: a method named `expect` on another type (`self.expect(Token::LBrace)?`),
     `#[cfg(any())]` on a test, and respellings in Python, JavaScript and Go.
-  - *Medium, not fixed: the parse time limit is a clock.* A hunk that parses in a few tenths
-    of a second on an idle machine can pass its limit (one second and five milliseconds a
-    KiB) on a loaded one, and then carries `syntax_unchecked` where the parser's item would
-    have been: the same patch, two answers. tree-sitter gives no count of work that follows
-    its cost (its progress calls are rarer on slow text than on ordinary code). Only text
-    that is nearly all error recovery is within reach of the limit, either answer is marked,
-    and the unchecked answer is one a patch can already choose by being larger than the
-    budget. A judge that needs one answer for one input should treat `syntax_unchecked` as a
-    reason to hold.
+  - *Medium, not fixed in that commit: the parse time limit was a clock.* A hunk that parses
+    in a few tenths of a second on an idle machine passed its limit on a loaded one, and then
+    carried `syntax_unchecked` where the parser's item would have been: the same patch, two
+    answers. It was written down as a limit. Round 8 (below) did not accept that, and it is
+    fixed there.
   - Tests: the fuzz target's rule is tightened (a panic path may go only inside a proved
     item, and never from a line that holds code outside it); the two-section test no longer
     returns early when the patch parser refuses a path named twice. The corpus has 43 cases;
     evidence precision 63 of 69, recall 63 of 104.
+- **Round 8 of Vesper's review (NO-GO on two medium points) and its fixes.** Every finding
+  of the independent review was found closed except the clock, and one was new.
+  - *Medium: the same patch, two answers (IR-M-1, now fixed).* The parser of hunks asks no
+    clock any more. Its answer is a function of the hunk alone: eight copies of the review's
+    patch started together on one processor all give the item that one copy gives alone
+    (before: the item alone, `syntax_unchecked` together). What bounds the work is bytes:
+    64 KiB a hunk, 256 KiB a review. Measured without a clock on 56 shapes of hostile text at
+    8, 16, 32 and 60 KiB: the slowest (text that is all error recovery) costs 14 microseconds
+    a byte and grows in step with its length, 0.8 s for a whole hunk and 3.4 s for a whole
+    review's budget. A caller that needs a deadline sets one around the command, and then
+    gets an error, not a different answer. The other readers of the syntax crate (the
+    structural view, highlighting), which only show code, keep their deadline.
+  - *Found while the clock was being removed: items nested in one another were scanned on
+    the square of their depth.* The scanner asked the tree for each item's parent and the
+    sibling before it, and tree-sitter answers both by walking down from the root: 4,700
+    functions nested in one another took 2.9 s, which the clock had been hiding. The scanner
+    keeps the parent's kind and the attributes before each node itself; the same text takes
+    hundredths of a second.
+  - *Medium: a raw identifier was not the identifier.* `x.r#unwrap()` and `X::r#unwrap(x)`
+    compile to the same calls and left neither an item nor a mark. A raw identifier is now
+    read as the identifier it is, by the parser (methods, macros, attributes) and by every
+    Rust token rule: `r#todo!()`, `#[r#ignore]`, `r#assert!(true)`, `Result::r#unwrap`. The
+    opener of a raw string is not an identifier and is left alone.
+  - The four path names passed as functions (`Result::unwrap` and the like) are read by the
+    same rule as the calls, whatever the spacing.
+  - Tests: a raw identifier in each rule, with the parser and past its budget; 3,000 nested
+    modules scanned under a bound (the old walk took 7.7 s against a bound of 3); the scanner's
+    source may name no clock. The corpus has 44 cases; evidence precision 69 of 75, recall 69
+    of 110.
 
 ### Changed
 

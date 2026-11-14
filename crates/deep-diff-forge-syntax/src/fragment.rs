@@ -10,8 +10,8 @@
 //! nothing is claimed. The inside of a macro invocation is such a part too, since the parser
 //! does not expand macros.
 //!
-//! The budgets are counts (bytes before the parse, nodes after it), so the same fragment always
-//! gives the same answer. The clock is only the crate's backstop against hostile input.
+//! The budgets are counts (bytes before the parse, nodes after it) and no clock is asked, so the
+//! same fragment always gives the same answer, whatever else the machine is doing.
 
 use crate::Language;
 use tree_sitter::Node;
@@ -179,8 +179,17 @@ fn merged(mut ranges: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
 }
 
 /// Scan `source` as a fragment of `language`. `None` when the language has no grammar, the
-/// fragment is over [`FRAGMENT_BYTE_BUDGET`], its tree is over [`FRAGMENT_NODE_BUDGET`], or the
-/// parse was cancelled by the crate's backstop: the caller then has no rung-2 answer at all.
+/// fragment is over [`FRAGMENT_BYTE_BUDGET`] or its tree is over [`FRAGMENT_NODE_BUDGET`]: the
+/// caller then has no rung-2 answer at all.
+///
+/// The answer is a function of `source` alone. No clock cuts this parse: a deadline made one
+/// patch give the parser's item on an idle machine and "not checked" on a loaded one
+/// (independent review, IR-M-1; still so after it was only documented, review V3 round 8).
+/// What bounds the work is the byte budget. Measured without a clock on 56 shapes of hostile
+/// text at 8, 16, 32 and 60 KiB (release build): the slowest, text that is all error recovery
+/// (`a?b:a?b:…`), costs about 14 microseconds a byte and grows in step with its length, 0.85 s
+/// for a whole fragment; ordinary Rust costs about 0.3. A caller that needs a deadline sets
+/// one around the whole operation, and then gets an error and not a different answer.
 #[must_use]
 pub fn scan_fragment(language: Language, source: &str) -> Option<FragmentScan> {
     if !language.is_supported() || source.len() > FRAGMENT_BYTE_BUDGET {
@@ -190,7 +199,7 @@ pub fn scan_fragment(language: Language, source: &str) -> Option<FragmentScan> {
     parser
         .set_language(&tree_sitter_rust::LANGUAGE.into())
         .ok()?;
-    let tree = crate::parse_bounded(&mut parser, source)?;
+    let tree = parser.parse(source, None)?;
     let root = tree.root_node();
     if root.descendant_count() > FRAGMENT_NODE_BUDGET {
         return None;
@@ -253,19 +262,10 @@ fn place_of(point: tree_sitter::Point) -> Place {
     )
 }
 
-/// The stretch an item covers with its attributes: from the first attribute or comment of the
-/// run before it to its end.
-fn item_span(node: Node) -> Span {
-    let mut first = node;
-    let mut before = node.prev_sibling();
-    while let Some(sibling) = before {
-        match sibling.kind() {
-            "attribute_item" => first = sibling,
-            "line_comment" | "block_comment" => {}
-            _ => break,
-        }
-        before = sibling.prev_sibling();
-    }
+/// The stretch an item covers with its attributes: from the first attribute of the run before
+/// it (`run`, in source order) to its end.
+fn item_span(node: Node, run: &[Node]) -> Span {
+    let first = run.first().copied().unwrap_or(node);
     (
         place_of(first.start_position()),
         place_of(node.end_position()),
@@ -285,33 +285,55 @@ fn text<'a>(node: Node, source: &'a str) -> &'a str {
     source.get(node.byte_range()).unwrap_or("")
 }
 
+/// What the walk knows about the children of one node while it is among them.
+struct Level<'tree> {
+    /// An error sits at or above the parent.
+    unread: bool,
+    /// Proved test code sits at or above the parent.
+    in_test: bool,
+    /// An item whose attribute spells a test sits at or above the parent.
+    test_spelled: bool,
+    /// The parent's kind.
+    kind: &'static str,
+    /// The attributes directly before the current child, in source order: the run that
+    /// comments do not break and anything else does.
+    run: Vec<Node<'tree>>,
+}
+
 /// One walk of the tree, without recursion (a fragment can nest as deeply as its node budget).
-/// `above` holds, for each ancestor of the current node, whether an error sits at or above it
-/// and whether test code does.
-fn walk(root: Node, source: &str) -> FragmentScan {
+/// `above` holds a [`Level`] for each ancestor of the current node.
+///
+/// The walk keeps the parent's kind and the attributes before the current node itself. Asking
+/// the tree (`Node::parent`, `Node::prev_sibling`) costs the node's depth each time, because
+/// tree-sitter finds a parent by walking down from the root: 4,700 functions nested in one
+/// another took 2.9 s that way, on the square of the depth (found while the parse clock was
+/// being removed, 2026-11-14).
+fn walk<'tree>(root: Node<'tree>, source: &str) -> FragmentScan {
     let mut scan = FragmentScan::default();
-    let mut above: Vec<(bool, bool, bool)> = Vec::new();
+    let mut above: Vec<Level<'tree>> = Vec::new();
     let mut cursor = root.walk();
     loop {
         let node = cursor.node();
-        let (error_above, test_above, spelled_above) =
-            above.last().copied().unwrap_or((false, false, false));
+        let kind = node.kind();
+        let (error_above, test_above, spelled_above, parent) =
+            above.last().map_or((false, false, false, ""), |level| {
+                (level.unread, level.in_test, level.test_spelled, level.kind)
+            });
+        let run: &[Node<'tree>] = above.last().map_or(&[], |level| level.run.as_slice());
         let error_here = node.is_error() || node.is_missing();
-        let macro_body = node.kind() == "token_tree"
-            && node
-                .parent()
-                .is_some_and(|parent| parent.kind() == "macro_invocation");
+        let macro_body = kind == "token_tree" && parent == "macro_invocation";
         if error_here || macro_body {
             scan.unreadable.push(rows_of(node));
         }
         let unread = error_above || error_here;
-        let opens_test = opens_test_code(node, source);
+        let item = matches!(kind, "function_item" | "mod_item" | "impl_item");
+        let opens_test = item && parent == "source_file" && opens_test_code(run, source);
         if opens_test {
-            scan.test_items.push(item_span(node));
+            scan.test_items.push(item_span(node, run));
         }
-        let spells = spells_test(node, source);
+        let spells = item && spells_test(run, source);
         if spells {
-            scan.spelled_items.push(item_span(node));
+            scan.spelled_items.push(item_span(node, run));
         }
         let test_spelled = spelled_above || spells;
         let in_test = test_above || opens_test;
@@ -345,10 +367,25 @@ fn walk(root: Node, source: &str) -> FragmentScan {
                 test_spelled,
             });
         }
+        // The run before the next sibling: an attribute joins it, a comment leaves it as it
+        // is, anything else ends it.
+        if let Some(level) = above.last_mut() {
+            match kind {
+                "attribute_item" => level.run.push(node),
+                "line_comment" | "block_comment" => {}
+                _ => level.run.clear(),
+            }
+        }
         // Nothing under an attribute or a macro body is a construct of its own.
-        let closed = macro_body || node.kind() == "attribute_item";
+        let closed = macro_body || kind == "attribute_item";
         if !closed && cursor.goto_first_child() {
-            above.push((unread, in_test, test_spelled));
+            above.push(Level {
+                unread,
+                in_test,
+                test_spelled,
+                kind,
+                run: Vec::new(),
+            });
             continue;
         }
         loop {
@@ -370,7 +407,7 @@ fn construct(node: Node, source: &str) -> Option<ConstructKind> {
         }),
         "macro_invocation" => {
             let path = text(node.child_by_field_name("macro")?, source);
-            let name = path.rsplit("::").next().unwrap_or(path).trim().to_owned();
+            let name = plain(path.rsplit("::").next().unwrap_or(path).trim()).to_owned();
             let mut walker = node.walk();
             let body = node
                 .children(&mut walker)
@@ -398,7 +435,7 @@ fn construct(node: Node, source: &str) -> Option<ConstructKind> {
             if function.kind() != "field_expression" {
                 return None;
             }
-            let name = text(function.child_by_field_name("field")?, source).to_owned();
+            let name = plain(text(function.child_by_field_name("field")?, source)).to_owned();
             Some(ConstructKind::MethodCall { name })
         }
         _ => None,
@@ -427,7 +464,7 @@ fn attribute_words(item: Node, source: &str) -> Vec<String> {
             arguments
                 .children(&mut walker)
                 .filter(|child| child.kind() == "identifier")
-                .map(|child| text(child, source).to_owned()),
+                .map(|child| plain(text(child, source)).to_owned()),
         );
     }
     words
@@ -440,7 +477,7 @@ fn identifiers(node: Node, source: &str) -> Vec<String> {
     loop {
         let current = cursor.node();
         if current.kind() == "identifier" {
-            words.push(text(current, source).to_owned());
+            words.push(plain(text(current, source)).to_owned());
         }
         if cursor.goto_first_child() {
             continue;
@@ -479,9 +516,10 @@ fn attribute_parts(item: Node, source: &str) -> Option<(String, Option<String>)>
     Some((compact(path), arguments))
 }
 
-/// Whether `node` is an item compiled only for tests, as far as a file read from its first line
-/// can prove it: a module, a function or an `impl` at the top level of the file whose first
-/// attribute is exactly `#[cfg(test)]`.
+/// Whether the item that the attributes `run` stand before is compiled only for tests, as far
+/// as a file read from its first line can prove it: the caller has found a module, a function
+/// or an `impl` at the top level of the file, and its first attribute is exactly
+/// `#[cfg(test)]`.
 ///
 /// The answer withdraws evidence, so it has to be proof. Each condition closes a way to make
 /// production code look like test code (review V3: VD3-H-1, VD3R2-H-1, VD3R3-H-1):
@@ -505,56 +543,29 @@ fn attribute_parts(item: Node, source: &str) -> Option<(String, Option<String>)>
 /// What is left unproved: a build that sets `--cfg test` itself, and a file that another file
 /// includes inside a macro. Neither is in the hunk, and the first is a build setting a review
 /// of the build files sees.
-fn opens_test_code(node: Node, source: &str) -> bool {
-    if !matches!(node.kind(), "function_item" | "mod_item" | "impl_item")
-        || node
-            .parent()
-            .is_none_or(|parent| parent.kind() != "source_file")
-    {
-        return false;
-    }
-    let mut first = None;
-    let mut before = node.prev_sibling();
-    while let Some(sibling) = before {
-        match sibling.kind() {
-            "attribute_item" => first = Some(sibling),
-            "line_comment" | "block_comment" => {}
-            _ => break,
-        }
-        before = sibling.prev_sibling();
-    }
-    first
-        .and_then(|attribute| attribute_parts(attribute, source))
+fn opens_test_code(run: &[Node], source: &str) -> bool {
+    run.first()
+        .and_then(|attribute| attribute_parts(*attribute, source))
         .is_some_and(|(path, arguments)| path == "cfg" && arguments.as_deref() == Some("(test)"))
 }
 
-/// Whether `node` is an item with an attribute that spells a test: its path ends in `test`
-/// (`#[test]`, `#[tokio::test]`, `#[r#test]`) or is `rstest`, or it is exactly `#[cfg(test)]`.
-/// A hint for a reader, never proof: [`opens_test_code`] says what proof takes.
-fn spells_test(node: Node, source: &str) -> bool {
-    if !matches!(node.kind(), "function_item" | "mod_item" | "impl_item") {
-        return false;
-    }
-    let mut before = node.prev_sibling();
-    while let Some(sibling) = before {
-        match sibling.kind() {
-            "attribute_item" => {
-                let spelled = attribute_parts(sibling, source).is_some_and(|(path, arguments)| {
-                    let last = path.rsplit("::").next().unwrap_or(&path);
-                    let last = last.strip_prefix("r#").unwrap_or(last);
-                    matches!(last, "test" | "rstest")
-                        || (path == "cfg" && arguments.as_deref() == Some("(test)"))
-                });
-                if spelled {
-                    return true;
-                }
-            }
-            "line_comment" | "block_comment" => {}
-            _ => return false,
-        }
-        before = sibling.prev_sibling();
-    }
-    false
+/// Whether an item with the attributes `run` before it has one that spells a test: its path
+/// ends in `test` (`#[test]`, `#[tokio::test]`, `#[r#test]`) or is `rstest`, or it is exactly
+/// `#[cfg(test)]`. A hint for a reader, never proof: [`opens_test_code`] says what proof takes.
+fn spells_test(run: &[Node], source: &str) -> bool {
+    run.iter().any(|attribute| {
+        attribute_parts(*attribute, source).is_some_and(|(path, arguments)| {
+            let last = path.rsplit("::").next().unwrap_or(&path);
+            matches!(plain(last), "test" | "rstest")
+                || (path == "cfg" && arguments.as_deref() == Some("(test)"))
+        })
+    })
+}
+
+/// An identifier without its raw prefix: `r#unwrap` is the identifier `unwrap` to the
+/// compiler, wherever a keyword is not meant (review V3 round 8, VD3R8-M-1).
+fn plain(name: &str) -> &str {
+    name.strip_prefix("r#").unwrap_or(name)
 }
 
 #[cfg(test)]
@@ -1025,5 +1036,76 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("600,000 rows were looked up within half a minute");
         assert_eq!(answer, (400_000, 400_000, true, true));
+    }
+
+    /// Asking the tree for a node's parent or the sibling before it costs the node's depth, so
+    /// items nested in one another were scanned on the square of the depth: 4,700 nested
+    /// functions took 2.9 s (release). The walk keeps both itself. Here 3,000 modules nested
+    /// in one another, each under a test attribute, are scanned within the bound, and the
+    /// answer about each is unchanged: every one spells a test, none is proved (only the first
+    /// is at the top level, and its attribute is not `cfg(test)`).
+    #[test]
+    fn items_nested_in_one_another_are_scanned_in_one_pass() {
+        const DEPTH: usize = 3_000;
+        let source = format!(
+            "{}fn f() {{ a().unwrap(); }}{}",
+            "#[test] mod m {".repeat(DEPTH),
+            "}".repeat(DEPTH)
+        );
+        assert!(source.len() <= FRAGMENT_BYTE_BUDGET);
+        let (done, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done.send(scan_fragment(Language::Rust, &source));
+        });
+        let found = wait
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("3,000 nested modules were scanned within three seconds")
+            .expect("the fragment is within its budgets");
+        assert_eq!(found.spelled_items.len(), DEPTH);
+        assert_eq!(found.test_items, []);
+        let call = found
+            .constructs
+            .iter()
+            .find(|c| matches!(&c.kind, ConstructKind::MethodCall { name } if name == "unwrap"))
+            .expect("the call is read");
+        assert!(call.test_spelled && !call.in_test);
+    }
+
+    /// Review V3 round 8, VD3R8-M-1: a raw identifier is the identifier.
+    #[test]
+    fn raw_identifiers_are_named_without_their_prefix() {
+        let found =
+            kinds("fn f(x: X) {\n    x.r#unwrap();\n    r#todo!();\n}\n#[r#ignore]\nfn t() {}\n");
+        let names: Vec<ConstructKind> = found.into_iter().map(|(kind, _, _)| kind).collect();
+        assert_eq!(
+            names,
+            [
+                method("unwrap"),
+                macro_call("todo", ""),
+                attribute(&["ignore"])
+            ]
+        );
+    }
+
+    /// Independent review IR-M-1, review V3 round 8: the scan is a function of its input, so
+    /// nothing in this file may ask a clock or parse under the crate's deadline (the other
+    /// readers of this crate, which only show code, still do). A scan that depends on time
+    /// cannot be shown by running it; this holds the source to it.
+    #[test]
+    fn the_fragment_scan_asks_no_clock() {
+        let source = include_str!("fragment.rs");
+        let code = source
+            .split_once("#[cfg(test)]\nmod tests {")
+            .expect("the tests module is the end of the file")
+            .0;
+        for word in [
+            "parse_bounded",
+            "parse_within",
+            "Instant",
+            "elapsed",
+            "progress_callback",
+        ] {
+            assert!(!code.contains(word), "the fragment scanner names `{word}`");
+        }
     }
 }

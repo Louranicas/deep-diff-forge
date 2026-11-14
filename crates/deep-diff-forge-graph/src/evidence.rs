@@ -651,22 +651,9 @@ const RULES: &[Rule] = &[
         Scope::Languages(GO),
         Match::Tokens(&["_ = err"]),
     ),
-    // The same calls named as functions, called (`Result::unwrap(x)`) or passed
-    // (`.map(Result::unwrap)`): no method call, so the parser's construct does not cover them
-    // and the spelling is all there is.
-    rule(
-        S::PanicPathAdded,
-        Side::New,
-        View::Code,
-        Scope::Languages(RUST),
-        Match::Tokens(&[
-            "Result::unwrap",
-            "Option::unwrap",
-            "Result::expect",
-            "Option::expect",
-        ]),
-    ),
-    // By spelling this cannot tell a test from other code: the path halves it on a test path,
+    // Called as a method or by a path, or the standard one named as a function to pass
+    // ([`calls_method`]). By spelling this cannot tell a test from other code: the path halves
+    // it on a test path,
     // and the parser withdraws it where the hunk shows a `#[cfg(test)]` around it
     // ([`fragment_evidence`]).
     rule(
@@ -970,6 +957,37 @@ pub fn hunk_signals_in(file: &ReviewFile, hunk: &PatchHunk, parse: Reading) -> V
         .collect()
 }
 
+/// The code view of each line of `hunk` on the old and on the new side: comments and strings
+/// blank, in the state the scanner reached on that side. In Rust a raw identifier reads as the
+/// identifier it is ([`without_raw_prefixes`]).
+fn hunk_views(
+    hunk: &PatchHunk,
+    language: Option<Language>,
+) -> Vec<(Option<String>, Option<String>)> {
+    let mut old_state = ScanState::default();
+    let mut new_state = ScanState::default();
+    hunk.lines
+        .iter()
+        .map(|line| {
+            let view = |state: &mut ScanState| {
+                language.map(|l| {
+                    let code = code_view(l, &line.text, state);
+                    if l == Language::Rust {
+                        without_raw_prefixes(&code).unwrap_or(code)
+                    } else {
+                        code
+                    }
+                })
+            };
+            match line.kind {
+                PatchLineKind::Context => (view(&mut old_state), view(&mut new_state)),
+                PatchLineKind::Added => (None, view(&mut new_state)),
+                PatchLineKind::Removed => (view(&mut old_state), None),
+            }
+        })
+        .collect()
+}
+
 /// `(side, signal, line, basis)` for every signal some rule finds on a changed line of `hunk`:
 /// once per signal and line however many rules or tokens match, in [`EvidenceSignal::ALL`] order,
 /// with the highest [`Basis`] among the rules that matched. Block comments and triple strings are
@@ -983,20 +1001,7 @@ fn hunk_matches(
 ) -> HunkFound {
     // First the code view of every line on each side it belongs to, so a rule that reads a
     // neighbour sees it as code, in the state the scanner reached there.
-    let mut old_state = ScanState::default();
-    let mut new_state = ScanState::default();
-    let views: Vec<(Option<String>, Option<String>)> = hunk
-        .lines
-        .iter()
-        .map(|line| {
-            let view = |state: &mut ScanState| language.map(|l| code_view(l, &line.text, state));
-            match line.kind {
-                PatchLineKind::Context => (view(&mut old_state), view(&mut new_state)),
-                PatchLineKind::Added => (None, view(&mut new_state)),
-                PatchLineKind::Removed => (view(&mut old_state), None),
-            }
-        })
-        .collect();
+    let views = hunk_views(hunk, language);
     // The code of the next line on `side` after line `at`: the line that follows it in that
     // version of the file, when the hunk holds it.
     let next_on = |side: Side, at: usize| -> Option<&str> {
@@ -1040,9 +1045,15 @@ fn hunk_matches(
             PatchLineKind::Removed => (Side::Old, line.old_line, views[at].0.as_deref()),
         };
         let Some(number) = number else { continue };
+        let raw = if language == Some(Language::Rust) {
+            without_raw_prefixes(&line.text)
+        } else {
+            None
+        };
+        let raw = raw.as_deref().unwrap_or(line.text.as_str());
         let hits = |rule: &Rule| {
             let text = match rule.view {
-                View::Raw => line.text.as_str(),
+                View::Raw => raw,
                 // A rule that reads code needs a language; `Scope::Any` code rules have none.
                 View::Code => view.unwrap_or(line.text.as_str()),
             };
@@ -1102,13 +1113,58 @@ fn hunk_matches(
 
 /// Whether `code` calls a method named `name`: `.name(`, with nothing but whitespace between the
 /// dot, the name and the parenthesis (`value.unwrap ()` is the same call), or calls it by a
-/// path, whatever the path (`<Option<u32>>::unwrap(x)`, `Result::<u32, E>::unwrap(r)`).
+/// path, whatever the path (`<Option<u32>>::unwrap(x)`, `Result::<u32, E>::unwrap(r)`), or
+/// names the standard one as a function to pass (`.map(Result::unwrap)`, `Option :: expect`):
+/// no method call there, so the parser's construct does not cover it and the spelling is all
+/// there is.
 fn calls_method(code: &str, name: &str) -> bool {
     code.match_indices(name).any(|(at, _)| {
         let before = code[..at].trim_end();
-        (before.ends_with('.') || before.ends_with("::"))
-            && code[at + name.len()..].trim_start().starts_with('(')
+        let after = &code[at + name.len()..];
+        if after.trim_start().starts_with('(') {
+            return before.ends_with('.') || before.ends_with("::");
+        }
+        let whole = after
+            .bytes()
+            .next()
+            .is_none_or(|b| !(b.is_ascii_alphanumeric() || b == b'_'));
+        whole
+            && before.strip_suffix("::").is_some_and(|owner| {
+                let owner = owner.trim_end();
+                ["Result", "Option"].iter().any(|standard| {
+                    owner.strip_suffix(standard).is_some_and(|rest| {
+                        rest.bytes()
+                            .next_back()
+                            .is_none_or(|b| !(b.is_ascii_alphanumeric() || b == b'_'))
+                    })
+                })
+            })
     })
+}
+
+/// `text` with the prefix of each raw identifier blanked (`x.r#unwrap()` reads `x.  unwrap()`),
+/// or `None` when it holds none. To the compiler `r#unwrap` is the identifier `unwrap`, so a
+/// rule that reads a name has to read it the same way; the rules pass over whitespace, and the
+/// columns stay where they were (review V3 round 8, VD3R8-M-1: `x.r#unwrap()` and
+/// `X::r#unwrap(x)` left neither an item nor a mark). The opener of a raw string (`r#"`) is not
+/// an identifier and is left alone.
+fn without_raw_prefixes(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let in_name = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || !b.is_ascii();
+    let mut out: Option<Vec<u8>> = None;
+    for (at, _) in text.match_indices("r#") {
+        let starts = at == 0 || !in_name(bytes[at - 1]);
+        let names = bytes
+            .get(at + 2)
+            .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_' || !b.is_ascii());
+        if starts && names {
+            let out = out.get_or_insert_with(|| bytes.to_vec());
+            out[at] = b' ';
+            out[at + 1] = b' ';
+        }
+    }
+    // Only two ASCII bytes were replaced by two ASCII bytes: still UTF-8.
+    out.and_then(|bytes| String::from_utf8(bytes).ok())
 }
 
 /// Whether `text` holds one of `heads`, whole and with no [`is_boundary_blocker`] byte before
@@ -3646,6 +3702,64 @@ mod tests {
                 "{line}"
             );
         }
+    }
+
+    /// Review V3 round 8, VD3R8-M-1: `r#unwrap` is the identifier `unwrap` to the compiler
+    /// (checked there with rustc), and `x.r#unwrap()` and `X::r#unwrap(x)` left neither an item
+    /// nor a mark. A raw identifier is read as the identifier it is, by the parser and by the
+    /// token rules, with the parser and without it.
+    #[test]
+    fn a_raw_identifier_is_read_as_the_identifier_it_is() {
+        let pad = "a".repeat(70_000);
+        let cases: &[(&str, EvidenceSignal)] = &[
+            ("pub fn f(x: X) { x.r#unwrap(); }", S::PanicPathAdded),
+            ("pub fn g(x: X) { X::r#unwrap(x); }", S::PanicPathAdded),
+            ("pub fn h(x: X) { x.r#expect(\"one\"); }", S::PanicPathAdded),
+            ("pub fn i(x: X) { x . r#unwrap (); }", S::PanicPathAdded),
+            (
+                "pub fn j(it: I) { it.map(Result::r#unwrap); }",
+                S::PanicPathAdded,
+            ),
+            (
+                "pub fn k(it: I) { it.map(r#Option :: r#expect); }",
+                S::PanicPathAdded,
+            ),
+            ("fn l() { r#assert!(true); }", S::TrivialAssert),
+            ("fn m() { r#todo!(); }", S::StubAdded),
+            ("fn n() { r#unimplemented!(); }", S::StubAdded),
+            ("#[r#ignore]", S::TestSkipped),
+            ("#[r#cfg_attr(miri, r#ignore)]", S::TestSkipped),
+            ("#[r#allow(dead_code)]", S::CheckSuppressed),
+        ];
+        for (line, signal) in cases {
+            // the parser reads the hunk
+            let parsed: Vec<EvidenceSignal> = found(&hunk_of("tests/r.rs", &[&format!("+{line}")]))
+                .iter()
+                .map(|item| item.0)
+                .collect();
+            assert_eq!(parsed, [*signal], "{line}");
+            // past the fragment budget only the token rules read it, and the hunk says so
+            let unparsed: Vec<EvidenceSignal> =
+                found(&hunk_of("tests/r.rs", &[&format!("+{line} // {pad}")]))
+                    .iter()
+                    .map(|item| item.0)
+                    .collect();
+            assert!(unparsed.contains(signal), "{line}: {unparsed:?}");
+        }
+        // not raw identifiers: the opener of a raw string; and a longer name is another name
+        for line in [
+            "+let a = r#\"x.unwrap()\"#;",
+            "+let b = br#\"todo!()\"#;",
+            "+let d = x.r#unwrap_or(1);",
+            "+let e = it.map(Result::r#unwrap_or_default);",
+        ] {
+            assert_eq!(found(&hunk_of("src/r.rs", &[line])), [], "{line}");
+        }
+        assert_eq!(without_raw_prefixes("x.unwrap()"), None);
+        assert_eq!(
+            without_raw_prefixes("x.r#unwrap(r#\"s\"#, r#fn)").as_deref(),
+            Some("x.  unwrap(r#\"s\"#,   fn)")
+        );
     }
 
     /// Review V3 round 4, VD3R4-M-1: inside another macro's body the parser names no
