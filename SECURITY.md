@@ -312,8 +312,42 @@ limit.
   a name that is not UTF-8 or that somebody else chose cannot matter. A commit that only a
   remote-tracking ref names was fetched and is not the session's. A commit that is gone
   from every ref and every reflog read is not found; that is a stated limit.
+- **What is staged is judged.** A stop judged the working tree and the commits; the index
+  was in neither. A credential that was staged and then repaired or deleted in the working
+  tree without `git add` was in no patch, the stop was silent, and the next plain
+  `git commit` recorded it. The change the index holds against the tree's `HEAD` is a unit
+  now ("Staged changes in" the path), judged when it is another change than the working
+  tree's. Its entries are read with `git ls-files --stage` and written into an index of the
+  scratch repository; the repository's own index is not written.
+- **Which commits of others are judged.** A commit that was in the repository when the
+  session began, named by any ref (remote-tracking ones included) or reflog, is not the
+  session's, also when the session pulls it, merges it by fast-forward, rebases onto it or
+  resets to it. One fetched during the session and brought onto a local branch is. The
+  documents said that a pull or a merge always makes commits the session's; every message
+  that names the range says the rule now, the advice after a tool call included.
+- **A stop's message never loses what blocks.** It holds, in this order: every unit that
+  blocks now, each named, with its rules; every unit that got no verdict, named, and the
+  count of commits that wait; new holds; what stands from before, as a count with three
+  names once there are more than three. Twelve units used to be listed, the oldest first:
+  with twelve failures standing, a commit that failed blocked the stop without being named,
+  and one that got no verdict was not said. The last two parts give way first when the
+  message is full, and it says how many it left out.
+- **A commit with no verdict never stops the judging of others.** When the chain gives
+  verdicts and one patch is refused (a name that is not UTF-8, a size, a shallow clone's
+  edge), that commit is said once by its id, remembered as not judgeable, and the next is
+  asked about. Only a chain that gives no verdict ends the asking, for that stop, with
+  nothing remembered. Before, such a commit was asked about first at every stop, and three
+  of them ended the judging of every later commit for the session.
+- **A hook that cannot keep its state does not block for good.** A failing commit cannot
+  be repaired, and with a state that cannot be written it was judged, and blocked, at every
+  stop. When, and only when, the state could not be kept, the client's `stop_hook_active`
+  is honoured: the stop that follows a block is allowed, says FAIL STANDS and says why.
+  The next turn blocks again, which is said each time.
 - **A failing commit blocks once and stands; a failing uncommitted change blocks again when
-  it comes back.** A commit is known by its id, so a branch switch or a new ref does not
+  it comes back.** A failing commit always blocks at the stop that first judges it: the
+  exception for one "committed as it is" after its failure had blocked is gone, because its
+  match (rule, signal, path, count) let another credential in the same file stand without
+  ever blocking. A commit is known by its id, so a branch switch or a new ref does not
   make its failure block again, and a later commit cannot make it pass. The failure of an
   uncommitted change is known by its rules, signals, paths and numbers of items; it is
   forgotten when a stop finds the change without it. Before, it was remembered for the
@@ -334,9 +368,11 @@ limit.
   message; a fail, a hold and UNJUDGED carry it too). It stays
   silent only where no project can be found at all: Git says there is no repository around
   the session's directory, the client names none, and none is recorded.
-- **What the hooks do not judge, and what they name.** They judge the uncommitted change of
-  the project's working tree and of a linked working tree the session's directory is in,
-  and the session's commits. Named once in a session as not judged: another repository the
+- **What the hooks do not judge, and what they name.** They judge the uncommitted and the
+  staged change of the project's working tree and of a linked working tree the session's
+  directory is in, and the session's commits. Another working tree of the project that has
+  changes which are not committed is named once as not judged, and so is one that was
+  removed by hand (up to sixteen are looked at). Named once in a session as not judged: another repository the
   session's directory is in at a stop, a submodule with changes that are not committed in
   it, a nested repository in the project's tree, which is left out of the patch (Git cannot
   even stage one that has no commit), and another working tree of the project that lies
@@ -344,7 +380,7 @@ limit.
   as said (32), it says once that there is more. Not judged and not named, for the judge on
   the pull request: a commit that only a remote-tracking ref names; a commit that is gone
   from every ref and from the reflogs that are read (those of each working tree's `HEAD`
-  and of the stash); an uncommitted change in a linked working tree the session is not in;
+  and of the stash); a commit that was in the repository when the session began;
   and work in a copy. An agent can make a stop UNJUDGED by breaking what the judge needs (an
   unreadable file; a path marked skip-worktree): never a pass, always visible, and never a
   block. Advice after a tool call covers the project's tree only. "No repository" is read
@@ -377,7 +413,7 @@ limit.
   never what a link of that name points at. Two hooks in different process-id namespaces
   that share one repository can take each other's process for gone; the hook that loses its
   directory then reports UNJUDGED, not a pass.
-- **Two files per session, in the user's state directory.** `deep-diff-forge/hooks` under
+- **Up to three files per session, in the user's state directory.** `deep-diff-forge/hooks` under
   an absolute `$XDG_STATE_HOME`, else under `~/.local/state`. They are there, and not in
   the repository, so that they are found by the session's id alone: before the repository
   is found, and when Git cannot find it. The session id is hashed and never chooses a file
@@ -385,11 +421,16 @@ limit.
   the commit the session began from (a full commit id, or that there was none), the keys of
   findings already said, the reasons already given for not running and the things a stop
   named (hashed), the failures of uncommitted changes that have blocked a stop (each as a
-  SHA-256 and a count), the commits that were judged with their outcomes (the last 4,096),
-  and the SHA-256 and the length of the second file. Every list is bounded when it is
+  SHA-256 and a count), and the SHA-256 and the length of each of the other two files. Every list is bounded when it is
   written, so the largest state is far under the 4 MiB a hook reads back. The second file
   is the list of commit ids that were named when the session began, one a line (up to a
-  million; a repository that names more cannot be recorded, which is said). A state file
+  million; a repository that names more cannot be recorded, which is said). The third is
+  the list of the session's commits that have their answer, one `id:outcome` a line in the
+  order they got it, with no bound that makes one be forgotten (the state kept the last
+  4,096, and what a forgotten one led to counted as judged, an unjudged ancestor included);
+  the state names its first lines by digest and count, and what stands after them is not
+  read. The reflogs are read with `git rev-list --walk-reflogs`, which prints ids alone: a
+  user's `log.showSignature` made every session one that could not be recorded. A state file
   that is there and is not a state the hooks can read (a link, another kind of file, too
   large, another schema, a project that is not whole) is never read as "no state", and a
   list that is missing, is a link, or is not the text the state names by its SHA-256 and

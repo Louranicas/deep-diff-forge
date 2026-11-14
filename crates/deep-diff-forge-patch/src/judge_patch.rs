@@ -665,6 +665,76 @@ pub fn judge_patch(
     })
 }
 
+/// The staged change of the working tree `repo` is in, as a patch against the commit `base`:
+/// what the index holds, which is what a plain `git commit` would record, whatever the
+/// working tree holds now. Empty when the index equals `base`'s tree.
+///
+/// The entries of the repository's index are read (`git ls-files --stage`) and written into
+/// an index of the scratch repository, which borrows the object store; the tree is written
+/// there and diffed like a commit's. Nothing in the reviewed repository is written.
+///
+/// A stop judged the working tree and the commits. What was staged and then taken out of the
+/// working tree again without `git add` was in neither, and the next plain `git commit`
+/// recorded it (fourth independent review of the hooks, HR4-H-1).
+///
+/// # Errors
+/// As [`judge_patch`]; an index with unmerged paths has no tree, which is an error.
+pub fn staged_patch(
+    repo: &Path,
+    base: &str,
+    scratch: &Path,
+    options: &GitAcquireOptions,
+) -> Result<Vec<u8>, JudgePatchError> {
+    let deadline = deadline_after(options.time_limit);
+    let from = source(repo, base, options, deadline)?;
+    let repository = empty_repository(&from.store, scratch, options, deadline)?;
+    let inside = Runner {
+        options,
+        cwd: from.root.clone(),
+        deadline,
+        config_env: Vec::new(),
+    };
+    let entries = inside.run(
+        "git ls-files",
+        &[
+            OsStr::new("ls-files"),
+            OsStr::new("--stage"),
+            OsStr::new("-z"),
+        ],
+        &[0],
+        INDEX_LISTING_CAP,
+    )?;
+    let list = scratch.join("index-entries");
+    std::fs::write(&list, entries)
+        .map_err(|e| refused(format!("cannot prepare the scratch directory: {e}")))?;
+    let staging = Runner {
+        options,
+        cwd: from.root.clone(),
+        deadline,
+        config_env: staging_env(&from, &repository),
+    };
+    staging.run_reading(
+        "git update-index",
+        &[
+            OsStr::new("update-index"),
+            OsStr::new("-z"),
+            OsStr::new("--index-info"),
+        ],
+        &[0],
+        4096,
+        &list,
+    )?;
+    let tree = line(staging.run("git write-tree", &[OsStr::new("write-tree")], &[0], 4096)?)?;
+    Ok(diff_outside(
+        &from.base,
+        &tree,
+        scratch,
+        &repository,
+        options,
+        deadline,
+    )?)
+}
+
 /// The patch from the commit `from` to the commit `to`, in the form and with the bytes
 /// [`judge_patch`] gives for a working tree whose state is `to`'s tree: diffed in a new, empty
 /// repository in `scratch` that only borrows the object store, with no configuration and no
@@ -814,6 +884,102 @@ pub fn has_commits_beyond(
     Ok(!runner.run("git rev-list", &args, &[0], 4096)?.is_empty())
 }
 
+/// One working tree of a repository, as `git worktree list` gives it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worktree {
+    /// Its top level (for a bare repository's own entry, the repository).
+    pub path: std::path::PathBuf,
+    /// The commit its `HEAD` names, when it names one.
+    pub head: Option<String>,
+    /// Git can be asked there: the directory exists and is still a working tree (it holds a
+    /// `.git`), or is the bare repository itself. Not so for a working tree that was removed
+    /// by hand, with or without another directory put at its path, until
+    /// `git worktree prune` forgets it.
+    pub usable: bool,
+}
+
+/// The working trees of the repository containing `repo`, the main one first.
+///
+/// # Errors
+/// Any [`GitAcquireError`] from running Git.
+pub fn worktrees(
+    repo: &Path,
+    options: &GitAcquireOptions,
+) -> Result<Vec<Worktree>, GitAcquireError> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let runner = Runner {
+        options,
+        cwd: repo.to_path_buf(),
+        deadline: deadline_after(options.time_limit),
+        config_env: Vec::new(),
+    };
+    let listing = runner.run(
+        "git worktree list",
+        &[
+            OsStr::new("worktree"),
+            OsStr::new("list"),
+            OsStr::new("--porcelain"),
+            OsStr::new("-z"),
+        ],
+        &[0],
+        NAMED_LISTING_CAP,
+    )?;
+    let mut found: Vec<Worktree> = Vec::new();
+    for record in listing.split(|byte| *byte == 0) {
+        if let Some(path) = record.strip_prefix(b"worktree ") {
+            let path = std::path::PathBuf::from(OsStr::from_bytes(path));
+            let usable = path.is_dir() && path.join(".git").exists();
+            found.push(Worktree {
+                path,
+                head: None,
+                usable,
+            });
+        } else if let Some(last) = found.last_mut() {
+            if record == b"bare" {
+                last.usable = last.path.is_dir();
+            } else if let Some(id) = record.strip_prefix(b"HEAD ")
+                && let Ok(id) = std::str::from_utf8(id)
+                && is_object_id(id)
+                && id.bytes().any(|b| b != b'0')
+            {
+                last.head = Some(id.to_owned());
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Whether the working tree at `tree` has changes that are not committed: staged, unstaged or
+/// untracked. Asked with `git status`, told not to refresh the index, so nothing is written.
+///
+/// # Errors
+/// Any [`GitAcquireError`] from running Git; a status over a mebibyte is one (and is a tree
+/// with changes).
+pub fn has_uncommitted_changes(
+    tree: &Path,
+    options: &GitAcquireOptions,
+) -> Result<bool, GitAcquireError> {
+    let runner = Runner {
+        options,
+        cwd: tree.to_path_buf(),
+        deadline: deadline_after(options.time_limit),
+        config_env: Vec::new(),
+    };
+    let status = runner.run(
+        "git status",
+        &[
+            OsStr::new("--no-optional-locks"),
+            OsStr::new("status"),
+            OsStr::new("--porcelain=v1"),
+            OsStr::new("-z"),
+            OsStr::new("--untracked-files=normal"),
+        ],
+        &[0],
+        1024 * 1024,
+    )?;
+    Ok(!status.is_empty())
+}
+
 /// Which refs [`named_commits`] reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Named {
@@ -888,49 +1054,30 @@ pub fn named_commits(
         }
         found.insert(commit.to_owned());
     }
-    // Every working tree of the repository: its `HEAD` (zeros for none yet), and what the
-    // reflog of that `HEAD` names. Each working tree has a `HEAD` and a reflog of its own, so
-    // each is asked where it stands.
-    let trees = runner.run(
-        "git worktree list",
-        &[
-            OsStr::new("worktree"),
-            OsStr::new("list"),
-            OsStr::new("--porcelain"),
-            OsStr::new("-z"),
-        ],
-        &[0],
-        NAMED_LISTING_CAP,
-    )?;
-    let mut places = Vec::new();
-    for record in trees.split(|byte| *byte == 0) {
-        if let Some(path) = record.strip_prefix(b"worktree ") {
-            use std::os::unix::ffi::OsStrExt as _;
-            places.push(std::path::PathBuf::from(OsStr::from_bytes(path)));
-        } else if let Some(id) = record.strip_prefix(b"HEAD ")
-            && let Ok(id) = std::str::from_utf8(id)
-            && is_object_id(id)
-            && id.bytes().any(|b| b != b'0')
-        {
-            found.insert(id.to_owned());
-        }
-    }
+    // Every working tree of the repository: its `HEAD`, and what the reflog of that `HEAD`
+    // names. Each working tree has a `HEAD` and a reflog of its own, so each is asked where it
+    // stands. One whose directory is gone, or is no working tree any more, is passed over:
+    // [`worktrees`] says which, for the caller to name.
+    let places = worktrees(repo, options)?;
     if places.len() > WORKTREES_CAP {
         return Err(refused(
-            "the repository has more working trees than a hook reads the history of",
+            "the repository has more working trees than a hook reads the history of (`git worktree prune` removes the ones that are gone)",
         ));
     }
+    // The reflog is read with `rev-list`, which prints ids and nothing else: `git log` adds
+    // what the user's configuration asks for (`log.showSignature`), and a line that was no id
+    // made every session of such a user one that could not be recorded (fourth independent
+    // review of the hooks, HR4-L-1).
     let reflog = |from: &Runner<'_>, walked: &str| -> Result<Vec<String>, GitAcquireError> {
         // Nothing to walk from where the name leads to no commit.
         if from.commit_id(walked)?.is_none() {
             return Ok(Vec::new());
         }
         let entries = from.run(
-            "git log",
+            "git rev-list",
             &[
-                OsStr::new("log"),
+                OsStr::new("rev-list"),
                 OsStr::new("--walk-reflogs"),
-                OsStr::new("--format=%H"),
                 OsStr::new("--end-of-options"),
                 OsStr::new(walked),
             ],
@@ -939,19 +1086,19 @@ pub fn named_commits(
         )?;
         let text = String::from_utf8_lossy(&entries);
         if !text.lines().all(is_object_id) {
-            return Err(refused("git log wrote a line that cannot be read"));
+            return Err(refused("git rev-list wrote a line that cannot be read"));
         }
         Ok(text.lines().map(str::to_owned).collect())
     };
     found.extend(reflog(&runner, "refs/stash")?);
     for place in places {
-        // A working tree whose directory is gone has nowhere to be asked from.
-        if !place.is_dir() {
+        found.extend(place.head);
+        if !place.usable {
             continue;
         }
         let there = Runner {
             options,
-            cwd: place,
+            cwd: place.path,
             deadline: runner.deadline,
             config_env: Vec::new(),
         };

@@ -294,7 +294,37 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     old side, five places of `agent doctor --gate`, and in the patch crate a long path, a
     large index, a long or missing or unreadable `info/exclude`, the user's `diff.context`
     and `head_contains`. The others are equivalent and are listed in the round's report.
-
+- **A fourth independent review of the hooks (NO-GO, narrower): staged content, messages that
+  keep what blocks, and commits with no verdict.** The review confirmed with the real judge
+  that every case of the third review holds and that a sweep of thirty ordinary Git
+  workflows blocks, and found narrower cases
+  (`docs/reviews/claude-independent-review-hooks-4-20261114.md`).
+  - *What is staged is judged* (HR4-H-1): the change the index holds is a third kind of
+    unit, "Staged changes in" the path, judged when it is another change than the working
+    tree's. A credential staged and then repaired without `git add` was in no patch.
+  - *A message keeps what blocks* (HR4-H-2): what blocks now, then what got no verdict,
+    then holds, then what stands (a count with three names past three). Twelve units were
+    listed the oldest first, and the commit that blocked could go unnamed.
+  - *A commit with no verdict* (HR4-M-2): refused while the chain gives verdicts, it is
+    said once, remembered as not judgeable, and the next commit is asked about; only a
+    chain that gives no verdict ends the asking, for that stop. Three such commits used to
+    end the judging of every later commit of the session.
+  - *A state that cannot be kept* (HR4-M-3): the client's `stop_hook_active` is honoured
+    then, so a failing commit, which cannot be repaired, does not block for good.
+  - *Which commits of others are judged* (HR4-M-1): those fetched during the session, not
+    those already in the repository when it began, however they reach the branch. README,
+    SECURITY, the start of a session and every message that names the range say so.
+  - *A failing commit always blocks once* (HR4-L-4): the exception for a failure that had
+    blocked while uncommitted is removed; its match let another credential stand.
+  - *Lows.* Reflogs are read with `git rev-list`, so a user's `log.showSignature` cannot
+    spoil the list; a working tree that was removed by hand is passed over and named;
+    `agent doctor --gate` has a link `commits` (HR4-L-1). A commit at the edge of a shallow
+    clone is UNJUDGED by its id, not judged "from nothing" (HR4-L-2). The commits that have
+    their answer are a file beside the state with no eviction (HR4-L-3). Another working
+    tree with uncommitted changes is named once (HR4-L-5). A message that leaves something
+    out says how much.
+  - *State.* Schema `deep-diff-forge.hook-state.v4`; a state of an earlier schema is not
+    read. *New in the patch crate:* `staged_patch`, `worktrees`, `has_uncommitted_changes`.
 ### Changed
 
 - Path and shape weights are stated once, in `RiskSignal::weight`, and the scorer reads

@@ -600,9 +600,14 @@ fn text_of_tree(root: &Path) -> String {
 fn the_users_configuration_does_not_shape_the_patch_and_the_users_ignore_file_does() {
     let scratch = Scratch::new("judge-patch-user-config");
     let root = changed_repository(&scratch);
+    // a file with CRLF line ends: `core.autocrlf` in the user's configuration would stage it
+    // with others, and needs no attribute to do so (a mutation run left the environment of
+    // the staging alive without its isolation)
+    std::fs::write(root.join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
     let plain = judge_patch(&root, "HEAD", &fresh(&scratch, "plain"), &options()).unwrap();
     let shown = String::from_utf8_lossy(&plain.bytes).into_owned();
     assert!(shown.contains("+fn a() { b(); }\n"), "{shown}");
+    assert!(shown.contains("+one\r\n"), "{shown}");
 
     // the reviewer's case: a filter in the user's configuration, and a user attributes file
     // that names it for every source file (and a conversion for every text file)
@@ -645,7 +650,7 @@ fn the_users_configuration_does_not_shape_the_patch_and_the_users_ignore_file_do
         &root,
         "HEAD",
         &fresh(&scratch, "narrow"),
-        &with(&user_config("[diff]\n\tcontext = 0\n")),
+        &with(&user_config("\tautocrlf = true\n[diff]\n\tcontext = 0\n")),
     )
     .unwrap();
     assert_eq!(
@@ -1230,4 +1235,128 @@ fn a_missing_ignore_file_is_no_rule_and_an_unreadable_one_is_refused() {
     std::fs::set_permissions(&exclude, std::fs::Permissions::from_mode(0o644)).unwrap();
     let ruled = judge_patch(&root, "HEAD", &fresh(&scratch, "ruled"), &options()).unwrap();
     assert!(!String::from_utf8_lossy(&ruled.bytes).contains("new name.txt"));
+
+    // The bound, to the byte (four changes of it were alive after a mutation run): a file of
+    // exactly a mebibyte is read whole, its last rule included; one byte more is refused, not
+    // cut, because a rule that was cut off would put a file in the patch.
+    let rule = "new name.txt\n";
+    let padded = |len: usize| format!("{}{rule}", "#".repeat(len - rule.len() - 1) + "\n");
+    std::fs::write(&exclude, padded(1024 * 1024)).unwrap();
+    assert_eq!(std::fs::metadata(&exclude).unwrap().len(), 1024 * 1024);
+    let exact = judge_patch(&root, "HEAD", &fresh(&scratch, "exact"), &options()).unwrap();
+    assert!(!String::from_utf8_lossy(&exact.bytes).contains("new name.txt"));
+    std::fs::write(&exclude, padded(1024 * 1024 + 1)).unwrap();
+    let over = judge_patch(&root, "HEAD", &fresh(&scratch, "over"), &options());
+    assert!(
+        over.is_err() && format!("{over:?}").contains("info/exclude is over 1 MiB"),
+        "{over:?}"
+    );
+}
+
+/// Fourth independent review of the hooks, HR4-H-1. `staged_patch` is the change the index
+/// holds against a commit: what a plain `git commit` would record, whatever the working tree
+/// holds now. With everything staged and nothing changed since, it is the working tree's
+/// patch, byte for byte; nothing in the repository is written; and an index with a conflict
+/// in it has no tree, which is an error and not an empty patch.
+#[test]
+fn the_staged_change_is_what_the_index_holds_not_what_the_tree_holds() {
+    use deep_diff_forge_patch::staged_patch;
+    let scratch = Scratch::new("judge-patch-staged");
+    let root = changed_repository(&scratch);
+    let staged = |name: &str| staged_patch(&root, "HEAD", &fresh(&scratch, name), &options());
+    // nothing staged: the index is the commit
+    assert_eq!(staged("none").unwrap(), b"");
+    // everything staged: the working tree's patch
+    git(&root, &["add", "--all"]);
+    let before = untouched(&root);
+    let tree = judge_patch(&root, "HEAD", &fresh(&scratch, "tree"), &options()).unwrap();
+    assert_eq!(staged("all").unwrap(), tree.bytes);
+    assert_eq!(before, untouched(&root), "the repository was written");
+    // the working tree is put back and a file removed, without `git add`: the index still
+    // holds the change, the tree holds another
+    std::fs::write(root.join("src.rs"), "fn a() {}\n").unwrap();
+    std::fs::remove_file(root.join("new name.txt")).unwrap();
+    let index = staged("index").unwrap();
+    assert_eq!(index, tree.bytes);
+    let now = judge_patch(&root, "HEAD", &fresh(&scratch, "now"), &options()).unwrap();
+    assert_ne!(now.bytes, index);
+    assert!(!String::from_utf8_lossy(&now.bytes).contains("b();"));
+    assert!(matches!(
+        staged_patch(&root, "no-such-commit", &fresh(&scratch, "bad"), &options()),
+        Err(JudgePatchError::NoBase)
+    ));
+}
+
+/// Fourth independent review of the hooks, HR4-L-1 and HR4-L-5. `worktrees` lists the working
+/// trees with the commit each `HEAD` names, and says of each whether Git can be asked there:
+/// not of one that was removed by hand, with or without a plain directory put at its path.
+/// Such a tree is passed over when the named commits are listed (it used to make the listing
+/// fail, and every session one that could not be recorded). `has_uncommitted_changes` says
+/// whether a working tree holds anything that is not committed.
+#[test]
+fn the_working_trees_are_listed_and_one_that_is_gone_is_passed_over() {
+    use deep_diff_forge_patch::{Named, has_uncommitted_changes, named_commits, worktrees};
+    let scratch = Scratch::new("judge-patch-worktrees");
+    let root = changed_repository(&scratch);
+    git(&root, &["add", "--all"]);
+    git(&root, &["commit", "--quiet", "-m", "work"]);
+    let head = text(git(&root, &["rev-parse", "HEAD"]));
+    let (clean, gone, plain) = (
+        scratch.join("clean"),
+        scratch.join("gone"),
+        scratch.join("plain"),
+    );
+    for tree in [&clean, &gone, &plain] {
+        let path = tree.to_str().unwrap();
+        git(&root, &["worktree", "add", "--quiet", "--detach", path]);
+    }
+    std::fs::remove_dir_all(&gone).unwrap();
+    std::fs::remove_dir_all(&plain).unwrap();
+    std::fs::create_dir(&plain).unwrap();
+
+    let found = worktrees(&root, &options()).unwrap();
+    let usable: Vec<(String, bool)> = found
+        .iter()
+        .map(|tree| {
+            let name = tree
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            (name, tree.usable)
+        })
+        .collect();
+    assert_eq!(
+        usable[0],
+        ("repo".to_owned(), true),
+        "the main working tree is first"
+    );
+    let mut linked = usable[1..].to_vec();
+    linked.sort();
+    assert_eq!(
+        linked,
+        [
+            ("clean".to_owned(), true),
+            ("gone".to_owned(), false),
+            ("plain".to_owned(), false)
+        ]
+    );
+    assert!(found.iter().all(|tree| tree.head.as_ref() == Some(&head)));
+    // the commits are listed all the same
+    let named = named_commits(&root, Named::Everything, &options()).unwrap();
+    assert!(named.contains(&head), "{named:?}");
+
+    assert!(!has_uncommitted_changes(&clean, &options()).unwrap());
+    std::fs::write(clean.join("untracked.txt"), "u\n").unwrap();
+    assert!(has_uncommitted_changes(&clean, &options()).unwrap());
+    std::fs::remove_file(clean.join("untracked.txt")).unwrap();
+    std::fs::write(clean.join("src.rs"), "fn staged() {}\n").unwrap();
+    git(&clean, &["add", "--all"]);
+    git(&clean, &["checkout", "--quiet", "HEAD", "--", "src.rs"]);
+    assert!(!has_uncommitted_changes(&clean, &options()).unwrap());
+    std::fs::write(clean.join("src.rs"), "fn staged() {}\n").unwrap();
+    git(&clean, &["add", "--all"]);
+    assert!(has_uncommitted_changes(&clean, &options()).unwrap());
+    assert!(has_uncommitted_changes(&plain, &options()).is_err());
 }

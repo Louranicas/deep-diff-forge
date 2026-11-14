@@ -318,7 +318,7 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
 | --- | --- | --- |
 | `SessionStart` | `agent hook session-start` | What the hooks do, the commit the session's changes are measured from, and whether a stop can be judged here: the chain is checked the way `agent doctor --gate` checks it, and a link that is missing is named instead of a promise. |
 | `PostToolUse`, after every tool | `agent hook post-tool` | **Advice, never a block.** The evidence that is new in the working tree since the session began (commits pulled or made by others in that time are in that range too): label, path, line, how the line was read, and what answers the signal and what does not. A finding is said once per session, also when the line moves. |
-| `Stop` | `agent hook stop` | A verdict on your uncommitted changes, and on each commit made since the session began that your branches, tags, stash, `HEAD` or their history name: each commit once, by its own change. **Only a fail holds the stop**: a commit's at the stop that first judges it, an uncommitted change's once while it is there. The message has the rules that failed and what answers them. A hold is reported for a person. With no judge, no policy, or no ranker the policy admits, the result is **UNJUDGED**, said plainly, and never a pass. |
+| `Stop` | `agent hook stop` | A verdict on your uncommitted and staged changes, and on each commit made since the session began that your branches, tags, stash, `HEAD` or their history name: each commit once, by its own change. **Only a fail holds the stop**: a commit's at the stop that first judges it, an uncommitted change's once while it is there. The message has the rules that failed and what answers them. A hold is reported for a person. With no judge, no policy, or no ranker the policy admits, the result is **UNJUDGED**, said plainly, and never a pass. |
 
 - **One project and one base for a session.** The session's first hook fixes three things:
   the project (the directory Claude Code names in `CLAUDE_PROJECT_DIR`, else the hook
@@ -336,31 +336,63 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   which, and says the remedy (start a new session). The device number is no part of the
   identity, so a reboot does not end a session.
 - **What a stop has judged: units.** First the uncommitted change of the project's working
-  tree: the tree, untracked files included, against the commit its own `HEAD` names. When
-  the session's directory is in another working tree of the same repository (a linked
-  worktree it entered), that tree's uncommitted change as well. Then each commit of the
-  session that no stop of the session has judged yet, the oldest first, each as the patch
-  from its first parent to itself (a commit with no parent: from nothing). A commit is the
-  session's when your branches, your tags, the stash, the `HEAD` of a working tree, or the
-  reflog of one of those `HEAD`s or of the stash leads to it now, and nothing that was named
-  when the session began does. So a commit is judged for what it holds, whatever came after
-  it: a credential that was committed and then reverted, or removed by a second commit; a
-  commit on a branch the session left; a commit of a staged file that was edited again; a
-  stash, with the commit that holds its untracked files (`git stash -u`), and the older
-  entries of the stash; a commit made on a detached `HEAD` that was left; a commit in
-  another working tree. A commit that only a remote-tracking ref names was fetched, not
-  made here, and is not judged; a pull or a merge makes the commits it brings the session's
-  (messages say that the range can hold other people's commits). All are judged by the
-  policy at the base. The same patch is judged once in a stop. A judged commit is
-  remembered with its verdict (the last 4,096; older ones count as judged), so a commit is
-  judged once in a session.
-- **How much one stop judges.** The uncommitted changes first, then as many commits as fit
-  the stop's time (45 seconds less four, and no new commit with less than three left). The
-  rest are counted in the message ("12 commits of this session: UNJUDGED … they are judged
-  at the next stop") and are judged at later stops, the oldest first. After three answers
-  in a row that are no verdict, the stop asks no more and says the reason for the rest.
-  The worst answer decides, and the message names each unit that did not pass: "Uncommitted
-  changes in" the tree's path, or "Commit" and the first twelve digits of its id. No name of
+  tree: the tree, untracked files included, against the commit its own `HEAD` names. Then
+  the staged change of that tree, what the index holds against the same commit, when it is
+  another change than the tree's: what was staged and then repaired or deleted in the
+  working tree without `git add` is what the next plain `git commit` records, so it is
+  judged ("Staged changes in" the path). With everything staged and nothing changed since,
+  the two are one patch and one run of the judge. When the session's directory is in
+  another working tree of the same repository (a linked worktree it entered), that tree's
+  uncommitted and staged changes as well. Then each commit of the session that has no
+  answer yet, the oldest first, each as the patch from its first parent to itself (a commit
+  with no parent: from nothing). A commit is the session's when your branches, your tags,
+  the stash, the `HEAD` of a working tree, or the reflog of one of those `HEAD`s or of the
+  stash leads to it now, and nothing that was named when the session began does. So a
+  commit is judged for what it holds, whatever came after it: a credential that was
+  committed and then reverted, or removed by a second commit; a commit on a branch the
+  session left; a commit of a staged file that was edited again; a stash, with the commit
+  that holds its untracked files (`git stash -u`), and the older entries of the stash; a
+  commit made on a detached `HEAD` that was left; a commit in another working tree; a merge
+  commit the session makes, against its first parent, so with what the merge brought in.
+- **Which commits of others are judged.** A commit that was already in the repository when
+  the session began, named by any ref (remote-tracking refs included) or by a reflog, is
+  not the session's, also when the session then pulls it, merges it by fast-forward,
+  rebases onto it or resets to it: it was there before, and it is not judged at a stop. So
+  whether a pull is judged depends on when its fetch happened: a commit fetched during the
+  session and then brought onto a local branch is the session's and is judged; one that an
+  earlier fetch (an editor's background fetch, another session) had already brought is
+  not. A commit that only a remote-tracking ref names is never the session's. Every message
+  that names the session's range says this, the advice after a tool call included: advice
+  reports what is in the working tree since the base, also from such a commit, and that is
+  no promise that a stop judges it. All units are judged by the policy at the base. The
+  same patch is judged once in a stop. Each commit that has its answer is kept with it in a
+  file beside the state, which has no bound a session reaches, so a commit is asked about
+  once in a session.
+- **How much one stop judges, and a commit that gets no verdict.** The uncommitted and
+  staged changes first, then as many commits as fit the stop's time (45 seconds less four,
+  and no new commit with less than three left). The rest are counted in the message ("12
+  commits of this session: UNJUDGED … they are judged at the next stop") and are judged at
+  later stops, the oldest first. A commit can get no verdict for two kinds of reason. When
+  the chain gives verdicts (another patch got one at this stop, or the judge answers the
+  probe `agent doctor --gate` uses), the judge or the patch builder refuses this patch for
+  what it is: a file name that is not UTF-8, a size over a limit, a commit at the edge of a
+  shallow clone, whose parent the repository does not have. That commit is said once, by
+  its id, as UNJUDGED with the reason, is remembered as not judgeable, and the next commit
+  is asked about. When the chain gives no verdict (no judge, no ranker the policy admits,
+  the stop's time is up), nothing was said about the patch: nothing more is asked at that
+  stop, the commits not reached are counted, nothing is remembered, and the next stop
+  tries again.
+- **What a stop's message holds, in this order.** Every unit whose failure blocks this
+  stop, each named, with its rules; every unit that got no verdict at this stop, each
+  named, with the reason, and the count of commits that wait; the units the judge held;
+  and what stands from before: by name while there are three or fewer, else as a count
+  with the first three ("13 earlier failures stand: Commit …, and 10 more."). The first two
+  parts are always whole. The last two are left out from where the message would pass
+  6,000 characters, and the message then says how many it left out. The first line is the
+  worst answer that is new at this stop: a block, else UNJUDGED, else HOLD, else FAIL
+  STANDS.
+  A unit is named as "Uncommitted changes in" or "Staged changes in" the tree's path, or
+  "Commit" and the first twelve digits of its id. No name of
   a ref is in a message. A later `SessionStart` with the same session id (a resume, a
   compaction) keeps the project, the base and the list; a start with a new id (Claude Code
   gives one after `/clear`) is a new session. Messages say what the session is measured
@@ -420,10 +452,14 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   of items) holds one stop and stands while every stop still finds it; when a stop finds
   the change without it, it is forgotten, so the same failure blocks again if it comes
   back. One more item under a rule that already failed is a new failure and blocks. A
-  failure that has blocked as an uncommitted change and is then committed as it is does not
-  block a second time: the commit is said to stand. A commit that was amended or rebased is
-  another commit and is judged again. When the hook cannot keep its state, it says so with
-  the decision.
+  failing staged change follows the rule of the uncommitted one. A failing commit blocks at
+  the stop that first judges it, whatever has blocked before as an uncommitted change. A
+  commit that was amended or rebased is another commit and is judged again. When the hook
+  cannot keep its state (a read-only directory, a full disk), it says so with the decision,
+  and nothing is remembered: a failure blocks again at the next turn. It does not block
+  twice running: when the client says that it is continuing because a stop hook has just
+  blocked (`stop_hook_active`), and only when the state could not be kept, the stop is
+  allowed and says FAIL STANDS with the reason.
 - **What the judge names beside its rules is passed on.** forge-warden also fails a change
   for a waiver that has expired and holds one for a note, with every rule passed. The message
   then carries the judge's own words for it (bounded, escaped, marked as the judge's text and
@@ -451,6 +487,8 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   timeout leaves a stop its time (50 seconds or more; `agent setup --hooks` prints 60),
   whether the session-start hook and the hook after a tool call are registered too (the
   judged range depends on the first; a matcher that narrows either fails the link), and
+  whether the commits the repository names can be listed as the first hook of a session
+  lists them (where they cannot, no session is recorded and every stop is UNJUDGED), and
   whether the directory the sessions' state is kept in can be used (there, a directory of
   its own, writable, outside the project's working tree). The
   settings read are the project's `.claude/settings.local.json` and `.claude/settings.json`
@@ -458,7 +496,8 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   A link that cannot be checked because an earlier one is missing is reported as not ready,
   never as fine. Exit 0 only when every link is ready, otherwise 7 (the contract asked for is
   not met). In `--json` the checks are named `git`, `repository`, `policy`, `judge`, `chain`,
-  `policy_protects_itself`, `patch`, `state_directory`, `hooks_enabled`, `hooks_registered`,
+  `policy_protects_itself`, `patch`, `commits`, `state_directory`, `hooks_enabled`,
+  `hooks_registered`,
   `hook_timeout`, `start_hook_registered` and `advice_hook_registered`,
   after the checks `agent doctor` always makes. It takes the same `--judge`, `--policy` and
   `--ranker-dir` as the stop hook. The start of a session runs the same checks in the time
@@ -503,9 +542,15 @@ Ordinary workflows, which must never end in silence. These are said, each once i
   commit it is at). A nested repository in the project's tree (a scratch `git init`, a
   checkout) is left out of the patch and named; another working tree of the project that
   lies inside its tree is left out too, and is named as what it is.
-- Commits pulled or merged during the session are the session's and are judged, each once:
-  a failure in one blocks once and is then left for a person, like any other. A pull of
-  many commits takes several stops to judge; each stop says how many wait.
+- Commits fetched during the session and brought onto a local branch are the session's and
+  are judged, each once: a failure in one blocks once and is then left for a person, like
+  any other. A pull of many commits takes several stops to judge; each stop says how many
+  wait. Commits that were already in the repository when the session began are not judged,
+  whatever brings them onto the branch: every message that names the range says so.
+- Another working tree of the project that the session's directory is not in and that has
+  uncommitted or staged changes: named, as not judged (up to sixteen such trees are looked
+  at). A working tree that was removed by hand: named, with `git worktree prune`.
+- A shallow clone: a commit whose parent the clone does not have is UNJUDGED by its id.
 - A session that began in a repository with no commit, or on an orphan branch, has no base:
   its stops are UNJUDGED (after the first commit, in the first case).
 - More commits than one stop has time for: the rest are counted as UNJUDGED and judged at
@@ -529,9 +574,10 @@ Stated limits, which the judge on the pull request covers:
   cleared with `git reflog expire`, a branch that was deleted with its commits never on
   `HEAD`) is not judged. The reflogs read are those of each working tree's `HEAD` and of
   the stash; a working tree whose directory is gone is not asked.
-- An uncommitted change in another linked working tree that the session's directory is not
-  in, work in a copy of the repository, and anything in a repository that is not the
-  session's project: named where the hook sees it, not judged.
+- Work in a copy of the repository, and anything in a repository that is not the session's
+  project: named where the hook sees it, not judged.
+- Two hooks of one session that run at the same time can each write the state the other
+  did not see: a commit is then judged again, or a failure blocks again. Never a pass.
 - The settings that install the hooks, the state file, the list of commits beside it and
   the judge on `PATH` are the agent's to edit: it shares the user's account. Whoever edits
   the state or that list can move the base, or make a commit count as there before.
@@ -544,9 +590,10 @@ Stated limits, which the judge on the pull request covers:
   call. A Git that words it otherwise is read as a failure, which is said, not as silence.
 - The scratch directory of a hook that was killed is removed only where `/proc` says its
   process is gone (Linux).
-- The state of a session is two files in the user's state directory (`deep-diff-forge/hooks`
-  under `$XDG_STATE_HOME`, else under `~/.local/state`), found by the session's id: the
-  state, and the list of commits that were there when it began. Files of sessions that have
+- The state of a session is up to three files in the user's state directory
+  (`deep-diff-forge/hooks` under `$XDG_STATE_HOME`, else under `~/.local/state`), found by
+  the session's id: the state, the list of commits that were there when it began, and the
+  list of commits that have their answer. Files of sessions that have
   ended are not removed. Hooks for Codex are not designed.
 
 ---
