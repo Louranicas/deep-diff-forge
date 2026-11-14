@@ -64,11 +64,12 @@ fuzz_target!(|data: &[u8]| {
         let ranked = RankedFile::scored(file);
         assert!(ranked.evidence.len() <= MAX_EVIDENCE_PER_FILE);
         for item in &ranked.evidence {
-            let hunk = file
+            let (index, hunk) = file
                 .patch_twin
                 .hunks
                 .iter()
-                .find(|h| h.id == item.hunk)
+                .enumerate()
+                .find(|(_, h)| h.id == item.hunk)
                 .expect("evidence names a hunk of its file");
             assert_eq!(item.address, hunk.address(&file.path));
             let on_side = hunk.lines.iter().any(|l| match item.side {
@@ -76,7 +77,7 @@ fuzz_target!(|data: &[u8]| {
                 Side::Old => l.old_line == Some(item.line),
             });
             assert!(on_side, "evidence line {} is not in its hunk", item.line);
-            assert!(hunk_signals(file, hunk).contains(&item.signal));
+            assert!(hunk_signals(file, index).is_some_and(|found| found.contains(&item.signal)));
         }
         for signal in EvidenceSignal::ALL {
             let in_evidence = ranked.evidence.iter().any(|e| e.signal == signal);

@@ -131,7 +131,7 @@ fn checked(text: &str) -> Option<Vec<EvidenceSignal>> {
                 item.signal.label()
             );
         }
-        for hunk in &file.patch_twin.hunks {
+        for (index, hunk) in file.patch_twin.hunks.iter().enumerate() {
             let mut in_hunk: Vec<EvidenceSignal> = evidence
                 .iter()
                 .filter(|item| item.hunk == hunk.id)
@@ -139,7 +139,7 @@ fn checked(text: &str) -> Option<Vec<EvidenceSignal>> {
                 .collect();
             in_hunk.sort();
             in_hunk.dedup();
-            assert_eq!(hunk_signals(file, hunk), in_hunk, "a hunk's labels differ");
+            assert_eq!(hunk_signals(file, index), Some(in_hunk), "a hunk's labels differ");
         }
         read.extend(
             evidence

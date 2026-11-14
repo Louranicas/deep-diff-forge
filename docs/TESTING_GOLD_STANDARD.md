@@ -48,9 +48,18 @@ era) no longer holds. How the standard is enforced today:
   the same hunk with another new position in its header), that nothing the scanner and
   the Rust rules of release 0.8.3 find on a changed line is missing, and that no join takes
   a reading away (what each hunk gives as a patch of its own is among what its file gives
-  for it). Nine of its ten seeds fail on the sources of the commit before it (`8f290e3`);
-  the tenth holds there and fails on round 14 as it was first built, which read a hunk
-  Git must put after another only as its continuation.
+  for it). Nine of its first ten seeds fail on the sources of the commit before it
+  (`8f290e3`); the tenth holds there and fails on round 14 as it was first built, which
+  read a hunk Git must put after another only as its continuation. Since round 15 it also
+  holds that a construct only a join reads is found when either number of the headers says
+  the hunks touch (with or without an old line in the first, in both orders), that a
+  construct cut beside the word it is known by is found whatever the numbers and the order
+  of the hunks, and that every item of a script's hunk with honest numbers is found under
+  false ones and with the hunk written second; the fragment rules also run with removed
+  lines, and a raw string's text may hold quotes. Of its 18 seeds the 8 new ones are those
+  rules': on the sources of `87d1afd`, each rule run alone, the join rule and the edge
+  rule fail on every seed, the script rule on its two seeds, and the raw-string seed fails
+  the older rules.
 - **Sandbox refusal controls:** the rootless-Podman planted-breach suite
   (`crates/deep-diff-forge-cli/tests/council_sandbox.rs`, 12 probes) runs on
   every pull request.
@@ -64,9 +73,9 @@ era) no longer holds. How the standard is enforced today:
   `fuzz_target.sh` lists targets with a TOML parser and fuzzes a new private
   corpus each run, under a root it makes if missing.
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
-  `fixtures/eval` (49 cases, measured 2026-11-14) must score at least its floors,
-  which are the measured values: ranking pairs 12/15, evidence precision 134/153,
-  evidence recall 134/187, findings 33/33. Any undeclared miss fails. The 75
+  `fixtures/eval` (50 cases, measured 2026-11-15) must score at least its floors,
+  which are the measured values: ranking pairs 12/15, evidence precision 158/179,
+  evidence recall 158/213, findings 33/33. Any undeclared miss fails. The 79
   declared misses (`known_miss`, `known_false_positive`) count as wrong in their
   metric rather than being excluded, and each fails once the engine gets it
   right. Planted controls prove a wrong label fails with exit 7, a changed file,

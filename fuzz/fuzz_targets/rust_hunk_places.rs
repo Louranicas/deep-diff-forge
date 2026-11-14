@@ -31,7 +31,8 @@
 //    cannot show what it does not hold).
 // 3. THE NEW NUMBER OF THE HEADER (IR6-H-1). The same fragment with the new position of its
 //    header set to 1, and to a number the input picks: the same items on the same lines of
-//    the hunk. Git places a hunk by its old position.
+//    the hunk. Git looks for a hunk from its new position and puts it where its lines are;
+//    no reading may depend on that number.
 // 5. NO JOIN TAKES A READING AWAY. Hunks Git must put together, or whose positions say they
 //    touch, are read as one text, and each of them is still read on its own, as every
 //    version before read it and as an applier that trusts positions places it
@@ -46,6 +47,26 @@
 //    lines (any text at all) as a created file, as added lines below line 1 and as removed
 //    lines: what the scanner and the Rust token rules of release 0.8.3 find on a changed
 //    line (`unsafe`, a spawn, a fetch, a removed `#[test]`) is found.
+//
+// 6. HUNKS THAT A NUMBER SAYS TOUCH ARE READ TOGETHER (seventh independent review, IR7-M-2
+//    and IR7-L-3). A construct that only a join reads (neither half has a word of it at its
+//    edge), written as two hunks: the first with no old line or with a line of context, the
+//    second at the next old line and the next new line; then with the second's new number
+//    false, and with its old number false; each in both orders. The construct is found
+//    every time: Git obeys neither number, so each is a hint, and a hunk with no old line
+//    counts as an earlier hunk too.
+// 7. THE EDGE OF A SIDE (the review's `cutpair.patch`). A construct cut after or before the
+//    word it is known by, as two hunks with context between them, with numbers the input
+//    picks (nothing says they touch) and in either order: its signal is reported.
+// 8. NO NUMBER HIDES THE LANGUAGE OF A SCRIPT (IR7-H-1). The input's own lines added below a
+//    shebang in a file with no extension: whatever the header's numbers are, and with the
+//    hunk written second in its section, every item of the hunk with honest numbers is
+//    found. With honest numbers release 0.8.3 reads the script's language, and rule 4 of
+//    the graph's own tests holds its floor there.
+//
+// Rules 2 and 3 also run with the change as REMOVED lines (a removed test's attribute), and
+// a raw string's text may hold quotes with fewer `#` than opened it (IR7-M-1; IR7-L-4 said
+// what this target could not see).
 //
 // Input: six bytes of choices (the cut, the changed lines, how a creation is cut and
 // whether its headers are honest, the new number), then lines. The first byte of a line
@@ -154,12 +175,32 @@ fn build(script: &str) -> Built {
                 }
                 built.push("\"; g();".to_owned(), Open::Code);
             }
-            // a raw string over lines, with one or two `#`: no quote in its text. It closes
-            // on a line of its own, or (for an odd pick) at the end of its last line of text,
-            // where a backslash can stand before the quote.
+            // a raw string over lines, with one or two `#`. For the first four picks of
+            // every eight its text holds no quote; for the others it may hold any quote that
+            // does not end it (one with fewer `#` after it than opened the string:
+            // `href="#top"` in a string opened with two). It closes on a line of its own, or
+            // (for an odd pick) at the end of its last line of text, where a backslash can
+            // stand before the quote.
             3 => {
                 let hashes = "#".repeat(1 + pick % 2);
-                let mut parts: Vec<String> = rest.split('|').map(|p| text(p, &['"'])).collect();
+                let quoted = |part: &str| {
+                    let mut kept = text(part, &[]);
+                    let closer = format!("\"{hashes}");
+                    while kept.contains(&closer) {
+                        kept = kept.replace(&closer, &format!("\" {}", &hashes[1..]));
+                    }
+                    kept
+                };
+                let mut parts: Vec<String> = rest
+                    .split('|')
+                    .map(|p| {
+                        if pick % 8 < 4 {
+                            text(p, &['"'])
+                        } else {
+                            quoted(p)
+                        }
+                    })
+                    .collect();
                 built.push(
                     format!("    let r = r{hashes}\"{}", parts.remove(0)),
                     Open::Raw,
@@ -263,6 +304,7 @@ fn real(views: &[String], signal: &str, at: usize) -> bool {
         "stub_added" => &["todo", "unimplemented"],
         "test_skipped" => &["ignore"],
         "trivial_assert" => &["assert"],
+        "test_removed" => &["test"],
         _ => return true,
     };
     let has = |at: usize| {
@@ -394,6 +436,160 @@ fn change(hunks: &str) -> String {
     format!("--- a/{PATH}\n+++ b/{PATH}\n{hunks}")
 }
 
+/// Constructs that only a join reads: two halves and the signal of the whole. Neither half
+/// has, at the edge where it was cut, a word the construct is known by; and read alone the
+/// second half is the text of a comment or of a string, or half an argument list.
+const JOINED: &[(&str, &str, &str)] = &[
+    ("    assert!(", "    true);", "trivial_assert"),
+    ("#[cfg_attr(miri,", "ignore)]", "test_skipped"),
+    ("/* /*", " */ // */ x.unwrap();", "panic_path_added"),
+    (
+        "    let s = \"text",
+        "more\"; x.unwrap(); // \"",
+        "panic_path_added",
+    ),
+];
+
+/// Constructs cut after or before the word they are known by.
+const EDGED: &[(&str, &str, &str)] = &[
+    ("    x.unwrap", "    ();", "panic_path_added"),
+    ("    x.", "    unwrap();", "panic_path_added"),
+    ("    y.expect", "    (\"set\");", "panic_path_added"),
+    ("    todo", "    !();", "stub_added"),
+    ("    unimplemented!", "    ();", "stub_added"),
+    ("    assert", "    !(true);", "trivial_assert"),
+    ("#[", "ignore]", "test_skipped"),
+    ("#[ignore", "]", "test_skipped"),
+    ("#", "[ignore = \"slow\"]", "test_skipped"),
+    (
+        "    std::process::Command::",
+        "    new(\"sh\").status().ok();",
+        "process_spawn",
+    ),
+    ("    let c = Command", "    ::new(\"sh\");", "process_spawn"),
+    (
+        "    let s = TcpStream",
+        "    ::connect(a);",
+        "network_fetch",
+    ),
+    ("#[allow", "(dead_code)]", "check_suppressed"),
+];
+
+fn has(file: &ReviewFile, signal: &str) -> bool {
+    file_evidence(file)
+        .iter()
+        .any(|item| item.signal.label() == signal)
+}
+
+/// Rule 6.
+fn hinted_joins_are_read(choice: &[u8]) {
+    let (first, second, signal) = JOINED[usize::from(choice[0]) % JOINED.len()];
+    let at = 2 + usize::from(choice[1]) % 60;
+    let lie = 40 + usize::from(choice[2]);
+    // the first hunk: its line after old line `at`, with no old line, or with that line
+    let context = choice[3] & 1 == 1;
+    let one = if context {
+        hunk(
+            &format!("@@ -{at},1 +{at},2 @@"),
+            &[(' ', "fn above() {}"), ('+', first)],
+        )
+    } else {
+        hunk(&format!("@@ -{at},0 +{},1 @@", at + 1), &[('+', first)])
+    };
+    for (what, old, new) in [
+        ("true numbers", at + 1, at + 2),
+        ("a false new number", at + 1, at + 2 + lie),
+        ("a false old number", at + 1 + lie, at + 2),
+    ] {
+        let two = hunk(
+            &format!("@@ -{old},1 +{new},1 @@"),
+            &[('-', "    let b = 2;"), ('+', second)],
+        );
+        for (order, patch) in [
+            ("in order", format!("{one}{two}")),
+            ("the second first", format!("{two}{one}")),
+        ] {
+            let file = parsed(&change(&patch)).expect("two hunks are a patch");
+            assert!(
+                has(&file, signal),
+                "{signal} of {first:?} and {second:?} as two hunks that touch ({what}, {order}, context above: {context}) is not found"
+            );
+        }
+    }
+}
+
+/// Rule 7.
+fn edges_are_read(choice: &[u8]) {
+    let (first, second, signal) = EDGED[usize::from(choice[0]) % EDGED.len()];
+    let number = |byte: u8, least: usize| least + usize::from(byte);
+    let one = hunk(
+        &format!(
+            "@@ -{},1 +{},2 @@",
+            number(choice[1], 2),
+            number(choice[2], 1)
+        ),
+        &[(' ', "fn above() {}"), ('+', first)],
+    );
+    let two = hunk(
+        &format!(
+            "@@ -{},1 +{},2 @@",
+            number(choice[3], 2),
+            number(choice[5], 1)
+        ),
+        &[('+', second), (' ', "fn below() {}")],
+    );
+    let patch = if choice[4] & 1 == 0 {
+        format!("{one}{two}")
+    } else {
+        format!("{two}{one}")
+    };
+    let file = parsed(&change(&patch)).expect("two hunks are a patch");
+    assert!(
+        has(&file, signal),
+        "{signal} of {first:?} cut from {second:?} is not found at the edge: {patch:?}"
+    );
+}
+
+/// Rule 8: `own` are the input's lines.
+fn no_number_hides_a_script(choice: &[u8], own: &[&str]) {
+    let shebang = if choice[4] & 2 == 0 {
+        "#!/bin/sh"
+    } else {
+        "#!/usr/bin/env python3"
+    };
+    let lines: Vec<(char, &str)> = [(' ', shebang)]
+        .into_iter()
+        .chain(own.iter().take(50).map(|line| ('+', *line)))
+        .collect();
+    let script = |old: usize, new: usize, before: &str| {
+        let body = hunk(&format!("@@ -{old},1 +{new},{} @@", lines.len()), &lines);
+        parsed(&format!("--- a/tools/job\n+++ b/tools/job\n{before}{body}"))
+    };
+    let Some(honest) = script(1, 1, "") else {
+        return;
+    };
+    let truth = places(&honest);
+    let (old, new) = (2 + usize::from(choice[1]), 2 + usize::from(choice[2]));
+    let other = hunk(
+        "@@ -900,1 +950,2 @@",
+        &[(' ', "echo above"), ('+', "echo added")],
+    );
+    for (what, file, offset) in [
+        ("a false old number", script(old, 1, ""), 0),
+        ("a false new number", script(1, new, ""), 0),
+        ("two false numbers", script(old, new, ""), 0),
+        ("the hunk written second", script(1, 1, &other), 2),
+    ] {
+        let found = places(&file.expect("the same hunk under other numbers is a patch"));
+        for (signal, new_side, at) in &truth {
+            assert!(
+                found.contains(&(*signal, *new_side, at + offset)),
+                "{signal} on line {at} of a script ({shebang}) is lost with {what}"
+            );
+        }
+    }
+}
+
 fuzz_target!(|data: &[u8]| {
     if data.len() < 7 || data.len() > 16 * 1024 {
         return;
@@ -429,6 +625,10 @@ fuzz_target!(|data: &[u8]| {
             }
         }
     }
+
+    hinted_joins_are_read(choice);
+    edges_are_read(choice);
+    no_number_hides_a_script(choice, &own);
 
     let built = build(&script);
     let n = built.lines.len();
@@ -484,12 +684,18 @@ fuzz_target!(|data: &[u8]| {
     if !boundary(first) || !boundary(last) {
         return;
     }
-    let from = first + usize::from(choice[2]) % (last - first);
+    let from = first + usize::from(choice[2] & 0x7f) % (last - first);
     let to = from + 1 + usize::from(choice[3]) % (last - from);
+    // the change adds its lines, or (the top bit of the third choice) removes them
+    let removes = choice[2] & 0x80 != 0;
     let signed = |range: std::ops::Range<usize>| -> Vec<(char, &str)> {
         range
             .map(|at| {
-                let sign = if (from..to).contains(&at) { '+' } else { ' ' };
+                let sign = match ((from..to).contains(&at), removes) {
+                    (false, _) => ' ',
+                    (true, false) => '+',
+                    (true, true) => '-',
+                };
                 (sign, built.lines[at].as_str())
             })
             .collect()
@@ -513,8 +719,17 @@ fuzz_target!(|data: &[u8]| {
     released_is_kept(&apart, "two hunks of added lines");
 
     let changed = to - from;
+    // the lines of a hunk of `rows` lines on its old and on its new side
+    let sides = |rows: usize| {
+        if removes {
+            (rows, rows - changed)
+        } else {
+            (rows - changed, rows)
+        }
+    };
+    let (old_rows, new_rows) = sides(n);
     let Some(full) = parsed(&change(&hunk(
-        &format!("@@ -1,{} +1,{n} @@", n - changed),
+        &format!("@@ -1,{old_rows} +1,{new_rows} @@"),
         &signed(0..n),
     ))) else {
         return;
@@ -541,11 +756,8 @@ fuzz_target!(|data: &[u8]| {
             1 + usize::from(choice[5]) * 7,
         ),
     ] {
-        let header = format!(
-            "@@ -{},{} +{new_start},{size} @@",
-            first + 1,
-            size - changed
-        );
+        let (old_rows, new_rows) = sides(size);
+        let header = format!("@@ -{},{old_rows} +{new_start},{new_rows} @@", first + 1);
         let file = parsed(&change(&hunk(&header, &fragment))).expect("a fragment is a patch");
         released_is_kept(&file, "the fragment");
         if declared {

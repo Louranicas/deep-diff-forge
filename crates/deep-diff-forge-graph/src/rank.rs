@@ -242,6 +242,37 @@ mod tests {
         assert_eq!(listed[0], (S::ProcessSpawn, 2));
         assert_eq!(listed[31], (S::StubAdded, 33));
     }
+    /// The list of 32 keeps release 0.8.3's items, and for that it gives up items that an
+    /// earlier round of this branch listed: it is not a superset of that round's list
+    /// (round 14 of Vesper's review, VD3R14-M-1, on this repository's history:
+    /// `tests/repo_scripts.rs` in commit `d239165`, where round 13 listed the panic path on
+    /// line 330 and this list has the spawn on line 368 in its place, which release 0.8.3
+    /// listed). The same shape here: 33 panic paths and then a spawn. The first 32 of all
+    /// items, which was round 13's list, are the panic paths of lines 1 to 32. This list has
+    /// the spawn, and the panic path of line 32 is the item that made room. Nothing else is
+    /// lost by it: the signals and the score come from every item and are the same.
+    #[test]
+    fn the_list_gives_up_a_later_rounds_item_to_keep_the_releases() {
+        use EvidenceSignal as S;
+        let mut lines: Vec<String> = (0..33).map(|i| format!("a{i}.unwrap();")).collect();
+        lines.push("std::process::Command::new(\"sh\");".to_owned());
+        let file = created(&lines);
+        let first_32: Vec<(S, u32)> = (1..=32).map(|line| (S::PanicPathAdded, line)).collect();
+        let listed = listed_items(&file);
+        let mut expected = first_32.clone();
+        expected[31] = (S::ProcessSpawn, 34);
+        assert_eq!(listed, expected);
+        assert!(!listed.contains(&first_32[31]));
+        let ranked = RankedFile::scored(&file);
+        assert!(ranked.evidence_truncated);
+        assert!(
+            ranked
+                .signals
+                .contains(&RiskSignal::Code(S::PanicPathAdded))
+        );
+        assert!(ranked.signals.contains(&RiskSignal::Code(S::ProcessSpawn)));
+    }
+
     use deep_diff_forge_patch::parse;
 
     const MULTI: &str = "\

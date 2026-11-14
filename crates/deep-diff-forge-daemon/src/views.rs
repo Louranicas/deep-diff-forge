@@ -157,7 +157,7 @@ struct Scans<'a> {
     done: Vec<std::cell::OnceCell<FileScan>>,
     /// For each file, the hunks that are read together with another hunk of it
     /// (`deep_diff_forge_graph::joined_hunks`), found when first asked for.
-    joined: Vec<std::cell::OnceCell<std::collections::HashSet<deep_diff_forge_core::HunkId>>>,
+    joined: Vec<std::cell::OnceCell<Vec<bool>>>,
 }
 
 impl<'a> Scans<'a> {
@@ -172,14 +172,12 @@ impl<'a> Scans<'a> {
     /// Whether `hunk` of file `index` is read together with another hunk of that file: Git
     /// must put the two one straight after the other, or their positions say it does, and
     /// then the evidence of a hunk is not the evidence of that hunk read alone.
-    fn joined(&self, index: usize, hunk: &PatchHunk) -> bool {
+    fn joined(&self, index: usize, hunk: usize) -> bool {
         self.joined[index]
-            .get_or_init(|| {
-                deep_diff_forge_graph::joined_hunks(&self.files[index])
-                    .into_iter()
-                    .collect()
-            })
-            .contains(&hunk.id)
+            .get_or_init(|| deep_diff_forge_graph::joined_hunks(&self.files[index]))
+            .get(hunk)
+            .copied()
+            .unwrap_or(false)
     }
 
     /// The scan of file `index`, made now if it has not been.
@@ -216,22 +214,40 @@ impl<'a> Scans<'a> {
     }
 }
 
-/// The labels of the evidence in one hunk a view shows: from the scan of its file when the
-/// view scanned every file for its order (`whole`), and else from a scan of that hunk alone.
-/// A hunk that is read together with other hunks of its file (a file created as several
-/// hunks, hunks that touch) has no scan of its own: its labels come from the one scan of its
-/// file, which is then made once for all such hunks of the file. `git diff` writes no such
-/// hunks.
+/// The labels of the evidence in hunk `hunk` of file `index`, for a view that shows it: from
+/// the scan of its file when the view scanned every file for its order (`whole`), and else
+/// from a scan of that hunk alone. A hunk that is read together with other hunks of its file
+/// (a file created as several hunks, hunks that touch, hunks of added lines only) has no
+/// scan of its own. When the view shows that one hunk and no other (`single`), the texts it
+/// stands in are read and nothing else of the file; else its labels come from the one scan
+/// of its file, which is then made once for all such hunks of the file. A `git diff` with
+/// context lines writes no such hunks; a `git diff -U0` does (each of its hunks of added
+/// lines goes on from the last hunk that ends the file), and there a view of one hunk costs
+/// one reading of the run that hunk is in, where the scan of the file reads every hunk alone
+/// as well (seventh independent review, IR7-L-2).
 ///
 /// Review V3 round 10, VD3R10-M-1, and the third independent review, IR3-L-1: a view of one
 /// hunk picked by its address took the labels from a scan of the whole file, so it paid for
 /// every other hunk of that file (1.8 s for a one-line hunk beside a hostile one that the
 /// view did not show; before the scans were shared, 0.00 s).
-fn shown_labels(scans: &Scans, whole: bool, index: usize, hunk: &PatchHunk) -> Vec<&'static str> {
-    if whole || scans.joined(index, hunk) {
-        return scans.labels(index, hunk);
-    }
-    deep_diff_forge_graph::hunk_signals_alone(&scans.files[index], hunk)
+fn shown_labels(
+    scans: &Scans,
+    whole: bool,
+    single: bool,
+    index: usize,
+    hunk: usize,
+) -> Vec<&'static str> {
+    let file = &scans.files[index];
+    let joined = scans.joined(index, hunk);
+    let signals = if whole || (joined && !single) {
+        return scans.labels(index, &file.patch_twin.hunks[hunk]);
+    } else if joined {
+        deep_diff_forge_graph::hunk_signals(file, hunk)
+    } else {
+        deep_diff_forge_graph::hunk_signals_alone(file, hunk)
+    };
+    signals
+        .unwrap_or_default()
         .into_iter()
         .map(deep_diff_forge_graph::EvidenceSignal::label)
         .collect()
@@ -539,7 +555,8 @@ fn hunks_with(
         } else {
             0
         };
-        let mut entry = Value::Object(hunk_head(file, hunk, &shown_labels(scans, whole, f, hunk)));
+        let labels = shown_labels(scans, whole, units.len() == 1, f, h);
+        let mut entry = Value::Object(hunk_head(file, hunk, &labels));
         entry["path"] = json!(file.path);
         entry["line_offset"] = json!(offset);
         entry["complete"] = json!(true);
@@ -1000,13 +1017,16 @@ mod tests {
         let mut seen = Vec::new();
         for (f, file) in files.iter().enumerate() {
             for (h, hunk) in file.patch_twin.hunks.iter().enumerate() {
-                let alone: Vec<&str> = deep_diff_forge_graph::hunk_signals(file, hunk)
+                let alone: Vec<&str> = deep_diff_forge_graph::hunk_signals(file, h)
+                    .unwrap()
                     .into_iter()
                     .map(deep_diff_forge_graph::EvidenceSignal::label)
                     .collect();
                 assert_eq!(scans.labels(f, hunk), alone, "file {f}, hunk {h}");
-                assert_eq!(shown_labels(&scans, true, f, hunk), alone);
-                assert_eq!(shown_labels(&scans, false, f, hunk), alone);
+                for single in [true, false] {
+                    assert_eq!(shown_labels(&scans, true, single, f, h), alone);
+                    assert_eq!(shown_labels(&scans, false, single, f, h), alone);
+                }
                 seen.push(alone);
             }
         }
@@ -1024,22 +1044,24 @@ mod tests {
     /// Hunks that are read together have the labels the file's scan gives them in every
     /// view. Here a file is created as two hunks, and the second completes a call the first
     /// began (sixth independent review of the integrity signals, IR6-H-3): read alone,
-    /// neither hunk has the call. `git diff` writes no such hunks, so for its patches a
-    /// picked hunk is still scanned alone.
+    /// neither hunk has the call. A `git diff` with context lines writes no such hunks, so
+    /// for its patches a picked hunk is still scanned alone. A view of one such hunk reads
+    /// the texts that hunk stands in and does not scan the file (IR7-L-2).
     #[test]
     fn hunks_read_together_have_the_labels_of_the_files_scan() {
         let r = review(
             "diff --git a/src/lib.rs b/src/lib.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/lib.rs\n@@ -0,0 +1,2 @@\n+pub fn a() {}\n+pub fn evil(x: Option<u32>) -> u32 { x.unwrap\n@@ -2,0 +3,1 @@\n+() }\n",
         );
         let files = r.files();
-        let hunks = &files[0].patch_twin.hunks;
-        for whole in [true, false] {
+        for (whole, single) in [(true, false), (false, false), (false, true)] {
             let scans = Scans::of(files);
             assert_eq!(
-                shown_labels(&scans, whole, 0, &hunks[0]),
+                shown_labels(&scans, whole, single, 0, 0),
                 ["panic_path_added"]
             );
-            assert_eq!(shown_labels(&scans, whole, 0, &hunks[1]), [""; 0]);
+            assert_eq!(shown_labels(&scans, whole, single, 0, 1), [""; 0]);
+            // only the view of one hunk leaves the file unscanned
+            assert_eq!(scans.done[0].get().is_none(), single, "{whole} {single}");
         }
     }
 
