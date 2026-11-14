@@ -428,6 +428,17 @@ impl Runner<'_> {
             .map(|done| done.stdout)
     }
 
+    /// Run Git for its exit code alone: one of `ok_codes`. Its output is not kept.
+    pub(crate) fn output_code(
+        &self,
+        command: &'static str,
+        args: &[&OsStr],
+        ok_codes: &[i32],
+    ) -> Result<i32, GitAcquireError> {
+        self.output(command, args, ok_codes, 4096)
+            .map(|done| done.code)
+    }
+
     /// [`Self::run`], keeping the exit code and the first [`STDERR_CAP`] bytes of stderr for a
     /// caller that must judge them too.
     #[expect(

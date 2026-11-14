@@ -613,6 +613,9 @@ mod tests {
         );
         assert_eq!(by("public_api_surface")["basis"], json!(["path"]));
         assert_eq!(by("public_api_surface")["sides"], json!([]));
+        // HR-L-6: read from the path and from every changed line, as the scorer reads it
+        assert_eq!(by("hazardous_text")["basis"], json!(["path", "lexical"]));
+        assert_eq!(by("hazardous_text")["sides"], json!(["new", "old"]));
         assert_eq!(by("secret_like")["class"], "security");
     }
 

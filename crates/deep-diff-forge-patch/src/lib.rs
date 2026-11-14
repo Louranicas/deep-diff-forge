@@ -44,7 +44,9 @@ pub use git_raw::{
     GitAcquireError, GitChange, GitChangeKind, GitChangeOrigin, GitPath, StructuredDiff,
 };
 pub use guards::{InputGuards, has_reviewable_hunks};
-pub use judge_patch::{JudgePatch, JudgePatchError, file_at_commit, judge_patch};
+pub use judge_patch::{
+    HeadState, JudgePatch, JudgePatchError, file_at_commit, head_contains, head_state, judge_patch,
+};
 pub use parser::{ParseOptions, parse, parse_decoded, parse_with};
 pub use render::{old_path, render_unified};
 pub use sealed::{ReviewError, SealedReview};

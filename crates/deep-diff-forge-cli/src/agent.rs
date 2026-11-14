@@ -110,7 +110,7 @@ fn setup(args: &[String]) {
     }
     if hooks {
         emitln!(
-            "\n# Claude Code hooks: merge into .claude/settings.json (one project) or ~/.claude/settings.json (every project).\n# Nothing is written for you. After a tool call the hook gives advice and never blocks; at a stop it\n# asks forge-warden for a verdict on the changes since HEAD, and only a fail holds the stop.\n# {}\n{:#}",
+            "\n# Claude Code hooks: merge into .claude/settings.json (one project) or ~/.claude/settings.json (every project).\n# Nothing is written for you. After a tool call the hook gives advice and never blocks; at a stop it\n# asks forge-warden for a verdict on everything changed since the session began, and only a fail holds the stop.\n# {}\n{:#}",
             match &judge {
                 Some(judge) => format!(
                     "The judge is named by its path as found now: {}",
@@ -426,6 +426,29 @@ mod tests {
             command("PostToolUse"),
             "/bin/ddf agent hook post-tool --client claude"
         );
+    }
+
+    /// Independent review of the hooks, HR-L-1 and HR-M-4: the timeout the printed settings
+    /// give each hook is longer than everything that hook may take, and the stop hook's is at
+    /// least what `agent doctor --gate` asks of a registered one. The steps' own limits used
+    /// to add up to several times the sixty seconds printed for a stop.
+    #[test]
+    fn the_printed_timeouts_leave_each_hook_its_time() {
+        let settings = hook_settings("/bin/ddf", None);
+        let timeout = |event: &str| {
+            settings["hooks"][event][0]["hooks"][0]["timeout"]
+                .as_u64()
+                .unwrap()
+        };
+        for (event, limit) in crate::hook_run::LIMITS {
+            assert!(timeout(event) > limit.as_secs(), "{event}");
+            assert!(
+                event != "Stop"
+                    || u64::from(crate::hook_run::STOP_TIMEOUT_NEEDED) > limit.as_secs(),
+                "the gate asks for less than a stop can take"
+            );
+        }
+        assert!(timeout("Stop") >= u64::from(crate::hook_run::STOP_TIMEOUT_NEEDED));
     }
 
     #[test]

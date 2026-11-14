@@ -16,7 +16,17 @@
 //!
 //! What the tree holds is what `git add --all` holds: tracked changes, deletions and untracked
 //! files, without ignored files (`.gitignore` files, the repository's `info/exclude`, which is
-//! copied, and the user's ignore file).
+//! copied, and the user's ignore file), and then every file that the repository's own index
+//! lists and the working tree has. A file under an ignore rule that was added with `git add -f`
+//! is in the next commit; `git add --all` alone left it out of the patch (independent review of
+//! the hooks, HR-M-2).
+//!
+//! **Staging reads no configuration.** The scratch Git directory has none, and the staging
+//! commands run with the system's and the user's configuration off as well, with no attributes
+//! file of the user or the system: a filter the user's configuration defines used to run on
+//! every staged file and the judge was given its output (HR-L-5). One value is carried over by
+//! hand: the user's `core.excludesFile`, so that what the user ignores everywhere stays out of
+//! the patch.
 //!
 //! **Nothing under the repository's Git directory but its object store and `info/exclude`
 //! shapes the bytes.** Staging in the repository's own Git directory read its
@@ -147,8 +157,6 @@ fn pair(name: &str, value: impl Into<OsString>) -> (OsString, OsString) {
 /// without running its filters, and what it is compared with.
 struct Source {
     root: std::path::PathBuf,
-    /// The configuration that switches the repository's own filters off.
-    filters: Vec<(OsString, OsString)>,
     /// The base commit, resolved.
     base: String,
     /// The repository's object directory.
@@ -157,44 +165,45 @@ struct Source {
     exclude: std::path::PathBuf,
     /// `sha1` or `sha256`.
     object_format: String,
+    /// The paths the repository's own index lists, as Git wrote them.
+    indexed: Vec<Vec<u8>>,
+    /// The user's own ignore file (`core.excludesFile` in the user's configuration), when it is
+    /// set to an absolute path.
+    user_excludes: Option<std::path::PathBuf>,
 }
 
-fn source(
-    repo: &Path,
-    base: &str,
-    options: &GitAcquireOptions,
-    deadline: std::time::Instant,
-) -> Result<Source, JudgePatchError> {
-    let probe = Runner {
-        options,
-        cwd: repo.to_path_buf(),
-        deadline,
-        config_env: Vec::new(),
-    };
-    let mut top = probe.run(
-        "git rev-parse",
-        &[OsStr::new("rev-parse"), OsStr::new("--show-toplevel")],
-        &[0],
-        64 * 1024,
-    )?;
-    if top.last() == Some(&b'\n') {
-        top.pop();
+/// Git's answer to `args`, a path on one line, without its newline.
+fn path_answer(
+    runner: &Runner,
+    command: &'static str,
+    args: &[&OsStr],
+    ok_codes: &[i32],
+) -> Result<std::path::PathBuf, GitAcquireError> {
+    let mut bytes = runner.run(command, args, ok_codes, 64 * 1024)?;
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
     }
-    let root = path_from_bytes(top);
-    let filters = repository_filters_off(options, &root, deadline)?;
-    let inside = Runner {
-        options,
-        cwd: root.clone(),
-        deadline,
-        config_env: filters.clone(),
-    };
-    let base = match inside.commit_id(base) {
-        Ok(Some(id)) => id,
-        Ok(None) | Err(GitAcquireError::InvalidSelection { .. }) => {
-            return Err(JudgePatchError::NoBase);
-        }
-        Err(other) => return Err(other.into()),
-    };
+    Ok(path_from_bytes(bytes))
+}
+
+/// Where Git keeps `name` for the repository `inside` runs in, as an absolute path.
+fn git_path(inside: &Runner, name: &str) -> Result<std::path::PathBuf, GitAcquireError> {
+    path_answer(
+        inside,
+        "git rev-parse",
+        &[
+            OsStr::new("rev-parse"),
+            OsStr::new("--path-format=absolute"),
+            OsStr::new("--git-path"),
+            OsStr::new(name),
+        ],
+        &[0],
+    )
+}
+
+/// The paths the index of the repository `inside` runs in lists, or
+/// [`JudgePatchError::SkipWorktree`] when it marks any of them skip-worktree.
+fn indexed_paths(inside: &Runner) -> Result<Vec<Vec<u8>>, JudgePatchError> {
     // `-t` tags each path; `S` is skip-worktree. `--sparse` keeps a sparse index as it is.
     let listing = inside.run(
         "git ls-files",
@@ -213,34 +222,70 @@ fn source(
     {
         return Err(JudgePatchError::SkipWorktree);
     }
-    let mut objects = inside.run(
+    // Each entry is a tag, a space and the path.
+    Ok(listing
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| entry.get(2..))
+        .filter(|path| !path.is_empty())
+        .map(<[u8]>::to_vec)
+        .collect())
+}
+
+fn source(
+    repo: &Path,
+    base: &str,
+    options: &GitAcquireOptions,
+    deadline: std::time::Instant,
+) -> Result<Source, JudgePatchError> {
+    let probe = Runner {
+        options,
+        cwd: repo.to_path_buf(),
+        deadline,
+        config_env: Vec::new(),
+    };
+    let root = path_answer(
+        &probe,
         "git rev-parse",
-        &[
-            OsStr::new("rev-parse"),
-            OsStr::new("--path-format=absolute"),
-            OsStr::new("--git-path"),
-            OsStr::new("objects"),
-        ],
+        &[OsStr::new("rev-parse"), OsStr::new("--show-toplevel")],
         &[0],
-        64 * 1024,
     )?;
-    if objects.last() == Some(&b'\n') {
-        objects.pop();
-    }
-    let mut exclude = inside.run(
-        "git rev-parse",
+    let filters = repository_filters_off(options, &root, deadline)?;
+    let inside = Runner {
+        options,
+        cwd: root.clone(),
+        deadline,
+        // The repository's own filters stay off for everything that is read from it.
+        config_env: filters,
+    };
+    let base = match inside.commit_id(base) {
+        Ok(Some(id)) => id,
+        Ok(None) | Err(GitAcquireError::InvalidSelection { .. }) => {
+            return Err(JudgePatchError::NoBase);
+        }
+        Err(other) => return Err(other.into()),
+    };
+    let indexed = indexed_paths(&inside)?;
+    // `--global` reads only the user's files; exit 1 says the key is not set.
+    let user_excludes = match path_answer(
+        &probe,
+        "git config",
         &[
-            OsStr::new("rev-parse"),
-            OsStr::new("--path-format=absolute"),
-            OsStr::new("--git-path"),
-            OsStr::new("info/exclude"),
+            OsStr::new("config"),
+            OsStr::new("--global"),
+            OsStr::new("--path"),
+            OsStr::new("--get"),
+            OsStr::new("core.excludesFile"),
         ],
-        &[0],
-        64 * 1024,
-    )?;
-    if exclude.last() == Some(&b'\n') {
-        exclude.pop();
-    }
+        &[0, 1],
+    ) {
+        Ok(path) => Some(path).filter(|path| path.is_absolute()),
+        // Git has no user configuration to ask (no home directory is set): nothing of the
+        // user's is carried over, and that is no reason to make no patch.
+        Err(GitAcquireError::CommandFailed { .. }) => None,
+        Err(other) => return Err(other.into()),
+    };
+    let objects = git_path(&inside, "objects")?;
+    let exclude = git_path(&inside, "info/exclude")?;
     let object_format = line(inside.run(
         "git rev-parse",
         &[OsStr::new("rev-parse"), OsStr::new("--show-object-format")],
@@ -249,11 +294,12 @@ fn source(
     )?)?;
     Ok(Source {
         root,
-        filters,
         base,
-        objects: path_from_bytes(objects),
-        exclude: path_from_bytes(exclude),
+        objects,
+        exclude,
         object_format,
+        indexed,
+        user_excludes,
     })
 }
 
@@ -327,26 +373,68 @@ fn empty_repository(
     Ok(repository)
 }
 
+/// The environment of the commands that stage the working tree: the scratch repository as the
+/// Git directory, the reviewed repository's top level as the work tree, and no configuration.
+/// The system's and the user's files are off ([`ISOLATED`]), so no filter either defines
+/// exists; the user's attributes file is off; and the one value kept is the user's own ignore
+/// file, passed by hand.
+fn staging_env(from: &Source, repository: &Path) -> Vec<(OsString, OsString)> {
+    let mut config = vec![("core.attributesFile", OsString::from("/dev/null"))];
+    if let Some(excludes) = &from.user_excludes {
+        config.push(("core.excludesFile", excludes.clone().into_os_string()));
+    }
+    let mut env: Vec<(OsString, OsString)> = ISOLATED
+        .iter()
+        .filter(|(name, _)| *name != "GIT_CONFIG_COUNT")
+        .map(|(k, v)| pair(k, *v))
+        .collect();
+    for (at, (key, value)) in config.iter().enumerate() {
+        env.push(pair(&format!("GIT_CONFIG_KEY_{at}"), *key));
+        env.push(pair(&format!("GIT_CONFIG_VALUE_{at}"), value.clone()));
+    }
+    env.push(pair("GIT_CONFIG_COUNT", config.len().to_string()));
+    env.extend([
+        pair("GIT_DIR", repository.to_path_buf()),
+        pair("GIT_WORK_TREE", from.root.clone()),
+    ]);
+    env
+}
+
+/// The paths the repository's own index lists that the scratch index does not hold although the
+/// working tree has a file there: what `git add --all` left out because an ignore rule names
+/// it. A path the working tree does not have is not one of them: the judged state is the
+/// working tree.
+fn left_out(from: &Source, staged: &[u8]) -> Vec<Vec<u8>> {
+    let staged: std::collections::BTreeSet<&[u8]> = staged
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .collect();
+    from.indexed
+        .iter()
+        .filter(|path| !staged.contains(path.as_slice()))
+        .filter(|path| {
+            std::fs::symlink_metadata(from.root.join(path_from_bytes((*path).clone()))).is_ok()
+        })
+        .cloned()
+        .collect()
+}
+
 /// The tree of the working state, written into `repository` (the scratch one), with the
 /// reviewed repository's top level as its work tree: its index and the objects it writes are in
 /// the scratch directory, and nothing of the reviewed repository's Git directory is read but
-/// its object store.
+/// its object store. `scratch` takes the list of paths that are staged by name.
 fn working_tree(
     from: &Source,
+    scratch: &Path,
     repository: &Path,
     options: &GitAcquireOptions,
     deadline: std::time::Instant,
 ) -> Result<String, GitAcquireError> {
-    let mut staging_env = from.filters.clone();
-    staging_env.extend([
-        pair("GIT_DIR", repository.to_path_buf()),
-        pair("GIT_WORK_TREE", from.root.clone()),
-    ]);
     let staging = Runner {
         options,
         cwd: from.root.clone(),
         deadline,
-        config_env: staging_env,
+        config_env: staging_env(from, repository),
     };
     staging.run(
         "git read-tree",
@@ -365,6 +453,38 @@ fn working_tree(
         &[0],
         64 * 1024,
     )?;
+    // What the repository's index holds is in the next commit, whatever an ignore rule says.
+    let staged = staging.run(
+        "git ls-files",
+        &[OsStr::new("ls-files"), OsStr::new("-z")],
+        &[0],
+        INDEX_LISTING_CAP,
+    )?;
+    let forced = left_out(from, &staged);
+    if !forced.is_empty() {
+        let list = scratch.join("indexed-paths");
+        let mut bytes = Vec::new();
+        for path in &forced {
+            bytes.extend_from_slice(path);
+            bytes.push(0);
+        }
+        std::fs::write(&list, bytes)
+            .map_err(|e| refused(format!("cannot prepare the scratch directory: {e}")))?;
+        let mut from_file = OsString::from("--pathspec-from-file=");
+        from_file.push(list.as_os_str());
+        staging.run(
+            "git add",
+            &[
+                OsStr::new("--literal-pathspecs"),
+                OsStr::new("add"),
+                OsStr::new("--force"),
+                from_file.as_os_str(),
+                OsStr::new("--pathspec-file-nul"),
+            ],
+            &[0],
+            64 * 1024,
+        )?;
+    }
     line(staging.run("git write-tree", &[OsStr::new("write-tree")], &[0], 4096)?)
 }
 
@@ -435,13 +555,92 @@ pub fn judge_patch(
     let deadline = deadline_after(options.time_limit);
     let from = source(repo, base, options, deadline)?;
     let repository = empty_repository(&from, scratch, options, deadline)?;
-    let tree = working_tree(&from, &repository, options, deadline)?;
+    let tree = working_tree(&from, scratch, &repository, options, deadline)?;
     let bytes = diff_outside(&from, &tree, scratch, &repository, options, deadline)?;
     Ok(JudgePatch {
         bytes,
         base: from.base,
         tree,
     })
+}
+
+/// What `HEAD` names in a repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeadState {
+    /// A commit, by its full id.
+    Commit(String),
+    /// No commit: the branch `HEAD` points at does not exist yet.
+    Unborn {
+        /// Some other branch or tag of the repository has a commit (an orphan branch), as
+        /// opposed to a repository with no commit at all.
+        repository_has_commits: bool,
+    },
+}
+
+/// What `HEAD` names in the repository containing `repo`.
+///
+/// # Errors
+/// Any [`GitAcquireError`] from running Git.
+pub fn head_state(repo: &Path, options: &GitAcquireOptions) -> Result<HeadState, GitAcquireError> {
+    let runner = Runner {
+        options,
+        cwd: repo.to_path_buf(),
+        deadline: deadline_after(options.time_limit),
+        config_env: Vec::new(),
+    };
+    if let Some(id) = runner.commit_id("HEAD")? {
+        return Ok(HeadState::Commit(id));
+    }
+    let any = runner.run(
+        "git rev-list",
+        &[
+            OsStr::new("rev-list"),
+            OsStr::new("--max-count=1"),
+            OsStr::new("--all"),
+        ],
+        &[0],
+        4096,
+    )?;
+    Ok(HeadState::Unborn {
+        repository_has_commits: !any.is_empty(),
+    })
+}
+
+/// Whether the history of `HEAD` contains `commit` (or is it). `false` when `HEAD` names no
+/// commit.
+///
+/// # Errors
+/// Any [`GitAcquireError`] from running Git, or `commit` not naming a commit that can be read.
+pub fn head_contains(
+    repo: &Path,
+    commit: &str,
+    options: &GitAcquireOptions,
+) -> Result<bool, GitAcquireError> {
+    let runner = Runner {
+        options,
+        cwd: repo.to_path_buf(),
+        deadline: deadline_after(options.time_limit),
+        config_env: Vec::new(),
+    };
+    let commit = runner
+        .commit_id(commit)?
+        .ok_or_else(|| refused(format!("`{commit}` does not name a commit")))?;
+    let Some(head) = runner.commit_id("HEAD")? else {
+        return Ok(false);
+    };
+    match runner.output_code(
+        "git merge-base",
+        &[
+            OsStr::new("merge-base"),
+            OsStr::new("--is-ancestor"),
+            OsStr::new(&commit),
+            OsStr::new(&head),
+        ],
+        &[0, 1],
+    )? {
+        0 => Ok(true),
+        _ => Ok(false),
+    }
 }
 
 /// The bytes of the file at `path` in `commit`, or `None` when that commit has no such file.

@@ -277,41 +277,114 @@ every gate ran as root inside the container. Gates refuse to run unless
   never repeats the text of a changed line. A path is shown quoted, with control characters
   escaped, cut at 120 characters, and the message says that paths are data. Rule text comes
   from the policy at the base commit and is escaped the same way.
-- **The repository's configuration is not trusted to shape the patch.** The working tree is
-  staged, and the patch diffed, in a new, empty Git directory that only borrows the object
-  store: the repository's own configuration and its `info/attributes` are never read, so no
-  filter it defines exists and making the patch runs no program the repository chose. The
-  diff is made with system and user configuration off, no configuration passed down by a
-  parent Git, attributes from the empty tree and fixed options. What is read from under the
-  Git directory is the object store and `info/exclude` (which files are left out, copied up
-  to 1 MiB). A `.gitattributes` in the working tree converts content as Git's built-in rules
-  say, and is in the patch the judge reads. Tests plant a hostile configuration, an attribute
-  that hides source as binary, a filter, an `info/attributes` line and `core.autocrlf`, and
-  require the same bytes and no run.
+- **The session cannot move what is judged.** The project and the commit its changes are
+  measured from are fixed by the session's first hook and kept in its state: the directory
+  the client names (`CLAUDE_PROJECT_DIR`), else the one recorded, else the hook input's
+  `cwd`; and the commit `HEAD` named there. Before, both were read at every stop from things
+  the session itself moves. A `cd` into a nested repository, another repository or a
+  directory that was gone let the stop pass with no output, and so did committing the work;
+  a committed policy change was the policy for the rest of the session. A stop now judges
+  the project wherever the session's directory is, and the working tree against the recorded
+  commit with that commit's policy. A linked working tree the session's directory is in is
+  judged as well.
+- **A stop that is its session's first hook is never silent.** It has just recorded the
+  project and the commit `HEAD` names, and knows nothing of what the session did before: the
+  session-start hook was installed after the session began, or not at all. On a clean tree
+  such a stop used to say nothing, so committed work still passed in silence. It now says,
+  once, that the session's start was not recorded and that work committed before the stop
+  was not judged, whatever the judge says of what is left in the tree (a pass or an empty
+  change is allowed with that message; a fail, a hold and UNJUDGED carry it too). It stays
+  silent only where no project can be found at all: Git says there is no repository around
+  the session's directory, the client names none, and none is recorded.
+- **What the hooks do not judge.** They judge the project's working tree and the working tree
+  the session's directory is in. A change written into another linked working tree, or
+  committed on another branch without touching those trees, is not judged by the hooks; a
+  judge on the pull request is what covers that. An agent can make a stop UNJUDGED by
+  breaking what the judge needs (a nested repository with no commit, which Git cannot stage;
+  an unreadable file; a path marked skip-worktree): never a pass, always visible, and never
+  a block. Advice after a tool call covers the project's tree only. "No repository" is read
+  from Git's English message under `LC_ALL=C`; any other wording is a failure and is said.
+  The cleanup of a killed hook's scratch directory needs `/proc`. The state file is the
+  agent's to edit, as below.
+- **Neither the repository's configuration nor the user's shapes the patch.** The working
+  tree is staged, and the patch diffed, in a new, empty Git directory that only borrows the
+  object store: the repository's own configuration and its `info/attributes` are never read,
+  so no filter it defines exists and making the patch runs no program the repository chose.
+  Staging and the diff both run with system and user configuration off, no configuration
+  passed down by a parent Git and no attributes file of the user or the system; the diff
+  takes its attributes from the empty tree, with fixed options. A filter in the user's
+  configuration used to run on every staged file, and the judge was given its output. One
+  value of the user's is passed on by hand: `core.excludesFile`, the user's own ignore file,
+  when it is an absolute path. What is read from under the Git directory is the object
+  store, the list of paths in the index (a file added with `git add -f` is staged whatever
+  an ignore rule says, as a commit would hold it) and `info/exclude` (which files are left
+  out, copied up to 1 MiB). A `.gitattributes` in the working tree converts content as Git's
+  built-in rules say, and is in the patch the judge reads. Tests plant a hostile
+  configuration, an attribute that hides source as binary, a filter of the repository and
+  one of the user, an `info/attributes` line and `core.autocrlf`, and require the same bytes
+  and no run.
 - **Nothing in the repository is written.** The index that is filled and the objects that are
   written are in a scratch directory under the Git common directory (`deep-diff-forge/`),
   removed when the hook ends; the repository's index, object store and configuration are only
-  read. One state file per session is kept there; the session id is hashed and never chooses
-  a file name.
-- **The hook's directory is a directory of its own.** `deep-diff-forge/` is made with mode
-  0700; when a symbolic link or a file stands there the hook does not run and says so. A state
-  file is opened without following a link, must be a regular file of at most 1 MiB, and is
-  written to a new file of mode 0600 that is moved into place. These are checks by path:
-  whoever can swap the directory between a check and a use can already write wherever this
-  account can.
-- **The policy is read from the base commit**, never from the working tree, and only when it
-  is a regular file there.
-- **A failure is never "nothing to judge".** Only two things are: no commit yet, and no
-  change. A patch that cannot be made (Git fails, a file cannot be prepared, the working tree
-  has paths marked skip-worktree as in a sparse checkout) makes a stop UNJUDGED with the
-  reason. Before, several such failures let a stop pass in silence.
+  read. A scratch directory that a killed hook left (`tmp-<pid>`) is removed by the next hook
+  once `/proc` says its process is gone: only a directory directly under `deep-diff-forge/`,
+  never what a link of that name points at. Two hooks in different process-id namespaces
+  that share one repository can take each other's process for gone; the hook that loses its
+  directory then reports UNJUDGED, not a pass.
+- **One state file per session, in the user's state directory.** `deep-diff-forge/hooks`
+  under an absolute `$XDG_STATE_HOME`, else under `~/.local/state`. It is there, and not in
+  the repository, so that it is found by the session's id alone: before the repository is
+  found, and when Git cannot find it. The session id is hashed and never chooses a file
+  name. The file holds the project's top level, the commit the session began from (a full
+  commit id, or that there was none), the keys of findings already said, the reasons already
+  given for not running (hashed) and the failure that blocked the last stop.
+- **Each directory of the hooks is a directory of its own.** `deep-diff-forge/` under the Git
+  common directory and `deep-diff-forge/hooks` in the state directory are made with mode
+  0700; when a symbolic link or a file stands at either the hook does not run and says so. A
+  state file is opened without following a link, must be a regular file of at most 1 MiB,
+  and is written to a new file of mode 0600 that is moved into place. These are checks by
+  path: whoever can swap the directory between a check and a use can already write wherever
+  this account can.
+- **The policy is read from the commit the session began from**, never from the working tree
+  and never from a later commit, and only when it is a regular file there.
+- **A failure is never "nothing to judge".** Only two things are: no commit when the session
+  began (and none since), and no change. One more is silent because there is nothing to
+  look at: Git ran and found no repository around a session that has no project recorded.
+  Everything else is said. Git missing from `PATH`, Git refusing the repository for its
+  owner, a session directory inside `.git` or gone with nothing recorded, a base commit that
+  can no longer be read, an orphan branch in a repository that has commits, a first commit
+  made after the session began, and a patch that cannot be made (Git fails, a file cannot be
+  prepared, paths marked skip-worktree as in a sparse checkout) each make a stop UNJUDGED
+  with the reason, make the start of a session say that stops will not be judged, and are
+  told once per session by the advice hook. Before, each of these let a stop pass in
+  silence. "No repository" is read from Git's own words in the `C` locale; any other failure
+  of Git is a failure.
+- **A hook exits 0, always.** Claude Code reads exit 2 from a `Stop` hook as a block with the
+  hook's error stream as the reason. A command line the hook cannot read (an unknown, doubled
+  or valueless option, no event, another client) used to end with exit 2, so a mistyped
+  settings entry held every stop. It is said in the client's JSON now, with exit 0: the hook
+  did not run, and for a stop UNJUDGED.
+- **A stop has one deadline.** Git, the helper that hashes the rankers and every run of the
+  judge, for every working tree, share 45 seconds; the client waits 60 and `agent doctor
+  --gate` fails a registered timeout under 50. Each step is given the time that is left.
+  Before, the steps' own limits added up to several minutes, and a client that ended the
+  hook dropped its answer, which reads as a pass.
+- **Text from the judge is data.** When a verdict fails or holds for something that is not a
+  rule (an expired waiver, a note), the message repeats the judge's own words for it: at
+  most twelve, each cut at 400 characters, escaped like every other text the hook did not
+  write, and marked as the judge's words and not instructions. A note's path is shown as
+  every path is.
 - **`agent doctor --gate` reads a registered stop hook only in the form `agent setup --hooks`
   prints.** One program and its arguments, written with plain characters and single quotes:
   no comment, second command, pipe, redirection or substitution. The program word must be
   this binary's own absolute path, the word itself and not what it leads to: a shell runs
   `A=ddf agent …` as the program `agent`, and a link can be pointed elsewhere later. The
   judge must be named, by the absolute path the gate checked; the policy and the rankers
-  must be the gate's.
+  must be the gate's. The entry is read whole: its type must be `command`, a timeout it sets
+  must leave a stop its time, and `disableAllHooks` in the settings file that wins (the
+  project's local file, the project's shared file, then the user's) fails the gate. The gate
+  also makes the patch a stop would make, so a tree a stop cannot judge is found by it.
+  Settings an administrator manages are not read.
 - **The judge decides, by its exit code and its document together.** DDF starts
   `forge-warden` under a deadline and output caps. Exit 0, 7 or 8 is a verdict only with a
   whole `forge-warden.verdict.v2` document, checked member by member against the schema
@@ -341,9 +414,14 @@ every gate ran as root inside the container. Gates refuse to run unless
   by an absolute path are searched. A judge inside the repository it would judge is refused.
   A directory outside the repository that a change can also write to is not detected: keep
   the judge where the session's tools cannot write.
-- **State cannot turn a fail into a pass.** The state file holds which findings were said and
-  which failure blocked the last stop. A lost or tampered file can make a finding be said
-  twice or a failure block once more; the stop is still decided by a fresh verdict.
+- **What the state can and cannot do.** The state file holds the session's project and base,
+  which findings were said and which failure blocked the last stop. A lost file makes the
+  next hook the session's first: the base becomes the commit `HEAD` names then, a finding
+  can be said twice and a failure can block once more. A verdict is always fresh, so no
+  state turns a judged fail into a pass; but whoever edits the file can move the base, and
+  with it what is judged. A base in the file is believed only as a full commit id. "The same
+  failure" is the rule, the signal, the path and the number of items the judge cites: a new
+  item blocks again. A state that cannot be kept is said with the stop's decision.
 - **Not a boundary:** the agent runs as the user. It can edit the settings that install the
   hooks, the state file, or the judge on `PATH`. The hooks guard against honest mistakes;
   CI running the judge in authority mode is the authority.

@@ -6,7 +6,8 @@
 //! where they are (`RiskSignal::label`, `EvidenceSignal::label`): tools outside this repository
 //! read them there. Weights come from the functions the scorer uses (`RiskSignal::weight`), and
 //! the sides from the rule table ([`signal_sides`]), so this document cannot disagree with a
-//! ranking.
+//! ranking. For the path and shape signals a test holds the same: each is scored on probes
+//! and must be found from exactly what its facts say it is read from.
 
 use crate::evidence::{EvidenceSignal, Side, signal_sides};
 use crate::risk::RiskSignal;
@@ -98,21 +99,28 @@ impl SignalFacts {
         self.signal.weight()
     }
 
-    /// The `basis` values an item of this signal can carry: how the line was read.
+    /// What the signal is read from: the path, status, modes or size of a change
+    /// ([`PATH_BASIS`]), the text of its lines (the `basis` an item of a code-evidence signal
+    /// carries), or both.
+    ///
+    /// `hazardous_text` is both: the scorer looks at the path and at every changed line. It
+    /// was listed as read from the path alone (independent review of the hooks, HR-L-6).
     #[must_use]
     pub const fn basis(&self) -> &'static [&'static str] {
         match self.signal {
             RiskSignal::Code(_) => &[crate::evidence::EVIDENCE_BASIS],
+            RiskSignal::HazardousText => &[PATH_BASIS, crate::evidence::EVIDENCE_BASIS],
             _ => &[PATH_BASIS],
         }
     }
 
-    /// The sides of a hunk the signal is looked for on; empty for a path or shape signal, which
-    /// points at no line.
+    /// The sides of a hunk the signal is looked for on; empty for a signal that reads no line.
+    /// `hazardous_text` is looked for on both, though a ranking points at no line for it.
     #[must_use]
     pub fn sides(&self) -> Vec<Side> {
         match self.signal {
             RiskSignal::Code(signal) => signal_sides(signal),
+            RiskSignal::HazardousText => vec![Side::New, Side::Old],
             _ => Vec::new(),
         }
     }
@@ -542,6 +550,8 @@ mod tests {
         assert_eq!(by("new_file").basis(), ["path"]);
         assert_eq!(by("unsafe_added").basis(), ["lexical"]);
         assert_eq!(by("new_file").sides(), []);
+        assert_eq!(by("hazardous_text").basis(), ["path", "lexical"]);
+        assert_eq!(by("hazardous_text").sides(), [Side::New, Side::Old]);
         assert_eq!(by("unsafe_added").sides(), [Side::New]);
         assert_eq!(by("test_removed").sides(), [Side::Old]);
         // every code-evidence signal is looked for on some side
@@ -639,6 +649,80 @@ mod tests {
                 "{}",
                 signal.label()
             );
+        }
+    }
+
+    /// Independent review of the hooks, HR-L-6: the facts of `hazardous_text` said it was read
+    /// from the path and looked for on no side, while the scorer reads every added and removed
+    /// line. No test compared the facts of a path signal with the scorer, so they could drift.
+    ///
+    /// Here every path and shape signal is scored on probes that differ from a plain change in
+    /// one thing only: a hazard in an added line, in a removed line, in a context line, or in
+    /// the path. A signal must be raised by a line of a side exactly when its facts list that
+    /// side, by some line exactly when they list the line basis, and never by a context line.
+    #[test]
+    fn the_facts_of_every_path_signal_say_what_the_scorer_reads() {
+        use deep_diff_forge_patch::parse;
+        let signals = |patch: &str| {
+            let file = parse(patch).unwrap().into_iter().next().unwrap();
+            crate::risk::score_file(&file).1
+        };
+        let change = |path: &str, context: &str, removed: &str, added: &str| {
+            format!(
+                "--- a/{path}\n+++ b/{path}\n@@ -1,2 +1,2 @@\n {context}\n-{removed}\n+{added}\n"
+            )
+        };
+        // a bidi control, an invisible character and a terminal escape: one hazard of each kind
+        for hazard in ["\u{202e}", "\u{200b}", "\u{1b}[2J"] {
+            let plain = signals(&change("src/a.rs", "x", "a", "b"));
+            let in_added = signals(&change("src/a.rs", "x", "a", &format!("b{hazard}")));
+            let in_removed = signals(&change("src/a.rs", "x", &format!("a{hazard}"), "b"));
+            let in_context = signals(&change("src/a.rs", &format!("x{hazard}"), "a", "b"));
+            for signal in PATH_SIGNALS {
+                let facts = facts(signal);
+                let label = facts.label();
+                let raised_by =
+                    |probe: &[RiskSignal]| probe.contains(&signal) && !plain.contains(&signal);
+                assert_eq!(
+                    raised_by(&in_added),
+                    facts.sides().contains(&Side::New),
+                    "{label}: an added line"
+                );
+                assert_eq!(
+                    raised_by(&in_removed),
+                    facts.sides().contains(&Side::Old),
+                    "{label}: a removed line"
+                );
+                assert!(
+                    !raised_by(&in_context),
+                    "{label}: a context line is no change"
+                );
+                assert_eq!(
+                    raised_by(&in_added) || raised_by(&in_removed),
+                    facts.basis().contains(&crate::evidence::EVIDENCE_BASIS),
+                    "{label}: the line basis"
+                );
+                // every one of them reads the path, the status, the modes or the size as well
+                assert!(facts.basis().contains(&PATH_BASIS), "{label}");
+            }
+        }
+        // the path alone raises it too, which is the other half of its basis
+        let plain = signals(&change("src/a.rs", "x", "a", "b"));
+        let in_path = signals(&change("src/a\u{202e}.rs", "x", "a", "b"));
+        assert!(
+            in_path.contains(&RiskSignal::HazardousText)
+                && !plain.contains(&RiskSignal::HazardousText)
+        );
+        // and a code-evidence signal reads lines only
+        for signal in EvidenceSignal::ALL {
+            let facts = facts(RiskSignal::Code(signal));
+            assert_eq!(
+                facts.basis(),
+                [crate::evidence::EVIDENCE_BASIS],
+                "{}",
+                facts.label()
+            );
+            assert_eq!(facts.sides(), signal_sides(signal), "{}", facts.label());
         }
     }
 }

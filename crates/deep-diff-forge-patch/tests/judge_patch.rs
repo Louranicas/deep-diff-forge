@@ -514,3 +514,147 @@ fn a_file_is_read_from_the_commit_not_from_the_working_tree() {
         Err(GitAcquireError::InvalidSelection { .. })
     ));
 }
+
+/// Independent review of the hooks, HR-M-2. The scratch index was filled with `git add --all`,
+/// which leaves out what an ignore rule names, and the repository's own index was never read.
+/// A file under an ignored pattern that was added with `git add -f` is in the next commit and
+/// was not in the patch. Both of the reviewer's cases: a rule in `.gitignore`, and one in
+/// `.git/info/exclude`.
+#[test]
+fn a_file_in_the_index_is_in_the_patch_whatever_an_ignore_rule_says() {
+    let scratch = Scratch::new("judge-patch-forced");
+    let root = scratch.join("repo");
+    std::fs::create_dir(&root).unwrap();
+    git(&root, &["init", "--quiet"]);
+    std::fs::write(root.join("src.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(root.join(".gitignore"), "build/\n").unwrap();
+    git(&root, &["add", "--all"]);
+    git(&root, &["commit", "--quiet", "-m", "base"]);
+    let shown = |name: &str| {
+        let patch = judge_patch(&root, "HEAD", &fresh(&scratch, name), &options()).unwrap();
+        String::from_utf8_lossy(&patch.bytes).into_owned()
+    };
+
+    std::fs::create_dir(root.join("build")).unwrap();
+    std::fs::write(root.join("build/gen.rs"), "const K: u8 = 1;\n").unwrap();
+    std::fs::write(root.join("build/odd name é.rs"), "const L: u8 = 2;\n").unwrap();
+    std::fs::write(root.join("build/never-added.rs"), "const M: u8 = 3;\n").unwrap();
+    std::fs::write(root.join("local.rs"), "const N: u8 = 4;\n").unwrap();
+    std::fs::write(root.join(".git/info/exclude"), "local.rs\n").unwrap();
+    // ignored and in no index: in no commit, and in no patch
+    assert_eq!(shown("ignored"), "");
+
+    git(&root, &["add", "-f", "build/gen.rs", "build/odd name é.rs"]);
+    git(&root, &["add", "-f", "local.rs"]);
+    let before = untouched(&root);
+    let forced = judge_patch(&root, "HEAD", &fresh(&scratch, "forced"), &options()).unwrap();
+    let text = String::from_utf8_lossy(&forced.bytes).into_owned();
+    for added in [
+        "diff --git a/build/gen.rs b/build/gen.rs\nnew file mode 100644\n",
+        "+const K: u8 = 1;\n",
+        "+const L: u8 = 2;\n",
+        "diff --git a/local.rs b/local.rs\nnew file mode 100644\n",
+        "+const N: u8 = 4;\n",
+    ] {
+        assert!(text.contains(added), "{added:?} is missing: {text}");
+    }
+    assert!(!text.contains("never-added"), "{text}");
+    assert_eq!(
+        untouched(&root),
+        before,
+        "making the patch changed the repository"
+    );
+    // The file as the working tree has it now, not as it was when it was added.
+    std::fs::write(root.join("build/gen.rs"), "const K: u8 = 9;\n").unwrap();
+    let later = shown("later");
+    assert!(
+        later.contains("+const K: u8 = 9;\n") && !later.contains("u8 = 1;"),
+        "{later}"
+    );
+    std::fs::write(root.join("build/gen.rs"), "const K: u8 = 1;\n").unwrap();
+
+    // and that is the commit: the bytes are the patch maker's for it
+    git(&root, &["commit", "--quiet", "-m", "generated files"]);
+    assert_eq!(forced.tree, text_of_tree(&root));
+    assert_eq!(forced.bytes, patch_maker(&root, &scratch, "HEAD~1", "HEAD"));
+
+    // A file that is in the index and gone from the working tree is not staged by name: the
+    // working tree is what is judged, and a path that is not there must not stop the patch.
+    std::fs::write(root.join("build/short-lived.rs"), "const S: u8 = 5;\n").unwrap();
+    git(&root, &["add", "-f", "build/short-lived.rs"]);
+    std::fs::remove_file(root.join("build/short-lived.rs")).unwrap();
+    assert_eq!(shown("gone"), "");
+}
+
+fn text_of_tree(root: &Path) -> String {
+    text(git(root, &["rev-parse", "HEAD^{tree}"]))
+}
+
+/// Independent review of the hooks, HR-L-5. The README said the tree was staged "with no
+/// configuration"; the user's and the system's were read, and a filter the user's
+/// configuration defined ran on every staged file, so the judge was given its output in place
+/// of the file. Staging reads neither now, nor an attributes file of the user. One thing of
+/// the user's is kept, passed by hand: the ignore file, so that what the user ignores in every
+/// repository does not turn up in a patch.
+#[test]
+fn the_users_configuration_does_not_shape_the_patch_and_the_users_ignore_file_does() {
+    let scratch = Scratch::new("judge-patch-user-config");
+    let root = changed_repository(&scratch);
+    let plain = judge_patch(&root, "HEAD", &fresh(&scratch, "plain"), &options()).unwrap();
+    let shown = String::from_utf8_lossy(&plain.bytes).into_owned();
+    assert!(shown.contains("+fn a() { b(); }\n"), "{shown}");
+
+    // the reviewer's case: a filter in the user's configuration, and a user attributes file
+    // that names it for every source file (and a conversion for every text file)
+    let marker = scratch.join("filter-ran");
+    let attributes = scratch.write("user-attributes", "*.rs filter=hide\n*.txt text eol=crlf\n");
+    let user_config = |more: &str| {
+        scratch.write(
+            "user-gitconfig",
+            format!(
+                "[filter \"hide\"]\n\tclean = \"sh -c 'touch {}; echo cleaned'\"\n\trequired = true\n[core]\n\tattributesFile = {}\n{more}",
+                marker.display(),
+                attributes.display()
+            ),
+        )
+    };
+    let with = |config: &Path| GitAcquireOptions {
+        env: vec![
+            (OsString::from("GIT_CONFIG_GLOBAL"), config.into()),
+            (OsString::from("GIT_CONFIG_NOSYSTEM"), OsString::from("1")),
+        ],
+        ..GitAcquireOptions::default()
+    };
+    let filtered = judge_patch(
+        &root,
+        "HEAD",
+        &fresh(&scratch, "filtered"),
+        &with(&user_config("")),
+    )
+    .unwrap();
+    assert!(!marker.exists(), "a filter of the user's configuration ran");
+    assert_eq!(
+        String::from_utf8_lossy(&filtered.bytes),
+        shown,
+        "the user's configuration changed the patch"
+    );
+    assert_eq!(filtered.tree, plain.tree);
+
+    // the user's ignore file keeps a file out, as it does for a commit
+    assert!(shown.contains("b/new name.txt"), "{shown}");
+    let ignore = scratch.write("user-ignore", "new name.txt\n");
+    let ignoring = judge_patch(
+        &root,
+        "HEAD",
+        &fresh(&scratch, "ignoring"),
+        &with(&user_config(&format!(
+            "\texcludesFile = {}\n",
+            ignore.display()
+        ))),
+    )
+    .unwrap();
+    let without = String::from_utf8_lossy(&ignoring.bytes).into_owned();
+    assert!(!without.contains("new name.txt"), "{without}");
+    assert!(without.contains("+fn a() { b(); }\n"), "{without}");
+    assert!(!marker.exists(), "a filter of the user's configuration ran");
+}

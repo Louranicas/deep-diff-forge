@@ -307,10 +307,24 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
 
 | Event | Command | What the agent gets |
 | --- | --- | --- |
-| `SessionStart` | `agent hook session-start` | What the hooks do, and whether a stop can be judged here (a judge and a policy at `HEAD`). |
-| `PostToolUse`, after every tool | `agent hook post-tool` | **Advice, never a block.** The evidence that is new in its changes since `HEAD`: label, path, line, how the line was read, and what answers the signal and what does not. A finding is said once per session, also when the line moves. |
-| `Stop` | `agent hook stop` | A verdict on the changes since `HEAD`. **Only a fail holds the stop**, with the rules that failed and what answers them. A hold is reported for a person. With no judge, no policy, or no ranker the policy admits, the result is **UNJUDGED**, said plainly, and never a pass. |
+| `SessionStart` | `agent hook session-start` | What the hooks do, the commit the session's changes are measured from, and whether a stop can be judged here: the chain is checked the way `agent doctor --gate` checks it, and a link that is missing is named instead of a promise. |
+| `PostToolUse`, after every tool | `agent hook post-tool` | **Advice, never a block.** The evidence that is new in everything it changed since the session began, committed or not: label, path, line, how the line was read, and what answers the signal and what does not. A finding is said once per session, also when the line moves. |
+| `Stop` | `agent hook stop` | A verdict on everything changed since the session began, committed or not. **Only a fail holds the stop**, with the rules that failed and what answers them. A hold is reported for a person. With no judge, no policy, or no ranker the policy admits, the result is **UNJUDGED**, said plainly, and never a pass. |
 
+- **One project and one base for a session.** The session's first hook fixes two things and
+  keeps them in the session's state: the project (the directory Claude Code names in
+  `CLAUDE_PROJECT_DIR`, else the one already recorded, else the hook input's `cwd`) and the
+  commit `HEAD` names there. Every later hook of the session judges that project from that
+  commit, wherever the agent has gone with `cd` and whatever it has committed: a stop from a
+  nested repository, another repository, a directory outside any, or one that is gone still
+  judges the project, and work that was committed is in the patch. When the session's
+  directory is in another working tree of the same repository (a linked worktree it
+  entered), that tree is judged as well, from the same commit by the same policy; the worst
+  answer decides and one message names each tree. A later `SessionStart` of the same session
+  (resume, compact, clear) keeps the commit. Messages say what was compared in plain words:
+  "changes since this session began (commit abc1234)". When the branch has left that commit
+  (a reset, a rebase, another branch) the working tree is still compared with it and the
+  message says the branch moved; when the commit can no longer be read the stop is UNJUDGED.
 - **The judge is [forge-warden](https://github.com/Louranicas/forge-warden)**, in its authority
   mode: `forge-warden check --policy P --patch F --ranker R --json`. DDF does not judge.
   `agent setup --hooks` finds it once and writes its absolute path into the commands as
@@ -328,29 +342,43 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   enrolled. Anything else is UNJUDGED: a program that is merely named `forge-warden` and exits 0 does not
   pass a stop. The seals do not prove who wrote the document; they bind a real judge's answer
   to these inputs.
-- **The policy is the one at the base commit** (`warden.toml`, or `--policy NAME`), read from
-  Git, never from the working tree: a change cannot loosen the policy it is judged by.
+- **The policy is the one at the commit the session began from** (`warden.toml`, or
+  `--policy NAME`), read from Git, never from the working tree: a change cannot loosen the
+  policy it is judged by, and committing the loosened policy does not make it the policy
+  either, for as long as the session lasts.
 - **The patch is the one a judge would be given for the commit.** The working tree, with
-  untracked files and without ignored ones, is staged and diffed against `HEAD` in a new,
-  empty Git directory that only borrows the object store, the way forge-warden's patch maker
-  diffs two commits: with no configuration and, for the diff, no attributes. For a state that
-  is committed with no conversion the bytes are equal (a test holds this). Nothing under the
-  repository's Git directory but the object store and `info/exclude` shapes the bytes: not
-  its configuration, not `info/attributes`. A `.gitattributes` file in the working tree does
-  convert content, and is itself in the patch. Where the repository's own configuration would
-  make a commit differ (`core.autocrlf`, `core.fileMode=false`, a filter), the judged tree is
-  the working tree's bytes and modes. Making the patch writes nothing in the repository: the
-  index and the objects are in a scratch directory under the Git directory, removed
-  afterwards. A working tree with paths marked skip-worktree (a sparse checkout) is not
-  judged: its absent files would read as deletions, so advice stays silent and a stop is
-  UNJUDGED with that reason.
+  untracked files and without ignored ones, is staged and diffed against the commit the
+  session began from in a new, empty Git directory that only borrows the object store, the
+  way forge-warden's patch maker diffs two commits. A file that the repository's index lists
+  is staged whatever an ignore rule says: one added with `git add -f` is in the next commit,
+  so it is in the patch. Staging reads no configuration: not the repository's, not the
+  user's, not the system's, and no attributes file of the user, so no filter any of them
+  defines runs; the diff reads no attributes at all. One thing of the user's is carried over
+  by hand, the ignore file (`core.excludesFile` in the user's configuration). For a state
+  that is committed with no conversion the bytes are equal (a test holds this). Nothing
+  under the repository's Git directory but the object store, the list of paths in its index
+  and `info/exclude` shapes the bytes: not its configuration, not `info/attributes`. A
+  `.gitattributes` file in the working tree does convert content, and is itself in the
+  patch. Where configuration would make a commit differ (`core.autocrlf`,
+  `core.fileMode=false`, a filter), the judged tree is the working tree's bytes and modes.
+  Making the patch writes nothing in the repository: the index and the objects are in a
+  scratch directory under the Git directory, removed afterwards. A working tree with paths
+  marked skip-worktree (a sparse checkout) is not judged: its absent files would read as
+  deletions, so a stop is UNJUDGED with that reason and advice says so once.
 - **The ranker is this binary first**, then the files in `--ranker-dir DIR` that come first
   by name, eight candidates in all. forge-warden
   admits a ranker only if the policy lists its SHA-256, so a newer DDF than the policy admits
   can still have its stop judged by an older, admitted one.
 - **The same failure does not block twice.** When Claude Code is already continuing because of
-  a stop hook and the same rules fail on the same paths, the stop is allowed and the failure
-  is left for a person.
+  a stop hook and the same rules fail for the same signals on the same paths with the same
+  number of items, the stop is allowed and the failure is left for a person. One more item
+  under a rule that already failed is a new failure and blocks again. When the hook cannot
+  keep its state, it says so with the decision.
+- **What the judge names beside its rules is passed on.** forge-warden also fails a change
+  for a waiver that has expired and holds one for a note, with every rule passed. The message
+  then carries the judge's own words for it (bounded, escaped, marked as the judge's text and
+  not instructions), and a fail with no failing rule says that it is for a person to settle:
+  it is not repaired by editing the change. It still holds the stop once.
 - **No line of the change is repeated to the agent.** A message holds labels, line numbers
   and remedy text; a path is quoted, escaped and cut at 120 characters, and the message says
   that paths are data, not instructions.
@@ -362,24 +390,79 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   it found: Git 2.40 or later, the repository, the policy at `HEAD`, the judge, the chain (the
   judge is given a probe, a patch that adds one comment line to the policy, and must return a
   verdict with a ranker this machine has), whether the policy protects its own file (a policy
-  that lets the probe pass can be loosened by any change), and whether a Claude Code settings
-  file registers the stop hook: the exact command `agent setup --hooks` prints, with this
-  binary and the judge each named by its own absolute path, and the policy and the rankers
-  that were checked (a command that only holds the words, starts with an assignment, names
-  this binary through a link or a relative path, or names no judge is not it). A link that cannot be checked because an earlier one is
-  missing is reported as not ready, never as fine. Exit 0 only when every link is ready,
-  otherwise 7 (the contract asked for is not met). In `--json` the checks are named `git`,
-  `repository`, `policy`, `judge`, `chain`, `policy_protects_itself` and `hooks_registered`,
+  that lets the probe pass can be loosened by any change), the patch (the one a stop would
+  judge is made, so a path marked skip-worktree or an untracked file that cannot be read is
+  found here and not at the first stop), whether hooks are switched on (`disableAllHooks` in
+  the settings file that wins), whether a Claude Code settings file registers the stop hook
+  (a hook of type `command` with the exact command `agent setup --hooks` prints: this binary
+  and the judge each named by its own absolute path, and the policy and the rankers that were
+  checked; a command that only holds the words, starts with an assignment, names this binary
+  through a link or a relative path, or names no judge is not it), and whether that hook's
+  timeout leaves a stop its time (50 seconds or more; `agent setup --hooks` prints 60). The
+  settings read are the project's `.claude/settings.local.json` and `.claude/settings.json`
+  and the user's `~/.claude/settings.json`; settings an administrator manages are not read.
+  A link that cannot be checked because an earlier one is missing is reported as not ready,
+  never as fine. Exit 0 only when every link is ready, otherwise 7 (the contract asked for is
+  not met). In `--json` the checks are named `git`, `repository`, `policy`, `judge`, `chain`,
+  `policy_protects_itself`, `patch`, `hooks_enabled`, `hooks_registered` and `hook_timeout`,
   after the checks `agent doctor` always makes. It takes the same `--judge`, `--policy` and
-  `--ranker-dir` as the stop hook.
-- **A hook never fails its client.** Outside a repository it says nothing. If it cannot run
-  (Git too slow, a state file that cannot be written), it exits 0 and tells the user that
-  nothing was judged.
+  `--ranker-dir` as the stop hook. The start of a session runs the same checks in the time
+  it has and says "stops will be judged" only when every one of them is ready.
+- **A hook never fails its client, and a failure is never silence.** A hook always exits 0;
+  exit 2, which Claude Code reads from a stop hook as a block, is never used, also not for a
+  command line the hook cannot read (a mistyped option says that the hook did not run, and
+  for a stop that it is UNJUDGED). Nothing is said in three cases only: Git ran and found no
+  repository around a session that has no project recorded; the repository had no commit
+  when the session began and has none now; the change is empty. A stop that is the first
+  hook of its session is the exception to the last two: it has only then recorded where the
+  session is, so it always says that the session's start was not recorded and that work
+  committed before it was not judged (once; the next stop is ordinary). Everything else is said: Git
+  missing or refusing the repository (another owner), a directory inside `.git`, a base that
+  cannot be read, an orphan branch, a patch that cannot be made. A stop then says UNJUDGED
+  with the reason, a start says that stops will not be judged, and advice says each reason
+  once in a session, not after every tool call.
+- **One deadline for each hook.** Everything a stop does (Git, hashing the rankers, every
+  run of the judge, for every tree) shares 45 seconds, inside the 60 its client waits;
+  advice has 4 of 5 and a start 8 of 10. A step gets the time that is left, never a limit of
+  its own on top. The scratch directory a hook that was killed left behind is removed by the
+  next hook of the repository, once its process is gone (where `/proc` says so).
 
-Limits, stated: the judged range is the changes since `HEAD`, so work committed during the
-session is outside it (a session selection from the merge base is planned). The hooks guard
-against honest mistakes: an agent that shares the user's account can edit the settings that
-install them, so CI in authority mode remains the authority. Hooks for Codex are not designed.
+Limits, stated:
+
+- The base is the commit `HEAD` named when the session's first hook ran. With the printed
+  settings that is the start of the session. A stop that is its session's first hook (the
+  session-start hook was installed after the session began, or not at all) can only measure
+  from where `HEAD` is then: what the session committed before it is not judged. Such a stop
+  is never silent. Whatever the judge says of what is left in the tree, it adds, once, that
+  the session's start was not recorded and that the session-start hook must be installed
+  before a session begins.
+- What is judged is two working trees at most: the project's, and the one the session's
+  directory is in at the stop when that is another working tree of the same repository. A
+  change written into another linked working tree, or committed on another branch without
+  touching those trees, is not judged by the hooks. A judge on the pull request is what
+  covers that.
+- An agent can make a stop UNJUDGED by breaking what the judge needs: a nested repository
+  with no commit in the tree (Git cannot stage it), a file that cannot be read, a path
+  marked skip-worktree. That is never a pass and always visible to the user, and it is never
+  a block either.
+- Advice after a tool call covers the project's working tree only, not a linked working tree
+  the session is in. The stop judges both.
+- "No repository here" is read from Git's own English message, with `LC_ALL=C` set for that
+  call. A Git that words it otherwise is read as a failure, which is said, not as silence.
+- The scratch directory of a hook that was killed is removed only where `/proc` says its
+  process is gone (Linux). Elsewhere it stays until a process with the same id runs a hook
+  in that repository.
+- Uncommitted work that was already in the tree when the session began is inside what is
+  judged: start sessions on a clean tree. The start says so when the tree is not clean.
+- A session that began in a repository with no commit, or on an orphan branch, has no base:
+  its stops are UNJUDGED (after the first commit, in the first case).
+- The state of a session (its project, its base, what was said) is one file in the user's
+  state directory (`deep-diff-forge/hooks` under `$XDG_STATE_HOME`, else under
+  `~/.local/state`), found by the session's id; without such a directory the hooks say that
+  they did not run. Files of sessions that have ended are not removed.
+- The hooks guard against honest mistakes: an agent that shares the user's account can edit
+  the settings that install them or the state file, so CI in authority mode remains the
+  authority. Hooks for Codex are not designed.
 
 ---
 
