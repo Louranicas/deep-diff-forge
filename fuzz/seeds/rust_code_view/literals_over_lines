@@ -1,0 +1,13 @@
+pub const A: &str = "
+/*"; pub const B: &str = r##"
+/*
+ /*
+/*
+"##; pub fn f() { unsafe { run() } }
+const C: &str = "ends with a backslash\
+"; const D: &[u8] = b"bytes
+/* " ; unsafe { g() } // "
+*/ "; const E: &str = r#"raw
+"# + r"x"; /* comment
+" still comment /* deeper
+*/ " */ unsafe { h() }

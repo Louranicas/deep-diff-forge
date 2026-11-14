@@ -1,0 +1,41 @@
+// IR4-H-1: one line hides every signal in the rest of the hunk.
+// The closing quote of '\x41' is taken for the opening quote of a char literal ',' ;
+// the next byte is the quote of the char literal '"', read as a string start; that
+// "string" ends at the quote that really opens "/*"; the slash-star is then read as code
+// and opens a block comment that nothing closes.
+pub const TABLE: (char, char, &str) = ('\x41','"', "/*");
+
+pub fn first(v: &[u32]) -> u32 {
+    let unchecked = unsafe { *v.as_ptr() };
+    let n: Option<u32> = v.first().copied();
+    n.unwrap() + n.expect("no") + unchecked
+}
+
+pub fn later() -> u32 {
+    todo!()
+}
+
+pub fn never() -> u32 {
+    unimplemented!()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore]
+    fn skipped() {
+        assert!(true);
+        assert_eq!(true, true);
+    }
+
+    #[test]
+    #[cfg_attr(all(), ignore)]
+    fn skipped_too() {
+        assert!(super::first(&[]) == 1);
+    }
+}
+
+fn main() {
+    println!("{:?}", TABLE);
+    println!("{}", first(&[]));
+}

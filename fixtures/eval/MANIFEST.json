@@ -1252,7 +1252,7 @@
       "id": "evidence/independent-review-2-20261114",
       "kind": "evidence",
       "patch": "evidence/independent-review-2-20261114.patch",
-      "origin": "internal: a second independent review by a Claude subagent, 2026-11-14 (docs/reviews/claude-independent-review-2-20261114.md), findings IR2-H-1, IR2-M-1 and IR2-M-2, and round 9 of Vesper's review (docs/reviews/vesper-v3-round9-report-20261114.md), finding VD3R9-M-1, each reproduced before it was counted. Expected: a production panic path in a new file whose first line holds //* inside a block comment, which the grammar does not count as a nested opener and the compiler does, so that the cfg(test) after it is comment text (it was withdrawn as proved test code); unwrap called by a path that is broken after its ::, passed as a function of the patch's own type, named as a value with generic arguments over two lines, and called after a comment that the lexer's code view ends too early; a conditional skip applied by a cfg_attr inside a cfg_attr; a conditional skip whose nested condition changed from all(miri) to all(); a removed test written #[r#test]. Negatives: an import named expect, a path that only leads through a module named unwrap, and a condition of which only the spacing changed. Declared false positive: a panic path in the cfg(test) module of a file created whole, reported with test_likely since the parser never removes evidence. Declared miss: a call inside another macro's body after /* /* */ // */, where the parser names no construct and the lexer's code view, which does not nest block comments, shows the token rules a comment. Changed 2026-11-14, when the parser left the evidence path and the tokens of a hunk are read across its lines (docs/reviews/claude-independent-review-3-20261114.md): a construct over lines is reported on its first added line, the line of the :: and not of the name; two more declared misses, the function of the patch's own type passed as a value (the parser named any path used as a value; tokens do not tell one from an import or a type, and only the standard Result and Option are read) and the call after /* /* */ // */ in plain code (the parser nested the comment; the code view does not); and one more declared false positive, the condition of which only the spacing changed (nothing is compared with the old side any more: a line written again inside a conditional skip is a change to it)",
+      "origin": "internal: a second independent review by a Claude subagent, 2026-11-14 (docs/reviews/claude-independent-review-2-20261114.md), findings IR2-H-1, IR2-M-1 and IR2-M-2, and round 9 of Vesper's review (docs/reviews/vesper-v3-round9-report-20261114.md), finding VD3R9-M-1, each reproduced before it was counted. Expected: a production panic path in a new file whose first line holds //* inside a block comment, which the grammar does not count as a nested opener and the compiler does, so that the cfg(test) after it is comment text (it was withdrawn as proved test code); unwrap called by a path that is broken after its ::, passed as a function of the patch's own type, named as a value with generic arguments over two lines, and called after a comment that the lexer's code view ends too early; a conditional skip applied by a cfg_attr inside a cfg_attr; a conditional skip whose nested condition changed from all(miri) to all(); a removed test written #[r#test]. Negatives: an import named expect, a path that only leads through a module named unwrap, and a condition of which only the spacing changed. Declared false positive: a panic path in the cfg(test) module of a file created whole, reported with test_likely since the parser never removes evidence. Declared miss: a call inside another macro's body after /* /* */ // */, where the parser names no construct and the lexer's code view, which does not nest block comments, shows the token rules a comment. Changed 2026-11-14, when the parser left the evidence path and the tokens of a hunk are read across its lines (docs/reviews/claude-independent-review-3-20261114.md): a construct over lines is reported on its first added line, the line of the :: and not of the name; two more declared misses, the function of the patch's own type passed as a value (the parser named any path used as a value; tokens do not tell one from an import or a type, and only the standard Result and Option are read) and the call after /* /* */ // */ in plain code (the parser nested the comment; the code view does not); and one more declared false positive, the condition of which only the spacing changed (nothing is compared with the old side any more: a line written again inside a conditional skip is a change to it). Changed again 2026-11-14 (review round 12): the code view reads Rust as the compiler's lexer does and nests block comments, so the two calls after /* /* */ // */ (in plain code, and inside another macro's body) are found; they moved from the declared misses to the expected items. The function of the patch's own type passed as a value stays declared",
       "expect": [
         {
           "path": "src/comment_opener.rs",
@@ -1289,14 +1289,6 @@
           "signal": "test_removed",
           "side": "old",
           "line": 1
-        }
-      ],
-      "known_miss": [
-        {
-          "path": "src/paths.rs",
-          "signal": "panic_path_added",
-          "side": "new",
-          "line": 6
         },
         {
           "path": "src/paths.rs",
@@ -1309,6 +1301,14 @@
           "signal": "panic_path_added",
           "side": "new",
           "line": 12
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/paths.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 6
         }
       ],
       "known_false_positive": [
@@ -1385,6 +1385,99 @@
         }
       ],
       "sha256": "a1557e60e8aaa53eb50fc34d214df180eb245224eaf37e65a34391c7a9caeb7c"
+    },
+    {
+      "id": "evidence/rust-code-view-20261114",
+      "kind": "evidence",
+      "patch": "evidence/rust-code-view-20261114.patch",
+      "origin": "internal: two findings of the independent reviews of 2026-11-14 against the code view (crates/deep-diff-forge-graph/src/lexical.rs), each reproduced on the released v0.8.3 binary with a control before it was counted, and a third text found while the fix was written. (1) IR2-H-3, docs/reviews/claude-independent-review-2-20261114.md: Rust nests block comments, and the view ended one at the first */, so after /* /* */ a // cut the line and the call behind the last */ was hidden (src/net.rs: a fetch, a spawn, an unwrap, a todo after a nested comment that holds a quote, and an unwrap after a comment that holds //*; v0.8.3 reports no signal for the file, and process_spawn and network_fetch for its control). (2) IR4-H-1, docs/reviews/claude-independent-review-4-20261114.md: a character literal with an escape longer than one character put the view one quote out of step, so that '\"' opened a string and \"/*\" a comment over the rest of the hunk (src/table.rs, a new file whose first line is such a constant: the unsafe block, the unwrap, the todo, the ignored test and the trivial assertion after it; src/escapes.rs, the same with '\\u{1F600}'|'\"' and a byte literal: v0.8.3 reports no evidence for either file, and unsafe_added for their controls). (3) src/piled.rs: a string and then a raw string that holds a comment opener on each of three lines; a scanner that counts comment depth has one reading for each depth, and the reading that resumed both strings, the compiler's, must not be the one dropped (found by the fuzz oracle against rustc's lexer while the fix was written; released versions read it right). Expected: every item. The fuzz target rust_code_view holds the view to the compiler's lexer for any text",
+      "expect": [
+        {
+          "path": "src/net.rs",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/net.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/net.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/net.rs",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/net.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/table.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/table.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/table.rs",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 10
+        },
+        {
+          "path": "src/table.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 16
+        },
+        {
+          "path": "src/table.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 18
+        },
+        {
+          "path": "src/escapes.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/piled.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/piled.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "src/piled.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 7
+        }
+      ],
+      "sha256": "170eccbcb87e8fbfd1e3285aa88a2223b61188a97dfb47152b2787cc75307614"
     }
   ]
 }

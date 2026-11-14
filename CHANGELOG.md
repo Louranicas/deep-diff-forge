@@ -444,6 +444,71 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `test_removed` is read the same way, so a removed `#[tokio::test(flavor = "…")]` or a
   `#[test]` written over lines is reported.*
 
+### Security
+
+- **Rust code after a nested block comment, or after a character literal with a long escape,
+  was hidden from every Rust rule** (second and fourth independent reviews of 2026-11-14,
+  IR2-H-3 and IR4-H-1; both reproduced on the released v0.8.3 binary with a control). Every
+  Rust rule reads a view of each line in which comments and literals are blank. That view
+  misread two things the compiler reads plainly, and what it took for a comment or a string
+  left no evidence: not `process_spawn`, `network_fetch`, `dynamic_eval` or `unsafe_added`,
+  and none of the integrity signals above.
+  - *Block comments.* Rust nests them. The view ended a comment at the first `*/`, so after
+    `/* /* */` a `//` cut the line where, for the compiler, the comment is still open and the
+    code behind its last `*/` runs:
+    `/* /* */ // */ std::process::Command::new("sh").arg("-c").arg(u).status().ok();`
+    was ranked as a line with no signal (v0.8.3: score 2, no signal; the same call written
+    plainly: `process_spawn`).
+  - *Character literals.* The view knew a literal by a closing quote two bytes on, or three
+    after a backslash. After `'\x41'`, `'\u{1F600}'` or any longer escape it was one quote
+    out of step: in `('\x41','"', "/*")` it took the `"` of `'"'` for the start of a string
+    and the `/*` of the real string for a comment that nothing closed, and the rest of the
+    hunk was blank (v0.8.3: no `unsafe_added` for an `unsafe` block under that line).
+  - *Since when.* Both readings are as old as the view: every release that has it, 0.5.0 to
+    0.8.3. Other languages are not affected: JavaScript, Go and C-like comments do not nest,
+    and no other language here has this form of literal.
+  - *The fix.* The Rust view no longer has rules of its own. It follows the compiler's lexer
+    (`rustc_lexer`) token by token, with that lexer's rule for where each token ends: block
+    comments nest, to any depth and over lines; a character or byte literal is read whole,
+    whatever its escape; a `'` before a name is a lifetime or a label; strings, byte strings
+    and C strings, and raw strings with any number of `#`, end where the lexer ends them, on
+    one line or over several; `r#fn` is a name; a literal's suffix and a number take the
+    letters that belong to them, so an `r` or a `b` before a quote is a prefix only where
+    the lexer says so; names past ASCII are read with the lexer's own tables (Unicode
+    18.0.0). Where an edition decides, the view takes edition 2021 and later (`cr"\"` is a
+    raw C string). What the lexer calls unterminated, and what it closes as a character
+    literal that no compiler accepts (`'ab'`, one over a line end), is passed over whole
+    and kept as text. The rule that a hunk may start inside a string stays: once a string
+    has run over a line end, the lines after it are read both ways and what either reading
+    finds code is code. One reading, the one that resumes every such string, is the
+    compiler's for text that starts in code; it is now kept apart and never dropped, however
+    many others there are. (A view that counts comment depth can pile up more readings than
+    it keeps: the oracle found a compiling text on which that one was dropped while this was
+    written.) Python, JavaScript and TypeScript, Go, shell and YAML are read exactly as
+    before.
+  - *How it is held.* A fuzz target, `rust_code_view`, compares the view with the compiler's
+    lexer itself (`ra-ap-rustc_lexer` 0.184.0, a dependency of the fuzz crate only) for any
+    text read as a file from its first line: every byte of a token that is code must stand
+    unchanged in the view, and where the view has one reading, every byte of a comment and
+    of a closed literal's text must be blank. One seed runs the comparison for every
+    character past ASCII, so the view's tables cannot fall behind the lexer's unseen. Unit
+    tests hold each rule above with what the compiler does, checked with rustc 1.99.1 in
+    editions 2015 to 2024. The corpus has 47 cases: `evidence/rust-code-view-20261114` holds
+    both hiding lines before a released signal each and before the integrity signals
+    (fourteen items, all expected), and the two calls after `/* /* */ // */` that were
+    declared misses are found (evidence precision 97 of 111, was 81 of 95; recall 97 of
+    139, was 81 of 125; 59 declared, was 61).
+  - *What changes for a reader of `rank.v0`.* Rust code that was hidden is evidence now, so
+    a file can rank higher than it did. A character literal with a long escape or of several
+    bytes (`'\u{2028}'`, `'é'`) is blank where it was shown. Nothing else in the output
+    changes.
+  - *Limits that remain.* A hunk that starts inside a string or a block comment is read as
+    code from its first line, as before. A shebang line, which the compiler skips, is read
+    as Rust. Before edition 2021 `cr"\"` is a name and an ordinary string; the view reads the
+    newer form. These known limits of the entries above are closed: the call after
+    `/* /* */ // */` (in plain code and in another macro's body) and the wrong `test_likely`
+    after `/* /* */ " */`.
+
 ## [0.8.3] - 2026-11-11
 
 Tagged `v0.8.3` at `a74bf91` (2026-11-11 UTC), signed.

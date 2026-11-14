@@ -1,0 +1,19 @@
+/* //* */ #[cfg(test)] // */
+pub mod t { pub fn production() -> u32 { crate::b().unwrap() } }
+#[cfg(test)]
+fn t() { a().unwrap(); /* /* */ " */ } pub fn production() -> u32 { crate::b().unwrap() }
+/* /* */ } */
+fn u() { a().unwrap(); /* /* */ // */ } pub fn production2() -> u32 { Result::unwrap(crate::b()) }
+macro_rules! live { ($a:ident $b:literal $($rest:tt)*) => { $($rest)* }; }
+live! { cr"\" }
+#[cfg(test)] pub mod v { // "
+    pub fn production() -> u32 { crate::b().unwrap() }
+}
+/* įĪ */ live! { // */
+/* /* Īį */ #[cfg(test)] // */
+const A: (char, char) = ('\u{7f}','"'); const B: &str = "/*";
+const C: (char, char) = ('é','"'); const D: &str = "/*";
+const E: (char, char) = ( '\x41' , '"' ); const F: &str = "/*";
+const G: [char; 4] = ['\u{10FFFF}','\'','"','\\']; const H: &str = "//";
+const I: (u8, u8) = (b'\x41',b'"'); const J: &str = "/*";
+fn w() { x.unwrap(); todo!(); unsafe { *p } }

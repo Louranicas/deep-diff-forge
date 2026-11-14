@@ -2874,14 +2874,14 @@ mod tests {
         }
     }
 
-    /// Second independent review, IR2-L-1, open again and declared. The lexer's code view
-    /// ends a block comment at the first `*/`, where the compiler nests them, so after
-    /// `/* /* */ " */` it takes the rest of the line for a string and after `/* /* */ // */`
-    /// for a comment. The production function there is not seen: the line's one panic path is
-    /// the test function's, and the line carries `test_likely`. While a parser read the hunk
-    /// it named the production call and the line lost its hint; the token reader reads what
-    /// the code view shows. The item stands either way (the hint removes nothing), and the
-    /// hint is wrong on these two lines.
+    /// Second independent review, IR2-L-1 and IR2-M-2, closed 2026-11-14 (review round 12).
+    /// The compiler nests block comments, and the code view now does: it reads Rust as the
+    /// compiler's lexer reads it. After `/* /* */ " */` and after `/* /* */ // */` the rest of
+    /// the line is code, so the production function there is seen: the line holds a panic
+    /// path outside the test function too and loses its hint, as it did while a parser read
+    /// the hunk. Until then the view ended the comment at the first `*/` and took the rest of
+    /// the line for a string or a comment: the hint was wrong on these two lines, and a call
+    /// that stood alone after such a comment left nothing (it was declared).
     #[test]
     fn after_a_nested_comment_the_hint_is_the_code_views() {
         let hints = |body: &[&str]| -> Vec<(u32, bool)> {
@@ -2891,35 +2891,42 @@ mod tests {
                 .map(|e| (e.line, e.test_likely))
                 .collect()
         };
-        // (while the parser read: `false`, both)
+        // (as while the parser read; `true`, both, while the view did not nest the comment)
         assert_eq!(
             hints(&[
                 "#[cfg(test)]",
                 "fn t() { a().unwrap(); /* /* */ \" */ } pub fn production() -> u32 { crate::b().unwrap() }",
             ]),
-            [(2, true)]
+            [(2, false)]
         );
         assert_eq!(
             hints(&[
                 "#[cfg(test)]",
                 "fn t() { a().unwrap(); /* /* */ // */ } pub fn production() -> u32 { Result::unwrap(crate::b()) }",
             ]),
-            [(2, true)]
+            [(2, false)]
         );
         // the control: the test function alone, with the same comment, has the hint
         assert_eq!(
             hints(&["#[cfg(test)]", "fn t() { a().unwrap(); /* /* */ \" */ }",]),
             [(2, true)]
         );
-        // Declared with it: with no other call on the line, what stands after such a comment
-        // leaves nothing at all (the parser named these three; second independent review,
-        // IR2-M-2).
-        for line in [
-            "+    /* /* */ // */ let v = Result::unwrap(x);",
-            "+    /* /* */ // */ let v = x.unwrap();",
-            "+    /* /* */ // */ todo!();",
+        // With no other call on the line, what stands after such a comment is found (the
+        // parser named these three; they left nothing while the view did not nest: second
+        // independent review, IR2-M-2).
+        for (line, signal) in [
+            (
+                "+    /* /* */ // */ let v = Result::unwrap(x);",
+                S::PanicPathAdded,
+            ),
+            ("+    /* /* */ // */ let v = x.unwrap();", S::PanicPathAdded),
+            ("+    /* /* */ // */ todo!();", S::StubAdded),
         ] {
-            assert_eq!(found(&hunk_of("src/p.rs", &[line])), [], "{line}");
+            assert_eq!(
+                found(&hunk_of("src/p.rs", &[line])),
+                [(signal, Basis::Lexical, 2)],
+                "{line}"
+            );
         }
     }
 
@@ -3671,11 +3678,11 @@ mod tests {
     }
 
     /// Second independent review, IR2-M-2: the rows of its table. Each compiles and behaves
-    /// as its plain spelling does, and each left neither an item nor `syntax_unchecked`. Six
-    /// are items. The seventh is declared a miss: after `/* /* */ // */` the lexer's code
-    /// view takes the rest of the line for a comment (it does not nest block comments), and
-    /// the token reader reads the code view. The parser, which nests them, named that call;
-    /// inside another macro's body it never was read (the corpus declares both).
+    /// as its plain spelling does, and each left neither an item nor `syntax_unchecked`. All
+    /// seven are items. The seventh was declared a miss until 2026-11-14 (review round 12):
+    /// after `/* /* */ // */` the code view took the rest of the line for a comment, where
+    /// the compiler nests block comments. The view now reads Rust as the compiler's lexer
+    /// does, in plain code and inside another macro's body (the corpus expects both).
     #[test]
     fn the_rows_of_the_second_reviews_table() {
         let rows: &[(&[&str], &[Item])] = &[
@@ -3706,8 +3713,11 @@ mod tests {
                 ],
                 &[(S::TestSkipped, Basis::Lexical, 11)],
             ),
-            // declared (the parser: `panic_path_added`)
-            (&["+    /* /* */ // */ let v = Result::unwrap(x);"], &[]),
+            // after a nested comment (declared a miss until the code view nested them)
+            (
+                &["+    /* /* */ // */ let v = Result::unwrap(x);"],
+                &[(S::PanicPathAdded, Basis::Lexical, 11)],
+            ),
         ];
         for (lines, expected) in rows {
             // the review's shape: a hunk at line 10 of an existing file, a comment line
