@@ -48,7 +48,7 @@ Generated from `docs/crate-edges.txt` (checked against `cargo metadata` by
 - `cluster` → core, graph, patch [dev]
 - `core` → (no workspace dependencies)
 - `daemon` → agent, core, graph, patch, testkit [dev]
-- `graph` → core, syntax, patch [dev]
+- `graph` → core, patch [dev]
 - `learning` → testkit [dev]
 - `patch` → core, testkit [dev]
 - `pipeline` → core, graph, patch, projection, syntax

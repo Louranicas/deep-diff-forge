@@ -63,16 +63,11 @@ fn parse_within(
 }
 
 mod analyze;
-mod fragment;
 mod highlight;
 mod language;
 mod structural;
 
 pub use analyze::{SemanticAnalysis, SyntaxOptions, analyze, analyze_language, enclosing_symbol};
-pub use fragment::{
-    Construct, ConstructKind, FRAGMENT_BYTE_BUDGET, FRAGMENT_NODE_BUDGET, FragmentScan,
-    MACRO_ARGUMENT_CAP, Place, Span, scan_fragment,
-};
 pub use highlight::{
     HighlightClass, HighlightSpan, display_safe_lines, highlight, highlight_to_ansi, to_ansi,
 };

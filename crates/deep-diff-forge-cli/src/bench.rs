@@ -152,12 +152,12 @@ pub fn long_line_patch() -> String {
 }
 
 /// A patch of 64 new Rust files, each one line of about 60 KB that is a sum of thirty thousand
-/// terms: every hunk is just under the fragment budget and as dense in tree nodes as source
-/// gets, which was the costliest input per byte for the parser (review V3 round 2, VD3R2-H-2).
-/// Since round 3 of that review a hunk that holds none of the parser's words is not parsed,
-/// and since 2026-11-14 a hunk over 22 KiB is over the parser's budget for a review; these
-/// hunks are both, so the workload holds the cost of turning them away: if they were parsed
-/// this ranking would take many times as long.
+/// terms: as many tokens as source of that size gets. It was the costliest input per byte for
+/// the parser that read Rust hunks until 2026-11-14 (review V3 round 2, VD3R2-H-2), and then,
+/// under that parser's budgets, a workload in which nothing was parsed (third independent
+/// review, IR3-L-2). The reader of tokens that replaced the parser reads every hunk whole,
+/// whatever its size, so the workload holds that cost: 3.8 MB of text, one token for every
+/// byte or two.
 #[must_use]
 pub fn many_fragments_patch() -> String {
     let line = format!("{}a;", "a+".repeat(30_000));

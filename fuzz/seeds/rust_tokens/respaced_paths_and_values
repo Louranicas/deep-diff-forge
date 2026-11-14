@@ -1,0 +1,7 @@
+fn g(it: I) {
+    let a = X :: unwrap ( x ) ;
+    let b = it . map ( Result :: unwrap ) ;
+    let c = Option :: < u8 > :: expect ;
+    let d = a :: b :: unwrap :: < Vec < u8 > > ( x ) ;
+    unimplemented ! [ ]
+}

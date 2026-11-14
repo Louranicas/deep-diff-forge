@@ -997,7 +997,7 @@
       "id": "evidence/review-v3-round4",
       "kind": "evidence",
       "patch": "evidence/review-v3-round4.patch",
-      "origin": "internal: an adversarial review by Vesper, V3 round 4, 2026-11-13 (docs/reviews/vesper-v3-round4-report-20261113.md), findings VD3R4-H-1 and VD3R4-M-1, each reproduced before it was counted. Expected: a panic path under a cfg(test) in a hunk of an existing file that only says it starts at line 1 (git apply --unidiff-zero or -C0 applies it further down, under a comment opened above), with context and with every line added; and syntax_unchecked on the line that opens an assertion over three lines inside another macro's body, where neither the parser nor a one-line rule reads it. Declared miss: the assertion in the macro body is trivial, and nothing says so. Declared false positive since the decision of 2026-11-14 that the parser never removes evidence (docs/reviews/claude-independent-review-2-20261114.md, IR2-H-1 to IR2-H-4: the proof of test code was broken four more ways, each compiled and run): the panic path in the cfg(test) module of a file that the patch creates whole, a negative until then; it is reported with test_likely",
+      "origin": "internal: an adversarial review by Vesper, V3 round 4, 2026-11-13 (docs/reviews/vesper-v3-round4-report-20261113.md), findings VD3R4-H-1 and VD3R4-M-1, each reproduced before it was counted. Expected: a panic path under a cfg(test) in a hunk of an existing file that only says it starts at line 1 (git apply --unidiff-zero or -C0 applies it further down, under a comment opened above), with context and with every line added; and the trivial assertion over three lines inside another macro's body, on the line that opens it (a declared miss, with syntax_unchecked on that line, while a parser read the hunks and one-line rules the rest; since 2026-11-14 the tokens of a hunk are read across its lines, a macro's body like any other). Declared false positive since the decision of 2026-11-14 that the parser never removes evidence (docs/reviews/claude-independent-review-2-20261114.md, IR2-H-1 to IR2-H-4: the proof of test code was broken four more ways, each compiled and run): the panic path in the cfg(test) module of a file that the patch creates whole, a negative until then; it is reported with test_likely",
       "expect": [
         {
           "path": "src/forged_first_line.rs",
@@ -1011,14 +1011,6 @@
           "side": "new",
           "line": 3
         },
-        {
-          "path": "tests/forwarded.rs",
-          "signal": "syntax_unchecked",
-          "side": "new",
-          "line": 5
-        }
-      ],
-      "known_miss": [
         {
           "path": "tests/forwarded.rs",
           "signal": "trivial_assert",
@@ -1040,7 +1032,7 @@
       "id": "evidence/independent-review-20261114",
       "kind": "evidence",
       "patch": "evidence/independent-review-20261114.patch",
-      "origin": "internal: an independent review by a Claude subagent, 2026-11-14 (docs/reviews/claude-independent-review-20261114.md), findings IR-H-1, IR-H-2, IR-M-2, IR-M-3, IR-L-2 and IR-L-3, each reproduced before it was counted. Expected: a production panic path on the line of a proved test function (named as a function, and inside a macro's arguments); a panic path in a new file whose first line the grammar reads as a shebang and the compiler as an attribute and an opened comment, so that the cfg(test) under it is comment text; syntax_unchecked for a parser's word inside another macro's body that no rule read; a conditional skip whose condition changed from miri to all(); unwrap and expect passed as functions or called by a path; a spaced allow attribute. Negatives: an ignore that belongs to a serde attribute; unwrap_or_default passed as a function. Declared false positives: a method named expect on a hand-written parser and on a mock, and a Python name that begins with unittest.skip; and since 2026-11-14 two that were negatives until then: the panic path in the cfg(test) module of a file created whole, read inside a macro's arguments (the parser never removes evidence any more; it is reported with test_likely), and the conditional skip of which only the reason changed (an attribute that starts on an unchanged line is the same as before only if its whole text is, second independent review IR2-M-1, and the reason is part of the text). Declared misses: the trivial assertion and the placeholder inside the macro body (marked unchecked, not named); cfg(any()) on a test; and respellings in Python, JavaScript and Go, where no parser backs the token rules (a skip raised as an exception, assertions with a message, with parentheses or with inner spaces, chained skip modifiers, a spaced call, an empty error check with the operands reversed)",
+      "origin": "internal: an independent review by a Claude subagent, 2026-11-14 (docs/reviews/claude-independent-review-20261114.md), findings IR-H-1, IR-H-2, IR-M-2, IR-M-3, IR-L-2 and IR-L-3, each reproduced before it was counted. Expected: a production panic path on the line of a proved test function (named as a function, and inside a macro's arguments); a panic path in a new file whose first line the grammar reads as a shebang and the compiler as an attribute and an opened comment, so that the cfg(test) under it is comment text; the trivial assertion and the placeholder written over lines inside another macro's body (declared misses, marked syntax_unchecked, until 2026-11-14: the tokens of a hunk are now read across its lines); a conditional skip whose condition changed from miri to all(); unwrap and expect passed as functions or called by a path; a spaced allow attribute. Negatives: an ignore that belongs to a serde attribute; unwrap_or_default passed as a function. Declared false positives: a method named expect on a hand-written parser and on a mock, and a Python name that begins with unittest.skip; and since 2026-11-14 two that were negatives until then: the panic path in the cfg(test) module of a file created whole, read inside a macro's arguments (the parser never removes evidence any more; it is reported with test_likely), and the conditional skip of which only the reason changed (an attribute that starts on an unchanged line is the same as before only if its whole text is, second independent review IR2-M-1, and the reason is part of the text). Declared misses: cfg(any()) on a test; and respellings in Python, JavaScript and Go, where no parser backs the token rules (a skip raised as an exception, assertions with a message, with parentheses or with inner spaces, chained skip modifiers, a spaced call, an empty error check with the operands reversed)",
       "expect": [
         {
           "path": "src/shared_line.rs",
@@ -1062,9 +1054,15 @@
         },
         {
           "path": "tests/macro_body.rs",
-          "signal": "syntax_unchecked",
+          "signal": "trivial_assert",
           "side": "new",
           "line": 5
+        },
+        {
+          "path": "tests/macro_body.rs",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 7
         },
         {
           "path": "tests/slow.rs",
@@ -1104,18 +1102,6 @@
         }
       ],
       "known_miss": [
-        {
-          "path": "tests/macro_body.rs",
-          "signal": "trivial_assert",
-          "side": "new",
-          "line": 5
-        },
-        {
-          "path": "tests/macro_body.rs",
-          "signal": "stub_added",
-          "side": "new",
-          "line": 7
-        },
         {
           "path": "tests/any.rs",
           "signal": "test_skipped",
@@ -1266,7 +1252,7 @@
       "id": "evidence/independent-review-2-20261114",
       "kind": "evidence",
       "patch": "evidence/independent-review-2-20261114.patch",
-      "origin": "internal: a second independent review by a Claude subagent, 2026-11-14 (docs/reviews/claude-independent-review-2-20261114.md), findings IR2-H-1, IR2-M-1 and IR2-M-2, and round 9 of Vesper's review (docs/reviews/vesper-v3-round9-report-20261114.md), finding VD3R9-M-1, each reproduced before it was counted. Expected: a production panic path in a new file whose first line holds //* inside a block comment, which the grammar does not count as a nested opener and the compiler does, so that the cfg(test) after it is comment text (it was withdrawn as proved test code); unwrap called by a path that is broken after its ::, passed as a function of the patch's own type, named as a value with generic arguments over two lines, and called after a comment that the lexer's code view ends too early; a conditional skip applied by a cfg_attr inside a cfg_attr; a conditional skip whose nested condition changed from all(miri) to all(); a removed test written #[r#test]. Negatives: an import named expect, a path that only leads through a module named unwrap, and a condition of which only the spacing changed. Declared false positive: a panic path in the cfg(test) module of a file created whole, reported with test_likely since the parser never removes evidence. Declared miss: a call inside another macro's body after /* /* */ // */, where the parser names no construct and the lexer's code view, which does not nest block comments, shows the token rules a comment",
+      "origin": "internal: a second independent review by a Claude subagent, 2026-11-14 (docs/reviews/claude-independent-review-2-20261114.md), findings IR2-H-1, IR2-M-1 and IR2-M-2, and round 9 of Vesper's review (docs/reviews/vesper-v3-round9-report-20261114.md), finding VD3R9-M-1, each reproduced before it was counted. Expected: a production panic path in a new file whose first line holds //* inside a block comment, which the grammar does not count as a nested opener and the compiler does, so that the cfg(test) after it is comment text (it was withdrawn as proved test code); unwrap called by a path that is broken after its ::, passed as a function of the patch's own type, named as a value with generic arguments over two lines, and called after a comment that the lexer's code view ends too early; a conditional skip applied by a cfg_attr inside a cfg_attr; a conditional skip whose nested condition changed from all(miri) to all(); a removed test written #[r#test]. Negatives: an import named expect, a path that only leads through a module named unwrap, and a condition of which only the spacing changed. Declared false positive: a panic path in the cfg(test) module of a file created whole, reported with test_likely since the parser never removes evidence. Declared miss: a call inside another macro's body after /* /* */ // */, where the parser names no construct and the lexer's code view, which does not nest block comments, shows the token rules a comment. Changed 2026-11-14, when the parser left the evidence path and the tokens of a hunk are read across its lines (docs/reviews/claude-independent-review-3-20261114.md): a construct over lines is reported on its first added line, the line of the :: and not of the name; two more declared misses, the function of the patch's own type passed as a value (the parser named any path used as a value; tokens do not tell one from an import or a type, and only the standard Result and Option are read) and the call after /* /* */ // */ in plain code (the parser nested the comment; the code view does not); and one more declared false positive, the condition of which only the spacing changed (nothing is compared with the old side any more: a line written again inside a conditional skip is a change to it)",
       "expect": [
         {
           "path": "src/comment_opener.rs",
@@ -1278,25 +1264,13 @@
           "path": "src/paths.rs",
           "signal": "panic_path_added",
           "side": "new",
-          "line": 5
+          "line": 4
         },
         {
           "path": "src/paths.rs",
           "signal": "panic_path_added",
           "side": "new",
-          "line": 6
-        },
-        {
-          "path": "src/paths.rs",
-          "signal": "panic_path_added",
-          "side": "new",
-          "line": 8
-        },
-        {
-          "path": "src/paths.rs",
-          "signal": "panic_path_added",
-          "side": "new",
-          "line": 10
+          "line": 7
         },
         {
           "path": "tests/nested_skip.rs",
@@ -1322,6 +1296,18 @@
           "path": "src/paths.rs",
           "signal": "panic_path_added",
           "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/paths.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 10
+        },
+        {
+          "path": "src/paths.rs",
+          "signal": "panic_path_added",
+          "side": "new",
           "line": 12
         }
       ],
@@ -1331,9 +1317,74 @@
           "signal": "panic_path_added",
           "side": "new",
           "line": 9
+        },
+        {
+          "path": "tests/respaced.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 3
         }
       ],
       "sha256": "1342828f8cfea18027fcc8c53237e9128b5b5e86b97e671ee587670c30e6d15a"
+    },
+    {
+      "id": "evidence/independent-review-3-20261114",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-3-20261114.patch",
+      "origin": "internal: a third independent review by a Claude subagent, 2026-11-14 (docs/reviews/claude-independent-review-3-20261114.md), findings IR3-H-1, IR3-M-1 to IR3-M-5, IR3-L-3 and IR3-L-4, each reproduced before it was counted, after which the parser was taken out of the evidence path. Expected: unwrap called over two lines in the arm of a macro_rules definition (mr1); unwrap called over three lines after a block comment that the grammar's scanner read as still open (gc1); an assertion of true over three lines with a line comment after the true (ca1); expect called as a method with generic arguments (tf4); a removed test whose attribute has arguments, tokio::test(flavor) (tr1). Negative: 8 KB of &) under a comment that names todo, which took the parser 15 s and holds nothing (the eval has no clock; the time is held by a unit test and measured). Declared misses, all one limit, a change that adds no token to the construct: a conditional skip whose condition lost feature = ci because a line end was moved into a comment (at1) or the line was deleted (at1ctl, which the parser found), and a call on an unchanged line that the change brings to life by removing the comment around it (un1)",
+      "expect": [
+        {
+          "path": "src/mr1.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/gc1.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/ca1.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/tf4.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/tr1.rs",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 10
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/at1.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 13
+        },
+        {
+          "path": "src/at1ctl.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 13
+        },
+        {
+          "path": "src/un1.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 12
+        }
+      ],
+      "sha256": "a1557e60e8aaa53eb50fc34d214df180eb245224eaf37e65a34391c7a9caeb7c"
     }
   ]
 }

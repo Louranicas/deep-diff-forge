@@ -36,7 +36,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   reported. Where the parser cannot read (an error, the inside of a macro, a hunk over 64 KiB
   or 50,000 nodes) the token rules' answer stands. The budgets are counts, so the same patch
   gives the same ranking. The graph crate now depends on the syntax crate
-  (`docs/crate-edges.txt`).
+  (`docs/crate-edges.txt`). *Superseded before release (2026-11-14, the last entry under
+  Testing): no parser reads a hunk for evidence, the tokens of a hunk are read across its
+  lines, a panic path is reported in test code too (marked `test_likely`), and the graph
+  crate does not depend on the syntax crate.*
 
 ### Testing
 
@@ -96,6 +99,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     for any worker count and the views agree with it. The same patch now ranks in 2.6 s. A
     hunk over the fragment budget is turned away before anything is built from it: a 60 MiB
     line of `}` took 925 MiB and now takes 249 MiB. The bench gains `rank_many_fragments`.
+    *Superseded before release: there is no budget and no plan (the last entry of this
+    section); the bench workload stays, and its hunks are now read whole.*
   - *Medium: the fix of round 1 reported constructs that were not added.* A `todo!(…)` or an
     `assert!(true, …)` whose message alone changed was reported. A construct that starts on
     an unchanged line is now evidence only when it did not carry the same signal before the
@@ -129,7 +134,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     is written over several lines. And such a hunk says so: the new signal
     **`syntax_unchecked`** (+1, once per file) marks a Rust hunk that holds one of those words
     and was not parsed (over 64 KiB or 50,000 nodes, or past the review's 2 MiB). It means
-    "not checked", not "bad".
+    "not checked", not "bad". *Superseded before release: the signal and the budgets are gone
+    with the parser (the last entry of this section).*
   - *Medium: the old-side comparison of round 2 could be turned against the evidence.* Two
     assertions on one line were taken for one another, and an old side too large to parse
     suppressed the item. Constructs are now paired by line and column, and when the old side
@@ -171,7 +177,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **A `fragment_scan` fuzz target** holds the rule the five rounds converged on: for any text,
   as a new file or as a change, every item the token rules find alone is still there with the
   parser on, except `syntax_unchecked` and, in a new file only, `panic_path_added`; the
-  scanner gives the same answer twice, and its rows are inside the fragment.
+  scanner gives the same answer twice, and its rows are inside the fragment. *Superseded
+  before release: the target is `rust_tokens` and holds other rules (the last entry of this
+  section).*
 - **An independent review of the integrity signals (a Claude reviewer with no part in the
   work; `docs/reviews/claude-independent-review-20261114.md`), verdict NO-GO, and its fixes.**
   Vesper's rounds 6 and 7 had passed the branch; this reviewer found three high findings they
@@ -328,16 +336,113 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     false positive); six items that were negatives are declared false positives (five
     panic paths in `#[cfg(test)]` code of a created file, and the reason-only change), so
     evidence precision is 77 of 90 (was 69 of 75) and recall 77 of 119 (was 69 of 110).
+- **Round 10 and a third independent review (both NO-GO): the parser is out of the evidence
+  path.** Round 10 (`docs/reviews/vesper-v3-round10-report-20261114.md`) found one medium
+  regression; the third independent review
+  (`docs/reviews/claude-independent-review-3-20261114.md`) found one high and five medium
+  findings, each compiled and run. Ten rounds had found the same three classes again and
+  again, and each has no end while a parser reads a hunk:
+  - *The grammar and the compiler read a text differently.* After the withdrawals were gone
+    this could still hide a construct that only the parser found: where the grammar took
+    code for a comment, a call written over three lines left nothing (IR3-M-3), an
+    attribute's text compared without its whitespace was "the same" after a line end moved
+    into a comment (IR3-M-1), and a comment inside an assertion made it "not trivial"
+    (IR3-M-4).
+  - *The parser is slow on hostile text, and no budget of bytes bounds it.* The budget of
+    squares was sized on one text; `// todo` and a line of `&)` cost sixty times as much for
+    each byte squared: 8 KB ranked in 15 s and 22 KB in 118 s, inside both budgets
+    (IR3-H-1).
+  - *The parser is blind in places, and there a construct leaves no trace.* Another macro's
+    body was marked `syntax_unchecked`; the arm of a `macro_rules!` definition was not
+    (IR3-M-2), and a method call with generic arguments, `x.expect::<'static>("no")`, was no
+    construct at all (IR3-M-5).
+
+  **What replaces it.** For Rust, the rules for `panic_path_added`, `trivial_assert`,
+  `stub_added`, `test_skipped` and `test_removed` read the tokens of a hunk across its lines
+  (`crates/deep-diff-forge-graph/src/rust_tokens.rs`). Each side of a hunk (its unchanged
+  lines with its added, or its removed, lines), as the code view gives it (comments and
+  strings blank, raw identifier prefixes blank), is cut into identifiers and single
+  punctuation marks; white space and line ends only separate them. Each construct is found
+  from one word by reading a bounded number of the tokens around it (generic arguments of up
+  to 64 tokens are passed over); a `#[cfg_attr(…)]` list is followed token by token as the
+  tokens pass, sixteen lists inside one another at most, and one opened past that is taken
+  to hold a skip. There is no grammar, no recursion and no clock, the tokens are held in a
+  short window, and the cost of a side is its length. A construct is evidence when at least
+  one of its tokens is on an added line (for `test_removed`, a removed line), and it is
+  reported on the first such line: so a condition that became `true`, or a changed
+  condition of a conditional skip, is evidence, and a message that changed inside
+  `assert!(true, "…")` is not. An item says `"basis": "lexical"` when its tokens are on one
+  line and `"hunk"` when they are on several. `test_likely` is given to a panic path that
+  stands inside the braces of an item whose attribute spells a test; it is still only a
+  hint.
+
+  **What is found that was not.** A construct inside another macro's body or in a
+  `macro_rules!` arm, on one line or over several; a method call or a path call with generic
+  arguments; an assertion with a comment inside it; a construct where the grammar read a
+  comment; a removed `#[tokio::test(flavor = "…")]` and a removed `#[test]` written over
+  lines (IR3-L-4); a test inside another macro's body gets the hint.
+
+  **What is gone.** The signal `syntax_unchecked` (there is nothing that is "not checked"),
+  the basis `syntax_fragment`, the two budgets (`REVIEW_FRAGMENT_BUDGET`,
+  `REVIEW_SQUARE_BUDGET`), the plan of a review (`FragmentPlan`, `Reading`) and with it
+  `file_evidence_in`, `hunk_signals_in`, `assess_file_in`, `score_file_in` and
+  `RankedFile::scored_in`, the syntax crate's fragment scanner (`scan_fragment`,
+  `FragmentScan`, `Construct`), and the graph crate's dependency on the syntax crate. The
+  answer for a hunk no longer depends on what else the review holds or on its order. None
+  of these was in a release.
+
+  **Also.** A view of hunks picked by address or by path scans the hunks it shows and no
+  others (round 10, VD3R10-M-1; IR3-L-1): one small hunk beside a hostile one took 1.8 s
+  and takes 0.00 s. Only the listing of every hunk scans every file, once, for the order.
+
+  **Measured** (release build, user seconds, `--rank`, `--outline`, `--hunks`): the third
+  review's 8 KB of `&)` 0.00, 0.00, 0.00 (were 17.5, 15.6, 15.5); its 22 KB 0.00 (118.3);
+  128 hunks of 1 KB of it 0.00 (30.2); the second review's sixteen hunks of 16 KB 0.00,
+  0.01, 0.00; four of 64 KB 0.00, 0.01, 0.01; the first review's `ternary32.patch` 0.05,
+  0.08, 0.05 and `slow.patch` 0.66, 0.70, 0.65; a million lines 1.9, 2.5, 2.5 (were 2.2,
+  2.8, 2.8); one line of 60 MiB 1.4, 2.0, 2.2 (the same as before). Two megabytes of each
+  of fourteen hostile units, on one line or a unit a line, rank in 0.03 to 0.35 s.
+
+  **Known limits, declared.** The code view decides what is a comment or a string, and it
+  ends a Rust block comment at the first `*/`, where the compiler nests them: a call after
+  `/* /* */ // */` on its line is not seen (the parser, which nests them, found it in plain
+  code; the corpus declares it), and the hint can be wrong there. A name that a macro builds
+  or that is bound to another name is not read; of functions used as values only `Result`'s
+  and `Option`'s are read, so `it.map(X::unwrap)` with a type of the patch's own, which the
+  parser named, is declared a miss (tokens do not tell it from an import, a type or a longer
+  path). Generic arguments of more than 64 tokens are not passed over. A construct of which
+  the hunk shows only a part is not read. A change that only removes tokens adds none: a
+  conditional skip whose condition lost a term because a line was deleted or a line end
+  moved into a comment (IR3-M-1's first patch and its control, which the parser found), and
+  a call that the change brings to life by removing the comment around it (IR3-L-3), are
+  declared misses. Nothing is compared with the old side, so a line written again inside a
+  conditional skip is reported even when only its spacing changed (declared a false
+  positive). `test_likely` is spelled, not proved.
+
+  **Tests.** The token reader has unit tests for the tokens, the window and each construct;
+  every reproduction of the ten rounds and the three independent reviews is an assertion
+  with its new answer, in the tests or in the corpus; two megabytes of each hostile unit
+  must rank within a bound of CPU time; the fuzz target `rust_tokens` replaces
+  `fragment_scan` (every item on a line the change made, the same answer twice, and the same
+  signals however a construct is spread over added lines). The corpus has 46 cases (new:
+  `evidence/independent-review-3-20261114`, five items and three declared misses): evidence
+  precision 81 of 95 (was 77 of 90), recall 81 of 125 (was 77 of 119).
 
 ### Changed
 
 - **`basis` in `rank.v0` evidence is no longer always `lexical`.** An item carries the highest
   rung that found it: `"hunk"` when a rule read a neighbouring line, `"syntax_fragment"` when
   the parser read the construct. An item only a token finds is unchanged. The set of values
-  grows: a client that compared it with `lexical` should accept other values.
+  grows: a client that compared it with `lexical` should accept other values. *Superseded
+  before release: the values are `lexical` and `hunk`; `syntax_fragment` was never released
+  and is gone with the parser. `hunk` now also marks a Rust construct whose tokens stand on
+  several lines.*
 - **Existing Rust signals can be found where they were not before.** `test_skipped`,
   `trivial_assert` and `stub_added` in a Rust hunk are now also found by the parser, so a
-  spelling the tokens missed is reported and raises the file's score.
+  spelling the tokens missed is reported and raises the file's score. *Superseded before
+  release: they are found by reading the hunk's tokens across its lines, not by a parser;
+  `test_removed` is read the same way, so a removed `#[tokio::test(flavor = "…")]` or a
+  `#[test]` written over lines is reported.*
 
 ## [0.8.3] - 2026-11-11
 

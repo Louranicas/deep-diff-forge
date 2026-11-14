@@ -39,7 +39,7 @@ errors, and reliable concurrency.
   labelled evaluation corpus (`fixtures/eval`, scored by `eval`; 11 cases in 0.5.0, 34
   since 0.6.0). Fuzz targets (11): `patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`, `council_report`,
   `stdio_mcp`, `stdio_rpc`, `structural_soundness`, `findings_verify`, `evidence_scan`,
-  `fragment_scan`
+  `rust_tokens`
   (`fuzz/Cargo.toml`). CI runs diff-scoped
   cargo-mutants on each pull request's changed lines.
 - **First milestone below:** steps 1 to 5 are done; step 6 (loom fixture) is withdrawn with

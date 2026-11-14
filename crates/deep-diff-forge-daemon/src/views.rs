@@ -144,16 +144,16 @@ struct FileScan {
 }
 
 /// The scans of a review for one view: each file is scanned once, when it is first asked for,
-/// under one plan for the whole review, as `rank` makes it, so a view never disagrees with
-/// the rank.
+/// as `rank` scans it, so a view never disagrees with the rank.
 ///
-/// Before, a view scanned a hunk once for the file's score and again for the hunk's labels,
-/// and the listing of all hunks made a second plan: an outline cost twice what the rank cost
-/// (second independent review of the integrity signals, IR2-H-5: 7.4 s for a patch that ranks
-/// in 3.7 s).
+/// A view that lists every file (the outline, and all hunks in risk order) needs each file's
+/// score, so it scans each file whole and takes the labels of its hunks from that one scan:
+/// before, such a view scanned a hunk once for the file's score and again for the hunk's
+/// labels, and an outline cost twice what the rank cost (second independent review of the
+/// integrity signals, IR2-H-5). A view of hunks picked by address or by path needs no score:
+/// it scans the hunks it shows and no others ([`shown_labels`]).
 struct Scans<'a> {
     files: &'a [ReviewFile],
-    plan: deep_diff_forge_graph::FragmentPlan,
     done: Vec<std::cell::OnceCell<FileScan>>,
 }
 
@@ -161,7 +161,6 @@ impl<'a> Scans<'a> {
     fn of(files: &'a [ReviewFile]) -> Self {
         Self {
             files,
-            plan: deep_diff_forge_graph::FragmentPlan::of(files),
             done: files.iter().map(|_| std::cell::OnceCell::new()).collect(),
         }
     }
@@ -169,8 +168,7 @@ impl<'a> Scans<'a> {
     /// The scan of file `index`, made now if it has not been.
     fn file(&self, index: usize) -> &FileScan {
         self.done[index].get_or_init(|| {
-            let assessment =
-                deep_diff_forge_graph::assess_file_in(&self.files[index], self.plan.file(index));
+            let assessment = deep_diff_forge_graph::assess_file(&self.files[index]);
             let mut hunks = std::collections::HashMap::new();
             for item in &assessment.evidence {
                 let place = deep_diff_forge_graph::EvidenceSignal::ALL
@@ -188,7 +186,8 @@ impl<'a> Scans<'a> {
     }
 
     /// The labels of the evidence in `hunk` of file `index`, in the order of
-    /// `EvidenceSignal::ALL`: what `hunk_signals_in` gives, without a second scan.
+    /// `EvidenceSignal::ALL`: what `hunk_signals` gives, without a second scan of a file that
+    /// was scanned whole.
     fn labels(&self, index: usize, hunk: &PatchHunk) -> Vec<&'static str> {
         let bits = self.file(index).hunks.get(&hunk.id).copied().unwrap_or(0);
         deep_diff_forge_graph::EvidenceSignal::ALL
@@ -198,6 +197,23 @@ impl<'a> Scans<'a> {
             .map(|(_, signal)| signal.label())
             .collect()
     }
+}
+
+/// The labels of the evidence in one hunk a view shows: from the scan of its file when the
+/// view scanned every file for its order (`whole`), and else from a scan of that hunk alone.
+///
+/// Review V3 round 10, VD3R10-M-1, and the third independent review, IR3-L-1: a view of one
+/// hunk picked by its address took the labels from a scan of the whole file, so it paid for
+/// every other hunk of that file (1.8 s for a one-line hunk beside a hostile one that the
+/// view did not show; before the scans were shared, 0.00 s).
+fn shown_labels(scans: &Scans, whole: bool, index: usize, hunk: &PatchHunk) -> Vec<&'static str> {
+    if whole {
+        return scans.labels(index, hunk);
+    }
+    deep_diff_forge_graph::hunk_signals(&scans.files[index], hunk)
+        .into_iter()
+        .map(deep_diff_forge_graph::EvidenceSignal::label)
+        .collect()
 }
 
 /// Files in review-risk order (highest first, then by path), as `rank` orders them.
@@ -470,9 +486,22 @@ pub fn hunks(
     selection: &Selection,
     page: &Page,
 ) -> Result<Value, ViewError> {
+    hunks_with(review, &Scans::of(review.files()), selection, page)
+}
+
+/// [`hunks`], with the scans it makes left for the caller to see (a test looks at which files
+/// were scanned whole).
+fn hunks_with(
+    review: &SealedReview,
+    scans: &Scans,
+    selection: &Selection,
+    page: &Page,
+) -> Result<Value, ViewError> {
     let (files, seal) = (review.files(), review.seal());
-    let scans = Scans::of(files);
-    let (units, key) = select(&scans, selection)?;
+    let (units, key) = select(scans, selection)?;
+    // Only the listing of every hunk scans every file (for the order): then the labels are
+    // those scans'. A selection scans what it shows.
+    let whole = matches!(selection, Selection::All);
     let (start_unit, start_line) = resume(page, seal, &key, |item| {
         units
             .get(item)
@@ -489,7 +518,7 @@ pub fn hunks(
         } else {
             0
         };
-        let mut entry = Value::Object(hunk_head(file, hunk, &scans.labels(f, hunk)));
+        let mut entry = Value::Object(hunk_head(file, hunk, &shown_labels(scans, whole, f, hunk)));
         entry["path"] = json!(file.path);
         entry["line_offset"] = json!(offset);
         entry["complete"] = json!(true);
@@ -935,10 +964,10 @@ mod tests {
         assert!(second["next_cursor"].is_null());
     }
 
-    /// The outline puts the riskiest file first, as `rank` does.
-    /// A view takes each hunk's labels from the one scan of its file. They are the labels a
-    /// scan of that hunk alone gives under the review's plan, for every hunk, with evidence
-    /// in some hunks, none in others, and a hunk the plan does not let the parser read.
+    /// A view that scans every file takes each hunk's labels from the one scan of its file.
+    /// They are the labels a scan of that hunk alone gives, for every hunk: with evidence in
+    /// some hunks, none in others, and one in a hunk of 30 KB (which a parser under a budget
+    /// did not read, and marked `syntax_unchecked`).
     #[test]
     fn a_hunks_labels_come_from_the_one_scan_of_its_file() {
         let pad = "a".repeat(30_000);
@@ -947,16 +976,16 @@ mod tests {
         ));
         let files = r.files();
         let scans = Scans::of(files);
-        let plan = deep_diff_forge_graph::FragmentPlan::of(files);
         let mut seen = Vec::new();
         for (f, file) in files.iter().enumerate() {
             for (h, hunk) in file.patch_twin.hunks.iter().enumerate() {
-                let alone: Vec<&str> =
-                    deep_diff_forge_graph::hunk_signals_in(file, hunk, plan.reading(f, h))
-                        .into_iter()
-                        .map(deep_diff_forge_graph::EvidenceSignal::label)
-                        .collect();
+                let alone: Vec<&str> = deep_diff_forge_graph::hunk_signals(file, hunk)
+                    .into_iter()
+                    .map(deep_diff_forge_graph::EvidenceSignal::label)
+                    .collect();
                 assert_eq!(scans.labels(f, hunk), alone, "file {f}, hunk {h}");
+                assert_eq!(shown_labels(&scans, true, f, hunk), alone);
+                assert_eq!(shown_labels(&scans, false, f, hunk), alone);
                 seen.push(alone);
             }
         }
@@ -966,11 +995,72 @@ mod tests {
                 vec!["trivial_assert"],
                 vec![],
                 vec!["stub_added", "panic_path_added"],
-                vec!["syntax_unchecked"],
+                vec!["trivial_assert"],
             ]
         );
     }
 
+    /// Review V3 round 10, VD3R10-M-1, and the third independent review, IR3-L-1. A view of
+    /// hunks picked by address or by path scans the hunks it shows: no file is scanned whole
+    /// for it. Before, the labels of one picked hunk came from a scan of its whole file, and
+    /// a one-line hunk cost what the hostile hunk beside it cost (1.8 s; 4 s in the review's
+    /// own patch). Only the listing of every hunk scans every file, for the order.
+    #[test]
+    fn a_selection_scans_only_the_hunks_it_shows() {
+        let r = review(
+            "--- a/tests/a.rs\n+++ b/tests/a.rs\n@@ -1,1 +1,2 @@\n fn cheap() {\n+    let n = 1;\n@@ -10,1 +11,3 @@\n fn other() {\n+    assert!(\n+        true);\n--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1,1 +1,2 @@\n fn w() {\n+    x.unwrap();\n",
+        );
+        let files = r.files();
+        let cheap = files[0].patch_twin.hunks[0].address(&files[0].path);
+        let other = files[0].patch_twin.hunks[1].address(&files[0].path);
+        let scanned = |scans: &Scans| -> Vec<bool> {
+            scans.done.iter().map(|file| file.get().is_some()).collect()
+        };
+        let labels = |answer: &Value| -> Vec<Value> {
+            answer["hunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|hunk| hunk["evidence"].clone())
+                .collect()
+        };
+        for (selection, expected) in [
+            (Selection::Addresses(vec![cheap.clone()]), vec![json!(null)]),
+            (
+                Selection::Addresses(vec![other, cheap]),
+                vec![json!(["trivial_assert"]), json!(null)],
+            ),
+            (
+                Selection::Paths(vec!["tests/a.rs".to_owned()]),
+                vec![json!(null), json!(["trivial_assert"])],
+            ),
+            (
+                Selection::Paths(vec!["src/b.rs".to_owned()]),
+                vec![json!(["panic_path_added"])],
+            ),
+        ] {
+            let scans = Scans::of(files);
+            let answer = hunks_with(&r, &scans, &selection, &Page::default()).unwrap();
+            assert_eq!(labels(&answer), expected, "{selection:?}");
+            assert_eq!(scanned(&scans), [false, false], "{selection:?}");
+        }
+        // every hunk, in risk order: each file is scanned, once, and the labels are the same
+        let scans = Scans::of(files);
+        let all = hunks_with(&r, &scans, &Selection::All, &Page::default()).unwrap();
+        assert_eq!(scanned(&scans), [true, true]);
+        let mut seen = labels(&all);
+        seen.sort_by_key(Value::to_string);
+        assert_eq!(
+            seen,
+            [
+                json!(["panic_path_added"]),
+                json!(["trivial_assert"]),
+                json!(null)
+            ]
+        );
+    }
+
+    /// The outline puts the riskiest file first, as `rank` does.
     #[test]
     fn outline_is_in_review_risk_order() {
         let review = review(&patch());

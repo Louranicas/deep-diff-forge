@@ -27,7 +27,7 @@ era) no longer holds. How the standard is enforced today:
 - **Fuzz smoke:** every target in `fuzz/Cargo.toml`
   (`patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
   `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness`,
-  `findings_verify`, `evidence_scan`, `fragment_scan`; `stdio_invariants.rs` is a shared module)
+  `findings_verify`, `evidence_scan`, `rust_tokens`; `stdio_invariants.rs` is a shared module)
   runs for 10 s per pull request; CI fails if a declared target is not in the
   run list. Crash inputs become fixtures under
   `fixtures/patch/regressions/`.
@@ -44,9 +44,9 @@ era) no longer holds. How the standard is enforced today:
   `fuzz_target.sh` lists targets with a TOML parser and fuzzes a new private
   corpus each run, under a root it makes if missing.
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
-  `fixtures/eval` (45 cases, measured 2026-11-14) must score at least its floors,
-  which are the measured values: ranking pairs 12/15, evidence precision 77/90,
-  evidence recall 77/119, findings 33/33. Any undeclared miss fails. The 58
+  `fixtures/eval` (46 cases, measured 2026-11-14) must score at least its floors,
+  which are the measured values: ranking pairs 12/15, evidence precision 81/95,
+  evidence recall 81/125, findings 33/33. Any undeclared miss fails. The 61
   declared misses (`known_miss`, `known_false_positive`) count as wrong in their
   metric rather than being excluded, and each fails once the engine gets it
   right. Planted controls prove a wrong label fails with exit 7, a changed file,

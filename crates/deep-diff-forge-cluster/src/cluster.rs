@@ -37,12 +37,9 @@ pub fn run_risk_cluster(
     parallelism: Parallelism,
     join: JoinPolicy,
 ) -> ClusterRun {
-    // The parser's budget is the review's, decided before any lane runs: every worker count
-    // parses the same hunks.
-    let plan = deep_diff_forge_graph::FragmentPlan::of(files);
-    let scored: Vec<RankedFile> = run_lane(files, parallelism, |index, file| {
-        RankedFile::scored_in(file, plan.file(index))
-    });
+    // A file's score is its own: no budget is shared between files, so every worker count
+    // gives the same answer.
+    let scored: Vec<RankedFile> = run_lane(files, parallelism, |_, file| RankedFile::scored(file));
     let ranked = apply_join(scored, join);
     let receipt = ClusterReceipt {
         dimensions: vec![ExecutionDimension::Patch, ExecutionDimension::Risk],
@@ -323,71 +320,47 @@ mod tests {
         }
     }
 
-    /// Independent review 2026-11-14, weak tests: every fixture here was `-a` / `+b`, so scoring
-    /// each file under a plan of its own (`RankedFile::scored`) passed every test. In this
-    /// review the plan of the whole review and a plan of one file give different answers, and
-    /// the cluster must give the review's, for every worker count. (There was a second such
-    /// review here, a path named by two sections; since 2026-11-14 the plan no longer treats a
-    /// created file differently, so the two plans agree on it.)
+    /// Independent review 2026-11-14, weak tests: every fixture here was `-a` / `+b`, so any
+    /// way of scoring passed every test. While a parser read the hunks under a budget, the
+    /// cluster had to score under the plan of the whole review, and this test held a review
+    /// in which the fourth and fifth file were past the budget (each said `syntax_unchecked`,
+    /// and alone each gave its item). There is no budget now: the same review, where every
+    /// file gives its item, for every worker count, and the same as scored alone.
     #[test]
-    fn the_cluster_scores_under_the_plan_of_the_whole_review() {
-        use deep_diff_forge_graph::{EvidenceSignal, FragmentPlan};
+    fn the_cluster_scores_each_file_as_it_scores_alone() {
+        use deep_diff_forge_graph::EvidenceSignal;
         let evidence = |ranked: &RankedFile| -> Vec<EvidenceSignal> {
             ranked.evidence.iter().map(|item| item.signal).collect()
         };
-        let check = |files: &[ReviewFile], at: usize, expected: &[EvidenceSignal]| {
-            let plan = FragmentPlan::of(files);
-            let alone = RankedFile::scored(&files[at]);
-            assert_ne!(evidence(&alone), expected, "the two plans must differ here");
-            for parallelism in [
-                Parallelism::Serial,
-                Parallelism::Fixed(1),
-                Parallelism::Fixed(2),
-                Parallelism::Fixed(8),
-                Parallelism::Auto,
-            ] {
-                let run = run_risk_cluster(files, parallelism, JoinPolicy::DeterministicInputOrder);
-                assert_eq!(evidence(&run.ranked[at]), expected, "{parallelism:?}");
-                for (index, file) in files.iter().enumerate() {
-                    assert_eq!(
-                        run.ranked[index],
-                        RankedFile::scored_in(file, plan.file(index)),
-                        "{parallelism:?}, file {index}"
-                    );
-                }
-            }
-        };
-
-        // A spent budget: each hunk is about 12 KB and holds a word the parser reads, and a
-        // hunk is charged the square of its bytes against the square of 22 KiB. Three fit
-        // and the fourth does not, so the assertion over three lines in the fourth and the
-        // fifth file is not read and each file says so. Alone, the parser reads either.
+        // each hunk is about 12 KB and holds an assertion over three lines
         let pad = "a".repeat(12_000);
-        let mut spent = Vec::new();
+        let mut review = Vec::new();
         for index in 0..5 {
             let text = format!(
                 "--- a/tests/t{index}.rs\n+++ b/tests/t{index}.rs\n@@ -1,1 +1,5 @@\n fn t() {{\n+    assert!(\n+        true\n+    );\n+    // {pad}\n"
             );
-            spent.extend(parse(&text).unwrap());
+            review.extend(parse(&text).unwrap());
         }
-        let plan = FragmentPlan::of(&spent);
-        let read: Vec<bool> = (0..spent.len())
-            .map(|index| plan.allows(index, 0))
-            .collect();
-        assert_eq!(read, [true, true, true, false, false]);
-        check(&spent, 3, &[EvidenceSignal::SyntaxUnchecked]);
-        check(&spent, 4, &[EvidenceSignal::SyntaxUnchecked]);
-        let first = run_risk_cluster(
-            &spent,
+        for parallelism in [
+            Parallelism::Serial,
+            Parallelism::Fixed(1),
             Parallelism::Fixed(2),
-            JoinPolicy::DeterministicInputOrder,
-        );
-        for index in 0..3 {
-            assert_eq!(
-                evidence(&first.ranked[index]),
-                [EvidenceSignal::TrivialAssert],
-                "file {index}"
-            );
+            Parallelism::Fixed(8),
+            Parallelism::Auto,
+        ] {
+            let run = run_risk_cluster(&review, parallelism, JoinPolicy::DeterministicInputOrder);
+            for (index, file) in review.iter().enumerate() {
+                assert_eq!(
+                    evidence(&run.ranked[index]),
+                    [EvidenceSignal::TrivialAssert],
+                    "{parallelism:?}, file {index}"
+                );
+                assert_eq!(
+                    run.ranked[index],
+                    RankedFile::scored(file),
+                    "{parallelism:?}, file {index}"
+                );
+            }
         }
     }
 

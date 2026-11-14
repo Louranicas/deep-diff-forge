@@ -98,8 +98,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "fragment_scan"
-path = "fuzz_targets/fragment_scan.rs"
+name = "rust_tokens"
+path = "fuzz_targets/rust_tokens.rs"
 test = false
 doc = false
 bench = false

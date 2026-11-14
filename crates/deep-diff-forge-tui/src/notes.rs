@@ -199,9 +199,6 @@ fn code_phrase(signal: EvidenceSignal) -> &'static str {
         EvidenceSignal::StubAdded => "A placeholder where code should be.",
         EvidenceSignal::ErrorSwallowed => "An error is caught and dropped.",
         EvidenceSignal::PanicPathAdded => "A call that panics on failure is added.",
-        EvidenceSignal::SyntaxUnchecked => {
-            "Rust code the parser did not read: only the token rules checked it."
-        }
     }
 }
 
@@ -320,7 +317,6 @@ mod tests {
                 "A placeholder where code should be.",
                 "An error is caught and dropped.",
                 "A call that panics on failure is added.",
-                "Rust code the parser did not read: only the token rules checked it.",
             ]
         );
     }

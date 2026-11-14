@@ -474,27 +474,30 @@ Additive members, so the schema names stay `v0`. They are present only when foun
 - `rank.v0` `ranked[i].evidence`: up to 32 items `{"signal", "address", "side", "line", "basis"}`.
   - `signal` is one of `unsafe_added`, `process_spawn`, `network_fetch`, `dynamic_eval`,
     `ci_privilege`, `build_hook`, `secret_like`, `check_suppressed`, `test_removed`,
-    `test_skipped`, `trivial_assert`, `stub_added`, `error_swallowed`, `panic_path_added` and
-    `syntax_unchecked` (a Rust hunk the parser should have read and did not: "not checked", not
-    "bad"; among the reasons, a hunk over 22 KiB, which is over the parser's budget for a
-    review). The list grows: a client must accept a
-    label it does not know.
+    `test_skipped`, `trivial_assert`, `stub_added`, `error_swallowed` and `panic_path_added`.
+    The list grows: a client must accept a label it does not know. (A fifteenth label,
+    `syntax_unchecked`, existed in unreleased builds until 2026-11-14 and is gone with the
+    parser it spoke of.)
   - `address` is the hunk's address: the same value the outline and `review.hunks` use.
   - `side` is `new` (an added line) or `old` (a removed line), and `line` is that line's number on
     that side.
-  - `basis` says how the item was found, as the highest rung that found it: `lexical` (a
-    token on the one changed line), `hunk` (the line read with the next line on the same side
-    of the hunk; so far only `error_swallowed`), or `syntax_fragment` (the new side of the hunk
-    parsed as a fragment of its language, and the construct read by the parser with no error
-    above it; Rust only so far). The list of values grows: a client must accept a value it
-    does not know and may treat it as at least `lexical`.
-  - `test_likely: true` is present on a `panic_path_added` item when the hunk shows a test
-    attribute around it (`#[test]`, a path ending in `::test`, `#[rstest]`, `#[cfg(test)]`). It is
-    a hint for a reader and never proof (an import can bind those names to anything, and a hunk
-    can sit under an open comment): the signal, the score and what a judge reads are the same
-    with and without it. The hint follows the item the call is inside, so a function that only
-    shares a line with a test is not marked; an item inside another macro's body is not read
-    and gets no hint. The member is absent otherwise. Since 2026-11-14 no `panic_path_added`
+  - `basis` says how the item was found, as the highest rung that found it: `lexical` (tokens
+    on the one changed line) or `hunk` (tokens read across the lines of one side of the hunk:
+    an error handler with its empty body on the next line, and in Rust a panic path, a
+    trivial assertion, a stub, a skipped or a removed test whose tokens stand on several
+    lines). The list of values grows: a client must accept a value it does not know and may
+    treat it as at least `lexical`. (A value `syntax_fragment`, for an item a parser
+    confirmed, existed in unreleased builds until 2026-11-14; no parser reads for evidence
+    now.)
+  - `test_likely: true` is present on a `panic_path_added` item when the hunk shows the call
+    inside the braces of an item whose attribute spells a test (`#[test]`, a path ending in
+    `::test`, `#[rstest]`, exactly `#[cfg(test)]`). It is a hint for a reader and never proof
+    (an import can bind those names to anything, a hunk can sit under an open comment, and the
+    braces are only counted in what the lexer takes for code): the signal, the score and what
+    a judge reads are the same with and without it. The hint follows the braces the call is
+    inside, so a function that only shares a line with a test is not marked, and a line that
+    holds a call of each kind is not either; a test inside another macro's body is read like
+    any other. The member is absent otherwise. Since 2026-11-14 no `panic_path_added`
     item is withdrawn as test code, whatever the patch shows: one in a `#[cfg(test)]` module
     of a file the patch creates is reported like any other and carries this member.
   - Items are ordered by hunk, then line, then signal. `evidence_truncated: true` follows when more

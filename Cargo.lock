@@ -231,7 +231,6 @@ version = "0.8.3"
 dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-patch",
- "deep-diff-forge-syntax",
 ]
 
 [[package]]
