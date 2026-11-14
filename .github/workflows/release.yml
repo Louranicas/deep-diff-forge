@@ -66,7 +66,7 @@ jobs:
         with:
           toolchain: 1.99.1
       - name: cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87 # v2
+        uses: EmbarkStudios/cargo-deny-action@9c67a826e39827395bfa619cd85cb2aaeb43cfaa # v2
         with:
           command: check
       - name: install host cargo-deny
@@ -255,7 +255,7 @@ jobs:
         with:
           subject-path: dist/sbom.spdx.json
       - name: upload release assets
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3 (node24)
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.3 (node24)
         with:
           files: |
             dist/deep-diff-forge-*.tar.gz

@@ -390,7 +390,7 @@ jobs:
         with:
           toolchain: 1.99.1
       - name: cargo-deny (bans, licenses, sources, advisories)
-        uses: EmbarkStudios/cargo-deny-action@8f84122a46a358a27cb0625d85ad60ab436a1b87 # v2
+        uses: EmbarkStudios/cargo-deny-action@9c67a826e39827395bfa619cd85cb2aaeb43cfaa # v2
         with:
           command: check
       - name: install host cargo-deny
