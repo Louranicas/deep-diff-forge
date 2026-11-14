@@ -121,6 +121,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   (500,000 entries: 9 MiB, was 69 MiB). New: a file whose name is not UTF-8 took one of the
   seven places and could not be written in the helper's list, so a later ranker that could
   have been offered was not. Such a name takes no place now.
+- **Round 8 of the same review (NO-GO: the same point, one case left).** This binary's own
+  path, when it is not UTF-8, still took the first place and was dropped by the parent. It
+  takes a place only when it can be written; the directory then gives all eight.
   `deep_diff_forge_patch::file_at_commit` reads a regular file from a commit, which is how
   the policy is read.
 

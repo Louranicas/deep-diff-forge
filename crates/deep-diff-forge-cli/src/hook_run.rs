@@ -503,12 +503,17 @@ fn judge_for(args: &[String], place: Option<&Place>) -> Result<PathBuf, String> 
 }
 
 /// The rankers a stop may offer the judge, in order: this binary, then the files in
-/// `--ranker-dir` that come first by name, [`RANKERS_TRIED`] in all. The judge checks each
+/// `--ranker-dir` that come first by name, [`RANKERS_TRIED`] in all, each one a path the
+/// helper can write in its list. The judge checks each
 /// one's hash against the policy itself, so nothing here has to read the policy.
 fn rankers(args: &[String]) -> Vec<PathBuf> {
+    // This binary takes the first place only when the helper can name it to its parent: a
+    // path that is not UTF-8 would be listed as null and dropped there, having cost a ranker
+    // of the directory its place (review V4 round 8, the rest of VD4R7-L-1).
     let mut list: Vec<PathBuf> = std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .into_iter()
+        .filter(|path| path.to_str().is_some())
         .collect();
     if let Some(dir) = crate::flag_value(args, "--ranker-dir")
         && let Ok(entries) = std::fs::read_dir(dir)

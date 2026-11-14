@@ -1376,3 +1376,37 @@ fn a_name_the_helper_cannot_write_takes_no_place() {
         .collect();
     assert_eq!(names, ["b1", "b2", "b3", "b4", "b5", "b6", "b7"]);
 }
+
+/// Review V4 round 8, the rest of VD4R7-L-1: this binary's own path can be the one that cannot
+/// be written. Started from a copy whose name is not UTF-8, the helper lists eight files of the
+/// directory and no null path. Before, it listed itself as null and stopped at `b7`.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_binary_whose_own_path_cannot_be_written_takes_no_place() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let scratch = Scratch::new("hook-seal-own-name");
+    let dir = scratch.join("rankers");
+    std::fs::create_dir(&dir).unwrap();
+    for index in 1..=9 {
+        std::fs::write(dir.join(format!("b{index}")), "abc").unwrap();
+    }
+    let copy = scratch.join(std::ffi::OsStr::from_bytes(b"ddf-\xff"));
+    std::fs::copy(env!("CARGO_BIN_EXE_deep-diff-forge"), &copy).unwrap();
+    let out = Command::new(&copy)
+        .args(["agent", "hook", "seal-rankers", "--ranker-dir"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let list: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let names: Vec<String> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            let path = entry["path"].as_str().expect("every path is a string");
+            path.rsplit('/').next().unwrap().to_owned()
+        })
+        .collect();
+    assert_eq!(names, ["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8"]);
+}
