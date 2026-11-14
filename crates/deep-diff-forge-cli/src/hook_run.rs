@@ -80,7 +80,7 @@ const REPORTED_CAP: usize = 5_000;
 const NOTICED_CAP: usize = 32;
 /// The most failures of uncommitted changes one session's state keeps as having blocked a
 /// stop; the oldest goes first.
-const BLOCKED_CAP: usize = 256;
+const BLOCKED_CAP: usize = 2_048;
 /// The most rankers a stop tries before it gives up on finding one the policy admits.
 const RANKERS_TRIED: usize = 8;
 
@@ -233,6 +233,9 @@ struct Place {
     own: PathBuf,
     /// The Git common directory: for a linked worktree it is not under `top`.
     common: PathBuf,
+    /// The Git directory of this working tree: the common directory for the main tree, the
+    /// tree's administrative directory under it for a linked one.
+    git_dir: PathBuf,
     /// Which repository this is ([`identity`]).
     id: String,
 }
@@ -280,6 +283,7 @@ fn find(dir: &Path, deadline: Deadline) -> Found {
             Some(id) => Found::Tree(Place {
                 top: dirs.top,
                 own: dirs.common_dir.join("deep-diff-forge"),
+                git_dir: dirs.git_dir,
                 common: dirs.common_dir,
                 id,
             }),
@@ -459,15 +463,18 @@ struct Project {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct State {
     project: Option<Project>,
+    /// How many stops of this session have judged its work: each commit that is asked about
+    /// is marked with the number of its stop ([`sorted_commits`]).
+    stops: u64,
     /// The keys of findings already said in this session ([`Finding::key`]).
     reported: BTreeSet<String>,
     /// What was already said once in this session, hashed: the reasons an advice hook gave for
     /// not running ([`notice`]) and the things a stop named as not judged.
     noticed: BTreeSet<String>,
-    /// The failures of uncommitted and staged changes that have blocked a stop and were found
-    /// again at every stop since, each as [`hook::failure_digest`] gives it: its rules,
-    /// signals, paths and numbers of items. One that a stop no longer finds is taken out, so it
-    /// blocks again when it comes back.
+    /// The failing lines of uncommitted and staged changes that have blocked a stop and were
+    /// found again at every stop that looked since, each as [`hook::remembered_line`] writes
+    /// it: the working tree, whether it is staged, the line (a rule, a signal and a path) and
+    /// its number of items ([`remember`]).
     blocked: Vec<String>,
     /// The SHA-256 and the number of lines of the session's file of judged commits
     /// ([`judged_file`]): the first so many lines of that file are the commits of the session
@@ -478,7 +485,7 @@ struct State {
     judged_count: usize,
 }
 
-const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v6";
+const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v7";
 
 /// A session's state file. The session id is hashed: it is the client's string and must not
 /// choose a file name.
@@ -612,6 +619,7 @@ fn state_from(text: &str) -> Result<State, &'static str> {
     }
     Ok(State {
         project,
+        stops: value["stops"].as_u64().ok_or(MEMBER)?,
         reported: list("reported", REPORTED_CAP)?.into_iter().collect(),
         noticed: list("noticed", NOTICED_CAP)?.into_iter().collect(),
         blocked: list("blocked", BLOCKED_CAP)?,
@@ -631,6 +639,7 @@ fn state_text(state: &State) -> String {
             "tips_count": project.tips_count,
             "by_start": project.by_start,
         })),
+        "stops": state.stops,
         "reported": state.reported,
         "noticed": state.noticed,
         "blocked": state.blocked,
@@ -873,6 +882,58 @@ impl Session {
         self.tips = None;
         self.judged = None;
         Ok(())
+    }
+
+    /// Write what an advice hook has to keep, and say whether it was written. The hook worked
+    /// on the state as it read it, with no lock, for as long as Git took; meanwhile a stop
+    /// may have judged and written. So the write is made under the session's lock, onto the
+    /// state as it is then, and it adds only what an advice hook owns: the findings and the
+    /// reasons it has said, and the project with its tips when the session still has none.
+    /// What a stop owns (what has blocked, the judged commits, the count of stops) is never
+    /// written back from the older copy: that brought a failure back that a stop had seen
+    /// repaired and forgotten (seventh independent review of the hooks, HR7-L-4). `Ok(false)`
+    /// when the lock could not be had in [`ADVICE_LOCK_WAIT`]: nothing is written.
+    fn keep_advice(&mut self, id: &str) -> Result<bool, String> {
+        let unchanged = self.tips.is_none()
+            && (self.kept.as_ref() == Some(&self.state)
+                || (self.kept.is_none() && self.state == State::default()));
+        if unchanged {
+            return Ok(true);
+        }
+        let turn = session_lock(id, ADVICE_LOCK_WAIT);
+        if matches!(turn, Turn::Taken) {
+            return Ok(false);
+        }
+        let read = self.kept.clone().unwrap_or_default();
+        let said = |mine: &BTreeSet<String>, theirs: &BTreeSet<String>| -> Vec<String> {
+            mine.difference(theirs).cloned().collect()
+        };
+        let (reported, noticed) = (
+            said(&self.state.reported, &read.reported),
+            said(&self.state.noticed, &read.noticed),
+        );
+        let mine = std::mem::take(&mut self.state);
+        let now = load(&self.file).map_err(|why| {
+            format!(
+                "this session's state file {} cannot be read as a state ({why})",
+                shown(&self.file)
+            )
+        })?;
+        self.kept.clone_from(&now);
+        self.state = now.unwrap_or_default();
+        if self.state.project.is_none() {
+            self.state.project = mine.project;
+        } else {
+            // another hook recorded the session first: its tips are the session's
+            self.tips = None;
+        }
+        keep_said(&mut self.state.reported, reported);
+        for key in noticed {
+            if self.state.noticed.len() < NOTICED_CAP {
+                self.state.noticed.insert(key);
+            }
+        }
+        self.keep().map(|()| true)
     }
 
     /// The session's tips: the ones this hook recorded and could not write yet, else the ones
@@ -1340,8 +1401,11 @@ fn post_tool(input: &Input) -> Option<String> {
         Ok(advice) => advice,
         Err(reason) => notice(&mut session.state, &reason),
     };
-    match session.keep() {
-        Ok(()) => out,
+    match session.keep_advice(&input.session) {
+        Ok(true) => out,
+        // Another hook of the session holds its state: nothing is written, so nothing is
+        // said either. What would have been said is new again after the next tool call.
+        Ok(false) => None,
         // What was to be said is not: the state would not remember it, and it would be said
         // again after every tool call.
         Err(why) => said_beside(
@@ -1408,6 +1472,9 @@ const NOT_CHECKED: &str = "not checked: ";
 /// from, and whether a stop can be judged here.
 fn session_start(input: &Input, args: &[String]) -> Option<String> {
     let deadline = Deadline::after(START_LIMIT);
+    // What a start reads of the session and what it records are one step, which no other
+    // hook of the session is in the middle of ([`session_lock`]).
+    let turn = session_lock(&input.session, START_LOCK_WAIT);
     let mut session = match Session::open(&input.session) {
         Ok(session) => session,
         Err(why) => return Some(hook::contract_trouble(&why)),
@@ -1433,7 +1500,16 @@ fn session_start(input: &Input, args: &[String]) -> Option<String> {
     {
         project.by_start = true;
     }
-    let unsaved = session.keep().err();
+    let unsaved = if matches!(turn, Turn::Taken) {
+        // another hook of the session is at work on its state: nothing is written over it
+        (work.fresh).then(|| {
+            "another hook of this session was running, so this start recorded nothing".to_owned()
+        })
+    } else {
+        session.keep().err()
+    };
+    // the checks that follow take time and write nothing of the session
+    drop(turn);
     let top = work.place.top.to_string_lossy();
     let id = match &work.project.base {
         Base::Commit(id) => id,
@@ -1614,7 +1690,7 @@ fn run_judge(
     policy: &Path,
     patch: &Path,
     ranker: &Path,
-    deadline: Deadline,
+    time: Duration,
 ) -> (Option<i32>, Option<Value>, Option<String>) {
     let mut command = std::process::Command::new(judge);
     command
@@ -1627,7 +1703,7 @@ fn run_judge(
         .arg(ranker)
         .arg("--json");
     let limits = Limits {
-        time: deadline.left().min(JUDGE_TIME),
+        time: time.min(JUDGE_TIME),
         stdout_bytes: JUDGE_STDOUT,
         stderr_bytes: JUDGE_STDERR,
     };
@@ -1703,7 +1779,7 @@ impl<'a> Bench<'a> {
     }
 
     /// Have `patch` judged; `name` is the file it is written to in the scratch directory.
-    fn judge(&self, patch: &[u8], name: &str) -> Judged {
+    fn judge(&self, patch: &[u8], name: &str, owed: u32) -> Judged {
         let patch_file = self.scratch.0.join(name);
         if let Err(error) = std::fs::write(&patch_file, patch) {
             return Judged::Unjudged {
@@ -1739,7 +1815,9 @@ impl<'a> Bench<'a> {
                 &self.policy_file,
                 &patch_file,
                 ranker,
-                self.deadline,
+                self.deadline
+                    .left()
+                    .saturating_sub(ASK_OWED.saturating_mul(owed)),
             );
             last = hook::judged(code, verdict.as_ref(), said.as_deref(), sealed);
             // Exit 4: the policy does not admit this ranker. Another may be admitted.
@@ -1757,7 +1835,7 @@ enum Elsewhere {
     Nothing,
     /// In a linked working tree of the project's repository, with this top level: that tree is
     /// judged as well.
-    Linked(PathBuf),
+    Linked(Box<Place>),
     /// In another repository, with this top level (a nested repository and a submodule are
     /// repositories of their own): it is not the session's project and is not judged, which is
     /// said.
@@ -1779,7 +1857,7 @@ fn elsewhere(cwd: &str, place: &Place, deadline: Deadline) -> Elsewhere {
     }
     match find(&cwd, deadline) {
         Found::Tree(found) if found.id != place.id => Elsewhere::Foreign(found.top),
-        Found::Tree(found) if found.top != place.top => Elsewhere::Linked(found.top),
+        Found::Tree(found) if found.top != place.top => Elsewhere::Linked(Box::new(found)),
         Found::Tree(_) | Found::NotARepository | Found::Gone => Elsewhere::Nothing,
         Found::Failed(reason) => Elsewhere::Failed(format!(
             "whether the session's directory is another working tree of this repository could not be found out: {reason}"
@@ -1814,6 +1892,9 @@ struct Stopping<'a> {
     args: &'a [String],
     /// When the judging must be done: [`STOP_RESERVE`] before the stop's own deadline.
     deadline: Deadline,
+    /// Which stop of the session this is, counted from one: what a commit that is asked about
+    /// is marked with, so that the one asked about least recently can be found.
+    number: u64,
 }
 
 /// What a stop judged.
@@ -1828,59 +1909,171 @@ struct Judging {
     commits: Vec<(String, String)>,
     /// The working trees this stop looked at for what is not committed in them.
     trees: Vec<Looked>,
-    /// Other working trees of the project ([`tree_id`]) that this stop found with nothing
-    /// uncommitted: what failed there is gone.
+    /// Other working trees of the project ([`tree_instance`]) that this stop found with
+    /// nothing uncommitted: what failed there is gone.
     clean: Vec<String>,
+    /// Every working tree `git worktree list` names now, when it could be read: what is
+    /// remembered of a tree that is not among them is forgotten.
+    listed: Option<BTreeSet<String>>,
 }
 
-/// One working tree whose uncommitted and staged changes a stop looked at.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One working tree whose uncommitted and staged changes a stop looked at, with the failing
+/// lines it found there ([`hook::failure_lines`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct Looked {
-    /// [`tree_id`] of the tree.
+    /// Which working tree ([`tree_instance`]).
     id: String,
-    /// Both changes were read and judged: what is not among `failures` is not there.
-    read: bool,
-    /// The failures found in them, as the state keeps them ([`hook::unit_failure`]).
-    failures: Vec<String>,
+    /// The lines of its uncommitted change; `None` when that change got no verdict, so
+    /// nothing is known of it.
+    tree: Option<Lines>,
+    /// The lines of what its index holds, all of them; `None` when the staged change got no
+    /// verdict.
+    index: Option<Lines>,
+    /// Of those, the lines that are the staged change's own: the uncommitted change does
+    /// not have them (it was repaired and the repair not staged).
+    staged: Lines,
 }
 
-/// A working tree as the state names it beside a failure that has blocked: sixteen digits of
-/// the SHA-256 of its path. A failure is remembered with the tree it is in, so that a stop
-/// forgets it only when it looked at that tree.
-fn tree_id(top: &Path) -> String {
-    deep_diff_forge_core::sha256_hex(top.as_os_str().as_encoded_bytes())[..16].to_owned()
+/// Failing lines, each with the number of items the judge cites for it.
+type Lines = std::collections::BTreeMap<String, usize>;
+
+/// Which working tree an administrative directory of a linked one stands for: sixteen digits
+/// of the SHA-256 of that directory's inode with the inode and the modification time of its
+/// file `commondir`, which Git writes when it makes the tree and not again.
+///
+/// A failure was remembered with the tree's path, and its key held the path once more. So
+/// `git worktree move` of an unchanged failing tree made it block a second time, and a tree
+/// made anew at the path of a removed one inherited "has already blocked" and never blocked
+/// (review V4 round 15, VD4R15-M-2; seventh independent review of the hooks, HR7-H-1). What
+/// Git keeps, found with Git 2.56 on btrfs and tmpfs: the directory and that file stay as
+/// they are over `git worktree move` and over a plain `mv` with `git worktree repair` (the
+/// file `gitdir` is rewritten, in place); `git worktree remove` and `add` at the same path,
+/// or the directory deleted, `prune` and `add`, give a new directory and a new file,
+/// whatever the directory is called (its name is not the tree: a moved tree keeps the old
+/// name, and a new tree at an old path can get it again). No birth time is used: not every
+/// file system has one. Where modification times are whole seconds and inode numbers are
+/// reused, a tree removed and made again within one second can be taken for the old one.
+/// Nothing is written into the repository to mark a tree.
+fn instance_of(admin: &Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let dir = std::fs::metadata(admin).ok()?;
+    let made = std::fs::metadata(admin.join("commondir")).ok()?;
+    let words = format!(
+        "{}:{}:{}.{}",
+        dir.ino(),
+        made.ino(),
+        made.mtime(),
+        made.mtime_nsec()
+    );
+    Some(deep_diff_forge_core::sha256_hex(words.as_bytes())[..16].to_owned())
 }
 
-/// Whether the state remembers a failure that has blocked in the working tree at `top`.
-fn stands_in(blocked: &[String], top: &Path) -> bool {
-    let id = tree_id(top);
-    blocked
-        .iter()
-        .any(|entry| entry.split_once('/').is_some_and(|(tree, _)| tree == id))
+/// The main working tree of a repository, to the session's memory of failures: there is one,
+/// and a repository that is moved or replaced is not the session's project any more.
+const MAIN_TREE: &str = "m";
+
+/// Which working tree `place` is: the main one, or the linked one its Git directory stands
+/// for ([`instance_of`]). A tree whose Git directory cannot be read is known by its path, as
+/// every tree was: that is said nowhere, because Git answers in such a tree only by accident.
+fn tree_instance(place: &Place) -> String {
+    if place.git_dir == place.common {
+        return MAIN_TREE.to_owned();
+    }
+    instance_of(&place.git_dir).unwrap_or_else(|| by_path(&place.top))
 }
 
-/// The failures that have blocked, as [`hook::decide_stop_trees`] compares them: without the
-/// tree each is remembered with.
-fn blocked_keys(blocked: &[String]) -> Vec<String> {
-    blocked
-        .iter()
-        .map(|entry| {
-            entry
-                .split_once('/')
-                .map_or(entry.as_str(), |(_, key)| key)
-                .to_owned()
+/// A working tree known by its path alone, when nothing better can be read.
+fn by_path(top: &Path) -> String {
+    format!(
+        "x{}",
+        &deep_diff_forge_core::sha256_hex(top.as_os_str().as_encoded_bytes())[..15]
+    )
+}
+
+/// The most administrative directories of linked working trees that are read.
+const TREES_READ: usize = 1_024;
+
+/// The linked working trees of the repository whose common directory is `common`, each as
+/// the path Git records for it with which tree it is ([`instance_of`]).
+fn linked_instances(common: &Path) -> Vec<(PathBuf, String)> {
+    let Ok(entries) = std::fs::read_dir(common.join("worktrees")) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .take(TREES_READ)
+        .filter_map(|entry| {
+            let admin = entry.path();
+            // `gitdir` names the tree's `.git` file
+            let dot_git = std::fs::read_to_string(admin.join("gitdir")).ok()?;
+            let top = Path::new(dot_git.trim_end_matches(['\n', '\r']))
+                .parent()?
+                .to_path_buf();
+            Some((top, instance_of(&admin)?))
         })
         .collect()
 }
 
-/// A patch judged, or the reason there is no patch; `None` when there is no change.
+/// Which working tree stands at `path`, one of the trees `git worktree list` names: the
+/// first of them is the main tree.
+fn listed_instance(path: &Path, main: bool, linked: &[(PathBuf, String)]) -> String {
+    if main {
+        return MAIN_TREE.to_owned();
+    }
+    let resolved = std::fs::canonicalize(path).ok();
+    linked
+        .iter()
+        .find(|(top, _)| {
+            top == path
+                || resolved
+                    .as_ref()
+                    .is_some_and(|path| std::fs::canonicalize(top).is_ok_and(|top| top == *path))
+        })
+        .map_or_else(|| by_path(path), |(_, id)| id.clone())
+}
+
+/// The tree a remembered line is kept with.
+fn tree_of(entry: &str) -> Option<&str> {
+    entry.split_once('/').map(|(tree, _)| tree)
+}
+
+/// Whether the state remembers a failure that has blocked in the working tree `id`.
+fn stands_in(blocked: &[String], id: &str) -> bool {
+    blocked.iter().any(|entry| tree_of(entry) == Some(id))
+}
+
+/// The tag of a tree's uncommitted (`u`) or staged (`s`) change ([`TreeJudged::tag`]).
+fn unit_tag(tree: &str, kind: char) -> String {
+    format!("{tree}/{kind}")
+}
+
+/// What the state remembers of the unit `tag`, as owned lines.
+fn lines_of(blocked: &[String], tag: &str) -> Lines {
+    hook::remembered(blocked, tag)
+        .into_iter()
+        .map(|(key, count)| (key.to_owned(), count))
+        .collect()
+}
+
+/// The asks about commits that every stop makes before any other ([`sorted_commits`]): what
+/// a run of the judge on a working tree's change leaves time for.
+const RESERVED_ASKS: u32 = 2;
+
+/// A patch judged, or the reason there is no patch; `None` when there is no change. `left`
+/// is the number of the working trees' patches that are still to be judged, this one
+/// included: the run leaves time for those and for the asks about commits that follow.
 fn judged_patch(
     tribunal: &mut Judge<'_>,
     patch: Result<Option<Vec<u8>>, String>,
+    left: &mut u32,
 ) -> Option<Judged> {
     match patch {
         Ok(None) => None,
-        Ok(Some(bytes)) => Some(tribunal.judge(&bytes)),
+        Ok(Some(bytes)) => {
+            *left = left.saturating_sub(1);
+            tribunal.owed = *left + RESERVED_ASKS;
+            Some(tribunal.judge(&bytes))
+        }
         Err(reason) => Some(Judged::Unjudged { reason }),
     }
 }
@@ -1897,6 +2090,9 @@ struct Judge<'a> {
     /// `Some(true)` once a patch, or the probe, has got a verdict at this stop: the chain works.
     /// `Some(false)` when the probe was asked and got none.
     chain: Option<bool>,
+    /// The runs of the judge this stop must still make after the next one: [`ASK_OWED`] of
+    /// its time is left for each.
+    owed: u32,
 }
 
 impl<'a> Judge<'a> {
@@ -1923,8 +2119,9 @@ impl<'a> Judge<'a> {
         if let Some(known) = self.answers.get(&digest) {
             return known.clone();
         }
+        let owed = self.owed;
         let answer = match self.bench() {
-            Ok(bench) => bench.judge(patch, "change.patch"),
+            Ok(bench) => bench.judge(patch, "change.patch", owed),
             Err(reason) => Judged::Unjudged {
                 reason: reason.clone(),
             },
@@ -1948,7 +2145,7 @@ impl<'a> Judge<'a> {
         let works = match self.bench() {
             Ok(bench) => bench.probe.as_ref().is_some_and(|probe| {
                 !matches!(
-                    bench.judge(probe.as_bytes(), "probe.patch"),
+                    bench.judge(probe.as_bytes(), "probe.patch", 0),
                     Judged::Unjudged { .. }
                 )
             }),
@@ -1983,31 +2180,25 @@ struct Note {
 /// What to say of the directory `nested` that was left out of the patch of the tree at `top`.
 /// Another working tree of this project that lies inside it is said to be that: it was called
 /// "a Git repository of its own" (third independent review of the hooks, HR3-L-3).
-fn left_out(stopping: &Stopping<'_>, top: &Path, nested: &str) -> Note {
+fn left_out(stopping: &Stopping<'_>, top: &Path, nested: &str) -> Option<Note> {
+    // A working tree of this repository that lies inside this one (Claude Code's own
+    // `.claude/worktrees/`) is a working tree of the project: judged at a stop made from
+    // inside it, and otherwise named under the rule for working trees, when it has changes
+    // or a failure that stands ([`other_trees`]). It was called "not judged" here at every
+    // stop, also at the stop that had judged it, and from the project it was counted twice
+    // (seventh independent review of the hooks, HR7-L-5).
     let linked = matches!(
         find(&top.join(nested), stopping.deadline),
         Found::Tree(found) if found.id == stopping.work.place.id
     );
-    if linked {
-        Note {
-            name: format!("the working tree {} inside it", hook::shown_path(nested)),
-            text: format!(
-                "The directory {} in {} is another working tree of this project (a linked worktree): its files are no part of what {} would commit, and were left out. The commits made in it are judged with the session's; its uncommitted changes are judged at a stop made from inside it.",
-                hook::shown_path(nested),
-                shown_tree(top),
-                shown_tree(top)
-            ),
-        }
-    } else {
-        Note {
-            name: format!("the nested repository {}", hook::shown_path(nested)),
-            text: format!(
-                "The directory {} in {} is a Git repository of its own and no part of what this project would commit: it was left out and not judged.",
-                hook::shown_path(nested),
-                shown_tree(top)
-            ),
-        }
-    }
+    (!linked).then(|| Note {
+        name: format!("the nested repository {}", hook::shown_path(nested)),
+        text: format!(
+            "The directory {} in {} is a Git repository of its own and no part of what this project would commit: it was left out and not judged.",
+            hook::shown_path(nested),
+            shown_tree(top)
+        ),
+    })
 }
 
 /// What is not committed in one working tree, each as a patch (`None`: no change) or the
@@ -2018,6 +2209,8 @@ struct Uncommitted {
     /// What the index holds against that `HEAD`, when it is another change than the tree's:
     /// what a plain `git commit` would record. `None` also when it is the same change.
     staged: Result<Option<Vec<u8>>, String>,
+    /// The index holds the very change the tree holds (and `staged` is `None` for that).
+    index_same: bool,
 }
 
 /// The uncommitted and the staged change of the working tree at `top`, each against the
@@ -2048,6 +2241,7 @@ fn uncommitted(
                     git_words(&error)
                 )),
                 staged: Ok(None),
+                index_same: false,
             });
         }
     };
@@ -2065,11 +2259,12 @@ fn uncommitted(
             return Ok(Uncommitted {
                 tree: Err(reason),
                 staged: Ok(None),
+                index_same: false,
             });
         }
     };
     for nested in &changed.nested {
-        beside.push(left_out(stopping, top, nested));
+        beside.extend(left_out(stopping, top, nested));
     }
     let index = staged_patch(
         top,
@@ -2077,6 +2272,8 @@ fn uncommitted(
         &stopping.scratch.sub(&format!("{name}-index"))?,
         &stopping.deadline.git(),
     );
+    let index_same =
+        matches!(&index, Ok(bytes) if !bytes.is_empty() && Some(bytes) == changed.patch.as_ref());
     let staged = match index {
         Ok(bytes) if bytes.is_empty() || Some(&bytes) == changed.patch.as_ref() => Ok(None),
         Ok(bytes) => Ok(Some(bytes)),
@@ -2089,6 +2286,7 @@ fn uncommitted(
     Ok(Uncommitted {
         tree: Ok(changed.patch),
         staged,
+        index_same,
     })
 }
 
@@ -2175,6 +2373,7 @@ fn judge_commit(
 /// same file met as well (fourth independent review of the hooks, HR4-L-4).
 fn commit_unit(id: &str, judged: Judged) -> TreeJudged {
     TreeJudged {
+        tag: String::new(),
         what: hook::commit_label(id),
         judged: Some(judged),
         holds: Holds::Now,
@@ -2186,6 +2385,7 @@ fn commit_unit(id: &str, judged: Judged) -> TreeJudged {
 /// stop: what is not a pass is said at each one.
 fn from_before(id: &str, judged: Judged) -> TreeJudged {
     TreeJudged {
+        tag: String::new(),
         what: hook::commit_label(id),
         judged: Some(judged),
         holds: Holds::Never,
@@ -2196,23 +2396,27 @@ fn from_before(id: &str, judged: Judged) -> TreeJudged {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Answer<'a> {
     Pass,
-    /// Held, with the names of the rules it is held for, as far as they were kept.
+    /// Held, with what was kept of the reason ([`kept_reason`]).
     Hold(&'a str),
-    /// Failed, with the names of its rules: those that fail, `;`, those the judge holds for.
+    /// Failed, with what was kept of the reason.
     Fail(&'a str),
-    /// No verdict yet, after so many attempts that count, with the latest reason. It is asked
-    /// about again: at every stop for [`ATTEMPTS`] attempts, then in its turn.
+    /// No verdict yet, after so many attempts that count, last asked about at the stop of
+    /// that number, with the latest reason. It is asked about again: at every stop for
+    /// [`ATTEMPTS`] attempts, then in its turn.
     NoVerdict {
         attempts: u32,
+        last: u64,
         reason: &'a str,
     },
-    /// No verdict, and none to come: the hook itself proves it from the repository.
+    /// No verdict, and none to come: the hook itself proves it from the commit.
     Final(&'a str),
 }
 
-/// Read one line of the file of judged commits: `ID:p`, `ID:h` or `ID:h:rules`, `ID:f` or
-/// `ID:f:rules;held rules`, `ID:n<attempts>:reason`, `ID:x:reason`.
+/// Read one line of the file of judged commits: `ID:p`, `ID:h:kept`, `ID:f:kept`
+/// ([`kept_reason`]; `ID:h` and `ID:f` with nothing kept), `ID:n<attempts>@<stop>:reason`,
+/// `ID:x:reason`.
 fn answer(entry: &str) -> Option<(&str, Answer<'_>)> {
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
     let (id, rest) = entry.split_once(':')?;
     if !is_commit_id(id) {
         return None;
@@ -2224,13 +2428,14 @@ fn answer(entry: &str) -> Option<(&str, Answer<'_>)> {
         _ => {
             let (kind, reason) = rest.split_once(':')?;
             match kind.strip_prefix('n') {
-                Some(attempts) => Answer::NoVerdict {
-                    attempts: attempts
-                        .parse()
-                        .ok()
-                        .filter(|_| attempts.bytes().all(|b| b.is_ascii_digit()))?,
-                    reason,
-                },
+                Some(counts) => {
+                    let (attempts, last) = counts.split_once('@')?;
+                    Answer::NoVerdict {
+                        attempts: attempts.parse().ok().filter(|_| digits(attempts))?,
+                        last: last.parse().ok().filter(|_| digits(last))?,
+                        reason,
+                    }
+                }
                 None if kind == "x" => Answer::Final(reason),
                 None if kind == "h" => Answer::Hold(reason),
                 None if kind == "f" => Answer::Fail(reason),
@@ -2241,56 +2446,87 @@ fn answer(entry: &str) -> Option<(&str, Answer<'_>)> {
     Some((id, said))
 }
 
-/// The most rules of one commit whose names are kept with its answer, and the most characters
-/// of each name.
+/// The most rules of one commit whose names are kept with its answer, the most characters
+/// of each name, and the most of the first thing the judge said beside its rules.
 const RULES_KEPT: usize = 8;
 const RULE_NAME_KEPT: usize = 64;
+const SAID_KEPT_CHARS: usize = 100;
 
-/// The names of a commit's rules as its line of the file of judged commits keeps them: those
-/// that fail, and after a `;` those the judge holds for. The rules of a commit were said at
-/// the stop that judged it and not kept, so a commit the judge held was "held" with no rule
-/// for the rest of the session (sixth independent review of the hooks, HR6-M-2).
-fn rule_ids(rules: &[hook::RuleOutcome], failed: bool) -> String {
+/// What is kept of the reason a commit was held or failed, on its line of the file of judged
+/// commits: the names of its rules (those that fail, and after a `;` those the judge holds
+/// for; `+N` for the names beyond [`RULES_KEPT`]), and after a `|` the first thing the judge
+/// said beside its rules, with the number of the others.
+///
+/// The rules of a commit were said at the stop that judged it and not kept, so a commit the
+/// judge held was "held" with no rule for the rest of the session (sixth independent review
+/// of the hooks, HR6-M-2). Then the names were kept and what the judge says beside its rules
+/// was not: a commit held for a note, or failed by an expired waiver, kept no reason at all
+/// (seventh, HR7-L-6).
+fn kept_reason(rules: &[hook::RuleOutcome], said: &[String], failed: bool) -> String {
+    use std::fmt::Write as _;
+    let plain = |text: &str, most: usize| -> String {
+        text.chars()
+            .take(most)
+            .map(|c| {
+                if c.is_control() || ",;:|".contains(c) {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect()
+    };
     let names = |held: bool| -> String {
-        rules
+        let all: Vec<String> = rules
             .iter()
             .filter(|rule| !failed || rule.held == held)
-            .take(RULES_KEPT)
-            .map(|rule| {
-                rule.id
-                    .chars()
-                    .take(RULE_NAME_KEPT)
-                    .map(|c| {
-                        if c.is_control() || ",;:".contains(c) {
-                            '_'
-                        } else {
-                            c
-                        }
-                    })
-                    .collect::<String>()
-            })
+            .map(|rule| plain(&rule.id, RULE_NAME_KEPT))
             .filter(|name| !name.is_empty())
-            .collect::<Vec<_>>()
-            .join(",")
+            .collect();
+        let mut kept: Vec<String> = all.iter().take(RULES_KEPT).cloned().collect();
+        if all.len() > RULES_KEPT {
+            kept.push(format!("+{}", all.len() - RULES_KEPT));
+        }
+        kept.join(",")
     };
-    if !failed {
-        return names(true);
+    let mut kept = if failed {
+        match (names(false), names(true)) {
+            (failing, held) if held.is_empty() => failing,
+            (failing, held) => format!("{failing};{held}"),
+        }
+    } else {
+        names(true)
+    };
+    if let Some(first) = said.first() {
+        let words: String = first
+            .chars()
+            .take(SAID_KEPT_CHARS)
+            .map(|c| match c {
+                '|' => '/',
+                c if c.is_control() => ' ',
+                c => c,
+            })
+            .collect();
+        kept.push('|');
+        kept.push_str(words.trim_end());
+        if said.len() > 1 {
+            let _ = write!(kept, " (+{} more)", said.len() - 1);
+        }
     }
-    match (names(false), names(true)) {
-        (failing, held) if held.is_empty() => failing,
-        (failing, held) => format!("{failing};{held}"),
-    }
+    kept
 }
 
-/// The rules of a commit judged at an earlier stop, from the names its line keeps
-/// ([`rule_ids`]): no reason and no path, which were said at that stop.
-fn rules_kept(names: &str, all_held: bool) -> Vec<hook::RuleOutcome> {
+/// The rules of a commit judged at an earlier stop, and what the judge said beside them,
+/// from what its line keeps ([`kept_reason`]): no explanation and no path, which were said
+/// at that stop.
+fn reason_kept(kept: &str, all_held: bool) -> (Vec<hook::RuleOutcome>, Vec<String>) {
+    let (names, said) = kept.split_once('|').unwrap_or((kept, ""));
     let (failing, held) = names.split_once(';').unwrap_or((names, ""));
     let rules = |names: &str, held: bool| -> Vec<hook::RuleOutcome> {
         names
             .split(',')
             .filter(|name| !name.is_empty())
-            .take(RULES_KEPT)
+            .take(RULES_KEPT + 1)
             .map(|name| hook::RuleOutcome {
                 id: name.chars().take(RULE_NAME_KEPT).collect(),
                 why: String::new(),
@@ -2299,7 +2535,12 @@ fn rules_kept(names: &str, all_held: bool) -> Vec<hook::RuleOutcome> {
             })
             .collect()
     };
-    [rules(failing, all_held), rules(held, true)].concat()
+    let said = if said.is_empty() {
+        Vec::new()
+    } else {
+        vec![said.to_owned()]
+    };
+    ([rules(failing, all_held), rules(held, true)].concat(), said)
 }
 
 /// A reason as one line of the file of judged commits holds it.
@@ -2327,70 +2568,125 @@ fn in_turn(attempts: u32, reason: &str) -> String {
     )
 }
 
+/// One commit a stop asks the judge about, at `at` among the session's commits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Ask {
+    at: usize,
+    /// Its attempts that counted; `None` when it was never asked about.
+    attempts: Option<u32>,
+    /// One of the two asks every stop makes before any other ([`sorted_commits`]).
+    reserved: bool,
+}
+
+impl Ask {
+    /// It has had [`ATTEMPTS`] attempts that counted: it is asked about in its turn.
+    fn in_turn(self) -> bool {
+        self.attempts.is_some_and(|attempts| attempts >= ATTEMPTS)
+    }
+}
+
 /// The session's commits by what its file of judged commits says of each: the unit of every
 /// commit that has an answer which is not a pass (`None` for the others), and the commits to
-/// ask about, in the order of asking, each with its rank (0 for one never asked about, else
-/// its attempts and one).
+/// ask about, in the order of asking.
 ///
-/// A commit that has had no verdict in [`ATTEMPTS`] attempts is not given up. Asking about
-/// every such commit at every stop would have no bound, so they take turns: the one with the
-/// fewest attempts (the oldest of those) is asked about, last, and every ask of it counts, so
-/// that the turn passes on. Before, such a commit was asked about no more: a judge that
-/// failed on one patch five times while it answered for others (so that each attempt
-/// counted) left a commit with a credential UNJUDGED for the rest of the session, and the
-/// failing verdict was never obtained (review V4 round 14, VD4R14-M-1).
+/// **Every commit without a verdict is submitted to the judge at least once in every N
+/// stops, N being the number of the session's commits that have no verdict.** That holds
+/// because of the order, which no result of an ask can change:
+///
+/// 1. one commit of those that have had [`ATTEMPTS`] attempts: the one asked about least
+///    recently. Each of S such commits is therefore asked about once in S stops. Asking
+///    about all of them at every stop would have no bound; asking about none gave them up
+///    (review V4 round 14, VD4R14-M-1).
+/// 2. one commit of those asked about before that have fewer attempts: again the one asked
+///    about least recently, so each of F such commits is asked about once in F stops.
+/// 3. the commits never asked about, the oldest first: at least one at every stop.
+/// 4. the other commits of 2, the least recently asked first, while the stop goes on.
+///
+/// 1 and 2 are made before any ask that can end the asking: three asks that fail and a
+/// probe that fails end it for the stop ([`judge_commits`]), and such asks stood in front.
+/// With a judge that gave no verdict for three commits and its probe, the same three were
+/// asked about at every stop, their attempts never counted, and a commit with a credential
+/// that waited for its turn was never submitted again (review V4 round 15, VD4R15-M-1).
+/// "Least recently" is by the number of the stop each was last asked about at, which every
+/// ask writes down whether or not the attempt counts.
+///
+/// What the property needs: a judge that can be run (with no judge or no policy nothing is
+/// submitted for any commit, which is said); a state that can be kept (with none, every
+/// stop starts from what was last written, and says so); and three seconds of the stop left
+/// after the working trees' changes. A run of the judge before these asks cannot take that
+/// time ([`ASK_OWED`]); Git taking the whole stop to read a working tree can, and the tree's
+/// change is then UNJUDGED at that stop, which is said.
 fn sorted_commits(
     listed: &[CommitAndParent],
     known: &[String],
-) -> (Vec<Option<TreeJudged>>, Vec<(u32, usize)>) {
+) -> (Vec<Option<TreeJudged>>, Vec<Ask>) {
     let known: std::collections::BTreeMap<&str, Answer<'_>> =
         known.iter().filter_map(|entry| answer(entry)).collect();
     let no_verdict = |reason: &str| Judged::Unjudged {
         reason: reason.to_owned(),
     };
     let mut units: Vec<Option<TreeJudged>> = vec![None; listed.len()];
-    let mut ask: Vec<(u32, usize)> = Vec::new();
+    let mut never: Vec<Ask> = Vec::new();
+    // (the stop it was last asked about at, the ask)
+    let mut turns: Vec<(u64, Ask)> = Vec::new();
+    let mut again: Vec<(u64, Ask)> = Vec::new();
     for (at, (id, _)) in listed.iter().enumerate() {
         match known.get(id.as_str()) {
             Some(Answer::Pass) => {}
-            Some(Answer::Fail(names)) => {
-                units[at] = Some(from_before(
-                    id,
-                    Judged::Fail {
-                        rules: rules_kept(names, false),
-                        said: Vec::new(),
-                    },
-                ));
+            Some(Answer::Fail(kept)) => {
+                let (rules, said) = reason_kept(kept, false);
+                units[at] = Some(from_before(id, Judged::Fail { rules, said }));
             }
-            Some(Answer::Hold(names)) => {
-                units[at] = Some(from_before(
-                    id,
-                    Judged::Hold {
-                        rules: rules_kept(names, true),
-                        said: Vec::new(),
-                    },
-                ));
+            Some(Answer::Hold(kept)) => {
+                let (rules, said) = reason_kept(kept, true);
+                units[at] = Some(from_before(id, Judged::Hold { rules, said }));
             }
             Some(Answer::Final(reason)) => units[at] = Some(from_before(id, no_verdict(reason))),
-            Some(Answer::NoVerdict { attempts, reason }) => {
-                let reason = if *attempts >= ATTEMPTS {
+            Some(Answer::NoVerdict {
+                attempts,
+                last,
+                reason,
+            }) => {
+                let ask = Ask {
+                    at,
+                    attempts: Some(*attempts),
+                    reserved: false,
+                };
+                let reason = if ask.in_turn() {
                     in_turn(*attempts, reason)
                 } else {
                     (*reason).to_owned()
                 };
                 units[at] = Some(from_before(id, no_verdict(&reason)));
-                // after every commit that was never asked about
-                ask.push((attempts.saturating_add(1), at));
+                if ask.in_turn() {
+                    turns.push((*last, ask));
+                } else {
+                    again.push((*last, ask));
+                }
             }
-            None => ask.push((0, at)),
+            None => never.push(Ask {
+                at,
+                attempts: None,
+                reserved: false,
+            }),
         }
     }
-    ask.sort_unstable();
-    // of those that take turns, the first: one a stop
-    let every_stop = ask.partition_point(|(rank, _)| *rank <= ATTEMPTS);
-    ask.truncate(every_stop + 1);
+    turns.sort_unstable_by_key(|(last, ask)| (*last, ask.at));
+    again.sort_unstable_by_key(|(last, ask)| (*last, ask.at));
+    let reserved = |(_, ask): &(u64, Ask)| Ask {
+        reserved: true,
+        ..*ask
+    };
+    let mut ask: Vec<Ask> = turns.first().map(reserved).into_iter().collect();
+    ask.extend(again.first().map(reserved));
+    ask.extend(never);
+    ask.extend(again.iter().skip(1).map(|(_, ask)| *ask));
     (units, ask)
 }
+
+/// The time of a stop that is left for each run of the judge it still owes when another run
+/// is made: no run can take the time of the asks every stop must make ([`sorted_commits`]).
+const ASK_OWED: Duration = Duration::from_secs(5);
 
 /// Have the session's commits judged, each by its own change ([`judge_commit`]), and make a
 /// unit of every commit that has no pass: at every stop, not only at the one that first
@@ -2403,21 +2699,20 @@ fn sorted_commits(
 ///   with a credential made that commit pass in silence from the next stop on (review V4
 ///   round 13, VD4R13-M-1; fifth independent review of the hooks, HR5-H-1). It is asked about
 ///   again at later stops and is a unit of every stop while it has no verdict.
-/// - The order of asking: the commits never asked about, the oldest first; then those that
-///   had no verdict, the fewest attempts first; all while the stop has time. After
-///   [`ATTEMPTS`] attempts a commit is asked about in its turn, one such commit a stop, the
-///   last of all ([`sorted_commits`]): it is never given up, and it is a unit of every stop.
+/// - The order of asking is [`sorted_commits`]'s, with what it holds: every commit without a
+///   verdict is submitted at least once in as many stops as there are such commits.
 /// - An attempt counts at a stop where some patch got a verdict. Where none did, nothing can
-///   be said of the patch: the commit is written down as asked, so that others come before
-///   it next time, and its attempts stay as they were. (An ask of a commit in its turn
-///   always counts: the count is what passes the turn on.) And when the first [`FIRST_ASKS`]
-///   asks of such a stop all fail, the judge is asked about its probe
-///   ([`Judge::chain_answers`]): with no verdict on that either, the stop asks no more and
-///   the rest are counted.
+///   be said of the patch: the commit is written down as asked at this stop, so that others
+///   come before it next time, and its attempts stay as they were. (An ask of a commit in
+///   its turn always counts.) When [`FIRST_ASKS`] asks of such a stop have failed, the judge
+///   is asked about its probe ([`Judge::chain_answers`]): with no verdict on that either,
+///   the stop asks no more and the rest are counted.
 /// - Only what the hook proves from the commit itself is final at once: a patch over the
 ///   builder's size (a commit does not change, so neither does that). It is a unit of every
 ///   stop too. A commit at the edge of a shallow clone is no such thing: the repository can
 ///   get its parent, so it is looked at again at every stop and nothing is written down.
+/// - Nothing of a stop is written before the stop ends: one that is killed in the middle of
+///   an ask leaves every commit where it was, the turn of the one it was asking about too.
 fn judge_commits(
     stopping: &Stopping<'_>,
     tribunal: &mut Judge<'_>,
@@ -2429,21 +2724,25 @@ fn judge_commits(
     let no_verdict = |reason: &str| Judged::Unjudged {
         reason: reason.to_owned(),
     };
-    let (mut units, ask) = sorted_commits(listed, known);
+    let (mut units, asks) = sorted_commits(listed, known);
+    let mut owed = u32::try_from(asks.iter().filter(|ask| ask.reserved).count()).unwrap_or(0);
     // Why the commits from here on wait, once one has to.
     let mut waits: Option<String> = tribunal.broken().map(str::to_owned);
     let (mut waiting, mut failed) = (0_usize, 0_usize);
-    // (the commit, its attempts after this stop, the reason)
+    // (the commit, its attempts, whether the ask counts whatever the chain did, the reason)
     let mut tried: Vec<(usize, u32, bool, String)> = Vec::new();
-    for (rank, at) in ask {
+    for ask in asks {
+        let at = ask.at;
         let commit = &listed[at];
         let id = &commit.0;
+        owed = owed.saturating_sub(u32::from(ask.reserved));
+        tribunal.owed = owed;
         if waits.is_none() && stopping.deadline.left() < COMMIT_FLOOR {
             waits = Some(NOT_YET.to_owned());
         }
         if waits.is_some() {
             // one that had no verdict before is a unit already, with its reason
-            waiting += usize::from(rank == 0);
+            waiting += usize::from(ask.attempts.is_none());
             continue;
         }
         // The repository does not have this commit's parent, so "from its parent" would be
@@ -2465,30 +2764,31 @@ fn judge_commits(
         let (judged, proven) = judge_commit(stopping, tribunal, at, commit)?;
         if let Some(reason) = tribunal.broken() {
             waits = Some(reason.to_owned());
-            waiting += usize::from(rank == 0);
+            waiting += usize::from(ask.attempts.is_none());
             continue;
         }
         let said = match &judged {
             Judged::Pass => "p".to_owned(),
-            Judged::Hold { rules, .. } => format!("h:{}", rule_ids(rules, false)),
-            Judged::Fail { rules, .. } => format!("f:{}", rule_ids(rules, true)),
+            Judged::Hold { rules, said } => format!("h:{}", kept_reason(rules, said, false)),
+            Judged::Fail { rules, said } => format!("f:{}", kept_reason(rules, said, true)),
             Judged::Unjudged { reason } if proven => format!("x:{}", one_line(reason)),
             Judged::Unjudged { .. } if stopping.deadline.left() < COMMIT_FLOOR => {
                 // the stop's time ended the asking: not an attempt
                 waits = Some(NOT_YET.to_owned());
-                waiting += usize::from(rank == 0);
+                waiting += usize::from(ask.attempts.is_none());
                 continue;
             }
-            Judged::Unjudged { reason } if rank > ATTEMPTS => {
-                // asked in its turn, the last ask of the stop: the ask counts, whatever the
-                // chain did, and the commit is said as what it is
-                tried.push((at, rank, true, reason.clone()));
-                units[at] = Some(commit_unit(id, no_verdict(&in_turn(rank, reason))));
+            Judged::Unjudged { reason } if ask.in_turn() => {
+                // asked in its turn: the ask counts, whatever the chain did, and the commit
+                // is said as what it is
+                let attempts = ask.attempts.unwrap_or(ATTEMPTS).saturating_add(1);
+                tried.push((at, attempts, true, reason.clone()));
+                units[at] = Some(commit_unit(id, no_verdict(&in_turn(attempts, reason))));
                 continue;
             }
             Judged::Unjudged { reason } => {
                 failed += 1;
-                tried.push((at, rank.saturating_sub(1), false, reason.clone()));
+                tried.push((at, ask.attempts.unwrap_or(0), false, reason.clone()));
                 if tribunal.chain != Some(true) && failed >= FIRST_ASKS && !tribunal.chain_answers()
                 {
                     waits = Some(reason.clone());
@@ -2500,6 +2800,7 @@ fn judge_commits(
         units[at] = (said != "p").then(|| commit_unit(id, judged));
         out.commits.push((id.clone(), said));
     }
+    tribunal.owed = 0;
     // An attempt counts where the chain gave a verdict at this stop. Where an ask failed and
     // no patch got a verdict, the judge is asked about its probe to find that out: with one
     // or two commits that get no verdict and nothing else to judge, the probe was never
@@ -2518,12 +2819,13 @@ fn judge_commits(
         let attempts = if counted { attempts } else { attempts + counts };
         out.commits.push((
             listed[at].0.clone(),
-            format!("n{attempts}:{}", one_line(&reason)),
+            format!("n{attempts}@{}:{}", stopping.number, one_line(&reason)),
         ));
     }
     out.units.extend(units.into_iter().flatten());
     if waiting > 0 {
         out.units.push(TreeJudged {
+            tag: String::new(),
             what: commits_label(waiting),
             judged: Some(Judged::Unjudged {
                 reason: waits.unwrap_or_else(|| NOT_YET.to_owned()),
@@ -2543,23 +2845,50 @@ fn other_trees(
     stopping: &Stopping<'_>,
     judged: &[PathBuf],
     blocked: &[String],
-    clean: &mut Vec<String>,
+    out: &mut Judging,
 ) -> Vec<Note> {
-    let Ok(trees) = worktrees(&stopping.work.place.top, &stopping.deadline.git()) else {
+    let place = &stopping.work.place;
+    let Ok(trees) = worktrees(&place.top, &stopping.deadline.git()) else {
         return Vec::new();
     };
+    let linked = linked_instances(&place.common);
+    let mut listed = BTreeSet::new();
     let mut said = Vec::new();
     let (mut looked_at, mut beyond) = (0, 0_usize);
-    for tree in trees {
+    for (at, tree) in trees.iter().enumerate() {
+        let id = listed_instance(&tree.path, at == 0, &linked);
+        listed.insert(id.clone());
         // a bare repository's own entry is no working tree: there is nothing uncommitted in it
         if tree.bare || judged.contains(&tree.path) {
             continue;
         }
+        // A failure that blocked a stop made from inside this tree is still the session's:
+        // it is not looked at from here, and it is said (sixth independent review of the
+        // hooks, HR6-M-1: it was forgotten at such a stop, and blocked again on return). It
+        // is part of the tree's name here, so it is on the line that counts these things at
+        // every stop: in the full text alone it was said once (seventh, HR7-L-3).
+        let stands = stands_in(blocked, &id);
+        let name = |what: &str| {
+            format!(
+                "the working tree {}{what}{}",
+                shown_tree(&tree.path),
+                if stands {
+                    " (a failure stands there)"
+                } else {
+                    ""
+                }
+            )
+        };
+        let standing = if stands {
+            " A failure there has blocked a stop of this session and stands: it was not looked at at this stop."
+        } else {
+            ""
+        };
         if !tree.usable {
             said.push(Note {
-                name: format!("the working tree {} (gone)", shown_tree(&tree.path)),
+                name: name(" (gone)"),
                 text: format!(
-                    "The working tree {} of this project is gone or is no working tree any more: what only its own history names is not judged (`git worktree prune` forgets it).",
+                    "The working tree {} of this project is gone or is no working tree any more: what only its own history names is not judged (`git worktree prune` forgets it).{standing}",
                     shown_tree(&tree.path)
                 ),
             });
@@ -2574,34 +2903,103 @@ fn other_trees(
             has_uncommitted_changes(&tree.path, &stopping.deadline.git()),
             Ok(false)
         ) {
-            clean.push(tree_id(&tree.path));
+            out.clean.push(id);
             continue;
         }
-        // A failure that blocked a stop made from inside this tree is still the session's:
-        // it is not looked at from here, and it is said (sixth independent review of the
-        // hooks, HR6-M-1: it was forgotten at such a stop, and blocked again on return).
-        let stands = if stands_in(blocked, &tree.path) {
-            " A failure there has blocked a stop of this session and stands: it was not looked at at this stop."
-        } else {
-            ""
-        };
         said.push(Note {
-            name: format!("the working tree {}", shown_tree(&tree.path)),
+            name: name(""),
             text: format!(
-                "The working tree {} of this project has changes that are not committed, and the session's directory is not in it: they were not judged (a stop made from inside it judges them; its commits are judged from anywhere).{stands}",
+                "The working tree {} of this project has changes that are not committed, and the session's directory is not in it: they were not judged (a stop made from inside it judges them; its commits are judged from anywhere).{standing}",
                 shown_tree(&tree.path)
             ),
         });
     }
+    out.listed = Some(listed);
     if beyond > 0 {
+        let trees = if beyond == 1 {
+            "1 more working tree".to_owned()
+        } else {
+            format!("{beyond} more working trees")
+        };
         said.push(Note {
-            name: format!("{beyond} more working trees that were not looked at"),
+            name: format!(
+                "{trees} that {} not looked at",
+                if beyond == 1 { "was" } else { "were" }
+            ),
             text: format!(
-                "This project has {beyond} more working trees than the {OTHER_TREES} a stop looks at: they were not looked at for changes that are not committed."
+                "This project has {trees} than the {OTHER_TREES} a stop looks at: {} not looked at for changes that are not committed.",
+                if beyond == 1 { "it was" } else { "they were" }
             ),
         });
     }
     said
+}
+
+/// Have the uncommitted and the staged change of one working tree judged, and add them to
+/// `out`: its units, and what this stop saw of it ([`Looked`]). `left` is the number of the
+/// working trees' patches that are still to be judged.
+fn tree_units(
+    tribunal: &mut Judge<'_>,
+    top: &Path,
+    id: &str,
+    found: Uncommitted,
+    blocked: &[String],
+    left: &mut u32,
+    out: &mut Judging,
+) {
+    let top = top.to_string_lossy();
+    let unknown = |judged: &Option<Judged>| matches!(judged, Some(Judged::Unjudged { .. }));
+    let lines = |judged: &Option<Judged>| -> Lines {
+        judged.as_ref().map(hook::failure_lines).unwrap_or_default()
+    };
+    let tree = judged_patch(tribunal, found.tree, left);
+    let index = if matches!(found.staged, Ok(None)) {
+        None
+    } else {
+        judged_patch(tribunal, found.staged, left)
+    };
+    // What the index holds that the tree's failure does not have is the staged change's
+    // own failure: the tree was repaired and the repair not staged, and a plain commit
+    // would still record it. A line the tree's failure has too is the tree's, and stands
+    // or blocks with it: as a failure of its own it made one that stood block again
+    // after `git add -A` and one more edit of any file (sixth independent review of the
+    // hooks, HR6-M-1). With no verdict on the tree's change, what is remembered of it
+    // stands in for its lines.
+    let tree_lines = (!unknown(&tree)).then(|| lines(&tree));
+    let cover = tree_lines
+        .clone()
+        .unwrap_or_else(|| lines_of(blocked, &unit_tag(id, 'u')));
+    let staged = match index.clone() {
+        Some(failed @ Judged::Fail { .. }) => {
+            hook::failure_part(&failed, &hook::lines_beyond(&failed, &cover), false)
+        }
+        other => other,
+    };
+    let index_lines = if found.index_same {
+        tree_lines.clone()
+    } else {
+        (!unknown(&index)).then(|| lines(&index))
+    };
+    out.trees.push(Looked {
+        id: id.to_owned(),
+        tree: tree_lines,
+        index: index_lines,
+        staged: lines(&staged),
+    });
+    out.units.push(TreeJudged {
+        tag: unit_tag(id, 'u'),
+        what: hook::tree_label(&top),
+        judged: tree,
+        holds: Holds::WhileNew,
+    });
+    if let Some(staged) = staged {
+        out.units.push(TreeJudged {
+            tag: unit_tag(id, 's'),
+            what: hook::staged_label(&top),
+            judged: Some(staged),
+            holds: Holds::WhileNew,
+        });
+    }
 }
 
 /// Have the session's work judged, unit by unit: the uncommitted and the staged change of the
@@ -2624,16 +3022,18 @@ fn judge_units(
     let mut writable = vec![place.top.clone()];
     let mut trees = vec![(
         place.top.clone(),
+        tree_instance(place),
         uncommitted(stopping, &place.top, "work", &mut out.beside)?,
     )];
     match elsewhere(stopping.cwd, place, stopping.deadline) {
         Elsewhere::Nothing => {}
-        Elsewhere::Linked(top) => {
+        Elsewhere::Linked(linked) => {
             trees.push((
-                top.clone(),
-                uncommitted(stopping, &top, "work-2", &mut out.beside)?,
+                linked.top.clone(),
+                tree_instance(&linked),
+                uncommitted(stopping, &linked.top, "work-2", &mut out.beside)?,
             ));
-            writable.push(top);
+            writable.push(linked.top);
         }
         Elsewhere::Foreign(top) => out.beside.push(Note {
             name: format!("the repository {} the session is in", shown_tree(&top)),
@@ -2645,15 +3045,17 @@ fn judge_units(
         }),
         Elsewhere::Failed(reason) => trees.push((
             PathBuf::from(stopping.cwd),
+            by_path(Path::new(stopping.cwd)),
             Uncommitted {
                 tree: Err(reason),
                 staged: Ok(None),
+                index_same: false,
             },
         )),
     }
     out.beside
         .extend(submodules_with_changes(place, stopping.deadline));
-    let others = other_trees(stopping, &writable, blocked, &mut out.clean);
+    let others = other_trees(stopping, &writable, blocked, &mut out);
     out.beside.extend(others);
     let mut tribunal = Judge {
         stop: stopping,
@@ -2661,52 +3063,28 @@ fn judge_units(
         bench: None,
         answers: std::collections::BTreeMap::new(),
         chain: None,
+        owed: 0,
     };
-    for (top, found) in trees {
-        let id = tree_id(&top);
-        let top = top.to_string_lossy();
-        let tree = judged_patch(&mut tribunal, found.tree);
-        // No unit for an index that holds what the tree holds, or what `HEAD` holds. And none
-        // for a staged failure that is all in the tree's failure: it is that failure, and
-        // stands or blocks with it. It had an identity of its own, so `git add -A` and one
-        // more edit of any file made a failure that stood block again, every other turn
-        // (sixth independent review of the hooks, HR6-M-1). A staged failure that the tree
-        // does not have (the tree was repaired and the repair not staged) is a unit.
-        let staged = if matches!(found.staged, Ok(None)) {
-            None
-        } else {
-            judged_patch(&mut tribunal, found.staged)
-        }
-        .filter(|staged| {
-            !tree
-                .as_ref()
-                .is_some_and(|tree| hook::failure_within(staged, tree))
-        });
-        let first = out.units.len();
-        out.units.push(TreeJudged {
-            what: hook::tree_label(&top),
-            judged: tree,
-            holds: Holds::WhileNew,
-        });
-        if let Some(staged) = staged {
-            out.units.push(TreeJudged {
-                what: hook::staged_label(&top),
-                judged: Some(staged),
-                holds: Holds::WhileNew,
-            });
-        }
-        let mine = &out.units[first..];
-        out.trees.push(Looked {
-            id,
-            read: mine
-                .iter()
-                .all(|unit| !matches!(unit.judged, Some(Judged::Unjudged { .. }))),
-            failures: hook::uncommitted_failures(mine),
-        });
+    let patches = |found: &Uncommitted| {
+        u32::from(matches!(found.tree, Ok(Some(_))))
+            + u32::from(matches!(found.staged, Ok(Some(_))))
+    };
+    let mut left: u32 = trees.iter().map(|(_, _, found)| patches(found)).sum();
+    for (top, id, found) in trees {
+        tree_units(
+            &mut tribunal,
+            &top,
+            &id,
+            found,
+            blocked,
+            &mut left,
+            &mut out,
+        );
     }
     match session_commits(stopping, tips) {
         Ok(listed) => judge_commits(stopping, &mut tribunal, &listed, known, &mut out)?,
         Err(reason) => out.units.push(TreeJudged {
+            tag: String::new(),
             what: "The commits of this session".to_owned(),
             judged: Some(Judged::Unjudged { reason }),
             holds: Holds::Now,
@@ -2718,38 +3096,60 @@ fn judge_units(
 /// Take what a stop judged into what the session remembers: `blocked` in its state, and the
 /// commits that have their answer in `judged`, the session's list of them.
 ///
-/// - The failures of uncommitted and staged changes that have blocked are remembered with
-///   the working tree they are in ([`tree_id`]). One is forgotten only at a stop that looked
-///   at its tree, read both of the tree's changes and did not find it: then it blocks again
-///   if it comes back (third independent review of the hooks, HR3-M-3). A tree that this
-///   stop did not look at keeps what is remembered of it, and so does one whose change could
-///   not be judged. Before, a failure was forgotten whenever its unit was absent, also when
-///   nothing had looked: a failure that stood blocked again when the session's directory
-///   left a linked working tree and came back (sixth independent review, HR6-M-1).
-/// - Each commit that got its answer is added to the list, which has no bound that makes an
-///   older one be forgotten.
+/// What is remembered of a working tree's uncommitted and staged changes is the failing
+/// lines a stop saw there, each with its count, kept with the tree ([`tree_instance`]):
+///
+/// - a stop that read the tree's uncommitted change remembers exactly its lines: a line that
+///   is gone is forgotten, so it blocks again if it comes back (third independent review of
+///   the hooks, HR3-M-3), and a count that fell is remembered as the lower one, so it blocks
+///   if it grows again;
+/// - of what the index holds it remembers the staged change's own lines, and keeps a line it
+///   remembered for as long as the index still holds it, also while the tree's failure has
+///   the line too: it was forgotten then, and blocked a second time when the tree was
+///   repaired again, although the index had not been touched (seventh, HR7-M-1);
+/// - a tree this stop did not look at, and a change that got no verdict, keep what is
+///   remembered (sixth, HR6-M-1);
+/// - a tree that a stop found with nothing uncommitted, and a tree that `git worktree list`
+///   no longer names, have nothing remembered: the failure is not in the project any more.
+///   An entry of a removed tree stayed for the rest of the session, and a tree made again
+///   at its path was told that its new failure had blocked before (seventh, HR7-H-1).
+///
+/// Each commit that got its answer is added to the list, which has no bound that makes an
+/// older one be forgotten.
 fn remember(state: &mut State, judging: &Judging, judged: &mut Vec<String>) {
-    for tree in &judging.trees {
-        if tree.read {
-            state.blocked.retain(|entry| {
-                entry
-                    .split_once('/')
-                    .is_none_or(|(id, key)| id != tree.id || tree.failures.iter().any(|f| f == key))
-            });
+    // what is remembered of one unit becomes `lines`
+    fn keep(blocked: &mut Vec<String>, tag: &str, lines: &Lines) {
+        blocked.retain(|entry| entry.rsplit_once('/').is_none_or(|(unit, _)| unit != tag));
+        blocked.extend(
+            lines
+                .iter()
+                .map(|(key, count)| hook::remembered_line(tag, key, *count)),
+        );
+    }
+    for looked in &judging.trees {
+        if let Some(lines) = &looked.tree {
+            keep(&mut state.blocked, &unit_tag(&looked.id, 'u'), lines);
         }
-        for failure in &tree.failures {
-            let entry = format!("{}/{failure}", tree.id);
-            if !state.blocked.contains(&entry) {
-                state.blocked.push(entry);
-            }
+        if let Some(index) = &looked.index {
+            let mut lines: Lines = lines_of(&state.blocked, &unit_tag(&looked.id, 's'))
+                .into_iter()
+                .filter_map(|(key, count)| {
+                    let now = *index.get(&key)?;
+                    Some((key, count.min(now)))
+                })
+                .collect();
+            lines.extend(looked.staged.clone());
+            keep(&mut state.blocked, &unit_tag(&looked.id, 's'), &lines);
         }
     }
-    // another working tree with nothing uncommitted in it has no failure of that kind left
-    for id in &judging.clean {
-        state
-            .blocked
-            .retain(|entry| entry.split_once('/').is_none_or(|(tree, _)| tree != id));
-    }
+    let gone = |entry: &String| {
+        let tree = tree_of(entry).unwrap_or_default();
+        judging.clean.iter().any(|id| id == tree)
+            || judging.listed.as_ref().is_some_and(|listed| {
+                !listed.contains(tree) && !judging.trees.iter().any(|looked| looked.id == tree)
+            })
+    };
+    state.blocked.retain(|entry| !gone(entry));
     let over = state.blocked.len().saturating_sub(BLOCKED_CAP);
     state.blocked.drain(..over);
     judged.extend(
@@ -3004,44 +3404,90 @@ fn notes_of(state: &mut State, mut beside: Vec<Note>, room: usize) -> Vec<String
     notes
 }
 
-/// How long a stop waits for another stop of its session to end.
+/// How long a stop waits for another hook of its session to let go of the session's state.
 const LOCK_WAIT: Duration = Duration::from_secs(3);
+/// How long a session-start hook waits for it, and how long an advice hook does: an advice
+/// hook that cannot have it leaves its state unwritten and says nothing.
+const START_LOCK_WAIT: Duration = Duration::from_secs(2);
+const ADVICE_LOCK_WAIT: Duration = Duration::from_millis(300);
 
-/// Whether this stop may run.
+/// The session's lock, held: a `flock` on the file `session-<hash>.lock` beside its state. It
+/// is let go when this is dropped, and when the process ends however it ends: a hook that is
+/// killed holds nothing. The file is taken away again by a hook that leaves the session
+/// with no state (a stop where there is no repository), so that a session the hooks have
+/// nothing to do with leaves no file behind.
+struct Held {
+    #[expect(dead_code, reason = "held for its lock")]
+    lock: nix::fcntl::Flock<std::fs::File>,
+    path: PathBuf,
+    state: PathBuf,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        // still locked here: whoever waits on this file finds another at its path, or
+        // none, and takes that one ([`session_lock`])
+        if !self.state.exists() {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Whether a hook has its session's state to itself.
 enum Turn {
-    /// It is the only stop of its session, for as long as this is held: a lock on a file
-    /// beside the session's state, let go when this is dropped (or the process ends).
-    Mine(#[expect(dead_code, reason = "held for its lock")] nix::fcntl::Flock<std::fs::File>),
-    /// There is no lock: the session has no state yet, or the lock could not be made (the
-    /// state directory cannot be written, and what the stop says of its state says so too).
+    /// It has, for as long as this is held.
+    Mine(#[expect(dead_code, reason = "held for its lock")] Held),
+    /// There is no lock to have: no state directory can be made (what the hook then says
+    /// of its state says so too), or the file system has no locks.
     Unlocked,
-    /// Another stop of the session is running and did not end in [`LOCK_WAIT`].
+    /// Another hook of the session holds it and did not let go in the time given.
     Taken,
 }
 
-/// Take the session's stop lock. Two stops of one session at the same time each read the
-/// state, judged, and wrote the list of judged commits and then the state: written as one's
-/// list, the other's list, the other's state, the first's state, the state named a list that
-/// was not in the file, and every later stop of the session was UNJUDGED (sixth independent
-/// review of the hooks, suspected from reading). With the lock the second stop reads what
-/// the first wrote, or says that the first is still running.
+/// Take the session's lock, waiting at most `wait`.
+///
+/// Every hook reads the session's state, works, and writes it. Two that did so at the same
+/// time wrote across each other. Two stops: one's list of judged commits, the other's list,
+/// the other's state, the first's state, after which the state named a list that was not in
+/// the file and every later stop was UNJUDGED (sixth independent review of the hooks). Two
+/// stops that were both the session's first hook, which took no lock because there was no
+/// state yet: both judged, both blocked for the same failure, both wrote (review V4 round
+/// 15, VD4R15-M-3). An advice hook and a stop: the advice hook's older copy of what had
+/// blocked came back, so a failure that a stop had seen repaired and forgotten "had blocked"
+/// again and did not block when it returned (seventh independent review, HR7-L-4).
+///
+/// So the lock is taken by every stop for all of its run, the first one too (the file is
+/// named from the session's id, which a hook has before any state exists), by a
+/// session-start hook for its reading and writing, and by an advice hook for its writing
+/// ([`Session::keep_advice`]).
 #[expect(
     clippy::disallowed_methods,
-    reason = "the stop-lock door: a stop waits a bounded time, in short sleeps, for the other stop of its session"
+    reason = "the session-lock door: a hook waits a bounded time, in short sleeps, for another hook of its session"
 )]
-fn stop_turn(session: &str, deadline: Deadline) -> Turn {
+fn session_lock(session: &str, wait: Duration) -> Turn {
     use nix::fcntl::{Flock, FlockArg};
-    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
     let Ok(dir) = sessions_dir() else {
         return Turn::Unlocked;
     };
-    // A session with no state yet has nothing two stops could spoil, and a stop that
-    // records nothing (no repository) leaves no file behind: the lock is for a session that
-    // has a state file.
-    let state = state_file(&dir, session);
-    if !std::fs::symlink_metadata(&state).is_ok_and(|found| found.is_file()) {
+    // The directory is made here when it is missing, unless it would lie inside a Git
+    // working tree: a state directory inside the project is refused by every hook, and
+    // nothing is written there to find that out.
+    let inside_a_tree = || {
+        resolved(&dir)
+            .ancestors()
+            .any(|above| above.join(".git").symlink_metadata().is_ok())
+    };
+    let made = dir.is_dir()
+        || (!inside_a_tree()
+            && dir
+                .parent()
+                .is_none_or(|parent| std::fs::create_dir_all(parent).is_ok())
+            && own_directory(&dir).is_ok());
+    if !made {
         return Turn::Unlocked;
     }
+    let state = state_file(&dir, session);
     let path = state.with_extension("lock");
     let open = || {
         std::fs::OpenOptions::new()
@@ -3052,16 +3498,35 @@ fn stop_turn(session: &str, deadline: Deadline) -> Turn {
             .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
             .open(&path)
     };
+    let until = Deadline::after(wait);
     let Ok(mut file) = open() else {
         return Turn::Unlocked;
     };
-    let until = Deadline::after(LOCK_WAIT.min(deadline.left()));
     loop {
         match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
-            Ok(lock) => return Turn::Mine(lock),
+            Ok(lock) => {
+                // The file that was locked must be the one at the path: a hook that left
+                // the session with no state has taken its lock file away, and another may
+                // have made a new one since.
+                let same = match (lock.metadata(), std::fs::symlink_metadata(&path)) {
+                    (Ok(held), Ok(there)) => held.ino() == there.ino() && held.dev() == there.dev(),
+                    _ => false,
+                };
+                if same {
+                    return Turn::Mine(Held { lock, path, state });
+                }
+                drop(lock);
+                if until.left().is_zero() {
+                    return Turn::Taken;
+                }
+                let Ok(again) = open() else {
+                    return Turn::Unlocked;
+                };
+                file = again;
+            }
             Err((back, nix::errno::Errno::EWOULDBLOCK)) if !until.left().is_zero() => {
                 file = back;
-                std::thread::sleep(Duration::from_millis(50));
+                std::thread::sleep(Duration::from_millis(25));
             }
             Err((_, nix::errno::Errno::EWOULDBLOCK)) => return Turn::Taken,
             // a file system with no locks: as before
@@ -3070,12 +3535,29 @@ fn stop_turn(session: &str, deadline: Deadline) -> Turn {
     }
 }
 
+/// What a stop says in a repository that has no commit: it has no base, so nothing in it is
+/// judged, and its files are in the project all the same. They are said, as everything is
+/// that is known and not judged. (A status that cannot be read is a tree with files.)
+fn no_commit_yet(work: &Work, deadline: Deadline) -> Option<Note> {
+    (!matches!(
+        has_uncommitted_changes(&work.place.top, &deadline.git()),
+        Ok(false)
+    ))
+    .then(|| Note {
+        name: "the files of this repository, which has no commit yet".to_owned(),
+        text: format!(
+            "The repository {} has no commit yet, so there is no commit to measure this session's changes from: its files were not judged. A session that begins after the first commit is judged.",
+            shown_tree(&work.place.top)
+        ),
+    })
+}
+
 /// When the agent wants to stop: have the session's work judged, unit by unit
 /// ([`judge_units`]), and block on a fail that holds this stop.
 fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
     let deadline = Deadline::after(STOP_LIMIT);
     // one stop of a session at a time, from before its state is read until after it is written
-    let turn = stop_turn(&input.session, deadline);
+    let turn = session_lock(&input.session, LOCK_WAIT.min(deadline.left()));
     if matches!(turn, Turn::Taken) {
         return Ok(Some(hook::unjudged_output(
             "another stop of this session is running and has not ended, so this one judged nothing: what that stop says is the answer",
@@ -3095,21 +3577,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
     let mut beside: Vec<Note> = Vec::new();
     let mut decision = match subject(&work, deadline) {
         Subject::Nothing => {
-            // A repository with no commit has no base, so nothing in it is judged. Its files
-            // are in the project all the same: they are said, as everything is that is known
-            // and not judged. (A status that cannot be read is a tree with files.)
-            if !matches!(
-                has_uncommitted_changes(&work.place.top, &deadline.git()),
-                Ok(false)
-            ) {
-                beside.push(Note {
-                    name: "the files of this repository, which has no commit yet".to_owned(),
-                    text: format!(
-                        "The repository {} has no commit yet, so there is no commit to measure this session's changes from: its files were not judged. A session that begins after the first commit is judged.",
-                        shown_tree(&work.place.top)
-                    ),
-                });
-            }
+            beside.extend(no_commit_yet(&work, deadline));
             StopDecision::Allow { message: None }
         }
         Subject::Unjudged(reason) => StopDecision::Allow {
@@ -3127,6 +3595,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
                 },
                 Ok((tips, mut known)) => {
                     let scratch = Scratch::new(&work.place.own)?;
+                    let number = session.state.stops.saturating_add(1);
                     let stopping = Stopping {
                         work: &work,
                         cwd: &input.cwd,
@@ -3136,15 +3605,24 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
                         deadline: Deadline(
                             deadline.0.checked_sub(STOP_RESERVE).unwrap_or(deadline.0),
                         ),
+                        number,
                     };
                     let judging = judge_units(&stopping, &tips, &known, &session.state.blocked)?;
                     // Decided by what had blocked before this stop; then this stop is
                     // remembered.
-                    let decision = hook::decide_stop_trees(
-                        &judging.units,
-                        &blocked_keys(&session.state.blocked),
-                        &words,
-                    );
+                    let decision =
+                        hook::decide_stop_trees(&judging.units, &session.state.blocked, &words);
+                    // The stops are counted for the commits that are asked about and get no
+                    // verdict, which are marked with the number: a stop with none of them
+                    // changes nothing by having been made.
+                    if judging.commits.iter().any(|(_, said)| {
+                        matches!(
+                            answer(&format!("{}:{said}", "0".repeat(40))),
+                            Some((_, Answer::NoVerdict { .. }))
+                        )
+                    }) {
+                        session.state.stops = number;
+                    }
                     let before = known.len();
                     remember(&mut session.state, &judging, &mut known);
                     if known.len() != before {
@@ -3869,7 +4347,7 @@ fn probe(
             ranker: &ranker_sha256,
         };
         let (code, verdict, said) =
-            run_judge(program, &policy_file, &patch_file, &ranker, deadline);
+            run_judge(program, &policy_file, &patch_file, &ranker, deadline.left());
         match (
             code,
             hook::judged(code, verdict.as_ref(), said.as_deref(), sealed),
@@ -3945,9 +4423,10 @@ mod tests {
     fn a_state_round_trips_and_anything_else_is_not_a_state() {
         let state = State {
             project: Some(project(Base::Commit(COMMIT.to_owned()))),
+            stops: 7,
             reported: ["b".to_owned(), "a".to_owned()].into(),
             noticed: ["n".to_owned()].into(),
-            blocked: vec![format!("{}:3", "f".repeat(64))],
+            blocked: vec![format!("m/u/{}:3", "f".repeat(24))],
             judged_sha256: "d".repeat(64),
             judged_count: 2,
         };
@@ -3973,7 +4452,7 @@ mod tests {
         let whole = json!({"top": "/r", "id": "2", "base": "none",
                            "tips_sha256": "0".repeat(64), "tips_count": 0, "by_start": true});
         let with = |project: &Value| {
-            json!({"schema": STATE_SCHEMA, "project": project,
+            json!({"schema": STATE_SCHEMA, "project": project, "stops": 0,
                    "reported": ["a"], "noticed": [], "blocked": [],
                    "judged_sha256": "", "judged_count": 0})
             .to_string()
@@ -4049,6 +4528,7 @@ mod tests {
                 tips_count: usize::MAX,
                 by_start: false,
             }),
+            stops: u64::MAX,
             reported: (0..REPORTED_CAP).map(|n| hex(n, 64)).collect(),
             noticed: (0..NOTICED_CAP).map(|n| hex(n, 64)).collect(),
             blocked: (0..BLOCKED_CAP)
@@ -4111,10 +4591,16 @@ mod tests {
 
     /// The rule of the hooks for a commit, by what the session's file says of it: every commit
     /// that has no pass is a unit of the stop, and every commit that has no verdict and none
-    /// the repository proves is asked about again, at this stop or in its turn. A commit that
-    /// had no verdict in five attempts was a unit and was asked about no more (review V4
-    /// round 14, VD4R14-M-1).
+    /// the commit itself proves is asked about again, at this stop or in its turn. A commit
+    /// that had no verdict in five attempts was a unit and was asked about no more (review V4
+    /// round 14, VD4R14-M-1); then it took turns behind every commit with fewer attempts, and
+    /// three of those that the judge gave no verdict for kept it from ever being asked about
+    /// again (round 15, VD4R15-M-1).
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table of states, one order, and the property simulated over many stops"
+    )]
     fn a_commit_without_a_verdict_is_always_asked_about_again() {
         let id = |n: usize| format!("{n:040x}");
         let listed =
@@ -4123,14 +4609,14 @@ mod tests {
         for (state, unit, asked) in [
             (None, false, true),
             (Some("p"), false, false),
-            (Some("h"), true, false),
-            (Some("f"), true, false),
-            (Some("x:shallow"), true, false),
-            (Some("n0:r"), true, true),
-            (Some("n4:r"), true, true),
-            (Some("n5:r"), true, true),
-            (Some("n6:r"), true, true),
-            (Some("n4294967295:r"), true, true),
+            (Some("h:quiet"), true, false),
+            (Some("f:no-secrets"), true, false),
+            (Some("x:too large"), true, false),
+            (Some("n0@1:r"), true, true),
+            (Some("n4@9:r"), true, true),
+            (Some("n5@9:r"), true, true),
+            (Some("n6@9:r"), true, true),
+            (Some("n4294967295@9:r"), true, true),
         ] {
             let known: Vec<String> = state
                 .iter()
@@ -4140,21 +4626,36 @@ mod tests {
             assert_eq!(units[0].is_some(), unit, "{state:?}");
             assert_eq!(ask.len(), usize::from(asked), "{state:?}");
         }
-        // The order: never asked about, then the fewest attempts; and of those past five
-        // attempts one, the one with the fewest (the oldest of those).
+        // The order: of those past five attempts the one asked about least recently (the
+        // older of two), of those with fewer attempts the one asked about least recently,
+        // then what was never asked about, then the others with fewer attempts.
         let known: Vec<String> = [
-            (0, "n7:r"),
-            (1, "n5:r"),
-            (2, "n2:r"),
-            (3, "n5:r"),
-            (5, "n0:r"),
+            (0, "n7@9:r"),
+            (1, "n5@3:r"),
+            (2, "n2@8:r"),
+            (3, "n5@3:r"),
+            (5, "n0@2:r"),
             (6, "p"),
+            (7, "n4@8:r"),
         ]
         .iter()
         .map(|(n, said)| format!("{}:{said}", id(*n)))
         .collect();
-        let (units, ask) = sorted_commits(&listed(7), &known);
-        assert_eq!(ask, [(0, 4), (1, 5), (3, 2), (6, 1)]);
+        let (units, ask) = sorted_commits(&listed(8), &known);
+        let order: Vec<(usize, Option<u32>, bool)> = ask
+            .iter()
+            .map(|ask| (ask.at, ask.attempts, ask.reserved))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (1, Some(5), true),
+                (5, Some(0), true),
+                (4, None, false),
+                (2, Some(2), false),
+                (7, Some(4), false)
+            ]
+        );
         // each of the three that wait for their turn is a unit, and says so
         for (at, attempts) in [(0, 7), (1, 5), (3, 5)] {
             let said = match units[at].as_ref().and_then(|unit| unit.judged.as_ref()) {
@@ -4168,18 +4669,57 @@ mod tests {
                 )
             );
         }
-        // The turn passes on: with the asked one counted, each of the three comes round.
-        let mut known: Vec<String> = (0..3).map(|n| format!("{}:n5:r", id(n))).collect();
-        let mut turns = Vec::new();
-        for _ in 0..7 {
-            let (_, ask) = sorted_commits(&listed(3), &known);
-            let [(rank, at)] = ask[..] else {
-                panic!("{ask:?}")
-            };
-            turns.push(at);
-            known[at] = format!("{}:n{rank}:r", id(at));
+
+        // The property: every commit without a verdict is submitted at least once in as
+        // many stops as there are such commits, whatever the judge does. Here it never
+        // gives a verdict, for any commit or for its probe: the worst case, in which the
+        // asking of a stop ends after three asks that failed (those in their turn apart)
+        // and no attempt of the others counts. Four commits are past five attempts, five
+        // have fewer, six were never asked about.
+        let total = 15;
+        let mut known: Vec<String> = (0..4)
+            .map(|n| format!("{}:n{}@{}:r", id(n), 5 + n, n % 2))
+            .chain((4..9).map(|n| format!("{}:n1@1:r", id(n))))
+            .collect();
+        let mut last = vec![0_u64; total];
+        for stop in 2..120_u64 {
+            let (_, asks) = sorted_commits(&listed(total), &known);
+            let mut failed = 0;
+            for ask in asks {
+                if failed == FIRST_ASKS {
+                    break;
+                }
+                failed += usize::from(!ask.in_turn());
+                assert!(
+                    stop - last[ask.at] <= u64::try_from(total).unwrap() || last[ask.at] == 0,
+                    "commit {} waited {} stops",
+                    ask.at,
+                    stop - last[ask.at]
+                );
+                last[ask.at] = stop;
+                let attempts = ask.attempts.unwrap_or(0) + u32::from(ask.in_turn());
+                let line = format!("{}:n{attempts}@{stop}:r", id(ask.at));
+                match known
+                    .iter_mut()
+                    .find(|entry| entry.starts_with(&id(ask.at)))
+                {
+                    Some(entry) => *entry = line,
+                    None => known.push(line),
+                }
+            }
+            // nobody is waiting longer than the number of commits without a verdict
+            if stop > 20 {
+                for (at, asked) in last.iter().enumerate() {
+                    assert!(
+                        stop - asked < u64::try_from(total).unwrap(),
+                        "at stop {stop} commit {at} was last asked about at stop {asked}"
+                    );
+                }
+            }
         }
-        assert_eq!(turns, [0, 1, 2, 0, 1, 2, 0]);
+        // and of the four that take turns, each once in four stops
+        let turns: Vec<u64> = last[..4].to_vec();
+        assert!(turns.iter().all(|asked| 119 - asked < 4), "{turns:?}");
     }
 
     /// The rule of the hooks for what a stop names beside its verdict: each kind of thing in
@@ -4507,6 +5047,10 @@ mod tests {
     /// held or failed commit keeps the names of its rules (round 15, HR6-M-2), and a commit
     /// with no verdict any number of attempts (round 15, VD4R14-M-1: the count ended at 5).
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one list: every form of a line, and what is kept of a reason"
+    )]
     fn a_line_of_the_judged_file_is_an_id_and_an_answer() {
         let id = "a".repeat(40);
         for line in [
@@ -4514,24 +5058,32 @@ mod tests {
             "h",
             "f",
             "h:no-silent-suppression",
+            "h:|note patch_unverifiable unsupported file mode 160000",
             "f:no-secrets",
             "f:no-secrets,keep-the-tests;no-silent-suppression",
+            "f:no-secrets,+3;quiet|expired waiver 0 for rule quiet (+1 more)",
             "f:",
-            "n0:r",
-            "n5:the ranker: timed out",
-            "n6:r",
-            "n4294967295:r",
+            "n0@1:r",
+            "n5@12:the ranker: timed out",
+            "n6@18446744073709551615:r",
+            "n4294967295@2:r",
             "x:shallow",
         ] {
             assert!(is_judged_entry(&format!("{id}:{line}")), "{line}");
         }
         for line in [
             format!("{id}:u"),
-            format!("{id}:n4294967296:r"),
-            format!("{id}:n-1:r"),
-            format!("{id}:n+1:r"),
-            format!("{id}:n1"),
-            format!("{id}:nx:r"),
+            // no number of a stop: the form of the build before
+            format!("{id}:n5:r"),
+            format!("{id}:n4294967296@1:r"),
+            format!("{id}:n1@18446744073709551616:r"),
+            format!("{id}:n-1@1:r"),
+            format!("{id}:n+1@1:r"),
+            format!("{id}:n1@+1:r"),
+            format!("{id}:n1@:r"),
+            format!("{id}:n@1:r"),
+            format!("{id}:n1@1"),
+            format!("{id}:nx@1:r"),
             format!("{id}:y:r"),
             id.clone(),
             "HEAD:p".to_owned(),
@@ -4539,7 +5091,7 @@ mod tests {
         ] {
             assert!(!is_judged_entry(&line), "{line}");
         }
-        // the names of the rules of a commit, as its line keeps them and gives them back
+        // what is kept of a commit's reason, as its line keeps it and gives it back
         let rule = |id: &str, held: bool| hook::RuleOutcome {
             id: id.to_owned(),
             why: "w".to_owned(),
@@ -4548,31 +5100,66 @@ mod tests {
         };
         let both = [
             rule("no-secrets", false),
-            rule("a:b,c;d\n", false),
+            rule("a:b,c;d|e\n", false),
             rule("quiet", true),
         ];
-        assert_eq!(rule_ids(&both, true), "no-secrets,a_b_c_d_;quiet");
-        assert_eq!(rule_ids(&both[2..], false), "quiet");
-        assert_eq!(rule_ids(&[], true), "");
-        let kept = rules_kept("no-secrets,a_b_c_d_;quiet", false);
+        assert_eq!(kept_reason(&both, &[], true), "no-secrets,a_b_c_d_e_;quiet");
+        assert_eq!(kept_reason(&both[2..], &[], false), "quiet");
+        assert_eq!(kept_reason(&[], &[], true), "");
+        let names = |kept: &str, all_held: bool| -> Vec<(String, bool)> {
+            reason_kept(kept, all_held)
+                .0
+                .into_iter()
+                .map(|rule| (rule.id, rule.held))
+                .collect()
+        };
         assert_eq!(
-            kept.iter()
-                .map(|rule| (rule.id.as_str(), rule.held))
-                .collect::<Vec<_>>(),
-            [("no-secrets", false), ("a_b_c_d_", false), ("quiet", true)]
+            names("no-secrets,a_b_c_d_e_;quiet", false),
+            [
+                ("no-secrets".to_owned(), false),
+                ("a_b_c_d_e_".to_owned(), false),
+                ("quiet".to_owned(), true)
+            ]
         );
-        assert!(rules_kept("quiet", true).iter().all(|rule| rule.held));
-        assert_eq!(rules_kept("", false), Vec::new());
-        // bounded: eight names of each kind, sixty-four characters of each
+        assert!(names("quiet", true).iter().all(|(_, held)| *held));
+        assert_eq!(reason_kept("", false), (Vec::new(), Vec::new()));
+        // A hold for a note and a failure by an expired waiver are no rule: the first thing
+        // the judge said is kept, with the number of the others. Nothing was kept, and the
+        // later stops of the session named the commit with no reason (HR7-L-6).
+        let said = [
+            "note patch_unverifiable: unsupported file mode 160000 (a submodule); coverage cannot be verified\n".to_owned(),
+            "note other: x".to_owned(),
+        ];
+        let kept = kept_reason(&[], &said, false);
+        assert_eq!(
+            kept,
+            "|note patch_unverifiable: unsupported file mode 160000 (a submodule); coverage cannot be verified (+1 more)"
+        );
+        assert_eq!(
+            reason_kept(&kept, true),
+            (Vec::new(), vec![kept[1..].to_owned()])
+        );
+        assert_eq!(
+            kept_reason(&both[..1], &said[..1], true).split('|').next(),
+            Some("no-secrets")
+        );
+        // bounded: eight names of each kind and the number of the others, sixty-four
+        // characters of each name, a hundred of what the judge said
         let many: Vec<hook::RuleOutcome> = (0..20)
             .map(|n| rule(&format!("{n}{}", "r".repeat(100)), false))
             .collect();
-        let line = rule_ids(&many, true);
-        assert_eq!(line.split(',').count(), RULES_KEPT);
+        let line = kept_reason(&many, &["s".repeat(500)], true);
+        let (rules, words) = line.split_once('|').unwrap();
+        assert_eq!(rules.split(',').count(), RULES_KEPT + 1);
+        assert_eq!(rules.split(',').next_back(), Some("+12"));
         assert!(
-            line.split(',')
+            rules
+                .split(',')
+                .take(RULES_KEPT)
                 .all(|name| name.chars().count() == RULE_NAME_KEPT)
         );
+        assert_eq!(words.len(), SAID_KEPT_CHARS);
+        assert_eq!(names(rules, false).len(), RULES_KEPT + 1);
     }
 
     /// Third independent review of the hooks, HR3-M-3, and the fourth, HR4-L-3. A failure of
@@ -4582,77 +5169,120 @@ mod tests {
     /// the state says of the list is a digest and a count, and a state that names a list
     /// without its digest is no state.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one sequence of stops: what each remembers and forgets"
+    )]
     fn a_failure_that_is_gone_is_forgotten_and_no_answer_is() {
-        let unit = |holds: Holds, judged: Option<Judged>| TreeJudged {
-            what: "u".to_owned(),
-            judged,
-            holds,
+        let lines = |pairs: &[(&str, usize)]| -> Lines {
+            pairs
+                .iter()
+                .map(|(key, count)| ((*key).to_owned(), *count))
+                .collect()
         };
-        let fail = |words: &str| Judged::Fail {
-            rules: Vec::new(),
-            said: vec![words.to_owned()],
-        };
-        let digest =
-            |words: &str| hook::unit_failure(&unit(Holds::WhileNew, Some(fail(words)))).unwrap();
-        let looked = |id: &str, read: bool, failures: &[&str]| Looked {
+        // a tree whose uncommitted change was read, with nothing in its index
+        let looked = |id: &str, tree: Option<&[(&str, usize)]>| Looked {
             id: id.to_owned(),
-            read,
-            failures: failures.iter().map(|words| digest(words)).collect(),
+            tree: tree.map(lines),
+            index: Some(Lines::new()),
+            staged: Lines::new(),
         };
-        let entry = |id: &str, words: &str| format!("{id}/{}", digest(words));
+        let stop = |trees: Vec<Looked>| Judging {
+            trees,
+            ..Judging::default()
+        };
         let mut state = State {
             project: Some(project(Base::Commit(COMMIT.to_owned()))),
             ..State::default()
         };
         let mut judged = Vec::new();
-        let there = Judging {
-            trees: vec![looked("t1", true, &["a"])],
-            ..Judging::default()
+        // (what is remembered, in a fixed order: a stop writes what it saw last)
+        let kept = |state: &State| {
+            let mut all = state.blocked.clone();
+            all.sort();
+            all
         };
+        let there = stop(vec![looked("t1", Some(&[("a", 1), ("b", 2)]))]);
         remember(&mut state, &there, &mut judged);
         remember(&mut state, &there, &mut judged);
-        assert_eq!(state.blocked, [entry("t1", "a")]);
-        assert_eq!(blocked_keys(&state.blocked), [digest("a")]);
-        let unread = Judging {
-            trees: vec![looked("t1", false, &[])],
-            ..Judging::default()
-        };
-        remember(&mut state, &unread, &mut judged);
+        assert_eq!(kept(&state), ["t1/u/a:1", "t1/u/b:2"]);
+        // no verdict on the change: nothing is known of it, and nothing is forgotten
+        remember(&mut state, &stop(vec![looked("t1", None)]), &mut judged);
         assert_eq!(
-            state.blocked,
-            [entry("t1", "a")],
+            kept(&state),
+            ["t1/u/a:1", "t1/u/b:2"],
             "forgotten without a verdict"
         );
         assert!(judged.is_empty(), "{judged:?}");
         // Sixth independent review of the hooks, HR6-M-1: a stop that did not look at the
         // tree forgets nothing of it, whatever it found in another tree; and a failure in
-        // that other tree is remembered beside it.
-        let elsewhere = Judging {
-            trees: vec![looked("t2", true, &["b"])],
-            ..Judging::default()
-        };
-        remember(&mut state, &elsewhere, &mut judged);
+        // that other tree is remembered beside it, the same line as its own.
+        remember(
+            &mut state,
+            &stop(vec![looked("t2", Some(&[("a", 1)]))]),
+            &mut judged,
+        );
         remember(&mut state, &Judging::default(), &mut judged);
-        assert_eq!(state.blocked, [entry("t1", "a"), entry("t2", "b")]);
-        // the same failure in two trees is two: one tree found clean forgets its own alone
-        let both = Judging {
-            trees: vec![looked("t1", true, &["a"]), looked("t2", true, &["a"])],
+        assert_eq!(kept(&state), ["t1/u/a:1", "t1/u/b:2", "t2/u/a:1"]);
+        // Seventh, HR7-M-1: one line is repaired and the count of the other falls. What was
+        // seen is what is remembered: the line that is gone blocks when it comes back, and
+        // the other blocks when its count grows again.
+        remember(
+            &mut state,
+            &stop(vec![looked("t1", Some(&[("b", 1)]))]),
+            &mut judged,
+        );
+        assert_eq!(kept(&state), ["t1/u/b:1", "t2/u/a:1"]);
+        // What is staged. Its own line is remembered ("k": the tree was repaired, the index
+        // was not), and stays remembered while the index holds it, also at a stop where the
+        // tree's failure has the line again and the staged change has no line of its own; it
+        // goes when the index no longer holds it.
+        let staged = |index: &[(&str, usize)], own: &[(&str, usize)]| {
+            stop(vec![Looked {
+                id: "t1".to_owned(),
+                tree: Some(lines(&[("b", 1)])),
+                index: Some(lines(index)),
+                staged: lines(own),
+            }])
+        };
+        remember(&mut state, &staged(&[("k", 2)], &[("k", 2)]), &mut judged);
+        assert_eq!(kept(&state), ["t1/s/k:2", "t1/u/b:1", "t2/u/a:1"]);
+        remember(&mut state, &staged(&[("k", 1), ("b", 1)], &[]), &mut judged);
+        assert_eq!(kept(&state), ["t1/s/k:1", "t1/u/b:1", "t2/u/a:1"]);
+        // (no verdict on what is staged: kept as it is)
+        let unread = stop(vec![Looked {
+            index: None,
+            ..looked("t1", Some(&[("b", 1)]))
+        }]);
+        remember(&mut state, &unread, &mut judged);
+        assert_eq!(kept(&state), ["t1/s/k:1", "t1/u/b:1", "t2/u/a:1"]);
+        remember(&mut state, &staged(&[], &[]), &mut judged);
+        assert_eq!(kept(&state), ["t1/u/b:1", "t2/u/a:1"]);
+        // A tree found with nothing uncommitted has no such failure left, and neither has a
+        // tree that Git no longer lists: an entry of a removed tree stayed for the rest of
+        // the session (seventh, HR7-H-1). A tree this stop looked at is kept whatever the
+        // list says.
+        let listing = |clean: &[&str], listed: &[&str]| Judging {
+            clean: clean.iter().map(|id| (*id).to_owned()).collect(),
+            listed: Some(listed.iter().map(|id| (*id).to_owned()).collect()),
             ..Judging::default()
         };
-        remember(&mut state, &both, &mut judged);
-        assert_eq!(state.blocked, [entry("t1", "a"), entry("t2", "a")]);
-        let other_clean = Judging {
-            clean: vec!["t2".to_owned()],
-            ..Judging::default()
+        remember(&mut state, &listing(&[], &["t1", "t2", "t9"]), &mut judged);
+        assert_eq!(kept(&state), ["t1/u/b:1", "t2/u/a:1"]);
+        remember(&mut state, &listing(&["t2"], &["t1", "t2"]), &mut judged);
+        assert_eq!(kept(&state), ["t1/u/b:1"]);
+        let unlisted = Judging {
+            trees: vec![looked("t3", Some(&[("c", 1)]))],
+            ..listing(&[], &["t9"])
         };
-        remember(&mut state, &other_clean, &mut judged);
-        assert_eq!(state.blocked, [entry("t1", "a")]);
+        remember(&mut state, &unlisted, &mut judged);
+        assert_eq!(kept(&state), ["t3/u/c:1"]);
         // gone: forgotten. The failure of a commit is remembered with the commit, not here.
         let gone = Judging {
-            trees: vec![looked("t1", true, &[])],
+            trees: vec![looked("t3", Some(&[]))],
             commits: vec![
-                ("c".repeat(40), "f".to_owned()),
-                ("d".repeat(40), "n1:the ranker did not answer".to_owned()),
+                ("c".repeat(40), "f:no-secrets".to_owned()),
+                ("d".repeat(40), "n1@1:the ranker did not answer".to_owned()),
             ],
             ..Judging::default()
         };
@@ -4661,8 +5291,8 @@ mod tests {
         assert_eq!(
             judged,
             [
-                format!("{}:f", "c".repeat(40)),
-                format!("{}:n1:the ranker did not answer", "d".repeat(40))
+                format!("{}:f:no-secrets", "c".repeat(40)),
+                format!("{}:n1@1:the ranker did not answer", "d".repeat(40))
             ]
         );
         assert!(judged.iter().all(|entry| is_judged_entry(entry)));
@@ -4675,7 +5305,7 @@ mod tests {
         };
         remember(&mut state, &many, &mut judged);
         assert_eq!(judged.len(), 5_002);
-        assert_eq!(judged[0], format!("{}:f", "c".repeat(40)));
+        assert_eq!(judged[0], format!("{}:f:no-secrets", "c".repeat(40)));
         // what a state says of the list: a count with its digest, or neither
         state.judged_sha256 = tips_text(&judged).1;
         state.judged_count = judged.len();

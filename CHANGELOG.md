@@ -412,6 +412,49 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   - *State.* Schema `deep-diff-forge.hook-state.v6`: a remembered failure is kept with
     the working tree it is in. *New in the patch crate:* `JudgePatchError::Unmerged`.
 
+- **Round 15 of Vesper's review and a seventh independent review of the hooks: the turn of
+  a commit that waits is kept for it; a failure is its lines and a working tree is what it
+  is, not where it is; a session's state is changed by one hook at a time**
+  (`docs/reviews/vesper-v4-round15-report-20261115.md`, NO-GO on three mediums;
+  `docs/reviews/claude-independent-review-hooks-7-20261115.md`, NO-GO on one high that was
+  new with the round before; it found no stop that prints nothing while something is open).
+  - *Every commit without a verdict is submitted at least once in as many stops as there
+    are such commits* (VD4R15-M-1). The commit whose turn it was came last; three commits
+    in front of it that got no verdict, and a probe that got none, ended the asking of
+    every stop before it. Each stop now first asks about the commit that has waited
+    longest among those past five attempts, then about the one asked about least
+    recently among those with fewer, then about the rest. A run of the judge before those
+    two leaves five seconds for each. Lines of the judged file: `id:n<attempts>@<stop>:reason`.
+  - *A working tree is known by what it is* (VD4R15-M-2, HR7-H-1, HR7-L-2). A failure was
+    remembered with the tree's path. `git worktree move` made an unchanged failure block
+    twice; a tree made anew at the path of a removed one inherited "has already blocked"
+    and never blocked; two trees whose paths were cut to the same words shared one
+    identity. A linked tree is known by its administrative directory and the file
+    `commondir` in it; what is remembered of a tree Git no longer lists is forgotten.
+  - *A failure is its lines* (HR7-M-1). The identity of a failure was one digest over all
+    of its lines, so what was left of a failure blocked again when another part of it was
+    repaired. A stop blocks for a line that is new or whose count has grown, says which
+    lines are new and which stand, and remembers what it saw. A staged line that has
+    blocked stands for as long as the index holds it.
+  - *A session's state is changed by one hook at a time* (VD4R15-M-3, HR7-L-4). Every stop
+    takes the session's lock, the first too; a session-start hook takes it for its
+    recording; an advice hook writes under it, onto the state as it is then, only what it
+    owns. Two first stops both blocked for one failure; a late advice hook brought back a
+    failure a stop had forgotten.
+  - *Lows.* The lines of every stop are never cut, and every unit is named or counted
+    (HR7-L-1: a cut took "and 42 more commits fail."). That a failure stands in a tree the
+    stop did not look at is said at every stop (HR7-L-3). A working tree inside the
+    project's tree is a working tree of it, not a "nested repository left out" at every
+    stop (HR7-L-5). A commit held or failed for something that is no rule keeps the
+    judge's first words (HR7-L-6). Rule names on a line are whole, with the number of
+    those that had no room; "1 more working tree".
+  - *Stated.* A change that is stashed and brought back blocks three times: as the
+    change, as the stash's commit, and as the change that is back.
+  - *State.* Schema `deep-diff-forge.hook-state.v7` (a remembered failure is a line with
+    its tree and whether it is staged; the stops that wrote a missing verdict are
+    counted); a state of an earlier schema is not read. The session's lock file is
+    `session-<hash>.lock`.
+
 ### Changed
 
 - Path and shape weights are stated once, in `RiskSignal::weight`, and the scorer reads
