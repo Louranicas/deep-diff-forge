@@ -796,13 +796,17 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   repeated id or a field its kind does not read, or a ranking pair is not two distinct paths. `eval` prints `deep-diff-forge.eval.v0` and exits 7 when a case
   fails.
 
-  **Measured 2026-10-31, 34 cases** (14 ranking, 17 evidence, 3 findings; 11 declared misses):
+  **Measured 2026-11-14, 35 cases** (14 ranking, 18 evidence, 3 findings; 11 declared misses).
+  One evidence case was added when the code view was made to read Rust as the compiler's lexer
+  does: it holds what a nested block comment and a character literal with a long escape had
+  hidden from the Rust rules (seven items, all found; the published v0.8.3 binary misses four).
+  The 2026-10-31 measurement on 34 cases was precision 21 / 22 and recall 21 / 28:
 
   | Metric | Right / total | Floor |
   | --- | ---: | ---: |
   | ranking pairs | 12 / 15 | 80.0% |
-  | evidence precision | 21 / 22 | 95.4% |
-  | evidence recall | 21 / 28 | 75.0% |
+  | evidence precision | 28 / 29 | 96.5% |
+  | evidence recall | 28 / 35 | 80.0% |
   | findings verdicts | 33 / 33 | 100% |
 
   `crates/deep-diff-forge-cli/tests/eval.rs` holds these floors (the measured values) and fails
@@ -849,7 +853,7 @@ Whoever writes a patch also chooses its paths, so a path can lower a file's scor
 | `test_removed` | removed | `#[test]`; `def test…`; `it(`, `test(`, `describe(`; `func Test…` | +3 |
 | `check_suppressed` | added | `#[allow(`; `# noqa`, `# type: ignore`; `eslint-disable`, `@ts-ignore`; `//nolint` (read in comments) | +2 |
 
-Languages come from the extension, or a shebang for a file with none: Rust, Python, JS/TS, Go, shell (with `Dockerfile` and `Makefile`) and YAML. The scan is **lexical** (`"basis": "lexical"`): it blanks comments and strings, following block comments and triple-quoted strings across a hunk's lines, and matches tokens with word boundaries. Code that runs inside a string stays code, so quoting a fetch or a spawn does not hide it: `$(…)` and backticks in shell double quotes, `${…}` in JS template literals, and `{…}` in one-line Python f-strings, each scanned as code with its own strings, escapes and comments. It finds tokens; it does not prove a change safe, and code assembled at run time hides from it. A path cannot hide code: token evidence keeps its weight under `generated/` or `vendor/` (a test path counts half, except `test_removed`); the path-scoped `build_hook` follows the generated rule like every path signal.
+Languages come from the extension, or a shebang for a file with none: Rust, Python, JS/TS, Go, shell (with `Dockerfile` and `Makefile`) and YAML. The scan is **lexical** (`"basis": "lexical"`): it blanks comments and strings, following block comments and triple-quoted strings across a hunk's lines, and matches tokens with word boundaries. Rust is read as the compiler's own lexer reads it (nested block comments, character and byte literals with any escape, lifetimes, raw strings with any number of `#`, raw identifiers, literal suffixes), and a fuzz target holds the view to that lexer: no byte of a token that is code is blank. In 0.5.0 to 0.8.3 the view ended a Rust block comment at the first `*/` and lost step after a character literal such as `'\x41'`, and code after either was hidden from every Rust rule (the changelog has both). Limits that remain for Rust: a hunk that starts inside a string or a block comment is read as code from its first line, so a comment or a string opened above the hunk can still hide a line; a shebang line, which the compiler skips, is read as Rust; and two readings are those of editions 2021 and 2024, so that in code for editions 2015 and 2018 one line can put the view a quote out of step for the rest of a hunk (`cr"\"`, read as a raw C string, and `'r#r"\"`, read as a raw lifetime and the start of a string; the changelog has both). Code that runs inside a string stays code, so quoting a fetch or a spawn does not hide it: `$(…)` and backticks in shell double quotes, `${…}` in JS template literals, and `{…}` in one-line Python f-strings, each scanned as code with its own strings, escapes and comments. It finds tokens; it does not prove a change safe, and code assembled at run time hides from it. A path cannot hide code: token evidence keeps its weight under `generated/` or `vendor/` (a test path counts half, except `test_removed`); the path-scoped `build_hook` follows the generated rule like every path signal.
 `rank.v0` lists each file's `evidence` (`signal`, `address`, `side`, `line`, `basis`; at most 32, then `evidence_truncated: true`), and each outline hunk lists its `evidence` labels.
 
 Ties break on path, so the order is reproducible. Under `--cluster` the result is
@@ -948,9 +952,10 @@ The engine is hardened against:
 - hidden-content patches;
 - attacks on the daemon's transport and filesystem.
 
-Ten fuzz targets cover the parser, review JSON, daemon protocol, agent annotations, council
+Eleven fuzz targets cover the parser, review JSON, daemon protocol, agent annotations, council
 reports, the MCP and `rpc` stdio servers, the soundness of the structural diff's
-"formatting only" verdict, agent-findings verification and the code-evidence scanner. See
+"formatting only" verdict, agent-findings verification, the code-evidence scanner, and the
+Rust code view against the compiler's own lexer (no byte of a token that is code is blank). See
 [`SECURITY.md`](SECURITY.md) for the threat model.
 
 ## Review council and evidence gates

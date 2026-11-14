@@ -1,0 +1,7 @@
+m!('('r"\" unsafe "); m!("x"r"\" unsafe "); m!(1r"\" unsafe "); m!(1.0r"\" unsafe ");
+m!(1e+r"\" unsafe "); m!(0b1e-r"\" unsafe "); m!(1_000u8b'\'' , b'"'); m!(0x1e+r"\");
+m!(1.r"\"); m!(0..r"\"); m!(0b+r"\"); m!(xr"\" unsafe "); m!(rb"\" unsafe ");
+m!(0xbr"\" unsafe "); m!(0o7b'x'); m!(1.5e10b"\""); m!(9e-_3c"\""); m!(0.r#"x"#); m!(1.e5 'a');
+m!(r#fn "x" r#"y"# k#fn br#"z"# cr#"w"# b"v" c"u" 'a' b'b' 'c 'static r#1 br#x cr##y);
+m!(#"x"# ##"y"## ###); m!(r###"three "## two "# one "###suffix); m!("s"suffix 'c'suffix 1suffix);
+m!('ab' 'r#fn '1 '1a' 'a'b''' '' ' ' '\'' b''' b'ab' b'\\'x); unsafe { g() }

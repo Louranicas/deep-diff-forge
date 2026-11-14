@@ -6,6 +6,91 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Security
+
+- **Rust code after a nested block comment, or after a character literal with a long escape,
+  was hidden from every rule that reads Rust code** (found 2026-11-14; both reproduced on the
+  published v0.8.3 binary, each with a control). The Rust rules for `unsafe_added`,
+  `process_spawn` and `network_fetch`, and for `test_removed` on the removed side, read a
+  view of each line in which comments and literals are blank. That view misread two things
+  the compiler reads plainly, and what it took for a comment or a string left no evidence.
+  - *Block comments.* Rust nests them. The view ended a comment at the first `*/`, so after
+    `/* /* */` a `//` cut the line where, for the compiler, the comment is still open and the
+    code behind its last `*/` runs. Measured on the published v0.8.3 binary: a patch that
+    adds `/* /* */ // */ let _ = reqwest::blocking::get(u);` and
+    `/* /* */ // */ std::process::Command::new("sh").arg("-c").arg(u).status().ok();` to a
+    function scored 2 with no signal; the same two calls written plainly scored 9 with
+    `process_spawn` and `network_fetch`.
+  - *Character literals.* The view knew a literal by a closing quote two bytes on, or three
+    after a backslash. After `'\x41'`, `'\u{1F600}'` or any longer escape it was one quote
+    out of step: in `('\x41','"', "/*")` it took the `"` of `'"'` for the start of a string
+    and the `/*` of the real string for a comment that nothing closed, and the rest of the
+    hunk was blank. Measured on the published v0.8.3 binary: a new file with that line and an
+    `unsafe` block under it scored 4 with no `unsafe_added`; the same file without the line
+    scored 8 with it.
+  - *Since when.* Both readings are as old as the view: every release that has code
+    evidence, 0.5.0 to 0.8.3. Other languages are not affected: JavaScript, Go and C-like
+    comments do not nest, and no other language here has this form of literal.
+  - *The fix.* The Rust view no longer has rules of its own. It follows the compiler's lexer
+    (`rustc_lexer`) token by token, with that lexer's rule for where each token ends: block
+    comments nest, to any depth and over lines; a character or byte literal is read whole,
+    whatever its escape; a `'` before a name is a lifetime or a label; strings, byte strings
+    and C strings, and raw strings with any number of `#`, end where the lexer ends them, on
+    one line or over several; `r#fn` is a name, and no other letter before a `#` makes one
+    (`k#fn` is `k`, `#` and `fn`, as rustc 1.99.1 reads it before edition 2021; the lexer's
+    newer `k#name` token is in no edition of that compiler and is not followed); a literal's
+    suffix and a number take the letters that belong to them, so an `r` or a `b` before a
+    quote is a prefix only where the lexer says so; names past ASCII are read with the
+    lexer's own tables (Unicode 18.0.0). Where an edition decides, the view takes edition
+    2021 and later (`cr"\"` is a raw C string, `'r#name` a raw lifetime). What the lexer
+    calls unterminated, and what it closes as a character literal that no compiler accepts
+    (`'ab'`, one over a line end), is passed over whole and kept as text. The rule that a
+    hunk may start inside a string stays: once a string has run over a line end, the lines
+    after it are read both ways and what either reading finds code is code. One reading, the
+    one that resumes every such string, is the compiler's for text that starts in code; it
+    is now kept apart and never dropped, however many others there are. (A view that counts
+    comment depth can pile up more readings than it keeps: the oracle found a compiling text
+    on which that one was dropped while this was written.) Python, JavaScript and
+    TypeScript, Go, shell and YAML are read exactly as before.
+  - *How it is held.* A new fuzz target, `rust_code_view` (the eleventh), compares the view
+    with the compiler's lexer itself (`ra-ap-rustc_lexer` 0.184.0, a dependency of the fuzz
+    crate only, never of a crate that ships: the fuzz lock gains it and `unicode-properties`
+    0.1.5 and moves `unicode-ident` from 1.0.24 to 1.0.27, the Unicode 18.0.0 tables that
+    lexer needs; the workspace lock and the SBOM do not change), read as rustc 1.99.1 reads
+    it where that lexer is newer (its `k#name` token), for any text read as a file from its
+    first line: every byte of a token that is code must stand unchanged in the view, and
+    where the view has one reading, every byte of a comment and of a closed literal's text
+    must be blank. One seed runs the comparison for every character past ASCII, so the
+    view's tables cannot fall behind the lexer's unseen. Unit tests hold the rules above
+    with what the compiler does (rustc 1.99.1, editions 2015 to 2024; the two readings under
+    "Not closed" are those of 2021 and 2024 only). The corpus has 35 cases:
+    `evidence/rust-code-view-20261114` holds both hiding lines before a fetch, a spawn and
+    an `unsafe` block (seven items, all expected; the published v0.8.3 binary misses four of
+    them), so evidence precision is 28 of 29 (was 21 of 22) and recall 28 of 35 (was 21 of
+    28), with 11 declared as before.
+  - *What changes for a reader of `rank.v0`.* Rust code that was hidden is evidence now, so
+    a file can rank higher than it did. Measured against the published v0.8.3 binary: for
+    the patch of each of this repository's last 150 commits (375 Rust files among 1,067)
+    the output is the same byte for byte. One text is known to go the other way, in code
+    for editions 2015 and 2018 only: the raw lifetime under "Not closed".
+  - *Not closed.* A hunk is a fragment, and it is read as code from its first line, as
+    before: a block comment or a string opened above it, in another hunk or in unchanged
+    text the patch does not show, can still hide a line. A shebang first line, which the
+    compiler skips, is read as Rust. And two readings are those of editions 2021 and 2024,
+    so that in code for editions 2015 and 2018 one line can put the view a quote out of step
+    for the rest of a hunk:
+    - `cr"\"` is read as a raw C string, as editions 2021 and 2024 read it. Before, it is
+      the name `cr` and an ordinary string. 0.8.3 read it the same way; nothing changes.
+    - `'r#r"\"` is read as a raw lifetime and the start of an ordinary string, as editions
+      2021 and 2024 read it. Editions 2015 and 2018 read `'r`, `#` and a raw string, and so
+      did 0.8.3. This is a trade: a call after the newer form was hidden from 0.8.3 and is
+      found; a call after the older form was found by 0.8.3 and is hidden (measured: a
+      process spawn on such a line, score 8 with `process_spawn` on 0.8.3, score 4 with no
+      signal now; the newer form, 4 with no signal on 0.8.3 and 8 with `process_spawn` now).
+
+    As everywhere in the lexical scan, no evidence means no token was found, never that a
+    change is safe.
+
 ## [0.8.3] - 2026-11-11
 
 Tagged `v0.8.3` at `a74bf91` (2026-11-11 UTC), signed.

@@ -17,6 +17,11 @@ deep-diff-forge-graph = { path = "../crates/deep-diff-forge-graph", version = "0
 deep-diff-forge-patch = { path = "../crates/deep-diff-forge-patch", version = "0.8.3", features = ["json"] }
 deep-diff-forge-syntax = { path = "../crates/deep-diff-forge-syntax", version = "0.8.3" }
 libfuzzer-sys = "0.4"
+# The compiler's own lexer, as published for rust-analyzer: the oracle of `rust_code_view`. A
+# dependency of this crate only, never of one that ships. Its tables are Unicode 18.0.0 with
+# `unicode-ident` 1.0.26 or later and `unicode-properties` 0.1.5 (the crate refuses to build
+# when the two disagree), which is the version of the tables in the graph crate's `lexical.rs`.
+ra-ap-rustc_lexer = "0.184.0"
 serde_json = "1"
 
 [lints.rust]
@@ -93,6 +98,13 @@ bench = false
 [[bin]]
 name = "evidence_scan"
 path = "fuzz_targets/evidence_scan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rust_code_view"
+path = "fuzz_targets/rust_code_view.rs"
 test = false
 doc = false
 bench = false

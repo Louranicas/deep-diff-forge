@@ -1,0 +1,3 @@
+const S: &str = "never closed
+unsafe { g() } // \"
+fn h() {}

@@ -1,0 +1,9 @@
+m!('(a/ "b" unsafe);
+m!('(
+'); unsafe { g() }
+m!('(\
+x'); unsafe { g() }
+m!('(
+unsafe { g('x') }
+m!(b'(
+'r"\" unsafe "); let c = '

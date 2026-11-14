@@ -1331,6 +1331,25 @@ mod tests {
         assert_eq!(signals(&added("src/x.rs", &["#[test]"])), []);
     }
 
+    /// Until 2026-11-14 the Rust code view ended a block comment at the first `*/` and lost
+    /// step after a character literal with a long escape, so a removed test behind either was
+    /// not read (the published v0.8.3 binary reports nothing for these two hunks). The
+    /// compiler nests the comment and reads the literal whole, and so does the view now.
+    #[test]
+    fn a_removed_test_behind_a_nested_comment_or_a_long_escape_is_found() {
+        let cases: [(&[&str], u32); 2] = [
+            (&["/* /* */ // */ #[test]", "fn t() {}"], 2),
+            (&[r#"let _ = ('\x41','"', "/*");"#, "#[test]"], 3),
+        ];
+        for (lines, line) in cases {
+            let found: Vec<_> = file_evidence(&removed("src/x.rs", lines))
+                .iter()
+                .map(|e| (e.signal, e.side, e.line))
+                .collect();
+            assert_eq!(found, [(S::TestRemoved, Side::Old, line)], "{lines:?}");
+        }
+    }
+
     #[test]
     fn ci_privilege_needs_a_workflow_path() {
         assert_eq!(

@@ -1,0 +1,5 @@
+fn f<'é, 'ℹ>(x: &'é str, y: &'ℹ str) { unsafe { g(x, y) } }
+m!(ér"\" unsafe "); m!(a·r"\" unsafe "); m!(→r"\"); m!(·r"\"); m!('→ x'); m!('é x');
+m!(😀r"\" unsafe "); m!(a😀b😀r"\" unsafe "); m!('😀 x'); m!('😀a'); m!(1😀r"\" unsafe ");
+m!(r#é r#→ k#é '՘ 'r#՘ ՘r"\" unsafe "); m!(a‍r"\" unsafe "); m!(1.é 1.→ 1é"\"");
+let ñandú = 'ñ'; let 名前 = "名前 // text"; let _ = '名'; unsafe { g() }

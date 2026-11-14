@@ -1,0 +1,80 @@
+//! An ordinary file: every common kind of comment, literal and name.
+#![allow(dead_code)]
+
+use std::collections::BTreeMap;
+use std::fmt::{self, Display};
+
+/// A point on a grid. `"quoted"` words and a `'c'` in a doc comment are text.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Point<'a, T: 'a + Copy> {
+    pub x: T,
+    pub y: T,
+    name: &'a str,
+}
+
+/* A block comment
+   over lines, with a /* nested */ one and a "quote" in it. */
+impl<'a, T: 'a + Copy + Display> Display for Point<'a, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} = ({}, {})", self.name, self.x, self.y)
+    }
+}
+
+pub const GREETING: &str = "hello, \"world\"\n\ttab \\ backslash";
+pub const BYTES: &[u8] = b"\x00\xff \"quoted\" /* not a comment */";
+pub const RAW: &str = r#"a "raw" string with // no comment"#;
+pub const RAW2: &[u8] = br##"hashes "# inside"##;
+pub const CONT: &str = "one line \
+                        continued";
+pub const MULTI: &str = "first
+second // still the string
+third";
+pub const CHARS: [char; 9] = ['a', '\n', '\'', '\\', '"', '/', '*', '\x41', '\u{1F600}'];
+pub const BYTE_CHARS: [u8; 4] = [b'a', b'\'', b'\\', b'\xff'];
+pub const NUMBERS: (u32, f64, u64, f32, u8, i64) = (1_000, 1.5e-3, 0xFF_u64, 2.0f32, 0b1010u8, 0o77);
+
+pub fn longest<'a, 'b: 'a>(x: &'a str, y: &'b str) -> &'a str {
+    'outer: for (i, c) in x.chars().enumerate() {
+        for d in y.chars() {
+            if c == d && i > 0 {
+                break 'outer;
+            }
+        }
+    }
+    if x.len() >= y.len() { x } else { y }
+}
+
+pub fn r#match(r#type: u32) -> u32 {
+    let range = 0..r#type; // a range, not a float
+    let half = 1.max(r#type / 2); /* a method on a number */
+    range.len() as u32 + half
+}
+
+macro_rules! table {
+    ($($name:ident => $value:expr),* $(,)?) => {{
+        let mut map = BTreeMap::new();
+        $( map.insert(stringify!($name), $value); )*
+        map
+    }};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn longest_is_longest() {
+        assert_eq!(longest("ab", "c"), "ab");
+        let t = table!(a => 1, b => 2);
+        assert_eq!(t["a"], 1);
+    }
+}
+
+fn main() {
+    let p = Point { x: 1, y: 2, name: "p" };
+    println!("{p} {} {}", GREETING.len(), r#match(4));
+    let v: Vec<u32> = vec![7];
+    let first = unsafe { *v.as_ptr() };
+    std::process::Command::new("true").status().ok();
+    let _ = first;
+}
