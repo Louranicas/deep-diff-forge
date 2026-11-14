@@ -407,6 +407,68 @@ pub fn outline(review: &SealedReview, page: &Page) -> Result<Value, ViewError> {
     }))
 }
 
+/// The evidence labels of the hunks a view lists, in whatever order it lists them: one
+/// [`deep_diff_forge_graph::HunkLabels`] for each file, kept until the listing's last hunk of
+/// that file. A file's hunks asked for in reverse, or the hunks of two files in turn, are then
+/// served from one reading of what each hunk comes into, and a request costs the lines of the
+/// hunks it lists and at most once more the lines of their files (review 2026-11-15,
+/// VLF4-M-1: with a reader that was made again when the file changed and that read a run of
+/// touching hunks from its start for each hunk asked out of order, 8,000 one-line hunks of a
+/// new file by address in reverse took 6.2 s against 0.13 s by path).
+struct UnitLabels<'a> {
+    files: &'a [ReviewFile],
+    /// The last place in the listing that names each file.
+    last: std::collections::HashMap<usize, usize>,
+    kept: std::collections::HashMap<usize, deep_diff_forge_graph::HunkLabels<'a>>,
+    /// The lines the readers let go so far had read, and how many readers were made.
+    #[cfg(test)]
+    work: (usize, usize),
+}
+
+impl<'a> UnitLabels<'a> {
+    fn new(files: &'a [ReviewFile], units: &[(usize, usize)]) -> Self {
+        Self {
+            files,
+            last: units
+                .iter()
+                .enumerate()
+                .map(|(position, &(f, _))| (f, position))
+                .collect(),
+            kept: std::collections::HashMap::new(),
+            #[cfg(test)]
+            work: (0, 0),
+        }
+    }
+
+    /// The labels of hunk `h` of file `f`, the unit at `position` of the listing.
+    fn of(
+        &mut self,
+        position: usize,
+        f: usize,
+        h: usize,
+    ) -> Vec<deep_diff_forge_graph::EvidenceSignal> {
+        let file = &self.files[f];
+        let labels = self.kept.entry(f).or_insert_with(|| {
+            #[cfg(test)]
+            {
+                self.work.1 += 1;
+            }
+            deep_diff_forge_graph::HunkLabels::new(file)
+        });
+        let signals = labels.of(h);
+        if self.last.get(&f) == Some(&position) {
+            let done = self.kept.remove(&f);
+            #[cfg(test)]
+            {
+                self.work.0 += done.map_or(0, |labels| labels.lines_read());
+            }
+            #[cfg(not(test))]
+            drop(done);
+        }
+        signals
+    }
+}
+
 /// `deep-diff-forge.review-hunks.v0`: the selected hunks, verbatim, each with its address, path,
 /// ranges and heading. A hunk too large for the page is continued at a line (`line_offset`,
 /// `complete: false`); a single line is never cut, so the only page over budget is one whose
@@ -430,13 +492,10 @@ pub fn hunks(
     let mut budget = page.max_bytes - ENVELOPE_BYTES;
     let mut out = Vec::new();
     let mut next = None;
-    let mut labels: Option<(usize, deep_diff_forge_graph::HunkLabels)> = None;
+    let mut labels = UnitLabels::new(files, &units);
     for (position, &(f, h)) in units.iter().enumerate().skip(start_unit) {
         let (file, hunk) = (&files[f], &files[f].patch_twin.hunks[h]);
-        if labels.as_ref().is_none_or(|(of, _)| *of != f) {
-            labels = Some((f, deep_diff_forge_graph::HunkLabels::new(file)));
-        }
-        let signals = labels.as_mut().map(|(_, l)| l.of(h)).unwrap_or_default();
+        let signals = labels.of(position, f, h);
         let offset = if position == start_unit {
             start_line
         } else {
@@ -925,6 +984,84 @@ mod tests {
         assert_eq!(all["hunks"][1]["evidence"], json!(["process_spawn"]));
         let ranked = deep_diff_forge_graph::RankedFile::scored(&r.files()[0]);
         assert_eq!(ranked.evidence.len(), 1);
+    }
+
+    /// Hunks asked for by address in any order, the hunks of two files in turn, are labelled
+    /// as by path, from one reader for each file and for the work of file order (review
+    /// 2026-11-15, VLF4-M-1: a reader made again whenever the file changed, reading a run of
+    /// hunks from its first for each hunk asked out of order, took 6.2 s for the 8,000 hunks
+    /// of a new file by address in reverse, against 0.13 s by path). Counted, not timed.
+    #[test]
+    fn hunks_by_address_in_any_order_are_read_once_for_each_file() {
+        use std::fmt::Write as _;
+        const HUNKS: usize = 400;
+        let mut text = String::new();
+        for name in ["a", "b"] {
+            let _ = write!(text, "--- /dev/null\n+++ b/src/{name}.rs\n");
+            for h in 0..HUNKS {
+                let line = match h % 10 {
+                    3 => format!("let {name}{h} = 1; /*"),
+                    4 => format!("// */ std::process::Command::new(\"{name}{h}\");"),
+                    _ => format!("let {name}{h} = 2;"),
+                };
+                let _ = write!(text, "@@ -0,0 +{},1 @@\n+{line}\n", h + 1);
+            }
+        }
+        let r = review(&text);
+        let files = r.files();
+        let in_order: Vec<(usize, usize)> = (0..2)
+            .flat_map(|f| (0..HUNKS).map(move |h| (f, h)))
+            .collect();
+        let in_turn_reversed: Vec<(usize, usize)> =
+            (0..HUNKS).rev().flat_map(|h| [(0, h), (1, h)]).collect();
+        let read = |units: &[(usize, usize)]| {
+            let mut labels = UnitLabels::new(files, units);
+            let mut got: Vec<_> = units
+                .iter()
+                .enumerate()
+                .map(|(position, &(f, h))| ((f, h), labels.of(position, f, h)))
+                .collect();
+            got.sort();
+            assert!(
+                labels.kept.is_empty(),
+                "every reader is let go at its last hunk"
+            );
+            (labels.work, got)
+        };
+        let (work, labelled) = read(&in_order);
+        // One reader for each file; each line once, and all but each file's last once more.
+        assert_eq!(work, (2 * (2 * HUNKS - 1), 2));
+        let (in_turn, the_same) = read(&in_turn_reversed);
+        assert_eq!(in_turn, work, "the two files in turn, reversed");
+        assert!(the_same == labelled, "labels differ by the order asked");
+        let spawns = labelled.iter().filter(|(_, labels)| !labels.is_empty());
+        assert_eq!(spawns.count(), 2 * HUNKS / 10);
+        // And through the view: by address, the two files in turn and reversed, each hunk has
+        // the head it has by path.
+        let whole = page(MAX_MAX_BYTES, None);
+        let paths = Selection::Paths(vec!["src/a.rs".into(), "src/b.rs".into()]);
+        let by_path = hunks(&r, &paths, &whole).unwrap();
+        let listed = by_path["hunks"].as_array().unwrap();
+        assert_eq!(listed.len(), 2 * HUNKS);
+        let address = |unit: &Value| unit["address"].as_str().unwrap().to_owned();
+        let (a, b) = listed.split_at(HUNKS);
+        let asked: Vec<String> = a
+            .iter()
+            .zip(b)
+            .rev()
+            .flat_map(|(a, b)| [address(a), address(b)])
+            .collect();
+        let by_address = hunks(&r, &Selection::Addresses(asked.clone()), &whole).unwrap();
+        let answered = by_address["hunks"].as_array().unwrap();
+        assert_eq!(answered.len(), asked.len());
+        for (unit, wanted) in answered.iter().zip(&asked) {
+            let same = listed.iter().find(|u| address(u) == *wanted).unwrap();
+            assert_eq!(unit, same);
+        }
+        assert_eq!(
+            answered[2 * HUNKS - 10]["evidence"],
+            json!(["process_spawn"])
+        );
     }
 
     /// Hunks by address come back in the order asked, verbatim; by path, every hunk of the file.

@@ -1,7 +1,7 @@
 // DDF review route: DDF-R12, DDF-R13. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-graph--src--risk
-use crate::evidence::{Evidence, EvidenceSignal, file_evidence};
+use crate::evidence::{Evidence, EvidenceSignal, file_evidence_marked};
 use deep_diff_forge_core::{FileStatus, PatchLineKind, ReviewFile};
 
 /// A deterministic, explainable reason a file is ranked where it is.
@@ -96,8 +96,14 @@ pub struct Assessment {
 /// (rounded up), except a removed test, which counts in full.
 #[must_use]
 pub fn assess_file(file: &ReviewFile) -> Assessment {
+    assess_file_marked(file).0
+}
+
+/// [`assess_file`], and beside its evidence, item for item, whether the reading every release
+/// up to 0.8.3 had finds the item: what the bounded list of a ranked file goes by.
+pub(crate) fn assess_file_marked(file: &ReviewFile) -> (Assessment, Vec<bool>) {
     let (path_score, mut signals) = score_path_and_shape(file);
-    let evidence = file_evidence(file);
+    let (evidence, released) = file_evidence_marked(file);
     let test = is_test(&file.path);
     let mut score = path_score;
     for signal in EvidenceSignal::ALL {
@@ -110,11 +116,14 @@ pub fn assess_file(file: &ReviewFile) -> Assessment {
             };
         }
     }
-    Assessment {
-        score,
-        signals,
-        evidence,
-    }
+    (
+        Assessment {
+            score,
+            signals,
+            evidence,
+        },
+        released,
+    )
 }
 
 /// The score and signals from everything but code evidence.

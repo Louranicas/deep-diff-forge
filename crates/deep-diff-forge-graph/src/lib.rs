@@ -17,7 +17,7 @@ mod risk;
 
 pub use evidence::{
     EVIDENCE_BASIS, Evidence, EvidenceSignal, HunkLabels, MAX_EVIDENCE_PER_FILE, Side,
-    file_evidence, hunk_signals,
+    file_evidence, file_evidence_released, hunk_signals,
 };
 pub use rank::{RankedFile, rank, sort_ranked};
 pub use risk::{

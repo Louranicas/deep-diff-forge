@@ -13,7 +13,7 @@
 //!   order ([`ScanState`]); a hunk that starts inside one is read as code.
 //! - Hunks with no line of the file between them are one text: the hunks of a file the patch
 //!   creates, and a hunk that begins where the one before it ends. Such a hunk is read once
-//!   more from what the hunk before left open ([`carried_view`]), beside the readings that
+//!   more from what the hunk before left open (`carried_view`), beside the readings that
 //!   start it as code.
 //! - A string still open at the end of a line (outside Rust) is read as code from its quote,
 //!   and is also carried to the next line of the hunk. That line is read twice, as code and as
@@ -24,7 +24,7 @@
 //!   scan without carried strings keeps; it can still leave that plain reading in a block
 //!   comment or triple string, as any misread quote could before strings were carried.
 //! - Rust has two readings, and a rule that reads code is asked of each on its own
-//!   ([`code_views`]): what either finds is found, and their bytes are never mixed. The first
+//!   (`code_views`): what either finds is found, and their bytes are never mixed. The first
 //!   is the shared scanner's, [`code_view`] with [`Language::Rust`], exactly as every release
 //!   from 0.5.0 to 0.8.3 had it: it ends a block comment at the first `*/` and knows a
 //!   character literal by a closing quote two or three bytes on. The second,
@@ -887,7 +887,7 @@ pub fn has_token(text: &str, token: &str) -> bool {
 /// What the lines of one side of a hunk have left open, in each reading of them: the state of
 /// [`code_views`]. The readings share nothing; each goes on from what it left open itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Readings {
+pub(crate) struct Readings {
     /// The shared scanner's state. For Rust this is the reading of 0.8.3.
     legacy: ScanState,
     /// The state of the lexer reading. Only Rust has one.
@@ -904,7 +904,7 @@ pub struct Readings {
 /// starts in code, which finds what the first hides after a nested block comment or a
 /// character literal with a long escape. Where both give the same view it is returned once.
 #[must_use]
-pub fn code_views(language: Language, line: &str, state: &mut Readings) -> Vec<String> {
+pub(crate) fn code_views(language: Language, line: &str, state: &mut Readings) -> Vec<String> {
     let legacy = code_view(language, line, &mut state.legacy);
     if language != Language::Rust {
         return vec![legacy];
@@ -920,7 +920,7 @@ pub fn code_views(language: Language, line: &str, state: &mut Readings) -> Vec<S
 /// What the hunks before a hunk have left open for it, when no line of the file stands between
 /// them: the state of [`carried_view`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Carried {
+pub(crate) struct Carried {
     /// Rust: the state of the lexer reading.
     lexer: RustLexerState,
     /// Every other language: the state of the shared scanner.
@@ -934,7 +934,7 @@ pub struct Carried {
 /// the whole file; for every other language it is [`code_view`]. It is asked beside the
 /// readings that start the hunk as code ([`code_views`]), never in their place.
 #[must_use]
-pub fn carried_view(language: Language, line: &str, state: &mut Carried) -> String {
+pub(crate) fn carried_view(language: Language, line: &str, state: &mut Carried) -> String {
     if language == Language::Rust {
         rust_lexer_view(line, &mut state.lexer)
     } else {
@@ -947,7 +947,7 @@ pub use rust::State as RustLexerState;
 /// The code bytes of one Rust line as the compiler's lexer reads it (the `rust` module of this
 /// file), and in `state` what the line leaves open for the next. Comments and the text of
 /// literals are blank; the view is as long as the line, or ends where a line comment starts.
-/// It is one of the two readings of Rust ([`code_views`]); the other is [`code_view`].
+/// It is one of the two readings of Rust (`code_views`); the other is [`code_view`].
 #[must_use]
 pub fn rust_lexer_view(line: &str, state: &mut RustLexerState) -> String {
     rust::code_view(line, state)

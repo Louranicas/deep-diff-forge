@@ -1,5 +1,5 @@
 use crate::evidence::{Evidence, MAX_EVIDENCE_PER_FILE};
-use crate::risk::{RiskSignal, assess_file};
+use crate::risk::{RiskSignal, assess_file_marked};
 use deep_diff_forge_core::{FileStatus, ReviewFile};
 
 /// A file placed in the ranked review stream. Built only by [`RankedFile::scored`], so its
@@ -18,9 +18,9 @@ pub struct RankedFile {
     /// The code evidence behind the [`RiskSignal::Code`] signals, at most
     /// [`MAX_EVIDENCE_PER_FILE`] items, in the order they stand in the file. When more were
     /// found, the list holds first the items the reading every release up to 0.8.3 had finds
-    /// ([`Evidence::released`]), as many as fit, and then, in the room that is left, items only
-    /// a further reading finds: with 32 or more released items it is exactly the list 0.8.3
-    /// printed, and it never holds fewer of them.
+    /// ([`crate::evidence::file_evidence_released`]), as many as fit, and then, in the room
+    /// that is left, items only a further reading finds: with 32 or more released items it
+    /// is exactly the list 0.8.3 printed, and it never holds fewer of them.
     pub evidence: Vec<Evidence>,
     /// More evidence was found than `evidence` holds (the score counts all of it).
     pub evidence_truncated: bool,
@@ -30,9 +30,9 @@ impl RankedFile {
     /// Assess `file` and place it.
     #[must_use]
     pub fn scored(file: &ReviewFile) -> Self {
-        let assessment = assess_file(file);
+        let (assessment, released) = assess_file_marked(file);
         let evidence_truncated = assessment.evidence.len() > MAX_EVIDENCE_PER_FILE;
-        let evidence = listed(assessment.evidence);
+        let evidence = listed(assessment.evidence, &released);
         Self {
             path: file.path.clone(),
             status: file.status,
@@ -45,28 +45,35 @@ impl RankedFile {
 }
 
 /// The items a ranked file lists: all of them when they fit the bound, in the order they stand
-/// in the file. Otherwise released items first ([`Evidence::released`]), as many as fit, then
+/// in the file. Otherwise released items first (`released` says of each item whether the
+/// reading every release up to 0.8.3 had finds it), as many as fit, then
 /// items only a further reading finds in the room that is left; the items kept stay in the
 /// order of the file. A further reading can add an item to the list but never takes the place
 /// of one 0.8.3 listed. (The score and the signals count every item, listed or not.)
-fn listed(mut evidence: Vec<Evidence>) -> Vec<Evidence> {
+fn listed(evidence: Vec<Evidence>, released: &[bool]) -> Vec<Evidence> {
     if evidence.len() <= MAX_EVIDENCE_PER_FILE {
         return evidence;
     }
-    let released = evidence.iter().filter(|item| item.released).count();
-    let mut room_released = released.min(MAX_EVIDENCE_PER_FILE);
+    let mut room_released = released
+        .iter()
+        .filter(|released| **released)
+        .count()
+        .min(MAX_EVIDENCE_PER_FILE);
     let mut room_further = MAX_EVIDENCE_PER_FILE - room_released;
-    evidence.retain(|item| {
-        let room = if item.released {
-            &mut room_released
-        } else {
-            &mut room_further
-        };
-        let keep = *room > 0;
-        *room -= usize::from(keep);
-        keep
-    });
     evidence
+        .into_iter()
+        .zip(released)
+        .filter_map(|(item, released)| {
+            let room = if *released {
+                &mut room_released
+            } else {
+                &mut room_further
+            };
+            let keep = *room > 0;
+            *room -= usize::from(keep);
+            keep.then_some(item)
+        })
+        .collect()
 }
 
 /// Rank the review by descending risk score, with a deterministic path
@@ -128,9 +135,24 @@ mod tests {
         let lines = |ranked: &RankedFile| -> Vec<u32> {
             ranked.evidence.iter().map(|item| item.line).collect()
         };
-        let ranked = RankedFile::scored(&hidden_then_plain(1, 32, 0));
+        // Of the items listed, which the reading of 0.8.3 finds.
+        let released = |file: &ReviewFile, ranked: &RankedFile| -> Vec<bool> {
+            let (all, marks) = crate::evidence::file_evidence_marked(file);
+            let mark = |item| {
+                all.iter()
+                    .position(|found| found == item)
+                    .map(|at| marks[at])
+            };
+            ranked
+                .evidence
+                .iter()
+                .map(|item| mark(item).unwrap())
+                .collect()
+        };
+        let file = hidden_then_plain(1, 32, 0);
+        let ranked = RankedFile::scored(&file);
         assert_eq!(lines(&ranked), (2..=33).collect::<Vec<_>>());
-        assert!(ranked.evidence.iter().all(|item| item.released));
+        assert!(released(&file, &ranked).iter().all(|released| *released));
         assert!(ranked.evidence_truncated);
         for signal in [EvidenceSignal::NetworkFetch, EvidenceSignal::ProcessSpawn] {
             assert!(
@@ -148,17 +170,17 @@ mod tests {
         let ranked = RankedFile::scored(&hidden_then_plain(2, 40, 3));
         assert_eq!(lines(&ranked), (3..=34).collect::<Vec<_>>());
         // All of it fits: every item, in the order of the file.
-        let ranked = RankedFile::scored(&hidden_then_plain(1, 31, 0));
+        let file = hidden_then_plain(1, 31, 0);
+        let ranked = RankedFile::scored(&file);
         assert_eq!(lines(&ranked), (1..=32).collect::<Vec<_>>());
-        assert!(!ranked.evidence[0].released && !ranked.evidence_truncated);
+        assert!(!released(&file, &ranked)[0] && !ranked.evidence_truncated);
         // Room for one more: every released item, and the first of the others, in file order.
-        let ranked = RankedFile::scored(&hidden_then_plain(1, 31, 2));
+        let file = hidden_then_plain(1, 31, 2);
+        let ranked = RankedFile::scored(&file);
         assert_eq!(lines(&ranked), (1..=32).collect::<Vec<_>>());
         assert!(ranked.evidence_truncated);
-        assert_eq!(
-            ranked.evidence.iter().filter(|item| item.released).count(),
-            31
-        );
+        let marks = released(&file, &ranked);
+        assert_eq!(marks.iter().filter(|released| **released).count(), 31);
     }
 
     #[test]

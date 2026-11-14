@@ -58,11 +58,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
       code, is kept apart and never dropped.
     - Python, JavaScript and TypeScript, Go, shell and YAML have one reading, exactly as
       before.
-  - *No answer is lower than 0.8.3's, by construction and by test.* The first reading is
-    0.8.3's own, so every item 0.8.3 reports for a patch is reported, and every file's score
-    is at least what it was (each signal found adds a weight of at least 1). This is why the
-    old reading stays: where a hunk starts inside a string or a comment opened above it,
-    neither reading is the compiler's, and each finds code the other does not. Measured: a
+  - *In the ranking, nothing 0.8.3 found is missing, by construction and by test.* The first
+    reading is 0.8.3's own, so every item 0.8.3 reports for a patch is reported, and every
+    file's score is at least what it was (each signal found adds a weight of at least 1).
+    This is why the old reading stays: where a hunk starts inside a string or a comment
+    opened above it, neither reading is the compiler's, and each finds code the other does
+    not. Measured: a
     function added below a list kept in a string that holds `crates/*/*/Cargo.toml` (to a
     reader that starts in code: `/*`, `/*`, `*/`) scores 6 with `process_spawn` in the
     reading of 0.8.3 and 2 with nothing in the lexer reading alone, and `git diff` writes
@@ -92,6 +93,29 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     3,162 did). Held by a rank test, the same at the JSON level, a
     property test (400 generated files of 40 to 120 changed lines: the list 0.8.3 would
     print is contained in the list printed) and a rule of the `evidence_scan` fuzz target.
+
+    So the claim is this, and no more: for every patch, the signals, the score and the
+    listed items (at the bound of 32 a file) of the ranking are at least those of 0.8.3. An
+    answer that is bounded in bytes (the MCP summary, a protocol line, a page) reaches its
+    bound sooner when it says more, and says so as before (a summary with its omitted count,
+    error 8, a cursor). Three cases measured against the published v0.8.3 binary (second
+    independent review, 2026-11-15):
+    - *The MCP summary.* `rank_patch` answers a ranking over 256 KiB with
+      `rank-summary.v0`, the highest-ranked files that fit. For a patch of 1,500 small Rust
+      files, one of which has fetches only the lexer reading finds, 0.8.3 lists 1,094 files
+      (`omitted_files` 406) and this build 1,082 (418): twelve files 0.8.3 listed, with their
+      items, are among the omitted. And a ranking that is 147 bytes under the cap on 0.8.3
+      (1,096 files, answered whole) is over it here and comes back as a summary of 1,094.
+    - *A protocol line.* An answer over the 80 MiB line cap is error 8. A `diff.rank` answer
+      of 83,885,992 bytes on 0.8.3 (115,864 files; constructed to stand under the cap by a
+      few hundred bytes) is 83,886,151 bytes here, and so error 8.
+    - *A page.* The first page of `--outline` (64 KiB unless asked otherwise) for a new Rust
+      file of 313 one-line hunks holds all 313 on 0.8.3; here it holds 312 and a cursor,
+      because 150 of the hunks now carry a label. Nothing is lost to a reader that follows
+      the cursor.
+
+    `--rank --json` on the command line has no bound in bytes. Nothing was built for these
+    three bounds: a count could be filled with the items of 0.8.3 first, bytes cannot.
   - *How the lexer reading is held.* A new fuzz target, `rust_code_view` (the eleventh),
     compares it with the compiler's lexer itself (`ra-ap-rustc_lexer` 0.184.0, a dependency
     of the fuzz crate only, never of a crate that ships: the fuzz lock gains it and
@@ -108,14 +132,26 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     binary misses four of them), so evidence precision is 28 of 29 (was 21 of 22) and
     recall 28 of 35 (was 21 of 28), with 11 declared as before.
   - *What changes for a reader of `rank.v0`.* Rust code that was hidden is evidence now, so
-    a file can rank higher than it did; nothing ranks lower. Three things 0.8.3 missed are
-    found: code after a nested block comment, code after a character literal with a long
+    a file's score can be higher than it was, and no file's score is lower. A file's place
+    in the ranking can fall, because another file's score rose (measured: of two files in
+    one patch, the one 0.8.3 ranks first is second here, behind a file whose two hidden
+    calls are found now). Three things 0.8.3 missed are found: code after a nested block
+    comment, code after a character literal with a long
     escape, and code after `'r#r"\"` written for editions 2021 and 2024 (0.8.3 read that
     form as editions 2015 and 2018 do, and still does in its reading, so code after the
     older form is found as before). For the patch of each of this repository's last 150
     commits (375 Rust files among 1,067) the output is the same byte for byte. Rust lines
     are read twice: two megabytes of ordinary Rust added as one hunk rank in 0.16 s where
     0.8.3 takes 0.12 s, with the same peak memory.
+  - *The Rust API of the crates.* Nothing public changes or goes, and what is added cannot
+    break a caller (`Evidence`, `Assessment` and every released function keep their shape).
+    `deep-diff-forge-graph` gains `HunkLabels` (the evidence labels of a file's hunks, asked
+    in any order; the daemon's views use it), `file_evidence_released` (for each item of
+    `file_evidence`, whether the reading of 0.8.3 finds it; the fuzz target holds the
+    bounded list with it) and, in `lexical`, `rust_lexer_view` with its state
+    `RustLexerState` (the fuzz targets hold it to the compiler's lexer). `file_evidence`,
+    `hunk_signals`, `assess_file` and `RankedFile::scored` return what this entry and the
+    next describe.
   - *Not closed.* A hunk is a fragment, and both readings start it as code. From a start
     that is not known (a block comment or a string opened above the hunk, in another hunk
     or in unchanged text the patch does not show), the readings are 0.8.3's and the
@@ -159,13 +195,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     by their one reading. It is a further reading, never a replacement (and at the bound of
     a file's printed list what only it finds is listed after the items of 0.8.3, like what
     only the lexer reading finds). The readings that
-    start the hunk as code are asked as before, so here too no answer is lower than 0.8.3's,
-    and a hunk that goes on from no other is read exactly as before.
+    start the hunk as code are asked as before, so here too no score is lower than 0.8.3's
+    and no signal or listed item of the ranking is missing, and a hunk that goes on from no
+    other is read exactly as before.
   - *How it is held.* Unit tests hold each form, with what `git apply --check -v` says to it
     recorded beside them, and the negative (one unseen line between two hunks: no join). A
     property test holds, for 4,500 generated files whose hunks have every form and any
     numbers, that no hunk has fewer items than when it is read alone and that the per-hunk
-    labels are the file's, asked in any order. A rule in the `evidence_scan` fuzz target
+    labels are the file's, asked in order, backwards, one at a time, or at random with
+    repeats. A test counts the lines read for the 2,000 hunks of a run (a file the patch
+    creates, hunks that touch by their numbers, appended hunks): the same count in file
+    order, reversed and shuffled, twice the lines less the last hunk's; a hunk asked again
+    costs its own lines; and a hunk that touches no other costs its own lines whatever its
+    file holds. A rule in the `evidence_scan` fuzz target
     holds that a stretch of Rust cut into hunks at lines the input chooses (a file the patch
     creates; the end of a file that exists, its later hunks at any old position) has every
     item its lexer reading has as one text. Measured: of 3,287 patch files (this
@@ -182,19 +224,44 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     from the end of the hunk before it that ends its file; that reading can add an item and
     takes none away (measured on the `-U0` patches of this repository's last 150 commits,
     672 such hunks among 5,159: no answer changes). The outline and the hunks view label
-    hunks as the rank does. For that the daemon's views now ask a file's hunks through one
-    reader, so that a run of hunks is read once and not once for each of them: this changes
-    how the labels are computed, not what they are for a patch Git wrote.
+    hunks as the rank does. What each hunk comes into from the hunks before it is worked out
+    once for a file, in file order, and kept for the request, so hunks can be asked for in
+    any order, by address or by path, the hunks of several files in turn: a request reads
+    the lines of the hunks it lists and at most once more the lines of their files, and a
+    hunk that touches no other costs its own lines whatever its file holds. Measured, best
+    of two: `review.hunks` for all 16,000 one-line hunks of a new file, by address, takes
+    0.25 s in file order, reversed and shuffled, as on 0.8.3; for 20,000 touching hunks of a
+    file that exists, 0.38 s in each order against 0.36 s on 0.8.3. (A reader that read a
+    run again from its first hunk for each hunk asked out of order took 25 to 52 s and 93 to
+    109 s for those requests reversed or shuffled: found in review on 2026-11-15, before any
+    release.) This changes how the labels are computed, not what they are for a patch Git
+    wrote.
   - *Not closed.* The parser still accepts hunk positions Git would not write and reports
     the header's line numbers: Git places a hunk by its context and takes the numbers as a
     hint (`@@ -9,4 +1,5 @@` is applied at line 9, and an appended hunk's lines are reported
-    at the numbers its header gives). For hunks with old lines the join goes by those
-    numbers: two that touch in the file while their positions say they do not are read
-    apart, and the reverse together. Hunks listed out of the file's order, which Git
-    accepts, are not joined. A hunk with unseen lines above it is still started as code,
-    whatever is open there. And `git apply --unidiff-zero` puts a hunk of added lines only
-    where its numbers say and not at the end of the file: for a patch applied that way the
-    reading from the end of the file is one more reading that the file does not have.
+    at the numbers its header gives). What Git must do with a hunk is read; what depends on
+    a number that can be false, or on a fact the patch does not show, is not, in two forms.
+    For hunks with old lines the join goes by the numbers given: two that touch in the file
+    while their positions say they do not are read apart, and the reverse together. And a
+    hunk of added lines only goes on from the last earlier hunk whose last line is a changed
+    line; below a hunk that ends in a context line it is joined only by its number. Git
+    appends it there whatever its number says when that context line is the last line of
+    the file, which the patch does not show (`@@ -2,2 +2,3 @@` ending in a context line,
+    then `@@ -9,0 +9,1 @@`, on a file of three lines: "Hunk #2 succeeded at 5 (offset -4
+    lines)"; a comment opened in the first hides code in the second, score 7 with no
+    evidence here as on 0.8.3; with the true number, `@@ -3,0 +5,1 @@`, the two are read
+    together and the spawn is found). Hunks listed out of the file's order, which Git
+    accepts, are not joined. A path named by more than one section is read section by
+    section (release 0.8.4 refuses such a patch): plain `git apply` applies the second
+    section to the result of the first, so a comment opened at the end of one hides code in
+    the next, as on 0.8.3. A hunk with unseen lines above it is still started as code,
+    whatever is open there. And two ways of applying other than plain `git apply` place
+    hunks differently. `git apply --unidiff-zero` puts a hunk of added lines only where its
+    numbers say and not at the end of the file: for a patch applied that way the reading
+    from the end of the file is one more reading that the file does not have.
+    `git apply --allow-overlap` applies two hunks that share a context line, which plain
+    `git apply` refuses: what the first opens above the shared line is open in the second
+    below it, and they are not joined.
 
 ## [0.8.3] - 2026-11-11
 

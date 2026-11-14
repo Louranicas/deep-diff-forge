@@ -26,7 +26,8 @@ use deep_diff_forge_graph::lexical::{
     Language, RustLexerState, ScanState, code_view, has_token, rust_lexer_view,
 };
 use deep_diff_forge_graph::{
-    EvidenceSignal, MAX_EVIDENCE_PER_FILE, RankedFile, Side, file_evidence, hunk_signals,
+    Evidence, EvidenceSignal, MAX_EVIDENCE_PER_FILE, RankedFile, Side, file_evidence,
+    file_evidence_released, hunk_signals,
 };
 use libfuzzer_sys::fuzz_target;
 use std::fmt::Write as _;
@@ -88,8 +89,13 @@ fuzz_target!(|data: &[u8]| {
         assert!(ranked.evidence.len() <= MAX_EVIDENCE_PER_FILE);
         let all = file_evidence(file);
         assert_eq!(ranked.evidence.len(), all.len().min(MAX_EVIDENCE_PER_FILE));
-        let released = || all.iter().filter(|e| e.released);
-        let listed = || ranked.evidence.iter().filter(|e| e.released);
+        // Which items the reading of 0.8.3 finds is said beside the list, item for item.
+        let marks = file_evidence_released(file);
+        assert_eq!(marks.len(), all.len());
+        let of_0_8_3: Vec<&Evidence> =
+            all.iter().zip(&marks).filter(|(_, m)| **m).map(|(e, _)| e).collect();
+        let released = || of_0_8_3.iter().copied();
+        let listed = || ranked.evidence.iter().filter(|e| of_0_8_3.contains(e));
         assert_eq!(listed().count(), released().count().min(MAX_EVIDENCE_PER_FILE));
         assert!(
             listed().zip(released()).all(|(listed, found)| listed == found),
