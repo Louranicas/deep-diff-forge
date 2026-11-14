@@ -441,8 +441,8 @@ bounded form.** What it holds to:
   verdict gives that stays the same from one stop to the next (its evidence is a hunk's
   address and a line number, which change when the file is edited above). So a finding
   that is removed and replaced by another under the same rule in the same file between
-  two stops is not told apart: the stop says FAIL STANDS, and says in that message what
-  "stands" means. The limit reaches one turn: a line that was gone at any stop that
+  two stops is not told apart: the stop says that the failure stands, and says in a line
+  of that message what "stands" means, whatever heads the message. The limit reaches one turn: a line that was gone at any stop that
   looked is forgotten. The post-tool advice, which is keyed by the text of a line, does
   show the new finding.
 - **The memory of failures is bounded, and nothing leaves it in silence.** A session keeps
@@ -452,7 +452,15 @@ bounded form.** What it holds to:
   of them (the largest changes that the stop is not looking at first): it stands
   unchanged and blocks as a whole on any change, and the block says that it is not all
   new. Only with more than 2,048 failing changes is any memory given up, and the stop at
-  which that happens says for how many.
+  which that happens says for how many. What a failure is remembered by is not what two
+  verdicts of one stop are compared by: which of the staged lines the working tree's
+  failure has too, and which lines of a failure that has grown are new, is asked line by
+  line whatever their number. It was asked of the digest, which covers no single line: past
+  256 lines every partial `git add` of an unchanged failure blocked again. The lines kept
+  for a staged change (they have blocked as its own, and the tree's failure has them too
+  now) are shortened into a digest of everything that has blocked for it, and kept while
+  that can be checked against what the index holds; they were let go with no word. Where
+  such a digest cannot be kept, the stop says so.
 - **A session's state is changed by one hook at a time.** Every stop holds a lock
   (`flock`) on a file beside the session's state, named from the session's id, from before
   it reads the state until it has written it; so does the stop that is the session's

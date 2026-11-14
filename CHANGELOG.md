@@ -516,6 +516,50 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   - *State.* Schema `deep-diff-forge.hook-state.v8` (a v7 state is not read: the entries
     of what has blocked have another form, and trees other identities).
 
+- **Round 17 of Vesper's review and a ninth independent review of the hooks: two verdicts
+  are compared by their lines, not by what is remembered of them; the tree a stop is in is
+  judged first also when it is a linked one; an ask that was made is written down.**
+  - *Staging a part of a large failure does not block again (HR9-M-1; also in the round
+    before).* Which of the index's failing lines the working tree's failure has too was
+    asked of the tree's failure as it is remembered. Past 256 lines that is one digest, and
+    a digest covers no single line: after a failure of 257 files had blocked, `git add` of
+    one of them blocked again as "Staged changes", and every further partial `git add`
+    once more. The two verdicts of a stop are compared line by line whatever their number;
+    the digest is only how a large failure is remembered between stops.
+  - *The tree a stop is in comes first (VD4R17-L-1).* The project's tree was read and
+    judged first whatever the stop was in. From a linked working tree with a slow main
+    tree, the stop's own change had about five seconds and was UNJUDGED at every such
+    stop. The tree of the stop's directory is read and judged first, the project's tree
+    after it, and the second is read only when the first has its verdicts.
+  - *What is kept for a staged change is kept as a digest too (HR9-L-1).* Over the bound
+    of 2,048 lines, the lines kept for a staged change (they have blocked as its own; the
+    tree's failure has them again) were let go with no word, and the staged failure,
+    untouched in the index, blocked a second time when the tree was repaired again. They
+    become one digest of everything that has blocked for that staged change, kept while a
+    stop can check it against what the index holds; where it cannot be kept, the stop says
+    in how many working trees what is staged may block once more.
+  - *An ask that was made is written down (HR9-L-2).* With about three seconds of judging
+    left the commit whose turn it was was submitted and answered "no verdict", and the
+    stop wrote nothing and said "not asked at this stop for lack of time"; a session
+    whose stops all came to their commits like that asked about the same commit every
+    time. An ask the judge was run for is written down with its reason whatever time is
+    left after it; "not asked" is said only of a commit the judge was not run for.
+  - *Two sentences where they belong (HR9-L-3).* What "stands" means for a change that is
+    not committed is a line of every message in which something of such a failure stands
+    or stands beside what is new, whatever heads it; it was part of the head FAIL STANDS
+    alone. A failure that was remembered by its lines and grows past 256 has its new lines
+    told apart in the block; it was a plain "FAIL" of all of it.
+  - *Stated.* With no birth time, whole-second times and reused inode numbers, a tree
+    removed and made again within one second can be taken for the old one, and the same
+    failing line in it does not block (README named only the harmless direction). A
+    repository with more than 256 working trees: what a stop says, and that it is never
+    silent. The sentences for memory that could not be kept: which of them a repository of
+    256 working trees or fewer cannot reach.
+  - *State.* The schema is still `deep-diff-forge.hook-state.v8`: the entries are the
+    same kinds, and a `k` entry can now be a digest, which the build before forgets at the
+    next stop that looks (it then says nothing of it: do not go back to that build in the
+    middle of a session).
+
 ### Changed
 
 - Path and shape weights are stated once, in `RiskSignal::weight`, and the scorer reads

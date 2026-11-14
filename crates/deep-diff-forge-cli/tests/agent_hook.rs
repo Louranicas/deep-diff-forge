@@ -6889,71 +6889,138 @@ fn the_sessions_own_change_is_judged_before_other_trees_are_looked_at() {
     );
 }
 
-/// Eighth independent review of the hooks, HR8-L-1, at the edge it was found at. A stop
-/// that comes to its commits with only a few seconds left (Git was slow: here a stand-in
-/// that sleeps once) must not write down an ask it did not make. The commit whose turn it
-/// was got "what is left less five seconds" as its time, which was nothing: the judge was
-/// not started for it, and the session's file said it had been asked for the seventh time.
-/// Whatever the stop has time for, the file and the judge's log agree, commit by commit:
-/// a line changes only for a commit the judge was shown at that stop.
-#[test]
-fn an_ask_that_was_not_made_is_not_written_down() {
-    let scratch = Scratch::new("hook-ask-not-made");
-    let root = repository(&scratch);
-    let (script, log) = reading_judge(&scratch);
-    start(&root, "s");
-    secret(&root, "k.rs");
-    commit_all(&root, "a key");
-    let key = git(&root, &["rev-parse", "HEAD"]).trim().to_owned();
-    // the key has no verdict six times, at stops where another commit gets one: it waits
-    // for its turn from then on
-    std::fs::write(scratch.join("judge.flaky"), "7\n").unwrap();
-    for stop in 1..=6 {
-        std::fs::write(root.join(format!("fine{stop}.rs")), "fn f() {}\n").unwrap();
-        commit_all(&root, "harmless");
-        allowed(&stop_from(&root, "s", &script));
+/// A session with three commits that have no verdict, for the stops that come to their
+/// commits late: `a` and `b` have had more than five attempts and take turns, one a stop
+/// (`b` was asked about longest ago); `c` has had one. The judge never answers for any of
+/// them, and from now on takes a second and a half for every patch. Gives the full id of
+/// each with the file it changes.
+fn three_commits_with_no_verdict(
+    root: &Path,
+    scratch: &Scratch,
+    judge: &Path,
+) -> Vec<(String, &'static str)> {
+    std::fs::write(scratch.join("judge.flaky"), "999\n").unwrap();
+    start(root, "s");
+    let mut commits = Vec::new();
+    for name in ["ka.rs", "kb.rs"] {
+        secret(root, name);
+        commit_all(root, name);
+        commits.push((git(root, &["rev-parse", "HEAD"]).trim().to_owned(), name));
     }
-    assert!(
-        judged_lines()[&key].starts_with("n6@"),
-        "{:?}",
-        judged_lines()
-    );
-    // and a second commit with no verdict, asked about once
-    unjudgeable(&root, "odd.rs");
-    let odd = git(&root, &["rev-parse", "HEAD"]).trim().to_owned();
-    allowed(&stop_from(&root, "s", &script));
+    // five stops count an attempt for both (the judge answers its probe); then each has
+    // its turn once
+    for _ in 0..7 {
+        allowed(&stop_from(root, "s", judge));
+    }
+    secret(root, "kc.rs");
+    commit_all(root, "kc.rs");
+    commits.push((git(root, &["rev-parse", "HEAD"]).trim().to_owned(), "kc.rs"));
+    allowed(&stop_from(root, "s", judge));
     let written = judged_lines();
-    assert!(written[&odd].starts_with("n1@"), "{written:?}");
-    assert!(written[&key].starts_with("n7@"), "{written:?}");
+    // (`a` had its turn again at the stop that first asked about `c`: `b` is next)
+    assert!(
+        written[&commits[0].0].starts_with("n7@")
+            && written[&commits[1].0].starts_with("n6@")
+            && written[&commits[2].0].starts_with("n1@"),
+        "{written:?}"
+    );
+    std::fs::write(scratch.join("judge.sleep"), "1.5\n").unwrap();
+    commits
+}
 
-    // The slow stop: the first thing it asks of Git takes 35.5 seconds, so it comes to its
-    // commits with between three and five of its 41 seconds left.
+/// One stop that comes to its commits `late` seconds after it began, because Git is slow
+/// (a stand-in that sleeps once, in the last call before the commits are asked about): the
+/// stop's decision, the files of the patches the judge was shown at it, in order, and the
+/// session's file of judged commits before and after it.
+fn late_stop(
+    root: &Path,
+    scratch: &Scratch,
+    judge: &Path,
+    log: &Path,
+    late: &str,
+) -> (
+    Value,
+    Vec<String>,
+    std::collections::BTreeMap<String, String>,
+    std::collections::BTreeMap<String, String>,
+) {
     let flag = scratch.join("git.sleep");
-    std::fs::write(&flag, "35.5\n").unwrap();
+    std::fs::write(&flag, format!("{late}\n")).unwrap();
     let slow = git_with(
-        &scratch,
+        scratch,
         "slow-git",
         &format!(
-            "if mv '{flag}' '{flag}.used' 2>/dev/null; then sleep \"$(cat '{flag}.used')\"; fi",
+            "case \" $* \" in *\" --topo-order \"*) if mv '{flag}' '{flag}.used' 2>/dev/null; then sleep \"$(cat '{flag}.used')\"; fi;; esac",
             flag = flag.display()
         ),
     );
-    let before = shown(&log).len();
-    let decision = stop_with_path(&slow, &root, "s", &script);
+    let before = judged_lines();
+    let shown_before = shown(log).len();
+    let decision = stop_with_path(&slow, root, "s", judge);
     assert!(!flag.exists(), "the stand-in Git was not used");
-    let submitted = shown(&log)[before..].to_vec();
-    let after = judged_lines();
-    for (id, file) in [(&key, "k.rs"), (&odd, "odd.rs")] {
+    (
+        decision,
+        shown(log)[shown_before..].to_vec(),
+        before,
+        judged_lines(),
+    )
+}
+
+/// What the eighth and the ninth independent review ask of a stop that comes to its
+/// commits late (HR8-L-1, HR9-L-2), in both directions and commit by commit: the session's
+/// file says a commit was asked about at this stop exactly when the judge was shown its
+/// patch at this stop.
+fn written_is_what_was_asked(
+    commits: &[(String, &'static str)],
+    submitted: &[String],
+    before: &std::collections::BTreeMap<String, String>,
+    after: &std::collections::BTreeMap<String, String>,
+    decision: &Value,
+) {
+    for (id, file) in commits {
         let asked = submitted.iter().any(|shown| shown == file);
         assert_eq!(
-            after[id] != written[id],
+            after[id] != before[id],
             asked,
             "{file}: written down as {} (before: {}), and the judge was shown {submitted:?}: {decision}",
             after[id],
-            written[id]
+            before[id]
         );
-        // one that was not asked says so, and keeps what it had
-        if !asked {
+    }
+}
+
+/// Eighth independent review of the hooks, HR8-L-1, and the ninth, HR9-L-2, at the edge
+/// they were found at: a stop that comes to its commits with under four seconds of its
+/// judging left, and a judge that takes a second and a half. The commit whose turn it is
+/// is submitted; the judge answers "no verdict"; under three seconds are left then.
+///
+/// - The eighth review's build did not start the judge (its time was "what is left less
+///   five seconds") and wrote the commit down as asked.
+/// - The ninth review's build ran the judge, wrote nothing, and said "not asked at this
+///   stop for lack of time": so the commit kept its turn, and a session whose stops all
+///   come to their commits like this asked about the same commit at every stop.
+///
+/// An ask the judge was run for is written down, whatever time is left after it: at the
+/// second such stop it is the other commit's turn.
+#[test]
+fn an_ask_is_written_down_when_it_was_made_and_only_then() {
+    let scratch = Scratch::new("hook-ask-made");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    let commits = three_commits_with_no_verdict(&root, &scratch, &script);
+    let turns = [commits[1].1, commits[0].1];
+    let mut first_asked = Vec::new();
+    for stop in 1..=2 {
+        // 41 seconds of judging, and Git takes 37 of them
+        let (decision, submitted, before, after) =
+            late_stop(&root, &scratch, &script, &log, "37.0");
+        written_is_what_was_asked(&commits, &submitted, &before, &after, &decision);
+        assert!(
+            !submitted.is_empty(),
+            "stop {stop}: the stop came to its commits with no time at all (a machine too slow for this test): {decision}"
+        );
+        // the commit that was not reached says so, and keeps what it had
+        if !submitted.iter().any(|file| file == "kc.rs") {
             assert!(
                 decision
                     .to_string()
@@ -6961,6 +7028,293 @@ fn an_ask_that_was_not_made_is_not_written_down() {
                 "{decision}"
             );
         }
+        first_asked.push(submitted[0].clone());
+    }
+    // the turn moves on: `b`, then `a`
+    assert_eq!(first_asked, turns, "the same commit was asked about twice");
+}
+
+/// The other two edges of a stop that comes to its commits late (ninth independent review
+/// of the hooks, the table under HR9-L-2). With under three seconds left no commit is
+/// asked about and nothing is written: each is said not to have been asked. With over
+/// seven seconds the commit whose turn it is and the one with fewer attempts are both
+/// asked about, and both are written down.
+#[test]
+fn a_stop_with_no_time_asks_nothing_and_one_with_seven_seconds_asks_both() {
+    let scratch = Scratch::new("hook-ask-edges");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    let commits = three_commits_with_no_verdict(&root, &scratch, &script);
+    // under two seconds of judging left
+    let (decision, submitted, before, after) = late_stop(&root, &scratch, &script, &log, "39.2");
+    written_is_what_was_asked(&commits, &submitted, &before, &after, &decision);
+    assert_eq!(submitted, Vec::<String>::new(), "{decision}");
+    assert_eq!(before, after);
+    assert!(
+        decision
+            .to_string()
+            .contains("not asked at this stop for lack of time"),
+        "{decision}"
+    );
+    // over seven seconds left: the turn of `b`, then `c`
+    let (decision, submitted, before, after) = late_stop(&root, &scratch, &script, &log, "33.5");
+    written_is_what_was_asked(&commits, &submitted, &before, &after, &decision);
+    assert!(
+        submitted.len() >= 2 && submitted[0] == commits[1].1 && submitted[1] == commits[2].1,
+        "{submitted:?}: {decision}"
+    );
+}
+
+/// Review V4 round 17, VD4R17-L-1, as reproduced. The session began in the project's main
+/// working tree and its directory is a linked working tree now; both have a change. The
+/// project's tree was read and judged first whatever the stop was in, so a slow run there
+/// left the stop's own tree about five seconds, and it was UNJUDGED at every such stop. The
+/// tree the stop is in comes first; the project's tree is judged after it.
+#[test]
+fn the_tree_a_stop_is_in_is_judged_before_the_projects_tree() {
+    let scratch = Scratch::new("hook-own-tree-first");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    let linked = scratch.join("linked");
+    git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "side",
+            linked.to_str().unwrap(),
+        ],
+    );
+    start(&root, "s");
+    secret(&root, "main.rs");
+    secret(&linked, "linked.rs");
+    blocked(&stop_from(&linked, "s", &script));
+    let submitted: Vec<String> = shown(&log)
+        .into_iter()
+        .filter(|file| Path::new(file).extension().is_some_and(|kind| kind == "rs"))
+        .collect();
+    assert_eq!(submitted, ["linked.rs", "main.rs"]);
+    // from the project's own tree the project's tree is the one the stop is in
+    start(&root, "from-main");
+    let before = shown(&log).len();
+    blocked(&stop_from(&root, "from-main", &script));
+    assert_eq!(shown(&log)[before..], ["main.rs".to_owned()]);
+
+    // The slow case: the judge takes a minute for the main tree's patch and six seconds
+    // for the linked tree's. The linked tree, which the stop is in, gets its verdict and
+    // blocks; the main tree's run is ended when its time is up and is said to have no
+    // verdict.
+    std::fs::write(
+        root.join("main.rs"),
+        "const KEY: &str = \"SECRET\"; // SLOWMAIN\n",
+    )
+    .unwrap();
+    std::fs::write(
+        linked.join("linked.rs"),
+        "const KEY: &str = \"SECRET\"; // SLOWLINKED\n",
+    )
+    .unwrap();
+    let slow = scratch.join("slow-judge");
+    write_program(
+        &slow,
+        &format!(
+            "#!/bin/sh\npatch=; prev=\nfor a in \"$@\"; do if [ \"$prev\" = --patch ]; then patch=\"$a\"; fi; prev=\"$a\"; done\nif [ -n \"$patch\" ] && grep -q '^+.*SLOWMAIN' \"$patch\"; then sleep 60; fi\nif [ -n \"$patch\" ] && grep -q '^+.*SLOWLINKED' \"$patch\"; then sleep 6; fi\nexec '{}' \"$@\"\n",
+            script.display()
+        ),
+    );
+    start(&root, "slow");
+    let began = std::time::Instant::now();
+    let reason = blocked(&stop_from(&linked, "slow", &slow)).to_owned();
+    assert!(
+        began.elapsed() < std::time::Duration::from_secs(44),
+        "{:?}",
+        began.elapsed()
+    );
+    let top = |tree: &Path| std::fs::canonicalize(tree).unwrap();
+    assert!(
+        reason.contains(&format!("{}: FAIL\n", uncommitted_in(&top(&linked))))
+            && reason.contains(&format!("{}: UNJUDGED\n", uncommitted_in(&top(&root)))),
+        "{reason}"
+    );
+}
+
+/// Ninth independent review of the hooks, HR9-M-1, as reproduced: 257 failing files have
+/// blocked; then one of them is staged, as it is; then two more; then all. With more than
+/// 256 lines every partial `git add` blocked again, as "Staged changes", for files that had
+/// not changed and had already blocked (the staged lines were compared with the tree's
+/// failure as it is remembered, which past 256 lines is one mark and covers no single
+/// line). Staging does not make a failure block again, whatever its size. And HR9-L-3,
+/// the second part: when the failure then grows by two files, the block says which are new
+/// and that the others stand; it was a plain "FAIL" of all 259.
+#[test]
+fn staging_a_part_of_a_large_failure_does_not_block_again() {
+    let scratch = Scratch::new("hook-stage-part");
+    let root = repository(&scratch);
+    let (script, _) = listing_judge(&scratch);
+    start(&root, "s");
+    std::fs::create_dir(root.join("g")).unwrap();
+    for file in 0..257 {
+        secrets(&root, &format!("g/k{file}.rs"), 1);
+    }
+    blocked(&stop_from(&root, "s", &script));
+    let stands = |row: &str| {
+        let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: FAIL STANDS. ")
+                && !said.contains("Staged changes in ")
+                && !said.contains("could not be kept"),
+            "{row}: {said}"
+        );
+    };
+    stands("nothing staged");
+    git(&root, &["add", "g/k1.rs"]);
+    stands("one of the 257 staged");
+    git(&root, &["add", "g/k2.rs", "g/k3.rs"]);
+    stands("two more staged");
+    git(&root, &["add", "--all"]);
+    stands("all staged");
+    git(&root, &["restore", "--staged", "g/k5.rs"]);
+    stands("one taken out of the index again");
+    // The failure grows by two files. It is remembered by a digest (257 lines), so the
+    // block is for all of it and says that it is not all new.
+    secrets(&root, "g/new-a.rs", 1);
+    secrets(&root, "g/new-b.rs", 1);
+    let reason = blocked(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        reason.contains("A failure here has blocked before and is not what it was")
+            && !reason.contains("New at this stop"),
+        "{reason}"
+    );
+    stands("after the block");
+}
+
+/// Ninth independent review of the hooks, HR9-L-3, the second part: a failure of 256 lines
+/// is remembered by its lines; it grows by two files, past the number of lines that are
+/// kept one by one. The block was a plain "FAIL" of all 258, with no word that 256 of them
+/// had been said: the new verdict was folded into a digest before it was compared. The
+/// lines are compared one by one whatever their number, so the block says which are new
+/// and that the others stand.
+#[test]
+fn a_failure_that_grows_past_the_lines_kept_says_what_is_new() {
+    let scratch = Scratch::new("hook-grows-past");
+    let root = repository(&scratch);
+    let (script, _) = listing_judge(&scratch);
+    start(&root, "s");
+    std::fs::create_dir(root.join("g")).unwrap();
+    for file in 0..256 {
+        secrets(&root, &format!("g/k{file}.rs"), 1);
+    }
+    blocked(&stop_from(&root, "s", &script));
+    secrets(&root, "g/new-a.rs", 1);
+    secrets(&root, "g/new-b.rs", 1);
+    let reason = blocked(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        reason.contains("New at this stop:\n")
+            && reason.contains("Stands beside it, as said before")
+            && reason.contains("g/new-a.rs")
+            && reason.contains("g/new-b.rs")
+            && !reason.contains("is not what it was"),
+        "{reason}"
+    );
+    assert!(allowed(&stop_from(&root, "s", &script)).starts_with("deep-diff-forge: FAIL STANDS. "));
+}
+
+/// Ninth independent review of the hooks, HR9-L-3, the first part. What "stands" means for
+/// a change that is not committed (the judge names the same rules on the same paths as
+/// many times; the hook does not know whether they are the same lines) was said under the
+/// head FAIL STANDS alone. A failure that stands is the same thing under any head: here
+/// the stop's head is HOLD, because the session also has a commit the judge holds.
+#[test]
+fn what_stands_means_is_said_under_every_head() {
+    const MEANS: &str = "Of a change that is not committed, \"stands\" and \"has blocked before\" mean: the judge names the same rules on the same paths as it did then, as many times or fewer. Whether they are the same lines of those files the hook does not know.";
+    let scratch = Scratch::new("hook-stands-means");
+    let root = repository(&scratch);
+    let (script, _) = listing_judge(&scratch);
+    start(&root, "s");
+    secrets(&root, "k.rs", 1);
+    let first = blocked(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        !first.contains(MEANS),
+        "nothing has blocked before: {first}"
+    );
+    let alone = allowed(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        alone.starts_with("deep-diff-forge: FAIL STANDS. ") && alone.contains(MEANS),
+        "{alone}"
+    );
+    // a commit the judge holds, beside the failure that stands
+    std::fs::write(root.join("h.rs"), "// HOLDME\n").unwrap();
+    git(&root, &["add", "h.rs"]);
+    git(&root, &["commit", "--quiet", "-m", "held"]);
+    let held = allowed(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        held.starts_with("deep-diff-forge: HOLD. ")
+            && held.contains("FAIL, which stands")
+            && held.contains(MEANS),
+        "{held}"
+    );
+    // and in a block, where what has blocked before stands beside what is new
+    secrets(&root, "k2.rs", 1);
+    let block = blocked(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        block.contains("Stands beside it, as said before") && block.contains(MEANS),
+        "{block}"
+    );
+}
+
+/// A stated limit, checked: a repository with more than 256 working trees. The hook does
+/// not read the history of so many (the commits of a session are found from the `HEAD` and
+/// the reflog of every working tree), and it says so at every stop; it is never silent.
+///
+/// - A session that began while the repository had 256 or fewer: the change of the tree the
+///   stop is in is judged and blocks; the session's commits are UNJUDGED with the reason.
+/// - A session that begins in such a repository: the commits that are there as it begins
+///   cannot be listed, so its own cannot be told from them, and every stop is UNJUDGED
+///   with the reason, whatever is in the tree.
+#[test]
+fn a_repository_with_more_working_trees_than_are_read_says_so() {
+    const WHY: &str = "the repository has more working trees than a hook reads the history of";
+    let scratch = Scratch::new("hook-many-trees");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let trees = scratch.join("trees");
+    std::fs::create_dir(&trees).unwrap();
+    let add = |n: usize| {
+        git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+                "--no-checkout",
+                trees.join(format!("t{n}")).to_str().unwrap(),
+            ],
+        );
+    };
+    // 256 working trees with the project's own: as many as are read
+    for n in 0..255 {
+        add(n);
+    }
+    start(&root, "before");
+    add(255);
+    start(&root, "after");
+    secret(&root, "k.rs");
+    let reason = blocked(&stop_from(&root, "before", &script)).to_owned();
+    assert!(
+        reason.contains("- rule no-secrets")
+            && reason.contains("The commits of this session: UNJUDGED")
+            && reason.contains(WHY),
+        "{reason}"
+    );
+    for stop in 1..=2 {
+        let said = allowed(&stop_from(&root, "after", &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: UNJUDGED. ") && said.contains(WHY),
+            "stop {stop}: {said}"
+        );
     }
 }
 

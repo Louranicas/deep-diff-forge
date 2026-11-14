@@ -1971,8 +1971,8 @@ struct Looked {
     /// The lines of its uncommitted change; `None` when that change got no verdict, so
     /// nothing is known of it.
     tree: Option<Lines>,
-    /// The lines of what its index holds, all of them; `None` when the staged change got no
-    /// verdict.
+    /// The lines of what its index holds, every one of them whatever their number
+    /// ([`hook::lines_whole`]); `None` when the staged change got no verdict.
     index: Option<Lines>,
     /// Of those, the lines that are the staged change's own: the uncommitted change does
     /// not have them (it was repaired and the repair not staged).
@@ -2932,10 +2932,12 @@ fn not_asked(unit: &mut Option<TreeJudged>) {
 ///   again at later stops and is a unit of every stop while it has no verdict.
 /// - The order of asking is [`sorted_commits`]'s, with what it holds: every commit without a
 ///   verdict is submitted at least once in as many stops as there are such commits.
-/// - An attempt is counted, and a turn used, only for a commit the judge was run for at this
-///   stop. One that the stop's time did not reach, or whose run the stop's end cut short,
-///   has nothing written down: it keeps its attempts and its turn, and is said not to have
-///   been asked ([`NOT_ASKED`]). It was written down as asked, with an attempt counted,
+/// - An attempt is counted, and a turn used, for a commit the judge was run for at this
+///   stop, and only for such a one. It is written down with what the judge said, also when
+///   the run was the last thing the stop had time for or the stop's end cut it short:
+///   "not asked" is said only of a commit the judge was not run for. One that the stop's
+///   time did not reach has nothing written down: it keeps its attempts and its turn, and
+///   is said not to have been asked ([`NOT_ASKED`]). It was written down as asked, with an attempt counted,
 ///   when the judge had not been started for it (eighth independent review of the hooks,
 ///   HR8-L-1). One the judge could not be run for although there was time (the commit
 ///   cannot be read from Git, no ranker can be offered) is written down as asked at this
@@ -3025,8 +3027,14 @@ fn judge_commits(
             Judged::Hold { rules, said } => format!("h:{}", kept_reason(rules, said, false)),
             Judged::Fail { rules, said } => format!("f:{}", kept_reason(rules, said, true)),
             Judged::Unjudged { reason } if proven => format!("x:{}", one_line(reason)),
-            Judged::Unjudged { .. } if stopping.deadline.left() < COMMIT_FLOOR => {
-                // the stop's time ended the asking: not an attempt, and no turn is used
+            Judged::Unjudged { .. } if !ran && stopping.deadline.left() < COMMIT_FLOOR => {
+                // The stop's time ended the asking before the judge was run for this
+                // commit: not an attempt, and no turn is used. An ask the judge WAS run
+                // for is written down below whatever time is left after it: with about
+                // three seconds left the judge was run, answered "no verdict", and the stop
+                // wrote nothing and said "not asked"; a session whose stops all came to
+                // their commits like that asked about the same commit every time (ninth
+                // independent review of the hooks, HR9-L-2).
                 waits = Some(NOT_YET.to_owned());
                 out_of_time = true;
                 waiting += usize::from(ask.attempts.is_none());
@@ -3435,8 +3443,17 @@ fn seen(
     // after `git add -A` and one more edit of any file (sixth independent review of the
     // hooks, HR6-M-1). With no verdict on the tree's change, what is remembered of it
     // stands in for its lines.
+    //
+    // Which of the index's lines the tree's failure has too is asked of the two verdicts
+    // of this stop, line by line, whatever their number. It was asked of the tree's
+    // failure as it is remembered, which past 256 lines is one mark, and a mark covers no
+    // single line: staging a part of an unchanged failure of 257 lines made every staged
+    // line the staged change's own, and the stop blocked again, at each further partial
+    // `git add` once more (ninth independent review of the hooks, HR9-M-1).
     let tree_lines = (!unknown(&tree)).then(|| lines(&tree));
-    let cover = tree_lines
+    let tree_whole =
+        (!unknown(&tree)).then(|| tree.as_ref().map(hook::lines_whole).unwrap_or_default());
+    let cover = tree_whole
         .clone()
         .unwrap_or_else(|| lines_of(blocked, &unit_tag(id, 'u')));
     // The one case where that cannot be done: the tree's change has no verdict and its
@@ -3448,8 +3465,9 @@ fn seen(
         tree_lines.is_some() || own.is_empty() || !cover.keys().any(|key| hook::is_mark(key))
     };
     let mut told_apart = true;
-    // (what the index holds, all of it, when it has a verdict)
-    let index_whole = (!unknown(&index)).then(|| lines(&index));
+    // (what the index holds, every line of it, when it has a verdict)
+    let index_whole =
+        (!unknown(&index)).then(|| index.as_ref().map(hook::lines_whole).unwrap_or_default());
     let staged = match index {
         Some(failed @ Judged::Fail { .. }) => {
             let own = hook::lines_beyond(&failed, &cover);
@@ -3467,7 +3485,7 @@ fn seen(
     let index_lines = if !told_apart {
         None
     } else if index_same {
-        tree_lines.clone()
+        tree_whole
     } else {
         index_whole
     };
@@ -3503,7 +3521,8 @@ fn seen(
 /// The order of a stop is by what matters most, under its one deadline:
 ///
 /// 1. the working tree the stop is in is read (Git), and its staged and uncommitted changes
-///    are judged;
+///    are judged; when that is a linked working tree, the project's own tree is read and
+///    judged after it;
 /// 2. the two asks about commits that every stop owes ([`sorted_commits`]);
 /// 3. the other commits, while [`COMMIT_FLOOR`] is left of the judging;
 /// 4. the submodules and the other working trees are looked at, in [`LOOK_TIME`] of their
@@ -3524,41 +3543,52 @@ fn judge_units(
     let place = &stopping.work.place;
     let mut out = Judging::default();
     let mut writable = vec![place.top.clone()];
-    let mut trees = vec![(
+    // The working trees this stop judges, the one the stop is in first: (its top level,
+    // which tree it is, the name of its scratch directory, why it cannot be read).
+    //
+    // The project's tree stood first whatever the stop was in. A session that began in the
+    // main tree and whose directory is a linked tree had the main tree read and judged
+    // first, and a slow run there left the stop's own tree about five seconds: UNJUDGED at
+    // every such stop (review V4 round 17, VD4R17-L-1). A tree is read when its turn comes,
+    // so that a slow Git in the other tree does not come before the first one's verdict.
+    let project = (
         place.top.clone(),
         tree_instance(place),
-        uncommitted(stopping, &place.top, "work", &mut out.beside)?,
-    )];
-    match elsewhere(stopping.cwd, place, stopping.deadline) {
-        Elsewhere::Nothing => {}
+        "work",
+        None::<String>,
+    );
+    let trees = match elsewhere(stopping.cwd, place, stopping.deadline) {
+        Elsewhere::Nothing => vec![project],
         Elsewhere::Linked(linked) => {
-            trees.push((
-                linked.top.clone(),
-                tree_instance(&linked),
-                uncommitted(stopping, &linked.top, "work-2", &mut out.beside)?,
-            ));
-            writable.push(linked.top);
+            writable.push(linked.top.clone());
+            vec![
+                (linked.top.clone(), tree_instance(&linked), "work-2", None),
+                project,
+            ]
         }
-        Elsewhere::Foreign(top) => out.beside.push(Note {
-            name: format!("the repository {} the session is in", shown_tree(&top)),
-            text: format!(
-                "The session's directory is in another repository, {}, which is not this session's project ({}): nothing in it was judged.",
-                shown_tree(&top),
-                shown_tree(&place.top)
+        Elsewhere::Foreign(top) => {
+            out.beside.push(Note {
+                name: format!("the repository {} the session is in", shown_tree(&top)),
+                text: format!(
+                    "The session's directory is in another repository, {}, which is not this session's project ({}): nothing in it was judged.",
+                    shown_tree(&top),
+                    shown_tree(&place.top)
+                ),
+                standing: 0,
+            });
+            vec![project]
+        }
+        Elsewhere::Failed(reason) => vec![
+            (
+                PathBuf::from(stopping.cwd),
+                by_path(Path::new(stopping.cwd)),
+                "",
+                Some(reason),
             ),
-            standing: 0,
-        }),
-        Elsewhere::Failed(reason) => trees.push((
-            PathBuf::from(stopping.cwd),
-            by_path(Path::new(stopping.cwd)),
-            Uncommitted {
-                tree: Err(reason),
-                staged: Ok(None),
-                index_same: false,
-            },
-        )),
-    }
-    let own: BTreeSet<String> = trees.iter().map(|(_, id, _)| id.clone()).collect();
+            project,
+        ],
+    };
+    let own: BTreeSet<String> = trees.iter().map(|(_, id, _, _)| id.clone()).collect();
     let mut tribunal = Judge {
         stop: stopping,
         writable,
@@ -3572,8 +3602,20 @@ fn judge_units(
         u32::from(matches!(found.tree, Ok(Some(_))))
             + u32::from(matches!(found.staged, Ok(Some(_))))
     };
-    let mut left: u32 = trees.iter().map(|(_, _, found)| patches(found)).sum();
-    for (top, id, found) in trees {
+    let count = trees.len();
+    for (at, (top, id, scratch, unreadable)) in trees.into_iter().enumerate() {
+        let found = match unreadable {
+            Some(reason) => Uncommitted {
+                tree: Err(reason),
+                staged: Ok(None),
+                index_same: false,
+            },
+            None => uncommitted(stopping, &top, scratch, &mut out.beside)?,
+        };
+        // The patches still to be judged after each of this tree's: its own, and two for
+        // each tree that has not been read yet (it has at most two).
+        let later = u32::try_from(count - at - 1).unwrap_or(0) * 2;
+        let mut left = patches(&found) + later;
         tree_units(
             &mut tribunal,
             &top,
@@ -3610,6 +3652,78 @@ struct Kept {
     lost: Vec<String>,
     /// The units this stop looked at that are remembered by their mark from now on.
     short: Vec<String>,
+    /// The staged changes (`TREE/s`) of which the lines kept beside their own could not be
+    /// kept, as lines or as a mark: when the working tree there is repaired again, what is
+    /// staged may block once more.
+    given_up: Vec<String>,
+}
+
+/// What is remembered of one unit: its own lines, the lines kept for it (a staged change's,
+/// `k`), and the number of entries that takes. Either is lines or one mark.
+#[derive(Debug, Default)]
+struct Unit {
+    own: Lines,
+    kept: Lines,
+    entries: usize,
+}
+
+impl Unit {
+    /// The unit in its short form: what its own lines become (one entry, or none when no
+    /// line is its own), what the lines kept for it become, and whether those had to be
+    /// given up.
+    ///
+    /// The kept lines become one mark of everything that has blocked for this staged change,
+    /// its own lines and the kept ones together: when the working tree is repaired again
+    /// and all of it is the staged change's own once more, the failure is exactly what that
+    /// mark stands for, and stands. They were let go with no word, and the staged failure,
+    /// untouched in the index, then blocked a second time (ninth independent review of the
+    /// hooks, HR9-L-1). They can only be given up where the own lines are a mark already
+    /// (more than 256 of them): then "all of it" has no lines to make a mark of.
+    fn short(&self) -> Short {
+        let one = |lines: &Lines| {
+            lines
+                .iter()
+                .next()
+                .map(|(key, count)| (key.clone(), *count))
+        };
+        let marked = |lines: &Lines| lines.keys().any(|key| hook::is_mark(key));
+        let own = match self.own.len() {
+            0 => None,
+            1 => one(&self.own),
+            _ => Some(hook::mark_of(&self.own)),
+        };
+        let (kept, gone) = if self.kept.is_empty() {
+            (None, false)
+        } else if marked(&self.kept) {
+            (one(&self.kept), false)
+        } else if marked(&self.own) {
+            (None, true)
+        } else {
+            let all: Lines = self
+                .own
+                .iter()
+                .chain(&self.kept)
+                .map(|(key, count)| (key.clone(), *count))
+                .collect();
+            (Some(hook::mark_of(&all)), false)
+        };
+        Short { own, kept, gone }
+    }
+
+    /// How many entries the short form has.
+    fn short_size(&self) -> usize {
+        let short = self.short();
+        usize::from(short.own.is_some()) + usize::from(short.kept.is_some())
+    }
+}
+
+/// A unit in its short form ([`Unit::short`]): the entry its own lines become, the entry
+/// the lines kept for it become (each a line or a mark with its count), and whether the
+/// kept lines had to be given up.
+struct Short {
+    own: Option<(String, usize)>,
+    kept: Option<(String, usize)>,
+    gone: bool,
 }
 
 /// The unit a remembered entry belongs to, as its tag: the tree with `u` or `s`. The lines
@@ -3634,8 +3748,9 @@ fn unit_of(entry: &str) -> Option<(String, bool)> {
 /// Now nothing a unit needs is dropped in silence:
 ///
 /// 1. While there are more entries than `cap`, a unit is put into its short form: its own
-///    lines become one mark ([`hook::mark_of`]) and the lines kept for it are let go. In that
-///    form the unit stands while its failure is exactly what it was, and blocks as a whole
+///    lines become one mark ([`hook::mark_of`]), and the lines kept for a staged change
+///    one mark of everything that has blocked for it ([`Unit::short`]). In that form the
+///    unit stands while its failure is exactly what a mark stands for, and blocks as a whole
 ///    when anything of it changes. The units this stop did not look at go first, the one
 ///    with the most entries first of those; a unit this stop looked at goes only when every
 ///    other is in its short form already, and is named in [`Kept::short`].
@@ -3652,44 +3767,32 @@ fn within_bound(blocked: &mut Vec<String>, looked: &BTreeSet<String>, cap: usize
     if blocked.len() <= cap {
         return kept;
     }
-    // each unit, in the order of the list: its own lines, and how many entries it has
+    // each unit, in the order of the list: its own lines, the lines kept for it, and how
+    // many entries it has
     let mut order: Vec<String> = Vec::new();
-    let mut units: std::collections::BTreeMap<String, (Lines, usize)> =
-        std::collections::BTreeMap::new();
+    let mut units: std::collections::BTreeMap<String, Unit> = std::collections::BTreeMap::new();
     for entry in blocked.iter() {
         let Some((unit, own)) = unit_of(entry) else {
             continue;
         };
         let found = units.entry(unit.clone()).or_insert_with(|| {
             order.push(unit.clone());
-            (Lines::new(), 0)
+            Unit::default()
         });
-        found.1 += 1;
-        if own
-            && let Some((line, count)) = entry.rsplit_once(':')
+        found.entries += 1;
+        if let Some((line, count)) = entry.rsplit_once(':')
             && let (Some((_, key)), Ok(count)) = (line.rsplit_once('/'), count.parse())
         {
-            found.0.insert(key.to_owned(), count);
+            let lines = if own { &mut found.own } else { &mut found.kept };
+            lines.insert(key.to_owned(), count);
         }
     }
     let here = |unit: &str| tree_of(unit).is_some_and(|tree| looked.contains(tree));
-    // what a unit is in its short form: one entry, or none when no line is its own
-    let short_form = |lines: &Lines| -> Option<(String, usize)> {
-        match lines.len() {
-            0 => None,
-            1 => lines
-                .iter()
-                .next()
-                .map(|(key, count)| (key.clone(), *count)),
-            _ => Some(hook::mark_of(lines)),
-        }
-    };
-    let short_size = |unit: &str| usize::from(!units[unit].0.is_empty());
-    let gain = |unit: &str| units[unit].1 - short_size(unit);
+    let gain = |unit: &str| units[unit].entries - units[unit].short_size();
     let mut candidates: Vec<&String> = order.iter().filter(|unit| gain(unit) > 0).collect();
     candidates.sort_by_key(|unit| (here(unit), std::cmp::Reverse(gain(unit))));
     // (an entry that is no unit's is not one this version wrote: it is not kept)
-    let mut total: usize = units.values().map(|(_, entries)| entries).sum();
+    let mut total: usize = units.values().map(|unit| unit.entries).sum();
     let mut shortened: BTreeSet<&str> = BTreeSet::new();
     for unit in candidates {
         if total <= cap {
@@ -3699,6 +3802,9 @@ fn within_bound(blocked: &mut Vec<String>, looked: &BTreeSet<String>, cap: usize
         shortened.insert(unit);
         if here(unit) {
             kept.short.push(unit.clone());
+        }
+        if units[unit].short().gone {
+            kept.given_up.push(unit.clone());
         }
     }
     // the last resort: whole units go, the ones this stop looked at last of all
@@ -3710,9 +3816,9 @@ fn within_bound(blocked: &mut Vec<String>, looked: &BTreeSet<String>, cap: usize
             break;
         }
         let size = if shortened.contains(unit.as_str()) {
-            short_size(unit)
+            units[unit].short_size()
         } else {
-            units[unit].1
+            units[unit].entries
         };
         if size == 0 {
             continue;
@@ -3722,6 +3828,8 @@ fn within_bound(blocked: &mut Vec<String>, looked: &BTreeSet<String>, cap: usize
         kept.lost.push(unit.clone());
     }
     kept.short.retain(|unit| !dropped.contains(unit.as_str()));
+    kept.given_up
+        .retain(|unit| !dropped.contains(unit.as_str()));
     let mut written: BTreeSet<String> = BTreeSet::new();
     let mut bounded = Vec::with_capacity(cap.min(blocked.len()));
     for entry in blocked.drain(..) {
@@ -3733,10 +3841,14 @@ fn within_bound(blocked: &mut Vec<String>, looked: &BTreeSet<String>, cap: usize
         }
         if !shortened.contains(unit.as_str()) {
             bounded.push(entry);
-        } else if written.insert(unit.clone())
-            && let Some((key, count)) = short_form(&units[&unit].0)
-        {
-            bounded.push(hook::remembered_line(&unit, &key, count));
+        } else if written.insert(unit.clone()) {
+            let short = units[&unit].short();
+            if let Some((key, count)) = short.own {
+                bounded.push(hook::remembered_line(&unit, &key, count));
+            }
+            if let (Some((key, count)), Some(tree)) = (short.kept, tree_of(&unit)) {
+                bounded.push(hook::remembered_line(&unit_tag(tree, 'k'), &key, count));
+            }
         }
     }
     *blocked = bounded;
@@ -3758,6 +3870,15 @@ fn memory_notes(kept: &Kept) -> Vec<String> {
         notes.push(format!(
             "The working trees of this project have more failing changes than the hook remembers for one session ({BLOCKED_CAP}): which failures have blocked could not be kept for {} that this stop did not look at. An unchanged failure there may block once more at a stop that looks at it again.",
             changes(kept.lost.len())
+        ));
+    }
+    if !kept.given_up.is_empty() {
+        notes.push(format!(
+            "This session has more failing lines than the hook keeps one by one ({BLOCKED_CAP}): of what is staged in {} it could not keep which lines had already blocked while the working tree's own failure has them too. When that working tree is repaired again, what is staged there may block once more, although the index has not changed.",
+            match kept.given_up.len() {
+                1 => "1 working tree".to_owned(),
+                trees => format!("{trees} working trees"),
+            }
         ));
     }
     if !kept.short.is_empty() {
@@ -3816,28 +3937,59 @@ fn remember_within(
                 .map(|(key, count)| hook::remembered_line(tag, key, *count)),
         );
     }
+    let mut given_up: Vec<String> = Vec::new();
     for looked in &judging.trees {
         if let Some(lines) = &looked.tree {
             keep(&mut state.blocked, &unit_tag(&looked.id, 'u'), lines);
         }
         if let Some(index) = &looked.index {
+            let (own_tag, kept_tag) = (unit_tag(&looked.id, 's'), unit_tag(&looked.id, 'k'));
             // of the lines remembered for the staged change, its own and the kept ones,
-            // those the index still holds and that are not its own now (a mark's lines are
-            // not known one by one: none of them is kept)
-            let kept: Lines = lines_of(&state.blocked, &unit_tag(&looked.id, 's'))
-                .into_iter()
-                .filter(|(key, _)| !looked.staged.contains_key(key))
+            // those the index still holds and that are not its own now
+            let before = lines_of(&state.blocked, &own_tag);
+            let mut kept: Lines = before
+                .iter()
+                .filter(|(key, _)| !hook::is_mark(key) && !looked.staged.contains_key(*key))
                 .filter_map(|(key, count)| {
-                    let now = *index.get(&key)?;
-                    Some((key, count.min(now)))
+                    let now = *index.get(key)?;
+                    Some((key.clone(), (*count).min(now)))
                 })
                 .collect();
-            keep(
-                &mut state.blocked,
-                &unit_tag(&looked.id, 's'),
-                &looked.staged,
-            );
-            keep(&mut state.blocked, &unit_tag(&looked.id, 'k'), &kept);
+            // A mark stands for lines that are not known one by one, so "those the index
+            // still holds" can be answered for it in two cases only: it is exactly what is
+            // the staged change's own now (then that is remembered, as its lines), or it is
+            // exactly what the index holds (then all of it is still there, and the mark is
+            // kept). In any other case the lines it stood for may be in the index or not:
+            // kept, lines that left the index and came back would not block; so the mark
+            // goes, and where the index still holds something the stop says so.
+            let own_now = match looked.staged.len() {
+                0 => None,
+                _ if looked.staged.keys().any(|key| hook::is_mark(key)) => looked
+                    .staged
+                    .iter()
+                    .next()
+                    .map(|(key, count)| (key.clone(), *count)),
+                _ => Some(hook::mark_of(&looked.staged)),
+            };
+            let held = (!index.is_empty()).then(|| hook::mark_of(index));
+            for (kind, tag) in [('s', &own_tag), ('k', &kept_tag)] {
+                for (key, count) in hook::remembered_as(&state.blocked, tag) {
+                    if !hook::is_mark(key) {
+                        continue;
+                    }
+                    let mark = Some((key.to_owned(), count));
+                    if mark == own_now {
+                        continue;
+                    }
+                    if mark == held {
+                        kept = Lines::from([(key.to_owned(), count)]);
+                    } else if held.is_some() && (kind == 'k' || looked.staged.is_empty()) {
+                        given_up.push(own_tag.clone());
+                    }
+                }
+            }
+            keep(&mut state.blocked, &own_tag, &looked.staged);
+            keep(&mut state.blocked, &kept_tag, &kept);
         }
     }
     let gone = |entry: &String| {
@@ -3856,7 +4008,9 @@ fn remember_within(
         .iter()
         .map(|looked| looked.id.clone())
         .collect();
-    let kept = within_bound(&mut state.blocked, &looked, cap);
+    let mut kept = within_bound(&mut state.blocked, &looked, cap);
+    given_up.dedup();
+    kept.given_up.extend(given_up);
     judged.extend(
         judging
             .commits
@@ -6237,15 +6391,55 @@ mod tests {
         assert_eq!(
             kept,
             Kept {
-                lost: Vec::new(),
-                short: vec!["c/u".to_owned()]
+                short: vec!["c/u".to_owned()],
+                ..Kept::default()
             }
         );
-        // what is kept for a staged change is of that change, and goes with its lines
-        let mut blocked = [unit("a/s", 4), unit("a/k", 3), unit("b/u", 2)].concat();
+        // What is kept for a staged change is of that change, and is shortened with it:
+        // into one mark of all that has blocked for it, the own lines and the kept ones
+        // (ninth independent review of the hooks, HR9-L-1: the kept lines were let go).
+        let kept_lines: Vec<String> = (10..13)
+            .map(|n| hook::remembered_line("a/k", &format!("{n:024x}"), 1))
+            .collect();
+        let mut blocked = [unit("a/s", 4), kept_lines, unit("b/u", 2)].concat();
+        let all: Lines = hook::remembered(&blocked, "a/s")
+            .into_iter()
+            .map(|(key, count)| (key.to_owned(), count))
+            .collect();
+        assert_eq!(all.len(), 7);
         assert_eq!(
             within_bound(&mut blocked, &looked(&["b"]), 5),
             Kept::default()
+        );
+        assert_eq!(
+            sizes(&blocked),
+            named(&[("a/s", 1), ("a/k", 1), ("b/u", 2)])
+        );
+        let (key, count) = hook::mark_of(&all);
+        assert_eq!(
+            hook::remembered_as(&blocked, "a/k")
+                .into_iter()
+                .collect::<Vec<_>>(),
+            [(key.as_str(), count)]
+        );
+        // Only where the own lines are a mark already is there nothing to make that mark
+        // of: then the kept lines go, and the unit is named for the stop to say so.
+        let mut blocked = [
+            vec![hook::remembered_line(
+                "a/s",
+                &format!("all{}", "0".repeat(21)),
+                300,
+            )],
+            unit("a/k", 4),
+            unit("b/u", 2),
+        ]
+        .concat();
+        assert_eq!(
+            within_bound(&mut blocked, &looked(&["b"]), 5),
+            Kept {
+                given_up: vec!["a/s".to_owned()],
+                ..Kept::default()
+            }
         );
         assert_eq!(sizes(&blocked), named(&[("a/s", 1), ("b/u", 2)]));
         // the last resort: every unit is one entry, and they are more than the bound
@@ -6266,7 +6460,8 @@ mod tests {
             kept,
             Kept {
                 lost: vec!["a/u".to_owned(), "b/u".to_owned()],
-                short: vec!["c/u".to_owned()]
+                short: vec!["c/u".to_owned()],
+                given_up: Vec::new(),
             }
         );
         // what a stop says of it: both things, each with its number, at that stop
@@ -6288,17 +6483,26 @@ mod tests {
         assert_eq!(memory_notes(&Kept::default()), Vec::<String>::new());
     }
 
-    /// The property of review V4 round 16, VD4R16-M-1, over generated sessions: many working
-    /// trees with failures of one line to four hundred, uncommitted and staged, changed and
+    /// The property of review V4 round 16, VD4R16-M-1, and of the ninth independent review,
+    /// HR9-M-1 and HR9-L-1, over generated sessions: many working trees with failures of one
+    /// line to six hundred, uncommitted and staged in whole and in part, changed and
     /// repaired between stops that are made from the trees in no order, with a judge that
-    /// sometimes gives no verdict, under the real bound and under small ones.
+    /// sometimes gives no verdict, under the real bound and under small ones. Each stop is
+    /// compared with a model that remembers every line and has no bound:
     ///
-    /// - A unit that is as it was at the last stop that looked at it does not block, unless a
-    ///   stop said that its memory could not be kept.
-    /// - A failing line that was not there at that stop, or has more items, blocks.
-    /// - While the session never had more lines than the bound, a failure of which a part
-    ///   was repaired stands: nothing was put into a short form.
+    /// - What the model blocks for, the hook blocks for: no new failing line is missed.
+    /// - While nothing of a tree is remembered by a mark, the hook blocks for nothing else.
+    /// - Where a mark is remembered, the hook may block beyond the model only for a change
+    ///   that is not what the mark stood for: an uncommitted change that is not as the last
+    ///   stop saw it; a staged change that is neither its own lines as the last stop saw
+    ///   them nor everything that has blocked for it.
+    /// - Where a stop has said that the memory of a tree could not be kept, that tree may
+    ///   block beyond the model until it has nothing failing left.
     /// - What is remembered stays within the bound, and the state within its size.
+    ///
+    /// The first form of this test never staged a part of an unchanged failure, and called
+    /// a tree unchanged only when tree and index were both as the last stop saw them: the
+    /// two findings passed it.
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -6310,10 +6514,14 @@ mod tests {
         struct Place {
             tree: Content,
             index: Content,
-            /// what the last stop that looked here saw, when it had a verdict for both
-            settled: Option<(Content, Content)>,
-            /// the uncommitted change as the last stop with a verdict for it saw it
-            told: Option<Content>,
+            /// the model: the uncommitted lines the last stop with a verdict saw, and every
+            /// staged line that has blocked and that the index has held since
+            told_tree: Content,
+            told_staged: Content,
+            /// the uncommitted change, and the staged change's own lines, as the last stop
+            /// that could tell them saw them
+            last_tree: Option<Content>,
+            last_own: Option<Content>,
             /// a stop said that the memory of this tree could not be kept
             lost: bool,
         }
@@ -6340,36 +6548,51 @@ mod tests {
                 said: Vec::new(),
             })
         };
-        // a line of `now` that `then` does not have, or has with fewer items
-        let grew = |now: &Content, then: &Content| {
+        // the lines of `now` that `then` does not have, or has with fewer items
+        let beyond = |now: &Content, then: &Content| -> Content {
             now.iter()
-                .any(|(file, count)| then.get(file).is_none_or(|had| had < count))
+                .filter(|(file, count)| then.get(file).is_none_or(|had| had < count))
+                .map(|(file, count)| (*file, *count))
+                .collect()
         };
-        let (mut stops, mut shortened, mut lost, mut stood_unchanged, mut blocked_new) =
-            (0, 0, 0, 0, 0);
+        let marked = |blocked: &[String], tag: &str| {
+            hook::remembered_as(blocked, tag)
+                .keys()
+                .any(|key| hook::is_mark(key))
+        };
+        let blocks = |unit: Option<&TreeJudged>, blocked: &[String]| {
+            unit.is_some_and(|unit| {
+                matches!(
+                    hook::decide_stop_trees(std::slice::from_ref(unit), blocked, "r"),
+                    StopDecision::Block { .. }
+                )
+            })
+        };
+        let (mut stops, mut shortened, mut lost, mut given_up) = (0, 0, 0, 0);
+        let (mut stood, mut blocked_new, mut part_staged, mut beyond_model) = (0, 0, 0, 0);
         for session in 0..90 {
             // most sessions are small ones under a small bound; some are large, under the
             // real one
             let (cap, trees, largest) = match session % 9 {
-                0 => (BLOCKED_CAP, 6 + next(14), 400),
+                0 => (BLOCKED_CAP, 6 + next(14), 600),
                 1..=4 => (40, 2 + next(8), 30),
                 _ => (6, 2 + next(8), 12),
             };
             let mut state = State::default();
             let mut all: Vec<Place> = vec![Place::default(); trees];
             let mut file = 0;
-            let mut exact = true;
-            for _ in 0..(if cap == BLOCKED_CAP { 50 } else { 70 }) {
+            for _ in 0..(if cap == BLOCKED_CAP { 60 } else { 80 }) {
                 let at = next(trees);
                 // something happens in this tree, or nothing does
                 {
                     let tree = &mut all[at];
-                    match next(10) {
+                    match next(12) {
                         0 | 1 if tree.tree.is_empty() => {
-                            let lines = if next(4) == 0 {
-                                1 + next(largest)
-                            } else {
-                                1 + next(largest / 4 + 1)
+                            let lines = match next(8) {
+                                // the sizes around the number of lines kept one by one
+                                0 if largest > 256 => [200, 256, 257, 600][next(4)],
+                                1 | 2 => 1 + next(largest),
+                                _ => 1 + next(largest / 4 + 1),
                             };
                             for _ in 0..lines {
                                 file += 1;
@@ -6403,65 +6626,120 @@ mod tests {
                             }
                         }
                         6 if next(4) == 0 => tree.tree.clear(),
+                        // a part of what fails in the tree is staged, as it is: `git add`
+                        // of some of the files; then more of them at a later stop
+                        7 | 8 => {
+                            let more: Vec<(usize, usize)> = tree
+                                .tree
+                                .iter()
+                                .filter(|(file, _)| !tree.index.contains_key(*file))
+                                .map(|(file, count)| (*file, *count))
+                                .collect();
+                            if !more.is_empty() {
+                                let part = 1 + next(more.len());
+                                tree.index.extend(more.into_iter().take(part));
+                                part_staged += 1;
+                            }
+                        }
+                        // everything staged is repaired in the tree, or put back there
+                        9 if next(3) == 0 => {
+                            for staged in tree.index.keys() {
+                                tree.tree.remove(staged);
+                            }
+                        }
+                        10 if next(3) == 0 => {
+                            let staged = tree.index.clone();
+                            tree.tree.extend(staged);
+                        }
                         _ => {}
                     }
                 }
-                let tree = all[at].clone();
+                let place = all[at].clone();
                 let id = format!("t{at}");
                 let no_verdict = || {
                     Some(Judged::Unjudged {
                         reason: "the judge did not answer".to_owned(),
                     })
                 };
-                let tree_read = tree.tree.is_empty() || next(12) != 0;
-                let same = !tree.index.is_empty() && tree.index == tree.tree;
-                let index_read = same || tree.index.is_empty() || next(12) != 0;
+                let tree_read = place.tree.is_empty() || next(12) != 0;
+                let same = !place.index.is_empty() && place.index == place.tree;
+                let index_read = if same {
+                    tree_read
+                } else {
+                    place.index.is_empty() || next(12) != 0
+                };
                 let (looked, units) = seen(
                     &id,
                     "/p",
                     if tree_read {
-                        judged(&tree.tree)
+                        judged(&place.tree)
                     } else {
                         no_verdict()
                     },
-                    if same || tree.index.is_empty() {
+                    if same || place.index.is_empty() {
                         None
                     } else if index_read {
-                        judged(&tree.index)
+                        judged(&place.index)
                     } else {
                         no_verdict()
                     },
                     same,
                     &state.blocked,
                 );
-                let blocks = matches!(
-                    hook::decide_stop_trees(&units, &state.blocked, "r"),
-                    StopDecision::Block { .. }
+                let unit = |kind: char| units.iter().find(|unit| unit.tag == unit_tag(&id, kind));
+                let (blocks_tree, blocks_staged) = (
+                    blocks(unit('u'), &state.blocked),
+                    blocks(unit('s'), &state.blocked),
                 );
-                let now = (tree.tree.clone(), tree.index.clone());
+                // the one case in which the staged change is said to have no verdict
+                let apart = !unit('s').is_some_and(|unit| {
+                    matches!(&unit.judged, Some(Judged::Unjudged { reason }) if reason == STAGED_NOT_APART)
+                });
                 let context = format!("session {session}, stop {stops}, tree {at}, cap {cap}");
-                if tree.settled.as_ref() == Some(&now) && !tree.lost {
-                    assert!(!blocks, "{context}: an unchanged failure blocked again");
-                    stood_unchanged += usize::from(!tree.tree.is_empty() || !tree.index.is_empty());
+
+                // the model
+                let cover = if tree_read {
+                    &place.tree
+                } else {
+                    &place.told_tree
+                };
+                let own = beyond(&place.index, cover);
+                let new_tree = tree_read && !beyond(&place.tree, &place.told_tree).is_empty();
+                let new_staged =
+                    index_read && apart && !beyond(&own, &place.told_staged).is_empty();
+                if new_tree {
+                    assert!(blocks_tree, "{context}: a new failing line did not block");
                 }
-                if tree_read && grew(&tree.tree, tree.told.as_ref().unwrap_or(&Content::new())) {
-                    assert!(blocks, "{context}: a new failing line did not block");
-                    blocked_new += 1;
+                if new_staged {
+                    assert!(blocks_staged, "{context}: a new staged line did not block");
                 }
-                if exact
-                    && blocks
-                    && tree_read
-                    && index_read
-                    && let Some((tree_then, index_then)) = &tree.settled
-                {
+                blocked_new += usize::from(new_tree || new_staged);
+                if blocks_tree && !new_tree && !place.lost {
                     assert!(
-                        grew(&tree.tree, tree_then)
-                            || grew(&tree.index, index_then)
-                            || tree.index != *index_then
-                            || tree.tree != *tree_then,
-                        "{context}: blocked with nothing new, and nothing in a short form"
+                        marked(&state.blocked, &unit_tag(&id, 'u'))
+                            && place.last_tree.as_ref() != Some(&place.tree),
+                        "{context}: the uncommitted change blocked with nothing new and nothing a mark does not cover"
                     );
+                    beyond_model += 1;
                 }
+                if blocks_staged && !new_staged && !place.lost {
+                    assert!(
+                        (marked(&state.blocked, &unit_tag(&id, 's'))
+                            || marked(&state.blocked, &unit_tag(&id, 'k')))
+                            && place.last_own.as_ref() != Some(&own)
+                            && own != place.told_staged,
+                        "{context}: the staged change blocked with nothing new and nothing a mark does not cover"
+                    );
+                    beyond_model += 1;
+                }
+                stood += usize::from(
+                    !blocks_tree
+                        && !blocks_staged
+                        && tree_read
+                        && index_read
+                        && (!place.tree.is_empty() || !place.index.is_empty()),
+                );
+
                 let judging = Judging {
                     trees: vec![looked],
                     listed: Some((0..trees).map(|n| format!("t{n}")).collect()),
@@ -6478,15 +6756,9 @@ mod tests {
                     "{context}: the state is {} bytes",
                     state_text(&state).len()
                 );
-                if state.blocked.iter().any(|entry| {
-                    entry
-                        .rsplit_once('/')
-                        .is_some_and(|(_, line)| hook::is_mark(line))
-                }) {
-                    exact = false;
-                }
                 shortened += kept.short.len();
                 lost += kept.lost.len();
+                given_up += kept.given_up.len();
                 assert!(
                     kept.lost
                         .iter()
@@ -6494,30 +6766,203 @@ mod tests {
                         || cap < 4,
                     "{context}: the tree a stop looked at was forgotten: {kept:?}"
                 );
-                for unit in &kept.lost {
+                for unit in kept.lost.iter().chain(&kept.given_up) {
                     let n: usize = unit[1..unit.find('/').unwrap()].parse().unwrap();
                     all[n].lost = true;
                 }
+                // the model remembers what the stop saw
                 let here = &mut all[at];
-                // (a stop that says the memory of the tree it is in was lost is the stop that
-                // may be followed by a second block)
-                here.lost = kept
-                    .lost
-                    .iter()
-                    .any(|unit| unit.starts_with(&format!("{id}/")));
-                here.settled = (tree_read && index_read).then_some(now);
                 if tree_read {
-                    here.told = Some(tree.tree.clone());
+                    here.told_tree = place.tree.clone();
+                    here.last_tree = Some(place.tree.clone());
+                }
+                if index_read && apart {
+                    let mut told: Content = here
+                        .told_staged
+                        .iter()
+                        .filter_map(|(file, count)| {
+                            Some((*file, (*count).min(*place.index.get(file)?)))
+                        })
+                        .collect();
+                    told.extend(own.clone());
+                    here.told_staged = told;
+                    here.last_own = Some(own);
+                }
+                // a tree with nothing failing left has nothing that could block again
+                if tree_read && index_read && place.tree.is_empty() && place.index.is_empty() {
+                    here.lost = false;
                 }
                 stops += 1;
             }
         }
         // the sessions reached what they are for
-        assert!(stops > 5_000, "{stops}");
-        assert!(shortened > 0 && lost > 0, "{shortened} {lost}");
+        assert!(stops > 6_000, "{stops}");
         assert!(
-            stood_unchanged > 300 && blocked_new > 300,
-            "{stood_unchanged} {blocked_new}"
+            shortened > 0 && lost > 0 && given_up > 0,
+            "{shortened} {lost} {given_up}"
+        );
+        assert!(
+            stood > 300 && blocked_new > 300 && part_staged > 100 && beyond_model > 0,
+            "{stood} {blocked_new} {part_staged} {beyond_model}"
+        );
+    }
+
+    /// Ninth independent review of the hooks, HR9-M-1, as reproduced: a failure of 257 lines
+    /// has blocked; then a part of it is staged, as it is, then more, then all of it. Past
+    /// 256 lines every `git add` of a part blocked again, as "Staged changes", for files that
+    /// had not changed: the staged lines were compared with the tree's failure as it is
+    /// remembered, one mark, which covers no single line. At every size the staging stands,
+    /// and the stop says nothing about memory.
+    #[test]
+    fn staging_a_part_of_a_failure_that_has_blocked_stands() {
+        for size in [1, 200, 256, 257, 600] {
+            let mut state = State::default();
+            let whole = failing_files(0, size, 1);
+            // (the stop, with the first `staged` failing files in the index)
+            let stop = |state: &mut State, staged: usize| -> (bool, Kept, usize) {
+                let index = (staged > 0 && staged < size).then(|| failing_files(0, staged, 1));
+                let (looked, units) = seen(
+                    "t",
+                    "/p",
+                    Some(whole.clone()),
+                    index,
+                    staged == size,
+                    &state.blocked,
+                );
+                let blocks = matches!(
+                    hook::decide_stop_trees(&units, &state.blocked, "r"),
+                    StopDecision::Block { .. }
+                );
+                let judging = Judging {
+                    trees: vec![looked],
+                    ..Judging::default()
+                };
+                let kept = remember_within(state, &judging, &mut Vec::new(), BLOCKED_CAP);
+                (blocks, kept, units.len())
+            };
+            assert!(stop(&mut state, 0).0, "{size}: the failure is new");
+            for staged in [0, 1, size / 2, size.saturating_sub(1), size, size / 2, 0] {
+                let (blocks, kept, units) = stop(&mut state, staged);
+                assert!(!blocks, "{size} lines, {staged} staged: it blocked again");
+                assert_eq!(kept, Kept::default(), "{size} lines, {staged} staged");
+                // nothing of the index is the staged change's own: there is no such unit
+                assert_eq!(units, 1, "{size} lines, {staged} staged");
+            }
+        }
+    }
+
+    /// Ninth independent review of the hooks, HR9-L-1, as reproduced. A staged failure has
+    /// blocked, and the working tree's failure has the same lines again, so they are kept
+    /// for the staged change and are no line of its own. Then the session has more lines
+    /// than it keeps: the kept lines were let go with no word, and when the tree was
+    /// repaired again the staged failure, untouched in the index, blocked a second time. They
+    /// become one mark of everything that has blocked for that staged change, and it stands.
+    #[test]
+    fn what_is_kept_for_a_staged_change_is_kept_as_a_mark() {
+        const SMALL: usize = 300;
+        let lines = |files: usize| failing_files(0, files, 1);
+        let mut state = State::default();
+        // one stop in the tree `a`, with what its tree and its index fail for
+        let stop = |state: &mut State, tree: usize, index: usize, cap: usize| -> (bool, Kept) {
+            let (looked, units) = seen(
+                "a",
+                "/a",
+                (tree > 0).then(|| lines(tree)),
+                (index > 0 && index != tree).then(|| lines(index)),
+                index > 0 && index == tree,
+                &state.blocked,
+            );
+            let blocks = matches!(
+                hook::decide_stop_trees(&units, &state.blocked, "r"),
+                StopDecision::Block { .. }
+            );
+            let judging = Judging {
+                trees: vec![looked],
+                ..Judging::default()
+            };
+            (
+                blocks,
+                remember_within(state, &judging, &mut Vec::new(), cap),
+            )
+        };
+        // 250 files staged with the tree repaired: blocks as the staged change's own
+        assert!(stop(&mut state, 0, 250, BLOCKED_CAP).0);
+        // the tree has them back: blocks as the tree's; the staged lines are kept
+        assert!(stop(&mut state, 250, 250, BLOCKED_CAP).0);
+        assert_eq!(hook::remembered_as(&state.blocked, "a/k").len(), 250);
+        assert!(!stop(&mut state, 0, 250, BLOCKED_CAP).0, "repaired again");
+        assert!(
+            stop(&mut state, 250, 250, BLOCKED_CAP).0,
+            "back in the tree"
+        );
+        // A stop in another tree with 250 failing files, under a bound of 300 entries: more
+        // lines than are kept. What is remembered of `a` goes into its short form (it is
+        // not the tree this stop looks at), and nothing is said, because nothing is lost.
+        let (blocks, kept) = stop_in(&mut state, "b", Some(failing_files(1_000, 250, 1)), SMALL);
+        assert!(blocks);
+        assert_eq!(kept, Kept::default());
+        let kept = hook::remembered_as(&state.blocked, "a/k");
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert!(kept.keys().all(|key| hook::is_mark(key)));
+        // The tree is repaired again and the index is as it has been since the first stop:
+        // what is staged stands. And once more round: the tree's failure blocks as the
+        // tree's (documented), the staged one stands again.
+        let (blocks, said) = stop(&mut state, 0, 250, SMALL);
+        assert!(!blocks, "the staged failure blocked a second time");
+        assert_eq!(said.given_up, Vec::<String>::new());
+        assert!(stop(&mut state, 250, 250, SMALL).0);
+        assert!(!stop(&mut state, 0, 250, SMALL).0);
+
+        // Where a mark cannot be kept, the stop says so. The index holds 300 failing files;
+        // 250 of them have blocked as the staged change's own and are kept; the tree has
+        // all 300. In the short form the mark stands for the 250, which is neither what the
+        // index holds nor what is the staged change's own at the next stop: it goes, and
+        // that stop says of which tree.
+        let mut state = State::default();
+        let look = |state: &mut State, tree: Judged, cap: usize| -> (bool, Kept) {
+            let (looked, units) = seen(
+                "a",
+                "/a",
+                Some(tree),
+                Some(lines(300)),
+                false,
+                &state.blocked,
+            );
+            let blocks = matches!(
+                hook::decide_stop_trees(&units, &state.blocked, "r"),
+                StopDecision::Block { .. }
+            );
+            let judging = Judging {
+                trees: vec![looked],
+                ..Judging::default()
+            };
+            (
+                blocks,
+                remember_within(state, &judging, &mut Vec::new(), cap),
+            )
+        };
+        // the tree fails for files 250 to 299 only: files 0 to 249 are the staged change's own
+        assert!(look(&mut state, failing_files(250, 50, 1), BLOCKED_CAP).0);
+        // the tree fails for all 300: the 250 are kept, and under a bound of 100 as a mark
+        let (_, kept) = look(&mut state, lines(300), 100);
+        assert_eq!(
+            kept,
+            Kept {
+                short: vec!["a/s".to_owned()],
+                ..Kept::default()
+            }
+        );
+        // nothing changes: nothing blocks, and the mark of the 250 cannot be kept
+        let (blocks, said) = look(&mut state, lines(300), 100);
+        assert!(!blocks);
+        assert_eq!(said.given_up, ["a/s"]);
+        let notes = memory_notes(&said);
+        assert!(
+            notes
+                .iter()
+                .any(|note| note.contains("of what is staged in 1 working tree")
+                    && note.contains("may block once more")),
+            "{notes:?}"
         );
     }
 

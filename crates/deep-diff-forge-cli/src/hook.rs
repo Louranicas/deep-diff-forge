@@ -993,7 +993,7 @@ fn violation_words(rule: &RuleOutcome, signal: &str, path: &str) -> String {
 /// items is kept beside each line: with the rule, the signal and the path alone, a second
 /// credential added to a file that already failed for one was never put to the agent
 /// (independent review of the hooks, HR-L-4).
-pub(crate) fn failure_lines(judged: &Judged) -> BTreeMap<String, usize> {
+pub(crate) fn lines_whole(judged: &Judged) -> BTreeMap<String, usize> {
     let Judged::Fail { rules, said } = judged else {
         return BTreeMap::new();
     };
@@ -1011,6 +1011,18 @@ pub(crate) fn failure_lines(judged: &Judged) -> BTreeMap<String, usize> {
     for words in said {
         lines.insert(line_key(&format!("\0said\0{words}")), 1);
     }
+    lines
+}
+
+/// The failing lines of a verdict as a session remembers them: every line
+/// ([`lines_whole`]) while they are at most [`LINES_KEPT`], and else one mark for all of them
+/// ([`mark_of`]). The mark is how a large failure is remembered between stops. It is not
+/// what a stop compares two verdicts with: a mark covers no single line, so asked which of
+/// the index's lines the working tree's failure has too, it said "none" for a failure of
+/// more than 256 lines, and staging a part of such a failure blocked again (ninth
+/// independent review of the hooks, HR9-M-1).
+pub(crate) fn failure_lines(judged: &Judged) -> BTreeMap<String, usize> {
+    let lines = lines_whole(judged);
     if lines.len() > LINES_KEPT {
         let (mark, count) = mark_of(&lines);
         return BTreeMap::from([(mark, count)]);
@@ -1082,43 +1094,52 @@ fn covered<K: std::borrow::Borrow<str> + Ord>(
     known.get(key).is_some_and(|seen| *seen >= count)
 }
 
-/// The lines of `judged` that `known` does not hold, or holds with fewer items. When `known`
-/// is a mark ([`mark_of`]), none if the failure is exactly the lines the mark stands for, and
-/// otherwise every line: what the mark stood for is not known line by line.
+/// The lines of `judged`, every one of them ([`lines_whole`]), that `known` does not hold,
+/// or holds with fewer items ([`beyond`]).
 pub(crate) fn lines_beyond<K: std::borrow::Borrow<str> + Ord>(
     judged: &Judged,
     known: &BTreeMap<K, usize>,
 ) -> BTreeSet<String> {
-    let lines = failure_lines(judged);
-    if !lines.is_empty()
-        && known.keys().any(|key| is_mark(key.borrow()))
-        && !lines.keys().any(|key| is_mark(key))
-    {
-        let (mark, count) = mark_of(&lines);
+    beyond(&lines_whole(judged), known)
+}
+
+/// The lines among `lines` that `known` does not hold, or holds with fewer items. `known` is
+/// lines, or what a session remembers, which can hold marks ([`mark_of`]): none of `lines`
+/// is beyond a mark that stands for exactly these lines, and a mark that stands for
+/// anything else covers no line, because what it stood for is not known line by line.
+/// Lines are compared one by one whatever their number: a failure that was remembered by
+/// its lines and has grown past [`LINES_KEPT`] has only its new lines beyond them. It was
+/// folded into a mark first, and blocked as if all of it were new (ninth independent review
+/// of the hooks, HR9-L-3).
+pub(crate) fn beyond<K: std::borrow::Borrow<str> + Ord>(
+    lines: &BTreeMap<String, usize>,
+    known: &BTreeMap<K, usize>,
+) -> BTreeSet<String> {
+    if lines.is_empty() {
+        return BTreeSet::new();
+    }
+    if known.keys().any(|key| is_mark(key.borrow())) {
+        let (mark, count) = mark_of(lines);
         if covered(known, &mark, count) {
             return BTreeSet::new();
         }
     }
     lines
-        .into_iter()
-        .filter(|(key, count)| !covered(known, key, *count))
-        .map(|(key, _)| key)
+        .iter()
+        .filter(|(key, count)| !covered(known, key, **count))
+        .map(|(key, _)| key.clone())
         .collect()
 }
 
 /// A failure cut to the lines `keep` names, or to the others (`rest`): the same rules with
 /// the violations of those lines, and what the judge said that is among them. The rules the
 /// judge holds for stay with the part that is kept. `None` when nothing of the failure is in
-/// that part. A failure that is remembered as one line ([`LINES_KEPT`]) is not cut.
+/// that part. The lines are the verdict's own ([`lines_whole`]), whatever their number.
 pub(crate) fn failure_part(judged: &Judged, keep: &BTreeSet<String>, rest: bool) -> Option<Judged> {
     let Judged::Fail { rules, said } = judged else {
         return None;
     };
     let wanted = |key: &str| keep.contains(key) != rest;
-    let lines = failure_lines(judged);
-    if lines.keys().any(|key| is_mark(key)) {
-        return lines.keys().all(|key| wanted(key)).then(|| judged.clone());
-    }
     let part: Vec<RuleOutcome> = rules
         .iter()
         .filter(|rule| !rule.held)
@@ -1456,7 +1477,12 @@ const BESIDE_ROOM: usize = 400;
 /// finding when the file is edited above it and differs for another finding in the same
 /// file. So a failure is known by rule, signal, path and number, and a finding that replaces
 /// another under the same rule in the same file between two stops is not told apart.
-const STANDS_BY_LINE: &str = " For a change that is not committed, that means: the judge names the same rules on the same paths as it did then, as many times or fewer. Whether they are the same lines of those files the hook does not know.";
+///
+/// It is a line of every stop at which something of a working tree's failure has blocked
+/// before, whatever heads the message: it was part of the head FAIL STANDS alone, so under
+/// a HOLD or an UNJUDGED head, and in a block that says "Stands beside it", the same
+/// standing failure came without it (ninth independent review of the hooks, HR9-L-3).
+const STANDS_BY_LINE: &str = "Of a change that is not committed, \"stands\" and \"has blocked before\" mean: the judge names the same rules on the same paths as it did then, as many times or fewer. Whether they are the same lines of those files the hook does not know.\n";
 
 /// What is said under a failure that blocks again because it changed while it was remembered
 /// by its mark ([`mark_of`]): the agent is not told that all of it is new.
@@ -1529,6 +1555,16 @@ fn blocking_text(trees: &[TreeJudged], blocked: &[String], room: usize) -> (Stri
             )
         };
         let (shown, beside, outcome) = match (new, old) {
+            // A failure that is remembered by a mark and is not what the mark stood for:
+            // which of its lines are new is not known, also where some of them are
+            // remembered one by one beside the mark, so none is called new.
+            _ if !is_commit(unit)
+                && remembered(blocked, &unit.tag)
+                    .keys()
+                    .any(|key| is_mark(key)) =>
+            {
+                ((*unit).clone(), BY_MARK.to_owned(), "FAIL")
+            }
             (Some(new), Some(old)) => (
                 TreeJudged {
                     judged: Some(new),
@@ -1537,14 +1573,6 @@ fn blocking_text(trees: &[TreeJudged], blocked: &[String], room: usize) -> (Stri
                 stands_beside(&old),
                 "FAIL, new at this stop",
             ),
-            // a failure that is remembered by its mark and is not what it was
-            _ if !is_commit(unit)
-                && remembered(blocked, &unit.tag)
-                    .keys()
-                    .any(|key| is_mark(key)) =>
-            {
-                ((*unit).clone(), BY_MARK.to_owned(), "FAIL")
-            }
             _ => ((*unit).clone(), String::new(), "FAIL"),
         };
         let Some(Judged::Fail { rules, .. }) = &shown.judged else {
@@ -1650,6 +1678,14 @@ fn trees_text(trees: &[TreeJudged], blocked: &[String]) -> String {
     // hooks, HR7-L-1).
     let no_verdict = no_verdict_line(trees);
     let staged_hint = trees.iter().any(|unit| is_staged(unit) && fails(&unit));
+    // something of a working tree's failure has blocked before: it stands, or stands
+    // beside what is new
+    let stands_by_line = trees.iter().any(|unit| {
+        !is_commit(unit)
+            && unit.holds == Holds::WhileNew
+            && fails(&unit)
+            && !remembered(blocked, &unit.tag).is_empty()
+    });
     let any = |wanted: fn(&TreeJudged) -> bool| trees.iter().any(wanted);
     let reserve = no_verdict.chars().count()
         + usize::from(any(|unit| matches!(unit.judged, Some(Judged::Hold { .. })))) * TAIL_LINE
@@ -1659,6 +1695,7 @@ fn trees_text(trees: &[TreeJudged], blocked: &[String]) -> String {
                 .any(|unit| fails(&unit) && !blocks_now(unit, blocked)),
         ) * TAIL_LINE
         + usize::from(staged_hint) * STAGED_HINT.len()
+        + usize::from(stands_by_line) * STANDS_BY_LINE.len()
         + RULE_SOURCE.len();
     let room = DETAIL_CAP.saturating_sub(reserve);
 
@@ -1733,6 +1770,9 @@ fn trees_text(trees: &[TreeJudged], blocked: &[String]) -> String {
     }
     if staged_hint {
         tail.push_str(STAGED_HINT);
+    }
+    if stands_by_line {
+        tail.push_str(STANDS_BY_LINE);
     }
     if rules_shown {
         tail.push_str(RULE_SOURCE);
@@ -1863,19 +1903,10 @@ pub(crate) fn decide_stop_trees(
             "deep-diff-forge: HOLD. The judge wants a person to look at this change ({range}).\n{detail}"
         )
     } else if is(|judged| matches!(judged, Judged::Fail { .. })) {
-        // What "this failure" is for a change that is not committed is said with it: the
-        // sentence was read as "these lines have blocked", which is more than the hook
-        // knows (eighth independent review of the hooks, HR8-L-4).
-        let lines = if trees
-            .iter()
-            .any(|tree| !is_commit(tree) && matches!(tree.judged, Some(Judged::Fail { .. })))
-        {
-            STANDS_BY_LINE
-        } else {
-            ""
-        };
+        // (what "this failure" is for a change that is not committed is a line of the
+        // detail: [`STANDS_BY_LINE`])
         format!(
-            "deep-diff-forge: FAIL STANDS. This failure has already blocked a stop of this session ({range}); it is left for a person.{lines}\n{detail}"
+            "deep-diff-forge: FAIL STANDS. This failure has already blocked a stop of this session ({range}); it is left for a person.\n{detail}"
         )
     } else {
         return StopDecision::Allow { message: None };
