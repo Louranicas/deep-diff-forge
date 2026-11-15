@@ -21,6 +21,10 @@
 // the one the first byte picks (so in several languages, Rust and JavaScript among them), each
 // file has the hunks that fit in what the files before it left, the rank reads at most 256 KiB
 // in the carried reading in all, and each file's hunks have the labels its share gives them.
+// The bound is passed only by five copies of over 52 KiB each, so two seeds do it from the first
+// run (`shared_bound_py`, `shared_bound_ts`: Python, TypeScript, Go, shell, YAML and Rust in
+// turn, the fifth cut part-way): a budget not charged for any one of Python, JavaScript, Go,
+// shell or YAML fails on them.
 //
 // Input: the first byte picks a path (and so a language and rule scope), the rest is the body
 // of one hunk; every line becomes a changed or context line, so the scanner sees comments and

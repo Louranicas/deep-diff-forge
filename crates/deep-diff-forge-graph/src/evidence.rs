@@ -3266,7 +3266,8 @@ mod tests {
     /// line that closes the comment the hunk before left open and then spawns a process,
     /// filler lines of at most 401 bytes (of `§`, two bytes each, when `wide`), and a line
     /// that opens a comment. Only the reading carried from hunk to hunk finds the spawn, in
-    /// every hunk read together but the first.
+    /// every hunk read together but the first. At a path in any other language the text is
+    /// the Rust one, for the shares alone: they count its bytes, which are the same.
     fn sized_creation(path: &str, sizes: &[usize], wide: bool) -> String {
         use std::fmt::Write as _;
         const LAST: &str = "let x = 1; /*";
@@ -3398,14 +3399,24 @@ mod tests {
 
     /// The created files of a patch share one carried reading of 256 KiB, in patch order: what
     /// one file reads together is taken from what the files after it may, whatever their
-    /// languages (the budget crosses from Rust into JavaScript and from JavaScript into Rust).
+    /// languages (the budget crosses into and out of each of Rust, JavaScript, Python, Go,
+    /// shell and YAML, so a budget charged for some languages and not others fails).
     /// Held at its edges: the budget used up exactly at a file's end leaves the next file
     /// nothing, one byte inside the next file cuts that file at the hunk the byte is in, and a
     /// file with fewer than two hunks in its share, or not read as one text at all, takes
     /// nothing.
     #[test]
     fn the_created_files_of_a_patch_share_one_bound() {
-        for exts in [["rs", "rs", "rs"], ["rs", "js", "rs"], ["js", "rs", "js"]] {
+        for exts in [
+            ["rs", "rs", "rs"],
+            ["rs", "js", "rs"],
+            ["js", "rs", "js"],
+            ["rs", "py", "go"],
+            ["py", "go", "sh"],
+            ["go", "sh", "yml"],
+            ["sh", "yml", "js"],
+            ["yml", "rs", "py"],
+        ] {
             created_files_share_one_bound(exts);
         }
     }

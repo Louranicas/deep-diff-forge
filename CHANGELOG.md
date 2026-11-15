@@ -205,9 +205,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     with fewer than two hunks read together is not read as one text, and takes nothing).
     This is no defence against a patch's author who means to hide code this way: one line
     longer than 512 bytes in the hunk with the hidden code or any hunk of the file before it,
-    or earlier created files that use up the 256 KiB, gives exactly 0.8.3's answer, at no
-    cost to the author (a review reproduced both). The join closes the case for patches that
-    honest tools write within the bound; `git diff` writes a creation as one hunk.
+    or earlier created files, or the file's own earlier hunks, that use up the 256 KiB, turn
+    the join off at no cost to the author (reviews reproduced all three). Code that an
+    earlier hunk's open comment or string hides is then found only where its hunk read alone
+    shows it: each hunk is read alone, as 0.8.3 reads it, with the second reading of Rust
+    beside it. The answer is not 0.8.3's for all that: in Rust the second reading still
+    reads every hunk and can find more (a review measured a creation at 4 with `new_file` on
+    0.8.3 and 7 with `network_fetch` added here; the spawn the earlier hunk hid was found by
+    neither). The join closes the case for patches that honest tools write within the bound;
+    `git diff` writes a creation as one hunk.
     Where that is depends on the patch alone, so a hunk has the same labels in the rank,
     the cluster with any number of workers, the outline page by page, the hunks by path and
     by address in any order, and asked for alone, and one request reads at most 256 KiB in
@@ -230,7 +236,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     `evidence_scan` fuzz target holds the same for a stretch of Rust cut into the hunks of a
     creation at lines the input chooses, and that its hunks are read together as far as the
     bound says, and that the created files of a patch (the same creation two to five times, at
-    paths in several languages) share it in patch order. Unit tests hold the bound: on
+    paths in several languages) share it in patch order; two of its seeds pass the bound
+    across Python, TypeScript, Go, shell, YAML and Rust. Unit tests hold the bound: on
     creations that pass it by their bytes and by one long line, in Rust and in JavaScript,
     every hunk has the same labels in every view and order of asking, and a hunk past the
     bound, the last one asked for alone among them, reads none of the hunks before it. Its
@@ -238,10 +245,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     byte more is not; a line of 512 bytes is carried and one of 513 is not, in ASCII and in
     two-byte characters; the budget used up exactly at a file's end leaves the next file
     nothing, and one byte into the next file cuts it at that hunk, with the budget passing
-    from Rust to JavaScript and from JavaScript to Rust); each of the mutations that moves
-    either limit by one, makes a `>` a `>=`, counts characters for bytes, gives each file the
-    whole budget again, shares it among the Rust files alone, or reads a file of a patch with
-    its own budget in the rank, the cluster or a view, fails them. Counted for whole requests:
+    into and out of each of Rust, JavaScript, Python, Go, shell and YAML); each of the
+    mutations that moves either limit by one, makes a `>` a `>=`, counts characters for
+    bytes, gives each file the whole budget again, shares it among the Rust files alone or
+    the Rust and JavaScript files alone, or reads a file of a patch with its own budget in
+    the rank, the cluster or a view, fails them. Counted for whole requests:
     the bytes the carried reading reads are counted on the thread, whatever readers a request
     makes, and on patches of many creations, each under every limit of a file of its own, the
     rank, the outline whole and page by page, every hunk whole and page by page, the hunks by
@@ -358,12 +366,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     numbers say: a comment or a string that one of them opens is not open in the next, as in
     0.8.3, and where positions Git would not write are refused is the parser (the release
     track), not this reading. That one limit has many forms, and reviews of this change
-    made these, each applied by Git and each answered here as by 0.8.3: a hunk that begins
-    at the line after the last old line of the hunk before it; a hunk of added lines only,
-    which plain Git appends to the file after the hunk that ended it, whatever its number
-    says; chains of those two; removal hunks that Git can only apply in reverse file order
-    (a deletion or a file's tail written as several hunks); hunks listed out of the file's
-    order; and hunks placed by `git apply --unidiff-zero`, `--allow-overlap` or
+    made these, each applied by Git and each read here hunk by hunk, as by 0.8.3: a hunk
+    that begins at the line after the last old line of the hunk before it; a hunk of added
+    lines only, which plain Git appends to the file after the hunk that ended it, whatever
+    its number says; chains of those two; removal hunks that Git can only apply in reverse
+    file order (a deletion or a file's tail written as several hunks); hunks listed out of
+    the file's order; and hunks placed by `git apply --unidiff-zero`, `--allow-overlap` or
     `--inaccurate-eof` where plain `git apply` would not place them (the last joins two
     hunks inside a line). Besides: a path named by more than one section is read section
     by section (the release track's fix for a path named by more than one section, not yet
@@ -376,8 +384,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     The bound is for the whole patch, spent on its created files in patch order: a patch's
     earlier created files can use it up, and then its later created files are read hunk by
     hunk, as in 0.8.3, whatever their size. So a patch's author who means to hide code this
-    way still can, at no cost: one long line, or earlier created files that use up the
-    bound, gives exactly 0.8.3's answer (the fix above says so).
+    way still can, at no cost: one long line, or earlier created files or the file's own
+    earlier hunks that use up the bound, leave that code found only where its hunk read
+    alone shows it (the fix above says so; the answer is not all 0.8.3's, as the second
+    reading of Rust still reads each hunk).
 
 ## [0.8.3] - 2026-11-11
 
