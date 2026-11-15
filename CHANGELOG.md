@@ -148,14 +148,24 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     break a caller (`Evidence`, `Assessment` and every released function keep their shape).
     `deep-diff-forge-graph` gains `HunkLabels`, the evidence labels of a file's hunks with
     the hunks of a created file read as one text (`new` for hunks asked for in file order,
-    `naming` for hunks asked for in any order, `of`; the daemon's views use it). Six more
-    items are public only for this workspace's own tests and fuzz targets; they are hidden
-    from the documentation, are not part of the API and may change: `HunkLabels::scans`,
-    `HunkLabels::views_alive_at_most` and `HunkLabels::entries_kept` (what a reader has
-    scanned and what it keeps), `file_evidence_released` (for each item of `file_evidence`,
-    whether the reading of 0.8.3 finds it) and, in `lexical`, `rust_lexer_view` with its
-    state `RustLexerState`. `file_evidence`, `assess_file` and `RankedFile::scored` return
-    what this entry and the next describe. `hunk_signals` answers as it did: for the hunk
+    `naming` for hunks asked for in any order, `of`). Fourteen more items are public only
+    for this workspace's own crates, tests and fuzz targets; they are hidden from the
+    documentation, are not part of the API and may change: `HunkLabels::scans`,
+    `HunkLabels::rule_evaluations`, `HunkLabels::views_alive_at_most`,
+    `HunkLabels::entries_kept`, `HunkLabels::carried_bytes` and `HunkLabels::read_together`
+    (what a reader has scanned, asked, kept and carried, and how many hunks it reads
+    together); `file_evidence_released` (for each item of `file_evidence`, whether the
+    reading of 0.8.3 finds it); in `lexical`, `rust_lexer_view` with its state
+    `RustLexerState`; and, for the one carried reading of a patch (next entry),
+    `CarriedShares` (with its methods `of` and `read_together`), `HunkLabels::in_patch`,
+    `RankedFile::scored_in_patch` and `assess_file_in_patch` (a file read with its share of
+    its patch, which the rank, the cluster and the daemon's views use) and
+    `carried_bytes_on_this_thread` (what the tests that hold a request's carried reading
+    count with). `file_evidence`, `assess_file`, `score_file`, `RankedFile::scored` and
+    `HunkLabels::new` and `naming` take one file and read it as the only file of its patch
+    (their documentation says so): a creation has the whole carried reading there, where in
+    a patch it has its share, so for a creation late in a large patch one of them can find
+    more than the rank of that patch lists. `hunk_signals` answers as it did: for the hunk
     it is given, read alone (with what the second reading of Rust finds), needing no other
     hunk of the file.
   - *Not closed.* A hunk is a fragment, and both readings start it as code. From a start
@@ -187,12 +197,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     file is also read as one text, in the order of the patch: a later hunk is read once more
     from what the hunks before it left open, when that is something. One state is carried:
     in Rust the lexer reading's, which for a created file is the compiler's reading of the
-    whole file, and in the other languages their one reading's. The hunks of a created file
-    are read together up to 256 KiB of its new side (each line counted with its end), with
-    no line longer than 512 bytes; from the first hunk that would take the reading past
-    either, each hunk is read alone, as in 0.8.3. Where that is depends on the file alone,
-    so a hunk has the same labels in the rank, the outline page by page, the hunks by path
-    and by address in any order, and asked for alone. It is a further reading,
+    whole file, and in the other languages their one reading's. The bound is for the whole
+    patch: its created files share one carried reading of 256 KiB of new side (each line
+    counted with its end) in patch order, and each is read together from its first hunk up
+    to the hunk that would take it past what the files before it left, or that has a line
+    longer than 512 bytes; from that hunk on, each hunk is read alone, as in 0.8.3 (a file
+    with fewer than two hunks read together is not read as one text, and takes nothing).
+    Where that is depends on the patch alone, so a hunk has the same labels in the rank,
+    the cluster with any number of workers, the outline page by page, the hunks by path and
+    by address in any order, and asked for alone, and one request reads at most 256 KiB in
+    the carried reading in all, whatever it asks. It is a further reading,
     never a replacement: every hunk is still read alone, exactly as before, so here too no
     score is lower than 0.8.3's and no signal or listed item of the ranking is missing (and
     at the bound of a file's printed list what only the carried reading finds is listed
@@ -210,11 +224,23 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     asked in order, backwards, one at a time, or at random with repeats. A rule in the
     `evidence_scan` fuzz target holds the same for a stretch of Rust cut into the hunks of a
     creation at lines the input chooses, and that its hunks are read together as far as the
-    bound says. Unit tests hold the bound: on creations that pass it by their bytes and by
-    one long line, in Rust and in JavaScript, every hunk has the same labels in every view and
-    order of asking, the reading carried from hunk to hunk never reads more than 256 KiB in a
-    request, and a hunk past the bound, the last one asked for alone among them, reads none
-    of the hunks before it.
+    bound says, and that the created files of a patch (the same creation two to five times)
+    share it in patch order. Unit tests hold the bound: on creations that pass it by their
+    bytes and by one long line, in Rust and in JavaScript, every hunk has the same labels in
+    every view and order of asking, and a hunk past the bound, the last one asked for alone
+    among them, reads none of the hunks before it. Its edges are held exactly (a creation of
+    256 KiB is read together to its end and one of a byte more is not; a line of 512 bytes
+    is carried and one of 513 is not, in ASCII and in two-byte characters; the budget used
+    up exactly at a file's end leaves the next file nothing, and one byte into the next file
+    cuts it at that hunk); each of the mutations that moves either limit by one, makes a
+    `>` a `>=`, counts characters for bytes, gives each file the whole budget again, or
+    reads a file of a patch with its own budget in the rank, the cluster or a view, fails
+    them. Counted for whole requests: the bytes the carried reading reads are counted on the
+    thread, whatever readers a request makes, and on patches of many creations, each under
+    every limit of a file of its own, the rank, the outline whole and page by page, every
+    hunk whole and page by page, the hunks by path, by address in several orders and each
+    alone, and the last hunk of each file read at most 256 KiB each; the outline and the
+    listing of every hunk read it once, as the rank does.
   - *What it costs, stated for any patch and held by tests that count.* The unit is a scan of
     a line: a view of a line is made by scanning the line once for each reading the view
     unites.
@@ -234,12 +260,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
       Rust and 8 more for the other languages; for ordinary text 1 more, and none where the
       hunks before left nothing open. A scan leaves the state the next hunk goes on from, so
       no line is read only to pass a state on. A hunk of a creation asked for by itself
-      costs the hunks before it that are read together, once (one view a line, 256 KiB of
-      lines of at most 512 bytes at the most), and then its own views; a hunk past the bound
-      costs its own views only, as in 0.8.3. The bound keeps that a small constant whatever
-      the patch: the hunks before a hunk asked for cost at the most the carried reading of
-      256 KiB of lines of 512 bytes (the most measured: lines that are each one JavaScript
-      word).
+      costs the hunks before it that are read together, once (one view a line), and then its
+      own views; a hunk past its file's share costs its own views only, as in 0.8.3. The one
+      budget of a patch keeps that a small constant for a whole request, whatever the patch
+      and whatever is asked: one request (a ranking, an outline page, any hunks in any order,
+      one hunk) reads at most 256 KiB of lines of at most 512 bytes in the carried reading in
+      all (the most measured: lines that are each one JavaScript word). The outline and the
+      listing of every hunk take the labels of a creation from the ranking's reading, so they
+      read it once. An MCP view whose answer is over its byte bound once escaped is asked
+      again with a smaller page, at most eight times in all, as in 0.8.3; each of those runs
+      is such a request.
     - *The rules.* The rules of a signal are asked in their order until one finds something,
       as in 0.8.3, so no rule is asked of the first view that 0.8.3 did not ask; a signal
       that is found is not asked for again in a further view.
@@ -256,40 +286,59 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
       generated files of every shape, all read, and the shape that cost the most in review)
       and exactly for ordinary text; the views made here that are alive at once (never more
       than one); the rules asked (the rules after the one that finds are not asked); the
-      entries kept; the bytes the carried reading reads (256 KiB at most in a request); and
-      the import rule against the one that kept a list (40,000 lines).
+      entries kept; the bytes the carried reading reads, counted for a whole request across
+      every file it reads (256 KiB at most in a request); and the import rule against the one
+      that kept a list (40,000 lines).
 
-    Measured against the published v0.8.3 binary on one host, in CPU seconds, the least of
-    two or three runs, with load averages between 0.4 and 5 (recorded beside each run):
-    samples, not bounds. Time, for ordinary Rust (2 MiB): 0.10 s against 0.07 s, as one
-    hunk, as a creation in hunks of 40 lines or in a file that exists. For text made to cost
-    the most: Rust whose every line the lexer reads twice (24 MB), in a file that exists 2.5
-    times 0.8.3's (0.70 s against 0.29 s), as a creation in 500 hunks of 16 lines 2.4 times
-    (0.70 s) and in 8,000 one-line hunks 1.8 times (0.51 s); with three raw strings left open
-    beside it, 2.4 times either way (0.81 s against 0.34 s); four kinds of literal left open
-    (30 MB), 1.5 times either way; JavaScript whose carried state holds three open strings
-    (24 MB), as a creation in 8,000 one-line hunks and in a file that exists, the same as
-    0.8.3. At the parser's size limit (67 MB), that Rust creation ranks in 1.9 s against
-    0.8 s and `review.outline` over the protocol takes 3.9 s against 1.6 s (2.4 times, the
-    most measured at that size), and the JavaScript one 2.9 s against 2.9 s; the shipped
-    clients give an exchange 30 s. One hunk asked for by its address: the last hunk read
-    together of a JavaScript creation whose lines are each one word of 512 bytes, the most
-    the bound lets the carried reading cost, 0.33 s against 0.14 s in a patch of 7.5 MB,
-    1.44 s against 1.26 s at the size limit, and 0.20 s against 0.01 s for those hunks
-    alone (263 KB): about 0.2 s more, whatever the patch. A hunk past the bound costs what it
-    costs in 0.8.3: the last of 2,400 hunks that are each one word of 3,000 letters (7.3 MB)
-    0.13 s, as in 0.8.3, where the commit before the bound took 29.5 s; the last of a Rust
-    creation at the size limit 1.17 s, as in 0.8.3. The first hunk costs what it cost. Peak
-    memory (maximum resident size): the same as 0.8.3's within 1 MB for every text above,
-    for one 30 MB line alone or after raw strings that the hunk before left open (118 MB),
-    and for 499,990 one-line hunks of a creation that each come into an open comment
-    (160 MB). A JavaScript line of 30 MB that is all `from`: 118 MB where 0.8.3 takes
-    250 MB, in a file that exists; behind a comment that the first hunk of a creation opened,
-    61 MB as in 0.8.3 (a line longer than 512 bytes is past the bound, so it is read alone).
-    999,000 lines of `unsafe` that only the second reading finds: 210 MB against 87 MB, which
-    is what 0.8.3 takes for those lines written plainly (209 MB). And, the most measured
-    against 0.8.3 for the same answer, 80,000 creations of three hunks listed by address
-    with the files in turn: 613 MB against 572 MB (1.07 times).
+    Measured against the published v0.8.3 binary on one host (16 threads), in CPU seconds,
+    the least of two runs, one measuring process at a time, with load averages between 1.1
+    and 1.5 (recorded beside each run): samples, not bounds. Time, for ordinary Rust
+    (2 MiB): 0.10 s against 0.07 s, as one hunk, as a creation in hunks of 40 lines or in a
+    file that exists. For text made to cost the most: Rust whose every line the lexer reads
+    twice (24 MB), in a file that exists 2.5 times 0.8.3's (0.70 s against 0.28 s), as a
+    creation in 500 hunks of 16 lines 2.5 times (0.70 s) and in 8,000 one-line hunks 1.8
+    times (0.51 s); with three raw strings left open beside it, 2.4 times (0.81 s against
+    0.34 s); four kinds of literal left open (30 MB), 1.5 times; JavaScript whose carried
+    state holds three open strings (24 MB), as a creation in 8,000 one-line hunks and in a
+    file that exists, the same as 0.8.3. At the parser's size limit (67 MB), that Rust
+    creation ranks in 1.9 s against 0.8 s and `review.outline` over the protocol takes
+    3.9 s against 1.6 s (2.4 times), and the JavaScript one 2.2 s against 2.8 s (the outline
+    takes the labels of the creation from the ranking's reading instead of reading its
+    hunks again); the shipped clients give an exchange 30 s. Many created files, each under
+    every limit of a file of its own, so that the bound of the patch is what holds them:
+    255 creations of that Rust text (65 MB) rank in 2.0 s against 0.8 s (2.4 times) and
+    their `review.outline` takes 4.0 s against 1.7 s (2.3 times), where the commit before
+    this one took 3.1 s and 6.2 s; 245 JavaScript creations whose lines are each one word of
+    510 letters, each just under 256 KiB (66.5 MB), rank in 16.5 s against 16.3 s and
+    `diff.rank` over the protocol takes 16.6 s against 16.4 s (the commit before: 63 s, past
+    the 30 s exchange), and one `review.hunks` naming the last hunk of each of the 245 files
+    1.50 s against 1.31 s (the commit before: 48 s); 8 of those files (2.2 MB) rank in
+    0.72 s against 0.53 s, alone or with `--cluster --parallel 2`; `review.outline` over 16
+    and 64 JavaScript creations of 512 hunks (4.4 and 17.5 MB) 1.3 s against 2.2 s and
+    6.2 s against 8.6 s (the commit before: 8.2 s and 33 s); 60,000 creations of two
+    one-line hunks (7.3 MB) rank in 0.45 s against 0.43 s, outline in 0.85 s against
+    0.82 s, and the last hunk of each asked in one request in 0.88 s against 0.87 s. What
+    one request's carried reading costs at the most, 256 KiB of JavaScript lines that are
+    each one word of about 512 bytes (the slowest reading measured; the same text behind an
+    open string or comment in Python, Go, shell, Rust or YAML takes 0.01 s): 0.20 s against
+    0.01 s for those hunks alone (263 KB), 0.33 s against 0.14 s for the last hunk read
+    together in a patch of 7.5 MB, 1.43 s against 1.25 s at the size limit: about 0.2 s
+    more, whatever the patch and whatever is asked. A hunk past its file's share costs what
+    it costs in 0.8.3: the last of 2,400 hunks that are each one word of 3,000 letters
+    (7.3 MB) 0.13 s, as in 0.8.3, where the commit before the first bound took 29.4 s; the
+    last of a Rust creation at the size limit 1.19 s against 1.18 s. The first hunk costs
+    what it cost. Peak memory (maximum resident size): the same as 0.8.3's within 1 MB for
+    every text above (patches of 2 MB and less take 8 to 10 MB, 1 MB more than 0.8.3 for
+    some), for one 30 MB line alone or after raw strings that the hunk before left open
+    (118 MB), and for 499,990 one-line hunks of a creation that each come into an open
+    comment (160 MB). A JavaScript line of 30 MB that is all `from`: 118 MB where 0.8.3
+    takes 250 MB, in a file that exists; behind a comment that the first hunk of a creation
+    opened, 61 MB as in 0.8.3 (a line longer than 512 bytes is past the bound, so it is read
+    alone). 999,000 lines of `unsafe` that only the second reading finds: 211 MB against
+    87 MB, which is what 0.8.3 takes for those lines written plainly (209 MB). And, the most
+    measured against 0.8.3 for the same answer, 80,000 creations of three hunks listed by
+    address with the files in turn: 586 MB against 572 MB (1.03 times; the commit before,
+    615 MB).
   - *What changes for a reader.* A file the patch creates in several hunks can rank higher.
     `git diff` writes a creation as one hunk, so for a patch it wrote nothing changes. The
     outline and the hunks view label the hunks of a creation as the rank does.
@@ -308,11 +357,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     hunks inside a line). Besides: a path named by more than one section is read section
     by section (the release track's fix for a path named by more than one section, not yet
     released, refuses such a patch), and a hunk with unseen lines above it is started as
-    code, whatever is open there. And a creation is read together only up to its bound:
-    from the hunk that would take the reading past 256 KiB of the new side, or that has a
-    line longer than 512 bytes, a comment or a string that one hunk leaves open is not open
-    in the next, as in 0.8.3 (a created file larger than that, written as several hunks, or
-    one with a long line such as a minified bundle's).
+    code, whatever is open there. And a creation is read together only up to its share of
+    the patch's bound: from the hunk that would take the reading past what is left of the
+    256 KiB, or that has a line longer than 512 bytes, a comment or a string that one hunk
+    leaves open is not open in the next, as in 0.8.3 (a created file larger than what is
+    left, written as several hunks, or one with a long line such as a minified bundle's).
+    The bound is for the whole patch, spent on its created files in patch order: a patch's
+    earlier created files can use it up, and then its later created files are read hunk by
+    hunk, as in 0.8.3, whatever their size.
 
 ## [0.8.3] - 2026-11-11
 

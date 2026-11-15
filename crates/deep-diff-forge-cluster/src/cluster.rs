@@ -3,7 +3,7 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-cluster--src--cluster
 use crate::scheduler::{resolve_workers, run_lane};
 use deep_diff_forge_core::{ExecutionDimension, JoinPolicy, Parallelism, ReviewFile};
-use deep_diff_forge_graph::{RankedFile, sort_ranked};
+use deep_diff_forge_graph::{CarriedShares, RankedFile, sort_ranked};
 
 /// A structured record of a cluster run (the framework's dimensional receipt).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,13 +31,20 @@ pub struct ClusterRun {
 
 /// Run the patch+risk dimensions over the review with bounded parallelism, then
 /// join deterministically. The result is identical for any worker count.
+///
+/// `files` are the files of one patch, all of them, in patch order: each is scored with its
+/// share of the patch's carried reading, worked out once before the lanes start, as
+/// [`deep_diff_forge_graph::rank`] scores it.
 #[must_use]
 pub fn run_risk_cluster(
     files: &[ReviewFile],
     parallelism: Parallelism,
     join: JoinPolicy,
 ) -> ClusterRun {
-    let scored: Vec<RankedFile> = run_lane(files, parallelism, |_, file| RankedFile::scored(file));
+    let shares = CarriedShares::of(files);
+    let scored: Vec<RankedFile> = run_lane(files, parallelism, |index, file| {
+        RankedFile::scored_in_patch(file, &shares, index)
+    });
     let ranked = apply_join(scored, join);
     let receipt = ClusterReceipt {
         dimensions: vec![ExecutionDimension::Patch, ExecutionDimension::Risk],
@@ -137,6 +144,49 @@ mod tests {
             );
         }
         parse(&s).unwrap()
+    }
+
+    /// Five created Rust files of 32 hunks of 2 KiB, each hunk closing the comment the hunk
+    /// before left open before a spawn: the patch's carried reading of 256 KiB covers the
+    /// first four, and the fifth is read hunk by hunk.
+    fn five_creations() -> Vec<ReviewFile> {
+        use std::fmt::Write as _;
+        let mut s = String::new();
+        for f in 0..5 {
+            let _ = writeln!(s, "--- /dev/null\n+++ b/src/c{f}.rs");
+            for h in 0..32 {
+                // 2,048 bytes: 40 for the spawn, 14 for the comment, 1,994 of filler.
+                let _ = writeln!(s, "@@ -0,0 +{},7 @@", 1 + h * 7);
+                let _ = writeln!(s, "+// */ std::process::Command::new(\"sh\");");
+                for _ in 0..4 {
+                    let _ = writeln!(s, "+//{}", "a".repeat(400 - 3));
+                }
+                let _ = writeln!(s, "+//{}", "a".repeat(1994 - 4 * 400 - 3));
+                let _ = writeln!(s, "+let x = 1; /*");
+            }
+        }
+        parse(&s).unwrap()
+    }
+
+    /// The lanes score each file with its share of the patch's carried reading, worked out
+    /// once from the whole patch, as the rank does, whatever the worker count: the fifth file
+    /// is past the budget and has none of the spawns only the carried reading finds.
+    #[test]
+    fn cluster_lanes_share_the_patch_bound_as_the_rank_does() {
+        let files = five_creations();
+        let ranked = deep_diff_forge_graph::rank(&files);
+        let fifth = ranked.iter().find(|r| r.path == "src/c4.rs").unwrap();
+        assert!(fifth.evidence.is_empty(), "{:?}", fifth.evidence);
+        let first = ranked.iter().find(|r| r.path == "src/c0.rs").unwrap();
+        assert_eq!(first.evidence.len(), 31);
+        for parallelism in [
+            Parallelism::Serial,
+            Parallelism::Fixed(2),
+            Parallelism::Fixed(3),
+        ] {
+            let run = run_risk_cluster(&files, parallelism, JoinPolicy::RankedReviewOrder);
+            assert_eq!(run.ranked, ranked, "{parallelism:?}");
+        }
     }
 
     #[test]

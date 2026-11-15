@@ -1,4 +1,4 @@
-use crate::evidence::{Evidence, MAX_EVIDENCE_PER_FILE};
+use crate::evidence::{CarriedShares, Evidence, MAX_EVIDENCE_PER_FILE, Share};
 use crate::risk::{RiskSignal, assess_file_marked};
 use deep_diff_forge_core::{FileStatus, ReviewFile};
 
@@ -27,10 +27,25 @@ pub struct RankedFile {
 }
 
 impl RankedFile {
-    /// Assess `file` and place it.
+    /// Assess `file`, read as the only file of its patch, and place it. [`rank`] places each
+    /// file of a patch read with its share of the patch's carried reading
+    /// ([`Self::scored_in_patch`]).
     #[must_use]
     pub fn scored(file: &ReviewFile) -> Self {
-        let (assessment, released) = assess_file_marked(file);
+        Self::sharing(file, Share::Own)
+    }
+
+    /// Not part of the API, and may change: assess `file` read with its share of its patch's
+    /// carried reading and place it, `file` being the file at `index` of the files `shares`
+    /// was made from. [`rank`] and the cluster's lanes place each file so.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn scored_in_patch(file: &ReviewFile, shares: &CarriedShares, index: usize) -> Self {
+        Self::sharing(file, shares.share(index))
+    }
+
+    fn sharing(file: &ReviewFile, share: Share) -> Self {
+        let (assessment, released) = assess_file_marked(file, share);
         let evidence_truncated = assessment.evidence.len() > MAX_EVIDENCE_PER_FILE;
         let evidence = listed(assessment.evidence, &released);
         Self {
@@ -78,9 +93,17 @@ fn listed(evidence: Vec<Evidence>, released: &[bool]) -> Vec<Evidence> {
 
 /// Rank the review by descending risk score, with a deterministic path
 /// tie-break, so the same review always produces the same order.
+///
+/// `files` are the files of one patch, all of them, in patch order: the files it creates in
+/// several hunks share one carried reading in that order ([`CarriedShares`]).
 #[must_use]
 pub fn rank(files: &[ReviewFile]) -> Vec<RankedFile> {
-    let mut ranked: Vec<RankedFile> = files.iter().map(RankedFile::scored).collect();
+    let shares = CarriedShares::of(files);
+    let mut ranked: Vec<RankedFile> = files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| RankedFile::scored_in_patch(file, &shares, index))
+        .collect();
     sort_ranked(&mut ranked);
     ranked
 }
@@ -137,7 +160,8 @@ mod tests {
         };
         // Of the items listed, which the reading of 0.8.3 finds.
         let released = |file: &ReviewFile, ranked: &RankedFile| -> Vec<bool> {
-            let (all, marks) = crate::evidence::file_evidence_marked(file);
+            let (all, marks) =
+                crate::evidence::file_evidence_marked(file, crate::evidence::Share::Own);
             let mark = |item| {
                 all.iter()
                     .position(|found| found == item)

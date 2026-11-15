@@ -21,10 +21,11 @@ pub const EVIDENCE_BASIS: &str = "lexical";
 /// The most evidence items a file reports; the score still counts every signal found.
 pub const MAX_EVIDENCE_PER_FILE: usize = 32;
 
-/// The most text the reading carried from one hunk of a created file to the next reads: bytes
-/// of the lines of the new side, each counted with its end. [`HunkLabels`] reads a creation's
-/// hunks together from the first up to the hunk that would take it past this, and each hunk
-/// from that one on alone.
+/// The most text the reading carried from one hunk of a created file to the next reads in a
+/// whole patch: bytes of the lines of the new side, each counted with its end. The created
+/// files of a patch share it in patch order ([`CarriedShares`]): each is read together from
+/// its first hunk up to the hunk that would take it past what the files before it left, and
+/// each hunk from that one on alone.
 const CARRIED_BYTES: usize = 256 * 1024;
 
 /// The longest line, in bytes, the reading carried from hunk to hunk reads: the hunk that has
@@ -492,24 +493,30 @@ impl FileKind {
 
 /// Every piece of evidence in `file`, in hunk order, then line order, then rule order, with no
 /// duplicates and no cap (callers cap what they print with [`MAX_EVIDENCE_PER_FILE`]).
+///
+/// `file` is read as the only file of its patch: a file the patch creates in several hunks
+/// has the whole of the patch's carried reading ([`CarriedShares`]). [`crate::rank`] reads
+/// each file of a patch with its share of it.
 #[must_use]
 pub fn file_evidence(file: &ReviewFile) -> Vec<Evidence> {
-    file_evidence_marked(file).0
+    file_evidence_marked(file, Share::Own).0
 }
 
 /// Not part of the API, and may change (the fuzz crate uses it). For each item of
 /// [`file_evidence`], in its order: whether the reading every release up to 0.8.3 had finds
 /// it. A ranked file's bounded list holds those items first
 /// ([`crate::RankedFile`]), so it never lists fewer of them than 0.8.3 listed; the
-/// `evidence_scan` fuzz target holds that with this.
+/// `evidence_scan` fuzz target holds that with this. `file` is read as the only file of its
+/// patch, as by [`file_evidence`].
 #[doc(hidden)]
 #[must_use]
 pub fn file_evidence_released(file: &ReviewFile) -> Vec<bool> {
-    file_evidence_marked(file).1
+    file_evidence_marked(file, Share::Own).1
 }
 
-/// [`file_evidence`], and beside it, item for item, whether the item is a released finding.
-pub(crate) fn file_evidence_marked(file: &ReviewFile) -> (Vec<Evidence>, Vec<bool>) {
+/// [`file_evidence`], and beside it, item for item, whether the item is a released finding;
+/// with the hunks read together that `share` says.
+pub(crate) fn file_evidence_marked(file: &ReviewFile, share: Share) -> (Vec<Evidence>, Vec<bool>) {
     let kind = FileKind::of(file);
     let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
     let mut out: Vec<Evidence> = Vec::new();
@@ -517,7 +524,7 @@ pub(crate) fn file_evidence_marked(file: &ReviewFile) -> (Vec<Evidence>, Vec<boo
     if rules.is_empty() {
         return (out, marks);
     }
-    let mut labels = HunkLabels::with(file, kind, rules);
+    let mut labels = HunkLabels::with(file, kind, rules, share);
     for (index, hunk) in file.patch_twin.hunks.iter().enumerate() {
         let mut address = None;
         // A hunk's scan yields each (side, signal, line) once and items from different hunks
@@ -576,10 +583,28 @@ struct Work {
     carried: Cell<usize>,
 }
 
+thread_local! {
+    /// The bytes of lines the reading carried from hunk to hunk has read on this thread, each
+    /// line counted with its end ([`carried_bytes_on_this_thread`]).
+    static CARRIED_ON_THREAD: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Not part of the API, and may change: the bytes of lines the reading carried from hunk to
+/// hunk has read on this thread since it started, each line counted with its end, by every
+/// reader. The tests that hold what one request reads, whatever readers it makes, take the
+/// difference before and after it.
+#[doc(hidden)]
+#[must_use]
+pub fn carried_bytes_on_this_thread() -> usize {
+    CARRIED_ON_THREAD.with(Cell::get)
+}
+
 impl Work {
     /// The view of `line` in the reading carried from hunk to hunk, from `state`, counted.
     fn carried_view(&self, language: Language, line: &str, state: &mut Carried) -> Live<'_> {
-        self.carried.set(self.carried.get() + line.len() + 1);
+        let bytes = line.len() + 1;
+        self.carried.set(self.carried.get() + bytes);
+        CARRIED_ON_THREAD.with(|read| read.set(read.get() + bytes));
         self.view(carried_view(language, line, state))
     }
 
@@ -626,12 +651,15 @@ enum Views {
 /// another; the hunks of a file that exists are read each on its own, whatever their numbers
 /// say.
 ///
-/// The hunks of a creation are read together from the first up to 256 KiB of the new side
-/// (each line counted with its end), none of whose lines is longer than 512 bytes: from the
-/// first hunk that would take the reading past either, each hunk is read alone, as in 0.8.3.
-/// Where that is depends on the file alone, so every hunk has the same labels however the
-/// hunks are asked for, and asking for any one hunk reads at most that much of the hunks
-/// before it.
+/// The hunks read together are bounded for the whole patch ([`CarriedShares`]): the created
+/// files share 256 KiB of the new side (each line counted with its end) in patch order, and
+/// none of the lines read together is longer than 512 bytes. A creation is read together from
+/// its first hunk up to the hunk that would take it past what the files before it left, or
+/// that has a longer line; from that hunk on, each hunk is read alone, as in 0.8.3. Where that
+/// is depends on the patch alone, so every hunk has the same labels however the hunks are
+/// asked for, and one request reads at most 256 KiB in the carried reading, whatever it asks.
+/// [`Self::new`] and [`Self::naming`] read the file as the only file of its patch; the views
+/// of a patch read it with its share ([`Self::in_patch`]).
 ///
 /// What it costs, for any patch. For each side a line is on, one view of it is made as 0.8.3
 /// made it, and for Rust one more as the compiler's lexer reads it; on its new side one more
@@ -653,7 +681,7 @@ enum Views {
 ///   not named is scanned once, for the state alone.
 /// - A hunk of a creation behind the place the reading has come to, that was not named, is
 ///   answered by going through the file again from its top, as far as that hunk and never
-///   past the bound above.
+///   past the file's share above (no view of a patch asks for one).
 pub struct HunkLabels<'a> {
     file: &'a ReviewFile,
     kind: FileKind,
@@ -661,7 +689,8 @@ pub struct HunkLabels<'a> {
     /// The file is one the patch creates, in a language, and more than one of its hunks are
     /// read together: those hunks are also one text.
     one_text: Option<Language>,
-    /// How many of the file's hunks, from the first, are read together ([`read_together`]).
+    /// How many of the file's hunks, from the first, are read together: its share of the
+    /// patch's carried reading ([`CarriedShares`]).
     together: usize,
     /// The hunks named to be asked for in any order, ascending.
     named: Vec<u32>,
@@ -675,40 +704,68 @@ pub struct HunkLabels<'a> {
 }
 
 impl<'a> HunkLabels<'a> {
-    /// A reader for hunks asked for in file order.
+    /// A reader for hunks asked for in file order, of `file` read as the only file of its
+    /// patch.
     #[must_use]
     pub fn new(file: &'a ReviewFile) -> Self {
-        let kind = FileKind::of(file);
-        let rules = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
-        Self::with(file, kind, rules)
+        Self::sharing(file, Share::Own)
     }
 
-    /// A reader for the hunks `asked`, given in the order they will be asked for. In file
-    /// order this is [`Self::new`]; in any other order the labels of these hunks are kept as
-    /// the file is gone through, so each is answered without going through it again.
+    /// A reader for the hunks `asked`, given in the order they will be asked for, of `file`
+    /// read as the only file of its patch. In file order this is [`Self::new`]; in any other
+    /// order the labels of these hunks are kept as the file is gone through, so each is
+    /// answered without going through it again.
     #[must_use]
     pub fn naming(file: &'a ReviewFile, asked: &[usize]) -> Self {
-        let mut labels = Self::new(file);
-        if labels.one_text.is_some() && !asked.is_sorted_by(|a, b| a < b) {
-            // A hunk past the bound is read alone and needs nothing kept.
-            labels.named = asked
-                .iter()
-                .filter(|&&index| index < labels.together)
-                .filter_map(|&index| u32::try_from(index).ok())
-                .collect();
-            labels.named.sort_unstable();
-            labels.named.dedup();
-        }
-        labels
+        Self::new(file).name(asked)
     }
 
-    fn with(file: &'a ReviewFile, kind: FileKind, rules: Vec<&'static Rule>) -> Self {
-        let created = file.status == FileStatus::Added && file.patch_twin.hunks.len() > 1;
-        let language = kind.language.filter(|_| created && !rules.is_empty());
-        let together = language.map_or(0, |_| read_together(&file.patch_twin.hunks));
+    /// Not part of the API, and may change: a reader for the hunks `asked` (none: in file
+    /// order), as [`Self::naming`], of `file` read with its share of its patch's carried
+    /// reading: `file` is the file at `index` of the files `shares` was made from. Every view
+    /// of a patch reads its files so.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn in_patch(
+        file: &'a ReviewFile,
+        shares: &CarriedShares,
+        index: usize,
+        asked: &[usize],
+    ) -> Self {
+        Self::sharing(file, shares.share(index)).name(asked)
+    }
+
+    fn sharing(file: &'a ReviewFile, share: Share) -> Self {
+        let kind = FileKind::of(file);
+        let rules = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
+        Self::with(file, kind, rules, share)
+    }
+
+    /// Names the hunks `asked`, when they are not in file order.
+    fn name(mut self, asked: &[usize]) -> Self {
+        if self.one_text.is_some() && !asked.is_sorted_by(|a, b| a < b) {
+            // A hunk past the file's share is read alone and needs nothing kept.
+            self.named = asked
+                .iter()
+                .filter(|&&index| index < self.together)
+                .filter_map(|&index| u32::try_from(index).ok())
+                .collect();
+            self.named.sort_unstable();
+            self.named.dedup();
+        }
+        self
+    }
+
+    fn with(file: &'a ReviewFile, kind: FileKind, rules: Vec<&'static Rule>, share: Share) -> Self {
+        let language = one_text_language(file, &kind, !rules.is_empty());
+        let together = match share {
+            _ if language.is_none() => 0,
+            Share::Own => read_together(&file.patch_twin.hunks, CARRIED_BYTES).0,
+            Share::Of(together) => together.min(file.patch_twin.hunks.len()),
+        };
         Self {
             file,
-            // A creation whose first hunk alone reaches the bound has nothing carried.
+            // A creation with fewer than two hunks in its share has nothing carried.
             one_text: language.filter(|_| together > 1),
             together,
             kind,
@@ -896,24 +953,97 @@ impl<'a> HunkLabels<'a> {
     }
 }
 
-/// How many of a creation's `hunks`, from the first, are read together: up to the first hunk
-/// with a line on its new side longer than [`CARRIED_LINE_BYTES`], or that takes the bytes of
-/// the new side (each line counted with its end) past [`CARRIED_BYTES`]. It depends on the
-/// hunks alone, and reads at most that much of them.
-fn read_together(hunks: &[PatchHunk]) -> usize {
+/// The language a file is read in as one text, when it is: a file the patch creates in more
+/// than one hunk, in a language, that some rule reads (`has_rules`).
+fn one_text_language(file: &ReviewFile, kind: &FileKind, has_rules: bool) -> Option<Language> {
+    let created = file.status == FileStatus::Added && file.patch_twin.hunks.len() > 1;
+    kind.language.filter(|_| created && has_rules)
+}
+
+/// How many of a creation's `hunks`, from the first, can be read together with `left` bytes
+/// of the carried reading left, and the bytes of those hunks: up to the first hunk with a
+/// line on its new side longer than [`CARRIED_LINE_BYTES`], or that takes the bytes of the
+/// new side (each line counted with its end) past `left`. It reads at most that much of them.
+fn read_together(hunks: &[PatchHunk], left: usize) -> (usize, usize) {
     let mut bytes = 0usize;
     for (index, hunk) in hunks.iter().enumerate() {
+        let before = bytes;
         for line in &hunk.lines {
             if line.kind == PatchLineKind::Removed {
                 continue;
             }
             bytes += line.text.len() + 1;
-            if line.text.len() > CARRIED_LINE_BYTES || bytes > CARRIED_BYTES {
-                return index;
+            if line.text.len() > CARRIED_LINE_BYTES || bytes > left {
+                return (index, before);
             }
         }
     }
-    hunks.len()
+    (hunks.len(), bytes)
+}
+
+/// How many hunks of a file are read together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Share {
+    /// As the only file of its patch: the whole of [`CARRIED_BYTES`].
+    Own,
+    /// As many as its patch's [`CarriedShares`] gave it.
+    Of(usize),
+}
+
+/// Not part of the API, and may change: how many hunks of each file of a patch, from the
+/// first, are read together as one text. The files a patch creates in more than one hunk,
+/// in a language that some rule reads, share one carried reading of 256 KiB of new side
+/// (each line counted with its end) in patch order: each, in its turn, has the hunks that
+/// fit in what the files before it left, as far as the first hunk with a line longer than
+/// 512 bytes, and what it has is taken from what is left. A file with fewer than two such
+/// hunks is not read as one text and takes nothing. It is worked out from the patch alone, so
+/// every view of a patch gives every hunk the same labels, and the carried reading of one
+/// request, of a view over the whole patch or of any hunks of it in any order, reads at most
+/// 256 KiB in all.
+#[doc(hidden)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CarriedShares {
+    together: Vec<usize>,
+}
+
+impl CarriedShares {
+    /// The shares of the files of a patch, `files`, all of them in patch order.
+    #[must_use]
+    pub fn of(files: &[ReviewFile]) -> Self {
+        let mut left = CARRIED_BYTES;
+        let together = files
+            .iter()
+            .map(|file| {
+                if file.status != FileStatus::Added || file.patch_twin.hunks.len() < 2 {
+                    return 0;
+                }
+                let kind = FileKind::of(file);
+                let has_rules = RULES.iter().any(|r| kind.admits(r.scope));
+                if one_text_language(file, &kind, has_rules).is_none() {
+                    return 0;
+                }
+                let (together, bytes) = read_together(&file.patch_twin.hunks, left);
+                if together < 2 {
+                    return 0;
+                }
+                left -= bytes;
+                together
+            })
+            .collect();
+        Self { together }
+    }
+
+    /// How many hunks, from the first, of the file at `index` are read together as one text
+    /// (none for a file that is not so read).
+    #[must_use]
+    pub fn read_together(&self, index: usize) -> usize {
+        self.together.get(index).copied().unwrap_or(0)
+    }
+
+    /// The share of the file at `index`.
+    pub(crate) fn share(&self, index: usize) -> Share {
+        Share::Of(self.read_together(index))
+    }
 }
 
 /// `(side, signal, line)` for every signal some rule finds on a changed line of `hunk`, read
@@ -2098,7 +2228,7 @@ mod tests {
             let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
             let hunk = &file.patch_twin.hunks[0];
             let alone = hunk_matches_in(hunk, kind.language, &rules, Views::Released);
-            let (items, marks) = file_evidence_marked(&file);
+            let (items, marks) = file_evidence_marked(&file, Share::Own);
             assert_eq!(marks, file_evidence_released(&file));
             for (item, released) in items.iter().zip(marks) {
                 assert_eq!(
@@ -3126,6 +3256,242 @@ mod tests {
         }
     }
 
+    /// The new-side text of a creation of `path` (Rust) whose hunk `h` is exactly `sizes[h]`
+    /// bytes, each line counted with its end: a line that closes the comment the hunk before
+    /// left open and then spawns a process, filler lines of at most 401 bytes (of `§`, two
+    /// bytes each, when `wide`), and a line that opens a comment. Only the reading carried
+    /// from hunk to hunk finds the spawn, in every hunk read together but the first.
+    fn sized_creation(path: &str, sizes: &[usize], wide: bool) -> String {
+        use std::fmt::Write as _;
+        const FIRST: &str = "// */ std::process::Command::new(\"sh\");";
+        const LAST: &str = "let x = 1; /*";
+        let mut text = format!("--- /dev/null\n+++ b/{path}\n");
+        let mut at = 1;
+        for &size in sizes {
+            let mut lines = vec![FIRST.to_owned()];
+            let mut left = size - (FIRST.len() + 1) - (LAST.len() + 1);
+            while left > 0 {
+                let line = left.min(401) - 1;
+                lines.push(match line {
+                    0 => String::new(),
+                    1 => "x".to_owned(),
+                    _ if wide => {
+                        format!("//{}{}", "§".repeat((line - 2) / 2), "a".repeat(line % 2))
+                    }
+                    _ => format!("//{}", "a".repeat(line - 2)),
+                });
+                left -= line + 1;
+            }
+            lines.push(LAST.to_owned());
+            let bytes: usize = lines.iter().map(|line| line.len() + 1).sum();
+            assert_eq!(bytes, size);
+            let _ = writeln!(text, "@@ -0,0 +{at},{} @@", lines.len());
+            for line in &lines {
+                let _ = writeln!(text, "+{line}");
+            }
+            at += lines.len();
+        }
+        text
+    }
+
+    /// `n` hunks of `each` bytes, and a last one of `last` bytes.
+    fn sizes(n: usize, each: usize, last: usize) -> Vec<usize> {
+        let mut sizes = vec![each; n];
+        sizes.push(last);
+        sizes
+    }
+
+    /// The edges of the bound, held exactly (each fails if the bound moves by one byte, if a
+    /// `>` becomes `>=`, or if characters are counted instead of bytes): a creation of exactly
+    /// 256 KiB is read together to its end and one of a byte more is not; a line of exactly
+    /// 512 bytes is carried and one of 513 is not, in ASCII and in two-byte characters; and the
+    /// labels of the hunks follow.
+    #[test]
+    fn the_bound_holds_at_its_exact_edges() {
+        let together = |text: &str| -> usize {
+            let files = parse(text).unwrap();
+            let shares = CarriedShares::of(&files);
+            let file = &files[0];
+            assert_eq!(
+                HunkLabels::new(file).read_together(),
+                shares.read_together(0)
+            );
+            shares.read_together(0)
+        };
+        // 32 hunks: 31 of 8 KiB and a last one that makes 256 KiB exactly, or one byte more.
+        for wide in [false, true] {
+            let exact = sized_creation("src/x.rs", &sizes(31, 8192, 8192), wide);
+            assert_eq!(together(&exact), 32, "exactly 256 KiB, wide {wide}");
+            let over = sized_creation("src/x.rs", &sizes(31, 8192, 8193), wide);
+            assert_eq!(together(&over), 31, "256 KiB and a byte, wide {wide}");
+        }
+        // The labels at the byte edge: the last hunk has the spawn only when it is carried.
+        for (last, spawn) in [(8192, true), (8193, false)] {
+            let text = sized_creation("src/x.rs", &sizes(31, 8192, last), false);
+            let file = parse(&text).unwrap().remove(0);
+            let expected = if spawn {
+                vec![EvidenceSignal::ProcessSpawn]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(HunkLabels::new(&file).of(31), expected, "last {last}");
+            assert_eq!(
+                HunkLabels::new(&file).of(30),
+                [EvidenceSignal::ProcessSpawn]
+            );
+        }
+        // A line of 512 bytes, then of 513, in hunk 3 of 6: in ASCII and in two-byte characters
+        // (256 and 257 characters).
+        for (line, wide, carried) in [
+            (512, false, 6),
+            (513, false, 3),
+            (512, true, 6),
+            (513, true, 3),
+        ] {
+            let long = if wide {
+                format!("//{}{}", "§".repeat((line - 2) / 2), "a".repeat(line % 2))
+            } else {
+                format!("//{}", "a".repeat(line - 2))
+            };
+            assert_eq!(long.len(), line);
+            let text = sized_creation("src/x.rs", &[600; 6], false);
+            // Hunk 3's second line (a filler of 401 bytes, end included) becomes the long line.
+            let (mut hunk, mut placed) = (0, false);
+            let text: String = text
+                .lines()
+                .map(|l| {
+                    hunk += usize::from(l.starts_with("+// */"));
+                    if hunk == 4 && !placed && l.len() == 401 && l.starts_with("+//") {
+                        placed = true;
+                        format!("+{long}\n")
+                    } else {
+                        format!("{l}\n")
+                    }
+                })
+                .collect();
+            assert!(placed, "the long line is placed");
+            assert_eq!(together(&text), carried, "line {line}, wide {wide}");
+            let file = parse(&text).unwrap().remove(0);
+            let spawn = !HunkLabels::new(&file).of(3).is_empty();
+            assert_eq!(spawn, carried > 3, "line {line}, wide {wide}");
+        }
+    }
+
+    /// The created files of a patch share one carried reading of 256 KiB, in patch order: what
+    /// one file reads together is taken from what the files after it may. Held at its edges:
+    /// the budget used up exactly at a file's end leaves the next file nothing, one byte inside
+    /// the next file cuts that file at the hunk the byte is in, and a file with fewer than two
+    /// hunks in its share, or not read as one text at all, takes nothing.
+    #[test]
+    fn the_created_files_of_a_patch_share_one_bound() {
+        // A: 32 hunks, all of 8 KiB but the last; B and C: three hunks of 100 bytes.
+        let shares_of = |a_last: usize, between: &str| -> Vec<usize> {
+            let mut text = sized_creation("src/a.rs", &sizes(31, 8192, a_last), false);
+            text.push_str(between);
+            text.push_str(&sized_creation("src/b.rs", &[100; 3], false));
+            text.push_str(&sized_creation("src/c.rs", &[100; 3], false));
+            let files = parse(&text).unwrap();
+            let shares = CarriedShares::of(&files);
+            (0..files.len()).map(|i| shares.read_together(i)).collect()
+        };
+        let full = 8192;
+        // A takes 256 KiB less 600: B and C read together to their ends.
+        assert_eq!(shares_of(full - 600, ""), [32, 3, 3]);
+        // Less 599: C's last hunk is the one the byte is in; it has two hunks still.
+        assert_eq!(shares_of(full - 599, ""), [32, 3, 2]);
+        // Less 300: B to its end, C nothing.
+        assert_eq!(shares_of(full - 300, ""), [32, 3, 0]);
+        // Less 299: B cut in its last hunk, and C has the 99 bytes left, under one hunk.
+        assert_eq!(shares_of(full - 299, ""), [32, 2, 0]);
+        // Less 200: B has two hunks; less 199: one, so it is not read as one text, and
+        // takes nothing: C has the 199 bytes, one hunk, and nothing either.
+        assert_eq!(shares_of(full - 200, ""), [32, 2, 0]);
+        assert_eq!(shares_of(full - 199, ""), [32, 0, 0]);
+        // A takes exactly 256 KiB: the others nothing. A byte more: A is cut at its last
+        // hunk, and B and C share what A's last hunk would have taken.
+        assert_eq!(shares_of(full, ""), [32, 0, 0]);
+        assert_eq!(shares_of(full + 1, ""), [31, 3, 3]);
+        // Files that are not read as one text take nothing: a file that exists, a creation in
+        // one hunk, a creation whose first hunk has a line over 512 bytes, and a creation in
+        // a language no rule reads.
+        let modified = "--- a/src/m.rs\n+++ b/src/m.rs\n@@ -1,1 +1,2 @@\n x\n+y\n";
+        let one_hunk = sized_creation("src/one.rs", &[300_000], false);
+        let long_first = format!(
+            "--- /dev/null\n+++ b/src/long.rs\n@@ -0,0 +1,1 @@\n+//{}\n@@ -0,0 +2,1 @@\n+x\n",
+            "a".repeat(600)
+        );
+        let no_rules =
+            "--- /dev/null\n+++ b/notes.unknown-kind\n@@ -0,0 +1,1 @@\n+a\n@@ -0,0 +2,1 @@\n+b\n";
+        let between = format!("{modified}{one_hunk}{long_first}{no_rules}");
+        let shares = shares_of(full - 600, &between);
+        assert_eq!(shares, [32, 0, 0, 0, 0, 3, 3]);
+        // A creation whose first hunk fits in what is left and whose second does not has one
+        // hunk in its share: it is not read as one text and takes nothing, so B after it still
+        // has the 300 bytes left.
+        let one_fits = sized_creation("src/one_fits.rs", &[100, 250], false);
+        assert_eq!(shares_of(full - 300, &one_fits), [32, 0, 3, 0]);
+    }
+
+    /// One request reads at most 256 KiB in the carried reading, whatever it asks: the rank of
+    /// a patch of 24 creations, each of about 64 KiB and under every limit of a file of its
+    /// own, reads exactly the shares of the first four (counted on the thread, whatever
+    /// readers it makes), and labels every hunk as its share says; one reader for each file,
+    /// asked in reverse with its share, reads no more.
+    #[test]
+    fn one_request_reads_at_most_the_bound_in_all() {
+        let mut text = String::new();
+        for f in 0..24 {
+            text.push_str(&sized_creation(&format!("src/f{f}.rs"), &[4096; 16], false));
+        }
+        let files = parse(&text).unwrap();
+        let shares = CarriedShares::of(&files);
+        let wanted: Vec<usize> = (0..24).map(|f| if f < 4 { 16 } else { 0 }).collect();
+        let got: Vec<usize> = (0..24).map(|f| shares.read_together(f)).collect();
+        assert_eq!(got, wanted);
+        for file in &files {
+            assert_eq!(
+                HunkLabels::new(file).read_together(),
+                16,
+                "as its patch's only file"
+            );
+        }
+        // The first hunk of a file comes into nothing open, and is not read in the carried
+        // reading; the other 15 of each of the four files are, once.
+        let once = CARRIED_BYTES - 4 * 4096;
+        let before = carried_bytes_on_this_thread();
+        let ranked = crate::rank(&files);
+        assert_eq!(carried_bytes_on_this_thread() - before, once);
+        for (f, file) in files.iter().enumerate() {
+            let listed = ranked.iter().find(|r| r.path == file.path).unwrap();
+            for (h, hunk) in file.patch_twin.hunks.iter().enumerate() {
+                let has = listed.evidence.iter().any(|e| e.hunk == hunk.id);
+                assert_eq!(has, (1..wanted[f]).contains(&h), "file {f} hunk {h}");
+            }
+        }
+        let before = carried_bytes_on_this_thread();
+        let reversed: Vec<usize> = (0..16).rev().collect();
+        for (f, file) in files.iter().enumerate() {
+            let mut labels = HunkLabels::in_patch(file, &shares, f, &reversed);
+            for &h in &reversed {
+                let spawn = labels.of(h) == [EvidenceSignal::ProcessSpawn];
+                assert_eq!(spawn, (1..wanted[f]).contains(&h), "file {f} hunk {h}");
+            }
+        }
+        assert_eq!(carried_bytes_on_this_thread() - before, once);
+        // Each hunk of each file alone, a reader each: at most one file's share each.
+        for (f, file) in files.iter().enumerate() {
+            for h in 0..16 {
+                let before = carried_bytes_on_this_thread();
+                let _ = HunkLabels::in_patch(file, &shares, f, &[]).of(h);
+                let read = carried_bytes_on_this_thread() - before;
+                assert!(
+                    read <= 16 * 4096 && (f < 4 || read == 0),
+                    "file {f} hunk {h}: {read}"
+                );
+            }
+        }
+    }
+
     /// At the bound, the list of a file the patch creates in several hunks holds every item
     /// 0.8.3 would list, though the reading carried from hunk to hunk finds more: 300
     /// generated creations of 40 to 100 lines, cut into hunks at random, with comments left
@@ -3169,7 +3535,7 @@ mod tests {
             let file = parse(&text).unwrap().remove(0);
             let (is_cut, _) = bounded_list_holds(&file, &text);
             cut += usize::from(is_cut);
-            let (_, marks) = file_evidence_marked(&file);
+            let (_, marks) = file_evidence_marked(&file, Share::Own);
             carried += marks.iter().filter(|released| !**released).count();
         }
         assert!(

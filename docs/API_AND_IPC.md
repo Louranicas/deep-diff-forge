@@ -482,7 +482,9 @@ Additive members, so the schema names stay `v0`. They are present only when foun
     than 32 were found; the score counts all of them. Each signal also appears in `signals`.
   - At the bound the list is not simply the first 32 in that order (since the release after
     0.8.3, which reads Rust a second way and reads the hunks of a file the patch
-    creates as one text, up to 256 KiB of it with no line longer than 512 bytes). It holds first
+    creates as one text, up to a bound for the whole patch: its created files share 256 KiB of
+    new side in patch order, with no line longer than 512 bytes, so one request reads at most
+    256 KiB in that reading, whatever it asks). It holds first
     the items the reading every release up to 0.8.3 had finds, as many as fit, and then, in the
     room that is left, items only a further reading finds; the items listed keep the order above.
     With 32 or more items of the first kind it is exactly the list 0.8.3 printed.

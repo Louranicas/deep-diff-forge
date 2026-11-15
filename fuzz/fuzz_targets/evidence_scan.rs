@@ -16,6 +16,11 @@
 // file from its first, whatever a hunk read alone would show, in the hunks read together: from
 // the first, up to 256 KiB of the new side with no line longer than 512 bytes.
 //
+// And the created files of a patch share one carried reading of 256 KiB in patch order: the
+// same creation two to five times over in one patch, each file has the hunks that fit in what
+// the files before it left, the rank reads at most 256 KiB in the carried reading in all, and
+// each file's hunks have the labels its share gives them.
+//
 // Input: the first byte picks a path (and so a language and rule scope), the rest is the body
 // of one hunk; every line becomes a changed or context line, so the scanner sees comments and
 // strings opening and closing across lines.
@@ -25,8 +30,9 @@ use deep_diff_forge_graph::lexical::{
     Language, RustLexerState, ScanState, code_view, has_token, rust_lexer_view,
 };
 use deep_diff_forge_graph::{
-    Evidence, EvidenceSignal, HunkLabels, MAX_EVIDENCE_PER_FILE, RankedFile, Side, file_evidence,
-    file_evidence_released, hunk_signals,
+    CarriedShares, Evidence, EvidenceSignal, HunkLabels, MAX_EVIDENCE_PER_FILE, RankedFile, Side,
+    assess_file_in_patch, carried_bytes_on_this_thread, file_evidence, file_evidence_released,
+    hunk_signals,
 };
 use libfuzzer_sys::fuzz_target;
 use std::fmt::Write as _;
@@ -171,6 +177,10 @@ fn one_text_in_hunks(pick: u8, text: &str) {
     if bytes <= 256 * 1024 {
         assert_eq!(together, if first_long > 1 { first_long } else { 0 });
     }
+    let copies = 1 + usize::from(pick >> 4) % 5;
+    if copies > 1 {
+        shared_in_patch(&patch, copies);
+    }
     // A hunk past the bound is read alone; the first is read from the top of the file either way.
     let evidence = file_evidence(file);
     let mut state = RustLexerState::default();
@@ -244,6 +254,68 @@ fn released_reading_is_found(file: &deep_diff_forge_core::ReviewFile) {
                     line.text
                 );
             }
+        }
+    }
+}
+
+/// `patch`, one creation, `copies` times over in one patch (each copy at its own path): each
+/// file has the hunks, from its first, that fit in what the files before it left of 256 KiB,
+/// up to the first with a line over 512 bytes, and takes them when they are two or more; the
+/// rank reads at most 256 KiB in the carried reading; every hunk has the labels of its share.
+fn shared_in_patch(patch: &str, copies: usize) {
+    let mut text = String::new();
+    for copy in 0..copies {
+        text.push_str(&patch.replace("+++ b/src/cut.rs", &format!("+++ b/src/cut{copy}.rs")));
+    }
+    let Ok(files) = deep_diff_forge_patch::parse(&text) else {
+        return;
+    };
+    let shares = CarriedShares::of(&files);
+    let mut left = 256 * 1024;
+    for (index, file) in files.iter().enumerate() {
+        let (mut fit, mut bytes) = (0, 0);
+        'hunks: for hunk in &file.patch_twin.hunks {
+            let mut more = 0;
+            for line in &hunk.lines {
+                more += line.text.len() + 1;
+                if line.text.len() > 512 || bytes + more > left {
+                    break 'hunks;
+                }
+            }
+            fit += 1;
+            bytes += more;
+        }
+        let own = HunkLabels::new(file).read_together();
+        let share = shares.read_together(index);
+        if own == 0 {
+            assert_eq!(share, 0, "file {index}");
+            continue;
+        }
+        if fit >= 2 {
+            left -= bytes;
+            assert_eq!(share, fit, "file {index}");
+        } else {
+            assert_eq!(share, 0, "file {index}");
+        }
+    }
+    let before = carried_bytes_on_this_thread();
+    let _ = deep_diff_forge_graph::rank(&files);
+    assert!(carried_bytes_on_this_thread() - before <= 256 * 1024);
+    for (index, file) in files.iter().enumerate() {
+        let mut found = std::collections::HashMap::new();
+        for item in assess_file_in_patch(file, &shares, index).evidence {
+            found
+                .entry(item.hunk)
+                .or_insert_with(Vec::new)
+                .push(item.signal);
+        }
+        let mut labels = HunkLabels::in_patch(file, &shares, index, &[]);
+        for (h, hunk) in file.patch_twin.hunks.iter().enumerate() {
+            let of_evidence: Vec<EvidenceSignal> = EvidenceSignal::ALL
+                .into_iter()
+                .filter(|signal| found.get(&hunk.id).is_some_and(|s| s.contains(signal)))
+                .collect();
+            assert_eq!(labels.of(h), of_evidence, "file {index} hunk {h}");
         }
     }
 }

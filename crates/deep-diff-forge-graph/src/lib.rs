@@ -15,11 +15,15 @@ pub mod lexical;
 mod rank;
 mod risk;
 
+#[doc(hidden)]
+pub use evidence::{CarriedShares, carried_bytes_on_this_thread};
 pub use evidence::{
     EVIDENCE_BASIS, Evidence, EvidenceSignal, HunkLabels, MAX_EVIDENCE_PER_FILE, Side,
     file_evidence, file_evidence_released, hunk_signals,
 };
 pub use rank::{RankedFile, rank, sort_ranked};
+#[doc(hidden)]
+pub use risk::assess_file_in_patch;
 pub use risk::{
     Assessment, LARGE_CHANGE_LINES, MANY_HUNKS, RiskSignal, assess_file, change_counts, score_file,
 };
