@@ -17,9 +17,10 @@
 // the first, up to 256 KiB of the new side with no line longer than 512 bytes.
 //
 // And the created files of a patch share one carried reading of 256 KiB in patch order: the
-// same creation two to five times over in one patch, each file has the hunks that fit in what
-// the files before it left, the rank reads at most 256 KiB in the carried reading in all, and
-// each file's hunks have the labels its share gives them.
+// same creation two to five times over in one patch, at paths taken from `PATHS` in turn from
+// the one the first byte picks (so in several languages, Rust and JavaScript among them), each
+// file has the hunks that fit in what the files before it left, the rank reads at most 256 KiB
+// in the carried reading in all, and each file's hunks have the labels its share gives them.
 //
 // Input: the first byte picks a path (and so a language and rule scope), the rest is the body
 // of one hunk; every line becomes a changed or context line, so the scanner sees comments and
@@ -179,7 +180,7 @@ fn one_text_in_hunks(pick: u8, text: &str) {
     }
     let copies = 1 + usize::from(pick >> 4) % 5;
     if copies > 1 {
-        shared_in_patch(&patch, copies);
+        shared_in_patch(pick, &patch, copies);
     }
     // A hunk past the bound is read alone; the first is read from the top of the file either way.
     let evidence = file_evidence(file);
@@ -258,14 +259,17 @@ fn released_reading_is_found(file: &deep_diff_forge_core::ReviewFile) {
     }
 }
 
-/// `patch`, one creation, `copies` times over in one patch (each copy at its own path): each
+/// `patch`, one creation, `copies` times over in one patch, copy `k` at `c{k}/` and the path
+/// of `PATHS` `k` places after the one `pick` picks (so in the languages of those paths): each
 /// file has the hunks, from its first, that fit in what the files before it left of 256 KiB,
-/// up to the first with a line over 512 bytes, and takes them when they are two or more; the
-/// rank reads at most 256 KiB in the carried reading; every hunk has the labels of its share.
-fn shared_in_patch(patch: &str, copies: usize) {
+/// up to the first with a line over 512 bytes, and takes them when they are two or more and
+/// the file is read as one text at all; the rank reads at most 256 KiB in the carried reading;
+/// every hunk has the labels of its share.
+fn shared_in_patch(pick: u8, patch: &str, copies: usize) {
     let mut text = String::new();
     for copy in 0..copies {
-        text.push_str(&patch.replace("+++ b/src/cut.rs", &format!("+++ b/src/cut{copy}.rs")));
+        let at = PATHS[(usize::from(pick) + copy) % PATHS.len()];
+        text.push_str(&patch.replace("+++ b/src/cut.rs", &format!("+++ b/c{copy}/{at}")));
     }
     let Ok(files) = deep_diff_forge_patch::parse(&text) else {
         return;

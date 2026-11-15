@@ -203,6 +203,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     to the hunk that would take it past what the files before it left, or that has a line
     longer than 512 bytes; from that hunk on, each hunk is read alone, as in 0.8.3 (a file
     with fewer than two hunks read together is not read as one text, and takes nothing).
+    This is no defence against a patch's author who means to hide code this way: one line
+    longer than 512 bytes in the hunk with the hidden code or any hunk of the file before it,
+    or earlier created files that use up the 256 KiB, gives exactly 0.8.3's answer, at no
+    cost to the author (a review reproduced both). The join closes the case for patches that
+    honest tools write within the bound; `git diff` writes a creation as one hunk.
     Where that is depends on the patch alone, so a hunk has the same labels in the rank,
     the cluster with any number of workers, the outline page by page, the hunks by path and
     by address in any order, and asked for alone, and one request reads at most 256 KiB in
@@ -224,23 +229,25 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     asked in order, backwards, one at a time, or at random with repeats. A rule in the
     `evidence_scan` fuzz target holds the same for a stretch of Rust cut into the hunks of a
     creation at lines the input chooses, and that its hunks are read together as far as the
-    bound says, and that the created files of a patch (the same creation two to five times)
-    share it in patch order. Unit tests hold the bound: on creations that pass it by their
-    bytes and by one long line, in Rust and in JavaScript, every hunk has the same labels in
-    every view and order of asking, and a hunk past the bound, the last one asked for alone
-    among them, reads none of the hunks before it. Its edges are held exactly (a creation of
-    256 KiB is read together to its end and one of a byte more is not; a line of 512 bytes
-    is carried and one of 513 is not, in ASCII and in two-byte characters; the budget used
-    up exactly at a file's end leaves the next file nothing, and one byte into the next file
-    cuts it at that hunk); each of the mutations that moves either limit by one, makes a
-    `>` a `>=`, counts characters for bytes, gives each file the whole budget again, or
-    reads a file of a patch with its own budget in the rank, the cluster or a view, fails
-    them. Counted for whole requests: the bytes the carried reading reads are counted on the
-    thread, whatever readers a request makes, and on patches of many creations, each under
-    every limit of a file of its own, the rank, the outline whole and page by page, every
-    hunk whole and page by page, the hunks by path, by address in several orders and each
-    alone, and the last hunk of each file read at most 256 KiB each; the outline and the
-    listing of every hunk read it once, as the rank does.
+    bound says, and that the created files of a patch (the same creation two to five times, at
+    paths in several languages) share it in patch order. Unit tests hold the bound: on
+    creations that pass it by their bytes and by one long line, in Rust and in JavaScript,
+    every hunk has the same labels in every view and order of asking, and a hunk past the
+    bound, the last one asked for alone among them, reads none of the hunks before it. Its
+    edges are held exactly (a creation of 256 KiB is read together to its end and one of a
+    byte more is not; a line of 512 bytes is carried and one of 513 is not, in ASCII and in
+    two-byte characters; the budget used up exactly at a file's end leaves the next file
+    nothing, and one byte into the next file cuts it at that hunk, with the budget passing
+    from Rust to JavaScript and from JavaScript to Rust); each of the mutations that moves
+    either limit by one, makes a `>` a `>=`, counts characters for bytes, gives each file the
+    whole budget again, shares it among the Rust files alone, or reads a file of a patch with
+    its own budget in the rank, the cluster or a view, fails them. Counted for whole requests:
+    the bytes the carried reading reads are counted on the thread, whatever readers a request
+    makes, and on patches of many creations, each under every limit of a file of its own, the
+    rank, the outline whole and page by page, every hunk whole and page by page, the hunks by
+    path, by address in several orders and each alone, and the last hunk of each file read at
+    most 256 KiB each; the outline and the listing of every hunk read it once, as the rank
+    does.
   - *What it costs, stated for any patch and held by tests that count.* The unit is a scan of
     a line: a view of a line is made by scanning the line once for each reading the view
     unites.
@@ -269,7 +276,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
       listing of every hunk take the labels of a creation from the ranking's reading, so they
       read it once. An MCP view whose answer is over its byte bound once escaped is asked
       again with a smaller page, at most eight times in all, as in 0.8.3; each of those runs
-      is such a request.
+      is such a request. So one MCP view call takes up to eight times one view's time, and the
+      factors stated below for a view apply to each of its runs: a review measured one
+      `review_outline` call on a 64 MB patch, part JavaScript and part Rust, made to run eight
+      times, at 34 s against 25 s on 0.8.3. MCP over stdio has no deadline of DDF's own (the
+      30 s is the socket client's).
     - *The rules.* The rules of a signal are asked in their order until one finds something,
       as in 0.8.3, so no rule is asked of the first view that 0.8.3 did not ask; a signal
       that is found is not asked for again in a further view.
@@ -364,7 +375,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     left, written as several hunks, or one with a long line such as a minified bundle's).
     The bound is for the whole patch, spent on its created files in patch order: a patch's
     earlier created files can use it up, and then its later created files are read hunk by
-    hunk, as in 0.8.3, whatever their size.
+    hunk, as in 0.8.3, whatever their size. So a patch's author who means to hide code this
+    way still can, at no cost: one long line, or earlier created files that use up the
+    bound, gives exactly 0.8.3's answer (the fix above says so).
 
 ## [0.8.3] - 2026-11-11
 

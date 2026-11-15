@@ -226,10 +226,12 @@ fn hunk_head(file: &ReviewFile, hunk: &PatchHunk) -> serde_json::Map<String, Val
     hunk_head_with(file, hunk, &deep_diff_forge_graph::hunk_signals(file, hunk))
 }
 
-/// A hunk's header facts with its evidence labels given. The outline takes the labels of the
-/// hunks of a file read as one text from its ranking ([`risk_order`]); the hunks view asks for
-/// them through one [`deep_diff_forge_graph::HunkLabels`] for each such file, with its share of
-/// the patch's carried reading, which reads the file's hunks as one text, once.
+/// A hunk's header facts with its evidence labels given. The outline and the listing of every
+/// hunk take the labels of the hunks of a file read as one text from its ranking
+/// ([`risk_order`]); a listing by path or by address asks for them through one
+/// [`deep_diff_forge_graph::HunkLabels`] for each such file, with its share of the patch's
+/// carried reading, which reads the file's hunks as one text, once. The hunks of any other
+/// file are read alone ([`deep_diff_forge_graph::hunk_signals`]).
 fn hunk_head_with(
     file: &ReviewFile,
     hunk: &PatchHunk,
@@ -1270,19 +1272,27 @@ mod tests {
         }
     }
 
-    /// A creation of `path` (Rust) whose hunk `h` is exactly `sizes[h]` bytes of new side, each
-    /// line counted with its end: a line that closes the comment the hunk before left open and
-    /// then spawns a process, filler lines, and a line that opens a comment. Only the reading
-    /// carried from hunk to hunk finds the spawn, in every hunk read together but the first.
+    /// A creation of `path` (Rust, or JavaScript when `path` ends in `.js`) whose hunk `h` is
+    /// exactly `sizes[h]` bytes of new side, each line counted with its end: a line that closes
+    /// the comment the hunk before left open and then spawns a process, filler lines, and a
+    /// line that opens a comment. Only the reading carried from hunk to hunk finds the spawn,
+    /// in every hunk read together but the first.
     fn sized_creation(path: &str, sizes: &[usize]) -> String {
         use std::fmt::Write as _;
-        const FIRST: &str = "// */ std::process::Command::new(\"sh\");";
         const LAST: &str = "let x = 1; /*";
+        let first = if std::path::Path::new(path)
+            .extension()
+            .is_some_and(|ext| ext == "js")
+        {
+            "// */ execSync(\"sh\");"
+        } else {
+            "// */ std::process::Command::new(\"sh\");"
+        };
         let mut text = format!("--- /dev/null\n+++ b/{path}\n");
         let mut at = 1;
         for &size in sizes {
-            let mut lines = vec![FIRST.to_owned()];
-            let mut left = size - (FIRST.len() + 1) - (LAST.len() + 1);
+            let mut lines = vec![first.to_owned()];
+            let mut left = size - (first.len() + 1) - (LAST.len() + 1);
             while left > 0 {
                 let line = left.min(301) - 1;
                 lines.push(match line {
@@ -1315,22 +1325,24 @@ mod tests {
         (answer, read)
     }
 
-    /// A patch whose created files share the carried reading, and the budget runs out in the
-    /// middle of a file: two creations of 96 KiB, one of 80 KiB cut after its hunk 25, two
-    /// more of 8 KiB left with nothing, a file that exists, and two small creations that fit
-    /// in what is left (32 hunks at most a file, so that the rank lists every item). With the
-    /// shares worked out here from the sizes: a file has the hunks that fit in what is left,
-    /// and takes them, when they are two or more.
+    /// A patch whose created files, Rust and JavaScript, share the carried reading, and the
+    /// budget runs out in the middle of a file: two creations of 96 KiB (Rust, then
+    /// JavaScript), one of 80 KiB (JavaScript) cut after its hunk 25, two more of 8 KiB left
+    /// with nothing, a file that exists, and two small creations (Rust, then JavaScript) that
+    /// fit in what is left (32 hunks at most a file, so that the rank lists every item). The
+    /// budget crosses from Rust into JavaScript and from JavaScript into Rust. With the shares
+    /// worked out here from the sizes: a file has the hunks that fit in what is left, and takes
+    /// them, when they are two or more, whatever its language.
     fn shared_patch() -> (String, Vec<usize>) {
         let plan: [(&str, usize, usize); 8] = [
             ("src/a.rs", 32, 3072),
-            ("src/b.rs", 32, 3072),
-            ("src/d.rs", 32, 2560),
+            ("src/b.js", 32, 3072),
+            ("src/d.js", 32, 2560),
             ("src/e.rs", 4, 2048),
-            ("src/f.rs", 4, 2048),
+            ("src/f.js", 4, 2048),
             ("src/m.rs", 0, 0),
             ("src/g.rs", 3, 100),
-            ("src/h.rs", 4, 100),
+            ("src/h.js", 4, 100),
         ];
         let mut text = String::new();
         let mut left = CARRIED_BOUND;

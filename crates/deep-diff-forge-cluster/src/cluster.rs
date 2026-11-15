@@ -146,26 +146,42 @@ mod tests {
         parse(&s).unwrap()
     }
 
-    /// Five created Rust files of 32 hunks of 2 KiB, each hunk closing the comment the hunk
-    /// before left open before a spawn: the patch's carried reading of 256 KiB covers the
-    /// first four, and the fifth is read hunk by hunk.
+    /// Five created files of 32 hunks of 2 KiB, Rust, JavaScript, Rust, JavaScript and Rust,
+    /// each hunk closing the comment the hunk before left open before a spawn: the patch's
+    /// carried reading of 256 KiB covers the first four, whatever their languages, and the
+    /// fifth is read hunk by hunk.
     fn five_creations() -> Vec<ReviewFile> {
         use std::fmt::Write as _;
         let mut s = String::new();
         for f in 0..5 {
-            let _ = writeln!(s, "--- /dev/null\n+++ b/src/c{f}.rs");
+            let (ext, spawn) = if f % 2 == 0 {
+                ("rs", "// */ std::process::Command::new(\"sh\");")
+            } else {
+                ("js", "// */ execSync(\"sh\");")
+            };
+            let _ = writeln!(s, "--- /dev/null\n+++ b/src/c{f}.{ext}");
             for h in 0..32 {
-                // 2,048 bytes: 40 for the spawn, 14 for the comment, 1,994 of filler.
+                // 2,048 bytes: the spawn, 14 for the comment, and filler.
                 let _ = writeln!(s, "@@ -0,0 +{},7 @@", 1 + h * 7);
-                let _ = writeln!(s, "+// */ std::process::Command::new(\"sh\");");
+                let _ = writeln!(s, "+{spawn}");
                 for _ in 0..4 {
                     let _ = writeln!(s, "+//{}", "a".repeat(400 - 3));
                 }
-                let _ = writeln!(s, "+//{}", "a".repeat(1994 - 4 * 400 - 3));
+                let filler = 2048 - (spawn.len() + 1) - 14;
+                let _ = writeln!(s, "+//{}", "a".repeat(filler - 4 * 400 - 3));
                 let _ = writeln!(s, "+let x = 1; /*");
             }
         }
-        parse(&s).unwrap()
+        let files = parse(&s).unwrap();
+        for file in &files {
+            let bytes: usize = file.patch_twin.hunks[0]
+                .lines
+                .iter()
+                .map(|line| line.text.len() + 1)
+                .sum();
+            assert_eq!(bytes, 2048, "{}", file.path);
+        }
+        files
     }
 
     /// The lanes score each file with its share of the patch's carried reading, worked out
@@ -177,8 +193,10 @@ mod tests {
         let ranked = deep_diff_forge_graph::rank(&files);
         let fifth = ranked.iter().find(|r| r.path == "src/c4.rs").unwrap();
         assert!(fifth.evidence.is_empty(), "{:?}", fifth.evidence);
-        let first = ranked.iter().find(|r| r.path == "src/c0.rs").unwrap();
-        assert_eq!(first.evidence.len(), 31);
+        for path in ["src/c0.rs", "src/c1.js", "src/c3.js"] {
+            let read = ranked.iter().find(|r| r.path == path).unwrap();
+            assert_eq!(read.evidence.len(), 31, "{path}");
+        }
         for parallelism in [
             Parallelism::Serial,
             Parallelism::Fixed(2),

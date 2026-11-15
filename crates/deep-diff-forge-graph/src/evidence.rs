@@ -552,8 +552,11 @@ pub(crate) fn file_evidence_marked(file: &ReviewFile, share: Share) -> (Vec<Evid
 /// of Rust finds added. It needs none of the file's other hunks and costs the hunk's own
 /// lines at every call.
 ///
-/// The outline and hunk views label the hunks of a file the patch creates as one text; that
-/// is [`HunkLabels`], which they ask, not this.
+/// The views of a patch ask this only for the hunks of a file that is not read as one text
+/// (its share of the patch's carried reading is under two hunks). For a file that is, the
+/// outline and the listing of every hunk take the labels of its hunks from the ranking's own
+/// reading of it (its evidence, read with the patch's shares), and a listing by path or by
+/// address asks a [`HunkLabels`] made with the patch's shares ([`HunkLabels::in_patch`]).
 #[must_use]
 pub fn hunk_signals(file: &ReviewFile, hunk: &PatchHunk) -> Vec<EvidenceSignal> {
     let kind = FileKind::of(file);
@@ -673,12 +676,14 @@ enum Views {
 /// at a time (the view of 0.8.3 keeps one string for each of its scans while it unites
 /// them, as it always did). What is kept:
 ///
-/// - For hunks asked for in file order ([`Self::new`]: the rank, the outline, a listing by
-///   path), one state, however many hunks the file has.
-/// - For hunks asked for in any other order, which are named first ([`Self::naming`]: a
-///   listing by address), the labels of the named hunks of a creation, eight bytes each. The
-///   file is gone through once, as far as the last hunk named; a hunk on the way that was
-///   not named is scanned once, for the state alone.
+/// - For hunks asked for in file order ([`Self::new`], or [`Self::in_patch`] naming none: the
+///   rank's reading of each file, with its share, and a listing by path), one state, however
+///   many hunks the file has. The outline and the listing of every hunk make no reader of
+///   their own: they take the labels from the rank's reading.
+/// - For hunks asked for in any other order, which are named first ([`Self::naming`], or
+///   [`Self::in_patch`] naming them: a listing by address), the labels of the named hunks of
+///   a creation, eight bytes each. The file is gone through once, as far as the last hunk
+///   named; a hunk on the way that was not named is scanned once, for the state alone.
 /// - A hunk of a creation behind the place the reading has come to, that was not named, is
 ///   answered by going through the file again from its top, as far as that hunk and never
 ///   past the file's share above (no view of a patch asks for one).
@@ -2707,8 +2712,8 @@ mod tests {
     /// `hunk_signals` answers for the hunk it is given, read alone, as every release up to
     /// 0.8.3 did (with what the second reading of Rust finds): it needs no other hunk of the
     /// file. The second hunk of a creation, whose line stands behind a comment the first
-    /// opened, has no label there; the views ask [`HunkLabels`], which reads the creation as
-    /// one text and has the spawn.
+    /// opened, has no label there; the views take its label from a reading of the creation as
+    /// one text (the rank's, or a [`HunkLabels`]), which has the spawn.
     #[test]
     fn hunk_signals_reads_the_hunk_given_alone() {
         let spawn = "std::process::Command::new(\"sh\");";
@@ -3256,20 +3261,21 @@ mod tests {
         }
     }
 
-    /// The new-side text of a creation of `path` (Rust) whose hunk `h` is exactly `sizes[h]`
-    /// bytes, each line counted with its end: a line that closes the comment the hunk before
-    /// left open and then spawns a process, filler lines of at most 401 bytes (of `§`, two
-    /// bytes each, when `wide`), and a line that opens a comment. Only the reading carried
-    /// from hunk to hunk finds the spawn, in every hunk read together but the first.
+    /// The new-side text of a creation of `path` (Rust, or JavaScript when `path` ends in
+    /// `.js`) whose hunk `h` is exactly `sizes[h]` bytes, each line counted with its end: a
+    /// line that closes the comment the hunk before left open and then spawns a process,
+    /// filler lines of at most 401 bytes (of `§`, two bytes each, when `wide`), and a line
+    /// that opens a comment. Only the reading carried from hunk to hunk finds the spawn, in
+    /// every hunk read together but the first.
     fn sized_creation(path: &str, sizes: &[usize], wide: bool) -> String {
         use std::fmt::Write as _;
-        const FIRST: &str = "// */ std::process::Command::new(\"sh\");";
         const LAST: &str = "let x = 1; /*";
+        let first = spawn_after_comment(path);
         let mut text = format!("--- /dev/null\n+++ b/{path}\n");
         let mut at = 1;
         for &size in sizes {
-            let mut lines = vec![FIRST.to_owned()];
-            let mut left = size - (FIRST.len() + 1) - (LAST.len() + 1);
+            let mut lines = vec![first.to_owned()];
+            let mut left = size - (first.len() + 1) - (LAST.len() + 1);
             while left > 0 {
                 let line = left.min(401) - 1;
                 lines.push(match line {
@@ -3292,6 +3298,19 @@ mod tests {
             at += lines.len();
         }
         text
+    }
+
+    /// A line that closes a block comment and then spawns a process, in the language of `path`
+    /// (JavaScript for `.js`, Rust otherwise): read alone it is a line comment.
+    fn spawn_after_comment(path: &str) -> &'static str {
+        if std::path::Path::new(path)
+            .extension()
+            .is_some_and(|ext| ext == "js")
+        {
+            "// */ execSync(\"sh\");"
+        } else {
+            "// */ std::process::Command::new(\"sh\");"
+        }
     }
 
     /// `n` hunks of `each` bytes, and a last one of `last` bytes.
@@ -3378,70 +3397,89 @@ mod tests {
     }
 
     /// The created files of a patch share one carried reading of 256 KiB, in patch order: what
-    /// one file reads together is taken from what the files after it may. Held at its edges:
-    /// the budget used up exactly at a file's end leaves the next file nothing, one byte inside
-    /// the next file cuts that file at the hunk the byte is in, and a file with fewer than two
-    /// hunks in its share, or not read as one text at all, takes nothing.
+    /// one file reads together is taken from what the files after it may, whatever their
+    /// languages (the budget crosses from Rust into JavaScript and from JavaScript into Rust).
+    /// Held at its edges: the budget used up exactly at a file's end leaves the next file
+    /// nothing, one byte inside the next file cuts that file at the hunk the byte is in, and a
+    /// file with fewer than two hunks in its share, or not read as one text at all, takes
+    /// nothing.
     #[test]
     fn the_created_files_of_a_patch_share_one_bound() {
+        for exts in [["rs", "rs", "rs"], ["rs", "js", "rs"], ["js", "rs", "js"]] {
+            created_files_share_one_bound(exts);
+        }
+    }
+
+    /// [`the_created_files_of_a_patch_share_one_bound`] with the files A, B and C in the
+    /// languages of the extensions `exts`; the files between them that take nothing are in
+    /// B's.
+    fn created_files_share_one_bound(exts: [&str; 3]) {
+        let [a, b, c] = [("a", exts[0]), ("b", exts[1]), ("c", exts[2])]
+            .map(|(name, ext)| format!("src/{name}.{ext}"));
+        let between_ext = exts[1];
         // A: 32 hunks, all of 8 KiB but the last; B and C: three hunks of 100 bytes.
         let shares_of = |a_last: usize, between: &str| -> Vec<usize> {
-            let mut text = sized_creation("src/a.rs", &sizes(31, 8192, a_last), false);
+            let mut text = sized_creation(&a, &sizes(31, 8192, a_last), false);
             text.push_str(between);
-            text.push_str(&sized_creation("src/b.rs", &[100; 3], false));
-            text.push_str(&sized_creation("src/c.rs", &[100; 3], false));
+            text.push_str(&sized_creation(&b, &[100; 3], false));
+            text.push_str(&sized_creation(&c, &[100; 3], false));
             let files = parse(&text).unwrap();
             let shares = CarriedShares::of(&files);
             (0..files.len()).map(|i| shares.read_together(i)).collect()
         };
         let full = 8192;
         // A takes 256 KiB less 600: B and C read together to their ends.
-        assert_eq!(shares_of(full - 600, ""), [32, 3, 3]);
+        assert_eq!(shares_of(full - 600, ""), [32, 3, 3], "{exts:?}");
         // Less 599: C's last hunk is the one the byte is in; it has two hunks still.
-        assert_eq!(shares_of(full - 599, ""), [32, 3, 2]);
+        assert_eq!(shares_of(full - 599, ""), [32, 3, 2], "{exts:?}");
         // Less 300: B to its end, C nothing.
-        assert_eq!(shares_of(full - 300, ""), [32, 3, 0]);
+        assert_eq!(shares_of(full - 300, ""), [32, 3, 0], "{exts:?}");
         // Less 299: B cut in its last hunk, and C has the 99 bytes left, under one hunk.
-        assert_eq!(shares_of(full - 299, ""), [32, 2, 0]);
+        assert_eq!(shares_of(full - 299, ""), [32, 2, 0], "{exts:?}");
         // Less 200: B has two hunks; less 199: one, so it is not read as one text, and
         // takes nothing: C has the 199 bytes, one hunk, and nothing either.
-        assert_eq!(shares_of(full - 200, ""), [32, 2, 0]);
-        assert_eq!(shares_of(full - 199, ""), [32, 0, 0]);
+        assert_eq!(shares_of(full - 200, ""), [32, 2, 0], "{exts:?}");
+        assert_eq!(shares_of(full - 199, ""), [32, 0, 0], "{exts:?}");
         // A takes exactly 256 KiB: the others nothing. A byte more: A is cut at its last
         // hunk, and B and C share what A's last hunk would have taken.
-        assert_eq!(shares_of(full, ""), [32, 0, 0]);
-        assert_eq!(shares_of(full + 1, ""), [31, 3, 3]);
+        assert_eq!(shares_of(full, ""), [32, 0, 0], "{exts:?}");
+        assert_eq!(shares_of(full + 1, ""), [31, 3, 3], "{exts:?}");
         // Files that are not read as one text take nothing: a file that exists, a creation in
         // one hunk, a creation whose first hunk has a line over 512 bytes, and a creation in
         // a language no rule reads.
         let modified = "--- a/src/m.rs\n+++ b/src/m.rs\n@@ -1,1 +1,2 @@\n x\n+y\n";
-        let one_hunk = sized_creation("src/one.rs", &[300_000], false);
+        let one_hunk = sized_creation(&format!("src/one.{between_ext}"), &[300_000], false);
         let long_first = format!(
-            "--- /dev/null\n+++ b/src/long.rs\n@@ -0,0 +1,1 @@\n+//{}\n@@ -0,0 +2,1 @@\n+x\n",
+            "--- /dev/null\n+++ b/src/long.{between_ext}\n@@ -0,0 +1,1 @@\n+//{}\n@@ -0,0 +2,1 @@\n+x\n",
             "a".repeat(600)
         );
         let no_rules =
             "--- /dev/null\n+++ b/notes.unknown-kind\n@@ -0,0 +1,1 @@\n+a\n@@ -0,0 +2,1 @@\n+b\n";
         let between = format!("{modified}{one_hunk}{long_first}{no_rules}");
         let shares = shares_of(full - 600, &between);
-        assert_eq!(shares, [32, 0, 0, 0, 0, 3, 3]);
+        assert_eq!(shares, [32, 0, 0, 0, 0, 3, 3], "{exts:?}");
         // A creation whose first hunk fits in what is left and whose second does not has one
         // hunk in its share: it is not read as one text and takes nothing, so B after it still
         // has the 300 bytes left.
-        let one_fits = sized_creation("src/one_fits.rs", &[100, 250], false);
-        assert_eq!(shares_of(full - 300, &one_fits), [32, 0, 3, 0]);
+        let one_fits = sized_creation(&format!("src/one_fits.{between_ext}"), &[100, 250], false);
+        assert_eq!(shares_of(full - 300, &one_fits), [32, 0, 3, 0], "{exts:?}");
     }
 
     /// One request reads at most 256 KiB in the carried reading, whatever it asks: the rank of
-    /// a patch of 24 creations, each of about 64 KiB and under every limit of a file of its
-    /// own, reads exactly the shares of the first four (counted on the thread, whatever
-    /// readers it makes), and labels every hunk as its share says; one reader for each file,
-    /// asked in reverse with its share, reads no more.
+    /// a patch of 24 creations, Rust and JavaScript in turn, each of about 64 KiB and under
+    /// every limit of a file of its own, reads exactly the shares of the first four (counted
+    /// on the thread, whatever readers it makes), and labels every hunk as its share says; one
+    /// reader for each file, asked in reverse with its share, reads no more.
     #[test]
     fn one_request_reads_at_most_the_bound_in_all() {
         let mut text = String::new();
         for f in 0..24 {
-            text.push_str(&sized_creation(&format!("src/f{f}.rs"), &[4096; 16], false));
+            let ext = if f % 2 == 0 { "rs" } else { "js" };
+            text.push_str(&sized_creation(
+                &format!("src/f{f}.{ext}"),
+                &[4096; 16],
+                false,
+            ));
         }
         let files = parse(&text).unwrap();
         let shares = CarriedShares::of(&files);
