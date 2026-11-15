@@ -337,7 +337,9 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   the state holds that file's SHA-256 and length, so a list that was cut or changed is not
   believed. Every later hook of the session judges that project, wherever the agent has gone
   with `cd`: a stop from a nested repository, another repository, a directory outside any,
-  or one that is gone still judges the project. The project is a repository at a path: it
+  or one that is gone still judges the project. A directory that is gone is in the tree
+  the nearest directory above it that is there is in: from a build directory removed
+  inside a linked working tree, that tree is the one the stop is in, and it is judged. The project is a repository at a path: it
   is known by the inode of its Git directory and by where it stands. A clone put at its
   path is not it, and neither is the project once it was moved: the stop is UNJUDGED, says
   which, and says the remedy (start a new session). The device number is no part of the
@@ -398,7 +400,8 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   them can take another's time: an ask leaves 5 seconds for each ask owed after it, so a
   judge that hangs on one commit, or on two, cannot keep the next from being submitted.
   (A run of the judge has 30 seconds at most. A run that was cut is written down as
-  asked and cut, with the time it had.) That holds while the judge can be run, the state
+  asked and cut, with the time it had: its part of what was left, all that was left, or
+  the 30 seconds.) That holds while the judge can be run, the state
   can be kept, and the stop has 13 seconds of its judging left when it comes to its
   commits (3 for the first ask it owes and 5 for each of the two after it), after the
   changes of its working trees are judged. With less, the asks are made in that order
@@ -514,7 +517,15 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   working tree remembers what it saw: a line that is gone is forgotten, so it blocks again
   if it comes back, and a number that fell is remembered as the lower one. A stop that did
   not look (the session's directory was not in that linked working tree) forgets nothing,
-  names the tree and says at every such stop that a failure stands there. What is staged
+  names the tree and says at every such stop that a failure stands there. Such a stop
+  looks at that tree with `git status`, which is not the reading the judge's patch is
+  made by: it does not show a change in a file marked assume-unchanged, nor one that a
+  clean filter or the line-ending settings of the repository hide (the judge's patch is
+  made with the repository's filters off). So where something of the tree is
+  remembered, `git status` saying nothing forgets nothing: the tree is read the way a
+  stop from inside it reads it, and only that reading finding nothing forgets; a change
+  it finds names the tree, and a tree it cannot read (a path marked skip-worktree) is
+  named as one that could not be looked at. What is staged
   is a failure of its own only in the lines the working tree's failure does not have: a
   credential that blocked while it was staged and in the working tree blocks again, as
   "Staged changes", when the file is repaired and not staged again, and the message says
@@ -630,7 +641,11 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   whether the session-start hook and the hook after a tool call are registered too (the
   judged range depends on the first; a matcher that narrows either fails the link), and
   whether the commits the repository names can be listed as the first hook of a session
-  lists them (where they cannot, no session is recorded and every stop is UNJUDGED), and
+  lists them (where Git refuses them because there are more working trees or more
+  commits named than a hook reads, a session is recorded with no such list, and its
+  commits are UNJUDGED at every stop while what is not committed is judged; where they
+  cannot be listed for another reason, no session is recorded and every stop is
+  UNJUDGED), and
   whether the directory the sessions' state is kept in can be used (there, a directory of
   its own, writable, outside the project's working tree). The
   settings read are the project's `.claude/settings.local.json` and `.claude/settings.json`
@@ -720,19 +735,28 @@ project and not judged at every stop while it is true, as stated above):
   while there were 256 or fewer, and for one that begins in such a repository: its start
   records the project and the commit it began from, and that there is no list of the
   commits that were there (the list is not taken later: a commit the session made
-  before then would count as one that was there). `git worktree prune` takes away the
-  entries of trees whose directories are gone; it does nothing for trees that exist.
+  before then would count as one that was there). `git worktree prune` forgets the
+  entries of trees that are gone; it does nothing for trees that exist. The reason a stop
+  gives says first what follows ("not in this session, whatever is committed (what is
+  not committed is judged)"), then the cause; a reason a message cuts for room ends with
+  "…".
 - A bare repository with its working trees inside it (`repo.git/main`,
   `repo.git/feature`) is a layout like any other: the tree a stop is in is the one Git
-  says its directory is in, wherever the Git directory lies. Only a directory that is in
-  no working tree and inside the Git directory is one of Git's own.
+  says its directory is in, wherever the Git directory lies. Only a directory that is
+  KNOWN to be in no working tree and is inside the Git directory is one of Git's own: it
+  has no `.git` entry, and neither has any directory between it and the Git directory
+  (the top of every working tree has one; a linked tree whose administrative directory
+  is gone still has its `.git` file). Where Git fails or does not answer for any other
+  directory the session is in, the stop is UNJUDGED with Git's words, the tree that
+  directory is under is named as one the session's directory may be in, and nothing of
+  it is forgotten.
 - The order of a stop, and its time. One limit: 45 seconds for everything, of which 4 are
   kept for remembering and saying, and 6 more for looking at the submodules and the other
   working trees when the project has any. So the judging has 41 seconds, or 35.
 
   | in this order | the time one run of the judge may take |
   | --- | --- |
-  | the working tree the stop is in: its uncommitted change, then its staged change when that is another | what is left of the judging, less what the asks about commits can need (3 seconds when no commit of the session waits for a verdict; 5 more when one waits for its turn, 5 more when one with fewer attempts waits: 13 at most), less 5 for its own staged change when there is one, less 3 for the project's tree when the stop is in a linked tree and the project's tree has something that is not committed (one `git status` of at most 2 seconds says; what it cannot say counts as a change). From a linked tree with nothing else to judge: 32 seconds. When that leaves under 3 seconds: all that is left. |
+  | the working tree the stop is in: its uncommitted change, then its staged change when that is another | what is left of the judging, less what the asks about commits can need (3 seconds when no commit of the session waits for a verdict; 5 more when one waits for its turn, 5 more when one with fewer attempts waits: 13 at most; a commit waits by the last line the session's file of judged commits has for it), less 5 for its own staged change when there is one, less 3 for the project's tree when the stop is in a linked tree and the project's tree has something that is not committed (one `git status` of at most 2 seconds says; what it cannot say counts as a change), and 30 seconds at most. From a linked tree with nothing else to judge: 30 seconds (32 are left, and no run has more than 30). When that leaves under 3 seconds: all that is left. |
   | the project's tree, when the stop is in a linked one | the same, of what is left then |
   | the asks a stop owes, three at most: the commit whose turn it is, the one with fewer attempts asked about longest ago, the oldest commit never asked about | what is left, less 5 seconds for each owed ask after it; when that is under 3 seconds, 3 seconds. Not made with under 3 seconds left. |
   | the other commits | what is left; not made with under 3 seconds left |

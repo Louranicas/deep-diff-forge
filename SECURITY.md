@@ -473,11 +473,23 @@ bounded form.** What it holds to:
   this, not read and why. Only the first forgets anything. A tree that could not be read
   came with "no staged change", so one stop at which Git failed, or a file could not be
   opened, forgot what had blocked of the staged change, and it blocked a second time.
+  And a look is not a reading: a stop made from another tree looks at a tree with `git
+  status`, which does not show a file marked assume-unchanged nor what a clean filter or
+  the line-ending settings hide, all of which the judge's patch has. Where a failure had
+  blocked in such a tree, a stop from the project's tree forgot it and printed nothing,
+  and the unchanged failure blocked again on return. Only the reader the judge's patch is
+  made by may say that a tree where something is remembered has nothing there.
 - **The tree a stop is in is the one Git says.** A directory under the Git common
   directory was taken for one of Git's own files, and Git was not asked: in a bare
   repository with its working trees inside it, a stop made from a linked tree did not
-  judge that tree's uncommitted work at all. Git is asked first; only a directory it puts
-  in no working tree and that lies inside the Git directory is one of its own.
+  judge that tree's uncommitted work at all. Git is asked first; and that a directory is
+  one of Git's own has to be known, not concluded from a failure of Git: it lies inside
+  the Git directory and neither it nor any directory between has a `.git` entry (the top
+  of every working tree has one). Any failure of Git for the tree the session is in was
+  "Git's own files" in that layout, so a tree pruned while its directory was away, with
+  credentials in it, was a silent stop. Such a stop is UNJUDGED with Git's words, and the
+  tree is never named as one the session is not in. A session directory that was removed
+  is asked about at the nearest directory above it that is there.
 - **A repository the hooks cannot list the commits of is still judged for what is not
   committed.** With more than 256 working trees (or a million named commits) the commits
   that were there when a session begins cannot be listed. The start recorded nothing

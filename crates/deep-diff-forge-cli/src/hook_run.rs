@@ -1914,7 +1914,14 @@ impl<'a> Bench<'a> {
                 && let Judged::Unjudged { reason } = &mut last
             {
                 let had = time.min(JUDGE_TIME).as_secs_f32();
-                if time < left {
+                if time >= JUDGE_TIME {
+                    // (it was said to have had "30.0 of the 34.9 seconds …: the rest is
+                    // kept for what is judged after it", where three of those were kept
+                    // and the rest is this bound: eleventh independent review, HR11-L-6)
+                    *reason = format!(
+                        "{reason} (this run had {had:.1} seconds, the most one run of the judge has)"
+                    );
+                } else if time < left {
                     *reason = format!(
                         "{reason} (this run had {had:.1} of the {:.1} seconds that were left of the stop's judging: the rest is kept for what is judged after it)",
                         left.as_secs_f32()
@@ -1922,6 +1929,13 @@ impl<'a> Bench<'a> {
                 } else if time < COMMIT_FLOOR {
                     *reason = format!(
                         "{reason} (the stop had {had:.1} seconds left for this run of the judge: what came before took its time)"
+                    );
+                } else {
+                    // (a run that had all that was left, three seconds or more, was written
+                    // with no time: "with the time it had" was not true of it, eleventh
+                    // independent review of the hooks, HR11-L-6)
+                    *reason = format!(
+                        "{reason} (this run had {had:.1} seconds, all that was left of the stop's judging)"
                     );
                 }
             }
@@ -2005,18 +2019,27 @@ enum Elsewhere {
 /// and named it with "the session's directory is not in it" (tenth independent review of
 /// the hooks, HR10-M-3). Only a directory that Git puts in no working tree and that lies
 /// inside the common directory is among Git's own files.
+///
+/// And that a directory is among Git's own files has to be KNOWN: it was concluded from any
+/// failure of Git for a directory under the common directory. In that layout every working
+/// tree is there, so a tree whose `.git` file named an administrative directory that was
+/// gone (pruned while the tree's directory was away) was "nothing here": a stop made from
+/// inside it, with credentials in it, printed nothing; and a Git that failed at one stop
+/// named the tree the session was in with "the session's directory is not in it" (eleventh
+/// independent review of the hooks, HR11-M-1). What is known without Git is
+/// [`among_gits_own_files`]; every other failure is [`Elsewhere::Failed`], as it is
+/// outside the common directory.
+///
+/// A directory that is not there any more (the session removed a build directory it was
+/// in) is asked about at the nearest directory above it that is there: the tree it was in
+/// is the tree the session is in. It "added nothing", so a linked tree was not judged from
+/// a directory that was gone, at any stop, and was named as a tree the session was not in
+/// (eleventh, HR11-L-5).
 fn elsewhere(cwd: &str, place: &Place, deadline: Deadline) -> Elsewhere {
-    let cwd = match std::fs::canonicalize(cwd) {
-        Ok(cwd) => cwd,
-        // not there (or no directory): it adds nothing
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) =>
-        {
-            return Elsewhere::Nothing;
-        }
+    let cwd = match standing_directory(Path::new(cwd)) {
+        Ok(Some(cwd)) => cwd,
+        // nothing of the path is there: it adds nothing
+        Ok(None) => return Elsewhere::Nothing,
         // there, and it could not be looked at: that is not "nothing there"
         Err(error) => {
             return Elsewhere::Failed(format!(
@@ -2032,11 +2055,60 @@ fn elsewhere(cwd: &str, place: &Place, deadline: Deadline) -> Elsewhere {
         Found::Tree(found) if found.top != place.top => Elsewhere::Linked(Box::new(found)),
         Found::Tree(_) | Found::NotARepository | Found::Gone => Elsewhere::Nothing,
         // in no working tree, and inside the Git directory: Git's own files
-        Found::Failed(_) if cwd.starts_with(&place.common) => Elsewhere::Nothing,
+        Found::Failed(_) if among_gits_own_files(&cwd, &place.common) => Elsewhere::Nothing,
         Found::Failed(reason) => Elsewhere::Failed(format!(
             "whether the session's directory is another working tree of this repository could not be found out: {reason}"
         )),
     }
+}
+
+/// `cwd` as it is on disk; when it is not there, the nearest directory above it that is.
+/// `None` when nothing of the path is there. A relative path is not walked up: what is
+/// above it would be read from the hook's own directory, not the session's.
+fn standing_directory(cwd: &Path) -> std::io::Result<Option<PathBuf>> {
+    let mut at = cwd;
+    loop {
+        match std::fs::canonicalize(at) {
+            Ok(found) => return Ok(Some(found)),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                match at.parent() {
+                    Some(above) if cwd.is_absolute() => at = above,
+                    _ => return Ok(None),
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Whether `dir` is known, with no word from Git, to be in no working tree and among the
+/// files of the Git directory `common`: it is under `common`, and neither it nor any
+/// directory between it and `common` has an entry called `.git`. The top of every working
+/// tree has one (a linked tree a file, also when the administrative directory it names is
+/// gone), so a directory with none above it is in no tree: `hooks`, `objects`, a tree's
+/// administrative directory, a plain directory someone made in a bare repository. An
+/// entry that cannot be looked at is not known to be absent.
+fn among_gits_own_files(dir: &Path, common: &Path) -> bool {
+    if !dir.starts_with(common) {
+        return false;
+    }
+    let mut at = dir;
+    while at != common {
+        let absent = matches!(
+            std::fs::symlink_metadata(at.join(".git")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        );
+        match at.parent() {
+            Some(above) if absent => at = above,
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// The time of a stop that is kept for what comes after the judging: remembering what was
@@ -2390,12 +2462,19 @@ const SECOND_TREE_LOOK: Duration = Duration::from_secs(2);
 /// no more: thirteen seconds were kept back whatever the session's commits were, and from a
 /// linked tree a second run of twelve seconds, on the tree's staged change, was cut (tenth
 /// independent review of the hooks, HR10-L-2, its second row).
+///
+/// The file is only added to, and a commit's answer is its last line, as it is for
+/// [`sorted_commits`]: every line was read here, so a commit that once had no verdict and
+/// has passed since held its five seconds back at every later stop, and one that had been
+/// in both lanes ten (eleventh independent review of the hooks, HR11-L-1).
 fn asks_kept(known: &[String]) -> Duration {
+    let last: std::collections::BTreeMap<&str, Answer<'_>> =
+        known.iter().filter_map(|entry| answer(entry)).collect();
     let waiting = |in_turn: bool| {
-        known.iter().any(|entry| {
+        last.values().any(|said| {
             matches!(
-                answer(entry),
-                Some((_, Answer::NoVerdict { attempts, .. })) if (attempts >= ATTEMPTS) == in_turn
+                said,
+                Answer::NoVerdict { attempts, .. } if (*attempts >= ATTEMPTS) == in_turn
             )
         })
     };
@@ -2631,7 +2710,18 @@ fn uncommitted(
     name: &str,
     beside: &mut Vec<Note>,
 ) -> Result<Uncommitted, String> {
-    let from = match head_state(top, &stopping.deadline.git()) {
+    uncommitted_by(stopping, top, name, stopping.deadline, beside)
+}
+
+/// [`uncommitted`], in the time `deadline` leaves.
+fn uncommitted_by(
+    stopping: &Stopping<'_>,
+    top: &Path,
+    name: &str,
+    deadline: Deadline,
+    beside: &mut Vec<Note>,
+) -> Result<Uncommitted, String> {
+    let from = match head_state(top, &deadline.git()) {
         Ok(HeadState::Commit(id)) => id,
         // A branch with no commit yet, which the session made: there is no commit of its own
         // to measure from, so the tree is measured from the session's base.
@@ -2648,7 +2738,7 @@ fn uncommitted(
         &from,
         "the commit HEAD names",
         &stopping.scratch.sub(name)?,
-        stopping.deadline,
+        deadline,
     );
     let changed = match changed {
         Ok(changed) => changed,
@@ -2661,7 +2751,7 @@ fn uncommitted(
         top,
         &from,
         &stopping.scratch.sub(&format!("{name}-index"))?,
-        &stopping.deadline.git(),
+        &deadline.git(),
     );
     let staged = match index {
         Ok(bytes) if bytes.is_empty() => Reading::Nothing,
@@ -3486,7 +3576,7 @@ fn not_looked_at(late: (usize, usize), beyond: (usize, usize)) -> Vec<Note> {
 /// administrative directory is that tree any more.
 fn other_trees(
     stopping: &Stopping<'_>,
-    judged: &[PathBuf],
+    (judged, unfound): (&[PathBuf], Option<&Path>),
     own: &BTreeSet<String>,
     blocked: &[String],
     end: Deadline,
@@ -3561,6 +3651,22 @@ fn other_trees(
             });
             continue;
         }
+        // The session's directory is under this tree, and which tree it is in could not be
+        // found out at this stop (that is said, with the reason, as the stop's own unit).
+        // It is not a tree "the session's directory is not in": that was said of the very
+        // tree the session was in when Git failed for it (eleventh independent review of
+        // the hooks, HR11-M-1). Nothing of it is forgotten.
+        if unfound.is_some_and(|cwd| cwd.starts_with(&tree.path)) {
+            said.push(Note {
+                name: name(" (the session's directory may be in it)"),
+                text: format!(
+                    "The session's directory is under the working tree {} of this project, and whether it is in that tree could not be found out at this stop: what is not committed there was not judged.{standing}",
+                    shown_tree(&tree.path)
+                ),
+                standing: usize::from(stands),
+            });
+            continue;
+        }
         looked_at += 1;
         if looked_at > OTHER_TREES {
             beyond = (beyond.0 + 1, beyond.1 + usize::from(stands));
@@ -3572,26 +3678,12 @@ fn other_trees(
             late = (late.0 + 1, late.1 + usize::from(stands));
             continue;
         }
-        match has_uncommitted_changes(&tree.path, &end.within(share).git()) {
-            Ok(false) => out.clean.push(id),
-            Ok(true) => said.push(Note {
-                name: name(""),
-                text: format!(
-                    "The working tree {} of this project has changes that are not committed, and the session's directory is not in it: they were not judged (a stop made from inside it judges them; its commits are judged from anywhere).{standing}",
-                    shown_tree(&tree.path)
-                ),
-                standing: usize::from(stands),
-            }),
-            Err(GitAcquireError::TimedOut { .. }) => {
-                late = (late.0 + 1, late.1 + usize::from(stands));
-            }
-            Err(error) => said.push(Note {
-                name: name(" (it could not be looked at)"),
-                text: format!(
-                    "Whether the working tree {} of this project has changes that are not committed could not be found out ({}): such changes are not judged.{standing}",
-                    shown_tree(&tree.path),
-                    git_words(&error)
-                ),
+        match other_tree(stopping, tree, stands, looked_at, end.within(share)) {
+            OtherTree::Nothing => out.clean.push(id),
+            OtherTree::Late => late = (late.0 + 1, late.1 + usize::from(stands)),
+            OtherTree::Named(what, text) => said.push(Note {
+                name: name(what),
+                text: format!("{text}{standing}"),
                 standing: usize::from(stands),
             }),
         }
@@ -3600,8 +3692,173 @@ fn other_trees(
     said
 }
 
+/// What a stop finds out about a working tree it is not in ([`other_tree`]).
+enum OtherTree {
+    /// Nothing there is uncommitted: what is remembered of the tree is forgotten.
+    Nothing,
+    /// It was not looked at in its share of the time.
+    Late,
+    /// It is named: what goes with its name, and the sentence.
+    Named(&'static str, String),
+}
+
+/// Look at the working tree `tree`, which the stop is not in, for changes that are not
+/// committed; `n` names the scratch directories of a reading. `stands`: something of the
+/// tree is remembered.
+///
+/// `git status` is a look, not the reading a stop judges by: it does not show a change in
+/// a file marked assume-unchanged, nor one that the repository's own configuration hides
+/// from it (a clean filter that takes a key out, line endings), and the judge's patch has
+/// them. Its "nothing" was taken for "nothing there": a failure that had blocked in such a
+/// tree was forgotten at a stop made from another tree, which printed nothing, and blocked
+/// a second time on return (eleventh independent review of the hooks, HR11-L-2). Where
+/// something is remembered of the tree, only the reader the judge's patch is made by says
+/// that nothing is there ([`other_tree_read`]); where nothing is remembered there is
+/// nothing to forget, and the look decides only whether the tree is named.
+fn other_tree(
+    stopping: &Stopping<'_>,
+    tree: &Worktree,
+    stands: bool,
+    n: usize,
+    within: Deadline,
+) -> OtherTree {
+    let not_judged = "they were not judged (a stop made from inside it judges them; its commits are judged from anywhere).";
+    let unknown = |reason: &str| {
+        OtherTree::Named(
+            " (it could not be looked at)",
+            format!(
+                "Whether the working tree {} of this project has changes that are not committed could not be found out ({reason}): such changes are not judged.",
+                shown_tree(&tree.path)
+            ),
+        )
+    };
+    match has_uncommitted_changes(&tree.path, &within.git()) {
+        Ok(false) if !stands => OtherTree::Nothing,
+        Ok(false) => match other_tree_read(stopping, &tree.path, n, within) {
+            Reading::Nothing => OtherTree::Nothing,
+            Reading::NotRead(reason) => unknown(&reason),
+            Reading::Found(()) => OtherTree::Named(
+                "",
+                format!(
+                    "The working tree {} of this project has changes that are not committed (`git status` there shows none of them; the patch a stop judges by has them), and the session's directory is not in it: {not_judged}",
+                    shown_tree(&tree.path)
+                ),
+            ),
+        },
+        Ok(true) => OtherTree::Named(
+            "",
+            format!(
+                "The working tree {} of this project has changes that are not committed, and the session's directory is not in it: {not_judged}",
+                shown_tree(&tree.path)
+            ),
+        ),
+        Err(GitAcquireError::TimedOut { .. }) => OtherTree::Late,
+        Err(error) => unknown(&git_words(&error)),
+    }
+}
+
+/// Whether the working tree at `top`, which the stop is not in, has anything that is not
+/// committed, by the reader a stop judges with ([`uncommitted`]): the tree's patch and the
+/// index's, each against the tree's `HEAD`. `n` names its scratch directories. No patch is
+/// judged here: this only says whether what is remembered of the tree may be forgotten.
+fn other_tree_read(
+    stopping: &Stopping<'_>,
+    top: &Path,
+    n: usize,
+    deadline: Deadline,
+) -> Reading<()> {
+    let name = format!("other-{n}");
+    let read = match uncommitted_by(stopping, top, &name, deadline, &mut Vec::new()) {
+        Ok(read) => read,
+        Err(reason) => return Reading::NotRead(reason),
+    };
+    match (read.tree, read.staged) {
+        (Reading::Nothing, Reading::Nothing) => Reading::Nothing,
+        (Reading::NotRead(reason), _) | (_, Reading::NotRead(reason)) => Reading::NotRead(reason),
+        _ => Reading::Found(()),
+    }
+}
+
+/// What the runs of the tree at `at` of the `count` a stop judges leave for the project's
+/// tree, which is judged after it: [`COMMIT_FLOOR`] when a tree is judged after this one and
+/// the project's tree is not known to be `clean`, else nothing. `clean` is asked only when a
+/// tree comes after this one (one `git status`).
+fn held_for_the_project(at: usize, count: usize, clean: impl FnOnce() -> bool) -> Duration {
+    if at + 1 < count && !clean() {
+        COMMIT_FLOOR
+    } else {
+        Duration::ZERO
+    }
+}
+
 /// Why a staged change has no verdict of its own at a stop ([`tree_units`]).
 const STAGED_NOT_APART: &str = "what is staged fails, and which of that is the staged change's own cannot be told at this stop: the uncommitted change got no verdict, and its failure is remembered by a digest alone";
+
+/// A working tree a stop judges: its top level, which tree it is, the name of its scratch
+/// directory, and why it cannot be read when it cannot.
+type TreeToJudge = (PathBuf, String, &'static str, Option<String>);
+
+/// The working trees a stop judges, the one the stop is in first; and the session's
+/// directory, when the tree it is in could not be found out. A linked tree the stop is in
+/// is added to `writable`; another repository the stop is in is named in `beside`.
+fn trees_to_judge(
+    stopping: &Stopping<'_>,
+    writable: &mut Vec<PathBuf>,
+    beside: &mut Vec<Note>,
+) -> (Vec<TreeToJudge>, Option<PathBuf>) {
+    let place = &stopping.work.place;
+    // The working trees this stop judges, the one the stop is in first: (its top level,
+    // which tree it is, the name of its scratch directory, why it cannot be read).
+    //
+    // The project's tree stood first whatever the stop was in. A session that began in the
+    // main tree and whose directory is a linked tree had the main tree read and judged
+    // first, and a slow run there left the stop's own tree about five seconds: UNJUDGED at
+    // every such stop (review V4 round 17, VD4R17-L-1). A tree is read when its turn comes,
+    // so that a slow Git in the other tree does not come before the first one's verdict.
+    let project = (
+        place.top.clone(),
+        tree_instance(place),
+        "work",
+        None::<String>,
+    );
+    // The session's directory, when the tree it is in could not be found out.
+    let mut unfound = None::<PathBuf>;
+    let trees = match elsewhere(stopping.cwd, place, stopping.deadline) {
+        Elsewhere::Nothing => vec![project],
+        Elsewhere::Linked(linked) => {
+            writable.push(linked.top.clone());
+            vec![
+                (linked.top.clone(), tree_instance(&linked), "work-2", None),
+                project,
+            ]
+        }
+        Elsewhere::Foreign(top) => {
+            beside.push(Note {
+                name: format!("the repository {} the session is in", shown_tree(&top)),
+                text: format!(
+                    "The session's directory is in another repository, {}, which is not this session's project ({}): nothing in it was judged.",
+                    shown_tree(&top),
+                    shown_tree(&place.top)
+                ),
+                standing: 0,
+            });
+            vec![project]
+        }
+        Elsewhere::Failed(reason) => {
+            unfound = standing_directory(Path::new(stopping.cwd)).ok().flatten();
+            vec![
+                (
+                    PathBuf::from(stopping.cwd),
+                    by_path(Path::new(stopping.cwd)),
+                    "",
+                    Some(reason),
+                ),
+                project,
+            ]
+        }
+    };
+    (trees, unfound)
+}
 
 /// Have the uncommitted and the staged change of one working tree judged, and add them to
 /// `out`: its units, and what this stop saw of it ([`Looked`]). `after` is what its runs
@@ -3813,51 +4070,7 @@ fn judge_units(
     let place = &stopping.work.place;
     let mut out = Judging::default();
     let mut writable = vec![place.top.clone()];
-    // The working trees this stop judges, the one the stop is in first: (its top level,
-    // which tree it is, the name of its scratch directory, why it cannot be read).
-    //
-    // The project's tree stood first whatever the stop was in. A session that began in the
-    // main tree and whose directory is a linked tree had the main tree read and judged
-    // first, and a slow run there left the stop's own tree about five seconds: UNJUDGED at
-    // every such stop (review V4 round 17, VD4R17-L-1). A tree is read when its turn comes,
-    // so that a slow Git in the other tree does not come before the first one's verdict.
-    let project = (
-        place.top.clone(),
-        tree_instance(place),
-        "work",
-        None::<String>,
-    );
-    let trees = match elsewhere(stopping.cwd, place, stopping.deadline) {
-        Elsewhere::Nothing => vec![project],
-        Elsewhere::Linked(linked) => {
-            writable.push(linked.top.clone());
-            vec![
-                (linked.top.clone(), tree_instance(&linked), "work-2", None),
-                project,
-            ]
-        }
-        Elsewhere::Foreign(top) => {
-            out.beside.push(Note {
-                name: format!("the repository {} the session is in", shown_tree(&top)),
-                text: format!(
-                    "The session's directory is in another repository, {}, which is not this session's project ({}): nothing in it was judged.",
-                    shown_tree(&top),
-                    shown_tree(&place.top)
-                ),
-                standing: 0,
-            });
-            vec![project]
-        }
-        Elsewhere::Failed(reason) => vec![
-            (
-                PathBuf::from(stopping.cwd),
-                by_path(Path::new(stopping.cwd)),
-                "",
-                Some(reason),
-            ),
-            project,
-        ],
-    };
+    let (trees, unfound) = trees_to_judge(stopping, &mut writable, &mut out.beside);
     let own: BTreeSet<String> = trees.iter().map(|(_, id, _, _)| id.clone()).collect();
     let mut tribunal = Judge {
         stop: stopping,
@@ -3881,18 +4094,15 @@ fn judge_units(
         // its 35 seconds, and with a judge that took 17 it was UNJUDGED with 20 seconds
         // unused (tenth independent review of the hooks, HR10-L-2). One `git status`
         // answers, under a bound of its own; what cannot be found out counts as a change.
-        let later = if at + 1 < count
-            && !matches!(
+        let later = held_for_the_project(at, count, || {
+            matches!(
                 has_uncommitted_changes(
                     &place.top,
                     &stopping.deadline.within(SECOND_TREE_LOOK).git()
                 ),
                 Ok(false)
-            ) {
-            COMMIT_FLOOR
-        } else {
-            Duration::ZERO
-        };
+            )
+        });
         let after = later + asks;
         tree_units(&mut tribunal, &top, &id, found, blocked, after, &mut out);
     }
@@ -3902,8 +4112,12 @@ fn judge_units(
     // the same.
     let listed = match tips {
         Tips::Listed(tips) => session_commits(stopping, tips),
+        // What follows from it stands first, and the whole has room in what a message shows
+        // of a reason ([`hook::REASON_CHARS`]): the cause stood first, and every stop of
+        // such a session read "… cannot be told from them: they are not." (eleventh
+        // independent review of the hooks, HR11-L-3).
         Tips::Unavailable(why) => Err(format!(
-            "the commits that were there when this session began could not be listed ({}), so the session's own cannot be told from them: they are not judged in this session, whatever is committed; what is not committed is",
+            "not in this session, whatever is committed (what is not committed is judged): the commits that were there when it began could not be listed ({})",
             deep_diff_forge_core::display_safe(why)
         )),
     };
@@ -3921,7 +4135,14 @@ fn judge_units(
     out.beside
         .extend(submodules_with_changes(place, end.within(LOOK_TIME / 2)));
     let judged = std::mem::take(&mut tribunal.writable);
-    let others = other_trees(stopping, &judged, &own, blocked, end, &mut out);
+    let others = other_trees(
+        stopping,
+        (&judged, unfound.as_deref()),
+        &own,
+        blocked,
+        end,
+        &mut out,
+    );
     out.beside.extend(others);
     Ok(out)
 }
@@ -4210,7 +4431,8 @@ struct StagedMemory {
     /// What is kept for it beside them (`k`): lines, or one mark of everything the index
     /// holds.
     kept: Lines,
-    /// A mark had to be given up ([`Kept::given_up`]).
+    /// A mark had to be given up, and not everything the index holds is remembered after
+    /// this stop ([`Kept::given_up`]).
     gone: bool,
     /// Its own lines are a mark from this stop on that is not known to be everything the
     /// index holds ([`Kept::as_a_whole`]).
@@ -4283,7 +4505,13 @@ fn staged_memory(
             Some(mark) if all && marked(folded) && !kept.is_empty() => Lines::from([mark]),
             _ => kept,
         },
-        gone,
+        // A mark that goes is said only where something stays unknown after this stop.
+        // Where the own lines and the kept ones are everything the index holds, all of it
+        // is remembered from here on and nothing of it can block again by the mark's
+        // going: the sentence warned there of a block that could not come (eleventh
+        // independent review of the hooks, HR11-L-4: it was said at the very stop that was
+        // the block an earlier stop had warned of, with the index untouched).
+        gone: gone && !all,
         whole: marked(folded)
             && !all
             && !folded
@@ -4683,6 +4911,11 @@ fn notes_of(state: &mut State, mut beside: Vec<Note>, room: usize) -> Vec<String
     notes
 }
 
+/// The characters `notes` take in a message, each on a line of its own.
+fn lines_taken(notes: &[String]) -> usize {
+    notes.iter().map(|note| note.chars().count() + 1).sum()
+}
+
 /// How long a stop waits for another hook of its session to let go of the session's state.
 const LOCK_WAIT: Duration = Duration::from_secs(3);
 /// How long a session-start hook waits for it, and how long an advice hook does: an advice
@@ -4916,11 +5149,10 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
         }
     };
     // what the memory cost is said whole, at this stop: the other notes get the room it leaves
-    let said: usize = memory.iter().map(|note| note.chars().count() + 1).sum();
     let mut notes = notes_of(
         &mut session.state,
         beside,
-        hook::room_beside(&decision).saturating_sub(said),
+        hook::room_beside(&decision).saturating_sub(lines_taken(&memory)),
     );
     notes.append(&mut memory);
     if let Err(why) = session.keep() {
@@ -7403,6 +7635,337 @@ mod tests {
         // above: a marked uncommitted change that changed, and a marked staged change
         // whose index changed)
         assert!(beyond_model > 0, "{beyond_model}");
+    }
+
+    /// Eleventh independent review of the hooks, HR11-L-4, as reproduced (`mi7.py 600`). 600
+    /// failing files are staged and repaired in the tree; the tree has 300 of them again;
+    /// one more failing file is staged, which blocks, and there the stop says, truly, that
+    /// the digest it had is given up and that what is staged may block once more when the
+    /// tree is repaired again. Then the tree is repaired and the index is not touched: that
+    /// is the block it warned of. The sentence was said again at that stop, where the index
+    /// holds exactly what it held and from where on everything it holds is remembered: no
+    /// such block can come any more, and none does.
+    #[test]
+    fn a_digest_given_up_is_said_where_it_is_given_up_and_not_at_the_block_it_warned_of() {
+        let lines = |files: usize| failing_files(0, files, 1);
+        let mut state = State::default();
+        let stop = |state: &mut State, tree: usize, index: usize| -> (bool, Kept) {
+            let (looked, units) = seen_of(
+                "a",
+                "/a",
+                (tree > 0).then(|| lines(tree)),
+                Some(lines(index)),
+                false,
+                &state.blocked,
+            );
+            let blocks = matches!(
+                hook::decide_stop_trees(&units, &state.blocked, "r"),
+                StopDecision::Block { .. }
+            );
+            let judging = Judging {
+                trees: vec![looked],
+                ..Judging::default()
+            };
+            (
+                blocks,
+                remember_within(state, &judging, &mut Vec::new(), BLOCKED_CAP),
+            )
+        };
+        let given_up = |kept: &Kept| {
+            memory_notes(kept)
+                .iter()
+                .any(|note| note.contains("the index no longer holds exactly that"))
+        };
+        assert!(stop(&mut state, 0, 600).0, "staged, the tree repaired");
+        assert!(!stop(&mut state, 0, 600).0);
+        assert!(stop(&mut state, 300, 600).0, "the tree's own failure");
+        assert!(!stop(&mut state, 300, 600).0);
+        // one more failing file staged: the index is not what the digest stood for
+        let (blocks, kept) = stop(&mut state, 300, 601);
+        assert!(blocks);
+        assert!(given_up(&kept), "{:?}", memory_notes(&kept));
+        assert!(!stop(&mut state, 300, 601).0);
+        // the tree repaired, the index untouched: the block that was announced, and no
+        // sentence about an index that "no longer holds" what it holds
+        let (blocks, kept) = stop(&mut state, 0, 601);
+        assert!(blocks);
+        assert!(!given_up(&kept), "{:?}", memory_notes(&kept));
+        assert_eq!(kept, Kept::default());
+        // from here on everything the index holds has blocked: whatever the tree does,
+        // the staged change stands
+        assert!(!stop(&mut state, 0, 601).0);
+        assert!(stop(&mut state, 100, 601).0, "the tree's own failure");
+        let (blocks, kept) = stop(&mut state, 0, 601);
+        assert!(!blocks, "the staged failure blocked again");
+        assert_eq!(kept, Kept::default());
+    }
+
+    /// Mutation run on `07df120`: what a stop knows of a working tree without asking Git
+    /// had mutants that no test caught. Each is read whole, or is "not known":
+    ///
+    /// - a tree known by its path alone is known by that path, and only by it (`by_path`
+    ///   returned one name for every path);
+    /// - a path in a file of Git's is read whole up to 16 KiB (`16 + 1024` bytes cut a long
+    ///   one, and named another directory);
+    /// - a `worktrees` directory that cannot be resolved (a link that loops) is not "no
+    ///   linked tree was ever made" (every resolving error was);
+    /// - a `shallow` file that cannot be read is not "a clone that is whole";
+    /// - submodules or a linked tree are something to look at, each on its own.
+    #[test]
+    fn what_is_known_of_a_tree_without_git_is_read_whole_or_said_unknown() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-known-without-git");
+        let root = std::fs::canonicalize(scratch.path()).unwrap();
+        let (a, b) = (by_path(&root.join("a")), by_path(&root.join("b")));
+        assert_ne!(a, b);
+        assert_eq!(a, by_path(&root.join("a")));
+        assert!(a.starts_with('x') && a.len() == 16, "{a}");
+
+        let long = root
+            .join("d".repeat(250))
+            .join("e".repeat(250))
+            .join("f".repeat(250));
+        let long = long
+            .join("g".repeat(250))
+            .join("h".repeat(250))
+            .join("tree");
+        assert!(long.as_os_str().len() > 1_300);
+        let pointer = scratch.write("gitdir", format!("{}/.git\n", long.display()));
+        assert_eq!(pointed_path(&pointer, b"", &root), Some(long.join(".git")));
+
+        let common = root.join("project/.git");
+        std::fs::create_dir_all(&common).unwrap();
+        assert!(shallow_commits(&common).is_ok_and(|none| none.is_empty()));
+        std::fs::create_dir(common.join("shallow")).unwrap();
+        assert!(shallow_commits(&common).is_err());
+        std::os::unix::fs::symlink("worktrees", common.join("worktrees")).unwrap();
+        let looped = linked_instances(&common);
+        assert!(!looped.whole && looped.trees.is_empty());
+
+        let place = |top: &Path, common: &Path| Place {
+            top: top.to_path_buf(),
+            own: common.to_path_buf(),
+            common: common.to_path_buf(),
+            git_dir: common.to_path_buf(),
+            id: "1".to_owned(),
+        };
+        let (top, git) = (root.join("p2"), root.join("p2/.git"));
+        std::fs::create_dir_all(&git).unwrap();
+        assert!(!has_more_to_look_at(&place(&top, &git)));
+        std::fs::create_dir(git.join("worktrees")).unwrap();
+        assert!(
+            !has_more_to_look_at(&place(&top, &git)),
+            "an empty directory"
+        );
+        std::fs::write(top.join(".gitmodules"), "").unwrap();
+        assert!(has_more_to_look_at(&place(&top, &git)), "submodules alone");
+        std::fs::remove_file(top.join(".gitmodules")).unwrap();
+        std::fs::create_dir(git.join("worktrees/t")).unwrap();
+        assert!(
+            has_more_to_look_at(&place(&top, &git)),
+            "a linked tree alone"
+        );
+    }
+
+    /// Mutation run on `07df120`, `kept_reason`: the rule names beyond [`RULES_KEPT`] are
+    /// counted, and only those (`>=` wrote "+0" after exactly eight), and what the judge said
+    /// is kept on one line (a control character in it was kept as it was).
+    #[test]
+    fn what_a_commit_keeps_of_its_reason_counts_only_what_it_leaves_out() {
+        let rules = |count: usize| -> Vec<hook::RuleOutcome> {
+            (0..count)
+                .map(|n| hook::RuleOutcome {
+                    id: format!("r{n}"),
+                    why: String::new(),
+                    held: false,
+                    violations: Vec::new(),
+                })
+                .collect()
+        };
+        assert_eq!(
+            kept_reason(&rules(RULES_KEPT), &[], true),
+            "r0,r1,r2,r3,r4,r5,r6,r7"
+        );
+        assert_eq!(
+            kept_reason(&rules(RULES_KEPT + 1), &[], true),
+            "r0,r1,r2,r3,r4,r5,r6,r7,+1"
+        );
+        assert_eq!(
+            kept_reason(&rules(1), &["a\tb\u{1b}c|d\n".to_owned()], true),
+            "r0|a b c/d"
+        );
+    }
+
+    /// Mutation run on `07df120`: what says the things a stop does not judge had mutants no
+    /// test caught. A name cut for the counting line has [`NOTE_NAME`] characters at most
+    /// (one more with `* 1` for `+ 1`); a note said in full takes its room, and one that
+    /// does not fit is counted (`+=` for `-=` said every note in full); one tree where a
+    /// failure stands is said as one; the note for trees that could not be listed is there
+    /// exactly when there is a linked tree or a failure in a tree this stop does not judge.
+    #[test]
+    fn notes_and_names_take_no_more_than_their_room() {
+        let name = format!(
+            "the working tree \"/{}\" (a failure stands there)",
+            "d".repeat(300)
+        );
+        let cut = counted_name(&name);
+        assert_eq!(cut.chars().count(), NOTE_NAME, "{cut}");
+        assert!(cut.ends_with("d… (a failure stands there)"), "{cut}");
+
+        let note = |n: usize| Note {
+            name: format!("n{n}"),
+            text: format!("{n} {}", "x".repeat(98)),
+            standing: 0,
+        };
+        let mut state = State::default();
+        // room for the line that counts, the first note and part of the second
+        let said = notes_of(&mut state, vec![note(1), note(2)], COUNT_LINE + 101 + 60);
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert_eq!(said[0], note(1).text);
+        assert_eq!(said[1], "1 thing in this project is not judged: n2.");
+
+        assert_eq!(
+            standing_counted(1).1,
+            " A failure that has blocked a stop of this session stands in 1 of them: it was not looked at at this stop."
+        );
+        assert!(
+            standing_counted(2)
+                .1
+                .starts_with(" Failures that have blocked")
+        );
+
+        let error = GitAcquireError::TimedOut {
+            command: "git worktree list",
+            limit_ms: 1,
+        };
+        let linked = |trees: usize| Linked {
+            trees: (0..trees)
+                .map(|n| (PathBuf::from(format!("/t{n}")), format!("{n}")))
+                .collect(),
+            whole: true,
+        };
+        let own = BTreeSet::from(["0".to_owned()]);
+        let mine = vec!["0/u/k:1".to_owned()];
+        assert_eq!(not_listed(&linked(0), &own, &mine, &error), Vec::new());
+        let elsewhere = vec!["0/u/k:1".to_owned(), "7/s/k:1".to_owned()];
+        let notes = not_listed(&linked(0), &own, &elsewhere, &error);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].standing, 1);
+        assert!(notes[0].name.ends_with("(a failure stands in 1 of them)"));
+        let notes = not_listed(&linked(2), &own, &mine, &error);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].standing, 0);
+    }
+
+    /// Mutation run on `07df120`, `staged_memory` and `Unit::short`: how a staged change
+    /// is remembered where its own lines are a mark had mutants no test caught.
+    ///
+    /// - The own lines are a mark (257 of them) and one more line of the index has blocked
+    ///   before: everything the index holds has blocked, and one mark of it is kept, so that
+    ///   any part of it can be the staged change's own again and stand. Counted otherwise
+    ///   (`!=` for `==`, `*` for `+`, a line that is not the same) it was not.
+    /// - The own lines are a mark, and the index holds a line that has not blocked: the own
+    ///   mark answers for itself alone ("remembered as a whole from now on"), and it is said.
+    /// - Own lines that are lines (not a mark) are never "a whole".
+    /// - One own line is kept as that line, not as a mark of one.
+    #[test]
+    fn a_staged_change_is_remembered_as_a_whole_only_where_that_is_known() {
+        let lines = |names: &[String]| -> Lines { names.iter().map(|n| (n.clone(), 1)).collect() };
+        let own_names: Vec<String> = (0..257).map(|n| format!("o{n}")).collect();
+        let own = lines(&own_names);
+        let folded = Lines::from([hook::mark_of(&own)]);
+        let kept = Lines::from([("k".to_owned(), 1)]);
+        let mut index = own.clone();
+        index.insert("k".to_owned(), 1);
+        let held = hook::mark_of(&index);
+
+        let now = staged_memory(&Lines::new(), &kept, &index, &own, &folded);
+        assert_eq!(now.kept, Lines::from([held]));
+        assert!(!now.gone && !now.whole);
+
+        // a line the index holds that has not blocked: the own mark is a whole of its own
+        let mut more = own.clone();
+        more.insert("z".to_owned(), 1);
+        let now = staged_memory(&Lines::new(), &Lines::new(), &more, &own, &folded);
+        assert!(now.whole && now.kept.is_empty() && !now.gone);
+        // and once it is remembered so, it is not said again
+        let now = staged_memory(&folded, &Lines::new(), &more, &own, &folded);
+        assert!(!now.whole);
+
+        // own lines that are lines: never a whole
+        let a = Lines::from([("a".to_owned(), 1)]);
+        let both = Lines::from([("a".to_owned(), 1), ("z".to_owned(), 1)]);
+        let now = staged_memory(&Lines::new(), &Lines::new(), &both, &a, &a);
+        assert!(!now.whole && now.own == a);
+
+        let short = Unit {
+            own: a.clone(),
+            kept: Lines::new(),
+            entries: 1,
+        }
+        .short();
+        assert_eq!(short.own, Some(("a".to_owned(), 1)));
+        assert!(short.kept.is_none() && !short.gone);
+    }
+
+    /// Mutation run on `07df120`: five mutants of what the stop's own tree leaves for the
+    /// project's tree were caught by no test (a judge would have to take within a second of
+    /// the time a run has to tell them apart from the outside). Three seconds are held back
+    /// exactly for a tree that is judged after this one and is not known to be clean, and
+    /// the project's tree is looked at only when it comes after.
+    #[test]
+    fn the_project_s_tree_has_time_held_back_only_when_it_comes_after_and_has_a_change() {
+        let never =
+            || -> bool { panic!("the project's tree was looked at when no tree comes after") };
+        assert_eq!(held_for_the_project(0, 2, || false), COMMIT_FLOOR);
+        assert_eq!(held_for_the_project(0, 2, || true), Duration::ZERO);
+        assert_eq!(held_for_the_project(1, 2, never), Duration::ZERO);
+        assert_eq!(held_for_the_project(0, 1, never), Duration::ZERO);
+        assert_eq!(held_for_the_project(1, 3, || false), COMMIT_FLOOR);
+        assert_eq!(held_for_the_project(2, 3, never), Duration::ZERO);
+    }
+
+    /// Mutation run on `07df120`, `stop`: what the sentences about memory take of a
+    /// message is counted with the line each is on (`-` or `*` for `+` counted less, and
+    /// the other notes were given room the message did not have).
+    #[test]
+    fn the_sentences_about_memory_take_their_lines_from_the_room() {
+        assert_eq!(lines_taken(&[]), 0);
+        assert_eq!(lines_taken(&[String::new()]), 1);
+        assert_eq!(lines_taken(&["ab".to_owned(), "é…".to_owned()]), 3 + 3);
+    }
+
+    /// Eleventh independent review of the hooks, HR11-L-1. The file of judged commits is
+    /// only added to, and the last line of a commit is its answer ([`sorted_commits`]).
+    /// [`asks_kept`] read every line: a commit that had no verdict at one stop and passed
+    /// at the next held five seconds back at every later stop of the session, and one that
+    /// had six such stops ten, although no commit waited (from a linked tree a run of 17
+    /// seconds on the stop's own change was cut at 13.6).
+    #[test]
+    fn time_is_held_back_only_for_commits_that_still_wait() {
+        let seconds = Duration::from_millis;
+        let line = |n: usize, said: &str| format!("{n:040x}:{said}");
+        // no verdict at one stop, then a pass: nothing waits
+        assert_eq!(
+            asks_kept(&[line(1, "n1@1:r"), line(1, "p")]),
+            seconds(3_000)
+        );
+        // no verdict at six stops (the last ones in its turn), then a pass
+        let mut six: Vec<String> = (1..=6).map(|n| line(1, &format!("n{n}@{n}:r"))).collect();
+        assert_eq!(asks_kept(&six), seconds(8_000));
+        six.push(line(1, "f:no-secrets"));
+        assert_eq!(asks_kept(&six), seconds(3_000));
+        // another commit still waits: it is counted, and only it
+        six.push(line(2, "n2@8:r"));
+        assert_eq!(asks_kept(&six), seconds(8_000));
+        six.push(line(3, "n9@8:r"));
+        assert_eq!(asks_kept(&six), OWED_ASKS_NEED);
+        // its last line counts, whatever stood before it
+        six.push(line(3, "x:the commit has no parent that can be read"));
+        six.push(line(2, "h:review"));
+        assert_eq!(asks_kept(&six), seconds(3_000));
+        // (a line that cannot be read is no commit that waits)
+        six.push("not a line".to_owned());
+        assert_eq!(asks_kept(&six), seconds(3_000));
     }
 
     /// Ninth independent review of the hooks, HR9-M-1, as reproduced: a failure of 257 lines

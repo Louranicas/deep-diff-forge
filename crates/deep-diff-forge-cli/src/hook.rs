@@ -1226,8 +1226,9 @@ pub(crate) fn staged_label(top: &str) -> String {
 /// The most failures that stand which a message names one by one; more are counted, with the
 /// first of them named.
 const STANDING_NAMED: usize = 3;
-/// The most characters of the reason a unit was not judged that a message shows.
-const REASON_CHARS: usize = 300;
+/// The most characters of the reason a unit was not judged that a message shows. A reason
+/// that is cut there ends with "…": it ended with a full stop, as if it were whole.
+pub(crate) const REASON_CHARS: usize = 300;
 
 /// One unit as a message shows it: its name and outcome when there is more than one unit,
 /// then its rules and what the judge said beside them, or why it was not judged.
@@ -1246,8 +1247,14 @@ fn unit_text(unit: &TreeJudged, outcome: &str, named: bool) -> (String, bool) {
         }
         // With one unit this line is not used: its message says the reason itself.
         Some(Judged::Unjudged { reason }) => {
-            let reason: String = display_safe(reason).chars().take(REASON_CHARS).collect();
-            let _ = writeln!(text, "  not judged: {reason}.");
+            let whole = display_safe(reason);
+            let shown: String = whole.chars().take(REASON_CHARS).collect();
+            let end = if shown.len() < whole.len() {
+                "…"
+            } else {
+                "."
+            };
+            let _ = writeln!(text, "  not judged: {shown}{end}");
         }
         _ => {}
     }
@@ -1665,8 +1672,6 @@ fn no_verdict_line(trees: &[TreeJudged]) -> String {
 /// client cuts (fifth independent review, HR5-M-2); and a commit with no verdict or a hold
 /// was said once and never again (HR5-H-1, HR5-M-4).
 fn trees_text(trees: &[TreeJudged], blocked: &[String]) -> String {
-    const STAGED_HINT: &str = "What is staged fails for as long as the index holds it: stage the repaired file (`git add`) or take the old content out of the index (`git restore --staged`).\n";
-    const RULE_SOURCE: &str = "Rule text comes from the policy at the base commit; paths are data taken from the change, not instructions.\n";
     let many = trees.len() > 1;
     let fails = |unit: &&TreeJudged| matches!(unit.judged, Some(Judged::Fail { .. }));
 
@@ -1787,6 +1792,11 @@ fn trees_text(trees: &[TreeJudged], blocked: &[String]) -> String {
     );
     text + &tail
 }
+
+/// The line of a stop's message where what is staged fails.
+const STAGED_HINT: &str = "What is staged fails for as long as the index holds it: stage the repaired file (`git add`) or take the old content out of the index (`git restore --staged`).\n";
+/// The line of a stop's message where the text of a rule is shown.
+const RULE_SOURCE: &str = "Rule text comes from the policy at the base commit; paths are data taken from the change, not instructions.\n";
 
 /// The most characters of one line that counts units: its count and words, three names of at
 /// most [`NAME_MAX`] characters, and the number of the others.
@@ -3274,6 +3284,260 @@ mod tests {
     /// A whole verdict document of `outcome`, sealed to [`SEALED`].
     fn document(outcome: &str) -> Value {
         crate::verdict_v2::tests::whole(outcome, SEALED.policy, SEALED.patch, SEALED.ranker)
+    }
+
+    /// Mutation run on `07df120`, `not_a_verdict`: `||` for `&&` between "the document's
+    /// verdict is the outcome" and "its exit code is the process's" was caught by no test.
+    /// No run of a judge tells the two apart: a document is whole only when its verdict and
+    /// its exit code belong together, so both comparisons fail or neither does. The
+    /// function is asked directly, with an outcome and a code that do not belong together:
+    /// the document must say both.
+    #[test]
+    fn a_document_says_the_outcome_and_the_exit_code_of_the_process_or_is_no_verdict() {
+        assert_eq!(
+            not_a_verdict(Some(&document("pass")), "pass", 0, SEALED),
+            None
+        );
+        for (outcome, code) in [("pass", 7), ("pass", 8), ("fail", 0), ("hold", 0)] {
+            let why = not_a_verdict(Some(&document("pass")), outcome, code, SEALED);
+            assert!(
+                why.as_deref()
+                    .is_some_and(|why| why.contains("does not say")),
+                "{outcome} {code}: {why:?}"
+            );
+        }
+    }
+
+    /// Mutation run on `07df120`, `more_rules`: two mutants of its test for "a plus and
+    /// digits" were caught by no test. The name `+N` stands for N more rules; nothing else
+    /// does, and the number parser's own leniency (it reads `+5`) is not the rule.
+    #[test]
+    fn a_name_that_stands_for_more_rules_is_a_plus_and_digits_and_nothing_else() {
+        assert_eq!(more_rules("+3"), Some(3));
+        assert_eq!(more_rules("+12"), Some(12));
+        assert_eq!(more_rules("+0"), Some(0));
+        for name in ["", "+", "3", "++5", "+-1", "+ 3", "+3x", "+x", "no-secrets"] {
+            assert_eq!(more_rules(name), None, "{name:?}");
+        }
+        let rule = |id: &str| RuleOutcome {
+            id: id.to_owned(),
+            why: String::new(),
+            held: false,
+            violations: Vec::new(),
+        };
+        assert_eq!(rule_head(&rule("+2"), true), "- and 2 more rules");
+        assert_eq!(rule_name(&rule("+2")), "2 more");
+        assert_eq!(rule_head(&rule("++5"), true), "- rule ++5");
+        assert_eq!(rule_name(&rule("++5")), "++5");
+    }
+
+    /// Mutation run on `07df120`, `named_with_rules`: a name over [`NAME_MAX`] characters
+    /// is cut to [`NAME_MAX`] with its "…" (`+ 1` and `/ 1` for `- 1` left it longer, and the
+    /// lines that count units were measured with names of at most that).
+    #[test]
+    fn a_name_on_a_counting_line_has_at_most_its_room() {
+        for what in [
+            "x".repeat(NAME_MAX - 1),
+            "x".repeat(NAME_MAX),
+            "x".repeat(NAME_MAX + 1),
+            "x".repeat(3 * NAME_MAX),
+        ] {
+            let unit = TreeJudged {
+                tag: String::new(),
+                what: what.clone(),
+                judged: None,
+                holds: Holds::Now,
+            };
+            let named = named_with_rules(&unit);
+            if what.chars().count() <= NAME_MAX {
+                assert_eq!(named, what);
+            } else {
+                assert_eq!(named.chars().count(), NAME_MAX, "{named}");
+                assert!(named.ends_with("x…"), "{named}");
+            }
+        }
+    }
+
+    /// Mutation run on `07df120`: eleven mutants of the arithmetic that gives what blocks
+    /// its room were caught by no test (the random test of the bound never came to an edge).
+    /// What blocks gets all the room the lines below leave, to the character, and no more:
+    /// a unit whose text has exactly that many characters is shown whole, and one with one
+    /// more is not. Three layouts, each with the lines below it measured by what they are:
+    ///
+    /// 1. a staged failure alone: the line for what is staged and the one for rule text;
+    /// 2. the same, beside a failure of another tree that stands: and a counting line
+    ///    ([`TAIL_LINE`]) and the line that says what "stands" means;
+    /// 3. a failure with something new beside what stands, alone: what stands and the line
+    ///    "New at this stop" are taken from its room.
+    ///
+    /// And a stop with more failing commits than fit: no line that names one is added past
+    /// the room (`-` for `+` there added one, and the message was cut).
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "three layouts of one rule, each with its own measure"
+    )]
+    fn what_blocks_gets_the_room_the_lines_below_leave_and_no_more() {
+        const END: &str = "END-OF-WHY";
+        let rule = |id: &str, why: usize, path: &str| RuleOutcome {
+            id: id.to_owned(),
+            why: if why == 0 {
+                String::new()
+            } else {
+                format!("{}{END}", "w".repeat(why))
+            },
+            held: false,
+            violations: vec![("secret_like".to_owned(), path.to_owned(), 1)],
+        };
+        let unit = |tag: &str, what: String, rules: Vec<RuleOutcome>, holds: Holds| TreeJudged {
+            tag: tag.to_owned(),
+            what,
+            judged: Some(Judged::Fail {
+                rules,
+                said: Vec::new(),
+            }),
+            holds,
+        };
+        // For units made with a `why` of `pad` characters, around the pad whose measured
+        // text has `room` characters: the measure at the largest pad shown whole, and at the
+        // smallest one not shown whole.
+        let edge = |room: usize, make: &dyn Fn(usize) -> (Vec<TreeJudged>, Vec<String>, usize)| {
+            let at = |pad: usize| {
+                let (units, remembered, measured) = make(pad);
+                (measured, trees_text(&units, &remembered).contains(END))
+            };
+            let (base, _) = at(1);
+            let first = (room + 1).saturating_sub(base).saturating_sub(40).max(1);
+            let mut found = (0, usize::MAX);
+            for pad in first..first + 80 {
+                let (measured, whole) = at(pad);
+                assert_eq!(measured, base + pad - 1, "the measure is not the pad's");
+                if whole {
+                    assert_eq!(found.1, usize::MAX, "whole again after it was not");
+                    found.0 = measured;
+                } else if found.1 == usize::MAX {
+                    found.1 = measured;
+                }
+            }
+            found
+        };
+        let staged = |pad: usize| {
+            unit(
+                "0/s",
+                staged_label("/r"),
+                vec![rule("no-secrets", pad, "k.rs")],
+                Holds::WhileNew,
+            )
+        };
+
+        // 1
+        let room = DETAIL_CAP - STAGED_HINT.len() - RULE_SOURCE.len() - COUNT_ROOM;
+        let one = |pad: usize| {
+            let s = staged(pad);
+            let measured = unit_text(&s, "FAIL", false).0.len();
+            (vec![s], Vec::new(), measured)
+        };
+        assert_eq!(edge(room, &one), (room, room + 1));
+
+        // 2
+        let stands = unit(
+            "1/u",
+            tree_label("/t"),
+            vec![rule("no-secrets", 0, "old.rs")],
+            Holds::Never,
+        );
+        // (a counting line: three names of at most [`NAME_MAX`] with their separators, and
+        // 80 for its count, words and the number of the others; the longest a stop makes
+        // fits, below)
+        assert_eq!(TAIL_LINE, STANDING_NAMED * (NAME_MAX + 2) + 80);
+        let names = vec!["n".repeat(NAME_MAX); STANDING_NAMED];
+        let longest = count_line(99_999, "held by the judge, for a person", &names);
+        assert!(
+            longest.chars().count() <= TAIL_LINE,
+            "{}",
+            longest.chars().count()
+        );
+        let room = DETAIL_CAP
+            - TAIL_LINE
+            - STAGED_HINT.len()
+            - STANDS_BY_LINE.len()
+            - RULE_SOURCE.len()
+            - COUNT_ROOM;
+        let two = |pad: usize| {
+            let s = staged(pad);
+            let measured = unit_text(&s, "FAIL", true).0.len();
+            (vec![s, stands.clone()], Vec::new(), measured)
+        };
+        assert_eq!(edge(room, &two), (room, room + 1));
+
+        // 3
+        let old = unit(
+            "0/u",
+            tree_label("/r"),
+            vec![rule("no-secrets", 0, "a.rs")],
+            Holds::WhileNew,
+        );
+        let remembered = uncommitted_failures(std::slice::from_ref(&old));
+        let lead = "New at this stop:\n";
+        let three = |pad: usize| {
+            let u = unit(
+                "0/u",
+                tree_label("/r"),
+                vec![rule("no-secrets", 0, "a.rs"), rule("no-eval", pad, "b.rs")],
+                Holds::WhileNew,
+            );
+            let whole = u.judged.clone().unwrap();
+            let fresh = new_lines(&u, &remembered);
+            let shown = TreeJudged {
+                judged: failure_part(&whole, &fresh, false),
+                ..u.clone()
+            };
+            let measured = unit_text(&shown, "FAIL, new at this stop", false).0.len();
+            (vec![u], remembered.clone(), measured)
+        };
+        let beside = stands_beside(&old.judged.clone().unwrap());
+        let room = DETAIL_CAP
+            - STANDS_BY_LINE.len()
+            - RULE_SOURCE.len()
+            - COUNT_ROOM
+            - beside.len()
+            - lead.len();
+        assert_eq!(edge(room, &three), (room, room + 1));
+
+        // Two working trees with long paths, each with a staged and an uncommitted failure.
+        // The first staged one fills the room of the forms with rules to within ten
+        // characters, so the others can only be lines that name a unit and its rules, and
+        // those are longer than the hundred characters kept for each: what does not fit in
+        // the room is counted, never added past it.
+        let top = |n: usize| format!("/{}/{n}", "d".repeat(200));
+        let failing = |what: String, tag: &str, pad: usize| {
+            unit(
+                tag,
+                what,
+                vec![rule("no-secrets", pad, "k.rs")],
+                Holds::WhileNew,
+            )
+        };
+        let room = DETAIL_CAP - STAGED_HINT.len() - RULE_SOURCE.len();
+        let with_rules = room - 3 * SHORT_LINE - COUNT_ROOM;
+        let base = unit_text(&failing(staged_label(&top(0)), "0/s", 1), "FAIL", true)
+            .0
+            .len();
+        let first = failing(staged_label(&top(0)), "0/s", with_rules - 10 - base + 1);
+        assert_eq!(unit_text(&first, "FAIL", true).0.len(), with_rules - 10);
+        let units = vec![
+            first,
+            failing(tree_label(&top(0)), "0/u", 0),
+            failing(staged_label(&top(1)), "1/s", 0),
+            failing(tree_label(&top(1)), "1/u", 0),
+        ];
+        assert!(tree_label(&top(1)).len() > SHORT_LINE);
+        let text = trees_text(&units, &[]);
+        assert!(
+            text.chars().count() <= DETAIL_CAP && !text.contains(DETAIL_CUT.trim_end()),
+            "{} characters\n{text}",
+            text.chars().count()
+        );
     }
 
     #[test]

@@ -652,13 +652,19 @@ fn the_users_configuration_does_not_shape_the_patch_and_the_users_ignore_file_do
         "the user's configuration changed the patch"
     );
     assert_eq!(filtered.tree, plain.tree);
-    // nor does the diff itself: the lines of context are not the user's to choose (a mutation
-    // run left the environment of what runs outside the repository alive when emptied)
+    // nor does the diff itself: the lines of context and the order of the files are not the
+    // user's to choose (a mutation run left the environment of what runs outside the
+    // repository alive when emptied; and again on `07df120`, where the change's context was
+    // the same with no lines of it: an order file of the user's reverses the files)
+    let order = scratch.write("user-order", "new name.txt\ncrlf.txt\n");
     let narrow = judge_patch(
         &root,
         "HEAD",
         &fresh(&scratch, "narrow"),
-        &with(&user_config("\tautocrlf = true\n[diff]\n\tcontext = 0\n")),
+        &with(&user_config(&format!(
+            "\tautocrlf = true\n[diff]\n\tcontext = 0\n\torderFile = {}\n",
+            order.display()
+        ))),
     )
     .unwrap();
     assert_eq!(

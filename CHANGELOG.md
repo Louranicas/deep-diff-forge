@@ -621,6 +621,46 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     list of the commits that were there); a state of an earlier schema is not read. *New
     in the patch crate:* nothing; the refusal for too many working trees says the number.
 
+- **Round 19 of Vesper's review and an eleventh independent review of the hooks: that a
+  directory is one of Git's own is known, not concluded; a look is not a reading.**
+  - *A tree Git cannot place is UNJUDGED, never "Git's own files" (HR11-M-1; older).* In a
+    bare repository with its trees inside it, any failure of Git for the directory a stop
+    was made from was read as "one of Git's own files": a tree pruned while its directory
+    was away, with credentials in it, gave a silent stop, and a Git that failed at one stop
+    named the tree the session was in as one "the session's directory is not in". A
+    directory is Git's own only when that is known without Git: it is inside the Git
+    directory and neither it nor any directory between has a `.git` entry. Any other
+    failure makes the stop UNJUDGED with Git's words; the tree the directory is under is
+    named as one the session's directory may be in, and nothing of it is forgotten.
+  - *`git status` saying nothing forgets nothing (HR11-L-2; older).* A stop made from
+    another tree took `git status` "clean" for "nothing there" and forgot what had blocked
+    in that tree; a file marked assume-unchanged, or a key a clean filter of the
+    repository takes out, is in the judge's patch and not in `git status`, so that stop
+    printed nothing and the unchanged failure blocked a second time on return. Where
+    something of the tree is remembered, it is read the way a stop from inside it reads
+    it, and only that reading finding nothing forgets.
+  - *Time is held back for commits that still wait (HR11-L-1).* A commit that once had no
+    verdict and then passed held five seconds back at every later stop (ten after both
+    lanes); the last line of each commit decides, as it does for the asks.
+  - *A session directory that is gone is in the tree it was in (HR11-L-5; older).* It is
+    asked about at the nearest directory above it that is there.
+  - *Sentences.* The reason "The commits of this session: UNJUDGED" in a session with more
+    than 256 working trees was cut after "they are not."; it says what follows first, and
+    a reason a message cuts ends with "…" (HR11-L-3). The sentence that a digest was given
+    up is not said at a stop where everything the index holds is remembered from then on,
+    the very block it had warned of (HR11-L-4). A run that had all that was left of the
+    stop, or the 30 seconds of one run, says so (HR11-L-6), and three README places say
+    what the code does.
+  - *Tests.* The two tests that failed for a loaded machine (review V4 round 19) wait for a
+    moment on the wall clock counted from the stop's first call of Git, measure what the
+    machine took, and make a stop again (a few times at most) only when that stop came to
+    its commits without the time the scenario needs; they pass only on stops that asked.
+    The mutation run on `07df120`: a test for each missed mutant, or why it is equivalent.
+    Two small functions were drawn out of their callers for that (what a tree leaves for
+    the project's tree; what the sentences about memory take of a message), and two
+    lines of a stop's message are constants of the module.
+  - *State.* Schema unchanged (`v9`).
+
 ### Changed
 
 - Path and shape weights are stated once, in `RiskSignal::weight`, and the scorer reads
