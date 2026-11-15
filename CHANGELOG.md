@@ -249,13 +249,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     mutations that moves either limit by one, makes a `>` a `>=`, counts characters for
     bytes, gives each file the whole budget again, shares it among the Rust files alone or
     the Rust and JavaScript files alone, or reads a file of a patch with its own budget in
-    the rank, the cluster or a view, fails them. Counted for whole requests:
-    the bytes the carried reading reads are counted on the thread, whatever readers a request
-    makes, and on patches of many creations, each under every limit of a file of its own, the
-    rank, the outline whole and page by page, every hunk whole and page by page, the hunks by
-    path, by address in several orders and each alone, and the last hunk of each file read at
-    most 256 KiB each; the outline and the listing of every hunk read it once, as the rank
-    does.
+    the rank, the cluster or a view, fails them. A further unit test compares the shares of
+    240 generated patches of 1 to 60 files with a model written from the rule as stated here,
+    and the rank's carried bytes with the model's: creations from one line to past the budget,
+    lines over 512 bytes in any hunk, every language by extension, by name and by shebang,
+    files in none, files that exist, renamed, deleted and binary files, and more than 25
+    creations. Leaving a share under 200 bytes, a file known by its shebang, a `Dockerfile` or
+    a `Makefile` uncharged, or giving the budget again from the 25th created file, fails it.
+    Counted for whole requests: the bytes the carried reading reads are counted on the thread,
+    whatever readers a request makes, and on patches of many creations, each under every limit
+    of a file of its own, the rank, the outline whole and page by page, every hunk whole and
+    page by page, the hunks by path, by address in several orders and each alone, and the last
+    hunk of each file read at most 256 KiB each; the outline and the listing of every hunk
+    read it once, as the rank does.
   - *What it costs, stated for any patch and held by tests that count.* The unit is a scan of
     a line: a view of a line is made by scanning the line once for each reading the view
     unites.

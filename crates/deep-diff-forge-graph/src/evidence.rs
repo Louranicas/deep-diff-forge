@@ -3541,6 +3541,504 @@ mod tests {
         }
     }
 
+    /// The shares of the created files of a patch against a model of the rule, on generated
+    /// patches: one test for the whole class of wrong shares, by size, by position, by language
+    /// and by kind of file.
+    mod shares_model {
+        use super::*;
+        use std::fmt::Write as _;
+
+        /// How many patches the test writes. Each has 1 to 60 files.
+        const PATCHES: usize = 240;
+
+        /// The budget and the longest line, as the CHANGELOG states them.
+        const BUDGET: usize = 256 * 1024;
+        const LONGEST_LINE: usize = 512;
+
+        /// A deterministic generator (xorshift), from a fixed seed.
+        struct Rng(u64);
+
+        impl Rng {
+            fn below(&mut self, n: usize) -> usize {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                usize::try_from(self.0 % (n as u64)).unwrap()
+            }
+        }
+
+        /// How a created file is written.
+        #[derive(Clone, Copy)]
+        struct Kind {
+            /// Its path, `#` standing for the file's number in the patch.
+            path: &'static str,
+            /// Its first line, a shebang, when it has one.
+            shebang: Option<&'static str>,
+            /// The scanner reads it in a language: by its extension, by its name
+            /// (`Dockerfile`, `Makefile`) or, with no extension, by its shebang. Said here from
+            /// the documented table, not asked of the code.
+            in_language: bool,
+            /// A line comment; a line that leaves something open at the end of a hunk in the
+            /// language (a block comment, a triple string, a string); and one that closes it at
+            /// the start of the next hunk. So each later hunk read together comes into
+            /// something open, and the carried reading reads it.
+            style: [&'static str; 3],
+        }
+
+        const C_LIKE: [&str; 3] = ["//", "x = 1; /*", "*/ y = 2;"];
+        const PYTHON: [&str; 3] = ["#", "x = \"\"\"", "\"\"\""];
+        const SHELL: [&str; 3] = ["#", "x=\"", "\""];
+        const YAML: [&str; 3] = ["#", "x: \"", "\""];
+        const TEXT: [&str; 3] = ["", "text", "text"];
+
+        const fn kind(
+            path: &'static str,
+            shebang: Option<&'static str>,
+            in_language: bool,
+            style: [&'static str; 3],
+        ) -> Kind {
+            Kind {
+                path,
+                shebang,
+                in_language,
+                style,
+            }
+        }
+
+        /// Every language the scanner reads, by every route to it, and files in none.
+        const KINDS: [Kind; 25] = [
+            kind("src/f#.rs", None, true, C_LIKE),
+            kind("vendor/f#/lib.rs", None, true, C_LIKE),
+            kind("f#/build.rs", None, true, C_LIKE),
+            kind("web/f#.js", None, true, C_LIKE),
+            kind("web/f#.ts", None, true, C_LIKE),
+            kind("web/f#.tsx", None, true, C_LIKE),
+            kind("web/f#.mjs", None, true, C_LIKE),
+            kind("go/f#.go", None, true, C_LIKE),
+            kind("py/f#.py", None, true, PYTHON),
+            kind("py/f#.pyi", None, true, PYTHON),
+            kind("sh/f#.sh", None, true, SHELL),
+            kind("sh/f#.bash", None, true, SHELL),
+            kind("mk/f#.mk", None, true, SHELL),
+            kind("f#/Dockerfile", None, true, SHELL),
+            kind("f#/Dockerfile.dev", None, true, SHELL),
+            kind("f#/Makefile", None, true, SHELL),
+            kind(".github/workflows/f#.yml", None, true, YAML),
+            kind("cfg/f#.yaml", None, true, YAML),
+            kind("bin/f#", Some("#!/bin/sh"), true, SHELL),
+            kind("bin/f#", Some("#!/usr/bin/env bash"), true, SHELL),
+            kind("bin/f#", Some("#!/usr/bin/env python3"), true, PYTHON),
+            kind("bin/f#", Some("#!/usr/bin/env node"), true, C_LIKE),
+            kind("docs/f#.txt", None, false, TEXT),
+            kind("bin/f#", Some("#!/usr/bin/env ruby"), false, TEXT),
+            kind("f#/LICENSE", None, false, TEXT),
+        ];
+
+        /// The size of a created file.
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Size {
+            /// Two or three hunks of one to three short lines: under 200 bytes.
+            Tiny,
+            /// Two to 8 hunks, each with up to 6 lines of up to 120 bytes besides the lines
+            /// that close and open.
+            Small,
+            /// Two to 24 hunks, each with up to 13 lines of up to 300 bytes besides those.
+            Medium,
+            /// Hunks each with up to 17 lines of 300 to 500 bytes besides those, to about 230
+            /// to 330 KiB in all: from most of the budget to past all of it.
+            Huge,
+            /// One hunk.
+            OneHunk,
+        }
+
+        /// A file of a generated patch: its section, and what the model reads of it, which the
+        /// generator knows from how it wrote it.
+        struct Written {
+            path: String,
+            /// The kind it was written as (an index into [`KINDS`]), when the patch creates it.
+            created: Option<usize>,
+            /// The lines of the new side of each hunk, when the patch creates it.
+            hunks: Vec<Vec<String>>,
+            section: String,
+        }
+
+        impl Written {
+            /// The patch creates it in a language, in more than one hunk.
+            fn takes_part(&self) -> bool {
+                self.created.is_some_and(|k| KINDS[k].in_language) && self.hunks.len() > 1
+            }
+        }
+
+        /// A line of `bytes` bytes: `comment` then letters, or two-byte characters.
+        fn line_of(rng: &mut Rng, comment: &str, bytes: usize) -> String {
+            let rest = bytes.saturating_sub(comment.len());
+            if rng.below(4) == 0 {
+                format!("{comment}{}{}", "§".repeat(rest / 2), "a".repeat(rest % 2))
+            } else {
+                format!("{comment}{}", "a".repeat(rest))
+            }
+        }
+
+        /// A file the patch creates, numbered `number`, of kind `at` and of size `size`. Up to
+        /// a fifth of the larger ones has a line over 512 bytes in its first hunk, its second
+        /// or a later one; up to an eighth has a line of exactly 512 bytes.
+        fn creation(rng: &mut Rng, number: usize, at: usize, size: Size) -> Written {
+            let kind = KINDS[at];
+            let [comment, opener, closer] = kind.style;
+            let path = kind.path.replace('#', &number.to_string());
+            let (count, fillers, widths) = match size {
+                Size::Tiny => (2 + rng.below(2), 0, (0, 1)),
+                Size::Small => (2 + rng.below(7), 5, (0, 120)),
+                Size::Medium => (2 + rng.below(23), 12, (0, 300)),
+                Size::Huge => (usize::MAX, 16, (300, 500)),
+                Size::OneHunk => (1, 5, (0, 120)),
+            };
+            let target = 230 * 1024 + rng.below(100 * 1024);
+            let larger = matches!(size, Size::Small | Size::Medium | Size::Huge);
+            let long = match rng.below(15) {
+                0 if larger => Some(0),
+                1 if larger => Some(1),
+                2 if larger => Some(2 + rng.below(if size == Size::Huge { 40 } else { 6 })),
+                _ => None,
+            };
+            let exact = (larger && rng.below(8) == 0).then(|| rng.below(8));
+            let mut hunks: Vec<Vec<String>> = Vec::new();
+            let mut total = 0;
+            while hunks.len() < count && (size != Size::Huge || total <= target) {
+                let h = hunks.len();
+                let mut lines = Vec::new();
+                match (h, kind.shebang) {
+                    (0, Some(shebang)) => lines.push(shebang.to_owned()),
+                    (0, None) => {}
+                    _ => lines.push(closer.to_owned()),
+                }
+                for _ in 0..rng.below(fillers + 2) {
+                    let bytes = widths.0 + rng.below(widths.1 - widths.0 + 1);
+                    lines.push(line_of(rng, comment, bytes));
+                }
+                if long == Some(h) {
+                    let bytes = LONGEST_LINE + 1 + rng.below(1000);
+                    // Anywhere but before a shebang, which names the language on line 1 only.
+                    let at = rng
+                        .below(lines.len() + 1)
+                        .max(usize::from(h == 0 && kind.shebang.is_some()));
+                    lines.insert(at, line_of(rng, comment, bytes));
+                }
+                if exact == Some(h) {
+                    lines.push(line_of(rng, comment, LONGEST_LINE));
+                }
+                if h > 0 && lines.len() == 1 && rng.below(2) == 0 {
+                    // A hunk of one line, that closes what the hunk before left and opens again.
+                    lines[0] = format!("{closer} {opener}");
+                } else {
+                    lines.push(opener.to_owned());
+                }
+                total += lines.iter().map(|line| line.len() + 1).sum::<usize>();
+                hunks.push(lines);
+            }
+            let mode = if kind.shebang.is_some() {
+                "100755"
+            } else {
+                "100644"
+            };
+            let mut section = format!(
+                "diff --git a/{path} b/{path}\nnew file mode {mode}\n--- /dev/null\n+++ b/{path}\n"
+            );
+            let mut start = 1;
+            for hunk in &hunks {
+                let _ = writeln!(section, "@@ -0,0 +{start},{} @@", hunk.len());
+                for line in hunk {
+                    let _ = writeln!(section, "+{line}");
+                }
+                start += hunk.len();
+            }
+            Written {
+                path,
+                created: Some(at),
+                hunks,
+                section,
+            }
+        }
+
+        /// A file the patch does not create, numbered `number`: one that exists (in one to
+        /// three hunks), renamed with changes, deleted, or binary.
+        fn other(rng: &mut Rng, number: usize) -> Written {
+            let kind = KINDS[rng.below(KINDS.len())];
+            let path = kind.path.replace('#', &number.to_string());
+            let mut hunks = String::new();
+            for k in 0..=rng.below(3) {
+                let bytes = if rng.below(6) == 0 { 600 } else { 40 };
+                let line = line_of(rng, kind.style[0], bytes);
+                let _ = write!(
+                    hunks,
+                    "@@ -{},1 +{},2 @@\n x\n+{line}\n",
+                    1 + 10 * k,
+                    1 + 11 * k
+                );
+            }
+            let (path, section) = match rng.below(4) {
+                0 => (
+                    path.clone(),
+                    format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n{hunks}"),
+                ),
+                1 => (
+                    path.clone(),
+                    format!(
+                        "diff --git a/old/{path} b/{path}\nsimilarity index 90%\nrename from old/{path}\nrename to {path}\n--- a/old/{path}\n+++ b/{path}\n{hunks}"
+                    ),
+                ),
+                2 => (
+                    path.clone(),
+                    format!(
+                        "diff --git a/{path} b/{path}\ndeleted file mode 100644\n--- a/{path}\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n"
+                    ),
+                ),
+                _ => {
+                    let path = format!("img/f{number}.png");
+                    let section = format!(
+                        "diff --git a/{path} b/{path}\nindex 1111111..2222222 100644\nBinary files a/{path} and b/{path} differ\n"
+                    );
+                    (path, section)
+                }
+            };
+            Written {
+                path,
+                created: None,
+                hunks: Vec::new(),
+                section,
+            }
+        }
+
+        /// A patch of 1 to 60 files in random order. In a third of the patches no file is
+        /// huge, so the budget is not used up; in a third one huge file is among the first
+        /// three; in a third it is in the middle.
+        fn generated_patch(rng: &mut Rng) -> (String, Vec<Written>) {
+            let n = 1 + rng.below(60);
+            let scenario = rng.below(3);
+            let huge_at = match scenario {
+                0 => usize::MAX,
+                1 => rng.below(n.min(3)),
+                _ => n / 3 + rng.below(n / 3 + 1),
+            };
+            let in_language: Vec<usize> =
+                (0..KINDS.len()).filter(|&k| KINDS[k].in_language).collect();
+            let in_none: Vec<usize> = (0..KINDS.len())
+                .filter(|&k| !KINDS[k].in_language)
+                .collect();
+            let mut written = Vec::new();
+            for number in 0..n {
+                let some_language = in_language[rng.below(in_language.len())];
+                let file = if number == huge_at {
+                    creation(rng, number, some_language, Size::Huge)
+                } else {
+                    match rng.below(20) {
+                        0..=10 => {
+                            let size = match rng.below(10) {
+                                0..=3 => Size::Tiny,
+                                8..=9 if scenario != 0 => Size::Medium,
+                                _ => Size::Small,
+                            };
+                            creation(rng, number, some_language, size)
+                        }
+                        11..=12 => {
+                            let none = in_none[rng.below(in_none.len())];
+                            creation(rng, number, none, Size::Small)
+                        }
+                        13 => creation(rng, number, some_language, Size::OneHunk),
+                        _ => other(rng, number),
+                    }
+                };
+                written.push(file);
+            }
+            let text = written.iter().map(|w| w.section.as_str()).collect();
+            (text, written)
+        }
+
+        /// What the model gives a file.
+        #[derive(Debug, Clone, Copy, Default)]
+        struct Modelled {
+            /// How many hunks, from the first, are read together.
+            together: usize,
+            /// Their bytes, which it takes from the budget.
+            bytes: usize,
+            /// The bytes of those after the first: what the carried reading reads of them
+            /// (the first comes into nothing open).
+            after_first: usize,
+            /// The hunk it stopped at, and whether for a long line (or for the budget).
+            stop: Option<(usize, bool)>,
+        }
+
+        /// The rule as the CHANGELOG states it, written plainly from it: the files go in
+        /// patch order and share one budget of 256 KiB of the new side, each line counted with
+        /// its end. A file the patch creates in more than one hunk, in a language, has its
+        /// hunks from the first up to the one that would take it past what the files before it
+        /// left, or that has a line longer than 512 bytes. With fewer than two hunks so, it is
+        /// not read as one text and takes nothing; else it takes their bytes from the budget.
+        /// Every other file takes nothing.
+        fn model(written: &[Written]) -> Vec<Modelled> {
+            let mut left = BUDGET;
+            let mut shares = Vec::new();
+            for file in written {
+                let mut share = Modelled::default();
+                if file.takes_part() {
+                    let (mut together, mut bytes, mut first) = (0, 0, 0);
+                    for (h, hunk) in file.hunks.iter().enumerate() {
+                        let long = hunk.iter().any(|line| line.len() > LONGEST_LINE);
+                        let size: usize = hunk.iter().map(|line| line.len() + 1).sum();
+                        if long || bytes + size > left {
+                            share.stop = Some((h, long));
+                            break;
+                        }
+                        if h == 0 {
+                            first = size;
+                        }
+                        together += 1;
+                        bytes += size;
+                    }
+                    if together > 1 {
+                        left -= bytes;
+                        share.together = together;
+                        share.bytes = bytes;
+                        share.after_first = bytes - first;
+                    }
+                }
+                shares.push(share);
+            }
+            shares
+        }
+
+        /// What the generated patches held, so the test fails if they stop holding enough of
+        /// each case.
+        #[derive(Debug, Default)]
+        struct Seen {
+            /// Shares under 200 bytes.
+            tiny_shares: usize,
+            /// Shares under 200 bytes before the first file the budget stops.
+            tiny_before_cut: usize,
+            /// Files the budget stops.
+            budget_stops: usize,
+            /// Files stopped by a long line in their first hunk, their second, a later one.
+            long_stops: [usize; 3],
+            /// Patches whose budget is used up by one of their first three files, a later one,
+            /// none.
+            out_early: usize,
+            out_later: usize,
+            out_never: usize,
+            /// Patches of more than 25 created files whose budget runs out at a file before the
+            /// 25th, with a file after the 25th that takes part.
+            many_out_early: usize,
+            /// Created files of more than 256 KiB.
+            past_budget: usize,
+            /// For each kind, the shares of at least 16 KiB.
+            large_shares: [usize; KINDS.len()],
+        }
+
+        impl Seen {
+            fn count(&mut self, written: &[Written], modelled: &[Modelled]) {
+                let first_out = modelled
+                    .iter()
+                    .position(|m| m.stop.is_some_and(|(_, long)| !long));
+                for (f, (file, m)) in written.iter().zip(modelled).enumerate() {
+                    let total: usize = file.hunks.iter().flatten().map(|l| l.len() + 1).sum();
+                    self.past_budget += usize::from(total > BUDGET);
+                    if m.together > 1 && m.bytes < 200 {
+                        self.tiny_shares += 1;
+                    }
+                    if m.bytes >= 16 * 1024 {
+                        self.large_shares[file.created.unwrap()] += 1;
+                    }
+                    match m.stop {
+                        Some((_, false)) => self.budget_stops += 1,
+                        Some((h, true)) => self.long_stops[h.min(2)] += 1,
+                        None => {}
+                    }
+                    if first_out.is_some_and(|out| f < out) && m.together > 1 && m.bytes < 200 {
+                        self.tiny_before_cut += 1;
+                    }
+                }
+                let created = written.iter().filter(|w| w.created.is_some()).count();
+                let late_part = written.iter().skip(25).any(Written::takes_part);
+                match first_out {
+                    None => self.out_never += 1,
+                    Some(out) if out < 3 => self.out_early += 1,
+                    Some(_) => self.out_later += 1,
+                }
+                if created > 25 && first_out.is_some_and(|out| out < 24) && late_part {
+                    self.many_out_early += 1;
+                }
+            }
+
+            fn assert_enough(&self) {
+                let s = self;
+                assert!(s.tiny_shares >= 200 && s.tiny_before_cut >= 100, "{s:?}");
+                assert!(
+                    s.budget_stops >= 100 && s.long_stops.iter().all(|&n| n >= 10),
+                    "{s:?}"
+                );
+                assert!(
+                    s.out_early >= 30 && s.out_later >= 30 && s.out_never >= 30,
+                    "{s:?}"
+                );
+                assert!(s.many_out_early >= 20 && s.past_budget >= 20, "{s:?}");
+                for (k, kind) in KINDS.iter().enumerate() {
+                    assert!(
+                        !kind.in_language || s.large_shares[k] > 0,
+                        "no large share of {}: {s:?}",
+                        kind.path
+                    );
+                }
+            }
+        }
+
+        /// For each of 240 generated patches (each of 1 to 60 files in random order: created
+        /// files of every size, from one line or under 200 bytes to past the whole budget, in
+        /// one hunk or several; lines over 512 bytes in a first, second or later hunk; every
+        /// language the scanner reads, by extension, by name and by shebang alone, and files in
+        /// none; files that exist, renamed, deleted and binary; more than 25 created files in
+        /// some; the budget used up early, in the middle and never), the shares are those of
+        /// [`model`], which is written from the stated rule and not from the code; and the
+        /// rank's carried reading reads at most 256 KiB, exactly the bytes of the shares' hunks
+        /// after the first.
+        #[test]
+        fn the_shares_are_those_of_the_stated_rule_on_generated_patches() {
+            let mut rng = Rng(0x5A4E_D0F5_C0DE_B0D9);
+            let mut seen = Seen::default();
+            for p in 0..PATCHES {
+                let (text, written) = generated_patch(&mut rng);
+                let files = parse(&text).unwrap();
+                let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+                let wanted: Vec<&str> = written.iter().map(|w| w.path.as_str()).collect();
+                assert_eq!(paths, wanted, "patch {p}");
+                let modelled = model(&written);
+                let shares = CarriedShares::of(&files);
+                let wrong: Vec<String> = modelled
+                    .iter()
+                    .enumerate()
+                    .filter(|&(f, m)| shares.read_together(f) != m.together)
+                    .map(|(f, m)| {
+                        format!(
+                            "file {f} {} ({} hunks): {} hunks, the model {} ({} bytes)",
+                            written[f].path,
+                            written[f].hunks.len(),
+                            shares.read_together(f),
+                            m.together,
+                            m.bytes
+                        )
+                    })
+                    .collect();
+                assert!(wrong.is_empty(), "patch {p}: {wrong:#?}");
+                let before = carried_bytes_on_this_thread();
+                let _ranked = crate::rank(&files);
+                let read = carried_bytes_on_this_thread() - before;
+                let by_the_model: usize = modelled.iter().map(|m| m.after_first).sum();
+                assert!(read <= BUDGET, "patch {p}: {read}");
+                assert_eq!(read, by_the_model, "patch {p}: the rank's carried reading");
+                seen.count(&written, &modelled);
+            }
+            seen.assert_enough();
+        }
+    }
+
     /// At the bound, the list of a file the patch creates in several hunks holds every item
     /// 0.8.3 would list, though the reading carried from hunk to hunk finds more: 300
     /// generated creations of 40 to 100 lines, cut into hunks at random, with comments left
