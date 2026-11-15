@@ -1036,7 +1036,7 @@ mod tests {
 
     /// Hunks asked for by address in any order, the hunks of two files in turn, are labelled
     /// as by path, from one reader for each file and for the work of file order (found in
-    /// review, 2026-11-15: a reader made again whenever the file changed, reading a run of
+    /// review, 2026-11-15: a reader made again whenever the file changed, reading a creation's
     /// hunks from its first for each hunk asked out of order, took 6.2 s for the 8,000 hunks
     /// of a new file by address in reverse, against 0.13 s by path). Counted, not timed.
     #[test]

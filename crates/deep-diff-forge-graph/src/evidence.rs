@@ -550,19 +550,22 @@ fn distinct(found: &[(Side, EvidenceSignal, u32)]) -> Vec<EvidenceSignal> {
         .collect()
 }
 
-/// What reading has cost, counted and not timed: how many views of lines were made (a scan
-/// of a line makes one), and how many of them were alive at once at the most.
+/// What reading has cost, counted and not timed: how many times lines were scanned (a view of
+/// a line is made by one scan of it or by several, one for each reading the view unites), how
+/// many times a rule was asked of a line or of a view, and how many of the views made here
+/// were alive at once at the most.
 #[derive(Debug, Default)]
 struct Work {
     scans: Cell<usize>,
+    rules: Cell<usize>,
     alive: Cell<usize>,
     most: Cell<usize>,
 }
 
 impl Work {
-    /// Counts `text`, a view of a line just made, until it is dropped.
-    fn view(&self, text: String) -> Live<'_> {
-        self.scans.set(self.scans.get() + 1);
+    /// Counts a view of a line just made, by `scans` scans of the line, until it is dropped.
+    fn view(&self, (text, scans): (String, usize)) -> Live<'_> {
+        self.scans.set(self.scans.get() + scans);
         self.alive.set(self.alive.get() + 1);
         self.most.set(self.most.get().max(self.alive.get()));
         Live { text, work: self }
@@ -603,11 +606,16 @@ enum Views {
 /// another; the hunks of a file that exists are read each on its own, whatever their numbers
 /// say.
 ///
-/// What it costs, for any patch. A line is scanned at most twice for each side it is on (once
-/// as 0.8.3 scanned it, and for Rust once more as the compiler's lexer reads it), and on its
-/// new side a third time when it stands in a later hunk of a creation that came into
-/// something open. A scan leaves the state the next hunk goes on from, so no line is read
-/// only to pass a state on. One view of one line is alive at a time. What is kept:
+/// What it costs, for any patch. For each side a line is on, one view of it is made as 0.8.3
+/// made it, and for Rust one more as the compiler's lexer reads it; on its new side one more
+/// when it stands in a later hunk of a creation that came into something open. A view is
+/// made by scanning the line once for each reading it unites: at most eight times for the
+/// view of 0.8.3 (as in 0.8.3), five for the lexer's, and five (Rust) or eight for the
+/// carried one; for ordinary text once each. A view leaves the state the next hunk goes on
+/// from, so no line is read only to pass a state on. The rules of a signal are asked in
+/// their order until one finds something, as in 0.8.3. Of the views made here one is alive
+/// at a time (the view of 0.8.3 keeps one string for each of its scans while it unites
+/// them, as it always did). What is kept:
 ///
 /// - For hunks asked for in file order ([`Self::new`]: the rank, the outline, a listing by
 ///   path), one state, however many hunks the file has.
@@ -693,17 +701,26 @@ impl<'a> HunkLabels<'a> {
         distinct(&found)
     }
 
-    /// Not part of the API, and may change: how many scans of lines were made so far (a scan
-    /// reads one line once, in one reading). The tests that hold what a request costs count
-    /// with it.
+    /// Not part of the API, and may change: how many times lines were scanned so far, inside
+    /// the views made of them (a view unites one scan of its line for each reading it holds).
+    /// The tests that hold what a request costs count with it.
     #[doc(hidden)]
     #[must_use]
     pub fn scans(&self) -> usize {
         self.work.scans.get()
     }
 
-    /// Not part of the API, and may change: the most views of lines that were alive at once
-    /// so far. The tests that hold what a scan keeps count with it.
+    /// Not part of the API, and may change: how many times a rule was asked of a line or of
+    /// a view of one so far.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn rule_evaluations(&self) -> usize {
+        self.work.rules.get()
+    }
+
+    /// Not part of the API, and may change: the most views of lines made by this reader that
+    /// were alive at once so far (not the views the released scanner keeps inside its own
+    /// view while it unites them). The tests that hold what a scan keeps count with it.
     #[doc(hidden)]
     #[must_use]
     pub fn views_alive_at_most(&self) -> usize {
@@ -849,8 +866,8 @@ fn hunk_matches_in(
 }
 
 /// The scan of one hunk. Each changed line is read in each reading that starts the hunk as
-/// code: one view is made, every rule that reads code is asked of it, and it is dropped
-/// before the next is made, so one view of one line is alive at a time. Each finding says
+/// code: one view is made, the rules are asked of it, and it is dropped before the next is
+/// made, so of these views one is alive at a time. Each finding says
 /// whether the reading every release up to 0.8.3 had finds it: the first view, or a rule that
 /// reads the line as it is. What only the lexer reading or the carried reading finds is a
 /// further finding.
@@ -873,11 +890,6 @@ fn scan_hunk(
     let mut old_state = Readings::default();
     let mut new_state = Readings::default();
     let mut found = Vec::new();
-    // The bit of each rule's signal, in `EvidenceSignal::ALL` order.
-    let bit = |rule: &Rule| {
-        let at = EvidenceSignal::ALL.iter().position(|s| *s == rule.signal);
-        at.map_or(0u16, |at| 1 << at)
-    };
     for line in &hunk.lines {
         let (side, number) = match line.kind {
             PatchLineKind::Context => {
@@ -900,45 +912,41 @@ fn scan_hunk(
             PatchLineKind::Added => (Side::New, line.new_line),
             PatchLineKind::Removed => (Side::Old, line.old_line),
         };
-        let hits_in = |rule: &Rule, text: &str| match rule.matches {
-            Match::Tokens(tokens) => tokens.iter().any(|t| token_in(text, t)),
-            Match::AnyCode => !text.trim().is_empty(),
-            Match::Secret => looks_like_secret(text),
-            Match::Imports(modules) => imports_module(text, &line.text, modules),
+        let asking = Asking {
+            rules,
+            side,
+            raw: &line.text,
+            work,
         };
-        let on_side = || rules.iter().filter(|r| r.side == side);
         // What the reading every release up to 0.8.3 had finds, and what only a further
         // reading finds, as bits by signal.
         let (mut released, mut further) = (0u16, 0u16);
-        // A rule that reads the line as it is; and a rule that reads code where there is no
-        // language to read it in (`Scope::Any` code rules).
-        for rule in on_side() {
-            if (rule.view == View::Raw || language.is_none()) && hits_in(rule, &line.text) {
-                released |= bit(rule);
-            }
-        }
         if let Some(language) = language {
             let state = if side == Side::New {
                 &mut new_state
             } else {
                 &mut old_state
             };
-            let code = |text: &str| {
-                on_side()
-                    .filter(|rule| rule.view == View::Code && hits_in(rule, text))
-                    .fold(0u16, |bits, rule| bits | bit(rule))
-            };
-            scan_code(language, &line.text, state, views, work, |first, text| {
-                if first {
-                    released |= code(text);
-                } else {
-                    further |= code(text);
-                }
-            });
+            scan_code(
+                language,
+                &line.text,
+                state,
+                views,
+                work,
+                |is_first, text| {
+                    if is_first {
+                        released = asking.first(Some(text));
+                    } else {
+                        further |= asking.later(text, released | further);
+                    }
+                },
+            );
             if carried_in && side == Side::New {
                 let view = work.view(carried_view(language, &line.text, &mut carried));
-                further |= code(&view.text);
+                further |= asking.later(&view.text, released | further);
             }
+        } else {
+            released = asking.first(None);
         }
         let Some(number) = number else { continue };
         for (at, signal) in EvidenceSignal::ALL.into_iter().enumerate() {
@@ -956,6 +964,65 @@ fn scan_hunk(
         };
     }
     found
+}
+
+/// The rules asked of one changed line. The rules of a signal are asked in their order until
+/// one finds something, as they always were: no rule is asked of the first view that 0.8.3
+/// did not ask, and a signal that is found is not asked for again in a later view.
+struct Asking<'a> {
+    rules: &'a [&'a Rule],
+    side: Side,
+    /// The line as it is.
+    raw: &'a str,
+    work: &'a Work,
+}
+
+impl Asking<'_> {
+    fn hits_in(&self, rule: &Rule, text: &str) -> bool {
+        self.work.rules.set(self.work.rules.get() + 1);
+        match rule.matches {
+            Match::Tokens(tokens) => tokens.iter().any(|t| token_in(text, t)),
+            Match::AnyCode => !text.trim().is_empty(),
+            Match::Secret => looks_like_secret(text),
+            Match::Imports(modules) => imports_module(text, self.raw, modules),
+        }
+    }
+
+    fn of_signal(&self, signal: EvidenceSignal) -> impl Iterator<Item = &&Rule> {
+        self.rules
+            .iter()
+            .filter(move |r| r.signal == signal && r.side == self.side)
+    }
+
+    /// The signals found, as bits, by the reading every release up to 0.8.3 had: `view` is
+    /// its view of the line, or nothing where there is no language to read code in.
+    fn first(&self, view: Option<&str>) -> u16 {
+        let mut bits = 0u16;
+        for (at, signal) in EvidenceSignal::ALL.into_iter().enumerate() {
+            let hit = self.of_signal(signal).any(|rule| match (rule.view, view) {
+                (View::Code, Some(view)) => self.hits_in(rule, view),
+                // A rule that reads the line as it is; and a rule that reads code where
+                // there is no language to read it in (`Scope::Any` code rules).
+                (View::Raw, _) | (View::Code, None) => self.hits_in(rule, self.raw),
+            });
+            bits |= u16::from(hit) << at;
+        }
+        bits
+    }
+
+    /// The signals not in `found` that a further view of the line has, as bits.
+    fn later(&self, view: &str, found: u16) -> u16 {
+        let mut bits = 0u16;
+        for (at, signal) in EvidenceSignal::ALL.into_iter().enumerate() {
+            if found & (1 << at) == 0 {
+                let hit = self
+                    .of_signal(signal)
+                    .any(|rule| rule.view == View::Code && self.hits_in(rule, view));
+                bits |= u16::from(hit) << at;
+            }
+        }
+        bits
+    }
 }
 
 /// The readings of `line` that start as code, one at a time: each view is made, given to
@@ -1025,16 +1092,24 @@ fn imports_module(code: &str, raw: &str, modules: &[&str]) -> bool {
         Some(name.strip_prefix("node:").unwrap_or(name))
     };
     // Every keyword hit in line order, so one forward walk knows which statement each is in
-    // and the type-only test runs once per statement: the line stays linear.
-    let mut hits: Vec<(usize, &str)> = ["require", "import", "from"]
-        .iter()
-        .flat_map(|keyword| code.match_indices(keyword).map(|(at, _)| (at, *keyword)))
-        .collect();
-    hits.sort_unstable();
+    // and the type-only test runs once per statement: the line stays linear. The hits of the
+    // three keywords are taken as they come, the earliest next, and no list of them is kept.
+    let mut found = ["require", "import", "from"].map(|keyword| {
+        code.match_indices(keyword)
+            .map(move |(at, _)| (at, keyword))
+            .peekable()
+    });
+    let mut hits = std::iter::from_fn(move || {
+        let next = found
+            .iter_mut()
+            .filter_map(|hits| hits.peek().copied())
+            .min()?;
+        found.iter_mut().find_map(|hits| hits.next_if_eq(&next))
+    });
     // `start` is where the current statement begins; only the bytes since the last hit are
     // searched for a later `;`.
     let (mut seen, mut start, mut type_only) = (0, 0, None);
-    hits.into_iter().any(|(at, keyword)| {
+    hits.any(|(at, keyword)| {
         if let Some(semi) = code[seen..at].rfind(';') {
             start = seen + semi + 1;
             type_only = None;
@@ -2143,7 +2218,7 @@ mod tests {
         }
     }
 
-    /// The items of a patch as the tests of touching hunks compare them.
+    /// The items of a patch as the tests of hunks compare them.
     fn items(patch: &str) -> Vec<Found> {
         let file = parse(patch).unwrap().remove(0);
         file_evidence(&file)
@@ -2173,7 +2248,12 @@ mod tests {
     fn the_hunks_of_a_created_file_are_read_as_one_text() {
         let spawn = "pub fn evil() { std::process::Command::new(\"sh\").status().ok(); }";
         let head = "--- /dev/null\n+++ b/src/evil.rs\n";
-        for (opener, closer) in [("/*", "// */"), ("/* /*", " */ // */")] {
+        for (opener, closer) in [
+            ("/*", "// */"),
+            ("/* /*", " */ // */"),
+            ("const S: &str = \"", "// \";"),
+            ("const S: &str = r#\"", "// \"#;"),
+        ] {
             let joined = format!(
                 "{head}@@ -0,0 +1,4 @@\n+//! Helpers.\n+{opener}\n+{closer} {spawn}\n+pub fn k() {{}}\n"
             );
@@ -2229,8 +2309,8 @@ mod tests {
         }
     }
 
-    /// The items of a patch's one file when each hunk is read alone, as before hunks were
-    /// joined: what the reading of 0.8.3 and the lexer reading find from a start as code.
+    /// The items of a patch's one file when each hunk is read alone: what the reading of 0.8.3
+    /// and the lexer reading find from a start as code.
     fn items_of_hunks_alone(patch: &str) -> Vec<Found> {
         let file = parse(patch).unwrap().remove(0);
         let kind = FileKind::of(&file);
@@ -2243,7 +2323,7 @@ mod tests {
             .collect()
     }
 
-    /// The pieces of the lines of [`a_run_of_hunks_loses_nothing_a_hunk_read_alone_finds`].
+    /// The pieces of the lines of [`no_hunk_of_a_file_has_fewer_items_than_read_alone`].
     const RUN_ATOMS: [&str; 18] = [
         "unsafe { g() }",
         "std::process::Command::new(\"sh\")",
@@ -2272,10 +2352,10 @@ mod tests {
     /// and one at a time, are the file's. The hunks are a created file cut into hunks, added
     /// lines after one line of an existing file, and an existing file's hunks of every form
     /// with any numbers (added lines only, a line and added lines, context on both sides, a
-    /// last line removed), so that both joins and neither are met. A created file cut into
+    /// last line removed), in a file the patch creates and in one that exists. A created file cut into
     /// hunks has every item its lexer reading has as one hunk.
     #[test]
-    fn a_run_of_hunks_loses_nothing_a_hunk_read_alone_finds() {
+    fn no_hunk_of_a_file_has_fewer_items_than_read_alone() {
         use std::fmt::Write as _;
         let mut seed = 0x2545_F491_4F6C_DD1D_u64;
         let mut next = move |below: usize| {
@@ -2436,10 +2516,12 @@ mod tests {
         assert_eq!(hunk_signals(&file, &other), [S::ProcessSpawn]);
     }
 
-    /// The bound on what reading costs, for any patch, counted and not timed. A line is
-    /// scanned at most twice for each side it is on (once as 0.8.3 scanned it, and for Rust
-    /// once more in the lexer reading); on its new side a third time when it stands in a
-    /// later hunk of a creation; and one view of one line is alive at a time. 2,000 generated
+    /// The bound on what reading costs, for any patch, counted and not timed. For each side a
+    /// line is on, one view of it is made as 0.8.3 made it and for Rust one more by the lexer
+    /// reading; on its new side one more when it stands in a later hunk of a creation; and
+    /// of these views one is alive at a time. A view is made by scanning the line once for
+    /// each reading it unites: up to eight times for the view of 0.8.3 (as in 0.8.3), five
+    /// for the lexer's, and five (Rust) or eight for the carried one. 2,000 generated
     /// files of every shape (created, changed, deleted; Rust and JavaScript; added, removed
     /// and context lines; openers of comments and of strings that saturate the readings),
     /// read in file order as the rank reads and by address in reverse; and the shape that
@@ -2472,7 +2554,9 @@ mod tests {
             usize::try_from(seed % (below as u64)).unwrap()
         };
         let mut texts: Vec<String> = Vec::new();
-        for case in 0..2000 {
+        let mut case = 0;
+        while texts.len() < 2000 {
+            case += 1;
             let path = if case % 5 == 0 {
                 "src/x.js"
             } else {
@@ -2501,12 +2585,16 @@ mod tests {
                     let line: Vec<&str> = (0..=next(3)).map(|_| ATOMS[next(ATOMS.len())]).collect();
                     let _ = writeln!(text, "{kind}{}", line.join(" "));
                 }
-                // The next hunk touches this one, or leaves a gap.
+                // The next hunk begins where this one ends, or further on.
                 old += olds + next(2) * 7;
                 new += news;
             }
-            texts.push(text);
+            // A text the parser refuses is not counted: 2,000 are read.
+            if parse(&text).is_ok() {
+                texts.push(text);
+            }
         }
+        assert_eq!(texts.len(), 2000);
         // The shape of the review, as a creation.
         let mut four = "--- /dev/null\n+++ b/src/four.rs\n".to_owned();
         let openers = [
@@ -2530,22 +2618,22 @@ mod tests {
         }
         texts.push(four);
         for text in &texts {
-            let Ok(mut files) = parse(text) else { continue };
-            let file = files.remove(0);
+            let file = parse(text).unwrap().remove(0);
             let hunks = &file.patch_twin.hunks;
-            let views = if file.path.rsplit('.').next() == Some("rs") {
-                2
-            } else {
-                1
-            };
+            let rust = file.path.rsplit('.').next() == Some("rs");
             let created = file.status == FileStatus::Added;
+            // The most scans of a line on one side: eight by the reading of 0.8.3 (twice
+            // for each of four readings, as in 0.8.3) and for Rust five more by the lexer
+            // reading; and for a line of a creation, the most by the carried reading.
+            let side = 8 + if rust { 5 } else { 0 };
+            let carried = if rust { 5 } else { 8 };
             let bound: usize = hunks
                 .iter()
                 .flat_map(|hunk| &hunk.lines)
                 .map(|line| match line.kind {
-                    PatchLineKind::Context => 2 * views,
-                    PatchLineKind::Added => views + usize::from(created),
-                    PatchLineKind::Removed => views,
+                    PatchLineKind::Context => 2 * side,
+                    PatchLineKind::Added => side + if created { carried } else { 0 },
+                    PatchLineKind::Removed => side,
                 })
                 .sum();
             let in_order: Vec<usize> = (0..hunks.len()).collect();
@@ -2565,6 +2653,190 @@ mod tests {
             // The rank reads the same way.
             let _ = file_evidence(&file);
         }
+    }
+
+    /// The rules of a signal are asked in their order until one finds something, as in every
+    /// release: on a JavaScript line where the first spawn rule finds `child_process`, the
+    /// spawn rules after it are not asked (a rule that was asked all the same built a list of
+    /// every `from` on a 30 MB line: 251 MB where 0.8.3 took 118 MB). Counted: a line with
+    /// nothing asks every rule of its side once.
+    #[test]
+    fn the_rules_of_a_signal_are_asked_until_one_finds_something() {
+        let asked = |line: &str| {
+            let file = added("src/x.js", &[line]);
+            let mut labels = HunkLabels::new(&file);
+            (labels.of(0), labels.rule_evaluations())
+        };
+        let kind = FileKind::of(&added("src/x.js", &["x"]));
+        let on_side = || {
+            RULES
+                .iter()
+                .filter(|r| kind.admits(r.scope) && r.side == Side::New)
+        };
+        let (nothing, every) = asked("let x = 1;");
+        assert_eq!((nothing, every), (vec![], on_side().count()));
+        let spawn: Vec<&Rule> = on_side().filter(|r| r.signal == S::ProcessSpawn).collect();
+        let first = spawn
+            .iter()
+            .position(|r| matches!(r.matches, Match::Tokens(t) if t.contains(&"child_process")))
+            .unwrap();
+        let not_asked = spawn.len() - 1 - first;
+        assert!(
+            not_asked > 0,
+            "a spawn rule stands after the one that finds it"
+        );
+        let (found, fewer) = asked("const cp = child_process; from from from");
+        assert_eq!(found, [S::ProcessSpawn]);
+        assert_eq!(fewer, every - not_asked);
+    }
+
+    /// A signal that is found is not asked for again in a later view, counted. A Rust line on
+    /// which the reading of 0.8.3 finds `unsafe` and which the lexer reading reads differently
+    /// (it has code behind a nested comment): the rules asked are those of the first view,
+    /// each signal's until one finds something, and in the lexer view the rules that read
+    /// code of every signal but the one found. In a later hunk of a creation that comes into
+    /// an open comment there is a third view, and the same holds of it.
+    #[test]
+    fn a_signal_that_is_found_is_not_asked_for_again_in_a_later_view() {
+        let line = "unsafe { g() } /* /* */ // */ let y = 1;";
+        let one = added("src/x.rs", &[line]);
+        let kind = &FileKind::of(&one);
+        let on_side = |signal: EvidenceSignal| {
+            RULES
+                .iter()
+                .filter(move |r| kind.admits(r.scope) && r.side == Side::New && r.signal == signal)
+        };
+        let finds = |r: &&Rule| matches!(r.matches, Match::Tokens(t) if t.contains(&"unsafe"));
+        let found_at = on_side(S::UnsafeAdded).position(|r| finds(&r)).unwrap();
+        // The first view: the found signal's rules up to the one that finds, every rule of
+        // the others.
+        let first: usize = EvidenceSignal::ALL
+            .into_iter()
+            .map(|signal| match signal {
+                S::UnsafeAdded => found_at + 1,
+                _ => on_side(signal).count(),
+            })
+            .sum();
+        // A later view: the rules that read code, of every signal but the one found.
+        let later: usize = EvidenceSignal::ALL
+            .into_iter()
+            .filter(|signal| *signal != S::UnsafeAdded)
+            .map(|signal| on_side(signal).filter(|r| r.view == View::Code).count())
+            .sum();
+        assert!(later > 0 && on_side(S::UnsafeAdded).any(|r| r.view == View::Code));
+        let mut labels = HunkLabels::new(&one);
+        assert_eq!(labels.of(0), [S::UnsafeAdded]);
+        assert_eq!(labels.rule_evaluations(), first + later, "two views");
+        let file = parse(&format!(
+            "--- /dev/null\n+++ b/src/x.rs\n@@ -0,0 +1,1 @@\n+/*\n@@ -0,0 +2,1 @@\n+*/ {line}\n"
+        ))
+        .unwrap()
+        .remove(0);
+        let mut labels = HunkLabels::new(&file);
+        let _ = labels.of(0);
+        let before = labels.rule_evaluations();
+        assert_eq!(labels.of(1), [S::UnsafeAdded]);
+        assert_eq!(
+            labels.rule_evaluations() - before,
+            first + 2 * later,
+            "three views"
+        );
+    }
+
+    /// The import rule as it was before it took its keyword hits one at a time: it kept a
+    /// list of every hit on the line and sorted it.
+    fn imports_module_with_a_list(code: &str, raw: &str, modules: &[&str]) -> bool {
+        let c = code.as_bytes();
+        let specifier_at = |at: usize, keyword: &str| -> Option<&str> {
+            let before = &code[..at];
+            let receiver_ok = at == 0
+                || !is_boundary_blocker(c[at - 1])
+                || (keyword == "require" && before.ends_with("module."));
+            let after = at + keyword.len();
+            if !receiver_ok
+                || c.get(after).is_some_and(|b| is_ident(*b))
+                || (keyword == "import" && before.trim_end().ends_with("typeof"))
+            {
+                return None;
+            }
+            let gap = c[after..]
+                .iter()
+                .take_while(|b| b.is_ascii_whitespace() || **b == b'(')
+                .count();
+            let q = after + gap;
+            if keyword == "require" && !c[after..q].contains(&b'(') {
+                return None;
+            }
+            let quote = *c.get(q).filter(|b| matches!(b, b'"' | b'\'' | b'`'))?;
+            let name = raw.get(q + 1..)?;
+            let name = &name[..name.find(char::from(quote))?];
+            Some(name.strip_prefix("node:").unwrap_or(name))
+        };
+        let mut hits: Vec<(usize, &str)> = ["require", "import", "from"]
+            .iter()
+            .flat_map(|keyword| code.match_indices(keyword).map(|(at, _)| (at, *keyword)))
+            .collect();
+        hits.sort_unstable();
+        let (mut seen, mut start, mut type_only) = (0, 0, None);
+        hits.into_iter().any(|(at, keyword)| {
+            if let Some(semi) = code[seen..at].rfind(';') {
+                start = seen + semi + 1;
+                type_only = None;
+            }
+            seen = at;
+            let skip = *type_only.get_or_insert_with(|| {
+                let head = code[start..].trim_start();
+                head.starts_with("import type ") || head.starts_with("export type ")
+            });
+            !skip && specifier_at(at, keyword).is_some_and(|m| modules.contains(&m))
+        })
+    }
+
+    /// The import rule answers as it did when it kept a list of its hits: 40,000 generated
+    /// lines of keywords, quotes, parentheses, statement ends and type-only heads.
+    #[test]
+    fn the_import_rule_without_a_list_answers_as_with_one() {
+        const ATOMS: [&str; 18] = [
+            "require",
+            "import",
+            "from",
+            "(",
+            " ",
+            "'child_process'",
+            "\"fs\"",
+            "`node:child_process`",
+            ";",
+            "import type ",
+            "export type ",
+            "module.",
+            "typeof ",
+            "x",
+            ")",
+            "'other'",
+            "fromage",
+            "\"",
+        ];
+        let mut seed = 0x1357_9BDF_2468_ACE1_u64;
+        let mut next = move |below: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % (below as u64)).unwrap()
+        };
+        let mut found = 0;
+        for _ in 0..40_000 {
+            let line: String = (0..=next(9)).map(|_| ATOMS[next(ATOMS.len())]).collect();
+            for modules in [&["child_process"][..], &["fs", "other"][..]] {
+                let now = imports_module(&line, &line, modules);
+                assert_eq!(
+                    now,
+                    imports_module_with_a_list(&line, &line, modules),
+                    "{line:?}"
+                );
+                found += usize::from(now);
+            }
+        }
+        assert!(found > 2000, "{found} lines with an import");
     }
 
     /// What the hunks of a creation cost and what a reader keeps, counted. A file the patch

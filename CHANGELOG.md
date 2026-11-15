@@ -205,38 +205,70 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     asked in order, backwards, one at a time, or at random with repeats. A rule in the
     `evidence_scan` fuzz target holds the same for a stretch of Rust cut into the hunks of a
     creation at lines the input chooses.
-  - *What it costs, stated for any patch and held by tests that count.* A line is scanned at
-    most twice for each side it is on (once as 0.8.3 scanned it, and for Rust once more as
-    the compiler's lexer reads it), and on its new side a third time when it stands in a
-    later hunk of a creation that came into something open. A scan leaves the state the
-    next hunk goes on from, so no line is read only to pass a state on. One view of one
-    line is alive at a time: each view is made, read by every rule and dropped before the
-    next is made, and the readings a view unites inside itself are united one at a time
-    too. In file order (the rank, the outline, a listing by path) one state is kept for a
-    creation, whatever the number of its hunks; a listing by address keeps the labels of
-    the hunks it names, eight bytes each. Tests count the scans of each line (2,000
-    generated files of every shape, and the shape that cost the most in review), the views
-    alive (never more than one) and the entries kept.
+  - *What it costs, stated for any patch and held by tests that count.* The unit is a scan of
+    a line: a view of a line is made by scanning the line once for each reading the view
+    unites.
+    - *The views of a line, for each side it is on.* The view of 0.8.3, made as 0.8.3 made
+      it: one scan for each reading its state holds and one more for each of them that
+      carries a string, eight at most. For Rust, the lexer view: five scans at most (four
+      readings that each resume a literal, and one scan that resumes none; readings that
+      begin from the same place share a scan). And for a later hunk of a creation that came
+      into something open, the carried view: five scans at most for Rust and eight for the
+      other languages (readings that begin the same as code share a scan). For JavaScript
+      "something open" includes the last code byte of the line before, which decides whether
+      a `/` begins a regex, so there nearly every later hunk of a creation has a carried
+      view.
+    - *So, for each side a line is on.* In a file that exists, or a creation in one hunk:
+      at most 8 scans, and 13 for Rust, where 0.8.3 made at most 8; for ordinary text 1, and
+      2 for Rust, where 0.8.3 made 1. In a later hunk of a creation: at most 5 more for
+      Rust and 8 more for the other languages; for ordinary text 1 more, and none where the
+      hunks before left nothing open. A scan leaves the state the next hunk goes on from, so
+      no line is read only to pass a state on. A hunk of a creation asked for by itself
+      costs the file up to that hunk, once (one view a line), and then its own views.
+    - *The rules.* The rules of a signal are asked in their order until one finds something,
+      as in 0.8.3, so no rule is asked of the first view that 0.8.3 did not ask; a signal
+      that is found is not asked for again in a further view.
+    - *Memory.* The two new views (the lexer's and the carried one) are each made, read by
+      the rules and dropped before the next view is made, and the readings inside each are
+      united one at a time, at one bit a byte. The view of 0.8.3 keeps one string for each
+      of its scans until it has united them, as in 0.8.3. A reader keeps one state for a
+      creation read in file order, whatever the number of its hunks, and the labels of the
+      hunks a listing by address names, eight bytes each. Each item found costs about 120
+      bytes, as in 0.8.3. The import rule no longer keeps a list of every keyword on a line
+      (24 bytes each in 0.8.3). The figures below are measured peak memory, which the
+      counters do not prove.
+    - *Held by tests that count*: the scans of each line against these bounds (2,000
+      generated files of every shape, all read, and the shape that cost the most in review)
+      and exactly for ordinary text; the views made here that are alive at once (never more
+      than one); the rules asked (the rules after the one that finds are not asked); the
+      entries kept; and the import rule against the one that kept a list (40,000 lines).
 
-    Measured against the published v0.8.3 binary, best of two. Time: 2 MiB of ordinary Rust
-    ranks in 0.09 s against 0.07 s, as since the second reading. The most measured is 2.1
-    times 0.8.3's: a creation of 20,000 one-line hunks, each coming into four kinds of
-    literal left open (30 MB), ranks in 1.22 s against 0.59 s; the same lines in a file that
-    exists, read hunk by hunk, in 0.9 s against 0.6 s. At the parser's size limit (67 MB in
-    11,130 hunks) the outline takes 2.7 s for a creation and 2.0 s for a file that exists,
-    against 1.3 s, and `review.outline` over the protocol 2.9 s and 2.1 s against 1.4 s (the
-    socket client's deadline is 30 s). By address, the 16,000 hunks of a creation and the
-    20,000 hunks of a file that exists take the same in file order, reversed and shuffled,
-    and what 0.8.3 takes (0.24 s and 0.35 s). Peak memory (maximum resident size): within
-    4 MB of 0.8.3's for one line of 30 MB, alone or after a raw string or a comment that the
-    hunk before left open (118 MB; under a limit of 250 MB of address space it is answered,
-    as by 0.8.3); the same as 0.8.3's for 499,990 one-line hunks of a creation that each
-    come into an open comment (`--rank` 160 MB, `--outline` 161 MB and, with a page of
-    16 MiB, 342 MB, `--hunks --path` 549 MB) and for 2 MiB of ordinary Rust (10 to 118 MB by
-    mode); for `review.hunks` with every address of 200,000 such hunks, in file order,
-    reversed or shuffled, 522 MB against 516 MB; and, the most measured, for 80,000
-    creations of three hunks listed by address with the files in turn, 612 MB against
-    571 MB (1.07 times).
+    Measured against the published v0.8.3 binary, the least of two runs. Time, for ordinary
+    Rust (2 MiB): 0.10 s against 0.07 s, as one hunk, as a creation in hunks of 40 lines or
+    in a file that exists. For text made to cost the most: Rust whose every line the lexer
+    reads twice (24 MB), in a file that exists 2.5 times 0.8.3's (0.76 s against 0.31 s), as
+    a creation in 8,000 one-line hunks 3.3 times (1.00 s against 0.30 s), and as a creation
+    in 500 hunks of 16 lines 4.0 times (1.19 s against 0.30 s; 4.5 times on a loaded host);
+    JavaScript whose carried state holds three open strings (24 MB), as a creation in 8,000
+    one-line hunks 2.6 times (1.48 s against 0.58 s), and in a file that exists the same as
+    0.8.3. `git diff` never writes a creation in several hunks. At the parser's size limit
+    (67 MB), for those two creations, the ranking takes 3.2 s and 4.2 s against 0.8 s and
+    1.4 s, and `review.outline` over the protocol 6.5 s and 8.8 s against 1.7 s and 3.0 s
+    (4.1 times, the most measured); the socket client's deadline is 30 s. The last hunk of
+    a creation asked for by its address costs the file up to it: 0.89 s against 0.47 s and
+    1.36 s against 0.43 s for the two creations of 8,000 hunks, and 0.05 s against 0.04 s
+    for 2 MiB of ordinary Rust; its
+    first hunk costs what it cost. Peak memory (maximum resident size): the same as 0.8.3's
+    within 1 MB for every text above, for one 30 MB line alone or after raw strings that the
+    hunk before left open (118 MB), and for 499,990 one-line hunks of a creation that each
+    come into an open comment (160 MB). A JavaScript line of 30 MB that is all `from`: 118 MB
+    where 0.8.3 takes 250 MB, in a file that exists; behind a comment that the first hunk of
+    a creation opened, where 0.8.3 reads it as a comment, 93 MB against 61 MB (the line is
+    now also read as code, at less than half of what 0.8.3 takes for it written as code).
+    999,000 lines of `unsafe` that only the second reading finds: 210 MB against 87 MB, which
+    is what 0.8.3 takes for those lines written plainly (209 MB). And, the most measured
+    against 0.8.3 for the same answer, 80,000 creations of three hunks listed by address
+    with the files in turn: 613 MB against 572 MB (1.07 times).
   - *What changes for a reader.* A file the patch creates in several hunks can rank higher.
     `git diff` writes a creation as one hunk, so for a patch it wrote nothing changes. The
     outline and the hunks view label the hunks of a creation as the rank does.
