@@ -21,6 +21,18 @@ pub const EVIDENCE_BASIS: &str = "lexical";
 /// The most evidence items a file reports; the score still counts every signal found.
 pub const MAX_EVIDENCE_PER_FILE: usize = 32;
 
+/// The most text the reading carried from one hunk of a created file to the next reads: bytes
+/// of the lines of the new side, each counted with its end. [`HunkLabels`] reads a creation's
+/// hunks together from the first up to the hunk that would take it past this, and each hunk
+/// from that one on alone.
+const CARRIED_BYTES: usize = 256 * 1024;
+
+/// The longest line, in bytes, the reading carried from hunk to hunk reads: the hunk that has
+/// a longer line on its new side, and every hunk after it, is read alone. The cost of the
+/// released JavaScript scanner grows as the square of a word's length, so this, with
+/// [`CARRIED_BYTES`], is what bounds the time the carried reading takes.
+const CARRIED_LINE_BYTES: usize = 512;
+
 /// What a changed line does that a reviewer should see first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EvidenceSignal {
@@ -553,16 +565,24 @@ fn distinct(found: &[(Side, EvidenceSignal, u32)]) -> Vec<EvidenceSignal> {
 /// What reading has cost, counted and not timed: how many times lines were scanned (a view of
 /// a line is made by one scan of it or by several, one for each reading the view unites), how
 /// many times a rule was asked of a line or of a view, and how many of the views made here
-/// were alive at once at the most.
+/// were alive at once at the most; and the bytes of lines the reading carried from hunk to
+/// hunk read.
 #[derive(Debug, Default)]
 struct Work {
     scans: Cell<usize>,
     rules: Cell<usize>,
     alive: Cell<usize>,
     most: Cell<usize>,
+    carried: Cell<usize>,
 }
 
 impl Work {
+    /// The view of `line` in the reading carried from hunk to hunk, from `state`, counted.
+    fn carried_view(&self, language: Language, line: &str, state: &mut Carried) -> Live<'_> {
+        self.carried.set(self.carried.get() + line.len() + 1);
+        self.view(carried_view(language, line, state))
+    }
+
     /// Counts a view of a line just made, by `scans` scans of the line, until it is dropped.
     fn view(&self, (text, scans): (String, usize)) -> Live<'_> {
         self.scans.set(self.scans.get() + scans);
@@ -606,9 +626,17 @@ enum Views {
 /// another; the hunks of a file that exists are read each on its own, whatever their numbers
 /// say.
 ///
+/// The hunks of a creation are read together from the first up to 256 KiB of the new side
+/// (each line counted with its end), none of whose lines is longer than 512 bytes: from the
+/// first hunk that would take the reading past either, each hunk is read alone, as in 0.8.3.
+/// Where that is depends on the file alone, so every hunk has the same labels however the
+/// hunks are asked for, and asking for any one hunk reads at most that much of the hunks
+/// before it.
+///
 /// What it costs, for any patch. For each side a line is on, one view of it is made as 0.8.3
 /// made it, and for Rust one more as the compiler's lexer reads it; on its new side one more
-/// when it stands in a later hunk of a creation that came into something open. A view is
+/// when it stands in a later hunk of a creation, read together, that came into something
+/// open. A view is
 /// made by scanning the line once for each reading it unites: at most eight times for the
 /// view of 0.8.3 (as in 0.8.3), five for the lexer's, and five (Rust) or eight for the
 /// carried one; for ordinary text once each. A view leaves the state the next hunk goes on
@@ -624,13 +652,17 @@ enum Views {
 ///   file is gone through once, as far as the last hunk named; a hunk on the way that was
 ///   not named is scanned once, for the state alone.
 /// - A hunk of a creation behind the place the reading has come to, that was not named, is
-///   answered by going through the file again from its top: right, and as slow as that says.
+///   answered by going through the file again from its top, as far as that hunk and never
+///   past the bound above.
 pub struct HunkLabels<'a> {
     file: &'a ReviewFile,
     kind: FileKind,
     rules: Vec<&'static Rule>,
-    /// The file is one the patch creates, in a language: its hunks are also one text.
+    /// The file is one the patch creates, in a language, and more than one of its hunks are
+    /// read together: those hunks are also one text.
     one_text: Option<Language>,
+    /// How many of the file's hunks, from the first, are read together ([`read_together`]).
+    together: usize,
     /// The hunks named to be asked for in any order, ascending.
     named: Vec<u32>,
     /// The named hunks the reading has come to, ascending, each with its labels as bits in
@@ -658,8 +690,10 @@ impl<'a> HunkLabels<'a> {
     pub fn naming(file: &'a ReviewFile, asked: &[usize]) -> Self {
         let mut labels = Self::new(file);
         if labels.one_text.is_some() && !asked.is_sorted_by(|a, b| a < b) {
+            // A hunk past the bound is read alone and needs nothing kept.
             labels.named = asked
                 .iter()
+                .filter(|&&index| index < labels.together)
                 .filter_map(|&index| u32::try_from(index).ok())
                 .collect();
             labels.named.sort_unstable();
@@ -670,9 +704,13 @@ impl<'a> HunkLabels<'a> {
 
     fn with(file: &'a ReviewFile, kind: FileKind, rules: Vec<&'static Rule>) -> Self {
         let created = file.status == FileStatus::Added && file.patch_twin.hunks.len() > 1;
+        let language = kind.language.filter(|_| created && !rules.is_empty());
+        let together = language.map_or(0, |_| read_together(&file.patch_twin.hunks));
         Self {
             file,
-            one_text: kind.language.filter(|_| created && !rules.is_empty()),
+            // A creation whose first hunk alone reaches the bound has nothing carried.
+            one_text: language.filter(|_| together > 1),
+            together,
             kind,
             rules,
             named: Vec::new(),
@@ -735,6 +773,27 @@ impl<'a> HunkLabels<'a> {
         self.labels.len() + usize::from(self.at.is_some())
     }
 
+    /// Not part of the API, and may change: the bytes of lines the reading carried from hunk
+    /// to hunk read so far, each line counted with its end. The tests that hold its bound count
+    /// with it.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn carried_bytes(&self) -> usize {
+        self.work.carried.get()
+    }
+
+    /// Not part of the API, and may change: how many of the file's hunks, from the first, are
+    /// read together as one text (none for a file that is not such a creation).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn read_together(&self) -> usize {
+        if self.one_text.is_some() {
+            self.together
+        } else {
+            0
+        }
+    }
+
     /// The labels kept for hunk `index`, when it is a named hunk the reading has come to.
     fn kept_labels(&self, index: usize) -> Option<u16> {
         let index = u32::try_from(index).ok()?;
@@ -757,7 +816,8 @@ impl<'a> HunkLabels<'a> {
             return Vec::new();
         }
         let language = self.kind.language;
-        let Some(text_language) = self.one_text else {
+        // A hunk past the bound, like a hunk of any file not read as one text, is read alone.
+        let Some(text_language) = self.one_text.filter(|_| index < self.together) else {
             return scan_hunk(
                 &hunks[index],
                 language,
@@ -790,8 +850,10 @@ impl<'a> HunkLabels<'a> {
                 // Any other: one scan of each line, for what it leaves open.
                 for line in &hunks[next].lines {
                     if line.kind != PatchLineKind::Removed {
-                        let view = carried_view(text_language, &line.text, &mut carried);
-                        drop(self.work.view(view));
+                        drop(
+                            self.work
+                                .carried_view(text_language, &line.text, &mut carried),
+                        );
                     }
                 }
             }
@@ -832,6 +894,26 @@ impl<'a> HunkLabels<'a> {
         let at = self.labels.partition_point(|&(kept, _)| kept < hunk);
         self.labels.insert(at, (hunk, bits));
     }
+}
+
+/// How many of a creation's `hunks`, from the first, are read together: up to the first hunk
+/// with a line on its new side longer than [`CARRIED_LINE_BYTES`], or that takes the bytes of
+/// the new side (each line counted with its end) past [`CARRIED_BYTES`]. It depends on the
+/// hunks alone, and reads at most that much of them.
+fn read_together(hunks: &[PatchHunk]) -> usize {
+    let mut bytes = 0usize;
+    for (index, hunk) in hunks.iter().enumerate() {
+        for line in &hunk.lines {
+            if line.kind == PatchLineKind::Removed {
+                continue;
+            }
+            bytes += line.text.len() + 1;
+            if line.text.len() > CARRIED_LINE_BYTES || bytes > CARRIED_BYTES {
+                return index;
+            }
+        }
+    }
+    hunks.len()
 }
 
 /// `(side, signal, line)` for every signal some rule finds on a changed line of `hunk`, read
@@ -904,7 +986,7 @@ fn scan_hunk(
                         scan_code(language, &line.text, &mut new_state, views, work, |_, _| ());
                     }
                     if carried_in {
-                        drop(work.view(carried_view(language, &line.text, &mut carried)));
+                        drop(work.carried_view(language, &line.text, &mut carried));
                     }
                 }
                 continue;
@@ -942,7 +1024,7 @@ fn scan_hunk(
                 },
             );
             if carried_in && side == Side::New {
-                let view = work.view(carried_view(language, &line.text, &mut carried));
+                let view = work.carried_view(language, &line.text, &mut carried);
                 further |= asking.later(&view.text, released | further);
             }
         } else {
@@ -2917,6 +2999,131 @@ mod tests {
             assert_eq!(alone.entries_kept(), 0);
         }
         assert_eq!(alone.scans(), 2 * HUNKS);
+    }
+
+    /// A creation in hunks whose every hunk leaves a block comment open, and whose next hunk
+    /// closes it behind a line comment before a spawn: the spawn is found only by the reading
+    /// carried from hunk to hunk. `kind` 0 and 1 are Rust, 2 and 3 JavaScript; 0 and 2 reach
+    /// the bound by their bytes (48 hunks of about 8 KiB), 1 and 3 by a line of 513 bytes in
+    /// the middle of hunk 20 (48 hunks of a few hundred bytes). Returns the text and where the
+    /// bound is by its definition: the first hunk with a new-side line over 512 bytes or that
+    /// takes the new side (each line counted with its end) past 256 KiB.
+    fn over_the_bound(kind: usize) -> (String, usize) {
+        use std::fmt::Write as _;
+        let (path, spawn) = if kind < 2 {
+            ("src/x.rs", "std::process::Command::new(\"sh\");")
+        } else {
+            ("src/x.js", "execSync(\"sh\");")
+        };
+        let by_bytes = kind.is_multiple_of(2);
+        let mut text = format!("--- /dev/null\n+++ b/{path}\n");
+        let (mut at, mut bytes) = (1, 0);
+        let mut bound = None;
+        for hunk in 0..48 {
+            let mut lines = vec![format!("// */ {spawn}")];
+            let filler = if by_bytes { 100 } else { 3 };
+            lines.extend((0..filler).map(|n| format!("let v{hunk}_{n} = {n:<60};")));
+            if !by_bytes && hunk == 20 {
+                lines.insert(2, format!("let long = {:<501};", 0));
+                assert_eq!(lines[2].len(), 513);
+            }
+            lines.push("let x = 1; /*".to_owned());
+            let _ = writeln!(text, "@@ -0,0 +{at},{} @@", lines.len());
+            for line in &lines {
+                let _ = writeln!(text, "+{line}");
+                bytes += line.len() + 1;
+                if bound.is_none() && (line.len() > 512 || bytes > 256 * 1024) {
+                    bound = Some(hunk);
+                }
+            }
+            at += lines.len();
+        }
+        let bound = bound.unwrap();
+        assert!(bound > 1 && bound < 47, "{bound}");
+        (text, bound)
+    }
+
+    /// The reading carried from hunk to hunk of a creation stops at its bound, at the same hunk
+    /// whatever the hunks are asked in: the rank, in file order, each hunk alone, named in
+    /// reverse and shuffled with repeats, and backwards unnamed (going through the file again
+    /// for each). Before the bound a hunk that comes into the comment the hunk before it opened
+    /// has the spawn; from the bound on every hunk has what it has read alone. And counted: no
+    /// request reads more than 256 KiB of lines in the carried reading, and asking for a hunk
+    /// past the bound, the last one alone for one, reads none.
+    #[test]
+    fn the_carried_reading_stops_at_its_bound_whatever_is_asked() {
+        for kind in 0..4 {
+            let (text, bound) = over_the_bound(kind);
+            let file = parse(&text).unwrap().remove(0);
+            let hunks = &file.patch_twin.hunks;
+            let last = hunks.len() - 1;
+            let bytes_of = |hunk: &PatchHunk| -> usize {
+                hunk.lines.iter().map(|line| line.text.len() + 1).sum()
+            };
+            let before: usize = hunks[..bound].iter().map(bytes_of).sum();
+            assert_eq!(HunkLabels::new(&file).read_together(), bound, "kind {kind}");
+            // The last hunk alone, and the hunk at the bound: nothing carried.
+            for index in [last, bound] {
+                let mut alone = HunkLabels::new(&file);
+                assert_eq!(alone.of(index), [], "kind {kind}, hunk {index}");
+                assert_eq!(alone.carried_bytes(), 0, "kind {kind}, hunk {index}");
+            }
+            // The last hunk before the bound: the hunks before it, and it, once.
+            let mut below = HunkLabels::new(&file);
+            assert_eq!(below.of(bound - 1), [EvidenceSignal::ProcessSpawn]);
+            assert_eq!(below.carried_bytes(), before, "kind {kind}");
+            assert!(before <= CARRIED_BYTES, "kind {kind}");
+            // Behind the reading: the file again from its top, as far as the hunk asked.
+            let carried = below.carried_bytes();
+            assert_eq!(below.of(1), [EvidenceSignal::ProcessSpawn]);
+            assert_eq!(
+                below.carried_bytes() - carried,
+                bytes_of(&hunks[0]) + bytes_of(&hunks[1])
+            );
+            // Every order asks for no more than the bound in one request.
+            let in_order: Vec<usize> = (0..hunks.len()).collect();
+            let reversed: Vec<usize> = in_order.iter().rev().copied().collect();
+            let mut seed = 0x5DEE_CE66_D1CE_4E5B_u64 ^ kind as u64;
+            let shuffled: Vec<usize> = (0..2 * hunks.len())
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    usize::try_from(seed % (hunks.len() as u64)).unwrap()
+                })
+                .collect();
+            for order in [&in_order, &reversed, &shuffled] {
+                for named in [true, false] {
+                    let mut labels = if named {
+                        HunkLabels::naming(&file, order)
+                    } else {
+                        HunkLabels::new(&file)
+                    };
+                    for &index in order {
+                        let carried = labels.carried_bytes();
+                        let got = labels.of(index);
+                        let read = labels.carried_bytes() - carried;
+                        assert!(read <= CARRIED_BYTES, "kind {kind}, hunk {index}: {read}");
+                        if index >= bound {
+                            assert_eq!(read, 0, "kind {kind}, hunk {index}");
+                        }
+                        let spawn = (1..bound).contains(&index);
+                        assert_eq!(got.is_empty(), !spawn, "kind {kind}, hunk {index}");
+                    }
+                    if named {
+                        // One pass, as far as the last hunk before the bound.
+                        assert!(labels.carried_bytes() <= before, "kind {kind}");
+                    }
+                }
+            }
+            // The rank, file order, each hunk alone, named and unnamed in any order: the same
+            // labels, and more than alone exactly in the hunks between the first and the bound.
+            assert_eq!(
+                hunks_with_more_than_alone(&file, &text),
+                bound - 1,
+                "kind {kind}"
+            );
+        }
     }
 
     /// At the bound, the list of a file the patch creates in several hunks holds every item

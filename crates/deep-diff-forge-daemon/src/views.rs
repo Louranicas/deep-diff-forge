@@ -1125,6 +1125,84 @@ mod tests {
         );
     }
 
+    /// The reading carried from hunk to hunk of a creation stops at its bound at the same hunk
+    /// in every view: the outline page by page (each page after the first starts in the middle
+    /// of the file), the hunks by path, by address in reverse and each address alone, and the
+    /// rank's evidence. A creation of 48 hunks of about 8 KiB, each leaving a comment open that
+    /// the next closes before a spawn: the hunks from the second to the bound have the spawn,
+    /// the others nothing.
+    #[test]
+    fn a_creation_past_the_bound_has_the_same_labels_in_every_view() {
+        use std::fmt::Write as _;
+        let mut text = "--- /dev/null\n+++ b/src/x.rs\n".to_owned();
+        let mut at = 1;
+        for hunk in 0..48 {
+            let mut lines = vec!["// */ std::process::Command::new(\"sh\");".to_owned()];
+            lines.extend((0..100).map(|n| format!("let v{hunk}_{n} = {n:<60};")));
+            lines.push("let x = 1; /*".to_owned());
+            let _ = writeln!(text, "@@ -0,0 +{at},{} @@", lines.len());
+            for line in &lines {
+                let _ = writeln!(text, "+{line}");
+            }
+            at += lines.len();
+        }
+        let r = review(&text);
+        let file = &r.files()[0];
+        let bound = deep_diff_forge_graph::HunkLabels::new(file).read_together();
+        assert!(bound > 2 && bound < 40, "{bound}");
+        let wanted: Vec<Value> = (0..48)
+            .map(|h| {
+                if (1..bound).contains(&h) {
+                    json!(["process_spawn"])
+                } else {
+                    Value::Null
+                }
+            })
+            .collect();
+        // The rank.
+        let evidence = deep_diff_forge_graph::file_evidence(file);
+        for (h, hunk) in file.patch_twin.hunks.iter().enumerate() {
+            let has = evidence.iter().any(|e| e.hunk == hunk.id);
+            assert_eq!(has, !wanted[h].is_null(), "rank, hunk {h}");
+        }
+        // The outline, page by page.
+        let (mut cursor, mut outlined, mut pages) = (None, Vec::new(), 0);
+        for _ in 0..10_000 {
+            let answer = outline(&r, &page(MIN_MAX_BYTES, cursor.clone())).unwrap();
+            for entry in answer["files"].as_array().unwrap() {
+                outlined.extend(entry["hunks"].as_array().unwrap().iter().cloned());
+            }
+            pages += 1;
+            cursor = answer["next_cursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(pages > 4, "{pages} pages");
+        let evidence_of = |units: &[Value]| -> Vec<Value> {
+            units.iter().map(|u| u["evidence"].clone()).collect()
+        };
+        assert_eq!(evidence_of(&outlined), wanted, "outline by cursor");
+        // The hunks by path, by address in reverse, and each address alone.
+        let whole = page(MAX_MAX_BYTES, None);
+        let by_path = hunks(&r, &Selection::Paths(vec!["src/x.rs".into()]), &whole).unwrap();
+        let listed = by_path["hunks"].as_array().unwrap();
+        assert_eq!(evidence_of(listed), wanted, "by path");
+        let addresses: Vec<String> = listed
+            .iter()
+            .map(|u| u["address"].as_str().unwrap().to_owned())
+            .collect();
+        let reversed: Vec<String> = addresses.iter().rev().cloned().collect();
+        let by_address = hunks(&r, &Selection::Addresses(reversed), &whole).unwrap();
+        let mut answered = evidence_of(by_address["hunks"].as_array().unwrap());
+        answered.reverse();
+        assert_eq!(answered, wanted, "by address in reverse");
+        for (h, address) in addresses.iter().enumerate() {
+            let one = hunks(&r, &Selection::Addresses(vec![address.clone()]), &whole).unwrap();
+            assert_eq!(one["hunks"][0]["evidence"], wanted[h], "hunk {h} alone");
+        }
+    }
+
     /// Hunks by address come back in the order asked, verbatim; by path, every hunk of the file.
     /// Bug hunt 2026-10-28, H2-04: a view carries at most `SECTION_VIEW_BYTES` of a heading, cut at
     /// a character boundary and flagged, so one huge heading cannot blow every page's budget.

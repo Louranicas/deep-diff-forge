@@ -13,7 +13,8 @@
 // And the hunks of a creation are one text: the same lines as a Rust file the patch creates, cut
 // into hunks at lines the input chooses, have as evidence every `unsafe` and `Command::new`
 // that the lexer reading (`lexical::rust_lexer_view`) shows when it reads the lines as one
-// file from its first, whatever a hunk read alone would show.
+// file from its first, whatever a hunk read alone would show, in the hunks read together: from
+// the first, up to 256 KiB of the new side with no line longer than 512 bytes.
 //
 // Input: the first byte picks a path (and so a language and rule scope), the rest is the body
 // of one hunk; every line becomes a changed or context line, so the scanner sees comments and
@@ -24,7 +25,7 @@ use deep_diff_forge_graph::lexical::{
     Language, RustLexerState, ScanState, code_view, has_token, rust_lexer_view,
 };
 use deep_diff_forge_graph::{
-    Evidence, EvidenceSignal, MAX_EVIDENCE_PER_FILE, RankedFile, Side, file_evidence,
+    Evidence, EvidenceSignal, HunkLabels, MAX_EVIDENCE_PER_FILE, RankedFile, Side, file_evidence,
     file_evidence_released, hunk_signals,
 };
 use libfuzzer_sys::fuzz_target;
@@ -127,7 +128,9 @@ fuzz_target!(|data: &[u8]| {
 /// The lines of `text` as one stretch of a Rust file, cut into hunks of one to four lines
 /// (`pick` and the line lengths choose): every item the lexer reading has for the whole text
 /// is evidence of the patch, which creates the file (the hunks of a file the patch creates
-/// are read as one text; the hunks of a file that exists are read each on its own).
+/// are read as one text, up to the bound; the hunks of a file that exists are read each on its
+/// own). The bound is where it is said to be: within 256 KiB, the hunks before the first with a
+/// line longer than 512 bytes are read together.
 fn one_text_in_hunks(pick: u8, text: &str) {
     let lines: Vec<String> = text
         .lines()
@@ -154,9 +157,24 @@ fn one_text_in_hunks(pick: u8, text: &str) {
     let [file] = files.as_slice() else {
         return;
     };
+    let hunks = &file.patch_twin.hunks;
+    let bytes: usize = hunks
+        .iter()
+        .flat_map(|hunk| &hunk.lines)
+        .map(|line| line.text.len() + 1)
+        .sum();
+    let first_long = hunks
+        .iter()
+        .position(|hunk| hunk.lines.iter().any(|line| line.text.len() > 512))
+        .unwrap_or(hunks.len());
+    let together = HunkLabels::new(file).read_together();
+    if bytes <= 256 * 1024 {
+        assert_eq!(together, if first_long > 1 { first_long } else { 0 });
+    }
+    // A hunk past the bound is read alone; the first is read from the top of the file either way.
     let evidence = file_evidence(file);
     let mut state = RustLexerState::default();
-    let added = file.patch_twin.hunks.iter().flat_map(|hunk| &hunk.lines);
+    let added = hunks.iter().take(together.max(1)).flat_map(|hunk| &hunk.lines);
     for line in added {
         let view = rust_lexer_view(&line.text, &mut state);
         let Some(number) = line.new_line else {
