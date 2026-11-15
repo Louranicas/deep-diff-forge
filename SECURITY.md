@@ -460,7 +460,38 @@ bounded form.** What it holds to:
   for a staged change (they have blocked as its own, and the tree's failure has them too
   now) are shortened into a digest of everything that has blocked for it, and kept while
   that can be checked against what the index holds; they were let go with no word. Where
-  such a digest cannot be kept, the stop says so.
+  such a digest cannot be kept, the stop says so. A digest that is exactly what the index
+  holds says that every staged line has blocked: then nothing staged is new, whatever
+  part of it the working tree's failure has too (it was asked only whether the staged
+  change's own failure is exactly it, and a large staged failure blocked again when the
+  tree was repaired in part with the index untouched). The rule: with the index untouched
+  and the state writable, what is staged does not block twice unless a stop said that its
+  memory of it could not be kept; and each such sentence says what happened at that stop.
+- **"Could not be read" is not "nothing there".** Whatever a stop reads of a working tree
+  (its uncommitted change, its index, whether another tree has changes, whether the clone
+  is shallow, which trees there are) has three answers: read and nothing there, read and
+  this, not read and why. Only the first forgets anything. A tree that could not be read
+  came with "no staged change", so one stop at which Git failed, or a file could not be
+  opened, forgot what had blocked of the staged change, and it blocked a second time.
+- **The tree a stop is in is the one Git says.** A directory under the Git common
+  directory was taken for one of Git's own files, and Git was not asked: in a bare
+  repository with its working trees inside it, a stop made from a linked tree did not
+  judge that tree's uncommitted work at all. Git is asked first; only a directory it puts
+  in no working tree and that lies inside the Git directory is one of its own.
+- **A repository the hooks cannot list the commits of is still judged for what is not
+  committed.** With more than 256 working trees (or a million named commits) the commits
+  that were there when a session begins cannot be listed. The start recorded nothing
+  then, and every stop was wholly UNJUDGED. It records the project and the commit the
+  session began from, and that there is no list: the session's commits are UNJUDGED at
+  every stop, and the working tree's own changes are judged. The list is never taken
+  later in the session: a commit made before then would pass as one that was there.
+- **No run of the judge can take the time of what the stop owes after it.** A stop owes
+  three asks about commits at most (the one whose turn it is, the one with fewer attempts
+  asked about longest ago, the oldest never asked about); each leaves five seconds for
+  each one after it, and a run on a working tree's change leaves them what they need. The last
+  owed ask had all that was left, and a run that would have had under three seconds too:
+  a judge that hangs on two commits took every stop between them, and a commit with a
+  credential that had never been asked about was never submitted.
 - **A session's state is changed by one hook at a time.** Every stop holds a lock
   (`flock`) on a file beside the session's state, named from the session's id, from before
   it reads the state until it has written it; so does the stop that is the session's

@@ -1123,7 +1123,7 @@ pub fn named_commits(
     let places = worktrees(repo, options)?;
     if places.len() > WORKTREES_CAP {
         return Err(refused(
-            "the repository has more working trees than a hook reads the history of (`git worktree prune` removes the ones that are gone)",
+            "the repository has more working trees than a hook reads the history of (256 at most; `git worktree prune` takes away the entries of trees whose directories are gone)",
         ));
     }
     // The reflog is read with `rev-list`, which prints ids and nothing else: `git log` adds

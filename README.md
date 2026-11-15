@@ -390,16 +390,21 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   like any first judgment. Such a commit is named as "no verdict in 7 attempts; it is asked
   about again in its turn". **Every commit without a verdict is submitted to the judge at
   least once in every N stops, N being the number of the session's commits that have no
-  verdict**: each stop first asks about the commit that has waited longest for its turn
+  verdict, and a commit that was never asked about at the first stop that owes it an
+  ask**: each stop first asks about the commit that has waited longest for its turn
   among those past five attempts, then about the one asked about least recently among
-  those with fewer, and only then about anything else, so no answer for one commit and no
-  commit that stands in front can keep another from being asked about. (That holds while
-  the judge can be run, the state can be kept, and the stop has 8 seconds of its judging
-  left when it comes to its commits, after the changes of its working trees are judged.
-  Then both asks are made, however long the first takes. With less, and at least 3
-  seconds, the first of the two is made, and the second if the first left 3 seconds; with
-  less than 3 neither is. A run of the judge before these asks leaves them their time;
-  Git taking long to read the working tree or the commits can use it.) An ask that is not
+  those with fewer, then about the oldest commit that was never asked about, and only
+  then about anything else. These are the asks a stop owes, three at most, and none of
+  them can take another's time: an ask leaves 5 seconds for each ask owed after it, so a
+  judge that hangs on one commit, or on two, cannot keep the next from being submitted.
+  (A run of the judge has 30 seconds at most. A run that was cut is written down as
+  asked and cut, with the time it had.) That holds while the judge can be run, the state
+  can be kept, and the stop has 13 seconds of its judging left when it comes to its
+  commits (3 for the first ask it owes and 5 for each of the two after it), after the
+  changes of its working trees are judged. With less, the asks are made in that order
+  while 3 seconds are left, each with 3 seconds. A run of the judge on a working tree's
+  change leaves the asks what they need (13 seconds when three are owed); Git taking long
+  to read the working tree or the commits can use them. An ask that is not
   made is not written down: no attempt is counted, the commit keeps its turn, and the stop
   says of it "not asked at this stop for lack of time". An ask that was made is written
   down with what the judge said, whatever time is left after it, so the turn moves on: a
@@ -550,24 +555,41 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   others stand.) **The session remembers 2,048 failing lines** (under 140 KiB of a state
   that is read up to 4 MiB). When the changes of its working trees have more, the largest
   ones that the stop is not looking at are remembered the same way, each by one digest:
-  an unchanged failure still stands, and a changed one blocks. Of a staged change two
-  digests are kept then: one of its own lines, and one of everything that has blocked for
-  it, with the lines the working tree's failure has too at the moment; so what is staged
-  still stands when the working tree is repaired again and the index is as it was. Such a
-  digest can be kept only while it can be checked: when it is neither what the index
-  holds nor what is the staged change's own at a stop that looks, it goes, and that stop
-  says in how many working trees ("of what is staged in 1 working tree it could not
-  keep …"): there, and only there, what is staged may block once more when the tree is
-  repaired again. A change the stop is looking at is put into the short form only when
+  an unchanged failure still stands, and a changed one blocks. **What is
+  staged stands for as long as the index is untouched and the state can be written,
+  whatever the working tree does, unless a stop has said that its memory of it could not
+  be kept.** With up to 256 failing lines that is remembered line by line. Past that, and
+  when the session has more lines than it keeps, what has blocked of a staged change is
+  remembered by a digest, and a digest answers for the index in one case: it is exactly
+  what the index holds. Then every staged line has blocked, and no part of it is new,
+  whichever part the working tree's failure has too at a stop (a staged failure of 300
+  files that is in the tree again in part, and repaired there again in part, stands
+  throughout). Where a digest cannot answer, the stop at which that begins says so, in
+  one of two sentences:
+  "What has blocked of what is staged in 1 working tree is remembered as a whole from
+  now on … after a change of that working tree it may block once more, although the index
+  has not changed" (the staged change's own failure has more than 256 lines and the index
+  holds further failing lines, or the session has more than 2,048 lines);
+  "Of what is staged in 1 working tree, the hook remembered what had blocked as a whole …
+  and the index no longer holds exactly that …" (a digest had to be given up: part of
+  what it stood for left the index, for example by `git reset -- FILE` of one of 300
+  staged failing files; one working tree is enough for this one). A change the stop is
+  looking at is put into the short form only when
   every other already is, and the stop says so. Only when the working trees have more
   than 2,048 failing changes is the memory of the oldest ones given up, and the stop at
   which that happens says how many: those, and only those, may block once more although
   nothing changed, while the state can be written. (With 256 working
   trees or fewer the last of these sentences cannot be reached: it needs more than 2,048
-  digests, and a working tree has at most three. The one about a change the stop is
-  looking at needs some 250 other trees that each have an uncommitted and a staged
-  failure. With more than 256 working trees a stop has a limit of another kind, stated
-  below. So these sentences are held by unit tests, not by a run of the hooks.) A failing commit blocks at
+  digests, and a working tree has at most three. The one about an uncommitted change the
+  stop is looking at needs some 250 other trees that each have an uncommitted and a
+  staged failure. Those two are held by unit tests, not by a run of the hooks; the two
+  about what is staged are held by runs of the hooks too.) **A stop that could not read
+  a working tree forgets nothing of it.** When Git cannot give the tree's change (a file
+  that may not be read, a path marked skip-worktree, a Git that fails or is slow at that
+  stop), the stop says UNJUDGED with the reason; it has not looked at the index either,
+  and where something of what is staged has blocked before it says so ("what has blocked
+  of it before stands"). "Could not be read" is never taken for "nothing there": a
+  failure is forgotten only by a stop that looked and did not find it. A failing commit blocks at
   the stop that first judges it, whatever has blocked before as an uncommitted change: its
   lines are a rule, a path and a number, and another credential in the same file has the
   same. So a change that is stashed and brought back blocks three times, each time for
@@ -691,21 +713,34 @@ project and not judged at every stop while it is true, as stated above):
   them 2 working trees where a failure stands that has blocked").
 - A repository with more than 256 working trees: the hooks do not read the history of so
   many (a session's commits are found from the `HEAD` and the reflog of every working
-  tree). A session that begins in such a repository is UNJUDGED at every stop, with that
-  reason, whatever is in its tree: the commits that are there as it begins cannot be
-  listed, so its own could not be told from them. A session that began while there were
-  256 or fewer has the change of the tree it is in judged as always, and its commits
-  UNJUDGED with the reason at every stop. Neither is silent. `git worktree prune` takes
-  away the entries of trees that are gone.
-- The order of a stop, under its one limit of 45 seconds: the working tree the stop is in
-  is read and its staged and uncommitted changes are judged (when the stop is in a
-  linked working tree, that tree first and the project's own tree after it; the second
-  is read only when the first has its verdicts); then the two asks about
-  commits that every stop owes; then the other commits; then the submodules and the other
-  working trees are looked at. When the project has linked working trees or submodules,
-  six seconds are kept for that last part, so the judging has 35 seconds, not 41. No stop
-  takes longer than the 45 seconds; a stop in a repository where Git is slow no longer
-  spends them on other trees before its own change has a verdict.
+  tree), so the session's commits cannot be told from the ones that were there:
+  "The commits of this session: UNJUDGED", with that reason, at every stop, whatever is
+  committed. What is not committed in the tree the stop is in, and in the project's tree,
+  is judged as always, and a failure there blocks. That is so for a session that began
+  while there were 256 or fewer, and for one that begins in such a repository: its start
+  records the project and the commit it began from, and that there is no list of the
+  commits that were there (the list is not taken later: a commit the session made
+  before then would count as one that was there). `git worktree prune` takes away the
+  entries of trees whose directories are gone; it does nothing for trees that exist.
+- A bare repository with its working trees inside it (`repo.git/main`,
+  `repo.git/feature`) is a layout like any other: the tree a stop is in is the one Git
+  says its directory is in, wherever the Git directory lies. Only a directory that is in
+  no working tree and inside the Git directory is one of Git's own.
+- The order of a stop, and its time. One limit: 45 seconds for everything, of which 4 are
+  kept for remembering and saying, and 6 more for looking at the submodules and the other
+  working trees when the project has any. So the judging has 41 seconds, or 35.
+
+  | in this order | the time one run of the judge may take |
+  | --- | --- |
+  | the working tree the stop is in: its uncommitted change, then its staged change when that is another | what is left of the judging, less what the asks about commits can need (3 seconds when no commit of the session waits for a verdict; 5 more when one waits for its turn, 5 more when one with fewer attempts waits: 13 at most), less 5 for its own staged change when there is one, less 3 for the project's tree when the stop is in a linked tree and the project's tree has something that is not committed (one `git status` of at most 2 seconds says; what it cannot say counts as a change). From a linked tree with nothing else to judge: 32 seconds. When that leaves under 3 seconds: all that is left. |
+  | the project's tree, when the stop is in a linked one | the same, of what is left then |
+  | the asks a stop owes, three at most: the commit whose turn it is, the one with fewer attempts asked about longest ago, the oldest commit never asked about | what is left, less 5 seconds for each owed ask after it; when that is under 3 seconds, 3 seconds. Not made with under 3 seconds left. |
+  | the other commits | what is left; not made with under 3 seconds left |
+  | the submodules and up to sixteen other working trees, looked at and not judged | 6 seconds together; one `git status` may take half of what is left of them |
+
+  No run of the judge has more than 30 seconds, and no stop takes longer than the 45. A
+  run that was stopped says what time it had. A tree is read (Git) when its turn comes,
+  not before: the project's tree is read after the tree the stop is in has its verdicts.
 - A shallow clone: a commit whose parent the clone does not have is UNJUDGED by its id,
   at every stop, until the clone has the parent (`git fetch --unshallow`); then it is
   judged.

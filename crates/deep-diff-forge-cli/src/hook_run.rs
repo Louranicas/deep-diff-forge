@@ -167,6 +167,9 @@ fn git_words(error: &GitAcquireError) -> String {
                 .unwrap_or("it wrote no reason");
             format!("`{command}` failed: {reason}")
         }
+        // (a refusal of the hooks' own, with its reason: "invalid Git selection:" in front
+        // of it said nothing of it)
+        GitAcquireError::InvalidSelection { detail } => detail.clone(),
         other => other.to_string(),
     }
 }
@@ -460,6 +463,15 @@ struct Project {
     /// was changed or cut short is not believed.
     tips_sha256: String,
     tips_count: usize,
+    /// Why there is no such list, when there is none: the commits that were there when the
+    /// session began could not be listed, for a reason that is the repository's and does
+    /// not pass (it has more working trees, or more commits named, than a hook reads). Then
+    /// the digest above is empty and the count zero, no tips file is written, and the
+    /// session's commits cannot be told from the others: they are UNJUDGED at every stop,
+    /// with this reason. The project and the base are recorded all the same, so the working
+    /// tree's own changes are judged. It is a state of its own, not an empty list: an empty
+    /// list says "nothing was there", and every commit would be the session's.
+    no_baseline: Option<String>,
     /// A session-start hook recorded this. Otherwise the base is only where `HEAD` was when
     /// the session's first hook ran.
     by_start: bool,
@@ -491,7 +503,7 @@ struct State {
     judged_count: usize,
 }
 
-const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v8";
+const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v9";
 
 /// A session's state file. The session id is hashed: it is the client's string and must not
 /// choose a file name.
@@ -594,6 +606,18 @@ fn state_from(text: &str) -> Result<State, &'static str> {
         project => {
             let read = || -> Option<Project> {
                 let top = project["top"].as_str().filter(|top| !top.is_empty())?;
+                // why there is no list of the commits that were there: a reason, or null
+                let no_baseline = match &project["no_baseline"] {
+                    Value::Null => None,
+                    Value::String(why) if !why.is_empty() => Some(why.clone()),
+                    _ => return None,
+                };
+                if !project
+                    .as_object()
+                    .is_some_and(|members| members.contains_key("no_baseline"))
+                {
+                    return None;
+                }
                 Some(Project {
                     top: top.to_owned(),
                     id: project["id"]
@@ -603,9 +627,18 @@ fn state_from(text: &str) -> Result<State, &'static str> {
                     base: base_from(project["base"].as_str()?)?,
                     tips_sha256: project["tips_sha256"]
                         .as_str()
-                        .filter(|digest| is_digest(digest))?
+                        .filter(|digest| {
+                            if no_baseline.is_some() {
+                                digest.is_empty()
+                            } else {
+                                is_digest(digest)
+                            }
+                        })?
                         .to_owned(),
-                    tips_count: usize::try_from(project["tips_count"].as_u64()?).ok()?,
+                    tips_count: usize::try_from(project["tips_count"].as_u64()?)
+                        .ok()
+                        .filter(|count| no_baseline.is_none() || *count == 0)?,
+                    no_baseline,
                     by_start: project["by_start"].as_bool()?,
                 })
             };
@@ -643,6 +676,7 @@ fn state_text(state: &State) -> String {
             "base": base_text(&project.base),
             "tips_sha256": project.tips_sha256,
             "tips_count": project.tips_count,
+            "no_baseline": project.no_baseline,
             "by_start": project.by_start,
         })),
         "stops": state.stops,
@@ -799,6 +833,15 @@ fn load_list(
     Ok(lines)
 }
 
+/// The commits that were there when a session began: every commit a ref, a `HEAD` or a
+/// reflog named then, by its id; or that there is no such list, and why
+/// ([`Project::no_baseline`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Tips {
+    Listed(Vec<String>),
+    Unavailable(String),
+}
+
 /// Read a session's tips file ([`load_list`]): all of it is what the state names.
 fn load_tips(path: &Path, project: &Project) -> Result<Vec<String>, String> {
     load_list(
@@ -944,10 +987,13 @@ impl Session {
 
     /// The session's tips: the ones this hook recorded and could not write yet, else the ones
     /// in its tips file, held against the state.
-    fn tips(&self, project: &Project) -> Result<Vec<String>, String> {
+    fn tips(&self, project: &Project) -> Result<Tips, String> {
+        if let Some(why) = &project.no_baseline {
+            return Ok(Tips::Unavailable(why.clone()));
+        }
         match &self.tips {
-            Some(tips) => Ok(tips.clone()),
-            None => load_tips(&tips_file(&self.file), project),
+            Some(tips) => Ok(Tips::Listed(tips.clone())),
+            None => load_tips(&tips_file(&self.file), project).map(Tips::Listed),
         }
     }
 
@@ -1040,7 +1086,7 @@ struct Work {
 
 /// Record the project at `place` for a session that has none: the commit `HEAD` names, which
 /// repository it is, and the commits that were there (the tips, returned beside it).
-fn record(place: &Place, deadline: Deadline) -> Result<(Project, Vec<String>), String> {
+fn record(place: &Place, deadline: Deadline) -> Result<(Project, Option<Vec<String>>), String> {
     let Some(top) = place.top.to_str() else {
         return Err("the project's path is not UTF-8".to_owned());
     };
@@ -1062,21 +1108,48 @@ fn record(place: &Place, deadline: Deadline) -> Result<(Project, Vec<String>), S
     };
     // Everything that names a commit now: every ref, every working tree's `HEAD`, and the
     // reflogs, whose older entries no ref leads to and which are not this session's either.
-    let tips = named_commits(&place.top, Named::Everything, &deadline.git()).map_err(|error| {
-        format!(
-            "the commits that are there as the session begins could not be listed, so its own could not be told from them: {} (`deep-diff-forge agent doctor --gate` checks this as the link `commits`; when it is ready, start a new session)",
-            git_words(&error)
-        )
-    })?;
-    if !tips.iter().all(|tip| is_commit_id(tip)) {
+    let tips = match named_commits(&place.top, Named::Everything, &deadline.git()) {
+        Ok(tips) => Some(tips),
+        // A refusal: the repository has more working trees, or more commits named, than a
+        // hook reads. That does not pass, so asking again at the next hook is no use, and
+        // it is no reason not to know the project and its base: they are recorded, with
+        // no list. The whole record was thrown away, so every stop of a session that began
+        // in a repository with 257 working trees met the same failure and never judged
+        // the tree it was in (review V4 round 18, VD4R18-L-1).
+        Err(GitAcquireError::InvalidSelection { detail }) => {
+            return Ok((
+                Project {
+                    top: top.to_owned(),
+                    id: place.id.clone(),
+                    base,
+                    tips_sha256: String::new(),
+                    tips_count: 0,
+                    no_baseline: Some(detail),
+                    by_start: false,
+                },
+                None,
+            ));
+        }
+        // Anything else may pass (Git was slow, a file was being written): nothing is
+        // recorded, and the next hook of the session tries again, as its first.
+        Err(error) => {
+            return Err(format!(
+                "the commits that are there as the session begins could not be listed, so its own could not be told from them: {} (`deep-diff-forge agent doctor --gate` checks this as the link `commits`; when it is ready, start a new session)",
+                git_words(&error)
+            ));
+        }
+    };
+    if !tips.iter().flatten().all(|tip| is_commit_id(tip)) {
         return Err("Git named a commit in a form that cannot be read".to_owned());
     }
+    let listed = tips.as_deref().unwrap_or_default();
     let project = Project {
         top: top.to_owned(),
         id: place.id.clone(),
         base,
-        tips_sha256: tips_text(&tips).1,
-        tips_count: tips.len(),
+        tips_sha256: tips_text(listed).1,
+        tips_count: listed.len(),
+        no_baseline: None,
         by_start: false,
     };
     Ok((project, tips))
@@ -1126,7 +1199,7 @@ fn locate(input: &Input, session: &mut Session, deadline: Deadline) -> Located {
         return match record(&place, deadline) {
             Ok((project, tips)) => {
                 session.state.project = Some(project.clone());
-                session.tips = Some(tips);
+                session.tips = tips;
                 Located::Here(Box::new(Work {
                     place,
                     project,
@@ -1787,7 +1860,7 @@ impl<'a> Bench<'a> {
     /// Have `patch` judged; `name` is the file it is written to in the scratch directory.
     /// With the answer comes whether the judge was run for it at all: with no time left
     /// ([`run_time`]), no ranker to offer or an input that cannot be written, it was not.
-    fn judge(&self, patch: &[u8], name: &str, owed: u32) -> (Judged, bool) {
+    fn judge(&self, patch: &[u8], name: &str, after: After) -> (Judged, bool) {
         let patch_file = self.scratch.0.join(name);
         if let Err(error) = std::fs::write(&patch_file, patch) {
             return (
@@ -1822,7 +1895,8 @@ impl<'a> Bench<'a> {
                 patch: &patch_sha256,
                 ranker: ranker_sha256,
             };
-            let Some(time) = run_time(self.deadline.left(), owed) else {
+            let left = self.deadline.left();
+            let Some(time) = run_time(left, after) else {
                 last = Judged::Unjudged {
                     reason: NO_TIME.to_owned(),
                 };
@@ -1832,17 +1906,24 @@ impl<'a> Bench<'a> {
             let (code, verdict, said) =
                 run_judge(&self.program, &self.policy_file, &patch_file, ranker, time);
             last = hook::judged(code, verdict.as_ref(), said.as_deref(), sealed);
-            // A run that had less than an ask is made with and gave no verdict says how
-            // little it had: "the judge was stopped" did not name the cause (eighth
-            // independent review of the hooks, HR8-L-2).
-            if time < COMMIT_FLOOR
-                && code.is_none()
+            // A run that was stopped says what time it had, and why it was no more: "the
+            // judge was stopped" did not name the cause (eighth independent review of the
+            // hooks, HR8-L-2). Either the stop had little left, or the run had its part of
+            // what was left and the rest is kept for what is judged after it.
+            if code.is_none()
                 && let Judged::Unjudged { reason } = &mut last
             {
-                *reason = format!(
-                    "{reason} (the stop had {:.1} seconds left for this run of the judge: what came before took its time)",
-                    time.as_secs_f32()
-                );
+                let had = time.min(JUDGE_TIME).as_secs_f32();
+                if time < left {
+                    *reason = format!(
+                        "{reason} (this run had {had:.1} of the {:.1} seconds that were left of the stop's judging: the rest is kept for what is judged after it)",
+                        left.as_secs_f32()
+                    );
+                } else if time < COMMIT_FLOOR {
+                    *reason = format!(
+                        "{reason} (the stop had {had:.1} seconds left for this run of the judge: what came before took its time)"
+                    );
+                }
             }
             // Exit 4: the policy does not admit this ranker. Another may be admitted.
             if code != Some(4) {
@@ -1856,18 +1937,45 @@ impl<'a> Bench<'a> {
 /// Why a patch has no verdict when the judge was not run for it for lack of time.
 const NO_TIME: &str = "the stop had no time left to run the judge: what came before it took the stop's time (Git reading the working trees and the commits, or earlier runs of the judge)";
 
-/// The time one run of the judge gets when `left` is left of the stop and it still owes
-/// `owed` runs after this one: what is left less [`ASK_OWED`] for each run owed, when that is
-/// at least [`COMMIT_FLOOR`]; else all that is left, so that the run that is made first is
-/// made at all. `None` when nothing is left: then the judge is not run.
+/// What a run of the judge must leave of the stop's judging for what is judged after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum After {
+    /// A run on a working tree's change: this much is held back, for the tree's other
+    /// change, for a second tree and for the asks about commits.
+    Trees(Duration),
+    /// An ask about a commit, with this many asks owed after it ([`sorted_commits`]):
+    /// [`ASK_OWED`] is held back for each.
+    Asks(u32),
+}
+
+/// The time one run of the judge gets when `left` is left of the stop's judging. This is the
+/// one place the rule is, and [`OWED_ASKS_NEED`] the number that follows from it.
 ///
-/// The run of the first ask a stop owes got `left` less [`ASK_OWED`] and nothing else: with
-/// under five seconds left that was no time, the judge was not started, and the commit was
-/// written down as asked, with an attempt counted (eighth independent review of the hooks,
-/// HR8-L-1).
-fn run_time(left: Duration, owed: u32) -> Option<Duration> {
-    let kept = left.saturating_sub(ASK_OWED.saturating_mul(owed));
-    let time = if kept >= COMMIT_FLOOR { kept } else { left };
+/// | the run | what it gets | when that is under [`COMMIT_FLOOR`] |
+/// | --- | --- | --- |
+/// | a working tree's change | `left` less what is held back ([`After::Trees`]) | all that is left: the stop's own change comes before everything |
+/// | an ask about a commit | `left` less [`ASK_OWED`] for each ask owed after it | [`COMMIT_FLOOR`], while that much is left: it cannot take the time of the asks owed after it |
+///
+/// No run gets more than [`JUDGE_TIME`], and none is made with nothing left (`None`).
+///
+/// History of the rule. The first ask a stop owes got `left` less five seconds and nothing
+/// else: with under five seconds left that was no time, the judge was not started, and the
+/// commit was written down as asked (eighth independent review of the hooks, HR8-L-1).
+/// Then a run that would have had under three seconds got all that was left, and the last
+/// ask owed always did: a judge that hangs on the commit in its turn and on the one with
+/// fewer attempts took the whole stop between them, at every stop, and a commit that had
+/// never been asked about was never submitted (tenth independent review of the hooks,
+/// HR10-L-3).
+fn run_time(left: Duration, after: After) -> Option<Duration> {
+    let time = match after {
+        After::Trees(kept) => Some(left.saturating_sub(kept))
+            .filter(|time| *time >= COMMIT_FLOOR)
+            .unwrap_or(left),
+        After::Asks(owed) => left
+            .saturating_sub(ASK_OWED.saturating_mul(owed))
+            .max(COMMIT_FLOOR)
+            .min(left),
+    };
     (!time.is_zero()).then_some(time)
 }
 
@@ -1888,19 +1996,43 @@ enum Elsewhere {
 
 /// Look at the hook input's `cwd`. The project is judged wherever `cwd` is; this only finds
 /// what else there is to judge or to name.
+///
+/// Which working tree a directory is in is Git's to say, and it is asked. A directory under
+/// the Git common directory was taken to be among Git's own files, where no working tree
+/// is, and Git was not asked. In a bare repository with its working trees inside it
+/// (`repo.git/main`, `repo.git/feature`) every working tree is under the common directory:
+/// a stop made from one that is not the session's project did not judge that tree at all,
+/// and named it with "the session's directory is not in it" (tenth independent review of
+/// the hooks, HR10-M-3). Only a directory that Git puts in no working tree and that lies
+/// inside the common directory is among Git's own files.
 fn elsewhere(cwd: &str, place: &Place, deadline: Deadline) -> Elsewhere {
-    let Ok(cwd) = std::fs::canonicalize(cwd) else {
-        return Elsewhere::Nothing;
+    let cwd = match std::fs::canonicalize(cwd) {
+        Ok(cwd) => cwd,
+        // not there (or no directory): it adds nothing
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Elsewhere::Nothing;
+        }
+        // there, and it could not be looked at: that is not "nothing there"
+        Err(error) => {
+            return Elsewhere::Failed(format!(
+                "whether the session's directory is another working tree of this repository could not be found out: it could not be looked at ({error})"
+            ));
+        }
     };
-    // The project's own top level, or a place inside the Git directory, where no working
-    // tree is.
-    if cwd == place.top || cwd.starts_with(&place.common) {
+    if cwd == place.top {
         return Elsewhere::Nothing;
     }
     match find(&cwd, deadline) {
         Found::Tree(found) if found.id != place.id => Elsewhere::Foreign(found.top),
         Found::Tree(found) if found.top != place.top => Elsewhere::Linked(Box::new(found)),
         Found::Tree(_) | Found::NotARepository | Found::Gone => Elsewhere::Nothing,
+        // in no working tree, and inside the Git directory: Git's own files
+        Found::Failed(_) if cwd.starts_with(&place.common) => Elsewhere::Nothing,
         Found::Failed(reason) => Elsewhere::Failed(format!(
             "whether the session's directory is another working tree of this repository could not be found out: {reason}"
         )),
@@ -1974,8 +2106,11 @@ struct Looked {
     /// The lines of what its index holds, every one of them whatever their number
     /// ([`hook::lines_whole`]); `None` when the staged change got no verdict.
     index: Option<Lines>,
-    /// Of those, the lines that are the staged change's own: the uncommitted change does
-    /// not have them (it was repaired and the repair not staged).
+    /// Of those, the lines that are the staged change's own, every one of them: the
+    /// uncommitted change does not have them (it was repaired and the repair not staged).
+    own: Lines,
+    /// The staged change's own lines as they are remembered ([`hook::failure_lines`]): the
+    /// lines, or one mark for more than [`hook::LINES_KEPT`].
     staged: Lines,
 }
 
@@ -2241,26 +2376,50 @@ fn lines_of(blocked: &[String], tag: &str) -> Lines {
         .collect()
 }
 
-/// The asks about commits that every stop makes before any other ([`sorted_commits`]): what
-/// a run of the judge on a working tree's change leaves time for.
-const RESERVED_ASKS: u32 = 2;
+/// How long a stop that is in a linked working tree looks whether the project's own tree
+/// has anything that is not committed, before it judges the tree it is in.
+const SECOND_TREE_LOOK: Duration = Duration::from_secs(2);
+/// What every run of the judge on a working tree's change leaves of the stop's judging for
+/// the asks about commits that the stop owes ([`sorted_commits`]): what those asks need
+/// ([`OWED_ASKS_NEED`] when there are three of them). `known` is the session's file of
+/// judged commits, which says, with no word asked of Git, whether a commit waits for its
+/// turn and whether one with fewer attempts waits; a commit that was never asked about
+/// cannot be known before the commits are listed, so one ask is always counted for it.
+///
+/// So a session none of whose commits waits for a verdict keeps [`COMMIT_FLOOR`] back and
+/// no more: thirteen seconds were kept back whatever the session's commits were, and from a
+/// linked tree a second run of twelve seconds, on the tree's staged change, was cut (tenth
+/// independent review of the hooks, HR10-L-2, its second row).
+fn asks_kept(known: &[String]) -> Duration {
+    let waiting = |in_turn: bool| {
+        known.iter().any(|entry| {
+            matches!(
+                answer(entry),
+                Some((_, Answer::NoVerdict { attempts, .. })) if (attempts >= ATTEMPTS) == in_turn
+            )
+        })
+    };
+    // of the owed asks after the first, the ones no commit waits for
+    let none_waits =
+        (OWED_ASKS - 1).saturating_sub(u32::from(waiting(true)) + u32::from(waiting(false)));
+    OWED_ASKS_NEED.saturating_sub(ASK_OWED.saturating_mul(none_waits))
+}
 
-/// A patch judged, or the reason there is no patch; `None` when there is no change. `left`
-/// is the number of the working trees' patches that are still to be judged, this one
-/// included: the run leaves time for those and for the asks about commits that follow.
+/// A patch that was read, judged: the verdict, or [`Judged::Unjudged`] when the judge gave
+/// none. A change that is not there and one that was not read stay what they are. `kept` is
+/// what the run leaves of the stop's judging for what is judged after it ([`After::Trees`]).
 fn judged_patch(
     tribunal: &mut Judge<'_>,
-    patch: Result<Option<Vec<u8>>, String>,
-    left: &mut u32,
-) -> Option<Judged> {
+    patch: Reading<Vec<u8>>,
+    kept: Duration,
+) -> Reading<Judged> {
     match patch {
-        Ok(None) => None,
-        Ok(Some(bytes)) => {
-            *left = left.saturating_sub(1);
-            tribunal.owed = *left + RESERVED_ASKS;
-            Some(tribunal.judge(&bytes))
+        Reading::Nothing => Reading::Nothing,
+        Reading::Found(bytes) => {
+            tribunal.after = After::Trees(kept);
+            Reading::Found(tribunal.judge(&bytes))
         }
-        Err(reason) => Some(Judged::Unjudged { reason }),
+        Reading::NotRead(reason) => Reading::NotRead(reason),
     }
 }
 
@@ -2276,9 +2435,8 @@ struct Judge<'a> {
     /// `Some(true)` once a patch, or the probe, has got a verdict at this stop: the chain works.
     /// `Some(false)` when the probe was asked and got none.
     chain: Option<bool>,
-    /// The runs of the judge this stop must still make after the next one: [`ASK_OWED`] of
-    /// its time is left for each.
-    owed: u32,
+    /// What the next run of the judge must leave for what is judged after it.
+    after: After,
     /// Whether the judge was run for the patch [`Judge::judge`] was last asked about, at
     /// this stop (for that patch or for another with the same bytes).
     ran: bool,
@@ -2309,9 +2467,9 @@ impl<'a> Judge<'a> {
             self.ran = true;
             return known.clone();
         }
-        let owed = self.owed;
+        let after = self.after;
         let (answer, ran) = match self.bench() {
-            Ok(bench) => bench.judge(patch, "change.patch", owed),
+            Ok(bench) => bench.judge(patch, "change.patch", after),
             Err(reason) => (
                 Judged::Unjudged {
                     reason: reason.clone(),
@@ -2342,7 +2500,9 @@ impl<'a> Judge<'a> {
         let works = match self.bench() {
             Ok(bench) => bench.probe.as_ref().is_some_and(|probe| {
                 !matches!(
-                    bench.judge(probe.as_bytes(), "probe.patch", 0).0,
+                    bench
+                        .judge(probe.as_bytes(), "probe.patch", After::Asks(0))
+                        .0,
                     Judged::Unjudged { .. }
                 )
             }),
@@ -2403,16 +2563,56 @@ fn left_out(stopping: &Stopping<'_>, top: &Path, nested: &Path) -> Option<Note> 
     })
 }
 
-/// What is not committed in one working tree, each as a patch (`None`: no change) or the
-/// reason it could not be read, which is said.
+/// What a stop has of something it reads of a working tree. There are three answers and no
+/// fourth: it was read and nothing is there; it was read and this is there; it was not read.
+///
+/// "Not read" had no value of its own: a tree that could not be read came with "no staged
+/// change", which is the answer "the index was read and holds nothing". So a stop that
+/// could not read the tree once (a file it may not open, a path marked skip-worktree, a Git
+/// that was slow) remembered the index as clean, and the staged failure, untouched and
+/// already told, blocked a second time at the next stop (tenth independent review of the
+/// hooks, HR10-M-1). It is round 15's rule: a failure is forgotten only by a stop that
+/// looked and did not find it. Everything that takes one of these must say what it does
+/// with each of the three.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Reading<T> {
+    /// It was read, and there is nothing: no change, no failing line.
+    Nothing,
+    /// It was read, and this is what is there.
+    Found(T),
+    /// It was not read, and why: nothing is known of it at this stop, so what is remembered
+    /// of it stands and nothing of it is forgotten.
+    NotRead(String),
+}
+
+/// What the index of a working tree holds against its `HEAD`, when it holds a change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Staged<T> {
+    /// The very change the working tree holds: it is judged once, as the tree's.
+    Same,
+    /// Another change than the tree's: what a plain `git commit` would record.
+    Other(T),
+}
+
+/// What is not committed in one working tree: what the tree holds, untracked files included,
+/// and what its index holds, each against the tree's own `HEAD`, each as a patch.
 struct Uncommitted {
-    /// What the working tree holds, untracked files included, against its own `HEAD`.
-    tree: Result<Option<Vec<u8>>, String>,
-    /// What the index holds against that `HEAD`, when it is another change than the tree's:
-    /// what a plain `git commit` would record. `None` also when it is the same change.
-    staged: Result<Option<Vec<u8>>, String>,
-    /// The index holds the very change the tree holds (and `staged` is `None` for that).
-    index_same: bool,
+    tree: Reading<Vec<u8>>,
+    staged: Reading<Staged<Vec<u8>>>,
+}
+
+impl Uncommitted {
+    /// A working tree that could not be read, and why. Its index was not read either: what
+    /// stops the tree from being read stops the index too, and the reason is said once,
+    /// with the tree.
+    fn not_read(reason: String) -> Self {
+        Self {
+            staged: Reading::NotRead(format!(
+                "it was not looked at, because the working tree's change could not be read ({reason})"
+            )),
+            tree: Reading::NotRead(reason),
+        }
+    }
 }
 
 /// The uncommitted and the staged change of the working tree at `top`, each against the
@@ -2437,14 +2637,10 @@ fn uncommitted(
         // to measure from, so the tree is measured from the session's base.
         Ok(HeadState::Unborn { .. }) => stopping.base.to_owned(),
         Err(error) => {
-            return Ok(Uncommitted {
-                tree: Err(format!(
-                    "the commit HEAD names could not be read: {}",
-                    git_words(&error)
-                )),
-                staged: Ok(None),
-                index_same: false,
-            });
+            return Ok(Uncommitted::not_read(format!(
+                "the commit HEAD names could not be read: {}",
+                git_words(&error)
+            )));
         }
     };
     let changed = change(
@@ -2456,14 +2652,7 @@ fn uncommitted(
     );
     let changed = match changed {
         Ok(changed) => changed,
-        // What stops the tree from being read stops the index too, and is said once.
-        Err(reason) => {
-            return Ok(Uncommitted {
-                tree: Err(reason),
-                staged: Ok(None),
-                index_same: false,
-            });
-        }
+        Err(reason) => return Ok(Uncommitted::not_read(reason)),
     };
     for nested in &changed.nested {
         beside.extend(left_out(stopping, top, nested));
@@ -2474,21 +2663,19 @@ fn uncommitted(
         &stopping.scratch.sub(&format!("{name}-index"))?,
         &stopping.deadline.git(),
     );
-    let index_same =
-        matches!(&index, Ok(bytes) if !bytes.is_empty() && Some(bytes) == changed.patch.as_ref());
     let staged = match index {
-        Ok(bytes) if bytes.is_empty() || Some(&bytes) == changed.patch.as_ref() => Ok(None),
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(JudgePatchError::Failed(error)) => Err(format!(
+        Ok(bytes) if bytes.is_empty() => Reading::Nothing,
+        Ok(bytes) if Some(&bytes) == changed.patch.as_ref() => Reading::Found(Staged::Same),
+        Ok(bytes) => Reading::Found(Staged::Other(bytes)),
+        Err(JudgePatchError::Failed(error)) => Reading::NotRead(format!(
             "what is staged could not be read from Git: {}",
             git_words(&error)
         )),
-        Err(other) => Err(format!("what is staged cannot be judged: {other}")),
+        Err(other) => Reading::NotRead(format!("what is staged cannot be judged: {other}")),
     };
     Ok(Uncommitted {
-        tree: Ok(changed.patch),
+        tree: changed.patch.map_or(Reading::Nothing, Reading::Found),
         staged,
-        index_same,
     })
 }
 
@@ -2756,10 +2943,18 @@ fn one_line(reason: &str) -> String {
 
 /// The commits at the edge of a shallow clone: the repository does not have their parents
 /// (`shallow` in the Git common directory lists them). None in a clone that is whole.
-fn shallow_commits(common: &Path) -> BTreeSet<String> {
-    std::fs::read_to_string(common.join("shallow"))
-        .map(|text| text.lines().map(|line| line.trim().to_owned()).collect())
-        .unwrap_or_default()
+///
+/// `Err` when the file is there and cannot be read: that is not "a clone that is whole". It
+/// was read as that, and a commit at the edge was then judged as if it had added the whole
+/// tree.
+fn shallow_commits(common: &Path) -> Result<BTreeSet<String>, String> {
+    match std::fs::read_to_string(common.join("shallow")) {
+        Ok(text) => Ok(text.lines().map(|line| line.trim().to_owned()).collect()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeSet::new()),
+        Err(error) => Err(format!(
+            "whether this clone is shallow could not be read ({error}), so a commit with no parent cannot be told from one whose parent the clone does not have"
+        )),
+    }
 }
 
 /// What a stop says of a commit that has had no verdict in more than [`ATTEMPTS`] attempts:
@@ -2888,21 +3083,31 @@ fn sorted_commits(
     };
     let mut ask: Vec<Ask> = turns.first().map(reserved).into_iter().collect();
     ask.extend(again.first().map(reserved));
-    ask.extend(never);
+    ask.extend(never.first().map(|ask| Ask {
+        reserved: true,
+        ..*ask
+    }));
+    ask.extend(never.iter().skip(1));
     ask.extend(again.iter().skip(1).map(|(_, ask)| *ask));
     (units, ask)
 }
 
-/// The time of a stop that is left for each run of the judge it still owes when another run
-/// is made: no run can take the time of the asks every stop must make ([`sorted_commits`]).
+/// The time of a stop's judging that a run of the judge leaves for a run it owes after it:
+/// a working tree's uncommitted change for the tree's staged change, and an ask about a
+/// commit for each ask owed after it. It is [`COMMIT_FLOOR`], which an ask is made with,
+/// and two seconds more for what lies between two runs (Git making the next patch, a run
+/// that is ended at its limit).
 const ASK_OWED: Duration = Duration::from_secs(5);
-/// What must be left of a stop's judging, when it comes to its commits, for both asks it
-/// owes to be made whatever the first one does: the first is then run for at least
-/// [`COMMIT_FLOOR`] and leaves [`ASK_OWED`] ([`run_time`]).
-const OWED_ASKS_NEED: Duration = Duration::from_secs(ASK_OWED.as_secs() + COMMIT_FLOOR.as_secs());
-// What a run of the judge on a working tree's change leaves for the asks that follow it is
-// enough for both of them.
-const _: () = assert!(ASK_OWED.as_secs() * (RESERVED_ASKS as u64) >= OWED_ASKS_NEED.as_secs());
+/// The asks about commits that a stop owes at most ([`sorted_commits`]): the commit whose
+/// turn it is, the one with fewer attempts that was asked about longest ago, and the oldest
+/// commit that was never asked about.
+const OWED_ASKS: u32 = 3;
+/// What must be left of a stop's judging, when it comes to its commits, for every ask it
+/// owes to be made whatever the others do: [`COMMIT_FLOOR`] for the first, and
+/// [`ASK_OWED`] for each of the others ([`run_time`]). Every run of the judge on a working
+/// tree's change leaves what the asks owed need ([`asks_kept`]).
+const OWED_ASKS_NEED: Duration =
+    Duration::from_secs(COMMIT_FLOOR.as_secs() + ASK_OWED.as_secs() * (OWED_ASKS as u64 - 1));
 /// What is said of a commit that had no verdict before and was not asked about at a stop
 /// because the stop's time was used: in front of its reason from before.
 const NOT_ASKED: &str = "not asked at this stop for lack of time (it keeps its turn); before:";
@@ -2968,6 +3173,7 @@ fn judge_commits(
     out: &mut Judging,
 ) -> Result<(), String> {
     let shallow = shallow_commits(&stopping.work.place.common);
+    let no_shallow = BTreeSet::new();
     let no_verdict = |reason: &str| Judged::Unjudged {
         reason: reason.to_owned(),
     };
@@ -2985,7 +3191,7 @@ fn judge_commits(
         let commit = &listed[at];
         let id = &commit.0;
         owed = owed.saturating_sub(u32::from(ask.reserved));
-        tribunal.owed = owed;
+        tribunal.after = After::Asks(owed);
         if waits.is_none() && stopping.deadline.left() < COMMIT_FLOOR {
             waits = Some(NOT_YET.to_owned());
             out_of_time = true;
@@ -3005,7 +3211,13 @@ fn judge_commits(
         // names, the commit is asked about like any other. It was written down as final,
         // and stayed "shallow" for the rest of the session (sixth independent review of the
         // hooks, HR6-L-2).
-        if commit.1.is_none() && shallow.contains(id) {
+        // (not known whether the clone is shallow: a commit with no parent has no verdict,
+        // and is looked at again at every stop)
+        if let (None, Err(why)) = (&commit.1, &shallow) {
+            units[at] = Some(from_before(id, no_verdict(why)));
+            continue;
+        }
+        if commit.1.is_none() && shallow.as_ref().unwrap_or(&no_shallow).contains(id) {
             units[at] = Some(from_before(
                 id,
                 no_verdict(
@@ -3079,7 +3291,7 @@ fn judge_commits(
         units[at] = (said != "p").then(|| commit_unit(id, judged));
         out.commits.push((id.clone(), said));
     }
-    tribunal.owed = 0;
+    tribunal.after = After::Asks(0);
     // An attempt counts where the chain gave a verdict at this stop. Where an ask failed and
     // no patch got a verdict, the judge is asked about its probe to find that out: with one
     // or two commits that get no verdict and nothing else to judge, the probe was never
@@ -3392,49 +3604,73 @@ fn other_trees(
 const STAGED_NOT_APART: &str = "what is staged fails, and which of that is the staged change's own cannot be told at this stop: the uncommitted change got no verdict, and its failure is remembered by a digest alone";
 
 /// Have the uncommitted and the staged change of one working tree judged, and add them to
-/// `out`: its units, and what this stop saw of it ([`Looked`]). `left` is the number of the
-/// working trees' patches that are still to be judged.
+/// `out`: its units, and what this stop saw of it ([`Looked`]). `after` is what its runs
+/// leave of the stop's judging for what is judged after the tree (a working tree that is
+/// judged after it, and the asks about commits: [`asks_kept`]); the first run also leaves
+/// [`ASK_OWED`] for the second when the tree has a staged change of its own.
 fn tree_units(
     tribunal: &mut Judge<'_>,
     top: &Path,
     id: &str,
     found: Uncommitted,
     blocked: &[String],
-    left: &mut u32,
+    after: Duration,
     out: &mut Judging,
 ) {
-    let tree = judged_patch(tribunal, found.tree, left);
-    let index = if matches!(found.staged, Ok(None)) {
-        None
+    let second = if matches!(found.staged, Reading::Found(Staged::Other(_))) {
+        ASK_OWED
     } else {
-        judged_patch(tribunal, found.staged, left)
+        Duration::ZERO
     };
-    let (looked, units) = seen(
-        id,
-        &top.to_string_lossy(),
-        tree,
-        index,
-        found.index_same,
-        blocked,
-    );
+    let tree = judged_patch(tribunal, found.tree, after + second);
+    let index = match found.staged {
+        Reading::Nothing => Reading::Nothing,
+        Reading::Found(Staged::Same) => Reading::Found(Staged::Same),
+        Reading::Found(Staged::Other(bytes)) => {
+            match judged_patch(tribunal, Reading::Found(bytes), after) {
+                Reading::Found(judged) => Reading::Found(Staged::Other(judged)),
+                Reading::Nothing => Reading::Nothing,
+                Reading::NotRead(reason) => Reading::NotRead(reason),
+            }
+        }
+        Reading::NotRead(reason) => Reading::NotRead(reason),
+    };
+    let (looked, units) = seen(id, &top.to_string_lossy(), tree, index, blocked);
     out.trees.push(looked);
     out.units.extend(units);
 }
 
-/// What a stop saw of the working tree `id` at `top`, from the verdicts on its uncommitted
-/// change and on what its index holds (`None`: no such change, or for the index the same
-/// change): what is remembered of it ([`Looked`]), and its units.
+/// What a stop saw of the working tree `id` at `top`, from what it has of its uncommitted
+/// change and of what its index holds ([`Reading`]; a change that was read and judged with no
+/// verdict is [`Judged::Unjudged`]): what is remembered of it ([`Looked`]), and its units.
+///
+/// - Nothing there: the unit has nothing to judge, and what was remembered of it is
+///   forgotten (the stop looked).
+/// - A verdict: the unit is judged; what is remembered becomes what was seen.
+/// - No verdict, or not read: nothing is known. The unit is said to be UNJUDGED with the
+///   reason, and what was remembered of it stands. A tree that was not read says its reason
+///   once: its index, which was not read for the same reason, is a unit of its own only
+///   when something of it has blocked before, and then says that it stands.
 fn seen(
     id: &str,
     top: &str,
-    tree: Option<Judged>,
-    index: Option<Judged>,
-    index_same: bool,
+    tree: Reading<Judged>,
+    index: Reading<Staged<Judged>>,
     blocked: &[String],
 ) -> (Looked, Vec<TreeJudged>) {
+    // the tree's verdict when it has one: `None` when nothing is known of the tree's change
+    let tree_read = !matches!(tree, Reading::NotRead(_));
+    let tree = match tree {
+        Reading::Nothing => None,
+        Reading::Found(judged) => Some(judged),
+        Reading::NotRead(reason) => Some(Judged::Unjudged { reason }),
+    };
     let unknown = |judged: &Option<Judged>| matches!(judged, Some(Judged::Unjudged { .. }));
     let lines = |judged: &Option<Judged>| -> Lines {
         judged.as_ref().map(hook::failure_lines).unwrap_or_default()
+    };
+    let whole = |judged: &Option<Judged>| -> Lines {
+        judged.as_ref().map(hook::lines_whole).unwrap_or_default()
     };
     // What the index holds that the tree's failure does not have is the staged change's
     // own failure: the tree was repaired and the repair not staged, and a plain commit
@@ -3451,23 +3687,46 @@ fn seen(
     // line the staged change's own, and the stop blocked again, at each further partial
     // `git add` once more (ninth independent review of the hooks, HR9-M-1).
     let tree_lines = (!unknown(&tree)).then(|| lines(&tree));
-    let tree_whole =
-        (!unknown(&tree)).then(|| tree.as_ref().map(hook::lines_whole).unwrap_or_default());
+    let tree_whole = (!unknown(&tree)).then(|| whole(&tree));
     let cover = tree_whole
         .clone()
         .unwrap_or_else(|| lines_of(blocked, &unit_tag(id, 'u')));
-    // The one case where that cannot be done: the tree's change has no verdict and its
-    // failure is remembered by its mark alone ([`hook::mark_of`]), and what the index holds
-    // is not exactly that failure. Then which of the index's lines are the staged change's
-    // own is not known at this stop, and it is said to have no verdict here: called its
-    // own, lines that have blocked as the tree's would block a second time.
+    let staged_tag = unit_tag(id, 's');
+    let told = hook::remembered(blocked, &staged_tag);
+    // The index: its verdict (`None`: it holds no change of its own), every line it holds
+    // (`None`: not known at this stop), and why it was not read, when it was not.
+    let (index, index_whole, not_read) = match index {
+        Reading::Nothing => (None, Some(Lines::new()), None),
+        Reading::Found(Staged::Same) => (None, tree_whole.clone(), None),
+        Reading::Found(Staged::Other(judged)) => {
+            let known =
+                (!matches!(judged, Judged::Unjudged { .. })).then(|| hook::lines_whole(&judged));
+            (Some(judged), known, None)
+        }
+        Reading::NotRead(reason) => (None, None, Some(reason)),
+    };
+    // Every line the index holds has blocked for the staged change: a mark that is
+    // remembered for it is exactly what the index holds now. Then nothing of what is
+    // staged is new, whatever part of it is the staged change's own at this stop. The
+    // mark was asked only whether the staged change's own failure is exactly it, so a
+    // staged failure of more than 256 lines that the tree had again in part and that was
+    // repaired there again in part blocked with the index untouched (tenth independent
+    // review of the hooks, HR10-M-2).
+    let all_told = index_whole.as_ref().is_some_and(|index| {
+        !index.is_empty() && {
+            let (mark, count) = hook::mark_of(index);
+            told.get(mark.as_str()) == Some(&count)
+        }
+    });
+    // The one case where the staged change's own lines cannot be told from the tree's: the
+    // tree's change has no verdict and its failure is remembered by its mark alone
+    // ([`hook::mark_of`]), and what the index holds is not exactly that failure. Then it
+    // is said to have no verdict here: called its own, lines that have blocked as the
+    // tree's would block a second time.
     let apart = |own: &BTreeSet<String>| {
         tree_lines.is_some() || own.is_empty() || !cover.keys().any(|key| hook::is_mark(key))
     };
     let mut told_apart = true;
-    // (what the index holds, every line of it, when it has a verdict)
-    let index_whole =
-        (!unknown(&index)).then(|| index.as_ref().map(hook::lines_whole).unwrap_or_default());
     let staged = match index {
         Some(failed @ Judged::Fail { .. }) => {
             let own = hook::lines_beyond(&failed, &cover);
@@ -3480,19 +3739,25 @@ fn seen(
                 })
             }
         }
+        // An index that was not read is said with the tree that was not read, once; by
+        // itself only when the tree was read, or when something of it has blocked before
+        // and stands.
+        None => not_read
+            .filter(|_| tree_read || !told.is_empty())
+            .map(|reason| Judged::Unjudged {
+                reason: if told.is_empty() {
+                    reason
+                } else {
+                    format!("{reason}; what has blocked of it before stands")
+                },
+            }),
         other => other,
-    };
-    let index_lines = if !told_apart {
-        None
-    } else if index_same {
-        tree_whole
-    } else {
-        index_whole
     };
     let looked = Looked {
         id: id.to_owned(),
         tree: tree_lines,
-        index: index_lines,
+        index: index_whole.filter(|_| told_apart),
+        own: whole(&staged),
         staged: lines(&staged),
     };
     let mut units = vec![TreeJudged {
@@ -3503,10 +3768,15 @@ fn seen(
     }];
     if let Some(staged) = staged {
         units.push(TreeJudged {
-            tag: unit_tag(id, 's'),
+            tag: staged_tag,
             what: hook::staged_label(top),
+            // (all of it has blocked before: it stands, like a commit from before)
+            holds: if all_told && matches!(staged, Judged::Fail { .. }) {
+                Holds::Never
+            } else {
+                Holds::WhileNew
+            },
             judged: Some(staged),
-            holds: Holds::WhileNew,
         });
     }
     (looked, units)
@@ -3536,7 +3806,7 @@ fn seen(
 /// with changes that are not committed in it, another working tree with changes.
 fn judge_units(
     stopping: &Stopping<'_>,
-    tips: &[String],
+    tips: &Tips,
     known: &[String],
     blocked: &[String],
 ) -> Result<Judging, String> {
@@ -3595,38 +3865,49 @@ fn judge_units(
         bench: None,
         answers: std::collections::BTreeMap::new(),
         chain: None,
-        owed: 0,
+        after: After::Asks(0),
         ran: false,
     };
-    let patches = |found: &Uncommitted| {
-        u32::from(matches!(found.tree, Ok(Some(_))))
-            + u32::from(matches!(found.staged, Ok(Some(_))))
-    };
-    let count = trees.len();
+    let (count, asks) = (trees.len(), asks_kept(known));
     for (at, (top, id, scratch, unreadable)) in trees.into_iter().enumerate() {
         let found = match unreadable {
-            Some(reason) => Uncommitted {
-                tree: Err(reason),
-                staged: Ok(None),
-                index_same: false,
-            },
+            Some(reason) => Uncommitted::not_read(reason),
             None => uncommitted(stopping, &top, scratch, &mut out.beside)?,
         };
-        // The patches still to be judged after each of this tree's: its own, and two for
-        // each tree that has not been read yet (it has at most two).
-        let later = u32::try_from(count - at - 1).unwrap_or(0) * 2;
-        let mut left = patches(&found) + later;
-        tree_units(
-            &mut tribunal,
-            &top,
-            &id,
-            found,
-            blocked,
-            &mut left,
-            &mut out,
-        );
+        // What this tree's runs leave for the project's tree, which is judged after it:
+        // [`COMMIT_FLOOR`] when that tree has something that is not committed, and
+        // nothing when it has not. Two runs' time was held back for it before it was known
+        // whether it had anything, so from a linked tree the stop's own change had 15 of
+        // its 35 seconds, and with a judge that took 17 it was UNJUDGED with 20 seconds
+        // unused (tenth independent review of the hooks, HR10-L-2). One `git status`
+        // answers, under a bound of its own; what cannot be found out counts as a change.
+        let later = if at + 1 < count
+            && !matches!(
+                has_uncommitted_changes(
+                    &place.top,
+                    &stopping.deadline.within(SECOND_TREE_LOOK).git()
+                ),
+                Ok(false)
+            ) {
+            COMMIT_FLOOR
+        } else {
+            Duration::ZERO
+        };
+        let after = later + asks;
+        tree_units(&mut tribunal, &top, &id, found, blocked, after, &mut out);
     }
-    match session_commits(stopping, tips) {
+    // The session's commits: the ones something names now that none of the commits that
+    // were there when it began leads to. With no list of those, none can be told from the
+    // others, and that is said at every stop; what is not committed was judged above all
+    // the same.
+    let listed = match tips {
+        Tips::Listed(tips) => session_commits(stopping, tips),
+        Tips::Unavailable(why) => Err(format!(
+            "the commits that were there when this session began could not be listed ({}), so the session's own cannot be told from them: they are not judged in this session, whatever is committed; what is not committed is",
+            deep_diff_forge_core::display_safe(why)
+        )),
+    };
+    match listed {
         Ok(listed) => judge_commits(stopping, &mut tribunal, &listed, known, &mut out)?,
         Err(reason) => out.units.push(TreeJudged {
             tag: String::new(),
@@ -3652,10 +3933,14 @@ struct Kept {
     lost: Vec<String>,
     /// The units this stop looked at that are remembered by their mark from now on.
     short: Vec<String>,
-    /// The staged changes (`TREE/s`) of which the lines kept beside their own could not be
-    /// kept, as lines or as a mark: when the working tree there is repaired again, what is
-    /// staged may block once more.
+    /// The staged changes (`TREE/s`) of which a mark had to be given up: what had blocked of
+    /// them was remembered as a whole, and the index no longer holds exactly that, so which
+    /// of the lines still staged have blocked is not known any more.
     given_up: Vec<String>,
+    /// The staged changes (`TREE/s`) that are remembered as a whole from now on, by a mark
+    /// that is not known to be everything the index holds: unchanged they stand, and after
+    /// a change of the working tree they may block once more with the index untouched.
+    as_a_whole: Vec<String>,
 }
 
 /// What is remembered of one unit: its own lines, the lines kept for it (a staged change's,
@@ -3800,7 +4085,12 @@ fn within_bound(blocked: &mut Vec<String>, looked: &BTreeSet<String>, cap: usize
         }
         total -= gain(unit);
         shortened.insert(unit);
-        if here(unit) {
+        // A staged change in its short form answers only for exactly what it was: after
+        // a change of the working tree it may block with the index untouched. That is
+        // said at this stop, whichever tree the stop is in.
+        if unit.ends_with("/s") {
+            kept.as_a_whole.push(unit.clone());
+        } else if here(unit) {
             kept.short.push(unit.clone());
         }
         if units[unit].short().gone {
@@ -3829,6 +4119,8 @@ fn within_bound(blocked: &mut Vec<String>, looked: &BTreeSet<String>, cap: usize
     }
     kept.short.retain(|unit| !dropped.contains(unit.as_str()));
     kept.given_up
+        .retain(|unit| !dropped.contains(unit.as_str()));
+    kept.as_a_whole
         .retain(|unit| !dropped.contains(unit.as_str()));
     let mut written: BTreeSet<String> = BTreeSet::new();
     let mut bounded = Vec::with_capacity(cap.min(blocked.len()));
@@ -3872,13 +4164,26 @@ fn memory_notes(kept: &Kept) -> Vec<String> {
             changes(kept.lost.len())
         ));
     }
+    let trees = |count: usize| match count {
+        1 => "1 working tree".to_owned(),
+        trees => format!("{trees} working trees"),
+    };
+    // Each of these says what happened at this stop, and nothing that is not true of it:
+    // the sentence began "This session has more failing lines than the hook keeps one by
+    // one (2048)" also for one working tree with 300 staged lines of which one file was
+    // taken out of the index (tenth independent review of the hooks, HR10-L-1).
     if !kept.given_up.is_empty() {
         notes.push(format!(
-            "This session has more failing lines than the hook keeps one by one ({BLOCKED_CAP}): of what is staged in {} it could not keep which lines had already blocked while the working tree's own failure has them too. When that working tree is repaired again, what is staged there may block once more, although the index has not changed.",
-            match kept.given_up.len() {
-                1 => "1 working tree".to_owned(),
-                trees => format!("{trees} working trees"),
-            }
+            "Of what is staged in {}, the hook remembered what had blocked as a whole, by a digest of all those lines (a change of more than {} failing lines, or a session of more than {BLOCKED_CAP}), and the index no longer holds exactly that: which of the lines that are still staged have blocked before is not known any more. What is staged there may block once more when the working tree is repaired again, although those lines have not changed.",
+            trees(kept.given_up.len()),
+            hook::LINES_KEPT
+        ));
+    }
+    if !kept.as_a_whole.is_empty() {
+        notes.push(format!(
+            "What has blocked of what is staged in {} is remembered as a whole from now on, by a digest of all those lines (a staged change of more than {} failing lines of its own, or a session of more than {BLOCKED_CAP}), and it is not known to be everything the index holds. While the working tree there stays as it is, what is staged stands; after a change of that working tree it may block once more, although the index has not changed.",
+            trees(kept.as_a_whole.len()),
+            hook::LINES_KEPT
         ));
     }
     if !kept.short.is_empty() {
@@ -3888,6 +4193,104 @@ fn memory_notes(kept: &Kept) -> Vec<String> {
         ));
     }
     notes
+}
+
+/// What `blocked` remembers under exactly the tag `tag`, as owned lines.
+fn lines_of_tag(blocked: &[String], tag: &str) -> Lines {
+    hook::remembered_as(blocked, tag)
+        .into_iter()
+        .map(|(key, count)| (key.to_owned(), count))
+        .collect()
+}
+
+/// What is remembered of a staged change after a stop that read its index.
+struct StagedMemory {
+    /// Its own lines (`s`): the lines, or one mark for more than [`hook::LINES_KEPT`].
+    own: Lines,
+    /// What is kept for it beside them (`k`): lines, or one mark of everything the index
+    /// holds.
+    kept: Lines,
+    /// A mark had to be given up ([`Kept::given_up`]).
+    gone: bool,
+    /// Its own lines are a mark from this stop on that is not known to be everything the
+    /// index holds ([`Kept::as_a_whole`]).
+    whole: bool,
+}
+
+/// What a stop that read the index of a working tree remembers of its staged change:
+/// everything that has blocked as the staged change's own and that the index has held ever
+/// since. `before_own` and `before_kept` are what was remembered (`s`, `k`), `index` every
+/// line the index holds now, `own` every line of them that is the staged change's own now
+/// (the working tree's failure does not have it), `folded` those as they are remembered.
+///
+/// With lines it is exact: the lines remembered that the index still holds, and the own
+/// ones. A mark stands for lines that are not known one by one, and can answer for the
+/// index in one case only: it is exactly what the index holds now. Then everything the
+/// index holds has blocked, whatever part of it is the staged change's own at any stop,
+/// and that mark is what is kept (`k`), for as long as the index stays what it is: the
+/// working tree can then have any part of it again, and be repaired again in any part,
+/// and nothing of it is new (tenth independent review of the hooks, HR10-M-2). A mark that
+/// is neither what the index holds nor what is the staged change's own cannot be kept:
+/// lines that left the index and came back would stand by it. It goes, and the stop says
+/// so. And own lines that are a mark while not everything the index holds is known to
+/// have blocked answer only for exactly themselves: that is said at the stop that first
+/// remembers them so.
+fn staged_memory(
+    before_own: &Lines,
+    before_kept: &Lines,
+    index: &Lines,
+    own: &Lines,
+    folded: &Lines,
+) -> StagedMemory {
+    let marked = |lines: &Lines| lines.keys().any(|key| hook::is_mark(key));
+    let before = || before_own.iter().chain(before_kept);
+    let held = (!index.is_empty()).then(|| hook::mark_of(index));
+    let own_mark = (!own.is_empty()).then(|| hook::mark_of(own));
+    let is = |mark: &Option<(String, usize)>, key: &str, count: usize| {
+        mark.as_ref()
+            .is_some_and(|(known, lines)| known == key && *lines == count)
+    };
+    // every line the index holds has blocked: one mark says so
+    if before().any(|(key, count)| is(&held, key, *count)) {
+        return StagedMemory {
+            own: folded.clone(),
+            kept: if own_mark == held {
+                Lines::new()
+            } else {
+                held.into_iter().collect()
+            },
+            gone: false,
+            whole: false,
+        };
+    }
+    // the lines remembered that the index still holds and that are not its own now
+    let kept: Lines = before()
+        .filter(|(key, _)| !hook::is_mark(key) && !own.contains_key(*key))
+        .filter_map(|(key, count)| Some((key.clone(), (*count).min(*index.get(key)?))))
+        .collect();
+    let gone = held.is_some()
+        && before().any(|(key, count)| hook::is_mark(key) && !is(&own_mark, key, *count));
+    // everything the index holds has blocked, by the lines: the own ones and the kept ones
+    let all = held.is_some()
+        && index.len() == own.len() + kept.len()
+        && index
+            .iter()
+            .all(|(key, count)| own.get(key).or_else(|| kept.get(key)) == Some(count));
+    StagedMemory {
+        // (the own lines are a mark and the others are lines: one mark for all of it, so
+        // that any part of it can become the staged change's own again and stand)
+        kept: match held {
+            Some(mark) if all && marked(folded) && !kept.is_empty() => Lines::from([mark]),
+            _ => kept,
+        },
+        gone,
+        whole: marked(folded)
+            && !all
+            && !folded
+                .iter()
+                .all(|(key, count)| before_own.get(key) == Some(count)),
+        own: folded.clone(),
+    }
 }
 
 /// Take what a stop judged into what the session remembers: `blocked` in its state, and the
@@ -3937,59 +4340,28 @@ fn remember_within(
                 .map(|(key, count)| hook::remembered_line(tag, key, *count)),
         );
     }
-    let mut given_up: Vec<String> = Vec::new();
+    let (mut given_up, mut as_a_whole): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
     for looked in &judging.trees {
         if let Some(lines) = &looked.tree {
             keep(&mut state.blocked, &unit_tag(&looked.id, 'u'), lines);
         }
         if let Some(index) = &looked.index {
             let (own_tag, kept_tag) = (unit_tag(&looked.id, 's'), unit_tag(&looked.id, 'k'));
-            // of the lines remembered for the staged change, its own and the kept ones,
-            // those the index still holds and that are not its own now
-            let before = lines_of(&state.blocked, &own_tag);
-            let mut kept: Lines = before
-                .iter()
-                .filter(|(key, _)| !hook::is_mark(key) && !looked.staged.contains_key(*key))
-                .filter_map(|(key, count)| {
-                    let now = *index.get(key)?;
-                    Some((key.clone(), (*count).min(now)))
-                })
-                .collect();
-            // A mark stands for lines that are not known one by one, so "those the index
-            // still holds" can be answered for it in two cases only: it is exactly what is
-            // the staged change's own now (then that is remembered, as its lines), or it is
-            // exactly what the index holds (then all of it is still there, and the mark is
-            // kept). In any other case the lines it stood for may be in the index or not:
-            // kept, lines that left the index and came back would not block; so the mark
-            // goes, and where the index still holds something the stop says so.
-            let own_now = match looked.staged.len() {
-                0 => None,
-                _ if looked.staged.keys().any(|key| hook::is_mark(key)) => looked
-                    .staged
-                    .iter()
-                    .next()
-                    .map(|(key, count)| (key.clone(), *count)),
-                _ => Some(hook::mark_of(&looked.staged)),
-            };
-            let held = (!index.is_empty()).then(|| hook::mark_of(index));
-            for (kind, tag) in [('s', &own_tag), ('k', &kept_tag)] {
-                for (key, count) in hook::remembered_as(&state.blocked, tag) {
-                    if !hook::is_mark(key) {
-                        continue;
-                    }
-                    let mark = Some((key.to_owned(), count));
-                    if mark == own_now {
-                        continue;
-                    }
-                    if mark == held {
-                        kept = Lines::from([(key.to_owned(), count)]);
-                    } else if held.is_some() && (kind == 'k' || looked.staged.is_empty()) {
-                        given_up.push(own_tag.clone());
-                    }
-                }
+            let now = staged_memory(
+                &lines_of_tag(&state.blocked, &own_tag),
+                &lines_of_tag(&state.blocked, &kept_tag),
+                index,
+                &looked.own,
+                &looked.staged,
+            );
+            if now.gone {
+                given_up.push(own_tag.clone());
             }
-            keep(&mut state.blocked, &own_tag, &looked.staged);
-            keep(&mut state.blocked, &kept_tag, &kept);
+            if now.whole {
+                as_a_whole.push(own_tag.clone());
+            }
+            keep(&mut state.blocked, &own_tag, &now.own);
+            keep(&mut state.blocked, &kept_tag, &now.kept);
         }
     }
     let gone = |entry: &String| {
@@ -4009,8 +4381,12 @@ fn remember_within(
         .map(|looked| looked.id.clone())
         .collect();
     let mut kept = within_bound(&mut state.blocked, &looked, cap);
-    given_up.dedup();
     kept.given_up.extend(given_up);
+    for unit in as_a_whole {
+        if !kept.as_a_whole.contains(&unit) {
+            kept.as_a_whole.push(unit);
+        }
+    }
     judged.extend(
         judging
             .commits
@@ -4029,7 +4405,9 @@ fn shown_tree(top: &Path) -> String {
 /// patch (second independent review of the hooks, HR2-M-3). Nothing is asked of Git when the
 /// project has no `.gitmodules` file.
 fn submodules_with_changes(place: &Place, deadline: Deadline) -> Vec<Note> {
-    if !place.top.join(".gitmodules").exists() {
+    // (no such file: no submodules. A file that cannot be looked at is not "no file": Git
+    // is asked, and says)
+    if matches!(place.top.join(".gitmodules").try_exists(), Ok(false)) {
         return Vec::new();
     }
     match dirty_submodules(&place.top, &deadline.git()) {
@@ -4200,8 +4578,29 @@ const NOTES_IN_FULL: usize = 5;
 
 /// What the line that counts the notes may need of a message, and the most characters of one
 /// name on it.
-const COUNT_LINE: usize = 620;
-const NOTE_NAME: usize = 140;
+const COUNT_LINE: usize = 700;
+const NOTE_NAME: usize = 180;
+
+/// A note's name as the counting line has it: at most [`NOTE_NAME`] characters, and what it
+/// says of a failure that stands is never what is cut. A name was cut at 140 characters
+/// from its front: the name of a working tree with a long path lost its end, "(a failure
+/// stands there)", which is the one thing the line is there to say of it. (Found by the
+/// mutation run, whose scratch directory has a longer path than a gate's: its baseline
+/// failed on the test of a working tree inside the project.)
+fn counted_name(name: &str) -> String {
+    let count = name.chars().count();
+    if count <= NOTE_NAME {
+        return name.to_owned();
+    }
+    let said = name
+        .rfind(" (a failure stands")
+        .map_or("", |at| &name[at..]);
+    let head: String = name
+        .chars()
+        .take(NOTE_NAME.saturating_sub(said.chars().count() + 1))
+        .collect();
+    format!("{head}…{said}")
+}
 
 /// What a stop says beside its verdict: every note at every stop while it is true ([`Note`]),
 /// with the one for a session whose start was not recorded. A note that is new to the
@@ -4247,7 +4646,7 @@ fn notes_of(state: &mut State, mut beside: Vec<Note>, room: usize) -> Vec<String
             || state.noticed.len() >= NOTICED_CAP
             || needs > left
         {
-            before.push((note.name.chars().take(NOTE_NAME).collect(), note.standing));
+            before.push((counted_name(&note.name), note.standing));
             continue;
         }
         left -= needs;
@@ -5168,16 +5567,23 @@ fn gate_in(
 /// and their reflogs name can be listed, as the first hook of a session lists them to tell
 /// the session's own commits from them. Where they cannot, no session is recorded and every
 /// stop is UNJUDGED, which the gate did not see (fourth independent review of the hooks,
-/// HR4-L-1).
+/// HR4-L-1); or, where the repository has more of them than a hook reads, the session is
+/// recorded with no list, and its commits are UNJUDGED at every stop.
 fn commits_check(place: Option<&Place>, deadline: Deadline) -> GateCheck {
     let listed = match place {
         Some(place) => named_commits(&place.top, Named::Everything, &deadline.git())
             .map(|commits| commits.len())
-            .map_err(|error| {
-                format!(
+            .map_err(|error| match &error {
+                // (a refusal: the session is recorded with no list of them, and what is
+                // not committed is judged; [`record`])
+                GitAcquireError::InvalidSelection { .. } => format!(
+                    "the commits of a session here would be UNJUDGED at every stop (what is not committed is judged): the commits the repository names cannot be listed: {}",
+                    git_words(&error)
+                ),
+                _ => format!(
                     "a session here could not be recorded and its stops would be UNJUDGED: the commits the repository names could not be listed: {}",
                     git_words(&error)
-                )
+                ),
             }),
         None => Err(not_checked("it needs the repository")),
     };
@@ -5300,6 +5706,7 @@ mod tests {
             base,
             tips_sha256: "a".repeat(64),
             tips_count: 2,
+            no_baseline: None,
             by_start: true,
         }
     }
@@ -5309,7 +5716,17 @@ mod tests {
     /// empty state: read as "no state", it made the next hook the session's first and the
     /// commit `HEAD` named then its base.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one list: every way a state file can be whole or not"
+    )]
     fn a_state_round_trips_and_anything_else_is_not_a_state() {
+        fn with_project(project: &Value) -> String {
+            json!({"schema": STATE_SCHEMA, "project": project, "stops": 0,
+                   "reported": ["a"], "noticed": [], "blocked": [],
+                   "judged_sha256": "", "judged_count": 0})
+            .to_string()
+        }
         let state = State {
             project: Some(project(Base::Commit(COMMIT.to_owned()))),
             stops: 7,
@@ -5324,6 +5741,7 @@ mod tests {
             let other = State {
                 project: Some(Project {
                     tips_count: 0,
+                    no_baseline: None,
                     by_start: false,
                     ..project(base)
                 }),
@@ -5339,13 +5757,43 @@ mod tests {
         // HR3-M-4: the device number that stood before it is given at mount time), and the
         // tips file is named by a whole SHA-256 and a count.
         let whole = json!({"top": "/r", "id": "2", "base": "none",
-                           "tips_sha256": "0".repeat(64), "tips_count": 0, "by_start": true});
-        let with = |project: &Value| {
-            json!({"schema": STATE_SCHEMA, "project": project, "stops": 0,
-                   "reported": ["a"], "noticed": [], "blocked": [],
-                   "judged_sha256": "", "judged_count": 0})
-            .to_string()
+                           "tips_sha256": "0".repeat(64), "tips_count": 0,
+                           "no_baseline": null, "by_start": true});
+        // Review V4 round 18, VD4R18-L-1: a project whose list of the commits that were
+        // there could not be made says so, with the reason, and names no list: that is a
+        // state of its own. A reason beside a list, a list with no digest and no reason,
+        // and a project that does not say which it is are no state.
+        let no_list = |reason: Value, digest: &str, count: usize| {
+            let mut project = whole.clone();
+            project["no_baseline"] = reason;
+            project["tips_sha256"] = json!(digest);
+            project["tips_count"] = json!(count);
+            project
         };
+        let unlisted = state_from(&with_project(&no_list(
+            json!("too many working trees"),
+            "",
+            0,
+        )))
+        .unwrap();
+        assert_eq!(
+            unlisted.project.as_ref().unwrap().no_baseline.as_deref(),
+            Some("too many working trees")
+        );
+        assert_eq!(state_from(&state_text(&unlisted)), Ok(unlisted));
+        for spoiled in [
+            no_list(json!("why"), &"0".repeat(64), 0),
+            no_list(json!("why"), "", 1),
+            no_list(json!(""), "", 0),
+            no_list(Value::Null, "", 0),
+            no_list(json!(1), "", 0),
+        ] {
+            assert!(state_from(&with_project(&spoiled)).is_err(), "{spoiled}");
+        }
+        let mut silent = whole.clone();
+        silent.as_object_mut().unwrap().remove("no_baseline");
+        assert!(state_from(&with_project(&silent)).is_err());
+        let with = |project: &Value| with_project(project);
         assert!(state_from(&with(&whole)).is_ok());
         for (member, value) in [
             ("top", json!("")),
@@ -5415,6 +5863,7 @@ mod tests {
                 base: Base::Commit(hex(0, 64)),
                 tips_sha256: hex(0, 64),
                 tips_count: usize::MAX,
+                no_baseline: None,
                 by_start: false,
             }),
             stops: u64::MAX,
@@ -5540,7 +5989,7 @@ mod tests {
             [
                 (1, Some(5), true),
                 (5, Some(0), true),
-                (4, None, false),
+                (4, None, true),
                 (2, Some(2), false),
                 (7, Some(4), false)
             ]
@@ -5871,6 +6320,7 @@ mod tests {
         let named = Project {
             tips_sha256: digest,
             tips_count: 2,
+            no_baseline: None,
             ..project(Base::NoCommit)
         };
         assert!(
@@ -5902,6 +6352,7 @@ mod tests {
         std::fs::write(&file, &text).unwrap();
         let miscounted = Project {
             tips_count: 3,
+            no_baseline: None,
             ..named.clone()
         };
         assert!(load_tips(&file, &miscounted).is_err());
@@ -5915,6 +6366,7 @@ mod tests {
         let big = Project {
             tips_sha256: digest,
             tips_count: many.len(),
+            no_baseline: None,
             ..project(Base::NoCommit)
         };
         assert_eq!(load_tips(&file, &big).map(|tips| tips.len()), Ok(30_000));
@@ -6082,6 +6534,7 @@ mod tests {
             id: id.to_owned(),
             tree: tree.map(lines),
             index: Some(Lines::new()),
+            own: Lines::new(),
             staged: Lines::new(),
         };
         let stop = |trees: Vec<Looked>| Judging {
@@ -6139,6 +6592,7 @@ mod tests {
                 id: "t1".to_owned(),
                 tree: Some(lines(&[("b", 1)])),
                 index: Some(lines(index)),
+                own: lines(own),
                 staged: lines(own),
             }])
         };
@@ -6221,6 +6675,30 @@ mod tests {
         }
     }
 
+    /// [`seen`] for a stop that read the tree and its index: the tree's verdict (`None`: no
+    /// change), and the index's (`None`: it holds no change, or with `same` the tree's).
+    fn seen_of(
+        id: &str,
+        top: &str,
+        tree: Option<Judged>,
+        index: Option<Judged>,
+        same: bool,
+        blocked: &[String],
+    ) -> (Looked, Vec<TreeJudged>) {
+        let index = match index {
+            _ if same => Reading::Found(Staged::Same),
+            None => Reading::Nothing,
+            Some(judged) => Reading::Found(Staged::Other(judged)),
+        };
+        seen(
+            id,
+            top,
+            tree.map_or(Reading::Nothing, Reading::Found),
+            index,
+            blocked,
+        )
+    }
+
     /// A failure of `files` failing files, the first `first`, each with `count` items: one line
     /// for each file.
     fn failing_files(first: usize, files: usize, count: usize) -> Judged {
@@ -6240,7 +6718,7 @@ mod tests {
     /// One stop made from inside the tree `id`, whose uncommitted change got `tree` and whose
     /// index holds no other change: whether it blocks, and what its remembering cost.
     fn stop_in(state: &mut State, id: &str, tree: Option<Judged>, cap: usize) -> (bool, Kept) {
-        let (looked, units) = seen(id, "/p", tree, None, false, &state.blocked);
+        let (looked, units) = seen_of(id, "/p", tree, None, false, &state.blocked);
         let blocks = matches!(
             hook::decide_stop_trees(&units, &state.blocked, "r"),
             StopDecision::Block { .. }
@@ -6295,7 +6773,7 @@ mod tests {
             .find(|tree| entries(&state, *tree) == 256)
             .expect("a tree kept line by line");
         let part = |tree: usize| Some(failing_files(tree * 1_000, hook::LINES_KEPT - 1, 1));
-        let (looked, units) = seen(
+        let (looked, units) = seen_of(
             &format!("t{marked}"),
             "/p",
             part(marked),
@@ -6407,9 +6885,14 @@ mod tests {
             .map(|(key, count)| (key.to_owned(), count))
             .collect();
         assert_eq!(all.len(), 7);
+        // (a staged change that is shortened is named, whichever tree the stop is in: it
+        // answers only for exactly what it was from now on, which the stop says)
         assert_eq!(
             within_bound(&mut blocked, &looked(&["b"]), 5),
-            Kept::default()
+            Kept {
+                as_a_whole: vec!["a/s".to_owned()],
+                ..Kept::default()
+            }
         );
         assert_eq!(
             sizes(&blocked),
@@ -6438,6 +6921,7 @@ mod tests {
             within_bound(&mut blocked, &looked(&["b"]), 5),
             Kept {
                 given_up: vec!["a/s".to_owned()],
+                as_a_whole: vec!["a/s".to_owned()],
                 ..Kept::default()
             }
         );
@@ -6461,7 +6945,7 @@ mod tests {
             Kept {
                 lost: vec!["a/u".to_owned(), "b/u".to_owned()],
                 short: vec!["c/u".to_owned()],
-                given_up: Vec::new(),
+                ..Kept::default()
             }
         );
         // what a stop says of it: both things, each with its number, at that stop
@@ -6494,8 +6978,8 @@ mod tests {
     /// - While nothing of a tree is remembered by a mark, the hook blocks for nothing else.
     /// - Where a mark is remembered, the hook may block beyond the model only for a change
     ///   that is not what the mark stood for: an uncommitted change that is not as the last
-    ///   stop saw it; a staged change that is neither its own lines as the last stop saw
-    ///   them nor everything that has blocked for it.
+    ///   stop saw it; a staged change whose index is not as the last stop that looked saw
+    ///   it (whatever the working tree did in between excuses nothing).
     /// - Where a stop has said that the memory of a tree could not be kept, that tree may
     ///   block beyond the model until it has nothing failing left.
     /// - What is remembered stays within the bound, and the state within its size.
@@ -6518,10 +7002,10 @@ mod tests {
             /// staged line that has blocked and that the index has held since
             told_tree: Content,
             told_staged: Content,
-            /// the uncommitted change, and the staged change's own lines, as the last stop
-            /// that could tell them saw them
+            /// the uncommitted change, and what the index holds, as the last stop that
+            /// could tell them saw them
             last_tree: Option<Content>,
-            last_own: Option<Content>,
+            last_index: Option<Content>,
             /// a stop said that the memory of this tree could not be kept
             lost: bool,
         }
@@ -6568,7 +7052,7 @@ mod tests {
                 )
             })
         };
-        let (mut stops, mut shortened, mut lost, mut given_up) = (0, 0, 0, 0);
+        let (mut stops, mut shortened, mut lost, mut given_up, mut unread) = (0, 0, 0, 0, 0);
         let (mut stood, mut blocked_new, mut part_staged, mut beyond_model) = (0, 0, 0, 0);
         for session in 0..90 {
             // most sessions are small ones under a small bound; some are large, under the
@@ -6586,7 +7070,7 @@ mod tests {
                 // something happens in this tree, or nothing does
                 {
                     let tree = &mut all[at];
-                    match next(12) {
+                    match next(13) {
                         0 | 1 if tree.tree.is_empty() => {
                             let lines = match next(8) {
                                 // the sizes around the number of lines kept one by one
@@ -6651,6 +7135,25 @@ mod tests {
                             let staged = tree.index.clone();
                             tree.tree.extend(staged);
                         }
+                        // a part of what is staged is repaired in the tree, or is back there
+                        11 => {
+                            let staged: Vec<(usize, usize)> = tree
+                                .index
+                                .iter()
+                                .map(|(file, count)| (*file, *count))
+                                .collect();
+                            if !staged.is_empty() {
+                                let from = next(staged.len());
+                                let part = 1 + next(staged.len() - from);
+                                for (file, count) in staged.into_iter().skip(from).take(part) {
+                                    if next(2) == 0 {
+                                        tree.tree.remove(&file);
+                                    } else {
+                                        tree.tree.insert(file, count);
+                                    }
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -6661,31 +7164,71 @@ mod tests {
                         reason: "the judge did not answer".to_owned(),
                     })
                 };
-                let tree_read = place.tree.is_empty() || next(12) != 0;
+                // Tenth independent review of the hooks, HR10-M-1: a stop that could not
+                // READ the tree (Git failed, a file could not be opened) has not read its
+                // index either, whatever the index holds. It is not a stop that found
+                // nothing: what is remembered of the tree is as it was after it.
+                let not_read = next(14) == 0;
+                let tree_read = !not_read && (place.tree.is_empty() || next(12) != 0);
                 let same = !place.index.is_empty() && place.index == place.tree;
-                let index_read = if same {
-                    tree_read
+                let index_read = !not_read
+                    && if same {
+                        tree_read
+                    } else {
+                        place.index.is_empty() || next(12) != 0
+                    };
+                let why = || "Git did not answer".to_owned();
+                let (looked, units) = if not_read {
+                    seen(
+                        &id,
+                        "/p",
+                        Reading::NotRead(why()),
+                        Reading::NotRead(why()),
+                        &state.blocked,
+                    )
+                } else if !index_read && !same && next(2) == 0 {
+                    // (the tree was read and the index could not be)
+                    seen(
+                        &id,
+                        "/p",
+                        if tree_read {
+                            judged(&place.tree).map_or(Reading::Nothing, Reading::Found)
+                        } else {
+                            Reading::Found(Judged::Unjudged { reason: why() })
+                        },
+                        Reading::NotRead(why()),
+                        &state.blocked,
+                    )
                 } else {
-                    place.index.is_empty() || next(12) != 0
+                    seen_of(
+                        &id,
+                        "/p",
+                        if tree_read {
+                            judged(&place.tree)
+                        } else {
+                            no_verdict()
+                        },
+                        if same || place.index.is_empty() {
+                            None
+                        } else if index_read {
+                            judged(&place.index)
+                        } else {
+                            no_verdict()
+                        },
+                        same,
+                        &state.blocked,
+                    )
                 };
-                let (looked, units) = seen(
-                    &id,
-                    "/p",
-                    if tree_read {
-                        judged(&place.tree)
-                    } else {
-                        no_verdict()
-                    },
-                    if same || place.index.is_empty() {
-                        None
-                    } else if index_read {
-                        judged(&place.index)
-                    } else {
-                        no_verdict()
-                    },
-                    same,
-                    &state.blocked,
-                );
+                let of_this_tree = |blocked: &[String]| -> Vec<String> {
+                    let mut entries: Vec<String> = blocked
+                        .iter()
+                        .filter(|entry| tree_of(entry) == Some(id.as_str()))
+                        .cloned()
+                        .collect();
+                    entries.sort();
+                    entries
+                };
+                let remembered_before = of_this_tree(&state.blocked);
                 let unit = |kind: char| units.iter().find(|unit| unit.tag == unit_tag(&id, kind));
                 let (blocks_tree, blocks_staged) = (
                     blocks(unit('u'), &state.blocked),
@@ -6711,7 +7254,18 @@ mod tests {
                     assert!(blocks_tree, "{context}: a new failing line did not block");
                 }
                 if new_staged {
-                    assert!(blocks_staged, "{context}: a new staged line did not block");
+                    assert!(
+                        blocks_staged,
+                        "{context}: a new staged line did not block\n tree {:?}\n index {:?}\n own {own:?}\n told {:?}\n remembered {:?}\n units {units:?}",
+                        place.tree,
+                        place.index,
+                        place.told_staged,
+                        state
+                            .blocked
+                            .iter()
+                            .filter(|entry| tree_of(entry) == Some(id.as_str()))
+                            .collect::<Vec<_>>()
+                    );
                 }
                 blocked_new += usize::from(new_tree || new_staged);
                 if blocks_tree && !new_tree && !place.lost {
@@ -6723,12 +7277,23 @@ mod tests {
                     beyond_model += 1;
                 }
                 if blocks_staged && !new_staged && !place.lost {
+                    // The one thing still excused for a staged change: the INDEX is not what
+                    // the last stop that looked saw, while what has blocked of it is
+                    // remembered by a mark. A mark cannot say which of its lines the index
+                    // still holds, so after a change of the index it answers for nothing,
+                    // and the block comes with the sentence "not what it was". With the
+                    // index untouched nothing is excused: the staged change does not block
+                    // again whatever the working tree does, unless a stop said that its
+                    // memory could not be kept. (The exception was "its own lines are not
+                    // what the last stop saw", which a change of the tree alone makes true:
+                    // a staged failure of 300 lines that the tree had again in part, and
+                    // that was then repaired there in part, blocked through it; tenth
+                    // independent review of the hooks, HR10-M-2.)
                     assert!(
                         (marked(&state.blocked, &unit_tag(&id, 's'))
                             || marked(&state.blocked, &unit_tag(&id, 'k')))
-                            && place.last_own.as_ref() != Some(&own)
-                            && own != place.told_staged,
-                        "{context}: the staged change blocked with nothing new and nothing a mark does not cover"
+                            && place.last_index.as_ref() != Some(&place.index),
+                        "{context}: the staged change blocked with nothing new, the index untouched, and no stop had said that its memory could not be kept"
                     );
                     beyond_model += 1;
                 }
@@ -6756,9 +7321,21 @@ mod tests {
                     "{context}: the state is {} bytes",
                     state_text(&state).len()
                 );
+                if not_read {
+                    assert!(
+                        !blocks_tree && !blocks_staged,
+                        "{context}: a stop that read nothing blocked"
+                    );
+                    assert_eq!(
+                        of_this_tree(&state.blocked),
+                        remembered_before,
+                        "{context}: a stop that could not read the tree changed what is remembered of it"
+                    );
+                    unread += 1;
+                }
                 shortened += kept.short.len();
                 lost += kept.lost.len();
-                given_up += kept.given_up.len();
+                given_up += kept.given_up.len() + kept.as_a_whole.len();
                 assert!(
                     kept.lost
                         .iter()
@@ -6766,9 +7343,26 @@ mod tests {
                         || cap < 4,
                     "{context}: the tree a stop looked at was forgotten: {kept:?}"
                 );
-                for unit in kept.lost.iter().chain(&kept.given_up) {
+                for unit in kept
+                    .lost
+                    .iter()
+                    .chain(&kept.given_up)
+                    .chain(&kept.as_a_whole)
+                {
                     let n: usize = unit[1..unit.find('/').unwrap()].parse().unwrap();
                     all[n].lost = true;
+                }
+                // What the hook says it has lost altogether, the model forgets too: from
+                // then on neither knows it, and a stop that cannot read the tree takes
+                // nothing of it for the tree's own (so what the hook then puts to the
+                // agent as staged is what the model expects).
+                for unit in &kept.lost {
+                    let n: usize = unit[1..unit.find('/').unwrap()].parse().unwrap();
+                    if unit.ends_with("/u") {
+                        all[n].told_tree.clear();
+                    } else {
+                        all[n].told_staged.clear();
+                    }
                 }
                 // the model remembers what the stop saw
                 let here = &mut all[at];
@@ -6786,7 +7380,7 @@ mod tests {
                         .collect();
                     told.extend(own.clone());
                     here.told_staged = told;
-                    here.last_own = Some(own);
+                    here.last_index = Some(place.index.clone());
                 }
                 // a tree with nothing failing left has nothing that could block again
                 if tree_read && index_read && place.tree.is_empty() && place.index.is_empty() {
@@ -6802,9 +7396,13 @@ mod tests {
             "{shortened} {lost} {given_up}"
         );
         assert!(
-            stood > 300 && blocked_new > 300 && part_staged > 100 && beyond_model > 0,
-            "{stood} {blocked_new} {part_staged} {beyond_model}"
+            stood > 300 && blocked_new > 300 && part_staged > 100 && unread > 100,
+            "{stood} {blocked_new} {part_staged} {unread}"
         );
+        // (how often the hook blocked where the model did not, under the two exceptions
+        // above: a marked uncommitted change that changed, and a marked staged change
+        // whose index changed)
+        assert!(beyond_model > 0, "{beyond_model}");
     }
 
     /// Ninth independent review of the hooks, HR9-M-1, as reproduced: a failure of 257 lines
@@ -6821,7 +7419,7 @@ mod tests {
             // (the stop, with the first `staged` failing files in the index)
             let stop = |state: &mut State, staged: usize| -> (bool, Kept, usize) {
                 let index = (staged > 0 && staged < size).then(|| failing_files(0, staged, 1));
-                let (looked, units) = seen(
+                let (looked, units) = seen_of(
                     "t",
                     "/p",
                     Some(whole.clone()),
@@ -6851,6 +7449,87 @@ mod tests {
         }
     }
 
+    /// Tenth independent review of the hooks, HR10-M-2, as reproduced: a staged failure that
+    /// has blocked as the staged change's own; then the working tree has it again in part;
+    /// then it is repaired there again in part, and then wholly. The index is never touched.
+    /// Past 256 lines the stop blocked for "Staged changes" at the partial repair: the mark
+    /// of all that had blocked was remembered, and a mark was asked only whether the staged
+    /// change's own failure is exactly it. A mark that is exactly what the index holds says
+    /// that every line the index holds has blocked: then no part of it is new.
+    #[test]
+    fn a_staged_failure_that_has_blocked_stands_whatever_the_tree_does() {
+        for size in [1, 200, 256, 257, 300, 600] {
+            let mut state = State::default();
+            // one stop: the tree fails for the files `from..to`, the index for all of them
+            let stop = |state: &mut State, from: usize, to: usize| -> (bool, bool, Kept) {
+                let tree = (to > from).then(|| failing_files(from, to - from, 1));
+                let same = from == 0 && to == size;
+                let (looked, units) = seen_of(
+                    "t",
+                    "/p",
+                    tree,
+                    (!same).then(|| failing_files(0, size, 1)),
+                    same,
+                    &state.blocked,
+                );
+                let blocks = |kind: char| {
+                    units
+                        .iter()
+                        .find(|unit| unit.tag == unit_tag("t", kind))
+                        .is_some_and(|unit| {
+                            matches!(
+                                hook::decide_stop_trees(
+                                    std::slice::from_ref(unit),
+                                    &state.blocked,
+                                    "r"
+                                ),
+                                StopDecision::Block { .. }
+                            )
+                        })
+                };
+                let (tree_blocks, staged_blocks) = (blocks('u'), blocks('s'));
+                let judging = Judging {
+                    trees: vec![looked],
+                    ..Judging::default()
+                };
+                let kept = remember_within(state, &judging, &mut Vec::new(), BLOCKED_CAP);
+                (tree_blocks, staged_blocks, kept)
+            };
+            let part = size.div_ceil(3);
+            let half = part.div_ceil(2);
+            // staged, the tree repaired: blocks as the staged change's own; then stands
+            assert!(stop(&mut state, 0, 0).1, "{size}");
+            assert_eq!(
+                stop(&mut state, 0, 0),
+                (false, false, Kept::default()),
+                "{size}"
+            );
+            // what the tree does from here on; its own change blocks when it has a file it
+            // did not have at the stop before
+            let mut had = 0..0;
+            for (from, to, row) in [
+                (0, part, "a part is in the tree again"),
+                (0, part, "again"),
+                (0, half, "half of that part repaired again"),
+                (half, part, "the other half instead"),
+                (0, 0, "all repaired again"),
+                (0, size, "all of it in the tree"),
+                (0, size, "again"),
+                (0, 0, "all repaired once more"),
+            ] {
+                let (tree, staged, kept) = stop(&mut state, from, to);
+                assert!(!staged, "{size} lines, {row}: what is staged blocked again");
+                assert_eq!(
+                    tree,
+                    (from..to).any(|file| !had.contains(&file)),
+                    "{size} lines, {row}"
+                );
+                assert_eq!(kept, Kept::default(), "{size} lines, {row}");
+                had = from..to;
+            }
+        }
+    }
+
     /// Ninth independent review of the hooks, HR9-L-1, as reproduced. A staged failure has
     /// blocked, and the working tree's failure has the same lines again, so they are kept
     /// for the staged change and are no line of its own. Then the session has more lines
@@ -6864,7 +7543,7 @@ mod tests {
         let mut state = State::default();
         // one stop in the tree `a`, with what its tree and its index fail for
         let stop = |state: &mut State, tree: usize, index: usize, cap: usize| -> (bool, Kept) {
-            let (looked, units) = seen(
+            let (looked, units) = seen_of(
                 "a",
                 "/a",
                 (tree > 0).then(|| lines(tree)),
@@ -6897,10 +7576,24 @@ mod tests {
         );
         // A stop in another tree with 250 failing files, under a bound of 300 entries: more
         // lines than are kept. What is remembered of `a` goes into its short form (it is
-        // not the tree this stop looks at), and nothing is said, because nothing is lost.
+        // not the tree this stop looks at). For its staged change the stop says so: a
+        // mark answers only for exactly what it stands for.
         let (blocks, kept) = stop_in(&mut state, "b", Some(failing_files(1_000, 250, 1)), SMALL);
         assert!(blocks);
-        assert_eq!(kept, Kept::default());
+        assert_eq!(
+            kept,
+            Kept {
+                as_a_whole: vec!["a/s".to_owned()],
+                ..Kept::default()
+            }
+        );
+        assert!(
+            memory_notes(&kept)
+                .iter()
+                .any(|note| note.contains("is remembered as a whole from now on")),
+            "{:?}",
+            memory_notes(&kept)
+        );
         let kept = hook::remembered_as(&state.blocked, "a/k");
         assert_eq!(kept.len(), 1, "{kept:?}");
         assert!(kept.keys().all(|key| hook::is_mark(key)));
@@ -6920,7 +7613,7 @@ mod tests {
         // that stop says of which tree.
         let mut state = State::default();
         let look = |state: &mut State, tree: Judged, cap: usize| -> (bool, Kept) {
-            let (looked, units) = seen(
+            let (looked, units) = seen_of(
                 "a",
                 "/a",
                 Some(tree),
@@ -6948,7 +7641,7 @@ mod tests {
         assert_eq!(
             kept,
             Kept {
-                short: vec!["a/s".to_owned()],
+                as_a_whole: vec!["a/s".to_owned()],
                 ..Kept::default()
             }
         );
@@ -6960,55 +7653,105 @@ mod tests {
         assert!(
             notes
                 .iter()
-                .any(|note| note.contains("of what is staged in 1 working tree")
+                .any(|note| note.contains("Of what is staged in 1 working tree, the hook remembered what had blocked as a whole")
                     && note.contains("may block once more")),
             "{notes:?}"
         );
     }
 
-    /// Eighth independent review of the hooks, HR8-L-1. The time of one run of the judge:
-    /// what is left less five seconds for each run still owed, when that leaves the run three
-    /// seconds; else all that is left; and no run when nothing is left. The first ask a stop
-    /// owes got "what is left less five seconds" and nothing else, which under five seconds
-    /// is no time: the judge was not started and the commit was written down as asked.
-    /// The time both asks need is stated in one place, [`OWED_ASKS_NEED`], and README says
-    /// the same number.
+    /// The time of one run of the judge ([`run_time`]), from the eighth independent review
+    /// of the hooks (HR8-L-1: the first ask a stop owes got "what is left less five seconds",
+    /// which under five seconds was no time, and was written down as asked) to the tenth
+    /// (HR10-L-3: a run that may take all that is left cannot be owed beside others; and
+    /// HR10-L-2: a run on the stop's own tree is held back only what the tree after it can
+    /// need). What every owed ask needs is one number, [`OWED_ASKS_NEED`], and README says
+    /// the same.
     #[test]
-    fn a_run_of_the_judge_has_time_or_is_not_made() {
+    fn a_run_of_the_judge_has_its_part_of_the_time_or_is_not_made() {
         let seconds = |ms: u64| Duration::from_millis(ms);
-        // enough for the run and for what is owed after it: the rest is kept
-        assert_eq!(run_time(seconds(41_000), 2), Some(seconds(31_000)));
-        assert_eq!(run_time(OWED_ASKS_NEED, 1), Some(COMMIT_FLOOR));
-        // not enough for both: the run that comes first has what there is (the reviewer's
-        // stop came to its commits with about 3.5 seconds)
-        assert_eq!(run_time(seconds(3_500), 1), Some(seconds(3_500)));
-        assert_eq!(
-            run_time(OWED_ASKS_NEED.checked_sub(seconds(1)).unwrap(), 1),
-            OWED_ASKS_NEED.checked_sub(seconds(1))
-        );
-        assert_eq!(run_time(seconds(200), 3), Some(seconds(200)));
-        // nothing owed: all of it
-        assert_eq!(run_time(seconds(3_500), 0), Some(seconds(3_500)));
-        // nothing left: the judge is not run
-        assert_eq!(run_time(Duration::ZERO, 0), None);
-        assert_eq!(run_time(Duration::ZERO, 2), None);
-        // With OWED_ASKS_NEED left, both owed asks are made whatever the first one does: it
-        // is given at least COMMIT_FLOOR, and when it uses all it was given, COMMIT_FLOOR is
-        // still left, which is what an ask is made with ([`judge_commits`]).
-        for left in [
-            OWED_ASKS_NEED,
-            OWED_ASKS_NEED + seconds(700),
-            seconds(41_000),
-        ] {
-            let first = run_time(left, 1).unwrap();
-            assert!(first >= COMMIT_FLOOR, "{left:?}");
-            assert!(left.checked_sub(first).unwrap() >= COMMIT_FLOOR, "{left:?}");
+        let asks = |left: u64, owed: u32| run_time(seconds(left), After::Asks(owed));
+        // an ask leaves five seconds for each ask owed after it
+        assert_eq!(asks(41_000, 2), Some(seconds(31_000)));
+        assert_eq!(asks(41_000, 0), Some(seconds(41_000)));
+        assert_eq!(asks(13_000, 2), Some(seconds(3_000)));
+        // with less than that it has three seconds, not all that is left: the asks owed
+        // after it are still made while three seconds are left for them
+        assert_eq!(asks(7_900, 2), Some(seconds(3_000)));
+        assert_eq!(asks(4_900, 1), Some(seconds(3_000)));
+        // with under three seconds it has what there is (and is not made at all, by the
+        // rule of [`judge_commits`]); with nothing, it is not run
+        assert_eq!(asks(1_900, 0), Some(seconds(1_900)));
+        assert_eq!(asks(0, 0), None);
+        assert_eq!(asks(0, 2), None);
+        // With OWED_ASKS_NEED left every owed ask is made, whatever the others do: each
+        // may use all it is given, and between two of them two seconds may be lost.
+        assert_eq!(OWED_ASKS, 3);
+        assert_eq!(OWED_ASKS_NEED, seconds(13_000));
+        for left in [13_000, 13_700, 20_000, 41_000] {
+            let mut left = seconds(left);
+            for owed in (0..OWED_ASKS).rev() {
+                assert!(left >= COMMIT_FLOOR, "an owed ask would not be made");
+                let had = run_time(left, After::Asks(owed)).unwrap().min(JUDGE_TIME);
+                assert!(had >= COMMIT_FLOOR);
+                left = left
+                    .checked_sub(had)
+                    .unwrap()
+                    .saturating_sub(seconds(if owed > 0 { 2_000 } else { 0 }));
+            }
         }
-        assert_eq!(OWED_ASKS_NEED, seconds(8_000));
+        // a hanging judge on the first two cannot take the third's time: 30 seconds (the
+        // most one run has), then 6, and 5 are left
+        let first = asks(41_000, 2).unwrap().min(JUDGE_TIME);
+        let second = run_time(seconds(41_000).checked_sub(first).unwrap(), After::Asks(1)).unwrap();
+        assert_eq!((first, second), (seconds(30_000), seconds(6_000)));
+
+        // A run on a working tree's change: what is held back for what comes after it, and
+        // all that is left when that would leave it under three seconds.
+        let tree = |left: u64, kept: Duration| run_time(seconds(left), After::Trees(kept));
+        // What a tree's run leaves for the asks about commits is what those asks can
+        // need, by the session's file of judged commits: three seconds when no commit
+        // waits for a verdict (a commit never asked about may be there), five more for a
+        // commit that waits for its turn, five more for one with fewer attempts.
+        let line = |n: usize, said: &str| format!("{n:040x}:{said}");
+        assert_eq!(asks_kept(&[]), seconds(3_000));
+        assert_eq!(
+            asks_kept(&[line(1, "p"), line(2, "f:no-secrets")]),
+            seconds(3_000)
+        );
+        assert_eq!(asks_kept(&[line(1, "n2@4:r")]), seconds(8_000));
+        assert_eq!(
+            asks_kept(&[line(1, "n7@4:r"), line(2, "n9@3:r")]),
+            seconds(8_000)
+        );
+        assert_eq!(
+            asks_kept(&[line(1, "n7@4:r"), line(2, "n0@3:r"), line(3, "p")]),
+            OWED_ASKS_NEED
+        );
+        // the stop's own tree, the project's tree clean, from a linked tree (35 seconds)
+        assert_eq!(tree(35_000, asks_kept(&[])), Some(seconds(32_000)));
+        assert_eq!(tree(35_000, OWED_ASKS_NEED), Some(seconds(22_000)));
+        // both dirty: three seconds for the project's tree; the own tree has over half
+        assert_eq!(
+            tree(35_000, OWED_ASKS_NEED + COMMIT_FLOOR),
+            Some(seconds(19_000))
+        );
+        // a staged change of its own too
+        assert_eq!(
+            tree(35_000, OWED_ASKS_NEED + COMMIT_FLOOR + ASK_OWED),
+            Some(seconds(14_000))
+        );
+        assert_eq!(
+            tree(12_000, OWED_ASKS_NEED + ASK_OWED),
+            Some(seconds(12_000))
+        );
+        assert_eq!(tree(0, OWED_ASKS_NEED), None);
+
         let readme = include_str!("../../../README.md");
         let stated = format!(
-            "{} seconds of its judging left when it comes to its commits",
-            OWED_ASKS_NEED.as_secs()
+            "{} seconds of its judging left when it comes to its commits ({} for the first ask it owes and {} for each of the two after it)",
+            OWED_ASKS_NEED.as_secs(),
+            COMMIT_FLOOR.as_secs(),
+            ASK_OWED.as_secs()
         );
         assert!(
             readme
@@ -7218,6 +7961,26 @@ mod tests {
             .map(|n| note(&format!("{n}{}", "n".repeat(300)), 1_000))
             .collect();
         assert!(line(long).chars().count() <= COUNT_LINE);
+        // A name that is cut keeps what it says of a failure that stands: the path of a
+        // working tree as a message shows it (120 characters) fits whole, and a longer
+        // name loses its middle, not its end.
+        let path = hook::shown_path(&format!("/home/u/{}/tree", "d".repeat(300)));
+        let whole =
+            format!("the working tree {path} (it could not be looked at) (a failure stands there)");
+        assert!(whole.chars().count() > NOTE_NAME);
+        let said = line(vec![note(&whole, 1)]);
+        assert!(
+            said.ends_with("… (a failure stands there).") && said.chars().count() <= COUNT_LINE,
+            "{said}"
+        );
+        let fits = format!("the working tree {path} (a failure stands there)");
+        assert!(fits.chars().count() <= NOTE_NAME);
+        assert!(line(vec![note(&fits, 1)]).contains(&fits));
+        let counted = format!(
+            "{} (a failure stands in 12 of them)",
+            "2 more working trees that were not looked at ".repeat(6)
+        );
+        assert!(line(vec![note(&counted, 12)]).ends_with("… (a failure stands in 12 of them)."));
         // what a note that counts trees says of them
         assert_eq!(standing_counted(0), (String::new(), String::new()));
         assert_eq!(standing_counted(1).0, " (a failure stands in 1 of them)");

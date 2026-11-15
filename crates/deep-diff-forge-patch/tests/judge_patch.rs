@@ -22,6 +22,12 @@ const ISOLATE: [(&str, &str); 2] = [
     ("GIT_CONFIG_NOSYSTEM", "1"),
 ];
 
+/// Git for a test's own steps. `maintenance.auto=false`: `git commit` starts a detached `git
+/// maintenance run --auto`, which holds `objects/maintenance.lock` for a moment after the
+/// commit has returned; [`untouched`] counts the files under `objects`, so on a busy machine a
+/// count taken right after a commit was one more than the count taken later, and "making the
+/// patch changed the repository" failed with nothing changed (22 of 400 runs beside another
+/// test suite; none of 400 with this).
 fn git(root: &Path, args: &[&str]) -> Vec<u8> {
     let out = Command::new("git")
         .current_dir(root)
@@ -35,6 +41,8 @@ fn git(root: &Path, args: &[&str]) -> Vec<u8> {
             "init.defaultBranch=main",
             "-c",
             "commit.gpgSign=false",
+            "-c",
+            "maintenance.auto=false",
         ])
         .args(args)
         .output()

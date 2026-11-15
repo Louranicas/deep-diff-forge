@@ -560,6 +560,67 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     next stop that looks (it then says nothing of it: do not go back to that build in the
     middle of a session).
 
+- **Round 18 of Vesper's review and a tenth independent review of the hooks: "not read" is
+  not "nothing there"; what is staged stands while the index is untouched; the tree a
+  stop is in is the one Git says; no run of the judge takes the time of what is owed
+  after it.**
+  - *A stop that could not read the tree forgets nothing (HR10-M-1; older).* A working
+    tree whose change could not be read (a file that may not be opened, a skip-worktree
+    path, a Git that failed or was slow at one stop) came with "no staged change", which
+    is the answer "the index was read and holds nothing". The stop forgot what had blocked
+    of the staged change, and the staged failure, untouched, blocked a second time at the
+    next stop. Everything a stop reads of a working tree now has three answers (nothing
+    there, this, not read and why), and only "nothing there" forgets. Such a stop says
+    that what has blocked of the staged change stands.
+  - *A large staged failure stands whatever the tree does (HR10-M-2; a regression of the
+    round before).* A staged failure of more than 256 lines that had blocked, was in the
+    working tree again in part, and was repaired there again in part blocked as "Staged
+    changes" with the index untouched. A digest that is exactly what the index holds says
+    that every staged line has blocked; it was asked only whether the staged change's own
+    failure is exactly it. The model test's exception that let this through is narrowed
+    to the one case a digest cannot answer: the index is not what the last stop saw.
+  - *Working trees inside a bare repository are judged from inside (HR10-M-3; older).* A
+    directory under the Git common directory was taken for one of Git's own files. With
+    `repo.git/main` and `repo.git/feature`, a stop made from `feature` in a session whose
+    project is `main` never judged what was not committed in `feature`, and said of it
+    that the session's directory was not in it. Which tree a directory is in is asked of
+    Git.
+  - *A session that begins with more than 256 working trees judges its tree
+    (VD4R18-L-1).* Its start could not list the commits that were there and recorded
+    nothing, so every stop was wholly UNJUDGED. The project and its base are recorded
+    with the fact that there is no list: the session's commits are UNJUDGED at every
+    stop, and what is not committed is judged and blocks.
+  - *The sentence for a digest that is given up says what happened (HR10-L-1).* It began
+    "This session has more failing lines than the hook keeps one by one (2048)" also in a
+    session with one working tree and 300 staged lines of which one file left the index.
+    It names its cause, and a second sentence says when what is staged is remembered as a
+    whole from now on. Both are reached by runs of the hooks.
+  - *The stop's own tree has the time the project's tree does not need (HR10-L-2; a
+    regression of the round before).* From a linked tree, time for two runs was held back
+    for the project's tree before it was known to have anything to judge: 15 of 35
+    seconds for the stop's own change. The project's tree is looked at first (one `git
+    status`); clean, nothing is held back for it; with a change, three seconds are. What
+    is held back for the asks about commits is what they can need by the session's file
+    of judged commits: three seconds when no commit waits for a verdict, thirteen at most.
+  - *A judge that hangs on two commits does not keep a third from being asked
+    (HR10-L-3; older).* A stop owes three asks at most, the oldest commit never asked
+    about among them; each leaves five seconds for each owed ask after it, and thirteen
+    seconds of the judging are what all three need. A run that was cut is written down
+    as asked, with the time it had.
+  - *Smaller.* A refusal of the hooks' own no longer begins "invalid Git selection:". A
+    `shallow` file that cannot be read, a `.gitmodules` that cannot be looked at and a
+    session directory that cannot be looked at are "not known", not "none".
+  - *Tests.* Two tests failed for where they ran, with nothing wrong in what they
+    tested. One cut a working tree's name at 140 characters and lost the words it looked
+    for under a long temporary directory (the mutation runs of the two rounds before
+    ended at their baseline on it, with no mutant tested): the name has 180. The other
+    counted the files under `objects` right after a `git commit` of its own, while the
+    maintenance process that commit leaves behind still held its lock file (22 of 400 runs
+    beside another test suite): the tests' own Git steps start no maintenance.
+  - *State.* Schema `deep-diff-forge.hook-state.v9` (the project says whether there is a
+    list of the commits that were there); a state of an earlier schema is not read. *New
+    in the patch crate:* nothing; the refusal for too many working trees says the number.
+
 ### Changed
 
 - Path and shape weights are stated once, in `RiskSignal::weight`, and the scorer reads

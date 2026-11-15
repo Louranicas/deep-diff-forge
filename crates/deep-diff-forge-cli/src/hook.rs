@@ -1682,9 +1682,9 @@ fn trees_text(trees: &[TreeJudged], blocked: &[String]) -> String {
     // beside what is new
     let stands_by_line = trees.iter().any(|unit| {
         !is_commit(unit)
-            && unit.holds == Holds::WhileNew
+            && !unit.tag.is_empty()
             && fails(&unit)
-            && !remembered(blocked, &unit.tag).is_empty()
+            && (unit.holds == Holds::Never || !remembered(blocked, &unit.tag).is_empty())
     });
     let any = |wanted: fn(&TreeJudged) -> bool| trees.iter().any(wanted);
     let reserve = no_verdict.chars().count()
