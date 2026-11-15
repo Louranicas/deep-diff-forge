@@ -97,14 +97,33 @@ use std::process::Command;
 /// position, and two spellings of a suppressed lint) and one item of the first independent
 /// review's case is new (an inner `#![allow(…)]` written as `#!`, a comment and the rest).
 /// Both floors rose.
+/// Measured a ninth time 2026-11-15 on the same 50 cases, after round 16 narrowed what the
+/// end of a hunk side is read for and stopped reading its beginning (a return type named
+/// `Command` at the end of a line had been a spawn): precision 156 of 176, recall 156 of
+/// 215. The seventh review's case gained two expected items (a stub cut after `todo!`, a
+/// spawn cut after `Command::`) and nine hard negatives, lost one declared false positive (a
+/// call of a function named `expect` is no longer reported), and three of its items are
+/// declared misses again, with one of the sixth review's (a call cut after `.unwrap` by
+/// hunks that nothing joins, and its forms). The precision floor rose; the recall floor
+/// fell, on purpose: `.unwrap` at the end of a side is the end of an honest line too.
+/// Measured a tenth time 2026-11-15 on 51 cases, in the same round, after the eighth
+/// independent review: precision 163 of 183, recall 163 of 230. The new case,
+/// `evidence/independent-review-8-20261115`, has seven expected items (an assertion in two
+/// hunks that touch, beside a hunk of added lines that names their place, three ways; the
+/// released paths as `<Command>::new` and `Command::<>::new`), eight declared misses (a hunk
+/// with old lines that falsely claims the place; a call cut twice; a function value cut
+/// before its name; a hunk an applier puts inside another; a script whose hunk does not
+/// show its first line; a space before a call's bracket) and four hard negatives. The
+/// precision floor rose; the recall floor fell by the eight misses that are now written
+/// down.
 const RANKING_PAIRS_FLOOR: u64 = 800_000;
-const EVIDENCE_PRECISION_FLOOR: u64 = 882_681;
-const EVIDENCE_RECALL_FLOOR: u64 = 741_784;
+const EVIDENCE_PRECISION_FLOOR: u64 = 890_710;
+const EVIDENCE_RECALL_FLOOR: u64 = 708_695;
 const FINDINGS_FLOOR: u64 = 1_000_000;
 /// Declared misses (plan N4): each counts as wrong in its metric above. The receipt's
 /// `known_misses` keeps its first meaning, the evidence `known_miss` items; `declared` lists all.
-const DECLARED: u64 = 79;
-const EVIDENCE_KNOWN_MISSES: u64 = 55;
+const DECLARED: u64 = 90;
+const EVIDENCE_KNOWN_MISSES: u64 = 67;
 /// The smallest corpus the gate accepts, and the fewest cases of each kind.
 const MIN_CASES: usize = 30;
 const MIN_CASES_PER_KIND: usize = 3;
@@ -224,14 +243,14 @@ fn the_summary_names_each_metric_and_each_failure() {
     let (code, text) = run(&corpus());
     assert_eq!(code, Some(0), "{text}");
     assert!(
-        text.starts_with("deep-diff-forge eval: 50 cases\n"),
+        text.starts_with("deep-diff-forge eval: 51 cases\n"),
         "{text}"
     );
     for line in [
         "  ranking_pairs        12/15",
-        "  evidence_precision   158/179",
-        "  evidence_recall      158/213",
-        "  declared             79",
+        "  evidence_precision   163/183",
+        "  evidence_recall      163/230",
+        "  declared             90",
         "  KNOWN ranking/auth-check-removed: src/handlers/delete.rs ranks below docs/CHANGES.md",
         "  KNOWN evidence/shell-heredoc: reports (\"scripts/docs.sh\", \"network_fetch\", \"new\", 3)",
     ] {
@@ -582,7 +601,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_recall"],
-        serde_json::json!({"right": 158, "total": 212, "ppm": 745_283})
+        serde_json::json!({"right": 163, "total": 229, "ppm": 711_790})
     );
 
     // A declared false positive the engine does not report.
@@ -600,7 +619,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_precision"],
-        serde_json::json!({"right": 158, "total": 179, "ppm": 882_681})
+        serde_json::json!({"right": 163, "total": 183, "ppm": 890_710})
     );
 
     // A declared false positive that is also expected.
@@ -616,7 +635,7 @@ fn a_declared_miss_must_still_be_a_miss() {
             .unwrap()
             .ends_with("is not reported, or is expected: remove it")
     );
-    assert_eq!(metrics["evidence_precision"]["right"], 159);
+    assert_eq!(metrics["evidence_precision"]["right"], 164);
     assert_eq!(known, usize::try_from(DECLARED).unwrap() - 1);
 }
 

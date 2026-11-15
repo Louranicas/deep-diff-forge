@@ -17,8 +17,9 @@
 //! names one path in more than one section**, which release 0.8.4 does and the release this
 //! branch stands on (0.8.3) does not: plain `git apply` applies two sections for one path to
 //! the same file, and a construct that one begins and the other ends is then read in two
-//! halves, as two files (seventh independent review, IR7-H-2; the edge of each half is still
-//! read, see the module `rust_tokens`). This branch must not be merged before it stands on
+//! halves, as two files (seventh independent review, IR7-H-2; what the first half ends on is
+//! read only where it is evidence by itself, see `waiting` in the module `rust_tokens`).
+//! This branch must not be merged before it stands on
 //! 0.8.4's refusal; the test `a_second_section_for_one_path_is_two_files_until_the_parser_refuses_it`
 //! pins today's answer and says what it must become.
 
@@ -737,6 +738,54 @@ const LEGACY_RUST_RULES: &[Rule] = &[
     ),
 ];
 
+std::thread_local! {
+    /// How often this thread went through every hunk of a file to learn something of the
+    /// file as a whole ([`file_walks`]).
+    static FILE_WALKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Notes one pass over every hunk of a file.
+fn walked() {
+    FILE_WALKS.with(|walks| walks.set(walks.get() + 1));
+}
+
+/// How many times this thread has gone through every hunk of a file to learn something of
+/// the file as a whole: the language of a file whose name gives none ([`FileKinds`]) and
+/// which hunks are read together ([`joined_hunks`]). For tests that hold the cost of a view:
+/// a view of hunks picked by path or by address may make such a pass once for a file, and
+/// never once for each hunk it shows. Round 15 asked for the language of a file in
+/// [`hunk_signals_alone`], for each hunk, and a page of 2,768 hunks of a file with no
+/// extension took 26 s where it had taken 0.3 s (eighth independent review, IR8-M-2); no
+/// test counted.
+#[doc(hidden)]
+#[must_use]
+pub fn file_walks() -> u64 {
+    FILE_WALKS.with(std::cell::Cell::get)
+}
+
+/// The kinds a file is read as and the rules each kind admits, worked out once for the file
+/// ([`FileKinds::of`]) and handed to whatever reads its hunks one at a time
+/// ([`hunk_signals_alone`]).
+pub struct FileKinds(Vec<(FileKind, Vec<&'static Rule>)>);
+
+impl FileKinds {
+    /// The kinds of `file`. For a file whose name gives no language this looks at the first
+    /// line of every hunk (a shebang there names one), so its cost is the number of hunks
+    /// of the file: a caller that reads many hunks of one file asks once.
+    #[must_use]
+    pub fn of(file: &ReviewFile) -> Self {
+        Self(
+            FileKind::readings(file)
+                .into_iter()
+                .map(|kind| {
+                    let rules = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
+                    (kind, rules)
+                })
+                .collect(),
+        )
+    }
+}
+
 /// What a file is, for rule scopes.
 struct FileKind {
     language: Option<Language>,
@@ -770,11 +819,15 @@ impl FileKind {
     /// language at all, and a fetch and an `eval` that release 0.8.3 and round 13 report
     /// went unreported (seventh independent review, IR7-H-1). Before that the rule was the
     /// release's alone, which the other false number (`+4`) and the order of hunks defeat.
+    ///
+    /// For a file whose name gives no language this looks at every hunk of the file, so it
+    /// is asked once for a file and never once for each of its hunks ([`FileKinds`]).
     fn readings(file: &ReviewFile) -> Vec<Self> {
         let path = file.path.as_str();
         if let Some(language) = Language::of(path, None) {
             return vec![Self::with(path, Some(language))];
         }
+        walked();
         let shebang = |line: Option<&PatchLine>| {
             line.and_then(|line| Language::of(path, Some(line.text.as_str())))
         };
@@ -910,17 +963,26 @@ pub fn hunk_signals(file: &ReviewFile, index: usize) -> Option<Vec<EvidenceSigna
 }
 
 /// [`hunk_signals`] for a hunk that is a text of its own ([`joined_hunks`] does not name it):
-/// the scan of that hunk alone, at the cost of that hunk. `None` if the file has no hunk
-/// `index`.
+/// the scan of that hunk alone, at the cost of that hunk and of nothing else. `None` if the
+/// file has no hunk `index`.
+///
+/// `kinds` are the kinds of this file, [`FileKinds::of`]`(file)`, which the caller works out
+/// once for the file and passes for each of its hunks. (Round 15 worked them out here, and
+/// for a file whose name gives no language that is a pass over every hunk of the file: a
+/// view of the hunks of such a file by path cost the square of their number. Eighth
+/// independent review, IR8-M-2.)
 #[must_use]
-pub fn hunk_signals_alone(file: &ReviewFile, index: usize) -> Option<Vec<EvidenceSignal>> {
+pub fn hunk_signals_alone(
+    file: &ReviewFile,
+    index: usize,
+    kinds: &FileKinds,
+) -> Option<Vec<EvidenceSignal>> {
     let hunk = file.patch_twin.hunks.get(index)?;
     let lines: Vec<&PatchLine> = hunk.lines.iter().collect();
     let top = placed_at_top(file.status, hunk, index == 0);
     let mut found = Vec::new();
-    for kind in FileKind::readings(file) {
-        let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
-        found = unite(&found, &text_hits(&lines, top, kind.language, &rules));
+    for (kind, rules) in &kinds.0 {
+        found = unite(&found, &text_hits(&lines, top, kind.language, rules));
         if kind.language == Some(Language::Rust) {
             found = unite(&found, &released_hits(hunk, &kind.legacy_rules()));
         }
@@ -1063,22 +1125,39 @@ fn texts(file: &ReviewFile) -> Vec<Text> {
 ///   and a number adds to them where it does not contradict them. And once for an applier
 ///   that goes by the numbers alone (`git apply --unidiff-zero` puts a hunk with no old line
 ///   at its new position and not at the end of the file): there the numbers join whatever
-///   they name, and nothing has to be at the end.
+///   they name, nothing has to be at the end, and a hunk with no line on a side stands
+///   between the hunk that ends before its place and the hunk that begins there. And round
+///   14's own joins (old numbers, hunks with old lines only, the first that ends before a
+///   position) are made by its own rule beside these, so that no later hint takes one of
+///   them away ([`hinted_joins`]).
 ///
-/// **The bound.** A hunk stands in at most six texts: alone; in the run Git must make; and in
-/// one run for each of the two numbers under each of the two ways of taking them. A run that
-/// two of these make is read once, so a patch whose numbers are true and whose hunks have
-/// context is read alone and, where hunks touch, once more. Within each kind of run a hunk
-/// has at most one hunk before it and one after it. So a file costs at most six readings of
-/// itself, however many hunks it has.
+/// **The bound.** A hunk stands in at most seven texts: alone; in the run Git must make; in
+/// the run round 14's rule makes; and in one run for each of the two numbers under each of
+/// the two ways of taking them. A run that two of these make is read once, so a patch whose
+/// numbers are true and whose hunks have context is read alone and, where hunks touch, once
+/// more. Within each kind of run a hunk has at most one hunk before it and one after it. So
+/// a file costs at most seven readings of itself, however many hunks it has.
 ///
-/// What this does not see: two hunks that touch while neither position of the second says
-/// so, and a hunk whose position says falsely that it follows another, before two that
-/// truly touch. A construct cut in two by such a pair is read in two halves by the join;
-/// what stands at the edge of each half is the matter of the rule for an anchor at the edge
-/// of a side. A `git diff` with context lines writes neither touching hunks nor a file's
-/// creation in several hunks, so for such a patch every hunk is read alone and no other
-/// way; a `git diff -U0` writes hunks of added lines only, and those are joined as above.
+/// What this does not see, each of which takes a writer who sets out to:
+///
+/// - two hunks that touch while neither position of the second says so. A construct cut in
+///   two by such a pair is read in two halves; what the first half ends on is the matter of
+///   the rule for the end of a side (`rust_tokens`), and a cut that no such form stands
+///   before is not found;
+/// - two hunks that touch by a number, when another hunk that has lines on that side says
+///   falsely that it ends before the same line and is written first ([`hinted_joins`]). A
+///   hunk with no line on the side cannot do that (until round 16 it could);
+/// - a hunk that an applier puts INSIDE the lines another hunk showed. A hunk's lines are
+///   read as lines that stand together. `git apply --unidiff-zero` puts a hunk of added
+///   lines at its new number, and that can be between two lines of an earlier hunk
+///   (`@@ -1,3 +1,4 @@` with `let v = opt.unwrap` as its third line, then `@@ -3,0 +4,1 @@`
+///   with `();`: line 4 stands before the first hunk's last line, and the result holds the
+///   call). Plain Git puts that second hunk at the end of the file. No reading here puts a
+///   hunk between the lines of another (eighth independent review, IR8-M-4).
+///
+/// A `git diff` with context lines writes neither touching hunks nor a file's creation in
+/// several hunks, so for such a patch every hunk is read alone and no other way; a
+/// `git diff -U0` writes hunks of added lines only, and those are joined as above.
 ///
 /// Until 2026-11-14 every hunk was read alone only, and a file created as two hunks hid a
 /// call whose name ended the first and whose `()` began the second (sixth independent
@@ -1086,6 +1165,7 @@ fn texts(file: &ReviewFile) -> Vec<Text> {
 /// old lines near the old position" and joined on old positions only; Git starts at the new
 /// position (seventh independent review, IR7-L-3).
 fn joined_texts(file: &ReviewFile) -> Vec<Text> {
+    walked();
     let hunks = &file.patch_twin.hunks;
     let count = |index: usize, other: PatchLineKind| {
         hunks[index]
@@ -1143,7 +1223,7 @@ fn joined_texts(file: &ReviewFile) -> Vec<Text> {
     // The runs Git must make; the runs each side's numbers add to them; the runs each side's
     // numbers make by themselves. A run two of them make is read once.
     let mut joined = runs(&must_before);
-    // The runs so far that begin with each hunk (five at most), so that a run made again is
+    // The runs so far that begin with each hunk (six at most), so that a run made again is
     // found without a search of all of them: a patch can be all pairs.
     let mut begun: std::collections::HashMap<usize, Vec<usize>> = joined
         .iter()
@@ -1160,21 +1240,25 @@ fn joined_texts(file: &ReviewFile) -> Vec<Text> {
         .zip(&new_lines)
         .map(|(hunk, lines)| (hunk.new_start, *lines))
         .collect();
-    let must = (must_before.as_slice(), must_followed.as_slice());
-    for must in [Some(must), None] {
-        for before in [
-            hinted_joins(&old_side, &top, must),
-            hinted_joins(&new_side, &top, must),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            for run in runs(&before) {
-                let same_start = begun.entry(run[0]).or_default();
-                if !same_start.iter().any(|place| joined[*place] == run) {
-                    same_start.push(joined.len());
-                    joined.push(run);
-                }
+    let must = Some((must_before.as_slice(), must_followed.as_slice()));
+    // Round 14's joins first, by its own rule and untouched by any later one; then the hints
+    // of each number: beside the joins Git must make, as plain Git places hunks, and alone,
+    // as the numbers order them.
+    for before in [
+        hinted_joins(&old_side, &top, must, Hints::Lined),
+        hinted_joins(&old_side, &top, must, Hints::LinesFirst),
+        hinted_joins(&new_side, &top, must, Hints::LinesFirst),
+        hinted_joins(&old_side, &top, None, Hints::Positions),
+        hinted_joins(&new_side, &top, None, Hints::Positions),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        for run in runs(&before) {
+            let same_start = begun.entry(run[0]).or_default();
+            if !same_start.iter().any(|place| joined[*place] == run) {
+                same_start.push(joined.len());
+                joined.push(run);
             }
         }
     }
@@ -1187,6 +1271,30 @@ fn joined_texts(file: &ReviewFile) -> Vec<Text> {
         .collect()
 }
 
+/// Which hunks may stand before a position and which hunks choose first, for
+/// [`hinted_joins`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hints {
+    /// Round 14's rule, kept as it was: the first hunk of the patch that has lines on the side
+    /// and ends before the position, and no other; the hunks choose in the order of the
+    /// patch. Whatever a later rule joins, the joins this one makes are made, and read as
+    /// they were.
+    Lined,
+    /// For plain `git apply`, which puts a hunk with no old line at the end of the file and
+    /// not between two others: the hunks that have lines on the side choose first, and take
+    /// a hunk that has lines there before one that has none. So a hunk with no line on a
+    /// side takes no place on that side, as the one before or as the one after, that a hunk
+    /// with lines there asks for.
+    LinesFirst,
+    /// For an applier that goes by the numbers: the hunks stand in the order of their
+    /// positions, a hunk with no line on the side between the hunk that ends before its
+    /// place and the hunk that begins there. The hunks with no line on the side choose
+    /// first (the hunk with lines that ends before their place, else the last free hunk of
+    /// their kind written before them), and a hunk with lines then goes after the last of
+    /// them.
+    Positions,
+}
+
 /// The hunk each hunk follows by the positions of one side, if those positions join any:
 /// `side` has, for each hunk, the start its header gives on that side and how many lines it
 /// has there. A hunk with lines on the side says its first line and, with its count, the line
@@ -1197,19 +1305,49 @@ fn joined_texts(file: &ReviewFile) -> Vec<Text> {
 /// that must follow them. Those joins stand, and a number only adds to them. Without it the
 /// numbers are taken alone, as an applier takes them for which nothing has to be at the end
 /// of the file.
+///
+/// `hints` says which hunks can be the one before and who chooses first ([`Hints`]). For a
+/// position the candidates are the hunks that say they end before it, those with lines on
+/// the side first and each kind in the order of the patch, and of them the first is taken
+/// that nothing follows yet, that is not the hunk itself and that is not the end of the run
+/// the hunk begins. Of two hunks with no line on the side that name one position, the one
+/// written first stands first: their numbers say nothing of it.
+///
+/// **A hint that a later round added never takes away a join an earlier rule made.** Round 15
+/// let a hunk with no line on the side stand for the position it names, kept ONE hunk for
+/// each position, the first of the patch, and went through the hunks once. So a hunk of
+/// added lines written early took the place of the hunk that truly ended there, and two
+/// hunks that round 14 joined were read apart (eighth independent review, IR8-M-1:
+/// `decoy2.patch`, a trivial assertion that round 14 reported and round 15 did not, and
+/// reported again when a number Git never reads was changed; a hunk could also find itself
+/// in that place and give up). Now round 14's joins are made by round 14's rule
+/// ([`Hints::Lined`]), and beside them the hints of each number are taken in the two ways
+/// above: for plain Git a hunk with lines is joined to a hunk with lines whatever hunks
+/// with none name the place, and by the numbers alone the hunks with none stand between
+/// them.
+///
+/// What stays: among several hunks that all have lines on the side and all say they end
+/// before one position, the first of the patch is taken by the first hunk of the patch that
+/// has lines and says it begins there, the second by the second. A number that is false in
+/// that way, in a hunk that has lines on that side, is the declared way to part two hunks.
 fn hinted_joins(
     side: &[(Option<u32>, u64)],
     top: &[bool],
     must: Option<(&[Option<usize>], &[bool])>,
+    hints: Hints,
 ) -> Option<Vec<Option<usize>>> {
-    let mut ends_before: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
-    for (index, (start, lines)) in side.iter().enumerate() {
-        if let Some(start) = start {
-            ends_before
-                .entry(u64::from(*start) + (*lines).max(1))
-                .or_insert(index);
-        }
-    }
+    // The hunks that can stand before a position, by position; for one position those with
+    // lines on the side first, each kind in the order of the patch.
+    let mut ends: Vec<(u64, bool, usize)> = side
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (start, lines))| {
+            let start = (*start)?;
+            (hints != Hints::Lined || *lines > 0)
+                .then(|| (u64::from(start) + (*lines).max(1), *lines == 0, index))
+        })
+        .collect();
+    ends.sort_unstable();
     let (mut before, mut followed) = match must {
         Some((before, followed)) => (before.to_vec(), followed.to_vec()),
         None => (vec![None; side.len()], vec![false; side.len()]),
@@ -1230,8 +1368,35 @@ fn hinted_joins(
             first[index] = head(&mut first, earlier);
         }
     }
-    let mut hints = false;
-    for (index, (start, lines)) in side.iter().enumerate() {
+    // For each place of `ends`, the next place at or after it whose hunk nothing follows yet
+    // (the place after the last, when there is none): a patch can name one position in every
+    // hunk, and each hunk is passed over once.
+    let mut free: Vec<usize> = (0..=ends.len()).collect();
+    let next_free = |free: &mut Vec<usize>, mut place: usize| {
+        while free[place] != place {
+            free[place] = free[free[place]];
+            place = free[place];
+        }
+        place
+    };
+    for (place, (_, _, index)) in ends.iter().enumerate() {
+        if followed[*index] {
+            free[place] = place + 1;
+        }
+    }
+    let mut hinted = false;
+    // which hunks choose first: `Some(true)` is a turn of those with no line on the side
+    let passes: &[Option<bool>] = match hints {
+        Hints::Lined => &[None],
+        Hints::LinesFirst => &[Some(false), Some(true)],
+        Hints::Positions => &[Some(true), Some(false)],
+    };
+    let turns = passes.iter().flat_map(|pass| {
+        side.iter()
+            .enumerate()
+            .filter(move |(_, (_, lines))| pass.is_none_or(|none| (*lines == 0) == none))
+    });
+    for (index, (start, lines)) in turns {
         if before[index].is_some() || top[index] {
             continue;
         }
@@ -1239,17 +1404,35 @@ fn hinted_joins(
             continue;
         };
         let position = u64::from(*start) + u64::from(*lines == 0);
-        if let Some(&earlier) = ends_before.get(&position)
-            && !followed[earlier]
-            && head(&mut first, earlier) != index
-        {
-            before[index] = Some(earlier);
-            followed[earlier] = true;
-            first[index] = head(&mut first, earlier);
-            hints = true;
+        let from = ends.partition_point(|(key, _, _)| *key < position);
+        let mut place = if hints == Hints::Lined {
+            from
+        } else {
+            next_free(&mut free, from)
+        };
+        while let Some(&(key, bare, earlier)) = ends.get(place) {
+            // Two hunks with no line on the side that name one position say nothing of
+            // which stands first there: the order of the patch is the one order they have
+            // (and those written later come later in `ends`).
+            if key != position || (bare && *lines == 0 && earlier >= index) {
+                break;
+            }
+            if !followed[earlier] && earlier != index && head(&mut first, earlier) != index {
+                before[index] = Some(earlier);
+                followed[earlier] = true;
+                free[place] = place + 1;
+                first[index] = head(&mut first, earlier);
+                hinted = true;
+                break;
+            }
+            if hints == Hints::Lined {
+                break;
+            }
+            // itself, or the end of the run it begins: neither can be before it
+            place = next_free(&mut free, place + 1);
         }
     }
-    hints.then_some(before)
+    hinted.then_some(before)
 }
 
 /// What the rules find in each hunk of `file` (in the one hunk `only`, when it names one),
@@ -1809,13 +1992,8 @@ fn view_matches(
     let views = &reading.lines;
     let next_on = |side: Side, at: usize| next_line_on(lines, views, side, at);
     let tokens = if language == Some(Language::Rust) {
-        // The end of a side is an edge in every reading; its beginning only in the reading
-        // from code (in another, the first tokens are not the first of the side).
-        let edges = rust_tokens::Edges {
-            start: from_code,
-            end: true,
-        };
-        rust_tokens::read_hunk(lines, views, reading.old, reading.new, edges)
+        // What a side ends on is read as the beginning of a construct, in every reading.
+        rust_tokens::read_hunk(lines, views, reading.old, reading.new, true)
     } else {
         rust_tokens::HunkItems::default()
     };
@@ -5134,7 +5312,7 @@ mod tests {
             .map(|index| hunk_signals(&file, index).unwrap())
             .collect();
         assert_eq!(hunk_signals(&file, 2), None);
-        assert_eq!(hunk_signals_alone(&file, 2), None);
+        assert_eq!(hunk_signals_alone(&file, 2, &FileKinds::of(&file)), None);
         assert_eq!(
             per_hunk,
             [
@@ -7340,8 +7518,14 @@ mod tests {
         assert_eq!(hunk_signals(&file, 1), Some(vec![S::PanicPathAdded]));
         assert_eq!(hunk_signals(&file, 3), Some(vec![S::UnsafeAdded]));
         assert_eq!(joined_hunks(&file), [false, true, true, true]);
-        assert_eq!(hunk_signals_alone(&file, 0), Some(vec![]));
-        assert_eq!(hunk_signals_alone(&file, 0), hunk_signals(&file, 0));
+        assert_eq!(
+            hunk_signals_alone(&file, 0, &FileKinds::of(&file)),
+            Some(vec![])
+        );
+        assert_eq!(
+            hunk_signals_alone(&file, 0, &FileKinds::of(&file)),
+            hunk_signals(&file, 0)
+        );
     }
 
     /// Sixth independent review, IR6-H-2, and the review of the port of the new scanner,
@@ -7788,6 +7972,69 @@ mod tests {
         );
     }
 
+    /// A hunk that is a text of its own is read alone at the cost of that hunk: with the
+    /// kinds of its file handed in ([`FileKinds`]) the reader makes no pass over the file,
+    /// and what it gives is what the scan of the file gives that hunk (eighth independent
+    /// review, IR8-M-2: round 15 worked the kinds out for each hunk, a pass over every hunk
+    /// of a file with no extension, and nothing but the views called this function, so no
+    /// test and no fuzz target saw it). Generated scripts with no extension, with true
+    /// numbers and false ones.
+    #[test]
+    fn a_hunk_alone_is_read_with_no_pass_over_its_file_and_as_the_scan_reads_it() {
+        let mut seed = 0x2026_1115_0009_u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as usize
+        };
+        let (mut alone, mut with_evidence) = (0, 0);
+        for case in 0..400 {
+            let hunks = script_hunks(case, &mut next);
+            let shift = if case % 3 == 0 { 0 } else { next() % 40 };
+            let mut text = "--- a/tools/job\n+++ b/tools/job\n".to_owned();
+            for (old, new, body) in &hunks {
+                let rows = body.lines().count();
+                let added = body.lines().filter(|line| line.starts_with('+')).count();
+                let _ = write!(
+                    text,
+                    "@@ -{},{} +{},{rows} @@\n{body}",
+                    old + shift,
+                    rows - added,
+                    new + shift
+                );
+            }
+            let file = parse(&text).unwrap().remove(0);
+            let joined = joined_hunks(&file);
+            let whole = file_evidence(&file);
+            let kinds = FileKinds::of(&file);
+            let before = file_walks();
+            for (index, hunk) in file.patch_twin.hunks.iter().enumerate() {
+                if joined[index] {
+                    continue;
+                }
+                let found = hunk_signals_alone(&file, index, &kinds).unwrap();
+                let scanned: Vec<S> = S::ALL
+                    .into_iter()
+                    .filter(|signal| {
+                        whole
+                            .iter()
+                            .any(|item| item.hunk == hunk.id && item.signal == *signal)
+                    })
+                    .collect();
+                assert_eq!(found, scanned, "case {case}, hunk {index}:\n{text}");
+                alone += 1;
+                with_evidence += usize::from(!found.is_empty());
+            }
+            assert_eq!(file_walks(), before, "case {case}");
+            assert_eq!(hunk_signals_alone(&file, hunks.len(), &kinds), None);
+        }
+        assert!(
+            alone > 800 && with_evidence > 400,
+            "{alone} {with_evidence}"
+        );
+    }
+
     /// The model of `git apply` that the joins on a hint rest on, and both hints (seventh
     /// independent review, IR7-L-3 and IR7-M-2). Plain `git apply` 2.56.0 and
     /// `git apply --unidiff-zero`, in scratch repositories:
@@ -7893,6 +8140,457 @@ mod tests {
         assert_eq!(texts(&removed), [text(&[0]), text(&[1]), text(&[0, 1])]);
     }
 
+    /// The constructs the token reader knows, their tokens apart, each with its signal and
+    /// whether it is read on added lines (else on removed ones).
+    const CUT_CONSTRUCTS: [(S, bool, &str); 28] = [
+        (S::PanicPathAdded, true, "let v = x . unwrap ( ) ;"),
+        (S::PanicPathAdded, true, "let v = x . expect ( msg ) ;"),
+        (S::PanicPathAdded, true, "let v = Option :: unwrap ( x ) ;"),
+        (
+            S::PanicPathAdded,
+            true,
+            "let v = x . unwrap :: < u8 > ( ) ;",
+        ),
+        (
+            S::PanicPathAdded,
+            true,
+            "let v = it . map ( Option :: unwrap ) ;",
+        ),
+        (
+            S::PanicPathAdded,
+            true,
+            "let v = it . map ( Result :: < u8 , E > :: unwrap ) ;",
+        ),
+        (S::StubAdded, true, "todo ! ( ) ;"),
+        (S::StubAdded, true, "unimplemented ! ( ) ;"),
+        (S::TrivialAssert, true, "assert ! ( true ) ;"),
+        (S::TrivialAssert, true, "assert_eq ! ( true , true ) ;"),
+        (S::TrivialAssert, true, "debug_assert ! ( true , msg ) ;"),
+        (S::TestSkipped, true, "# [ ignore ] fn t ( ) { }"),
+        (S::TestSkipped, true, "# [ ignore = why ] fn t ( ) { }"),
+        (S::TestSkipped, true, "# ! [ ignore ]"),
+        (
+            S::TestSkipped,
+            true,
+            "# [ cfg_attr ( miri , ignore ) ] fn t ( ) { }",
+        ),
+        (
+            S::CheckSuppressed,
+            true,
+            "# [ allow ( dead_code ) ] fn t ( ) { }",
+        ),
+        (S::CheckSuppressed, true, "# ! [ allow ( unused ) ]"),
+        (
+            S::ProcessSpawn,
+            true,
+            "let c = std :: process :: Command :: new ( sh ) ;",
+        ),
+        (S::ProcessSpawn, true, "let c = Command :: new ( sh ) ;"),
+        (S::ProcessSpawn, true, "fn f ( c : process :: Command ) { }"),
+        (S::NetworkFetch, true, "let r = reqwest :: get ( u ) ;"),
+        (S::NetworkFetch, true, "let r = ureq :: get ( u ) ;"),
+        (
+            S::NetworkFetch,
+            true,
+            "let s = TcpStream :: connect ( a ) ;",
+        ),
+        (S::NetworkFetch, true, "let s = UdpSocket :: bind ( a ) ;"),
+        (S::TestRemoved, false, "# [ test ] fn t ( ) { }"),
+        (
+            S::TestRemoved,
+            false,
+            "# [ tokio :: test ] async fn t ( ) { }",
+        ),
+        (S::TestRemoved, false, "# [ rstest ] fn t ( ) { }"),
+        (
+            S::TestRemoved,
+            false,
+            "# [ tokio :: test ( flavor = x ) ] async fn t ( ) { }",
+        ),
+    ];
+
+    /// Every construct the token reader knows, cut in two between any two of its tokens
+    /// and written as two hunks with a blank line of context between the halves (the eighth
+    /// independent review's enumeration, IR8-M-3: 28 constructs, 265 cuts).
+    ///
+    /// - **With true numbers every cut is read.** The hunks touch, the join reads them as one
+    ///   text, and the construct is found wherever it was cut. One true number is enough
+    ///   (either one).
+    /// - **With both numbers of the second hunk false nothing joins them**, and the construct
+    ///   is found where one half holds a construct whole (the cut is outside it: `x.unwrap()`
+    ///   and then `;`; `reqwest::` is the release's key by itself, `process::Command` is one
+    ///   without `::new`, `::unwrap(x)` is a path call), or where the first half ends on a
+    ///   form that is evidence by itself (`rust_tokens`: `todo!`, `assert!(true`,
+    ///   `assert_eq!(true, true`, `#[ignore`, `#[allow`, `Command::`, `process::`,
+    ///   `TcpStream::`, `UdpSocket::`, `.unwrap::`, a removed `#[test`). That is 201 of the
+    ///   265, pinned here so that a form added or taken away shows. The other 64 are
+    ///   declared misses: a cut straight after or before the bare word (`x.` / `unwrap()`,
+    ///   `x.unwrap` / `()`, `Command` / `::new`, `todo` / `!()`), inside an assertion before
+    ///   its truth, between `#` or `#[` and the attribute's name, inside a `cfg_attr` list,
+    ///   inside generic arguments, and a function passed as a value cut before its name
+    ///   (`Option::` / `unwrap`). A construct cut twice, its word alone in a hunk of its
+    ///   own, is one too (the review's `alone.patch`).
+    #[test]
+    fn a_cut_is_read_by_the_join_under_one_true_number_and_apart_only_where_an_end_is_evidence() {
+        let has = |patch: &str, signal: S| {
+            file_evidence(&parse(patch).unwrap().remove(0))
+                .iter()
+                .any(|item| item.signal == signal)
+        };
+        let (mut cuts, mut found_apart) = (0, 0);
+        for (signal, added, text) in CUT_CONSTRUCTS {
+            let tokens: Vec<&str> = text.split(' ').collect();
+            for cut in 1..tokens.len() {
+                let (first, second) = (tokens[..cut].join(" "), tokens[cut..].join(" "));
+                // the second hunk begins at old line 12 and new line 13 (added halves), or
+                // at old line 13 and new line 12 (removed halves)
+                let two = |old: u32, new: u32| {
+                    if added {
+                        format!(
+                            "--- a/src/c.rs\n+++ b/src/c.rs\n@@ -10,2 +10,3 @@\n fn above() {{}}\n+    {first}\n \n@@ -{old},1 +{new},2 @@\n+    {second}\n fn below() {{}}\n"
+                        )
+                    } else {
+                        format!(
+                            "--- a/src/c.rs\n+++ b/src/c.rs\n@@ -10,3 +10,2 @@\n fn above() {{}}\n-    {first}\n \n@@ -{old},2 +{new},1 @@\n-    {second}\n fn below() {{}}\n"
+                        )
+                    }
+                };
+                let (old, new) = if added { (12, 13) } else { (13, 12) };
+                for (what, patch) in [
+                    ("true numbers", two(old, new)),
+                    ("a false new number", two(old, new + 50)),
+                    ("a false old number", two(old + 50, new)),
+                ] {
+                    assert!(
+                        has(&patch, signal),
+                        "{signal:?} of {first:?} and {second:?} with {what}"
+                    );
+                }
+                cuts += 1;
+                found_apart += usize::from(has(&two(old + 50, new + 70), signal));
+            }
+        }
+        assert_eq!((cuts, found_apart), (265, 201));
+    }
+
+    /// The joins of round 14, by round 14's rule as it was written then (a small copy, to
+    /// compare with): a hunk with no old line that is not the top goes after the last hunk
+    /// so far that must end the file; then, in the order of the patch, a hunk goes after the
+    /// first hunk of the patch that has old lines and ends before its old position, if
+    /// nothing follows that one yet. The runs of more than one hunk: those Git must make,
+    /// and those the positions add to them.
+    fn joins_of_round_14(file: &ReviewFile) -> Vec<Vec<usize>> {
+        let hunks = &file.patch_twin.hunks;
+        let old_lines: Vec<u64> = hunks
+            .iter()
+            .map(|hunk| {
+                hunk.lines
+                    .iter()
+                    .filter(|line| line.kind != PatchLineKind::Added)
+                    .count() as u64
+            })
+            .collect();
+        let top: Vec<bool> = (0..hunks.len())
+            .map(|index| placed_at_top(file.status, &hunks[index], index == 0))
+            .collect();
+        let mut must: Vec<Option<usize>> = vec![None; hunks.len()];
+        let mut followed = vec![false; hunks.len()];
+        let mut ends_file = None;
+        for (index, hunk) in hunks.iter().enumerate() {
+            if old_lines[index] == 0
+                && !top[index]
+                && let Some(earlier) = ends_file
+            {
+                must[index] = Some(earlier);
+                followed[earlier] = true;
+            }
+            if hunk
+                .lines
+                .last()
+                .is_none_or(|line| line.kind != PatchLineKind::Context)
+            {
+                ends_file = Some(index);
+            }
+        }
+        let mut ends_before = std::collections::HashMap::new();
+        for (index, hunk) in hunks.iter().enumerate() {
+            if let Some(start) = hunk.old_start
+                && old_lines[index] > 0
+            {
+                ends_before
+                    .entry(u64::from(start) + old_lines[index])
+                    .or_insert(index);
+            }
+        }
+        let mut before = must.clone();
+        for (index, hunk) in hunks.iter().enumerate() {
+            let (None, false, Some(start)) = (before[index], top[index], hunk.old_start) else {
+                continue;
+            };
+            let position = u64::from(start) + u64::from(old_lines[index] == 0);
+            if let Some(&earlier) = ends_before.get(&position)
+                && earlier != index
+                && !followed[earlier]
+            {
+                before[index] = Some(earlier);
+                followed[earlier] = true;
+            }
+        }
+        let runs = |before: &[Option<usize>]| {
+            let mut after = vec![None; hunks.len()];
+            for (index, earlier) in before.iter().enumerate() {
+                if let Some(earlier) = earlier {
+                    after[*earlier] = Some(index);
+                }
+            }
+            (0..hunks.len())
+                .filter(|index| before[*index].is_none())
+                .map(|start| {
+                    std::iter::successors(Some(start), |index| after[*index]).collect::<Vec<_>>()
+                })
+                .filter(|run| run.len() > 1)
+                .collect::<Vec<_>>()
+        };
+        let mut out = runs(&must);
+        for run in runs(&before) {
+            if !out.contains(&run) {
+                out.push(run);
+            }
+        }
+        out
+    }
+
+    /// Eighth independent review, IR8-M-1: a hint that a later round added takes no join
+    /// away that an earlier rule made. The review's patches, on its file `f.rs` (ten lines;
+    /// lines 3 to 7 are `let d = c * 2;`, `debug_assert!(`, `a < b,`, the message, and
+    /// `let e = d + 1;`), each checked there with plain `git apply --check -v`:
+    ///
+    /// - `decoy2.patch`: a hunk that changes the last line; `@@ -4,0 +60,1 @@` with one added
+    ///   comment line (Git puts it at the end, after the first, whatever its numbers); and
+    ///   two hunks that touch by their old numbers, the second with a false new number,
+    ///   which turn the assertion into `debug_assert!(true, …)`. Round 14 joined the two and
+    ///   reported the assertion. Round 15 let a hunk with no old line stand for the position
+    ///   it names, kept one hunk for a position, the first of the patch, and so the comment
+    ///   hunk took the place of the hunk that truly ends before line 5: nothing was
+    ///   reported, and with `-20,0` for `-4,0`, a number Git never reads, it was.
+    /// - `decoy.patch`: the comment hunk written first. It has no hunk to go after, and by
+    ///   round 14's rule it then takes the place after the first of the two (it stands
+    ///   "after line 4"); the second finds that place taken. Neither round found this one.
+    ///   Now the two that have old lines are one text for plain Git, whatever a hunk with
+    ///   none says, and by the numbers alone the three are one, the comment between.
+    /// - `triple.patch`: the same with the three in the order of the file.
+    /// - `selfshadow.patch`: a hunk with no old line written BEFORE the hunk it follows
+    ///   found itself in the table and gave up.
+    #[test]
+    fn a_later_hint_takes_no_earlier_join_away() {
+        let text = |hunks: &[usize]| Text {
+            hunks: hunks.to_vec(),
+            top: false,
+        };
+        let existing = |hunks: &str| {
+            parse(&format!("--- a/f.rs\n+++ b/f.rs\n{hunks}"))
+                .unwrap()
+                .remove(0)
+        };
+        let last = "@@ -10,1 +50,1 @@\n-fn main() { println!(\"{}\", check(1, 2)); }\n+fn main() { println!(\"{}\", check(1, 3)); }\n";
+        let first =
+            "@@ -3,2 +3,2 @@\n-    let d = c * 2;\n+    let d = c * 3;\n     debug_assert!(\n";
+        let second = |new: u32| {
+            format!(
+                "@@ -5,3 +{new},3 @@\n-        a < b,\n+        true,\n         \"a must be below b\");\n     let e = d + 1;\n"
+            )
+        };
+        let assertion = |line: u32| [(S::TrivialAssert, Basis::Hunk, line)];
+        for decoy in ["@@ -4,0 +60,1 @@", "@@ -20,0 +60,1 @@"] {
+            let file = existing(&format!("{last}{decoy}\n+// end\n{first}{}", second(30)));
+            let all = texts(&file);
+            assert!(all.contains(&text(&[2, 3])), "{decoy}: {all:?}");
+            assert_eq!(found(&file), assertion(30), "{decoy}");
+            for run in joins_of_round_14(&file) {
+                assert!(all.iter().any(|text| text.hunks == run), "{decoy}: {run:?}");
+            }
+        }
+        // `decoy.patch`
+        let file = existing(&format!("@@ -4,0 +40,1 @@\n+// end\n{first}{}", second(30)));
+        assert_eq!(
+            texts(&file),
+            [
+                text(&[0]),
+                text(&[1]),
+                text(&[2]),
+                // round 14's rule: the comment after the first of the two, the second alone
+                text(&[1, 0]),
+                // for plain Git, the two that have old lines, whatever a hunk with none says
+                text(&[1, 2]),
+                // and by the numbers alone, the three in the order of their positions
+                text(&[1, 0, 2])
+            ]
+        );
+        assert_eq!(found(&file), assertion(30));
+        // `triple.patch`
+        let file = existing(&format!(
+            "{first}@@ -4,0 +70,1 @@\n+        // the condition\n{}",
+            second(90)
+        ));
+        assert_eq!(
+            texts(&file),
+            [
+                text(&[0]),
+                text(&[1]),
+                text(&[2]),
+                text(&[0, 1]),
+                text(&[0, 2]),
+                text(&[0, 1, 2])
+            ]
+        );
+        assert_eq!(found(&file), assertion(90));
+        // and with code in the hunk of added lines, which read between the two would part
+        // the assertion from its condition: the two are still read together
+        let file = existing(&format!(
+            "{first}@@ -4,0 +70,1 @@
++        x); check(
+{}",
+            second(90)
+        ));
+        assert_eq!(found(&file), assertion(90));
+        // where no hunk with old lines ends before a position, a hunk with none stands for
+        // it, and can be followed in its turn: three hunks of added lines at one old line
+        let file = existing(
+            "@@ -4,0 +40,1 @@
++    let v = opt.
+@@ -4,0 +50,1 @@
++    unwrap
+@@ -4,0 +60,1 @@
++    ();
+",
+        );
+        assert_eq!(
+            texts(&file),
+            [text(&[0]), text(&[1]), text(&[2]), text(&[0, 1, 2])]
+        );
+        assert_eq!(found(&file), [(S::PanicPathAdded, Basis::Hunk, 40)]);
+        // `selfshadow.patch`: the hunk with no old line stands after line 4, where the hunk
+        // written after it ends. It is not its own predecessor.
+        let file = existing(
+            "@@ -4,0 +40,2 @@\n+        true ||\n+        a < b,\n@@ -3,2 +3,2 @@\n-    let d = c * 2;\n+    let d = c * 3;\n-    debug_assert!(\n+    assert!(\n",
+        );
+        let all = texts(&file);
+        assert!(all.contains(&text(&[1, 0])), "{all:?}");
+        // What stays, and is the declared way to part two hunks: two hunks that both have
+        // old lines and both say they end before line 5, the false one written first. The
+        // hunk at line 5 goes after the first of them.
+        let file = existing(&format!(
+            "@@ -3,2 +60,2 @@\n context\n-gone\n+here\n{first}{}",
+            second(30)
+        ));
+        assert_eq!(
+            texts(&file),
+            [text(&[0]), text(&[1]), text(&[2]), text(&[0, 2])]
+        );
+        assert_eq!(found(&file), []);
+    }
+
+    /// A hunk is not put after the end of the run it begins, and the next hunk that ends
+    /// before its place is taken instead. Here the first hunk written (old lines 10 and 11)
+    /// goes after the third, a hunk of added lines that says it stands after line 9; Git
+    /// must put that third after the second, which ends the file and begins at line 12. So
+    /// the second begins a run that the first ends, and the first says it ends before line
+    /// 12: it is passed over, and the fourth, which says the same, is taken.
+    #[test]
+    fn the_end_of_the_run_a_hunk_begins_is_not_put_before_it() {
+        let file = parse(
+            "--- a/src/r.rs\n+++ b/src/r.rs\n@@ -10,2 +10,2 @@\n-a\n+b\n c\n@@ -12,1 +12,1 @@\n-d\n+e\n@@ -9,0 +90,1 @@\n+f\n@@ -10,2 +70,2 @@\n-g\n+h\n i\n",
+        )
+        .unwrap()
+        .remove(0);
+        let runs: Vec<Vec<usize>> = joined_texts(&file)
+            .into_iter()
+            .map(|text| text.hunks)
+            .collect();
+        assert!(runs.contains(&vec![3, 1, 2, 0]), "{runs:?}");
+        for run in &runs {
+            let mut hunks = run.clone();
+            hunks.sort_unstable();
+            hunks.dedup();
+            assert_eq!(hunks.len(), run.len(), "{run:?}");
+        }
+    }
+
+    /// The same as a property (IR8-M-1): over generated sections of two to six hunks with
+    /// every kind of number, true and false, in any order, with hunks that have no line on a
+    /// side among them, each run that round 14's rule makes ([`joins_of_round_14`]) is a
+    /// text now, hunk for hunk. And what a set of joins must be whatever the numbers: no
+    /// hunk twice in a text, no text made twice, and a hunk in at most six joined texts
+    /// (seven with the hunk alone: the bound of [`joined_texts`]).
+    #[test]
+    fn every_join_of_round_14_is_a_text_whatever_else_the_numbers_say() {
+        const BODIES: [&str; 6] = [
+            " c\n+a\n c\n",
+            "+a\n",
+            "-r\n",
+            " c\n-r\n+a\n",
+            "-r\n+a\n c\n",
+            "+a\n+b\n",
+        ];
+        let mut seed = 0x2026_1115_0008_u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as usize
+        };
+        let (mut made, mut more) = (0, 0);
+        for case in 0..40_000 {
+            let mut patch = "--- a/src/g.rs\n+++ b/src/g.rs\n".to_owned();
+            for _ in 0..2 + next() % 5 {
+                let body = BODIES[next() % BODIES.len()];
+                let old = body.lines().filter(|line| !line.starts_with('+')).count();
+                let new = body.lines().filter(|line| !line.starts_with('-')).count();
+                // few positions, so that hunks name the same ones; now and then one far off
+                let mut number = || {
+                    if next() % 8 == 0 {
+                        40 + next() % 3
+                    } else {
+                        next() % 9
+                    }
+                };
+                let (at_old, at_new) = (number(), number());
+                let _ = write!(patch, "@@ -{at_old},{old} +{at_new},{new} @@\n{body}");
+            }
+            let file = parse(&patch).unwrap().remove(0);
+            let now = joined_texts(&file);
+            let then = joins_of_round_14(&file);
+            for run in &then {
+                assert!(
+                    now.iter().any(|text| text.hunks == *run),
+                    "case {case}: {run:?} of\n{patch}"
+                );
+            }
+            made += usize::from(!then.is_empty());
+            more += usize::from(now.len() > then.len());
+            for (place, text) in now.iter().enumerate() {
+                let mut hunks = text.hunks.clone();
+                hunks.sort_unstable();
+                hunks.dedup();
+                assert_eq!(hunks.len(), text.hunks.len(), "case {case}: {text:?}");
+                assert!(text.hunks.len() > 1, "case {case}");
+                assert!(!now[..place].contains(text), "case {case}: {text:?} twice");
+            }
+            for index in 0..file.patch_twin.hunks.len() {
+                let stands_in = now
+                    .iter()
+                    .filter(|text| text.hunks.contains(&index))
+                    .count();
+                assert!(
+                    stands_in <= 6,
+                    "case {case}: hunk {index} in {stands_in}\n{patch}"
+                );
+            }
+        }
+        // the cases are of the kind that matters
+        assert!(made > 20_000 && more > 10_000, "{made} {more}");
+    }
+
     /// A side that began inside a raw string opened with several `#` is read to the quote
     /// that truly ends it, whatever quotes its text holds (seventh independent review,
     /// IR7-M-1: the review's `html.patch`, the plain output of `git diff` for a test whose
@@ -7941,47 +8639,77 @@ mod tests {
         assert_eq!(found_in(&page(" \"####", "#####")), []);
     }
 
-    /// A construct cut in two by hunks that nothing joins is read at the edges of its halves
-    /// (seventh independent review, the declared limit `cutpair.patch`: two hunks that touch
-    /// while the second's position says they do not; plain `git apply --check -v`: rc 0 and
-    /// no offset line; rustc compiles the result). With both numbers of the second hunk
-    /// false, no join reads the two together, and round 14 was silent. The first half ends
-    /// on `.unwrap`, which no line of code ends on, and that is the item.
+    /// A construct cut in two by hunks that nothing joins (seventh independent review, the
+    /// declared limit `cutpair.patch`: two hunks that touch while the second's position says
+    /// they do not; plain `git apply --check -v`: rc 0 and no offset line; rustc compiles
+    /// the result). One true number joins the two. With both numbers false nothing does,
+    /// and then what the first half ends on is read, when it is evidence by itself: a macro
+    /// with its `!`, a path with its `::`. A bare name is not, and neither is `.unwrap` with
+    /// nothing after it (a field can be named so, and a line of honest code can end on it):
+    /// round 15 read those too, and reported a spawn in a file that has none (round 15 of
+    /// Vesper's review, VD3R15-M-1). So a call cut after `.unwrap` by such a pair is a
+    /// declared miss again; it takes a writer who sets out to.
     #[test]
-    fn a_construct_cut_by_hunks_that_nothing_joins_is_read_at_the_edge() {
+    fn a_construct_cut_by_hunks_that_nothing_joins_is_read_where_its_end_is_evidence() {
         let existing = |hunks: &str| {
             parse(&format!("--- a/cut.rs\n+++ b/cut.rs\n{hunks}"))
                 .unwrap()
                 .remove(0)
         };
-        let first =
-            "@@ -1,2 +1,3 @@\n fn f(opt: Option<u32>) -> u32 {\n+    let v = opt.unwrap\n \n";
-        for second in ["@@ -40,2 +50,3 @@", "@@ -3,2 +4,3 @@", "@@ -40,2 +4,3 @@"] {
-            let file = existing(&format!("{first}{second}\n+    ();\n     a\n }}\n"));
+        let pair = |first: &str, second: &str, header: &str| {
+            existing(&format!(
+                "@@ -1,2 +1,3 @@\n fn f(opt: Option<u32>) -> u32 {{\n+{first}\n \n{header}\n+{second}\n     a\n }}\n"
+            ))
+        };
+        // the call: found by the join when a number is true, and not when both are false
+        let call = [(S::PanicPathAdded, Basis::Hunk, 2)];
+        for header in ["@@ -3,2 +4,3 @@", "@@ -40,2 +4,3 @@", "@@ -3,2 +50,3 @@"] {
             assert_eq!(
-                found(&file),
-                [(S::PanicPathAdded, Basis::Hunk, 2)],
-                "{second}"
+                found(&pair("    let v = opt.unwrap", "    ();", header)),
+                call
             );
         }
-        // the cut before the word: the second half begins with it
-        let before = existing(
-            "@@ -1,2 +1,3 @@\n fn f(opt: Option<u32>) -> u32 {\n+    let v = opt.\n \n@@ -40,2 +50,3 @@\n+    unwrap();\n     a\n }\n",
+        let apart = "@@ -40,2 +50,3 @@";
+        assert_eq!(found(&pair("    let v = opt.unwrap", "    ();", apart)), []);
+        assert_eq!(found(&pair("    let v = opt.", "    unwrap();", apart)), []);
+        // what is evidence by itself, with both numbers false
+        for (first, second, signal) in [
+            ("    todo!", "    ();", S::StubAdded),
+            (
+                "    let c = std::process::Command::",
+                "    new(\"sh\");",
+                S::ProcessSpawn,
+            ),
+            ("    let c = Command::", "    new(\"sh\");", S::ProcessSpawn),
+            (
+                "    let s = TcpStream::",
+                "    connect(a);",
+                S::NetworkFetch,
+            ),
+            ("#[ignore", "]", S::TestSkipped),
+            ("    assert!(true", "    );", S::TrivialAssert),
+        ] {
+            assert_eq!(
+                found(&pair(first, second, apart)),
+                [(signal, Basis::Hunk, 2)],
+                "{first}"
+            );
+        }
+        // and what is not: the bare name, whatever the other half begins with
+        for (first, second) in [
+            ("    let c = Command", "    ::new(\"sh\");"),
+            ("    let s = TcpStream", "    ::connect(a);"),
+            ("    let rest = todo", "    !();"),
+            ("    assert", "    !(true);"),
+        ] {
+            assert_eq!(found(&pair(first, second, apart)), [], "{first}");
+        }
+        // Vesper's patch, as `git diff -U0` wrote it: a return type named `Command` at the
+        // end of a line, in a file with no spawn
+        let honest = existing(
+            "@@ -3 +3 @@ struct Command;\n-fn command() -> Command\n+pub fn command() -> Command\n",
         );
-        assert_eq!(found(&before), [(S::PanicPathAdded, Basis::Hunk, 50)]);
-        // hunks in the other order, and a spawn cut after its `::`
-        let spawn = existing(
-            "@@ -40,2 +50,3 @@\n+    new(\"sh\").status().ok();\n     a\n }\n@@ -1,2 +1,3 @@\n fn f() {\n+    std::process::Command::\n \n",
-        );
-        // (`process::Command` is whole on its line; the path that goes on after `::` is the
-        // edge's, and the higher basis is the item's)
-        assert_eq!(found(&spawn), [(S::ProcessSpawn, Basis::Hunk, 2)]);
-        // The beginning of a side is an edge only in its reading from code. Read from inside
-        // a comment, this side's first token after `*/` is `unwrap`; it is not the first of
-        // the side, and a call of a function of that name is no panic path.
-        let inside =
-            existing("@@ -30,2 +30,3 @@\n the end of a note */ unwrap(x);\n+f();\n g();\n");
-        assert_eq!(found(&inside), []);
+        assert_eq!(found(&honest), []);
     }
 
     /// A second section for the same path (seventh independent review, IR7-H-2). Plain
@@ -7995,10 +8723,12 @@ mod tests {
     /// refusal. After the rebase `parse` must return an error for this patch: replace the
     /// body of this test by that assertion.
     ///
-    /// Until then: the first section ends on `.unwrap`, and the edge of a side is read, so
-    /// the call is reported there (round 14: nothing). The second section says nothing.
-    /// (A rename of a file the patch creates, followed by a change to the new name, is not
-    /// another way to this: plain Git refuses it, "src/n.rs: No such file or directory".)
+    /// Until then nothing is reported for it: the first section ends on `.unwrap`, which is
+    /// no evidence by itself (a field can have that name), and the second begins with `();`.
+    /// (Round 15 reported the call at the end of the first section; that reading also made
+    /// a spawn of a return type named `Command`, and is gone. A rename of a file the patch
+    /// creates, followed by a change to the new name, is not another way to this: plain Git
+    /// refuses it, "src/n.rs: No such file or directory".)
     #[test]
     fn a_second_section_for_one_path_is_two_files_until_the_parser_refuses_it() {
         let files = parse(
@@ -8010,7 +8740,7 @@ mod tests {
             (files[0].path.as_str(), files[1].path.as_str()),
             ("src/n.rs", "src/n.rs")
         );
-        assert_eq!(found(&files[0]), [(S::PanicPathAdded, Basis::Hunk, 2)]);
+        assert_eq!(found(&files[0]), []);
         assert_eq!(found(&files[1]), []);
     }
 

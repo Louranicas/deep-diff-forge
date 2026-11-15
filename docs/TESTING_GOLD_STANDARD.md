@@ -59,7 +59,25 @@ era) no longer holds. How the standard is enforced today:
   lines, and a raw string's text may hold quotes. Of its 18 seeds the 8 new ones are those
   rules': on the sources of `87d1afd`, each rule run alone, the join rule and the edge
   rule fail on every seed, the script rule on its two seeds, and the raw-string seed fails
-  the older rules.
+  the older rules. Since round 16 the edge rule cuts only where what a side ends on is
+  evidence by itself (`todo!`, `#[ignore`, `Command::`), and a ninth rule holds the other
+  direction: a line of honest code as a one-line hunk (a return type named `Command`, a
+  field named `expect`, a variable named `todo`, a call of a function named `expect`)
+  reports none of the signals whose constructs its last or first word begins. Its 20 seeds
+  hold, and that rule fails on every one of them on the sources of `ceb2e6f`. After the
+  eighth independent review it has three more rules (28 seeds): no hunk of added lines
+  that names the place where two hunks with old lines touch parts those two (up to three
+  such hunks, written before, between or after, with or without a hunk that ends the file
+  before them; this rule fails on ten of the seeds on the sources of `ceb2e6f`, its own
+  four among them); a removed test's attribute cut after `#[test`, `#[tokio::` and the like
+  is reported (with the old side's forms deleted no rule used to fail); and a shebang on a
+  removed first line only, or on an added one only, names a script's language, and a
+  second hunk that begins with another language's shebang takes nothing away.
+  `evidence_scan` also writes its lines as hunks of three with unseen lines between them
+  and holds that a hunk read alone has the labels the scan of its file gives it, with no
+  pass over the file, and that the view of the file's hunks by path shows the outline's
+  labels and goes through the file's hunks at most twice (no target called the reader of
+  one hunk before, and nothing held what a view by path costs).
 - **Sandbox refusal controls:** the rootless-Podman planted-breach suite
   (`crates/deep-diff-forge-cli/tests/council_sandbox.rs`, 12 probes) runs on
   every pull request.
@@ -73,9 +91,9 @@ era) no longer holds. How the standard is enforced today:
   `fuzz_target.sh` lists targets with a TOML parser and fuzzes a new private
   corpus each run, under a root it makes if missing.
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
-  `fixtures/eval` (50 cases, measured 2026-11-15) must score at least its floors,
-  which are the measured values: ranking pairs 12/15, evidence precision 158/179,
-  evidence recall 158/213, findings 33/33. Any undeclared miss fails. The 79
+  `fixtures/eval` (51 cases, measured 2026-11-15) must score at least its floors,
+  which are the measured values: ranking pairs 12/15, evidence precision 163/183,
+  evidence recall 163/230, findings 33/33. Any undeclared miss fails. The 90
   declared misses (`known_miss`, `known_false_positive`) count as wrong in their
   metric rather than being excluded, and each fails once the engine gets it
   right. Planted controls prove a wrong label fails with exit 7, a changed file,

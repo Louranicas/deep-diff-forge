@@ -55,9 +55,35 @@
 //    false, and with its old number false; each in both orders. The construct is found
 //    every time: Git obeys neither number, so each is a hint, and a hunk with no old line
 //    counts as an earlier hunk too.
-// 7. THE EDGE OF A SIDE (the review's `cutpair.patch`). A construct cut after or before the
-//    word it is known by, as two hunks with context between them, with numbers the input
-//    picks (nothing says they touch) and in either order: its signal is reported.
+// 7. THE END OF A SIDE (the review's `cutpair.patch`). A construct cut after the word it is
+//    known by and the token that makes it that construct (`todo!`, `#[ignore`, `Command::`),
+//    as two hunks with context between them, with numbers the input picks (nothing says
+//    they touch) and in either order: its signal is reported.
+// 9. WHAT AN HONEST LINE ENDS OR BEGINS WITH IS NO ITEM (round 15 of Vesper's review,
+//    VD3R15-M-1). A line of honest code as a one-line hunk, the shape of a one-line change
+//    in `git diff -U0`, at a position the input picks: a return type named `Command`, a
+//    field of type `UdpSocket`, a field named `expect` at the head of a chain, a variable
+//    named `todo`, a call of a function named `expect`, an assignment to `ignore`. None of
+//    the signals whose constructs these words begin is reported. (Round 15 read a bare name
+//    at the end of a side, and `expect(` at its beginning.)
+// 10. NO HUNK WITHOUT OLD LINES PARTS TWO THAT TOUCH (eighth independent review, IR8-M-1).
+//    A construct that only a join reads, in two hunks that have old lines and whose OLD
+//    numbers say they touch (the first ends on the first half as a line of context, the
+//    new number of the second is false), and beside them up to three hunks of added lines
+//    only that name the same old position, written before, between or after the two, with
+//    or without a hunk before them that ends the file (Git then puts them after it): the
+//    construct is found. Round 15 kept one hunk for a position, the first of the patch,
+//    and such a hunk took the place of the one that truly ends there.
+// 11. THE END OF AN OLD SIDE. A removed test's attribute cut after `#[test`, `#[rstest`,
+//    `#[tokio`, `#[tokio::`, as two hunks of removed lines with numbers the input picks,
+//    in either order: the removed test is reported. (Rule 7 cuts added lines only: with
+//    the old side's forms deleted no rule failed. IR8-L-5.)
+// 12. A SHEBANG ON EITHER SIDE OF ANY HUNK NAMES THE LANGUAGE (IR8-L-5). The script of rule
+//    8 with its shebang on a removed first line only, and on an added first line only,
+//    under numbers the input picks; and with a second hunk in its section, before or after
+//    it, whose first line is the shebang of another language, removed, added or context:
+//    every item of the script with honest numbers is found. Two languages are two
+//    readings, and neither takes anything from the other.
 // 8. NO NUMBER HIDES THE LANGUAGE OF A SCRIPT (IR7-H-1). The input's own lines added below a
 //    shebang in a file with no extension: whatever the header's numbers are, and with the
 //    hunk written second in its section, every item of the hunk with honest numbers is
@@ -450,30 +476,58 @@ const JOINED: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Constructs cut after or before the word they are known by.
+/// Constructs cut after the word they are known by and the token that makes them that
+/// construct: what the first half ends on is evidence by itself.
 const EDGED: &[(&str, &str, &str)] = &[
-    ("    x.unwrap", "    ();", "panic_path_added"),
-    ("    x.", "    unwrap();", "panic_path_added"),
-    ("    y.expect", "    (\"set\");", "panic_path_added"),
-    ("    todo", "    !();", "stub_added"),
+    ("    todo!", "    ();", "stub_added"),
     ("    unimplemented!", "    ();", "stub_added"),
-    ("    assert", "    !(true);", "trivial_assert"),
-    ("#[", "ignore]", "test_skipped"),
+    ("    assert!(true", "    );", "trivial_assert"),
     ("#[ignore", "]", "test_skipped"),
-    ("#", "[ignore = \"slow\"]", "test_skipped"),
+    ("#[allow", "(dead_code)]", "check_suppressed"),
     (
         "    std::process::Command::",
         "    new(\"sh\").status().ok();",
         "process_spawn",
     ),
-    ("    let c = Command", "    ::new(\"sh\");", "process_spawn"),
+    ("    let c = Command::", "    new(\"sh\");", "process_spawn"),
     (
-        "    let s = TcpStream",
-        "    ::connect(a);",
+        "    let s = TcpStream::",
+        "    connect(a);",
         "network_fetch",
     ),
-    ("#[allow", "(dead_code)]", "check_suppressed"),
+    ("    let v = x.unwrap::", "    <u8>();", "panic_path_added"),
 ];
+
+/// Lines of honest code that end or begin with a word a construct is known by, and are not
+/// that construct.
+const HONEST: &[&str] = &[
+    "pub fn command() -> Command",
+    "    socket: UdpSocket",
+    "fn dial(a: &str) -> io::Result<TcpStream",
+    "use reqwest",
+    "    let n = self.expect",
+    "        Self::expect",
+    "    let rest = todo",
+    "    assert",
+    "    assert_eq!(true,",
+    "expect(&value, 3);",
+    "unwrap(x);",
+    "ignore = true;",
+    "[ignore]",
+    "::Command",
+];
+
+/// A removed test's attribute, cut after what makes it one.
+const EDGED_OLD: &[(&str, &str)] = &[
+    ("#[test", "]"),
+    ("    #[tokio::", "    test] async fn t() {}"),
+    ("#[rstest", "] fn t() {}"),
+    ("#[tokio", "::test]"),
+    ("    #[tokio::test", "    ] async fn u() {}"),
+];
+
+/// What a hunk of added lines only may hold when it is written to part two others.
+const DECOYS: &[&str] = &["// end", "    x); check(", ";", "/* note", "    \"text"];
 
 fn has(file: &ReviewFile, signal: &str) -> bool {
     file_evidence(file)
@@ -548,6 +602,187 @@ fn edges_are_read(choice: &[u8]) {
         has(&file, signal),
         "{signal} of {first:?} cut from {second:?} is not found at the edge: {patch:?}"
     );
+}
+
+/// Rule 10.
+fn no_hunk_without_old_lines_parts_two_that_touch(choice: &[u8]) {
+    let (first, second, signal) = JOINED[usize::from(choice[0]) % JOINED.len()];
+    let at = 3 + usize::from(choice[1]) % 60;
+    let lie = 40 + usize::from(choice[2]);
+    let one = hunk(
+        &format!("@@ -{at},2 +{at},2 @@"),
+        &[
+            ('-', "    let b = 2;"),
+            ('+', "    let b = 3;"),
+            (' ', first),
+        ],
+    );
+    let two = hunk(
+        &format!("@@ -{},2 +{},2 @@", at + 2, at + 2 + lie),
+        &[
+            ('-', "    let c = 4;"),
+            ('+', second),
+            (' ', "fn below() {}"),
+        ],
+    );
+    let mut hunks = if choice[4] & 1 == 0 {
+        vec![one, two]
+    } else {
+        vec![two, one]
+    };
+    let decoys = usize::from(choice[3]) % 4;
+    for k in 0..decoys {
+        // it says it stands after the last old line of the first hunk
+        let decoy = hunk(
+            &format!("@@ -{},0 +{},1 @@", at + 1, 900 + 10 * k),
+            &[(
+                '+',
+                DECOYS[(usize::from(choice[5] >> 1) + k) % DECOYS.len()],
+            )],
+        );
+        let place = usize::from(choice[4] >> (1 + 2 * k)) % (hunks.len() + 1);
+        hunks.insert(place, decoy);
+    }
+    if choice[5] & 1 == 1 {
+        hunks.insert(
+            0,
+            hunk(
+                "@@ -800,1 +800,1 @@",
+                &[('-', "fn last() {}"), ('+', "fn last() { }")],
+            ),
+        );
+    }
+    let patch = hunks.concat();
+    let file = parsed(&change(&patch)).expect("hunks are a patch");
+    assert!(
+        has(&file, signal),
+        "{signal} of {first:?} and {second:?} in two hunks whose old numbers touch is not found beside {decoys} hunks of added lines at their place: {patch:?}"
+    );
+}
+
+/// Rule 11.
+fn old_edges_are_read(choice: &[u8]) {
+    let (first, second) = EDGED_OLD[usize::from(choice[0]) % EDGED_OLD.len()];
+    let number = |byte: u8, least: usize| least + usize::from(byte);
+    let one = hunk(
+        &format!(
+            "@@ -{},2 +{},1 @@",
+            number(choice[1], 2),
+            number(choice[2], 2)
+        ),
+        &[(' ', "fn above() {}"), ('-', first)],
+    );
+    let two = hunk(
+        &format!(
+            "@@ -{},2 +{},1 @@",
+            number(choice[3], 2),
+            number(choice[5], 2)
+        ),
+        &[('-', second), (' ', "fn below() {}")],
+    );
+    let patch = if choice[4] & 1 == 0 {
+        format!("{one}{two}")
+    } else {
+        format!("{two}{one}")
+    };
+    let file = parsed(&change(&patch)).expect("two hunks are a patch");
+    assert!(
+        has(&file, "test_removed"),
+        "the removed test of {first:?} cut from {second:?} is not found at the edge: {patch:?}"
+    );
+}
+
+/// Rule 12: `own` are the input's lines.
+fn a_shebang_on_either_side_names_the_language(choice: &[u8], own: &[&str]) {
+    let (shebang, another) = if choice[4] & 2 == 0 {
+        ("#!/bin/sh", "#!/usr/bin/env python3")
+    } else {
+        ("#!/usr/bin/env python3", "#!/usr/bin/env node")
+    };
+    let added: Vec<(char, &str)> = own.iter().take(50).map(|line| ('+', *line)).collect();
+    let script = |old: usize, new: usize, head: &[(char, &str)], before: &str, after: &str| {
+        let lines: Vec<(char, &str)> = head.iter().copied().chain(added.iter().copied()).collect();
+        let olds = lines.iter().filter(|(sign, _)| *sign != '+').count();
+        let news = lines.iter().filter(|(sign, _)| *sign != '-').count();
+        let body = hunk(&format!("@@ -{old},{olds} +{new},{news} @@"), &lines);
+        parsed(&format!(
+            "--- a/tools/job\n+++ b/tools/job\n{before}{body}{after}"
+        ))
+    };
+    let Some(honest) = script(1, 1, &[(' ', shebang)], "", "") else {
+        return;
+    };
+    let truth = places(&honest);
+    let (old, new) = (2 + usize::from(choice[1]), 2 + usize::from(choice[2]));
+    let note = "# the first line was another";
+    // a hunk of another language: its first line is that shebang, on one side or on both
+    let sign = [' ', '-', '+'][usize::from(choice[3]) % 3];
+    let lines: Vec<(char, &str)> = match sign {
+        '-' => vec![('-', another), ('+', "// moved"), (' ', "print(1)")],
+        '+' => vec![('-', "// first"), ('+', another), (' ', "print(1)")],
+        _ => vec![
+            (' ', another),
+            ('-', "print(0)"),
+            ('+', "print(2)"),
+            (' ', "print(1)"),
+        ],
+    };
+    let rows = lines.len() - 1;
+    let other = hunk(&format!("@@ -400,{rows} +500,{rows} @@"), &lines);
+    for (what, file, offset) in [
+        (
+            "its shebang on a removed line only",
+            script(old, new, &[('-', shebang), ('+', note)], "", ""),
+            1,
+        ),
+        (
+            "its shebang on an added line only",
+            script(old, new, &[('-', note), ('+', shebang)], "", ""),
+            1,
+        ),
+        (
+            "a hunk of another language after it",
+            script(1, 1, &[(' ', shebang)], "", &other),
+            0,
+        ),
+        (
+            "a hunk of another language before it",
+            script(old, new, &[(' ', shebang)], &other, ""),
+            lines.len(),
+        ),
+    ] {
+        let found = places(&file.expect("the script under another header is a patch"));
+        for (signal, new_side, at) in &truth {
+            assert!(
+                found.contains(&(*signal, *new_side, at + offset)),
+                "{signal} on line {at} of a script ({shebang}) is lost with {what} ({another} on {sign:?})"
+            );
+        }
+    }
+}
+
+/// Rule 9.
+fn honest_lines_are_no_items(choice: &[u8]) {
+    let line = HONEST[usize::from(choice[0]) % HONEST.len()];
+    let at = 2 + usize::from(choice[1]);
+    let body = hunk(
+        &format!("@@ -{at} +{at} @@"),
+        &[('-', "    let before = 1;"), ('+', line)],
+    );
+    let file = parsed(&change(&body)).expect("a one-line hunk is a patch");
+    for signal in [
+        "process_spawn",
+        "network_fetch",
+        "panic_path_added",
+        "stub_added",
+        "trivial_assert",
+        "test_skipped",
+    ] {
+        assert!(
+            !has(&file, signal),
+            "{signal} is reported for the honest line {line:?} as a one-line hunk"
+        );
+    }
 }
 
 /// Rule 8: `own` are the input's lines.
@@ -628,7 +863,11 @@ fuzz_target!(|data: &[u8]| {
 
     hinted_joins_are_read(choice);
     edges_are_read(choice);
+    honest_lines_are_no_items(choice);
     no_number_hides_a_script(choice, &own);
+    no_hunk_without_old_lines_parts_two_that_touch(choice);
+    old_edges_are_read(choice);
+    a_shebang_on_either_side_names_the_language(choice, &own);
 
     let built = build(&script);
     let n = built.lines.len();

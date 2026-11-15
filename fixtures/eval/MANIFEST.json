@@ -1652,7 +1652,7 @@
       "id": "evidence/independent-review-6-20261114",
       "kind": "evidence",
       "patch": "evidence/independent-review-6-20261114.patch",
-      "origin": "internal: a sixth independent review by a Claude subagent (docs/reviews/claude-independent-review-6-20261114.md, IR6-H-1, IR6-H-2, IR6-H-3, IR6-L-1, IR6-L-4), round 13 of Vesper's review (docs/reviews/vesper-v3-round13-report-20261114.md, VD3R13-M-1) and the review of the port of the Rust scanner to the released line (LF-H-1), 2026-11-14, each reproduced before it was counted, with `git apply` 2.56.0 and rustc 1.99.1 where a claim is about them. Expected. The place of a hunk is where Git must put it: a spawn on a line added inside an existing block comment in a hunk whose header says +1 (src/placed.rs: Git applies it at line 9), the same with the comment opened by an earlier hunk (src/second.rs), and a line `#! ...` inside a macro call in a hunk that says +1 (src/macro.rs: no shebang, since the old position is 6). Hunks Git must put together are one text: a call cut in two by the hunks of a created file (src/split.rs) and by a hunk of added lines after one that ends its file (src/end.rs), a spawn after a comment two deep opened in the first hunk of a created file (src/deep.rs), and a spawn below a string opened in the first hunk whose text holds crates/*/*/Cargo.toml (src/glob.rs). A join is a further reading and takes none away: two hunks of added lines only, the first leaving a block comment open, the second a spawn and a call (src/zero.rs: plain `git apply` puts both at the end of the file, where the second is the text of that comment, and the hunks are also read as that one text; `git apply --unidiff-zero` puts each where its numbers say, where the comment is closed between them and rustc compiles the second as code, so each hunk is always read on its own as well; the first build of this round read the second only as a continuation and lost both items, which round 13 reported). A side that carries anything over a line end is also read from inside a string, and from inside a raw string: #[ignore] added between two tests whose expected output is a raw string over lines (tests/snapshots.rs, a `diff -U3`), a test removed between two strings (tests/t.rs), a spawn after the closing line of a string, on a line that holds the string \"/*\" (src/help.rs), a spawn after a raw string whose text ends in a backslash (src/paths.rs), and what release 0.8.3 reported and round 13 lost, a spawn and an unsafe block below a string whose text has more comment openers than closers (src/main.rs, src/script.rs, plain `git diff`s). And the general answer: a hunk that reaches the top of its file is read exactly, so the full-context forms of two declared misses are found (src/full/strcode.rs, src/full/nested.rs). A hunk with old position 1 is the top of its file whatever its new position says, and a line comment there is a line comment (src/top.rs: nothing is reported). Declared misses, each as a bare fragment: a spawn after a string that began above the hunk, on a line whose quotes balance (src/strcode.rs: read from code nothing is carried over a line end, so nothing says the side began in a string); a spawn two comments deep behind `// */ //` (src/nested.rs, src/depth2.rs: a side is read from inside one comment, not two); a call cut in two by two hunks that touch while the second header says they do not (src/apart.rs: Git finds a hunk by its context, wherever its header says it is); and four spellings of a suppressed lint that the one-line rule does not read (src/allow.rs: a comment inside the attribute, the attribute over two lines, `cfg_attr(all(), allow(...))`, `expect(...)`). Declared false positives, the cost of the further readings: a call in the text of a string on a line after a block comment that the hunk does not see the end of (src/notes.rs: the side carries a comment over a line end and is read from inside a string too), and the two items release 0.8.3 reported in the text of a string after a string over lines (src/legacy.rs: the reading of that release, by its own rules, is kept so that nothing it reports is lost; the two items of newer signals that the same text gave until round 13 are not reported). Since 2026-11-15 three of the declared misses above are found and expected: the call cut in two by hunks that touch while the second header says they do not (src/apart.rs: the first half ends on `x.unwrap`, and the edge of a side is read), and two of the four spellings of a suppressed lint (src/allow.rs: the comment inside the attribute and the attribute over two lines are the tokens `#`, `[`, `allow`, `(` to the reader; `cfg_attr(all(), allow(...))` and `expect(...)` stay declared). Corrected 2026-11-15 (seventh independent review, IR7-L-3): Git starts looking for a hunk at its NEW position and takes the nearest place that has its old lines, so the hunk of src/placed.rs goes to line 9 when its lines stand there and not at line 1; where this text says that Git places a hunk by its old position, only positions 0 and 1 are meant, which say the hunk must be at the beginning. The expectations did not change",
+      "origin": "internal: a sixth independent review by a Claude subagent (docs/reviews/claude-independent-review-6-20261114.md, IR6-H-1, IR6-H-2, IR6-H-3, IR6-L-1, IR6-L-4), round 13 of Vesper's review (docs/reviews/vesper-v3-round13-report-20261114.md, VD3R13-M-1) and the review of the port of the Rust scanner to the released line (LF-H-1), 2026-11-14, each reproduced before it was counted, with `git apply` 2.56.0 and rustc 1.99.1 where a claim is about them. Expected. The place of a hunk is where Git must put it: a spawn on a line added inside an existing block comment in a hunk whose header says +1 (src/placed.rs: Git applies it at line 9), the same with the comment opened by an earlier hunk (src/second.rs), and a line `#! ...` inside a macro call in a hunk that says +1 (src/macro.rs: no shebang, since the old position is 6). Hunks Git must put together are one text: a call cut in two by the hunks of a created file (src/split.rs) and by a hunk of added lines after one that ends its file (src/end.rs), a spawn after a comment two deep opened in the first hunk of a created file (src/deep.rs), and a spawn below a string opened in the first hunk whose text holds crates/*/*/Cargo.toml (src/glob.rs). A join is a further reading and takes none away: two hunks of added lines only, the first leaving a block comment open, the second a spawn and a call (src/zero.rs: plain `git apply` puts both at the end of the file, where the second is the text of that comment, and the hunks are also read as that one text; `git apply --unidiff-zero` puts each where its numbers say, where the comment is closed between them and rustc compiles the second as code, so each hunk is always read on its own as well; the first build of this round read the second only as a continuation and lost both items, which round 13 reported). A side that carries anything over a line end is also read from inside a string, and from inside a raw string: #[ignore] added between two tests whose expected output is a raw string over lines (tests/snapshots.rs, a `diff -U3`), a test removed between two strings (tests/t.rs), a spawn after the closing line of a string, on a line that holds the string \"/*\" (src/help.rs), a spawn after a raw string whose text ends in a backslash (src/paths.rs), and what release 0.8.3 reported and round 13 lost, a spawn and an unsafe block below a string whose text has more comment openers than closers (src/main.rs, src/script.rs, plain `git diff`s). And the general answer: a hunk that reaches the top of its file is read exactly, so the full-context forms of two declared misses are found (src/full/strcode.rs, src/full/nested.rs). A hunk with old position 1 is the top of its file whatever its new position says, and a line comment there is a line comment (src/top.rs: nothing is reported). Declared misses, each as a bare fragment: a spawn after a string that began above the hunk, on a line whose quotes balance (src/strcode.rs: read from code nothing is carried over a line end, so nothing says the side began in a string); a spawn two comments deep behind `// */ //` (src/nested.rs, src/depth2.rs: a side is read from inside one comment, not two); a call cut in two by two hunks that touch while the second header says they do not (src/apart.rs: Git finds a hunk by its context, wherever its header says it is); and four spellings of a suppressed lint that the one-line rule does not read (src/allow.rs: a comment inside the attribute, the attribute over two lines, `cfg_attr(all(), allow(...))`, `expect(...)`). Declared false positives, the cost of the further readings: a call in the text of a string on a line after a block comment that the hunk does not see the end of (src/notes.rs: the side carries a comment over a line end and is read from inside a string too), and the two items release 0.8.3 reported in the text of a string after a string over lines (src/legacy.rs: the reading of that release, by its own rules, is kept so that nothing it reports is lost; the two items of newer signals that the same text gave until round 13 are not reported). Since 2026-11-15 three of the declared misses above are found and expected: the call cut in two by hunks that touch while the second header says they do not (src/apart.rs: the first half ends on `x.unwrap`, and the edge of a side is read), and two of the four spellings of a suppressed lint (src/allow.rs: the comment inside the attribute and the attribute over two lines are the tokens `#`, `[`, `allow`, `(` to the reader; `cfg_attr(all(), allow(...))` and `expect(...)` stay declared). Corrected 2026-11-15 (seventh independent review, IR7-L-3): Git starts looking for a hunk at its NEW position and takes the nearest place that has its old lines, so the hunk of src/placed.rs goes to line 9 when its lines stand there and not at line 1; where this text says that Git places a hunk by its old position, only positions 0 and 1 are meant, which say the hunk must be at the beginning. The expectations did not change. Since round 16 (2026-11-15) the call of src/apart.rs is a declared miss again: `.unwrap` with nothing after it at the end of a side is no evidence by itself (a field can be named so), and neither number of the second hunk says the two touch",
       "expect": [
         {
           "path": "src/placed.rs",
@@ -1757,12 +1757,6 @@
           "line": 5
         },
         {
-          "path": "src/apart.rs",
-          "signal": "panic_path_added",
-          "side": "new",
-          "line": 3
-        },
-        {
           "path": "src/allow.rs",
           "signal": "check_suppressed",
           "side": "new",
@@ -1805,6 +1799,12 @@
           "signal": "check_suppressed",
           "side": "new",
           "line": 8
+        },
+        {
+          "path": "src/apart.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
         }
       ],
       "known_false_positive": [
@@ -1833,7 +1833,7 @@
       "id": "evidence/independent-review-7-20261115",
       "kind": "evidence",
       "patch": "evidence/independent-review-7-20261115.patch",
-      "origin": "internal: a seventh independent review by a Claude subagent (docs/reviews/claude-independent-review-7-20261115.md, IR7-H-1, IR7-H-2, IR7-M-1, IR7-M-2, IR7-M-3, IR7-L-3) and round 14 of Vesper's review, 2026-11-15, each reproduced before it was counted, with `git apply` 2.56.0 and rustc 1.99.1 where a claim is about them. Expected. No number in a hunk header decides the language of a file with no extension: a fetch and an eval added below `#!/bin/sh` in a hunk written `@@ -4,3 +1,5 @@` (tools/deploy: plain Git applies it at line 1 with no message; release 0.8.3 and round 13 report both, round 14 reported nothing), the same hunk written `@@ -4,3 +4,5 @@` (tools/setup: \"Hunk #1 succeeded at 1 (offset -3 lines)\"; no version before this one reported anything), and the hunk with the shebang written second in its section (tools/late: the first hunk is read as the script's language too). A side that began inside a raw string is read to the quote that truly ends it: the plain `git diff -U3` of a test whose page is kept in r##\"...\"## and holds href=\"#top\" and a link (tests/page.rs: two panic paths and a spawn after the string; round 13 found none, round 14 the spawn only). Hunks are read together on the hint of either number, and a hunk with no old line counts as an earlier hunk: an added line and the changed line after it (src/m.rs: `opt.unwrap` and `();`; plain Git refuses the pair, `git apply --unidiff-zero` puts them together), and two hunks with context whose second has a false old number and a true new one (src/cut.rs: Git starts looking at the new number and prints nothing). The edge of a side is read: the same pair with both numbers false, which nothing joins (src/edge.rs: the first half ends on `.unwrap`), and a pair cut before the word (src/before.rs: the second half begins `unwrap()`). The paths release 0.8.3 keyed its signals on are read as tokens: `std::process :: Command :: new` (src/sp1.rs), the same over three lines (src/sp3.rs), `TcpStream :: connect` (src/sp4.rs), `Command` and `::new` on two lines under a glob import (src/sp7.rs), and `#[` and `allow(` on two lines (src/lint.rs); each compiles, and release 0.8.3 reports none of them. A second section for one path (src/n.rs, twice: plain Git applies both sections to the one file and the result is the call `opt.unwrap` `();`): the two are two files to this crate and nothing joins them, the first ends on `.unwrap` and that edge is the item; the fix is the parser's refusal of such a patch in release 0.8.4, which this branch does not stand on yet. Declared misses. A second section that goes on in a string the first opened (src/two.rs: plain Git applies both, rustc compiles the result, and the spawn after the string's last line is read as text of a string; this is IR7-H-2 where no edge shows it, and it waits for the same refusal). A trivial assertion cut after its opening bracket by two hunks that nothing joins (tests/cutassert.rs: `assert!(` ends a line of every assertion written over several lines, so it is no evidence at the end of a side). A raw string whose text has quotes with one, two, three and four `#` and that ends at a quote with five (tests/deep.rs: a side is read for its first four counts). A spawn through an alias that never writes the names the rule keys on (src/alias.rs: `Command as C`, then `C::new`; release 0.8.3 the same). A Python call with a space before its dot (tools/space.py: `os . system(cmd)`; the rules of the other languages read one line as it is written). Declared false positives, the cost of this round's readings: a call of a function of the crate's own named `expect` on a changed line that begins its hunk (src/free.rs: a side that begins with `expect(` may be the end of a call cut before its name; 2 of 177,957 fragments of real crate files begin so), and a fetch word below a line that reads as a shebang in the middle of a text file with no extension (NOTES: the file is read as that language too)",
+      "origin": "internal: a seventh independent review by a Claude subagent (docs/reviews/claude-independent-review-7-20261115.md, IR7-H-1, IR7-H-2, IR7-M-1, IR7-M-2, IR7-M-3, IR7-L-3) and round 14 of Vesper's review, 2026-11-15, each reproduced before it was counted, with `git apply` 2.56.0 and rustc 1.99.1 where a claim is about them. Expected. No number in a hunk header decides the language of a file with no extension: a fetch and an eval added below `#!/bin/sh` in a hunk written `@@ -4,3 +1,5 @@` (tools/deploy: plain Git applies it at line 1 with no message; release 0.8.3 and round 13 report both, round 14 reported nothing), the same hunk written `@@ -4,3 +4,5 @@` (tools/setup: \"Hunk #1 succeeded at 1 (offset -3 lines)\"; no version before this one reported anything), and the hunk with the shebang written second in its section (tools/late: the first hunk is read as the script's language too). A side that began inside a raw string is read to the quote that truly ends it: the plain `git diff -U3` of a test whose page is kept in r##\"...\"## and holds href=\"#top\" and a link (tests/page.rs: two panic paths and a spawn after the string; round 13 found none, round 14 the spawn only). Hunks are read together on the hint of either number, and a hunk with no old line counts as an earlier hunk: an added line and the changed line after it (src/m.rs: `opt.unwrap` and `();`; plain Git refuses the pair, `git apply --unidiff-zero` puts them together), and two hunks with context whose second has a false old number and a true new one (src/cut.rs: Git starts looking at the new number and prints nothing). The edge of a side is read: the same pair with both numbers false, which nothing joins (src/edge.rs: the first half ends on `.unwrap`), and a pair cut before the word (src/before.rs: the second half begins `unwrap()`). The paths release 0.8.3 keyed its signals on are read as tokens: `std::process :: Command :: new` (src/sp1.rs), the same over three lines (src/sp3.rs), `TcpStream :: connect` (src/sp4.rs), `Command` and `::new` on two lines under a glob import (src/sp7.rs), and `#[` and `allow(` on two lines (src/lint.rs); each compiles, and release 0.8.3 reports none of them. A second section for one path (src/n.rs, twice: plain Git applies both sections to the one file and the result is the call `opt.unwrap` `();`): the two are two files to this crate and nothing joins them, the first ends on `.unwrap` and that edge is the item; the fix is the parser's refusal of such a patch in release 0.8.4, which this branch does not stand on yet. Declared misses. A second section that goes on in a string the first opened (src/two.rs: plain Git applies both, rustc compiles the result, and the spawn after the string's last line is read as text of a string; this is IR7-H-2 where no edge shows it, and it waits for the same refusal). A trivial assertion cut after its opening bracket by two hunks that nothing joins (tests/cutassert.rs: `assert!(` ends a line of every assertion written over several lines, so it is no evidence at the end of a side). A raw string whose text has quotes with one, two, three and four `#` and that ends at a quote with five (tests/deep.rs: a side is read for its first four counts). A spawn through an alias that never writes the names the rule keys on (src/alias.rs: `Command as C`, then `C::new`; release 0.8.3 the same). A Python call with a space before its dot (tools/space.py: `os . system(cmd)`; the rules of the other languages read one line as it is written). Declared false positives, the cost of this round's readings: a call of a function of the crate's own named `expect` on a changed line that begins its hunk (src/free.rs: a side that begins with `expect(` may be the end of a call cut before its name; 2 of 177,957 fragments of real crate files begin so), and a fetch word below a line that reads as a shebang in the middle of a text file with no extension (NOTES: the file is read as that language too). Changed 2026-11-15 after round 15 of Vesper's review (docs/reviews/vesper-v3-round15-report-20261115.md, VD3R15-M-1): what a side ends on is read only where it is evidence by itself, and the beginning of a side is not read at all. So three items above are declared misses again, each needing a writer who sets out to: the call cut after `.unwrap` by two hunks that nothing joins (src/edge.rs), the same cut before the word (src/before.rs), and the second section for one path (src/n.rs: nothing is reported for it until the parser refuses it). Expected instead, with both numbers of the second hunk false: a stub cut after `todo!` (src/stub.rs) and a spawn cut after `Command::` (src/spawn.rs). Hard negatives, each a line of honest code as a one-line hunk of `git diff -U0`, for which nothing may be reported: a return type named `Command` at the end of a line whose brace stands on the next (src/cmd.rs: Vesper's patch, which round 15 reported as a spawn in a file that has none), a return type `TcpStream` (src/net.rs), a field of type `UdpSocket` (src/sock.rs), a line that ends on the bare name `reqwest` (src/uses.rs), a variable named `todo` (src/list.rs), a field named `expect` at the head of a chain (src/field.rs), an assignment to a variable named `ignore` (src/assign.rs), a removed line that begins with a call of a function named `test` (tests/old.rs), and the call of a function named `expect` at the beginning of a hunk, which round 15 reported and is no longer a declared false positive (src/free.rs)",
       "expect": [
         {
           "path": "tools/deploy",
@@ -1908,18 +1908,6 @@
           "line": 3
         },
         {
-          "path": "src/edge.rs",
-          "signal": "panic_path_added",
-          "side": "new",
-          "line": 3
-        },
-        {
-          "path": "src/before.rs",
-          "signal": "panic_path_added",
-          "side": "new",
-          "line": 50
-        },
-        {
           "path": "src/sp1.rs",
           "signal": "process_spawn",
           "side": "new",
@@ -1950,13 +1938,37 @@
           "line": 1
         },
         {
-          "path": "src/n.rs",
-          "signal": "panic_path_added",
+          "path": "src/stub.rs",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/spawn.rs",
+          "signal": "process_spawn",
           "side": "new",
           "line": 2
         }
       ],
       "known_miss": [
+        {
+          "path": "src/edge.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/before.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 50
+        },
+        {
+          "path": "src/n.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
         {
           "path": "src/two.rs",
           "signal": "process_spawn",
@@ -1990,19 +2002,115 @@
       ],
       "known_false_positive": [
         {
-          "path": "src/free.rs",
-          "signal": "panic_path_added",
-          "side": "new",
-          "line": 30
-        },
-        {
           "path": "NOTES",
           "signal": "network_fetch",
           "side": "new",
           "line": 31
         }
       ],
-      "sha256": "b91e26cd4aff952c82ea88c97756f3256cf312267709da1651022474e3a1fb6e"
+      "sha256": "38965fc16bcd23a16ec612dd54ff280ffc54da14918ad5d3ccd5f37283440c06"
+    },
+    {
+      "id": "evidence/independent-review-8-20261115",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-8-20261115.patch",
+      "origin": "internal: an eighth independent review by a Claude subagent (docs/reviews/claude-independent-review-8-20261115.md: IR8-M-1, IR8-M-3, IR8-M-4, IR8-L-1, IR8-L-3, IR8-L-4; GO-WITH-FIXES on the round 15 commit), 2026-11-15, each reproduced before it was counted. IR8-M-1, a hint of a later round took away a join an earlier rule made: two hunks that have old lines and whose old numbers say they touch turn an assertion into `debug_assert!(true, ...)`, and beside them stands a hunk of added lines only that names the same old position. In src/decoy.rs it is written after a hunk that ends the file (the review's decoy2.patch: round 14 reported the assertion, round 15 did not, and did when a number Git never reads was changed); in src/first.rs it is written first (decoy.patch: neither round reported it); in src/between.rs it holds code that, read between the two, would part the assertion from its condition. Expected in all three. IR8-L-1: `<Command>::new`, `Command::<>::new`, `<TcpStream>::connect` and `TcpStream::<>::connect` are the paths the release keys on in two more spellings (src/q.rs, which compiles and runs; no version reported a line of it). Declared misses that need a writer who sets out to: two hunks that BOTH have old lines and both say they end before one line, the false one written first, part the two that touch (src/claimed.rs: what stays of IR8-M-1); a call cut twice so that its word stands alone in a hunk of its own, behind false numbers (src/alone.rs) and a function passed as a value cut before its name (src/value.rs), both IR8-M-3: no end of a side is evidence by itself there; and a hunk of added lines that `git apply --unidiff-zero` puts by its new number inside the lines an earlier hunk showed (src/inside.rs, IR8-M-4: plain Git puts it at the end of the file, and the reader takes a hunk's lines as lines that stand together). Declared misses of an ordinary diff: a script with no extension whose hunk does not show line 1 has no language, so its fetch and its `eval` are not read (tools/release, IR8-L-4: the same in every version); and `eval (source)`, `os.system (command)` with a space before the bracket (tools/run.py). Hard negatives (IR8-L-3): a line that ends on an enum variant named `Command` (src/kind.rs) and one that ends on a field named `todo` (src/sum.rs), both of which round 15 reported; a hunk that begins with the call of a function named `unwrap` (src/free.rs), which round 15 reported too; and the name as a generic argument, `Vec::<Command>::new()` and `HashMap<String, TcpStream>` (src/args.rs), which the new spellings must not read",
+      "expect": [
+        {
+          "path": "src/decoy.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 30
+        },
+        {
+          "path": "src/first.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 30
+        },
+        {
+          "path": "src/between.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 30
+        },
+        {
+          "path": "src/q.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/q.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/q.rs",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/q.rs",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 7
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/claimed.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 30
+        },
+        {
+          "path": "src/alone.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/value.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/inside.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tools/release",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 21
+        },
+        {
+          "path": "tools/release",
+          "signal": "dynamic_eval",
+          "side": "new",
+          "line": 22
+        },
+        {
+          "path": "tools/run.py",
+          "signal": "dynamic_eval",
+          "side": "new",
+          "line": 20
+        },
+        {
+          "path": "tools/run.py",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 21
+        }
+      ],
+      "known_false_positive": [],
+      "sha256": "9b0345c9358294b03d92a354ce189c842f1a95835877a45703c0e877812c2655"
     }
   ]
 }

@@ -535,6 +535,291 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     (VD3R12-L-1, IR5-L-2), and the comment on `Found` names both kinds of item that can
     come late (IR5-L-3).
 
+- **An eighth independent review (GO-WITH-FIXES, nothing high): a hint of a later round takes
+  no join away that an earlier rule made; a view of hunks by path costs what it shows; what
+  is read at the end of a side, and what needs a true number, is said exactly.** The review
+  read the round 15 commit and found: never lower than release 0.8.3 (55,000 generated
+  patches in six languages with honest and false numbers, and the history of two
+  repositories at several context widths: score, signals, items, outline labels and
+  refusals, 0 lower), the language rule sound, rank and outline linear, the corpus saying
+  what the binary does. It broke three claims of that commit's request, each below, and
+  asked for the limits to be stated where they were not. This entry is the same round as
+  the one below it (round 16): that one answers Vesper, this one the independent
+  reviewer, and both stand on one commit.
+  - *A hunk of added lines took the place of the hunk that truly ended there (IR8-M-1;
+    lower than round 14, not lower than release 0.8.3; needs a writer who sets out to).*
+    Hunks are read together on the hint of a number: the hunk that begins at a line goes
+    after the hunk that says it ends before that line. Round 14 took, for a line, the first
+    hunk of the patch that has old lines and ends there. Round 15 let a hunk with no line on
+    the side stand for the line it names, kept ONE hunk for a line, the first of the patch,
+    and went through the hunks once. So a hunk of added lines written early
+    (`@@ -4,0 +60,1 @@`, one comment line) took the place of `@@ -3,2 +3,2 @@`, which ends
+    on `debug_assert!(`, and `@@ -5,3 +30,3 @@`, which changes the condition to `true,`,
+    was joined to the comment. Round 14 reported the assertion; round 15 did not, and did when
+    the `4` was written `20`, a number plain `git apply` never reads. Five of the review's
+    55,000 generated patches were lower than round 14 for this reason. A second form: a
+    hunk with no old line written BEFORE the hunk it follows found itself in the table and
+    gave up.
+    **The rule now: a hint that a later round adds takes no join away that an earlier rule
+    made.** Round 14's joins are made by round 14's rule, as it was, beside every later one
+    (a test holds a copy of that rule and asks, over 40,000 generated sections of two to six
+    hunks with every kind of number, that each run it makes is a text now). And the later
+    hints are taken in two ways that say what they model. *As plain Git places hunks*
+    (beside the joins Git must make): Git puts a hunk with no old line at the end of the
+    file and not between two others, so the hunks that have lines on the side choose first
+    and take a hunk with lines before one with none; a hunk with no line on a side takes no
+    place on that side that a hunk with lines asks for, as the one before or as the one
+    after. *By the numbers alone* (`git apply --unidiff-zero` and anything else that trusts
+    them): the hunks stand in the order of their positions, a hunk with no line on the side
+    between the hunk that ends before its place and the hunk that begins there, so the
+    three are one text. In both, a hunk is never its own predecessor, the next hunk that is
+    free is taken when the first is not, and of two hunks with no line on the side that
+    name one line the one written first stands first. A hunk now stands in at most seven
+    texts (six before): alone, in the run Git must make, in round 14's run, and in a run
+    for each number under each of the two ways; a run that two of them make is read once.
+    The review's patches: `decoy2.patch` is found again; `decoy.patch` and `triple.patch`,
+    which no round found (the comment hunk written first, or between the two), are found;
+    with code in the hunk of added lines that would part the assertion from its condition,
+    it is found too. On the review's 55,000 generated patches, round 14 to now: 0 lower in
+    score, signals, items and outline labels (9,608 with something gained).
+    *What stays, and is declared:* among several hunks that all HAVE lines on a side and
+    all say they end before one line, the first of the patch is taken by the first hunk
+    that begins there. A third hunk with old lines and a false old number, written first,
+    still parts two hunks that touch (the corpus has it as a declared miss). And against
+    round 15 itself the new order is not a superset: where a hunk with no line on a side
+    and a hunk with lines both name one line, round 15 joined the hunk that follows to
+    whichever was written first, and now the two ways above decide. Two of the 55,000
+    generated patches (hunks with random numbers, in a Python and a YAML file) report an
+    item or a label less in one hunk for that; 92 report more.
+  - *A view of hunks by path cost the square of the hunks for a file with no extension
+    (IR8-M-2; an ordinary diff only when very large, a writer at will).* Round 15 made the
+    language of a file with no extension depend on a shebang in ANY of its hunks, which is
+    a pass over every hunk, and the reader of one hunk (`hunk_signals_alone`) asked for it
+    again for every hunk a view showed. Rank and outline were not affected (they scan a
+    file once). Now the kinds of a file are worked out once (`FileKinds::of`) and handed to
+    the reader of a hunk; the views keep them beside the list of joined hunks. Wall time
+    of one page (16 MiB where the row does not say), best of three runs and for the two
+    rows of 50,000 hunks of five:
+
+    | Hunks shown, one page | release 0.8.3 | round 14 | round 15 | now |
+    | --- | ---: | ---: | ---: | ---: |
+    | `bin/tool.sh`, 12,500 hunks | 0.21 s | 0.21 s | 0.21 s | 0.21 s |
+    | `bin/tool` (no extension), 12,500 | 0.20 s | 0.20 s | 4.09 s | 0.20 s |
+    | `bin/tool.sh`, 25,000 | 0.43 s | 0.44 s | 0.44 s | 0.43 s |
+    | `bin/tool`, 25,000 | 0.41 s | 0.42 s | 16.08 s | 0.43 s |
+    | `bin/tool.sh`, 50,000 | 0.56 s | 0.56 s | 0.58 s | 0.56 s |
+    | `bin/tool`, 50,000 | 0.53 s | 0.53 s | 41.32 s | 0.54 s |
+    | `data/table` in 333,000 hunks, a page of 64 KiB (175 hunks) | 0.26 s | 0.32 s | 2.70 s | 0.36 s |
+    | the same, a page of 1 MiB (2,768 hunks) | 0.27 s | 0.32 s | 25.50 s | 0.31 s |
+
+    Nothing held this cost: no test and no fuzz target called `hunk_signals_alone` (the
+    views were its one caller), and the cost tests looked at rank. Now a test of the views
+    counts the passes over a file (`file_walks`, a counter in the library for tests): two
+    for a listing by path and for one by many addresses, for 600 hunks as for 30; a test
+    of the library holds that the reader of one hunk makes none and gives what the scan of
+    the file gives; and the fuzz target `evidence_scan` holds both for any text. The same
+    shape was looked for elsewhere: a view of ONE joined hunk goes through the headers of
+    its file a fixed number of times, which it must (to find the texts that hunk stands
+    in); no other caller asks anything of a file once for each of its hunks.
+  - *What the end of a side is read for, exactly (IR8-M-3).* The entry for round 15 says a
+    construct "is found when the cut stands beside its word, whatever the numbers and the
+    order of the hunks". That was not true when it was written (the word alone in a hunk
+    of its own, cut on both sides: `let v = opt.`, `unwrap`, `();`; a function passed as a
+    value, `Option::` and then `unwrap;`), and it is less true since the entry below
+    narrowed the forms. Said exactly: a construct cut in two by hunks that nothing joins is
+    found when one half holds a construct whole, or when the first half ends on one of the
+    forms the entry below lists (`todo!`, `assert!(true`, `#[ignore`, `#[allow`,
+    `Command::`, `process::`, `TcpStream::`, `UdpSocket::`, `.unwrap::`, a removed
+    `#[test`), and nowhere else; a cut anywhere else needs ONE true number in the header of
+    the second hunk, the old or the new, and then the join reads it. The review's
+    enumeration is a test now: 28 constructs cut between any two of their tokens, 265 cuts,
+    each as two hunks. With true numbers, with a false new number and with a false old
+    number, all 265 are found. With both false, 201 are (round 15: 242), and the 64 others
+    are the declared misses: after or before the bare word (`x.` / `unwrap()`, `x.unwrap` /
+    `()`, `Command` / `::new`, `todo` / `!()`), inside an assertion before its truth,
+    between `#` or `#[` and the attribute's name, inside a `cfg_attr` list, inside generic
+    arguments, and the function value cut before its name.
+  - *An applier that puts a hunk inside another (IR8-M-4; declared).* A hunk's lines are
+    read as lines that stand together. `git apply --unidiff-zero` puts a hunk of added
+    lines at its NEW number, and that can be between two lines an earlier hunk showed:
+    `@@ -1,3 +1,4 @@` with `let v = opt.unwrap` as its third line and a line of context
+    after it, then `@@ -3,0 +4,1 @@` with `();`. The result holds the call; plain Git puts
+    the second hunk at the end of the file; no reading here puts one hunk between the lines
+    of another. It is in the list of what needs a writer, and in the corpus as a declared
+    miss.
+  - *Two more spellings of the released paths (IR8-L-1; in release 0.8.3 too).*
+    `<Command>::new("true")` and `Command::<>::new("true")` are the path `Command::new` to
+    the compiler (the name alone in angle brackets; an empty list of generic arguments),
+    and so for `TcpStream::connect` and `UdpSocket::bind`. All four lines of the review's
+    file compile and run, and no version reported one. They are read now, as tokens.
+    `Vec::<Command>::new()`, `HashMap<String, TcpStream>` and `<Command as Default>::…` are
+    other paths and are not (the `<` there follows `::` or a name, or the brackets hold
+    more). On every line of 603 crates as a one-line hunk (7,911,652 lines) the answer is
+    item for item what it was: these spellings are in none of them.
+  - *Memory, for three shapes (IR8-L-2).* The entry for round 15 gives one figure, for a
+    file created as 499,000 hunks of one line, and says "now 263". It is right for that
+    shape and low for others. `--rank`, peak resident memory, release 0.8.3, round 14,
+    round 15, now:
+
+    | `--rank` of one file | release 0.8.3 | round 14 | round 15 | now |
+    | --- | ---: | ---: | ---: | ---: |
+    | created as 499,000 hunks of one line (the figure of the entry for round 15) | 176 MB, 0.60 s | 293 MB, 1.50 s | 263 MB, 1.58 s | 262 MB, 1.54 s |
+    | 333,000 hunks joined by hints, old numbers forward and new numbers backward, each line a string left open | 159 MB, 0.79 s | 334 MB, 2.77 s | 319 MB, 3.43 s | 317 MB, 3.43 s |
+    | 9,000 hunks that touch, each with nine long lines of context (51 MB of patch) | 111 MB, 0.95 s | 226 MB, 1.75 s | 226 MB, 1.69 s | 226 MB, 1.69 s |
+
+    So the factor over the release is up to about two, as the review said, and the seventh
+    text of this round costs nothing on these shapes (a run that two rules make is kept
+    once).
+  - *The same construct twice (IR8-L-3).* `std::process::` at the end of one hunk and
+    `Command::new("b")` in the next give two items, one on each line. The second is what
+    the next hunk gives read alone, and no reading is taken away for another; the score
+    counts a signal once. It is in the list of limits now. The other half of that finding
+    went with the entry below: the review's `e1` (a line that ends on `Kind::Command`) and
+    `e3` (one that ends on `self.todo`) are silent, and are hard negatives in the corpus;
+    and nothing is read at the beginning of a side any more, so the suspected case of a
+    side that begins inside a comment and then holds `unwrap(` cannot arise.
+  - *The list of what is still not found (IR8-L-4).* Added under what needs a writer: the
+    third hunk with lines that claims a place (above), the construct cut twice and the
+    function value cut before its name, the hunk an applier puts inside another. Added
+    under what an ordinary diff can do: a file with no extension none of whose hunks shows
+    a shebang has no language at all, so a `curl … | sh` and an `eval` added on line 20 of
+    a script named `deploy`, in a plain `git diff -U3`, are not reported (in no version;
+    full context shows line 1); a construct reported on two lines (above). Moved from
+    writer to ordinary: a space before the bracket of a call in the other languages
+    (`eval (source)`, `os.system (command)`, `fetch (u)`), which code that no formatter
+    has touched writes. And the README no longer says that everything is monotone from one
+    round of this branch to the next: a further reading only adds, and two changes took
+    something back on purpose (the forms of the entry below; the joins this entry puts
+    back).
+  - *Tests (IR8-L-5).* The fuzz target `rust_hunk_places` has three more rules. Rule 10: two
+    hunks that have old lines and touch by their old numbers, the new number of the second
+    false, and beside them up to three hunks of added lines that name the same line,
+    written before, between or after the two, with or without a hunk before them that ends
+    the file: the construct is found. Rule 11: a removed test's attribute cut after `#[test`,
+    `#[rstest`, `#[tokio`, `#[tokio::` or `#[tokio::test`, on removed lines (with the old
+    side's forms deleted no rule used to fail). Rule 12: a script's shebang on a removed
+    first line only, on an added one only, and a second hunk before or after it that begins
+    with another language's shebang, removed, added or context: every item of the script
+    with honest numbers is found. Its 28 seeds hold; on the sources of the commit before
+    (`ceb2e6f`) rule 10 fails on ten of them, its own four among them. `evidence_scan` reads
+    its lines as hunks of three as well (above). Planted in scratch copies, each of these
+    fails the tests named: round 14's rule left out (the two join tests); a hunk with no
+    line on the side counted like any other, in the order of the patch (the join test); a
+    hunk that ends the run it begins not passed over (its own test); the kinds of a file
+    worked out for each hunk, in the library and in the views (the two counting tests); the
+    name in angle brackets read whatever stands before the `<` (the spellings test). And
+    in the fuzz target, each rule run alone over the 28 seeds: with the old side's forms
+    deleted rule 11 fails on 25, with a shebang read on the new side only rule 12 on 4,
+    with a hunk that has no line on the side counted like any other rule 10 on 2. The
+    corpus has 51 cases (new: `evidence/independent-review-8-20261115`, seven expected
+    items, eight declared misses, four hard negatives): evidence precision 163 of 183 (was
+    156 of 176), recall 163 of 230 (was 156 of 215), 90 declared (was 82).
+  - *Compared, on the final binary.* 5,748 existing patches of every review and the corpus,
+    rank, full answer and the bounded list: against release 0.8.3, nothing lower in score,
+    2,424 patches with something gained, and one line of difference that is the two
+    entries of one path changing places (a second section for one path, as before);
+    against round 14, nothing lost in the full answer and one patch in the list (the
+    declared trade of the list of 32, which keeps the release's items); against round 15,
+    nine patches report less, every one of them a form the entry below took back (a bare
+    word at the end of a side, a call at its beginning, the first of two sections). The
+    review's 55,000 generated patches: against round 14, 0 lower in the full answer (in
+    the list of 32, 74, each a file whose list is cut on one side or both: the same
+    trade); against release 0.8.3 with the views checked against the rank, 0 lower (29,118
+    with something gained, and every view agrees with the rank); against round 15, 1,432
+    report less, and between the build that has only the change of the entry below and
+    the final one, 2 do (above). Every line of 603 crates, of this repository's sources and
+    of its history's changed lines as a one-line hunk, again: item for item what the entry
+    below measured, and what it is with no form read at the end of a side.
+- **Round 15 of Vesper's review (NO-GO on one finding): the end of a hunk side is read only
+  where it is evidence by itself.** Vesper found every finding of the two reviews before
+  closed, the memory figure accurate and the dependency on release 0.8.4 acceptably stated.
+  - *A bare name at the end of a side is no construct (VD3R15-M-1, an ordinary diff).* The
+    entry below read the end of a hunk side as the beginning of a construct for a list of
+    forms, among them the bare first name of a path release 0.8.3 keys a signal on. A file
+    with `struct Command;` and `pub fn command() -> Command`, its brace on the next line,
+    changed on that line: `git diff -U0` writes a one-line hunk that ends on `Command`, and
+    it was reported as `process_spawn`, weight 4, in a file that spawns nothing. The
+    measurement behind that list had no line of this shape: it cut files at fixed lines and
+    read history at three context widths, and a line of code that ends on a type's name with
+    nothing after it is rare in rustfmt's style and ordinary in others.
+  - *The rule now.* A form is read at the end of a side only when what the side shows is by
+    itself evidence of the construct: the word it is known by WITH the token that makes it
+    that construct, and no line of honest code ends that way. Every form the entry below
+    built was gone through with that question:
+
+    | Form at the end of a side | An honest line that ends so | Now |
+    | --- | --- | --- |
+    | `Command`, `TcpStream`, `UdpSocket`, `reqwest`, `ureq` (bare) | `pub fn command() -> Command` | not read |
+    | `Command::`, `process::`, `TcpStream::`, `UdpSocket::` | none | read |
+    | `.unwrap`, `.expect` | `let n = self.expect` (a field, at the head of a chain; such fields are in real crates) | not read |
+    | `::unwrap`, `::expect` | `Self::expect` (a function as the value of a block) | not read |
+    | `.unwrap::`, `.expect::`, also with `<` | none (no field has generic arguments) | read |
+    | `todo`, `unimplemented` (bare) | `let rest = todo` (a variable) | not read |
+    | `todo!`, `unimplemented!` | none | read |
+    | the name of an assertion, bare or with `!` | none with `!`; but it says nothing of an assertion that cannot fail | not read |
+    | `assert_eq!(true`, `assert_eq!(true,` | `assert_eq!(true,` with a value on the next line | not read |
+    | `assert!(true`, `assert_eq!(true, true` | none | read |
+    | `#[ignore`, `#![ignore`, `#[allow`, `#![allow` | none | read |
+    | old side: `#[test`, `#[rstest`, `#[tokio`, `#[tokio::`, `#[tokio::test` | none | read |
+
+    And the beginning of a side is not read as the end of a construct at all. The entry
+    below read `unwrap(`, `expect(`, `ignore]`, `ignore =`, `[ignore]`, `[allow(`,
+    `::Command` and, on the old side, `test]`, `test(` and `tokio::test` there. A line of
+    honest code begins with `expect(&value, 3);` (a function of the crate's own), with
+    `test(&[], 1);` and with `ignore = true;`, and none of the others shows the head that
+    makes it the construct.
+  - *Measured on the shape that makes edges.* Every line as a one-line hunk that removes
+    the line and adds it again (`@@ -N +N @@`, a one-line change in `git diff -U0`): every
+    line end and every line start is then an edge. 7,911,652 lines of 18,450 Rust files of
+    603 crates, the 93,551 lines of this repository's own Rust sources, and the 121,309
+    changed lines of its history. Fires of each form the entry below built or weighed
+    (crates, sources, history); none of them is an item the file has on that line:
+
+    | Form | Fires |
+    | --- | ---: |
+    | start `()` (weighed, not built) | 617, 1, 1 |
+    | start `!(` (weighed, not built) | 123, 1, 1 |
+    | start `test]` or `test(`, old side (built) | 70, 0, 0 |
+    | start `expect(` (built) | 58, 3, 3 |
+    | start `ignore =` (built) | 24, 0, 0 |
+    | end `ureq`, bare (built) | 1, 0, 0 |
+    | end `process`, bare (weighed) | 1, 0, 0 |
+    | every other form, built or weighed, at either edge | 0, 0, 0 |
+
+    So the forms that fired are gone, and so are those that an honest line can end with
+    though none of 8.1 million did: this set, too, has no line that ends on a bare `Command`
+    (Vesper's file has its brace on the next line, which rustfmt does not write), so the
+    measurement alone would not have caught Vesper's case: the question whether an honest
+    line can end so decided it. From now on a form is read only when BOTH hold: no line of
+    honest code can end that way, and the form does not fire on this set. With the forms
+    that are still read, the
+    answer on all three sets is the same item for item as with no edge read at all
+    (153,212 items on the crates, 4,801 on the sources, 3,164 on the history).
+  - *What is lost by it.* A construct cut by two hunks that nothing joins is found only when
+    the first half ends on a form that is still read. A call cut after `.unwrap` or
+    `.expect`, a path cut after its bare first name (`Command`, then `::new`), an assertion
+    cut before its `true`, and any construct cut before its word are declared misses again,
+    as they were before the entry below; so is what the first of two sections for one path
+    ends on. Each takes a writer who sets out to (both numbers of the second hunk false, or
+    a second section), and none is in an honest diff. One true number of the second hunk,
+    the old or the new, still joins the two hunks and finds the construct, and release 0.8.4
+    refuses the second section.
+  - *Tests.* The reader's tests hold every form that is read, the honest lines that are
+    not (Vesper's among them) and the beginning of a side; the file-level test holds the
+    cut pair for what is found and what is not, and Vesper's patch as Git wrote it; the
+    pinned test of the two sections expects nothing again. The fuzz target
+    `rust_hunk_places` cuts only the forms that are read (rule 7) and has a new rule 9: a
+    line of honest code as a one-line hunk, at any position, reports none of the signals
+    whose constructs its last or first word begins. Its 20 seeds hold; on the sources of the
+    commit before (`ceb2e6f`) rule 9 fails on every one of them. The corpus has the same 50
+    cases: the seventh review's case gained two expected items (a stub cut after `todo!`, a
+    spawn cut after `Command::`, both numbers false) and nine hard negatives (Vesper's
+    patch, a return type `TcpStream`, a field of type `UdpSocket`, a line that ends on
+    `reqwest`, a variable named `todo`, a field named `expect`, an assignment to `ignore`,
+    a removed call of `test`, a call of `expect`), lost its declared false positive for
+    that call, and three of its items and one of the sixth review's are declared misses
+    again: evidence precision 156 of 176 (was 158 of 179), recall 156 of 215 (was 158 of
+    213), 82 declared (was 79).
 - **Round 14 of Vesper's review and a seventh independent review (both NO-GO): no header
   number decides what is found; the bounded list is claimed for what it is.** Both reviews
   found the joins of the round before sound (no loss of the first build's kind in 587 crate
@@ -588,7 +873,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     a number that contradicts one is not taken, and alone, as an applier takes them that
     goes by the numbers and puts nothing at the end of the file. A hunk stands in at most
     six texts (three in the round before), and a run two hints make is read once: a patch
-    with true numbers and context is read as before.
+    with true numbers and context is read as before. (Corrected 2026-11-15 after the eighth
+    independent review, IR8-M-1: as built here, a hunk with no line on a side could take
+    the place of the hunk that truly ended before a line, and joins that round 14 made
+    were lost. The entry for that review, above, has the rule that replaced this one;
+    seven texts since.)
+  - *Corrected 2026-11-15 (the entry above this one).* Of the forms listed under "The edge
+    of a side" below, only those are still read that are evidence by themselves, and
+    nothing is read at the beginning of a side: a bare `Command` at the end of an honest
+    line was reported as a spawn. The corpus figures and the fuzz controls of this entry
+    are those of its day.
   - *The edge of a side (the declared false-position pair; the review's idea).* Two hunks
     that touch behind numbers that do not say so are joined by nothing, and no rule built on
     numbers or on the order of hunks can close that (`cutpair.patch`: one digit, no message
@@ -611,7 +905,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     `ignore,` at the start (a function and an argument can have those names). So the
     construct is found when the cut stands beside its word, whatever the numbers and the
     order of the hunks, and not when it stands after an assertion's bracket or inside a
-    `cfg_attr` list before its `ignore`.
+    `cfg_attr` list before its `ignore`. (That sentence was not true, and is withdrawn:
+    eighth independent review, IR8-M-3. A word cut on BOTH sides, alone in a hunk of its
+    own, was at no edge, and a function passed as a value was not read cut before its
+    name. The entry for that review, above, says exactly which cuts are found.)
   - *The paths of release 0.8.3's signals, as tokens (IR7-M-3; in release 0.8.3 too).*
     `process_spawn` and `network_fetch` are keyed on `Command::new`, `process::Command`,
     `reqwest::`, `ureq::`, `TcpStream::connect` and `UdpSocket::bind`, each looked for as
@@ -675,7 +972,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     hunk, without a word.
   - *The memory of a file of very many joined hunks.* A file created as 499,000 hunks of
     one line (`--rank`, peak resident memory): release 0.8.3 176 MB, round 13 176, round 14
-    293, now 263. Round 14 held a text for every hunk read alone beside the joined ones (now
+    293, now 263. (Right for this shape and low for others: the entry for the eighth
+    independent review, above, has three shapes, IR8-L-2.) Round 14 held a text for every
+    hunk read alone beside the joined ones (now
     none: each hunk is read alone as the scan goes over the file, and nothing is kept for it
     but what it gives), a second table of answers for a file read as one kind (now one), and
     in the views a set of the ids of the joined hunks (now one flag a hunk, and
