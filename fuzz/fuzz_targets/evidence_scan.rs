@@ -21,9 +21,10 @@
 // the one the first byte picks (so in several languages, Rust and JavaScript among them), each
 // file has the hunks that fit in what the files before it left, the rank reads at most 256 KiB
 // in the carried reading in all, and each file's hunks have the labels its share gives them.
-// The copies pass the bound when their new sides, after the input's lossy decoding, add up to
-// more than 256 KiB: four or five large copies of valid UTF-8 do (a copy has at most about
-// 64 KiB), and two copies can when invalid bytes are decoded to three bytes each. Two seeds
+// The copies can pass the bound only when their new sides, after the input's lossy decoding,
+// add up to more than 256 KiB, and only through copies in a language (a copy has at most
+// about 64 KiB of valid UTF-8, so four valid copies pass it only at that size, five at less;
+// two can when invalid bytes are decoded to three bytes each). Two seeds
 // pass it from the first run (`shared_bound_py`, `shared_bound_ts`: Python, TypeScript, Go,
 // shell, YAML and Rust in turn, made so that four copies fit and the fifth is cut part-way): a
 // budget not charged for any one of Python, JavaScript, Go, shell or YAML fails on them.

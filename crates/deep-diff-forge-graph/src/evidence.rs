@@ -3542,8 +3542,11 @@ mod tests {
     }
 
     /// The shares of the created files of a patch against a model of the rule, on generated
-    /// patches: one test for the whole class of wrong shares, by size, by position, by language
-    /// and by kind of file.
+    /// patches: wrong shares by size, by position, by language and by kind of file, as far as
+    /// the generator reaches. It reaches patches of up to 60 files (so up to 50 creations), the
+    /// kinds of file in `KINDS` and the shebangs they write; a share that is wrong only past
+    /// that (from the 51st creation, or for an extension or a shebang no kind writes) is not
+    /// caught here.
     mod shares_model {
         use super::*;
         use std::fmt::Write as _;
