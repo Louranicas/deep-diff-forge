@@ -69,8 +69,8 @@
 //!   - Two hunks that touch while neither position of the second says so: Git finds a hunk
 //!     by its text wherever its header says it is, no join reads the two together, and a
 //!     construct cut in two by them is read in two halves. **A hunk side is read as text
-//!     that ends there; nothing is inferred from how it ends**, and nothing from how it
-//!     begins. So such a construct is found only when one half holds it whole; else it is a
+//!     that ends there; nothing is inferred from how it ends.** So such a construct is found
+//!     only when one half holds it whole; else it is a
 //!     declared miss, which takes a writer who sets out to (one true number of the second
 //!     hunk joins the two, and the construct is found). Rounds 15 to 17 read some forms at
 //!     the end of a side as the beginning of the construct, each on an argument (no honest
@@ -81,14 +81,28 @@
 //!     `todo!`, a range (`0..unwrap::<u8>()`, a free function) and the token tree of a
 //!     macro, which takes any tokens (`discard! { value.unwrap:: NOT_A_CALL }` compiles; round
 //!     17 of Vesper's review, VD3R17-M-1, and the tenth independent review, IR10-L-3). Since
-//!     round 18 no form is read there.
-//!   - A `cfg_attr` list that the side leaves open on its `ignore` is no skip, by the same
-//!     rule: `ignore` can go on as `ignore::case`, an attribute of a crate or a module of
-//!     that name. This is *ordinary*: rustfmt writes a long condition over lines and
-//!     `ignore` alone on the line above `)]`, so a `git diff -U0` of two rustfmt-clean files
-//!     ends there (tenth independent review, `cfgu0.patch`). Rounds 13 to 16 read it as a
-//!     skip; it is the one place where a round after 14 reports less than round 14 did
-//!     (release 0.8.3 reports nothing there).
+//!     round 18 no form is read there. Round 18 still read a skip's attribute from the token
+//!     after its `ignore`, and in such a macro `#[ignore(` goes on as anything (round 18 of
+//!     Vesper's review, VD3R18-M-1): since round 19 a skip is read only where the side holds
+//!     its attribute whole, from `#` to its `]`.
+//!   - The beginning of a side is read as the first tokens of its text, and a side's first
+//!     token can go on from a line the side does not show. So a bracketed released path at
+//!     the very start of a side, `<Command>::new()`, is read as the path even where an
+//!     unseen `Vec::` on the line above makes it a type argument: a false `process_spawn`
+//!     (eleventh independent review, IR11-L-1, `vecturbo-u0.patch`). It takes a writer (no
+//!     formatter breaks a line between `::` and `<`), and reading it is the direction that
+//!     detects: not reading a `<` that nothing shown precedes would lose `let c =` and
+//!     `<Command>::new(…)` written over two lines.
+//!   - A `cfg_attr` list that the side leaves open, on its `ignore` or after it (`ignore`,
+//!     `ignore = "…"`, `ignore(…)`, up to its `)]`), is no skip, by the same rule: `ignore`
+//!     can go on as `ignore::case`, an attribute of a crate or a module of that name, and in
+//!     a macro that takes any tokens anything can follow. This is *ordinary*: rustfmt writes
+//!     a long condition over lines and `ignore` or `ignore = "…"` alone on the line above
+//!     `)]`, so a `git diff -U0` of two rustfmt-clean files ends there (tenth independent
+//!     review, `cfgu0.patch`; with a reason, round 19's `cfgeqnew-u0.patch`). Rounds 13 to
+//!     16 read the bare `ignore` there as a skip and rounds 13 to 18 the one with a reason:
+//!     these are the places where a later round reports less than round 14 did (release
+//!     0.8.3 reports nothing there).
 //!   - The further readings cost false items. From inside a comment: the text after a `*/`
 //!     in a string near the start of a fragment (1 on the fragments, 8 on the history). From
 //!     inside a string: the text of the side's own strings (60 and 24). From inside a raw
@@ -105,9 +119,10 @@
 //!     version 18.0.0.
 //! - A name a macro builds, or one bound to another name (`use Option::unwrap as take;`), is
 //!   not the word.
-//! - A construct longer than its bound is not read, and neither is one the hunk shows only a
-//!   part of: a hunk side is read as text that ends there; nothing is inferred from how it
-//!   ends.
+//! - A construct longer than its bound is not read (an `#[ignore…]` of more than
+//!   [`TURBOFISH_TOKENS`] tokens from `[` to `]` too; a `cfg_attr` list has no bound), and
+//!   neither is one the hunk shows only a part of: a hunk side is read as text that ends
+//!   there; nothing is inferred from how it ends.
 //! - The paths release 0.8.3 keyed a signal on are read as tokens (`Command :: new`,
 //!   `process::` and `Command` on two lines); a path through a `use` alias or a glob import
 //!   that never writes those names is not, here as in that release.
@@ -257,15 +272,24 @@ enum Word {
     Yield,
     If,
     While,
+    Mut,
+    Become,
+    Do,
+    Yeet,
     Other,
 }
 
 impl Word {
-    /// A keyword after which an expression begins, and so a `<` straight after it opens a
-    /// path in angle brackets and is no comparison: `return`, `match`, `in` (of `for … in`),
-    /// `break` (its label too: `break 'l <Command>::new(…)`), `yield`, `if` and `while`.
-    /// (Tenth independent review, IR10-L-2: `return <Command>::new("true").status()` compiles
-    /// and runs.) `else` is not among them: only `{` or `if` can follow it.
+    /// A keyword of rustc 1.99.1 after which an expression can begin and a `<` opens a path in
+    /// angle brackets: `return`, `match`, `in` (of `for … in`), `break` (its label too: `break
+    /// 'l <Command>::new(…)`), `yield`, `if`, `while`, `mut` (of `&mut`) and `become`; and
+    /// `yeet` after `do` (read in [`released_path`]). The list is measured, not chosen: each
+    /// strict and reserved keyword of the Rust reference, and `yeet` after `do`, was compiled
+    /// before `<Command>::new("true")` in every position that fits it, and these are the ones
+    /// that compile (`yield`, `become` and `do yeet` with a nightly feature; tenth independent
+    /// review, IR10-L-2; eleventh, IR11-L-2, `&mut <Command>::new(…)`; round 18 of Vesper's
+    /// review, VD3R18-L-1, `become` and `do yeet`). `else` is not among them (only `{` or `if`
+    /// can follow it), nor `const` and `mut` after `&raw` (a temporary has no address).
     const fn begins_expression(self) -> bool {
         matches!(
             self,
@@ -276,6 +300,8 @@ impl Word {
                 | Self::Yield
                 | Self::If
                 | Self::While
+                | Self::Mut
+                | Self::Become
         )
     }
 
@@ -316,6 +342,10 @@ impl Word {
             b"yield" => Self::Yield,
             b"if" => Self::If,
             b"while" => Self::While,
+            b"mut" => Self::Mut,
+            b"become" => Self::Become,
+            b"do" => Self::Do,
+            b"yeet" => Self::Yeet,
             _ => Self::Other,
         }
     }
@@ -546,6 +576,29 @@ impl<'a, I: Iterator<Item = SideLine<'a>>> Window<'a, I> {
         None
     }
 
+    /// The place of the closer that matches the bracket at `open`, when it is within
+    /// [`TURBOFISH_TOKENS`] tokens of it, both counted. Brackets inside are passed over whole.
+    fn matching(&self, open: usize) -> Option<usize> {
+        let What::Mark(bracket) = self.token(open)?.what else {
+            return None;
+        };
+        let close = closer(bracket)?;
+        let mut depth = 0usize;
+        for at in open..open + TURBOFISH_TOKENS {
+            match self.token(at)?.what {
+                What::Mark(b'(' | b'[' | b'{') => depth += 1,
+                What::Mark(mark @ (b')' | b']' | b'}')) => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return (mark == close).then_some(at);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// The first changed line among the tokens from `first` to `last`, and the rung a construct
     /// made of them stands on: `lexical` on one line, `hunk` over several.
     fn extent(&self, first: usize, last: usize) -> (Option<usize>, Basis) {
@@ -680,6 +733,13 @@ fn stub<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Option<
 /// A `#` straight after a name is read like any other: up to edition 2018 `x#[ignore]` is
 /// the tokens `x`, `#`, `[`, `ignore`, `]` to the compiler too, and a macro can drop the `x`
 /// (compiled and run on edition 2018: the test does not run; from edition 2021 it is an error).
+///
+/// The attribute is read only when the side's text holds it whole, from its `#` to the `]`
+/// that closes its `[` ([`TURBOFISH_TOKENS`] tokens at most from `[` to `]`): inside a macro
+/// that takes any tokens `#[ignore(` goes on as anything (`discard! { #[ignore(` and
+/// `NOT_A_SKIP )] }` compiles and skips no test; round 18 of Vesper's review, VD3R18-M-1, of
+/// a `git diff -U0` that ends on the parenthesis). The construct, for where it is evidence, is
+/// still `#[ignore` and the token after it.
 fn ignored<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Option<(usize, usize)> {
     let at = window.at;
     let open = if window.marks(at + 1, b'!') {
@@ -690,8 +750,11 @@ fn ignored<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Opti
     let ends = window.marks(open + 2, b']')
         || window.marks(open + 2, b'=')
         || window.marks(open + 2, b'(');
-    (window.marks(open, b'[') && window.word(open + 1) == Some(Word::Ignore) && ends)
-        .then_some((at, open + 2))
+    (window.marks(open, b'[')
+        && window.word(open + 1) == Some(Word::Ignore)
+        && ends
+        && window.matching(open).is_some())
+    .then_some((at, open + 2))
 }
 
 /// A test's attribute, when the current token is `#`: `#[test]`, `#[tokio::test]` or
@@ -745,8 +808,15 @@ const OWNER_NAMES: usize = 8;
 /// The `<` opens such a path where it follows no name and no `:` (`= <Command>::new`,
 /// `(<Command>::new`), and where it follows a keyword after which an expression begins
 /// ([`Word::begins_expression`]: `return <Command>::new(…)`, `match`, `for _ in`, `break` with
-/// or without its label, `yield`, `if`, `while`; tenth independent review, IR10-L-2). After
-/// any other name it is a comparison or a type's generic list (`a <Command> ::new(x)`).
+/// or without its label, `yield`, `if`, `while`, `&mut`, `become`, and `do yeet`; tenth
+/// independent review, IR10-L-2). After any other name it is a comparison or a type's generic
+/// list (`a <Command> ::new(x)`).
+///
+/// A side's first token can go on from a line the side does not show, so a `<` at the very
+/// start of a side follows nothing the reader sees and opens a path: when an unseen `Vec::`
+/// stands above it, `<Command>::new()` there is a type argument and the item is false
+/// (eleventh independent review, IR11-L-1, `vecturbo-u0.patch`: a writer's, since no
+/// formatter breaks a line between `::` and `<`; reading it is the direction that detects).
 fn released_path<'a, I: Iterator<Item = SideLine<'a>>>(
     window: &Window<'a, I>,
 ) -> Option<(EvidenceSignal, (usize, usize))> {
@@ -765,12 +835,21 @@ fn released_path<'a, I: Iterator<Item = SideLine<'a>>>(
                 window.marks(keyword + 1, b'\'') && window.word(keyword) == Some(Word::Break)
             })
         };
+        // `do yeet` before the `<`
+        let yeeted = |name: usize| {
+            window.word(name) == Some(Word::Yeet)
+                && name
+                    .checked_sub(1)
+                    .is_some_and(|keyword| window.word(keyword) == Some(Word::Do))
+        };
         let opens = |open: usize| {
             window.marks(open, b'<')
                 && open
                     .checked_sub(1)
                     .is_none_or(|before| match window.word(before) {
-                        Some(word) => word.begins_expression() || labelled(before),
+                        Some(word) => {
+                            word.begins_expression() || labelled(before) || yeeted(before)
+                        }
                         None => !window.marks(before, b':'),
                     })
         };
@@ -986,6 +1065,10 @@ struct List {
     /// its own: the first changed line of the list up to that `ignore`, and the line the
     /// `ignore` is on.
     candidate: Option<(Option<usize>, usize)>,
+    /// The skip it holds so far: the first changed line of the list up to an `ignore` that is
+    /// an attribute of its own, and the rung. It is noted only when the list closes and the
+    /// attribute's `]` follows: a skip is read only where the side holds the attribute whole.
+    skip: Option<(usize, Basis)>,
     /// Its closing parenthesis has been read.
     closed: bool,
 }
@@ -1019,30 +1102,37 @@ impl List {
 ///
 /// An `ignore` is the attribute when a comma, the list's closing parenthesis, `=` or `(`
 /// follows it (`cfg_attr(all(), ignore(flaky))` switches the test off where the lint
-/// `ill_formed_attribute_input` is allowed: see [`ignored`]). One that the side ends on is not
-/// read: a hunk side is read as text that ends there, and `ignore` can go on as
-/// `ignore::case`.
+/// `ill_formed_attribute_input` is allowed: see [`ignored`]). The skip is read only when the
+/// side's text holds the attribute whole, to the list's `)` and the `]` after it (so an
+/// `ignore(` to its matching `)`): a hunk side is read as text that ends there, `ignore` can
+/// go on as `ignore::case`, and inside a macro that takes any tokens `cfg_attr(all(),
+/// ignore(` goes on as anything (round 18 of Vesper's review, VD3R18-M-1). A list opened past
+/// [`CFG_ATTR_LISTS`] is the one exception: it is not followed, and is taken to hold a skip.
 #[derive(Default)]
 struct Skips {
     open: Vec<List>,
 }
 
 impl Skips {
-    /// Note the skip of `list`, whose `ignore` is on line `ignore_line`, when a token of it up to
+    /// The skip of `list`, whose `ignore` is on line `ignore_line`, when a token of it up to
     /// there is on a changed line (`changed`, the first such line).
-    fn skip(found: &mut Found, list: &List, changed: Option<usize>, ignore_line: usize) {
-        if let Some(line) = changed {
-            found.note(Item {
-                line,
-                signal: EvidenceSignal::TestSkipped,
-                basis: if list.line == ignore_line {
-                    Basis::Lexical
-                } else {
-                    Basis::Hunk
-                },
-                test_likely: false,
-            });
-        }
+    fn skip(list: &List, changed: Option<usize>, ignore_line: usize) -> Option<(usize, Basis)> {
+        let basis = if list.line == ignore_line {
+            Basis::Lexical
+        } else {
+            Basis::Hunk
+        };
+        changed.map(|line| (line, basis))
+    }
+
+    /// Note a skip.
+    fn note(found: &mut Found, (line, basis): (usize, Basis)) {
+        found.note(Item {
+            line,
+            signal: EvidenceSignal::TestSkipped,
+            basis,
+            test_likely: false,
+        });
     }
 
     /// Read the current token of `window`.
@@ -1053,16 +1143,22 @@ impl Skips {
     ) {
         let Some(token) = window.here() else { return };
         let closed = self.open.last_mut().is_some_and(|list| {
-            Self::follow(list, token, found);
+            Self::follow(list, token);
             list.closed
         });
-        if closed
-            && let Some(inner) = self.open.pop()
-            && let Some(around) = self.open.last_mut()
-        {
-            // the inner list's `(` was a bracket of the list around it, and so were its tokens
-            around.depth = around.depth.saturating_sub(1);
-            around.changed = around.changed.or(inner.changed);
+        if closed && let Some(inner) = self.open.pop() {
+            // the attribute is whole: its list closed here, and its `]` follows
+            if window.marks(window.at + 1, b']')
+                && let Some(skip) = inner.skip
+            {
+                Self::note(found, skip);
+            }
+            if let Some(around) = self.open.last_mut() {
+                // the inner list's `(` was a bracket of the list around it, and so were its
+                // tokens
+                around.depth = around.depth.saturating_sub(1);
+                around.changed = around.changed.or(inner.changed);
+            }
         }
         if token.what != What::Mark(b'(') {
             return;
@@ -1094,22 +1190,30 @@ impl Skips {
             tokens: 0,
             head: None,
             candidate: None,
+            skip: None,
             closed: false,
         };
         if self.open.len() >= CFG_ATTR_LISTS {
             // not followed: taken to hold a skip
-            Self::skip(found, &list, changed, token.line);
+            if let Some(skip) = Self::skip(&list, changed, token.line) {
+                Self::note(found, skip);
+            }
             return;
         }
         self.open.push(list);
     }
 
     /// One token of the innermost open list.
-    fn follow(list: &mut List, token: Token, found: &mut Found) {
+    fn follow(list: &mut List, token: Token) {
         if let Some((changed, line)) = list.candidate.take()
             && matches!(token.what, What::Mark(b',' | b')' | b'=' | b'('))
+            && let Some((first, basis)) = Self::skip(list, changed, line)
         {
-            Self::skip(found, list, changed, line);
+            // every `ignore` of the list has the same first changed line: it is set once
+            list.skip = Some(
+                list.skip
+                    .map_or((first, basis), |(at, was)| (at, was.max(basis))),
+            );
         }
         if token.changed && list.changed.is_none() {
             list.changed = Some(token.line);
@@ -1348,7 +1452,8 @@ impl TestStretch {
 ///
 /// A hunk side is read as text that ends there; nothing is inferred from how it ends. A
 /// construct of which the side shows only the beginning is not read (see the head of this
-/// module: rounds 15 to 17 read some forms there, and grammar broke each).
+/// module: rounds 15 to 17 read some forms there, and round 18 a skip's attribute up to its
+/// `(`, and grammar broke each).
 pub(crate) fn read_new<'a>(lines: impl Iterator<Item = SideLine<'a>>) -> Vec<Item> {
     use EvidenceSignal as S;
     let mut window = Window::over(lines);
@@ -1920,9 +2025,24 @@ mod tests {
             "+#[ignore",
             "+#[doc = ignore]",
             "+#!![ignore]",
+            // not whole: the side does not hold the `]` (round 18 of Vesper's review,
+            // VD3R18-M-1: in a macro that takes any tokens `#[ignore(` goes on as anything)
+            "+#[ignore(",
+            "+#![ignore(",
+            "+#[ignore(x)",
+            "+#[ignore(x]",
+            "+#[ignore =",
+            "+#[ignore = \"\"",
         ] {
             assert_eq!(signals(&[line]), [], "{line}");
         }
+        // whole within the bound, from `[` to `]`, and not past it
+        let arguments = |count: usize| format!("+#[ignore({})]", "x ".repeat(count));
+        assert_eq!(
+            signals(&[&arguments(TURBOFISH_TOKENS - 5)]),
+            [S::TestSkipped]
+        );
+        assert_eq!(signals(&[&arguments(TURBOFISH_TOKENS - 4)]), []);
         // an `ignore` that is another attribute's argument is no skip (the attribute is
         // read for what it is)
         assert_eq!(signals(&["+#[allow(ignore)]"]), [S::CheckSuppressed]);
@@ -1952,7 +2072,16 @@ mod tests {
             ("miri, ignore(x))]", true),
             ("all(), ignore(flaky))]", true),
             ("a, cfg_attr(b, ignore(y)))]", true),
-            ("a, cfg_attr(b, ignore (", true),
+            // not whole: the list, or the `ignore(` in it, is still open where the side ends,
+            // or no `]` follows its `)` (VD3R18-M-1)
+            ("a, cfg_attr(b, ignore (", false),
+            ("all(), ignore(", false),
+            ("all(), ignore(flaky)", false),
+            ("all(), ignore(flaky))", false),
+            ("miri, ignore)", false),
+            ("miri, ignore,", false),
+            ("miri, ignore = \"\"", false),
+            ("miri, ignore)) ]", false),
             ("miri, ignore[x])]", false),
             ("miri, serde(ignore(x)))]", false),
             ("miri, ignore::x(y))]", false),
@@ -1962,9 +2091,10 @@ mod tests {
             ("a, allow(x), cfg_attr(b, inline, ignore))]", true),
             ("a, cfg_attr(b, cfg_attr(c, ignore)))]", true),
             ("a, cfg_attr(b, cfg_attr(c, inline)), ignore)]", true),
-            ("a, cfg_attr(b, ignore)", true),
-            ("a, cfg_attr(b, ignore ,", true),
-            ("a, cfg_attr(b, ignore =", true),
+            ("a, cfg_attr(b, ignore)", false),
+            ("a, cfg_attr(b, ignore))]", true),
+            ("a, cfg_attr(b, ignore ,", false),
+            ("a, cfg_attr(b, ignore =", false),
             // an `ignore` that the side ends on is no skip: it can go on as `ignore::case`
             ("a, cfg_attr(b, ignore", false),
             ("a, cfg_attr(b, ignore::case))]", false),
@@ -2099,10 +2229,16 @@ mod tests {
             [S::TestSkipped]
         );
         // the lists a `cfg_attr` applies are one list to the reader, however deep
-        let deep = format!("+#[cfg_attr(a, {}ignore)", "cfg_attr(a, ".repeat(200_000));
+        let deep = format!(
+            "+#[cfg_attr(a, {}ignore{}]",
+            "cfg_attr(a, ".repeat(200_000),
+            ")".repeat(200_001)
+        );
         assert_eq!(signals(&[&deep]), [S::TestSkipped]);
-        // and one that the side ends on is none
+        // and one that the side leaves open, on its `ignore` or after it, is none
         let deep = format!("+#[cfg_attr(a, {}ignore", "cfg_attr(a, ".repeat(200_000));
+        assert_eq!(signals(&[&deep]), []);
+        let deep = format!("+#[cfg_attr(a, {}ignore)", "cfg_attr(a, ".repeat(200_000));
         assert_eq!(signals(&[&deep]), []);
         let deep = format!(
             "+#[cfg_attr(a, {}inline{}] fn f(x: u8, ignore: u8) {{}}",
@@ -2636,6 +2772,20 @@ mod tests {
                 "+    return <std::net::TcpStream>::connect(a);",
                 S::NetworkFetch,
             ),
+            // eleventh independent review, IR11-L-2 (`mutref-u0.patch`, compiled and run: it
+            // spawned `touch`), and round 18 of Vesper's review, VD3R18-L-1 (`become.rs`,
+            // `yeet.rs`, compiled with their nightly features)
+            (
+                "+    let ok = run(&mut <Command>::new(\"touch\").arg(p));",
+                S::ProcessSpawn,
+            ),
+            (
+                "+    let c = &mut <Command>::new(\"touch\");",
+                S::ProcessSpawn,
+            ),
+            ("+    become <Command>::new(program)", S::ProcessSpawn),
+            ("+    do yeet <Command>::new(\"true\");", S::ProcessSpawn),
+            ("+    do yeet <TcpStream>::connect(a);", S::NetworkFetch),
         ] {
             assert_eq!(new(&[line]), [(signal, Basis::Lexical, 0)], "{line}");
         }
@@ -2645,11 +2795,21 @@ mod tests {
             new(&["+    break 'outer", "+        <Command>::new(x);"]),
             [(S::ProcessSpawn, Basis::Lexical, 1)]
         );
-        // a label alone, a postfix keyword, a longer name: a comparison or a generic list
+        // the keyword on the line before
+        assert_eq!(
+            new(&["+    do yeet", "+        <Command>::new(x);"]),
+            [(S::ProcessSpawn, Basis::Lexical, 1)]
+        );
+        // a label alone, a postfix keyword, a longer name, `yeet` without `do`, a name
+        // before `yeet`: a comparison or a generic list
         for line in [
             "+    let b = 'l <Command> ::new(x);",
             "+    let b = x.await <Command> ::new(x);",
             "+    let b = returned <Command> ::new(x);",
+            "+    let b = mutable <Command> ::new(x);",
+            "+    let b = becomes <Command> ::new(x);",
+            "+    let b = yeet <Command> ::new(x);",
+            "+    let b = undo yeet <Command> ::new(x);",
         ] {
             assert_eq!(new(&[line]), [], "{line}");
         }
@@ -2664,8 +2824,11 @@ mod tests {
     /// side a test's attribute up to its name; from round 15 to round 17 a method's name with
     /// `::` after it (round 17 of Vesper's review, VD3R17-M-1: in a macro that takes any
     /// tokens `value.unwrap::` goes on as `NOT_A_CALL`; tenth independent review, IR10-L-3:
-    /// after a range `unwrap` is a free function).
-    const FORMS_ONCE_READ_AT_AN_EDGE: [&str; 52] = [
+    /// after a range `unwrap` is a free function); and from round 13 to round 18 a skip's
+    /// attribute that the side does not hold whole, to its `]` (round 18 of Vesper's review,
+    /// VD3R18-M-1: in such a macro `#[ignore(` and `cfg_attr(all(), ignore(` go on as
+    /// anything; the parenthesised forms were read in round 18 only).
+    const FORMS_ONCE_READ_AT_AN_EDGE: [&str; 63] = [
         // rounds 13 to 16
         "#[cfg_attr(miri, ignore",
         "#![cfg_attr(miri, ignore",
@@ -2723,6 +2886,19 @@ mod tests {
         "        value.unwrap::",
         "    let r = 0..unwrap::",
         "        value.expect::<",
+        // rounds 13 to 18: a skip's attribute up to the token after its `ignore`
+        "#[ignore =",
+        "#![ignore =",
+        "#[cfg_attr(miri, ignore,",
+        "#[cfg_attr(miri, ignore =",
+        "#[cfg_attr(miri, ignore)",
+        "#[cfg_attr(a, cfg_attr(b, ignore)",
+        // round 18: with its opening parenthesis (Vesper's `direct.rs` and `cfg.rs`)
+        "#[ignore(",
+        "#![ignore(",
+        "        #[ignore(",
+        "#[cfg_attr(miri, ignore(",
+        "        #[cfg_attr(all(), ignore(",
     ];
 
     /// No form is read at the end of a side (round 18, the coordinator's ruling on round 17
@@ -2760,6 +2936,19 @@ mod tests {
         // review's `range-u0.patch` (`let r = 1..unwrap::` and `<u8>();`, a free function)
         assert_eq!(new(&["+        value.unwrap::"]), []);
         assert_eq!(new(&["+    let r = 0..unwrap::"]), []);
+        // Vesper's two patches of round 18 (VD3R18-M-1), as `git diff -U0` wrote them, and
+        // the same text with its `)]`, which is the whole attribute and a skip
+        for (shown, close) in [
+            ("+        #[ignore(", "         )]"),
+            ("+        #[cfg_attr(all(), ignore(", "         ))]"),
+        ] {
+            assert_eq!(new(&[" fn main() {", shown]), [], "{shown}");
+            assert_eq!(
+                new(&[" discard! {", shown, "             NOT_A_SKIP", close]),
+                [(S::TestSkipped, Basis::Lexical, 1)],
+                "{shown}"
+            );
+        }
         // and the macro's text whole: `.unwrap::` going on as a name is no call either
         assert_eq!(
             new(&[
@@ -2888,7 +3077,8 @@ mod tests {
         for (shown, signal) in [
             ("    assert!(true,", S::TrivialAssert),
             ("    assert_eq!(true, true,", S::TrivialAssert),
-            ("#[ignore =", S::TestSkipped),
+            ("#[ignore = \"\"]", S::TestSkipped),
+            ("#[ignore(x)]", S::TestSkipped),
             ("#[allow(", S::CheckSuppressed),
             ("    todo!(", S::StubAdded),
             ("    unimplemented![", S::StubAdded),

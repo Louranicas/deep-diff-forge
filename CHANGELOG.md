@@ -535,6 +535,136 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     (VD3R12-L-1, IR5-L-2), and the comment on `Found` names both kinds of item that can
     come late (IR5-L-3).
 
+- **Round 18 of Vesper's review (NO-GO on one medium) and an eleventh independent review
+  (GO-WITH-FIXES, nothing high): a skip is read only where the side holds its attribute
+  whole.** Both reviews read the round 18 commit (`af74308`). The eleventh found it never
+  lower than release 0.8.3 or round 14 beyond the declared cases on every set it made
+  (58,198 patches: real `git diff --no-index` patches at three context widths, generated
+  sets and the `-U0`/`-U1`/`-U3` history of four repositories no review had used), no
+  item added by any of 70,924 cuts of real lines, and nothing lower than round 17 but
+  `.unwrap::` and `.expect::` at the end of a side. This is the line's last build round.
+  - *A skip's attribute is read only when the side holds it whole (VD3R18-M-1; the
+    coordinator's ruling).* Round 18 read `#[ignore(` and `ignore(` as an attribute of its
+    own in a `cfg_attr` list from the parenthesis on. Vesper compiled
+    `macro_rules! discard { ($($tokens:tt)*) => {}; }` with `discard! {` and
+    `#[ignore(` on one line and `NOT_A_SKIP` and `)]` on the next two (and the same with
+    `#[cfg_attr(all(), ignore(`): it runs and skips no test, and the `git diff -U0` of a
+    change from `#[allow(` ends its hunk on the parenthesis, which round 18 reported as a
+    `test_skipped` (release 0.8.3 and rounds 14 and 17: nothing). **One rule for the
+    class:** a skip is read only where the side's text holds its attribute whole, from `#`
+    to its `]` (`#[ignore]`, `#[ignore = "…"]`, `#[ignore(…)]`, `#![ignore…]`; in a
+    `cfg_attr` list, to the list's `)` and the `]` after it, so an `ignore(` to its
+    matching `)`). The construct, for where it is evidence, is unchanged: `#[ignore` and
+    the token after it, or the list from its `#` to its `ignore`. `ignored` asks for the
+    `]` that closes the attribute's `[`, within 64 tokens from `[` to `]` (an `#[ignore(…)]`
+    with a longer argument list is not read: it is the one form that round 18 read on a
+    whole text and round 19 does not, and no patch of the comparisons has one); a `cfg_attr` list keeps the skip
+    it holds and notes it when it closes and its `]` follows. A list opened past
+    `CFG_ATTR_LISTS` is still taken to hold a skip (it is not followed; no code nests
+    lists so). No other form read on a whole text loses its reading: every patch lower than round 18
+    below is a side that ends before the attribute's `]`. What the
+    rule takes away, at the end of a side: round 18's `#[ignore(`, `#![ignore(` and
+    `cfg_attr(…, ignore(`; and what rounds 13 to 18 read, `#[ignore =`, `#![ignore =` and an
+    `ignore` followed by `,`, `=` or `)` in a list left open. One of these is *ordinary*:
+    rustfmt writes a long condition over lines and `ignore = "reason"` alone on the line
+    above `)]`, so a `git diff -U0` of two rustfmt-clean files ends there
+    (`cfgeqnew-u0.patch`, made here with rustfmt; rounds 14 and 18 report the skip,
+    release 0.8.3 does not). It is the same shape as the bare `ignore` of `cfgu0.patch`,
+    and it is declared beside it (README, the head of `rust_tokens`, the corpus). When the
+    next hunk has a true number, the join reads the whole attribute and finds it.
+    Vesper's two patches give no signal; the complete forms of the tenth review's
+    `ignparen.patch` still skip. Tests: both opening-parenthesis forms, Vesper's indented
+    one-line sides and the six older forms join `no_form_is_read_at_the_end_of_a_side`
+    (63 forms, at the end of a new side and of an old side, after context and after a
+    change, spaced and a token a line, in a macro's braces and not); Vesper's patches at no
+    signal and the same text with its `)]` a skip; the unclosed forms in the table of the
+    conditional skip and of the spacing test; the bound; the ordinary `ignore = "…"` shape
+    at no signal with `-U0` and a skip with its `)]` in the hunk. Corpus: Vesper's patches
+    as hard negatives (new case `evidence/independent-review-11-20261116`).
+  - *Correction to the round 18 entry below.* It says that `#[ignore(`, `#![ignore(` and
+    `ignore(` in a `cfg_attr` list "are read as `test_skipped` on the whole text, at any
+    spacing the reader handles (never at an edge)". **The parenthesis was false:** round 18
+    read each of them at the end of a side from the opening parenthesis on (the eleventh
+    review's `endparen.patch`, Vesper's two patches). Since round 19 none of them is read
+    before the attribute's `]`. The round 17 entry's "(with `,`, `)` or `=` after it, it
+    is)", of an `ignore` at a side's end in an open list, was true of rounds 17 and 18 and
+    is not of round 19.
+  - *A side that begins at a bracketed path (IR11-L-1; declared, no code).* The head of
+    `rust_tokens` said "nothing is inferred from how it ends, and nothing from how it
+    begins", and the README that `Vec::<Command>::new()` is not read. A side's first token
+    can go on from a line the side does not show: `let v = Vec::` and on the next line
+    `<Command>::new();` compiles and spawns nothing, and a `-U0` hunk that changes the
+    second line begins at the `<`, which nothing shown precedes, and is read as the path
+    (rounds 16 to 18 report a `process_spawn`; release 0.8.3 and round 14 do not). Both
+    sentences now say this: the beginning of a side is read as the first tokens of its
+    text, and the false item is a writer's (no formatter breaks a line between `::` and
+    `<`; not reading such a `<` would lose `let c =` and `<Command>::new(…)` over two
+    lines). Declared in the README's writer's limits and the head comment; the reviewer's
+    `vecturbo-u0.patch` is a declared false positive in the corpus.
+  - *The keywords before a bracketed path (IR11-L-2, VD3R18-L-1; one rule, measured).* The
+    list is now the keywords of rustc 1.99.1 after which an expression can begin and a `<`
+    opens a path. It was derived by compiling `KW <Command>::new("true")` after each of
+    the 52 strict and reserved keywords of the Rust reference (38 strict, 14 reserved) and after `do yeet`, in 13
+    positions each (a statement, a `let`, a tail, a loop, a borrow, `&raw`, a condition, a
+    `match`, `for … in`, a coroutine, a tail call, a closure, an argument), in editions
+    2021 and 2024, with `RUSTC_BOOTSTRAP=1` and the keyword's feature where it is unstable
+    (1,354 compilations). The ones that compile: `return`, `match`, `in`, `break`, `if`,
+    `while`, `mut` (of `&mut`), and with a nightly feature `yield` (`coroutines`), `become`
+    (`explicit_tail_calls`) and `yeet` after `do` (`yeet_expr`). `mut`, `become` and
+    `do yeet` are new (18 lines of code, net); `else`, `const` and `mut` after `&raw` (no
+    address of a temporary), `continue` (a comparison follows it) and the rest do not
+    compile. The review's `mutref-u0.patch` and `mutref-u3.patch` (it spawned `touch`) and
+    Vesper's `become` and `do yeet` now report the spawn; a name before the `<`
+    (`mutable`, `becomes`, `yeet` without `do`, `undo yeet`) is no path. Corpus: the four
+    as expected items.
+  - *Documents (IR11-L-3).* The README's list of the rounds that took something back
+    names round 18 (`.unwrap::` and `.expect::` at the end of a side: 224 patches of the
+    review's sets by its count, 12 of the 6,110 patches this branch is compared on, re-measured) and round 19
+    (14 of the same patches, below). The round 18 sentence on memory, "peak memory within 1 MiB on every input",
+    holds for the first of its two runs only (on a build whose answers are the final
+    binary's); its second run, on the final binary, measured within 2 MiB, and the
+    eleventh review measured every input 1 to 2 MiB higher than round 17 (five by 2 MiB):
+    **within 2 MiB** is what holds. `git grep` finds the old phrase once more, in the
+    round 18 request to Vesper, a record of what was asked, left as it was.
+  - *Controls, comparisons, cost, fuzz.* Each plant in a scratch clone with its own target directory, against
+    the graph crate's 239 tests (all pass unplanted; so do the corpus test's 9): `#[ignore…`
+    read without its `]` fails 4 (`no_form_is_read_at_the_end_of_a_side`, the spacing
+    test, the test of `#[ignore(…)]` and the bare `ignore`, the count of cuts); a
+    `cfg_attr` list's `)` noted with no `]` after it 3; a list still open at the side's end
+    noted 5; the three at once (the reading of `af74308`) 7, and 4 of the corpus test; each
+    added keyword taken out (`mut`, `become`, `yeet` after `do`) 1, and `yeet` read without
+    its `do` 1 (`a_bracketed_path_after_a_keyword_that_begins_an_expression_is_read`). The
+    fuzz target `rust_hunk_places` built as a plain program and run over its 43 seeds, each
+    rule alone: no rule fails with this round's reader, with `af74308`'s, or with the three
+    plants at once. No fuzz target was changed: no rule tells round 18's reading of an
+    opening parenthesis from this round's (rule 16 holds that a cut line adds nothing the
+    whole line lacks, and round 18 read the parenthesis on the whole line too); the unit
+    tests above hold it. On the final binary, 6,110 patches (the 6,059 of round 18, this
+    round's own 20 and its corpus case, and the eleventh review's 30 reproductions), score,
+    signals and items, plain and strict: against release 0.8.3 one patch lower, the second
+    section for one path (as before), and 2,547 with something gained; against round 14,
+    fifteen lower (strict: sixteen, the list of 32 of `bound-lang.patch`, as since round
+    16), the six of round 18 (the bare `ignore`) and nine more, each a skip's attribute
+    that a side ends before its `]` (round 17's own `e6`, `#[cfg_attr(miri, ignore =`; six
+    of this round's one-line sides; `cfgeqnew-u0.patch` and its copy in the corpus, the
+    ordinary `ignore = "…"`); against round 18, fourteen lower, every one such a side (round
+    17's `e6`; this round's nine one-line sides, three with the parenthesis;
+    `cfgeqnew-u0.patch`; Vesper's `ignparen-u0.patch`; the review's `endparen.patch`; the
+    new corpus case, Vesper's two sections), and seven with
+    something gained (`&mut`, `become`, `do yeet`). No refusal differs. Cost, the 51
+    inputs of round 16 (`--rank --json`, user and system seconds, the best of three, peak
+    memory, one process at a time, against round 18, on a machine with a load of 8 to 16):
+    54.29 s in all for round 18 and 54.63 s now, peak memory within 2 MiB on every input
+    (0 to 2 MiB higher, a larger binary); the four that looked slower, re-timed three times
+    alternating, had equal bests (`items60-frag` 4.36 against 4.37 s, `manyhunks-added`
+    2.58 against 2.51 s, `slashstar-fragment-lines` 1.11 against 1.10 s, `hints-330k` 3.54
+    against 3.55 s). Memory on the reviewer's shapes (`--rank`): within 1.4 MB and 1.5 % of
+    round 18 on every shape (43,000 touching hunks with 60-byte context lines 451 MB).
+    Fuzz, 300 s each on this round's tree, every target with exit 0: `rust_hunk_places`
+    28,097 runs, `rust_tokens` 87,219, `rust_code_view` 767,893 and `evidence_scan` 202,278
+    (the last was pending from round 18). Pedantic clippy (workspace, all targets, and the
+    fuzz crate), `cargo fmt --check` and the workspace's tests (2,084 passed, 4 ignored)
+    are clean.
 - **Round 17 of Vesper's review (NO-GO on one medium) and a tenth independent review
   (GO-WITH-FIXES, nothing high): no form is read at the end of a hunk side.** Both
   reviews read the round 17 commit (`aa4acb7`). The tenth found it never lower than

@@ -2287,6 +2287,67 @@
         }
       ],
       "sha256": "9f9160546e2ecb53d4d5e9cd20b41f586f46a72088b089d363093d0135e0b980"
+    },
+    {
+      "id": "evidence/independent-review-11-20261116",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-11-20261116.patch",
+      "origin": "internal: round 18 of Vesper's review (docs/reviews/vesper-v3-round18-report-20261116.md: VD3R18-M-1, VD3R18-L-1) and an eleventh independent review by a Claude subagent (docs/reviews/claude-independent-review-11-20261116.md: IR11-L-1, IR11-L-2), 2026-11-16, each reproduced before it was counted, with rustc 1.99.1 where the finding rests on it. Hard negatives: `#[ignore(` and `#[cfg_attr(all(), ignore(` at the end of a one-line `-U0` side (tests/direct.rs, tests/cfg.rs: Vesper's patches as `git diff -U0` wrote them); in the file they stand in `discard! { … }`, a macro that takes any tokens, and the parenthesis goes on as `NOT_A_SKIP` and `)]`: it compiles and skips no test. Round 18 reported a `test_skipped` on each; since round 19 a skip is read only where the side holds its attribute whole, to its `]`. Expected: `<Command>::new(…)` after `&mut` (src/mutref.rs and src/mutref3.rs, the review's `mutref-u0.patch` and `mutref-u3.patch`, the string's absolute path replaced by a name: it compiles, and run it spawned `touch`), after `become` (src/become.rs, Vesper's `become.rs`, `explicit_tail_calls`) and after `do yeet` (src/yeet.rs, Vesper's `yeet.rs`, `yeet_expr`; both compiled with RUSTC_BOOTSTRAP=1). No version read them: the keyword list is now the keywords of rustc 1.99.1 after which an expression can begin and a `<` opens a path, measured by compiling `KW <Command>::new(\"true\")` after every strict and reserved keyword. Declared false positive: a side that begins at the `<` of `<Command>::new();` whose unseen line above ends on `Vec::` (src/vecturbo.rs, the review's `vecturbo-u0.patch`: a type argument, the program spawns nothing; a side's first token can go on from a line it does not show; a writer's, IR11-L-1). Declared miss, ordinary: rustfmt's layout of a `cfg_attr` list with a long condition and `ignore = \"…\"` alone on the line above `)]`, so a `git diff -U0` of two rustfmt-clean files ends there (tests/slowreason.rs, round 19's `cfgeqnew-u0.patch`; rounds 13 to 18 read it as a skip, release 0.8.3 does not): the side does not hold the attribute whole",
+      "expect": [
+        {
+          "path": "src/become.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "src/mutref.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/mutref.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/mutref3.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/mutref3.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/yeet.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 6
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "tests/slowreason.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/vecturbo.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        }
+      ],
+      "sha256": "948ce0424233ccd343d16f6d3a28e7253ccac566c1b1d45c79b10bfc1f5341cf"
     }
   ]
 }

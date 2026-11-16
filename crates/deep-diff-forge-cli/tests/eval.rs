@@ -141,14 +141,24 @@ use std::process::Command;
 /// negatives (`.unwrap::` and `.expect::<` in a macro that takes any tokens; `0..unwrap::`).
 /// The ninth review's call cut after `.unwrap::` is a declared miss. Both floors fell, on
 /// purpose: what was taken out was read at an edge, and grammar broke it.
+/// Measured a thirteenth time 2026-11-16 on 54 cases, after round 19 read a skip only where
+/// the side holds its attribute whole and the keywords before a bracketed path became those
+/// rustc 1.99.1 compiles there: precision 177 of 201, recall 177 of 259. The new case,
+/// `evidence/independent-review-11-20261116`, has six expected items (`<Command>::new` after
+/// `&mut` in two patches of two lines each, after `become` and after `do yeet`), one declared
+/// miss (`ignore = "…"` alone above an unchanged `)]`, rustfmt's layout, at the end of a
+/// `-U0` hunk), one declared false positive (a side that begins at `<Command>::new();` under
+/// an unseen `Vec::`) and two hard negatives (Vesper's `#[ignore(` and
+/// `#[cfg_attr(all(), ignore(` at the end of a side). The precision floor fell, on purpose:
+/// the false item is declared, not new to this round.
 const RANKING_PAIRS_FLOOR: u64 = 800_000;
-const EVIDENCE_PRECISION_FLOOR: u64 = 881_443;
-const EVIDENCE_RECALL_FLOOR: u64 = 678_571;
+const EVIDENCE_PRECISION_FLOOR: u64 = 880_597;
+const EVIDENCE_RECALL_FLOOR: u64 = 683_397;
 const FINDINGS_FLOOR: u64 = 1_000_000;
 /// Declared misses (plan N4): each counts as wrong in its metric above. The receipt's
 /// `known_misses` keeps its first meaning, the evidence `known_miss` items; `declared` lists all.
-const DECLARED: u64 = 107;
-const EVIDENCE_KNOWN_MISSES: u64 = 81;
+const DECLARED: u64 = 109;
+const EVIDENCE_KNOWN_MISSES: u64 = 82;
 /// The smallest corpus the gate accepts, and the fewest cases of each kind.
 const MIN_CASES: usize = 30;
 const MIN_CASES_PER_KIND: usize = 3;
@@ -268,14 +278,14 @@ fn the_summary_names_each_metric_and_each_failure() {
     let (code, text) = run(&corpus());
     assert_eq!(code, Some(0), "{text}");
     assert!(
-        text.starts_with("deep-diff-forge eval: 53 cases\n"),
+        text.starts_with("deep-diff-forge eval: 54 cases\n"),
         "{text}"
     );
     for line in [
         "  ranking_pairs        12/15",
-        "  evidence_precision   171/194",
-        "  evidence_recall      171/252",
-        "  declared             107",
+        "  evidence_precision   177/201",
+        "  evidence_recall      177/259",
+        "  declared             109",
         "  KNOWN ranking/auth-check-removed: src/handlers/delete.rs ranks below docs/CHANGES.md",
         "  KNOWN evidence/shell-heredoc: reports (\"scripts/docs.sh\", \"network_fetch\", \"new\", 3)",
     ] {
@@ -626,7 +636,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_recall"],
-        serde_json::json!({"right": 171, "total": 251, "ppm": 681_274})
+        serde_json::json!({"right": 177, "total": 258, "ppm": 686_046})
     );
 
     // A declared false positive the engine does not report.
@@ -644,7 +654,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_precision"],
-        serde_json::json!({"right": 171, "total": 194, "ppm": 881_443})
+        serde_json::json!({"right": 177, "total": 201, "ppm": 880_597})
     );
 
     // A declared false positive that is also expected.
@@ -660,7 +670,7 @@ fn a_declared_miss_must_still_be_a_miss() {
             .unwrap()
             .ends_with("is not reported, or is expected: remove it")
     );
-    assert_eq!(metrics["evidence_precision"]["right"], 172);
+    assert_eq!(metrics["evidence_precision"]["right"], 178);
     assert_eq!(known, usize::try_from(DECLARED).unwrap() - 1);
 }
 

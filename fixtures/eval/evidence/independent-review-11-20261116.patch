@@ -1,0 +1,69 @@
+diff --git a/tests/direct.rs b/tests/direct.rs
+--- a/tests/direct.rs
++++ b/tests/direct.rs
+@@ -5 +5 @@ fn main() {
+-        #[allow(
++        #[ignore(
+diff --git a/tests/cfg.rs b/tests/cfg.rs
+--- a/tests/cfg.rs
++++ b/tests/cfg.rs
+@@ -5 +5 @@ fn main() {
+-        #[cfg_attr(all(), allow(
++        #[cfg_attr(all(), ignore(
+diff --git a/src/mutref.rs b/src/mutref.rs
+--- a/src/mutref.rs
++++ b/src/mutref.rs
+@@ -4,2 +4,2 @@ fn main() {
+-    let ok = false;
+-    let c = &mut 0;
++    let ok = run(&mut <Command>::new("touch").arg("SPAWNED1"));
++    let c = &mut <Command>::new("touch");
+diff --git a/src/mutref3.rs b/src/mutref3.rs
+--- a/src/mutref3.rs
++++ b/src/mutref3.rs
+@@ -1,8 +1,8 @@
+ use std::process::Command;
+ fn run(c: &mut Command) -> bool { c.status().map(|s| s.success()).unwrap_or(false) }
+ fn main() {
+-    let ok = false;
+-    let c = &mut 0;
++    let ok = run(&mut <Command>::new("touch").arg("SPAWNED1"));
++    let c = &mut <Command>::new("touch");
+     let ok2 = c.status().is_ok();
+     println!("{ok} {ok2}");
+ }
+diff --git a/src/become.rs b/src/become.rs
+--- a/src/become.rs
++++ b/src/become.rs
+@@ -7 +7 @@ fn run<S: AsRef<OsStr>>(program: S) -> Command {
+-    return <Command>::new(program)
++    become <Command>::new(program)
+diff --git a/src/yeet.rs b/src/yeet.rs
+--- a/src/yeet.rs
++++ b/src/yeet.rs
+@@ -6 +6 @@ fn make_error() -> Result<(), Command> {
+-    Ok(())
++    do yeet <Command>::new("true");
+@@ -10 +10 @@ fn main() {
+-    assert!(make_error().is_ok());
++    assert!(make_error().is_err());
+diff --git a/src/vecturbo.rs b/src/vecturbo.rs
+--- a/src/vecturbo.rs
++++ b/src/vecturbo.rs
+@@ -4 +4 @@ fn main() {
+-        <Child>::new();
++        <Command>::new();
+diff --git a/tests/slowreason.rs b/tests/slowreason.rs
+--- a/tests/slowreason.rs
++++ b/tests/slowreason.rs
+@@ -2,2 +2,8 @@
+-#[should_panic(
+-    expected = "a very long expected panic message that makes rustfmt wrap the attribute over lines"
++#[cfg_attr(
++    any(
++        target_os = "windows",
++        target_os = "macos",
++        target_arch = "wasm32",
++        target_env = "musl"
++    ),
++    ignore = "slow on these platforms"

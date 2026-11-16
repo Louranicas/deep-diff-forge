@@ -4646,8 +4646,11 @@ mod tests {
             ("a, allow(x), cfg_attr(b, inline, ignore))]", true),
             ("a, cfg_attr(b, cfg_attr(c, ignore)))]", true),
             ("a, cfg_attr(b, cfg_attr(c, inline)), ignore)]", true),
-            ("a, cfg_attr(b, ignore)", true),
-            ("a, cfg_attr(b, ignore =", true),
+            ("a, cfg_attr(b, ignore))]", true),
+            // not whole: the side ends before the list's `)]` (round 18 of Vesper's review,
+            // VD3R18-M-1)
+            ("a, cfg_attr(b, ignore)", false),
+            ("a, cfg_attr(b, ignore =", false),
             // and only that: the nested condition, the place of the condition, another
             // attribute's list, a longer name, what follows a nested list that has closed,
             // and an `ignore` that the side ends on (it can go on as `ignore::case`: read
@@ -4675,16 +4678,13 @@ mod tests {
             assert_eq!(found(&hunk_of("tests/a.rs", &[&line])), expected, "{line}");
         }
         // no recursion: a line that nests as deep as it is long
-        let deep = format!("+#[cfg_attr(a, {}ignore,", "cfg_attr(a, ".repeat(200_000));
+        let (nest, shut) = ("cfg_attr(a, ".repeat(200_000), ")".repeat(200_001));
+        let deep = format!("+#[cfg_attr(a, {nest}ignore,{shut}]");
         assert_eq!(
             within_deadline(move || found(&hunk_of("tests/a.rs", &[&deep]))),
             [(S::TestSkipped, Basis::Lexical, 2)]
         );
-        let deep = format!(
-            "+#[cfg_attr(a, {}inline{}]",
-            "cfg_attr(a, ".repeat(200_000),
-            ")".repeat(200_001)
-        );
+        let deep = format!("+#[cfg_attr(a, {nest}inline{shut}]");
         assert_eq!(
             within_deadline(move || found(&hunk_of("tests/a.rs", &[&deep]))),
             []
@@ -8315,16 +8315,19 @@ mod tests {
     ///   and then `;`; `reqwest::` is the release's key by itself, `process::Command` is one
     ///   without `::new`, `::unwrap(x)` is a path call, `assert!(true,` is the assertion
     ///   whatever message follows), and nowhere else: a hunk side is read as text that ends
-    ///   there, and nothing is inferred from how it ends. That is 176 of the 265, pinned
+    ///   there, and nothing is inferred from how it ends. That is 173 of the 265, pinned
     ///   here so that a form read at an edge shows (round 16 read forms at the end of a
     ///   side and had 201; round 17 read one, a method's name and `::`, and had 178, the two
-    ///   more being the cuts after `.unwrap ::` and `.unwrap :: <`). The other 89 are
-    ///   declared misses: a
+    ///   more being the cuts after `.unwrap ::` and `.unwrap :: <`; round 18 had 176, the
+    ///   three more being a skip's attribute cut before its `]`: after `ignore =`, after
+    ///   `ignore = why` and after the `cfg_attr` list's `)`, which round 19 reads only
+    ///   whole). The other 92 are declared misses: a
     ///   cut straight after or before the bare word (`x.` / `unwrap()`, `x.unwrap` / `()`,
     ///   `Command` / `::new`, `todo` / `!()`), after a path's `::` (`Command::` / `new`),
     ///   after a stub's `!`, inside an assertion before the comma or bracket that ends its
     ///   truth, between `#`, `#[` or the attribute's name and what follows, inside a
-    ///   `cfg_attr` list (also straight after its `ignore`), after a method's name and its
+    ///   `cfg_attr` list (also straight after its `ignore` or its `)`), a skip's attribute
+    ///   anywhere before its `]`, after a method's name and its
     ///   `::` or `::<`, inside generic arguments, and a function passed as a value cut
     ///   before its name (`Option::` / `unwrap`). A construct cut twice, its word alone in a
     ///   hunk of its own, is one too (the review's `alone.patch`).
@@ -8368,7 +8371,7 @@ mod tests {
                 found_apart += usize::from(has(&two(old + 50, new + 70), signal));
             }
         }
-        assert_eq!((cuts, found_apart), (265, 176));
+        assert_eq!((cuts, found_apart), (265, 173));
     }
 
     /// The joins of round 14, by round 14's rule as it was written then (a small copy, to
@@ -9054,7 +9057,9 @@ mod tests {
     /// (`cfgu0.patch`: rustfmt writes a long condition over lines and `ignore` alone above
     /// `)]`) is not read: it can go on as `ignore::case`, and a hunk side is read as text that
     /// ends there. That one is an ordinary declared miss (the coordinator's ruling of round
-    /// 17, kept in round 18).
+    /// 17, kept in round 18). Since round 19 a skip is read only where the side holds its
+    /// attribute whole, and the same layout with a reason, `ignore = "…"` alone above `)]`, is
+    /// the same ordinary miss (rounds 13 to 18 read it).
     #[test]
     fn an_ignore_with_arguments_is_a_skip_and_a_bare_ignore_at_the_end_is_not() {
         let file = parse(
@@ -9075,6 +9080,30 @@ mod tests {
         .unwrap()
         .remove(0);
         assert_eq!(found(&cfgu0), []);
+        // Vesper, round 18 (VD3R18-M-1, `direct.rs` and `cfg.rs`, as `git diff -U0` wrote
+        // them): in `discard! { … }` the attribute's opening parenthesis goes on as
+        // `NOT_A_SKIP` and `)]`; it compiles and skips nothing
+        for line in ["#[ignore(", "#[cfg_attr(all(), ignore("] {
+            let honest = parse(&format!(
+                "--- a/tests/d.rs\n+++ b/tests/d.rs\n@@ -5 +5 @@ fn main() {{\n-        #[allow(\n+        {line}\n"
+            ))
+            .unwrap()
+            .remove(0);
+            assert_eq!(found(&honest), [], "{line}");
+        }
+        let reason = parse(
+            "--- a/tests/slow.rs\n+++ b/tests/slow.rs\n@@ -2,2 +2,8 @@\n-#[should_panic(\n-    expected = \"a very long expected panic message that makes rustfmt wrap the attribute over lines\"\n+#[cfg_attr(\n+    any(\n+        target_os = \"windows\",\n+        target_os = \"macos\",\n+        target_arch = \"wasm32\",\n+        target_env = \"musl\"\n+    ),\n+    ignore = \"slow on these platforms\"\n",
+        )
+        .unwrap()
+        .remove(0);
+        assert_eq!(found(&reason), []);
+        // with the `)]` in the hunk it is whole, and a skip
+        let reason = parse(
+            "--- a/tests/slow.rs\n+++ b/tests/slow.rs\n@@ -1,4 +1,10 @@\n #[test]\n-#[should_panic(\n-    expected = \"a very long expected panic message that makes rustfmt wrap the attribute over lines\"\n+#[cfg_attr(\n+    any(\n+        target_os = \"windows\",\n+        target_os = \"macos\",\n+        target_arch = \"wasm32\",\n+        target_env = \"musl\"\n+    ),\n+    ignore = \"slow on these platforms\"\n )]\n",
+        )
+        .unwrap()
+        .remove(0);
+        assert_eq!(found(&reason), [(S::TestSkipped, Basis::Hunk, 2)]);
     }
 
     /// A second section for the same path (seventh independent review, IR7-H-2). Plain
