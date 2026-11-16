@@ -124,9 +124,10 @@ publish-dry-run:
 # `just release-local-verify` (scripts/release_local.sh; docs/RELEASE_AND_PUBLICATION.md).
 # crates.io stays on hold by owner decision. The tag is made on the HEAD current when it is
 # signed, which the recipe does not compare with the HEAD at the start: run it only in a
-# dedicated, freshly cloned release worktree that nobody else uses, with no ignored files
-# (`git status --porcelain --ignored` empty) before it starts and HEAD stable throughout
-# (docs/RELEASE_AND_PUBLICATION.md, Tag And Push).
+# dedicated, freshly cloned release worktree that nobody else uses, with no ignored or
+# untracked files (`git status --porcelain --ignored --untracked-files=all` empty: without the
+# last option, status.showUntrackedFiles=no hides both) before it starts and HEAD stable
+# throughout (docs/RELEASE_AND_PUBLICATION.md, Tag And Push).
 # Usage: just release-tag 0.8.4
 [group("release")]
 release-tag version:

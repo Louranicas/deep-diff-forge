@@ -135,8 +135,10 @@ What the recipe does not check (reviews of 0.8.4, VR84C-M-1 and VR84C-M-2):
 
 So the release relies on this procedure: the tag is cut in a dedicated release worktree,
 freshly cloned, used by nobody else and under the release operator's exclusive control, with no
-ignored files before the recipe starts (`git status --porcelain --ignored` prints nothing) and
-a stable `HEAD` for the whole recipe. The coordinator's release script, outside this repository,
+ignored or untracked files before the recipe starts (`git status --porcelain --ignored
+--untracked-files=all` prints nothing; without `--untracked-files=all`, a
+`status.showUntrackedFiles=no` setting hides ignored files from this check too) and a stable
+`HEAD` for the whole recipe. The coordinator's release script, outside this repository,
 records `HEAD` before the gate and compares it after.
 
 ## Signed Tags
