@@ -513,9 +513,12 @@ says when it closed:
   Interactive `review` on macOS stays open until the `macOS tests` job is seen passing it.
 - **A binary section that deletes, creates or renames a file is shown as `binary_changed`
   (G3 of the v0.8.3 rescore, medium; open in 0.8.4).** A deletion, creation or rename with a
-  binary line has status `binary_changed` in every view, with no `deleted_file` or `new_file`
-  signal: the deletion is visible only as the raw `deleted file mode` line in the full JSON's
-  metadata.
+  binary line has status `binary_changed` in every view. From 0.8.4 the ranking gives a binary
+  creation or deletion the `new_file` or `deleted_file` signal with its weight; elsewhere the
+  deletion or creation is visible only as the raw `deleted file mode` or `new file mode` line in
+  the full JSON's metadata.
+- **Two hunks can share an address.** A section that creates a file followed by a change in
+  place with an identical hunk gives two hunks one address, in v0.8.3 and in 0.8.4.
 - **A corrupt binary body (F1 of the v0.8.2 rescore, medium; still open in v0.8.3 and 0.8.4).**
   Git stops at a `GIT binary patch` body that does not inflate and exits 0, applying only the
   sections before it, while DDF, which checks the body's line grammar only, shows every section

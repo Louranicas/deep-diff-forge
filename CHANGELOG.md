@@ -14,7 +14,7 @@ blob from its object store, and one path in several sections, which Git applies 
 (independent rescore of v0.8.3, G1 and G2, high; L1, low). They also hid Rust code after a
 nested block comment, after a character literal with a long escape, or after a comment or
 a string that an earlier hunk of a created file opened, from every rule that reads Rust
-code (found 2026-11-14). Upgrade from 0.8.3; the one interface change is a new
+code (found 2026-11-14). Upgrade from 0.8.3; the one breaking change is a new
 `PatchParseError` variant (the enum is `#[non_exhaustive]`). G3 of the same rescore
 (medium) and the known limits listed under 0.8.3 are not fixed here. This release has no
 GitHub release: it is published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally for Linux x86_64.
@@ -33,6 +33,13 @@ GitHub release: it is published as a signed tag on GitLab, Gitea and Forgejo; bi
   with Git 2.56; v0.8.2 is the same. The line is now read exactly as `Binary files … differ`
   is (status `binary_changed`), under the same rules: it ends the header, it is refused
   straight after `diff --git`, after the section's `---`/`+++` and under a submodule mode.
+  In the ranking, a binary section that creates a file (`new file mode`, or `/dev/null` as
+  the old side of its binary line) carries `new_file` beside `binary_change`, and one that
+  deletes a file (`deleted file mode`, or `/dev/null` as the new side) `deleted_file`, with
+  the weights of a text file, so a creation or deletion that 0.8.3 ranked as `added` or
+  `deleted` ranks no lower (review of 0.8.4, R84-M-1: without it `new file mode 100755` and
+  `Files /dev/null and b/n differ` scored 5 where 0.8.3 scored 6). The status stays
+  `binary_changed` (G3).
   Where Git does not read it as the marker it stays ignored text, as measured: after a hunk,
   after a line that already ended the header, and with a carriage return before its line
   feed.
@@ -44,8 +51,8 @@ GitHub release: it is published as a signed tag on GitLab, Gitea and Forgejo; bi
   (exit 4). The sections Git writes with no hunk are still read: a mode change, a pure rename
   or copy, an empty file created or deleted (with or without its `index` line), and a binary
   section.
-- **One path in several sections is refused unless Git applies the sections in order**
-  (rescore G2, high). Git applies a patch as a set: every removal first, every creation
+- **One path in several sections is refused, except in two section shapes that Git can apply
+  in order when their hunks apply** (rescore G2, high). Git applies a patch as a set: every removal first, every creation
   after, and a rename or copy reads its source as it was before the patch. DDF showed the
   sections as a sequence. Measured on v0.8.3 with Git 2.56, each exit 0 on both sides:
   - "modified `x`", then "deleted `x`": Git leaves `x` in place holding the modified content;
@@ -63,17 +70,25 @@ GitHub release: it is published as a signed tag on GitLab, Gitea and Forgejo; bi
   - a change in place (hunks, a mode change, a binary change) after a section that wrote the
     path, whether that created it, changed it, or renamed or copied a file to it. Git patches
     the earlier section's result, so a `git format-patch --stdout` series that touches a file
-    in several commits is still reviewed;
+    in several commits is still reviewed when no line of its commit messages begins with `-`
+    or `+` (`---` included); a series with such a line is refused (a body line outside any
+    hunk), as by 0.8.3;
   - a `new file` section after a `deleted file` section for one path, which is how Git writes
     a change of type (a file that becomes a symlink).
 
-  Reading a path is no conflict: a copy or rename whose source another section changes or
-  renames away, as `git diff -C` writes it, is still reviewed, and its hunks are against the
-  source as it was before the patch, which is what Git copies. Refused, though Git writes
-  them: two renames in which one's new name is the other's old name (a swap or a chain, from
-  `git diff -B -M`), and a series in which a later commit deletes or renames away a file an
-  earlier commit of the same series created or changed (`git apply` of the whole series does
-  not give the series' result there either; `git am` applies it mail by mail).
+  Reading a path is no conflict: a copy whose source another section changes or renames
+  away, as `git diff -C` writes it, is still reviewed, and its hunks are against the source
+  as it was before the patch, which is what Git copies. Every other pairing on one path is
+  refused, and so are some shapes Git writes. These were found; the list is of shapes found,
+  not proved complete: two renames in which one's new name is the other's old name (a swap
+  or a chain, from `git diff -B -M`); a series in which a later commit deletes or renames
+  away a file an earlier commit of the same series created or changed (`git apply` of the
+  whole series does not give the series' result there either; `git am` applies it mail by
+  mail); a rename of `x` to `y` followed by a new `x` (`git format-patch -M` of a move and
+  then a new file at the old name); a deletion of `y` followed by a rename of `x` to `y` (a
+  series that removes `y` and then moves `x` there); and a copy onto `x` followed by a
+  rename of `x` to `y` (`git diff -B -M -C --find-copies-harder`). For the last three one
+  `git apply` gives the series' or the commit's tree; they are refused all the same.
 - **A traditional diff with `/dev/null` on both sides is refused** (rescore L1, low). Git
   takes it for a new file and reads the name from the whole second line, so
   `+++ /dev/null run.sh` created `dev/null run.sh` while the review showed `dev/null`. No
@@ -451,8 +466,9 @@ GitHub release: it is published as a signed tag on GitLab, Gitea and Forgejo; bi
     the file's order; and hunks placed by `git apply --unidiff-zero`, `--allow-overlap` or
     `--inaccurate-eof` where plain `git apply` would not place them (the last joins two
     hunks inside a line). Besides: a path named by more than one section is read section
-    by section (the parser of this release refuses one path in several sections unless Git
-    applies them in order: see the third Security entry above), and a hunk with unseen
+    by section (the parser of this release refuses one path in several sections except in
+    two section shapes that Git can apply in order: see the third Security entry above), and
+    a hunk with unseen
     lines above it is started as
     code, whatever is open there. And a creation is read together only up to its share of
     the patch's bound: from the hunk that would take the reading past what is left of the
@@ -469,10 +485,19 @@ GitHub release: it is published as a signed tag on GitLab, Gitea and Forgejo; bi
 
 ### Changed
 
-- `PatchParseError` has a new variant, `PathInSeveralSections { line_number, path }` (the
-  enum is `#[non_exhaustive]`). `SectionWithoutPatch` now also covers a Git section with
-  headers but no change in them, and `InconsistentHeader` a traditional diff with `/dev/null`
-  on both sides; their messages say so.
+- `PatchParseError` has a new variant, `PathInSeveralSections { line_number, path,
+  same_section }` (the enum is `#[non_exhaustive]`); `same_section` is `true` for a single
+  section that renames a path to itself, which is refused as well, and its message names
+  that section rather than an earlier one (review of 0.8.4, R84-L-5). `SectionWithoutPatch`
+  now also covers a Git section with headers but no change in them, and `InconsistentHeader`
+  a traditional diff with `/dev/null` on both sides; their messages say so.
+- **`deploy release` and `--help` no longer claim GitHub** (review of 0.8.4, R84-L-3). The
+  `deep-diff-forge.release.v0` schema, its members and the target names are unchanged; only
+  values change. `github` and `github-release` are `skipped` (were `published` and
+  `blocked`), the targets `gitea` and `forgejo` are added as `published` beside `gitlab`, and
+  a skipped target is not listed in `pending`, which is now `["crates.io"]` (was
+  `["github-release", "crates.io"]`). `--help` says a release is a signed tag on GitLab, Gitea
+  and Forgejo and a local release, and that nothing goes to GitHub.
 - **Built and published without GitHub.** `scripts/release_local.sh` builds a release on the
   owner's machine (two fresh exports, `release.yml`'s cargo command, one SHA-256 required;
   the smoke, glibc check, SBOM, archive, receipt and `SHA256SUMS`) and verifies one (the tag's

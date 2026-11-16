@@ -27,9 +27,10 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
   with `gh api .../environments`). Only the crates.io `publish` job runs in it,
   so a tag run builds, attests and uploads without waiting, and a publish waits
   for the owner even with the gate open.
-- `deep-diff-forge deploy release` reports this posture as a declared snapshot:
-  `github` and `gitlab` published, `github-release` and `crates.io` blocked
-  (a build cannot know whether its own version was tagged).
+- `deep-diff-forge deploy release` reports the posture as a declared snapshot. From 0.8.4:
+  `gitlab`, `gitea` and `forgejo` published, `github` and `github-release` skipped (nothing
+  goes to GitHub; a skipped target is not pending), `crates.io` blocked. Up to 0.8.3 it said
+  `github` and `gitlab` published and `github-release` and `crates.io` blocked.
 - The workflows are described below exactly as `.github/workflows/ci.yml` and
   `.github/workflows/release.yml` define them.
 

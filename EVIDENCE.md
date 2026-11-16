@@ -1335,35 +1335,54 @@ its build and checks are the local ones below ([local release](docs/RELEASE_AND_
     ([DDF-2026-002](docs/advisories/DDF-2026-002.md)).
   - The code view fix (`07f4fd2`) was merged into `release/0.8.4` at `566daa2` and the version
     set to 0.8.4 at `69064ca`; the local release tool and the advisories (`8f6cbc2`, new files
-    only) and the documents of this commit follow. No file under `crates/`, `fuzz/` or `fixtures/`
-    changed after `69064ca`. The independent review of `69064ca`'s G1 and G2 change was in
-    progress when this section was written; its result is not recorded here.
+    only), the documents (`14e3ad2`) and one review round follow. Two independent reviewers
+    read `69064ca` (2026-11-16): both GO-WITH-FIXES, and neither found a patch 0.8.4 accepts
+    that `git apply` writes otherwise than the review shows. The round (`b8712e6`, then the
+    documents of this commit) applies the rulings on their findings: a binary section that
+    creates or deletes a file carries `new_file` or `deleted_file` (R84-M-1, medium: without it
+    such a file ranked below 0.8.3), `--help` and `deploy release` no longer claim GitHub
+    (R84-L-3), a rename of a path to itself has its own message (R84-L-5), a test of one path
+    spelled two ways, and narrowed wording. `fuzz/` and `fixtures/` did not change after
+    `69064ca`.
 - **Gate.** `scripts/ci_local.sh` passed every one of its 32 steps on `69064ca` (09:47:25Z to
-  09:49:53Z) and on the candidate of this commit, whose tree differs only in this section
-  (13:06:44Z to 13:10:19Z): `steps failed: 0`, and the tree unchanged after it. `cargo test
-  --workspace` counts 2,008 passed and 4 ignored (the banner's count).
+  09:49:53Z), on `14e3ad2`, and on the candidate of this commit, whose tree differs only in this
+  section (14:36:30Z to 14:39:13Z): `steps failed: 0`, and the tree unchanged after it. `cargo test
+  --workspace` counts 2,011 passed and 4 ignored (the banner's count; 2,008 before the review
+  round).
 - **Control.** In a scratch clone at `v0.8.3` (`a74bf91`) with 0.8.4's
   `tests/git_differential.rs`, 7 tests fail: four for G1, two for G2 and one for L1 (a
   traditional diff with `/dev/null` on both sides). The file names an error variant v0.8.3 lacks,
   so one assertion on that variant was weakened to `Err(_)` in the scratch copy, a change that can
   only make tests pass. The other 12 tests of the file, shapes that stay reviewed, pass there.
+  For the review round, in a scratch clone at `14e3ad2` with its new tests: the binary-creation
+  test fails at its floor check (a score of 5 where v0.8.3 gives 6), the rename-to-itself test
+  on the message, and two `deploy release` tests on `pending`; the test of one path spelled two
+  ways passes there, as it holds what `14e3ad2` already does.
 - **Comparison.** Over 5,831 patches (the review corpora of the code view fix), the binary of
   `07f4fd2` that both reviewers passed and the 0.8.4 binary of `69064ca` (`lost.py --strict`):
   lost 0, gained 0, 275 refused by both, and 3 refused by 0.8.4 only, each a file created by one
   section and renamed away by the next (`PathInSeveralSections`, the G2 rule). The ranked JSON
-  answers are byte-identical on the other 5,828.
-- **Local build** (`scripts/release_local.sh build`, on the candidate of this commit, 13:04:11Z
-  to 13:05:24Z, in the `fedora-toolbox-44` toolbox; Rust 1.99.1, LLD 23.1.1, glibc 2.43 on the
+  answers are byte-identical on the other 5,828. After the review round, over the same 5,831
+  and 31 more (the reviewer's reproductions and interaction cases, and binary creations and
+  deletions written each way), against the binary of `69064ca`: lost 0, refusal differs 0, and
+  119 files in 78 patches gain, each a binary section that creates a file (`new_file`, +2;
+  116) or deletes one (`deleted_file`, +3; 3), no other gain. Against the published v0.8.3
+  binary: no score lower and no signal or item missing once two sections of one path are
+  matched by status (`lost.py` pairs them by rank position, and in two interaction cases a
+  created section now ranks above the other section of its path, the same on `69064ca`);
+  8 refused by 0.8.4 only, each a G2 shape (`PathInSeveralSections`).
+- **Local build** (`scripts/release_local.sh build`, on the candidate of this commit,
+  14:32:12Z to 14:33:08Z, in the `fedora-toolbox-44` toolbox; Rust 1.99.1, LLD 23.1.1, glibc 2.43 on the
   build machine). Two fresh exports at two paths built with
   `cargo build --release --locked -p deep-diff-forge-cli --target x86_64-unknown-linux-gnu`
   gave one binary, SHA-256
-  `7bfc281c049cc898775cd4e087d5417bf20f924aff0637962e4010f51b869d96` (both builds). It prints
+  `33917d57ade71bf90f19751e96c2c880cf104bae700b97ad4302a9710b9c9156` (both builds; `7bfc281c…` before the review round). It prints
   `deep-diff-forge 0.8.4`, produces a review document, and requires at most `GLIBC_2.34`
   (`GLIBC_2.39` only as the weak `pidfd_spawnp` and `pidfd_getpid`). It holds no build path, and
   it holds the registry source path under `CARGO_HOME` (`~/.cargo` of the build account). The
   archive, `SHA256SUMS` and receipt hashes of the release are those of the owner's build of the
   tag: an archive carries its commit's time and `README.md`, so this commit cannot hold its own.
-- **Self-test.** `scripts/test_release_local.sh` on the candidate (13:04:11Z to 13:06:33Z): all
+- **Self-test.** `scripts/test_release_local.sh` on the candidate (14:32:12Z to 14:34:30Z): all
   cases passed. A good build and its verify pass; a changed archive byte fails verify, with the
   checksums as built and recomputed; a checksum signature by another key fails; a tag that is not
   the workspace version is refused by build and verify; `github.com` in an argument, an
