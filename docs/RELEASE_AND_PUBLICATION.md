@@ -2,9 +2,14 @@
 
 This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
-## Status 2026-11-11 (0.8.3 released)
+## Status 2026-11-16 (0.8.4 prepared)
 
-- **0.8.3 is released** as the signed tag `v0.8.3` (2026-11-11 UTC), the latest tag: a security release for v0.8.2's review of bare `diff --git` lines
+- **0.8.4** is a security release for v0.8.3's review of `Files … differ` lines and of one
+  path in several sections (rescore of v0.8.3, G1 and G2), with the fix for Rust code the
+  code view hid. It is a release once the signed tag `v0.8.4` exists; pushing that tag is the
+  owner's decision. It is not built by `release.yml` and has no GitHub release: once tagged
+  it is published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally for Linux x86_64.
+- **0.8.3 was released** as the signed tag `v0.8.3` (2026-11-11 UTC), the last tag before 0.8.4: a security release for v0.8.2's review of bare `diff --git` lines
   and of modes (rescore of v0.8.2, GHSA-rq5r-p3g9-phff), with three dependency updates, one of
   which the supply chain gate needs (rustix 1.1.6, RUSTSEC-2026-0486). Its assets and tag
   cannot change (Immutable Releases); pushing any later `v*` tag is the owner's decision.
@@ -32,7 +37,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
 | Channel | Purpose | Today |
 | --- | --- | --- |
-| `main` | Current development branch. | 0.8.3, reached only through pull requests (branch ruleset). |
+| `main` | Current development branch. | 0.8.4, merged without GitHub; up to 0.8.3 it was reached only through pull requests (branch ruleset). |
 | GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3`. |
 | GitLab mirror | Secondary remote and redundancy. | Pushed to match GitHub. |
 | crates.io | Rust library and CLI distribution. | On hold (`DDF_CRATES_IO`). |
@@ -44,7 +49,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 Semantic versioning. The plan below is the original 2026-06 sequence, kept as
 written; the releases did not follow it (`v0.2.0` already held 12 crates,
 including the TUI, daemon and learning crates; the review and SDK crates came
-later; 0.8.3 is the current development line):
+later; 0.8.4 is the current development line):
 
 ```text
 0.1.0: model and CLI bootstrap

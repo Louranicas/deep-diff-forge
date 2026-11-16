@@ -6,6 +6,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-11-16
+
+**Security release.** v0.8.3 and earlier could review a patch otherwise than `git apply`
+writes it: a `Files … differ` line, which Git reads as a binary marker and answers with a
+blob from its object store, and one path in several sections, which Git applies as a set
+(independent rescore of v0.8.3, G1 and G2, high; L1, low). They also hid Rust code after a
+nested block comment, after a character literal with a long escape, or after a comment or
+a string that an earlier hunk of a created file opened, from every rule that reads Rust
+code (found 2026-11-14). Upgrade from 0.8.3; the one interface change is a new
+`PatchParseError` variant (the enum is `#[non_exhaustive]`). G3 of the same rescore
+(medium) and the known limits listed under 0.8.3 are not fixed here. This release has no
+GitHub release: it is published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally for Linux x86_64.
+
 ### Security
 
 - **`Files … differ` is the binary marker `Binary files … differ` is** (independent rescore of
@@ -438,8 +451,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     the file's order; and hunks placed by `git apply --unidiff-zero`, `--allow-overlap` or
     `--inaccurate-eof` where plain `git apply` would not place them (the last joins two
     hunks inside a line). Besides: a path named by more than one section is read section
-    by section (the release track's fix for a path named by more than one section, not yet
-    released, refuses such a patch), and a hunk with unseen lines above it is started as
+    by section (the parser of this release refuses one path in several sections unless Git
+    applies them in order: see the third Security entry above), and a hunk with unseen
+    lines above it is started as
     code, whatever is open there. And a creation is read together only up to its share of
     the patch's bound: from the hunk that would take the reading past what is left of the
     256 KiB, or that has a line longer than 512 bytes, a comment or a string that one hunk
@@ -2731,7 +2745,8 @@ A supply-chain & fuzz hardening pass then raised the release/CI posture:
   `--json`/`--jsonl` stability tests. Corrected the daemon's `lib.rs` doc from
   "thread-per-connection" to the true single-threaded sequential accept loop.
 
-[Unreleased]: https://github.com/Louranicas/deep-diff-forge/compare/v0.8.3...HEAD
+[Unreleased]: https://gitlab.com/lukeomahoney/deep-diff-forge/-/compare/v0.8.4...main
+[0.8.4]: https://gitlab.com/lukeomahoney/deep-diff-forge/-/tags/v0.8.4
 [0.8.3]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.3
 [0.8.2]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.2
 [0.8.1]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.1

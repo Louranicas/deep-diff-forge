@@ -6,9 +6,16 @@ an exceptional one. This policy documents the maintained security boundary,
 the controls enforced by the repository, and the limits operators must account
 for.
 
-## Status 2026-11-11 (0.8.3 released)
+## Status 2026-11-16 (0.8.4 prepared)
 
-- `v0.8.3` (2026-11-11 UTC, signed) is the latest release, a security release: v0.8.2 and earlier can review a change on a
+- 0.8.4 is a security release: v0.8.3 and earlier can review a patch otherwise than `git apply`
+  writes it, for a `Files … differ` line (Git reads it as a binary marker and writes a blob from
+  its object store) and for one path in several sections (Git applies them as a set): G1 and G2
+  of the v0.8.3 rescore. They also hide Rust code after a nested block comment, a character
+  literal with a long escape, or a comment an earlier hunk of a created file opened from the
+  Rust rules. 0.8.4 is a release once the signed tag `v0.8.4` exists; until then `v0.8.3` is
+  the latest. It has no GitHub release: once tagged it is published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally for Linux x86_64.
+- `v0.8.3` (2026-11-11 UTC, signed), the release before 0.8.4, is a security release: v0.8.2 and earlier can review a change on a
   different file, or with a different mode or type, than `git apply` writes (F3 and F2 of the
   v0.8.2 rescore and a case found in the fix's review, [GHSA-rq5r-p3g9-phff](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-rq5r-p3g9-phff)).
   It also updates three dependencies, rustix among them (RUSTSEC-2026-0486; DDF calls none of
@@ -60,8 +67,8 @@ Fixes land on `main` first and reach users in the next tagged release.
 
 | Version | State | Security fixes |
 | --- | --- | --- |
-| `main` | 0.8.3 and later changes, untagged | Land here first. |
-| `v0.8.3` (2026-11-11 UTC) | Latest published release | Yes: the next release carries them. |
+| `main` | 0.8.4 (a release once `v0.8.4` is tagged) | Land here first. |
+| `v0.8.3` (2026-11-11 UTC) | Published; superseded once `v0.8.4` is tagged | No. It can show a patch otherwise than `git apply` writes it: a `Files … differ` line Git reads as a binary marker, or one path in several sections (G1 and G2 of the v0.8.3 rescore); and it hides Rust code after a nested block comment or a character literal with a long escape from the Rust rules. 0.8.4 fixes them. |
 | `v0.8.2` (2026-11-10) | Published, superseded | No. It can show a change on a different file, or with a different mode or type, than `git apply` writes: a name left by a bare `diff --git` line before a binary line, a new file's mode overridden by `new mode`, or content under a mode Git reads as a submodule ([GHSA-rq5r-p3g9-phff](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-rq5r-p3g9-phff)); 0.8.3 fixes them. |
 | `v0.8.1` (2026-11-08) | Published, superseded | No. It can review a different file or mode than `git apply` writes: a copy, a `---`/`+++` name with nothing after its first component, repeated mode headers, a header after a binary line, or a carriage return in a move name (N1-N3 of the v0.8.1 rescore and F1-F2 of the rescore before the v0.8.2 tag, [GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp)); 0.8.2 fixes them. |
 | `v0.8.0` (2026-11-07) | Published, superseded | No. It reviews a rename to a different destination than `git apply` writes when a non-header line comes between two `rename to` lines (F1 of the v0.8.0 rescore, high); 0.8.1 fixes it. |
