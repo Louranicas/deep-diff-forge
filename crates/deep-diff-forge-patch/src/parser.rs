@@ -177,6 +177,17 @@ const GIT_MODES: [&str; 4] = ["100644", "100755", "120000", "160000"];
 /// why: the first one no shape Git writes has after the ones before it, or, when the headers
 /// begin a shape Git writes but end before it does, the last (or the `diff --git` line's).
 fn refused_header(shape: &[(Header, usize)]) -> Option<((Header, usize), &'static str)> {
+    // A binary line straight after `diff --git` is no patch to Git, which leaves the line's
+    // name for the next section (F3): leaving out `index` never makes one Git reads.
+    if let Some(first) = shape
+        .first()
+        .filter(|h| matches!(h.0, Header::BinaryFiles | Header::BinaryPatch))
+    {
+        return Some((
+            *first,
+            "Git reads no patch from a binary line straight after diff --git",
+        ));
+    }
     let mut longest = 0;
     for entry in GIT_WRITES {
         let mut at = 0;

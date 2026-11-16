@@ -62,7 +62,9 @@ These are 37 header shapes in all:
 
 They are the `GIT_WRITES` list in `src/parser.rs`. A section is read only if its headers are one
 of these shapes. A `similarity index`, `dissimilarity index` or `index` line may be left out of
-the shape. None of them changes what `git apply` writes:
+the shape, except that a binary line may not come straight after `diff --git`: Git reads no
+patch from that, and leaves the line's name for the next section (F3 of the v0.8.2 rescore).
+None of these lines changes what `git apply` writes:
 
 - a score only sets the percentage `--summary` prints;
 - without `index`, Git applies a text section alike, and it refuses a binary one ("cannot apply
