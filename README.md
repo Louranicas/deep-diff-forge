@@ -35,9 +35,9 @@ Underneath sits one rule. The apply-able patch is truth, and nothing may rewrite
   <sub>Real output, not a mock-up: <code>scripts/docs/render_terminal_svg.py</code> runs the binary on the crate changes of PR #23 and draws what it prints.</sub>
 </p>
 
-> **Status: 0.8.4, a security release prepared 2026-11-16; it is a release once the signed tag `v0.8.4` exists.** It fixes reviews in v0.8.3 that differed from `git apply`: a `Files … differ` line, which Git reads as a binary marker, and one path in several sections, which Git applies as a set (rescore of v0.8.3, G1 and G2); and Rust code that a nested block comment, a character literal with a long escape, or a comment an earlier hunk of a created file opened had hidden from the Rust rules ([CHANGELOG](CHANGELOG.md)).
-> - **Declared scope:** a local, single-user review tool on Linux and macOS ([the exact targets](#supported-platforms)), covering the CLI, daemon, `rpc`, MCP and SDKs. All four targets are built and smoke-tested on current CI runners. The oldest OS versions listed are declared from the binaries, not run. The [verdict and its evidence](#project-status) are below.
-> - **Releases:** the latest GitHub release is [v0.8.3](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.3), with Linux (x86_64 and arm64) and macOS binaries, an SPDX SBOM and build provenance. 0.8.4 has no GitHub release: once the signed tag `v0.8.4` exists it is published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally for Linux x86_64.
+> **Status: 0.8.4, a security release prepared 2026-11-16; it is a release once the signed tag `v0.8.4` exists.** It fixes reviews in v0.8.3 that differed from `git apply`: a `Files … differ` line, which Git reads as a binary marker, and one path in several sections, which Git applies as a set (rescore of v0.8.3, G1 and G2); and Rust code that a nested block comment, a character literal with a long escape, or a comment an earlier hunk of a created file opened had hidden from the Rust rules ([CHANGELOG](CHANGELOG.md); advisories [DDF-2026-001](docs/advisories/DDF-2026-001.md) for G1 and G2, [DDF-2026-002](docs/advisories/DDF-2026-002.md) for the Rust code view).
+> - **Declared scope:** a local, single-user review tool on Linux and macOS ([the exact targets](#supported-platforms)), covering the CLI, daemon, `rpc`, MCP and SDKs. Up to v0.8.3 all four targets were built and smoke-tested on CI runners; 0.8.4 is built only for `x86_64-unknown-linux-gnu`, on the owner's machine. The oldest OS versions listed are declared from the binaries, not run. The [verdict and its evidence](#project-status) are below.
+> - **Releases:** the latest GitHub release is [v0.8.3](https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.3), with Linux (x86_64 and arm64) and macOS binaries, an SPDX SBOM and build provenance. 0.8.4 has no GitHub release: once the signed tag `v0.8.4` exists it is published on [GitLab](https://gitlab.com/lukeomahoney/deep-diff-forge), with mirrors on Gitea and Forgejo, as the signed tag and a Linux x86_64 archive built locally; `scripts/release_local.sh verify` checks it ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)).
 > - **crates.io:** publication is on hold by decision until the codebase is fully production-hardened.
 
 <p align="center">
@@ -190,10 +190,20 @@ curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.8.3/
 sha256sum -c deep-diff-forge-v0.8.3-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
-**From source** (`main`: 0.8.4, everything in this README). This needs Rust **1.88+** (edition 2024):
+**0.8.4** is published on GitLab, <https://gitlab.com/lukeomahoney/deep-diff-forge>, once the
+owner's signed tag `v0.8.4` exists: the tag and a Linux x86_64 archive
+(`deep-diff-forge-v0.8.4-x86_64-unknown-linux-gnu.tar.gz`) with its `.sha256`, the SBOM, the build
+receipt, `SHA256SUMS` and the owner's signature of it, `SHA256SUMS.sig`. There is no arm64 Linux
+or macOS binary of 0.8.4. Check the downloaded files from a clone with
+`scripts/release_local.sh verify v0.8.4 <dir> .github/release_allowed_signers`: the tag's signature, every checksum and
+its signature, and a rebuild that must give the same binary
+([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)).
+
+**From source** (`main` on GitLab: 0.8.4, everything in this README; GitHub's `main` stays at
+0.8.3). This needs Rust **1.88+** (edition 2024):
 
 ```bash
-git clone https://github.com/Louranicas/deep-diff-forge.git
+git clone https://gitlab.com/lukeomahoney/deep-diff-forge.git
 cd deep-diff-forge
 cargo build --release --locked -p deep-diff-forge-cli
 target/release/deep-diff-forge --version        # deep-diff-forge 0.8.4
@@ -202,16 +212,19 @@ target/release/deep-diff-forge --self-test
 
 ### Supported platforms
 
-These four release targets are the whole platform scope. Each is built by `release.yml` and its
-binary is run (`--version` and a review) before it ships. 0.8.4 is not built by `release.yml`:
-once the signed tag `v0.8.4` exists it is published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally for Linux x86_64.
+These four release targets are the whole platform scope. Up to v0.8.3 each was built by
+`release.yml` and its binary run (`--version` and a review) before it shipped. 0.8.4 is not built
+by `release.yml`: only `x86_64-unknown-linux-gnu` is built, on the owner's machine in the
+`fedora-toolbox-44` toolbox with `scripts/release_local.sh`, which runs the same smoke and glibc
+check; the other three targets are not built for 0.8.4, and v0.8.3's binaries for them remain on
+the GitHub releases page.
 
-| Target | Built and run on | Needs | Tests on every pull request |
-| --- | --- | --- | --- |
-| `x86_64-unknown-linux-gnu` | `ubuntu-24.04` | glibc 2.34 or newer | the whole suite (`deploy gate-feature`, required) |
-| `aarch64-unknown-linux-gnu` | `ubuntu-22.04-arm`, natively | glibc 2.34 or newer | the whole suite (`Linux arm64 tests`, not required; gates releases) |
-| `aarch64-apple-darwin` | `macos-26` (arm64) | macOS 11 or newer | the whole suite (`macOS tests`, required); the launchd agent (`macOS launchd agent`, not required; skipped in releases) |
-| `x86_64-apple-darwin` | cross-built on `macos-26`, run under Rosetta 2 | macOS 10.12 or newer | none (the release smoke only) |
+| Target | 0.8.4 | Built and run on (to v0.8.3) | Needs | Tests on every pull request (to v0.8.3) |
+| --- | --- | --- | --- | --- |
+| `x86_64-unknown-linux-gnu` | built locally (Fedora 44 toolbox, Rust 1.99.1, LLD); the whole local gate (`scripts/ci_local.sh`) | `ubuntu-24.04` | glibc 2.34 or newer | the whole suite (`deploy gate-feature`, required) |
+| `aarch64-unknown-linux-gnu` | not built for 0.8.4 | `ubuntu-22.04-arm`, natively | glibc 2.34 or newer | the whole suite (`Linux arm64 tests`, not required; gates releases) |
+| `aarch64-apple-darwin` | not built for 0.8.4 | `macos-26` (arm64) | macOS 11 or newer | the whole suite (`macOS tests`, required); the launchd agent (`macOS launchd agent`, not required; skipped in releases) |
+| `x86_64-apple-darwin` | not built for 0.8.4 | cross-built on `macos-26`, run under Rosetta 2 | macOS 10.12 or newer | none (the release smoke only) |
 
 - **The glibc floor, glibc 2.34**, is enforced: `scripts/check_glibc_floor.sh` fails the release
   smoke when a Linux binary requires a newer `GLIBC_` symbol version. Measured 2026-10-31: the
@@ -219,7 +232,9 @@ once the signed tag `v0.8.4` exists it is published as a signed tag on GitLab, G
   2.34), Ubuntu 22.04 (2.35) and Debian 12 (2.36), and the loader refused it on Debian 11 (2.31).
   The arm64 binary, built on `ubuntu-22.04-arm`, passes the same check in CI (measured; built on
   `ubuntu-24.04-arm` it needed `GLIBC_2.39`, PR #79); it has not been run on an older arm64
-  distribution (unmeasured).
+  distribution (unmeasured). The 0.8.4 x86_64 binary, built on Fedora 44 (glibc 2.43) with the
+  rustup toolchain's LLD, requires at most `GLIBC_2.34` (`readelf`, 2026-11-16; `GLIBC_2.39`
+  only as the two weak symbols below); it has not been run on an older system.
 - **On glibc 2.34 to 2.38 the loader prints one warning line to stderr per run**,
   ``weak version `GLIBC_2.39' not found``. The output and exit code are unchanged (measured on the
   three systems above). Rust's standard library references `pidfd_spawnp` and `pidfd_getpid`
@@ -909,9 +924,12 @@ Deeper: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/SCHEMATICS.md`
 
 ## Quality gates
 
-Deep-Diff-Forge reviews untrusted code, so it is built to make bad code hard to write. `main`
-changes only through a pull request, on a branch that is up to date, after **thirteen required
-checks**. Nobody can bypass them.
+Deep-Diff-Forge reviews untrusted code, so it is built to make bad code hard to write. Up to
+0.8.3, `main` changed only through a pull request, on a branch that is up to date, after
+**thirteen required checks** that nobody could bypass. From 0.8.4 nothing runs at GitHub: `main`
+moves on GitLab, and the release commit passes the local gate (`scripts/ci_local.sh`, the steps of
+the `secrets`, `msrv`, `gate` and `supply-chain` jobs); the macOS, diff-mutation, bench and
+CodeQL checks below do not run for it.
 
 | Required check | What it proves |
 | --- | --- |
@@ -935,8 +953,11 @@ Across the tree:
   ([supported platforms](#supported-platforms)).
 - **Campaigns.** Each week `campaign.yml` runs a 10-minute hostile daemon soak with real review
   work and leak checks (RSS and open-fd growth), and an hour of fuzzing for every fuzz target.
-- **Releases.** Each release builds four targets (three up to v0.5.0) and runs every one (the
-  x86_64 macOS binary under Rosetta 2), holds the Linux ones to the glibc floor, verifies checksums, and attaches SLSA provenance and the SBOM. Release tags
+- **Releases.** Each release up to v0.8.3 built four targets (three up to v0.5.0) and ran every one (the
+  x86_64 macOS binary under Rosetta 2), held the Linux ones to the glibc floor, verified checksums, and attached SLSA provenance and the SBOM. 0.8.4 is built
+  on the owner's machine for Linux x86_64 only, twice from fresh exports that must give one SHA-256,
+  with the same smoke, glibc check, SBOM and checksums, and `SHA256SUMS` signed by the owner; it
+  has no build-provenance attestation ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)). GitHub release tags
   are immutable (a tag ruleset), and CodeQL analyses the code and workflows. The crates.io job
   (on hold) runs in the `release` environment, which deploys only from `v*` tags and, since
   2026-11-01, waits for the owner's approval.
@@ -1097,7 +1118,7 @@ someone else's pull request.
    human review can focus on ideas.
 
 Everyone participates under the [Code of Conduct](CODE_OF_CONDUCT.md). Security issues go
-through a [private advisory](SECURITY.md), not a public issue.
+through a confidential issue on GitLab ([SECURITY.md](SECURITY.md#reporting-a-vulnerability)), not a public issue.
 
 ## Documentation map
 

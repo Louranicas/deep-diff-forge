@@ -1320,3 +1320,64 @@ Dates here are UTC unless marked. The tag was signed at 16:39Z on 2026-11-11, wh
     - `index 1111111..2222222 160000` over a one-line hunk on an existing regular file: `git apply --check` refuses it (`wrong type`); v0.8.2 showed the file modified. v0.8.3 refuses it (`invalid file mode at line 7`).
   - **Controls.** A plain new file, a binary change with its `index` line, and a new submodule (`new file mode 160000` with a `Subproject commit` line) are accepted by both versions and read as Git reads them.
 - **Not measured here.** v0.8.3 as released has had no independent rescore. F1 of the same rescore (a binary body Git finds corrupt is shown as applied), F4 and F5 are not fixed in 0.8.3 ([CHANGELOG](CHANGELOG.md), Known limits). The patches were compared with Git's `--numstat --summary` and, for one, `--check`; no patch was applied to a working tree for this section. The macOS and arm64 archives were checked by checksum and attestation only, not run.
+
+## 0.8.4 release commit (2026-11-16)
+
+Dates here are UTC. 0.8.4 is built and published without GitHub: no workflow runs for it, and
+its build and checks are the local ones below ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)).
+
+- **Inputs.**
+  - The independent rescore of the released v0.8.3 (2026-11-12, 67/100) found G1 and G2 (high):
+    a `Files … differ` line after an `index` line, and one path in several sections, each
+    reviewed otherwise than `git apply` writes it ([DDF-2026-001](docs/advisories/DDF-2026-001.md)).
+    Rust code hidden from the code view by a nested block comment, a character literal with a
+    long escape, or a comment an earlier hunk of a created file opened was found on 2026-11-14
+    ([DDF-2026-002](docs/advisories/DDF-2026-002.md)).
+  - The code view fix (`07f4fd2`) was merged into `release/0.8.4` at `566daa2` and the version
+    set to 0.8.4 at `69064ca`; the local release tool and the advisories (`8f6cbc2`, new files
+    only) and the documents of this commit follow. No file under `crates/`, `fuzz/` or `fixtures/`
+    changed after `69064ca`. The independent review of `69064ca`'s G1 and G2 change was in
+    progress when this section was written; its result is not recorded here.
+- **Gate.** `scripts/ci_local.sh` passed every one of its 32 steps on `69064ca` (09:47:25Z to
+  09:49:53Z) and on the candidate of this commit, whose tree differs only in this section
+  (13:06:44Z to 13:10:19Z): `steps failed: 0`, and the tree unchanged after it. `cargo test
+  --workspace` counts 2,008 passed and 4 ignored (the banner's count).
+- **Control.** In a scratch clone at `v0.8.3` (`a74bf91`) with 0.8.4's
+  `tests/git_differential.rs`, 7 tests fail: four for G1, two for G2 and one for L1 (a
+  traditional diff with `/dev/null` on both sides). The file names an error variant v0.8.3 lacks,
+  so one assertion on that variant was weakened to `Err(_)` in the scratch copy, a change that can
+  only make tests pass. The other 12 tests of the file, shapes that stay reviewed, pass there.
+- **Comparison.** Over 5,831 patches (the review corpora of the code view fix), the binary of
+  `07f4fd2` that both reviewers passed and the 0.8.4 binary of `69064ca` (`lost.py --strict`):
+  lost 0, gained 0, 275 refused by both, and 3 refused by 0.8.4 only, each a file created by one
+  section and renamed away by the next (`PathInSeveralSections`, the G2 rule). The ranked JSON
+  answers are byte-identical on the other 5,828.
+- **Local build** (`scripts/release_local.sh build`, on the candidate of this commit, 13:04:11Z
+  to 13:05:24Z, in the `fedora-toolbox-44` toolbox; Rust 1.99.1, LLD 23.1.1, glibc 2.43 on the
+  build machine). Two fresh exports at two paths built with
+  `cargo build --release --locked -p deep-diff-forge-cli --target x86_64-unknown-linux-gnu`
+  gave one binary, SHA-256
+  `7bfc281c049cc898775cd4e087d5417bf20f924aff0637962e4010f51b869d96` (both builds). It prints
+  `deep-diff-forge 0.8.4`, produces a review document, and requires at most `GLIBC_2.34`
+  (`GLIBC_2.39` only as the weak `pidfd_spawnp` and `pidfd_getpid`). It holds no build path, and
+  it holds the registry source path under `CARGO_HOME` (`~/.cargo` of the build account). The
+  archive, `SHA256SUMS` and receipt hashes of the release are those of the owner's build of the
+  tag: an archive carries its commit's time and `README.md`, so this commit cannot hold its own.
+- **Self-test.** `scripts/test_release_local.sh` on the candidate (13:04:11Z to 13:06:33Z): all
+  cases passed. A good build and its verify pass; a changed archive byte fails verify, with the
+  checksums as built and recomputed; a checksum signature by another key fails; a tag that is not
+  the workspace version is refused by build and verify; `github.com` in an argument, an
+  environment variable or the `gitlab` remote's URL is refused; a commit whose binary differs
+  between two builds writes nothing.
+- **Signers.** `v0.8.3` verifies against `.github/release_allowed_signers` through
+  `scripts/verify_release_tag.sh` (good signature, commit on `gitlab/main`), as it does against
+  `.github/allowed_signers`. In the same line form, a scratch key's signature in the namespace
+  `deep-diff-forge-release-sha256sums` verifies, and one made in namespace `git` does not.
+- **Pending (the owner's steps).** The merge, the signed tag `v0.8.4` on GitLab, Gitea and
+  Forgejo, the release build of the tag, the signature of its `SHA256SUMS`, and publishing the
+  files. None had happened when this section was written.
+- **Not measured here.** 0.8.4 has had no independent rescore. The binary was run only on the
+  build machine (glibc 2.43), not on an older system. No binary was built for
+  `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin` or `aarch64-apple-darwin`. G3, F1, F4 and
+  F5 are open ([SECURITY.md](SECURITY.md#residual-risks-and-non-goals) for G3 and F1; the
+  0.8.3 Known limits of the [CHANGELOG](CHANGELOG.md) for F1, F4 and F5).

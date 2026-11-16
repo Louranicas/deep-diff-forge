@@ -14,7 +14,12 @@ for.
   of the v0.8.3 rescore. They also hide Rust code after a nested block comment, a character
   literal with a long escape, or a comment an earlier hunk of a created file opened from the
   Rust rules. 0.8.4 is a release once the signed tag `v0.8.4` exists; until then `v0.8.3` is
-  the latest. It has no GitHub release: once tagged it is published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally for Linux x86_64.
+  the latest. It has no GitHub release: once tagged it is published on GitLab
+  (`https://gitlab.com/lukeomahoney/deep-diff-forge`), with mirrors on Gitea and Forgejo, as the
+  signed tag and a Linux x86_64 binary built on the owner's machine
+  ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)). Advisories:
+  [DDF-2026-001](docs/advisories/DDF-2026-001.md) (G1, G2) and
+  [DDF-2026-002](docs/advisories/DDF-2026-002.md) (the Rust code view).
 - `v0.8.3` (2026-11-11 UTC, signed), the release before 0.8.4, is a security release: v0.8.2 and earlier can review a change on a
   different file, or with a different mode or type, than `git apply` writes (F3 and F2 of the
   v0.8.2 rescore and a case found in the fix's review, [GHSA-rq5r-p3g9-phff](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-rq5r-p3g9-phff)).
@@ -35,7 +40,9 @@ for.
   Ubuntu 24.04, arm64 on Ubuntu 22.04 since v0.6.0; glibc 2.34 or newer, enforced
   by `scripts/check_glibc_floor.sh`), `aarch64-apple-darwin` and `x86_64-apple-darwin`.
   Every shipped binary is run in the release smoke test, the x86_64 macOS one under
-  Rosetta 2. Not claimed: musl, Windows, other architectures, crates.io packages,
+  Rosetta 2. 0.8.4 ships only `x86_64-unknown-linux-gnu`, built and smoke-tested on the owner's
+  machine (Fedora 44 toolbox) by `scripts/release_local.sh`; the other three targets are not
+  built for 0.8.4. Not claimed: musl, Windows, other architectures, crates.io packages,
   or a daemon shared between users on one host
   ([supported platforms](README.md#supported-platforms)).
 - Known limits are listed under [Residual risks](#residual-risks-and-non-goals).
@@ -45,8 +52,9 @@ for.
 Do not open a public issue for an unfixed vulnerability or include sensitive
 repository content in a report.
 
-- Preferred: submit a [private GitHub security advisory][report] using
-  **Security → Report a vulnerability**.
+- Preferred: open a **confidential issue** on GitLab,
+  `https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues/new` (tick *This issue is
+  confidential*).
 - Include the affected version or commit, impact, prerequisites, and the
   smallest safe reproduction available.
 - State whether the report concerns the CLI, daemon, parser, local learning
@@ -58,8 +66,6 @@ High/Critical issues are prioritized for a fix or documented mitigation. We
 coordinate publication with the reporter and publish an advisory and patched
 release when the fix is ready; these targets are not a service-level agreement.
 
-[report]: https://github.com/Louranicas/deep-diff-forge/security/advisories/new
-
 ## Supported versions
 
 Before 1.0, only the newest released minor line receives security fixes.
@@ -68,7 +74,7 @@ Fixes land on `main` first and reach users in the next tagged release.
 | Version | State | Security fixes |
 | --- | --- | --- |
 | `main` | 0.8.4 (a release once `v0.8.4` is tagged) | Land here first. |
-| `v0.8.3` (2026-11-11 UTC) | Published; superseded once `v0.8.4` is tagged | No. It can show a patch otherwise than `git apply` writes it: a `Files … differ` line Git reads as a binary marker, or one path in several sections (G1 and G2 of the v0.8.3 rescore); and it hides Rust code after a nested block comment or a character literal with a long escape from the Rust rules. 0.8.4 fixes them. |
+| `v0.8.3` (2026-11-11 UTC) | Published; superseded once `v0.8.4` is tagged | No. G1/G2 ([DDF-2026-001](docs/advisories/DDF-2026-001.md)) and the Rust code view ([DDF-2026-002](docs/advisories/DDF-2026-002.md)); 0.8.4 fixes them. |
 | `v0.8.2` (2026-11-10) | Published, superseded | No. It can show a change on a different file, or with a different mode or type, than `git apply` writes: a name left by a bare `diff --git` line before a binary line, a new file's mode overridden by `new mode`, or content under a mode Git reads as a submodule ([GHSA-rq5r-p3g9-phff](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-rq5r-p3g9-phff)); 0.8.3 fixes them. |
 | `v0.8.1` (2026-11-08) | Published, superseded | No. It can review a different file or mode than `git apply` writes: a copy, a `---`/`+++` name with nothing after its first component, repeated mode headers, a header after a binary line, or a carriage return in a move name (N1-N3 of the v0.8.1 rescore and F1-F2 of the rescore before the v0.8.2 tag, [GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp)); 0.8.2 fixes them. |
 | `v0.8.0` (2026-11-07) | Published, superseded | No. It reviews a rename to a different destination than `git apply` writes when a non-header line comes between two `rename to` lines (F1 of the v0.8.0 rescore, high); 0.8.1 fixes it. |
@@ -99,7 +105,8 @@ The following data is always treated as attacker-controlled:
 - learning metadata supplied at the receipt boundary.
 
 The operating-system kernel, effective user identity, process environment,
-installed trust roots, and GitHub release infrastructure are trusted. The local
+installed trust roots, and GitHub release infrastructure (to v0.8.3; from 0.8.4 the owner's
+build machine and the GitLab, Gitea and Forgejo hosts instead) are trusted. The local
 OS account is the daemon's isolation boundary: another process running as the
 same effective user is not considered isolated from the daemon or its learning
 store.
@@ -303,6 +310,15 @@ every gate ran as root inside the container. Gates refuse to run unless
   client's build requirement and Actions. CodeQL (`codeql.yml`, security-extended queries) analyses the Rust code
   and the workflows on pull requests, on `main` and weekly; since 2026-11-02 both analyses,
   `codeql (rust)` and `codeql (actions)`, are required checks.
+- **From 0.8.4, releases are built without GitHub.** `release.yml` is not used: the owner
+  builds on his own machine with `scripts/release_local.sh build`, which builds the commit twice
+  from fresh exports with `release.yml`'s cargo command and stops unless both binaries have one
+  SHA-256, then runs the same smoke and glibc check, writes the SBOM, archive, receipt and
+  `SHA256SUMS`, and signs nothing. The owner signs `SHA256SUMS` with the release key in the
+  namespace `deep-diff-forge-release-sha256sums` and publishes the signed tag and the files on
+  GitLab, Gitea and Forgejo. There is no build-provenance attestation and no CI run on the
+  release commit; `scripts/ci_local.sh` passes on it instead. Only `x86_64-unknown-linux-gnu`
+  is built ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)).
 - crates.io publication is on hold by owner decision until the codebase is
   production-hardened. The `publish` job runs only on a tag and only when the
   repository variable `DDF_CRATES_IO` is `open`; a configured
@@ -352,8 +368,11 @@ every gate ran as root inside the container. Gates refuse to run unless
 7. Install from a tagged release or use `cargo install --locked`; retain the
    lockfile in reproducible deployments.
 
-For a downloaded release, check its SHA-256 sidecar and verify its GitHub
-attestation against `Louranicas/deep-diff-forge`. A checksum obtained from the
+For a downloaded release up to v0.8.3, check its SHA-256 sidecar and verify its GitHub
+attestation against `Louranicas/deep-diff-forge`. For 0.8.4 and later, run
+`scripts/release_local.sh verify` from a clone: it checks the tag's signature, every file
+against `SHA256SUMS`, the owner's signature of `SHA256SUMS`, and a fresh build against the
+archive's binary. A checksum obtained from the
 same untrusted location as an artifact detects corruption but is not, alone, an
 independent authenticity proof.
 
@@ -492,6 +511,15 @@ says when it closed:
   workspace cannot be cross-checked here: tree-sitter's C build needs the macOS SDK), and the
   same reader passes the pty test on Linux with the feature turned on for that run.
   Interactive `review` on macOS stays open until the `macOS tests` job is seen passing it.
+- **A binary section that deletes, creates or renames a file is shown as `binary_changed`
+  (G3 of the v0.8.3 rescore, medium; open in 0.8.4).** A deletion, creation or rename with a
+  binary line has status `binary_changed` in every view, with no `deleted_file` or `new_file`
+  signal: the deletion is visible only as the raw `deleted file mode` line in the full JSON's
+  metadata.
+- **A corrupt binary body (F1 of the v0.8.2 rescore, medium; still open in v0.8.3 and 0.8.4).**
+  Git stops at a `GIT binary patch` body that does not inflate and exits 0, applying only the
+  sections before it, while DDF, which checks the body's line grammar only, shows every section
+  as changed: nothing unreviewed is written, but reviewed changes do not land.
 - **The review council trial is undesigned.** The council is used on this
   repository; no controlled trial of its review quality exists.
 

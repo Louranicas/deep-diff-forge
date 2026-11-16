@@ -473,6 +473,18 @@ GitHub release: it is published as a signed tag on GitLab, Gitea and Forgejo; bi
   enum is `#[non_exhaustive]`). `SectionWithoutPatch` now also covers a Git section with
   headers but no change in them, and `InconsistentHeader` a traditional diff with `/dev/null`
   on both sides; their messages say so.
+- **Built and published without GitHub.** `scripts/release_local.sh` builds a release on the
+  owner's machine (two fresh exports, `release.yml`'s cargo command, one SHA-256 required;
+  the smoke, glibc check, SBOM, archive, receipt and `SHA256SUMS`) and verifies one (the tag's
+  signature, the checksums and their signature, a rebuild, against the new
+  `.github/release_allowed_signers`), with a self-test,
+  `scripts/test_release_local.sh`, and the recipes `just release-local-build`,
+  `release-local-verify` and `release-local-test`; `just release-tag` pushes the tag to
+  GitLab, Gitea and Forgejo only and refuses a remote that points at GitHub. The advisories
+  are in the repository: [DDF-2026-001](docs/advisories/DDF-2026-001.md) (G1, G2) and
+  [DDF-2026-002](docs/advisories/DDF-2026-002.md) (the Rust code view). Security reports go
+  to a confidential issue on GitLab ([SECURITY.md](SECURITY.md#reporting-a-vulnerability))
+  instead of a private GitHub advisory.
 
 ### Fixed
 

@@ -39,7 +39,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 | --- | --- | --- |
 | `main` | Current development branch. | 0.8.4, merged without GitHub; up to 0.8.3 it was reached only through pull requests (branch ruleset). |
 | GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3`. |
-| GitLab mirror | Secondary remote and redundancy. | Pushed to match GitHub. |
+| GitLab mirror | Secondary remote and redundancy; from 0.8.4 the repository of record. | Up to 0.8.3 pushed to match GitHub; 0.8.4's signed tag and release files are published here ([local release](#local-release-from-084)). |
 | crates.io | Rust library and CLI distribution. | On hold (`DDF_CRATES_IO`). |
 | cargo-binstall | Fast binary installation. | Not configured (no binstall metadata in any `Cargo.toml`). |
 | package managers | Later, after CLI stabilizes. | None. |
@@ -84,8 +84,10 @@ rustup default. Run `scripts/diff_mutation.sh` from anywhere in the checkout: it
 - [ ] `DDF_SOAK_SECONDS=10 python3 scripts/security/daemon_soak.py`
 - [ ] `python3 scripts/security/privacy_probe.py`
 - [ ] Regenerated `sbom.spdx.json` matches the committed dependency graph
-- [ ] A `workflow_dispatch` run of `release.yml` on the release commit passes
-      (the dry run; it runs the macOS tests too, as the tag run does)
+- [ ] Up to 0.8.3: a `workflow_dispatch` run of `release.yml` on the release commit passes
+      (the dry run; it runs the macOS tests too, as the tag run does). From 0.8.4:
+      `scripts/test_release_local.sh` passes and `scripts/release_local.sh build` succeeds on
+      the release commit ([Local release](#local-release-from-084))
 - [ ] The version moved everywhere it is stated: workspace and fuzz manifests, both lock
       files, the SBOM, and the Python package (`sdk/python/pyproject.toml` and
       `deep_diff_forge.__version__`; `cli/tests/python_sdk.rs` fails if they differ)
@@ -97,22 +99,25 @@ checklist; neither has tooling yet.
 
 ## Tag And Push
 
-`main` reaches GitHub only through a merged pull request: the branch ruleset
+Up to 0.8.3, `main` reached GitHub only through a merged pull request: the branch ruleset
 requires a PR, thirteen passing checks (the PR-time jobs of `ci.yml` and the two
 CodeQL analyses of `codeql.yml`), an
-up-to-date branch, and allows no bypass. The tag is cut from that commit with
-the `justfile` recipe:
+up-to-date branch, and allows no bypass. From 0.8.4 nothing runs at GitHub: `main` moves on
+GitLab, and the release commit passes `scripts/ci_local.sh` instead. The tag is cut from that
+commit with the `justfile` recipe:
 
 ```bash
-just release-tag 0.8.3
+just release-tag 0.8.4
 ```
 
 `release-tag` refuses a version that differs from `[workspace.package].version`
-or a dirty tree, runs `just gate-release`, creates a signed annotated tag `vX.Y.Z`
-(see [Signed Tags](#signed-tags)), and pushes it to the remotes named `origin`
-(GitHub) and `gitlab`. The tag push
-starts `release.yml`. crates.io publishes only when `DDF_CRATES_IO == 'open'`
-(see below).
+or a dirty tree, and refuses unless the remotes named `gitlab`, `gitea` and `forgejo` all
+exist and none of their fetch or push URLs contains `github.com` (in any case), before the gate
+and before signing. It then runs `just gate-release`, creates a signed annotated tag `vX.Y.Z`
+(see [Signed Tags](#signed-tags)), and pushes it to those three remotes only, never `origin`
+(GitHub). Up to 0.8.3 the recipe pushed to `origin` and `gitlab`, and the tag push started
+`release.yml`; from 0.8.4 the tag starts nothing, and the release is built and checked as in
+[Local release](#local-release-from-084). crates.io stays on hold.
 
 ## Signed Tags
 
@@ -151,14 +156,84 @@ git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v v0.8.3
 ```
 
 Rotating the key means adding the new public key to `.github/allowed_signers`
-in a reviewed PR before the first tag it signs. Old lines stay, so older tags
+(and, from 0.8.4, to `.github/release_allowed_signers`) in a reviewed change before the first
+tag it signs. Old lines stay, so older tags
 keep verifying. Whether GitHub and GitLab show the tag as "Verified" depends on
 the key also being registered as a signing key on each account; the
 `allowed_signers` check above does not.
 
+## Local release (from 0.8.4)
+
+0.8.4 is built and published without GitHub (owner decision 2026-11-16); `release.yml` is not
+used for releases from 0.8.4. `scripts/release_local.sh` runs its build and check steps on the
+owner's machine. It publishes, pushes, tags and signs nothing, and contacts no network service:
+cargo runs offline (`cargo fetch --locked` once beforehand, outside the tool), and git reads only
+the local repository. Its self-test is `scripts/test_release_local.sh` (`just release-local-test`).
+
+- **Build.** In the `fedora-toolbox-44` toolbox, with the toolchain that `scripts/ci_local.sh`
+  pins at the commit (Rust 1.99.1):
+
+  ```bash
+  scripts/release_local.sh build <commit> <outdir>     # just release-local-build <commit> <outdir>
+  ```
+
+  It exports the commit twice with `git archive`, into two new directories, builds each with
+  `release.yml`'s exact command, `cargo build --release --locked -p deep-diff-forge-cli --target
+  x86_64-unknown-linux-gnu`, in an environment holding only `HOME`, `PATH`, `TMPDIR`,
+  `CARGO_HOME`, `RUSTUP_HOME`, the toolchain pin and offline mode, and stops, writing nothing,
+  unless the two binaries have the same SHA-256. It then runs `release.yml`'s smoke
+  (`--version` and a review document) and `scripts/check_glibc_floor.sh` (glibc 2.34), writes the
+  SBOM, packs the archive with `scripts/package_release.py` (`SOURCE_DATE_EPOCH` = the commit
+  time), and writes into `<outdir>`, which must not exist: the archive, its `.sha256`,
+  `sbom.spdx.json`, `release-receipt.json` (commit, toolchain, both build hashes, every file's
+  SHA-256) and `SHA256SUMS` over all of them. A `<commit>` that is a tag must be
+  `v<workspace version>`.
+- **Sign.** The owner signs `SHA256SUMS` with the release key, in a namespace used for nothing
+  else (a signature in namespace `git` is one git accepts on a tag or commit):
+
+  ```bash
+  ssh-keygen -Y sign -f ~/.ssh/id_ed25519_ddf_release_signing -n deep-diff-forge-release-sha256sums <outdir>/SHA256SUMS
+  ```
+
+- **Publish.** The signed tag goes to GitLab (`https://gitlab.com/lukeomahoney/deep-diff-forge`),
+  Gitea and Forgejo through `just release-tag`; the archive and the other files of `<outdir>`,
+  with `SHA256SUMS.sig`, are attached to the tag's release on GitLab. These are the owner's
+  steps.
+- **Verify.** From a clone that has the tag and `gitlab/main` (fetch them first; the tool uses no
+  remote):
+
+  ```bash
+  scripts/release_local.sh verify v0.8.4 <dir> .github/release_allowed_signers
+  just release-local-verify v0.8.4 <dir> .github/release_allowed_signers
+  ```
+
+  It passes only if (1) `scripts/verify_release_tag.sh` accepts the tag against the signers
+  file, its commit is on `gitlab/main` and the tag is `v<workspace version>`; (2) `SHA256SUMS`
+  lists exactly the files of `<dir>`, each matches, and `SHA256SUMS.sig` verifies against the
+  signers file in namespace `deep-diff-forge-release-sha256sums`; (3) a fresh build of the tag's
+  commit gives the binary of the receipt and of the archive. One file serves checks 1 and 2, so
+  `.github/release_allowed_signers` holds the release key, the principal and key of
+  `.github/allowed_signers`, for both namespaces, `git` and `deep-diff-forge-release-sha256sums`.
+  `.github/allowed_signers` stays `git` only: `just release-tag` and `release.yml` read it, and
+  `repo_scripts.rs` requires that form of each of its lines. Rotating the key means changing
+  both files in one commit.
+
+- **Targets.** Only `x86_64-unknown-linux-gnu` is built: the build machine has no
+  `aarch64-unknown-linux-gnu` Rust target or cross linker, and there is no macOS runner. The
+  `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin` and `aarch64-apple-darwin` binaries of
+  v0.8.3 remain on its GitHub release; none is built for 0.8.4.
+- **Reproducibility.** The binary does not depend on the checkout path: the two builds of every
+  `build` run are made at two different paths and must be equal (measured; see
+  [EVIDENCE.md](../EVIDENCE.md)). The binary holds the registry source path under `CARGO_HOME`,
+  so a rebuild gives the same SHA-256 only with the same toolchain and the same `CARGO_HOME`
+  path (both are in the receipt). That second half is inferred from the strings in the binary,
+  not measured.
+- **What it does not give.** No build-provenance attestation, no CI run on the release commit
+  (the local gate `scripts/ci_local.sh` instead), and no binary for the other three targets.
+
 ## Artifact Layout
 
-Release assets uploaded on a tag run:
+Release assets uploaded on a tag run (to v0.8.3; for 0.8.4 see [Local release](#local-release-from-084)):
 
 ```text
 deep-diff-forge-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
@@ -228,7 +303,8 @@ of them, all but `linux-arm64` and `launchd`, are required by ruleset 25868121 (
 
 ### `release.yml`
 
-Triggers: `push` of a `v*` tag, and `workflow_dispatch` (dry run). Default
+Not used for releases from 0.8.4 ([Local release](#local-release-from-084)); described as it
+ran up to v0.8.3. Triggers: `push` of a `v*` tag, and `workflow_dispatch` (dry run). Default
 permission `contents: read`; only `release` elevates, and it compiles and runs nothing.
 
 | Job | Runner | What it does |
@@ -290,7 +366,9 @@ reports/releases/vX.Y.Z/
 
 ## Mirror Policy
 
-GitHub is the primary remote:
+From 0.8.4 nothing is pushed to GitHub: GitLab is the repository of record, with mirrors on
+Gitea and Forgejo, and GitHub keeps `main` and the tags as they were after v0.8.3. Up to 0.8.3,
+GitHub was the primary remote:
 
 ```text
 https://github.com/Louranicas/deep-diff-forge

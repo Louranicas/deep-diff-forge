@@ -16,7 +16,7 @@ reaches `main`.
 | Found a bug | [Open a bug report](https://github.com/Louranicas/deep-diff-forge/issues/new?template=bug_report.yml). A patch that reproduces it is the best report there is. |
 | An idea | [Open a feature request](https://github.com/Louranicas/deep-diff-forge/issues/new?template=feature_request.yml) and describe the problem before the solution. |
 | An hour | Pick an issue labelled [`good first issue`](https://github.com/Louranicas/deep-diff-forge/labels/good%20first%20issue) or [`help wanted`](https://github.com/Louranicas/deep-diff-forge/labels/help%20wanted), or one of the open problems below. |
-| A security finding | **Don't open a public issue.** Follow [SECURITY.md](SECURITY.md) and use a private advisory. |
+| A security finding | **Don't open a public issue.** Follow [SECURITY.md](SECURITY.md) and open a confidential issue on GitLab (https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues/new, tick *This issue is confidential*). |
 | Docs or graphics to improve | Every `.md` file is fair game. The code is the source of truth, so check claims against it. |
 
 ### Open problems worth owning
