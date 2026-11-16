@@ -164,7 +164,7 @@ pub(crate) struct HunkItems {
 /// which sides this reading covers. A Rust hunk can have two readings (a side read from code,
 /// and read as if it began inside a block comment): each is read here on its own, whole, and
 /// what they find is united by the caller. No view is ever a mixture of two readings. `end`
-/// says that what a side ends on is read as the beginning of a construct ([`waiting`]).
+/// says that what the new side ends on is read as the beginning of a construct ([`waiting`]).
 pub(crate) fn read_hunk(
     lines: &[&PatchLine],
     views: &[(Option<String>, Option<String>)],
@@ -200,7 +200,7 @@ pub(crate) fn read_hunk(
             Vec::new()
         },
         old: if old && has(PatchLineKind::Removed) {
-            read_old(side(false), end)
+            read_old(side(false))
         } else {
             Vec::new()
         },
@@ -243,20 +243,6 @@ enum Word {
 impl Word {
     const fn panics(self) -> bool {
         matches!(self, Self::Unwrap | Self::Expect)
-    }
-
-    const fn stubs(self) -> bool {
-        matches!(self, Self::Todo | Self::Unimplemented)
-    }
-
-    /// How many `true` make an assertion of this name one that cannot fail, if it is an
-    /// assertion.
-    const fn asserts(self) -> Option<usize> {
-        match self {
-            Self::Assert | Self::DebugAssert => Some(1),
-            Self::AssertEq | Self::DebugAssertEq => Some(2),
-            _ => None,
-        }
     }
 
     /// The word `name` is, whole: a longer name (`unwrap_or`, `ignored`) is another word.
@@ -669,6 +655,10 @@ fn test_attribute<'a, I: Iterator<Item = SideLine<'a>>>(
     (window.marks(end, b']') || window.marks(end, b'(')).then_some((at, end))
 }
 
+/// How many names before the last one are passed over in `<a::b::Name>::function`
+/// ([`released_path`]).
+const OWNER_NAMES: usize = 8;
+
 /// A path that release 0.8.3 keyed `process_spawn` or `network_fetch` on, when the current
 /// token is the name it starts from: `Command::new` and `process::Command` (from `Command`),
 /// `reqwest::` and `ureq::`, `TcpStream::connect`, `UdpSocket::bind`. That release looked for
@@ -684,6 +674,16 @@ fn test_attribute<'a, I: Iterator<Item = SideLine<'a>>>(
 /// compiles and runs (eighth independent review, IR8-L-1: four lines that no version
 /// reported). `Vec::<Command>::new` and a type `Foo<Command>` are other things: there the
 /// `<` follows `::` or a name, and the path is not read.
+///
+/// In the angle brackets the name may be the last name of a path
+/// (`<std::net::TcpStream>::connect`, `<self::UdpSocket>::bind`, `<p::Command>::new` after
+/// `use std::process as p`; round 16 of Vesper's review, VD3R16-L-1, and the ninth
+/// independent review, IR9-L-2): the release's rule keys on the last name too
+/// (`tokio::net::TcpStream::connect` is its item), and the names before it are passed over
+/// backwards, [`OWNER_NAMES`] at most, in the tokens the window already holds. Other
+/// spellings of the same type are NOT read and are declared: in parentheses
+/// (`<(Command)>::new`), with an empty list of generic arguments inside the brackets
+/// (`<Command<>>::new`), and as an associated type (`<<Command as T>::Me>::new`).
 fn released_path<'a, I: Iterator<Item = SideLine<'a>>>(
     window: &Window<'a, I>,
 ) -> Option<(EvidenceSignal, (usize, usize))> {
@@ -693,7 +693,8 @@ fn released_path<'a, I: Iterator<Item = SideLine<'a>>>(
     let to = |from: usize, name: Word| {
         (window.path(from) && window.word(from + 2) == Some(name)).then_some(from + 2)
     };
-    // the name at `at` stands alone in angle brackets that open a path
+    // the name at `at` stands in angle brackets that open a path, alone or as the last name
+    // of a path (`<std::net::TcpStream>`, `<::std::net::TcpStream>`)
     let bracketed = || {
         let opens = |open: usize| {
             window.marks(open, b'<')
@@ -701,7 +702,22 @@ fn released_path<'a, I: Iterator<Item = SideLine<'a>>>(
                     window.word(before).is_some() || window.marks(before, b':')
                 })
         };
-        window.marks(at + 1, b'>') && at.checked_sub(1).is_some_and(opens)
+        let mut first = at;
+        for _ in 0..OWNER_NAMES {
+            match first.checked_sub(3) {
+                Some(owner) if window.path(owner + 1) && window.word(owner).is_some() => {
+                    first = owner;
+                }
+                _ => break,
+            }
+        }
+        if first
+            .checked_sub(2)
+            .is_some_and(|colons| window.path(colons))
+        {
+            first -= 2;
+        }
+        window.marks(at + 1, b'>') && first.checked_sub(1).is_some_and(opens)
     };
     let then = |name: Word| {
         to(at + 1, name)
@@ -745,80 +761,79 @@ fn allowed<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Opti
     .then_some((at, open + 2))
 }
 
-/// The constructs that the end of the side leaves waiting: `window` holds the side's last
-/// tokens, and they are the beginning of a construct, up to and with the token that makes it
-/// that construct and no other thing.
+/// The construct that the end of the side leaves waiting: `window` holds the side's last
+/// tokens, and they are the beginning of a construct whatever follows them.
 ///
 /// A hunk shows a part of a file and does not say what stands after its last line. Two hunks
 /// that stand together in the file can be written so that nothing says they do (the second
 /// with false positions: Git finds it by its text), and a construct cut in two by them is
 /// then read in two halves, by no join (seventh independent review: `cutpair.patch`). So the
-/// end of a side is read as what it is, text that goes on unseen.
+/// end of a side could be read as what it is, text that goes on unseen.
 ///
-/// **What counts.** A form is read only when what the side shows is by itself evidence of
-/// the construct: the word it is known by WITH the token that makes it the construct, and
-/// such that no line of honest code ends that way. Both are asked of a form: that no honest
-/// line can end so, and that it fires on no line of the one-line-hunk set below (the second
-/// alone is not enough: that set has no line that ends on a bare `Command` either). These
-/// pass:
+/// **The rule.** A form is read at the end of a side only if this reader's own rule for the
+/// whole construct fires on the tokens the side shows followed by ANY continuation that the
+/// grammar allows (outside the token tree of a macro, where anything is allowed), and if it
+/// is not a plausible end of a line of prose (a hunk can begin inside a comment that it does
+/// not show, and is then read as code). "No honest line ends so", the rule of rounds 15 and
+/// 16, was argued from a sample (8.1 million lines) and was false twice by grammar: round 15
+/// read a bare `Command` and a signature ends on it; round 16 read `Command::` and a path
+/// goes on on the next line (`const X: u8 = Command::` and then `VERSION;` compiles, and
+/// `git diff -U0` writes the hunk; round 16 of Vesper's review, VD3R16-M-1). A sample cannot
+/// show that no honest line ends so; the grammar can.
 ///
-/// - `todo!` and `unimplemented!` (the macro's name and its `!`);
-/// - an assertion as far as its truth: `assert!(true`, `assert_eq!(true, true` (and the
-///   `debug_` forms);
-/// - `#[ignore` and `#![ignore`, `#[allow` and `#![allow` (the attribute's `#[` and its name);
-/// - `Command::`, `process::`, `TcpStream::`, `UdpSocket::` (the first name of a path release
-///   0.8.3 keyed a signal on, and the `::` that goes on from it);
-/// - `.unwrap::` and `.expect::`, also with `<` (a method's name with generic arguments
-///   begun: no field has them);
-/// - on the old side, `#[test`, `#[rstest`, `#[tokio`, `#[tokio::` and `#[tokio::test`.
+/// **One form passes: `.unwrap::` and `.expect::`, also with the `<` after them.** After a
+/// method's name and `::` the grammar allows only generic arguments and then the call's
+/// bracket (a field has no generic arguments: `s.unwrap::<u8>` with no call is refused by
+/// the compiler, "field expressions cannot have generic arguments"), so every continuation
+/// is a call of a method named `unwrap` or `expect`, which is what [`panic_path`] reads. (That
+/// rule passes over generic arguments of up to [`TURBOFISH_TOKENS`] tokens; behind longer
+/// ones the call is the same call, and the form at the edge still says so.)
 ///
-/// **What does not, and why.** Round 15 read more, on a measurement that had no line of the
-/// shape that matters (every line of 603 crates as the end of a side: a one-line change in
-/// `git diff -U0` is exactly that). Each of these is the end of an honest line, or says too
-/// little:
+/// **What the rule takes away from round 16,** each with a continuation under which the rule
+/// for the whole does not fire, or with the reason it needs no form at an edge:
 ///
-/// - a bare `Command`, `TcpStream`, `UdpSocket`, `reqwest` or `ureq`: any type or crate of
-///   that name, at the end of a signature whose brace stands on the next line
-///   (`pub fn command() -> Command`: round 15 of Vesper's review, VD3R15-M-1, the output of
-///   `git diff -U0` for a file with no spawn in it, reported as `process_spawn`);
-/// - `.unwrap` and `.expect` with nothing after them: a field of that name at the head of a
-///   chain that goes on on the next line (`self.expect` is a field in real crates), and
-///   `::unwrap` and `::expect`: a function of that name given as a value (`Self::expect` as
-///   the last expression of a block);
-/// - a bare `todo` or `unimplemented`: a variable (`let rest = { todo };`);
-/// - the name of an assertion, alone or with its `!`: every assertion begins so, and it says
-///   nothing of an assertion that cannot fail; `assert_eq!(true` and `assert_eq!(true,`: the
-///   second `true` is not shown (`assert_eq!(true,` ends a line of code written before
-///   rustfmt, with a real value on the next);
-/// - an assertion cut after its opening bracket, a bare `#` or `#[`, and a `cfg_attr` list
-///   left open that does not end on `ignore` (279, 16 and 217 of 177,957 fragments end so;
-///   a list that ends on `ignore` is read by [`Skips::end`]).
+/// - `Command::`, `process::`, `TcpStream::`, `UdpSocket::`: `Command::VERSION`,
+///   `process::id()`, `TcpStream::VERSION`. A path names anything its owner holds.
+/// - `assert!(true` and `assert_eq!(true, true`: `assert!(true && x)`, `assert!(true ==
+///   f())`. rustfmt itself writes `assert!(` and `true` on two lines and `&& …` on the
+///   next when the condition is long, and a `git diff -U0` that changes the first two ends
+///   on the form (ninth independent review, IR9-M-2). With the comma after the `true` the
+///   condition is over and only the message can follow: that is no form at an edge, it is
+///   what [`trivial_assert`] reads anywhere.
+/// - `#[ignore` and `#[allow` (and their `#![` forms): `#[ignore::case]`, `#[allow::this]`,
+///   an attribute of a crate or a module of that name. `#[ignore =` and `#[allow(` are read
+///   by [`ignored`] and [`allowed`] anywhere. (`#[ignore(…)]` is not a form of the
+///   attribute: the compiler refuses it.)
+/// - `todo!` and `unimplemented!`: after a macro's name and `!` only its bracket can follow,
+///   so by grammar the form would pass; but it is how a sentence ends ("the fast path is
+///   still a todo!", a line of a block comment whose opener the hunk does not show: ninth
+///   independent review, IR9-L-5). With the bracket, [`stub`] reads it anywhere.
+/// - on the old side, `#[test`, `#[rstest`, `#[tokio`, `#[tokio::`, `#[tokio::test`:
+///   `#[rstest::fixture]` and `#[tokio::main]` are in every project that uses those crates,
+///   `#[test::case]` and `#[tokio::test::x]` are paths the grammar allows. With `]` or `(`
+///   after the name [`test_attribute`] reads it anywhere. So nothing is read at the end of
+///   an old side.
 ///
-/// And the beginning of a side is not read as the end of a construct at all (round 15 read
-/// `unwrap(`, `expect(`, `ignore]`, `ignore =`, `[allow(`, `::Command` and, on the old side,
-/// `test]` and `test(` there): a line of honest code begins with a call of a function named
-/// `expect` or `test`, or with an assignment to a variable named `ignore` (64, 70 and 24 of
-/// 8.1 million lines), and none of the others shows the head that makes it the construct.
+/// And nothing is read at the beginning of a side, as since round 16 (a line of honest code
+/// begins with a call of a function named `expect` or `test`), nor after a bare name
+/// (`pub fn command() -> Command`, `let n = self.expect`, `let rest = todo`).
 ///
-/// So a construct cut by hunks that nothing joins is found when the cut stands after one of
-/// the forms above, and nowhere else: not after a bare name, not before the word, not
-/// inside an assertion before its truth, not when it is cut twice so that its word stands
-/// alone in a hunk of its own (`let v = opt.`, then `unwrap`, then `();`), and not when a
-/// function is passed as a value and cut before its name (`Option::`, then `unwrap;`:
-/// `Option::` is the beginning of every path of that type). A cut in any of those places is
-/// found when ONE number of the second hunk is true, the old or the new: the hunks are then
-/// joined. Behind two false numbers it takes a writer who sets out to, and it is said so in
-/// the README. (Until round 16 the changelog said such a construct "is found when the cut
-/// stands beside its word"; eighth independent review, IR8-M-3. Of 265 cuts of 28
-/// constructs, each as two hunks: with one true number all are found; with none, 201,
-/// which is every cut that leaves a whole construct in one half or stands after a form
-/// above. The graph crate's tests hold both counts.)
-fn waiting<'a, I: Iterator<Item = SideLine<'a>>>(
-    window: &Window<'a, I>,
-    found: &mut Found,
-    new: bool,
-) {
-    use EvidenceSignal as S;
+/// So a construct cut in two by hunks that nothing joins is found when one half holds a
+/// construct whole, or when the first half ends on the one form above, and in no other
+/// case: a cut anywhere else is found when ONE number of the second hunk is true, the old
+/// or the new (the hunks are then joined), and behind two false numbers it is a declared
+/// miss, which takes a writer who sets out to. Of 265 cuts of 28 constructs, each as two
+/// hunks: with one true number all are found; with none, those that leave a whole construct
+/// in one half and the two after `.unwrap ::` and `.unwrap :: <`. The graph crate's tests
+/// hold both counts.
+///
+/// One older reading of what a side ends on went by the same rule: from round 13 to round
+/// 16 a `cfg_attr` list that the side left open and that ended on `ignore` was taken to hold
+/// the skip. `#[cfg_attr(miri, ignore::case)]` is an attribute of a crate or a module of
+/// that name, so the bare `ignore` at the end of a side is no skip; with `,`, `)` or `=`
+/// after it, it is one to [`Skips`] anywhere. (This is the one place where a round after 14
+/// reports less than round 14 did; release 0.8.3 reports nothing there.)
+fn waiting<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>, found: &mut Found) {
     let Some(end) = window.held.len().checked_sub(1) else {
         return;
     };
@@ -829,31 +844,6 @@ fn waiting<'a, I: Iterator<Item = SideLine<'a>>>(
             .is_some_and(|at| window.marks(at, mark))
     };
     let path = |back: usize| end.checked_sub(back).is_some_and(|at| window.path(at));
-    // `#[` or `#![` ends `back` places before the last token: the place of its `#`
-    let attribute = |back: usize| {
-        if !mark(back, b'[') {
-            None
-        } else if mark(back + 1, b'#') {
-            Some(end - back - 1)
-        } else if mark(back + 1, b'!') && mark(back + 2, b'#') {
-            Some(end - back - 2)
-        } else {
-            None
-        }
-    };
-    if !new {
-        // a test's attribute as far as it goes
-        let hash = match word(0) {
-            Some(Word::Test) if path(2) && word(3) == Some(Word::Tokio) => attribute(4),
-            Some(Word::Test | Word::Rstest | Word::Tokio) => attribute(1),
-            None if path(1) && word(2) == Some(Word::Tokio) => attribute(3),
-            _ => None,
-        };
-        if let Some(hash) = hash.filter(|hash| window.marks(hash + 1, b'[')) {
-            found.edge(window, S::TestRemoved, hash, end);
-        }
-        return;
-    }
     // a method call with generic arguments begun: `.unwrap::` or `.unwrap::<`
     for back in [2, 3] {
         let begun = if back == 2 {
@@ -862,50 +852,7 @@ fn waiting<'a, I: Iterator<Item = SideLine<'a>>>(
             path(2) && mark(0, b'<')
         };
         if begun && word(back).is_some_and(Word::panics) && mark(back + 1, b'.') {
-            found.edge(window, S::PanicPathAdded, end - back - 1, end);
-        }
-    }
-    // a stub: the macro's name and its `!`
-    if mark(0, b'!') && word(1).is_some_and(Word::stubs) {
-        found.edge(window, S::StubAdded, end - 1, end);
-    }
-    // an assertion as far as its truth: `assert!(true`, `assert_eq!(true, true`
-    for back in [3, 5] {
-        let Some(trues) = word(back).and_then(Word::asserts) else {
-            continue;
-        };
-        let opened = mark(back - 1, b'!')
-            && end
-                .checked_sub(back - 2)
-                .and_then(|at| window.token(at))
-                .is_some_and(
-                    |token| matches!(token.what, What::Mark(open) if closer(open).is_some()),
-                );
-        let truths = match (trues, back) {
-            (1, 3) => word(0) == Some(Word::True),
-            (2, 5) => word(2) == Some(Word::True) && mark(1, b',') && word(0) == Some(Word::True),
-            _ => false,
-        };
-        if opened && truths {
-            found.edge(window, S::TrivialAssert, end - back, end);
-        }
-    }
-    // an attribute as far as its name
-    match (word(0), attribute(1)) {
-        (Some(Word::Ignore), Some(hash)) => found.edge(window, S::TestSkipped, hash, end),
-        (Some(Word::Allow), Some(hash)) => found.edge(window, S::CheckSuppressed, hash, end),
-        _ => {}
-    }
-    // the first name of a path of release 0.8.3's signals and the `::` after it
-    if path(1) {
-        match word(2) {
-            Some(Word::Command | Word::Process) => {
-                found.edge(window, S::ProcessSpawn, end - 2, end);
-            }
-            Some(Word::TcpStream | Word::UdpSocket) => {
-                found.edge(window, S::NetworkFetch, end - 2, end);
-            }
-            _ => {}
+            found.edge(window, EvidenceSignal::PanicPathAdded, end - back - 1, end);
         }
     }
 }
@@ -1114,6 +1061,10 @@ impl List {
 /// The construct is the list from its `#` to the `ignore`, so its condition is inside: a
 /// change to the condition is a change to the skip (`miri` to `all()`: the test now runs
 /// nowhere; independent review, IR-M-3).
+///
+/// An `ignore` is the attribute when a comma, the list's closing parenthesis or `=` follows
+/// it. One that the side ends on is not read: what follows is not shown, and it can be
+/// `::case` (see [`waiting`]).
 #[derive(Default)]
 struct Skips {
     open: Vec<List>,
@@ -1250,16 +1201,6 @@ impl Skips {
                 list.begin_argument();
             }
             What::Mark(_) => list.count_token(),
-        }
-    }
-
-    /// The side has ended. A list that ends on `ignore` is taken to hold the skip: the hunk
-    /// shows no more of it, and what is not shown is no reason to drop evidence.
-    fn end(&self, found: &mut Found) {
-        for list in &self.open {
-            if let Some((changed, line)) = list.candidate {
-                Self::skip(found, list, changed, line);
-            }
         }
     }
 }
@@ -1484,18 +1425,18 @@ pub(crate) fn read_new<'a>(lines: impl Iterator<Item = SideLine<'a>>, end: bool)
             found.construct(&window, signal, extent, likely);
         }
         if end && window.token(window.at + 1).is_none() {
-            waiting(&window, &mut found, true);
+            waiting(&window, &mut found);
         }
         window.step();
     }
-    skips.end(&mut found);
     found.sorted()
 }
 
 /// The signals of the old side of a hunk, on its removed lines: `lines` are its unchanged and
 /// removed lines in order. A test's attribute with at least one token on a removed line is a
-/// removed test, on the first such line.
-pub(crate) fn read_old<'a>(lines: impl Iterator<Item = SideLine<'a>>, end: bool) -> Vec<Item> {
+/// removed test, on the first such line. Nothing is read at the end of an old side that is
+/// not read anywhere ([`waiting`] says why).
+pub(crate) fn read_old<'a>(lines: impl Iterator<Item = SideLine<'a>>) -> Vec<Item> {
     let mut window = Window::over(lines);
     let mut found = Found::default();
     while let Some(token) = window.here() {
@@ -1503,9 +1444,6 @@ pub(crate) fn read_old<'a>(lines: impl Iterator<Item = SideLine<'a>>, end: bool)
             && let Some(extent) = test_attribute(&window)
         {
             found.construct(&window, EvidenceSignal::TestRemoved, extent, false);
-        }
-        if end && window.token(window.at + 1).is_none() {
-            waiting(&window, &mut found, false);
         }
         window.step();
     }
@@ -1619,7 +1557,7 @@ mod tests {
 
     /// What the old side `lines` gives.
     fn old(lines: &[&str]) -> Vec<Found3> {
-        read_old(lines_of(&side(lines)), NO_EDGES)
+        read_old(lines_of(&side(lines)))
             .iter()
             .map(|item| (item.signal, item.basis, item.line))
             .collect()
@@ -2040,7 +1978,7 @@ mod tests {
             ("miri, ignore = \"\")]", true),
             ("all(a, b), allow(x), ignore)]", true),
             // the side ends on the `ignore`
-            ("miri, ignore", true),
+            ("miri, ignore", false),
             ("ignore, allow(x))]", false),
             ("miri, allow(ignore))]", false),
             ("feature = \"\", serde(skip, ignore, default))]", false),
@@ -2055,7 +1993,12 @@ mod tests {
             ("a, allow(x), cfg_attr(b, inline, ignore))]", true),
             ("a, cfg_attr(b, cfg_attr(c, ignore)))]", true),
             ("a, cfg_attr(b, cfg_attr(c, inline)), ignore)]", true),
-            ("a, cfg_attr(b, ignore", true),
+            ("a, cfg_attr(b, ignore)", true),
+            ("a, cfg_attr(b, ignore ,", true),
+            ("a, cfg_attr(b, ignore =", true),
+            // an `ignore` that the side ends on is no skip: it can go on as `ignore::case`
+            ("a, cfg_attr(b, ignore", false),
+            ("a, cfg_attr(b, ignore::case))]", false),
             // and only that: the nested condition, the place of the condition, another
             // attribute's list, a longer name, and what follows a nested list that has closed
             ("all(), cfg_attr(ignore, allow(x)))]", false),
@@ -2187,8 +2130,11 @@ mod tests {
             [S::TestSkipped]
         );
         // the lists a `cfg_attr` applies are one list to the reader, however deep
-        let deep = format!("+#[cfg_attr(a, {}ignore", "cfg_attr(a, ".repeat(200_000));
+        let deep = format!("+#[cfg_attr(a, {}ignore)", "cfg_attr(a, ".repeat(200_000));
         assert_eq!(signals(&[&deep]), [S::TestSkipped]);
+        // and one that the side ends on is none
+        let deep = format!("+#[cfg_attr(a, {}ignore", "cfg_attr(a, ".repeat(200_000));
+        assert_eq!(signals(&[&deep]), []);
         let deep = format!(
             "+#[cfg_attr(a, {}inline{}] fn f(x: u8, ignore: u8) {{}}",
             "cfg_attr(a, ".repeat(200_000),
@@ -2500,14 +2446,6 @@ mod tests {
             .collect()
     }
 
-    /// The same for the old side.
-    fn edged_old(lines: &[&str]) -> Vec<Found3> {
-        read_old(lines_of(&side(lines)), true)
-            .iter()
-            .map(|item| (item.signal, item.basis, item.line))
-            .collect()
-    }
-
     /// The paths release 0.8.3 keyed `process_spawn` and `network_fetch` on, and its
     /// `#[allow(`, are the same tokens whatever stands between them (seventh independent
     /// review, IR7-M-3: `sp1`, `sp3`, `sp4`, `sp7`, each a created file that compiles and
@@ -2632,6 +2570,51 @@ mod tests {
             new(&["+    let _ = <Command", "+    >::new(\"true\");"]),
             [(S::ProcessSpawn, Basis::Hunk, 0)]
         );
+        // the name as the last name of a path in the brackets (round 16 of Vesper's
+        // review, VD3R16-L-1: its `q.rs`; ninth independent review, IR9-L-2: `q.rs`, each
+        // compiled and run by the reviewer)
+        for (line, signal) in [
+            (
+                "+    let _ = <std::net::TcpStream>::connect(\"127.0.0.1:9\");",
+                S::NetworkFetch,
+            ),
+            (
+                "+    let _ = <std::net::UdpSocket>::bind(\"127.0.0.1:0\");",
+                S::NetworkFetch,
+            ),
+            ("+    let _ = <self::UdpSocket>::bind(a);", S::NetworkFetch),
+            ("+    let _ = <p::Command>::new(\"true\");", S::ProcessSpawn),
+            (
+                "+    let _ = < :: std :: net :: TcpStream > :: connect(a);",
+                S::NetworkFetch,
+            ),
+            (
+                "+    let _ = <a::b::c::d::e::f::g::h::Command>::new(x);",
+                S::ProcessSpawn,
+            ),
+        ] {
+            assert_eq!(new(&[line]), [(signal, Basis::Lexical, 0)], "{line}");
+        }
+        // `process::Command` is the release's key by itself, in brackets as anywhere
+        assert_eq!(
+            new(&["+    let _ = <std::process::Command>::new(\"true\");"]),
+            [(S::ProcessSpawn, Basis::Lexical, 0)]
+        );
+        // the spellings that are declared and not read, and paths that are other things
+        for line in [
+            "+    let _ = <(Command)>::new(\"true\");",
+            "+    let _ = <Command<>>::new(\"true\");",
+            "+    let _ = <(TcpStream)>::connect(a);",
+            "+    let _ = <<Command as T>::Me>::new(\"true\");",
+            "+    let v = Vec::<std::net::TcpStream>::new();",
+            "+    let m: HashMap<String, net::TcpStream> = HashMap::new();",
+            "+    let b = a <net::UdpSocket>::bind(x);",
+            "+    let d = <net::TcpStream as Default>::connect();",
+            "+    let e = <a::b::c::d::e::f::g::h::i::Command>::new(x);",
+            "+    let f = <net::TcpStreamer>::connect(x);",
+        ] {
+            assert_eq!(new(&[line]), [], "{line}");
+        }
         // and what is another thing: the name as a generic argument of another path or
         // type, generic arguments that are not empty, a comparison
         for line in [
@@ -2649,33 +2632,22 @@ mod tests {
         }
     }
 
-    /// The end of a side is text that goes on unseen. What it ends on is the beginning of a
-    /// construct, and an item, when it is the word the construct is known by WITH the token
-    /// that makes it that construct and nothing else, and no line of honest code ends so.
+    /// The end of a side is text that goes on unseen. What it ends on is an item only when
+    /// the reader's rule for the whole construct fires whatever follows: after a method's
+    /// name and `::` only generic arguments and the call can follow.
     #[test]
-    fn what_a_side_ends_on_is_read_when_it_is_evidence_by_itself() {
-        for (end, signal) in [
-            ("todo!", S::StubAdded),
-            ("unimplemented !", S::StubAdded),
-            ("assert!(true", S::TrivialAssert),
-            ("debug_assert![true", S::TrivialAssert),
-            ("assert_eq!(true, true", S::TrivialAssert),
-            ("#[ignore", S::TestSkipped),
-            ("#![ignore", S::TestSkipped),
-            ("#[allow", S::CheckSuppressed),
-            ("#![allow", S::CheckSuppressed),
-            ("let c = Command::", S::ProcessSpawn),
-            ("use std::process::", S::ProcessSpawn),
-            ("let s = TcpStream ::", S::NetworkFetch),
-            ("let s = UdpSocket::", S::NetworkFetch),
-            ("let v = opt.unwrap::", S::PanicPathAdded),
-            ("let v = opt.expect::<", S::PanicPathAdded),
+    fn what_a_side_ends_on_is_read_when_every_continuation_is_the_construct() {
+        for end in [
+            "let v = opt.unwrap::",
+            "let v = opt.unwrap ::<",
+            "let v = opt.expect::",
+            "let v = opt . expect :: <",
         ] {
             let line = format!("+{end}");
             // at the end of the side it is an item, on the changed line that holds it
             assert_eq!(
                 edged(&[" fn f() {", &line]),
-                [(signal, Basis::Hunk, 1)],
+                [(S::PanicPathAdded, Basis::Hunk, 1)],
                 "{end}"
             );
             // on an unchanged line it is none, and neither is it before the end
@@ -2687,27 +2659,156 @@ mod tests {
         }
         // over two lines: on the first changed one
         assert_eq!(
-            edged(&["+let c = Command", " ::"]),
-            [(S::ProcessSpawn, Basis::Hunk, 0)]
+            edged(&["+let v = opt.unwrap", " ::"]),
+            [(S::PanicPathAdded, Basis::Hunk, 0)]
         );
-        // the old side: a test's attribute as far as it goes
-        for end in [
-            "#[test",
-            "#[rstest",
-            "#[tokio",
-            "#[tokio::",
-            "#[tokio::test",
-        ] {
-            let line = format!("-{end}");
-            assert_eq!(
-                edged_old(&[" fn f() {}", &line]),
-                [(S::TestRemoved, Basis::Hunk, 1)],
-                "{end}"
-            );
-            assert_eq!(old(&[" fn f() {}", &line]), [], "{end}");
+        // a path is no method: `X::unwrap::` goes on to anything
+        assert_eq!(edged(&[" fn f() {", "+let v = X::unwrap::"]), []);
+        assert_eq!(edged(&[" fn f() {", "+let v = opt.unwrap_or::"]), []);
+    }
+
+    /// The property behind the form that is read: the tokens shown, then any continuation
+    /// the grammar allows, are a construct to the rule for the whole. Generated here: every
+    /// kept form, with generic arguments of several shapes and a call of several shapes,
+    /// written on the next line or lines, each line with any white space.
+    #[test]
+    fn every_continuation_of_a_form_read_at_an_edge_is_the_construct() {
+        const SHOWN: [&str; 4] = [
+            "let v = opt.unwrap::",
+            "let v = opt . unwrap ::",
+            "let v = make()?.expect::",
+            "x.y().unwrap::",
+        ];
+        const GENERICS: [&str; 7] = [
+            "<>",
+            "<u8>",
+            "< 'static >",
+            "<Vec<u8>>",
+            "<[u8; 4]>",
+            "<(u8, fn(u8) -> u8)>",
+            "<Result<Vec<u8>, Box<dyn std::error::Error>>>",
+        ];
+        const CALLS: [&str; 4] = ["()", "(\"why\")", "( msg )", "(&format!(\"{x}\"))"];
+        let mut cases = 0;
+        for shown in SHOWN {
+            for generics in GENERICS {
+                for call in CALLS {
+                    // the form with `<` shown is the form and the first token of its generics
+                    let (open, rest) = generics.split_at(1);
+                    for (first, second) in [
+                        (shown.to_owned(), format!("{generics}{call};")),
+                        (format!("{shown}{open}"), format!("{rest}{call};")),
+                        (format!("{shown} {open}"), format!("    {rest} {call} ;")),
+                    ] {
+                        let shown_line = format!("+{first}");
+                        // the edge says so with the continuation unseen
+                        assert_eq!(
+                            edged(&[" fn f() {", &shown_line]),
+                            [(S::PanicPathAdded, Basis::Hunk, 1)],
+                            "{first}"
+                        );
+                        // and the rule for the whole fires on the two as one text, with no
+                        // edge read, the continuation on one line or on two
+                        let next_line = format!("+{second}");
+                        assert_eq!(
+                            signals(&[&shown_line, &next_line]),
+                            [S::PanicPathAdded],
+                            "{first} | {second}"
+                        );
+                        let (head, tail) = second.split_at(second.find('>').map_or(1, |at| at + 1));
+                        let (head, tail) = (format!("+{head}"), format!("+{tail}"));
+                        assert_eq!(
+                            signals(&[&shown_line, &head, &tail]),
+                            [S::PanicPathAdded],
+                            "{first} | {second}"
+                        );
+                        cases += 1;
+                    }
+                }
+            }
         }
-        assert_eq!(edged_old(&["-#![test"]), []);
-        assert_eq!(edged_old(&["-#[testing"]), []);
+        assert_eq!(cases, 4 * 7 * 4 * 3);
+    }
+
+    /// What a side can end on with a continuation that is NOT the construct is no item,
+    /// though round 16 read each of these (each line is the form and, after `|`, an honest
+    /// continuation; the form at the end of a side gives nothing, and the two lines as one
+    /// text give nothing either, which is what makes the form no evidence):
+    ///
+    /// - round 16 of Vesper's review, VD3R16-M-1: `const X: u8 = Command::` and `VERSION;`
+    ///   on the next line, which compiles, and whose `git diff -U0` ends on `Command::`;
+    /// - ninth independent review, IR9-M-2: rustfmt's own layout of a long condition that
+    ///   begins with `true`;
+    /// - an attribute that is a path (`#[rstest::fixture]`, `#[tokio::main]`);
+    /// - IR9-L-5: `todo!` as the end of a sentence in a comment the hunk does not open.
+    #[test]
+    fn what_a_side_ends_on_with_another_continuation_is_no_item() {
+        for (shown, goes_on) in [
+            ("const X: u8 = Command::", "VERSION;"),
+            ("let id = std::process::", "id();"),
+            ("let v = TcpStream::", "VERSION;"),
+            ("let v = UdpSocket ::", "DEFAULT_PORT;"),
+            ("    assert!(true", "        && long_condition(a) > limit);"),
+            ("    debug_assert![true", "        == likely(true)];"),
+            ("    assert_eq!(true, true", "        && x);"),
+            ("#[ignore", "::case]"),
+            ("#![ignore", "::all]"),
+            ("#[allow", "::this]"),
+            ("#![allow", "::that]"),
+        ] {
+            let (shown, goes_on) = (format!("+{shown}"), format!("+{goes_on}"));
+            assert_eq!(edged(&[" fn f() {", &shown]), [], "{shown}");
+            assert_eq!(signals(&[&shown, &goes_on]), [], "{shown} {goes_on}");
+        }
+        // prose: the end of a sentence, and no bracket ever follows
+        for shown in [
+            " * The fast path is still a todo!",
+            "// not yet: unimplemented !",
+        ] {
+            let line = format!("+{shown}");
+            assert_eq!(edged(&[" fn f() {", &line]), [], "{shown}");
+        }
+        // the old side: nothing is read at its end
+        for (shown, goes_on) in [
+            ("#[test", "::case]"),
+            ("#[rstest", "::fixture]"),
+            ("#[tokio", "::main]"),
+            ("#[tokio::", "main]"),
+            ("#[tokio::test", "::x]"),
+        ] {
+            let (shown, goes_on) = (format!("-{shown}"), format!("-{goes_on}"));
+            assert_eq!(old(&[" fn f() {}", &shown]), [], "{shown}");
+            assert_eq!(old(&[&shown, &goes_on]), [], "{shown} {goes_on}");
+        }
+        // with the token that ends the doubt, each is a construct to the rule for the
+        // whole, at the end of a side as anywhere, and no form at an edge is needed
+        for (shown, signal) in [
+            ("    assert!(true,", S::TrivialAssert),
+            ("    assert_eq!(true, true,", S::TrivialAssert),
+            ("#[ignore =", S::TestSkipped),
+            ("#[allow(", S::CheckSuppressed),
+            ("    todo!(", S::StubAdded),
+            ("    unimplemented![", S::StubAdded),
+        ] {
+            let line = format!("+{shown}");
+            assert_eq!(
+                new(&[" fn f() {", &line]),
+                [(signal, Basis::Lexical, 1)],
+                "{shown}"
+            );
+            assert_eq!(
+                edged(&[" fn f() {", &line]),
+                [(signal, Basis::Lexical, 1)],
+                "{shown}"
+            );
+        }
+        for shown in ["#[test]", "#[rstest(", "#[tokio::test("] {
+            let line = format!("-{shown}");
+            assert_eq!(
+                old(&[" fn f() {}", &line]),
+                [(S::TestRemoved, Basis::Lexical, 1)]
+            );
+        }
     }
 
     /// What honest code ends a line with is no item, and neither is what says too little.
@@ -2734,7 +2835,6 @@ mod tests {
             "    assert!",
             "    debug_assert_eq!",
             "    assert_eq!(true",
-            "    assert_eq!(true,",
             // what real code ends lines with
             "    assert!(",
             "    assert_eq!(a,",
@@ -2789,7 +2889,7 @@ mod tests {
             "tokio::test]",
         ] {
             let line = format!("-{start}");
-            assert_eq!(edged_old(&[&line, " fn t() {}"]), [], "{start}");
+            assert_eq!(old(&[&line, " fn t() {}"]), [], "{start}");
         }
     }
 }

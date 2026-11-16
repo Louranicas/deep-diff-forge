@@ -53,7 +53,8 @@ era) no longer holds. How the standard is enforced today:
   read a hunk Git must put after another only as its continuation. Since round 15 it also
   holds that a construct only a join reads is found when either number of the headers says
   the hunks touch (with or without an old line in the first, in both orders), that a
-  construct cut beside the word it is known by is found whatever the numbers and the order
+  construct cut beside the word it is known by is found (so it was said then; since round
+  17 only after a method's name and `::`) whatever the numbers and the order
   of the hunks, and that every item of a script's hunk with honest numbers is found under
   false ones and with the hunk written second; the fragment rules also run with removed
   lines, and a raw string's text may hold quotes. Of its 18 seeds the 8 new ones are those
@@ -77,7 +78,24 @@ era) no longer holds. How the standard is enforced today:
   and holds that a hunk read alone has the labels the scan of its file gives it, with no
   pass over the file, and that the view of the file's hunks by path shows the outline's
   labels and goes through the file's hunks at most twice (no target called the reader of
-  one hunk before, and nothing held what a view by path costs).
+  one hunk before, and nothing held what a view by path costs). In round 17 the end of a
+  side went under one rule (a form is read there only where every continuation the
+  grammar allows is the construct: a method's name with `::` after it), and
+  `rust_hunk_places` (38 seeds) follows it: its edge rule cuts only after that form; its
+  rule for honest ends has the lines that round 16 still reported (a constant
+  `Command::` whose name stands on the next line, a sentence of a comment that ends on
+  `todo!`, a `cfg_attr` list left open on `ignore`), honest forms over TWO lines (`assert!(`
+  and `true`, as rustfmt writes a long condition) and removed lines (`#[rstest`, which
+  goes on as `::fixture]`), and fails on every seed on the sources of `4391c1e`; a removed
+  test's attribute cut in two is found by the join when the old numbers say the hunks
+  touch; a change cut inside into touching hunks with true numbers loses no item of the
+  same change as one hunk (the ninth independent review's `whole.py`); two hunks at old
+  position 0 of an existing file, which `git apply --unidiff-zero` stacks and the reader
+  joins to nothing (declared), lose nothing each has alone; and a hunk with lines that
+  falsely claims the place where two hunks touch parts nothing when it is written after
+  them. `evidence_scan` also holds what a scan keeps in memory: the readings alive at one
+  moment never hold more lines than the file has (a unit test in the graph crate holds
+  the exact figure: one reading of the longest text).
 - **Sandbox refusal controls:** the rootless-Podman planted-breach suite
   (`crates/deep-diff-forge-cli/tests/council_sandbox.rs`, 12 probes) runs on
   every pull request.
@@ -91,9 +109,9 @@ era) no longer holds. How the standard is enforced today:
   `fuzz_target.sh` lists targets with a TOML parser and fuzzes a new private
   corpus each run, under a root it makes if missing.
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
-  `fixtures/eval` (51 cases, measured 2026-11-15) must score at least its floors,
-  which are the measured values: ranking pairs 12/15, evidence precision 163/183,
-  evidence recall 163/230, findings 33/33. Any undeclared miss fails. The 90
+  `fixtures/eval` (52 cases, measured 2026-11-15) must score at least its floors,
+  which are the measured values: ranking pairs 12/15, evidence precision 166/188,
+  evidence recall 166/244, findings 33/33. Any undeclared miss fails. The 103
   declared misses (`known_miss`, `known_false_positive`) count as wrong in their
   metric rather than being excluded, and each fails once the engine gets it
   right. Planted controls prove a wrong label fails with exit 7, a changed file,

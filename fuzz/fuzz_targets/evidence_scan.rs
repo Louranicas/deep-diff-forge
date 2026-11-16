@@ -10,6 +10,8 @@
 // the labels the scan of its file gives it, and that reader makes no pass over the file. The
 // view of the file's hunks by path shows for each hunk the labels the outline shows, and goes
 // through every hunk of the file a fixed number of times (two), however many hunks there are.
+// And a scan holds one reading of one text at a time: the lines of the readings alive at one
+// moment are never more than the lines of the file.
 //
 // Input: the first byte picks a path (and so a language and rule scope), the rest is the body
 // of one hunk; every line becomes a changed or context line, so the scanner sees comments and
@@ -18,7 +20,7 @@
 use deep_diff_forge_daemon::views::{MAX_MAX_BYTES, Page, Selection, hunks, outline};
 use deep_diff_forge_graph::{
     EvidenceSignal, FileKinds, MAX_EVIDENCE_PER_FILE, RankedFile, Side, file_evidence, file_walks,
-    hunk_signals, hunk_signals_alone, joined_hunks,
+    hunk_signals, hunk_signals_alone, joined_hunks, view_lines_peak,
 };
 use deep_diff_forge_patch::{InputGuards, SealedReview};
 use libfuzzer_sys::fuzz_target;
@@ -65,7 +67,17 @@ fn hunks_alone_and_by_path(name: &str, text: &str) {
         return;
     };
     for file in review.files() {
+        // what a scan holds: one reading of one text at a time, so never more lines than
+        // the file has, however many texts its hunks stand in (ninth independent review,
+        // IR9-L-6: nothing held a memory figure)
+        let _ = view_lines_peak();
         let evidence = file_evidence(file);
+        let lines: usize = file.patch_twin.hunks.iter().map(|h| h.lines.len()).sum();
+        let held = view_lines_peak();
+        assert!(
+            held <= lines as u64,
+            "a scan of {lines} lines held {held} lines of readings at one time"
+        );
         let joined = joined_hunks(file);
         let kinds = FileKinds::of(file);
         let before = file_walks();

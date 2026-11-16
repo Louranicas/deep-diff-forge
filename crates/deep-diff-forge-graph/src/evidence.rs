@@ -1033,6 +1033,15 @@ fn signals_of(hits: &[Hit]) -> Vec<EvidenceSignal> {
 /// `git apply` refuses it on a file that has lines; `git apply --unidiff-zero`, which is how a
 /// `git diff -U0` patch is applied, puts it AFTER line 1.
 ///
+/// A section can have several hunks that this function calls the top (two at old position
+/// 0; one at 0 and one at 1 that holds an old line). Plain `git apply` refuses such a patch
+/// on a file that has lines. `git apply --unidiff-zero` applies it: every hunk at old
+/// position 0 goes to line 1, the one written later above the one written earlier, and a
+/// hunk at old position 1 under them. Each is read here as the top and joined to nothing,
+/// so a construct cut by two of them is not found, and a second one that stands under a
+/// comment the first leaves open is read from code. That is declared, not read (ninth
+/// independent review, IR9-M-1; a test pins it, with the Git runs).
+///
 /// Until 2026-11-14 a side counted as the top of its file when its own first line had the
 /// number 1, and for the new side that number is the `+N` of the header, which is the patch
 /// writer's word: `@@ -9,4 +1,5 @@` is applied at line 9 when its old lines are there and
@@ -1124,7 +1133,8 @@ fn texts(file: &ReviewFile) -> Vec<Text> {
 ///   The hints are taken twice. Once for plain `git apply`: the joins Git must make stand,
 ///   and a number adds to them where it does not contradict them. And once for an applier
 ///   that goes by the numbers alone (`git apply --unidiff-zero` puts a hunk with no old line
-///   at its new position and not at the end of the file): there the numbers join whatever
+///   at its new position and not at the end of the file; at line 1, when its old position
+///   is 0, which no join models: see below): there the numbers join whatever
 ///   they name, nothing has to be at the end, and a hunk with no line on a side stands
 ///   between the hunk that ends before its place and the hunk that begins there. And round
 ///   14's own joins (old numbers, hunks with old lines only, the first that ends before a
@@ -1145,11 +1155,15 @@ fn texts(file: &ReviewFile) -> Vec<Text> {
 ///   the rule for the end of a side (`rust_tokens`), and a cut that no such form stands
 ///   before is not found;
 /// - two hunks that touch by a number, when another hunk that has lines on that side says
-///   falsely that it ends before the same line and is written first ([`hinted_joins`]). A
-///   hunk with no line on the side cannot do that (until round 16 it could);
+///   falsely that it ends before the same line and is written first, or says falsely that
+///   it begins at that line and is written between the two ([`hinted_joins`]). A hunk with
+///   no line on the side cannot do that (until round 16 it could);
+/// - two or more hunks that are each the top of the file ([`placed_at_top`]), which
+///   `git apply --unidiff-zero` stacks at line 1;
 /// - a hunk that an applier puts INSIDE the lines another hunk showed. A hunk's lines are
 ///   read as lines that stand together. `git apply --unidiff-zero` puts a hunk of added
-///   lines at its new number, and that can be between two lines of an earlier hunk
+///   lines at its new number (at line 1, if its old position is 0), and that can be between
+///   two lines of an earlier hunk
 ///   (`@@ -1,3 +1,4 @@` with `let v = opt.unwrap` as its third line, then `@@ -3,0 +4,1 @@`
 ///   with `();`: line 4 stands before the first hunk's last line, and the result holds the
 ///   call). Plain Git puts that second hunk at the end of the file. No reading here puts a
@@ -1329,7 +1343,10 @@ enum Hints {
 /// What stays: among several hunks that all have lines on the side and all say they end
 /// before one position, the first of the patch is taken by the first hunk of the patch that
 /// has lines and says it begins there, the second by the second. A number that is false in
-/// that way, in a hunk that has lines on that side, is the declared way to part two hunks.
+/// that way, in a hunk that has lines on that side, is the declared way to part two hunks:
+/// a third hunk that says it ends before the line where two touch, written before them, or
+/// one that says it begins there, written between them (ninth independent review, IR9-L-4).
+/// Written after both, such a hunk takes nothing.
 fn hinted_joins(
     side: &[(Option<u32>, u64)],
     top: &[bool],
@@ -1582,6 +1599,7 @@ fn legacy_views(hunk: &PatchHunk) -> Views {
         }
     }
     Views {
+        _held: Held::of(lines.len()),
         lines,
         old: true,
         new: true,
@@ -1640,12 +1658,67 @@ fn legacy_hits(hunk: &PatchHunk, rules: &[&Rule], views: &Views) -> Vec<Hit> {
 /// One reading of a text: the code view of each of its lines on the old and on the new side
 /// (comments and strings blank), `None` on a side the line is not on or this reading does not
 /// cover.
+///
+/// This is what a scan holds beside the patch itself: a second copy of each line of the text
+/// for each side the line is on. One reading of one text is alive at a time (a reading is
+/// made, read by the rules and dropped before the next), so the most a scan holds is one
+/// reading of the longest text of the file, and that can be the whole file when its hunks
+/// touch or are joined. Nothing else held this until round 17 (ninth independent review,
+/// IR9-L-3 and IR9-L-6: memory was a figure measured for some shapes); now every reading
+/// counts its lines while it is alive ([`Held`], [`view_lines_peak`]) and a test holds the
+/// sentence above.
 struct Views {
     lines: Vec<(Option<String>, Option<String>)>,
     /// Whether this reading covers the old side.
     old: bool,
     /// Whether this reading covers the new side.
     new: bool,
+    /// Counts the lines of this reading while it is alive.
+    _held: Held,
+}
+
+std::thread_local! {
+    /// The lines of the readings alive on this thread now, and the most there have been
+    /// since the count was last begun ([`view_lines_peak`]).
+    static VIEW_LINES: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// The lines of one reading, counted while the reading is alive.
+struct Held(u64);
+
+impl Held {
+    fn of(lines: usize) -> Self {
+        let lines = lines as u64;
+        VIEW_LINES.with(|count| {
+            let (alive, peak) = count.get();
+            count.set((alive + lines, peak.max(alive + lines)));
+        });
+        Self(lines)
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        VIEW_LINES.with(|count| {
+            let (alive, peak) = count.get();
+            count.set((alive.saturating_sub(self.0), peak));
+        });
+    }
+}
+
+/// The most lines that readings alive at one time have held on this thread since the last
+/// call, which begins the count again. A reading is the code view of a text ([`Views`]): for
+/// each line a copy for each side it is on. For tests that hold what a scan keeps in memory:
+/// one reading of one text at a time, so never more lines than the longest text of the file
+/// has, however many texts a hunk stands in and however many readings a text has.
+#[doc(hidden)]
+#[must_use]
+pub fn view_lines_peak() -> u64 {
+    VIEW_LINES.with(|count| {
+        let (alive, peak) = count.get();
+        count.set((alive, alive));
+        peak
+    })
 }
 
 /// The one reading of a text in a language the shared scanner reads: both sides, each in the
@@ -1653,7 +1726,7 @@ struct Views {
 fn plain_views(lines: &[&PatchLine], language: Option<Language>) -> Views {
     let mut old_state = ScanState::default();
     let mut new_state = ScanState::default();
-    let lines = lines
+    let lines: Vec<_> = lines
         .iter()
         .map(|line| {
             let view = |state: &mut ScanState| language.map(|l| code_view(l, &line.text, state));
@@ -1665,6 +1738,7 @@ fn plain_views(lines: &[&PatchLine], language: Option<Language>) -> Views {
         })
         .collect();
     Views {
+        _held: Held::of(lines.len()),
         lines,
         old: true,
         new: true,
@@ -1732,6 +1806,7 @@ fn rust_reading(
     let old_carries = read(old, old_start, false);
     let new_carries = read(new, new_start, true);
     let views = Views {
+        _held: Held::of(lines.len()),
         lines,
         old: old_start.is_some(),
         new: new_start.is_some(),
@@ -4547,7 +4622,7 @@ mod tests {
             ("miri, ignore)]", true),
             ("miri, ignore = \"slow\")]", true),
             ("all(a, b), allow(x), ignore)]", true),
-            ("miri, ignore", true),
+            ("miri, ignore", false),
             ("ignore, allow(x))]", false),
             ("miri, allow(ignore))]", false),
             ("feature = \"serde\", serde(skip, ignore, default))]", false),
@@ -4560,9 +4635,14 @@ mod tests {
             ("a, allow(x), cfg_attr(b, inline, ignore))]", true),
             ("a, cfg_attr(b, cfg_attr(c, ignore)))]", true),
             ("a, cfg_attr(b, cfg_attr(c, inline)), ignore)]", true),
-            ("a, cfg_attr(b, ignore", true),
+            ("a, cfg_attr(b, ignore)", true),
+            ("a, cfg_attr(b, ignore =", true),
             // and only that: the nested condition, the place of the condition, another
-            // attribute's list, a longer name, and what follows a nested list that has closed
+            // attribute's list, a longer name, what follows a nested list that has closed,
+            // and an `ignore` that the side ends on (it can go on as `ignore::case`: read
+            // from round 13 to round 16, and no skip by the rule for the end of a side)
+            ("a, cfg_attr(b, ignore", false),
+            ("a, cfg_attr(b, ignore::case))]", false),
             ("all(), cfg_attr(ignore, allow(x)))]", false),
             ("cfg_attr(a, ignore), allow(x))]", false),
             ("a, serde(cfg_attr(b, ignore)))]", false),
@@ -4584,7 +4664,7 @@ mod tests {
             assert_eq!(found(&hunk_of("tests/a.rs", &[&line])), expected, "{line}");
         }
         // no recursion: a line that nests as deep as it is long
-        let deep = format!("+#[cfg_attr(a, {}ignore", "cfg_attr(a, ".repeat(200_000));
+        let deep = format!("+#[cfg_attr(a, {}ignore,", "cfg_attr(a, ".repeat(200_000));
         assert_eq!(
             within_deadline(move || found(&hunk_of("tests/a.rs", &[&deep]))),
             [(S::TestSkipped, Basis::Lexical, 2)]
@@ -6164,8 +6244,10 @@ mod tests {
                 );
             }
         }
-        // An assertion cut after its `true` is no assertion in the middle of a side, and at
-        // the end of one it is the beginning of one: what stands after the side is not shown.
+        // An assertion cut after its `true` is no assertion, in the middle of a side and at
+        // the end of one: what stands after the side is not shown, and it can be `== x`
+        // (rounds 15 and 16 read the end of a side here; ninth independent review, IR9-M-2).
+        // With the comma after it the condition is over.
         assert_eq!(
             found(&hunk_of(
                 "tests/a.rs",
@@ -6173,9 +6255,10 @@ mod tests {
             )),
             []
         );
+        assert_eq!(found(&hunk_of("tests/a.rs", &["+    assert!(true"])), []);
         assert_eq!(
-            found(&hunk_of("tests/a.rs", &["+    assert!(true"])),
-            [(S::TrivialAssert, Basis::Hunk, 2)]
+            found(&hunk_of("tests/a.rs", &["+    assert!(true,"])),
+            [(S::TrivialAssert, Basis::Lexical, 2)]
         );
         // the one rule left that passes over spaces on a line: `# [allow(`
         assert!(spaced("# [ allow (x)]", &["#"], &["[allow("]));
@@ -6986,8 +7069,8 @@ mod tests {
                 }
             ]
         );
-        // however many hunks touch, each is read alone and all of them once as one text: a
-        // hunk stands in at most three texts, so no bound on joins is needed
+        // however many hunks touch, each is read alone and all of them once as one text (a
+        // run that several rules make is kept once; a hunk stands in at most seven texts)
         let many = existing(&(0..20).fold(String::new(), |mut hunks, n| {
             let _ = writeln!(hunks, "@@ -{},2 +{},3 @@\n x\n+y\n z", 3 + 2 * n, 3 + 3 * n);
             hunks
@@ -8219,19 +8302,21 @@ mod tests {
     /// - **With both numbers of the second hunk false nothing joins them**, and the construct
     ///   is found where one half holds a construct whole (the cut is outside it: `x.unwrap()`
     ///   and then `;`; `reqwest::` is the release's key by itself, `process::Command` is one
-    ///   without `::new`, `::unwrap(x)` is a path call), or where the first half ends on a
-    ///   form that is evidence by itself (`rust_tokens`: `todo!`, `assert!(true`,
-    ///   `assert_eq!(true, true`, `#[ignore`, `#[allow`, `Command::`, `process::`,
-    ///   `TcpStream::`, `UdpSocket::`, `.unwrap::`, a removed `#[test`). That is 201 of the
-    ///   265, pinned here so that a form added or taken away shows. The other 64 are
-    ///   declared misses: a cut straight after or before the bare word (`x.` / `unwrap()`,
-    ///   `x.unwrap` / `()`, `Command` / `::new`, `todo` / `!()`), inside an assertion before
-    ///   its truth, between `#` or `#[` and the attribute's name, inside a `cfg_attr` list,
-    ///   inside generic arguments, and a function passed as a value cut before its name
-    ///   (`Option::` / `unwrap`). A construct cut twice, its word alone in a hunk of its
-    ///   own, is one too (the review's `alone.patch`).
+    ///   without `::new`, `::unwrap(x)` is a path call, `assert!(true,` is the assertion
+    ///   whatever message follows), or where the first half ends on the one form that is
+    ///   read at the end of a side (`rust_tokens`: `.unwrap::`, also with its `<`). That is
+    ///   178 of the 265, pinned here so that a form added or taken away shows (round 16 read
+    ///   more forms at the end of a side, and had 201). The other 87 are declared misses: a
+    ///   cut straight after or before the bare word (`x.` / `unwrap()`, `x.unwrap` / `()`,
+    ///   `Command` / `::new`, `todo` / `!()`), after a path's `::` (`Command::` / `new`),
+    ///   after a stub's `!`, inside an assertion before the comma or bracket that ends its
+    ///   truth, between `#`, `#[` or the attribute's name and what follows, inside a
+    ///   `cfg_attr` list (also straight after its `ignore`), inside generic arguments, and a
+    ///   function passed as a value cut
+    ///   before its name (`Option::` / `unwrap`). A construct cut twice, its word alone in a
+    ///   hunk of its own, is one too (the review's `alone.patch`).
     #[test]
-    fn a_cut_is_read_by_the_join_under_one_true_number_and_apart_only_where_an_end_is_evidence() {
+    fn a_cut_is_read_by_the_join_under_one_true_number_and_apart_only_where_a_half_is_whole() {
         let has = |patch: &str, signal: S| {
             file_evidence(&parse(patch).unwrap().remove(0))
                 .iter()
@@ -8270,7 +8355,7 @@ mod tests {
                 found_apart += usize::from(has(&two(old + 50, new + 70), signal));
             }
         }
-        assert_eq!((cuts, found_apart), (265, 201));
+        assert_eq!((cuts, found_apart), (265, 178));
     }
 
     /// The joins of round 14, by round 14's rule as it was written then (a small copy, to
@@ -8490,6 +8575,80 @@ mod tests {
         assert_eq!(found(&file), []);
     }
 
+    /// What a scan holds in memory beside the patch: one reading of one text at a time, so
+    /// never more lines than the longest text of the file has, however many texts a hunk
+    /// stands in and however many readings a text has (ninth independent review, IR9-L-3
+    /// and IR9-L-6: memory was stated as a factor measured on three shapes, the reviewer's
+    /// shapes gave a larger one, and no test held anything). Counted by the readings
+    /// themselves ([`view_lines_peak`]):
+    ///
+    /// - hunks apart: the lines of the longest hunk, not of the file;
+    /// - the same hunks touching by true numbers, which are one text: all their lines, once
+    ///   (the shape the reviewer measured at 2.6 times the release: every line of the file
+    ///   is held a second time, for each side it is on);
+    /// - a hunk that stands in several texts, and a Rust fragment that is read from several
+    ///   starts: still the longest text, once.
+    #[test]
+    fn a_scan_holds_one_reading_of_one_text_at_a_time() {
+        let longest = |file: &ReviewFile| {
+            texts(file)
+                .iter()
+                .map(|text| {
+                    text.hunks
+                        .iter()
+                        .map(|index| file.patch_twin.hunks[*index].lines.len())
+                        .sum::<usize>()
+                })
+                .max()
+                .unwrap_or(0) as u64
+        };
+        let peak = |file: &ReviewFile| {
+            let _ = view_lines_peak();
+            let found = file_evidence(file).len();
+            (view_lines_peak(), found)
+        };
+        let hunks = |path: &str, count: usize, step: usize, rows: usize, line: &str| {
+            let mut patch = format!("--- a/{path}\n+++ b/{path}\n");
+            for n in 0..count {
+                let at = 2 + step * n;
+                let _ = writeln!(patch, "@@ -{at},{rows} +{at},{rows} @@");
+                for row in 0..rows - 1 {
+                    let _ = writeln!(patch, " context {n} {row}");
+                }
+                let _ = writeln!(patch, "-old\n+{line}");
+            }
+            parse(&patch).unwrap().remove(0)
+        };
+        for (path, line) in [
+            ("src/a.rs", "    let s = \"open; x.unwrap();"),
+            ("src/a.rs", "    x.unwrap();"),
+            ("tools/a.py", "os.system(cmd)"),
+        ] {
+            // 200 hunks of 21 lines, 50 lines apart: nothing joins them
+            let apart = hunks(path, 200, 50, 20, line);
+            assert_eq!(joined_hunks(&apart), [false; 200]);
+            assert_eq!(peak(&apart).0, 21, "{path} {line}");
+            // the same hunks, each beginning where the last one ended: one text
+            let touching = hunks(path, 200, 20, 20, line);
+            assert_eq!(joined_hunks(&touching), [true; 200]);
+            assert_eq!(longest(&touching), 200 * 21);
+            let (held, found) = peak(&touching);
+            assert_eq!(held, 200 * 21, "{path} {line}");
+            assert!(
+                found >= 200 || line.contains("open"),
+                "{path} {line}: {found}"
+            );
+        }
+        // a hunk in several texts (the review's `decoy.patch` shape: three joined texts)
+        let several = parse(
+            "--- a/f.rs\n+++ b/f.rs\n@@ -4,0 +40,1 @@\n+// end\n@@ -3,2 +3,2 @@\n-    let d = c * 2;\n+    let d = c * 3;\n     debug_assert!(\n@@ -5,3 +30,3 @@\n-        a < b,\n+        true,\n         \"a must be below b\");\n     let e = d + 1;\n",
+        )
+        .unwrap()
+        .remove(0);
+        assert_eq!(texts(&several).len(), 6);
+        assert_eq!((longest(&several), peak(&several).0), (8, 8));
+    }
+
     /// A hunk is not put after the end of the run it begins, and the next hunk that ends
     /// before its place is taken instead. Here the first hunk written (old lines 10 and 11)
     /// goes after the third, a hunk of added lines that says it stands after line 9; Git
@@ -8514,6 +8673,70 @@ mod tests {
             hunks.dedup();
             assert_eq!(hunks.len(), run.len(), "{run:?}");
         }
+    }
+
+    /// What the joins do not see and the documents declare, pinned so that a change to it
+    /// shows (ninth independent review, IR9-M-1 and IR9-L-4; each needs a writer who sets
+    /// out to, and none is lower than release 0.8.3, which joins nothing).
+    ///
+    /// - **Hunks at the top.** A hunk whose old position is 0, or is 1 and that holds an old
+    ///   line, is the top of its file to the reader, follows nothing and is read from the
+    ///   start of a file only. `git apply --unidiff-zero` 2.56.0 puts every hunk at old
+    ///   position 0 at line 1, the one written later ABOVE the one written earlier, and a
+    ///   hunk at old position 1 under them (run in a scratch repository: `twotop.patch`,
+    ///   "Hunk #1 succeeded at 1 (offset -2 lines)", and `topone.patch`, whose every number
+    ///   is true, "Applied patch m.rs cleanly"; plain `git apply` refuses both). So
+    ///   `opt.unwrap` and `()` stand together in the result, and nothing here reads them
+    ///   together. A reading that did would be one more family of joins; it is declared
+    ///   instead, as the hunk that an applier puts inside another is.
+    /// - **The mirror of the declared decoy.** Two hunks touch by a true number, and a third
+    ///   that has lines on that side says falsely that it BEGINS at the line where they
+    ///   touch, written between them: the first goes before the first hunk of the patch
+    ///   that says it begins there (`mirror.patch`; Git: "Hunk #2 succeeded at 7 (offset 3
+    ///   lines)"). Written after both, the third takes nothing.
+    #[test]
+    fn what_the_joins_do_not_see_is_what_the_documents_declare() {
+        let text = |hunks: &[usize], top: bool| Text {
+            hunks: hunks.to_vec(),
+            top,
+        };
+        let existing = |hunks: &str| {
+            parse(&format!("--- a/m.rs\n+++ b/m.rs\n{hunks}"))
+                .unwrap()
+                .remove(0)
+        };
+        // `twotop.patch`
+        let twotop = existing(
+            "@@ -0,0 +3,2 @@\n+    ()\n+}\n@@ -0,0 +1,2 @@\n+pub fn boom(opt: Option<u8>) -> u8 {\n+    opt.unwrap\n",
+        );
+        assert_eq!(texts(&twotop), [text(&[0], true), text(&[1], true)]);
+        assert_eq!(found(&twotop), []);
+        // `topone.patch`
+        let topone = existing(
+            "@@ -0,0 +1,2 @@\n+pub fn boom(opt: Option<u8>) -> u8 {\n+    opt.unwrap\n@@ -1,1 +3,3 @@\n+    ()\n+}\n fn main() {\n",
+        );
+        assert_eq!(texts(&topone), [text(&[0], true), text(&[1], true)]);
+        assert_eq!(found(&topone), []);
+        // the same four lines with a second hunk that is no top are read together
+        let topthen = existing(
+            "@@ -0,0 +1,2 @@\n+pub fn boom(opt: Option<u8>) -> u8 {\n+    opt.unwrap\n@@ -1,0 +3,2 @@\n+    ()\n+}\n",
+        );
+        assert_eq!(found(&topthen), [(S::PanicPathAdded, Basis::Hunk, 2)]);
+        // `mirror.patch` and its control
+        let mirror = |decoy: &str, order: [usize; 3]| {
+            let hunks = [
+                "@@ -2,2 +2,2 @@\n-    let _unused = 0;\n+    let _used = 0;\n     debug_assert!(\n".to_owned(),
+                format!("{decoy}\n-    let z = 3;\n+    let z = 4;\n     let w = 5;\n"),
+                "@@ -4,2 +4,2 @@\n-        a < b,\n+        true,\n         \"a must be below b\"\n".to_owned(),
+            ];
+            existing(&order.map(|at| hunks[at].as_str()).concat())
+        };
+        let assertion = [(S::TrivialAssert, Basis::Hunk, 4)];
+        // the decoy between the two, claiming the line they touch at: declared
+        assert_eq!(found(&mirror("@@ -4,2 +4,2 @@", [0, 1, 2])), []);
+        // with its true numbers, and written after the two with its false ones: found
+        assert_eq!(found(&mirror("@@ -7,2 +7,2 @@", [0, 1, 2])), assertion);
+        assert_eq!(found(&mirror("@@ -4,2 +4,2 @@", [0, 2, 1])), assertion);
     }
 
     /// The same as a property (IR8-M-1): over generated sections of two to six hunks with
@@ -8643,14 +8866,22 @@ mod tests {
     /// declared limit `cutpair.patch`: two hunks that touch while the second's position says
     /// they do not; plain `git apply --check -v`: rc 0 and no offset line; rustc compiles
     /// the result). One true number joins the two. With both numbers false nothing does,
-    /// and then what the first half ends on is read, when it is evidence by itself: a macro
-    /// with its `!`, a path with its `::`. A bare name is not, and neither is `.unwrap` with
-    /// nothing after it (a field can be named so, and a line of honest code can end on it):
-    /// round 15 read those too, and reported a spawn in a file that has none (round 15 of
-    /// Vesper's review, VD3R15-M-1). So a call cut after `.unwrap` by such a pair is a
-    /// declared miss again; it takes a writer who sets out to.
+    /// and then what the first half ends on is read only where every continuation the
+    /// grammar allows is the construct: a method's name with `::` after it. Rounds 15 and
+    /// 16 read more at the end of a side, each time on the argument that no honest line
+    /// ends so, and each time a reviewer wrote the honest line:
+    ///
+    /// - round 15 a bare `Command` (`pub fn command() -> Command`, Vesper, VD3R15-M-1);
+    /// - round 16 `Command::` (`const X: u8 = Command::` and `VERSION;`, Vesper,
+    ///   VD3R16-M-1), and `assert!(true` (rustfmt's layout of a long condition that begins
+    ///   with `true`, ninth independent review, IR9-M-2), and `todo!` (the end of a
+    ///   sentence in a comment the hunk does not open, IR9-L-5).
+    ///
+    /// So a stub cut after `todo!`, a spawn cut after `Command::`, an assertion cut after
+    /// its `true` and an attribute cut after its name are declared misses behind two false
+    /// numbers, as a call cut after `.unwrap` is; each takes a writer who sets out to.
     #[test]
-    fn a_construct_cut_by_hunks_that_nothing_joins_is_read_where_its_end_is_evidence() {
+    fn a_construct_cut_by_hunks_that_nothing_joins_is_read_where_every_continuation_is_it() {
         let existing = |hunks: &str| {
             parse(&format!("--- a/cut.rs\n+++ b/cut.rs\n{hunks}"))
                 .unwrap()
@@ -8661,18 +8892,29 @@ mod tests {
                 "@@ -1,2 +1,3 @@\n fn f(opt: Option<u32>) -> u32 {{\n+{first}\n \n{header}\n+{second}\n     a\n }}\n"
             ))
         };
+        let apart = "@@ -40,2 +50,3 @@";
+        let numbers = ["@@ -3,2 +4,3 @@", "@@ -40,2 +4,3 @@", "@@ -3,2 +50,3 @@"];
         // the call: found by the join when a number is true, and not when both are false
         let call = [(S::PanicPathAdded, Basis::Hunk, 2)];
-        for header in ["@@ -3,2 +4,3 @@", "@@ -40,2 +4,3 @@", "@@ -3,2 +50,3 @@"] {
+        for header in numbers {
             assert_eq!(
                 found(&pair("    let v = opt.unwrap", "    ();", header)),
                 call
             );
         }
-        let apart = "@@ -40,2 +50,3 @@";
         assert_eq!(found(&pair("    let v = opt.unwrap", "    ();", apart)), []);
         assert_eq!(found(&pair("    let v = opt.", "    unwrap();", apart)), []);
-        // what is evidence by itself, with both numbers false
+        // the one form that is read at the end of a side, with both numbers false
+        for first in ["    let v = opt.unwrap::", "    let v = opt.expect::<"] {
+            let second = if first.ends_with('<') {
+                "    u8>(m);"
+            } else {
+                "    <u8>();"
+            };
+            assert_eq!(found(&pair(first, second, apart)), call, "{first}");
+        }
+        // what rounds 15 and 16 read there and is no evidence: each is found by the join
+        // under one true number, and not behind two false ones
         for (first, second, signal) in [
             ("    todo!", "    ();", S::StubAdded),
             (
@@ -8687,27 +8929,53 @@ mod tests {
                 S::NetworkFetch,
             ),
             ("#[ignore", "]", S::TestSkipped),
+            ("#[allow", "(dead_code)]", S::CheckSuppressed),
             ("    assert!(true", "    );", S::TrivialAssert),
+            ("    let c = Command", "    ::new(\"sh\");", S::ProcessSpawn),
+            (
+                "    let s = TcpStream",
+                "    ::connect(a);",
+                S::NetworkFetch,
+            ),
+            ("    let rest = todo", "    !();", S::StubAdded),
+            ("    assert", "    !(true);", S::TrivialAssert),
         ] {
-            assert_eq!(
-                found(&pair(first, second, apart)),
-                [(signal, Basis::Hunk, 2)],
-                "{first}"
-            );
+            for header in numbers {
+                assert_eq!(
+                    found(&pair(first, second, header)),
+                    [(signal, Basis::Hunk, 2)],
+                    "{first} {header}"
+                );
+            }
+            // `std::process::Command` is a construct whole in the first half
+            let whole = if first.contains("process::Command") {
+                vec![(signal, Basis::Lexical, 2)]
+            } else {
+                vec![]
+            };
+            assert_eq!(found(&pair(first, second, apart)), whole, "{first}");
         }
-        // and what is not: the bare name, whatever the other half begins with
-        for (first, second) in [
-            ("    let c = Command", "    ::new(\"sh\");"),
-            ("    let s = TcpStream", "    ::connect(a);"),
-            ("    let rest = todo", "    !();"),
-            ("    assert", "    !(true);"),
-        ] {
-            assert_eq!(found(&pair(first, second, apart)), [], "{first}");
-        }
-        // Vesper's patch, as `git diff -U0` wrote it: a return type named `Command` at the
-        // end of a line, in a file with no spawn
+        // The reviewers' patches, each as `git diff -U0` wrote it, each in a file that has
+        // no such construct. Vesper, round 15: a return type named `Command`.
         let honest = existing(
             "@@ -3 +3 @@ struct Command;\n-fn command() -> Command\n+pub fn command() -> Command\n",
+        );
+        assert_eq!(found(&honest), []);
+        // Vesper, round 16 (`command-colon.patch`): a constant of a type named `Command`,
+        // the path going on on the next line
+        let honest = existing(
+            "@@ -7 +7 @@ impl Command { const VERSION: u8 = 1; }\n-const X: u8 = Other::\n+const X: u8 = Command::\n",
+        );
+        assert_eq!(found(&honest), []);
+        // Ninth independent review (`asserttrue-u0.patch`): rustfmt's layout of
+        // `assert!(true && "…".len() > limit)`, the operator line unchanged
+        let honest = existing(
+            "@@ -2,2 +2,2 @@ pub fn check(limit: usize) {\n-    debug_assert!(\n-        cfg!(debug_assertions)\n+    assert!(\n+        true\n",
+        );
+        assert_eq!(found(&honest), []);
+        // and its `prose.patch`: a line of a block comment that the hunk does not open
+        let honest = existing(
+            "@@ -12 +12 @@\n- * The fast path is not written yet.\n+ * The fast path is still a todo!\n",
         );
         assert_eq!(found(&honest), []);
     }
