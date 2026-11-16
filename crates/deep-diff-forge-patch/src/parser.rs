@@ -997,21 +997,26 @@ impl Parser {
     /// - a section that changes a path in place after a section that wrote it (created it,
     ///   changed it, or renamed or copied a file to it): Git patches the earlier section's
     ///   result (`previous_patch`), which is how a series from `git format-patch --stdout`
-    ///   that touches a file in two commits applies;
+    ///   that touches a file in two commits applies (such a series is read when no line of
+    ///   its commit messages begins with `-` or `+`; one that has such a line is refused as a
+    ///   body line outside any hunk, as by 0.8.3);
     /// - a `new file` section after a `deleted file` section for the same path, which is how
     ///   Git writes a change of type (a file that becomes a symlink).
     ///
-    /// Reading a path is no conflict: a copy or rename whose source another section changes is
-    /// what `git diff -C` writes, and its hunks are against the source before the patch.
+    /// Reading a path is no conflict: a copy whose source another section changes is what
+    /// `git diff -C` writes, and its hunks are against the source before the patch.
     ///
     /// Paths are compared as the review names them, which is how Git's own table of the paths a
     /// patch touches compares them. A `diff --git` name that keeps a repeated slash (`d//x`) is
     /// no second name for `d/x`: Git refuses to write it ("invalid path", measured).
     fn record_path_uses(&mut self, file: &FileBuf) -> Result<(), PatchParseError> {
         let (removes, writes) = file.path_uses();
+        // A rename of a path to itself names it twice in one section (review of 0.8.4, R84-L-5).
+        let same_section = matches!((&removes, &writes), (Some((r, _)), Some((w, _))) if r == w);
         let again = |path: String| PatchParseError::PathInSeveralSections {
             line_number: file.first_line,
             path,
+            same_section,
         };
         if let Some((path, removal)) = removes {
             if self.path_uses.contains_key(&path) {
@@ -4283,9 +4288,9 @@ diff --git a/a b c.rs b/a b c.rs
     /// The path and line of the refusal, when `patch` is refused for a path in two sections.
     fn path_in_several_sections(patch: &str) -> Option<(String, usize)> {
         match parse(patch) {
-            Err(PatchParseError::PathInSeveralSections { line_number, path }) => {
-                Some((path, line_number))
-            }
+            Err(PatchParseError::PathInSeveralSections {
+                line_number, path, ..
+            }) => Some((path, line_number)),
             _ => None,
         }
     }
@@ -4374,6 +4379,140 @@ diff --git a/a b c.rs b/a b c.rs
             message.len() < 400 && !message.contains('\u{1b}'),
             "{message}"
         );
+    }
+
+    /// Review of 0.8.4 (a limit, held by a test): one path spelled two ways is one path to the
+    /// rule, which compares the paths the review names, not the header text. Quoted and bare,
+    /// an octal escape, a traditional section beside a `diff --git` one, and `d//x` beside
+    /// `d/x`: each pair is refused for the path the review shows.
+    #[test]
+    fn one_path_spelled_two_ways_is_one_path_in_several_sections() {
+        let modify = |name: &str| {
+            format!(
+                "diff --git a/{name} b/{name}\nindex 1111111..2222222 100644\n--- a/{name}\n+++ b/{name}\n@@ -1 +1 @@\n-a\n+b\n"
+            )
+        };
+        let delete = |header: &str, old: &str| {
+            format!(
+                "{header}deleted file mode 100644\nindex 2222222..0000000\n--- {old}\n+++ /dev/null\n@@ -1 +0,0 @@\n-b\n"
+            )
+        };
+        let traditional_modify =
+            |name: &str| format!("--- a/{name}\n+++ b/{name}\n@@ -1 +1 @@\n-a\n+b\n");
+        let traditional_delete =
+            |old: &str| format!("--- {old}\n+++ /dev/null\n@@ -1 +0,0 @@\n-b\n");
+        for (patch, path, line) in [
+            // Quoted and bare, and a quoted octal escape for `x`.
+            (
+                format!(
+                    "{}{}",
+                    modify("x"),
+                    delete("diff --git \"a/x\" \"b/x\"\n", "\"a/x\"")
+                ),
+                "x",
+                8,
+            ),
+            (
+                format!(
+                    "{}{}",
+                    modify("x"),
+                    delete("diff --git \"a/\\170\" \"b/\\170\"\n", "\"a/\\170\"")
+                ),
+                "x",
+                8,
+            ),
+            // A traditional section (with a timestamp) beside a `diff --git` one, both ways.
+            (
+                format!(
+                    "{}{}",
+                    modify("x"),
+                    traditional_delete("a/x\t2026-01-01 00:00:00")
+                ),
+                "x",
+                8,
+            ),
+            (
+                format!(
+                    "{}{}",
+                    traditional_modify("x"),
+                    delete("diff --git a/x b/x\n", "a/x")
+                ),
+                "x",
+                6,
+            ),
+            // `d//x` and `d/x`, in Git and traditional sections.
+            (
+                format!(
+                    "{}{}",
+                    modify("d//x"),
+                    delete("diff --git a/d/x b/d/x\n", "a/d/x")
+                ),
+                "d/x",
+                8,
+            ),
+            (
+                format!("{}{}", modify("d/x"), traditional_delete("a/d//x")),
+                "d/x",
+                8,
+            ),
+            (
+                format!(
+                    "{}{}",
+                    traditional_modify("d//x"),
+                    traditional_delete("a/d/x")
+                ),
+                "d/x",
+                6,
+            ),
+        ] {
+            assert_eq!(
+                path_in_several_sections(&patch),
+                Some((path.to_owned(), line)),
+                "{patch:?}"
+            );
+        }
+    }
+
+    /// Review of 0.8.4, R84-L-5: a single section that renames a path to itself removes and
+    /// writes it, and is refused as before, with a message about that section, not an earlier
+    /// one.
+    #[test]
+    fn a_rename_of_a_path_to_itself_is_refused_with_its_own_message() {
+        for patch in [
+            "diff --git a/x b/x\nsimilarity index 100%\nrename from x\nrename to x\n".to_owned(),
+            format!(
+                "diff --git a/x b/x\nsimilarity index 90%\nrename from x\nrename to x\nindex {OLD_ID}..{OLD_ID}\nFiles a/x and b/x differ\n"
+            ),
+        ] {
+            let error = parse(&patch).unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    PatchParseError::PathInSeveralSections {
+                        line_number: 1,
+                        path,
+                        same_section: true,
+                    } if path == "x"
+                ),
+                "{patch:?}: {error:?}"
+            );
+            let message = error.to_string();
+            assert!(message.contains("renames \"x\" to itself"), "{message}");
+            assert!(!message.contains("earlier section"), "{message}");
+        }
+        // Two sections keep the message about an earlier one.
+        let error = parse(&format!("{MODIFY_X}{DELETE_X}")).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                PatchParseError::PathInSeveralSections {
+                    same_section: false,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("an earlier section"), "{error}");
     }
 
     #[test]

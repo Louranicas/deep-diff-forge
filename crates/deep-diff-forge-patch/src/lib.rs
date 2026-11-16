@@ -150,14 +150,18 @@ pub enum PatchParseError {
     /// not carry out as the sequence the review would show. Git applies a patch as a set: every
     /// removal first, every creation after, and a rename or copy reads its source as it was
     /// before the patch. So "modify `x`", then "delete `x`" leaves `x` in place with the
-    /// modified content. Two shapes are read, because Git applies them in order: a change in
-    /// place after a section that wrote the path, and `new file` after `deleted file` for one
-    /// path (a change of type).
+    /// modified content. Two shapes are read, because Git can apply them in order when their
+    /// hunks apply: a change in place after a section that wrote the path, and `new file` after
+    /// `deleted file` for one path (a change of type). A single section that renames a path to
+    /// itself removes and writes it, and is refused too (`same_section`).
     PathInSeveralSections {
-        /// 1-based line number where the later of the two sections began.
+        /// 1-based line number where the later of the two sections began (the section itself,
+        /// with `same_section`).
         line_number: usize,
         /// The path, as the review would show it.
         path: String,
+        /// The section at `line_number` renames `path` to itself, so it removes and writes it.
+        same_section: bool,
     },
     /// A header line (a path, mode or hunk header the parser reads meaning from) that is not
     /// UTF-8. Decoded lossily, the value it names would be a substitute: `caf\xe9` and
@@ -292,7 +296,18 @@ impl std::fmt::Display for PatchParseError {
                 f,
                 "the file section beginning at line {line_number} holds nothing git apply reads as a patch (no hunk, no binary marker, and no rename, copy, creation, deletion or mode change in its headers)"
             ),
-            Self::PathInSeveralSections { line_number, path } => write!(
+            Self::PathInSeveralSections {
+                line_number,
+                path,
+                same_section: true,
+            } => write!(
+                f,
+                "the file section beginning at line {line_number} renames {} to itself, removing and writing one path in one section, which no tool writes",
+                Excerpt(path)
+            ),
+            Self::PathInSeveralSections {
+                line_number, path, ..
+            } => write!(
                 f,
                 "the file section beginning at line {line_number} writes or removes {}, which an earlier section also writes or removes; git apply does not apply such sections one after the other",
                 Excerpt(path)

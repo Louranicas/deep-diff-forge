@@ -1588,20 +1588,26 @@ fn deploy_doctor(json: bool, socket: Option<&std::path::Path>) {
 
 /// Report the release publication posture for the current version.
 ///
-/// This is a declared snapshot (like `deploy status`): the actual release acts
-/// are `git tag`, `gh release`, and `cargo publish`. The source is on both remotes,
-/// so `github` and `gitlab` are `published`. `github-release` is `blocked`: a build
-/// cannot know whether its own version was tagged, and a release exists only once the
-/// owner pushes a `v*` tag. crates.io is `blocked`: publication is on hold by owner
-/// decision, and release.yml publishes only when the repository variable
-/// `DDF_CRATES_IO` is `open`.
+/// This is a declared snapshot (like `deploy status`): the actual release acts are the
+/// owner's signed tag, `scripts/release_local.sh` and `cargo publish`. From 0.8.4 the source
+/// is on GitLab, Gitea and Forgejo, so those are `published`, and nothing goes to GitHub:
+/// `github` and `github-release` are `skipped` (the members and the target names stay, so
+/// the `release.v0` schema is unchanged), and a skipped target is not listed as `pending`.
+/// crates.io is `blocked`: publication is on hold by owner decision.
 fn deploy_release(json: bool) {
     use deep_diff_forge_core::{ReleasePlan, TargetState};
     let plan = ReleasePlan::new(env!("CARGO_PKG_VERSION"))
-        .with_target("github", TargetState::Published)
+        .with_target("github", TargetState::Skipped)
         .with_target("gitlab", TargetState::Published)
-        .with_target("github-release", TargetState::Blocked)
+        .with_target("gitea", TargetState::Published)
+        .with_target("forgejo", TargetState::Published)
+        .with_target("github-release", TargetState::Skipped)
         .with_target("crates.io", TargetState::Blocked);
+    let pending: Vec<&str> = plan
+        .pending()
+        .into_iter()
+        .filter(|name| plan.target_state(name) != Some(TargetState::Skipped))
+        .collect();
 
     if json {
         use deep_diff_forge_core::json_escape;
@@ -1618,7 +1624,7 @@ fn deploy_release(json: bool) {
                 json_escape(t.state.as_str())
             );
         }
-        let pending: Vec<String> = plan.pending().iter().map(|p| json_escape(p)).collect();
+        let pending: Vec<String> = pending.iter().map(|p| json_escape(p)).collect();
         emitln!(
             "{{\n  \"schema\": \"deep-diff-forge.release.v0\",\n  \"version\": {},\n  \"fully_published\": {},\n  \"targets\": [{}],\n  \"pending\": [{}]\n}}",
             json_escape(&plan.version),
@@ -1631,7 +1637,6 @@ fn deploy_release(json: bool) {
         for t in &plan.targets {
             emitln!("  {:<16} {}", t.name, t.state.as_str());
         }
-        let pending = plan.pending();
         if pending.is_empty() {
             emitln!("fully published");
         } else {
@@ -2155,7 +2160,8 @@ MATURITY:
   records local-only strategy receipts (learn status|record) and scores them,
   reporting whether a learned default would be trusted; no engine default reads
   the scores yet. It never uploads source and never mutates patch truth.
-  Tagged releases are cut to GitHub (binary + checksums) and both git remotes
+  From 0.8.4 a release is a signed tag on GitLab, Gitea and Forgejo and a local
+  release (binary + checksums, scripts/release_local.sh); nothing goes to GitHub
   (deploy release --json reports the per-target posture).
   crates.io publication is on hold until the codebase is production-ready; a
   configured registry token does not lift the hold.
