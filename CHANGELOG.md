@@ -6,6 +6,82 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+### Security
+
+- **A `diff --git` section is read only if its headers are a shape Git's own diff writes**
+  (plan of record S3.1 to S3.3). Five independent assessments in a row, of v0.8.0 to v0.8.3,
+  each found one more header shape that DDF read one way and `git apply` wrote another, and
+  each was fixed case by case. The parser now holds a list of the 37 header shapes
+  `builtin_diff` and `fill_metainfo` write (Git 2.56's `diff.c`). The 37 are:
+  - a file created or deleted;
+  - a mode change;
+  - a rename or copy, with or without an edit;
+  - a rewrite under `-B`;
+  - a text body, a binary body or none.
+
+  A section whose headers are not one of them is refused (exit 4, new error
+  `HeaderNotWrittenByGit`, naming the line and why). A `similarity index`, `dissimilarity index`
+  or `index` line may be left out, since none of them changes what Git writes. Each line must
+  also be in the form Git writes it:
+  - a mode of `100644`, `100755`, `120000` or `160000`;
+  - `index` ids of hex digits;
+  - a whole percentage.
+
+  Every refusal 0.8.4 made stays, with its reason.
+  - *Measured:* every commit was diffed as `git diff`, `git diff -M -C -B`,
+    `git diff --binary`, `git format-patch --stdout` and `git log -p --first-parent`, over:
+    - this repository: 892 commits on all refs, 4,457 patches, 57,038 `diff --git` sections;
+    - forge-warden's `hub.git`: 772 commits, 3,857 patches, 29,301 sections;
+    - a scratch repository built to give every row, with nine more option sets: 55 commits,
+      866 patches, 1,071 sections, all 37 shapes;
+    - 646 windows of 2 to 5 commits from both histories.
+
+    No patch that 0.8.4 read is refused, and none is refused as `HeaderNotWrittenByGit`. The
+    refusals that remain are 0.8.4's own: a `format-patch` message line that begins `-`, the
+    byte budget, a `-- ` signature after a binary body, and one path in several sections.
+  - *Newly refused, each read by Git and never written by it:*
+    - `Files … differ`, which 0.8.4 read as `Binary files … differ`;
+    - a hunk with no `---`/`+++` before it;
+    - `similarity index` with no move, and `dissimilarity index` beside one;
+    - a second `copy to`, `rename to` or `index`, and a `rename to` or `copy to` with no
+      `from` line;
+    - headers out of Git's order (`index` before the mode lines, `new mode` before `old mode`,
+      `copy from` before `similarity index`);
+    - modes such as `100664` or `100600`, `index` ids that are not hex, and scores over 100
+      or without `%`.
+  - *Found while building it:* a binary marker that ends in a carriage return
+    (`Binary files … differ\r`, `GIT binary patch\r`) is no marker to Git, which compares the
+    line feed. After `old mode`/`new mode` and `index`, Git applied only the mode change,
+    while v0.8.3 and 0.8.4 reviewed a binary change of the content (DDF showed more than Git
+    wrote; nothing was hidden). It is refused now.
+  - *Found by the generated differential:* a section whose `diff --git` halves name two paths
+    (`diff --git a/x b/z`), with no `---`/`+++`, rename or copy header, gives Git no file name,
+    and Git refuses it ("git diff header lacks filename information"). v0.8.3 and 0.8.4 took
+    the rightmost ` b/` and reviewed a binary change, a deletion or a mode change of `z`. Git
+    writes nothing, so nothing was hidden. It is refused now (`InvalidPath`, as for a section
+    that names no path). On the 0.8.4 parser, the 24,000 generated patches hold 81 cases,
+    every one of this shape, and no patch that Git writes otherwise than the review shows.
+  - *Proved by applying:* `tests/generated_differential.rs` builds 24,000 patches from 64
+    fixed seeds. Each is one to three sections Git writes, with up to three near-miss moves.
+    DDF reads each patch, and a real `git apply` applies it in a repository whose object store
+    holds every blob an `index` line names (26 s on the build machine). DDF read 7,769 of them,
+    and Git applied 6,832 of those, each to exactly the tree the review describes. Git refused
+    to read none of the patches DDF read. `DDF_DIFFERENTIAL_SEEDS=N` runs seeds 1 to N.
+- **`CONFORMANCE.md`** (in the patch crate) is the table of what Git reads. It has one row for
+  each header line `apply.c` recognises, and one for the traditional form. Each row says what
+  Git sets from the line, which line wins when it is repeated, what Git refuses, whether Git's
+  diff writes the line, and what DDF 0.8.4 did and does now, each cited to Git 2.56.1's source.
+  Each row has a test (`tests/conformance.rs`) that runs its forms through DDF and through a
+  real `git apply`, and a test fails if a row and a test do not match.
+
+### Changed
+
+- `PatchParseError` has a new variant, `HeaderNotWrittenByGit { line_number, header, reason }`
+  (the enum is `#[non_exhaustive]`).
+- A rename DDF finds from the `---`/`+++` names, with no rename header, now records its
+  `rename from`/`rename to` before the `index` line, where Git writes them, so that DDF's
+  rendering is a shape Git writes. Before, they came after it.
+
 ## [0.8.4] - 2026-11-16
 
 **Security release.** v0.8.3 and earlier could review a patch otherwise than `git apply`
