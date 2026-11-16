@@ -929,8 +929,9 @@ Deep-Diff-Forge reviews untrusted code, so it is built to make bad code hard to 
 0.8.3, `main` changed only through a pull request, on a branch that is up to date, after
 **thirteen required checks** that nobody could bypass. From 0.8.4 nothing runs at GitHub: `main`
 moves on GitLab, and the release commit passes the local gate (`scripts/ci_local.sh`, the steps of
-the `secrets`, `msrv`, `gate` and `supply-chain` jobs), run in a dedicated release worktree whose
-procedure is in [Tag And Push](docs/RELEASE_AND_PUBLICATION.md#tag-and-push); the macOS, diff-mutation, bench and
+the `secrets`, `msrv`, `gate` and `supply-chain` jobs), run by the owner's release script in a
+fresh clone of that commit before the tag; `just release-tag` itself runs only `gate-release`,
+a subset of it (the procedure is in [Tag And Push](docs/RELEASE_AND_PUBLICATION.md#tag-and-push)); the macOS, diff-mutation, bench and
 CodeQL checks below do not run for it.
 
 | Required check | What it proves |

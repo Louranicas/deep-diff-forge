@@ -138,8 +138,13 @@ freshly cloned, used by nobody else and under the release operator's exclusive c
 ignored or untracked files before the recipe starts (`git status --porcelain --ignored
 --untracked-files=all` prints nothing; without `--untracked-files=all`, a
 `status.showUntrackedFiles=no` setting hides ignored files from this check too) and a stable
-`HEAD` for the whole recipe. The coordinator's release script, outside this repository,
-records `HEAD` before the gate and compares it after.
+`HEAD` for the whole recipe. The owner's release script, outside this repository, first runs
+`scripts/ci_local.sh` in a second fresh clone of the same commit. It then runs the recipe
+unchanged in the release clone, with the push URLs of the three remotes pointed at local
+staging repositories. It pushes the signed tag to GitLab, Gitea and Forgejo only if `HEAD` is
+still the commit it started from, the tag names that commit, and the tag verifies. The recipe
+alone signs and pushes in one step: run without that script, a wrong tag would only be found
+after it was pushed.
 
 ## Signed Tags
 

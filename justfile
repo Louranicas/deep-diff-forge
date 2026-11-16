@@ -165,7 +165,9 @@ release-tag version:
     # The gate must not have changed the tree (a rewritten Cargo.lock, a regenerated file).
     # This does not prove that the tag names the commit the gate ran on: the tag is made on the
     # HEAD current below, which is not compared with the HEAD at the start (the release
-    # procedure keeps HEAD stable, and its script records HEAD before the gate and after).
+    # procedure keeps HEAD stable, and the owner's release script points this recipe's pushes at
+    # local staging repositories and publishes the tag only if HEAD and the tag's commit are still
+    # the commit it started from).
     if [ -n "$(git status --porcelain)" ]; then
       echo "the release gate changed the working tree (git status --porcelain); commit or discard before tagging" >&2
       exit 1
