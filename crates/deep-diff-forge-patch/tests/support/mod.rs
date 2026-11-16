@@ -35,26 +35,42 @@ pub fn regular(content: &[u8]) -> Entry {
     }
 }
 
-/// A scratch repository holding a tree, with `blobs` in its object store. A patch's `@OLD@` is
-/// the id of the first file's blob, `@NEW@` the id of the first stored blob and `@ZERO@` the null
-/// id; `ids` names every stored blob, so a generator can write any of them.
+/// A scratch repository holding a tree, with `blobs` in its object store. `ids` names every
+/// stored blob in order, so a generator can write any of them, and `contents` maps each id to
+/// its bytes, so the oracle can say what a binary section that names one writes.
 pub struct Repo {
     scratch: deep_diff_forge_testkit::Scratch,
     pub ids: Vec<String>,
+    pub contents: BTreeMap<String, Vec<u8>>,
 }
 
 impl Repo {
-    pub fn new(tag: &str, blobs: &[&[u8]]) -> Self {
+    /// A repository whose object ids are `format`'s (`sha1` or `sha256`).
+    pub fn with_format(tag: &str, blobs: &[&[u8]], format: &str) -> Self {
         let scratch = deep_diff_forge_testkit::Scratch::new(&format!("git-conf-{tag}"));
         fs::create_dir(scratch.join("home")).unwrap();
         let repo = Self {
             scratch,
             ids: Vec::new(),
+            contents: BTreeMap::new(),
         };
         fs::create_dir(repo.root()).unwrap();
-        assert!(repo.git(&["init", "-q"]).status.success(), "git init");
-        let ids = blobs.iter().map(|blob| repo.store(blob)).collect();
-        Self { ids, ..repo }
+        let format = format!("--object-format={format}");
+        assert!(
+            repo.git(&["init", "-q", &format]).status.success(),
+            "git init {format}"
+        );
+        let ids: Vec<String> = blobs.iter().map(|blob| repo.store(blob)).collect();
+        let contents = ids
+            .iter()
+            .cloned()
+            .zip(blobs.iter().map(|b| b.to_vec()))
+            .collect();
+        Self {
+            ids,
+            contents,
+            ..repo
+        }
     }
 
     pub fn root(&self) -> std::path::PathBuf {
@@ -82,8 +98,6 @@ impl Repo {
                 "core.autocrlf=false",
                 "-c",
                 "core.quotepath=false",
-                "-c",
-                "diff.external=",
             ])
             .args(args);
         command.output().unwrap()
@@ -147,15 +161,16 @@ impl Repo {
         self.git(&["apply", "--check", &name]).status.success()
     }
 
-    /// A real `git apply` on `before`: the tree Git leaves, or `None` when it refuses (and so
-    /// writes nothing).
-    pub fn apply(&self, before: &Tree, patch: &[u8]) -> Option<Tree> {
+    /// A real `git apply` on `before`: whether Git applied the patch, what it said on stderr,
+    /// and the tree it left (which must be `before` when it refused: Git refuses a patch whole).
+    pub fn apply_outcome(&self, before: &Tree, patch: &[u8]) -> (bool, String, Tree) {
         self.reset(before);
         let name = self.write_patch(patch);
-        let applied = self.git(&["apply", &name]).status.success();
+        let out = self.git(&["apply", &name]);
         let mut after = Tree::new();
         read_tree(&self.root(), &self.root(), &mut after).unwrap();
-        applied.then_some(after)
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        (out.status.success(), stderr, after)
     }
 }
 
@@ -238,11 +253,34 @@ fn patched(old: &[u8], file: &ReviewFile) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// What a binary section writes, as its `index` line names it: nothing for the null id, else the
+/// blob whose full id it names when the store holds it. `None` when the review does not say:
+/// an abbreviated id (Git refuses to apply it), or a blob outside `blobs` (Git builds it from
+/// the `GIT binary patch` data, which this oracle does not decode; Git checks the result against
+/// the id itself). Those are the binary results this oracle does not prove.
+fn binary_result(file: &ReviewFile, blobs: &BTreeMap<String, Vec<u8>>) -> Option<Vec<u8>> {
+    let ids = file
+        .patch_twin
+        .metadata
+        .iter()
+        .find_map(|m| m.strip_prefix("index "))?;
+    let new = ids.split(' ').next()?.split_once("..")?.1;
+    if !new.is_empty() && new.bytes().all(|b| b == b'0') {
+        return Some(Vec::new());
+    }
+    blobs.get(new).cloned()
+}
+
 /// The tree the review describes: its sections carried out one after the other on `before`,
 /// each as its status, paths, mode headers and hunks say, or `None` when a hunk does not fit
 /// the file it names. A rename or copy takes its source from `before`, which is what its hunks
-/// are written against.
-pub fn reviewed_tree(before: &Tree, files: &[ReviewFile]) -> Option<Tree> {
+/// are written against. A binary section writes the blob its `index` line names (see
+/// [`binary_result`]).
+pub fn reviewed_tree(
+    before: &Tree,
+    files: &[ReviewFile],
+    blobs: &BTreeMap<String, Vec<u8>>,
+) -> Option<Tree> {
     let mut after = before.clone();
     for file in files {
         let meta = &file.patch_twin.metadata;
@@ -273,7 +311,7 @@ pub fn reviewed_tree(before: &Tree, files: &[ReviewFile]) -> Option<Tree> {
             continue;
         }
         entry.content = match entry.content.take() {
-            _ if file.status == FileStatus::BinaryChanged => None,
+            _ if file.status == FileStatus::BinaryChanged => binary_result(file, blobs),
             // An earlier section's binary change left content the review does not know; Git
             // applies a later section to it, and that is not checked here.
             None => None,
@@ -285,8 +323,15 @@ pub fn reviewed_tree(before: &Tree, files: &[ReviewFile]) -> Option<Tree> {
 }
 
 /// Whether Git's tree is the reviewed one: the same paths with the same type and mode, and the
-/// same content wherever the review shows content.
+/// same content wherever the review shows content. An empty directory Git leaves behind after it
+/// moves a file out of it is no file, and is not compared unless the review makes one (a
+/// submodule's).
 pub fn agree(git: &Tree, reviewed: &Tree) -> bool {
+    let git: Tree = git
+        .iter()
+        .filter(|(path, _)| !path.ends_with('/') || reviewed.contains_key(*path))
+        .map(|(path, entry)| (path.clone(), entry.clone()))
+        .collect();
     git.len() == reviewed.len()
         && git.iter().zip(reviewed).all(|((gp, g), (rp, r))| {
             gp == rp

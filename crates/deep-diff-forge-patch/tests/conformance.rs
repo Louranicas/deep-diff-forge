@@ -14,7 +14,7 @@
 mod support;
 
 use deep_diff_forge_core::{FileStatus, ReviewFile};
-use deep_diff_forge_patch::{ParseOptions, PatchParseError, decode, parse_decoded};
+use deep_diff_forge_patch::{ParseOptions, PatchParseError, decode, old_path, parse_decoded};
 use support::{Repo, Tree, agree, regular, reviewed_tree};
 
 /// What DDF and Git each made of one patch.
@@ -68,12 +68,17 @@ impl Seen {
     }
 }
 
-/// The tree before every case: `x` holds `a`, `y` holds `y`, `e` is empty.
+/// The tree before every case: `x` holds `a`, `y` holds `y`, `e` is empty, `d/x` holds `dx`.
 fn before() -> Tree {
-    [("x", &b"a\n"[..]), ("y", b"y\n"), ("e", b"")]
-        .into_iter()
-        .map(|(path, content)| (path.to_owned(), regular(content)))
-        .collect()
+    [
+        ("x", &b"a\n"[..]),
+        ("y", b"y\n"),
+        ("e", b""),
+        ("d/x", b"dx\n"),
+    ]
+    .into_iter()
+    .map(|(path, content)| (path.to_owned(), regular(content)))
+    .collect()
 }
 
 /// A content as the tree holds it.
@@ -86,7 +91,7 @@ fn file(content: &str, executable: bool) -> support::Entry {
 
 /// A repository whose store holds `x`'s blob (`@OLD@`) and `stored` (`@NEW@`).
 fn rig(tag: &str) -> Repo {
-    Repo::new(tag, &[b"a\n", b"stored\n", b"y\n", b""])
+    Repo::with_format(tag, &[b"a\n", b"stored\n", b"y\n", b"", b"dx\n"], "sha1")
 }
 
 /// Runs `patch` (with `@OLD@`, `@NEW@` and `@ZERO@` filled in) through DDF and Git, and checks
@@ -100,14 +105,16 @@ fn see(repo: &Repo, patch: &str) -> Seen {
     let reading = repo.reading(patch.as_bytes());
     repo.reset(&before());
     let checks = repo.checks(patch.as_bytes());
-    let applied = repo.apply(&before(), patch.as_bytes());
-    assert_eq!(
-        checks,
-        applied.is_some(),
-        "--check and apply differ: {patch:?}"
+    let (ok, _, after) = repo.apply_outcome(&before(), patch.as_bytes());
+    assert_eq!(checks, ok, "--check and apply differ: {patch:?}");
+    // Git applies a patch whole or not at all: a refusal writes nothing.
+    assert!(
+        ok || after == before(),
+        "Git refused {patch:?} but wrote {after:?}"
     );
+    let applied = ok.then_some(after);
     if let (Ok(files), Some(git)) = (&ddf, &applied) {
-        let reviewed = reviewed_tree(&before(), files)
+        let reviewed = reviewed_tree(&before(), files, &repo.contents)
             .unwrap_or_else(|| panic!("the review of {patch:?} does not fit its tree"));
         assert!(
             agree(git, &reviewed),
@@ -291,14 +298,21 @@ fn row_copy_from() {
     );
     assert_eq!(s.git_tree()["c"], file("y\n", false));
     s.refused(|e| matches!(e, PatchParseError::InvalidPath { .. }));
+    // A source with a doubled slash names the file Git reads, squashed (S3A-L-1).
+    let s = see(
+        &r,
+        "diff --git a/d/x b/c\nsimilarity index 100%\ncopy from d//x\ncopy to c\n",
+    );
+    assert_eq!(s.git_tree()["c"], file("dx\n", false));
+    assert_eq!(old_path(&s.read()[0]).as_deref(), Some("d/x"));
 }
 
 #[test]
 fn row_copy_to() {
     let r = rig("copy-to");
     // Twice: Git writes the last; 0.8.4 read that too; refused now.
-    let s = see(&r, &format!("{COPY}copy to d\n"));
-    assert!(s.git_tree().contains_key("d") && !s.git_tree().contains_key("c"));
+    let s = see(&r, &format!("{COPY}copy to k\n"));
+    assert!(s.git_tree().contains_key("k") && !s.git_tree().contains_key("c"));
     s.refused_as_unwritten();
     // Before `copy from`: Git reads it; refused now.
     let s = see(
@@ -334,6 +348,15 @@ fn row_rename_from() {
     );
     assert_eq!(s.git_tree()["r"], file("a\n", false));
     s.refused(|e| matches!(e, PatchParseError::InvalidPath { .. }));
+    // A source with a doubled slash: Git removes `d/x`, and the review names `d/x` (S3A-L-1;
+    // 0.8.4 and 19a4cc6 showed `d//x`, so the oracle kept a `d/x` Git removed).
+    let s = see(
+        &r,
+        "diff --git a/d/x b/r\nsimilarity index 100%\nrename from d//x\nrename to r\n",
+    );
+    assert_eq!(s.git_tree()["r"], file("dx\n", false));
+    assert!(!s.git_tree().contains_key("d/x"));
+    assert_eq!(old_path(&s.read()[0]).as_deref(), Some("d/x"));
 }
 
 #[test]
@@ -502,6 +525,14 @@ fn row_new_name() {
     );
     assert!(s.reading.is_none());
     s.refused(|e| matches!(e, PatchParseError::MisplacedHeader { .. }));
+    // A `---`/`+++` with no hunk after it, which Git never writes (an empty file is `new file
+    // mode` and `index`): Git creates the empty file; refused now (0.8.4 read it).
+    let s = see(
+        &r,
+        "diff --git a/n b/n\nnew file mode 100644\nindex @ZERO@..e69de29\n--- /dev/null\n+++ b/n\n",
+    );
+    assert_eq!(s.git_tree()["n"], file("", false));
+    s.refused_as_unwritten();
 }
 
 #[test]
@@ -637,6 +668,105 @@ fn row_no_line_feed() {
     let s = see(&r, &format!("{X}old mode 100644\nnew mode 100755"));
     s.git_writes_nothing();
     s.refused(|e| matches!(e, PatchParseError::UnterminatedLine { .. }));
+}
+
+/// Git with an identity, for the commits the presentations below are written from.
+fn commit(repo: &Repo, dir: &str, message: &str) {
+    for args in [
+        vec!["-C", dir, "add", "-A"],
+        vec![
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "-C",
+            dir,
+            "commit",
+            "-qm",
+            message,
+        ],
+    ] {
+        let out = repo.git(&args);
+        assert!(out.status.success(), "{args:?}: {out:?}");
+    }
+}
+
+/// The work tree as `support` reads it, without `.git` and without the nested repository's.
+fn tree_of(repo: &Repo) -> Tree {
+    let mut tree = Tree::new();
+    for path in ["x", "sm/x", "a.bin", "b.bin"] {
+        if let Ok(bytes) = std::fs::read(repo.root().join(path)) {
+            tree.insert(path.to_owned(), regular(&bytes));
+        }
+    }
+    tree
+}
+
+/// Asserts that DDF reads `patch` and that a real `git apply` refuses it whole: it writes
+/// nothing, so the review shows a change that never lands, and none that lands otherwise
+/// (C1 in its two-outcome form, `CONFORMANCE.md`).
+fn read_and_refused_whole(repo: &Repo, patch: &[u8], why: &str) -> Vec<ReviewFile> {
+    let files = parse_decoded(&decode(patch), ParseOptions::default())
+        .unwrap_or_else(|e| panic!("DDF refuses Git's own {why}: {e}"));
+    let before = tree_of(repo);
+    let name = repo.root().join(".git/presentation.patch");
+    std::fs::write(&name, patch).unwrap();
+    let out = repo.git(&["apply", name.to_str().unwrap()]);
+    assert!(!out.status.success(), "git apply accepts the {why}");
+    assert_eq!(tree_of(repo), before, "git apply wrote part of the {why}");
+    files
+}
+
+/// Three presentations Git's own diff writes that `git apply` refuses whole (`CONFORMANCE.md`,
+/// "Git writes it" against "`git apply` accepts it"): DDF reads each as the change it shows,
+/// as 0.8.4 did, and Git writes nothing from it. The generated differential counts each.
+#[test]
+fn git_written_presentations_git_apply_refuses_whole() {
+    // (a) A plain `git diff` of a binary file: abbreviated ids, which `apply_binary` refuses
+    // ("without full index line"). In SHA-1 and SHA-256 repositories; with `--full-index` the
+    // same change applies, and Git writes the new blob.
+    for format in ["sha1", "sha256"] {
+        let r = Repo::with_format(&format!("abbrev-{format}"), &[], format);
+        std::fs::write(r.root().join("x"), b"old\0content\n").unwrap();
+        commit(&r, ".", "old");
+        std::fs::write(r.root().join("x"), b"new\0content\n").unwrap();
+        let plain = r.git(&["diff"]).stdout;
+        let full = r.git(&["diff", "--full-index"]).stdout;
+        assert!(r.git(&["hash-object", "-w", "x"]).status.success());
+        assert!(r.git(&["checkout", "--", "x"]).status.success());
+        let files = read_and_refused_whole(&r, &plain, &format!("{format} binary diff"));
+        assert_eq!(files[0].status, FileStatus::BinaryChanged);
+        let name = r.root().join(".git/full.patch");
+        std::fs::write(&name, &full).unwrap();
+        assert!(r.git(&["apply", name.to_str().unwrap()]).status.success());
+        assert_eq!(
+            std::fs::read(r.root().join("x")).unwrap(),
+            b"new\0content\n"
+        );
+    }
+    // (b) `git diff --submodule=diff`: a `Submodule sm …` line, then the submodule's own section
+    // under the superproject path. In the repository it describes, `sm/x` already holds the new
+    // content, so Git refuses the section.
+    let r = Repo::with_format("submodule-diff", &[], "sha1");
+    std::fs::create_dir(r.root().join("sm")).unwrap();
+    assert!(r.git(&["-C", "sm", "init", "-q"]).status.success());
+    std::fs::write(r.root().join("sm/x"), b"a\n").unwrap();
+    commit(&r, "sm", "s1");
+    commit(&r, ".", "parent");
+    std::fs::write(r.root().join("sm/x"), b"b\n").unwrap();
+    commit(&r, "sm", "s2");
+    let patch = r.git(&["diff", "--submodule=diff"]).stdout;
+    assert!(patch.starts_with(b"Submodule sm "), "{patch:?}");
+    let files = read_and_refused_whole(&r, &patch, "submodule diff");
+    assert_eq!(files[0].path, "sm/x");
+    // (c) `git diff --no-index` of two binary files: `diff --git` halves that name two paths,
+    // with nothing else naming the files, so Git names no file ("lacks filename information").
+    let r = Repo::with_format("no-index", &[], "sha1");
+    std::fs::write(r.root().join("a.bin"), b"a\0b").unwrap();
+    std::fs::write(r.root().join("b.bin"), b"a\0c").unwrap();
+    let patch = r.git(&["diff", "--no-index", "a.bin", "b.bin"]).stdout;
+    let files = read_and_refused_whole(&r, &patch, "--no-index pair");
+    assert_eq!(files[0].status, FileStatus::BinaryChanged);
 }
 
 /// The table and the tests are held to each other: every row of `CONFORMANCE.md` has a test

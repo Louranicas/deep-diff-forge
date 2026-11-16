@@ -63,23 +63,31 @@ impl Rng {
 }
 
 /// The tree every patch is applied to: `x` and `w` both hold `a` (so a hunk meant for one also
-/// fits the other), `y` holds `y`, `e` is empty.
+/// fits the other), `y` holds `y`, `e` is empty, `d/x` holds `dx` (for doubled slashes).
 fn before() -> Tree {
-    [("x", &b"a\n"[..]), ("w", b"a\n"), ("y", b"y\n"), ("e", b"")]
-        .into_iter()
-        .map(|(path, content)| (path.to_owned(), regular(content)))
-        .collect()
+    [
+        ("x", &b"a\n"[..]),
+        ("w", b"a\n"),
+        ("y", b"y\n"),
+        ("e", b""),
+        ("d/x", b"dx\n"),
+    ]
+    .into_iter()
+    .map(|(path, content)| (path.to_owned(), regular(content)))
+    .collect()
 }
 
 /// The blobs of the object store, named in the sections as `@OLD@` (`a`), `@NEW@` (`stored`),
-/// `@Y@`, `@E@` (empty) and `@T@` (`y` with no line feed, a symlink's target); `…7@` is the
-/// seven-digit abbreviation, `@ZERO@` the null id.
-const BLOBS: [(&str, &[u8]); 5] = [
+/// `@Y@`, `@E@` (empty), `@T@` (`y` with no line feed, a symlink's target) and `@DX@`; `…7@` is
+/// the seven-digit abbreviation, `@ZERO@` the null id and `@SUB@` a submodule's commit id, each
+/// as long as the repository's ids (SHA-1 or SHA-256).
+const BLOBS: [(&str, &[u8]); 6] = [
     ("OLD", b"a\n"),
     ("NEW", b"stored\n"),
     ("Y", b"y\n"),
     ("E", b""),
     ("T", b"y"),
+    ("DX", b"dx\n"),
 ];
 
 /// Sections Git writes for changes to `before()`, as `git diff` writes them (a change of type is
@@ -110,7 +118,14 @@ const WRITTEN: &[&str] = &[
     "diff --git a/x b/r\nsimilarity index 60%\nrename from x\nrename to r\nindex @OLD@..@NEW@ 100644\nBinary files a/x and b/r differ\n",
     "diff --git a/x b/x\ndeleted file mode 100644\nindex @OLD7@..@ZERO7@\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\ndiff --git a/x b/x\nnew file mode 120000\nindex @ZERO7@..@T7@\n--- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+y\n\\ No newline at end of file\n",
     "diff --git a/x b/x\ndissimilarity index 100%\nindex @OLD7@..@NEW7@ 100644\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+stored\n",
-    "diff --git a/m b/m\nnew file mode 160000\nindex 0000000..1234567\n--- /dev/null\n+++ b/m\n@@ -0,0 +1 @@\n+Subproject commit 1234567890123456789012345678901234567890\n",
+    "diff --git a/m b/m\nnew file mode 160000\nindex 0000000..1234567\n--- /dev/null\n+++ b/m\n@@ -0,0 +1 @@\n+Subproject commit @SUB@\n",
+    // A plain `git diff` of a binary file: abbreviated ids, which `git apply` refuses whole.
+    "diff --git a/x b/x\nindex @OLD7@..@NEW7@ 100644\nBinary files a/x and b/x differ\n",
+    "diff --git a/n b/n\nnew file mode 100644\nindex @ZERO7@..@NEW7@\nBinary files /dev/null and b/n differ\n",
+    // A file in a directory, for the doubled-slash move.
+    "diff --git a/d/x b/d/x\nindex @DX7@..@NEW7@ 100644\n--- a/d/x\n+++ b/d/x\n@@ -1 +1 @@\n-dx\n+stored\n",
+    "diff --git a/d/x b/r\nsimilarity index 100%\nrename from d/x\nrename to r\n",
+    "diff --git a/d/x b/c\nsimilarity index 100%\ncopy from d/x\ncopy to c\n",
 ];
 
 /// Header lines of other rows, put into a section by the `insert` move.
@@ -127,7 +142,7 @@ const FOREIGN: &[&str] = &[
     "rename from x",
     "rename to s",
     "copy from y",
-    "copy to d",
+    "copy to k",
     "rename old x",
     "Files a/x and b/x differ",
     "Binary files a/x and b/x differ",
@@ -149,7 +164,7 @@ const RENAMES: &[(&str, &str)] = &[
     ("a/x b", "a/w b"),
     ("rename to r", "rename to s"),
     ("rename from x", "rename from w"),
-    ("copy to c", "copy to d"),
+    ("copy to c", "copy to k"),
     ("copy from y", "copy from x"),
 ];
 
@@ -333,7 +348,14 @@ fn change_index_id(rng: &mut Rng, s: &mut Section) -> &'static str {
 /// The moves that change a section as a whole: a header of another row put in, another body,
 /// the binary marker's word changed, the names or the whole header taken away.
 fn mutate_section(rng: &mut Rng, s: &mut Section) -> &'static str {
-    match rng.below(6) {
+    match rng.below(7) {
+        // A path spelled with a doubled slash, which Git squashes (`d//x` is `d/x`).
+        5 => {
+            if let Some(text) = s.header.iter_mut().find(|l| l.contains("d/x")) {
+                *text = text.replacen("d/x", "d//x", 1);
+            }
+            "double slash"
+        }
         0 => {
             let i = 1 + rng.below(s.header.len());
             s.header
@@ -422,6 +444,13 @@ struct Tally {
     patches: usize,
     read: usize,
     applied_as_read: usize,
+    /// DDF reads, Git reads and refuses to apply, writing nothing: a binary marker whose ids
+    /// are abbreviated (a plain `git diff` of a binary file), a `--submodule=diff` envelope's
+    /// inner section, and any other patch Git refuses whole (a hunk that does not fit the tree,
+    /// a file that already exists, …).
+    abbreviated_binary: usize,
+    submodule_diff: usize,
+    refused_whole: usize,
     /// Git applies, DDF refuses: by DDF's reason and the moves that made the patch.
     git_only: BTreeMap<String, usize>,
     /// DDF reads, Git refuses to read: a section shaped as `git diff --no-index` writes a binary
@@ -457,13 +486,15 @@ fn fill(text: &str, ids: &BTreeMap<&str, String>) -> String {
         out = out.replace(&format!("@{name}7@"), &id[..7]);
         out = out.replace(&format!("@{name}@"), id);
     }
+    let len = ids.values().next().map_or(40, String::len);
     out.replace("@ZERO7@", "0000000")
-        .replace("@ZERO@", &"0".repeat(40))
+        .replace("@ZERO@", &"0".repeat(len))
+        .replace("@SUB@", &"1".repeat(len))
 }
 
-fn run(seeds: &[u64], tag: &str) -> Tally {
+fn run(seeds: &[u64], tag: &str, format: &str) -> Tally {
     let blobs: Vec<&[u8]> = BLOBS.iter().map(|(_, b)| *b).collect();
-    let repo = Repo::new(tag, &blobs);
+    let repo = Repo::with_format(tag, &blobs, format);
     let ids: BTreeMap<&str, String> = BLOBS
         .iter()
         .map(|(name, _)| *name)
@@ -496,10 +527,23 @@ fn run(seeds: &[u64], tag: &str) -> Tally {
                         }
                         continue;
                     }
-                    let Some(git) = repo.apply(&before, patch.as_bytes()) else {
+                    let (applied, stderr, git) = repo.apply_outcome(&before, patch.as_bytes());
+                    if !applied {
+                        // C1, second outcome: Git refuses the whole patch and writes nothing.
+                        if git != before {
+                            tally.failures.push(format!(
+                                "Git refused part of a patch DDF reads: {case}\n git: {git:?}"
+                            ));
+                        } else if stderr.contains("without full index line") {
+                            tally.abbreviated_binary += 1;
+                        } else if patch.lines().any(|l| l.starts_with("Submodule ")) {
+                            tally.submodule_diff += 1;
+                        } else {
+                            tally.refused_whole += 1;
+                        }
                         continue;
-                    };
-                    match reviewed_tree(&before, files) {
+                    }
+                    match reviewed_tree(&before, files, &repo.contents) {
                         Some(reviewed) if agree(&git, &reviewed) => tally.applied_as_read += 1,
                         reviewed => tally.failures.push(format!(
                             "git apply writes otherwise than DDF reads: {case}\n git: {git:?}\n ddf: {reviewed:?}"
@@ -539,7 +583,8 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
         let handles: Vec<_> = (0..THREADS)
             .map(|t| {
                 let mine: Vec<u64> = seeds.iter().copied().filter(|s| s % THREADS == t).collect();
-                scope.spawn(move || run(&mine, &format!("gen{t}")))
+                let format = if t % 2 == 1 { "sha256" } else { "sha1" };
+                scope.spawn(move || run(&mine, &format!("gen{t}"), format))
             })
             .collect();
         handles.into_iter().map(|h| h.join().unwrap()).collect()
@@ -550,6 +595,9 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
         total.read += tally.read;
         total.applied_as_read += tally.applied_as_read;
         total.no_index += tally.no_index;
+        total.abbreviated_binary += tally.abbreviated_binary;
+        total.submodule_diff += tally.submodule_diff;
+        total.refused_whole += tally.refused_whole;
         for (shape, n) in tally.git_only {
             *total.git_only.entry(shape).or_default() += n;
         }
@@ -557,13 +605,16 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
     }
     let git_only: usize = total.git_only.values().sum();
     eprintln!(
-        "generated differential: {} seeds, {} patches in {:.1} s; DDF read {}, Git applied {} of them as reviewed; Git applies and DDF refuses {git_only}; DDF reads and Git cannot, as `git diff --no-index` pairs, {}",
+        "generated differential: {} seeds, {} patches in {:.1} s; DDF read {}, Git applied {} of them as reviewed; Git applies and DDF refuses {git_only}",
         seeds.len(),
         total.patches,
         started.elapsed().as_secs_f64(),
         total.read,
         total.applied_as_read,
-        total.no_index,
+    );
+    eprintln!(
+        "  DDF reads, git apply refuses whole and writes nothing: abbreviated binary ids {}, --submodule=diff {}, --no-index pairs (Git cannot read them) {}, other {}",
+        total.abbreviated_binary, total.submodule_diff, total.no_index, total.refused_whole,
     );
     for failure in total.failures.iter().take(40) {
         eprintln!("  FAIL {}", failure.lines().next().unwrap_or_default());
@@ -573,7 +624,12 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
     for (shape, n) in shapes.iter().take(25) {
         eprintln!("  {n:5}  {shape}");
     }
-    // Not vacuous: most of Git's own patches and many near misses are read and applied.
+    // Not vacuous: the plain binary group is reached, and most of Git's own patches and many
+    // near misses are read and applied.
+    assert!(
+        total.abbreviated_binary > 0,
+        "no abbreviated binary diff was generated"
+    );
     assert!(
         total.applied_as_read * 4 >= total.patches,
         "only {} of {} patches were read and applied",
