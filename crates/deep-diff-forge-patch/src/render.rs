@@ -134,7 +134,10 @@ pub fn old_path(file: &ReviewFile) -> Option<String> {
         let from = meta
             .strip_prefix("rename from ")
             .or_else(|| meta.strip_prefix("copy from "))?;
-        Some(super::paths::decode_path(from).unwrap_or_else(|| from.to_string()))
+        // Squashed as Git squashes a moved path (`find_name`), so `rename from d//x` names
+        // `d/x`, the file Git removes (independent review of S3a, S3A-L-1).
+        let from = super::paths::decode_path(from).unwrap_or_else(|| from.to_string());
+        Some(super::parser::squash_slashes(&from))
     })
 }
 

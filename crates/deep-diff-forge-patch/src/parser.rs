@@ -1586,6 +1586,22 @@ impl FileBuf {
         if let Some(unwritten) = self.unwritten.take() {
             return Err(unwritten);
         }
+        // Git writes `---`/`+++` only before a hunk; an empty file is `new file mode` and
+        // `index`. Read, a new symlink with `---`/`+++` and no hunk let Git delete the file the
+        // section before replaced and then fail to write the link, so a refused patch wrote
+        // part of itself (generated differential, 2026-11-17).
+        if let Some(names) = self
+            .shape
+            .iter()
+            .find(|h| h.0 == Header::Names)
+            .filter(|_| self.git && self.hunks.is_empty())
+        {
+            return Err(PatchParseError::HeaderNotWrittenByGit {
+                line_number: names.1,
+                header: Header::Names.text(),
+                reason: "Git writes ---/+++ only before a hunk",
+            });
+        }
         match refused_header(&self.shape) {
             Some(((header, line_number), reason)) if self.git => {
                 Err(PatchParseError::HeaderNotWrittenByGit {
@@ -2035,7 +2051,7 @@ fn strip_p(path: &str, p0: bool) -> Option<&str> {
 }
 
 /// `squash_slash`: each run of `/` becomes one.
-fn squash_slashes(path: &str) -> String {
+pub(crate) fn squash_slashes(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for c in path.chars() {
         if !(c == '/' && out.ends_with('/')) {

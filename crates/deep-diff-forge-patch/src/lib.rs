@@ -166,8 +166,8 @@ pub enum PatchParseError {
     /// `120000` or `160000`, an `index` id that is not hex, a score that is not a percentage),
     /// a `Files … differ` line, or a binary marker ending in a carriage return. The shapes Git
     /// writes are listed in the crate's `CONFORMANCE.md`; `similarity index`, `dissimilarity
-    /// index` and `index` lines may be left out of them. Five rescores in a row found a shape
-    /// Git reads otherwise than the review did; DDF now reads no other.
+    /// index` and `index` lines may be left out of them. Five rescores in a row found a header
+    /// shape Git reads otherwise than the review did; DDF now reads no other header shape.
     HeaderNotWrittenByGit {
         /// 1-based line number of the header line refused.
         line_number: usize,
