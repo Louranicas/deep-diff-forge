@@ -523,10 +523,20 @@ bounded form.** What it holds to:
   is read of every other tree counts as that tree's only when Git names that tree there,
   at every stop. And a tree does not move while the directory it is remembered at stands:
   where Git and the records pair a tree something has blocked in with another top than
-  the one the state records for it, and that directory stands or cannot be looked at,
+  the one the state records for it, and the tree stands at that directory (its `.git` file
+  names the tree's own administrative directory) or it cannot be looked at,
   neither directory is read as that tree (UNJUDGED from it, named from elsewhere, both
   paths said, nothing forgotten) until `git worktree repair` is run in the directory that
-  stands or it is removed; where it is gone, the tree was moved and is read where it is. A stop made from a submodule's Git directory (`.git/modules/<name>`) is
+  stands or it is removed; where it is gone or holds something else (a tree, a clone or a
+  build directory made at the old path of a tree moved with `git worktree move`), the tree
+  was moved and is read where it is. Two cases Git's own commands make are stated limits:
+  `git worktree repair` run in a copy of a linked tree before anything blocked there makes
+  the copy the tree, and the directory copied is then no tree of the project (nothing in it
+  is judged; a stop from inside it is UNJUDGED); and a tree moved with `mv` whose entry Git
+  then ends (`git worktree prune`, or `git worktree add -f` at its old path) is forgotten,
+  with what blocked there (a stop from the moved directory is UNJUDGED). Where a failure
+  stands in a gone tree, its note advises `git worktree repair`, not prune; the remedy for
+  `mv` is said only where the directory moved from is gone. A stop made from a submodule's Git directory (`.git/modules/<name>`) is
   UNJUDGED: Git names the submodule's working tree there, which does not contain the
   session's directory, and the reason says so. The caller's `GIT_CEILING_DIRECTORIES` is
   kept without the entries at or under one of the project's trees, each compared with its
@@ -761,7 +771,7 @@ bounded form.** What it holds to:
   item blocks again. A state that cannot be kept is said with the stop's decision.
 - **Not a boundary:** the agent runs as the user. It can edit the settings that install the
   hooks, the state file, or the judge on `PATH`. An agent that edits Git's own
-  administrative files (`gitdir`, `commondir`, `core.worktree`) can make one tree be read
+  administrative files (`gitdir`, `commondir`, `core.worktree`, a tree's `.git` file) can make one tree be read
   as another; the hooks make this visible where a remembered directory still stands (the
   stop is UNJUDGED and both directories are named), and otherwise it is a stated limit, as
   editing the state file is. The hooks guard against honest mistakes; CI running the judge

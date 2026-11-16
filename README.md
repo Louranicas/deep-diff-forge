@@ -725,7 +725,9 @@ project and not judged at every stop while it is true, as stated above):
   where a failure has blocked first. Sixteen are looked at; the ones beyond, and the ones the six seconds did not
   reach, were not looked at: the stop says how many, and nothing that is remembered of
   them is forgotten. A working tree that was removed by hand: named, with
-  `git worktree prune`, which forgets a linked tree that is gone. Git lists a main Git
+  `git worktree prune`, which forgets a linked tree that is gone; where a failure stands in
+  it the note advises no prune but `git worktree repair` where a tree moved with `mv` is
+  now (prune would forget what blocked there). Git lists a main Git
   directory made apart under another name than `.git` as the main tree itself: a session
   that began in a linked tree of such a repository has that entry named so at every stop,
   and prune does not change it. Where nothing is remembered of a tree, `git status` alone decides whether it is
@@ -809,17 +811,22 @@ project and not judged at every stop while it is true, as stated above):
   parent directory: every stop made from the main tree of such a repository is UNJUDGED,
   with words that say so. A linked tree moved with a plain
   `mv` and not repaired is such a pair too (its `gitdir` names where it was): a stop from it
-  is UNJUDGED until `git worktree repair` in it records where it is, and its reason says so.
+  is UNJUDGED until `git worktree repair` in it records where it is, and its reason says so
+  where the directory it was moved from is gone (only there: run in a copy, the repair makes
+  the copy the tree).
 - A tree does not move while the directory it is remembered at stands. Where Git and the
   records pair a linked tree something has blocked in with another top level than the one
-  the session's state records for it, and the recorded directory still stands (or cannot
-  be looked at), neither directory is judged as that tree: a stop from it is UNJUDGED, a
+  the session's state records for it, and the tree still stands at the recorded directory
+  (a directory whose `.git` file names that tree's own administrative directory, or one
+  that cannot be looked at), neither directory is judged as that tree: a stop from it is UNJUDGED, a
   stop from elsewhere names it, both paths are said, and nothing of it is forgotten, until
   `git worktree repair` is run in the directory that stands or that directory is removed.
   This is what a copy of a tree that `git worktree repair` was run in (`cp -a`, then the
   repair in the copy), or Git's own files edited by hand, give. Where the recorded
-  directory is gone, the tree is read at its new top: a tree moved and repaired, or moved
-  with `git worktree move`, keeps what has blocked in it and does not block again.
+  directory is gone, or is no longer that tree (a new tree, a clone or a build directory
+  made at the old path of a tree moved with `git worktree move`), the tree is read at its
+  new top: a tree moved and repaired, or moved with `git worktree move`, keeps what has
+  blocked in it and does not block again, and a new failure in it blocks.
 - A listed tree is left out as the one a stop judges only by which tree it is, never by
   its path: two entries `git worktree list` gives with one path (an administrative `gitdir`
   record edited to name another tree's `.git`) are two trees, and each is looked at or
@@ -883,8 +890,8 @@ Deliberate evasion, made visible where that is cheap:
 - An agent can make a stop UNJUDGED by breaking what the judge needs (a file that cannot be
   read, a path marked skip-worktree). That is never a pass and always visible to the user,
   and it is never a block either.
-- Git's own administrative files edited by hand (`gitdir`, `commondir`, `core.worktree`)
-  so that one tree is read as another: where a directory the session remembers a failure
+- Git's own administrative files edited by hand (`gitdir`, `commondir`, `core.worktree`,
+  a tree's `.git` file) so that one tree is read as another: where a directory the session remembers a failure
   at still stands, the stop is UNJUDGED and both directories are named; otherwise it is a
   stated limit, as an edited state file is.
 
@@ -898,6 +905,11 @@ Stated limits, which the judge on the pull request covers:
   the stash; a working tree whose directory is gone is not asked.
 - Work in a copy of the repository, and anything in a repository that is not the session's
   project: named where the hook sees it, not judged.
+- `git worktree repair` run in a copy of a linked tree before anything blocked in the tree
+  makes the copy the tree: the directory copied is then no tree of the project, and nothing
+  in it is judged (a stop from inside it is UNJUDGED). A tree moved with `mv` whose entry Git
+  then ends (`git worktree prune`, or `git worktree add -f` at its old path) is forgotten
+  with what blocked there; a stop from the moved directory is UNJUDGED.
 - Two stops of one session do not run at the same time: every stop, the session's first
   too, holds a lock beside the session's state while it runs (`flock` on
   `session-<hash>.lock`), and a second one waits three seconds and then says UNJUDGED,

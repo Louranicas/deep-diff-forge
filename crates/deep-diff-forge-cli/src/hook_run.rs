@@ -2554,8 +2554,20 @@ fn elsewhere(cwd: &str, place: &Place, around: &Around<'_>, deadline: Deadline) 
 /// pair ([`Found::Unpaired`]), is not judged; and the trees that may be the one: every tree
 /// `cwd` lies under, the tree at the top level Git named and the tree the records name.
 fn unpaired_here(cwd: &Path, unpaired: &Unpaired) -> Elsewhere {
+    // The remedy of a tree moved with `mv` (the recorded directory is gone) is said for that
+    // case alone: run in a copy, it makes the copy the tree and the directory copied no tree
+    // of the project (seventeenth independent review of the hooks, HR17-L-1).
+    let moved = unpaired.recorded.as_deref().is_some_and(|recorded| {
+        std::fs::symlink_metadata(recorded)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    });
+    let hint = if moved {
+        " (`git worktree repair` in a tree moved with `mv` records where it is)"
+    } else {
+        ""
+    };
     let reason = format!(
-        "{} (`git worktree repair` in a tree moved with `mv` records where it is): whether the session's directory is another working tree could not be found out, and neither directory is judged as that tree ({}; the session's directory {})",
+        "{}{hint}: whether the session's directory is another working tree could not be found out, and neither directory is judged as that tree ({}; the session's directory {})",
         unpaired.words(),
         unpaired.git_dir_words(),
         shown(cwd)
@@ -2601,7 +2613,8 @@ fn moved_here(cwd: &Path, top: &Path, old: &Path) -> Elsewhere {
 }
 
 /// Where the session's state records the tree `id` ([`State::trees`]), when that is not `top`
-/// and a directory stands there or whether one does cannot be found out. An identity does not
+/// and the tree still stands there: a directory whose `.git` file names the tree's own
+/// administrative directory, or one of which that cannot be found out. An identity does not
 /// move while its remembered directory stands: with two nested linked trees, the inner tree's
 /// `core.worktree` set to the outer one and its administrative `gitdir` record edited to name
 /// the outer tree's `.git`, Git and the records named the outer tree as the inner one; the
@@ -2610,26 +2623,40 @@ fn moved_here(cwd: &Path, top: &Path, old: &Path) -> Elsewhere {
 /// round 24, VD4R24-M-1). The same after `cp -a` of a tree, `git clean` and
 /// `git worktree repair` run in the copy (sixteenth independent review of the hooks,
 /// HR16-L-3). Where the recorded directory is gone, the tree was moved: it is read at `top`.
+///
+/// Any directory at the recorded path counted as the tree standing there: after
+/// `git worktree move`, a new tree, a clone or a build directory made at the old path left
+/// the moved tree UNJUDGED at every stop, and a new key in it never blocked (seventeenth
+/// independent review of the hooks, HR17-M-1). A directory with no `.git` file, or one that
+/// names another administrative directory, is not the tree.
 fn standing_record(
     recorded: &std::collections::BTreeMap<String, String>,
     id: &str,
     top: &Path,
 ) -> Option<PathBuf> {
+    let gone = |error: &std::io::Error| {
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+        )
+    };
     let old = PathBuf::from(recorded.get(id)?);
     if same_form(&old) == same_form(top) {
         return None;
     }
-    match std::fs::metadata(&old) {
-        Ok(found) if !found.is_dir() => None,
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) =>
-        {
-            None
+    let dot_git = old.join(".git");
+    // the directory, then its `.git` file
+    for (path, directory) in [(old.as_path(), true), (dot_git.as_path(), false)] {
+        match std::fs::metadata(path) {
+            Ok(found) if found.is_dir() != directory => return None,
+            Err(error) if gone(&error) => return None,
+            Err(_) => return Some(old.clone()),
+            Ok(_) => {}
         }
-        _ => Some(old),
+    }
+    match pointed_path(&dot_git, b"gitdir: ", &old) {
+        Some(admin) => (instance_of(&same_form(&admin)).as_deref() == Some(id)).then_some(old),
+        None => Some(old),
     }
 }
 
@@ -4223,6 +4250,17 @@ fn not_looked_at(late: (usize, usize), beyond: (usize, usize)) -> Vec<Note> {
     said
 }
 
+/// What the note of a working tree that is gone advises. Not `git worktree prune` where a
+/// failure stands in the tree: it forgets what blocked there, also in a tree moved with `mv`
+/// (seventeenth independent review of the hooks, HR17-L-2).
+fn gone_advice(stands: bool) -> &'static str {
+    if stands {
+        "if it was moved with `mv`, `git worktree repair` run where it is now records it; `git worktree prune` would forget what blocked there"
+    } else {
+        "`git worktree prune` forgets a linked tree that is gone; Git lists a main Git directory made apart under another name than `.git` as the main tree, and that entry stays"
+    }
+}
+
 /// What to say of the project's other working trees: one that is gone, and one the session
 /// is not in that has changes which are not committed (they are in no patch of this stop; the
 /// commits made there are judged). An agent that makes a working tree and edits it by path
@@ -4309,8 +4347,9 @@ fn other_trees(
             said.push(Note {
                 name: name(" (gone)"),
                 text: format!(
-                    "The working tree {} of this project is gone or is no working tree any more: what only its own history names is not judged (`git worktree prune` forgets a linked tree that is gone; Git lists a main Git directory made apart under another name than `.git` as the main tree, and that entry stays).{standing}",
-                    shown_tree(&tree.path)
+                    "The working tree {} of this project is gone or is no working tree any more: what only its own history names is not judged ({}).{standing}",
+                    shown_tree(&tree.path),
+                    gone_advice(stands)
                 ),
                 standing: usize::from(stands),
             });
@@ -9304,14 +9343,19 @@ mod tests {
     /// Review V4 round 24, VD4R24-M-1, and the sixteenth independent review, HR16-L-3: an
     /// identity does not move while its remembered directory stands. A tree the state records
     /// at one directory and that Git and the records now pair with another top is read at the
-    /// new top only where the recorded directory is gone:
+    /// new top only where the tree no longer stands at the recorded directory (seventeenth
+    /// independent review of the hooks, HR17-M-1: any directory there counted):
     ///
     /// | the recorded directory | the new top the same | the new top another |
     /// | --- | --- | --- |
-    /// | stands | read | not read: the recorded one is said |
+    /// | its `.git` names this tree's administrative directory | read | not read: it is said |
     /// | is gone | read | read (a tree moved and repaired) |
     /// | is a file | read | read |
     /// | cannot be looked at | read | not read |
+    /// | has no `.git` (a build directory made at the old path) | read | read |
+    /// | its `.git` names another tree's (a tree added at the old path) | read | read |
+    /// | its `.git` is a directory (a clone made at the old path) | read | read |
+    /// | its `.git` cannot be read | read | not read |
     /// | not recorded | read | read |
     ///
     /// And two listed entries with one path are two trees (HR16-L-1).
@@ -9320,30 +9364,58 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let scratch = deep_diff_forge_testkit::Scratch::new("hook-standing-record");
         let root = std::fs::canonicalize(scratch.path()).unwrap();
-        for dir in ["stands", "new", "locked/tree"] {
+        for dir in [
+            "stands",
+            "new",
+            "locked/tree",
+            "bare",
+            "other",
+            "clone/.git",
+            "unread",
+            "admin/mine",
+            "admin/theirs",
+        ] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
+        for admin in ["admin/mine", "admin/theirs"] {
+            std::fs::write(root.join(admin).join("commondir"), "../..\n").unwrap();
+        }
+        let mine = instance_of(&root.join("admin/mine")).unwrap();
+        let dot_git = |dir: &str, admin: &str| {
+            let named = format!("gitdir: {}\n", root.join(admin).display());
+            std::fs::write(root.join(dir).join(".git"), named).unwrap();
+        };
+        dot_git("stands", "admin/mine");
+        dot_git("other", "admin/theirs");
+        dot_git("unread", "admin/mine");
         std::fs::write(root.join("file"), "x").unwrap();
-        let at = |dir: &str| root.join(dir).to_string_lossy().into_owned();
-        let recorded: std::collections::BTreeMap<String, String> = [
-            ("a".to_owned(), at("stands")),
-            ("b".to_owned(), at("gone")),
-            ("c".to_owned(), at("file")),
-            ("d".to_owned(), at("locked/tree")),
+        for (path, mode) in [("locked", 0o000), ("unread/.git", 0o000)] {
+            std::fs::set_permissions(root.join(path), std::fs::Permissions::from_mode(mode))
+                .unwrap();
+        }
+        let cell = |dir: &str, top: &str| {
+            let recorded = [(mine.clone(), root.join(dir).to_string_lossy().into_owned())].into();
+            standing_record(&recorded, &mine, &root.join(top))
+        };
+        let rows: Vec<_> = [
+            "stands",
+            "gone",
+            "file",
+            "locked/tree",
+            "bare",
+            "other",
+            "clone",
+            "unread",
         ]
-        .into();
-        std::fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(0o000))
-            .unwrap();
-        let cell = |id: &str, top: &str| standing_record(&recorded, id, &root.join(top));
-        let rows = [
-            (cell("a", "stands"), cell("a", "new")),
-            (cell("b", "gone"), cell("b", "new")),
-            (cell("c", "file"), cell("c", "new")),
-            (cell("d", "locked/tree"), cell("d", "new")),
-            (cell("e", "stands"), cell("e", "new")),
-        ];
-        std::fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(0o755))
-            .unwrap();
+        .iter()
+        .map(|dir| (cell(dir, dir), cell(dir, "new")))
+        .collect();
+        let not_recorded =
+            standing_record(&std::collections::BTreeMap::new(), &mine, &root.join("new"));
+        for (path, mode) in [("locked", 0o755), ("unread/.git", 0o644)] {
+            std::fs::set_permissions(root.join(path), std::fs::Permissions::from_mode(mode))
+                .unwrap();
+        }
         assert_eq!(
             rows,
             [
@@ -9352,13 +9424,14 @@ mod tests {
                 (None, None),
                 (None, Some(root.join("locked/tree"))),
                 (None, None),
+                (None, None),
+                (None, None),
+                (None, Some(root.join("unread"))),
             ]
         );
+        assert_eq!(not_recorded, None);
         // the same directory written another way is the same top
-        assert_eq!(
-            standing_record(&recorded, "a", &root.join("new/../stands")),
-            None
-        );
+        assert_eq!(cell("stands", "new/../stands"), None);
         // two entries of the listing with one path: each takes a tree of its own
         let linked = Linked {
             trees: vec![

@@ -922,6 +922,36 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     two listed entries with one path, on functions `7380e8e` does not have.
   - *State.* Schema unchanged (`v10`).
 
+- **The closing fix of the hooks line: Vesper's round 25 (GO) and a seventeenth independent
+  review of the hooks (NO-GO).**
+  - *The tree stands at its recorded directory only where that directory is the tree
+    (HR17-M-1, medium).* Round 25 took any directory at the recorded path for the tree
+    standing there: after `git worktree move`, a new tree, a clone or a build directory made
+    at the old path left the moved tree UNJUDGED at every stop, a new key in it never
+    blocked, and the remedy the stop named changed nothing. The recorded directory now
+    counts only when its `.git` file names the tree's own administrative directory, or when
+    it cannot be read; otherwise the tree is read at its new top, its failure stands and a
+    new one blocks. VD4R24-M-1 and HR16-L-3 stay UNJUDGED with nothing forgotten (their old
+    directory still names the tree).
+  - *Words and stated limits (HR17-L-1, HR17-L-2, low).* The remedy for a tree moved with
+    `mv` is said only where the directory it was moved from is gone: run in a copy, the
+    repair makes the copy the tree and the directory copied no tree of the project, which
+    is now a stated limit. The note of a gone tree in which a failure stands no longer
+    advises `git worktree prune` (it would forget what blocked there) but repair where a
+    tree moved with `mv` is now; a tree whose entry Git ends after `mv` (prune, or
+    `git worktree add -f` at its old path) is a stated limit. SECURITY's "Not a boundary"
+    adds a tree's `.git` file to the files of Git's that an agent can edit.
+  - *A test that is sensitive to load (HR17-L-3; no code).*
+    `a_repository_with_more_working_trees_than_are_read_says_so` can fail under heavy
+    parallel load: the session start's 8 seconds over the reflogs of 256 trees run out, and
+    the session gets the words of one with no list of commits (the same on `7380e8e`).
+  - *Tests.* Each fails on `38af7b8`: a tree moved with `git worktree move` and a new tree,
+    a clone or a build directory made at its old path; two trees swapped; a new failure in
+    the moved tree before and after its commit. The unit table has rows for a recorded
+    directory with no `.git`, with a `.git` that names another tree's directory, with a
+    `.git` that is a directory, and with a `.git` that cannot be read.
+  - *State.* Schema unchanged (`v10`).
+
 ### Changed
 
 - Path and shape weights are stated once, in `RiskSignal::weight`, and the scorer reads

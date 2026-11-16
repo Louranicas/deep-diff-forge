@@ -8949,6 +8949,149 @@ fn two_listed_entries_with_one_path_are_two_trees() {
     );
 }
 
+/// Seventeenth independent review of the hooks, HR17-M-1, as reproduced: a tree a failure
+/// stands in is moved with `git worktree move`, and something new is made at its old path (a
+/// new tree, a clone, a build directory). Any directory at the recorded path counted as the
+/// tree standing there: every stop from the moved tree was UNJUDGED and a new key in it never
+/// blocked. Only a directory whose `.git` names the tree's own administrative directory is the
+/// tree: the moved tree is judged where it is, its failure stands, and a new one blocks.
+#[test]
+fn a_tree_moved_by_git_is_judged_whatever_is_made_at_its_old_path() {
+    for made in ["tree", "clone", "build"] {
+        let scratch = Scratch::new("hook-moved-then-made");
+        let root = repository(&scratch);
+        let (script, log) = reading_judge(&scratch);
+        let (linked, moved) = (scratch.join("linked"), scratch.join("moved"));
+        linked_tree(&root, &linked, "side");
+        start(&root, "s");
+        secret(&linked, "first.rs");
+        blocked(&stop_from(&linked, "s", &script));
+        let at = [linked.to_str().unwrap(), moved.to_str().unwrap()];
+        git(&root, &["worktree", "move", at[0], at[1]]);
+        match made {
+            "tree" => linked_tree(&root, &linked, "fresh"),
+            "clone" => {
+                git(
+                    &scratch.join("."),
+                    &[
+                        "clone",
+                        "--quiet",
+                        "--no-local",
+                        root.to_str().unwrap(),
+                        at[0],
+                    ],
+                );
+            }
+            _ => std::fs::create_dir_all(linked.join("target/debug")).unwrap(),
+        }
+        let said = allowed(&stop_from(&moved, "s", &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: FAIL STANDS. "),
+            "{made}: {said}"
+        );
+        // a second key is put to the judge (the stand-in's failure is one line whatever the
+        // file, so it stands with the first; with the real judge it is a new item and blocks)
+        secret(&moved, "second.rs");
+        let said = allowed(&stop_from(&moved, "s", &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: FAIL STANDS. "),
+            "{made}: {said}"
+        );
+        assert!(
+            shown(&log)
+                .last()
+                .is_some_and(|names| names.contains("second.rs")),
+            "{made}: {:?}",
+            shown(&log)
+        );
+    }
+}
+
+/// Seventeenth independent review of the hooks, HR17-M-1: two trees, a failure standing in
+/// each, swapped with three `git worktree move`. Each old directory holds the other tree, so
+/// neither is where its tree stood: each is judged where it is now, and each failure stands.
+#[test]
+fn two_trees_swapped_by_git_are_each_judged_where_they_are() {
+    let scratch = Scratch::new("hook-swapped");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let (a, b, between) = (
+        scratch.join("a"),
+        scratch.join("b"),
+        scratch.join("between"),
+    );
+    linked_tree(&root, &a, "a");
+    linked_tree(&root, &b, "b");
+    start(&root, "s");
+    secret(&a, "a.rs");
+    blocked(&stop_from(&a, "s", &script));
+    secret(&b, "b.rs");
+    blocked(&stop_from(&b, "s", &script));
+    let sorted = || {
+        let mut lines = remembered_lines();
+        lines.sort();
+        lines
+    };
+    let before = sorted();
+    for (from, to) in [(&a, &between), (&b, &a), (&between, &b)] {
+        git(
+            &root,
+            &[
+                "worktree",
+                "move",
+                from.to_str().unwrap(),
+                to.to_str().unwrap(),
+            ],
+        );
+    }
+    for tree in [&a, &b] {
+        let said = allowed(&stop_from(tree, "s", &script)).to_owned();
+        assert!(said.starts_with("deep-diff-forge: FAIL STANDS. "), "{said}");
+        assert_eq!(sorted(), before);
+    }
+}
+
+/// Seventeenth independent review of the hooks, HR17-M-1 (`moveaddcommit`): after the move and
+/// a new tree at the old path, a new key in the moved tree is judged while it is uncommitted
+/// (with the stand-in judge it is the same failure line, so it stands), and its commit blocks
+/// as a commit does, once.
+#[test]
+fn a_new_failure_in_a_tree_moved_by_git_is_judged_before_and_after_its_commit() {
+    let scratch = Scratch::new("hook-moved-commit");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    let (linked, moved) = (scratch.join("linked"), scratch.join("moved"));
+    linked_tree(&root, &linked, "side");
+    start(&root, "s");
+    secret(&linked, "first.rs");
+    blocked(&stop_from(&linked, "s", &script));
+    git(
+        &root,
+        &[
+            "worktree",
+            "move",
+            linked.to_str().unwrap(),
+            moved.to_str().unwrap(),
+        ],
+    );
+    linked_tree(&root, &linked, "fresh");
+    secret(&moved, "second.rs");
+    let said = allowed(&stop_from(&moved, "s", &script)).to_owned();
+    assert!(said.starts_with("deep-diff-forge: FAIL STANDS. "), "{said}");
+    assert!(
+        shown(&log)
+            .last()
+            .is_some_and(|names| names.contains("second.rs")),
+        "{:?}",
+        shown(&log)
+    );
+    git(&moved, &["add", "second.rs"]);
+    git(&moved, &["commit", "--quiet", "-m", "second"]);
+    blocked(&stop_from(&moved, "s", &script));
+    let said = allowed(&stop_from(&moved, "s", &script)).to_owned();
+    assert!(said.starts_with("deep-diff-forge: FAIL STANDS. "), "{said}");
+}
+
 /// A linked tree moved with a plain `mv` and not repaired is a pair the records do not name:
 /// a stop from it is UNJUDGED and says how it is put right; after `git worktree repair` the
 /// directory it was remembered at is gone, so the tree is read where it is now, and its
