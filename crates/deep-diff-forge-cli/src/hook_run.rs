@@ -2030,6 +2030,15 @@ enum Elsewhere {
 /// [`among_gits_own_files`]; every other failure is [`Elsewhere::Failed`], as it is
 /// outside the common directory.
 ///
+/// And what is known without Git is where a directory lies, not what is missing there. A
+/// directory with no `.git` entry above it was known to be Git's own; but removing a linked
+/// tree's `.git` file and its administrative directory, the tree's files left in place,
+/// made that true of the very tree the session was in: a stop from it printed nothing with
+/// two credentials in it, and forgot the failure that had blocked there (review V4 round
+/// 20, VD4R20-M-1). Only the common directory itself and Git's own subtrees of it
+/// ([`GITS_OWN_SUBTREES`]) are Git's own; any other directory Git cannot place is
+/// [`Elsewhere::Failed`], wherever it lies.
+///
 /// A directory that is not there any more (the session removed a build directory it was
 /// in) is asked about at the nearest directory above it that is there: the tree it was in
 /// is the tree the session is in. It "added nothing", so a linked tree was not judged from
@@ -2054,7 +2063,7 @@ fn elsewhere(cwd: &str, place: &Place, deadline: Deadline) -> Elsewhere {
         Found::Tree(found) if found.id != place.id => Elsewhere::Foreign(found.top),
         Found::Tree(found) if found.top != place.top => Elsewhere::Linked(Box::new(found)),
         Found::Tree(_) | Found::NotARepository | Found::Gone => Elsewhere::Nothing,
-        // in no working tree, and inside the Git directory: Git's own files
+        // Git's own files, known by where they lie (never by what is missing there)
         Found::Failed(_) if among_gits_own_files(&cwd, &place.common) => Elsewhere::Nothing,
         Found::Failed(reason) => Elsewhere::Failed(format!(
             "whether the session's directory is another working tree of this repository could not be found out: {reason}"
@@ -2086,15 +2095,60 @@ fn standing_directory(cwd: &Path) -> std::io::Result<Option<PathBuf>> {
     }
 }
 
+/// The directories Git itself makes at the top of a Git common directory, each of which holds
+/// only Git's own files: the object store (`objects`), the refs and their logs (`refs`,
+/// `logs`, `reftable`), the hooks and `info` of the repository, the administrative
+/// directories of linked working trees (`worktrees`) and of submodules (`modules`), the
+/// older places for remotes (`branches`, `remotes`), the recorded resolutions of `git
+/// rerere` (`rr-cache`), what `git fsck --lost-found` writes (`lost-found`), the state of a
+/// rebase, an `am` or a cherry-pick (`rebase-merge`, `rebase-apply`, `sequencer`), `git
+/// svn`'s (`svn`) and the file system monitor's (`fsmonitor--daemon`). A directory under
+/// one of them is Git's own whatever is or is not in it. A directory of any other name in
+/// the Git directory is not known to be: a working tree can be there (a bare repository
+/// with its trees inside it), and one whose `.git` file and administrative directory were
+/// removed looks like any other directory (review V4 round 20, VD4R20-M-1).
+/// What other programs keep in a Git directory (`lfs`, `annex`) is not here: a stop made
+/// from inside it is UNJUDGED with Git's words, never silent.
+const GITS_OWN_SUBTREES: &[&str] = &[
+    "objects",
+    "refs",
+    "logs",
+    "reftable",
+    "hooks",
+    "info",
+    "worktrees",
+    "modules",
+    "branches",
+    "remotes",
+    "rr-cache",
+    "lost-found",
+    "rebase-merge",
+    "rebase-apply",
+    "sequencer",
+    "svn",
+    "fsmonitor--daemon",
+];
+
 /// Whether `dir` is known, with no word from Git, to be in no working tree and among the
-/// files of the Git directory `common`: it is under `common`, and neither it nor any
-/// directory between it and `common` has an entry called `.git`. The top of every working
-/// tree has one (a linked tree a file, also when the administrative directory it names is
-/// gone), so a directory with none above it is in no tree: `hooks`, `objects`, a tree's
-/// administrative directory, a plain directory someone made in a bare repository. An
-/// entry that cannot be looked at is not known to be absent.
+/// files of the Git directory `common`: it is `common` itself, or lies under one of Git's
+/// own subtrees of it ([`GITS_OWN_SUBTREES`]), and neither it nor any directory between it
+/// and `common` has an entry called `.git` (the top of every working tree has one, so a
+/// tree someone made inside such a subtree is not taken for Git's own while it has its
+/// `.git` file). An entry that cannot be looked at is not known to be absent. That no
+/// `.git` entry is there proves nothing alone: it was all that was asked, and a linked
+/// tree whose two records had been removed was taken for Git's own (VD4R20-M-1).
 fn among_gits_own_files(dir: &Path, common: &Path) -> bool {
-    if !dir.starts_with(common) {
+    let Ok(below) = dir.strip_prefix(common) else {
+        return false;
+    };
+    let structural = match below.components().next() {
+        None => true,
+        Some(std::path::Component::Normal(first)) => {
+            GITS_OWN_SUBTREES.iter().any(|name| first == *name)
+        }
+        Some(_) => false,
+    };
+    if !structural {
         return false;
     }
     let mut at = dir;
@@ -3573,7 +3627,8 @@ fn not_looked_at(late: (usize, usize), beyond: (usize, usize)) -> Vec<Note> {
 ///
 /// Which trees the repository has is read from its own directory ([`linked_instances`]),
 /// not from the paths of the listing: what is remembered of a tree is forgotten only when no
-/// administrative directory is that tree any more.
+/// administrative directory is that tree any more, and only at a stop that knows which tree
+/// the session is in (`unfound` is `None`).
 fn other_trees(
     stopping: &Stopping<'_>,
     (judged, unfound): (&[PathBuf], Option<&Path>),
@@ -3584,7 +3639,12 @@ fn other_trees(
 ) -> Vec<Note> {
     let place = &stopping.work.place;
     let linked = linked_instances(&place.common);
-    if linked.whole {
+    // A stop that could not find out which tree the session is in forgets nothing because a
+    // tree is not listed: the session's directory may be a tree whose records are gone. Its
+    // `.git` file and its administrative directory removed, a linked tree was listed no
+    // more, and what had blocked in it was forgotten at the stop made from inside it (review
+    // V4 round 20, VD4R20-M-1). A stop that can place the session's directory forgets it.
+    if linked.whole && unfound.is_none() {
         out.listed = Some(
             std::iter::once(MAIN_TREE.to_owned())
                 .chain(linked.trees.iter().map(|(_, id)| id.clone()))
@@ -3799,8 +3859,9 @@ const STAGED_NOT_APART: &str = "what is staged fails, and which of that is the s
 type TreeToJudge = (PathBuf, String, &'static str, Option<String>);
 
 /// The working trees a stop judges, the one the stop is in first; and the session's
-/// directory, when the tree it is in could not be found out. A linked tree the stop is in
-/// is added to `writable`; another repository the stop is in is named in `beside`.
+/// directory, when the tree it is in could not be found out (`Some` then, and only then).
+/// A linked tree the stop is in is added to `writable`; another repository the stop is in
+/// is named in `beside`.
 fn trees_to_judge(
     stopping: &Stopping<'_>,
     writable: &mut Vec<PathBuf>,
@@ -3845,7 +3906,17 @@ fn trees_to_judge(
             vec![project]
         }
         Elsewhere::Failed(reason) => {
-            unfound = standing_directory(Path::new(stopping.cwd)).ok().flatten();
+            // Where the directory is on disk; when that cannot be found out (a directory
+            // above it that cannot be searched), the path as it is written, its links
+            // followed as far as they can be. It was "none", and the tree it is under was
+            // named as one "the session's directory is not in" (twelfth independent review
+            // of the hooks, HR12-L-4). A relative path is kept as it is: no tree is under it.
+            let cwd = Path::new(stopping.cwd);
+            unfound = Some(match standing_directory(cwd) {
+                Ok(Some(found)) => found,
+                _ if cwd.is_absolute() => same_form(cwd),
+                _ => cwd.to_path_buf(),
+            });
             vec![
                 (
                     PathBuf::from(stopping.cwd),
@@ -7698,6 +7769,49 @@ mod tests {
         let (blocks, kept) = stop(&mut state, 0, 601);
         assert!(!blocks, "the staged failure blocked again");
         assert_eq!(kept, Kept::default());
+    }
+
+    /// Review V4 round 20, VD4R20-M-1: a directory is Git's own by where it lies, never by
+    /// what is missing there. The Git directory itself and a directory under one of Git's own
+    /// subtrees are; a directory of any other name under the Git directory is not, also with
+    /// no `.git` entry anywhere above it (a linked tree whose two records were removed); a
+    /// tree someone made inside one of Git's subtrees is not while it has its `.git` entry;
+    /// nothing outside the Git directory is.
+    #[test]
+    fn a_directory_is_gits_own_by_where_it_lies_not_by_what_is_missing() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-gits-own");
+        let root = std::fs::canonicalize(scratch.path()).unwrap();
+        let common = root.join("repo.git");
+        for name in GITS_OWN_SUBTREES {
+            std::fs::create_dir_all(common.join(name).join("deep")).unwrap();
+        }
+        for dir in ["feature/deep", "plain", "objects/wt/deep", "outside"] {
+            std::fs::create_dir_all(common.join(dir)).unwrap();
+        }
+        std::fs::write(common.join("objects/wt/.git"), "gitdir: x\n").unwrap();
+        assert!(among_gits_own_files(&common, &common));
+        for name in GITS_OWN_SUBTREES {
+            assert!(among_gits_own_files(&common.join(name), &common), "{name}");
+            assert!(
+                among_gits_own_files(&common.join(name).join("deep"), &common),
+                "{name}"
+            );
+        }
+        for dir in [
+            common.join("feature"),
+            common.join("feature/deep"),
+            common.join("plain"),
+            // a name only like one of Git's own
+            common.join("objects-not"),
+            common.join("objects/wt"),
+            common.join("objects/wt/deep"),
+            // a way out of the Git directory, and a place outside it
+            common.join("../outside"),
+            root.join("outside"),
+            root.clone(),
+        ] {
+            assert!(!among_gits_own_files(&dir, &common), "{}", dir.display());
+        }
     }
 
     /// Mutation run on `07df120`: what a stop knows of a working tree without asking Git

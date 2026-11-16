@@ -661,6 +661,40 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     lines of a stop's message are constants of the module.
   - *State.* Schema unchanged (`v9`).
 
+- **Round 20 of Vesper's review (NO-GO) and a twelfth independent review of the hooks
+  (GO-WITH-FIXES): what is missing proves nothing.**
+  - *A tree whose two records were removed is UNJUDGED, not "Git's own files" (VD4R20-M-1,
+    medium).* A directory under the Git directory with no `.git` entry above it was known
+    to be Git's own. In a bare repository with its trees inside it, removing a linked
+    tree's `.git` file and its administrative directory, its files left in place, made
+    that true of the tree the session was in: the next stop from it printed nothing with a
+    second credential there, and the failure that had blocked in it was forgotten. A
+    directory is Git's own only by where it lies: the Git directory itself or a directory
+    under one of the subtrees Git makes there (`objects`, `refs`, `logs`, `reftable`,
+    `hooks`, `info`, `worktrees`, `modules`, `branches`, `remotes`, `rr-cache`,
+    `lost-found`, `rebase-merge`, `rebase-apply`, `sequencer`, `svn`,
+    `fsmonitor--daemon`), with no `.git` entry between. Any other directory Git cannot
+    place makes the stop UNJUDGED with Git's words, and a stop that cannot place the
+    session's directory forgets nothing because a tree is no longer listed.
+  - *A directory that cannot be resolved is still under its tree (HR12-L-4).* Under a
+    directory that cannot be searched, the session's directory was "none", and the tree
+    it is under was named as one "the session's directory is not in". The path as written
+    (its links followed as far as they can be) says which tree it is under: "may be in
+    it".
+  - *The no-verdict line marks a cut reason (HR12-L-3).* It cut each commit's reason at
+    150 characters with no mark; it ends a cut reason with "…", within the same 150.
+  - *Stated (HR12-L-1, HR12-L-2).* README and SECURITY say that a tree whose only change
+    `git status` does not show, with nothing blocked there, is not named from another
+    tree; and that a remembered tree too large to read in its share of the six seconds is
+    named "could not be looked at … stands" at each stop from elsewhere, each taking that
+    much longer.
+  - *Mutation accounting (VD4R20-L-1, HR12-L-5).* Of the 76 mutants the run on `07df120`
+    missed, 69 are killed by behaviour and 7 are equivalent: `NAME_MAX - 2` for
+    `NAME_MAX + 2` in `TAIL_LINE` was counted killed by an assertion that repeats the
+    constant's definition, and the longest counting line (781 characters) fits the
+    mutant's 794. That assertion is labelled a definition check.
+  - *State.* Schema unchanged (`v9`).
+
 ### Changed
 
 - Path and shape weights are stated once, in `RiskSignal::weight`, and the scorer reads

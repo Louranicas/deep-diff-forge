@@ -7725,6 +7725,169 @@ fn a_tree_git_cannot_place_is_unjudged_and_never_taken_for_gits_own_files() {
     }
 }
 
+/// What the session's state remembers of failures that have blocked (its only session).
+fn remembered_lines() -> Vec<String> {
+    let state = states_in(&sessions());
+    assert_eq!(state.len(), 1, "{state:?}");
+    let kept: Value = serde_json::from_str(&std::fs::read_to_string(&state[0]).unwrap()).unwrap();
+    kept["blocked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry.as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// Review V4 round 20, VD4R20-M-1, as reproduced. In a bare repository with its working
+/// trees inside it, a linked tree's `.git` file and its administrative directory are both
+/// removed while its directory and its files stay, and a second key is written there. Git
+/// cannot place the directory ("must be run in a work tree"), and a directory under the Git
+/// directory with no `.git` entry above it was taken for one of Git's own files: the stop
+/// made from it printed nothing, and the failure that had blocked there was forgotten. That
+/// no `.git` entry is there proves nothing: only the Git directory itself and Git's own
+/// subtrees of it are Git's own. The stop is UNJUDGED with Git's words, the second key is
+/// put to no judge, and nothing remembered is forgotten.
+#[test]
+fn a_tree_whose_two_records_were_removed_is_unjudged_and_keeps_what_blocked_there() {
+    let scratch = Scratch::new("hook-bare-records-gone");
+    let (bare, trees) = bare_with_trees(&scratch, &["main", "feature"]);
+    let (main, feature) = (&trees[0], &trees[1]);
+    let (script, log) = reading_judge(&scratch);
+    start(main, "s");
+    secret(feature, "first.rs");
+    blocked(&stop_from(feature, "s", &script));
+    let before = remembered_lines();
+    assert_ne!(before, Vec::<String>::new(), "nothing was remembered");
+
+    // both records of the tree go; its directory, its files and a second key stay
+    let pointer = std::fs::read_to_string(feature.join(".git")).unwrap();
+    let admin = PathBuf::from(pointer.trim_end().strip_prefix("gitdir: ").unwrap());
+    let admin = if admin.is_absolute() {
+        admin
+    } else {
+        feature.join(admin)
+    };
+    assert!(admin.is_dir(), "{}", admin.display());
+    std::fs::remove_file(feature.join(".git")).unwrap();
+    std::fs::remove_dir_all(&admin).unwrap();
+    secret(feature, "second.rs");
+    std::fs::create_dir(feature.join("deep")).unwrap();
+    // a plain directory someone made in the bare repository is not known to be Git's own
+    // either: nothing tells it from the tree above
+    let plain = bare.join("plain");
+    std::fs::create_dir(&plain).unwrap();
+    for cwd in [
+        feature.clone(),
+        feature.join("deep"),
+        feature.clone(),
+        plain,
+    ] {
+        let said = allowed(&stop_from(&cwd, "s", &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: UNJUDGED. ")
+                && said.contains(
+                    "whether the session's directory is another working tree of this repository could not be found out: "
+                )
+                // Git's words follow (cut with the reason at its bound)
+                && said.contains("Git could not say which repository"),
+            "{}: {said}",
+            cwd.display()
+        );
+        assert_eq!(remembered_lines(), before, "{}", cwd.display());
+    }
+    assert!(
+        !shown(&log).iter().any(|names| names.contains("second.rs")),
+        "{:?}",
+        shown(&log)
+    );
+
+    // Git's own subtrees are still Git's own, where Git itself cannot answer (a bare
+    // repository has no working tree to name): the project is judged, and nothing "could
+    // not be found out"
+    for inside in [bare.clone(), bare.join("refs/heads"), bare.join("objects")] {
+        let said = stop_from(&inside, "s", &script);
+        let said = said["systemMessage"].as_str().unwrap_or_default();
+        assert!(
+            !said.contains("could not be found out"),
+            "{}: {said}",
+            inside.display()
+        );
+    }
+}
+
+/// Twelfth independent review of the hooks, HR12-L-4, as reproduced: the session's
+/// directory is under a directory of a linked tree that cannot be searched (mode 000). The
+/// stop is rightly UNJUDGED with the operating system's words, but the directory, which
+/// could not be resolved, was "none", and the linked tree it is under was named with "the
+/// session's directory is not in it", which is never to be said of that tree. The path as
+/// it is written says which tree it is under.
+#[test]
+fn a_directory_that_cannot_be_resolved_is_still_under_its_tree() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Scratch::new("hook-locked-cwd");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let linked = scratch.join("linked");
+    git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "side",
+            linked.to_str().unwrap(),
+        ],
+    );
+    start(&root, "s");
+    secret(&linked, "linked.rs");
+    blocked(&stop_from(&linked, "s", &script));
+    let locked = linked.join("locked");
+    std::fs::create_dir_all(locked.join("sub")).unwrap();
+    // the same directory by a symbolic link to the tree: the links of the part that can be
+    // resolved are followed
+    let alias = scratch.join("alias");
+    std::os::unix::fs::symlink(&linked, &alias).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // (whoever may search every directory, as root may, has no such directory: that
+    // trigger is passed)
+    let unsearchable = std::fs::read_dir(&locked).is_err();
+    let said = unsearchable.then(|| {
+        [
+            stop_from(&alias.join("locked/sub"), "s", &script),
+            stop_from(&locked.join("sub"), "s", &script),
+        ]
+    });
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if let Some([first, again]) = said {
+        let (first, again) = (allowed(&first).to_owned(), allowed(&again).to_owned());
+        for said in [&first, &again] {
+            assert!(
+                said.starts_with("deep-diff-forge: UNJUDGED. ")
+                    && said.contains("could not be looked at")
+                    && !said.contains("the session's directory is not in it"),
+                "{said}"
+            );
+        }
+        assert!(
+            first.contains(
+                "/linked\" of this project, and whether it is in that tree could not be found out at this stop"
+            ) && first.contains("A failure there has blocked a stop of this session and stands"),
+            "{first}"
+        );
+        assert!(
+            again.contains("(the session's directory may be in it) (a failure stands there)"),
+            "{again}"
+        );
+    }
+    // nothing of the tree was forgotten
+    let stands = allowed(&stop_from(&linked, "s", &script)).to_owned();
+    assert!(
+        stands.starts_with("deep-diff-forge: FAIL STANDS. "),
+        "{stands}"
+    );
+}
+
 /// Eleventh independent review of the hooks, HR11-L-5, as reproduced: the session's
 /// directory was a directory of a linked working tree and has been removed (a build
 /// directory the agent was in). A directory that is gone "added nothing", so the tree the

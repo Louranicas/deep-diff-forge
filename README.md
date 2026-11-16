@@ -722,8 +722,18 @@ project and not judged at every stop while it is true, as stated above):
   where a failure has blocked first. Sixteen are looked at; the ones beyond, and the ones the six seconds did not
   reach, were not looked at: the stop says how many, and nothing that is remembered of
   them is forgotten. A working tree that was removed by hand: named, with
-  `git worktree prune`. A tree in which a failure has blocked is named with that ("a
-  failure stands there") at every stop, before the others; for the trees a stop's line
+  `git worktree prune`. Where nothing is remembered of a tree, `git status` alone decides whether it is
+  named: a tree whose only change is in a file marked assume-unchanged (or one a clean
+  filter or the line-ending settings hide from `git status`), and in which nothing has
+  blocked yet, is not named by a stop made from another tree. Where something is
+  remembered of a tree and `git status` there shows nothing, the tree is read with the
+  judge's own reader within that tree's share of the six seconds (all six when it is the
+  only other tree); a tree too large to read in that time (that reader hashes every
+  tracked file again: 10,000 files, 314 MB took 0.9 seconds with a warm cache) is named
+  "could not be looked at", with its failure standing, at each stop made from elsewhere,
+  also after the failure was repaired, and each such stop takes about that much longer. A
+  tree in which a failure has blocked is named with that ("a failure stands there") at
+  every stop, before the others; for the trees a stop's line
   does not name, and for the ones it only counts, the line gives their number ("among
   them 2 working trees where a failure stands that has blocked").
 - A repository with more than 256 working trees: the hooks do not read the history of so
@@ -739,17 +749,24 @@ project and not judged at every stop while it is true, as stated above):
   entries of trees that are gone; it does nothing for trees that exist. The reason a stop
   gives says first what follows ("not in this session, whatever is committed (what is
   not committed is judged)"), then the cause; a reason a message cuts for room ends with
-  "…".
+  "…", on the line that counts the commits with no verdict too (150 characters each).
 - A bare repository with its working trees inside it (`repo.git/main`,
   `repo.git/feature`) is a layout like any other: the tree a stop is in is the one Git
-  says its directory is in, wherever the Git directory lies. Only a directory that is
-  KNOWN to be in no working tree and is inside the Git directory is one of Git's own: it
-  has no `.git` entry, and neither has any directory between it and the Git directory
-  (the top of every working tree has one; a linked tree whose administrative directory
-  is gone still has its `.git` file). Where Git fails or does not answer for any other
-  directory the session is in, the stop is UNJUDGED with Git's words, the tree that
-  directory is under is named as one the session's directory may be in, and nothing of
-  it is forgotten.
+  says its directory is in, wherever the Git directory lies. Where Git cannot say, a
+  directory is one of Git's own only by where it lies: the Git directory itself, or a
+  directory under one of the subtrees Git makes there (`objects`, `refs`, `logs`,
+  `reftable`, `hooks`, `info`, `worktrees`, `modules`, `branches`, `remotes`,
+  `rr-cache`, `lost-found`, `rebase-merge`, `rebase-apply`, `sequencer`, `svn`,
+  `fsmonitor--daemon`: each holds Git's own files only, while a working tree can be
+  anywhere else in the Git directory), with no `.git` entry between. That no `.git`
+  entry is there proves nothing alone: a linked tree whose `.git` file and administrative directory
+  were both removed looks like any plain directory. Where Git fails or does not answer
+  for any other directory the session is in (also a plain directory made in a bare
+  repository, and what other programs keep in a Git directory, such as `lfs`), the stop
+  is UNJUDGED with Git's words, the tree that directory is under is named as one the
+  session's directory may be in (also when the directory cannot be resolved, under a
+  directory that cannot be searched), and nothing remembered of any tree is forgotten at
+  that stop.
 - The order of a stop, and its time. One limit: 45 seconds for everything, of which 4 are
   kept for remembering and saying, and 6 more for looking at the submodules and the other
   working trees when the project has any. So the judging has 41 seconds, or 35.

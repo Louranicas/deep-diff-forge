@@ -1617,7 +1617,10 @@ fn blocking_text(trees: &[TreeJudged], blocked: &[String], room: usize) -> (Stri
 }
 
 /// The line of every stop for the commits that have no verdict: their number, and the first
-/// three with the latest reason. Empty when there is none.
+/// three with the latest reason, each of at most half of [`REASON_CHARS`] characters. A
+/// reason cut there ends with "…", as one cut anywhere else in a message does: it was cut
+/// with no mark, in the middle of a word, while the README said that a cut reason ends with
+/// "…" (twelfth independent review of the hooks, HR12-L-3). Empty when there is none.
 fn no_verdict_line(trees: &[TreeJudged]) -> String {
     let mut text = String::new();
     let unjudged: Vec<&TreeJudged> = trees
@@ -1633,10 +1636,16 @@ fn no_verdict_line(trees: &[TreeJudged]) -> String {
                     Some(Judged::Unjudged { reason }) => reason.as_str(),
                     _ => "",
                 };
-                let reason: String = display_safe(reason)
-                    .chars()
-                    .take(REASON_CHARS / 2)
-                    .collect();
+                let reason = display_safe(reason);
+                let reason: String = if reason.chars().count() > REASON_CHARS / 2 {
+                    reason
+                        .chars()
+                        .take(REASON_CHARS / 2 - 1)
+                        .chain(['…'])
+                        .collect()
+                } else {
+                    reason.into_owned()
+                };
                 format!("{} ({reason})", unit.what.trim_start_matches("Commit "))
             })
             .collect();
@@ -3358,6 +3367,46 @@ mod tests {
         }
     }
 
+    /// Twelfth independent review of the hooks, HR12-L-3. The line that counts the commits
+    /// with no verdict cut each reason at half of [`REASON_CHARS`] characters with no mark
+    /// ("… says so at lengt)."), while the README said that a reason a message cuts ends
+    /// with "…". A reason over that bound is cut to it, the "…" inside the bound; one within
+    /// it is whole. Characters are counted, not bytes.
+    #[test]
+    fn a_reason_the_no_verdict_line_cuts_ends_with_its_mark_within_its_bound() {
+        let bound = REASON_CHARS / 2;
+        let id = "e".repeat(40);
+        let unit = |reason: &str| TreeJudged {
+            tag: String::new(),
+            what: commit_label(&id),
+            judged: Some(Judged::Unjudged {
+                reason: reason.to_owned(),
+            }),
+            holds: Holds::Now,
+        };
+        for whole in [
+            "r".repeat(bound - 1),
+            "r".repeat(bound),
+            "r".repeat(bound + 1),
+            "r".repeat(2_000),
+            "é".repeat(bound),
+            "é".repeat(bound + 1),
+        ] {
+            let line = no_verdict_line(&[unit(&whole)]);
+            let shown = line
+                .strip_prefix("1 commit of this session has no verdict: eeeeeeeeeeee (")
+                .and_then(|rest| rest.strip_suffix(").\n"))
+                .unwrap_or_else(|| panic!("{line:?}"));
+            if whole.chars().count() <= bound {
+                assert_eq!(shown, whole);
+            } else {
+                assert_eq!(shown.chars().count(), bound, "{shown}");
+                let kept = shown.strip_suffix('…').unwrap_or_else(|| panic!("{shown}"));
+                assert!(whole.starts_with(kept), "{shown}");
+            }
+        }
+    }
+
     /// Mutation run on `07df120`: eleven mutants of the arithmetic that gives what blocks
     /// its room were caught by no test (the random test of the bound never came to an edge).
     /// What blocks gets all the room the lines below leave, to the character, and no more:
@@ -3448,7 +3497,11 @@ mod tests {
         );
         // (a counting line: three names of at most [`NAME_MAX`] with their separators, and
         // 80 for its count, words and the number of the others; the longest a stop makes
-        // fits, below)
+        // fits, below.) The equality is a definition check, not a kill: it repeats the
+        // definition of [`TAIL_LINE`]. By behaviour `NAME_MAX - 2` for `NAME_MAX + 2` there
+        // is equivalent (794 against 806; the longest line, below, has 781), and the
+        // mutation table counts it with the equivalents (review V4 round 20, VD4R20-L-1;
+        // twelfth independent review of the hooks, HR12-L-5).
         assert_eq!(TAIL_LINE, STANDING_NAMED * (NAME_MAX + 2) + 80);
         let names = vec!["n".repeat(NAME_MAX); STANDING_NAMED];
         let longest = count_line(99_999, "held by the judge, for a person", &names);
