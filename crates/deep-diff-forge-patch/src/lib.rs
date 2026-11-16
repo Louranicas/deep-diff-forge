@@ -159,6 +159,23 @@ pub enum PatchParseError {
         /// The path, as the review would show it.
         path: String,
     },
+    /// A `diff --git` section whose header lines are not a shape Git's own diff writes: a
+    /// combination or an order of `old mode`, `new mode`, `new file mode`, `deleted file mode`,
+    /// `similarity index`, `rename`, `copy`, `index`, `---`/`+++` and binary lines that no Git
+    /// writes, a line not in the form Git writes it (a mode other than `100644`, `100755`,
+    /// `120000` or `160000`, an `index` id that is not hex, a score that is not a percentage),
+    /// a `Files … differ` line, or a binary marker ending in a carriage return. The shapes Git
+    /// writes are listed in the crate's `CONFORMANCE.md`; `similarity index`, `dissimilarity
+    /// index` and `index` lines may be left out of them. Five rescores in a row found a shape
+    /// Git reads otherwise than the review did; DDF now reads no other.
+    HeaderNotWrittenByGit {
+        /// 1-based line number of the header line refused.
+        line_number: usize,
+        /// Which header it is (`similarity index`, `---/+++`, …).
+        header: &'static str,
+        /// Why it is refused.
+        reason: &'static str,
+    },
     /// A header line (a path, mode or hunk header the parser reads meaning from) that is not
     /// UTF-8. Decoded lossily, the value it names would be a substitute: `caf\xe9` and
     /// `caf\xe8` both read `caf\u{fffd}`, so two files would share one reviewed path.
@@ -228,6 +245,7 @@ impl PatchParseError {
             | Self::HunkWithoutChange { .. }
             | Self::SectionWithoutPatch { .. }
             | Self::PathInSeveralSections { .. }
+            | Self::HeaderNotWrittenByGit { .. }
             | Self::MalformedHunkHeader { .. }
             | Self::BodyLineOutsideHunk { .. }
             | Self::TruncatedHunk { .. }
@@ -296,6 +314,14 @@ impl std::fmt::Display for PatchParseError {
                 f,
                 "the file section beginning at line {line_number} writes or removes {}, which an earlier section also writes or removes; git apply does not apply such sections one after the other",
                 Excerpt(path)
+            ),
+            Self::HeaderNotWrittenByGit {
+                line_number,
+                header,
+                reason,
+            } => write!(
+                f,
+                "header line {line_number} ({header}) is not one Git's diff writes there: {reason}"
             ),
             Self::LossyHeader { line_number } => write!(
                 f,
