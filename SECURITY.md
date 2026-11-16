@@ -489,20 +489,27 @@ bounded form.** What it holds to:
 - **The tree a stop is in is the one Git says.** A directory under the Git common
   directory was taken for one of Git's own files, and Git was not asked: in a bare
   repository with its working trees inside it, a stop made from a linked tree did not
-  judge that tree's uncommitted work at all. Git is asked first; and that a directory is
-  one of Git's own has to be known, not concluded from a failure of Git, nor from what is
-  missing: it is the Git directory itself or lies under one of the subtrees Git makes
-  there (`objects`, `refs`, `logs`, `worktrees` and the others the README lists), with
-  no `.git` entry between. Any failure of Git for the tree the session is in was "Git's
-  own files" in that layout, so a tree pruned while its directory was away, with
-  credentials in it, was a silent stop; and so, after that, was a tree whose `.git` file
-  and administrative directory had both been removed, its files left in place, since no
-  `.git` entry above a directory was taken as proof. Such a stop is UNJUDGED with Git's
-  words, nothing remembered of any tree is forgotten at it, and the tree is never named
-  as one the session is not in (also when the session's directory cannot be resolved,
-  under a directory that cannot be searched: the path as written says which tree it is
-  under). A session directory that was removed is asked about at the nearest directory
-  above it that is there.
+  judge that tree's uncommitted work at all. Git is asked first; and a directory Git
+  cannot place is never taken for one of Git's own files. That was concluded from any
+  failure of Git for the tree the session is in, so a tree pruned while its directory was
+  away, with credentials in it, was a silent stop; then from no `.git` entry above the
+  directory, and then from where it lies, under one of seventeen names Git uses in its
+  directory (`hooks`, `logs`, `svn` …), and each time a tree whose `.git` file and
+  administrative directory had both been removed, its files left in place, was a silent
+  stop that forgot the failure that had blocked in it: `git worktree add` makes a tree
+  under any name in the Git directory. Such a stop is UNJUDGED with Git's words first,
+  wherever its directory lies, also from inside a Git directory (`.git/hooks`, a bare
+  repository's own directory), where the reason says so; it forgets nothing because a
+  tree is no longer listed (a tree the judge's own reading finds clean is forgotten, as at
+  every stop), and the tree the directory is under is never named as one the session is
+  not in (also when the session's directory cannot be resolved, under a directory that
+  cannot be searched: a relative path is taken from the hook's own directory and a `..`
+  after a link from where the link leads; where that cannot be done, every tree may be
+  the one). A session directory that was removed is asked about at the nearest directory
+  above it that is there. A `GIT_CEILING_DIRECTORIES` in the session's environment is
+  emptied for the hooks' Git calls; a directory on another file system mounted inside a
+  linked tree is, with `GIT_DISCOVERY_ACROSS_FILESYSTEM` unset, in no repository to Git
+  (the README states it).
 - **A repository the hooks cannot list the commits of is still judged for what is not
   committed.** With more than 256 working trees (or a million named commits) the commits
   that were there when a session begins cannot be listed. The start recorded nothing

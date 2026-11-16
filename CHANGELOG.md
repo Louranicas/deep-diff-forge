@@ -695,6 +695,58 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     mutant's 794. That assertion is labelled a definition check.
   - *State.* Schema unchanged (`v9`).
 
+- **Round 21 of Vesper's review (NO-GO) and a thirteenth independent review of the hooks
+  (GO-WITH-FIXES): no directory Git cannot place is Git's own.**
+  - *A tree under a name Git uses is not Git's own either (VD4R21-M-1, medium; HR13-L-1).*
+    `git worktree add` makes a linked tree at `repo.git/hooks/feature`, `repo.git/logs/feat`
+    or `repo.git/svn`. With its `.git` file and its administrative directory removed, a
+    directory under one of the seventeen names the round before listed was Git's own: the
+    stop from that tree printed nothing with a second key in it, and the failure that had
+    blocked there was forgotten. Nothing on disk tells such a tree from Git's own files, so
+    where a directory lies no longer decides anything: a stop from any directory Git cannot
+    place is UNJUDGED with Git's words, and forgets nothing because a tree is no longer
+    listed. The list is gone. What follows, and is meant: a stop made from inside a Git
+    directory (`.git`, `.git/hooks`, `.git/NOTES_MERGE_WORKTREE`, `.git/lfs`, a bare
+    repository's own directory), which was silent when the project was clean, is UNJUDGED
+    once for that stop, with a reason that says the session's directory is inside the Git
+    directory and Git cannot say which working tree it is in; nothing remembered of any tree
+    is forgotten there because it is not listed. No stop is silent because of where its
+    directory lies.
+  - *Git's words come first (HR13-L-2).* The reason for a directory Git cannot place gave
+    the path before Git's words, and a message shows 300 characters of a reason: with a
+    long path, "…: fatal: this operation must b…" was all there was to read. Git's words,
+    then what follows from them, then the paths. README and SECURITY said that nothing
+    remembered of any tree is forgotten at such a stop; a tree the judge's own reading
+    finds clean is forgotten there, as at every stop. They say what this entry says: it
+    forgets nothing because a tree is no longer listed.
+  - *A relative directory is anchored (VD4R21-L-1).* Where the session's directory, given
+    as a relative path, could not be resolved (`../linked/locked/sub`, under a directory
+    that cannot be searched), the path was kept as written, no tree was under it, and the
+    linked tree it names was "the session's directory is not in it". It is taken from the
+    hook's own directory, as the system takes it; when that directory cannot be had, every
+    tree is one the session's directory may be in.
+  - *A `..` after a link steps up from where the link leads (suspected by the thirteenth
+    review; reproduced).* An absolute path with `alias/../linked` under a directory that
+    cannot be searched was taken out by name: the tree beside `alias` "may" have had the
+    session's directory, and the tree it was in on disk was one it was "not in". A `..`
+    after a part that cannot be resolved leaves the directory unknown: every tree may be
+    the one.
+  - *No ceiling (suspected by the thirteenth review; reproduced).* A
+    `GIT_CEILING_DIRECTORIES` at a linked tree's top in the session's environment made Git
+    say "not a git repository" for a directory in that tree: it was not judged from there,
+    and was named as one the session's directory is not in. Every Git call of the hooks has
+    the variable empty, which Git reads as no ceiling. The shared hardening list is
+    unchanged: the other commands honour a ceiling their caller sets. Not changed:
+    `GIT_DISCOVERY_ACROSS_FILESYSTEM`. Set, Git finds a tree across a mount, which is
+    right; unset (Git's default), a directory on another file system mounted inside a
+    linked tree is in no repository to Git, which README states as a limit.
+  - *Tests.* Each finding has a test that fails on `67202b1`: trees at `hooks/feature`,
+    `logs/feat` and `svn` with both records removed; a long path under
+    `.git/NOTES_MERGE_WORKTREE`; a relative directory under one that cannot be searched; a
+    `..` after a link; a ceiling at a linked tree's top. The tests that took a stop from
+    Git's directories to be quiet say that it is UNJUDGED, with the project judged.
+  - *State.* Schema unchanged (`v9`).
+
 ### Changed
 
 - Path and shape weights are stated once, in `RiskSignal::weight`, and the scorer reads

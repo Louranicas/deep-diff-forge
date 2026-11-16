@@ -133,14 +133,32 @@ impl Deadline {
         Self(self.0.min(now() + time))
     }
 
-    /// Git options whose time limit is the time that is left.
+    /// Git options whose time limit is the time that is left, and with no ceiling
+    /// ([`NO_CEILING`]).
     fn git(self) -> GitAcquireOptions {
         GitAcquireOptions {
             time_limit: self.left(),
+            env: NO_CEILING
+                .iter()
+                .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+                .collect(),
             ..GitAcquireOptions::default()
         }
     }
 }
+
+/// What every Git call of the hooks has in its environment beside the shared hardening
+/// (`deep_diff_forge_core::git`): `GIT_CEILING_DIRECTORIES` empty, which Git reads as no
+/// ceiling. With a ceiling inside a linked tree in the session's environment, Git said "not a
+/// git repository" for a directory below it: the tree the session was in was not judged from
+/// there, and was named as one "the session's directory is not in" (thirteenth independent
+/// review of the hooks, suspected; reproduced in round 22). Which tree a directory is in is
+/// not the session's to bound. The shared list keeps the variable: the other commands honour
+/// a ceiling their caller sets, and their tests set one so that a repository around a
+/// temporary directory cannot answer. `GIT_DISCOVERY_ACROSS_FILESYSTEM` stays as the session
+/// has it: set, Git finds the tree across a mount; unset, Git stops at one (a limit the README
+/// states).
+const NO_CEILING: [(&str, &str); 1] = [("GIT_CEILING_DIRECTORIES", "")];
 
 /// A Git failure in words that do not change from one hook to the next: the time limit of a
 /// call is whatever its hook had left, and a reason that named it would be a new reason at
@@ -268,8 +286,9 @@ enum Found {
     /// It does not exist, or is not a directory.
     Gone,
     /// Git could not say: it is missing, it refuses the repository (another owner), the
-    /// directory is inside a Git directory, or it ran out of time.
-    Failed(String),
+    /// directory is inside a Git directory, or it ran out of time. `reason` says it with the
+    /// directory; `words` are what failed alone (Git's own words, when it gave them).
+    Failed { reason: String, words: String },
 }
 
 /// What Git prints when it finds no repository around a directory, in the `C` locale.
@@ -296,19 +315,30 @@ fn find(dir: &Path, deadline: Deadline) -> Found {
                 common: dirs.common_dir,
                 id,
             }),
-            None => Found::Failed(format!(
-                "the Git directory of the repository {} is in could not be read",
-                shown(dir)
-            )),
+            None => Found::Failed {
+                reason: format!(
+                    "the Git directory of the repository {} is in could not be read",
+                    shown(dir)
+                ),
+                words: format!(
+                    "the Git directory {} could not be read",
+                    shown(&dirs.common_dir)
+                ),
+            },
         },
         Err(GitAcquireError::CommandFailed { stderr, .. }) if stderr.contains(NO_REPOSITORY) => {
             Found::NotARepository
         }
-        Err(error) => Found::Failed(format!(
-            "Git could not say which repository {} is in: {}",
-            shown(dir),
-            git_words(&error)
-        )),
+        Err(error) => {
+            let words = git_words(&error);
+            Found::Failed {
+                reason: format!(
+                    "Git could not say which repository {} is in: {words}",
+                    shown(dir)
+                ),
+                words,
+            }
+        }
     }
 }
 
@@ -1176,7 +1206,7 @@ const NEW_SESSION: &str = "start a new session to have the work there judged";
 fn locate(input: &Input, session: &mut Session, deadline: Deadline) -> Located {
     let named = match client_project_dir().map(|dir| find(&dir, deadline)) {
         Some(Found::Tree(found)) => Some(found),
-        Some(Found::Failed(reason)) => return Located::Trouble(reason),
+        Some(Found::Failed { reason, .. }) => return Located::Trouble(reason),
         Some(Found::NotARepository | Found::Gone) | None => None,
     };
     let Some(project) = session.state.project.clone() else {
@@ -1193,7 +1223,7 @@ fn locate(input: &Input, session: &mut Session, deadline: Deadline) -> Located {
                         shown(cwd)
                     ));
                 }
-                Found::Failed(reason) => return Located::Trouble(reason),
+                Found::Failed { reason, .. } => return Located::Trouble(reason),
             }
         };
         return match record(&place, deadline) {
@@ -1232,7 +1262,7 @@ fn locate(input: &Input, session: &mut Session, deadline: Deadline) -> Located {
             "the repository at {} is not the one this session started in (another repository stands at that path now, or the project's Git directory was made anew); {NEW_SESSION}",
             hook::shown_path(&project.top)
         )),
-        Found::Failed(reason) => Located::Trouble(reason),
+        Found::Failed { reason, .. } => Located::Trouble(reason),
         Found::NotARepository | Found::Gone => Located::Trouble(format!(
             "the project this session began in, {}, is no longer a Git working tree; {NEW_SESSION}",
             hook::shown_path(&project.top)
@@ -2017,27 +2047,25 @@ enum Elsewhere {
 /// (`repo.git/main`, `repo.git/feature`) every working tree is under the common directory:
 /// a stop made from one that is not the session's project did not judge that tree at all,
 /// and named it with "the session's directory is not in it" (tenth independent review of
-/// the hooks, HR10-M-3). Only a directory that Git puts in no working tree and that lies
-/// inside the common directory is among Git's own files.
+/// the hooks, HR10-M-3).
 ///
-/// And that a directory is among Git's own files has to be KNOWN: it was concluded from any
-/// failure of Git for a directory under the common directory. In that layout every working
-/// tree is there, so a tree whose `.git` file named an administrative directory that was
-/// gone (pruned while the tree's directory was away) was "nothing here": a stop made from
-/// inside it, with credentials in it, printed nothing; and a Git that failed at one stop
-/// named the tree the session was in with "the session's directory is not in it" (eleventh
-/// independent review of the hooks, HR11-M-1). What is known without Git is
-/// [`among_gits_own_files`]; every other failure is [`Elsewhere::Failed`], as it is
-/// outside the common directory.
-///
-/// And what is known without Git is where a directory lies, not what is missing there. A
-/// directory with no `.git` entry above it was known to be Git's own; but removing a linked
-/// tree's `.git` file and its administrative directory, the tree's files left in place,
-/// made that true of the very tree the session was in: a stop from it printed nothing with
-/// two credentials in it, and forgot the failure that had blocked there (review V4 round
-/// 20, VD4R20-M-1). Only the common directory itself and Git's own subtrees of it
-/// ([`GITS_OWN_SUBTREES`]) are Git's own; any other directory Git cannot place is
-/// [`Elsewhere::Failed`], wherever it lies.
+/// And a directory Git cannot place is never taken for one of Git's own files, wherever it
+/// lies. That was concluded first from any failure of Git for a directory under the common
+/// directory: a tree whose `.git` file named an administrative directory that was gone was
+/// "nothing here", and a stop made from inside it, with credentials in it, printed nothing
+/// (eleventh independent review of the hooks, HR11-M-1). Then from a directory with no
+/// `.git` entry above it: removing a linked tree's `.git` file and its administrative
+/// directory, the tree's files left in place, made that true of the very tree the session
+/// was in, and the stop from it printed nothing and forgot the failure that had blocked
+/// there (review V4 round 20, VD4R20-M-1). Then from where the directory lies, under one of
+/// seventeen subtrees Git makes in its directory: `git worktree add` puts a tree at
+/// `repo.git/hooks/feature` or `repo.git/svn` without complaint, and with its two records
+/// removed that tree was silent and forgotten the same way (review V4 round 21,
+/// VD4R21-M-1; thirteenth independent review of the hooks, HR13-L-1). Nothing on disk tells
+/// such a tree from Git's own files once its records are gone, so nothing is concluded: a
+/// stop made from a directory Git cannot place is UNJUDGED with Git's words, also from
+/// inside a Git directory (`.git/hooks`, a bare repository's own directory), and forgets
+/// nothing because a tree is no longer listed ([`other_trees`]).
 ///
 /// A directory that is not there any more (the session removed a build directory it was
 /// in) is asked about at the nearest directory above it that is there: the tree it was in
@@ -2063,11 +2091,30 @@ fn elsewhere(cwd: &str, place: &Place, deadline: Deadline) -> Elsewhere {
         Found::Tree(found) if found.id != place.id => Elsewhere::Foreign(found.top),
         Found::Tree(found) if found.top != place.top => Elsewhere::Linked(Box::new(found)),
         Found::Tree(_) | Found::NotARepository | Found::Gone => Elsewhere::Nothing,
-        // Git's own files, known by where they lie (never by what is missing there)
-        Found::Failed(_) if among_gits_own_files(&cwd, &place.common) => Elsewhere::Nothing,
-        Found::Failed(reason) => Elsewhere::Failed(format!(
-            "whether the session's directory is another working tree of this repository could not be found out: {reason}"
-        )),
+        Found::Failed { words, .. } => Elsewhere::Failed(unplaced(&cwd, &place.common, &words)),
+    }
+}
+
+/// Why a stop made from `cwd`, which Git could not place (`words`), is not judged: Git's
+/// words first, then what follows, then the paths. A message shows a reason up to
+/// [`hook::REASON_CHARS`] characters, and the path stood before Git's words: with a long
+/// one, "…: fatal: this operation must b…" was all a person could read (thirteenth
+/// independent review of the hooks, HR13-L-2). Where the directory lies under the Git
+/// directory `common` that is said in plain words, for a person to act on; it decides
+/// nothing ([`elsewhere`]).
+fn unplaced(cwd: &Path, common: &Path, words: &str) -> String {
+    let what = "Whether the session's directory is another working tree could not be found out";
+    if cwd.starts_with(common) {
+        format!(
+            "{words}. {what}: it is inside the Git directory, and Git cannot say which working tree it is in (the Git directory {}; the session's directory {})",
+            shown(common),
+            shown(cwd)
+        )
+    } else {
+        format!(
+            "{words}. {what}: Git could not say which repository it is in ({})",
+            shown(cwd)
+        )
     }
 }
 
@@ -2093,76 +2140,6 @@ fn standing_directory(cwd: &Path) -> std::io::Result<Option<PathBuf>> {
             Err(error) => return Err(error),
         }
     }
-}
-
-/// The directories Git itself makes at the top of a Git common directory, each of which holds
-/// only Git's own files: the object store (`objects`), the refs and their logs (`refs`,
-/// `logs`, `reftable`), the hooks and `info` of the repository, the administrative
-/// directories of linked working trees (`worktrees`) and of submodules (`modules`), the
-/// older places for remotes (`branches`, `remotes`), the recorded resolutions of `git
-/// rerere` (`rr-cache`), what `git fsck --lost-found` writes (`lost-found`), the state of a
-/// rebase, an `am` or a cherry-pick (`rebase-merge`, `rebase-apply`, `sequencer`), `git
-/// svn`'s (`svn`) and the file system monitor's (`fsmonitor--daemon`). A directory under
-/// one of them is Git's own whatever is or is not in it. A directory of any other name in
-/// the Git directory is not known to be: a working tree can be there (a bare repository
-/// with its trees inside it), and one whose `.git` file and administrative directory were
-/// removed looks like any other directory (review V4 round 20, VD4R20-M-1).
-/// What other programs keep in a Git directory (`lfs`, `annex`) is not here: a stop made
-/// from inside it is UNJUDGED with Git's words, never silent.
-const GITS_OWN_SUBTREES: &[&str] = &[
-    "objects",
-    "refs",
-    "logs",
-    "reftable",
-    "hooks",
-    "info",
-    "worktrees",
-    "modules",
-    "branches",
-    "remotes",
-    "rr-cache",
-    "lost-found",
-    "rebase-merge",
-    "rebase-apply",
-    "sequencer",
-    "svn",
-    "fsmonitor--daemon",
-];
-
-/// Whether `dir` is known, with no word from Git, to be in no working tree and among the
-/// files of the Git directory `common`: it is `common` itself, or lies under one of Git's
-/// own subtrees of it ([`GITS_OWN_SUBTREES`]), and neither it nor any directory between it
-/// and `common` has an entry called `.git` (the top of every working tree has one, so a
-/// tree someone made inside such a subtree is not taken for Git's own while it has its
-/// `.git` file). An entry that cannot be looked at is not known to be absent. That no
-/// `.git` entry is there proves nothing alone: it was all that was asked, and a linked
-/// tree whose two records had been removed was taken for Git's own (VD4R20-M-1).
-fn among_gits_own_files(dir: &Path, common: &Path) -> bool {
-    let Ok(below) = dir.strip_prefix(common) else {
-        return false;
-    };
-    let structural = match below.components().next() {
-        None => true,
-        Some(std::path::Component::Normal(first)) => {
-            GITS_OWN_SUBTREES.iter().any(|name| first == *name)
-        }
-        Some(_) => false,
-    };
-    if !structural {
-        return false;
-    }
-    let mut at = dir;
-    while at != common {
-        let absent = matches!(
-            std::fs::symlink_metadata(at.join(".git")),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound
-        );
-        match at.parent() {
-            Some(above) if absent => at = above,
-            _ => return false,
-        }
-    }
-    true
 }
 
 /// The time of a stop that is kept for what comes after the judging: remembering what was
@@ -3631,7 +3608,7 @@ fn not_looked_at(late: (usize, usize), beyond: (usize, usize)) -> Vec<Note> {
 /// the session is in (`unfound` is `None`).
 fn other_trees(
     stopping: &Stopping<'_>,
-    (judged, unfound): (&[PathBuf], Option<&Path>),
+    (judged, unfound): (&[PathBuf], Option<&Unfound>),
     own: &BTreeSet<String>,
     blocked: &[String],
     end: Deadline,
@@ -3711,18 +3688,25 @@ fn other_trees(
             });
             continue;
         }
-        // The session's directory is under this tree, and which tree it is in could not be
-        // found out at this stop (that is said, with the reason, as the stop's own unit).
-        // It is not a tree "the session's directory is not in": that was said of the very
-        // tree the session was in when Git failed for it (eleventh independent review of
-        // the hooks, HR11-M-1). Nothing of it is forgotten.
-        if unfound.is_some_and(|cwd| cwd.starts_with(&tree.path)) {
-            said.push(Note {
-                name: name(" (the session's directory may be in it)"),
-                text: format!(
+        // The session's directory is under this tree, or where it is is not known, and
+        // which tree it is in could not be found out at this stop (that is said, with the
+        // reason, as the stop's own unit). It is not a tree "the session's directory is not
+        // in": that was said of the very tree the session was in when Git failed for it
+        // (eleventh independent review of the hooks, HR11-M-1). Nothing of it is forgotten.
+        if let Some(unfound) = unfound.filter(|unfound| unfound.may_be_in(&tree.path)) {
+            let text = match unfound {
+                Unfound::Under(_) => format!(
                     "The session's directory is under the working tree {} of this project, and whether it is in that tree could not be found out at this stop: what is not committed there was not judged.{standing}",
                     shown_tree(&tree.path)
                 ),
+                Unfound::Anywhere => format!(
+                    "Where the session's directory is could not be found out at this stop, so it may be in the working tree {} of this project: what is not committed there was not judged.{standing}",
+                    shown_tree(&tree.path)
+                ),
+            };
+            said.push(Note {
+                name: name(" (the session's directory may be in it)"),
+                text,
                 standing: usize::from(stands),
             });
             continue;
@@ -3854,6 +3838,76 @@ fn held_for_the_project(at: usize, count: usize, clean: impl FnOnce() -> bool) -
 /// Why a staged change has no verdict of its own at a stop ([`tree_units`]).
 const STAGED_NOT_APART: &str = "what is staged fails, and which of that is the staged change's own cannot be told at this stop: the uncommitted change got no verdict, and its failure is remembered by a digest alone";
 
+/// Where the session's directory is, at a stop that could not find out which working tree it
+/// is in ([`Elsewhere::Failed`]). A tree it may be in is named "the session's directory may be
+/// in it", never "is not in it", and nothing of that tree is forgotten ([`other_trees`]).
+enum Unfound {
+    /// It is this directory, or under it: a tree this lies under may be the one.
+    Under(PathBuf),
+    /// Where it is is not known: any tree may be the one.
+    Anywhere,
+}
+
+impl Unfound {
+    /// Where the session's directory `cwd` is: on disk when it can be resolved; when it cannot
+    /// (a directory above it that cannot be searched), the path as written, its links
+    /// followed as far as they can be ([`through_links`]).
+    ///
+    /// The directory was "none" when it could not be resolved, and the tree it is under was
+    /// named as one "the session's directory is not in" (twelfth independent review of the
+    /// hooks, HR12-L-4). Then a relative path was kept as written, and no tree, whose path
+    /// is absolute, was ever under it: the same was said of the linked tree a path like
+    /// `../linked/locked/sub` names (review V4 round 21, VD4R21-L-1). A relative path is
+    /// anchored at the hook's own directory, where the system resolves it too; when that
+    /// directory cannot be had, or a `..` comes after a part that cannot be resolved, where
+    /// the directory is is not known.
+    fn of(cwd: &Path) -> Self {
+        if let Ok(Some(found)) = standing_directory(cwd) {
+            return Self::Under(found);
+        }
+        let absolute = if cwd.is_absolute() {
+            cwd.to_path_buf()
+        } else {
+            match std::env::current_dir() {
+                Ok(here) => here.join(cwd),
+                Err(_) => return Self::Anywhere,
+            }
+        };
+        through_links(&absolute).map_or(Self::Anywhere, Self::Under)
+    }
+
+    /// Whether the session's directory may be in the working tree at `top`.
+    fn may_be_in(&self, top: &Path) -> bool {
+        match self {
+            Self::Under(cwd) => cwd.starts_with(top),
+            Self::Anywhere => true,
+        }
+    }
+}
+
+/// The absolute `path` with its `.` and `..` taken out the way the system takes them out, and
+/// its links followed as far as it exists ([`resolved`]). A `..` steps up from where the part
+/// before it leads, its links followed: taken out by name, `alias/../linked` was `linked`
+/// beside `alias`, while the system goes up from where `alias` points (thirteenth independent
+/// review of the hooks; a tree the session's directory was in was named "the session's
+/// directory is not in it", and another tree "may be in it"). `None` when a part before a
+/// `..` cannot be resolved: whether it is a link is not known.
+fn through_links(path: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let mut plain = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                plain = std::fs::canonicalize(&plain).ok()?;
+                plain.pop();
+            }
+            other => plain.push(other),
+        }
+    }
+    Some(resolved(&plain))
+}
+
 /// A working tree a stop judges: its top level, which tree it is, the name of its scratch
 /// directory, and why it cannot be read when it cannot.
 type TreeToJudge = (PathBuf, String, &'static str, Option<String>);
@@ -3866,7 +3920,7 @@ fn trees_to_judge(
     stopping: &Stopping<'_>,
     writable: &mut Vec<PathBuf>,
     beside: &mut Vec<Note>,
-) -> (Vec<TreeToJudge>, Option<PathBuf>) {
+) -> (Vec<TreeToJudge>, Option<Unfound>) {
     let place = &stopping.work.place;
     // The working trees this stop judges, the one the stop is in first: (its top level,
     // which tree it is, the name of its scratch directory, why it cannot be read).
@@ -3883,7 +3937,7 @@ fn trees_to_judge(
         None::<String>,
     );
     // The session's directory, when the tree it is in could not be found out.
-    let mut unfound = None::<PathBuf>;
+    let mut unfound = None::<Unfound>;
     let trees = match elsewhere(stopping.cwd, place, stopping.deadline) {
         Elsewhere::Nothing => vec![project],
         Elsewhere::Linked(linked) => {
@@ -3906,17 +3960,7 @@ fn trees_to_judge(
             vec![project]
         }
         Elsewhere::Failed(reason) => {
-            // Where the directory is on disk; when that cannot be found out (a directory
-            // above it that cannot be searched), the path as it is written, its links
-            // followed as far as they can be. It was "none", and the tree it is under was
-            // named as one "the session's directory is not in" (twelfth independent review
-            // of the hooks, HR12-L-4). A relative path is kept as it is: no tree is under it.
-            let cwd = Path::new(stopping.cwd);
-            unfound = Some(match standing_directory(cwd) {
-                Ok(Some(found)) => found,
-                _ if cwd.is_absolute() => same_form(cwd),
-                _ => cwd.to_path_buf(),
-            });
+            unfound = Some(Unfound::of(Path::new(stopping.cwd)));
             vec![
                 (
                     PathBuf::from(stopping.cwd),
@@ -4208,7 +4252,7 @@ fn judge_units(
     let judged = std::mem::take(&mut tribunal.writable);
     let others = other_trees(
         stopping,
-        (&judged, unfound.as_deref()),
+        (&judged, unfound.as_ref()),
         &own,
         blocked,
         end,
@@ -5566,7 +5610,7 @@ pub(crate) fn gate(cwd: &Path, args: &[String]) -> Vec<GateCheck> {
         Found::NotARepository | Found::Gone => {
             Err("this directory is not in a Git repository".to_owned())
         }
-        Found::Failed(reason) => Err(reason),
+        Found::Failed { reason, .. } => Err(reason),
     };
     gate_in(
         cwd,
@@ -7771,47 +7815,96 @@ mod tests {
         assert_eq!(kept, Kept::default());
     }
 
-    /// Review V4 round 20, VD4R20-M-1: a directory is Git's own by where it lies, never by
-    /// what is missing there. The Git directory itself and a directory under one of Git's own
-    /// subtrees are; a directory of any other name under the Git directory is not, also with
-    /// no `.git` entry anywhere above it (a linked tree whose two records were removed); a
-    /// tree someone made inside one of Git's subtrees is not while it has its `.git` entry;
-    /// nothing outside the Git directory is.
+    /// Review V4 round 21, VD4R21-M-1, and the thirteenth independent review of the hooks,
+    /// HR13-L-1 and HR13-L-2. No directory Git cannot place is Git's own, wherever it lies:
+    /// the reason a stop gives for one starts with Git's words, so that a cut for room keeps
+    /// them, and says in plain words when the directory is inside the Git directory. Where it
+    /// lies is in the words only.
     #[test]
-    fn a_directory_is_gits_own_by_where_it_lies_not_by_what_is_missing() {
-        let scratch = deep_diff_forge_testkit::Scratch::new("hook-gits-own");
-        let root = std::fs::canonicalize(scratch.path()).unwrap();
-        let common = root.join("repo.git");
-        for name in GITS_OWN_SUBTREES {
-            std::fs::create_dir_all(common.join(name).join("deep")).unwrap();
-        }
-        for dir in ["feature/deep", "plain", "objects/wt/deep", "outside"] {
-            std::fs::create_dir_all(common.join(dir)).unwrap();
-        }
-        std::fs::write(common.join("objects/wt/.git"), "gitdir: x\n").unwrap();
-        assert!(among_gits_own_files(&common, &common));
-        for name in GITS_OWN_SUBTREES {
-            assert!(among_gits_own_files(&common.join(name), &common), "{name}");
-            assert!(
-                among_gits_own_files(&common.join(name).join("deep"), &common),
-                "{name}"
-            );
-        }
-        for dir in [
-            common.join("feature"),
-            common.join("feature/deep"),
-            common.join("plain"),
-            // a name only like one of Git's own
-            common.join("objects-not"),
-            common.join("objects/wt"),
-            common.join("objects/wt/deep"),
-            // a way out of the Git directory, and a place outside it
-            common.join("../outside"),
-            root.join("outside"),
-            root.clone(),
+    fn a_directory_git_cannot_place_is_said_with_gits_words_first() {
+        let words = "`git rev-parse` failed: fatal: this operation must be run in a work tree";
+        let common = PathBuf::from(format!("/{}/repo.git", "c".repeat(160)));
+        for (cwd, inside) in [
+            (common.join("hooks/feature"), true),
+            (common.join("svn"), true),
+            (common.clone(), true),
+            (
+                PathBuf::from(format!("/{}/feature", "d".repeat(200))),
+                false,
+            ),
         ] {
-            assert!(!among_gits_own_files(&dir, &common), "{}", dir.display());
+            let reason = unplaced(&cwd, &common, words);
+            assert!(reason.starts_with(words), "{reason}");
+            // what a message shows of it, after a cut for room, holds Git's words and what
+            // follows from them whole: the paths come last
+            let shown: String = reason.chars().take(hook::REASON_CHARS).collect();
+            assert!(
+                shown.contains("which working tree it is in (") || !inside,
+                "{shown}"
+            );
+            assert_eq!(
+                reason.contains("could not be found out: it is inside the Git directory"),
+                inside,
+                "{reason}"
+            );
+            assert!(!reason.contains("Git's own"), "{reason}");
         }
+    }
+
+    /// Review V4 round 21, VD4R21-L-1, and the thirteenth independent review of the hooks:
+    /// where the session's directory is when it cannot be resolved. A relative path is
+    /// anchored at the hook's own directory (it was kept as written, and no tree was under
+    /// it); a `..` steps up from where the part before it leads, its links followed (it was
+    /// taken out by name, and `alias/../linked` was the `linked` beside `alias`); a `..`
+    /// after a part that cannot be resolved leaves the directory unknown, and every tree
+    /// may be the one it is in.
+    #[test]
+    fn where_an_unresolved_directory_is_follows_the_system() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-unfound");
+        let root = std::fs::canonicalize(scratch.path()).unwrap();
+        std::fs::create_dir_all(root.join("deep/inner")).unwrap();
+        std::fs::create_dir_all(root.join("deep/linked")).unwrap();
+        std::fs::create_dir_all(root.join("linked")).unwrap();
+        std::os::unix::fs::symlink(root.join("deep/inner"), root.join("alias")).unwrap();
+        assert_eq!(
+            through_links(&root.join("alias/../linked/locked/sub")),
+            Some(root.join("deep/linked/locked/sub"))
+        );
+        assert_eq!(
+            through_links(&root.join("linked/./x/../locked")),
+            None,
+            "a `..` after a part that is not there"
+        );
+        assert_eq!(
+            through_links(&root.join("deep/../linked/locked")),
+            Some(root.join("linked/locked"))
+        );
+        let under = Unfound::Under(root.join("deep/linked/locked/sub"));
+        assert!(under.may_be_in(&root.join("deep/linked")));
+        assert!(!under.may_be_in(&root.join("linked")));
+        assert!(Unfound::Anywhere.may_be_in(&root.join("linked")));
+        // a relative path is the hook's own directory's: the system reads it so
+        let here = std::env::current_dir().unwrap();
+        let relative = Path::new("no-such-directory-of-the-test/sub");
+        match Unfound::of(relative) {
+            Unfound::Under(at) => assert_eq!(at, resolved(&here.join(relative))),
+            Unfound::Anywhere => panic!("a relative path was not anchored"),
+        }
+    }
+
+    /// Thirteenth independent review of the hooks, suspected and reproduced in round 22: a
+    /// ceiling in the session's environment bounded where Git looked for the tree a
+    /// directory is in. Every Git call of the hooks has none.
+    #[test]
+    fn the_hooks_git_calls_have_no_ceiling() {
+        let options = Deadline::after(Duration::from_secs(1)).git();
+        assert!(
+            options
+                .env
+                .contains(&(OsString::from("GIT_CEILING_DIRECTORIES"), OsString::new())),
+            "{:?}",
+            options.env
+        );
     }
 
     /// Mutation run on `07df120`: what a stop knows of a working tree without asking Git

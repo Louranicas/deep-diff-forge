@@ -752,21 +752,31 @@ project and not judged at every stop while it is true, as stated above):
   "…", on the line that counts the commits with no verdict too (150 characters each).
 - A bare repository with its working trees inside it (`repo.git/main`,
   `repo.git/feature`) is a layout like any other: the tree a stop is in is the one Git
-  says its directory is in, wherever the Git directory lies. Where Git cannot say, a
-  directory is one of Git's own only by where it lies: the Git directory itself, or a
-  directory under one of the subtrees Git makes there (`objects`, `refs`, `logs`,
-  `reftable`, `hooks`, `info`, `worktrees`, `modules`, `branches`, `remotes`,
-  `rr-cache`, `lost-found`, `rebase-merge`, `rebase-apply`, `sequencer`, `svn`,
-  `fsmonitor--daemon`: each holds Git's own files only, while a working tree can be
-  anywhere else in the Git directory), with no `.git` entry between. That no `.git`
-  entry is there proves nothing alone: a linked tree whose `.git` file and administrative directory
-  were both removed looks like any plain directory. Where Git fails or does not answer
-  for any other directory the session is in (also a plain directory made in a bare
-  repository, and what other programs keep in a Git directory, such as `lfs`), the stop
-  is UNJUDGED with Git's words, the tree that directory is under is named as one the
-  session's directory may be in (also when the directory cannot be resolved, under a
-  directory that cannot be searched), and nothing remembered of any tree is forgotten at
-  that stop.
+  says its directory is in, wherever the Git directory lies. A directory Git cannot place
+  is never taken for one of Git's own files, wherever it lies: nothing on disk tells a
+  linked tree whose `.git` file and administrative directory were both removed from a
+  plain directory, and `git worktree add` makes a tree under any name in the Git
+  directory, also under the names Git uses itself (`repo.git/hooks/feature`,
+  `repo.git/logs/feat`, `repo.git/svn`). Where Git fails or does not answer for the
+  directory the session is in, the stop is UNJUDGED with Git's words, which come first in
+  its reason so that a cut for room keeps them. So is a stop made from inside a Git
+  directory (`.git`, `.git/hooks`, `.git/NOTES_MERGE_WORKTREE` while `git notes merge`
+  waits there, what other programs keep in it such as `.git/lfs`, a bare repository's own
+  directory): its reason says that the session's directory is inside the Git directory
+  and that Git cannot say which working tree it is in, and nothing there is judged as a
+  tree of its own (the project is judged as at every stop). At such a stop the tree the
+  directory is under is named as one the session's directory may be in, also when the
+  directory cannot be resolved, under a directory that cannot be searched: a relative
+  directory is taken from the hook's own directory, and a `..` after a link steps up from
+  where the link leads; where that cannot be done, every tree is named so. And the stop
+  forgets nothing because a tree is no longer listed (a tree the judge's own reading finds
+  clean is forgotten, as at every stop). No stop is silent because of where its directory
+  lies.
+- The hooks' Git calls have no `GIT_CEILING_DIRECTORIES`: a ceiling in the session's
+  environment does not hide the tree its directory is in. `GIT_DISCOVERY_ACROSS_FILESYSTEM`
+  is as the session has it. Unset, Git stops at a file system boundary: a directory on
+  another file system mounted inside a linked tree is in no repository to Git, so that
+  tree is not judged from there and is named as one the session's directory is not in.
 - The order of a stop, and its time. One limit: 45 seconds for everything, of which 4 are
   kept for remembering and saying, and 6 more for looking at the submodules and the other
   working trees when the project has any. So the judging has 41 seconds, or 35.
