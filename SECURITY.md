@@ -423,7 +423,9 @@ bounded form.** What it holds to:
   only where the file system keeps no birth time, and there that limit remains. Nothing is
   written to mark a tree, and nothing of a tree's identity is taken from a path, as a
   message shows it or as Git records it: which trees a repository has is read from the
-  directories under `worktrees`, and a path from Git's files is read as bytes and from
+  directories under `worktrees`, a listed tree is left out as judged by which tree it is
+  and not by its path (two listed entries with one path are two trees), and a path from
+  Git's files is read as bytes and from
   the directory Git reads it from (a tree recorded by relative paths had another identity
   from outside than from inside, and what had blocked in it was forgotten by every stop
   made from the project).
@@ -509,13 +511,22 @@ bounded form.** What it holds to:
   it that is there, a relative one after it is taken from the hook's own directory: where
   the session is, is found one way for every use of it. What Git answers is believed only
   as a pair that names one tree of the repository's records: the top level it names must
-  be the one the Git directory it names records (a linked tree's `gitdir` file; the main
-  tree's top as `git worktree list` gives it), and must contain the session's directory. A
+  be the one the Git directory it names records (a linked tree's `gitdir` file; for the
+  main Git directory, its parent when it is named `.git`, and where it was made apart under
+  another name and records no top, the project's top when the session began in the main
+  tree), and must contain the session's directory. A main Git directory named `.git` that
+  does not lie at the tree's top (`--separate-git-dir=…/.git`, or a `.git` link to it)
+  therefore makes every stop from the main tree UNJUDGED, said and never silent. A
   `core.worktree` that points Git at the project, at an outer tree, or at a subdirectory
   of the tree, and a copy of a linked tree made with `cp -a`, make the stop UNJUDGED;
   nothing of either tree is forgotten and neither directory is judged as that tree. What
   is read of every other tree counts as that tree's only when Git names that tree there,
-  at every stop. A stop made from a submodule's Git directory (`.git/modules/<name>`) is
+  at every stop. And a tree does not move while the directory it is remembered at stands:
+  where Git and the records pair a tree something has blocked in with another top than
+  the one the state records for it, and that directory stands or cannot be looked at,
+  neither directory is read as that tree (UNJUDGED from it, named from elsewhere, both
+  paths said, nothing forgotten) until `git worktree repair` is run in the directory that
+  stands or it is removed; where it is gone, the tree was moved and is read where it is. A stop made from a submodule's Git directory (`.git/modules/<name>`) is
   UNJUDGED: Git names the submodule's working tree there, which does not contain the
   session's directory, and the reason says so. The caller's `GIT_CEILING_DIRECTORIES` is
   kept without the entries at or under one of the project's trees, each compared with its
@@ -586,8 +597,10 @@ bounded form.** What it holds to:
   at, and in how many of those a failure stands, is said). Named the same way: another repository the
   session's directory is in at a stop, a submodule with changes that are not committed in
   it, a nested repository in the project's tree, which is left out of the patch (Git cannot
-  even stage one that has no commit), and another working tree of the project that lies
-  inside its tree (named as that). Each of these is said at every stop while it is true:
+  even stage one that has no commit), a directory there that Git places in this repository
+  with a Git directory whose records name another directory (a copy of a linked tree made
+  inside the project: named as no working tree by the records), and another working tree
+  of the project that lies inside its tree (named as that). Each of these is said at every stop while it is true:
   in full the first time, afterwards in one line that counts such things and names the
   first three (five are said in full at one stop and a session remembers 32 as said in
   full; the others are in that line). Before, each was said once in a session, and a stop
@@ -747,8 +760,12 @@ bounded form.** What it holds to:
   failure" is the rule, the signal, the path and the number of items the judge cites: a new
   item blocks again. A state that cannot be kept is said with the stop's decision.
 - **Not a boundary:** the agent runs as the user. It can edit the settings that install the
-  hooks, the state file, or the judge on `PATH`. The hooks guard against honest mistakes;
-  CI running the judge in authority mode is the authority.
+  hooks, the state file, or the judge on `PATH`. An agent that edits Git's own
+  administrative files (`gitdir`, `commondir`, `core.worktree`) can make one tree be read
+  as another; the hooks make this visible where a remembered directory still stands (the
+  stop is UNJUDGED and both directories are named), and otherwise it is a stated limit, as
+  editing the state file is. The hooks guard against honest mistakes; CI running the judge
+  in authority mode is the authority.
 
 ### Supply chain and releases
 

@@ -872,6 +872,56 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     the pair rule's words.
   - *State.* Schema unchanged (`v10`).
 
+- **Round 24 of Vesper's review (NO-GO) and a sixteenth independent review of the hooks
+  (NO-GO): one tree identity moved onto another directory.** The last build round of this
+  line. Both reviews found one medium each; the class (VD4R23-M-1, HR15-L-1, HR15-L-2
+  before) is closed where the hook can see it cheaply and stated as a limit otherwise.
+  - *A tree does not move while the directory it is remembered at stands (VD4R24-M-1,
+    medium; HR16-L-3, low).* Two nested linked trees, the inner tree's `core.worktree` set
+    to the outer one and its administrative `gitdir` record edited to name the outer tree's
+    `.git`: Git and the records named the outer tree as the inner one, the clean outer tree
+    was judged under the inner tree's name, what had blocked in the inner tree was
+    forgotten, and the next stops printed nothing with two keys in it. The same after
+    `cp -a` of a linked tree, `git clean` and `git worktree repair` run in the copy. The
+    state already records the top of every tree something has blocked in: where a tree is
+    now paired, by any route, with another top than the recorded one and the recorded
+    directory still stands (or cannot be looked at), neither directory is read as that
+    tree. A stop from it is UNJUDGED ("Git names … as the working tree that this session's
+    memory has at …, which still stands"), a stop from elsewhere names it, nothing is
+    forgotten, and the recorded top is kept, until `git worktree repair` is run in the
+    directory that stands or it is removed. Where the recorded directory is gone, the tree
+    is read at its new top as before (a tree moved and repaired, `git worktree move`).
+  - *What is not a listed tree is not taken for one (HR16-M-1, medium).* A copy of a linked
+    tree made inside the project (`cp -a ../feature feature-copy`) with a key in it: every
+    stop from the project printed nothing, because a directory Git places in this
+    repository with a Git directory whose records name another directory was taken for a
+    working tree named by the rule for working trees, which names only listed trees. It is
+    named as left out, at every stop ("… is no working tree of this project by the
+    repository's records (Git names …)").
+  - *A listed tree is left out as judged by which tree it is, not by its path (HR16-L-1,
+    low).* With one tree's `gitdir` record edited to name another tree's `.git`, Git lists
+    the other path twice; a stop from that tree left both entries out by their path, and the
+    first tree's failure was neither looked at nor said. Two entries with one path are now
+    two trees, each taking an administrative directory no entry before it took.
+  - *Words (HR16-L-2, low, and the sixteenth review's notes; no code).* README and
+    SECURITY now say that a main Git directory named `.git` that does not lie at the tree's
+    top (`--separate-git-dir=…/.git`, or a `.git` link) makes every stop from the main tree
+    UNJUDGED; SECURITY's main-tree pair sentence names both layouts. A stop from a tree
+    moved with `mv` and not repaired says that `git worktree repair` run in it records where
+    it is; the note of a gone tree no longer says that `git worktree prune` forgets a main
+    Git directory listed as the main tree.
+  - *A stated limit.* SECURITY's "Not a boundary" says that an agent that edits Git's own
+    administrative files (`gitdir`, `commondir`, `core.worktree`) can make one tree be read
+    as another; the hooks make this visible where a remembered directory still stands, and
+    otherwise it is a stated limit, as editing the state file is.
+  - *Tests.* Each finding has a test that fails on `7380e8e`: the two nested trees with
+    both records moved; a copy repaired onto; a copy inside the project; two listed entries
+    with one path; and a tree moved by hand, unjudged with the remedy until repaired, then
+    standing (the remedy's words are new). A unit table for the recorded directory
+    (standing, gone, a file, unreadable, not recorded; the new top the same or another) and
+    two listed entries with one path, on functions `7380e8e` does not have.
+  - *State.* Schema unchanged (`v10`).
+
 ### Changed
 
 - Path and shape weights are stated once, in `RiskSignal::weight`, and the scorer reads

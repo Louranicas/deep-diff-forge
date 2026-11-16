@@ -2391,6 +2391,8 @@ struct Around<'a> {
     linked: Vec<PathBuf>,
     /// The trees something is remembered of that the repository no longer lists.
     unlisted: &'a [Unlisted],
+    /// The top level of each linked tree something is remembered of ([`State::trees`]).
+    recorded: &'a std::collections::BTreeMap<String, String>,
 }
 
 /// Look at the hook input's `cwd`. The project is judged wherever `cwd` is; this only finds
@@ -2451,6 +2453,11 @@ struct Around<'a> {
 /// And a directory that lies in a tree that is no longer a working tree of this repository,
 /// whose memory stands while its directory is there ([`unlisted_trees`]), is UNJUDGED: Git
 /// places it in no repository, and the stop from inside it was silent (fourteenth, HR14-L-2).
+///
+/// And a tree does not move while the directory it is remembered at stands: where Git and the
+/// records pair a tree with another top than the one the session's state records for it, and
+/// a directory stands there, the stop is UNJUDGED and both directories are named
+/// ([`standing_record`]; review V4 round 24, VD4R24-M-1; sixteenth, HR16-L-3).
 fn elsewhere(cwd: &str, place: &Place, around: &Around<'_>, deadline: Deadline) -> Elsewhere {
     let cwd = match standing_directory(Path::new(cwd)) {
         Standing::At(cwd) => cwd,
@@ -2500,8 +2507,16 @@ fn elsewhere(cwd: &str, place: &Place, around: &Around<'_>, deadline: Deadline) 
                 return Elsewhere::Failed(reason, Unfound::Under(cwd));
             }
             Found::Tree(found) if found.id != place.id => Elsewhere::Foreign(found.top),
-            Found::Tree(found) if found.top != place.top => {
-                return Elsewhere::Linked(Box::new(found));
+            Found::Tree(found) => {
+                if let Some(old) =
+                    standing_record(around.recorded, &tree_instance(&found), &found.top)
+                {
+                    return moved_here(&cwd, &found.top, &old);
+                }
+                if found.top != place.top {
+                    return Elsewhere::Linked(Box::new(found));
+                }
+                Elsewhere::Nothing
             }
             Found::AtBoundary { words, mount }
                 if across(&cwd, mount.as_deref(), &around.linked) =>
@@ -2512,9 +2527,7 @@ fn elsewhere(cwd: &str, place: &Place, around: &Around<'_>, deadline: Deadline) 
                 );
                 return Elsewhere::Failed(reason, Unfound::Under(cwd));
             }
-            Found::Tree(_) | Found::NotARepository | Found::AtBoundary { .. } | Found::Gone => {
-                Elsewhere::Nothing
-            }
+            Found::NotARepository | Found::AtBoundary { .. } | Found::Gone => Elsewhere::Nothing,
             Found::Failed { words, .. } => {
                 let reason = unplaced(&cwd, &place.common, &words);
                 return Elsewhere::Failed(reason, Unfound::Under(cwd));
@@ -2542,7 +2555,7 @@ fn elsewhere(cwd: &str, place: &Place, around: &Around<'_>, deadline: Deadline) 
 /// `cwd` lies under, the tree at the top level Git named and the tree the records name.
 fn unpaired_here(cwd: &Path, unpaired: &Unpaired) -> Elsewhere {
     let reason = format!(
-        "{}: whether the session's directory is another working tree could not be found out, and neither directory is judged as that tree ({}; the session's directory {})",
+        "{} (`git worktree repair` in a tree moved with `mv` records where it is): whether the session's directory is another working tree could not be found out, and neither directory is judged as that tree ({}; the session's directory {})",
         unpaired.words(),
         unpaired.git_dir_words(),
         shown(cwd)
@@ -2557,6 +2570,67 @@ fn unpaired_here(cwd: &Path, unpaired: &Unpaired) -> Elsewhere {
             tops,
         },
     )
+}
+
+/// The words that say why the tree Git names at `top` is not read as itself: the session's
+/// state records that tree at `old`, which still stands ([`standing_record`]).
+fn moved_words(top: &Path, old: &Path) -> String {
+    format!(
+        "Git names {} as the working tree that this session's memory has at {}, which still stands: neither directory is judged as that tree, and nothing of it is forgotten, until `git worktree repair` is run in the directory that stands or it is removed",
+        shown_tree(top),
+        shown_tree(old)
+    )
+}
+
+/// Why a stop made from `cwd`, in the tree Git names at `top`, is not judged: the session
+/// remembers a failure of that tree at `old`, which still stands ([`standing_record`]). The
+/// trees that may be the one: every tree `cwd` lies under, and the trees at `top` and `old`.
+fn moved_here(cwd: &Path, top: &Path, old: &Path) -> Elsewhere {
+    let reason = format!(
+        "{} (the session's directory {})",
+        moved_words(top, old),
+        shown(cwd)
+    );
+    Elsewhere::Failed(
+        reason,
+        Unfound::Unpaired {
+            cwd: cwd.to_path_buf(),
+            tops: vec![top.to_path_buf(), old.to_path_buf()],
+        },
+    )
+}
+
+/// Where the session's state records the tree `id` ([`State::trees`]), when that is not `top`
+/// and a directory stands there or whether one does cannot be found out. An identity does not
+/// move while its remembered directory stands: with two nested linked trees, the inner tree's
+/// `core.worktree` set to the outer one and its administrative `gitdir` record edited to name
+/// the outer tree's `.git`, Git and the records named the outer tree as the inner one; the
+/// clean outer tree was judged under the inner tree's name, what had blocked there was
+/// forgotten, and the next stops were silent with two keys in the inner tree (review V4
+/// round 24, VD4R24-M-1). The same after `cp -a` of a tree, `git clean` and
+/// `git worktree repair` run in the copy (sixteenth independent review of the hooks,
+/// HR16-L-3). Where the recorded directory is gone, the tree was moved: it is read at `top`.
+fn standing_record(
+    recorded: &std::collections::BTreeMap<String, String>,
+    id: &str,
+    top: &Path,
+) -> Option<PathBuf> {
+    let old = PathBuf::from(recorded.get(id)?);
+    if same_form(&old) == same_form(top) {
+        return None;
+    }
+    match std::fs::metadata(&old) {
+        Ok(found) if !found.is_dir() => None,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            None
+        }
+        _ => Some(old),
+    }
 }
 
 /// Whether a linked working tree of the project, of those at `linked`, lies across the
@@ -2965,15 +3039,26 @@ fn linked_instances(common: &Path) -> Linked {
 
 /// Which working tree stands at `path`, one of the trees `git worktree list` names: the
 /// first of them is the main tree. A linked tree is found by the path its administrative
-/// directory records, which is where Git has the listed path from; and, when a directory
+/// directory records, which is where Git has the listed path from, of those not `taken` by
+/// an entry before it (two records that name one path are two trees); and, when a directory
 /// stands at `path`, by the administrative directory its own `.git` file names, when that
 /// is one of this repository's. One that neither finds is known by its path.
-fn listed_instance(path: &Path, main: bool, common: &Path, linked: &Linked) -> String {
+fn listed_instance(
+    path: &Path,
+    main: bool,
+    common: &Path,
+    linked: &Linked,
+    taken: &BTreeSet<String>,
+) -> String {
     if main {
         return MAIN_TREE.to_owned();
     }
     let wanted = same_form(path);
-    if let Some((_, id)) = linked.trees.iter().find(|(top, _)| *top == wanted) {
+    if let Some((_, id)) = linked
+        .trees
+        .iter()
+        .find(|(top, id)| *top == wanted && !taken.contains(id))
+    {
         return id.clone();
     }
     let own = pointed_path(&path.join(".git"), b"gitdir: ", path)
@@ -3191,9 +3276,31 @@ fn left_out(stopping: &Stopping<'_>, top: &Path, nested: &Path) -> Option<Note> 
     // (seventh independent review of the hooks, HR7-L-5).
     let linked = match find(&top.join(nested), stopping.deadline) {
         Found::Tree(found) => found.id == stopping.work.place.id,
-        // a tree of this repository Git names with another's Git directory: named by the
-        // rule for working trees, not as a repository of its own
-        Found::Unpaired(unpaired) => unpaired.id == stopping.work.place.id,
+        // What Git names with a Git directory of this repository whose records name another
+        // directory is no tree the records name (a copy of a linked tree made inside the
+        // project, `cp -a ../feature feature-copy`): it was taken for one, and with a key in
+        // it every stop from the project was silent (sixteenth independent review of the
+        // hooks, HR16-M-1). It is named as left out. A tree the records do name there, which
+        // Git names otherwise, is named by the rule for working trees.
+        Found::Unpaired(unpaired) if unpaired.id == stopping.work.place.id => {
+            let here = same_form(&top.join(nested));
+            if unpaired.recorded.as_deref().map(same_form) == Some(here) {
+                return None;
+            }
+            return Some(Note {
+                name: format!(
+                    "the directory {} (no working tree by the records)",
+                    shown(nested)
+                ),
+                text: format!(
+                    "The directory {} in {} is no working tree of this project by the repository's records ({}) and no part of what this project would commit: it was left out and not judged.",
+                    shown(nested),
+                    shown_tree(top),
+                    unpaired.words()
+                ),
+                standing: 0,
+            });
+        }
         _ => false,
     };
     (!linked).then(|| Note {
@@ -4120,7 +4227,7 @@ fn not_looked_at(late: (usize, usize), beyond: (usize, usize)) -> Vec<Note> {
 /// is not in that has changes which are not committed (they are in no patch of this stop; the
 /// commits made there are judged). An agent that makes a working tree and edits it by path
 /// is never "in" it (fourth independent review of the hooks, HR4-L-5). `own` are the trees
-/// this stop judges ([`tree_instance`]), `judged` their top levels.
+/// this stop has units of ([`tree_instance`]), `judged` those of them it reads and judges.
 ///
 /// This is the last thing a stop does before it remembers, and it has a time of its own,
 /// `end`. The trees were looked at before the session's own change was judged, each `git
@@ -4142,7 +4249,7 @@ fn not_looked_at(late: (usize, usize), beyond: (usize, usize)) -> Vec<Note> {
 /// the session is in (`unfound` is `None`).
 fn other_trees(
     stopping: &Stopping<'_>,
-    (judged, unfound): (&[PathBuf], Option<&Unfound>),
+    (judged, unfound): (&BTreeSet<String>, Option<&Unfound>),
     (linked, unlisted): (&Linked, &[Unlisted]),
     own: &BTreeSet<String>,
     blocked: &[String],
@@ -4202,7 +4309,7 @@ fn other_trees(
             said.push(Note {
                 name: name(" (gone)"),
                 text: format!(
-                    "The working tree {} of this project is gone or is no working tree any more: what only its own history names is not judged (`git worktree prune` forgets it).{standing}",
+                    "The working tree {} of this project is gone or is no working tree any more: what only its own history names is not judged (`git worktree prune` forgets a linked tree that is gone; Git lists a main Git directory made apart under another name than `.git` as the main tree, and that entry stays).{standing}",
                     shown_tree(&tree.path)
                 ),
                 standing: usize::from(stands),
@@ -4215,23 +4322,22 @@ fn other_trees(
         // in": that was said of the very tree the session was in when Git failed for it
         // (eleventh independent review of the hooks, HR11-M-1). Nothing of it is forgotten.
         if let Some(unfound) = unfound.filter(|unfound| unfound.may_be_in(&tree.path)) {
-            let text = match unfound {
-                Unfound::Unpaired { cwd, .. } if !cwd.starts_with(&tree.path) => format!(
-                    "Git named the working tree {} of this project with another directory for the session's directory, so whether the session's directory is in that tree could not be found out at this stop: what is not committed there was not judged.{standing}",
-                    shown_tree(&tree.path)
-                ),
-                Unfound::Under(_) | Unfound::Unpaired { .. } => format!(
-                    "The session's directory is under the working tree {} of this project, and whether it is in that tree could not be found out at this stop: what is not committed there was not judged.{standing}",
-                    shown_tree(&tree.path)
-                ),
-                Unfound::Anywhere => format!(
-                    "Where the session's directory is could not be found out at this stop, so it may be in the working tree {} of this project: what is not committed there was not judged.{standing}",
-                    shown_tree(&tree.path)
-                ),
-            };
+            let text = format!("{}{standing}", unfound.words(&tree.path));
             said.push(Note {
                 name: name(" (the session's directory may be in it)"),
                 text,
+                standing: usize::from(stands),
+            });
+            continue;
+        }
+        // The tree is remembered at another directory, which stands: neither is read as it.
+        if let Some(old) = standing_record(stopping.recorded, &id, &tree.path) {
+            said.push(Note {
+                name: name(" (remembered at another directory, which stands)"),
+                text: format!(
+                    "{}. What is not committed in either was not judged at this stop.{standing}",
+                    moved_words(&tree.path, &old)
+                ),
                 standing: usize::from(stands),
             });
             continue;
@@ -4268,19 +4374,31 @@ fn other_trees(
 /// stands that has blocked first: each with which tree it is ([`listed_instance`]), whether
 /// such a failure stands there, and the trees no longer listed whose directory it is now
 /// ([`UnlistedIs::Again`]).
+///
+/// A tree is left out as judged by which tree it is (`judged`), never by its path: with a
+/// tree's administrative `gitdir` record edited to name another tree's `.git`, Git lists the
+/// other tree's path twice, both entries were left out at a stop made from that tree, and
+/// the failure that stood in the first tree was neither looked at nor said (sixteenth
+/// independent review of the hooks, HR16-L-1). Each entry is the tree of an administrative
+/// directory no entry before it is ([`listed_instance`]).
 fn listed_others<'t>(
     trees: &'t [Worktree],
-    judged: &[PathBuf],
+    judged: &BTreeSet<String>,
     (common, linked, unlisted): (&Path, &Linked, &[Unlisted]),
     blocked: &[String],
 ) -> Vec<(&'t Worktree, String, bool, Vec<String>)> {
+    let mut taken = BTreeSet::new();
     let mut others: Vec<(&Worktree, String, bool, Vec<String>)> = trees
         .iter()
         .enumerate()
         // a bare repository's own entry is no working tree: there is nothing uncommitted in it
-        .filter(|(_, tree)| !tree.bare && !judged.contains(&tree.path))
-        .map(|(at, tree)| {
-            let id = listed_instance(&tree.path, at == 0, common, linked);
+        .filter(|(_, tree)| !tree.bare)
+        .filter_map(|(at, tree)| {
+            let id = listed_instance(&tree.path, at == 0, common, linked, &taken);
+            taken.insert(id.clone());
+            if judged.contains(&id) {
+                return None;
+            }
             let olds: Vec<String> = unlisted
                 .iter()
                 .filter(|old| matches!(&old.is, UnlistedIs::Again(now) if *now == id))
@@ -4292,7 +4410,7 @@ fn listed_others<'t>(
             // again on return). So is one that blocked in a tree that stood at this path
             // before and is no longer listed.
             let stands = stands_in(blocked, &id) || olds.iter().any(|old| stands_in(blocked, old));
-            (tree, id, stands, olds)
+            Some((tree, id, stands, olds))
         })
         .collect();
     others.sort_by_key(|(_, _, stands, _)| !stands);
@@ -4508,6 +4626,24 @@ enum Unfound {
 }
 
 impl Unfound {
+    /// What a stop says of the working tree at `top`, which the session's directory may be in.
+    fn words(&self, top: &Path) -> String {
+        match self {
+            Self::Unpaired { cwd, .. } if !cwd.starts_with(top) => format!(
+                "Git named the working tree {} of this project with another directory for the session's directory, so whether the session's directory is in that tree could not be found out at this stop: what is not committed there was not judged.",
+                shown_tree(top)
+            ),
+            Self::Under(_) | Self::Unpaired { .. } => format!(
+                "The session's directory is under the working tree {} of this project, and whether it is in that tree could not be found out at this stop: what is not committed there was not judged.",
+                shown_tree(top)
+            ),
+            Self::Anywhere => format!(
+                "Where the session's directory is could not be found out at this stop, so it may be in the working tree {} of this project: what is not committed there was not judged.",
+                shown_tree(top)
+            ),
+        }
+    }
+
     /// Whether the session's directory may be in the working tree at `top`.
     fn may_be_in(&self, top: &Path) -> bool {
         match self {
@@ -4895,15 +5031,22 @@ fn judge_units(
     let mut writable = vec![place.top.clone()];
     let linked = linked_instances(&place.common);
     let unlisted = unlisted_trees(blocked, stopping.recorded, &linked);
-    out.tops = linked
+    let listed_tops = linked
         .trees
         .iter()
-        .filter(|(top, _)| !top.as_os_str().is_empty())
-        .map(|(top, id)| (id.clone(), top.clone()))
+        .filter(|(top, _)| !top.as_os_str().is_empty());
+    // (a tree's recorded top does not move while the directory there stands)
+    out.tops = listed_tops
+        .clone()
+        .map(|(top, id)| {
+            let kept = standing_record(stopping.recorded, id, top);
+            (id.clone(), kept.unwrap_or_else(|| top.clone()))
+        })
         .collect();
     let around = Around {
-        linked: out.tops.values().cloned().collect(),
+        linked: listed_tops.map(|(top, _)| top.clone()).collect(),
         unlisted: &unlisted,
+        recorded: stopping.recorded,
     };
     let (trees, unfound) = trees_to_judge(stopping, &around, &mut writable, &mut out.beside);
     for (top, id, _, unreadable) in &trees {
@@ -4912,6 +5055,12 @@ fn judge_units(
         }
     }
     let own: BTreeSet<String> = trees.iter().map(|(_, id, _, _)| id.clone()).collect();
+    // the trees this stop reads and judges, by which tree each is
+    let judged: BTreeSet<String> = trees
+        .iter()
+        .filter(|(_, _, _, unreadable)| unreadable.is_none())
+        .map(|(_, id, _, _)| id.clone())
+        .collect();
     let mut tribunal = Judge {
         stop: stopping,
         writable,
@@ -4974,7 +5123,6 @@ fn judge_units(
     let end = stopping.look.within(LOOK_TIME);
     out.beside
         .extend(submodules_with_changes(place, end.within(LOOK_TIME / 2)));
-    let judged = std::mem::take(&mut tribunal.writable);
     let others = other_trees(
         stopping,
         (&judged, unfound.as_ref()),
@@ -9153,6 +9301,83 @@ mod tests {
         assert_eq!(kept.len(), TREES_BYTES / (16 * 1024));
     }
 
+    /// Review V4 round 24, VD4R24-M-1, and the sixteenth independent review, HR16-L-3: an
+    /// identity does not move while its remembered directory stands. A tree the state records
+    /// at one directory and that Git and the records now pair with another top is read at the
+    /// new top only where the recorded directory is gone:
+    ///
+    /// | the recorded directory | the new top the same | the new top another |
+    /// | --- | --- | --- |
+    /// | stands | read | not read: the recorded one is said |
+    /// | is gone | read | read (a tree moved and repaired) |
+    /// | is a file | read | read |
+    /// | cannot be looked at | read | not read |
+    /// | not recorded | read | read |
+    ///
+    /// And two listed entries with one path are two trees (HR16-L-1).
+    #[test]
+    fn a_tree_is_not_moved_while_the_directory_it_is_remembered_at_stands() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-standing-record");
+        let root = std::fs::canonicalize(scratch.path()).unwrap();
+        for dir in ["stands", "new", "locked/tree"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("file"), "x").unwrap();
+        let at = |dir: &str| root.join(dir).to_string_lossy().into_owned();
+        let recorded: std::collections::BTreeMap<String, String> = [
+            ("a".to_owned(), at("stands")),
+            ("b".to_owned(), at("gone")),
+            ("c".to_owned(), at("file")),
+            ("d".to_owned(), at("locked/tree")),
+        ]
+        .into();
+        std::fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(0o000))
+            .unwrap();
+        let cell = |id: &str, top: &str| standing_record(&recorded, id, &root.join(top));
+        let rows = [
+            (cell("a", "stands"), cell("a", "new")),
+            (cell("b", "gone"), cell("b", "new")),
+            (cell("c", "file"), cell("c", "new")),
+            (cell("d", "locked/tree"), cell("d", "new")),
+            (cell("e", "stands"), cell("e", "new")),
+        ];
+        std::fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        assert_eq!(
+            rows,
+            [
+                (None, Some(root.join("stands"))),
+                (None, None),
+                (None, None),
+                (None, Some(root.join("locked/tree"))),
+                (None, None),
+            ]
+        );
+        // the same directory written another way is the same top
+        assert_eq!(
+            standing_record(&recorded, "a", &root.join("new/../stands")),
+            None
+        );
+        // two entries of the listing with one path: each takes a tree of its own
+        let linked = Linked {
+            trees: vec![
+                (root.join("new"), "1".repeat(16)),
+                (root.join("new"), "2".repeat(16)),
+            ],
+            whole: true,
+        };
+        let first = listed_instance(&root.join("new"), false, &root, &linked, &BTreeSet::new());
+        let second = listed_instance(
+            &root.join("new"),
+            false,
+            &root,
+            &linked,
+            &[first.clone()].into(),
+        );
+        assert_eq!((first, second), ("1".repeat(16), "2".repeat(16)));
+    }
+
     /// Mutation run on `07df120`: what a stop knows of a working tree without asking Git
     /// had mutants that no test caught. Each is read whole, or is "not known":
     ///
@@ -9790,6 +10015,7 @@ mod tests {
         let scratch = deep_diff_forge_testkit::Scratch::new("hook-pointed-path");
         let root = std::fs::canonicalize(scratch.path()).unwrap();
         let common = root.join("project/.git");
+        let untaken = BTreeSet::new();
         let admin = |name: &str, gitdir: &[u8]| -> PathBuf {
             let admin = common.join("worktrees").join(name);
             std::fs::create_dir_all(&admin).unwrap();
@@ -9859,14 +10085,14 @@ mod tests {
             (&bytes, odd_top.clone()),
         ] {
             assert_eq!(
-                listed_instance(&top, false, &common, &linked),
+                listed_instance(&top, false, &common, &linked, &untaken),
                 instance_of(admin).unwrap(),
                 "{}",
                 top.display()
             );
         }
         assert_eq!(
-            listed_instance(&root.join("rel-wt"), true, &common, &linked),
+            listed_instance(&root.join("rel-wt"), true, &common, &linked, &untaken),
             MAIN_TREE
         );
         // A tree whose `gitdir` cannot be read is found by its own `.git` file, when that
@@ -9880,7 +10106,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            listed_instance(&lost, false, &common, &linked),
+            listed_instance(&lost, false, &common, &linked, &untaken),
             instance_of(&unread).unwrap()
         );
         let elsewhere = root.join("elsewhere");
@@ -9888,7 +10114,7 @@ mod tests {
         std::fs::write(elsewhere.join("fake/commondir"), "x").unwrap();
         std::fs::write(lost.join(".git"), "gitdir: ../elsewhere/fake\n").unwrap();
         assert_eq!(
-            listed_instance(&lost, false, &common, &linked),
+            listed_instance(&lost, false, &common, &linked, &untaken),
             by_path(&lost)
         );
         assert_eq!(same_form(&root.join("a/./b/../c")), root.join("a/c"));

@@ -8731,6 +8731,257 @@ fn a_ceiling_written_through_the_project_still_hides_its_repository() {
     assert_eq!(shown(&log), Vec::<String>::new());
 }
 
+/// Review V4 round 24, VD4R24-M-1, as reproduced: two genuine linked trees, the inner one
+/// inside the outer one; the inner tree's own `core.worktree` names the outer tree, and its
+/// administrative `gitdir` record is edited to name the outer tree's `.git`. Git and the
+/// records then name the outer tree as the inner one: the clean outer tree was judged under
+/// the inner tree's name, what had blocked in the inner tree was forgotten, and the next
+/// stops printed nothing with two keys in it. An identity does not move while the directory
+/// it is remembered at stands: UNJUDGED there, named from the project, nothing forgotten.
+#[test]
+fn a_tree_whose_records_name_another_is_unjudged_while_its_directory_stands() {
+    let scratch = Scratch::new("hook-records-moved");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    let (outer, inner) = (scratch.join("outer"), scratch.join("outer/inner"));
+    linked_tree(&root, &outer, "outer");
+    linked_tree(&root, &inner, "inner");
+    start(&root, "s");
+    secret(&inner, "first.rs");
+    blocked(&stop_from(&inner, "s", &script));
+    let before = remembered_lines();
+    let admin = PathBuf::from(git(&inner, &["rev-parse", "--absolute-git-dir"]).trim());
+    git(&root, &["config", "extensions.worktreeConfig", "true"]);
+    git(
+        &inner,
+        &[
+            "config",
+            "--worktree",
+            "core.worktree",
+            outer.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(
+        admin.join("gitdir"),
+        format!("{}\n", outer.join(".git").display()),
+    )
+    .unwrap();
+    let mut exclude = std::fs::OpenOptions::new()
+        .append(true)
+        .open(root.join(".git/info/exclude"))
+        .unwrap();
+    exclude.write_all(b"\n/inner/\n").unwrap();
+    assert_eq!(git(&inner, &["status", "--porcelain"]), "");
+    secret(&inner, "second.rs");
+    for _ in 0..2 {
+        let said = allowed(&stop_from(&inner, "s", &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: UNJUDGED. ")
+                && said.contains("/outer\" as the working tree that this session's memory has at ")
+                && said.contains("/outer/inner\", which still stands"),
+            "{said}"
+        );
+        assert_eq!(remembered_lines(), before);
+        let from_project = allowed(&stop_from(&root, "s", &script)).to_owned();
+        assert!(
+            from_project.contains("/outer/inner\", which still stands")
+                || from_project.contains(
+                    "/outer\" (remembered at another directory, which stands) (a failure stands there)"
+                ),
+            "{from_project}"
+        );
+        assert_eq!(remembered_lines(), before);
+    }
+    assert!(
+        !shown(&log).iter().any(|names| names.contains("second.rs")),
+        "{:?}",
+        shown(&log)
+    );
+}
+
+/// Sixteenth independent review of the hooks, HR16-L-3, as reproduced: a copy of a linked
+/// tree (`cp -a`), cleaned with `git clean`, and `git worktree repair` run in the copy: Git's
+/// records name the copy as the tree. The clean copy was read under the tree's name at the
+/// next stop from the project, what had blocked in the tree was forgotten, and the stops from
+/// the project and from the copy printed nothing with two keys in the tree. While the tree's
+/// own directory stands, neither directory is read as that tree, and both are named.
+#[test]
+fn a_copy_the_records_were_repaired_onto_is_not_read_while_the_tree_stands() {
+    let scratch = Scratch::new("hook-copy-repaired");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    let (linked, copy) = (scratch.join("linked"), scratch.join("copy"));
+    linked_tree(&root, &linked, "side");
+    start(&root, "s");
+    secret(&linked, "first.rs");
+    blocked(&stop_from(&linked, "s", &script));
+    let before = remembered_lines();
+    let copied = Command::new("cp")
+        .arg("-a")
+        .arg(&linked)
+        .arg(&copy)
+        .status()
+        .unwrap();
+    assert!(copied.success());
+    git(&copy, &["clean", "-fdq"]);
+    git(&copy, &["worktree", "repair"]);
+    secret(&linked, "second.rs");
+    let both = |said: &str| {
+        said.contains("/copy\" as the working tree that this session's memory has at ")
+            && said.contains("/linked\", which still stands")
+    };
+    for _ in 0..2 {
+        let from_project = allowed(&stop_from(&root, "s", &script)).to_owned();
+        assert!(
+            both(&from_project)
+                || from_project.contains(
+                    "/copy\" (remembered at another directory, which stands) (a failure stands there)"
+                ),
+            "{from_project}"
+        );
+        assert_eq!(remembered_lines(), before);
+        let said = allowed(&stop_from(&copy, "s", &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: UNJUDGED. ") && both(&said),
+            "{said}"
+        );
+        assert_eq!(remembered_lines(), before);
+    }
+    let said = allowed(&stop_from(&linked, "s", &script)).to_owned();
+    assert!(
+        said.starts_with("deep-diff-forge: UNJUDGED. ") && said.contains("/copy\" as that tree"),
+        "{said}"
+    );
+    assert_eq!(remembered_lines(), before);
+    assert!(
+        !shown(&log).iter().any(|names| names.contains("second.rs")),
+        "{:?}",
+        shown(&log)
+    );
+}
+
+/// Sixteenth independent review of the hooks, HR16-M-1, as reproduced: a copy of a linked tree
+/// made inside the project (`cp -a ../linked feature-copy`), with a key in it. Git sees a
+/// repository inside the project and leaves it out of the patch; the hooks took it for a tree
+/// of the project named by the rule for working trees, which names only listed trees, and
+/// every stop from the project printed nothing. It is named as left out, at every stop, as a
+/// nested repository is.
+#[test]
+fn a_copy_of_a_linked_tree_inside_the_project_is_named_as_left_out() {
+    let scratch = Scratch::new("hook-copy-inside");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    let linked = scratch.join("linked");
+    linked_tree(&root, &linked, "side");
+    start(&root, "s");
+    let copy = root.join("feature-copy");
+    let copied = Command::new("cp")
+        .arg("-a")
+        .arg(&linked)
+        .arg(&copy)
+        .status()
+        .unwrap();
+    assert!(copied.success());
+    secret(&copy, "incopy.rs");
+    for _ in 0..3 {
+        let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+        assert!(
+            said.contains("The directory \"feature-copy\" in \"")
+                && said.contains(
+                    "is no working tree of this project by the repository's records (Git names "
+                )
+                || said.contains("the directory \"feature-copy\" (no working tree by the records)"),
+            "{said}"
+        );
+    }
+    assert!(
+        !shown(&log).iter().any(|names| names.contains("incopy.rs")),
+        "{:?}",
+        shown(&log)
+    );
+}
+
+/// Sixteenth independent review of the hooks, HR16-L-1, as reproduced: the administrative
+/// `gitdir` record of one linked tree edited to name another tree's `.git`, so that Git
+/// lists the other tree's path twice. A stop from that other tree left both entries out as
+/// judged, by their path, and the failure that stood in the first tree was neither looked
+/// at nor said: the stop printed nothing with a second key there. A listed tree is left out
+/// as judged only by which tree it is.
+#[test]
+fn two_listed_entries_with_one_path_are_two_trees() {
+    let scratch = Scratch::new("hook-listed-twice");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    let (first, other) = (scratch.join("first"), scratch.join("other"));
+    linked_tree(&root, &first, "first");
+    linked_tree(&root, &other, "other");
+    start(&root, "s");
+    secret(&first, "first.rs");
+    blocked(&stop_from(&first, "s", &script));
+    let before = remembered_lines();
+    std::fs::write(
+        root.join(".git/worktrees/first/gitdir"),
+        format!("{}\n", other.join(".git").display()),
+    )
+    .unwrap();
+    let listed = git(&root, &["worktree", "list", "--porcelain"]);
+    let entries = listed
+        .lines()
+        .filter(|line| line.starts_with("worktree ") && line.ends_with("/other"))
+        .count();
+    assert_eq!(entries, 2, "{listed}");
+    secret(&first, "second.rs");
+    for cwd in [&other, &root, &other] {
+        let said = allowed(&stop_from(cwd, "s", &script)).to_owned();
+        assert!(
+            said.contains("/first\", which still stands")
+                || said.contains(
+                    "/other\" (remembered at another directory, which stands) (a failure stands there)"
+                ),
+            "{said}"
+        );
+        assert_eq!(remembered_lines(), before);
+    }
+    assert!(
+        !shown(&log).iter().any(|names| names.contains("second.rs")),
+        "{:?}",
+        shown(&log)
+    );
+}
+
+/// A linked tree moved with a plain `mv` and not repaired is a pair the records do not name:
+/// a stop from it is UNJUDGED and says how it is put right; after `git worktree repair` the
+/// directory it was remembered at is gone, so the tree is read where it is now, and its
+/// unchanged failure stands (it does not block a second time).
+#[test]
+fn a_tree_moved_by_hand_is_unjudged_until_repaired_and_then_stands() {
+    // (a short name: the words come after both paths, in what a message shows of a reason)
+    let scratch = Scratch::new("hook-mv");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let (linked, moved) = (scratch.join("linked"), scratch.join("moved"));
+    linked_tree(&root, &linked, "side");
+    start(&root, "s");
+    secret(&linked, "first.rs");
+    blocked(&stop_from(&linked, "s", &script));
+    let before = remembered_lines();
+    std::fs::rename(&linked, &moved).unwrap();
+    let said = allowed(&stop_from(&moved, "s", &script)).to_owned();
+    assert!(
+        said.starts_with("deep-diff-forge: UNJUDGED. ")
+            && said.contains("/linked\" as that tree")
+            && said.contains("as that tree (`git worktree repair` in a tree moved with `mv` records where it is): "),
+        "{said}"
+    );
+    assert_eq!(remembered_lines(), before);
+    git(&moved, &["worktree", "repair"]);
+    for _ in 0..2 {
+        let said = allowed(&stop_from(&moved, "s", &script)).to_owned();
+        assert!(said.starts_with("deep-diff-forge: FAIL STANDS. "), "{said}");
+        assert_eq!(remembered_lines(), before);
+    }
+}
+
 /// Twelfth independent review of the hooks, HR12-L-4, as reproduced: the session's
 /// directory is under a directory of a linked tree that cannot be searched (mode 000). The
 /// stop is rightly UNJUDGED with the operating system's words, but the directory, which
