@@ -510,9 +510,14 @@ GitHub release: it is published as a signed tag on GitLab, Gitea and Forgejo; bi
   are not exactly the five it packs (review of 0.8.4, R84B-L-2: a second member `./D/…` was
   what `tar -xzf` left). `just release-tag` pushes the tag to GitLab, Gitea and Forgejo only,
   refuses a remote whose URL names github.com, and refuses to tag when `git status --porcelain`
-  prints anything, untracked files included, before the release gate or after it (review of
-  0.8.4, VR84B-M-2: the check was `git diff --quiet`, which does not see an untracked
-  `build.rs` that Cargo reads). The advisories
+  prints anything before the release gate or after it, so a tracked change or an untracked file
+  Git does not ignore stops it (review of 0.8.4, VR84B-M-2: the check was `git diff --quiet`,
+  which does not see an untracked `build.rs` that Cargo reads). It does not see ignored files,
+  or files hidden by `status.showUntrackedFiles=no`, and it does not compare `HEAD` before and
+  after the gate, so it does not prove the tag names the gated commit: the release relies on a
+  dedicated, freshly cloned worktree under exclusive control, with no ignored files and a stable
+  `HEAD` ([Tag And Push](docs/RELEASE_AND_PUBLICATION.md#tag-and-push); VR84C-M-1,
+  VR84C-M-2). The advisories
   are in the repository: [DDF-2026-001](docs/advisories/DDF-2026-001.md) (G1, G2) and
   [DDF-2026-002](docs/advisories/DDF-2026-002.md) (the Rust code view). Security reports go
   to a confidential issue on GitLab ([SECURITY.md](SECURITY.md#reporting-a-vulnerability))

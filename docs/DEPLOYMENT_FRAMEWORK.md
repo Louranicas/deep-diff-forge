@@ -207,7 +207,7 @@ Every recipe in the `justfile` (checked 2026-10-28):
 | `just gate-release` | `gate-feature` + `docs`. |
 | `just ci` | Runs `scripts/ci_local.sh`: step-for-step replica of the `secrets`, `msrv`, `gate` and `supply-chain` CI jobs (checked by `crates/deep-diff-forge-cli/tests/ci_replica.rs`). Not the Podman evidence job or diff mutation. |
 | `just publish-dry-run` | `cargo publish --dry-run` for the core and learning crates. |
-| `just release-tag <version>` | Check version and a clean tree (`git status --porcelain` prints nothing, before and after the gate), refuse a remote whose URL names github.com, run `gate-release`, sign `v<version>`, push the tag to the `gitlab`, `gitea` and `forgejo` remotes. |
+| `just release-tag <version>` | Check version and that `git status --porcelain` prints nothing, before and after the gate (ignored files and `HEAD` are not checked: see the release procedure in `docs/RELEASE_AND_PUBLICATION.md`, Tag And Push), refuse a remote whose URL names github.com, run `gate-release`, sign `v<version>`, push the tag to the `gitlab`, `gitea` and `forgejo` remotes. |
 | `just zellij-observe` | Optional Zellij session observation. |
 | `just habitat-observe` | Optional habitat/factory status and wiring observation. |
 | `just doctor` | `status` + `hooks-status` + `contracts` + optional external observation. |

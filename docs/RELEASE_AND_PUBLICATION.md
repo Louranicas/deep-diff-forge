@@ -104,22 +104,40 @@ Up to 0.8.3, `main` reached GitHub only through a merged pull request: the branc
 requires a PR, thirteen passing checks (the PR-time jobs of `ci.yml` and the two
 CodeQL analyses of `codeql.yml`), an
 up-to-date branch, and allows no bypass. From 0.8.4 nothing runs at GitHub: `main` moves on
-GitLab, and the release commit passes `scripts/ci_local.sh` instead. The tag is cut from that
-commit with the `justfile` recipe:
+GitLab, and the release commit passes `scripts/ci_local.sh` instead. The tag is cut with the
+`justfile` recipe, on the `HEAD` of the worktree it runs in, under the procedure below:
 
 ```bash
 just release-tag 0.8.4
 ```
 
 `release-tag` refuses a version that differs from `[workspace.package].version`
-or a tree for which `git status --porcelain` prints anything (untracked files included, which
-Cargo can read; checked before the gate and again after it), and refuses unless the remotes named `gitlab`, `gitea` and `forgejo` all
+or a status-visible change (`git status --porcelain` prints anything, checked before the gate
+and again after it: a tracked change, or an untracked file Git does not ignore, such as a stray
+`build.rs` Cargo would compile), and refuses unless the remotes named `gitlab`, `gitea` and `forgejo` all
 exist and none of their fetch or push URLs contains `github.com` (in any case), before the gate
 and before signing. It then runs `just gate-release`, creates a signed annotated tag `vX.Y.Z`
 (see [Signed Tags](#signed-tags)), and pushes it to those three remotes only, never `origin`
 (GitHub). Up to 0.8.3 the recipe pushed to `origin` and `gitlab`, and the tag push started
 `release.yml`; from 0.8.4 the tag starts nothing, and the release is built and checked as in
 [Local release](#local-release-from-084). crates.io stays on hold.
+
+What the recipe does not check (reviews of 0.8.4, VR84C-M-1 and VR84C-M-2):
+
+- **Ignored files.** `git status --porcelain` does not list a file that `.gitignore`,
+  `.git/info/exclude` or a global excludes file ignores, nor an untracked file when
+  `status.showUntrackedFiles=no` is set; Cargo compiles an ignored package-root `build.rs` all
+  the same, so the gate could run on an input the commit does not hold.
+- **`HEAD`.** The recipe tags the `HEAD` current when it signs and does not compare it with the
+  `HEAD` at the start. A commit made in the worktree while the gate runs leaves a clean status,
+  and the tag then names a commit the gate did not run on. The status checks do not prove that
+  the tag names the gated commit.
+
+So the release relies on this procedure: the tag is cut in a dedicated release worktree,
+freshly cloned, used by nobody else and under the release operator's exclusive control, with no
+ignored files before the recipe starts (`git status --porcelain --ignored` prints nothing) and
+a stable `HEAD` for the whole recipe. The coordinator's release script, outside this repository,
+records `HEAD` before the gate and compares it after.
 
 ## Signed Tags
 

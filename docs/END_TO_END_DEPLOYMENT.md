@@ -247,21 +247,23 @@ weekly campaign (`campaign.yml`) runs it for 600 s that way (measured 2026-10-30
 
 ### Gate 7: Publish
 
-Publishing order:
+Publishing order from 0.8.4 (GitLab is the repository of record; nothing goes to GitHub):
 
-1. Commit release changes.
-2. Tag `vX.Y.Z`.
-3. Push to GitHub.
-4. Push to GitLab when credentials/project exist.
-5. Create release assets.
-6. Publish crates only after release artifacts pass smoke.
+1. Merge the release changes to GitLab `main`.
+2. In a dedicated, freshly cloned release worktree, run `just release-tag X.Y.Z`: it gates,
+   signs the tag and pushes it to the `gitlab`, `gitea` and `forgejo` remotes.
+3. Build the release from the tag (`just release-local-build`), sign its `SHA256SUMS`, and
+   attach the files to the tag's release on GitLab.
+4. Publish crates only after release artifacts pass smoke (on hold).
 
-`main` changes only through a merged pull request, and GitLab `main` is fast-forwarded to
-GitHub's. The tag is the owner's act, and one recipe validates and pushes it to the `gitlab`,
-`gitea` and `forgejo` remotes (from 0.8.4; never to GitHub):
+Up to 0.8.3 the order was: commit, tag, push to GitHub, push to GitLab, release assets made by
+`release.yml` at GitHub, crates; `main` changed only through a merged pull request on GitHub,
+and GitLab `main` was fast-forwarded to GitHub's. From 0.8.4 GitLab `main` moves on its own and
+GitHub's stays at 0.8.3. The tag is the owner's act, under the procedure in
+[Tag And Push](RELEASE_AND_PUBLICATION.md#tag-and-push):
 
 ```bash
-just release-tag X.Y.Z   # version check, clean tree, gate-release, then push vX.Y.Z to gitlab, gitea and forgejo
+just release-tag X.Y.Z   # version check, git status --porcelain empty, gate-release, then push vX.Y.Z to gitlab, gitea and forgejo
 ```
 
 Current status (2026-10-26, kept as written; see the 2026-10-28 status at the

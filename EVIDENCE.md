@@ -1351,10 +1351,15 @@ its build and checks are the local ones below ([local release](docs/RELEASE_AND_
     `deleted_file` only with a `new file mode` or `deleted file mode` header), makes
     `release-tag` refuse any `git status --porcelain` output before and after the gate, makes
     `verify` refuse an archive whose members are not exactly the five it packs, and fixes the
-    wording. `fuzz/` and `fixtures/` did not change after `69064ca`.
+    wording. The same reviewers re-read `363755e` (2026-11-17): one GO with lows, one NO-GO on
+    two claims of the `release-tag` recipe (VR84C-M-1: `git status --porcelain` does not see
+    ignored files, which Cargo can read; VR84C-M-2: the recipe does not compare `HEAD` before
+    and after the gate). The documents of this commit narrow those claims and state the release
+    worktree procedure; nothing under `crates/` or `scripts/` changed after `363755e`. `fuzz/`
+    and `fixtures/` did not change after `69064ca`.
 - **Gate.** `scripts/ci_local.sh` passed every one of its 32 steps on `69064ca` (09:47:25Z to
-  09:49:53Z), on `14e3ad2`, on `1c00c62`, and on the candidate of this commit, whose tree differs
-  only in this section (17:53:52Z to 17:56:40Z): `steps failed: 0`, and the tree unchanged after it. `cargo
+  09:49:53Z), on `14e3ad2`, on `1c00c62`, on `363755e` (18:02:52Z to 18:04:43Z), and on the
+  candidate of this commit, whose tree differs only in this section (19:40:15Z to 19:42:22Z): `steps failed: 0`, and the tree unchanged after it. `cargo
   test --workspace` counts 2,013 passed and 4 ignored (the banner's count; 2,008 before the
   first review round, 2,011 after it).
 - **Control.** In a scratch clone at `v0.8.3` (`a74bf91`) with 0.8.4's
@@ -1393,17 +1398,17 @@ its build and checks are the local ones below ([local release](docs/RELEASE_AND_
     (2), each by that weight and each in a section without the header of the signal it lost
     (the name reading the closing fix removes); nothing else differs.
 - **Local build** (`scripts/release_local.sh build`, on the candidate of this commit,
-  17:48:55Z to 17:49:52Z, in the `fedora-toolbox-44` toolbox; Rust 1.99.1, LLD 23.1.1, glibc 2.43 on the
+  19:27:09Z to 19:28:07Z, in the `fedora-toolbox-44` toolbox; Rust 1.99.1, LLD 23.1.1, glibc 2.43 on the
   build machine). Two fresh exports at two paths built with
   `cargo build --release --locked -p deep-diff-forge-cli --target x86_64-unknown-linux-gnu`
   gave one binary, SHA-256
-  `0c93b3edb0cde6f37c9d06bf3ed5ced6c9c2d43b9f52ae4d39e4e37b2707087f` (both builds; `7bfc281c…` before the first review round, `33917d57…` after it). It prints
+  `0c93b3edb0cde6f37c9d06bf3ed5ced6c9c2d43b9f52ae4d39e4e37b2707087f` (both builds, and the same on `363755e`; `7bfc281c…` before the first review round, `33917d57…` after it). It prints
   `deep-diff-forge 0.8.4`, produces a review document, and requires at most `GLIBC_2.34`
   (`GLIBC_2.39` only as the weak `pidfd_spawnp` and `pidfd_getpid`). It holds no build path, and
   it holds the registry source path under `CARGO_HOME` (`~/.cargo` of the build account). The
   archive, `SHA256SUMS` and receipt hashes of the release are those of the owner's build of the
   tag: an archive carries its commit's time and `README.md`, so this commit cannot hold its own.
-- **Self-test.** `scripts/test_release_local.sh` on the candidate (17:48:55Z to 17:51:06Z): all
+- **Self-test.** `scripts/test_release_local.sh` on the candidate (19:27:09Z to 19:29:12Z): all
   cases passed. A good build and its verify pass; a changed archive byte fails verify, with the
   checksums as built and recomputed; a checksum signature by another key fails; a tag that is not
   the workspace version is refused by build and verify; `github.com` in an argument, an

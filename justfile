@@ -114,14 +114,19 @@ publish-dry-run:
     cargo publish --dry-run -p deep-diff-forge-core --allow-dirty
     cargo publish --dry-run -p deep-diff-forge-learning --allow-dirty
 
-# Cut a release: validate the tag matches the workspace version + a clean tree (`git status
-# --porcelain` prints nothing, untracked files included, before and after the gate), refuse
+# Cut a release: validate the tag matches the workspace version + no status-visible change
+# (`git status --porcelain` prints nothing, before and after the gate; it does not see ignored
+# files, or untracked files hidden by status.showUntrackedFiles=no), refuse
 # unless the remotes `gitlab`, `gitea` and `forgejo` all exist and none points at github.com,
 # run the release gate, then sign the tag and push it to those three remotes only (never
 # `origin`, which is GitHub). From 0.8.4 nothing runs at GitHub: the tag starts no workflow;
 # the release is built and checked on this machine with `just release-local-build` and
 # `just release-local-verify` (scripts/release_local.sh; docs/RELEASE_AND_PUBLICATION.md).
-# crates.io stays on hold by owner decision.
+# crates.io stays on hold by owner decision. The tag is made on the HEAD current when it is
+# signed, which the recipe does not compare with the HEAD at the start: run it only in a
+# dedicated, freshly cloned release worktree that nobody else uses, with no ignored files
+# (`git status --porcelain --ignored` empty) before it starts and HEAD stable throughout
+# (docs/RELEASE_AND_PUBLICATION.md, Tag And Push).
 # Usage: just release-tag 0.8.4
 [group("release")]
 release-tag version:
@@ -133,8 +138,9 @@ release-tag version:
       echo "version mismatch: arg='${want}' but [workspace.package].version='${have}'" >&2
       exit 1
     fi
-    # Clean means `git status --porcelain` prints nothing, untracked files included: Cargo
-    # finds an untracked build.rs, and the tag must name exactly what the gate ran on.
+    # Status-visible changes only: a tracked change, or an untracked file Git does not ignore
+    # (a stray build.rs, which Cargo compiles). An ignored file, or one hidden by
+    # status.showUntrackedFiles=no, is not seen; the release procedure rules them out.
     if [ -n "$(git status --porcelain)" ]; then
       echo "working tree is not clean (git status --porcelain); commit or remove before tagging" >&2
       exit 1
@@ -155,8 +161,10 @@ release-tag version:
       esac
     done
     just gate-release
-    # The gate must not have changed the tree (a rewritten Cargo.lock, a regenerated file):
-    # the tag names the commit that was gated.
+    # The gate must not have changed the tree (a rewritten Cargo.lock, a regenerated file).
+    # This does not prove that the tag names the commit the gate ran on: the tag is made on the
+    # HEAD current below, which is not compared with the HEAD at the start (the release
+    # procedure keeps HEAD stable, and its script records HEAD before the gate and after).
     if [ -n "$(git status --porcelain)" ]; then
       echo "the release gate changed the working tree (git status --porcelain); commit or discard before tagging" >&2
       exit 1
