@@ -41,7 +41,7 @@
 //
 // Input: the first byte picks the shape (bit 0: a new file, or a change), a path (bits 1 and
 // 2) and the place of the one respacing (the bits above); the rest is the text. For rule 5
-// the first line of the text picks constructs and places (a letter `a` to `l` and a digit,
+// the first line of the text picks constructs and places (a letter `a` to `n` and a digit,
 // again and again), the lines up to a line `--` are the comment's text, and the lines after
 // it the strings' text.
 
@@ -167,6 +167,9 @@ const CONSTRUCTS: &[(&[&str], EvidenceSignal)] = &[
     (&["#", "[", "ignore", "]", "fn", "t", "(", ")", "{", "}"], EvidenceSignal::TestSkipped),
     (&["#", "[", "cfg_attr", "(", "all", "(", ")", ",", "ignore", ")", "]", "fn", "t", "(", ")", "{", "}"], EvidenceSignal::TestSkipped),
     (&["#", "[", "cfg_attr", "(", "not", "(", "feature", "=", "\"never)\"", ")", ",", "ignore", ")", "]", "fn", "t", "(", ")", "{", "}"], EvidenceSignal::TestSkipped),
+    // `#[ignore(…)]`, a lint a crate can allow (tenth independent review, IR10-M-1)
+    (&["#", "[", "ignore", "(", "not_ready", ")", "]", "fn", "t", "(", ")", "{", "}"], EvidenceSignal::TestSkipped),
+    (&["#", "[", "cfg_attr", "(", "all", "(", ")", ",", "ignore", "(", "flaky", ")", ")", "]", "fn", "t", "(", ")", "{", "}"], EvidenceSignal::TestSkipped),
 ];
 
 /// Rule 5 for one shape (a new file, or a hunk below line 1 of an existing one): the lines of

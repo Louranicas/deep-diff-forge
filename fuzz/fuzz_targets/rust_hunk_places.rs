@@ -55,11 +55,13 @@
 //    false, and with its old number false; each in both orders. The construct is found
 //    every time: Git obeys neither number, so each is a hint, and a hunk with no old line
 //    counts as an earlier hunk too.
-// 7. THE END OF A SIDE (the review's `cutpair.patch`). The one form that is read at the end
-//    of a side, a method's name with `::` after it (`.unwrap::`, `.expect::<`: only generic
-//    arguments and the call can follow), cut there as two hunks with context between them,
-//    with numbers the input picks (nothing says they touch) and in either order: the panic
-//    path is reported.
+// 7. NO FORM IS READ AT THE END OF A SIDE (the review's `cutpair.patch`; round 17 of Vesper's
+//    review, VD3R17-M-1). A method call with generic arguments cut after its `::` or its
+//    `<` (`.unwrap::`, `.expect::<`: the last form that rounds 15 to 17 read at the end of a
+//    side, and in a macro that takes any tokens it goes on as anything), as two hunks with
+//    context between them, in either order: with numbers the input picks among those that do
+//    not say the two touch, no panic path is reported; with the second's old number true,
+//    the join reads it and it is. (Until round 18 it was reported both ways.)
 // 9. WHAT A SIDE ENDS OR BEGINS WITH IS NO ITEM WHEN IT CAN GO ON AS SOMETHING ELSE (round
 //    15 of Vesper's review, VD3R15-M-1; round 16, VD3R16-M-1; ninth independent review,
 //    IR9-M-2 and IR9-L-5). A line of honest code as a one-line hunk, the shape of a one-line
@@ -73,7 +75,9 @@
 //    on `#[rstest` or `#[tokio::` (which go on as `::fixture]` and `main]`) is no removed
 //    test. (Round 15 read a bare name at the end of a side and `expect(` at its beginning;
 //    round 16 read `Command::`, `assert!(true`, `todo!`, `#[ignore` and the old side's
-//    forms at the end.)
+//    forms at the end; round 17 `.unwrap::`, which the reviewers' shapes here break: a
+//    macro's token tree, `value.unwrap::` going on as `NOT_A_CALL`, and a range,
+//    `0..unwrap::` going on as `<u8>()`, a free function.)
 // 10. NO HUNK WITHOUT OLD LINES PARTS TWO THAT TOUCH (eighth independent review, IR8-M-1).
 //    A construct that only a join reads, in two hunks that have old lines and whose OLD
 //    numbers say they touch (the first ends on the first half as a line of context, the
@@ -105,6 +109,19 @@
 //    says falsely that it begins at the line where the two touch, or that it ends before
 //    it: the construct is found. (Written before them, or between them when it claims the
 //    beginning, it takes the place: the declared way to part two hunks.)
+// 16. A SIDE'S LAST LINE, CUT ANYWHERE, ADDS NOTHING (round 18: a hunk side is read as text
+//    that ends there; nothing is inferred from how it ends). A line, from a list of every
+//    form some round read at the end of a side written out whole (with a continuation that
+//    makes it the construct, and one that makes it something else), and the input's own
+//    first line, is the last added line of a hunk, whole and cut: every cut of the listed
+//    line, and one cut of the input's line at a place the input picks. A cut is made between
+//    two tokens, outside every string and comment of every reading (the code view of the
+//    cut line is the start of the code view of the whole line, from code, from inside a
+//    comment, a string and a raw string, and as release 0.8.3 reads it, and the cut line
+//    carries nothing over its end). What the reader of tokens reports for the cut line
+//    (its eight signals) is reported for the whole line, on the same line: what the side
+//    does not show can only add to what it does. (A cut inside a name makes another word,
+//    `Result::unwrap_or` cut to `Result::unwrap`, and is no cut here.)
 // 12. A SHEBANG ON EITHER SIDE OF ANY HUNK NAMES THE LANGUAGE (IR8-L-5). The script of rule
 //    8 with its shebang on a removed first line only, and on an added first line only,
 //    under numbers the input picks; and with a second hunk in its section, before or after
@@ -501,10 +518,16 @@ const JOINED: &[(&str, &str, &str)] = &[
         "more\"; x.unwrap(); // \"",
         "panic_path_added",
     ),
+    // `ignore(…)` as an attribute of its own (tenth independent review, IR10-M-1): the lint
+    // `ill_formed_attribute_input` denies it by default, and a crate that allows it skips
+    // the test. Cut before its `ignore`, as the bare one above: rules 10 and 15 show the
+    // first half as context, and a skip is a change only when a token from its `#` to its
+    // `ignore` is on a changed line.
+    ("#[cfg_attr(miri,", "ignore(flaky))]", "test_skipped"),
 ];
 
-/// Constructs cut after the one form that is read at the end of a side: every continuation
-/// the grammar allows is the construct.
+/// Method calls with generic arguments cut after the form that rounds 15 to 17 read at the end
+/// of a side: found by a join, and not at the edge.
 const EDGED: &[(&str, &str, &str)] = &[
     ("    let v = x.unwrap::", "    <u8>();", "panic_path_added"),
     ("    let v = x.unwrap ::<", "    u8>();", "panic_path_added"),
@@ -548,6 +571,44 @@ const HONEST: &[&str] = &[
     "#[cfg_attr(miri, ignore",
     " * The fast path is still a todo!",
     "// not yet: unimplemented!",
+    // round 17 of Vesper's review, VD3R17-M-1: inside `discard! { … }`, which takes any tokens
+    "        value.unwrap::",
+    "        value.expect::<",
+    // the tenth independent review, IR10-L-3: a range whose end calls a free function
+    "    let r = 0..unwrap::",
+];
+
+/// Rule 16: every form some round read at the end of a side, written out whole, with a
+/// continuation that makes it the construct and one that makes it something else.
+const CUT_LINES: &[&str] = &[
+    "    let v = opt.unwrap::<u8>();",
+    "    let v = make()?.expect :: < 'static > (\"why\");",
+    "        value.unwrap:: NOT_A_CALL",
+    "    let r = 0..unwrap::<u8>();",
+    "    let c = Command::new(\"sh\").status();",
+    "const X: u8 = Command::VERSION;",
+    "    let id = std::process::id();",
+    "    let s = TcpStream::connect(a);",
+    "    let v = UdpSocket :: DEFAULT;",
+    "    assert!(true && long(a) > limit);",
+    "    assert_eq!(true, true, \"m\");",
+    "    debug_assert![true == likely(true)];",
+    "    todo!(); // the fast path is still a todo!",
+    "    unimplemented ! { }",
+    "#[cfg_attr(miri, ignore)] fn t() {}",
+    "#[cfg_attr(miri, ignore::case)] fn t() {}",
+    "#[cfg_attr(all(), ignore(flaky))] fn t() {}",
+    "#[ignore(not_ready)] fn t() {}",
+    "#[ignore::case] fn t() {}",
+    "#![ignore] fn t() {}",
+    "#[allow(dead_code)] fn t() {}",
+    "#[allow::this] fn t() {}",
+    "#[test] fn t() {}",
+    "#[tokio::main] async fn m() {}",
+    "#[rstest::fixture] fn f() {}",
+    "    let s = <std::net::TcpStream>::connect(a);",
+    "    return <Command>::new(\"true\").status();",
+    "    let v = it.map(Result::<u8, E>::unwrap);",
 ];
 
 /// Honest forms over two lines, as rustfmt writes them, each the two changed lines of a
@@ -627,35 +688,124 @@ fn hinted_joins_are_read(choice: &[u8]) {
 }
 
 /// Rule 7.
-fn edges_are_read(choice: &[u8]) {
+fn no_form_is_read_at_an_edge(choice: &[u8]) {
     let (first, second, signal) = EDGED[usize::from(choice[0]) % EDGED.len()];
-    let number = |byte: u8, least: usize| least + usize::from(byte);
+    // the first hunk covers old line `old` and new lines `new` and `new + 1`
+    let (old, new) = (2 + usize::from(choice[1]), 1 + usize::from(choice[2]));
     let one = hunk(
-        &format!(
-            "@@ -{},1 +{},2 @@",
-            number(choice[1], 2),
-            number(choice[2], 1)
-        ),
+        &format!("@@ -{old},1 +{new},2 @@"),
         &[(' ', "fn above() {}"), ('+', first)],
     );
-    let two = hunk(
-        &format!(
-            "@@ -{},1 +{},2 @@",
-            number(choice[3], 2),
-            number(choice[5], 1)
-        ),
-        &[('+', second), (' ', "fn below() {}")],
-    );
-    let patch = if choice[4] & 1 == 0 {
-        format!("{one}{two}")
-    } else {
-        format!("{two}{one}")
+    // the second: numbers that say nothing about the first (neither old position touches,
+    // before or after, nor either new one), or a true old number
+    let two = |old: usize, new: usize| {
+        hunk(
+            &format!("@@ -{old},1 +{new},2 @@"),
+            &[('+', second), (' ', "fn below() {}")],
+        )
     };
-    let file = parsed(&change(&patch)).expect("two hunks are a patch");
-    assert!(
-        has(&file, signal),
-        "{signal} of {first:?} cut from {second:?} is not found at the edge: {patch:?}"
+    let apart = two(
+        old + 2 + usize::from(choice[3]),
+        new + 3 + usize::from(choice[5]),
     );
+    let joined = two(old + 1, new + 3 + usize::from(choice[5]));
+    for (what, two, read) in [
+        ("apart", apart, false),
+        ("joined by the old number", joined, true),
+    ] {
+        let patch = if choice[4] & 1 == 0 {
+            format!("{one}{two}")
+        } else {
+            format!("{two}{one}")
+        };
+        let file = parsed(&change(&patch)).expect("two hunks are a patch");
+        assert_eq!(
+            has(&file, signal),
+            read,
+            "{signal} of {first:?} cut from {second:?}, {what}: {patch:?}"
+        );
+    }
+}
+
+/// Whether `at` is a place to cut `line` for rule 16: between two characters that are not both
+/// of a name, outside every string and comment of every reading, with nothing carried over the
+/// end of the cut line.
+fn a_cut_in_code(line: &str, at: usize) -> bool {
+    let word = |c: char| c.is_alphanumeric() || c == '_' || !c.is_ascii();
+    if at == 0 || at >= line.len() || !line.is_char_boundary(at) {
+        return false;
+    }
+    let (cut, rest) = line.split_at(at);
+    if cut.chars().next_back().is_some_and(word) && rest.chars().next().is_some_and(word) {
+        return false;
+    }
+    let agrees = |whole: &[String], part: &[String]| {
+        whole[0].as_bytes().get(..at) == Some(part[0].as_bytes())
+    };
+    [
+        RustStart::Code,
+        RustStart::Comment,
+        RustStart::Str,
+        RustStart::RawStr(1),
+        RustStart::RawStr(2),
+        RustStart::RawStr(3),
+        RustStart::RawStr(4),
+    ]
+    .into_iter()
+    .all(|start| agrees(&rust_views(&[line], start), &rust_views(&[cut], start)))
+        && agrees(&rust_legacy_views(&[line]), &rust_legacy_views(&[cut]))
+        && !rust_side(&[cut], RustStart::Code).open_over_lines
+}
+
+/// Rule 16: `own` are the input's lines.
+fn a_cut_last_line_adds_nothing(choice: &[u8], own: &[&str]) {
+    const READ: [&str; 8] = [
+        "process_spawn",
+        "network_fetch",
+        "check_suppressed",
+        "test_removed",
+        "test_skipped",
+        "trivial_assert",
+        "stub_added",
+        "panic_path_added",
+    ];
+    let at = 2 + usize::from(choice[1]);
+    let read = |line: &str| {
+        let body = hunk(
+            &format!("@@ -{at},1 +{at},2 @@"),
+            &[(' ', "fn above() {}"), ('+', line)],
+        );
+        parsed(&change(&body)).map(|file| {
+            places(&file)
+                .into_iter()
+                .filter(|(signal, _, _)| READ.contains(signal))
+                .collect::<BTreeSet<_>>()
+        })
+    };
+    let listed = CUT_LINES[usize::from(choice[0]) % CUT_LINES.len()];
+    let mut lines: Vec<(&str, Vec<usize>)> = vec![(listed, (1..listed.len()).collect())];
+    if let Some(line) = own.first().copied().filter(|line| line.len() > 1) {
+        lines.push((line, vec![1 + usize::from(choice[5]) % (line.len() - 1)]));
+    }
+    for (line, cuts) in lines {
+        let Some(whole) = read(line) else {
+            continue;
+        };
+        for cut in cuts {
+            if !a_cut_in_code(line, cut) {
+                continue;
+            }
+            let Some(part) = read(&line[..cut]) else {
+                continue;
+            };
+            assert!(
+                part.is_subset(&whole),
+                "the last line {line:?} cut at {cut} ({:?}) reports {:?} that the whole line does not",
+                &line[..cut],
+                part.difference(&whole).collect::<Vec<_>>()
+            );
+        }
+    }
 }
 
 /// Rule 10.
@@ -992,7 +1142,8 @@ fuzz_target!(|data: &[u8]| {
     }
 
     hinted_joins_are_read(choice);
-    edges_are_read(choice);
+    no_form_is_read_at_an_edge(choice);
+    a_cut_last_line_adds_nothing(choice, &own);
     honest_lines_are_no_items(choice);
     no_number_hides_a_script(choice, &own);
     no_hunk_without_old_lines_parts_two_that_touch(choice);

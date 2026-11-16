@@ -60,8 +60,9 @@ era) no longer holds. How the standard is enforced today:
   lines, and a raw string's text may hold quotes. Of its 18 seeds the 8 new ones are those
   rules': on the sources of `87d1afd`, each rule run alone, the join rule and the edge
   rule fail on every seed, the script rule on its two seeds, and the raw-string seed fails
-  the older rules. Since round 16 the edge rule cuts only where what a side ends on is
-  evidence by itself (`todo!`, `#[ignore`, `Command::`), and a ninth rule holds the other
+  the older rules. In round 16 the edge rule cut only where what a side ended on was
+  taken for evidence by itself (`todo!`, `#[ignore`, `Command::`; so it was said then:
+  since round 18 nothing is read at the end of a side), and a ninth rule holds the other
   direction: a line of honest code as a one-line hunk (a return type named `Command`, a
   field named `expect`, a variable named `todo`, a call of a function named `expect`)
   reports none of the signals whose constructs its last or first word begins. Its 20 seeds
@@ -95,7 +96,24 @@ era) no longer holds. How the standard is enforced today:
   falsely claims the place where two hunks touch parts nothing when it is written after
   them. `evidence_scan` also holds what a scan keeps in memory: the readings alive at one
   moment never hold more lines than the file has (a unit test in the graph crate holds
-  the exact figure: one reading of the longest text).
+  the exact figure: one reading of the longest text; it counts the lines of the views a
+  reading holds, not memory, and the README's memory figures are measured, not held by
+  it). In round 18 no form is read at the end of a side (a hunk side is read as text that
+  ends there; nothing is inferred from how it ends: in a macro that takes any tokens
+  `.unwrap::` goes on as anything, and after a range `unwrap` is a free function), and
+  `rust_hunk_places` follows: its edge rule (7) is turned round, a method call with
+  generic arguments cut after its `::` or `<` is not found when the numbers say nothing
+  and is found by the join when the old number is true; its rule for honest ends (9) has
+  the reviewers' shapes (`value.unwrap::` and `value.expect::<` in a macro's braces,
+  `0..unwrap::`); a new rule (16) puts a line as a side's last line whole and cut between
+  any two of its tokens outside every string and comment of every reading (every cut of a
+  line from a list of every form some round read at an edge, written out whole, and one
+  cut of the input's own first line) and requires that the cut line reports nothing of
+  the reader's eight signals that the whole line does not; and its joined constructs have
+  `ignore(…)` in a `cfg_attr` list. `rust_tokens` has `#[ignore(…)]` and `ignore(…)` in a
+  `cfg_attr` list among the constructs of its rule 5. The graph crate's tests hold that no
+  form of the 52 that rounds 13 to 17 read at an edge gives an item there, on either side,
+  spaced or a token a line, in a macro's braces or not.
 - **Sandbox refusal controls:** the rootless-Podman planted-breach suite
   (`crates/deep-diff-forge-cli/tests/council_sandbox.rs`, 12 probes) runs on
   every pull request.
@@ -109,9 +127,9 @@ era) no longer holds. How the standard is enforced today:
   `fuzz_target.sh` lists targets with a TOML parser and fuzzes a new private
   corpus each run, under a root it makes if missing.
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
-  `fixtures/eval` (52 cases, measured 2026-11-15) must score at least its floors,
-  which are the measured values: ranking pairs 12/15, evidence precision 166/188,
-  evidence recall 166/244, findings 33/33. Any undeclared miss fails. The 103
+  `fixtures/eval` (53 cases, measured 2026-11-16) must score at least its floors,
+  which are the measured values: ranking pairs 12/15, evidence precision 171/194,
+  evidence recall 171/252, findings 33/33. Any undeclared miss fails. The 107
   declared misses (`known_miss`, `known_false_positive`) count as wrong in their
   metric rather than being excluded, and each fails once the engine gets it
   right. Planted controls prove a wrong label fails with exit 7, a changed file,

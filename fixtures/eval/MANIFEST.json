@@ -2116,7 +2116,7 @@
       "id": "evidence/independent-review-9-20261115",
       "kind": "evidence",
       "patch": "evidence/independent-review-9-20261115.patch",
-      "origin": "internal: round 16 of Vesper's review (docs/reviews/vesper-v3-round16-report-20261115.md: VD3R16-M-1, VD3R16-L-1) and a ninth independent review by a Claude subagent (docs/reviews/claude-independent-review-9-20261115.md: IR9-M-1, IR9-M-2, IR9-L-1, IR9-L-2, IR9-L-4, IR9-L-5), 2026-11-15, each reproduced before it was counted, with `git apply` 2.56.0 and rustc 1.99.1 where the finding rests on them. Expected: the released name as the last name of a path in angle brackets, `<std::net::TcpStream>::connect`, `<std::net::UdpSocket>::bind`, `<p::Command>::new`, `<self::UdpSocket>::bind` (src/q.rs: the same paths to the compiler, which no version reported); and a call cut after `.unwrap::` by two hunks that nothing joins (src/turbo.rs): the one form that is read at the end of a side, since after a method's name and `::` only generic arguments and the call can follow. Hard negatives, each the honest end of a hunk that round 16 reported: a constant `Command::` whose name `VERSION;` stands on the next line (src/x.rs: Vesper's patch as `git diff -U0` wrote it, a `process_spawn` in a file that spawns nothing); rustfmt's layout of an assertion whose long condition begins with `true` (src/g.rs: `assert!(` and `true` changed, the line `&& ...` not in the hunk); a line of a block comment that ends on `todo!` (src/prose.rs); a removed `#[rstest` whose next line is `::fixture]` (src/attr.rs); `#[cfg_attr(miri, ignore` whose next line is `::case)]`, an attribute of a crate named `ignore` (src/alias.rs: read as a skip from round 13 to round 16); `#[allow` whose next line is `::this]` (src/lint.rs). Declared misses that need a writer who sets out to: a conditional skip cut after its `ignore` behind two false numbers (src/cutskip.rs); the spellings `<(Command)>::new`, `<Command<>>::new`, `<(TcpStream)>::connect` and `<<Command as T>::Me>::new` (src/spelled.rs: the same types to the compiler, not read); two hunks at old position 0, which `git apply --unidiff-zero` stacks at line 1, the one written later above the other, so that `opt.unwrap` and `()` stand together (src/twotop.rs), and one at old position 0 with one at old position 1 under it, every number true (src/topone.rs): each such hunk is the top of its file to the reader and is joined to nothing (IR9-M-1; plain `git apply` refuses both patches); a hunk at old position 1 whose added line `// */ pub fn f() { ... } /*` is code behind the `/*` that the hunk above it ends on, and a line comment to every reading from the start of a file (src/topcomment.rs: the same root, applied with `git apply --unidiff-zero` and compiled; release 0.8.3 misses it too); and the mirror of the declared decoy, a hunk with lines that says falsely that it BEGINS at the line where two hunks touch, written between them (src/mirror.rs, IR9-L-4). Declared false positives of an ordinary `git diff -U0` (IR9-L-1): a hunk of added lines is read as going on from the last hunk before it that ends its file, which is where plain `git apply` puts it, and a construct can form across the two that stands in neither place: `assert!(` changed on line 10 and `true,` added on line 41 as an argument of another call (src/far.rs), and a changed `} catch (e) {` with a hunk of added lines far below it that begins with `}` (src/far.js). On the `-U0` history of two repositories (10,333 Rust hunks in sections of two or more) the joins add no label and take none",
+      "origin": "internal: round 16 of Vesper's review (docs/reviews/vesper-v3-round16-report-20261115.md: VD3R16-M-1, VD3R16-L-1) and a ninth independent review by a Claude subagent (docs/reviews/claude-independent-review-9-20261115.md: IR9-M-1, IR9-M-2, IR9-L-1, IR9-L-2, IR9-L-4, IR9-L-5), 2026-11-15, each reproduced before it was counted, with `git apply` 2.56.0 and rustc 1.99.1 where the finding rests on them. Expected: the released name as the last name of a path in angle brackets, `<std::net::TcpStream>::connect`, `<std::net::UdpSocket>::bind`, `<p::Command>::new`, `<self::UdpSocket>::bind` (src/q.rs: the same paths to the compiler, which no version reported); and a call cut after `.unwrap::` by two hunks that nothing joins (src/turbo.rs): the one form that is read at the end of a side, since after a method's name and `::` only generic arguments and the call can follow. Hard negatives, each the honest end of a hunk that round 16 reported: a constant `Command::` whose name `VERSION;` stands on the next line (src/x.rs: Vesper's patch as `git diff -U0` wrote it, a `process_spawn` in a file that spawns nothing); rustfmt's layout of an assertion whose long condition begins with `true` (src/g.rs: `assert!(` and `true` changed, the line `&& ...` not in the hunk); a line of a block comment that ends on `todo!` (src/prose.rs); a removed `#[rstest` whose next line is `::fixture]` (src/attr.rs); `#[cfg_attr(miri, ignore` whose next line is `::case)]`, an attribute of a crate named `ignore` (src/alias.rs: read as a skip from round 13 to round 16); `#[allow` whose next line is `::this]` (src/lint.rs). Declared misses that need a writer who sets out to: a conditional skip cut after its `ignore` behind two false numbers (src/cutskip.rs); the spellings `<(Command)>::new`, `<Command<>>::new`, `<(TcpStream)>::connect` and `<<Command as T>::Me>::new` (src/spelled.rs: the same types to the compiler, not read); two hunks at old position 0, which `git apply --unidiff-zero` stacks at line 1, the one written later above the other, so that `opt.unwrap` and `()` stand together (src/twotop.rs), and one at old position 0 with one at old position 1 under it, every number true (src/topone.rs): each such hunk is the top of its file to the reader and is joined to nothing (IR9-M-1; plain `git apply` refuses both patches); a hunk at old position 1 whose added line `// */ pub fn f() { ... } /*` is code behind the `/*` that the hunk above it ends on, and a line comment to every reading from the start of a file (src/topcomment.rs: the same root, applied with `git apply --unidiff-zero` and compiled; release 0.8.3 misses it too); and the mirror of the declared decoy, a hunk with lines that says falsely that it BEGINS at the line where two hunks touch, written between them (src/mirror.rs, IR9-L-4). Declared false positives of an ordinary `git diff -U0` (IR9-L-1): a hunk of added lines is read as going on from the last hunk before it that ends its file, which is where plain `git apply` puts it, and a construct can form across the two that stands in neither place: `assert!(` changed on line 10 and `true,` added on line 41 as an argument of another call (src/far.rs), and a changed `} catch (e) {` with a hunk of added lines far below it that begins with `}` (src/far.js). On the `-U0` history of two repositories (10,333 Rust hunks in sections of two or more) the joins add no label and take none. Changed in round 18 (2026-11-16), after round 17 of Vesper's review (VD3R17-M-1) and the tenth independent review (IR10-L-3): no form is read at the end of a hunk side (a hunk side is read as text that ends there; nothing is inferred from how it ends), because inside a macro that takes any tokens `value.unwrap::` goes on as `NOT_A_CALL` and the program compiles, and after a range `unwrap::` is a free function. So the call cut after `.unwrap::` behind two false numbers (src/turbo.rs) is a declared miss that needs a writer who sets out to; one true number of the second hunk still joins the two and finds it",
       "expect": [
         {
           "path": "src/q.rs",
@@ -2141,15 +2141,15 @@
           "signal": "network_fetch",
           "side": "new",
           "line": 5
-        },
+        }
+      ],
+      "known_miss": [
         {
           "path": "src/turbo.rs",
           "signal": "panic_path_added",
           "side": "new",
           "line": 2
-        }
-      ],
-      "known_miss": [
+        },
         {
           "path": "src/cutskip.rs",
           "signal": "test_skipped",
@@ -2220,6 +2220,73 @@
         }
       ],
       "sha256": "df2854112ad38c86d5178bb4cf11fc833ea34bf87e5f5a652b5526dca3ab5493"
+    },
+    {
+      "id": "evidence/independent-review-10-20261116",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-10-20261116.patch",
+      "origin": "internal: round 17 of Vesper's review (docs/reviews/vesper-v3-round17-report-20261116.md: VD3R17-M-1) and a tenth independent review by a Claude subagent (docs/reviews/claude-independent-review-10-20261116.md: IR10-M-1, IR10-L-1, IR10-L-2, IR10-L-3, and its note on the bare `ignore`), 2026-11-16, each reproduced before it was counted, with `git apply` 2.56.1 and rustc 1.99.1 where the finding rests on them. Expected: `#[ignore(not_ready)]` and `#[cfg_attr(all(), ignore(flaky))]` (tests/ign.rs, the review's `ignparen.patch`: the lint `ill_formed_attribute_input` is deny by default and the patch's `Cargo.toml` allows it, and then both tests compile and are ignored; no version read either); the released path `<Command>::new` after `return`, `match`, `for _ in` and `break 'l` (src/kw.rs, the review's `kw.patch`: the program compiles and spawns `true`; no version read them, as the bracketed spelling was read only after a mark). Hard negatives, the last form that rounds 15 to 17 read at the end of a hunk side: `value.unwrap::` inside a macro that takes any tokens, where it goes on as `NOT_A_CALL` and the program compiles and calls nothing (src/macro.rs: Vesper's `macro-token-tree.patch` as `git diff -U0` wrote it), the same with `.expect::<` (src/macro2.rs), and `let r = 0..unwrap::` followed by `<u8>();`, a range whose end calls a free function (src/range.rs: the review's `range-u0.patch`). Rounds 16 and 17 reported a `panic_path_added` on each. Declared misses: the bare `ignore` that a `cfg_attr` list leaves open at the end of a hunk side (tests/slow.rs, the review's `cfgu0.patch`: rustfmt writes a long condition over lines and `ignore` alone above `)]`, so an ordinary `git diff -U0` of two rustfmt-clean files ends there; it can go on as `ignore::case`, and rounds 13 to 16 read it as a skip: ordinary, by the coordinator's ruling); a created file written as two hunks at old position 0, which `git apply --unidiff-zero` stacks the later one above the earlier, so that `opt.unwrap` and `()` stand together (src/newtwotop.rs, the review's `newtwotop.patch`; plain `git apply` refuses it). Declared false positive: the same two hunks in the other order (src/newtop.rs, `newtop-natural.patch`): the reader joins the hunks of a created file in the order written and reports the call, which Git's result does not hold (IR10-L-1, a writer's)",
+      "expect": [
+        {
+          "path": "tests/ign.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/ign.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 8
+        },
+        {
+          "path": "src/kw.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 11
+        },
+        {
+          "path": "src/kw.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 21
+        },
+        {
+          "path": "src/kw.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 31
+        },
+        {
+          "path": "src/kw.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 41
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "tests/slow.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/newtwotop.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/newtop.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "9f9160546e2ecb53d4d5e9cd20b41f586f46a72088b089d363093d0135e0b980"
     }
   ]
 }

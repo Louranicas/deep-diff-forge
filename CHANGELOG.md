@@ -535,6 +535,143 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     (VD3R12-L-1, IR5-L-2), and the comment on `Found` names both kinds of item that can
     come late (IR5-L-3).
 
+- **Round 17 of Vesper's review (NO-GO on one medium) and a tenth independent review
+  (GO-WITH-FIXES, nothing high): no form is read at the end of a hunk side.** Both
+  reviews read the round 17 commit (`aa4acb7`). The tenth found it never lower than
+  release 0.8.3 or round 14 on every set it made (40,000 real `git diff --no-index`
+  patches, 46,000 generated, the `-U0`/`-U1`/`-U3` history of two repositories) beside
+  the declared `ignore`, and no edge item on 19.1 million lines of real Rust as one-line
+  hunks. Each broke the last edge form all the same.
+  - *No form is read at the end of a side (VD3R17-M-1, IR10-L-3; the coordinator's
+    ruling).* Round 17 kept one form, a method's name with `::` after it (`.unwrap::`,
+    `.expect::`, also with the `<`), because outside a macro only generic arguments and
+    the call can follow. Vesper compiled `macro_rules! discard { ($($tokens:tt)*) => {}; }`
+    and `discard! { value.unwrap:: NOT_A_CALL }`: it runs and calls nothing, and the
+    `git diff -U0` of a change from `value.other::` ends its hunk on `value.unwrap::`,
+    which round 17 reported as a `panic_path_added`. The tenth reviewer wrote
+    `let r = 1..unwrap::` and `<u8>();` with a free function named `unwrap`: after a range
+    the `.` is the second of `..`. Rounds 15, 16 and 17 each kept forms read at the end of
+    a side and each was broken by grammar (a path, an assertion, a sentence, a macro, a
+    range). **The rule now, in one sentence: a hunk side is read as text that ends there;
+    nothing is inferred from how it ends.** `waiting` and the `end` flag of the reader are
+    gone. A construct cut by two hunks is found by a join (one true number of the second
+    hunk, the old or the new) or where one half holds it whole; behind two false numbers
+    it is a declared miss that takes a writer. Of the 265 cuts of 28 constructs written as
+    two hunks, all are found with one true number, and 176 with none (round 17: 178; the
+    two are the cuts after `.unwrap ::` and `.unwrap :: <`). The ninth review's
+    `turbo.rs` in the corpus is a declared miss now. Tests: a property test over every
+    form that rounds 13 to 17 read at an edge (52, listed in `rust_tokens`'s tests: the
+    `cfg_attr` list left open on `ignore`; round 15's bare names, `X::unwrap`, `todo`,
+    `assert`, `assert_eq!(true,`, `Command`, `TcpStream`, `UdpSocket`, `reqwest`, `ureq`;
+    rounds 15 and 16's `todo!`, `assert!(true`, `assert_eq!(true, true`, `#[ignore`,
+    `#[allow`, `Command::`, `process::`, `TcpStream::`, `UdpSocket::` and the old side's
+    `#[test`, `#[rstest`, `#[tokio`, `#[tokio::`, `#[tokio::test`; round 17's `.unwrap::`,
+    `.unwrap::<`, `.expect::`, `.expect::<`; the reviewers' `value.unwrap::` and
+    `0..unwrap::`), each at the end of a new side and of an old side, after context and
+    after a changed line, spaced and a token a line, in a macro's braces and not: no
+    item; the method call with generic arguments read by the rule for the whole over any
+    lines (336 continuations) and not before its call; Vesper's `macro-token-tree.patch`
+    and the review's `range-u0.patch` at no signal in the graph crate's tests and as hard
+    negatives in the corpus. The whole rule still reads `0..unwrap::<u8>()` as a method
+    call when the side shows the call (round 14 did too; rustfmt writes it on one line):
+    a writer's false positive, not changed here.
+  - *The bare `ignore` at the end of a side (the ruling of round 17, kept; its statement
+    corrected).* A `cfg_attr` list that a side leaves open on `ignore` is still not a
+    skip (it can go on as `ignore::case`). Round 17 framed this as three of its own
+    patches; the tenth review showed it is **ordinary**: rustfmt writes a long condition
+    over lines and `ignore` alone on the line above `)]`, so a `git diff -U0` of two
+    rustfmt-clean files ends there (`cfgu0.patch`; rounds 14 and 16 reported the skip,
+    round 17 and release 0.8.3 do not). The README, the head of `rust_tokens` and the
+    corpus (`tests/slow.rs`, a declared miss) say so.
+  - *`#[ignore(…)]` is a skip (IR10-M-1).* The round 17 entry below says "`#[ignore(…)]`
+    is refused by the compiler and is not a form of the attribute", and the doc comment of
+    `waiting` said the same. **That is false:** rustc 1.99.1 reports `#[ignore(reason)]`
+    through the lint `ill_formed_attribute_input` ("this was previously accepted by the
+    compiler"), deny by default, and a lint can be allowed (`[lints.rust]
+    ill_formed_attribute_input = "allow"` in `Cargo.toml`, a line no Rust rule reads);
+    then the test compiles and does not run (checked again here: `#[ignore(not_ready)]`,
+    `#[ignore()]`, `#[cfg_attr(all(), ignore(x))]`, `#![ignore(x)]` inside a test's body
+    and `cfg_attr` within `cfg_attr`, each `ignored`). `#[ignore(`, `#![ignore(` and
+    `ignore(` as an attribute of its own in a `cfg_attr` list are read as `test_skipped`
+    on the whole text, at any spacing the reader handles (never at an edge). No version
+    read them; release 0.8.3 neither. `#[ignore[x]]` is a hard error and is not read.
+  - *A created file in several hunks at old position 0 (IR10-L-1; declared).* Plain
+    `git apply` refuses a created file with a second hunk at `-0,0`; `git apply
+    --unidiff-zero` applies it and puts the later hunk at line 1, above the earlier, as for
+    an existing file, while the reader joins a created file's hunks in the order written.
+    So `newtwotop.patch` (the call in Git's result) is a declared miss and
+    `newtop-natural.patch` (no call in Git's result; rounds 14 to 17 report one) a declared
+    false positive, both writers'. Declared with IR9-M-1 in the README, the docs of
+    `placed_at_top` (whose "and no other" was false for this applier) and `joined_texts`,
+    a test and the corpus. No new join family.
+  - *Bracketed released paths after a keyword (IR10-L-2).* `<Command>::new(…)` and the
+    other bracketed spellings are read where the `<` follows a keyword after which an
+    expression begins: `return`, `match`, `in` (of `for … in`), `break` with or without
+    its label (`break 'l <Command>::new(…)`), `yield`, `if`, `while` (compiled and run
+    here: each spawns). Not after `else` (only `{` or `if` can follow it), not after any
+    other name (`a <Command> ::new(x)`, `x.await <…`, a label alone). The review's
+    `kw.patch` has five `process_spawn` items, the four keywords and the control after `=`
+    (round 17: the control only); `kw-u3.patch` and `kw-u0.patch` score 6 (every version
+    before: 2). The whole rule reads `0..unwrap::<u8>()` as a method call (above).
+  - *Documents (IR10-L-4).* The head of `rust_tokens` (its list of declared limits), the
+    head of `evidence`, `docs/TESTING_GOLD_STANDARD.md`, the README and the docs of
+    `read_new`, `read_old`, `Skips`, `placed_at_top` and `joined_texts` say the one rule;
+    the sentences that named an edge form as read are gone or marked as history. The
+    memory test is described as what it is: it counts the lines of the views a reading
+    holds, not memory (the README's memory figures are measured, not held by it).
+  - *Fuzz.* `rust_hunk_places` (43 seeds; 5 new, printable ASCII): rule 7 is turned round
+    (a method call with generic arguments cut after its `::` or `<` is not found when the
+    numbers say nothing,
+    and is found by the join when the old number is true); rule 9 has the reviewers'
+    shapes (`value.unwrap::`, `value.expect::<` in a macro's braces, `0..unwrap::`); new
+    rule 16: a side's last line, whole and cut between two tokens outside every string
+    and comment of every reading (every cut of a line from a list of every form some
+    round read at an edge written out whole, and one cut of the input's own first line),
+    and the cut line reports nothing of the reader's eight signals that the whole line
+    does not; the joined constructs have `ignore(…)` in a `cfg_attr` list. `rust_tokens`
+    has `#[ignore(…)]` and a `cfg_attr` `ignore(…)` among its constructs (one new seed).
+    No existing seed's bytes changed; the new seeds are printable ASCII.
+  - *Controls, comparisons, cost.* Each plant in a scratch clone with its own target
+    directory, against the graph crate's 239 tests (all pass unplanted; so do the corpus
+    test's 9): round 17's `.unwrap::` read at the end of a side again fails 4
+    (`no_form_is_read_at_the_end_of_a_side`, the method call over any lines, and the two
+    counts of cuts); round 16's `todo!` there 5; the bare `ignore` of a `cfg_attr` list left
+    open read as a skip again (rounds 13 to 16) 6; `#[ignore(` unread 2, and 4 of the corpus
+    test; `ignore(` in a `cfg_attr` list unread 2; no keyword before a bracketed path 1, any
+    name before it 2, the label of `break 'l` unread 1, `else` and `await` taken for such
+    keywords 1; a created file's later hunk at `-0,0` read as a top 2; the four changes of
+    the reader undone at once (the reading of `aa4acb7`) 8, and 4 of the corpus test. The
+    fuzz target `rust_hunk_places` built as a plain program and run over its 43 seeds, each
+    rule alone: with this round's reader no rule fails; with `aa4acb7`'s, rule 7 fails on
+    all 43, rule 16 on 5, rule 9 on 2 (the macro and the range) and rules 6, 10 and 15 on
+    3 (`ignore(…)` in a `cfg_attr` list); with the `.unwrap::` plant, rules 7, 16 and 9 as
+    for `aa4acb7` and no other. (That run found one of this round's joined constructs
+    written with its `ignore` on the line that rules 10 and 15 show as context, which is no
+    change to a skip; it is cut before its `ignore` now, as the bare one is.) On the final
+    binary, 6,059 patches (the 6,000 the rounds are measured on, round 17's own 33, the
+    tenth review's 12 reproductions, Vesper's, and this round's 13), score, signals and
+    items, plain and strict: against release 0.8.3 one patch lower, the second section for
+    one path (as before), and 2,518 with something gained; against round 14, six lower,
+    every one the bare `ignore` above (round 17's own `e5` and `skipend`, the ninth review's
+    case, `cfgu0.patch` and two copies of it, this round's own and the tenth review's case
+    in the corpus; strict adds the list of 32 of `bound-lang.patch`, as in rounds 16 and
+    17); against round 17, twelve lower, every one a `.unwrap::` or `.expect::` at the end
+    of a side (the eighth review's cuts `c03-cut07` and `c03-cut08`, the ninth review's
+    `turbo.rs`, the tenth review's `range-edge` and `range-u0` and its case in the corpus,
+    Vesper's `macro-token-tree`, and five of this round's own), and eleven with something
+    gained (`#[ignore(…)]`, the keywords). No refusal differs. Cost, the 51 inputs of round
+    16 (`--rank --json`, user and system seconds, the best of three, peak memory, one
+    process at a time, against round 17): 48.13 s in all for round 17 and 48.53 s now,
+    peak memory within 1 MiB on every input; one input looked 22 % slower (`short-frag`,
+    1.22 against 1.49 s) and three alternating runs gave 1.21 s each way; the slowest,
+    `items60-frag`, 4.41 against 4.50 s, 404 MiB each. (Measured on a build whose answers
+    are those of the final binary on all 6,059 patches; a second run on the final binary,
+    on a loaded machine, gave 50.60 against 51.51 s, peak memory within 2 MiB, and the best
+    of three alternating runs of its two slowest-looking inputs equal: `items60-frag` 4.45
+    against 4.41 s, `dquote-newfile-lines` 1.04 against 1.03 s.) Memory on the reviewer's
+    shapes (`--rank`): within 0.4 % of round 17 on every shape (43,000 touching hunks 280
+    MB; with 60-byte context lines 451 MB; 200,000 chained hunks 193 MB); within 1.6 % (at
+    most 1.3 MB) in the second run.
 - **Round 16 of Vesper's review (NO-GO on one medium) and a ninth independent review
   (GO-WITH-FIXES, nothing high): the end of a hunk side is read under one rule, and what
   the joins do not see is declared.** Both reviews read the round 16 commit (`4391c1e`) and

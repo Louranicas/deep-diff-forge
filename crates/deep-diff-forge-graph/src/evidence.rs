@@ -17,8 +17,8 @@
 //! names one path in more than one section**, which release 0.8.4 does and the release this
 //! branch stands on (0.8.3) does not: plain `git apply` applies two sections for one path to
 //! the same file, and a construct that one begins and the other ends is then read in two
-//! halves, as two files (seventh independent review, IR7-H-2; what the first half ends on is
-//! read only where it is evidence by itself, see `waiting` in the module `rust_tokens`).
+//! halves, as two files (seventh independent review, IR7-H-2; a hunk side is read as text
+//! that ends there, and nothing is inferred from how it ends: the module `rust_tokens`).
 //! This branch must not be merged before it stands on
 //! 0.8.4's refusal; the test `a_second_section_for_one_path_is_two_files_until_the_parser_refuses_it`
 //! pins today's answer and says what it must become.
@@ -1016,9 +1016,19 @@ fn signals_of(hits: &[Hit]) -> Vec<EvidenceSignal> {
 
 /// Whether `hunk` is at the beginning of its file however the patch is applied, `first` saying
 /// that it is the first hunk of its section. In a section that creates a file the first hunk
-/// is, whatever its header says, and no other (the file is empty until that hunk is applied).
+/// is, whatever its header says (the file is empty until that hunk is applied); the reader
+/// takes no other hunk of such a section for the top, and joins them in the order written.
 /// In any other section a hunk is when its OLD position is 0, or is 1 and the hunk holds an
 /// old line: that is the one thing plain `git apply` reads the old position for.
+///
+/// One applier puts another hunk of a created file at the top all the same: plain
+/// `git apply` refuses a created file with two hunks at `-0,0`, and `git apply
+/// --unidiff-zero` applies it and puts the later hunk at line 1, ABOVE the earlier one, as for
+/// an existing file (tenth independent review, IR10-L-1: `newtwotop.patch`, `()` written
+/// first and `opt.unwrap` second, gives a file that holds the call, and nothing reports it;
+/// `newtop-natural.patch`, the two the other way round, gives a file with no call, and the
+/// join in the order written reports one). Both are declared with the hunks at old position 0
+/// of an existing file, below: a writer's.
 ///
 /// Nothing else in a header says where a hunk goes. Git looks for the hunk's old lines,
 /// starting at the NEW position and going outward, and puts the hunk at the nearest place
@@ -1040,7 +1050,8 @@ fn signals_of(hits: &[Hit]) -> Vec<EvidenceSignal> {
 /// hunk at old position 1 under them. Each is read here as the top and joined to nothing,
 /// so a construct cut by two of them is not found, and a second one that stands under a
 /// comment the first leaves open is read from code. That is declared, not read (ninth
-/// independent review, IR9-M-1; a test pins it, with the Git runs).
+/// independent review, IR9-M-1; a test pins it, with the Git runs), and so is the same stack
+/// in a created file (IR10-L-1, above).
 ///
 /// Until 2026-11-14 a side counted as the top of its file when its own first line had the
 /// number 1, and for the new side that number is the `+N` of the header, which is the patch
@@ -1151,15 +1162,16 @@ fn texts(file: &ReviewFile) -> Vec<Text> {
 /// What this does not see, each of which takes a writer who sets out to:
 ///
 /// - two hunks that touch while neither position of the second says so. A construct cut in
-///   two by such a pair is read in two halves; what the first half ends on is the matter of
-///   the rule for the end of a side (`rust_tokens`), and a cut that no such form stands
-///   before is not found;
+///   two by such a pair is read in two halves, and a hunk side is read as text that ends
+///   there (`rust_tokens`): the construct is found only where one half holds it whole;
 /// - two hunks that touch by a number, when another hunk that has lines on that side says
 ///   falsely that it ends before the same line and is written first, or says falsely that
 ///   it begins at that line and is written between the two ([`hinted_joins`]). A hunk with
 ///   no line on the side cannot do that (until round 16 it could);
 /// - two or more hunks that are each the top of the file ([`placed_at_top`]), which
-///   `git apply --unidiff-zero` stacks at line 1;
+///   `git apply --unidiff-zero` stacks at line 1, and a created file written as several
+///   hunks at old position 0, which it stacks the same way while the reader joins them in
+///   the order written (IR10-L-1);
 /// - a hunk that an applier puts INSIDE the lines another hunk showed. A hunk's lines are
 ///   read as lines that stand together. `git apply --unidiff-zero` puts a hunk of added
 ///   lines at its new number (at line 1, if its old position is 0), and that can be between
@@ -2067,8 +2079,7 @@ fn view_matches(
     let views = &reading.lines;
     let next_on = |side: Side, at: usize| next_line_on(lines, views, side, at);
     let tokens = if language == Some(Language::Rust) {
-        // What a side ends on is read as the beginning of a construct, in every reading.
-        rust_tokens::read_hunk(lines, views, reading.old, reading.new, true)
+        rust_tokens::read_hunk(lines, views, reading.old, reading.new)
     } else {
         rust_tokens::HunkItems::default()
     };
@@ -4640,7 +4651,7 @@ mod tests {
             // and only that: the nested condition, the place of the condition, another
             // attribute's list, a longer name, what follows a nested list that has closed,
             // and an `ignore` that the side ends on (it can go on as `ignore::case`: read
-            // from round 13 to round 16, and no skip by the rule for the end of a side)
+            // from round 13 to round 16; a hunk side is read as text that ends there)
             ("a, cfg_attr(b, ignore", false),
             ("a, cfg_attr(b, ignore::case))]", false),
             ("all(), cfg_attr(ignore, allow(x)))]", false),
@@ -8303,16 +8314,18 @@ mod tests {
     ///   is found where one half holds a construct whole (the cut is outside it: `x.unwrap()`
     ///   and then `;`; `reqwest::` is the release's key by itself, `process::Command` is one
     ///   without `::new`, `::unwrap(x)` is a path call, `assert!(true,` is the assertion
-    ///   whatever message follows), or where the first half ends on the one form that is
-    ///   read at the end of a side (`rust_tokens`: `.unwrap::`, also with its `<`). That is
-    ///   178 of the 265, pinned here so that a form added or taken away shows (round 16 read
-    ///   more forms at the end of a side, and had 201). The other 87 are declared misses: a
+    ///   whatever message follows), and nowhere else: a hunk side is read as text that ends
+    ///   there, and nothing is inferred from how it ends. That is 176 of the 265, pinned
+    ///   here so that a form read at an edge shows (round 16 read forms at the end of a
+    ///   side and had 201; round 17 read one, a method's name and `::`, and had 178, the two
+    ///   more being the cuts after `.unwrap ::` and `.unwrap :: <`). The other 89 are
+    ///   declared misses: a
     ///   cut straight after or before the bare word (`x.` / `unwrap()`, `x.unwrap` / `()`,
     ///   `Command` / `::new`, `todo` / `!()`), after a path's `::` (`Command::` / `new`),
     ///   after a stub's `!`, inside an assertion before the comma or bracket that ends its
     ///   truth, between `#`, `#[` or the attribute's name and what follows, inside a
-    ///   `cfg_attr` list (also straight after its `ignore`), inside generic arguments, and a
-    ///   function passed as a value cut
+    ///   `cfg_attr` list (also straight after its `ignore`), after a method's name and its
+    ///   `::` or `::<`, inside generic arguments, and a function passed as a value cut
     ///   before its name (`Option::` / `unwrap`). A construct cut twice, its word alone in a
     ///   hunk of its own, is one too (the review's `alone.patch`).
     #[test]
@@ -8355,7 +8368,7 @@ mod tests {
                 found_apart += usize::from(has(&two(old + 50, new + 70), signal));
             }
         }
-        assert_eq!((cuts, found_apart), (265, 178));
+        assert_eq!((cuts, found_apart), (265, 176));
     }
 
     /// The joins of round 14, by round 14's rule as it was written then (a small copy, to
@@ -8588,6 +8601,11 @@ mod tests {
     ///   is held a second time, for each side it is on);
     /// - a hunk that stands in several texts, and a Rust fragment that is read from several
     ///   starts: still the longest text, once.
+    ///
+    /// It counts the lines of the code views a reading holds, not memory: what else a
+    /// reading might hold for a text (a copy of a view, a cache) is not counted here, and the
+    /// memory figures of the README are measured, not held by this test (tenth independent
+    /// review, its weak tests).
     #[test]
     fn a_scan_holds_one_reading_of_one_text_at_a_time() {
         let longest = |file: &ReviewFile| {
@@ -8689,6 +8707,9 @@ mod tests {
     ///   `opt.unwrap` and `()` stand together in the result, and nothing here reads them
     ///   together. A reading that did would be one more family of joins; it is declared
     ///   instead, as the hunk that an applier puts inside another is.
+    /// - **A created file in several hunks at old position 0** (tenth independent review,
+    ///   IR10-L-1): `--unidiff-zero` stacks them the same way, the later one above, where
+    ///   the reader joins a created file's hunks in the order written.
     /// - **The mirror of the declared decoy.** Two hunks touch by a true number, and a third
     ///   that has lines on that side says falsely that it BEGINS at the line where they
     ///   touch, written between them: the first goes before the first hunk of the patch
@@ -8737,6 +8758,27 @@ mod tests {
         // with its true numbers, and written after the two with its false ones: found
         assert_eq!(found(&mirror("@@ -7,2 +7,2 @@", [0, 1, 2])), assertion);
         assert_eq!(found(&mirror("@@ -4,2 +4,2 @@", [0, 2, 1])), assertion);
+        // a created file in several hunks at old position 0 (tenth independent review,
+        // IR10-L-1): `git apply --unidiff-zero` puts the later hunk ABOVE the earlier one
+        // (plain `git apply` refuses), and the reader joins them in the order written. So
+        // `newtwotop.patch` (Git's result holds `opt.unwrap` / `()`, compiles and panics) is
+        // a declared miss, and `newtop-natural.patch` (Git's result has no call) a declared
+        // false positive.
+        let created = |hunks: &str| {
+            parse(&format!(
+                "diff --git a/m.rs b/m.rs\nnew file mode 100644\n--- /dev/null\n+++ b/m.rs\n{hunks}"
+            ))
+            .unwrap()
+            .remove(0)
+        };
+        let newtwotop = created(
+            "@@ -0,0 +3,3 @@\n+    ()\n+}\n+fn main() { boom(None); }\n@@ -0,0 +1,2 @@\n+pub fn boom(opt: Option<u8>) -> u8 {\n+    opt.unwrap\n",
+        );
+        assert_eq!(found(&newtwotop), []);
+        let natural = created(
+            "@@ -0,0 +1,2 @@\n+pub fn boom(opt: Option<u8>) -> u8 {\n+    opt.unwrap\n@@ -0,0 +3,3 @@\n+    ()\n+}\n+fn main() { boom(None); }\n",
+        );
+        assert_eq!(found(&natural), [(S::PanicPathAdded, Basis::Hunk, 2)]);
     }
 
     /// The same as a property (IR8-M-1): over generated sections of two to six hunks with
@@ -8866,22 +8908,27 @@ mod tests {
     /// declared limit `cutpair.patch`: two hunks that touch while the second's position says
     /// they do not; plain `git apply --check -v`: rc 0 and no offset line; rustc compiles
     /// the result). One true number joins the two. With both numbers false nothing does,
-    /// and then what the first half ends on is read only where every continuation the
-    /// grammar allows is the construct: a method's name with `::` after it. Rounds 15 and
-    /// 16 read more at the end of a side, each time on the argument that no honest line
-    /// ends so, and each time a reviewer wrote the honest line:
+    /// and the construct is found only where one half holds it whole: a hunk side is read
+    /// as text that ends there, and nothing is inferred from how it ends. Rounds 15 to 17
+    /// read forms at the end of a side, each time on an argument (no honest line ends so;
+    /// every continuation the grammar allows is the construct), and each time a reviewer
+    /// wrote the honest line:
     ///
     /// - round 15 a bare `Command` (`pub fn command() -> Command`, Vesper, VD3R15-M-1);
     /// - round 16 `Command::` (`const X: u8 = Command::` and `VERSION;`, Vesper,
     ///   VD3R16-M-1), and `assert!(true` (rustfmt's layout of a long condition that begins
     ///   with `true`, ninth independent review, IR9-M-2), and `todo!` (the end of a
-    ///   sentence in a comment the hunk does not open, IR9-L-5).
+    ///   sentence in a comment the hunk does not open, IR9-L-5);
+    /// - round 17 `.unwrap::` and `.expect::<` (in a macro that takes any tokens it goes on as
+    ///   `NOT_A_CALL` and the program compiles: Vesper, VD3R17-M-1; after a range `unwrap` is
+    ///   a free function: tenth independent review, IR10-L-3).
     ///
     /// So a stub cut after `todo!`, a spawn cut after `Command::`, an assertion cut after
-    /// its `true` and an attribute cut after its name are declared misses behind two false
-    /// numbers, as a call cut after `.unwrap` is; each takes a writer who sets out to.
+    /// its `true`, an attribute cut after its name and a method call cut after its `::` are
+    /// declared misses behind two false numbers, as a call cut after `.unwrap` is; each
+    /// takes a writer who sets out to.
     #[test]
-    fn a_construct_cut_by_hunks_that_nothing_joins_is_read_where_every_continuation_is_it() {
+    fn a_construct_cut_by_hunks_that_nothing_joins_is_found_only_where_a_half_holds_it_whole() {
         let existing = |hunks: &str| {
             parse(&format!("--- a/cut.rs\n+++ b/cut.rs\n{hunks}"))
                 .unwrap()
@@ -8904,17 +8951,23 @@ mod tests {
         }
         assert_eq!(found(&pair("    let v = opt.unwrap", "    ();", apart)), []);
         assert_eq!(found(&pair("    let v = opt.", "    unwrap();", apart)), []);
-        // the one form that is read at the end of a side, with both numbers false
+        // what rounds 15 to 17 read there and is no evidence: each is found by the join
+        // under one true number, and not behind two false ones
         for first in ["    let v = opt.unwrap::", "    let v = opt.expect::<"] {
             let second = if first.ends_with('<') {
                 "    u8>(m);"
             } else {
                 "    <u8>();"
             };
-            assert_eq!(found(&pair(first, second, apart)), call, "{first}");
+            for header in numbers {
+                assert_eq!(
+                    found(&pair(first, second, header)),
+                    call,
+                    "{first} {header}"
+                );
+            }
+            assert_eq!(found(&pair(first, second, apart)), [], "{first}");
         }
-        // what rounds 15 and 16 read there and is no evidence: each is found by the join
-        // under one true number, and not behind two false ones
         for (first, second, signal) in [
             ("    todo!", "    ();", S::StubAdded),
             (
@@ -8978,6 +9031,50 @@ mod tests {
             "@@ -12 +12 @@\n- * The fast path is not written yet.\n+ * The fast path is still a todo!\n",
         );
         assert_eq!(found(&honest), []);
+        // Vesper, round 17 (`macro-token-tree.patch`): in `discard! { … }`, a macro that
+        // takes any tokens, `value.unwrap::` goes on as `NOT_A_CALL`; it compiles and calls
+        // nothing
+        let honest =
+            existing("@@ -7 +7 @@ fn main() {\n-        value.other::\n+        value.unwrap::\n");
+        assert_eq!(found(&honest), []);
+        // tenth independent review (`range-u0.patch`): `let r = 0..unwrap::` and `<u8>();`,
+        // a range whose end calls a free function named `unwrap`
+        let honest = existing(
+            "@@ -5 +5 @@ fn main() {\n-    let r = 1..unwrap::\n+    let r = 0..unwrap::\n",
+        );
+        assert_eq!(found(&honest), []);
+    }
+
+    /// `#[ignore(…)]` switches a test off where the lint `ill_formed_attribute_input` is
+    /// allowed: the lint is deny by default, `[lints.rust] ill_formed_attribute_input =
+    /// "allow"` in `Cargo.toml` allows it, and the test compiles and is ignored (tenth
+    /// independent review, IR10-M-1: `ignparen.patch`, a real `git diff`; rustc 1.99.1, two
+    /// tests ignored). As an attribute of its own in a `cfg_attr` list it does the same. And
+    /// the bare `ignore` that an ordinary `git diff -U0` of rustfmt output ends a hunk on
+    /// (`cfgu0.patch`: rustfmt writes a long condition over lines and `ignore` alone above
+    /// `)]`) is not read: it can go on as `ignore::case`, and a hunk side is read as text that
+    /// ends there. That one is an ordinary declared miss (the coordinator's ruling of round
+    /// 17, kept in round 18).
+    #[test]
+    fn an_ignore_with_arguments_is_a_skip_and_a_bare_ignore_at_the_end_is_not() {
+        let file = parse(
+            "--- a/tests/it.rs\n+++ b/tests/it.rs\n@@ -1,9 +1,11 @@\n #[test]\n+#[ignore(not_ready)]\n fn a() {\n     assert_eq!(1 + 1, 2);\n }\n \n #[test]\n+#[cfg_attr(all(), ignore(flaky))]\n fn d() {\n     assert_eq!(2 + 2, 4);\n }\n",
+        )
+        .unwrap()
+        .remove(0);
+        assert_eq!(
+            found(&file),
+            [
+                (S::TestSkipped, Basis::Lexical, 2),
+                (S::TestSkipped, Basis::Lexical, 8)
+            ]
+        );
+        let cfgu0 = parse(
+            "--- a/tests/slow.rs\n+++ b/tests/slow.rs\n@@ -2,2 +2,8 @@\n-#[should_panic(\n-    expected = \"a very long expected panic message that makes rustfmt wrap the attribute over lines\"\n+#[cfg_attr(\n+    any(\n+        target_os = \"windows\",\n+        target_os = \"macos\",\n+        target_arch = \"wasm32\",\n+        target_env = \"musl\"\n+    ),\n+    ignore\n",
+        )
+        .unwrap()
+        .remove(0);
+        assert_eq!(found(&cfgu0), []);
     }
 
     /// A second section for the same path (seventh independent review, IR7-H-2). Plain
