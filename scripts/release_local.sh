@@ -23,11 +23,13 @@
 #   local ref gitlab/main (fetch it first; this tool does not), and the tag is v<version>;
 #   (2) SHA256SUMS lists exactly the files of <outdir>, each matches, and SHA256SUMS.sig
 #   verifies against <allowed_signers> in namespace deep-diff-forge-release-sha256sums;
-#   (3) run only when 1 and 2 pass: a fresh build of the tag's commit has the binary hash of
-#   the receipt and of the binary in the archive. Exit 0 only if all three hold.
+#   (3) run only when 1 and 2 pass: the archive holds exactly its five members (the directory,
+#   the two licences, README.md and the binary), and a fresh build of the tag's commit has the
+#   binary hash of the receipt and of the binary in the archive. Exit 0 only if all three hold.
 #
-# Both modes refuse any argument, the URL of remote gitlab, or an environment variable they read
-# (HOME PATH TMPDIR CARGO_HOME RUSTUP_HOME GIT_*) that contains github.com, before doing anything.
+# Both modes refuse any argument, or an environment variable they read (HOME PATH TMPDIR
+# CARGO_HOME RUSTUP_HOME GIT_*), that contains github.com, before doing anything; verify also
+# refuses a gitlab remote whose URL contains github.com (build reads no remote).
 #
 # Targets not built: aarch64-unknown-linux-gnu (no cross toolchain on the build machine), macOS
 # (no runner). The binary does not depend on the export or target path (measured 2026-11-16),
@@ -161,7 +163,7 @@ EOF
 }
 
 do_verify() {
-  local tag="$1" out signers url main sha c1=PASS c2=PASS c3=PASS listed present p sig_ok=no rh rc rv h ah
+  local tag="$1" out signers url main sha c1=PASS c2=PASS c3=PASS listed present p sig_ok=no rh rc rv h ah d members
   [ -d "$2" ] || die "$2 is not a directory"
   [ -s "$3" ] || die "$3 is not a non-empty allowed-signers file"
   out="$(cd "$2" && pwd)"
@@ -206,7 +208,13 @@ do_verify() {
   else
     read -r rh rc rv < <(python3 -I -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r["build_sha256"][0], r["commit"], r["version"])' "$out/release-receipt.json") || true
     ah="$(tar -xzOf "$out/deep-diff-forge-$tag-$target.tar.gz" "deep-diff-forge-$tag-$target/deep-diff-forge" | sha256sum | cut -d' ' -f1)" || ah="no binary in the archive"
-    if [ "$rc" != "$sha" ] || [ "$rv" != "$version" ]; then
+    # The members must be exactly these: a second spelling of the binary's name (`./D/…`,
+    # `D//…`) is not what -O above reads but is what `tar -xzf` leaves (review of 0.8.4, R84B-L-2).
+    d="deep-diff-forge-$tag-$target"
+    members="$(tar -tzf "$out/$d.tar.gz" | LC_ALL=C sort)" || members="unreadable"
+    if [ "$members" != "$(printf '%s\n' "$d/" "$d/LICENSE-APACHE" "$d/LICENSE-MIT" "$d/README.md" "$d/deep-diff-forge" | LC_ALL=C sort)" ]; then
+      c3="FAIL: the archive's members are not exactly $d/ and its LICENSE-APACHE, LICENSE-MIT, README.md and deep-diff-forge"
+    elif [ "$rc" != "$sha" ] || [ "$rv" != "$version" ]; then
       c3="FAIL: the receipt is for $rc $rv, the tag names $sha $version"
     else
       h="$(build_at "$sha" "$work/b1")"

@@ -114,7 +114,8 @@ publish-dry-run:
     cargo publish --dry-run -p deep-diff-forge-core --allow-dirty
     cargo publish --dry-run -p deep-diff-forge-learning --allow-dirty
 
-# Cut a release: validate the tag matches the workspace version + a clean tree, refuse
+# Cut a release: validate the tag matches the workspace version + a clean tree (`git status
+# --porcelain` prints nothing, untracked files included, before and after the gate), refuse
 # unless the remotes `gitlab`, `gitea` and `forgejo` all exist and none points at github.com,
 # run the release gate, then sign the tag and push it to those three remotes only (never
 # `origin`, which is GitHub). From 0.8.4 nothing runs at GitHub: the tag starts no workflow;
@@ -132,8 +133,10 @@ release-tag version:
       echo "version mismatch: arg='${want}' but [workspace.package].version='${have}'" >&2
       exit 1
     fi
-    if ! git diff --quiet || ! git diff --cached --quiet; then
-      echo "working tree is dirty; commit before tagging" >&2
+    # Clean means `git status --porcelain` prints nothing, untracked files included: Cargo
+    # finds an untracked build.rs, and the tag must name exactly what the gate ran on.
+    if [ -n "$(git status --porcelain)" ]; then
+      echo "working tree is not clean (git status --porcelain); commit or remove before tagging" >&2
       exit 1
     fi
     # Nothing at GitHub: every fetch and push URL of each target remote (insteadOf rewrites
@@ -154,8 +157,8 @@ release-tag version:
     just gate-release
     # The gate must not have changed the tree (a rewritten Cargo.lock, a regenerated file):
     # the tag names the commit that was gated.
-    if ! git diff --quiet || ! git diff --cached --quiet; then
-      echo "the release gate changed the working tree; commit or discard before tagging" >&2
+    if [ -n "$(git status --porcelain)" ]; then
+      echo "the release gate changed the working tree (git status --porcelain); commit or discard before tagging" >&2
       exit 1
     fi
     # Signed with the caller's user.signingkey and verified against .github/allowed_signers;

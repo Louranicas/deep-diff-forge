@@ -9,7 +9,9 @@
 # and with both checksum files recomputed); 3 SHA256SUMS signed by a key not in allowed_signers
 # fails verify; 4 a tag whose name is not the workspace version is refused by build and fails
 # verify; 5 github.com in an argument, an environment variable or the gitlab remote's URL is
-# refused; 6 a commit whose binary differs between two builds writes nothing.
+# refused; 6 a commit whose binary differs between two builds writes nothing; 7 an archive that
+# also holds ./D/deep-diff-forge (another binary, which `tar -xzf` leaves in place of the good
+# one), with its checksums recomputed and signed by the good key, fails verify.
 #
 # Run it where cargo builds (here: in the fedora-toolbox-44 toolbox), from a clean checkout:
 #   scripts/test_release_local.sh
@@ -103,6 +105,28 @@ expect "5c gitlab remote URL" 2 "refused: the URL of remote gitlab" \
   "$tool" verify "v$version" "$t/out" "$t/allowed_signers"
 git remote set-url gitlab "$t/gitlab.git"
 absent "$t/out-g"
+
+# 7: a second spelling of the binary's name in the archive (review of 0.8.4, R84B-L-2): check 3
+# read the member D/deep-diff-forge, while `tar -xzf` leaves the later ./D/deep-diff-forge.
+mkdir "$t/p-member"
+cp "$t/out/$dist" "$t/out/release-receipt.json" "$t/out/sbom.spdx.json" "$t/p-member/"
+python3 -I -c '
+import io, sys, tarfile
+p = sys.argv[1]
+with tarfile.open(p, "r:gz") as t:
+    members = [(m, t.extractfile(m).read() if m.isfile() else None) for m in t.getmembers()]
+with tarfile.open(p, "w:gz", format=tarfile.GNU_FORMAT) as t:
+    for m, data in members:
+        t.addfile(m, io.BytesIO(data) if data is not None else None)
+    evil = b"#!/bin/sh\necho planted\n"
+    info = tarfile.TarInfo("./" + members[0][0].name.rstrip("/") + "/deep-diff-forge")
+    info.size, info.mode = len(evil), 0o755
+    t.addfile(info, io.BytesIO(evil))
+' "$t/p-member/$dist"
+(cd "$t/p-member" && sha256sum "$dist" >"$dist.sha256" && sha256sum -- *.gz *.sha256 *.json >SHA256SUMS)
+ssh-keygen -q -Y sign -f "$t/keys/good" -n "$ns" "$t/p-member/SHA256SUMS"
+expect "7 a second spelling of the binary in the archive" 1 "the archive's members are not exactly" \
+  "$tool" verify "v$version" "$t/p-member" "$t/allowed_signers"
 
 # 6: a plant that makes the binary differ between builds (a build script's time in the binary).
 git checkout --quiet -b plant-unreproducible "$head"

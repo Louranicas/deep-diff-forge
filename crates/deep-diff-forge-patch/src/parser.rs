@@ -1007,8 +1007,9 @@ impl Parser {
     /// `git diff -C` writes, and its hunks are against the source before the patch.
     ///
     /// Paths are compared as the review names them, which is how Git's own table of the paths a
-    /// patch touches compares them. A `diff --git` name that keeps a repeated slash (`d//x`) is
-    /// no second name for `d/x`: Git refuses to write it ("invalid path", measured).
+    /// patch touches compares them. A name with a repeated slash (`d//x`) is `d/x`, as it is to
+    /// Git: with `---`/`+++` lines, `git apply` writes `d/x` (`find_name` squashes the slashes;
+    /// measured, review of 0.8.4, R84B-L-3).
     fn record_path_uses(&mut self, file: &FileBuf) -> Result<(), PatchParseError> {
         let (removes, writes) = file.path_uses();
         // A rename of a path to itself names it twice in one section (review of 0.8.4, R84-L-5).

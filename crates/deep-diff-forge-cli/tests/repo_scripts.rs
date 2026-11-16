@@ -514,6 +514,34 @@ fn the_release_recipe_tags_only_through_the_signing_script() {
     }
 }
 
+/// Review of 0.8.4, VR84B-M-2: `git diff --quiet` and `git diff --cached --quiet` pass with an
+/// untracked file, which Cargo can read (an untracked `build.rs`), so the gate could run on
+/// more than the commit that is tagged. The recipe refuses any `git status --porcelain` output
+/// (untracked files included) before the gate and after it. A scratch run of the recipe with the
+/// gate, signing and push stubbed is in the 0.8.4 evidence; this holds its shape.
+#[test]
+fn the_release_recipe_refuses_any_status_output_before_and_after_the_gate() {
+    let justfile = std::fs::read_to_string(format!("{ROOT}/justfile")).unwrap();
+    let recipe = justfile
+        .split("\nrelease-tag version:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n\n").next())
+        .expect("the release-tag recipe");
+    let check = r#"if [ -n "$(git status --porcelain)" ]; then"#;
+    let gate = recipe
+        .find("just gate-release")
+        .expect("the recipe runs the gate");
+    let checks: Vec<usize> = recipe.match_indices(check).map(|(i, _)| i).collect();
+    assert!(
+        checks.len() == 2 && checks[0] < gate && gate < checks[1],
+        "a status check before and after the gate:\n{recipe}"
+    );
+    assert!(
+        !recipe.contains("git diff --quiet"),
+        "git diff --quiet does not see untracked files:\n{recipe}"
+    );
+}
+
 // --- scripts/verify_release_tag.sh --------------------------------------------------------
 
 /// Runs the release workflow's check of `tag`, with `main` the commit `main` points at.
