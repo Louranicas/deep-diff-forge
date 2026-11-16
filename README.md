@@ -811,9 +811,11 @@ project and not judged at every stop while it is true, as stated above):
   parent directory: every stop made from the main tree of such a repository is UNJUDGED,
   with words that say so. A linked tree moved with a plain
   `mv` and not repaired is such a pair too (its `gitdir` names where it was): a stop from it
-  is UNJUDGED until `git worktree repair` in it records where it is, and its reason says so
-  where the directory it was moved from is gone (only there: run in a copy, the repair makes
-  the copy the tree).
+  is UNJUDGED until `git worktree repair` in it records where it is, and its reason names
+  that remedy where the directory it was moved from is gone (only there: run in a copy, the
+  repair makes the copy the tree). The remedy comes after the names of both trees, and the
+  reason is cut at a fixed length, so with long names it can be cut off; where a failure
+  stands in the tree, the note on the tree that is gone gives the remedy whole.
 - A tree does not move while the directory it is remembered at stands. Where Git and the
   records pair a linked tree something has blocked in with another top level than the one
   the session's state records for it, and the tree still stands at the recorded directory
