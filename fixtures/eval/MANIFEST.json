@@ -531,6 +531,57 @@
       "sha256": "12aad991e95568580821af934a2b034064898b4f66a78c17e79afb1ceee87c98"
     },
     {
+      "id": "evidence/rust-code-view-20261114",
+      "kind": "evidence",
+      "patch": "evidence/rust-code-view-20261114.patch",
+      "origin": "internal: two findings of 2026-11-14 against the code view (crates/deep-diff-forge-graph/src/lexical.rs), each reproduced on the published v0.8.3 binary with a control before it was counted, and a third text found while the fix was written. (1) Rust nests block comments, and the view ended one at the first */, so after /* /* */ a // cut the line and the call behind the last */ was hidden (src/net.rs: a fetch and a spawn; the three lines after them hold the same comment with a quote and with //* inside it and add nothing a rule names; v0.8.3 reports no signal for the file, and process_spawn and network_fetch for the two calls written plainly). (2) A character literal with an escape longer than one character put the view one quote out of step, so that '\"' opened a string and \"/*\" a comment over the rest of the hunk (src/table.rs, a new file whose first line is such a constant, and the unsafe block after it; src/escapes.rs, the same with '\\u{1F600}'|'\"' and a byte literal: v0.8.3 reports no evidence for either file, and unsafe_added for each without that line). (3) src/piled.rs: a string and then a raw string that holds a comment opener on each of three lines; a scanner that counts comment depth has one reading for each depth, and the reading that resumed both strings, the compiler's, must not be the one dropped (found by the fuzz oracle against rustc's lexer while the fix was written; released versions read it right). Expected: every item. The fuzz target rust_code_view holds the view to the compiler's lexer for any text",
+      "expect": [
+        {
+          "path": "src/net.rs",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/net.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/table.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/escapes.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/piled.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/piled.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "src/piled.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 7
+        }
+      ],
+      "sha256": "170eccbcb87e8fbfd1e3285aa88a2223b61188a97dfb47152b2787cc75307614"
+    },
+    {
       "id": "findings/mixed",
       "kind": "findings",
       "patch": "findings/mixed.patch",

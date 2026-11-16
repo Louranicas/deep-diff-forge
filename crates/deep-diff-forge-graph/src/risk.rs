@@ -1,7 +1,7 @@
 // DDF review route: DDF-R12, DDF-R13. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-graph--src--risk
-use crate::evidence::{Evidence, EvidenceSignal, file_evidence};
+use crate::evidence::{CarriedShares, Evidence, EvidenceSignal, Share, file_evidence_marked};
 use deep_diff_forge_core::{FileStatus, PatchLineKind, ReviewFile};
 
 /// A deterministic, explainable reason a file is ranked where it is.
@@ -74,6 +74,8 @@ pub const MANY_HUNKS: usize = 5;
 /// is chosen by whoever wrote the patch, so it may lower a file's priority but never hide
 /// it: before, a new `src/generated/x.rs` that spawned a process scored 0 and ranked below
 /// a one-line README edit.
+///
+/// `file` is read as the only file of its patch, as by [`assess_file`].
 #[must_use]
 pub fn score_file(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     let assessment = assess_file(file);
@@ -94,10 +96,29 @@ pub struct Assessment {
 /// Code evidence adds each signal's weight once per file. A path cannot hide code: evidence
 /// keeps its weight on a generated or vendored path, and on a test path it counts half
 /// (rounded up), except a removed test, which counts in full.
+///
+/// `file` is read as the only file of its patch ([`crate::evidence::file_evidence`]);
+/// [`crate::rank`] reads each file of a patch with its share of the patch's carried reading.
 #[must_use]
 pub fn assess_file(file: &ReviewFile) -> Assessment {
+    assess_file_marked(file, Share::Own).0
+}
+
+/// Not part of the API, and may change: [`assess_file`] of `file` read with its share of its
+/// patch's carried reading, `file` being the file at `index` of the files `shares` was made
+/// from. The outline of a patch scores its files so.
+#[doc(hidden)]
+#[must_use]
+pub fn assess_file_in_patch(file: &ReviewFile, shares: &CarriedShares, index: usize) -> Assessment {
+    assess_file_marked(file, shares.share(index)).0
+}
+
+/// [`assess_file`], with the hunks read together that `share` says, and beside its evidence,
+/// item for item, whether the reading every release up to 0.8.3 had finds the item: what the
+/// bounded list of a ranked file goes by.
+pub(crate) fn assess_file_marked(file: &ReviewFile, share: Share) -> (Assessment, Vec<bool>) {
     let (path_score, mut signals) = score_path_and_shape(file);
-    let evidence = file_evidence(file);
+    let (evidence, released) = file_evidence_marked(file, share);
     let test = is_test(&file.path);
     let mut score = path_score;
     for signal in EvidenceSignal::ALL {
@@ -110,11 +131,14 @@ pub fn assess_file(file: &ReviewFile) -> Assessment {
             };
         }
     }
-    Assessment {
-        score,
-        signals,
-        evidence,
-    }
+    (
+        Assessment {
+            score,
+            signals,
+            evidence,
+        },
+        released,
+    )
 }
 
 /// The score and signals from everything but code evidence.

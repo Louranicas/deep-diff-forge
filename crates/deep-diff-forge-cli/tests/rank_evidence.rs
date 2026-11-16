@@ -124,6 +124,40 @@ fn rank_and_outline_are_byte_stable() {
 }
 
 /// Evidence is capped per file in the document, while the score still counts what was found.
+/// The printed list at the bound holds what 0.8.3 printed: a fetch on line 1 that only the
+/// second reading of Rust finds (it stands behind a nested block comment), then 32 process
+/// spawns. The published v0.8.3 binary lists the spawns on lines 2 to 33 and scores 8. The list
+/// here is the same 32 items; the fetch is in the signals and the score, and
+/// `evidence_truncated` says the list is not all there is.
+#[test]
+fn the_capped_list_holds_the_items_0_8_3_listed() {
+    let spawns = (1..=32).fold(String::new(), |mut body, i| {
+        let _ = writeln!(body, "+std::process::Command::new(\"sh\"); // {i:02}");
+        body
+    });
+    let patch = format!(
+        "diff --git a/src/cap.rs b/src/cap.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/cap.rs\n\
+         @@ -0,0 +1,33 @@\n+/* /* */ // */ let _ = reqwest::blocking::get(u);\n{spawns}"
+    );
+    let rank: Value =
+        serde_json::from_str(&run(&patch, &["--stdin-patch", "--rank", "--json"])).unwrap();
+    let file = &rank["ranked"][0];
+    let listed: Vec<(&str, u64)> = file["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["signal"].as_str().unwrap(), e["line"].as_u64().unwrap()))
+        .collect();
+    let spawns: Vec<(&str, u64)> = (2..=33).map(|line| ("process_spawn", line)).collect();
+    assert_eq!(listed, spawns);
+    assert_eq!(file["evidence_truncated"], true);
+    assert_eq!(
+        file["signals"],
+        serde_json::json!(["new_file", "process_spawn", "network_fetch"])
+    );
+    assert_eq!(file["score"], 11);
+}
+
 #[test]
 fn evidence_is_capped_and_says_so() {
     let body = (0..40).fold(String::new(), |mut body, i| {

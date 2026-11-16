@@ -479,7 +479,26 @@ Additive members, so the schema names stay `v0`. They are present only when foun
     that side.
   - `basis` is always `lexical`.
   - Items are ordered by hunk, then line, then signal. `evidence_truncated: true` follows when more
-    were found; the score counts all of them. Each signal also appears in `signals`.
+    than 32 were found; the score counts all of them. Each signal also appears in `signals`.
+  - At the bound the list is not simply the first 32 in that order (since the release after
+    0.8.3, which reads Rust a second way and reads the hunks of a file the patch
+    creates as one text, up to a bound for the whole patch: its created files share 256 KiB of
+    new side in patch order, with no line longer than 512 bytes, so one request reads at most
+    256 KiB in that reading, whatever it asks). It holds first
+    the items the reading every release up to 0.8.3 had finds, as many as fit, and then, in the
+    room that is left, items only a further reading finds; the items listed keep the order above.
+    With 32 or more items of the first kind it is exactly the list 0.8.3 printed.
+  - What is held against 0.8.3: for every patch, the signals, the score and the listed items (at
+    the bound of 32 a file) of the ranking are at least those of 0.8.3. An answer that is bounded
+    in bytes (the MCP summary, a protocol line, a page) reaches its bound sooner when it says
+    more, and says so as before (a summary with its omitted count, error 8, a cursor); time and
+    memory are linear in the patch, within the factors stated in the changelog. Measured
+    against the published v0.8.3 binary: the `rank_patch` summary (256 KiB) of a 1,500-file patch
+    lists 1,082 files where 0.8.3 listed 1,094 (`omitted_files` 418 against 406), and a ranking
+    147 bytes under that cap on 0.8.3 comes back as a summary; a `diff.rank` answer of 83,885,992
+    bytes on 0.8.3 is 83,886,151 bytes, over the 80 MiB line cap, and so error 8; the first page
+    of the outline (64 KiB) of a file of 313 one-line hunks holds 312 and a cursor where 0.8.3's
+    held all 313. A file's place in the ranking can fall when another file's score rises.
 - `review-outline.v0` and `review-hunks.v0` hunk heads: `evidence`, the distinct signal labels in
   that hunk. It comes from the same scan as `rank`, so the two never disagree.
 - The CLI (`--rank --json`, `--outline`), the daemon (`diff.rank`, `review.outline`,

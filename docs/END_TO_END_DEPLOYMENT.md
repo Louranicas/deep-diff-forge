@@ -24,7 +24,7 @@ The gate sequence below is the design. What runs today:
 - Gate 4's snapshot directories (`fixtures/expected/...`) do not exist. The
   fixtures today are `fixtures/patch/*.patch` (with `fixtures/patch/regressions/`),
   `fixtures/council/` and, since 0.5.0, the labelled corpus `fixtures/eval/`
-  (34 cases since 0.6.0); fuzz seeds live in `fuzz/seeds/`.
+  (34 cases since 0.6.0, 35 with `evidence/rust-code-view-20261114`, not yet released); fuzz seeds live in `fuzz/seeds/`.
 - Gate 8 has no tooling; nothing writes `reports/releases/`.
 - 0.8.3 is tagged `v0.8.3` (2026-11-11 UTC), the latest release. Published releases: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3`. crates.io
   is on hold (`DDF_CRATES_IO`).
