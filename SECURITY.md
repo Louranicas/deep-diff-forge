@@ -524,7 +524,8 @@ bounded form.** What it holds to:
   at every stop. And a tree does not move while the directory it is remembered at stands:
   where Git and the records pair a tree something has blocked in with another top than
   the one the state records for it, and the tree stands at that directory (its `.git` file
-  names the tree's own administrative directory) or it cannot be looked at,
+  names the tree's own administrative directory, or is a file that is not a `gitdir: ` line
+  naming a path, such as an empty one) or it cannot be looked at,
   neither directory is read as that tree (UNJUDGED from it, named from elsewhere, both
   paths said, nothing forgotten) until `git worktree repair` is run in the directory that
   stands or it is removed; where it is gone or holds something else (a tree, a clone or a

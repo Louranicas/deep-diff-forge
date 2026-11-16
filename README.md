@@ -819,7 +819,8 @@ project and not judged at every stop while it is true, as stated above):
 - A tree does not move while the directory it is remembered at stands. Where Git and the
   records pair a linked tree something has blocked in with another top level than the one
   the session's state records for it, and the tree still stands at the recorded directory
-  (a directory whose `.git` file names that tree's own administrative directory, or one
+  (a directory whose `.git` file names that tree's own administrative directory, or whose
+  `.git` is a file that is not a `gitdir: ` line naming a path, such as an empty one, or one
   that cannot be looked at), neither directory is judged as that tree: a stop from it is UNJUDGED, a
   stop from elsewhere names it, both paths are said, and nothing of it is forgotten, until
   `git worktree repair` is run in the directory that stands or that directory is removed.

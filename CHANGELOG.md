@@ -929,8 +929,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     standing there: after `git worktree move`, a new tree, a clone or a build directory made
     at the old path left the moved tree UNJUDGED at every stop, a new key in it never
     blocked, and the remedy the stop named changed nothing. The recorded directory now
-    counts only when its `.git` file names the tree's own administrative directory, or when
-    it cannot be read; otherwise the tree is read at its new top, its failure stands and a
+    counts only when its `.git` file names the tree's own administrative directory, when that
+    file is not a `gitdir: ` line naming a path (an empty file, another first line), or when
+    it cannot be read (VD4R25C-L-1: conservative, UNJUDGED with nothing forgotten); otherwise the tree is read at its new top, its failure stands and a
     new one blocks. VD4R24-M-1 and HR16-L-3 stay UNJUDGED with nothing forgotten (their old
     directory still names the tree).
   - *Words and stated limits (HR17-L-1, HR17-L-2, low).* The remedy for a tree moved with
