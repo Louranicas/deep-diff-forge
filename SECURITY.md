@@ -499,31 +499,41 @@ bounded form.** What it holds to:
   stop that forgot the failure that had blocked in it: `git worktree add` makes a tree
   under any name in the Git directory. Such a stop is UNJUDGED with Git's words first,
   wherever its directory lies, also from inside a Git directory (`.git/hooks`, a bare
-  repository's own directory), where the reason says so; it forgets nothing because a
-  tree is no longer listed (a tree the judge's own reading finds clean is forgotten, as at
+  repository's own directory), where the reason says so; it forgets nothing because a tree
+  is no longer listed (a tree the judge's own reading finds clean is forgotten, as at
   every stop), and the tree the directory is under is never named as one the session is
   not in (also when the session's directory cannot be resolved, under a directory that
   cannot be searched: a relative path is taken from the hook's own directory and a `..`
-  after a link from where the link leads; where that cannot be done, every tree may be
-  the one). A session directory that was removed is asked about at the nearest directory
-  above it that is there, a relative one after it is taken from the hook's own directory:
-  where the session is, is found one way for every use of it. What Git answers must hold
-  the session's directory: a `core.worktree` that points Git at another directory makes
-  the stop UNJUDGED, and nothing of the tree is forgotten. The caller's
-  `GIT_CEILING_DIRECTORIES` is kept without the entries at or under one of the project's
-  trees: a ceiling hides nothing of the project, and a repository the user hides above it
-  stays hidden. Where Git stops at a file-system boundary (`GIT_DISCOVERY_ACROSS_FILESYSTEM`
-  unset) that a linked tree of the project lies across, the stop is UNJUDGED with Git's
-  words, never "no repository".
+  after a link from where the link leads; where that cannot be done, every tree may be the
+  one). A session directory that was removed is asked about at the nearest directory above
+  it that is there, a relative one after it is taken from the hook's own directory: where
+  the session is, is found one way for every use of it. What Git answers is believed only
+  as a pair that names one tree of the repository's records: the top level it names must
+  be the one the Git directory it names records (a linked tree's `gitdir` file; the main
+  tree's top as `git worktree list` gives it), and must contain the session's directory. A
+  `core.worktree` that points Git at the project, at an outer tree, or at a subdirectory
+  of the tree, and a copy of a linked tree made with `cp -a`, make the stop UNJUDGED;
+  nothing of either tree is forgotten and neither directory is judged as that tree. What
+  is read of every other tree counts as that tree's only when Git names that tree there,
+  at every stop. A stop made from a submodule's Git directory (`.git/modules/<name>`) is
+  UNJUDGED: Git names the submodule's working tree there, which does not contain the
+  session's directory, and the reason says so. The caller's `GIT_CEILING_DIRECTORIES` is
+  kept without the entries at or under one of the project's trees, each compared with its
+  `..` and its links resolved: a ceiling hides nothing of the project, and a repository
+  the user hides above it stays hidden, also when its entry is written through the
+  project's path. Where Git stops at a file-system boundary
+  (`GIT_DISCOVERY_ACROSS_FILESYSTEM` unset) that a linked tree of the project lies across,
+  the stop is UNJUDGED with Git's words, never "no repository".
 - **What blocked in a tree is not forgotten while its directory stands.** A linked tree
   the repository no longer lists (both records removed, or its `.git` file removed and
   `git worktree prune`) was forgotten at the next stop, and Git places its directory in no
-  repository: the stop from inside it was silent with credentials there. The state
-  (schema `v10`) records the top level of each linked tree it remembers a failure of; while
-  that directory stands the tree is named at every stop and a stop from inside it is
-  UNJUDGED. It is forgotten when the directory is gone, or when it is a tree again and the
-  judge's own reading finds it clean. A `v9` state is read with no tree recorded and
-  written back as `v10`.
+  repository: the stop from inside it was silent with credentials there. The state (schema
+  `v10`) records the top level of each linked tree it remembers a failure of; while that
+  directory stands the tree is named at every stop and a stop from inside it is UNJUDGED.
+  It is forgotten when the directory is gone, or when it is a tree again and the judge's
+  own reading finds it clean, a reading of that tree that Git names there. A `v9` state is
+  read with no tree recorded and written back as `v10` by the first hook that reads it and
+  keeps its state, changed or not.
 - **A repository the hooks cannot list the commits of is still judged for what is not
   committed.** With more than 256 working trees (or a million named commits) the commits
   that were there when a session begins cannot be listed. The start recorded nothing

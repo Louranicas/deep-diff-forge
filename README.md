@@ -750,43 +750,63 @@ project and not judged at every stop while it is true, as stated above):
   gives says first what follows ("not in this session, whatever is committed (what is
   not committed is judged)"), then the cause; a reason a message cuts for room ends with
   "…", on the line that counts the commits with no verdict too (150 characters each).
-- A bare repository with its working trees inside it (`repo.git/main`,
-  `repo.git/feature`) is a layout like any other: the tree a stop is in is the one Git
-  says its directory is in, wherever the Git directory lies. A directory Git cannot place
-  is never taken for one of Git's own files, wherever it lies: nothing on disk tells a
-  linked tree whose `.git` file and administrative directory were both removed from a
-  plain directory, and `git worktree add` makes a tree under any name in the Git
-  directory, also under the names Git uses itself (`repo.git/hooks/feature`,
-  `repo.git/logs/feat`, `repo.git/svn`). Where Git fails or does not answer for the
-  directory the session is in, the stop is UNJUDGED with Git's words, which come first in
-  its reason so that a cut for room keeps them. So is a stop made from inside a Git
-  directory (`.git`, `.git/hooks`, `.git/NOTES_MERGE_WORKTREE` while `git notes merge`
-  waits there, what other programs keep in it such as `.git/lfs`, a bare repository's own
-  directory): its reason says that the session's directory is inside the Git directory
-  and that Git cannot say which working tree it is in, and nothing there is judged as a
-  tree of its own (the project is judged as at every stop). At such a stop the tree the
-  directory is under is named as one the session's directory may be in, also when the
-  directory cannot be resolved, under a directory that cannot be searched: a relative
-  directory is taken from the hook's own directory, and a `..` after a link steps up from
-  where the link leads; where that cannot be done, every tree is named so. And the stop
-  forgets nothing because a tree is no longer listed (a tree the judge's own reading finds
-  clean is forgotten, as at every stop). No stop is silent because of where its directory
-  lies.
+- A bare repository with its working trees inside it (`repo.git/main`, `repo.git/feature`)
+  is a layout like any other: the tree a stop is in is the one Git says its directory is
+  in, wherever the Git directory lies. A directory Git cannot place is never taken for one
+  of Git's own files, wherever it lies: nothing on disk tells a linked tree whose `.git`
+  file and administrative directory were both removed from a plain directory, and
+  `git worktree add` makes a tree under any name in the Git directory, also under the
+  names Git uses itself (`repo.git/hooks/feature`, `repo.git/logs/feat`, `repo.git/svn`).
+  Where Git fails or does not answer for the directory the session is in, the stop is
+  UNJUDGED with Git's words, which come first in its reason so that a cut for room keeps
+  them. So is a stop made from inside a Git directory (`.git`, `.git/hooks`,
+  `.git/NOTES_MERGE_WORKTREE` while `git notes merge` waits there, what other programs
+  keep in it such as `.git/lfs`, a bare repository's own directory): its reason says that
+  the session's directory is inside the Git directory and that Git cannot say which
+  working tree it is in, and nothing there is judged as a tree of its own (the project is
+  judged as at every stop). A stop made from a submodule's Git directory
+  (`.git/modules/<name>`, or a directory under it) is UNJUDGED as well, for another reason
+  that it says: there Git names the submodule's working tree, which does not contain the
+  session's directory ("Git names as the working tree a directory that does not contain
+  the session's directory", with "inside the Git directory" after the paths). At such a
+  stop the tree the directory is under is named as one the session's directory may be in,
+  also when the directory cannot be resolved, under a directory that cannot be searched: a
+  relative directory is taken from the hook's own directory, and a `..` after a link steps
+  up from where the link leads; where that cannot be done, every tree is named so. And the
+  stop forgets nothing because a tree is no longer listed (a tree the judge's own reading
+  finds clean is forgotten, as at every stop). No stop is silent because of where its
+  directory lies.
 - Where the session's directory is, is found one way, first, for every use of it: a
   relative directory is taken from the hook's own directory, and then, like an absolute
   one, the nearest directory of its path that is there is the one asked about (a part
   that was removed, or that names a file, is passed over). When the hook's own directory
   cannot be had, or a part of the path cannot be looked at, the stop is UNJUDGED and the
   trees the directory may be in are named so.
-- What Git answers must hold the session's directory. Where Git names as the working tree
-  a directory that does not contain it (a `core.worktree` in a linked tree's own
-  configuration), the stop is UNJUDGED with words that say so, and nothing is forgotten;
-  what is read of another tree counts as that tree's only when Git names that tree there.
+- What Git answers is believed only as a pair that names one tree. The top level Git names
+  and the Git directory it names must be one tree of the repository's own records: a
+  linked tree's Git directory pairs with the directory its `gitdir` file names, the main
+  one with the main tree's top as `git worktree list` gives it. Where they are not (a
+  `core.worktree` in a linked tree's own configuration, pointing at the project, at an
+  outer tree the tree lies in, or at a subdirectory of the tree; a copy of a linked tree
+  made with `cp -a`), the stop is UNJUDGED with words that say so ("Git names … as the
+  working tree of a Git directory whose records name … as that tree", the Git directory's
+  path after it), nothing of
+  either tree is forgotten, and neither directory is judged as that tree. A pair must also
+  contain the session's directory. What is read of every other tree counts as that tree's
+  only when Git names that tree there, at every stop: one `git rev-parse` more for each
+  tree looked at. Where a repository records no top level of its main tree (its Git
+  directory made apart with `--separate-git-dir`), the main tree's top is the project's
+  when the session began in the main tree; a session that began in a linked tree of such a
+  repository is UNJUDGED at a stop made from the main tree. A linked tree moved with a plain
+  `mv` and not repaired is such a pair too (its `gitdir` names where it was): a stop from it
+  is UNJUDGED until `git worktree repair` in it records where it is.
 - The hooks keep the caller's `GIT_CEILING_DIRECTORIES`, without each entry that lies at
-  or under one of the project's working trees: a ceiling inside a tree does not hide it,
-  and a repository the user hides with a ceiling above the project (a home directory's)
-  stays hidden. The project itself is found with the caller's ceiling as it is, so a
-  session that begins below a ceiling that hides its repository has no project there.
+  or under one of the project's working trees, an entry compared with its `..` and its
+  links resolved (`repo/../hidden` is `hidden`, beside the project): a ceiling inside a
+  tree does not hide it, and a repository the user hides with a ceiling above the project
+  (a home directory's) stays hidden. The project itself is found with the caller's ceiling
+  as it is, so a session that begins below a ceiling that hides its repository has no
+  project there.
 - `GIT_DISCOVERY_ACROSS_FILESYSTEM` is as the session has it. Unset, Git stops at a file
   system boundary (a mount, or a btrfs subvolume, which one unprivileged command makes):
   where a linked tree of the project lies across the boundary Git stopped at, the stop is
@@ -795,16 +815,17 @@ project and not judged at every stop while it is true, as stated above):
   every directory under `/var` is below one).
 - A linked tree a failure is remembered of stays remembered while its directory stands,
   also when the repository no longer lists it (its `.git` file and administrative
-  directory removed, or its `.git` file removed and `git worktree prune`): every stop names
-  it ("… is no longer a working tree of this repository; what blocked there stands until
-  the directory is gone or it is a tree again"), and a stop made from inside it is
-  UNJUDGED. It is forgotten when its directory is gone (the ordinary `git worktree
-  remove`), or when it is a tree again and the judge's own reading finds that tree clean.
-  For this the session's state (schema `deep-diff-forge.hook-state.v10`) records the top
-  level of each linked tree it remembers a failure of; a state of the schema before (`v9`)
-  is read with no tree recorded and written back in the new one. A path that is not UTF-8
-  or is longer than 16 KiB, and the paths past 256 KiB in all, are not recorded: such a tree
-  is forgotten when it is no longer listed, as before.
+  directory removed, or its `.git` file removed and `git worktree prune`): every stop
+  names it ("… is no longer a working tree of this repository; what blocked there stands
+  until the directory is gone or it is a tree again"), and a stop made from inside it is
+  UNJUDGED. It is forgotten when its directory is gone (the ordinary
+  `git worktree remove`), or when it is a tree again and the judge's own reading finds
+  that tree clean. For this the session's state (schema `deep-diff-forge.hook-state.v10`)
+  records the top level of each linked tree it remembers a failure of; a state of the
+  schema before (`v9`) is read with no tree recorded and written back in the new one by
+  the first hook that reads it and keeps its state (a stop, or a session's start), changed
+  or not. A path that is not UTF-8 or is longer than 16 KiB, and the paths past 256 KiB in
+  all, are not recorded: such a tree is forgotten when it is no longer listed, as before.
 - The order of a stop, and its time. One limit: 45 seconds for everything, of which 4 are
   kept for remembering and saying, and 6 more for looking at the submodules and the other
   working trees when the project has any. So the judging has 41 seconds, or 35.

@@ -809,6 +809,69 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     its trees no longer listed are forgotten as before. A path that is not UTF-8 or is
     longer than 16 KiB, and the paths past 256 KiB in all, are not recorded.
 
+- **Round 23 of Vesper's review (NO-GO) and a fifteenth independent review of the hooks
+  (GO-WITH-FIXES): containment is not identity.** Round 23's rule "Git's answer must hold
+  the session's directory" checked that the top Git names contains the directory, not that
+  the top and the Git directory Git names are one tree.
+  - *Git's answer is believed only as a pair that names one tree (VD4R23-M-1, medium;
+    HR15-L-1 and HR15-L-2, low).* Two genuine linked trees, the inner one inside the outer
+    one, the inner tree's own `core.worktree` naming the outer tree: Git named the outer
+    top (it holds the session's directory) with the inner tree's Git directory, the clean
+    outer tree was judged under the inner tree's name, what had blocked in the inner tree
+    was forgotten, and the next stop printed nothing with two keys in it. The same with
+    `core.worktree` naming a subdirectory of the tree that holds a clean copy of its
+    files; and a copy of a linked tree made with `cp -a` and cleaned was judged as that
+    tree, which then blocked a second time for the same failure. Now the top Git names
+    must be the one the Git directory it names records: a linked tree's `gitdir` file (its
+    path less `/.git`), the main tree's top as `git worktree list` gives it (the directory
+    of a main Git directory named `.git`; where the Git directory was made apart and
+    records no top, the project's top when the session began in the main tree). A pair
+    that is not one tree makes the stop UNJUDGED ("Git names … as the working tree of a
+    Git directory whose records name … as that tree", the two trees first so that a cut
+    for room keeps them, the Git directory's path after them); nothing of either tree is
+    forgotten, and neither directory is judged as that tree at that stop. That the top
+    contains the session's directory is still asked after it. What follows, and is meant:
+    a stop from a copy of a linked tree is UNJUDGED (it was judged as the tree, and a copy
+    with the tree's failure in it stood as that failure); a session that begins in such a
+    copy, or in a tree so redirected, is told why at its start, and its stops are
+    UNJUDGED; a session that began in a linked tree of a repository whose Git directory
+    was made apart is UNJUDGED at a stop from the main tree; and a stop from a linked tree
+    moved with a plain `mv` and not repaired is UNJUDGED (its `gitdir` names where it was;
+    `git worktree repair` in it records where it is).
+  - *What is read of every listed tree counts as its own only when Git names that tree
+    there (HR15-L-1).* That was asked only where a failure stood and the reading found
+    nothing, so a tree Git is pointed away from was read through the redirect elsewhere,
+    and once forgotten was never named again. Now every other tree a stop looks at is
+    asked, with the pair rule: one `git rev-parse` more for each, at most sixteen a stop,
+    each in the tree's share of the six seconds for looking. A tree Git does not name
+    there is "could not be looked at", with the reason, and nothing of it is forgotten.
+  - *A `v9` state is written as `v10` by the first hook that reads it (VD4R23-L-1, low).*
+    A clean `v9` state was read and, nothing changed, left as `v9`: the state read is the
+    same whether it came from `v9` or `v10`. Whether the file was `v9` is kept beside it,
+    and the first stop (or session start) that keeps the state writes it as `v10`.
+  - *A ceiling entry is compared in its resolved form (a note of the fifteenth review).*
+    An entry written through the project's path (`repo/../hidden`, which is the repository
+    `hidden` beside it) was compared as written, started with the project's path, and was
+    left out: the repository it hides was found. Entries are compared with their `..` and
+    their links resolved, `..` by name where the part before it is not there.
+  - *Words (the fifteenth review).* README, SECURITY and this file now say that a stop
+    made from a submodule's Git directory (`.git/modules/<name>`) is UNJUDGED: Git names
+    the submodule's working tree there, which does not contain the session's directory.
+    Its reason says so and now adds that the directory is inside the Git directory.
+    README's "inside the Git directory … Git cannot say which working tree it is in" is
+    the reason of a stop from `.git`, `.git/hooks` and the like, as it says; the round-23
+    sentences on `core.worktree` are the pair rule's.
+  - *Tests.* Each finding has a test that fails on `c9a2ece`: two nested linked trees, the
+    inner one pointed at the outer one; a tree pointed at a clean copy inside itself; a
+    copy of a linked tree, cleaned; a copy of a project whose Git directory was made apart;
+    a clean `v9` state; a ceiling written `repo/../hidden` (an integration test and an
+    entry of the ceiling's unit table). The pair rule has a unit table of its own (main,
+    linked, linked pointed at the main tree, at an outer tree, at a subdirectory, a copy, a
+    `gitdir` missing or unreadable, a Git directory made apart), on functions `c9a2ece`
+    does not have. The round-23 test of `core.worktree` pointed at the project now reads
+    the pair rule's words.
+  - *State.* Schema unchanged (`v10`).
+
 ### Changed
 
 - Path and shape weights are stated once, in `RiskSignal::weight`, and the scorer reads

@@ -51,8 +51,8 @@ use deep_diff_forge_core::process::{Limits, run_bounded};
 use deep_diff_forge_graph::Side;
 use deep_diff_forge_patch::{
     CommitAndParent, GitAcquireError, GitAcquireOptions, HeadState, InputGuards, JudgePatchError,
-    Named, SealedReview, Worktree, commit_patch, commits_beyond, dirty_submodules, file_at_commit,
-    has_uncommitted_changes, head_contains, head_state, judge_patch, named_commits,
+    Named, RepositoryDirs, SealedReview, Worktree, commit_patch, commits_beyond, dirty_submodules,
+    file_at_commit, has_uncommitted_changes, head_contains, head_state, judge_patch, named_commits,
     repository_dirs, staged_patch, worktrees,
 };
 use serde_json::{Value, json};
@@ -206,8 +206,17 @@ fn callers_ceiling() -> Option<OsString> {
 
 /// The ceiling `ceiling` (a list of directories, `:` between them) without every absolute
 /// entry that lies at or under one of `trees`, the project's working trees as they are on
-/// disk; an entry is compared as written and with its links followed ([`resolved`]). The
-/// other entries stay as they are, in their order.
+/// disk; an entry is compared in the one form it has on disk, its `..` and its links resolved
+/// ([`through_links`]; where a part before a `..` is not there, its `..` taken out by name,
+/// [`same_form`]). The other entries stay as they are, in their order. An entry was also
+/// compared as written: `R/../H`, which is the repository `H` beside the project `R`, starts
+/// with `R` as written and was left out, and the repository it hides was found (fifteenth
+/// independent review of the hooks). The resolved form is the one that counts, found with
+/// Git 2.56: Git takes an entry through `realpath` (an entry whose path cannot be resolved
+/// hides nothing), and an entry after an empty one as written, compared with the directory
+/// it looks from as the system gives it, which holds no `..` and passes through no link; so
+/// an entry as written that starts with a tree's path but resolves outside it hides nothing
+/// of that tree.
 ///
 /// Round 22 emptied the ceiling for every Git call of the hooks: a ceiling inside a linked
 /// tree made Git say "not a git repository" for a directory below it, and the tree the
@@ -226,11 +235,11 @@ fn ceiling_without(ceiling: &OsStr, trees: &[PathBuf]) -> OsString {
         .split(|byte| *byte == b':')
         .filter(|entry| {
             let path = Path::new(OsStr::from_bytes(entry));
-            let whole = resolved(path);
-            !(path.is_absolute()
-                && trees
-                    .iter()
-                    .any(|tree| path.starts_with(tree) || whole.starts_with(tree)))
+            if !path.is_absolute() {
+                return true;
+            }
+            let whole = through_links(path).unwrap_or_else(|| same_form(path));
+            !trees.iter().any(|tree| whole.starts_with(tree))
         })
         .collect();
     OsString::from_vec(kept.join(&b':'))
@@ -375,6 +384,151 @@ enum Found {
     /// directory is inside a Git directory, or it ran out of time. `reason` says it with the
     /// directory; `words` are what failed alone (Git's own words, when it gave them).
     Failed { reason: String, words: String },
+    /// Git named a working tree and a Git directory that the repository's own records do not
+    /// pair ([`pair_of`]): what it says is not believed, and neither directory is taken for
+    /// that tree.
+    Unpaired(Box<Unpaired>),
+}
+
+/// What Git named for a directory, which the repository's records do not pair
+/// ([`Found::Unpaired`]).
+#[derive(Debug, Clone)]
+struct Unpaired {
+    /// Which repository it is ([`identity`]).
+    id: String,
+    /// The working tree Git named.
+    top: PathBuf,
+    /// The Git directory Git named with it.
+    git_dir: PathBuf,
+    /// The working tree the records of that Git directory name, when they name one that can
+    /// be read.
+    recorded: Option<PathBuf>,
+}
+
+impl Unpaired {
+    /// What Git named, in words: the two working trees first, so that a reason a message cuts
+    /// for room ([`hook::REASON_CHARS`]) keeps them; the Git directory goes with the paths at
+    /// the end ([`Unpaired::git_dir_words`]).
+    fn words(&self) -> String {
+        format!(
+            "Git names {} as the working tree of a Git directory whose records name {}",
+            shown(&self.top),
+            self.recorded.as_deref().map_or_else(
+                || "no working tree that can be read".to_owned(),
+                |recorded| format!("{} as that tree", shown(recorded))
+            )
+        )
+    }
+
+    /// The Git directory Git named, in words.
+    fn git_dir_words(&self) -> String {
+        format!("the Git directory {}", shown(&self.git_dir))
+    }
+
+    /// Why a hook that has to know which working tree `dir` is in cannot.
+    fn reason(&self, dir: &Path) -> String {
+        format!(
+            "{}: which working tree {} is in could not be found out ({})",
+            self.words(),
+            shown(dir),
+            self.git_dir_words()
+        )
+    }
+}
+
+/// What the records of a repository say of a working tree and a Git directory that Git named
+/// together ([`pair_of`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Pair {
+    /// They are one tree.
+    One,
+    /// The main Git directory of a repository that records no top level of its main tree:
+    /// the directory is not named `.git` (one made apart with `--separate-git-dir`, or a
+    /// submodule's under `.git/modules`), and `git worktree list` names the Git directory
+    /// itself as that tree. Of the project's own repository a stop asks it against the
+    /// project ([`elsewhere`]).
+    Unrecorded,
+    /// They are not one tree: the top level the records name for that Git directory, when
+    /// they name one that can be read.
+    Not(Option<PathBuf>),
+}
+
+/// Whether the working tree `top` and the Git directory `git_dir` that Git named together are
+/// one tree of the repository whose common directory is `common`, by the repository's own
+/// records. All three are as they are on disk.
+///
+/// - A linked tree's Git directory (`<common>/worktrees/<id>`) records its tree in its file
+///   `gitdir`, which names the tree's `.git` file: that file's directory is the tree's top
+///   level, as `git worktree list` gives it ([`linked_instances`]). A Git directory that is
+///   not the common one and not under `worktrees`, and a `gitdir` that is missing or cannot
+///   be read, pair with no tree.
+/// - The main Git directory, named `.git`, is the main tree's: its directory is that tree's
+///   top level, as `git worktree list` gives it.
+///
+/// Git's answer was believed when the top it named held the session's directory. That is
+/// containment, not one tree: `core.worktree` in a linked tree's own configuration pointing
+/// at an outer linked tree it lies in, or at a subdirectory of itself with a clean copy of
+/// its files, and a copy of a linked tree made with `cp -a` (its `.git` file names the same
+/// Git directory), each made Git name a directory that holds the session's directory with
+/// the Git directory of another tree. That directory was judged as the tree, found clean,
+/// and what had blocked in the tree was forgotten; the next stop was silent with
+/// credentials there (review V4 round 23, VD4R23-M-1; fifteenth independent review of the
+/// hooks, HR15-L-1), or blocked a second time for the same failure (HR15-L-2).
+fn pair_of(top: &Path, git_dir: &Path, common: &Path) -> Pair {
+    if git_dir == common {
+        if common.file_name() != Some(OsStr::new(".git")) {
+            return Pair::Unrecorded;
+        }
+        return match common.parent() {
+            Some(main) if main == top => Pair::One,
+            main => Pair::Not(main.map(Path::to_path_buf)),
+        };
+    }
+    let under_worktrees = git_dir.parent().is_some_and(|parent| {
+        std::fs::canonicalize(common.join("worktrees")).is_ok_and(|all| all == parent)
+    });
+    if !under_worktrees {
+        return Pair::Not(None);
+    }
+    let recorded = pointed_path(&git_dir.join("gitdir"), b"", git_dir)
+        .and_then(|dot_git| dot_git.parent().map(same_form));
+    match recorded {
+        Some(recorded) if recorded == top => Pair::One,
+        recorded => Pair::Not(recorded),
+    }
+}
+
+/// What the directories `dirs` that Git named for `dir` are to a hook: the working tree they
+/// name, when the repository's records pair its top level with its Git directory
+/// ([`pair_of`]).
+fn placed(dir: &Path, dirs: RepositoryDirs) -> Found {
+    let Some(id) = identity(&dirs.common_dir) else {
+        return Found::Failed {
+            reason: format!(
+                "the Git directory of the repository {} is in could not be read",
+                shown(dir)
+            ),
+            words: format!(
+                "the Git directory {} could not be read",
+                shown(&dirs.common_dir)
+            ),
+        };
+    };
+    if let Pair::Not(recorded) = pair_of(&dirs.top, &dirs.git_dir, &dirs.common_dir) {
+        return Found::Unpaired(Box::new(Unpaired {
+            id,
+            top: dirs.top,
+            git_dir: dirs.git_dir,
+            recorded,
+        }));
+    }
+    Found::Tree(Place {
+        top: dirs.top,
+        own: dirs.common_dir.join("deep-diff-forge"),
+        git_dir: dirs.git_dir,
+        common: dirs.common_dir,
+        id,
+    })
 }
 
 /// What Git prints when it finds no repository around a directory, in the `C` locale.
@@ -408,25 +562,7 @@ fn find(dir: &Path, deadline: Deadline) -> Found {
         .env
         .push((OsString::from("LC_ALL"), OsString::from("C")));
     match repository_dirs(dir, &options) {
-        Ok(dirs) => match identity(&dirs.common_dir) {
-            Some(id) => Found::Tree(Place {
-                top: dirs.top,
-                own: dirs.common_dir.join("deep-diff-forge"),
-                git_dir: dirs.git_dir,
-                common: dirs.common_dir,
-                id,
-            }),
-            None => Found::Failed {
-                reason: format!(
-                    "the Git directory of the repository {} is in could not be read",
-                    shown(dir)
-                ),
-                words: format!(
-                    "the Git directory {} could not be read",
-                    shown(&dirs.common_dir)
-                ),
-            },
-        },
+        Ok(dirs) => placed(dir, dirs),
         Err(ref error @ GitAcquireError::CommandFailed { ref stderr, .. })
             if stderr.contains(NO_REPOSITORY) && stderr.contains(BOUNDARY) =>
         {
@@ -738,11 +874,23 @@ fn is_digest(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// The state a state file's text holds, without whether it is of the schema before.
+#[cfg(test)]
+fn state_from(text: &str) -> Result<State, &'static str> {
+    state_read(text).map(|(state, _)| state)
+}
+
 /// Read a state file's text. `Err` says why it is not a state this version wrote: such a file
 /// is never read as "no state", in part or whole. An empty state would make the next hook the
 /// session's first, and the commit `HEAD` names then its base: what the session had committed
 /// until then passed in silence (second independent review of the hooks, HR2-M-1).
-fn state_from(text: &str) -> Result<State, &'static str> {
+///
+/// With the state, whether the text is of the schema before ([`STATE_SCHEMA_BEFORE`]): such
+/// a state is written back in the new one by the first hook that reads it and keeps its state,
+/// whether or not that hook changes it ([`Session::keep`]). It is read into the same state as
+/// one of the new schema with no tree recorded, so the state alone could not tell, and a hook
+/// that changed nothing left the file as it was (review V4 round 23, VD4R23-L-1).
+fn state_read(text: &str) -> Result<(State, bool), &'static str> {
     const MEMBER: &str = "one of its members is missing";
     let value = serde_json::from_str::<Value>(text).map_err(|_| "it is not JSON")?;
     let before = value["schema"] == STATE_SCHEMA_BEFORE;
@@ -821,7 +969,7 @@ fn state_from(text: &str) -> Result<State, &'static str> {
     } else {
         trees_from(&value["trees"]).ok_or("what it says of the working trees is not whole")?
     };
-    Ok(State {
+    let state = State {
         trees,
         project,
         stops: value["stops"].as_u64().ok_or(MEMBER)?,
@@ -830,7 +978,8 @@ fn state_from(text: &str) -> Result<State, &'static str> {
         blocked: list("blocked", BLOCKED_CAP)?,
         judged_sha256: judged_sha256.to_owned(),
         judged_count,
-    })
+    };
+    Ok((state, before))
 }
 
 fn state_text(state: &State) -> String {
@@ -895,12 +1044,19 @@ fn recordable(top: &str) -> bool {
 /// file they would not read back.
 const STATE_CAP: u64 = 4 * 1024 * 1024;
 
+/// The state a session's state file holds, without whether it is of the schema before.
+#[cfg(test)]
+fn load(path: &Path) -> Result<Option<State>, String> {
+    load_read(path).map(|read| read.map(|(state, _)| state))
+}
+
 /// Read a session's state file: `Ok(None)` when there is none, `Err` with the reason when
 /// something stands at its name that is not a state the hooks can read (a link, another kind
 /// of file, a file over [`STATE_CAP`], other content). The file is opened without following a
 /// link and without waiting on a FIFO, must be a regular file once open, and its size is
-/// checked before anything is read (review V4, VD4-M-1).
-fn load(path: &Path) -> Result<Option<State>, String> {
+/// checked before anything is read (review V4, VD4-M-1). With the state, whether the file is
+/// of the schema before ([`state_read`]).
+fn load_read(path: &Path) -> Result<Option<(State, bool)>, String> {
     use std::os::unix::fs::OpenOptionsExt as _;
     let file = match std::fs::OpenOptions::new()
         .read(true)
@@ -924,7 +1080,7 @@ fn load(path: &Path) -> Result<Option<State>, String> {
     file.take(STATE_CAP)
         .read_to_string(&mut text)
         .map_err(|e| format!("it cannot be read ({e})"))?;
-    state_from(&text).map(Some).map_err(str::to_owned)
+    state_read(&text).map(Some).map_err(str::to_owned)
 }
 
 /// Write `text` beside `path` and move it into place, so a reader never sees half of it. The
@@ -1060,6 +1216,9 @@ struct Session {
     state: State,
     /// The state as the file holds it; `None` when there is no file.
     kept: Option<State>,
+    /// The file holds a state of the schema before ([`STATE_SCHEMA_BEFORE`]): it is written
+    /// in the new one at the next [`Session::keep`], changed or not.
+    upgrade: bool,
     /// The tips this hook recorded and has not written yet.
     tips: Option<Vec<String>>,
     /// The judged commits with what this hook added, not written yet.
@@ -1084,27 +1243,31 @@ impl Session {
             _ => {}
         }
         let file = state_file(&dir, id);
-        let kept = load(&file).map_err(|why| {
+        let read = load_read(&file).map_err(|why| {
             format!(
                 "this session's state file {} cannot be read as a state ({why}), so the project and the commit this session began from are not known; nothing is recorded over it (remove the file to have the next hook record the session anew)",
                 shown(&file)
             )
         })?;
+        let (kept, upgrade) = read.map_or((None, false), |(state, before)| (Some(state), before));
         Ok(Self {
             dir,
             file,
             state: kept.clone().unwrap_or_default(),
             kept,
+            upgrade,
             tips: None,
             judged: None,
         })
     }
 
-    /// Write the state if this hook changed it, making its directory first; and before it the
-    /// lists this hook recorded, so that a state never names a list that is not there.
+    /// Write the state if this hook changed it, or if the file holds the schema before,
+    /// making its directory first; and before it the lists this hook recorded, so that a state
+    /// never names a list that is not there.
     fn keep(&mut self) -> Result<(), String> {
         if self.tips.is_none()
             && self.judged.is_none()
+            && !self.upgrade
             && (self.kept.as_ref() == Some(&self.state)
                 || (self.kept.is_none() && self.state == State::default()))
         {
@@ -1127,6 +1290,7 @@ impl Session {
         }
         save(&self.file, &self.state)?;
         self.kept = Some(self.state.clone());
+        self.upgrade = false;
         self.tips = None;
         self.judged = None;
         Ok(())
@@ -1161,12 +1325,14 @@ impl Session {
             said(&self.state.noticed, &read.noticed),
         );
         let mine = std::mem::take(&mut self.state);
-        let now = load(&self.file).map_err(|why| {
+        let read = load_read(&self.file).map_err(|why| {
             format!(
                 "this session's state file {} cannot be read as a state ({why})",
                 shown(&self.file)
             )
         })?;
+        let (now, upgrade) = read.map_or((None, false), |(state, before)| (Some(state), before));
+        self.upgrade = upgrade;
         self.kept.clone_from(&now);
         self.state = now.unwrap_or_default();
         if self.state.project.is_none() {
@@ -1373,10 +1539,12 @@ const NEW_SESSION: &str = "start a new session to have the work there judged";
 /// a reboot was refused for good, with a reason that was not true (third independent review
 /// of the hooks, HR3-M-4).
 fn locate(input: &Input, session: &mut Session, deadline: Deadline) -> Located {
-    let named = match client_project_dir().map(|dir| find(&dir, deadline)) {
-        Some(Found::Tree(found)) => Some(found),
-        Some(Found::Failed { reason, .. }) => return Located::Trouble(reason),
-        Some(Found::NotARepository | Found::AtBoundary { .. } | Found::Gone) | None => None,
+    let client = client_project_dir();
+    let named = match client.as_deref().map(|dir| (find(dir, deadline), dir)) {
+        Some((Found::Tree(found), _)) => Some(found),
+        Some((Found::Failed { reason, .. }, _)) => return Located::Trouble(reason),
+        Some((Found::Unpaired(unpaired), dir)) => return Located::Trouble(unpaired.reason(dir)),
+        Some((Found::NotARepository | Found::AtBoundary { .. } | Found::Gone, _)) | None => None,
     };
     let Some(project) = session.state.project.clone() else {
         let place = if let Some(place) = named {
@@ -1393,6 +1561,7 @@ fn locate(input: &Input, session: &mut Session, deadline: Deadline) -> Located {
                     ));
                 }
                 Found::Failed { reason, .. } => return Located::Trouble(reason),
+                Found::Unpaired(unpaired) => return Located::Trouble(unpaired.reason(cwd)),
             }
         };
         return match record(&place, deadline) {
@@ -1432,6 +1601,7 @@ fn locate(input: &Input, session: &mut Session, deadline: Deadline) -> Located {
             hook::shown_path(&project.top)
         )),
         Found::Failed { reason, .. } => Located::Trouble(reason),
+        Found::Unpaired(unpaired) => Located::Trouble(unpaired.reason(recorded)),
         Found::NotARepository | Found::AtBoundary { .. } | Found::Gone => {
             Located::Trouble(format!(
                 "the project this session began in, {}, is no longer a Git working tree; {NEW_SESSION}",
@@ -2259,11 +2429,19 @@ struct Around<'a> {
 /// (eleventh, HR11-L-5). Where the directory is is found one way, first, for every use of
 /// it ([`standing_directory`]).
 ///
-/// What Git answers must hold the session's directory. Where it names a working tree that
-/// does not contain the directory (`core.worktree` in a linked tree's own configuration,
-/// pointing at the project), the stop is UNJUDGED with words that say so: from inside that
-/// tree the stop was silent, and what had blocked there was forgotten (fourteenth independent
-/// review of the hooks, HR14-L-4). Where Git stopped at a file-system boundary that a linked
+/// What Git answers is believed only as a pair that names one tree ([`pair_of`]): the top
+/// level it names and the Git directory it names must be one tree of the repository's own
+/// records; where they are not, the stop is UNJUDGED with words that say so, nothing of
+/// either tree is forgotten, and neither directory is judged as that tree at this stop
+/// ([`Unfound::Unpaired`]). For the project's main Git directory where the repository records
+/// no top level of its main tree (one made apart with `--separate-git-dir`), that top is the
+/// project's when the project is the main tree, and there is none to pair with when it is a
+/// linked one. And the top Git names must contain the directory as well: where it names a
+/// working tree that does not (`core.worktree` in a linked tree's own configuration pointing
+/// at the project), the stop was silent from inside that tree, and what had blocked there was
+/// forgotten (fourteenth independent review of the hooks, HR14-L-4); a pair holding the
+/// directory was not enough either (review V4 round 23, VD4R23-M-1; fifteenth, HR15-L-1 and
+/// HR15-L-2). Where Git stopped at a file-system boundary that a linked
 /// tree of the project lies across (a btrfs subvolume made inside it, a mount), Git has not
 /// said the directory is in no repository: the stop is UNJUDGED with Git's words, and that
 /// tree "may be in it" (fourteenth, HR14-L-3; it was named as a tree "the session's directory
@@ -2289,9 +2467,33 @@ fn elsewhere(cwd: &str, place: &Place, around: &Around<'_>, deadline: Deadline) 
         Elsewhere::Nothing
     } else {
         match find(&cwd, deadline) {
+            Found::Unpaired(unpaired) => return unpaired_here(&cwd, &unpaired),
+            Found::Tree(found)
+                if found.id == place.id
+                    && found.top != place.top
+                    && pair_of(&found.top, &found.git_dir, &found.common) == Pair::Unrecorded =>
+            {
+                let unpaired = Unpaired {
+                    id: found.id,
+                    top: found.top,
+                    git_dir: found.git_dir,
+                    recorded: (place.git_dir == place.common).then(|| place.top.clone()),
+                };
+                return unpaired_here(&cwd, &unpaired);
+            }
             Found::Tree(found) if !cwd.starts_with(&found.top) => {
+                // (from a submodule's Git directory, `.git/modules/<name>`, Git names the
+                // submodule's working tree: that is said, for a person to act on)
+                let inside = if cwd.starts_with(&place.common) {
+                    format!(
+                        ", which is inside the Git directory {}",
+                        shown(&place.common)
+                    )
+                } else {
+                    String::new()
+                };
                 let reason = format!(
-                    "Git names as the working tree a directory that does not contain the session's directory: whether the session's directory is another working tree could not be found out (Git names {}; the session's directory {})",
+                    "Git names as the working tree a directory that does not contain the session's directory: whether the session's directory is another working tree could not be found out (Git names {}; the session's directory {}{inside})",
                     shown(&found.top),
                     shown(&cwd)
                 );
@@ -2333,6 +2535,28 @@ fn elsewhere(cwd: &str, place: &Place, around: &Around<'_>, deadline: Deadline) 
         return Elsewhere::Failed(reason, Unfound::Under(cwd));
     }
     placed
+}
+
+/// Why a stop made from `cwd`, for which Git named a pair the repository's records do not
+/// pair ([`Found::Unpaired`]), is not judged; and the trees that may be the one: every tree
+/// `cwd` lies under, the tree at the top level Git named and the tree the records name.
+fn unpaired_here(cwd: &Path, unpaired: &Unpaired) -> Elsewhere {
+    let reason = format!(
+        "{}: whether the session's directory is another working tree could not be found out, and neither directory is judged as that tree ({}; the session's directory {})",
+        unpaired.words(),
+        unpaired.git_dir_words(),
+        shown(cwd)
+    );
+    let tops = std::iter::once(unpaired.top.clone())
+        .chain(unpaired.recorded.clone())
+        .collect();
+    Elsewhere::Failed(
+        reason,
+        Unfound::Unpaired {
+            cwd: cwd.to_path_buf(),
+            tops,
+        },
+    )
 }
 
 /// Whether a linked working tree of the project, of those at `linked`, lies across the
@@ -2965,10 +3189,13 @@ fn left_out(stopping: &Stopping<'_>, top: &Path, nested: &Path) -> Option<Note> 
     // or a failure that stands ([`other_trees`]). It was called "not judged" here at every
     // stop, also at the stop that had judged it, and from the project it was counted twice
     // (seventh independent review of the hooks, HR7-L-5).
-    let linked = matches!(
-        find(&top.join(nested), stopping.deadline),
-        Found::Tree(found) if found.id == stopping.work.place.id
-    );
+    let linked = match find(&top.join(nested), stopping.deadline) {
+        Found::Tree(found) => found.id == stopping.work.place.id,
+        // a tree of this repository Git names with another's Git directory: named by the
+        // rule for working trees, not as a repository of its own
+        Found::Unpaired(unpaired) => unpaired.id == stopping.work.place.id,
+        _ => false,
+    };
     (!linked).then(|| Note {
         name: format!("the nested repository {}", shown(nested)),
         text: format!(
@@ -3989,7 +4216,11 @@ fn other_trees(
         // (eleventh independent review of the hooks, HR11-M-1). Nothing of it is forgotten.
         if let Some(unfound) = unfound.filter(|unfound| unfound.may_be_in(&tree.path)) {
             let text = match unfound {
-                Unfound::Under(_) => format!(
+                Unfound::Unpaired { cwd, .. } if !cwd.starts_with(&tree.path) => format!(
+                    "Git named the working tree {} of this project with another directory for the session's directory, so whether the session's directory is in that tree could not be found out at this stop: what is not committed there was not judged.{standing}",
+                    shown_tree(&tree.path)
+                ),
+                Unfound::Under(_) | Unfound::Unpaired { .. } => format!(
                     "The session's directory is under the working tree {} of this project, and whether it is in that tree could not be found out at this stop: what is not committed there was not judged.{standing}",
                     shown_tree(&tree.path)
                 ),
@@ -4016,7 +4247,7 @@ fn other_trees(
             late = (late.0 + 1, late.1 + usize::from(stands));
             continue;
         }
-        match other_tree(stopping, tree, stands, looked_at, end.within(share)) {
+        match other_tree(stopping, (tree, &id), stands, looked_at, end.within(share)) {
             OtherTree::Nothing => {
                 out.clean.push(id);
                 out.clean.extend(olds);
@@ -4109,9 +4340,16 @@ enum OtherTree {
     Named(&'static str, String),
 }
 
-/// Look at the working tree `tree`, which the stop is not in, for changes that are not
-/// committed; `n` names the scratch directories of a reading. `stands`: something of the
-/// tree is remembered.
+/// Look at the working tree `tree`, which is the tree `id` ([`listed_instance`]) and which the
+/// stop is not in, for changes that are not committed; `n` names the scratch directories of a
+/// reading. `stands`: something of the tree is remembered.
+///
+/// What is read of it counts as its own only when Git names that tree there
+/// ([`names_the_tree`]), at every stop and for every listed tree: that was asked only where a
+/// failure stood and the reading found nothing, so a tree Git is pointed away from was read
+/// through the redirect wherever nothing stood, and once forgotten was never named again
+/// (fifteenth independent review of the hooks, HR15-L-1). One `git rev-parse` more for each
+/// tree looked at: at most [`OTHER_TREES`] a stop, each in the tree's share of the time.
 ///
 /// `git status` is a look, not the reading a stop judges by: it does not show a change in
 /// a file marked assume-unchanged, nor one that the repository's own configuration hides
@@ -4124,7 +4362,7 @@ enum OtherTree {
 /// nothing to forget, and the look decides only whether the tree is named.
 fn other_tree(
     stopping: &Stopping<'_>,
-    tree: &Worktree,
+    (tree, id): (&Worktree, &str),
     stands: bool,
     n: usize,
     within: Deadline,
@@ -4139,17 +4377,15 @@ fn other_tree(
             ),
         )
     };
+    match names_the_tree(&stopping.work.place, &tree.path, id, within) {
+        Ok(()) => {}
+        Err(None) => return OtherTree::Late,
+        Err(Some(reason)) => return unknown(&reason),
+    }
     match has_uncommitted_changes(&tree.path, &within.git()) {
         Ok(false) if !stands => OtherTree::Nothing,
         Ok(false) => match other_tree_read(stopping, &tree.path, n, within) {
-            // (what was read is this tree's only when Git names this tree there)
-            Reading::Nothing => match pointed_elsewhere(&tree.path, within) {
-                Some(top) => unknown(&format!(
-                    "Git names {} as the working tree there, which is not this tree",
-                    shown_tree(&top)
-                )),
-                None => OtherTree::Nothing,
-            },
+            Reading::Nothing => OtherTree::Nothing,
             Reading::NotRead(reason) => unknown(&reason),
             Reading::Found(()) => OtherTree::Named(
                 "",
@@ -4171,15 +4407,52 @@ fn other_tree(
     }
 }
 
-/// The working tree Git names for the tree at `path`, when that is another directory: its
-/// own configuration points Git elsewhere (`core.worktree`). What is read of the tree is
-/// then read of that other directory, and "nothing there" is not this tree's: what had
-/// blocked in it was forgotten at a stop made from the project (fourteenth independent
-/// review of the hooks, HR14-L-4). `None` when Git names the tree itself, or cannot say
-/// (the reading says why).
-fn pointed_elsewhere(path: &Path, within: Deadline) -> Option<PathBuf> {
-    let dirs = repository_dirs(path, &within.git()).ok()?;
-    (dirs.top != resolved(path)).then_some(dirs.top)
+/// Whether Git, asked at `path`, names the tree `id` of the project at `place` there: that
+/// directory as the top level, with a Git directory the repository's records pair with it
+/// ([`placed`]) that is the tree `id` ([`tree_instance`]). Otherwise what is read at `path`
+/// is read of another directory or under another tree's name, and "nothing there" is not
+/// this tree's: a tree whose own configuration points Git elsewhere (`core.worktree`) was
+/// forgotten at a stop made from the project (fourteenth independent review of the hooks,
+/// HR14-L-4; fifteenth, HR15-L-1; review V4 round 23, VD4R23-M-1). `Err(None)` when Git did
+/// not answer in the time it had; `Err(Some(why))` when it answered otherwise.
+fn names_the_tree(
+    place: &Place,
+    path: &Path,
+    id: &str,
+    within: Deadline,
+) -> Result<(), Option<String>> {
+    let dirs = match repository_dirs(path, &within.git()) {
+        Ok(dirs) => dirs,
+        Err(GitAcquireError::TimedOut { .. }) => return Err(None),
+        Err(error) => return Err(Some(git_words(&error))),
+    };
+    match placed(path, dirs) {
+        Found::Tree(found)
+            if found.top == resolved(path)
+                && found.id == place.id
+                && tree_instance(&found) == id =>
+        {
+            Ok(())
+        }
+        Found::Tree(found) if found.top == resolved(path) => Err(Some(format!(
+            "Git names {} as the working tree there with the Git directory {}, which is not this tree's",
+            shown_tree(&found.top),
+            shown(&found.git_dir)
+        ))),
+        Found::Tree(found) => Err(Some(format!(
+            "Git names {} as the working tree there, which is not this tree",
+            shown_tree(&found.top)
+        ))),
+        Found::Unpaired(unpaired) => Err(Some(format!(
+            "{}; {}",
+            unpaired.words(),
+            unpaired.git_dir_words()
+        ))),
+        Found::Failed { words, .. } => Err(Some(words)),
+        Found::NotARepository | Found::AtBoundary { .. } | Found::Gone => {
+            Err(Some("Git names no working tree there".to_owned()))
+        }
+    }
 }
 
 /// Whether the working tree at `top`, which the stop is not in, has anything that is not
@@ -4225,6 +4498,11 @@ const STAGED_NOT_APART: &str = "what is staged fails, and which of that is the s
 enum Unfound {
     /// It is this directory, or under it: a tree this lies under may be the one.
     Under(PathBuf),
+    /// It is `cwd`, for which Git named a top level and a Git directory the repository's
+    /// records do not pair ([`Found::Unpaired`]): a tree `cwd` lies under may be the one, and
+    /// so may the trees at `tops` (the one Git named, the one the records name), of which
+    /// nothing is forgotten either.
+    Unpaired { cwd: PathBuf, tops: Vec<PathBuf> },
     /// Where it is is not known: any tree may be the one.
     Anywhere,
 }
@@ -4234,6 +4512,9 @@ impl Unfound {
     fn may_be_in(&self, top: &Path) -> bool {
         match self {
             Self::Under(cwd) => cwd.starts_with(top),
+            Self::Unpaired { cwd, tops } => {
+                cwd.starts_with(top) || tops.iter().any(|named| same_form(named) == same_form(top))
+            }
             Self::Anywhere => true,
         }
     }
@@ -6110,6 +6391,7 @@ pub(crate) fn gate(cwd: &Path, args: &[String]) -> Vec<GateCheck> {
             Err("this directory is not in a Git repository".to_owned())
         }
         Found::Failed { reason, .. } => Err(reason),
+        Found::Unpaired(unpaired) => Err(unpaired.reason(cwd)),
     };
     gate_in(
         cwd,
@@ -8479,7 +8761,11 @@ mod tests {
                         "reported": [], "noticed": [], "blocked": [entry],
                         "judged_sha256": "", "judged_count": 0})
         .to_string();
-        let state = state_from(&v9).unwrap();
+        let (state, before) = state_read(&v9).unwrap();
+        assert!(
+            before,
+            "a state of the schema before is written back in the new one"
+        );
         assert_eq!(state.blocked, std::slice::from_ref(&entry));
         assert!(state.trees.is_empty());
         assert_eq!(state.stops, 3);
@@ -8488,7 +8774,7 @@ mod tests {
             text.contains("\"schema\":\"deep-diff-forge.hook-state.v10\""),
             "{text}"
         );
-        assert_eq!(state_from(&text), Ok(state));
+        assert_eq!(state_read(&text), Ok((state, false)));
         for trees in [
             json!(null),
             json!([]),
@@ -8532,6 +8818,12 @@ mod tests {
             entry("home/project"),
             entry("elsewhere"),
             entry("home/feature"),
+            // through the project, to a directory beside it: it stays (fifteenth review)
+            entry("home/project/../hidden"),
+            // through a directory that is not there, into the project: left out
+            entry("home/gone/../project/x"),
+            // through a link, up from where it leads: beside the tree, so it stays
+            entry("alias/../other"),
         ]
         .join(":");
         let wanted = [
@@ -8539,6 +8831,8 @@ mod tests {
             String::new(),
             "relative".to_owned(),
             entry("elsewhere"),
+            entry("home/project/../hidden"),
+            entry("alias/../other"),
         ]
         .join(":");
         assert_eq!(
@@ -8565,6 +8859,191 @@ mod tests {
             OsString::from("GIT_CEILING_DIRECTORIES"),
             OsString::from("/a:/b")
         )));
+    }
+
+    /// Review V4 round 23, VD4R23-M-1, and the fifteenth independent review of the hooks,
+    /// HR15-L-1 and HR15-L-2: Git's answer is believed only as a pair that names one tree of
+    /// the repository's records. A linked Git directory pairs with the directory its `gitdir`
+    /// file names; the main one, named `.git`, with its own directory; a main Git directory of
+    /// another name records no top level. Everything else, and a `gitdir` that is missing or
+    /// cannot be read, pairs with no tree.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table: every way Git's pair can be one tree of the records or not"
+    )]
+    fn git_is_believed_only_as_a_pair_that_names_one_tree() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-pair");
+        let root = std::fs::canonicalize(scratch.path()).unwrap();
+        let repo = root.join("repo");
+        let common = repo.join(".git");
+        for dir in [
+            "repo/.git/worktrees/l",
+            "repo/.git/worktrees/i",
+            "repo/.git/worktrees/missing",
+            "repo/.git/worktrees/unreadable/gitdir",
+            "repo/sub",
+            "linked/sub",
+            "outer/inner",
+            "copy",
+            "elsewhere/admin",
+            "apart/repo.git",
+            "apart/work",
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let admin = |name: &str| common.join("worktrees").join(name);
+        let linked = root.join("linked");
+        std::fs::write(
+            admin("l").join("gitdir"),
+            format!("{}\n", linked.join(".git").display()),
+        )
+        .unwrap();
+        // written relative to the administrative directory, as `--relative-paths` writes it
+        std::fs::write(admin("i").join("gitdir"), "../../../../outer/inner/.git\n").unwrap();
+        std::fs::write(
+            root.join("elsewhere/admin/gitdir"),
+            format!("{}\n", linked.join(".git").display()),
+        )
+        .unwrap();
+        let (outer, inner) = (root.join("outer"), root.join("outer/inner"));
+        let apart = root.join("apart/repo.git");
+        let table: [(&str, PathBuf, PathBuf, PathBuf, Pair); 13] = [
+            (
+                "main",
+                repo.clone(),
+                common.clone(),
+                common.clone(),
+                Pair::One,
+            ),
+            (
+                "main pointed at a subdirectory",
+                repo.join("sub"),
+                common.clone(),
+                common.clone(),
+                Pair::Not(Some(repo.clone())),
+            ),
+            (
+                "linked",
+                linked.clone(),
+                admin("l"),
+                common.clone(),
+                Pair::One,
+            ),
+            (
+                "linked, its gitdir relative",
+                inner.clone(),
+                admin("i"),
+                common.clone(),
+                Pair::One,
+            ),
+            (
+                "linked pointed at the main tree",
+                repo.clone(),
+                admin("l"),
+                common.clone(),
+                Pair::Not(Some(linked.clone())),
+            ),
+            (
+                "linked pointed at an outer tree it lies in",
+                outer,
+                admin("i"),
+                common.clone(),
+                Pair::Not(Some(inner)),
+            ),
+            (
+                "linked pointed at a subdirectory of itself",
+                linked.join("sub"),
+                admin("l"),
+                common.clone(),
+                Pair::Not(Some(linked.clone())),
+            ),
+            (
+                "a copy of a linked tree",
+                root.join("copy"),
+                admin("l"),
+                common.clone(),
+                Pair::Not(Some(linked.clone())),
+            ),
+            (
+                "gitdir missing",
+                linked.clone(),
+                admin("missing"),
+                common.clone(),
+                Pair::Not(None),
+            ),
+            (
+                "gitdir unreadable",
+                linked.clone(),
+                admin("unreadable"),
+                common.clone(),
+                Pair::Not(None),
+            ),
+            (
+                "a Git directory not under worktrees",
+                linked.clone(),
+                root.join("elsewhere/admin"),
+                common.clone(),
+                Pair::Not(None),
+            ),
+            (
+                "linked, of another common directory",
+                linked,
+                admin("l"),
+                apart.clone(),
+                Pair::Not(None),
+            ),
+            (
+                "a main Git directory made apart",
+                root.join("apart/work"),
+                apart.clone(),
+                apart,
+                Pair::Unrecorded,
+            ),
+        ];
+        for (case, top, git_dir, common, wanted) in table {
+            assert_eq!(pair_of(&top, &git_dir, &common), wanted, "{case}");
+        }
+        // the two trees come first in the words, the Git directory after them, so that a reason
+        // cut for room keeps the trees
+        let unpaired = Unpaired {
+            id: String::new(),
+            top: root.join("outer"),
+            git_dir: admin("i"),
+            recorded: Some(root.join("outer/inner")),
+        };
+        let words = unpaired.words();
+        assert!(
+            words.starts_with("Git names ")
+                && words.contains(
+                    "/outer\" as the working tree of a Git directory whose records name "
+                )
+                && words.ends_with("/outer/inner\" as that tree"),
+            "{words}"
+        );
+        let reason = unpaired.reason(&root.join("outer/inner/lib"));
+        assert!(
+            reason.starts_with(&words) && reason.ends_with("/repo/.git/worktrees/i\")"),
+            "{reason}"
+        );
+        let unrecorded = Unpaired {
+            recorded: None,
+            ..unpaired
+        };
+        assert!(
+            unrecorded
+                .words()
+                .ends_with("whose records name no working tree that can be read")
+        );
+        // the trees such a stop holds: every tree the directory lies under, and the two named
+        let unfound = Unfound::Unpaired {
+            cwd: root.join("copy/lib"),
+            tops: vec![root.join("copy"), root.join("linked")],
+        };
+        assert!(unfound.may_be_in(&root.join("copy")));
+        assert!(unfound.may_be_in(&root.join("linked/.")));
+        assert!(unfound.may_be_in(&root));
+        assert!(!unfound.may_be_in(&root.join("repo")));
     }
 
     /// Fourteenth independent review of the hooks, HR14-L-3: where Git stopped at a
