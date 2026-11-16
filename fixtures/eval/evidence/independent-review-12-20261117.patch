@@ -1,0 +1,26 @@
+diff --git a/tests/four.rs b/tests/four.rs
+--- a/tests/four.rs
++++ b/tests/four.rs
+@@ -2,8 +2,8 @@
+ #[cfg_attr(
+     any(
+         target_os = "windows",
+-        target_os = "macos",
+-        target_arch = "wasm32",
++        target_os = "ios",
++        target_arch = "wasm64",
+         target_env = "musl"
+     ),
+     ignore = "slow on these platforms"
+diff --git a/src/deep.rs b/src/deep.rs
+--- a/src/deep.rs
++++ b/src/deep.rs
+@@ -6 +6 @@ fn main() {
+-    x
++    #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, 
+diff --git a/src/mutmacro.rs b/src/mutmacro.rs
+--- a/src/mutmacro.rs
++++ b/src/mutmacro.rs
+@@ -1 +1 @@
+-discard! { old }
++discard! { mut <Command>::new("true") }

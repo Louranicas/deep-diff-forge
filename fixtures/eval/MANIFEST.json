@@ -2348,6 +2348,36 @@
         }
       ],
       "sha256": "948ce0424233ccd343d16f6d3a28e7253ccac566c1b1d45c79b10bfc1f5341cf"
+    },
+    {
+      "id": "evidence/independent-review-12-20261117",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-12-20261117.patch",
+      "origin": "internal: round 19 of Vesper's review (docs/reviews/vesper-v3-round19-report-20261117.md: VD3R19-M-1, VD3R19-L-1) and a twelfth independent review by a Claude subagent (docs/reviews/claude-independent-review-12-20261117.md: IR12-L-1, IR12-L-2, IR12-L-3), 2026-11-17, each reproduced on the frozen binaries; the line's build rounds are over, and all three are declared, not fixed (the coordinator's closing diff). Declared miss, ordinary (IR12-L-1): rustfmt's vertical layout of a `cfg_attr` list (`any(`, four targets, `),`, `ignore = \"…\"`, `)]`) with two targets changed, as plain `git diff` (three lines of context) writes it: the hunk ends on the `ignore` line, before `)]` (tests/four.rs, the review's `four-u3.patch`; rounds 14 and 18 report the skip, release 0.8.3 does not). A skip is read only where the side holds its attribute whole, and this miss happens wherever a hunk ends between the `ignore` and the `)]`, at any context width. Declared false positive, writer's (VD3R19-M-1 = IR12-L-2): seventeen `#[cfg_attr(a, ` opened inside one another in the tokens of a macro that discards them, with no `ignore` (src/deep.rs, the review's `deep17-u0.patch`; it compiles and skips nothing): the seventeenth list is past `CFG_ATTR_LISTS` (16), is not followed and is taken to hold a skip (rounds 14 to 19; release 0.8.3 reports nothing). Declared false positive, writer's (VD3R19-L-1 = IR12-L-3): `discard! { mut <Command>::new(\"true\") }` (src/mutmacro.rs, Vesper's `mut-macro.patch`; it compiles and spawns nothing): the keyword rule is lexical and reads a bracketed released path after any `mut` straight before it, `&mut` being the measured case",
+      "expect": [],
+      "known_miss": [
+        {
+          "path": "tests/four.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 5
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/deep.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/mutmacro.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 1
+        }
+      ],
+      "sha256": "5ee746068298582cc8096ec06370c97a3697fde16cc5eefa18bc95d7920e700f"
     }
   ]
 }

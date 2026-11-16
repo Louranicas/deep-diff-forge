@@ -82,9 +82,9 @@
 //!     macro, which takes any tokens (`discard! { value.unwrap:: NOT_A_CALL }` compiles; round
 //!     17 of Vesper's review, VD3R17-M-1, and the tenth independent review, IR10-L-3). Since
 //!     round 18 no form is read there. Round 18 still read a skip's attribute from the token
-//!     after its `ignore`, and in such a macro `#[ignore(` goes on as anything (round 18 of
-//!     Vesper's review, VD3R18-M-1): since round 19 a skip is read only where the side holds
-//!     its attribute whole, from `#` to its `]`.
+//!     after its `ignore` (`#[ignore(`; round 18 of Vesper's review, VD3R18-M-1): since round
+//!     19 a skip is read only where the side holds its attribute whole, `#` to `]`, but for
+//!     a seventeenth `cfg_attr` list nested in 16 ([`CFG_ATTR_LISTS`]), taken to hold one.
 //!   - The beginning of a side is read as the first tokens of its text, and a side's first
 //!     token can go on from a line the side does not show. So a bracketed released path at
 //!     the very start of a side, `<Command>::new()`, is read as the path even where an
@@ -95,14 +95,14 @@
 //!     `<Command>::new(…)` written over two lines.
 //!   - A `cfg_attr` list that the side leaves open, on its `ignore` or after it (`ignore`,
 //!     `ignore = "…"`, `ignore(…)`, up to its `)]`), is no skip, by the same rule: `ignore`
-//!     can go on as `ignore::case`, an attribute of a crate or a module of that name, and in
-//!     a macro that takes any tokens anything can follow. This is *ordinary*: rustfmt writes
-//!     a long condition over lines and `ignore` or `ignore = "…"` alone on the line above
-//!     `)]`, so a `git diff -U0` of two rustfmt-clean files ends there (tenth independent
-//!     review, `cfgu0.patch`; with a reason, round 19's `cfgeqnew-u0.patch`). Rounds 13 to
-//!     16 read the bare `ignore` there as a skip and rounds 13 to 18 the one with a reason:
-//!     these are the places where a later round reports less than round 14 did (release
-//!     0.8.3 reports nothing there).
+//!     can go on as `ignore::case`, and in a macro that takes any tokens anything can
+//!     follow. This is *ordinary*: rustfmt writes `ignore` or `ignore = "…"` alone above
+//!     `)]`, and wherever a hunk ends between the `ignore` and the `)]`, at any context width
+//!     (plain `git diff` included), the skip is not read (`-U0`: `cfgu0.patch`,
+//!     `cfgeqnew-u0.patch`; three lines of context: the twelfth review's `four-u3.patch`,
+//!     IR12-L-1). Rounds 13 to 16 read the bare `ignore` there as a skip and rounds 13 to 18
+//!     the one with a reason: these are the places where a later round reports less than
+//!     round 14 did (release 0.8.3 reports nothing there).
 //!   - The further readings cost false items. From inside a comment: the text after a `*/`
 //!     in a string near the start of a fragment (1 on the fragments, 8 on the history). From
 //!     inside a string: the text of the side's own strings (60 and 24). From inside a raw
@@ -282,14 +282,14 @@ enum Word {
 impl Word {
     /// A keyword of rustc 1.99.1 after which an expression can begin and a `<` opens a path in
     /// angle brackets: `return`, `match`, `in` (of `for … in`), `break` (its label too: `break
-    /// 'l <Command>::new(…)`), `yield`, `if`, `while`, `mut` (of `&mut`) and `become`; and
-    /// `yeet` after `do` (read in [`released_path`]). The list is measured, not chosen: each
-    /// strict and reserved keyword of the Rust reference, and `yeet` after `do`, was compiled
-    /// before `<Command>::new("true")` in every position that fits it, and these are the ones
-    /// that compile (`yield`, `become` and `do yeet` with a nightly feature; tenth independent
-    /// review, IR10-L-2; eleventh, IR11-L-2, `&mut <Command>::new(…)`; round 18 of Vesper's
-    /// review, VD3R18-L-1, `become` and `do yeet`). `else` is not among them (only `{` or `if`
-    /// can follow it), nor `const` and `mut` after `&raw` (a temporary has no address).
+    /// 'l <Command>::new(…)`), `yield`, `if`, `while`, `mut` (measured as `&mut`) and `become`;
+    /// and `yeet` after `do` (read in [`released_path`]). The list is measured: each strict and
+    /// reserved keyword, and `yeet` after `do`, was compiled before `<Command>::new("true")` in
+    /// every position that fits it, and these compile (`yield`, `become`, `do yeet` with a
+    /// nightly feature; IR10-L-2, IR11-L-2, VD3R18-L-1). `else` is not among them, nor `const`
+    /// after `&raw` (no address of a temporary). The rule is lexical, the one word before the
+    /// `<`: any `mut` opens it, so `&raw mut <Command>::new(…)` (refused, E0745) and `mut <…>`
+    /// in a macro's discarded tokens are a writer's false items (VD3R19-L-1, IR12-L-3).
     const fn begins_expression(self) -> bool {
         matches!(
             self,
@@ -735,11 +735,11 @@ fn stub<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Option<
 /// (compiled and run on edition 2018: the test does not run; from edition 2021 it is an error).
 ///
 /// The attribute is read only when the side's text holds it whole, from its `#` to the `]`
-/// that closes its `[` ([`TURBOFISH_TOKENS`] tokens at most from `[` to `]`): inside a macro
-/// that takes any tokens `#[ignore(` goes on as anything (`discard! { #[ignore(` and
-/// `NOT_A_SKIP )] }` compiles and skips no test; round 18 of Vesper's review, VD3R18-M-1, of
-/// a `git diff -U0` that ends on the parenthesis). The construct, for where it is evidence, is
-/// still `#[ignore` and the token after it.
+/// that closes its `[` ([`TURBOFISH_TOKENS`] tokens at most from `[` to `]`; a `cfg_attr` list
+/// past [`CFG_ATTR_LISTS`] is the one exception, see [`Skips`]): in a macro that takes any
+/// tokens `#[ignore(` goes on as anything (`discard! { #[ignore(` and `NOT_A_SKIP )] }`
+/// compiles and skips no test; VD3R18-M-1, a `git diff -U0` that ends on the parenthesis).
+/// The construct, for where it is evidence, is still `#[ignore` and the token after it.
 fn ignored<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Option<(usize, usize)> {
     let at = window.at;
     let open = if window.marks(at + 1, b'!') {
@@ -1067,7 +1067,7 @@ struct List {
     candidate: Option<(Option<usize>, usize)>,
     /// The skip it holds so far: the first changed line of the list up to an `ignore` that is
     /// an attribute of its own, and the rung. It is noted only when the list closes and the
-    /// attribute's `]` follows: a skip is read only where the side holds the attribute whole.
+    /// attribute's `]` follows (a list past [`CFG_ATTR_LISTS`] is not followed at all).
     skip: Option<(usize, Basis)>,
     /// Its closing parenthesis has been read.
     closed: bool,
@@ -1104,10 +1104,10 @@ impl List {
 /// follows it (`cfg_attr(all(), ignore(flaky))` switches the test off where the lint
 /// `ill_formed_attribute_input` is allowed: see [`ignored`]). The skip is read only when the
 /// side's text holds the attribute whole, to the list's `)` and the `]` after it (so an
-/// `ignore(` to its matching `)`): a hunk side is read as text that ends there, `ignore` can
-/// go on as `ignore::case`, and inside a macro that takes any tokens `cfg_attr(all(),
-/// ignore(` goes on as anything (round 18 of Vesper's review, VD3R18-M-1). A list opened past
-/// [`CFG_ATTR_LISTS`] is the one exception: it is not followed, and is taken to hold a skip.
+/// `ignore(` to its matching `)`): `ignore` can go on as `ignore::case`, and in a macro
+/// `cfg_attr(all(), ignore(` goes on as anything (VD3R18-M-1). The one exception: a list opened
+/// past [`CFG_ATTR_LISTS`] is not followed and is taken to hold a skip, with no `ignore` and no
+/// `]` (a writer's false item; round 19 of Vesper's review, VD3R19-M-1; IR12-L-2).
 #[derive(Default)]
 struct Skips {
     open: Vec<List>,

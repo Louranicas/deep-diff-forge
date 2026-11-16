@@ -665,6 +665,42 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     (the last was pending from round 18). Pedantic clippy (workspace, all targets, and the
     fuzz crate), `cargo fmt --check` and the workspace's tests (2,084 passed, 4 ignored)
     are clean.
+  - *The round 19 reviews (addendum, 2026-11-17; documents and corpus only, no code).* Both
+    reviews read the round 19 commit (`f819a56`). Vesper said NO-GO on one medium and
+    recommended narrowing with no further round; the twelfth independent review said
+    GO-WITH-FIXES, documents only (it found nothing lower than release 0.8.3, and nothing
+    lower than round 14 on 15,864 patches of the `-U0`, `-U1` and `-U3` history of ten real
+    repositories). The line's build rounds are over, so each finding is declared, and the
+    release binary is unchanged (it is byte for byte the round 19 build).
+    - *The rustfmt `ignore` miss is not `-U0` only (IR12-L-1, ordinary).* This entry says
+      `git diff -U0` ends a hunk on `ignore = "reason"`, and the round 19 ruling said the
+      default three lines of context show the `)]`. **That was too narrow:** wherever a hunk
+      ends between the `ignore` and the `)]`, at any context width (plain `git diff`
+      included), the skip is not read. Plain `git diff` of a change to two targets of
+      rustfmt's vertical `any(…)` ends its hunk on the `ignore` line (the review's
+      `four-u3.patch`; rounds 14 and 18 report the skip, release 0.8.3 does not); `-U1` does
+      after a changed line of the condition. The README, the head of `rust_tokens` and the
+      test's doc say so; `four-u3.patch` is a declared miss in the corpus.
+    - *A seventeenth nested `cfg_attr` list is taken to hold a skip (VD3R19-M-1 = IR12-L-2,
+      a writer's).* "A skip is read only where the side holds its attribute whole" holds for
+      the first 16 `#[cfg_attr(` lists followed at once (`CFG_ATTR_LISTS`). One opened
+      inside 16 others is not followed and is taken to hold a skip, with no `ignore` and no
+      `]`: seventeen openers in the tokens of a macro that discards them compile and skip
+      nothing, and rounds 14 to 19 report a `test_skipped` (release 0.8.3 does not). Only a
+      macro's token tree nests lists so. Every sentence of that rule now says so (README,
+      the head of `rust_tokens`, the docs of `ignored` and `Skips`, the testing document);
+      the review's `deep17-u0.patch` is a declared false positive in the corpus.
+    - *The keyword rule is lexical (VD3R19-L-1 = IR12-L-3, a writer's).* A bracketed
+      released path is read after any `mut` straight before its `<`; `&mut` is the measured
+      case. So `&raw mut <Command>::new("true")` (which the compiler refuses, E0745) and
+      `discard! { mut <Command>::new("true") }` (which compiles and spawns nothing) are read
+      as `process_spawn`, new against round 18. The sentence "nor `const` or `mut` after
+      `&raw`" in the README and the doc of `begins_expression` was false and now reads "nor
+      `const` after `&raw`", with the lexical rule and its false items stated. Vesper's
+      `mut-macro.patch` is a declared false positive in the corpus.
+    - *Corpus.* New case `evidence/independent-review-12-20261117`: 55 cases, precision
+      177/203, recall 177/260, findings 33/33, ranking 12/15, 112 declared (83 evidence
+      `known_miss`). Both floors fell, on purpose.
 - **Round 17 of Vesper's review (NO-GO on one medium) and a tenth independent review
   (GO-WITH-FIXES, nothing high): no form is read at the end of a hunk side.** Both
   reviews read the round 17 commit (`aa4acb7`). The tenth found it never lower than

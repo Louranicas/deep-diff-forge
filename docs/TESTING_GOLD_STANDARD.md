@@ -114,14 +114,18 @@ era) no longer holds. How the standard is enforced today:
   `cfg_attr` list among the constructs of its rule 5. The graph crate's tests hold that no
   form of the 52 that rounds 13 to 17 read at an edge gives an item there, on either side,
   spaced or a token a line, in a macro's braces or not. In round 19 a skip is read only
-  where the side holds its attribute whole, from `#` to its `]` (round 18 still read
+  where the side holds its attribute whole, from `#` to its `]`, for the first 16
+  `cfg_attr` lists followed at once (a seventeenth nested one is taken to hold a skip with
+  no `ignore` and no `]`, a writer's false item: VD3R19-M-1, IR12-L-2) (round 18 still read
   `#[ignore(` from its parenthesis, and in a macro that takes any tokens it goes on as
   anything: round 18 of Vesper's review, VD3R18-M-1), and the list of forms has 63 (the
   skip's attributes that rounds 13 to 18 read before their `]`, Vesper's two one-line
   sides among them); a test holds the bound of the whole attribute (`#[ignore(…)]` of up
   to 64 tokens from `[` to `]`). The keywords after which a `<` opens a bracketed path
   are the ones rustc 1.99.1 compiles before `<Command>::new("true")`, and a test holds
-  each added one (`&mut`, `become`, `do yeet`) and a name before the `<` as controls.
+  each added one (`&mut`, `become`, `do yeet`) and a name before the `<` as controls; the
+  rule is lexical (any `mut` straight before the `<`, so `&raw mut` and `mut` in a macro's
+  discarded tokens are a writer's false items: VD3R19-L-1, IR12-L-3).
   The fuzz targets are unchanged in this round.
 - **Sandbox refusal controls:** the rootless-Podman planted-breach suite
   (`crates/deep-diff-forge-cli/tests/council_sandbox.rs`, 12 probes) runs on
@@ -136,9 +140,9 @@ era) no longer holds. How the standard is enforced today:
   `fuzz_target.sh` lists targets with a TOML parser and fuzzes a new private
   corpus each run, under a root it makes if missing.
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
-  `fixtures/eval` (54 cases, measured 2026-11-16) must score at least its floors,
-  which are the measured values: ranking pairs 12/15, evidence precision 177/201,
-  evidence recall 177/259, findings 33/33. Any undeclared miss fails. The 109
+  `fixtures/eval` (55 cases, measured 2026-11-17) must score at least its floors,
+  which are the measured values: ranking pairs 12/15, evidence precision 177/203,
+  evidence recall 177/260, findings 33/33. Any undeclared miss fails. The 112
   declared misses (`known_miss`, `known_false_positive`) count as wrong in their
   metric rather than being excluded, and each fails once the engine gets it
   right. Planted controls prove a wrong label fails with exit 7, a changed file,

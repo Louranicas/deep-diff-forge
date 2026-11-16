@@ -9058,8 +9058,11 @@ mod tests {
     /// `)]`) is not read: it can go on as `ignore::case`, and a hunk side is read as text that
     /// ends there. That one is an ordinary declared miss (the coordinator's ruling of round
     /// 17, kept in round 18). Since round 19 a skip is read only where the side holds its
-    /// attribute whole, and the same layout with a reason, `ignore = "…"` alone above `)]`, is
-    /// the same ordinary miss (rounds 13 to 18 read it).
+    /// attribute whole (but for a seventeenth nested `cfg_attr` list, taken to hold one), and
+    /// the same layout with a reason, `ignore = "…"` alone above `)]`, is the same ordinary miss
+    /// (rounds 13 to 18 read it). Neither is `-U0` only: wherever a hunk ends between the
+    /// `ignore` and the `)]`, at any context width, the skip is not read (the twelfth
+    /// independent review's `four-u3.patch`, plain `git diff`, IR12-L-1).
     #[test]
     fn an_ignore_with_arguments_is_a_skip_and_a_bare_ignore_at_the_end_is_not() {
         let file = parse(
