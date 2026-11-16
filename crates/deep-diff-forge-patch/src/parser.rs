@@ -1466,14 +1466,22 @@ impl FileBuf {
         // information"): a `diff --git i/x w/y` mode change was reviewed as a file with an
         // empty path (bug hunt 2026-11-01).
         // So does Git when the `diff --git` halves name two paths (`git_header_name` gives no
-        // name) and no `---`/`+++`, rename or copy header names the files: the rightmost ` b/`
-        // was taken, so a binary change or a deletion was reviewed where Git wrote nothing
-        // (generated differential, 2026-11-17).
+        // name) and no `---`/`+++`, rename or copy header names the files. Git's diff writes
+        // that only for two files compared with `git diff --no-index` (a binary or mode-only
+        // pair), which stays reviewed as the pair; never for a file created or deleted, which
+        // was reviewed under the rightmost ` b/` where Git wrote nothing (generated
+        // differential, 2026-11-17).
         let named = self.old_raw.is_some()
             || self.new_raw.is_some()
             || self.rename_to.is_some()
             || self.copy_to.is_some();
-        if self.resolve_path().is_empty() || (self.git && self.git_old != self.git_new && !named) {
+        let whole = self
+            .metadata
+            .iter()
+            .any(|m| m.starts_with("new file mode ") || m.starts_with("deleted file mode "));
+        if self.resolve_path().is_empty()
+            || (self.git && self.git_old != self.git_new && !named && whole)
+        {
             return Err(PatchParseError::InvalidPath {
                 line_number: self.first_line,
             });
@@ -3498,6 +3506,12 @@ diff --git a/x b/x
             ("diff --git i/a b/c w/a b/c", "a b/c"),
             ("diff --git i/x \"w/x\"", "x"),
             ("diff --git a/x \"b/x\"", "x"),
+            // Different names, as `git diff --no-index` writes them for two files: the
+            // rightmost ` b/` still splits them (Git takes no name from the line, and `git
+            // apply` refuses the section: a stated limit, `CONFORMANCE.md` row `diff-git`).
+            ("diff --git a/x b/y", "y"),
+            // A CR ending the line is not part of the first name, so the halves never match.
+            ("diff --git a/x b/x\r", "x\r"),
         ] {
             let file = one(&format!("{line}\nold mode 100644\nnew mode 100755\n"));
             assert_eq!(
@@ -3506,15 +3520,15 @@ diff --git a/x b/x
                 "{line}"
             );
         }
-        // Different names, as `git diff --no-index` writes them for two files, or a CR ending
-        // the line (not part of the first name, so the halves never match): Git takes no name
-        // from the line, and with no other header naming the files it refuses the section
-        // ("lacks filename information"). 0.8.4 took the rightmost ` b/`.
-        for line in ["diff --git a/x b/y", "diff --git a/x b/x\r"] {
+        // A file created or deleted under halves that name two paths, which no Git writes:
+        // refused, as Git refuses it (0.8.4 took the rightmost ` b/`).
+        for headers in ["deleted file mode 100644\n", "new file mode 100644\n"] {
             assert_eq!(
-                parse(&format!("{line}\nold mode 100644\nnew mode 100755\n")),
+                parse(&format!(
+                    "diff --git a/x b/y\n{headers}index 1111111..0000000\n"
+                )),
                 Err(PatchParseError::InvalidPath { line_number: 1 }),
-                "{line}"
+                "{headers}"
             );
         }
     }

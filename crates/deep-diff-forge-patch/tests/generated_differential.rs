@@ -424,7 +424,31 @@ struct Tally {
     applied_as_read: usize,
     /// Git applies, DDF refuses: by DDF's reason and the moves that made the patch.
     git_only: BTreeMap<String, usize>,
+    /// DDF reads, Git refuses to read: a section shaped as `git diff --no-index` writes a binary
+    /// or mode-only pair of two files (the stated limit of `CONFORMANCE.md`, row `diff-git`).
+    no_index: usize,
     failures: Vec<String>,
+}
+
+/// Whether a section's `diff --git` halves name two paths with nothing else naming the files
+/// and no file created or deleted: what `git diff --no-index` writes for a binary or mode-only
+/// pair, which Git's own `git apply` cannot read.
+fn no_index_pair(patch: &str) -> bool {
+    sections(patch).iter().any(|s| {
+        let named = s.header.iter().any(|l| {
+            [
+                "--- ",
+                "rename ",
+                "copy ",
+                "new file mode ",
+                "deleted file mode ",
+            ]
+            .iter()
+            .any(|p| l.starts_with(p))
+        });
+        let halves = names(s);
+        halves.len() == 2 && halves[0] != halves[1] && !named
+    })
 }
 
 fn fill(text: &str, ids: &BTreeMap<&str, String>) -> String {
@@ -463,9 +487,13 @@ fn run(seeds: &[u64], tag: &str) -> Tally {
                 Ok(files) => {
                     tally.read += 1;
                     if reading.is_none() {
-                        tally
-                            .failures
-                            .push(format!("DDF reads what Git refuses to read: {case}"));
+                        if no_index_pair(&patch) {
+                            tally.no_index += 1;
+                        } else {
+                            tally
+                                .failures
+                                .push(format!("DDF reads what Git refuses to read: {case}"));
+                        }
                         continue;
                     }
                     let Some(git) = repo.apply(&before, patch.as_bytes()) else {
@@ -521,6 +549,7 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
         total.patches += tally.patches;
         total.read += tally.read;
         total.applied_as_read += tally.applied_as_read;
+        total.no_index += tally.no_index;
         for (shape, n) in tally.git_only {
             *total.git_only.entry(shape).or_default() += n;
         }
@@ -528,12 +557,13 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
     }
     let git_only: usize = total.git_only.values().sum();
     eprintln!(
-        "generated differential: {} seeds, {} patches in {:.1} s; DDF read {}, Git applied {} of them as reviewed; Git applies and DDF refuses {git_only}",
+        "generated differential: {} seeds, {} patches in {:.1} s; DDF read {}, Git applied {} of them as reviewed; Git applies and DDF refuses {git_only}; DDF reads and Git cannot, as `git diff --no-index` pairs, {}",
         seeds.len(),
         total.patches,
         started.elapsed().as_secs_f64(),
         total.read,
         total.applied_as_read,
+        total.no_index,
     );
     for failure in total.failures.iter().take(40) {
         eprintln!("  FAIL {}", failure.lines().next().unwrap_or_default());

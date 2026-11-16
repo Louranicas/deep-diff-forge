@@ -56,17 +56,23 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     wrote; nothing was hidden). It is refused now.
   - *Found by the generated differential:* a section whose `diff --git` halves name two paths
     (`diff --git a/x b/z`), with no `---`/`+++`, rename or copy header, gives Git no file name,
-    and Git refuses it ("git diff header lacks filename information"). v0.8.3 and 0.8.4 took
-    the rightmost ` b/` and reviewed a binary change, a deletion or a mode change of `z`. Git
-    writes nothing, so nothing was hidden. It is refused now (`InvalidPath`, as for a section
-    that names no path). On the 0.8.4 parser, the 24,000 generated patches hold 81 cases,
-    every one of this shape, and no patch that Git writes otherwise than the review shows.
+    and Git refuses it ("git diff header lacks filename information"). For a file created or
+    deleted under such halves, which no Git writes, v0.8.3 and 0.8.4 took the rightmost ` b/`
+    and reviewed a creation or deletion of `z`. Git writes nothing, so nothing was hidden.
+    It is refused now (`InvalidPath`, as for a section that names no path).
+    - *Stated limit:* `git diff --no-index` writes such halves for two binary files, or two
+      files that differ only in mode. DDF's `<old> <new>` mode reviews that output, and it is
+      read as before, but Git's own `git apply` cannot read it.
+    - *On the 0.8.4 parser:* the 24,000 generated patches hold 81 patches DDF read and Git
+      refuses to read, all of this shape: 20 creations or deletions, refused now, and 61
+      pairs. None of them is a patch Git writes otherwise than the review shows.
   - *Proved by applying:* `tests/generated_differential.rs` builds 24,000 patches from 64
     fixed seeds. Each is one to three sections Git writes, with up to three near-miss moves.
     DDF reads each patch, and a real `git apply` applies it in a repository whose object store
-    holds every blob an `index` line names (26 s on the build machine). DDF read 7,769 of them,
+    holds every blob an `index` line names (24 to 37 s on the build machine when it is idle, 67 s under load). DDF read 7,820 of them,
     and Git applied 6,832 of those, each to exactly the tree the review describes. Git refused
-    to read none of the patches DDF read. `DDF_DIFFERENTIAL_SEEDS=N` runs seeds 1 to N.
+    to read none of the patches DDF read, except 51 `--no-index` pairs (the limit above), which
+    are counted, not failed. `DDF_DIFFERENTIAL_SEEDS=N` runs seeds 1 to N.
 
     Three parser changes that earlier rescores found, each put back in a scratch clone, make
     it fail on the fixed seeds when the accept-list is turned off:

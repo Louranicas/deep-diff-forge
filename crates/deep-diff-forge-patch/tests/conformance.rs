@@ -136,16 +136,24 @@ fn row_diff_git() {
     assert!(s.reading.is_none());
     s.refused(|e| matches!(e, PatchParseError::SectionWithoutPatch { .. }));
     // Halves that name two paths give no name, and with nothing else naming the files Git
-    // refuses the section; 0.8.4 took the rightmost ` b/`.
+    // refuses the section. Git's diff writes such a section only for two files compared with
+    // `git diff --no-index` (a binary or a mode-only pair): read as the pair, a stated limit
+    // (Git writes nothing). A file created or deleted under such halves, which no Git writes,
+    // is refused; 0.8.4 took the rightmost ` b/`.
     for headers in [
         "index @OLD@..@NEW@ 100644\nBinary files a/x and b/z differ\n",
-        "deleted file mode 100644\nindex @OLD@..@ZERO@\nBinary files a/x and /dev/null differ\n",
         "old mode 100644\nnew mode 100755\n",
     ] {
         let s = see(&r, &format!("diff --git a/x b/z\n{headers}"));
         assert!(s.reading.is_none(), "{headers}");
-        s.refused(|e| matches!(e, PatchParseError::InvalidPath { line_number: 1 }));
+        assert_eq!(s.read()[0].path, "z");
     }
+    let s = see(
+        &r,
+        "diff --git a/x b/z\ndeleted file mode 100644\nindex @OLD@..@ZERO@\nBinary files a/x and /dev/null differ\n",
+    );
+    assert!(s.reading.is_none());
+    s.refused(|e| matches!(e, PatchParseError::InvalidPath { line_number: 1 }));
 }
 
 #[test]
