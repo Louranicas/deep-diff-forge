@@ -67,6 +67,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     holds every blob an `index` line names (26 s on the build machine). DDF read 7,769 of them,
     and Git applied 6,832 of those, each to exactly the tree the review describes. Git refused
     to read none of the patches DDF read. `DDF_DIFFERENTIAL_SEEDS=N` runs seeds 1 to N.
+
+    Three parser changes that earlier rescores found, each put back in a scratch clone, make
+    it fail on the fixed seeds when the accept-list is turned off:
+    - `Files … differ` read as text again (G1): 70 failures, the first at seed 16;
+    - a bare header's name carried over (F3): 710 failures, the first at seed 8;
+    - `new mode` after `new file mode` accepted (F2): 11 failures, the first at seed 10.
+
+    With the accept-list on, the list itself refuses the F3 and F2 shapes. G1 still fails the
+    test: `new file mode` and `index` followed by an unread line is a shape Git writes.
 - **`CONFORMANCE.md`** (in the patch crate) is the table of what Git reads. It has one row for
   each header line `apply.c` recognises, and one for the traditional form. Each row says what
   Git sets from the line, which line wins when it is repeated, what Git refuses, whether Git's
