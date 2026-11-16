@@ -514,7 +514,8 @@ says when it closed:
 - **A binary section that deletes, creates or renames a file is shown as `binary_changed`
   (G3 of the v0.8.3 rescore, medium; open in 0.8.4).** A deletion, creation or rename with a
   binary line has status `binary_changed` in every view. From 0.8.4 the ranking gives a binary
-  creation or deletion the `new_file` or `deleted_file` signal with its weight; elsewhere the
+  section with a `new file mode` or `deleted file mode` header the `new_file` or `deleted_file`
+  signal with its weight (the names on the binary line are not read for it); elsewhere the
   deletion or creation is visible only as the raw `deleted file mode` or `new file mode` line in
   the full JSON's metadata.
 - **Two hunks can share an address.** A section that creates a file followed by a change in

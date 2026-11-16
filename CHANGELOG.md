@@ -33,12 +33,14 @@ GitHub release: it is published as a signed tag on GitLab, Gitea and Forgejo; bi
   with Git 2.56; v0.8.2 is the same. The line is now read exactly as `Binary files … differ`
   is (status `binary_changed`), under the same rules: it ends the header, it is refused
   straight after `diff --git`, after the section's `---`/`+++` and under a submodule mode.
-  In the ranking, a binary section that creates a file (`new file mode`, or `/dev/null` as
-  the old side of its binary line) carries `new_file` beside `binary_change`, and one that
-  deletes a file (`deleted file mode`, or `/dev/null` as the new side) `deleted_file`, with
-  the weights of a text file, so a creation or deletion that 0.8.3 ranked as `added` or
-  `deleted` ranks no lower (review of 0.8.4, R84-M-1: without it `new file mode 100755` and
-  `Files /dev/null and b/n differ` scored 5 where 0.8.3 scored 6). The status stays
+  In the ranking, a binary section with a `new file mode` header carries `new_file` beside
+  `binary_change`, and one with a `deleted file mode` header `deleted_file`, with the weights
+  of a text file, so a creation or deletion that 0.8.3 ranked as `added` or `deleted` ranks no
+  lower (review of 0.8.4, R84-M-1: without it `new file mode 100755` and
+  `Files /dev/null and b/n differ` scored 5 where 0.8.3 scored 6). These are the headers Git
+  acts on: with one, `git apply` creates or deletes the file, or refuses when the path's state
+  disagrees. The names on the binary line are not read for it, as Git does not read them
+  (`/dev/null` there, with no mode header, gives neither signal). The status stays
   `binary_changed` (G3).
   Where Git does not read it as the marker it stays ignored text, as measured: after a hunk,
   after a line that already ended the header, and with a carriage return before its line
@@ -504,8 +506,13 @@ GitHub release: it is published as a signed tag on GitLab, Gitea and Forgejo; bi
   signature, the checksums and their signature, a rebuild, against the new
   `.github/release_allowed_signers`), with a self-test,
   `scripts/test_release_local.sh`, and the recipes `just release-local-build`,
-  `release-local-verify` and `release-local-test`; `just release-tag` pushes the tag to
-  GitLab, Gitea and Forgejo only and refuses a remote that points at GitHub. The advisories
+  `release-local-verify` and `release-local-test`; `verify` refuses an archive whose members
+  are not exactly the five it packs (review of 0.8.4, R84B-L-2: a second member `./D/…` was
+  what `tar -xzf` left). `just release-tag` pushes the tag to GitLab, Gitea and Forgejo only,
+  refuses a remote whose URL names github.com, and refuses to tag when `git status --porcelain`
+  prints anything, untracked files included, before the release gate or after it (review of
+  0.8.4, VR84B-M-2: the check was `git diff --quiet`, which does not see an untracked
+  `build.rs` that Cargo reads). The advisories
   are in the repository: [DDF-2026-001](docs/advisories/DDF-2026-001.md) (G1, G2) and
   [DDF-2026-002](docs/advisories/DDF-2026-002.md) (the Rust code view). Security reports go
   to a confidential issue on GitLab ([SECURITY.md](SECURITY.md#reporting-a-vulnerability))

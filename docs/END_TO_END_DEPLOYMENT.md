@@ -257,10 +257,11 @@ Publishing order:
 6. Publish crates only after release artifacts pass smoke.
 
 `main` changes only through a merged pull request, and GitLab `main` is fast-forwarded to
-GitHub's. The tag is the owner's act, and one recipe validates and pushes it to both remotes:
+GitHub's. The tag is the owner's act, and one recipe validates and pushes it to the `gitlab`,
+`gitea` and `forgejo` remotes (from 0.8.4; never to GitHub):
 
 ```bash
-just release-tag X.Y.Z   # version check, clean tree, gate-release, then push vX.Y.Z to origin and gitlab
+just release-tag X.Y.Z   # version check, clean tree, gate-release, then push vX.Y.Z to gitlab, gitea and forgejo
 ```
 
 Current status (2026-10-26, kept as written; see the 2026-10-28 status at the

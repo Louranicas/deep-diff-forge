@@ -112,7 +112,8 @@ just release-tag 0.8.4
 ```
 
 `release-tag` refuses a version that differs from `[workspace.package].version`
-or a dirty tree, and refuses unless the remotes named `gitlab`, `gitea` and `forgejo` all
+or a tree for which `git status --porcelain` prints anything (untracked files included, which
+Cargo can read; checked before the gate and again after it), and refuses unless the remotes named `gitlab`, `gitea` and `forgejo` all
 exist and none of their fetch or push URLs contains `github.com` (in any case), before the gate
 and before signing. It then runs `just gate-release`, creates a signed annotated tag `vX.Y.Z`
 (see [Signed Tags](#signed-tags)), and pushes it to those three remotes only, never `origin`
@@ -211,8 +212,10 @@ the local repository. Its self-test is `scripts/test_release_local.sh` (`just re
   It passes only if (1) `scripts/verify_release_tag.sh` accepts the tag against the signers
   file, its commit is on `gitlab/main` and the tag is `v<workspace version>`; (2) `SHA256SUMS`
   lists exactly the files of `<dir>`, each matches, and `SHA256SUMS.sig` verifies against the
-  signers file in namespace `deep-diff-forge-release-sha256sums`; (3) a fresh build of the tag's
-  commit gives the binary of the receipt and of the archive. One file serves checks 1 and 2, so
+  signers file in namespace `deep-diff-forge-release-sha256sums`; (3) the archive's members are
+  exactly the five it packs (the directory, `LICENSE-APACHE`, `LICENSE-MIT`, `README.md` and the
+  binary), and a fresh build of the tag's commit gives the binary of the receipt and of the
+  archive. One file serves checks 1 and 2, so
   `.github/release_allowed_signers` holds the release key, the principal and key of
   `.github/allowed_signers`, for both namespaces, `git` and `deep-diff-forge-release-sha256sums`.
   `.github/allowed_signers` stays `git` only: `just release-tag` and `release.yml` read it, and
@@ -231,6 +234,18 @@ the local repository. Its self-test is `scripts/test_release_local.sh` (`just re
   not measured.
 - **What it does not give.** No build-provenance attestation, no CI run on the release commit
   (the local gate `scripts/ci_local.sh` instead), and no binary for the other three targets.
+- **Known limits of releasing without GitHub (0.8.4; reviews of 0.8.4).**
+  - The GitLab project is private: on 2026-11-16 its API answered an anonymous request with 404. Until
+    the owner makes it public, its clone URL, the release files and the issue routes (ordinary
+    and confidential) are closed to the public.
+  - The binary holds the build account's `CARGO_HOME` path (`~/.cargo` of that account, so the
+    account's name). A third party's `verify` passes check 3 only when it rebuilds at that path
+    with the receipt's toolchain. `--remap-path-prefix` is parked for a later release.
+  - `cargo deny` and `cargo audit` in `scripts/ci_local.sh` fetch the RustSec advisory database
+    from github.com: a read that bills nothing, but the gate needs github.com reachable.
+  - The edits to `.github/ISSUE_TEMPLATE` are inert: GitHub reads them from its `main`, which
+    stays at 0.8.3, and GitLab does not read them.
+  - The README's "Latest release" badge is GitHub's, so it shows v0.8.3.
 
 ## Artifact Layout
 

@@ -845,7 +845,7 @@ per file (`crates/deep-diff-forge-graph/src/risk.rs`). Higher means review first
 | *(primary source)* | not a test, config or lockfile | +1 |
 | `public_api_surface` | `lib.rs`, `mod.rs`, or an `/api/` path | +5 |
 | `large_change` | ≥ 80 changed lines | +3 |
-| `deleted_file` · `new_file` | removed · added (a binary section too, beside `binary_change`) | +3 · +2 |
+| `deleted_file` · `new_file` | removed · added (a binary section with a `deleted file mode` · `new file mode` header too, beside `binary_change`) | +3 · +2 |
 | `many_hunks` | ≥ 5 hunks | +2 |
 | `config_or_lockfile` · `binary_change` | `Cargo.toml`, `*.lock`, `*.yaml`, … · binary | +1 · +1 |
 | `test_only` | under `tests/` or `test/`, `*_test.*`, `*.test.*` | no bonus |
@@ -1114,7 +1114,7 @@ someone else's pull request.
    and the open problems.
 2. Pick an issue labelled [`good first issue`](https://github.com/Louranicas/deep-diff-forge/labels/good%20first%20issue)
    or [`help wanted`](https://github.com/Louranicas/deep-diff-forge/labels/help%20wanted), or
-   [open your own](https://github.com/Louranicas/deep-diff-forge/issues/new/choose).
+   [open your own](https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues/new).
 3. Send a pull request. CI tells you everything a reviewer would check mechanically, so the
    human review can focus on ideas.
 
