@@ -2,9 +2,50 @@
 
 The rule of this crate is that the patch `git apply` applies is the truth, and nothing may
 show it otherwise. Five independent assessments in a row (v0.8.0 to v0.8.3) each found one
-more header shape that DDF read one way and `git apply` wrote another way. From the release after
-0.8.4 on, the parser does not try to read every shape as Git reads it. It reads the shapes Git's own diff
-writes, and it refuses the others (`PatchParseError::HeaderNotWrittenByGit`).
+more header shape that DDF read one way and `git apply` wrote another way. From the release
+after 0.8.4 on, the parser does not try to read every shape as Git reads it. It reads the
+header shapes Git's own diff writes, and it refuses the others
+(`PatchParseError::HeaderNotWrittenByGit`).
+
+## What is promised
+
+For every patch DDF accepts, a plain `git apply` in Git's default configuration does one of
+two things:
+
+- it writes exactly the paths, types, modes and contents the review shows; or
+- it refuses the whole patch and writes nothing.
+
+A review never shows one change while Git writes another. It may show a change that never
+lands, because DDF reads a diff without the tree it applies to: a hunk that does not fit the
+file, or a file that already exists, makes Git refuse the whole patch.
+
+"Git writes it" is not the same as "`git apply` accepts it". Git's own diff writes three
+presentations that DDF reads, as 0.8.4 did, and that `git apply` refuses whole:
+
+- **A binary marker with abbreviated ids.** A plain `git diff` of a binary file writes
+  `Binary files … differ` after an `index` line with abbreviated ids. `apply_binary` wants full
+  ids ("cannot apply binary patch … without full index line", `apply.c` 3315). With
+  `--full-index` or `--binary`, the same change applies.
+- **The inner section of a `--submodule=diff` envelope.** `git diff --submodule=diff` writes a
+  `Submodule sm …` line, then the submodule's own section under the superproject path. In the
+  repository it describes, Git refuses that section.
+- **`diff --git` halves Git cannot split.** These are halves that name two paths, or that Git
+  cannot split into one name (a trailing space or tab, mixed quoting, a repeated ` b/`), with no
+  `---`/`+++`, rename or copy header. `git diff --no-index` of two binary files, or of two that
+  differ only in mode, writes such halves. Git names no file ("lacks filename information").
+
+`tests/conformance.rs` asserts each of the three against real Git output. In each case Git
+refuses the whole patch and the tree is unchanged. The generated differential counts each one
+apart and fails on anything else Git refuses to read.
+
+Limits of the promise:
+
+- `git apply --reject`, which applies a patch in part, is outside it.
+- So is a non-default configuration. With `core.fileMode=false`, and without `--index`, Git
+  writes the mode an `index` line names: `check_preimage`, `apply.c` 3919–3937, takes the old
+  mode from the patch when it does not trust the executable bit. Leaving the `index` line out
+  then changes the mode written (independent review of S3a, S3A-L-2). The patch does not carry
+  the repository's configuration, so no reading of it can close this.
 
 This file is the table of what Git reads. It holds one row for each header line `git apply`
 recognises in a `diff --git` section, and one for the traditional `---`/`+++` form. Each row
@@ -64,7 +105,7 @@ They are the `GIT_WRITES` list in `src/parser.rs`. A section is read only if its
 of these shapes. A `similarity index`, `dissimilarity index` or `index` line may be left out of
 the shape, except that a binary line may not come straight after `diff --git`: Git reads no
 patch from that, and leaves the line's name for the next section (F3 of the v0.8.2 rescore).
-None of these lines changes what `git apply` writes:
+In Git's default configuration, none of these lines changes what `git apply` writes:
 
 - a score only sets the percentage `--summary` prints;
 - without `index`, Git applies a text section alike, and it refuses a binary one ("cannot apply
@@ -94,7 +135,7 @@ The traditional form (`---`/`+++` with no `diff --git`) is not written by Git, b
 
 | Row | Form | Git sets (apply.c) | Repeated | Git refuses | Git writes it (diff.c) | DDF 0.8.4 | DDF now |
 |---|---|---|---|---|---|---|---|
-| `diff-git` | `diff --git a/P b/P` | Opens a section (`find_header` 1646). The default name is the path both halves give (`git_header_name` 1197). With no header line after it, the line is no patch (`git_hdr_len <= len`, 1654). | Opens the next section. | No name from it or from any other line: "lacks filename information" (1462). | Always, first (`builtin_diff` 3879). | Read; refused with nothing after it. With halves that name two paths and no `---`/`+++`, rename or copy header, the rightmost ` b/` named the file, so a creation or a deletion was reviewed that Git refuses (found by the generated differential). | Same for a file created or deleted under such halves, which no Git writes: refused, as Git refuses it. **Limit:** `git diff --no-index` of two binary files, or of two files that differ only in mode, writes such halves with nothing else naming the files. Git's own `git apply` refuses that output, and DDF reads it as the pair it compares (as 0.8.4 did). Git writes nothing from it. |
+| `diff-git` | `diff --git a/P b/P` | Opens a section (`find_header` 1646). The default name is the path both halves give (`git_header_name` 1197). With no header line after it, the line is no patch (`git_hdr_len <= len`, 1654). | Opens the next section. | No name from it or from any other line: "lacks filename information" (1462). | Always, first (`builtin_diff` 3879). | Read; refused with nothing after it. With halves that name two paths and no `---`/`+++`, rename or copy header, the rightmost ` b/` named the file, so a creation or a deletion was reviewed that Git refuses (found by the generated differential). | Same for a file created or deleted under such halves, which no Git writes: refused, as Git refuses it. **Limit:** any other section whose halves Git cannot split, with nothing else naming the files, is read as 0.8.4 read it (the rightmost ` b/`), and Git refuses it whole. Such halves name two paths, or have a trailing space or tab, mixed quoting or a repeated ` b/`. `git diff --no-index` of two binary files, or of two that differ only in mode, writes them. See "What is promised". |
 | `old-mode` | `old mode M` | The old mode, canonicalised (`gitdiff_oldmode` 1023, `parse_mode_line` 1006). | The last wins. | Not octal: "invalid mode" (1017). A section whose only change is an unchanged mode: "patch with only garbage" (2344). | Before `new mode`, when the mode changes (3897). | Read. A repeat was refused. Any octal mode with a type Git writes was taken, such as `100664`. | Only right after `diff --git` and before `new mode`, and only with `100644`, `100755`, `120000` or `160000`. |
 | `new-mode` | `new mode M` | The new mode (`gitdiff_newmode` 1031). | The last wins. Also overrides `new file mode`. | As `old mode`. | After `old mode` (3898). | Read. A repeat, or one beside `new file mode`, was refused. | Only right after `old mode`, with a mode Git writes. |
 | `deleted-file-mode` | `deleted file mode M` | A deletion with that old mode. The old name is the default name (`gitdiff_delete` 1039). | The last mode wins. | With `new file mode`, `rename` or `copy`: "inconsistent header lines" (`check_header_line` 1347). A deletion with content left: "still has contents" (1982). | For a deleted file (3889). | Read. A repeat was refused. | Only right after `diff --git`, with a mode Git writes. |
@@ -108,7 +149,7 @@ The traditional form (`---`/`+++` with no `diff --git`) is not written by Git, b
 | `similarity-index` | `similarity index N%` | The score, if N is at most 100. Any other number is ignored (`gitdiff_similarity` 1099). Nothing that is applied. | The last wins. | Nothing. | First of a rename's or a copy's lines, N from 0 to 100 (4842, 4852). | Read anywhere among the extended headers, any text after it. | Only before `rename from` or `copy from`, N a whole number from 0 to 100. |
 | `dissimilarity-index` | `dissimilarity index N%` | As `similarity index` (1109). | The last wins. | Nothing. | For a rewrite (`-B`), before `index` (4864). | Read anywhere, beside a rename too. | Only right after the mode lines (or `diff --git`), before `index`. |
 | `index` | `index A..B` or `index A..B M` | The two ids, and M as the old mode (`gitdiff_index` 1119). A line with no `..` sets nothing. For a binary section the ids must be full (3315). | The last wins, the mode included. | Nothing at this line. A binary section without full ids is refused when it is applied (3315). | When the blob changed. ` M` only when the mode did not (4893). | Read anywhere among the extended headers, any text. Its mode was held to the object types Git writes (a file, a symlink, a submodule), and refused beside a mode line. | Only where Git writes it: last of the extended headers, with the mode exactly when there is no mode line. The ids are lowercase hex digits, 1 to 64 of them (Git writes 4 or more; a shorter id changes nothing Git writes). |
-| `old-name` | `--- P` (in a Git section) | Checks the old name against the one already known, or sets it (`gitdiff_oldname` 988, `gitdiff_verify_name` 941). | Checked again; a different name: "inconsistent old filename". | A name that differs, or `/dev/null` beside a known name. | Before the first hunk (`emit_rewrite_diff` 1874, and the first hunk of a text diff). | Read and checked as Git checks it. A second pair was refused. | Same, and only as the last header before the hunks. |
+| `old-name` | `--- P` (in a Git section) | Checks the old name against the one already known, or sets it (`gitdiff_oldname` 988, `gitdiff_verify_name` 941). | Checked again; a different name: "inconsistent old filename". | A name that differs, or `/dev/null` beside a known name. | Before the first hunk (`emit_rewrite_diff` 1874, and the first hunk of a text diff). | Read and checked as Git checks it. A second pair was refused. A pair with no hunk after it was read in a new or deleted file. | Same, and only as the last header before the hunks, with a hunk after it (Git writes an empty file as `new file mode` and `index`). |
 | `new-name` | `+++ P` (in a Git section) | As `---`, for the new name (`gitdiff_newname` 997). | As `---`. | As `---`. | Right after `---`. | As `---`. | As `---`. |
 | `hunk-header` | `@@ -a,b +c,d @@` | Ends the header (`gitdiff_hdrend` 922). The hunks are read from here (`parse_single_patch` 1924). | Each hunk follows the last. | A hunk that changes nothing (`parse_fragment` 1772). A hunk with no header before it: "patch fragment without header" (1633). | Only after `---`/`+++`. | Read. A first hunk with no `---`/`+++` before it was read. | Read only after `---`/`+++`. |
 | `other-line` | Any other line | Ends the header (`gitdiff_unrecognized` 1159). The patch is whatever the headers so far say. | Not applicable. | "patch with only garbage" if no hunk, no binary line and no change in the headers (2344). | Not inside a header (a blank line or the next commit comes after a section). | The header ended there; a later header or hunk was refused. | Same. |

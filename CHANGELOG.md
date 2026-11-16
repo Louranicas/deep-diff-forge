@@ -28,6 +28,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   - a whole percentage.
 
   Every refusal 0.8.4 made stays, with its reason.
+  - *What is promised (C1):* for every patch DDF accepts, a plain `git apply` in Git's default
+    configuration either writes exactly the paths and contents the review shows, or refuses
+    the whole patch and writes nothing. "Git writes it" is not "`git apply` accepts it". Three
+    presentations Git's own diff writes are read, as 0.8.4 read them, and `git apply` refuses
+    them whole:
+    - a binary marker with abbreviated ids (a plain `git diff` of a binary file);
+    - the inner section of a `git diff --submodule=diff` envelope;
+    - `diff --git` halves Git cannot split, as `git diff --no-index` writes for two binary
+      files.
+
+    Each is tested against real Git output. Outside the promise: `git apply --reject`, and a
+    non-default configuration. With `core.fileMode=false`, Git writes the mode an `index` line
+    names, so leaving that line out changes the mode written (`CONFORMANCE.md`).
   - *Measured:* every commit was diffed as `git diff`, `git diff -M -C -B`,
     `git diff --binary`, `git format-patch --stdout` and `git log -p --first-parent`, over:
     - this repository: 892 commits on all refs, 4,457 patches, 57,038 `diff --git` sections;
@@ -38,7 +51,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
     No patch that 0.8.4 read is refused, and none is refused as `HeaderNotWrittenByGit`. The
     refusals that remain are 0.8.4's own: a `format-patch` message line that begins `-`, the
-    byte budget, a `-- ` signature after a binary body, and one path in several sections.
+    byte budget, the line budget, a `-- ` signature after a binary body, and one path in
+    several sections.
   - *Newly refused, each read by Git and never written by it:*
     - `Files … differ`, which 0.8.4 read as `Binary files … differ`;
     - a hunk with no `---`/`+++` before it;
@@ -60,28 +74,47 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     deleted under such halves, which no Git writes, v0.8.3 and 0.8.4 took the rightmost ` b/`
     and reviewed a creation or deletion of `z`. Git writes nothing, so nothing was hidden.
     It is refused now (`InvalidPath`, as for a section that names no path).
-    - *Stated limit:* `git diff --no-index` writes such halves for two binary files, or two
-      files that differ only in mode. DDF's `<old> <new>` mode reviews that output, and it is
-      read as before, but Git's own `git apply` cannot read it.
-    - *On the 0.8.4 parser:* the 24,000 generated patches hold 81 patches DDF read and Git
-      refuses to read, all of this shape: 20 creations or deletions, refused now, and 61
-      pairs. None of them is a patch Git writes otherwise than the review shows.
+    - *Stated limit:* any other section whose halves Git cannot split, with nothing else
+      naming the files, is read as before, and Git refuses it whole. Such halves name two
+      paths, or have a trailing space or tab, mixed quoting or a repeated ` b/`.
+      `git diff --no-index` writes them for two binary files, or two files that differ only in
+      mode, and DDF's `<old> <new>` mode reviews that output.
+    - *On the 0.8.4 parser:* the first version of the generated differential (24,000
+      patches) held 81 patches DDF read and Git refuses to read, all of this shape: 20
+      creations or deletions, refused now, and 61 pairs. None of them is a patch Git writes
+      otherwise than the review shows.
   - *Proved by applying:* `tests/generated_differential.rs` builds 24,000 patches from 64
     fixed seeds. Each is one to three sections Git writes, with up to three near-miss moves.
-    DDF reads each patch, and a real `git apply` applies it in a repository whose object store
-    holds every blob an `index` line names (24 to 37 s on the build machine when it is idle, 67 s under load). DDF read 7,820 of them,
-    and Git applied 6,832 of those, each to exactly the tree the review describes. Git refused
-    to read none of the patches DDF read, except 51 `--no-index` pairs (the limit above), which
-    are counted, not failed. `DDF_DIFFERENTIAL_SEEDS=N` runs seeds 1 to N.
+    Half the threads use SHA-1 repositories and half SHA-256. DDF reads each patch, and a real
+    `git apply` applies it in a repository whose object store holds every blob an `index` line
+    names (40 s idle, 56 s under load, on the build machine). DDF read 8,669. Git applied
+    6,926 of those, each to exactly the tree the review describes. A binary section with a full
+    id is held to the blob it names. Every other patch DDF read, Git refused whole, writing
+    nothing:
+    - 1,130 binary markers with abbreviated ids;
+    - 58 `--no-index` pairs;
+    - 555 others whose hunks or files do not fit the tree.
+    - none of the `--submodule=diff` envelope, which the generator does not write; the test
+      of real Git output covers it.
 
-    Three parser changes that earlier rescores found, each put back in a scratch clone, make
-    it fail on the fixed seeds when the accept-list is turned off:
-    - `Files … differ` read as text again (G1): 70 failures, the first at seed 16;
-    - a bare header's name carried over (F3): 710 failures, the first at seed 8;
-    - `new mode` after `new file mode` accepted (F2): 11 failures, the first at seed 10.
+    Any patch DDF read that Git refuses to read, outside the named presentations, fails the
+    test, as does any that Git applies otherwise than the review shows.
+    `DDF_DIFFERENTIAL_SEEDS=N` runs seeds 1 to N.
+
+    The oracle does not prove two things: the bytes of a binary section whose id is abbreviated
+    or whose new blob is not in the store, and where Git places a hunk it finds at an offset.
+
+    Parser changes that earlier rescores found, each put back in a scratch clone, make the test
+    fail on the fixed seeds when the accept-list is turned off:
+    - `Files … differ` read as text again (G1): 53 failures, the first at seed 8;
+    - a bare header's name carried over (F3): 668 failures, the first at seed 8;
+    - `new mode` after `new file mode` accepted (F2): 5 failures, the first at seed 12.
 
     With the accept-list on, the list itself refuses the F3 and F2 shapes. G1 still fails the
-    test: `new file mode` and `index` followed by an unread line is a shape Git writes.
+    test (20 failures): `new file mode` and `index` followed by an unread line is a shape Git
+    writes. A binary marker ending in a carriage return read again, with the list on, fails it
+    12 times (the first at seed 8): the binary oracle sees the blob the review names where Git
+    changed only the mode.
 - **`CONFORMANCE.md`** (in the patch crate) is the table of what Git reads. It has one row for
   each header line `apply.c` recognises, and one for the traditional form. Each row says what
   Git sets from the line, which line wins when it is repeated, what Git refuses, whether Git's
@@ -96,6 +129,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - A rename DDF finds from the `---`/`+++` names, with no rename header, now records its
   `rename from`/`rename to` before the `index` line, where Git writes them, so that DDF's
   rendering is a shape Git writes. Before, they came after it.
+
+### Fixed
+
+- **A moved file's old path is squashed as Git squashes it** (independent review of S3a,
+  S3A-L-1, low). `rename from d//x` or `copy from d//x` was reported as `old_path` `d//x`, while
+  `git apply` read `d/x`. It is `d/x` now (`render::old_path`), with a real-apply test.
 
 ## [0.8.4] - 2026-11-16
 
